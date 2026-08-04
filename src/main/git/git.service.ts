@@ -52,6 +52,9 @@ interface ExecResult {
 async function execGit(args: string[], cwd: string, input?: string): Promise<ExecResult> {
   if (!cwd) throw new GitExecError(1, 'cwd is required', '')
   const absCwd = resolve(cwd)
+  // Print non-ASCII file names verbatim (UTF-8) instead of octal escapes like "\346\265\213\350\257\225".
+  // Applies to every git invocation — cross-platform (Windows + macOS).
+  args = ['-c', 'core.quotepath=false', ...args]
   const st = await stat(absCwd).catch(() => null)
   if (!st || !st.isDirectory()) {
     throw new GitExecError(1, `cwd is not a directory: ${absCwd}`, '')
