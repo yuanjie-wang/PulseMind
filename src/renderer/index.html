@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PulseMind</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: local-file: http: https:; connect-src 'self' http://localhost:* https:; font-src 'self' data:; frame-src 'none'; object-src 'none'">
+    <script>
+      (function() { document.documentElement.dataset.platform = navigator.platform.includes('Win') ? 'win32' : '' })()
+    </script>
+    <style>
+      html, body, #root {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+      body {
+        font-variant-emoji: text;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      /* Windows: disable expensive backdrop-filter blur effects.
+         macOS has hardware-accelerated Core Animation blur — Windows does not.
+         Compensate frosted-glass panels with more opaque backgrounds. */
+      html[data-platform='win32'] * {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+      }
+
+      /* Remove default focus outline on click; keyboard focus uses focus-visible.
+         Tab navigation is globally disabled (see App.tsx), so this is safe. */
+      button:focus-visible,
+      [tabindex]:focus-visible {
+        outline: none;
+      }
+
+      /* Global thin scrollbar */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(128, 128, 128, 0.4);
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgba(128, 128, 128, 0.6);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

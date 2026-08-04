@@ -1,0 +1,52 @@
+import type { ContentBlock } from './agent'
+
+export interface ConversationIndexEntry {
+  id: string
+  title: string
+  lastMessage: string | null
+  messageCount: number
+  createdAt: string
+  updatedAt: string
+  summary?: string
+  keywords?: string
+  pinned?: boolean
+}
+
+export interface Message {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  contentBlocks?: ContentBlock[]
+  createdAt: string
+  liked?: boolean
+  favorited?: boolean
+  processingMs?: number
+  inputTokens?: number
+  outputTokens?: number
+  autoSummary?: boolean
+  compressedIds?: string[]
+}
+
+export interface Conversation {
+  id: string
+  title: string
+  messages: Message[]
+  createdAt: string
+  updatedAt: string
+  summary?: string
+}
+
+export interface ToolResultBatchEntry {
+  ref_id: string
+  message_id: string
+  block_index: number
+  tool_use_id: string
+  content: string
+  is_error: number
+}
+
+export interface TokenStats {
+  hourly: Array<{ time: string; inputTokens: number; outputTokens: number }>
+  daily: Array<{ date: string; inputTokens: number; outputTokens: number }>
+  monthly: Array<{ month: string; inputTokens: number; outputTokens: number }>
+}

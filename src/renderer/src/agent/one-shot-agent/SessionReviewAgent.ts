@@ -1,0 +1,114 @@
+import { OneShotAgent } from './OneShotAgent'
+import { extractJson } from './json-utils'
+import type { ExtractedMemory } from './MemoryExtractionAgent'
+
+export interface SessionReviewInput {
+  sessionSummary: string
+  existingExperiencesText?: string
+  locale?: string
+}
+
+export interface SessionReviewOutput {
+  memories: ExtractedMemory[]
+  summary?: string
+  keywords?: string[]
+  experience?: {
+    title: string
+    content: string
+    category: string
+  } | null
+}
+
+export class SessionReviewAgent extends OneShotAgent<SessionReviewInput, SessionReviewOutput> {
+  readonly name = 'SessionReviewAgent'
+
+  protected buildSystemPrompt(): string {
+    return `\
+You are a session review system. Analyze the conversation below and extract two kinds of information in a single pass:
+
+## A. Memories
+Extract important facts, decisions, and user preferences. Each memory must have:
+- "content": specific, durable information (not transient chat)
+- "type": one of "fact", "decision", "preference"
+- "category": one of "code", "architecture", "user_pref", "decision", "general"
+
+Also generate:
+- "summary": a short phrase (max 200 chars) describing this conversation
+- "keywords": array of search keywords (max 10, prefer Chinese if conversation is in Chinese)
+
+## B. Experience (optional)
+Determine if the conversation contains lessons or observations worth remembering for future work. There are two types of valuable experience:
+
+**Optimizations:** A repetitive task was simplified, a workflow shortcut discovered, a process improvement found through trial and error. Worth remembering because the same situation will come up again.
+
+**User pain points:** The user expressed frustration, dissatisfaction, or pushed back on an approach. This signals a recurring problem worth avoiding in the future.
+
+An experience has:
+- "title": a short, descriptive title (max 30 chars). Choose a title that makes the experience easily identifiable in a list.
+- "content": structured Markdown with four sections:
+  - ## 背景 (Background) — What prompted this? Context of the problem or task.
+  - ## 过程 (Process) — What was done? Key steps, approaches tried, tools used.
+  - ## 问题 (Problems) — What went wrong or was tricky? Pain points, pitfalls, frustrations.
+  - ## 优化 (Optimization) — Lessons learned, what to do differently next time, actionable takeaways.
+- "category": one of "code", "architecture", "user_pref", "decision", "general" — choose the most relevant category
+
+If this conversation doesn't contain any worthwhile lessons, set "experience" to null.
+
+## Output Format
+Return ONLY a JSON object with these keys:
+{
+  "memories": [{ "content": "...", "type": "fact|decision|preference", "category": "code|architecture|user_pref|decision|general" }],
+  "summary": "...",
+  "keywords": ["...", "..."],
+  "experience": { "title": "...", "content": "...", "category": "code|architecture|user_pref|decision|general" } | null
+}`
+  }
+
+  protected buildUserMessages(input: SessionReviewInput): { role: string; content: string }[] {
+    const langInstruction = input.locale === 'zh'
+      ? '请用中文编写 experience 的 content。'
+      : 'Write the experience content in English.'
+
+    const existingSection = input.existingExperiencesText
+      ? `\n\nEXISTING EXPERIENCES (check if new insight relates to or duplicates any of these):\n${input.existingExperiencesText}`
+      : ''
+
+    return [{
+      role: 'user',
+      content: `Review this conversation and extract memories + optional experience.\n${langInstruction}${existingSection}\n\n${input.sessionSummary}`
+    }]
+  }
+
+  protected parseResponse(raw: string): SessionReviewOutput {
+    const parsed = extractJson<{
+      memories?: unknown[]
+      summary?: string
+      keywords?: unknown[]
+      experience?: { title?: string; content?: string; category?: string } | null
+    }>(raw)
+
+    if (!parsed) return this.getDefaultOutput()
+
+    // Support old format (array of memories only)
+    if (Array.isArray(parsed)) {
+      return { memories: parsed as ExtractedMemory[] }
+    }
+
+    return {
+      memories: Array.isArray(parsed.memories) ? parsed.memories as ExtractedMemory[] : [],
+      summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
+      keywords: Array.isArray(parsed.keywords) ? parsed.keywords.filter((k: unknown) => typeof k === 'string') : undefined,
+      experience: parsed.experience && typeof parsed.experience === 'object' && parsed.experience.content && parsed.experience.content !== 'None'
+        ? {
+            title: typeof parsed.experience.title === 'string' ? parsed.experience.title : '',
+            content: typeof parsed.experience.content === 'string' ? parsed.experience.content : '',
+            category: typeof parsed.experience.category === 'string' ? parsed.experience.category : 'general'
+          }
+        : null
+    }
+  }
+
+  protected getDefaultOutput(): SessionReviewOutput {
+    return { memories: [] }
+  }
+}

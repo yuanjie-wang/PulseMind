@@ -1,0 +1,22 @@
+# Playwright Chromium browser (bundled for distribution)
+browsers/
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+out/
+release/
+
+# OS / system
+.DS_Store
+*.tsbuildinfo
+
+# Tool caches
+.codegraph/
+.ccweb/
+.claude/
+
+# Docs / release assets
+readme30.pdf

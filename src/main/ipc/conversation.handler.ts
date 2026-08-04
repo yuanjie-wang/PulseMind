@@ -1,0 +1,216 @@
+import { ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { IPC_CHANNELS } from '../../shared/ipc-channels'
+import type { Conversation, Message, TokenStats } from '../../shared/types/conversation'
+import {
+  listConversations,
+  getConversation,
+  hydrateConversation,
+  saveConversation,
+  appendConversationMessages,
+  deriveConvType,
+  deriveRectId,
+  updateMessageMetadata,
+  deleteConversation,
+  updateConversationTitle,
+  updateConversationSummary,
+  updateConversationKeywords,
+  getConversationExtractedMsgCount,
+  updateConversationExtractedMsgCount,
+  getConversationExperienceExtractedCount,
+  updateConversationExperienceExtractedCount,
+  updateConversationPinned,
+  touchConversation,
+  listConversationsForMemory,
+  searchConversationsByKeyword,
+  saveConversationPlan,
+  getConversationPlan,
+  getToolResultsByIds,
+} from '../storage/conversation.db'
+import {
+  getHourlyTokenStats,
+  getDailyTokenStats,
+  getMonthlyTokenStats
+} from '../storage/stats.db'
+import { getDb } from '../storage/database'
+import type { ToolResultBatchEntry } from '../../shared/types/conversation'
+
+// ── Handler wrappers (reduce try-catch boilerplate) ─────────────────────
+
+function passThrough<T>(channel: string, fn: (...args: any[]) => T, defaultVal: T) {
+  return async (_event: IpcMainInvokeEvent, ...args: any[]): Promise<T> => {
+    try { return await fn(...args) }
+    catch (e) { console.error(`[DB] error ${channel}:`, e); return defaultVal }
+  }
+}
+
+function voidHandler(channel: string, fn: (...args: any[]) => void) {
+  return async (_event: IpcMainInvokeEvent, ...args: any[]): Promise<void> => {
+    try { fn(...args) }
+    catch (e) { console.error(`[DB] error ${channel}:`, e) }
+  }
+}
+
+// ── Slot-filling helpers ────────────────────────────────────────────────
+
+function fillHourlySlots(
+  rows: Array<{ label: string; inputTokens: number; outputTokens: number }>
+): TokenStats['hourly'] {
+  const now = new Date()
+  const map = new Map<string, { time: string; inputTokens: number; outputTokens: number }>()
+  for (const r of rows) {
+    if (r.label) map.set(r.label.slice(0, 13), { time: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+  }
+  const slots: TokenStats['hourly'] = []
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 60 * 60 * 1000)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}`
+    const label = key + ':00'
+    const existing = map.get(key)
+    slots.push(existing || { time: label, inputTokens: 0, outputTokens: 0 })
+  }
+  return slots
+}
+
+function fillDailySlots(
+  rows: Array<{ label: string; inputTokens: number; outputTokens: number }>
+): TokenStats['daily'] {
+  const now = new Date()
+  const map = new Map<string, { date: string; inputTokens: number; outputTokens: number }>()
+  for (const r of rows) {
+    if (r.label) map.set(r.label, { date: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+  }
+  const slots: TokenStats['daily'] = []
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const existing = map.get(key)
+    slots.push(existing || { date: key, inputTokens: 0, outputTokens: 0 })
+  }
+  return slots
+}
+
+function fillMonthlySlots(
+  rows: Array<{ label: string; inputTokens: number; outputTokens: number }>
+): TokenStats['monthly'] {
+  const now = new Date()
+  const map = new Map<string, { month: string; inputTokens: number; outputTokens: number }>()
+  for (const r of rows) {
+    if (r.label) map.set(r.label, { month: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+  }
+  const slots: TokenStats['monthly'] = []
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const existing = map.get(key)
+    slots.push(existing || { month: key, inputTokens: 0, outputTokens: 0 })
+  }
+  return slots
+}
+
+export function registerConversationHandlers(): void {
+  // Debug: test native module directly from renderer
+  ipcMain.handle(IPC_CHANNELS.DB_CHECK, async () => {
+    try {
+      const db = getDb()
+      const row = db.prepare('SELECT sqlite_version() as v').get() as { v: string }
+      return `SQLite ${row.v}, tables: conversations=${!!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'").get()}`
+    } catch (e) {
+      return `DB error: ${e}`
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST, passThrough(IPC_CHANNELS.CONVERSATION_LIST, listConversations, []))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET, passThrough(IPC_CHANNELS.CONVERSATION_GET, getConversation, null))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_HYDRATE, passThrough(IPC_CHANNELS.CONVERSATION_HYDRATE, hydrateConversation, null))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_DELETE, voidHandler(IPC_CHANNELS.CONVERSATION_DELETE, deleteConversation))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, updateConversationTitle))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_SUMMARY, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_SUMMARY, updateConversationSummary))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_KEYWORDS, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_KEYWORDS, updateConversationKeywords))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET_EXTRACTED_MSG_COUNT, passThrough(IPC_CHANNELS.CONVERSATION_GET_EXTRACTED_MSG_COUNT, getConversationExtractedMsgCount, 0))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_EXTRACTED_MSG_COUNT, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_EXTRACTED_MSG_COUNT, updateConversationExtractedMsgCount))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET_EXPERIENCE_EXTRACTED_COUNT, passThrough(IPC_CHANNELS.CONVERSATION_GET_EXPERIENCE_EXTRACTED_COUNT, getConversationExperienceExtractedCount, 0))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_EXPERIENCE_EXTRACTED_COUNT, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_EXPERIENCE_EXTRACTED_COUNT, updateConversationExperienceExtractedCount))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST_FOR_MEMORY, passThrough(IPC_CHANNELS.CONVERSATION_LIST_FOR_MEMORY, listConversationsForMemory, []))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SEARCH_KEYWORD, passThrough(IPC_CHANNELS.CONVERSATION_SEARCH_KEYWORD, (query: string, limit?: number, dateFilter?: Record<string, string>) => searchConversationsByKeyword(query, limit, dateFilter), []))
+
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_TOGGLE_PIN, voidHandler(IPC_CHANNELS.CONVERSATION_TOGGLE_PIN, (id: string, pinned: boolean) => updateConversationPinned(id, pinned)))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_TOUCH, voidHandler(IPC_CHANNELS.CONVERSATION_TOUCH, (id: string) => touchConversation(id)))
+
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SAVE, async (_event, conversation: Conversation) => {
+    console.log(`[DB] save: ${conversation.id} "${conversation.title}" (${conversation.messages?.length || 0} msgs)`)
+    try {
+      saveConversation(conversation)
+      const count = listConversations().length
+      console.log(`[DB] save: OK, now ${count} conversations total`)
+    } catch (e) {
+      console.error('[DB] save error:', e)
+    }
+  })
+
+  // Synchronous save for beforeunload — blocks until written
+  ipcMain.on(IPC_CHANNELS.CONVERSATION_SAVE_SYNC, (_event, conversation: Conversation) => {
+    try {
+      saveConversation(conversation)
+    } catch (e) {
+      console.error('[DB] save-sync error:', e)
+    }
+  })
+
+  // Incremental append (only new messages)
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_APPEND_MESSAGES, voidHandler(
+    IPC_CHANNELS.CONVERSATION_APPEND_MESSAGES,
+    (convId: string, title: string, messages: Message[]) => appendConversationMessages(convId, title, messages)
+  ))
+
+  // Targeted metadata update (liked/favorited)
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_MESSAGE_METADATA, voidHandler(
+    IPC_CHANNELS.CONVERSATION_UPDATE_MESSAGE_METADATA,
+    (msgId: string, data: { liked?: boolean; favorited?: boolean }) => updateMessageMetadata(msgId, data)
+  ))
+
+  // Plan persistence
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SAVE_PLAN, voidHandler(IPC_CHANNELS.CONVERSATION_SAVE_PLAN, (id: string, planJson: string | null) => saveConversationPlan(id, planJson)))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET_PLAN, passThrough(IPC_CHANNELS.CONVERSATION_GET_PLAN, (id: string) => getConversationPlan(id), null))
+
+  // Tool result lookup (for tool_result_search)
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET_TOOL_RESULT, passThrough(
+    IPC_CHANNELS.CONVERSATION_GET_TOOL_RESULT,
+    (ids: string[]) => getToolResultsByIds(ids),
+    []
+  ))
+
+  // Batch persist tool_results (called before nanoCompact to prevent data loss)
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_PERSIST_TOOL_RESULTS, async (_event, convId: string, results: ToolResultBatchEntry[]) => {
+    if (results.length === 0) return
+    try {
+      const db = getDb()
+      // Ensure conversation exists (may be a new conversation not yet saved)
+      db.prepare('INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at, type, rect_id) VALUES (?, ?, ?, ?, ?, ?)').run(convId, '', new Date().toISOString(), new Date().toISOString(), deriveConvType(convId), deriveRectId(convId))
+      const stmt = db.prepare(
+        'INSERT OR IGNORE INTO tool_results (ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
+      db.transaction(() => {
+        for (const r of results) stmt.run(r.ref_id, convId, r.message_id, r.block_index, r.tool_use_id, r.content, r.is_error)
+      })()
+    } catch (e) {
+      console.error('[DB] error persist-tool-results:', e)
+    }
+  })
+
+  // Token Statistics
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_TOKEN_STATS, async () => {
+    try {
+      const hourlyRows = getHourlyTokenStats()
+      const dailyRows = getDailyTokenStats()
+      const monthlyRows = getMonthlyTokenStats()
+      return {
+        hourly: fillHourlySlots(hourlyRows),
+        daily: fillDailySlots(dailyRows),
+        monthly: fillMonthlySlots(monthlyRows)
+      }
+    } catch (e) {
+      console.error('[DB] token-stats error:', e)
+      return { hourly: [], daily: [], monthly: [] }
+    }
+  })
+}

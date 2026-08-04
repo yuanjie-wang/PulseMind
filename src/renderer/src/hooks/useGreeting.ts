@@ -1,0 +1,45 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { LlmAdapter } from '../llm/adapter'
+import { GreetingAgent } from '../agent/one-shot-agent/GreetingAgent'
+
+export function useGreeting(
+  adapter: LlmAdapter,
+  apiKey: string | null,
+  baseURL: string,
+  model: string
+): { greeting: string | null; regenerateGreeting: () => void } {
+  const [greeting, setGreeting] = useState<string | null>(null)
+  const agentRef = useRef(new GreetingAgent())
+  const optsRef = useRef({ adapter, apiKey, baseURL, model })
+
+  useEffect(() => {
+    optsRef.current = { adapter, apiKey, baseURL, model }
+  })
+
+  useEffect(() => {
+    if (!apiKey || !baseURL || !model) return
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      const text = await agentRef.current.execute(undefined, {
+        llmConfig: { apiKey, baseURL, model, adapter },
+        maxTokens: 300
+      })
+      if (!cancelled && text) setGreeting(text)
+    }, 100)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [apiKey, baseURL, model, adapter])
+
+  const regenerateGreeting = useCallback(() => {
+    const { apiKey, baseURL, model, adapter } = optsRef.current
+    if (!apiKey || !baseURL || !model) return
+    setGreeting(null)
+    agentRef.current.execute(undefined, {
+      llmConfig: { apiKey, baseURL, model, adapter },
+      maxTokens: 300
+    }).then((text) => {
+      if (text) setGreeting(text)
+    })
+  }, [])
+
+  return { greeting, regenerateGreeting }
+}

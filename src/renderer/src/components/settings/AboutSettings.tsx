@@ -1,0 +1,198 @@
+import React from 'react'
+import { Drawer, Typography } from 'antd'
+import { XMarkdown } from '@ant-design/x-markdown'
+import '@ant-design/x-markdown/themes/light.css'
+import { useTranslation } from '../../i18n/useTranslation'
+
+const { Text } = Typography
+
+const productIntroMdZh = `
+# PulseMind
+
+> 每一次脉动，皆是智能。
+
+PulseMind 是一款桌面端 AI 助手应用，搭载自主 Agent 引擎，支持多模型提供商、工具调用、技能系统、记忆管理、MCP 协议扩展和可视化页面生成等特性。
+
+## 快速开始
+
+使用 PulseMind 前，需要先完成两个关键设置。
+
+### LLM 设置
+点击左侧设置按钮，配置您的 LLM（大语言模型）：
+
+- **提供商** — 选择 Anthropic、OpenAI 或其他兼容的 API 提供商
+- **模型** — 输入您要使用的模型名称
+- **API 密钥** — 填入您的 API 密钥，密钥仅存储在本地
+- **基础 URL** — 如需使用代理或兼容接口，可自定义请求地址
+
+创建配置后，点击「使用此配置」即可激活。
+
+### 助手设置
+在「助手设置」中，您可以个性化 AI 助手的交互方式：
+
+- **我的称呼** — 设置助手在对话中对您的称呼方式
+- **助手名称** — 自定义助手在会话中显示的名称
+- **助手灵魂** — 定义助手的核心个性、价值观和行为准则，让 AI 更贴合您的使用场景
+
+完成以上设置后，即可开始新的对话。
+
+## 核心特性
+
+### Agent 引擎
+自主 Agent 循环：用户消息 → LLM 流式响应 → 工具自动执行（只读工具免批、敏感操作需确认）→ 结果回传 → 继续循环直到完成。支持流式块实时渲染、自动上下文压缩（智能摘要旧工具结果以节省 Token 窗口）、子代理并发调用（标题生成、记忆提取、经验萃取、技能匹配等）。
+
+### 子代理系统
+支持创建自定义子代理角色，为每个子代理独立配置工具集和行为提示词。内置通用助手、画布生成等角色模板，主 Agent 可在任务中通过 spawn_agent 工具动态调用子代理协作处理复杂任务。
+
+### 多模型支持
+通过适配器模式同时支持 Anthropic 和 OpenAI 两大协议，可接入任意兼容 OpenAI 接口的服务（包括国内大模型厂商）。支持创建多套 LLM 配置，在提供商、模型、密钥之间自由切换。
+
+### 工具系统
+内置 21 个工具，覆盖文件操作（读/写/编辑/搜索/修补）、命令执行（终端实时输出、跨平台）、浏览器操作、MCP 工具调用、记忆检索、工具执行结果搜索、内联交互等场景。支持 YOLO 模式一键切换完全自主运行。
+
+### MCP 协议扩展
+集成 MCP（Model Context Protocol）服务器管理，可注册任意 MCP 服务器扩展 AI 能力。内置 Chrome DevTools MCP，AI 可直接操控浏览器完成导航、点击、输入、截图、内容提取。
+
+### 技能系统
+通过导入 .zip 技能包扩展 AI 能力。每个技能包含 SKILL.md 文件，设有 YAML 头部信息和系统提示模板，可深度塑造 AI 的行为方式。支持触发关键词自动激活。
+
+### 知识库（LLM Wiki）
+支持导入本地文件、网页 URL 和历史对话经验到知识库。内置多格式提取（PDF、Office、代码文件等），由 LLM 自动将原始材料编译为结构化知识 Wiki —— 按来源摘要、实体、概念、综合文章四个维度组织，并自动构建带摘要的知识索引。LLM 在对话中可通过搜索工具直接检索和引用知识库内容。
+
+### 经验系统
+每次对话结束后自动将有价值的交互模式提炼为「经验」。记录特定场景下的有效工作方式，随着使用不断累积，让 AI 越来越了解您的做事风格。经验可自动入库到知识库进行编译管理。
+
+### 记忆系统
+三重记忆体系：手动编写持久记忆 + 会话结束后自动提取关键信息 + 最近会话上下文。自动捕获的记忆按事实、决策、偏好等类型分类，支持 SQLite FTS5 全文搜索。经验也作为记忆的一部分统一存储和管理。
+
+### Canvas 页面生成
+可视化 HTML 页面生成模式：AI 生成代码 → iframe 实时预览 → 画布标注反馈 → 迭代优化。支持 WebGL 渐变加载动画、多区域并行生成、一键导出 HTML。
+
+### 会话管理
+所有对话持久化存储于本地 SQLite（WAL 模式），支持自动标题生成。每条消息可点赞、收藏、查看 Token 用量。支持自动清理旧会话。
+
+### 收藏与统计
+单条消息可收藏至专属收藏夹，方便归档查阅。Token 用量按小时、日、月以堆叠柱状图展示，全部数据本地存储。
+
+### Plan 任务规划
+支持多步骤任务规划（create_plan / advance_plan），AI 可制定结构化执行计划并逐步推进，适合复杂工作流场景。
+
+### 双语言支持
+内置中文和 English 双语界面，即时切换。当前语言自动注入系统提示词，确保 AI 使用正确的语言回复。
+`
+
+const productIntroMdEn = `
+# PulseMind
+
+> Live Intelligence, In Every Pulse.
+
+PulseMind is a desktop AI assistant powered by its own Agent engine, with multi-provider LLM support, tool calling, skill system, memory management, MCP protocol extension, and visual page generation.
+
+## Quick Start
+
+Two key settings are required before using PulseMind.
+
+### LLM Settings
+Click the settings button on the left to configure your LLM:
+
+- **Provider** — Choose Anthropic, OpenAI, or any compatible API provider
+- **Model** — Enter the model name you want to use
+- **API Key** — Enter your API key; keys are stored locally only
+- **Base URL** — Custom endpoint for proxy or compatible interfaces
+
+After creating a profile, click "Use This Profile" to activate it.
+
+### Assistant Settings
+In the assistant settings, you can personalize the AI interaction:
+
+- **My Name** — Sets how the assistant addresses you
+- **Assistant Name** — Customizes the assistant's display name in conversation
+- **Assistant Soul** — Defines the core personality, values, and behavioral guidelines
+
+Once configured, you can start a new conversation.
+
+## Core Features
+
+### Agent Engine
+Autonomous agent loop: user message → LLM streaming response → tool execution (read-only auto-approved, sensitive actions require confirmation) → result feedback → continue until complete. Features real-time streaming block rendering, automatic context compression (intelligently summarizes old tool results to save token window), concurrent sub-agents (title generation, memory extraction, experience distillation, skill matching).
+
+### Sub-Agent System
+Create custom agent roles with independently configured tool sets and behavior prompts. Built-in role templates include general assistant and canvas generator. The main agent can dynamically invoke sub-agents via the spawn_agent tool to collaborate on complex tasks.
+
+### Multi-Model Support
+Supports both Anthropic and OpenAI protocols via an adapter pattern. Compatible with any OpenAI-compatible API service. Create multiple LLM profiles and switch freely between providers, models, and keys.
+
+### Tool System
+21 built-in tools covering file operations (read/write/edit/search/patch), command execution (real-time terminal output), browser automation, MCP tool calls, memory retrieval, tool result search, and inline interaction. YOLO mode for one-click fully autonomous operation.
+
+### MCP Protocol Extension
+Built-in MCP (Model Context Protocol) server management — register any MCP server to extend AI capabilities. Comes with Chrome DevTools MCP for browser navigation, clicking, typing, screenshots, and content extraction.
+
+### Skill System
+Import .zip skill packs to extend AI capabilities. Each skill includes a SKILL.md file with YAML frontmatter and system prompt template. Supports trigger keywords for automatic activation in relevant contexts.
+
+### Knowledge Base (LLM Wiki)
+Import local files, web URLs, and conversation experiences into the knowledge base. Built-in multi-format extraction (PDF, Office, code files, etc.) — raw materials are automatically compiled by the LLM into a structured knowledge Wiki organized across four dimensions: source summaries, entities, concepts, and syntheses, with an auto-built indexed catalog. The LLM can search and reference knowledge base content directly during conversations.
+
+### Experience System
+After each conversation, valuable interaction patterns are automatically distilled into "experiences" — capturing effective workflows for specific scenarios. Experiences can be automatically saved to the knowledge base for compilation.
+
+### Memory System
+Triple-tier memory: manually written persistent memories + auto-extracted key information after sessions + recent conversation context. Memories are categorized by type (fact, decision, preference) with SQLite FTS5 full-text search. Experiences are stored as part of the memory system.
+
+### Canvas Page Generation
+Visual HTML page generation mode: AI generates code → iframe live preview → canvas annotation feedback → iterative refinement. Features WebGL gradient loading animations, multi-region parallel generation, and one-click HTML export.
+
+### Conversation Management
+All conversations are persisted in local SQLite (WAL mode) with auto-title generation. Individual messages can be liked, favorited, and inspected for token usage. Auto-cleanup for old sessions.
+
+### Favorites & Statistics
+Save individual messages to a dedicated favorites collection. Token usage displayed as stacked bar charts across hourly, daily, and monthly views — all data stored locally.
+
+### Plan System
+Multi-step task planning (create_plan / advance_plan) — AI can create structured execution plans and work through them step by step, ideal for complex workflows.
+
+### Bilingual Support
+Built-in Chinese and English interface with instant switching. The current language is automatically injected into the system prompt to ensure the AI responds in the correct language.
+`
+
+interface AboutSettingsProps {
+  open: boolean
+  onClose: () => void
+  inline?: boolean
+}
+
+function AboutSettings({ open, onClose, inline }: AboutSettingsProps): React.ReactElement {
+  const { t, locale } = useTranslation()
+  const content = locale === 'zh' ? productIntroMdZh : productIntroMdEn
+
+  const body = (
+    <>
+      <div className="x-markdown-light" style={{ fontSize: 14, lineHeight: 1.8 }}>
+        <XMarkdown content={content} />
+      </div>
+      <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0', textAlign: 'center' }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          PulseMind v{__APP_VERSION__}
+        </Text>
+      </div>
+    </>
+  )
+
+  if (inline) {
+    return <div style={{ height: '100%', overflow: 'auto' }}>{body}</div>
+  }
+
+  return (
+    <Drawer
+      title={t('welcome.aboutTitle')}
+      open={open}
+      onClose={onClose}
+      size={480}
+    >
+      {body}
+    </Drawer>
+  )
+}
+
+export default AboutSettings
