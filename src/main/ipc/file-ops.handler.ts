@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { patchContent } from '../utils/patch-utils'
 import { DATA_DIR } from '../storage'
-import { extractWithMarkitdown } from '../storage/extractors/markitdown-extractor'
+import { getOrConvert } from '../storage/read-cache'
 
 async function getSharp(): Promise<any> {
   const mod = await import('sharp')
@@ -80,12 +80,12 @@ async function resolveWritablePath(input: string): Promise<string> {
 }
 
 export function registerFileOpsHandlers(): void {
-  // ── Save base64 image to ~/.pulsemind/tmp/ ─────────────────────────
+  // ── Save base64 image to ~/.pulsemind/tmp/screenshot/ ──────────────
   ipcMain.handle(
     IPC_CHANNELS.UTIL_SAVE_BASE64_IMAGE,
     async (_event, data: string): Promise<{ success: boolean; path: string }> => {
       try {
-        const tmpDir = path.join(DATA_DIR, 'tmp')
+        const tmpDir = path.join(DATA_DIR, 'tmp', 'screenshot')
         await mkdir(tmpDir, { recursive: true })
         const timestamp = Date.now()
         const rand = Math.random().toString(36).slice(2, 8)
@@ -102,12 +102,12 @@ export function registerFileOpsHandlers(): void {
     }
   )
 
-  // ── Copy file to ~/.pulsemind/tmp/ ────────────────────────────────
+  // ── Copy file to ~/.pulsemind/tmp/screenshot/ ─────────────────────
   ipcMain.handle(
     IPC_CHANNELS.UTIL_COPY_FILE_TO_TMP,
     async (_event, sourcePath: string): Promise<{ success: boolean; path: string }> => {
       try {
-        const tmpDir = path.join(DATA_DIR, 'tmp')
+        const tmpDir = path.join(DATA_DIR, 'tmp', 'screenshot')
         await mkdir(tmpDir, { recursive: true })
         const timestamp = Date.now()
         const rand = Math.random().toString(36).slice(2, 8)
@@ -225,13 +225,12 @@ export function registerFileOpsHandlers(): void {
     }
   )
 
-  // ── Convert file to markdown via markitdown ──────────────────────
+  // ── Convert file to markdown via markitdown (cached in tmp/read-cache) ──
   ipcMain.handle(
     IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN,
-    async (_event, filePath: string, includeFrontmatter?: boolean): Promise<string | null> => {
+    async (_event, filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> => {
       try {
-        const result = await extractWithMarkitdown(filePath, includeFrontmatter)
-        return result?.content || null
+        return await getOrConvert(filePath)
       } catch {
         return null
       }

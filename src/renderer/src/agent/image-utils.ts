@@ -1,4 +1,4 @@
-// ── Helper: save screenshot images from MCP results to ~/.pulsemind/tmp/ ──
+// ── Helper: save screenshot images from MCP results to ~/.pulsemind/tmp/screenshot/ ──
 
 function isBase64Image(s: string): boolean {
   return s.length > 1000 && (s.startsWith('/9j/') || s.startsWith('iVBOR') || s.startsWith('UklGR'))

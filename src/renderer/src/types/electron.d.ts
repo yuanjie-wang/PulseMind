@@ -203,7 +203,7 @@ export interface ElectronAPI {
   editFile: (input: { filePath: string; oldStr: string; newStr: string; multi: boolean }) => Promise<{ success: boolean; replacements: number; error?: string }>
   patchFile: (input: { filePath: string; diff: string }) => Promise<{ success: boolean; replacements: number; error?: string }>
   writeFile: (input: { filePath: string; content: string; append?: boolean }) => Promise<{ success: boolean; error?: string }>
-  convertFileToMarkdown: (filePath: string, includeFrontmatter?: boolean) => Promise<string | null>
+  convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
   saveBase64Image: (data: string) => Promise<{ success: boolean; path: string }>
   copyFileToTmp: (sourcePath: string) => Promise<{ success: boolean; path: string }>
   copyFile: (input: { source?: string; sourceUrl?: string; destination: string }) => Promise<{ success: boolean; error?: string }>

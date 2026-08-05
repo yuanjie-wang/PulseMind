@@ -6,6 +6,7 @@ import { registerIpcHandlers } from './ipc'
 import { ensureDataDir } from './storage'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
 import { skillStore } from './storage/skill-store'
+import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { runLaunchHooks } from './hooks-runner'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
@@ -305,6 +306,12 @@ if (gotTheLock) {
 
   createWindow()
   writeLog('INFO', 'startup: main window created')
+
+  // Tmp cleanup runs in the background (async fs, fire-and-forget) so it never
+  // blocks window creation or the UI event loop. Also swept periodically for
+  // long-running sessions.
+  void runTmpCleanup().catch((err) => writeLog('WARN', `startup: tmp cleanup failed: ${err}`))
+  setInterval(() => { void runTmpCleanup().catch(() => {}) }, TMP_CLEANUP_INTERVAL_MS)
 
   // Splash → main window crossfade (independent of hooks). The fade countdown
   // is anchored to the splash's first paint via scheduleSplashFade (see

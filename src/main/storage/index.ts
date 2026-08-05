@@ -70,7 +70,7 @@ export function joinDataPath(...segments: string[]): string {
 
 export function ensureDataDir(): void {
   // Create parent directories if they don't exist
-  for (const dir of [DATA_DIR, SKILLS_DIR, KNOWLEDGE_DIR, KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR, KNOWLEDGE_SCHEMA_DIR, WORKSPACE_DIR, HOOKS_DIR, join(DATA_DIR, 'db'), join(DATA_DIR, 'mcp'), join(DATA_DIR, 'memory'), join(DATA_DIR, 'tmp')]) {
+  for (const dir of [DATA_DIR, SKILLS_DIR, KNOWLEDGE_DIR, KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR, KNOWLEDGE_SCHEMA_DIR, WORKSPACE_DIR, HOOKS_DIR, join(DATA_DIR, 'db'), join(DATA_DIR, 'mcp'), join(DATA_DIR, 'memory'), join(DATA_DIR, 'tmp'), join(DATA_DIR, 'tmp', 'trunc')]) {
     if (!existsSync(dir)) {
       try {
         mkdirSync(dir, { recursive: true })

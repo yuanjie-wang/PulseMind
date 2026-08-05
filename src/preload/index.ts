@@ -213,8 +213,8 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_PATCH_FILE, input),
   writeFile: (input: { filePath: string; content: string; append?: boolean }): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_WRITE_FILE, input),
-  convertFileToMarkdown: (filePath: string, includeFrontmatter?: boolean): Promise<string | null> =>
-    ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath, includeFrontmatter),
+  convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),
   saveBase64Image: (data: string): Promise<{ success: boolean; path: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_SAVE_BASE64_IMAGE, data),
   copyFileToTmp: (sourcePath: string): Promise<{ success: boolean; path: string }> =>
