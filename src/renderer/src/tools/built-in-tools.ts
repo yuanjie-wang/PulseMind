@@ -12,7 +12,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── read ──────────────────────────────────────────────────────────
   {
     name: 'read',
-    description: 'Read a file from the local filesystem.',
+    description:
+      'Read a file from the local filesystem. Returns content with a --- File Metadata --- header (path, size, line range). Use offset/limit for large files instead of reading the whole thing. Auto-converts PDF/DOCX/XLSX and other document formats to markdown.',
     category: 'file',
     triggers: ['read', 'open', 'cat', 'view'],
     input_schema: {
@@ -44,7 +45,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── write ─────────────────────────────────────────────────────────
   {
     name: 'write',
-    description: 'Write content to a file on the local filesystem.',
+    description:
+      'Write content to a file on the local filesystem. Overwrites by default — set append:true to append. Content longer than 10KB is auto-split into chunks. Prefer edit for targeted changes to existing files.',
     category: 'file',
     triggers: ['write', 'save', 'create', 'output'],
     input_schema: {
@@ -318,7 +320,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'memory_search',
     description: 'Search across memories, decisions, and user preferences.',
     category: 'memory',
-    triggers: ['memory', 'recall', 'remember', 'search memory', 'past context'],
+    triggers: ['memory', 'recall', 'remember', 'search memory', 'past context', '记忆', '记得', '回忆', '上次', '之前'],
     input_schema: {
       type: 'object',
       properties: {
@@ -339,7 +341,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['query']
     },
     instructions: toolInstructions.memory_search,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── memory_save ────────────────────────────────────────────────────
@@ -347,7 +350,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'memory_save',
     description: 'Save an important fact, decision, or preference to long-term memory.',
     category: 'memory',
-    triggers: ['remember', 'save', 'important', 'note this'],
+    triggers: ['remember', 'save', 'important', 'note this', '重要', '记一下'],
     input_schema: {
       type: 'object',
       properties: {
@@ -369,7 +372,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['content']
     },
     instructions: toolInstructions.memory_save,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── conversation_search ────────────────────────────────
@@ -393,7 +397,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: []
     },
     instructions: toolInstructions.conversation_search,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── tool_result_search ────────────────────────────────────────────────
@@ -414,7 +419,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['ids']
     },
     instructions: toolInstructions.tool_result_search,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── pick_skill ──────────────────────────────────────────────────────
@@ -481,7 +487,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'knowledge_search',
     description: 'Search the local knowledge base for imported files and wiki pages.',
     category: 'knowledge',
-    triggers: ['knowledge', 'wiki', 'knowledge base', 'search knowledge', 'lookup knowledge'],
+    triggers: ['knowledge', 'wiki', 'knowledge base', 'search knowledge', 'lookup knowledge', '知识', '知识库', '文档'],
     input_schema: {
       type: 'object',
       properties: {
@@ -493,7 +499,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: []
     },
     instructions: toolInstructions.knowledge_search,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── knowledge_read ─────────────────────────────────────────────────
@@ -518,7 +525,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['path']
     },
     instructions: toolInstructions.knowledge_read,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── spawn_agent ────────────────────────────────────────────────────
@@ -600,7 +608,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'git_status',
     description: 'Check the current state of a git repository: branch, ahead/behind, staged/unstaged/untracked files, and conflicts.',
     category: 'git',
-    triggers: ['git status', 'status', 'branch', '仓库状态'],
+    triggers: ['git', 'status', 'branch', 'checkout', 'merge', 'rebase', 'stash', 'push', 'pull', '仓库', '分支', '合并'],
     input_schema: {
       type: 'object',
       properties: {
@@ -612,7 +620,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: []
     },
     instructions: toolInstructions.git_status,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── git_diff ──────────────────────────────────────────────────────
@@ -645,7 +654,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: []
     },
     instructions: toolInstructions.git_diff,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── git_log ───────────────────────────────────────────────────────
@@ -669,7 +679,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: []
     },
     instructions: toolInstructions.git_log,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── git_commit ────────────────────────────────────────────────────
@@ -698,7 +709,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['message']
     },
     instructions: toolInstructions.git_commit,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 
   // ── git_restore ───────────────────────────────────────────────────
@@ -727,6 +739,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['files']
     },
     instructions: toolInstructions.git_restore,
-    builtIn: true
+    builtIn: true,
+    gated: true
   },
 ]

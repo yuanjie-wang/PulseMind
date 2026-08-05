@@ -3,6 +3,7 @@ import { getDb } from './database'
 
 const DEFAULT_ENABLED_TOOLS = [
   'exec', 'read', 'write', 'edit', 'search', 'list_dir',
+  'git_status', 'git_diff', 'git_log', 'git_commit', 'git_restore',
   'browser_interact', 'browser_extract', 'browser_screenshot',
   'browser_evaluate', 'browser_pages', 'browser_dialog',
   'ask_user',

@@ -365,30 +365,38 @@ Update plan progress. Call this after completing, failing, or finishing the curr
 
   pick_tool: `## pick_tool
 
-Select and activate MCP (Model Context Protocol) tools. Use this to discover what MCP tools are available and activate the ones you need.
+Select and activate hidden tools — MCP (Model Context Protocol) tools from servers, or gated built-in tools (git / memory / knowledge categories). Use this to discover available tools and activate the ones you need.
+
+Built-in categories auto-activate when the conversation mentions their topic (e.g. "commit", "branch", "记得", "知识库"), but you can also activate them explicitly here.
 
 ### Mode 1 — Direct name lookup
-Provide the exact **names** of MCP tools to activate them directly.
+Provide the exact **names** of tools to activate them directly (e.g. list_pages, git_status, memory_search).
 
-### Mode 2 — Intent-based matching
-Provide an **intent** describing what you need, and a sub-agent LLM selects the best matching tools.
+### Mode 2 — Load a unit
+Provide a **serverName** — a server id (e.g. chrome-devtools) or a built-in category (e.g. git, memory, knowledge) — to load all its tools.
+
+### Mode 3 — Intent-based matching
+Provide an **intent** describing what you need, and a sub-agent LLM selects the best matching servers and categories.
 
 ### Parameters
-- **names** (optional) — Array of exact MCP tool names to activate directly. When provided, intent is ignored.
+- **names** (optional) — Array of exact tool names to activate directly. When provided, intent is ignored.
+- **serverName** (optional) — Server id or built-in category id (e.g. chrome-devtools, git, memory, knowledge) to load all its tools.
 - **intent** (optional) — Describe what you want to accomplish. Used for automatic tool matching.
 
-One of "names" or "intent" must be provided.
+One of "names", "serverName", or "intent" must be provided.
 
 ### How it works
-1. The available MCP tools are listed in this tool's description
+1. Available servers and built-in categories are listed in this tool's description
 2. If "names" is provided, those tools are activated directly
-3. Otherwise, a sub-agent LLM call selects the best matching tools
+3. Otherwise, a sub-agent LLM call selects the best matching units
 4. The selected tool definitions are returned so you can use them
-5. Selected MCP tools become available as regular tools in subsequent turns
+5. Selected tools become available as regular tools in subsequent turns
 
 ### Guidelines
-- Use "names" when you know exactly which MCP tool you need
+- Use "names" when you know exactly which tools you need
+- Use "serverName" to load an entire server or category
 - Use "intent" for automatic matching when uncertain
+- Git/memory/knowledge categories auto-activate on keyword mention; call pick_tool to activate them explicitly when needed
 - You can call pick_tool again later to activate additional tools`,
 
   install: `## install

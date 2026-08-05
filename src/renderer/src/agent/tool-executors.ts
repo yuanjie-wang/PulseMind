@@ -6,6 +6,7 @@ import { buildCommandFromSkillInput } from './command-builder'
 import { SkillKeywordAgent, SkillSelectionAgent, ServerSelectionAgent } from './one-shot-agent'
 import { saveImagesInText } from './image-utils'
 import { getCachedMcpServers } from './mcp-cache'
+import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId, isBuiltinServerId } from '../tools/builtin-gate'
 import type { KnowledgeFile } from '../../../shared/types/knowledge'
 import type { GitAction, GitResult, GitStatusInfo, GitDiffResult, GitLogEntry, GitCommitResult, GitRestorePreview } from '../../../shared/types/git'
 
@@ -131,21 +132,19 @@ export class ToolExecutor {
           let content: string
           let totalLines = 0
 
-          // markitdown path for binary document formats
+          // markitdown path for binary document formats (cached in tmp/read-cache)
           if (ToolExecutor.CONVERTIBLE_EXTS.has(ext)) {
-            const md = await window.electronAPI.convertFileToMarkdown(filePath, false)
-            if (md !== null) {
-              const base = filePath.replace(/^.*[/\\]/, '').replace(/\.[^.]+$/, '') + '.md'
-              const dest = `~/.pulsemind/tmp/${base}`
-              // Save converted markdown to ~/.pulsemind/tmp/ for reference
-              try { await window.electronAPI.writeFile({ filePath: dest, content: md }) } catch { /* non-critical */ }
-              const lines = md.split('\n')
+            const result = await window.electronAPI.convertFileToMarkdown(filePath)
+            if (result !== null) {
+              const lines = result.content.split('\n')
               totalLines = lines.length
               content = lines.slice(offset - 1, offset - 1 + limit).join('\n')
               t.status = 'completed'; t.exitCode = 0; t.output = content
+              const note = result.cachePath
+                ? `Content converted from original file to markdown. Full conversion saved at: ${result.cachePath}${result.hit ? ' (cached)' : ''}`
+                : 'Content converted from original file to markdown.'
               this.addToolResult(t.id, this.formatReadOutput(
-                filePath, fileSize, totalLines, offset, limit, content,
-                `Content converted from original file to markdown. Full conversion saved at: ${dest}`,
+                filePath, fileSize, totalLines, offset, limit, content, note,
               ), false, undefined, Infinity)
               return
             }
@@ -462,8 +461,11 @@ export class ToolExecutor {
   async execPickTool(t: ToolUseBlock, setSelectedTools: (names: string[]) => void): Promise<void> {
     t.status = 'running'; this.notify()
     try {
-      // Helper: fetch all connected MCP tools (flat, across all servers)
-      const fetchMcpTools = async () => {
+      // Helper: fetch all candidate tools — connected MCP tools + gated built-in tools.
+      // Gated built-ins wear synthetic per-category serverIds (`builtin:<category>`,
+      // e.g. `builtin:git`) so the MCP selection logic (names / serverName / intent)
+      // applies to them uniformly, mirroring per-server granularity.
+      const fetchCandidateTools = async () => {
         const servers = await window.electronAPI.mcpListServers()
         const all: Array<{ name: string; serverId: string; description: string; inputSchema: any }> = []
         for (const server of servers) {
@@ -472,27 +474,45 @@ export class ToolExecutor {
             all.push({ name: tool.name, serverId: server.id, description: tool.description, inputSchema: tool.inputSchema })
           }
         }
+        for (const def of this.opts.toolManager.getEnabledTools().map(t => t.definition)) {
+          if (!def.gated) continue
+          all.push({ name: def.name, serverId: builtinCategoryServerId(def.category), description: def.description, inputSchema: def.input_schema })
+        }
         return all
       }
 
       // Helper: format tool selection result for display
+      const srcLabel = (serverId: string): string => isBuiltinServerId(serverId) ? `built-in ${serverId.slice('builtin:'.length)}` : serverId
+      const selectHeader = (tools: Array<{ serverId: string }>): string => {
+        const hasMcp = tools.some(t => !isBuiltinServerId(t.serverId))
+        const hasBuiltin = tools.some(t => isBuiltinServerId(t.serverId))
+        if (hasMcp && hasBuiltin) return '## Selected Tools'
+        return hasBuiltin ? '## Selected Built-in Tools' : '## Selected MCP Tools'
+      }
       const formatResult = (tools: Array<{ name: string; serverId: string; description: string; inputSchema: any }>, header: string): string => {
         const lines = tools.map(t =>
-          `- **${t.name}** (from \`${t.serverId}\`): ${t.description || '(no description)'}`
+          `- **${t.name}** (from \`${srcLabel(t.serverId)}\`): ${t.description || '(no description)'}`
         )
         const schemas = tools.map(t => {
           const schema = t.inputSchema && Object.keys(t.inputSchema).length > 0
             ? `\`\`\`json\n${JSON.stringify(t.inputSchema, null, 2)}\n\`\`\``
             : '*No parameters*'
-          return `**${t.name}** (from \`${t.serverId}\`)\n\n${schema}`
+          return `**${t.name}** (from \`${srcLabel(t.serverId)}\`)\n\n${schema}`
         }).join('\n\n---\n\n')
-        return `${header}\n\n${lines.join('\n')}\n\n### Tool Signatures\n\n${schemas}\n\nThese MCP tools are now available for you to use.`
+        const hasBuiltin = tools.some(t => isBuiltinServerId(t.serverId))
+        const hasMcp = tools.some(t => !isBuiltinServerId(t.serverId))
+        const availability = hasBuiltin && hasMcp
+          ? 'These MCP and built-in tools are now available for you to use.'
+          : hasBuiltin
+            ? 'These built-in tools are now available for you to use.'
+            : 'These MCP tools are now available for you to use.'
+        return `${header}\n\n${lines.join('\n')}\n\n### Tool Signatures\n\n${schemas}\n\n${availability}`
       }
 
-      // ── Mode 1: direct name lookup (unchanged) ─────────────────────
+      // ── Mode 1: direct name lookup (MCP or gated built-in tools) ──
       const namesInput = t.input?.names as string[] | undefined
       if (namesInput && Array.isArray(namesInput) && namesInput.length > 0) {
-        const allTools = await fetchMcpTools()
+        const allTools = await fetchCandidateTools()
         const validNames: string[] = []
         const notFound: string[] = []
         for (const name of namesInput) {
@@ -500,12 +520,12 @@ export class ToolExecutor {
           else notFound.push(name)
         }
         if (validNames.length === 0) {
-          this.addToolResult(t.id, `No MCP tools found matching names: ${notFound.join(', ')}.`, true)
+          this.addToolResult(t.id, `No MCP or built-in tools found matching names: ${notFound.join(', ')}.`, true)
           t.exitCode = 1; t.status = 'completed'; this.notify(); return
         }
         const matched = allTools.filter(t => validNames.includes(t.name))
         setSelectedTools(validNames)
-        this.addToolResult(t.id, formatResult(matched, '## Selected MCP Tools'), false)
+        this.addToolResult(t.id, formatResult(matched, selectHeader(matched)), false)
         t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
 
@@ -518,40 +538,62 @@ export class ToolExecutor {
           s.id.toLowerCase() === serverNameInput.toLowerCase() ||
           s.name.toLowerCase() === serverNameInput.toLowerCase()
         )
-        if (!matchedServer || matchedServer.status !== 'connected') {
-          this.addToolResult(t.id, `MCP server "${serverNameInput}" not found or not connected. Available servers: ${servers.filter(s => s.status === 'connected').map(s => s.id).join(', ')}`, true)
-          t.exitCode = 1; t.status = 'completed'; this.notify(); return
+        if (matchedServer && matchedServer.status === 'connected') {
+          const serverTools = matchedServer.tools.map(t => ({
+            name: t.name,
+            serverId: matchedServer.id,
+            description: t.description,
+            inputSchema: t.inputSchema
+          }))
+          const toolNames = serverTools.map(t => t.name)
+          const summary = getCachedMcpServers().find(s => s.id === matchedServer.id)?.summary
+          const header = summary
+            ? `## Server "${matchedServer.name}" Loaded\n\n${summary}`
+            : `## Server "${matchedServer.name}" Loaded (${toolNames.length} tools)`
+          setSelectedTools(toolNames)
+          this.addToolResult(t.id, formatResult(serverTools, header), false)
+          t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
-        const serverTools = matchedServer.tools.map(t => ({
-          name: t.name,
-          serverId: matchedServer.id,
-          description: t.description,
-          inputSchema: t.inputSchema
-        }))
-        const toolNames = serverTools.map(t => t.name)
-        const summary = getCachedMcpServers().find(s => s.id === matchedServer.id)?.summary
-        const header = summary
-          ? `## Server "${matchedServer.name}" Loaded\n\n${summary}`
-          : `## Server "${matchedServer.name}" Loaded (${toolNames.length} tools)`
-        setSelectedTools(toolNames)
-        this.addToolResult(t.id, formatResult(serverTools, header), false)
-        t.exitCode = 0; t.status = 'completed'; this.notify(); return
+
+        // Built-in category fallback: serverName matches a gated category
+        // (e.g. "git", "memory", "knowledge", or "builtin:git")
+        const category = serverNameInput.replace(/^builtin:/, '').toLowerCase()
+        const catDefs = this.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.gated && d.category === category)
+        if (catDefs.length > 0) {
+          const catTools = catDefs.map(d => ({
+            name: d.name,
+            serverId: builtinCategoryServerId(d.category),
+            description: d.description,
+            inputSchema: d.input_schema
+          }))
+          const names = catTools.map(t => t.name)
+          const summary = BUILTIN_CATEGORY_SUMMARIES[category]
+          const header = summary
+            ? `## Built-in category "${category}" Loaded\n\n${summary}`
+            : `## Built-in category "${category}" Loaded (${names.length} tools)`
+          setSelectedTools(names)
+          this.addToolResult(t.id, formatResult(catTools, header), false)
+          t.exitCode = 0; t.status = 'completed'; this.notify(); return
+        }
+
+        this.addToolResult(t.id, `Server or category "${serverNameInput}" not found. Available servers: ${servers.filter(s => s.status === 'connected').map(s => s.id).join(', ') || '(none)'}. Available built-in categories: ${Object.keys(BUILTIN_CATEGORY_SUMMARIES).join(', ')}.`, true)
+        t.exitCode = 1; t.status = 'completed'; this.notify(); return
       }
 
       // ── Mode 3: intent-based matching (server level) ───────────────
       const intent = String(t.input?.intent || '')
       if (!intent) throw new Error('One of "names", "serverName", or "intent" must be provided')
 
-      t.output = `Matching intent to MCP servers: ${intent.slice(0, 80)}...`; this.notify()
-      const allTools2 = await fetchMcpTools()
+      t.output = `Matching intent to MCP servers and built-in tools: ${intent.slice(0, 80)}...`; this.notify()
+      const allTools2 = await fetchCandidateTools()
       if (allTools2.length === 0) {
-        this.addToolResult(t.id, 'No MCP tools available from connected servers.', false)
+        this.addToolResult(t.id, 'No MCP or built-in tools available.', false)
         t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
 
       // Build server-level summary list for the server selection agent
       const servers2 = await window.electronAPI.mcpListServers()
-      const serverList = servers2
+      let serverList = servers2
         .filter(s => s.status === 'connected')
         .map(s => {
           const summary = getCachedMcpServers().find(ss => ss.id === s.id)?.summary
@@ -560,6 +602,15 @@ export class ToolExecutor {
             : `- [${s.id}] ${s.name} (${s.tools.length} tools)`
         })
         .join('\n')
+      // Synthetic rows (one per gated built-in category) so the selection agent can
+      // pick built-ins at the same granularity as MCP servers.
+      const gatedBuiltins = this.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.gated)
+      const builtinByCat = new Map<string, number>()
+      for (const d of gatedBuiltins) builtinByCat.set(d.category, (builtinByCat.get(d.category) || 0) + 1)
+      for (const [cat, count] of builtinByCat) {
+        const summary = BUILTIN_CATEGORY_SUMMARIES[cat]
+        serverList += `\n- [${builtinCategoryServerId(cat)}] ${summary || `${cat} (${count} tools)`}`
+      }
 
       const svAgent = new ServerSelectionAgent()
       const selectedServerIds = await svAgent.execute(
@@ -568,7 +619,7 @@ export class ToolExecutor {
       )
 
       if (selectedServerIds.length === 0) {
-        this.addToolResult(t.id, 'No matching MCP servers found.', false)
+        this.addToolResult(t.id, 'No matching servers or categories found.', false)
         t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
 
@@ -582,7 +633,8 @@ export class ToolExecutor {
       const selectedNames2 = matchedTools.map(t => t.name)
       const serverNames2 = [...new Set(matchedTools.map(t => t.serverId))].join(', ')
       setSelectedTools(selectedNames2)
-      this.addToolResult(t.id, formatResult(matchedTools, `## Selected MCP Tools from Servers: ${serverNames2}`), false)
+      const headerTitle = selectHeader(matchedTools).replace('## ', '')
+      this.addToolResult(t.id, formatResult(matchedTools, `## ${headerTitle} from: ${serverNames2}`), false)
       t.exitCode = 0
     } catch (err) { this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'pick_tool failed'}`, true); t.exitCode = -1 }
     t.status = 'completed'; this.notify()

@@ -9,6 +9,7 @@ import type {
 } from '../types/agent'
 import type { ToolManager } from '../tools/ToolManager'
 import type { ToolInputSchema } from '../tools/types'
+import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId } from '../tools/builtin-gate'
 import type { SkillManager } from '../skills/SkillManager'
 import type { HooksConfig } from '../types/hooks'
 import type { MemoryManager } from '../memory/MemoryManager'
@@ -29,7 +30,7 @@ import { stripImageData } from './image-utils'
 // Every tool result funnels through addToolResult; executors do NOT truncate
 // on their own. This single cap is the one backstop: results over the token
 // budget are head+tail truncated for context, and the full text is offloaded
-// to ~/.pulsemind/tmp/ so the model can `read` it back. The budget is in
+// to ~/.pulsemind/tmp/trunc/ so the model can `read` it back. The budget is in
 // estimated tokens because the context window is counted in tokens — a fixed
 // char cap would be far too generous for CJK-heavy output (30K chars ≈ 7.5K
 // tokens in English but ≈ 30K tokens in Chinese). The DB persists whatever
@@ -130,6 +131,8 @@ export class AgentEngine {
   private mcpToolOwner = new Map<string, string>()
   /** MCP tool names selected via pick_tool — empty = none selected */
   public selectedMcpTools: string[] = []
+  /** Gated built-in tool names activated via pick_tool or keyword trigger — empty = all hidden */
+  public selectedBuiltinTools: string[] = []
   // Sub-agents for background LLM tasks (stateless singletons)
   private skillKeywordAgent = new SkillKeywordAgent()
   private skillSelectionAgent = new SkillSelectionAgent()
@@ -597,7 +600,42 @@ export class AgentEngine {
     // as fire-and-forget, so this may be the first time we await it).
     await ensureCache()
 
-    const enabledTools = toolManager.getEnabledTools().map(t => t.definition)
+    let enabledTools = toolManager.getEnabledTools().map(t => t.definition)
+
+    // ── Gated built-in tools: keyword auto-trigger + session activation ──
+    // Category-level: any trigger hit activates the whole gated category (git/memory/knowledge),
+    // so "commit my changes" surfaces status/diff/log/commit/restore together.
+    {
+      const userText = this.messages
+        .filter(m => m.role === 'user')
+        .flatMap(m => m.contentBlocks)
+        .filter(b => b.type === 'text')
+        .map(b => (b as TextBlock).text)
+        .join('\n')
+        .toLowerCase()
+      const gatedByCategory = new Map<string, string[]>()
+      for (const def of enabledTools) {
+        if (!def.gated) continue
+        const arr = gatedByCategory.get(def.category) || []
+        gatedByCategory.set(def.category, [...arr, ...(def.triggers || [])])
+      }
+      const activated = new Set(this.selectedBuiltinTools)
+      for (const [category, keywords] of gatedByCategory) {
+        if (keywords.some(kw => userText.includes(kw.toLowerCase()))) {
+          for (const def of enabledTools) {
+            if (def.gated && def.category === category) activated.add(def.name)
+          }
+        }
+      }
+      this.selectedBuiltinTools = [...activated]
+    }
+    // Apply the gate: hide gated tools unless activated (spawned-agent whitelist forces them in).
+    {
+      const activated = new Set(this.selectedBuiltinTools)
+      const allowed = this.allowedToolsSet
+      enabledTools = enabledTools.filter(t => !t.gated || activated.has(t.name) || allowed?.has(t.name))
+    }
+
     const skillManager = this.opts.skillManager
     if (skillManager) {
       const pickSkillIdx = enabledTools.findIndex(t => t.name === 'pick_skill')
@@ -673,10 +711,29 @@ export class AgentEngine {
             serverRows.push(`- [${server.id}]${statusTag} ${summary}${toolSuffix}`)
           }
 
-          if (serverRows.length > 0) {
+          // Gated built-in categories the model can still activate via pick_tool —
+          // one row per category (mirrors the per-server MCP rows above).
+          const activatedBuiltins = new Set(this.selectedBuiltinTools)
+          const builtinByCat = new Map<string, string[]>()
+          for (const d of toolManager.getEnabledTools().map(t => t.definition)) {
+            if (!d.gated || activatedBuiltins.has(d.name)) continue
+            const arr = builtinByCat.get(d.category) || []
+            arr.push(d.name)
+            builtinByCat.set(d.category, arr)
+          }
+          const builtinRows = [...builtinByCat.entries()]
+            .map(([cat, names]) => {
+              const summary = BUILTIN_CATEGORY_SUMMARIES[cat] || `${cat} (${names.length} tools)`
+              return `- [${builtinCategoryServerId(cat)}] ${summary} | tools(${names.length}): ${names.join(', ')}`
+            })
+
+          // Servers and built-in categories are activation units of the same kind,
+          // so they share one list (rows are formatted identically).
+          const availableRows = [...serverRows, ...builtinRows]
+          if (availableRows.length > 0) {
             enabledTools[pickToolIdx] = {
               ...enabledTools[pickToolIdx],
-              description: `${enabledTools[pickToolIdx].description}\n\nAvailable MCP servers:\n${serverRows.join('\n')}\n\nTo activate: use \`pick_tool\` with \`serverName\` to load all tools from a server, or \`intent\` to auto-match.`,
+              description: `${enabledTools[pickToolIdx].description}\n\nAvailable servers & tool categories (hidden until activated — mention their topic, or use \`pick_tool\` with \`names\`/\`serverName\`/\`intent\`):\n${availableRows.join('\n')}`,
             }
           }
         }
@@ -1075,7 +1132,7 @@ export class AgentEngine {
   private addToolResult = (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number): void => {
     // Global guardrail (see MAX_TOOL_RESULT_TOKENS above): errors are kept whole,
     // anything else over the token budget is head+tail truncated and the full text
-    // is offloaded to ~/.pulsemind/tmp/ for the model to `read` back. The length
+    // is offloaded to ~/.pulsemind/tmp/trunc/ for the model to `read` back. The length
     // short-circuit skips estimation when even worst-case (all CJK) fits the budget.
     // `maxTokens` overrides the default — the read tool passes Infinity to bypass
     // the guardrail entirely (reading a file IS the task, so results always land
@@ -1089,7 +1146,7 @@ export class AgentEngine {
         const head = Math.floor((budget * 0.75) / perChar)
         const tail = Math.floor((budget * 0.25) / perChar)
         const hidden = text.length - head - tail
-        const dest = `~/.pulsemind/tmp/trunc_${toolUseId.slice(0, 8)}_${Date.now()}.txt`
+        const dest = `~/.pulsemind/tmp/trunc/trunc_${toolUseId.slice(0, 8)}_${Date.now()}.txt`
         window.electronAPI.writeFile({ filePath: dest, content: text }).catch(() => {})
         text = `${text.slice(0, head)}\n\n… [Tool result truncated: ~${estTokens.toLocaleString()} tokens, ${hidden.toLocaleString()} chars omitted — full text saved at ${dest}, use \`read\` to page through it] …\n\n${text.slice(-tail)}`
       }
@@ -1263,7 +1320,13 @@ export class AgentEngine {
       if (isYoloMode && gatedMcpTools.length > 0) for (const t of gatedMcpTools) await this.toolExecutor.execMCPTool(t)
       for (const t of systemTools) {
         if (t.name === 'pick_skill') await this.toolExecutor.execPickSkill(t)
-        else if (t.name === 'pick_tool') await this.toolExecutor.execPickTool(t, (names) => { this.selectedMcpTools = names })
+        else if (t.name === 'pick_tool') await this.toolExecutor.execPickTool(t, (names) => {
+          // Classify by built-in definition set (not mcpToolOwner): an MCP tool from a
+          // server that connected after this loop's discovery is still a valid MCP pick.
+          const builtinNames = new Set(this.opts.toolManager.getEnabledTools().map(x => x.definition.name))
+          this.selectedMcpTools = names.filter(n => !builtinNames.has(n))
+          this.selectedBuiltinTools = names.filter(n => builtinNames.has(n))
+        })
         else if (t.name === 'install') await this.toolExecutor.execInstall(t)
         else if (t.name === 'spawn_agent') await this.toolExecutor.execSpawnAgent(t)
         else if (t.name === 'webfetch') await this.toolExecutor.execWebFetch(t)

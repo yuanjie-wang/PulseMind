@@ -25,6 +25,8 @@ export interface ToolDefinition {
   input_schema: ToolInputSchema
   instructions: string
   builtIn?: boolean
+  /** When true, the tool is hidden from the model's tool list until activated (via pick_tool or keyword trigger). */
+  gated?: boolean
 }
 
 export interface ToolState {
