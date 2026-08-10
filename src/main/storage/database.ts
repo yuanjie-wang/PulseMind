@@ -279,6 +279,21 @@ export async function initializeDatabase(): Promise<void> {
       if (kfCount > 0) { console.log('[DB] Rebuilding knowledge_fts index...'); rebuildKnowledgeFts(KNOWLEDGE_RAW_DIR) }
     }
 
+    // Sweep orphaned tool_results: tool_results.message_id has no FK, so message
+    // deletion (replaceMessagesAtomic, crash-mid-save) leaves dead rows behind.
+    // Idempotent — second run deletes 0 rows; keeps the table lean.
+    const orphanCount = (getDb().prepare(
+      `SELECT COUNT(*) as c FROM tool_results
+       WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.id = tool_results.message_id)`
+    ).get() as { c: number }).c
+    if (orphanCount > 0) {
+      getDb().prepare(
+        `DELETE FROM tool_results
+         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.id = tool_results.message_id)`
+      ).run()
+      console.log(`[DB] Cleaned ${orphanCount} orphaned tool_result rows`)
+    }
+
     const count = (getDb().prepare('SELECT COUNT(*) as c FROM conversations').get() as { c: number }).c
     console.log(`[DB] ${count} conversations in database`)
   } catch (e) {

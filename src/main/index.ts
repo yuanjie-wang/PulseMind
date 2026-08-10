@@ -46,6 +46,21 @@ process.on('unhandledRejection', (reason) => {
   console.error('[Main] unhandledRejection:', reason)
 })
 
+// ── Renderer/subprocess crash diagnostics ──
+// Distinguishes "renderer white-screened" causes: a *crash* (render-process-gone
+// with reason 'crashed'/'killed') vs a *reload* (HMR restart / manual refresh,
+// which fires no such event). Reason 403 on macOS is the App Sandbox killing the
+// renderer for a violation; 'oom' means the renderer ran out of memory.
+app.on('render-process-gone', (_e, wc, details) => {
+  let url = ''
+  try { url = wc.getURL() } catch {}
+  writeLog('WARN', `render-process-gone: reason=${details.reason} exitCode=${details.exitCode} url=${url}`)
+  console.warn('[Main] render-process-gone:', details, url)
+})
+app.on('child-process-gone', (_e, details) => {
+  writeLog('WARN', `child-process-gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`)
+})
+
 // Splash timing is anchored to the splash's first paint (ready-to-show), not to
 // window creation, so a slow Windows compositor can't get the splash closed
 // before it was ever visible. MAX_SPLASH_MS caps the wait as a fallback.

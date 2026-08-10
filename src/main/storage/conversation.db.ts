@@ -336,12 +336,15 @@ export function replaceMessagesAtomic(
   if (deletes.length === 0 && inserts.length === 0) return
   const database = getDb()
   const delStmt = database.prepare('DELETE FROM messages WHERE id = ?')
+  // tool_results has no FK on message_id, so deleting a message without this
+  // would leave its tool_result rows orphaned and unreachable forever.
+  const delTrStmt = database.prepare('DELETE FROM tool_results WHERE message_id = ?')
   const insStmt = database.prepare(
     `INSERT INTO messages (id, conversation_id, role, content, content_blocks, created_at, auto_summary, compressed_ids)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
   database.transaction(() => {
-    for (const id of deletes) delStmt.run(id)
+    for (const id of deletes) { delStmt.run(id); delTrStmt.run(id) }
     for (const m of inserts) insStmt.run(m.id, m.conversation_id, m.role, m.content, m.content_blocks, m.created_at, m.auto_summary, m.compressed_ids)
   })()
 }

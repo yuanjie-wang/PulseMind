@@ -5,7 +5,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "node scripts/build.js && concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
-    "dev:renderer": "vite",
+    "dev:renderer": "node scripts/dev-renderer.js",
     "dev:electron": "wait-on http://localhost:5173 && cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron .",
     "build": "node scripts/build.js && vite build",
     "lint": "eslint src/",

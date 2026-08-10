@@ -151,14 +151,18 @@ export function useChatController(options: UseChatControllerOptions) {
 
         for (const conv of candidates.slice(0, 10)) {
           try {
-            const conversation = await window.electronAPI.getConversation(conv.id)
-            if (!conversation) continue
-
+            // Cheap pre-check first: if this conversation was already fully
+            // extracted, skip loading its messages entirely. messageCount comes
+            // from the list query (COUNT(*) over messages), so it equals
+            // getConversation().messages.length without the full row fetch.
             const processedCount = await window.electronAPI.getConversationExperienceExtractedCount(conv.id)
-            if (processedCount >= conversation.messages.length) {
+            if (processedCount >= conv.messageCount) {
               processedConvRef.current.add(conv.id)
               continue
             }
+
+            const conversation = await window.electronAPI.getConversation(conv.id)
+            if (!conversation) continue
 
             const userMessages = conversation.messages.filter(m =>
               m.role === 'user' && m.contentBlocks?.some(b => b.type === 'text')

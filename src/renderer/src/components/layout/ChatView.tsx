@@ -59,6 +59,13 @@ function getSegmentKey(seg: Segment): string {
   return 'streaming'
 }
 
+function getSegmentAnchorId(seg: Segment | undefined): string | undefined {
+  if (!seg) return undefined
+  if (seg.type === 'single') return seg.msg.id.replace(/__\w+$/, '')
+  if (seg.type === 'execution') return seg.msgs[0]?.id?.replace(/__\w+$/, '')
+  return undefined
+}
+
 function groupMessages(messages: AgentMessage[]): Segment[] {
   const segments: Segment[] = []
   let i = 0
@@ -179,6 +186,15 @@ function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
 
+  // ── Windowed rendering ──
+  // Only the latest PAGE_SIZE segments render initially; older segments are
+  // prepended lazily on scroll-up (extraTop = extra segments above the tail).
+  // The live tail stays rendered so streaming / new messages always show.
+  const PAGE_SIZE = 50
+  const [extraTop, setExtraTop] = useState(0)
+  const loadMoreRef = useRef<() => void>(() => {})
+  const loadMoreBusyRef = useRef(false)
+
   // Platform detection for Windows (disable frosted glass, full opacity)
   const [isWin, setIsWin] = useState(false)
   useEffect(() => {
@@ -187,12 +203,21 @@ function ChatView({
     }).catch(() => { /* default to false */ })
   }, [])
 
-  // Scroll tracking
+  // Scroll tracking: near-bottom drives autoscroll and drops prepended history;
+  // scroll-up near the top lazily loads one more page of older segments.
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100
-  }, [])
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
+    isNearBottomRef.current = nearBottom
+    if (nearBottom) {
+      setExtraTop(0)
+      return
+    }
+    if (el.scrollTop < 150 && extraTop > 0) {
+      loadMoreRef.current()
+    }
+  }, [extraTop])
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
@@ -208,9 +233,11 @@ function ChatView({
     if (isConvSwitch) {
       pendingScrollRef.current = true
       prevConvIdRef.current = conversationId
+      setExtraTop(0)
     }
 
     if (!isNearBottomRef.current || messages.length === 0) return
+    setExtraTop(0)
 
     if (pendingScrollRef.current) {
       // Conversation switch with async-loaded messages: wait for DOM to settle
@@ -363,6 +390,49 @@ function ChatView({
     return segs
   }, [messages, isStreaming, streamingBlocks])
 
+  // Windowed render slice: always includes the live tail, optionally prepending
+  // extraTop older segments above it. Keeps DOM size bounded for long threads.
+  const windowTop = Math.max(0, allSegments.length - PAGE_SIZE - extraTop)
+  const renderedSegments = allSegments.slice(windowTop)
+
+  // Lazy-load one more page of older segments on scroll-up. The segment that was
+  // topmost is used as a scroll anchor: after React prepends the older segments,
+  // scrollTop is restored so the content doesn't visibly jump.
+  const loadMore = useCallback(() => {
+    if (loadMoreBusyRef.current) return
+    const el = scrollRef.current
+    if (!el) return
+    if (windowTop <= 0) return
+    const topSeg = renderedSegments[0]
+    const anchorId = topSeg?.type === 'single'
+      ? topSeg.msg.id.replace(/__\w+$/, '')
+      : topSeg?.type === 'execution'
+        ? topSeg.msgs[0]?.id?.replace(/__\w+$/, '')
+        : undefined
+    if (!anchorId) return
+    const anchorEl = document.getElementById(`chat-msg-${anchorId}`)
+    const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null
+
+    loadMoreBusyRef.current = true
+    setExtraTop((e) => Math.min(allSegments.length, e + PAGE_SIZE))
+
+    // Double rAF: wait for React to commit the new segments before restoring scroll.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      loadMoreBusyRef.current = false
+      const elAfter = scrollRef.current
+      const anchorAfter = document.getElementById(`chat-msg-${anchorId}`)
+      if (elAfter && anchorAfter && anchorTop !== null) {
+        elAfter.scrollTop += anchorAfter.getBoundingClientRect().top - anchorTop
+      }
+    }))
+  }, [windowTop, renderedSegments, allSegments.length])
+
+  // handleScroll is stable (deps: [extraTop]) and reads the latest loadMore via
+  // this ref; the effect keeps the ref in sync after every render.
+  useEffect(() => {
+    loadMoreRef.current = loadMore
+  })
+
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null)
 
   // Map any message id to the chat-msg-* anchor of its segment. Execution
@@ -389,13 +459,19 @@ function ChatView({
   useEffect(() => {
     if (!planScrollToMsgId) return
     const targetId = msgIdToAnchorRef.current.get(planScrollToMsgId) ?? planScrollToMsgId
+    // If the target segment is above the rendered window, widen the window so
+    // its anchor mounts before scrollIntoView runs.
+    const targetIdx = allSegments.findIndex((seg) => getSegmentAnchorId(seg) === targetId)
+    if (targetIdx >= 0 && targetIdx < windowTop) {
+      setExtraTop(Math.max(extraTop, allSegments.length - PAGE_SIZE - targetIdx))
+    }
     setHighlightedMsgId(targetId)
     const scrollTimer = setTimeout(() => {
       document.getElementById(`chat-msg-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 100)
     const clearTimer = setTimeout(() => setHighlightedMsgId(null), 2000)
     return () => { clearTimeout(scrollTimer); clearTimeout(clearTimer) }
-  }, [planScrollToMsgId])
+  }, [planScrollToMsgId, allSegments, windowTop, extraTop])
 
   // ── Render helpers ──
 
@@ -567,9 +643,9 @@ function ChatView({
       >
         <div style={{ height: 24 }} />
 
-        {allSegments.map((seg, index) => (
+        {renderedSegments.map((seg, i) => (
           <React.Fragment key={getSegmentKey(seg)}>
-            {renderSegment(seg, index)}
+            {renderSegment(seg, windowTop + i)}
           </React.Fragment>
         ))}
 

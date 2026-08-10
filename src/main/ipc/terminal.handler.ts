@@ -21,14 +21,18 @@ function getSender(event: Electron.IpcMainInvokeEvent): Electron.WebContents {
   return BrowserWindow.fromWebContents(event.sender)?.webContents ?? event.sender
 }
 
+// isDestroyed() alone is insufficient: during a renderer reload/crash the
+// WebContents object survives but its frame is disposed, and send() throws
+// "Render frame was disposed before WebFrameMain could be accessed". A subprocess
+// exit firing in that window must drop the event, not crash the main process.
 function sendOutput(webContents: Electron.WebContents, processId: string, type: 'stdout' | 'stderr', data: string) {
   if (webContents.isDestroyed()) return
-  webContents.send(IPC_CHANNELS.TERMINAL_OUTPUT, { processId, type, data })
+  try { webContents.send(IPC_CHANNELS.TERMINAL_OUTPUT, { processId, type, data }) } catch { /* renderer frame disposed */ }
 }
 
 function sendExit(webContents: Electron.WebContents, processId: string, code: number | null, signal: string | null) {
   if (webContents.isDestroyed()) return
-  webContents.send(IPC_CHANNELS.TERMINAL_EXIT, { processId, code, signal })
+  try { webContents.send(IPC_CHANNELS.TERMINAL_EXIT, { processId, code, signal }) } catch { /* renderer frame disposed */ }
 }
 
 /** Cross-platform process kill. On Windows, signals aren't supported — use `.kill()` or `taskkill`. */
@@ -151,10 +155,12 @@ export function registerTerminalHandlers(): void {
     child.on('error', (err) => {
       if (idleTimer) clearTimeout(idleTimer)
       processes.delete(processId)
-      webContents.send(IPC_CHANNELS.TERMINAL_ERROR, {
-        processId,
-        message: `Failed to spawn process: ${err.message}`
-      })
+      if (!webContents.isDestroyed()) {
+        try { webContents.send(IPC_CHANNELS.TERMINAL_ERROR, {
+          processId,
+          message: `Failed to spawn process: ${err.message}`
+        }) } catch { /* renderer frame disposed */ }
+      }
       // Also send exit event so the renderer's tool result callback fires
       sendExit(webContents, processId, null, 'SIGTERM')
     })
