@@ -216,10 +216,10 @@ function ChatView({
       setExtraTop(0)
       return
     }
-    if (el.scrollTop < 150 && extraTop > 0) {
+    if (el.scrollTop < 150) {
       loadMoreRef.current()
     }
-  }, [extraTop])
+  }, [])
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
@@ -429,8 +429,9 @@ function ChatView({
     }))
   }, [windowTop, renderedSegments, allSegments.length])
 
-  // handleScroll is stable (deps: [extraTop]) and reads the latest loadMore via
-  // this ref; the effect keeps the ref in sync after every render.
+  // handleScroll is stable (deps: []) and reads the latest loadMore via this
+  // ref; the effect keeps the ref in sync after every render. loadMore itself
+  // decides whether older segments exist (windowTop > 0).
   useEffect(() => {
     loadMoreRef.current = loadMore
   })
