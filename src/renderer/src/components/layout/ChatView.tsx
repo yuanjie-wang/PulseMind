@@ -40,6 +40,7 @@ interface ChatViewProps {
   conversationId?: string
   conversationTitle?: string
   planScrollToMsgId?: string | null
+  contextLength?: number
 }
 
 // --- Message grouping: break at text / ask_user, group tools between them ---
@@ -179,7 +180,8 @@ function ChatView({
   activeProfileId,
   onSelectProfile,
   greeting,
-  planScrollToMsgId
+  planScrollToMsgId,
+  contextLength
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
   const animName = `ecg-scroll-${uid.replace(/[:.]/g, '')}`
@@ -499,6 +501,7 @@ function ChatView({
             onKillTool={onKillTool ?? onRejectTool}
             conversationId={conversationId}
             conversationTitle={conversationTitle}
+            contextLength={contextLength}
           />
         </div>
       )
@@ -530,6 +533,7 @@ function ChatView({
             onRespondToTool={onRespondToTool}
             conversationId={conversationId}
             conversationTitle={conversationTitle}
+            contextLength={contextLength}
           />
         </div>
       )
@@ -554,7 +558,7 @@ function ChatView({
         </div>
       </div>
     )
-  }, [highlightedMsgId, allSegments, isRequesting, agentStatus.status, streamingBlocks, onApproveTool, onRejectTool, onKillTool, onRespondToTool, onSaveConversation, conversationId, conversationTitle])
+  }, [highlightedMsgId, allSegments, isRequesting, agentStatus.status, streamingBlocks, onApproveTool, onRejectTool, onKillTool, onRespondToTool, onSaveConversation, conversationId, conversationTitle, contextLength])
 
   // ── Render ──
 

@@ -34,6 +34,10 @@ export interface Conversation {
   createdAt: string
   updatedAt: string
   summary?: string
+  /** LLM-generated summary of the leading history dropped by hardTruncate (API-copy only, never shown). */
+  historySummary?: string
+  /** id of the first kept message at the time the summary was generated. */
+  historySummaryFrontier?: string
 }
 
 export interface ToolResultBatchEntry {

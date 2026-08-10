@@ -23,5 +23,7 @@ export type { SessionReviewInput, SessionReviewOutput } from './SessionReviewAge
 export { KnowledgeCompilerAgent } from './KnowledgeCompilerAgent'
 export { AutoSummaryAgent } from './AutoSummaryAgent'
 export type { AutoSummaryInput } from './AutoSummaryAgent'
+export { HistorySummaryAgent } from './HistorySummaryAgent'
+export type { HistorySummaryInput } from './HistorySummaryAgent'
 export type { CompilerInput, CompilerOutput, WikiAction, RawFileInfo } from './KnowledgeCompilerAgent'
 export type { LlmConfig, ExecuteOptions } from './LlmConfig'

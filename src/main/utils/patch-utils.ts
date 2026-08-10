@@ -28,6 +28,8 @@ export interface DiffHunk {
 export function parseUnifiedDiff(diff: string): DiffHunk[] {
   const hunks: DiffHunk[] = []
   const lines = diff.split('\n')
+  // A trailing newline yields an empty final element that is not a real hunk line.
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
   let current: DiffHunk | null = null
 
   for (const raw of lines) {
@@ -163,17 +165,23 @@ export function applyPatch(content: string, hunks: DiffHunk[]): { success: true;
  */
 export function patchContent(content: string, diff: string): PatchResult & { content?: string } {
   try {
-    const hunks = parseUnifiedDiff(diff)
+    // Line-ending tolerance: model-generated diffs are always LF, but files on
+    // Windows may be CRLF. Normalize for matching, then restore the original
+    // line ending on write so the whole file stays consistent.
+    const isCRLF = content.includes('\r\n')
+    const normalizedContent = isCRLF ? content.replace(/\r\n/g, '\n') : content
+    const hunks = parseUnifiedDiff(diff.replace(/\r\n/g, '\n'))
     if (hunks.length === 0) {
       return { success: false, replacements: 0, error: 'No valid hunks found in diff' }
     }
 
-    const result = applyPatch(content, hunks)
+    const result = applyPatch(normalizedContent, hunks)
     if (!result.success) {
       return { success: false, replacements: 0, error: result.error }
     }
 
-    return { success: true, replacements: hunks.length, content: result.content }
+    const out = isCRLF ? result.content.replace(/\n/g, '\r\n') : result.content
+    return { success: true, replacements: hunks.length, content: out }
   } catch (err) {
     return {
       success: false,

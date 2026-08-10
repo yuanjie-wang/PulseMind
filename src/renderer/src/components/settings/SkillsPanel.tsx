@@ -83,8 +83,8 @@ interface SkillCardProps {
 
 function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.ReactElement {
   const [expanded, setExpanded] = useState(false)
-  const { definition, enabled } = skill
   const { t } = useTranslation()
+  const { definition, enabled } = skill
 
   return (
     <div

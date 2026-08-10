@@ -62,7 +62,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   const saveCurrentConversation = useCallback(async () => {
     const convId = convIdRef.current
     if (!convId || isSavingRef.current) return
-    const msgs = messages
+    // Source messages from the engine keyed by convId — never the shared
+    // `messages` state, whose stale closure previously wrote one conversation's
+    // messages under another conversation's ID.
+    const engine = enginesRef.current.get(convId)
+    const msgs = engine?.messages
     if (!msgs || msgs.length === 0) return
 
     isSavingRef.current = true
@@ -77,6 +81,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     const title = existingTitle || firstText || '新对话'
 
     const conversation = agentMessagesToConversation(msgs, convId, title)
+    const hs = engine?.getHistorySummary()
+    if (hs) {
+      conversation.historySummary = hs.text
+      conversation.historySummaryFrontier = hs.firstKeptId
+    }
 
     try {
       // Always do a full save to capture content changes in existing messages
@@ -99,13 +108,14 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     } finally {
       isSavingRef.current = false
     }
-  }, [messages, conversations])
+  }, [conversations, enginesRef])
   saveRef.current = saveCurrentConversation
 
   const saveConversationSync = useCallback(() => {
     const convId = convIdRef.current
     if (!convId) return
-    const msgs = messages
+    const engine = enginesRef.current.get(convId)
+    const msgs = engine?.messages
     if (!msgs || msgs.length === 0) return
     const firstText = msgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
     const existingConv = conversations.find(
@@ -115,11 +125,16 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       ? existingConv.label : null
     const title = existingTitle || firstText || '新对话'
     const conversation = agentMessagesToConversation(msgs, convId, title)
+    const hs = engine?.getHistorySummary()
+    if (hs) {
+      conversation.historySummary = hs.text
+      conversation.historySummaryFrontier = hs.firstKeptId
+    }
 
     // Always full save to capture content changes in existing messages
     window.electronAPI.saveConversationSync(conversation)
     savedMsgIdsRef.current.set(convId, new Set(conversation.messages.map(m => m.id)))
-  }, [messages, conversations])
+  }, [conversations, enginesRef])
 
   /** Synchronously save ALL in-memory conversations, not just the active one.
    *  Required in beforeunload — if the user last clicked a blank conversation,
@@ -137,6 +152,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
         ? existingConv.label : null
       const title = existingTitle || firstText || '新对话'
       const conversation = agentMessagesToConversation(engine.messages, convId, title)
+      const hs = engine.getHistorySummary()
+      if (hs) {
+        conversation.historySummary = hs.text
+        conversation.historySummaryFrontier = hs.firstKeptId
+      }
       window.electronAPI.saveConversationSync(conversation)
     }
   }, [saveConversationSync, enginesRef])
@@ -251,6 +271,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
           const agentMsgs = storedMessagesToAgentMessages(fullConv.messages)
           if (engine) {
             engine.loadConversation(agentMsgs)
+            engine.seedHistorySummary(fullConv.historySummary, fullConv.historySummaryFrontier)
             engine.loadPlan(key)
           }
           if (activeEngineIdRef.current === key) {
@@ -310,28 +331,32 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setActiveConversationKey(undefined)
 
     // Then save previous conversation in the background (fire-and-forget).
-    // Uses captured convId since convIdRef.current was already cleared.
-    if (oldConvId && messages.length > 0) {
+    // Uses captured convId since convIdRef.current was already cleared, and
+    // sources messages from the engine (never the shared state) so the save
+    // cannot be mis-filed under a different conversation ID.
+    const oldEngine = enginesRef.current.get(oldConvId)
+    const oldMsgs = oldEngine?.messages
+    if (oldConvId && oldMsgs && oldMsgs.length > 0) {
       // Only save if there are unsaved changes
       const savedIds = savedMsgIdsRef.current.get(oldConvId)
-      const hasChanges = !savedIds || messages.some(m => !savedIds.has(m.id))
+      const hasChanges = !savedIds || oldMsgs.some(m => !savedIds.has(m.id))
       if (hasChanges) {
-        const firstText = messages[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
+        const firstText = oldMsgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
         const existingConv = conversations.find(
           (c: { key: string; label: string }) => String(c.key) === oldConvId
         )
         const existingTitle = existingConv?.label && existingConv.label !== '新对话'
           ? existingConv.label : null
         const title = existingTitle || firstText || '新对话'
-        const conversation = agentMessagesToConversation(messages, oldConvId, title)
+        const conversation = agentMessagesToConversation(oldMsgs, oldConvId, title)
 
         window.electronAPI.saveConversation(conversation).catch(err =>
           console.error('[Chat] Background save failed during new conversation:', err)
         )
-        savedMsgIdsRef.current.set(oldConvId, new Set(messages.map(m => m.id)))
+        savedMsgIdsRef.current.set(oldConvId, new Set(oldMsgs.map(m => m.id)))
       }
     }
-  }, [conversations, autoCleanup, messages,
+  }, [conversations, autoCleanup, enginesRef,
       setMessages, setAgentStatus, setStreamingBlocks, setPlan,
       activeEngineIdRef, setActiveConversationKey, removeConversation])
 

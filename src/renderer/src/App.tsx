@@ -370,6 +370,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               agentStatus={agentStatus}
               streamingBlocks={streamingBlocks}
               hasApiKey={hasApiKey}
+              contextLength={contextLength}
               onSendMessage={handleRequest}
               onCancel={abort}
               onApproveTool={approveTool}

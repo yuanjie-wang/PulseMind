@@ -30,8 +30,24 @@ function ensureChromeSummary(servers: MCPManagedServer[]): MCPManagedServer[] {
   return servers
 }
 
+/**
+ * Defensive wrapper: window.electronAPI.mcpListServers can be missing if the
+ * running window holds a stale preload (Vite HMR refreshes renderer modules but
+ * never the preload bridge). Calling it would SYNC-throw (not a rejection),
+ * which .catch() can't absorb — breaking AgentEngine construction. Guard so the
+ * app degrades to an empty list instead of crashing.
+ */
+function safeMcpListServers(): Promise<MCPManagedServer[]> {
+  const fn = window.electronAPI?.mcpListServers
+  if (typeof fn !== 'function') {
+    console.warn('[mcp-cache] window.electronAPI.mcpListServers missing (stale preload?) — treating as empty list')
+    return Promise.resolve([])
+  }
+  return fn.call(window.electronAPI)
+}
+
 function refetchMcp(): void {
-  window.electronAPI.mcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {})
+  safeMcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {})
 }
 function refetchSubAgents(): void {
   window.electronAPI.subagentList().then(data => { subAgentProfiles = data }).catch(() => {})
@@ -58,7 +74,7 @@ export function ensureCache(): Promise<void> {
 
   // Initial fetch — return a promise so callers can wait for cache readiness
   initPromise = Promise.all([
-    window.electronAPI.mcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {}),
+    safeMcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {}),
     window.electronAPI.subagentList().then(data => { subAgentProfiles = data }).catch(() => {}),
     window.electronAPI.getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {}),
   ]).then(() => {})
@@ -82,7 +98,7 @@ export function getCachedMcpServers(): MCPManagedServer[] {
 
 /** Force-refresh the cached MCP server list and return when done. */
 export function refreshMcpServers(): Promise<void> {
-  return window.electronAPI.mcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {})
+  return safeMcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {})
 }
 
 export function getCachedSubAgentProfiles(): SubAgentProfile[] {

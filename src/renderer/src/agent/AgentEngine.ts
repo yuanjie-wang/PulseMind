@@ -5,6 +5,7 @@ import type {
   TextBlock,
   ToolUseBlock,
   ToolResultBlock,
+  ThinkingBlock,
   Plan
 } from '../types/agent'
 import type { ToolManager } from '../tools/ToolManager'
@@ -16,7 +17,7 @@ import type { MemoryManager } from '../memory/MemoryManager'
 import type { KnowledgeManager } from '../knowledge/KnowledgeManager'
 import type { PlatformInfo } from '../types/electron'
 import type { LlmAdapter } from '../llm/adapter'
-import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
+import { SkillKeywordAgent, SkillSelectionAgent, HistorySummaryAgent } from './one-shot-agent'
 import { sanitizeSchema, safeInvoke, safeInvokeObserver, MAX_LOOP_ITERATIONS, generateMsgId, type SubAgentResult, type SpawnSubAgentConfig, type SubAgentHandle } from './agent-utils'
 import { buildCommandFromSkillInput } from './command-builder'
 import { buildSystemPrompt } from './system-prompt-builder'
@@ -43,6 +44,90 @@ const MAX_TOOL_RESULT_TOKENS = 4_000
 function estimateTokens(text: string): number {
   const cjk = text.match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g)?.length ?? 0
   return cjk + Math.ceil((text.length - cjk) / 4)
+}
+
+/** Compact one-line summary of a tool call for the parent progress UI (sub-agents). */
+function summarizeToolCall(name: string, input: Record<string, unknown>): string {
+  const i = input || {}
+  const short = (v: unknown): string => { const s = String(v ?? '').trim(); return s ? s.slice(0, 60) : '' }
+  switch (name) {
+    case 'read': case 'write': case 'edit': {
+      const p = short(i.file_path)
+      return p ? `${name} ${p}` : name
+    }
+    case 'exec': {
+      const c = short(i.command)
+      return c ? `exec ${c}` : name
+    }
+    case 'search': {
+      const q = short(i.query)
+      return q ? `search "${q}"` : name
+    }
+    case 'list_dir': {
+      const d = short(i.dir_path)
+      return d ? `list_dir ${d}` : name
+    }
+    case 'find': {
+      const p = short(i.pattern)
+      return p ? `find ${p}` : name
+    }
+    default: return name
+  }
+}
+
+/** Cap per-message text length when condensing the dropped region for summarization. */
+const SUMMARY_TEXT_CAP = 2000
+/** Cap tool_result content length per block when condensing for summarization. */
+const SUMMARY_RESULT_CAP = 400
+/** Cap the total condensed region fed to the summary LLM (~40k chars ≈ 11k tokens). */
+const SUMMARY_INPUT_CAP = 40000
+
+/**
+ * Condense a dropped message region into a single compact text blob for the
+ * summary agent. tool_use is reduced via summarizeToolCall, tool_result content
+ * is truncated, thinking blocks are dropped (internal reasoning), text is capped.
+ */
+function buildDroppedRegionText(region: AgentMessage[]): string {
+  const parts: string[] = []
+  let budget = SUMMARY_INPUT_CAP
+  for (const msg of region) {
+    if (budget <= 0) break
+    if (!msg.contentBlocks || msg.contentBlocks.length === 0) continue
+    const roleLabel = msg.role === 'user' ? '用户' : '助手'
+    const lines: string[] = []
+    for (const block of msg.contentBlocks) {
+      if (budget <= 0) break
+      if (block.type === 'text') {
+        const t = (block as TextBlock).text
+        if (t) lines.push(t.slice(0, SUMMARY_TEXT_CAP))
+      } else if (block.type === 'tool_use') {
+        const tu = block as ToolUseBlock
+        lines.push(`[工具 ${summarizeToolCall(tu.name, tu.input)}]`)
+      } else if (block.type === 'tool_result') {
+        const c = ((block as ToolResultBlock).content || '').slice(0, SUMMARY_RESULT_CAP)
+        if (c) lines.push(`[工具结果] ${c}`)
+      }
+      // thinking / redacted_thinking: skip — internal reasoning, no summary value
+    }
+    if (lines.length === 0) continue
+    const text = `${roleLabel}: ${lines.join('\n')}`
+    parts.push(text)
+    budget -= text.length
+  }
+  return parts.join('\n\n')
+}
+
+/**
+ * Build a synthetic user message carrying the history summary. Only ever inserted
+ * into the API copy passed to buildRequest — it never enters this.messages.
+ */
+function makeHistorySummaryMessage(text: string): AgentMessage {
+  return {
+    id: `summary_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    role: 'user',
+    contentBlocks: [{ type: 'text', text: `【历史对话摘要】\n${text}` }],
+    createdAt: new Date().toISOString()
+  }
 }
 
 // ── AgentEngine Options ───────────────────────────────────────────────
@@ -133,6 +218,9 @@ export class AgentEngine {
   public selectedMcpTools: string[] = []
   /** Gated built-in tool names activated via pick_tool or keyword trigger — empty = all hidden */
   public selectedBuiltinTools: string[] = []
+  /** Cached history summary for the currently-dropped leading region. Keyed by the
+   *  id of the first kept message after hardTruncate; reused until the frontier advances. */
+  private historySummary: { firstKeptId: string; text: string } | null = null
   // Sub-agents for background LLM tasks (stateless singletons)
   private skillKeywordAgent = new SkillKeywordAgent()
   private skillSelectionAgent = new SkillSelectionAgent()
@@ -142,6 +230,8 @@ export class AgentEngine {
   private spawnSystemPrompt?: string
   private spawnSystemPromptAppendix?: string
   private onSpawnProgress?: (summary: string) => void
+  /** Last time onSpawnProgress fired — heartbeat updates are throttled to 800ms. */
+  private _lastSpawnProgressAt = 0
   private allowedToolsSet?: Set<string>
   private allowedMcpServersSet?: Set<string>
   /** Active spawned sub-agents, keyed by sub-agent id */
@@ -298,6 +388,13 @@ export class AgentEngine {
       return
     }
 
+    // Reconcile orphaned tool_use blocks (interrupted tool executions) before
+    // EVERY request. resumeExecution / stream-idle retry / sub-agent loops jump
+    // straight here, bypassing startLoop's reconciliation. Without this, a
+    // sleep/resume interrupt leaves an unpaired assistant tool_calls message
+    // that OpenAI rejects with "insufficient tool messages following tool_calls".
+    opts.adapter.reconcileMessages?.(this.messages)
+
     this.loopCount += 1
     if (this.loopCount > this.maxLoopCount) {
       if (this.spawnSystemPrompt) {
@@ -393,11 +490,14 @@ export class AgentEngine {
     const nanoCompacted = this.nanoCompact(apiMessages)
     const lightCompacted = this.lightCompact(nanoCompacted, opts.contextLength || 128000)
     const truncatedMessages = this.hardTruncate(lightCompacted, opts.contextLength || 128000)
+    // After truncation, inject an LLM summary of the dropped region into the API
+    // copy so the model keeps the gist. Synthetic message never leaves this scope.
+    const finalMessages = await this.injectHistorySummary(lightCompacted, truncatedMessages)
 
     const { url: apiUrl, headers, body } = opts.adapter.buildRequest(opts.baseURL, opts.apiKey, {
       model: opts.model,
       maxTokens: Math.floor(opts.maxTokens * 1.5),
-      messages: truncatedMessages,
+      messages: finalMessages,
       tools: enabledTools,
       systemPrompt,
       stream: true
@@ -459,12 +559,16 @@ export class AgentEngine {
           else if (type === 'tool_use') {
             this.currentAssistantBlocks[index] = { type: 'tool_use', id: id || '', name: name || '', input: {}, status: 'pending' }
             this.jsonAccumulators.set(index, '')
+            this.reportSpawnProgress(`子代理正在生成工具调用: ${name || ''}...`)
           }
         },
         onContentBlockDelta: (index, delta) => {
           const block = this.currentAssistantBlocks[index]
           if (!block) return
-          if (delta.type === 'text_delta' && block.type === 'text') { block.text += delta.text || '' }
+          if (delta.type === 'text_delta' && block.type === 'text') {
+            block.text += delta.text || ''
+            this.reportSpawnProgress(`子代理思考中... (第${this.loopCount}轮)`)
+          }
           else if (delta.type === 'thinking_delta' && block.type === 'thinking') { (block as any).thinking += (delta as any).thinking || '' }
           else if (delta.type === 'signature_delta' && block.type === 'thinking') { (block as any).signature = ((block as any).signature || '') + ((delta as any).signature || '') }
           else if (delta.type === 'input_json_delta' && block.type === 'tool_use') {
@@ -488,6 +592,7 @@ export class AgentEngine {
               block.input = {}
               ;(block as any)._jsonTruncated = true
             }
+            this.reportSpawnProgress(`工具参数就绪: ${summarizeToolCall(block.name, block.input)}`, true)
           }
           this.streamingBlocks = this.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
           this.notify()
@@ -513,6 +618,8 @@ export class AgentEngine {
           this.notify()
 
           const toolUses = blocks.filter((b): b is ToolUseBlock => b.type === 'tool_use')
+
+          if (toolUses.length > 0) this.reportSpawnProgress(`子代理第 ${this.loopCount} 轮完成,${toolUses.length} 个工具待执行`, true)
 
           if (stopReason === 'tool_use' && toolUses.length > 0) {
             await this.handleToolUseResponse(toolUses)
@@ -615,7 +722,7 @@ export class AgentEngine {
         .toLowerCase()
       const gatedByCategory = new Map<string, string[]>()
       for (const def of enabledTools) {
-        if (!def.gated) continue
+        if (def.availability !== 'gated') continue
         const arr = gatedByCategory.get(def.category) || []
         gatedByCategory.set(def.category, [...arr, ...(def.triggers || [])])
       }
@@ -623,7 +730,7 @@ export class AgentEngine {
       for (const [category, keywords] of gatedByCategory) {
         if (keywords.some(kw => userText.includes(kw.toLowerCase()))) {
           for (const def of enabledTools) {
-            if (def.gated && def.category === category) activated.add(def.name)
+            if (def.availability === 'gated' && def.category === category) activated.add(def.name)
           }
         }
       }
@@ -633,7 +740,7 @@ export class AgentEngine {
     {
       const activated = new Set(this.selectedBuiltinTools)
       const allowed = this.allowedToolsSet
-      enabledTools = enabledTools.filter(t => !t.gated || activated.has(t.name) || allowed?.has(t.name))
+      enabledTools = enabledTools.filter(t => t.availability !== 'gated' || activated.has(t.name) || allowed?.has(t.name))
     }
 
     const skillManager = this.opts.skillManager
@@ -716,7 +823,7 @@ export class AgentEngine {
           const activatedBuiltins = new Set(this.selectedBuiltinTools)
           const builtinByCat = new Map<string, string[]>()
           for (const d of toolManager.getEnabledTools().map(t => t.definition)) {
-            if (!d.gated || activatedBuiltins.has(d.name)) continue
+            if (d.availability !== 'gated' || activatedBuiltins.has(d.name)) continue
             const arr = builtinByCat.get(d.category) || []
             arr.push(d.name)
             builtinByCat.set(d.category, arr)
@@ -984,6 +1091,7 @@ export class AgentEngine {
     this.maxLoopCount = MAX_LOOP_ITERATIONS
     this.isCancelled = false
     this.pendingToolIds = new Set()
+    this.historySummary = null
     this.notify()
   }
 
@@ -1026,6 +1134,15 @@ export class AgentEngine {
   }
 
   // ── Spawn sub-agent ──────────────────────────────────────────────────
+
+  /** Push a live progress line to the parent engine's UI (sub-agents only). Throttled to 800ms except forced transition updates. */
+  private reportSpawnProgress = (msg: string, force = false): void => {
+    if (!this.onSpawnProgress || !this.spawnSystemPrompt) return
+    const now = Date.now()
+    if (!force && now - this._lastSpawnProgressAt < 800) return
+    this._lastSpawnProgressAt = now
+    this.onSpawnProgress(msg)
+  }
 
   spawnSubAgent(config: SpawnSubAgentConfig): SubAgentHandle {
     const id = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
@@ -1605,6 +1722,110 @@ export class AgentEngine {
     return truncated
   }
 
+  /** Current history-summary cache. Persisted with the conversation and reseeded on reload. */
+  getHistorySummary(): { firstKeptId: string; text: string } | null {
+    return this.historySummary
+  }
+
+  /** Restore the persisted history summary after rehydration so the dropped region
+   *  is not re-summarized. Clears the cache when no usable summary is provided. */
+  seedHistorySummary(text?: string, frontierId?: string): void {
+    this.historySummary = text && frontierId ? { firstKeptId: frontierId, text } : null
+  }
+
+  /**
+   * After hardTruncate drops leading messages, inject an LLM summary of the
+   * dropped region into the API copy so the model keeps the gist. The injected
+   * message lives only in the local array passed to buildRequest — this.messages,
+   * the DB, and the UI are untouched.
+   *
+   * Cache (this.historySummary, persisted via getHistorySummary/seedHistorySummary):
+   * hardTruncate drops roughly the same leading region every turn (the API copy is
+   * rebuilt from this.messages each loop). Keyed on the first kept message id:
+   *  - frontier unchanged → reuse verbatim (zero LLM calls);
+   *  - frontier moved back (kept more) → cached summary covers a superset, reuse;
+   *  - frontier advanced (dropped more) → summarize only the newly-dropped slice
+   *    and append to the cached text (incremental, avoids re-summarizing history);
+   *  - no usable cache → summarize the full dropped region.
+   * On any LLM failure, falls back to plain truncation (current behavior).
+   */
+  private async injectHistorySummary(
+    lightCompacted: AgentMessage[],
+    truncated: AgentMessage[]
+  ): Promise<AgentMessage[]> {
+    const droppedCount = lightCompacted.length - truncated.length
+    if (droppedCount <= 0) return truncated
+
+    const firstKeptId = truncated[0]?.id
+    if (!firstKeptId) return truncated
+
+    const dropped = lightCompacted.slice(0, droppedCount)
+    const cache = this.historySummary
+
+    // 1. Stable frontier → reuse verbatim.
+    if (cache?.firstKeptId === firstKeptId) {
+      return [makeHistorySummaryMessage(cache.text), ...truncated]
+    }
+
+    // 2. Old frontier message still kept (dropped less) → cached summary covers a
+    //    superset of the dropped region. Reuse and re-key to the new frontier.
+    if (cache && truncated.some((m) => m.id === cache.firstKeptId)) {
+      this.historySummary = { firstKeptId, text: cache.text }
+      return [makeHistorySummaryMessage(cache.text), ...truncated]
+    }
+
+    // 3. Old frontier message now dropped (frontier advanced) → summarize only the
+    //    newly-dropped slice after the old frontier and extend the cached text.
+    if (cache) {
+      const j = dropped.findIndex((m) => m.id === cache.firstKeptId)
+      if (j >= 0) {
+        const extraText = buildDroppedRegionText(dropped.slice(j))
+        if (extraText.trim()) {
+          const extra = await this.runHistorySummary(extraText)
+          if (extra) {
+            const text = cache.text + '\n\n' + extra
+            this.historySummary = { firstKeptId, text }
+            return [makeHistorySummaryMessage(text), ...truncated]
+          }
+        }
+      }
+    }
+
+    // 4. No usable cache → summarize the full dropped region.
+    const regionText = buildDroppedRegionText(dropped)
+    if (!regionText.trim()) return truncated
+    const summary = await this.runHistorySummary(regionText)
+    if (!summary) {
+      console.warn('[AgentEngine] history summary empty, using plain truncation')
+      return truncated
+    }
+    this.historySummary = { firstKeptId, text: summary }
+    console.log(`[AgentEngine] injected history summary (${summary.length} chars) for ${droppedCount} dropped messages`)
+    return [makeHistorySummaryMessage(summary), ...truncated]
+  }
+
+  /** Run the HistorySummaryAgent non-streaming. Returns '' on LLM failure/empty. */
+  private async runHistorySummary(regionText: string): Promise<string> {
+    const summaryAgent = new HistorySummaryAgent()
+    try {
+      return await summaryAgent.execute(
+        { regionText, locale: this.opts.locale },
+        {
+          llmConfig: {
+            adapter: this.opts.adapter,
+            apiKey: this.opts.apiKey || '',
+            baseURL: this.opts.baseURL,
+            model: this.opts.model
+          },
+          maxTokens: 500
+        }
+      )
+    } catch (err) {
+      console.warn('[AgentEngine] history summary failed, using plain truncation:', err)
+      return ''
+    }
+  }
+
   /** Estimate total token count for given messages.
    *  Uses stored outputTokens (LLM-reported) when available as the most accurate signal,
    *  falls back to per-block heuristic (chars/3.5) for user/tool messages.
@@ -1614,9 +1835,18 @@ export class AgentEngine {
     const msgs = messages ?? this.messages
     let total = 0
     for (const msg of msgs) {
-      // Use actual LLM-reported outputTokens when available (most accurate)
+      // LLM-reported outputTokens cover the assistant's text output (and
+      // usually tool_use input), but providers often exclude thinking/reasoning
+      // from completion_tokens. Count thinking + tool_use blocks explicitly so
+      // the estimate doesn't undercount — an undercount makes compaction fire
+      // late and then drop a huge chunk of context at once.
       if (msg.outputTokens) {
         total += msg.outputTokens * 3.5
+        for (const block of msg.contentBlocks) {
+          if (block.type === 'text') continue // outputTokens already covers text
+          if (block.type === 'tool_use') total += JSON.stringify(block.input).length + block.name.length
+          else if (block.type === 'thinking') total += (block as ThinkingBlock).thinking.length
+        }
         continue
       }
       for (const block of msg.contentBlocks) {

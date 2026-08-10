@@ -176,7 +176,14 @@ export function registerFileOpsHandlers(): void {
       try {
         const safePath = await resolveWritablePath(input.filePath)
         const content = await readFile(safePath, 'utf-8')
-        const count = content.split(input.oldStr).length - 1
+        // Line-ending tolerance: model-generated old_str is always LF, but files
+        // on Windows may be CRLF. Normalize for matching, then restore the file's
+        // original line ending on write so the whole file stays consistent.
+        const isCRLF = content.includes('\r\n')
+        const normalizedContent = isCRLF ? content.replace(/\r\n/g, '\n') : content
+        const oldStr = input.oldStr.replace(/\r\n/g, '\n')
+        const newStr = input.newStr.replace(/\r\n/g, '\n')
+        const count = normalizedContent.split(oldStr).length - 1
 
         if (count === 0) {
           return {
@@ -186,9 +193,10 @@ export function registerFileOpsHandlers(): void {
           }
         }
 
-        const newContent = input.multi
-          ? content.replaceAll(input.oldStr, input.newStr)
-          : content.replace(input.oldStr, input.newStr)
+        const replaced = input.multi
+          ? normalizedContent.replaceAll(oldStr, newStr)
+          : normalizedContent.replace(oldStr, newStr)
+        const newContent = isCRLF ? replaced.replace(/\n/g, '\r\n') : replaced
 
         await writeFile(safePath, newContent, 'utf-8')
         return { success: true, replacements: count }

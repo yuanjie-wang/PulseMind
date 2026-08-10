@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { RightOutlined } from '@ant-design/icons'
-import type { AgentMessage, ContentBlock } from '../../types/agent'
+import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import { MessageGroup } from './MessageGroup'
 
 // Injected once into <head> to avoid creating a new <style> element on every render
@@ -26,6 +26,7 @@ interface ExecutionSegmentProps {
   onRespondToTool?: (toolUseId: string, response: string) => void
   conversationId?: string
   conversationTitle?: string
+  contextLength?: number
 }
 
 // --- Extract displayable items from segment messages in LLM order ---
@@ -62,7 +63,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
   const [expanded, setExpanded] = useState(false)
 
   // Single traversal for all derived state — replaces 4 separate useMemo calls
-  const { texts, initial, done, toolCount, receivingText } = useMemo(() => {
+  const { texts, initial, done, toolCount, receivingText, liveOutput } = useMemo(() => {
     let hasTools = false
     let anyNonPending = false // any tool has a status beyond 'pending' (running, completed, rejected)
     let anyRunning = false
@@ -70,6 +71,9 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
     const texts: string[] = []
     let toolCount = 0
     const toolNames = new Set<string>()
+    // Last output line from any currently-running tool (e.g. sub-agent progress),
+    // surfaced in the collapsed header so the user sees it move without expanding.
+    let liveOutput: string | null = null
 
     for (const msg of props.messages) {
       if (msg.role !== 'user') {
@@ -80,7 +84,14 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
           toolCount++
           hasTools = true
           if (block.name) toolNames.add(block.name)
-          if (block.status === 'running') anyRunning = true
+          if (block.status === 'running') {
+            anyRunning = true
+            const out = (block as ToolUseBlock).output
+            if (out) {
+              const line = out.split('\n').filter(Boolean).pop() ?? ''
+              liveOutput = line.length > 80 ? line.slice(0, 77) + '...' : line
+            }
+          }
           if (block.status === undefined) continue
           if (block.status !== 'pending') anyNonPending = true
         }
@@ -95,6 +106,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
       toolCount,
       anyRunning,
       anyNonPending,
+      liveOutput,
       receivingText: props.isReceiving && toolNames.size > 0
         ? Array.from(toolNames).join(', ') + ' 指令生成中...'
         : ''
@@ -109,7 +121,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
   const showDone = done && !isPending
   const showInitialActive = initial && props.isRequesting
   const showSpinner = !showDone && props.isRequesting
-  const displayText = props.isReceiving ? receivingText : (showDone ? `已完成（工具调用${toolCount}次）` : showInitialActive ? '开始执行' : (texts.length > 0 ? texts[texts.length - 1] : 'Processing...'))
+  const displayText = props.isReceiving ? receivingText : (showDone ? `已完成（工具调用${toolCount}次）` : showInitialActive ? '开始执行' : (liveOutput || (texts.length > 0 ? texts[texts.length - 1] : 'Processing...')))
 
   return (
     <div style={{ margin: '8px 0', borderRadius: 8, overflow: 'hidden' }}>
@@ -184,6 +196,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
               onRespondToTool={props.onRespondToTool}
               conversationId={props.conversationId}
               conversationTitle={props.conversationTitle}
+              contextLength={props.contextLength}
             />
           ))}
         </div>

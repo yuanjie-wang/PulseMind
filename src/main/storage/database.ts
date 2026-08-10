@@ -69,6 +69,8 @@ function createTables(): void {
       plan_json TEXT,
       extracted_msg_count INTEGER NOT NULL DEFAULT 0,
       experience_extracted_count INTEGER NOT NULL DEFAULT 0,
+      history_summary TEXT,
+      history_summary_frontier TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -211,6 +213,8 @@ function createTables(): void {
   try { database.exec('ALTER TABLE conversations ADD COLUMN plan_json TEXT') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN extracted_msg_count INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN experience_extracted_count INTEGER NOT NULL DEFAULT 0') } catch (e) {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary TEXT') } catch (e) {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary_frontier TEXT') } catch (e) {}
   try { database.exec('ALTER TABLE messages ADD COLUMN liked INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE messages ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE messages ADD COLUMN processing_ms INTEGER') } catch (e) {}

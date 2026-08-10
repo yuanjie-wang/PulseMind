@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
-import { Modal } from 'antd'
+import { Modal, theme } from 'antd'
 import {
   CopyOutlined,
   CheckOutlined,
@@ -30,6 +30,7 @@ import { CodeBlock } from './CodeBlock'
 import { LocalImage } from './LocalImage'
 import { ThinkingBlockView } from './ThinkingBlockView'
 import { FileRefChip } from './FileRefChip'
+import { ContextRing, estimateContextUsed } from './ContextRing'
 
 // Blinking cursor keyframe for live sub-agent preview
 const cursorKeyframe = `@keyframes pulsemind-blink-cursor {
@@ -141,7 +142,8 @@ function CollapsibleToolBlock({
   onRejectTool,
   onKillTool,
   onRespondToTool,
-  completedFromResult = false
+  completedFromResult = false,
+  contextLength
 }: {
   block: ToolUseBlock
   onApproveTool?: (toolUseId: string) => void
@@ -149,9 +151,11 @@ function CollapsibleToolBlock({
   onKillTool?: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
   completedFromResult?: boolean
+  contextLength?: number
 }): React.ReactElement {
   const [collapsed, setCollapsed] = useState(block.name !== 'ask_user')
   const { t } = useTranslation()
+  const { token } = theme.useToken()
   const summary = toolBlockSummary(block)
   const needsAction = block.status === 'pending' && !!onApproveTool
 
@@ -220,6 +224,14 @@ function CollapsibleToolBlock({
     } catch (err) { console.error('Failed to load sub-agent conversation:', err) }
     setPreviewLoading(false)
   }
+
+  // Live previews carry real cumulative token counts on the AgentMessage list;
+  // DB-hydrated messages fall back to char estimation inside estimateContextUsed.
+  const isLivePreview = subAgentHandle != null && subAgentHandle.agentStatus.status !== 'idle'
+  const previewMsgs = isLivePreview && subAgentHandle
+    ? subAgentHandle.messages
+    : ((previewConv?.messages ?? []) as AgentMessage[])
+  const subContextUsed = previewMsgs.length > 0 ? estimateContextUsed(previewMsgs) : 0
 
   return (
     <div style={{ margin: '4px 0' }}>
@@ -314,17 +326,49 @@ function CollapsibleToolBlock({
       {/* Sub-agent preview modal */}
       {isSpawnAgent && (
         <Modal
-          title="子代理对话"
+          title={
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <span>子代理对话</span>
+              <span style={{ flex: 1 }} />
+              {contextLength != null && contextLength > 0 && subContextUsed > 0 && (
+                <span style={{ marginRight: 6, display: 'flex', alignItems: 'center' }}>
+                  <ContextRing used={subContextUsed} total={contextLength} />
+                </span>
+              )}
+              <button
+                type="button"
+                aria-label="Close"
+                className="pm-subagent-close"
+                onClick={() => { setPreviewOpen(false); if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = undefined } }}
+                style={{
+                  background: 'transparent',
+                  border: 0,
+                  cursor: 'pointer',
+                  padding: 4,
+                  lineHeight: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  color: token.colorIcon,
+                  borderRadius: 4
+                }}
+              >
+                <CloseOutlined style={{ fontSize: 14 }} />
+              </button>
+            </div>
+          }
           open={previewOpen}
           onCancel={() => { setPreviewOpen(false); if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = undefined } }}
+          closable={false}
           width="80%"
           style={{ top: 20 }}
           footer={null}
-          styles={{ body: { maxHeight: '75vh', overflow: 'auto', padding: 16 } }}
+          styles={{
+            container: { paddingTop: 12, paddingBottom: 20, paddingLeft: 24, paddingRight: 24 },
+            body: { maxHeight: '75vh', overflow: 'auto', padding: 16 }
+          }}
         >
-          <style>{'.ant-modal-close:focus-visible { outline: none }'}</style>
+          <style>{`.pm-subagent-close:hover { color: ${token.colorIconHover} }`}</style>
           {(() => {
-            const isLivePreview = subAgentHandle != null && subAgentHandle.agentStatus.status !== 'idle'
             const filteredMessages = (previewConv?.messages ?? []).filter((msg: Message) =>
               msg.contentBlocks?.some((b: ContentBlock) => b.type === 'text' || b.type === 'tool_use') || msg.content
             )
@@ -369,7 +413,7 @@ function CollapsibleToolBlock({
                         const tb = b as ToolUseBlock
                         return (
                           <div key={`tu-${i}`} style={{ paddingLeft: 4, marginTop: 4 }}>
-                            <CollapsibleToolBlock block={tb} completedFromResult={completedToolIds.has(tb.id)} />
+                            <CollapsibleToolBlock block={tb} completedFromResult={completedToolIds.has(tb.id)} contextLength={contextLength} />
                           </div>
                         )
                       })}
@@ -410,7 +454,8 @@ export const MessageGroup = React.memo(function MessageGroup({
   onRespondToTool,
   onKillTool,
   conversationId,
-  conversationTitle
+  conversationTitle,
+  contextLength
 }: {
   msg: AgentMessage
   showActions?: boolean
@@ -420,6 +465,7 @@ export const MessageGroup = React.memo(function MessageGroup({
   onKillTool: (toolUseId: string) => void
   conversationId?: string
   conversationTitle?: string
+  contextLength?: number
 }): React.ReactElement | null {
   const [liked, setLiked] = useState(msg.liked ?? false)
   const [favorited, setFavorited] = useState(msg.favorited ?? false)
@@ -570,6 +616,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                   onRejectTool={onRejectTool}
                   onKillTool={onKillTool}
                   onRespondToTool={onRespondToTool}
+                  contextLength={contextLength}
                 />
               )
             }

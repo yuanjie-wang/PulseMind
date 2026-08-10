@@ -342,7 +342,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.memory_search,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── memory_save ────────────────────────────────────────────────────
@@ -373,7 +373,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.memory_save,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── conversation_search ────────────────────────────────
@@ -398,7 +398,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.conversation_search,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── tool_result_search ────────────────────────────────────────────────
@@ -420,7 +420,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.tool_result_search,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── pick_skill ──────────────────────────────────────────────────────
@@ -500,7 +500,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.knowledge_search,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── knowledge_read ─────────────────────────────────────────────────
@@ -526,7 +526,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.knowledge_read,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── spawn_agent ────────────────────────────────────────────────────
@@ -621,7 +621,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.git_status,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── git_diff ──────────────────────────────────────────────────────
@@ -655,7 +655,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.git_diff,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── git_log ───────────────────────────────────────────────────────
@@ -680,7 +680,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.git_log,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── git_commit ────────────────────────────────────────────────────
@@ -710,7 +710,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.git_commit,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 
   // ── git_restore ───────────────────────────────────────────────────
@@ -740,6 +740,6 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.git_restore,
     builtIn: true,
-    gated: true
+    availability: 'gated'
   },
 ]

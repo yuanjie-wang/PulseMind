@@ -258,6 +258,10 @@ const en: TranslationDict = {
     title: 'Tools',
     description: 'Enable or disable AI capabilities. Enabled tools are registered as tool_use definitions sent with every API request.',
     noTools: 'No tools available.',
+    status: {
+      activated: 'Activated',
+      awaitActivation: 'Await activation',
+    },
     categories: {
       file: 'File',
       system: 'System',
@@ -265,6 +269,7 @@ const en: TranslationDict = {
       interaction: 'Interaction',
       memory: 'Memory',
       knowledge: 'Knowledge',
+      git: 'Git',
     },
   },
   skills: {

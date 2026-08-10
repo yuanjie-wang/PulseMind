@@ -314,6 +314,36 @@ function buildApiMessages(messages: AgentMessage[], systemPrompt: string): unkno
     }
   }
 
+  // Safety net: OpenAI requires every assistant tool_call to be answered by a
+  // tool message. Interrupted executions (sleep/resume, user cancel mid-tool)
+  // can leave an assistant message with tool_calls and no following tool
+  // response. Inject synthetic responses so the request never 400s.
+  for (let i = 0; i < result.length; i++) {
+    const m = result[i] as { role?: string; tool_calls?: Array<{ id: string }> }
+    if (m.role !== 'assistant' || !m.tool_calls || m.tool_calls.length === 0) continue
+
+    // OpenAI requires tool responses to directly follow the assistant message,
+    // so the first non-tool message after it breaks the pairing.
+    const resolvedIds = new Set<string>()
+    for (let j = i + 1; j < result.length; j++) {
+      const next = result[j] as { role?: string; tool_call_id?: string }
+      if (next.role !== 'tool') break
+      if (next.tool_call_id) resolvedIds.add(next.tool_call_id)
+    }
+
+    const unresolved = m.tool_calls.filter((tc) => !resolvedIds.has(tc.id))
+    if (unresolved.length === 0) continue
+
+    console.warn(`[OpenAI] Injecting synthetic tool response for ${unresolved.length} orphaned tool_call(s):`, unresolved.map((tc) => tc.id))
+    const synthetic: unknown[] = unresolved.map((tc) => ({
+      role: 'tool',
+      tool_call_id: tc.id,
+      content: 'Tool execution was interrupted or cancelled before producing a result.'
+    }))
+    result.splice(i + 1, 0, ...synthetic)
+    i += synthetic.length
+  }
+
   return result
 }
 

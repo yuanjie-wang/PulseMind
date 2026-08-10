@@ -69,7 +69,12 @@ export function InputArea({
 
   useEffect(() => {
     let cancelled = false
-    const check = () => window.electronAPI.mcpListServers().then(servers => {
+    const listServers = window.electronAPI?.mcpListServers
+    if (typeof listServers !== 'function') {
+      console.warn('[InputArea] window.electronAPI.mcpListServers missing (stale preload?) — chrome-tab feature disabled')
+      return
+    }
+    const check = () => listServers().then(servers => {
       if (cancelled) return
       const srv = servers.find(s =>
         s.id === 'chrome-devtools' || s.id === 'chromedevtools' || s.name === 'Chrome DevTools'
@@ -119,6 +124,10 @@ export function InputArea({
 
   const fetchChromeTabs = async (): Promise<ChromeTab[] | null> => {
     try {
+      if (typeof window.electronAPI?.mcpListServers !== 'function') {
+        message.warning('Chrome DevTools MCP 不可用（preload 未加载，请重启应用）')
+        return null
+      }
       // Check if Chrome DevTools MCP is connected
       const servers = await window.electronAPI.mcpListServers()
       const chromeServer = servers.find(s => s.id === 'chrome-devtools')

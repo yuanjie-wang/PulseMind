@@ -475,7 +475,7 @@ export class ToolExecutor {
           }
         }
         for (const def of this.opts.toolManager.getEnabledTools().map(t => t.definition)) {
-          if (!def.gated) continue
+          if (def.availability !== 'gated') continue
           all.push({ name: def.name, serverId: builtinCategoryServerId(def.category), description: def.description, inputSchema: def.input_schema })
         }
         return all
@@ -558,7 +558,7 @@ export class ToolExecutor {
         // Built-in category fallback: serverName matches a gated category
         // (e.g. "git", "memory", "knowledge", or "builtin:git")
         const category = serverNameInput.replace(/^builtin:/, '').toLowerCase()
-        const catDefs = this.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.gated && d.category === category)
+        const catDefs = this.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.availability === 'gated' && d.category === category)
         if (catDefs.length > 0) {
           const catTools = catDefs.map(d => ({
             name: d.name,
@@ -604,7 +604,7 @@ export class ToolExecutor {
         .join('\n')
       // Synthetic rows (one per gated built-in category) so the selection agent can
       // pick built-ins at the same granularity as MCP servers.
-      const gatedBuiltins = this.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.gated)
+      const gatedBuiltins = this.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.availability === 'gated')
       const builtinByCat = new Map<string, number>()
       for (const d of gatedBuiltins) builtinByCat.set(d.category, (builtinByCat.get(d.category) || 0) + 1)
       for (const [cat, count] of builtinByCat) {
@@ -702,7 +702,11 @@ export class ToolExecutor {
         maxTokens: maxTokens || this.opts.maxTokens,
         maxLoopIterations: maxLoopIterations || 20,
         onProgress: (summary) => {
-          t.output = summary
+          // Rolling activity log (cap 8 lines) so the user sees the sub-agent moving live.
+          const lines = (t.output || '').split('\n')
+          lines.push(summary)
+          while (lines.length > 8) lines.shift()
+          t.output = lines.join('\n')
           this.notify()
         },
       })

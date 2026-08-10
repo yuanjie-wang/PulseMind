@@ -11,7 +11,7 @@ const zh = {
     loading: '加载中...',
     search: '搜索...',
     all: '全部',
-    builtIn: 'builtIn',
+    builtIn: '内置',
     experience: '经验',
     active: '当前使用',
     warning: '警告',
@@ -256,6 +256,10 @@ const zh = {
     title: '工具',
     description: '启用或禁用 AI 能力。启用的工具将注册为 tool_use 定义，随每次 API 请求发送。',
     noTools: '暂无可用工具。',
+    status: {
+      activated: '已激活',
+      awaitActivation: '按需激活',
+    },
     categories: {
       file: '文件',
       system: '系统',
@@ -263,6 +267,7 @@ const zh = {
       interaction: '交互',
       memory: '记忆',
       knowledge: '知识',
+      git: 'Git',
     },
   },
   skills: {

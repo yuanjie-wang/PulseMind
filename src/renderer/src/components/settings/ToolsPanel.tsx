@@ -48,6 +48,7 @@ function ToolsPanel({
     interaction: t('tools.categories.interaction'),
     memory: t('tools.categories.memory'),
     knowledge: t('tools.categories.knowledge'),
+    git: t('tools.categories.git'),
   }
 
   if (tools.length === 0) {
@@ -119,8 +120,8 @@ interface ToolCardProps {
 
 function ToolCard({ tool, onToggle }: ToolCardProps): React.ReactElement {
   const [expanded, setExpanded] = useState(false)
-  const { definition, enabled } = tool
   const { t } = useTranslation()
+  const { definition, enabled } = tool
 
   return (
     <div
@@ -154,9 +155,13 @@ function ToolCard({ tool, onToggle }: ToolCardProps): React.ReactElement {
           <Text strong style={{ fontSize: 14, color: enabled ? undefined : '#bbb' }} ellipsis>
             {definition.name}
           </Text>
-          {definition.builtIn && (
-            <Tag color='default' style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
-              {t('common.builtIn')}
+          {definition.availability === 'gated' ? (
+            <Tag color="gold" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', flexShrink: 0 }}>
+              {t('tools.status.awaitActivation')}
+            </Tag>
+          ) : (
+            <Tag color="green" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', flexShrink: 0 }}>
+              {t('tools.status.activated')}
             </Tag>
           )}
         </div>

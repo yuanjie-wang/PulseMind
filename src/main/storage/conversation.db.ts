@@ -82,8 +82,8 @@ export function listConversations(): ConversationIndexEntry[] {
 export function getConversation(id: string): Conversation | null {
   const database = getDb()
   const conv = database
-    .prepare('SELECT id, title, summary, keywords, created_at, updated_at FROM conversations WHERE id = ?')
-    .get(id) as { id: string; title: string; summary: string | null; keywords: string | null; created_at: string; updated_at: string } | undefined
+    .prepare('SELECT id, title, summary, keywords, history_summary, history_summary_frontier, created_at, updated_at FROM conversations WHERE id = ?')
+    .get(id) as { id: string; title: string; summary: string | null; keywords: string | null; history_summary: string | null; history_summary_frontier: string | null; created_at: string; updated_at: string } | undefined
   if (!conv) return null
 
   const messages = database
@@ -94,6 +94,8 @@ export function getConversation(id: string): Conversation | null {
 
   return {
     id: conv.id, title: conv.title, summary: conv.summary || undefined,
+    historySummary: conv.history_summary || undefined,
+    historySummaryFrontier: conv.history_summary_frontier || undefined,
     messages: messages.map((m) => ({
       id: m.id, role: m.role as 'user' | 'assistant',
       content: m.content,
@@ -113,9 +115,10 @@ export function saveConversation(conversation: Conversation): void {
   const now = new Date().toISOString()
 
   const upsertConv = database.prepare(
-    `INSERT INTO conversations (id, title, created_at, updated_at, type, rect_id)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at`
+    `INSERT INTO conversations (id, title, created_at, updated_at, type, rect_id, history_summary, history_summary_frontier)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at,
+       history_summary = excluded.history_summary, history_summary_frontier = excluded.history_summary_frontier`
   )
   const upsertMsg = database.prepare(
     `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -128,7 +131,7 @@ export function saveConversation(conversation: Conversation): void {
   )
 
   const save = database.transaction(() => {
-    upsertConv.run(conversation.id, conversation.title || '新对话', conversation.createdAt || now, now, deriveConvType(conversation.id), deriveRectId(conversation.id))
+    upsertConv.run(conversation.id, conversation.title || '新对话', conversation.createdAt || now, now, deriveConvType(conversation.id), deriveRectId(conversation.id), conversation.historySummary || null, conversation.historySummaryFrontier || null)
 
     for (const msg of conversation.messages || []) {
       const sanitized = sanitizeToolResults(msg.contentBlocks, conversation.id, msg.id, (refId, convId, msgId, blockIdx, toolUseId, content, isErr) => {
