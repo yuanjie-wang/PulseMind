@@ -139,7 +139,8 @@ function reconcileToolResults(messages: AgentMessage[]): void {
           type: 'tool_result' as const,
           tool_use_id: tu.id,
           content: 'Tool execution was interrupted or cancelled.',
-          is_error: true
+          is_error: true,
+          tool_result_id: crypto.randomUUID()
         })),
         createdAt: new Date().toISOString()
       })
@@ -157,7 +158,8 @@ function reconcileToolResults(messages: AgentMessage[]): void {
           type: 'tool_result' as const,
           tool_use_id: tu.id,
           content: 'Tool execution was interrupted or cancelled.',
-          is_error: true
+          is_error: true,
+          tool_result_id: crypto.randomUUID()
         })
       }
     }

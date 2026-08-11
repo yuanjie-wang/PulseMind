@@ -251,17 +251,22 @@ function buildApiMessages(messages: AgentMessage[], systemPrompt: string): unkno
 
       const orphanedText: string[] = []
       for (const tr of toolResultBlocks) {
+        // OpenAI tool messages have no is_error field, so encode the failure
+        // signal in the content itself — otherwise the model can't tell a
+        // failed tool (timeout, truncated params, nonzero exit) from a success
+        // once nanoCompact strips the result to a placeholder.
+        const content = tr.is_error ? `[tool_result_error] ${tr.content}` : tr.content
         if (pending && pending.has(tr.tool_use_id)) {
           // Normal case: tool_call_id matches the preceding assistant
           result.push({
             role: 'tool',
             tool_call_id: tr.tool_use_id,
-            content: tr.content
+            content
           })
         } else {
           // Orphaned: compaction dropped the matching assistant's tool_calls.
           // Fall back to text so the LLM at least sees the content.
-          orphanedText.push(`[Tool result for ${tr.tool_use_id}]: ${tr.content.slice(0, 2000)}`)
+          orphanedText.push(`[Tool result for ${tr.tool_use_id}]: ${content.slice(0, 2000)}`)
         }
       }
 
@@ -439,7 +444,8 @@ export const openaiAdapter: LlmAdapter = {
             type: 'tool_result' as const,
             tool_use_id: tu.id,
             content: 'Tool execution was interrupted or cancelled.',
-            is_error: true
+            is_error: true,
+            tool_result_id: crypto.randomUUID()
           })),
           createdAt: new Date().toISOString()
         })
@@ -457,7 +463,8 @@ export const openaiAdapter: LlmAdapter = {
             type: 'tool_result' as const,
             tool_use_id: tu.id,
             content: 'Tool execution was interrupted or cancelled.',
-            is_error: true
+            is_error: true,
+            tool_result_id: crypto.randomUUID()
           })
         }
       }

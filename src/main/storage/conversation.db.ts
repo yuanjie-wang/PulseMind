@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { Conversation, ConversationIndexEntry, Message } from '../../shared/types/conversation'
 import type { ContentBlock, ToolResultBlock } from '../../shared/types/agent'
 import { getDb } from './database'
@@ -40,9 +39,14 @@ function sanitizeToolResults(
       }
       return { type: 'tool_result' as const, tool_use_id: trBlock.tool_use_id, tool_result_id: trBlock.tool_result_id, content: '' }
     }
-    // First save — generate UUID, write to table, strip for JSON
+    // No ID on the block. The renderer assigns tool_result_id for most paths,
+    // but some (truncated/oversized rejections, adapter reconciliation) create
+    // blocks without one. Derive a STABLE ref_id from message+tool_use so every
+    // save writes the same row (INSERT OR REPLACE dedupes) — a fresh UUID here
+    // would duplicate rows, since the mutation below only affects this IPC copy,
+    // not the live renderer block.
     modified = true
-    const toolResultId = randomUUID()
+    const toolResultId = `${msgId}_${trBlock.tool_use_id}`
     insertToolResult(toolResultId, convId, msgId, idx, trBlock.tool_use_id, trBlock.content, trBlock.is_error ? 1 : 0)
     // Mutate the original block so subsequent saves in this session detect it
     trBlock.tool_result_id = toolResultId

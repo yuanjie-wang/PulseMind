@@ -131,6 +131,18 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     const toolAppendix = toolManager?.getSystemPromptAppendix()
     if (toolAppendix) parts.push(toolAppendix)
 
+    // ── Compressed tool results ──────────────────────────────────────
+    // Old tool_result content may be stripped to a placeholder to fit the
+    // context window. The model must understand these markers so it doesn't
+    // mistake a placeholder for a real result — and can resolve it on demand.
+    parts.push(`\
+## Compressed Tool Results
+
+Very old tool execution results may be compressed to save context space. You may encounter these two markers inside tool result content:
+
+- \`[tool_result_id: <uuid>]\` — the original tool result content was removed to fit the context window. The result DID happen, but its full text is gone. Use the \`tool_result_search\` tool with the uuid to retrieve the original content if you need it.
+- \`[tool_result_error] ...\` — the tool call FAILED (timeout, truncated parameters, nonzero exit code, etc.). The tool did NOT complete its task. Do not claim the task was done; treat the remaining text as the error message and respond accordingly.`)
+
     // ── Render Reference ─────────────────────────────────────────────
     parts.push(`\
 ## Render Reference

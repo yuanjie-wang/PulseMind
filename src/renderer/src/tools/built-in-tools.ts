@@ -420,7 +420,10 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.tool_result_search,
     builtIn: true,
-    availability: 'gated'
+    // Always available: compacted tool_results surface as [tool_result_id: xxx]
+    // placeholders mid-conversation, and the model must be able to resolve them
+    // without relying on user-text keyword triggers.
+    availability: 'always'
   },
 
   // ── pick_skill ──────────────────────────────────────────────────────

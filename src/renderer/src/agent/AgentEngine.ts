@@ -492,7 +492,11 @@ export class AgentEngine {
     const truncatedMessages = this.hardTruncate(lightCompacted, opts.contextLength || 128000)
     // After truncation, inject an LLM summary of the dropped region into the API
     // copy so the model keeps the gist. Synthetic message never leaves this scope.
-    const finalMessages = await this.injectHistorySummary(lightCompacted, truncatedMessages)
+    // Pass the PRE-compaction copy as the summarizer source: nanoCompact has
+    // already replaced old tool_results with [tool_result_id:] placeholders, so
+    // summarizing lightCompacted would hide what the tools actually returned
+    // (incl. failures) and let the summary fabricate outcomes.
+    const finalMessages = await this.injectHistorySummary(apiMessages, lightCompacted, truncatedMessages)
 
     const { url: apiUrl, headers, body } = opts.adapter.buildRequest(opts.baseURL, opts.apiKey, {
       model: opts.model,
@@ -1357,7 +1361,10 @@ export class AgentEngine {
           msg = partialPath ? `Write to "${partialPath}" was truncated (max_tokens hit while generating content). The file was NOT written. Retry with a smaller payload or split the content across multiple write calls.` : 'Tool call input was truncated (max_tokens limit hit while generating parameters). Retry with a smaller payload or split across multiple calls.'
         } else { msg = 'Tool call input was truncated (max_tokens limit hit while generating parameters). Retry with a smaller payload or split across multiple calls.' }
       } else { msg = 'Tool call was interrupted by the token limit. Please continue.' }
-      return { type: 'tool_result' as const, tool_use_id: tool.id, content: msg, is_error: true }
+      // tool_result_id must be assigned here: without it, sanitizeToolResults
+      // generates a fresh UUID on every save (it only mutates the IPC copy, not
+      // the live renderer block), producing duplicate tool_results rows.
+      return { type: 'tool_result' as const, tool_use_id: tool.id, content: msg, is_error: true, tool_result_id: crypto.randomUUID() }
     })
     this.messages = [...this.messages, { id: generateMsgId(), role: 'user' as const, contentBlocks: combinedBlocks, createdAt: new Date().toISOString() }]
   }
@@ -1486,7 +1493,7 @@ export class AgentEngine {
           .map(([key, max]) => `${key}: ${String(t.input?.[key] ?? '').length} chars (max ${max})`)
           .join(', ')
         const msg = `Tool "${t.name}" was rejected: parameter(s) too large (${details}). Please split the work into smaller calls.`
-        return { type: 'tool_result' as const, tool_use_id: t.id, content: msg, is_error: true }
+        return { type: 'tool_result' as const, tool_use_id: t.id, content: msg, is_error: true, tool_result_id: crypto.randomUUID() }
       })
       this.messages = [...this.messages, { id: generateMsgId(), role: 'user' as const, contentBlocks: oversizedResults, createdAt: new Date().toISOString() }]
       // Execute non-oversized tools
@@ -1750,6 +1757,7 @@ export class AgentEngine {
    * On any LLM failure, falls back to plain truncation (current behavior).
    */
   private async injectHistorySummary(
+    original: AgentMessage[],
     lightCompacted: AgentMessage[],
     truncated: AgentMessage[]
   ): Promise<AgentMessage[]> {
@@ -1759,7 +1767,10 @@ export class AgentEngine {
     const firstKeptId = truncated[0]?.id
     if (!firstKeptId) return truncated
 
-    const dropped = lightCompacted.slice(0, droppedCount)
+    // Slice the pre-compaction copy so the summarizer sees real tool results
+    // (success AND error content), not [tool_result_id:] placeholders.
+    // nanoCompact is a 1:1 map (no add/drop), so index alignment holds.
+    const dropped = original.slice(0, droppedCount)
     const cache = this.historySummary
 
     // 1. Stable frontier → reuse verbatim.
