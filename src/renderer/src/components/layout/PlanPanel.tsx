@@ -20,12 +20,16 @@ export function PlanPanel({ plan, onJumpToStep }: PlanPanelProps) {
   const { token } = theme.useToken()
   const [collapsed, setCollapsed] = useState(false)
   const [currentPlan, setCurrentPlan] = useState<Plan | null>(null)
-  const [visible, setVisible] = useState(false)
+  // If the panel mounts with a plan already set (e.g. switching back to chat view),
+  // show it immediately — don't rely on the fade-in animation. Under React StrictMode
+  // (dev) the mount effect double-runs and its cleanup cancels the scheduled rAF, so a
+  // mount-time fade-in would leave the panel stuck at opacity: 0.
+  const [visible, setVisible] = useState(() => plan !== null)
   const rafRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setTimeout>>()
 
   // Track plan existence (not reference) to only animate on null↔non-null transitions
-  const hadPlanRef = useRef(false)
+  const hadPlanRef = useRef(plan !== null)
 
   useEffect(() => {
     const hasPlan = plan !== null

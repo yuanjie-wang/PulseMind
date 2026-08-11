@@ -40,6 +40,10 @@ interface ChatViewProps {
   conversationId?: string
   conversationTitle?: string
   planScrollToMsgId?: string | null
+  /** Called once the plan jump has been performed so the parent can clear the
+   *  request — without this the scroll effect keeps re-running on every
+   *  message/window change and yanks the viewport back to the step. */
+  onPlanScrollHandled?: () => void
   contextLength?: number
 }
 
@@ -181,6 +185,7 @@ function ChatView({
   onSelectProfile,
   greeting,
   planScrollToMsgId,
+  onPlanScrollHandled,
   contextLength
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
@@ -212,6 +217,10 @@ function ChatView({
     if (!el) return
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
     isNearBottomRef.current = nearBottom
+    // While a plan jump's smooth scroll is animating, don't collapse the widened
+    // window or trigger lazy-load — the animation's early frames near the old
+    // bottom would otherwise fight the widened window back to the tail.
+    if (suppressPlanScrollRef.current) return
     if (nearBottom) {
       setExtraTop(0)
       return
@@ -437,6 +446,22 @@ function ChatView({
   })
 
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null)
+  // Stable ref for the plan-jump-done callback so the effect below never needs it
+  // in deps (the parent's inline arrow would otherwise re-run the effect every render).
+  const onPlanScrollHandledRef = useRef(onPlanScrollHandled)
+  onPlanScrollHandledRef.current = onPlanScrollHandled
+  // Timers live in refs and are only cancelled on unmount, not on effect re-runs:
+  // the parent clears planScrollToMsgId right after the jump (see below), which
+  // re-runs this effect and would otherwise cancel the pending highlight clear.
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  // Set while the plan jump's smooth scroll is animating so handleScroll doesn't
+  // collapse the widened window mid-animation (see handleScroll).
+  const suppressPlanScrollRef = useRef(false)
+  useEffect(() => () => {
+    clearTimeout(highlightTimerRef.current)
+    clearTimeout(scrollTimerRef.current)
+  }, [])
 
   // Map any message id to the chat-msg-* anchor of its segment. Execution
   // segments merge several assistant messages but expose only one DOM anchor
@@ -462,18 +487,35 @@ function ChatView({
   useEffect(() => {
     if (!planScrollToMsgId) return
     const targetId = msgIdToAnchorRef.current.get(planScrollToMsgId) ?? planScrollToMsgId
-    // If the target segment is above the rendered window, widen the window so
-    // its anchor mounts before scrollIntoView runs.
-    const targetIdx = allSegments.findIndex((seg) => getSegmentAnchorId(seg) === targetId)
-    if (targetIdx >= 0 && targetIdx < windowTop) {
-      setExtraTop(Math.max(extraTop, allSegments.length - PAGE_SIZE - targetIdx))
+    // If the target segment is above the rendered window, widen it so the target's
+    // anchor mounts; the effect re-runs after windowTop settles, then scrolls below.
+    const anchor = document.getElementById(`chat-msg-${targetId}`)
+    if (!anchor) {
+      const targetIdx = allSegments.findIndex((seg) => getSegmentAnchorId(seg) === targetId)
+      if (targetIdx >= 0 && targetIdx < windowTop) {
+        setExtraTop(Math.max(extraTop, allSegments.length - PAGE_SIZE - targetIdx))
+        return
+      }
+      // Target segment isn't loaded and can't be widened to — stop retrying.
+      onPlanScrollHandledRef.current?.()
+      return
     }
     setHighlightedMsgId(targetId)
-    const scrollTimer = setTimeout(() => {
+    clearTimeout(scrollTimerRef.current)
+    suppressPlanScrollRef.current = true
+    scrollTimerRef.current = setTimeout(() => {
       document.getElementById(`chat-msg-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      // Let handleScroll resume normal near-bottom collapse / lazy-load once the
+      // smooth scroll has settled, and clear the parent's request so this effect
+      // stops re-running on later message/window changes (lazy-load, new messages,
+      // approval dialogs) — which previously yanked the viewport back to the step
+      // after the user scrolled away and re-widened the window after it was
+      // collapsed to the tail. Clearing also lets the same step be re-clicked later
+      // to jump again.
+      setTimeout(() => { suppressPlanScrollRef.current = false }, 700)
+      onPlanScrollHandledRef.current?.()
     }, 100)
-    const clearTimer = setTimeout(() => setHighlightedMsgId(null), 2000)
-    return () => { clearTimeout(scrollTimer); clearTimeout(clearTimer) }
+    highlightTimerRef.current = setTimeout(() => setHighlightedMsgId(null), 2000)
   }, [planScrollToMsgId, allSegments, windowTop, extraTop])
 
   // ── Render helpers ──

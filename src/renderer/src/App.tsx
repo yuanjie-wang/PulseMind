@@ -390,6 +390,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               onSelectProfile={(profileId: string) => saveSettings({ ...settings, activeProfileId: profileId })}
               greeting={greeting}
               planScrollToMsgId={planScrollToMsgId}
+              onPlanScrollHandled={() => setPlanScrollToMsgId(null)}
             />
           </AppLayout>
           {activeView === 'chat' && <PlanPanel plan={plan} onJumpToStep={setPlanScrollToMsgId} />}
