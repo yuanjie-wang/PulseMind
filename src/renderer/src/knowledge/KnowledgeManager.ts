@@ -1,4 +1,5 @@
 import { KnowledgeCompilerAgent } from '../agent/one-shot-agent/KnowledgeCompilerAgent'
+import { ExperienceCompressionAgent } from '../agent/one-shot-agent/ExperienceCompressionAgent'
 import type { LlmAdapter } from '../llm/adapter'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../../../shared/types/knowledge'
 
@@ -10,11 +11,13 @@ import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeLis
  */
 export class KnowledgeManager {
   private compilerAgent = new KnowledgeCompilerAgent()
+  private experienceCompressionAgent = new ExperienceCompressionAgent()
   private apiKey = ''
   private baseURL = ''
   private adapter: LlmAdapter | null = null
   private model = ''
   private _wikiVersion = 0
+  private _consolidating = false
 
   /** Incremented each time compile() or compileFile() succeeds. AgentEngine
    *  checks this to decide whether its cached snapshot is stale. */
@@ -290,6 +293,87 @@ export class KnowledgeManager {
   /** Clear all knowledge: delete all files and DB records. */
   async clearAll(): Promise<{ deletedRaw: number; deletedWiki: number }> {
     return window.electronAPI.knowledgeClearAll()
+  }
+
+  /**
+   * Merge and deduplicate experience files when their count exceeds the
+   * threshold (lazy, non-periodic). Processes experiences in batches of 20:
+   * each batch is consolidated by the LLM into at most 10 merged experiences,
+   * written as new raw files and compiled into the wiki, then the source
+   * files are deleted. Safe order: write new files first, delete originals
+   * only after at least one replacement was written.
+   */
+  async consolidateExperiences(threshold = 25): Promise<{ ok: boolean; merged: number; remaining: number; log: string }> {
+    if (this._consolidating) return { ok: false, merged: 0, remaining: 0, log: 'Consolidation already running' }
+    if (!this.canCompile || !this.adapter) return { ok: false, merged: 0, remaining: 0, log: 'LLM not configured' }
+    this._consolidating = true
+
+    try {
+      const all = await this.listFiles()
+      const experiences = all.filter(f => f.sourceType === 'experience')
+      if (experiences.length <= threshold) {
+        return { ok: true, merged: 0, remaining: experiences.length, log: 'Under threshold, no consolidation needed' }
+      }
+
+      const BATCH_SIZE = 20
+      const logs: string[] = []
+
+      for (let i = 0; i < experiences.length; i += BATCH_SIZE) {
+        const batch = experiences.slice(i, i + BATCH_SIZE)
+
+        // Read full contents (must not be truncated — consolidation needs complete text)
+        const contents = await Promise.all(batch.map(async (f) => {
+          let content = ''
+          try { content = await this.readRawContent(f.filePath) } catch { /* unreadable file: keep title only */ }
+          return `## ${f.title}\n\n${content}`
+        }))
+
+        const result = await this.experienceCompressionAgent.execute(
+          { experiencesText: contents.join('\n\n---\n\n') },
+          {
+            llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model },
+            maxTokens: 4000
+          }
+        )
+
+        const valid = result.filter(exp => exp.content && exp.content.length >= 10)
+        const written: string[] = []
+        for (const exp of valid) {
+          const title = exp.title?.slice(0, 80) || 'Consolidated experience'
+          try {
+            const saved = await this.saveExperience(exp.content, 'consolidation', title)
+            written.push(saved.id)
+            await this.compileFile(saved.id).catch(err =>
+              logs.push(`compile "${title}": ${err instanceof Error ? err.message : String(err)}`)
+            )
+          } catch (err) {
+            logs.push(`write "${title}": ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+
+        // Only delete sources after at least one replacement was written
+        if (written.length > 0) {
+          for (const f of batch) {
+            await this.deleteFile(f.id).catch(() => {})
+          }
+        }
+        logs.push(`Batch of ${batch.length} experiences → ${valid.length} merged (${batch.length - valid.length} duplicates removed)`)
+      }
+
+      const remaining = (await this.listFiles()).filter(f => f.sourceType === 'experience').length
+      console.log(`[KnowledgeManager] Experience consolidation complete: ${experiences.length} → ${remaining}`)
+      return { ok: true, merged: experiences.length - remaining, remaining, log: logs.join('; ') }
+    } catch (err) {
+      console.warn('[KnowledgeManager] Experience consolidation error:', err)
+      return {
+        ok: false,
+        merged: 0,
+        remaining: (await this.listFiles().catch(() => [])).filter(f => f.sourceType === 'experience').length,
+        log: err instanceof Error ? err.message : String(err)
+      }
+    } finally {
+      this._consolidating = false
+    }
   }
 
   // ─── System Prompt Context ─────────────────────────────────────────

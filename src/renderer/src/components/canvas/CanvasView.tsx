@@ -155,7 +155,7 @@ export default function CanvasView() {
   const [toolEvents, setToolEvents] = useState<Record<string, Array<{ toolName: string; args: string; status: 'running' | 'done'; summary?: string }>>>({})
   const [pendingNote, setPendingNote] = useState<{ x: number; y: number; annotationId: string } | null>(null)
   const [isCtrlHeld, setIsCtrlHeld] = useState(false)
-  const { activeProfile } = useSettings()
+  const { settings, activeProfile } = useSettings()
   const canvasEngineMapRef = useRef<Map<string, CanvasEngineHandle>>(new Map())
 
   // Background deselect — deselect rect when clicking outside canvas
@@ -856,6 +856,7 @@ return JSON.stringify(results);
           baseURL: linkedProfile?.baseURL || (activeProfile?.baseURL ?? ''),
           model: linkedProfile?.model || (activeProfile?.model ?? ''),
           maxTokens: linkedProfile?.maxTokens || (activeProfile?.maxTokens ?? 8192),
+          profileId: canvasSub?.profileId || settings.activeProfileId,
           workDir,
           rectId: id,
           platformInfo,

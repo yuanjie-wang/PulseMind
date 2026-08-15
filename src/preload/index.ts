@@ -5,6 +5,7 @@ import type { AppSettings } from '../shared/types/settings'
 import type { TerminalOutputEvent, TerminalExitEvent, ApiStreamChunkEvent, ApiStreamErrorEvent, ApiStreamDoneEvent, ApiStreamRetryEvent, PlatformInfo, DataPaths } from '../renderer/src/types/electron'
 import type { ToolPreferences } from '../shared/types/tool-types'
 import type { SkillPreferences, SkillDefinition } from '../shared/types/skill-types'
+import type { ExperienceRecord, ExperienceDraft } from '../shared/types/experience-types'
 import type { MemoryEntry, MemorySearchInput } from '../renderer/src/memory/types'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../shared/types/knowledge'
 import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../renderer/src/types/electron'
@@ -104,6 +105,23 @@ const electronAPI = {
   writeSkill: (skill: SkillDefinition): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.SKILLS_WRITE, skill),
 
+  // Experiences
+  listExperiences: (): Promise<ExperienceRecord[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_LIST),
+  saveExperienceRecord: (draft: ExperienceDraft): Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_SAVE, draft),
+  deleteExperienceRecord: (name: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_DELETE, name),
+  readExperienceRecord: (name: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_READ, name),
+  touchExperienceRecord: (name: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_TOUCH, name),
+  onExperiencesChanged: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC_CHANNELS.EXPERIENCES_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.EXPERIENCES_CHANGED, handler)
+  },
+
   // Terminal
   executeCommand: (command: string, cwd?: string, timeoutMs?: number): Promise<string> =>
     ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXECUTE, command, cwd, timeoutMs),
@@ -132,7 +150,7 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.GIT_INVOKE, action),
 
   // API Proxy
-  apiFetchStream: (requestId: string, url: string, options?: { method?: string; headers?: Record<string, string>; body?: string | object }): Promise<void> =>
+  apiFetchStream: (requestId: string, url: string, options?: { method?: string; headers?: Record<string, string>; body?: string | object; profileId?: string }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.API_FETCH_STREAM, requestId, url, options || {}),
   apiAbortStream: (requestId: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.API_ABORT_STREAM, requestId),
@@ -181,7 +199,7 @@ const electronAPI = {
   },
 
   // Non-streaming fetch via main process (avoids CORS)
-  apiFetch: (url: string, options?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<string | null> =>
+  apiFetch: (url: string, options?: { method?: string; headers?: Record<string, string>; body?: string; withProfileHeaders?: boolean; profileId?: string }): Promise<string | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.API_FETCH, url, options || {}),
 
   // App / Platform Info

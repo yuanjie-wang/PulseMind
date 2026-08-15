@@ -304,6 +304,19 @@ Read the content of a knowledge base file or compiled wiki page.
 - Check the \`knowledge_search\` output carefully: it shows which path and type to use
 - Compiled files may have multiple wiki pages — each one has a different path`,
 
+  experience_read: `## experience_read
+
+Read the full content of a past workflow experience when it is relevant to the current task.
+
+### Parameters
+- **name** (required) — The experience name, exactly as shown in the Experience Index
+
+### Guidelines
+- Use when the Experience Index mentions an experience relevant to the current task
+- The experience contains structured sections: Background / Process / Problems / Optimization
+- Apply the Optimization section as a lesson when performing the same kind of task
+- Reading an experience is the only way its full content becomes available — the index only shows titles`,
+
   spawn_agent: `## spawn_agent
 
 Select the **most suitable sub-agent** from the available list and delegate a task to it.

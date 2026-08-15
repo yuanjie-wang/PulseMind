@@ -6,6 +6,7 @@ import type { ToolManager } from '../tools/ToolManager'
 import type { SkillManager } from '../skills/SkillManager'
 import type { MemoryManager } from '../memory/MemoryManager'
 import type { KnowledgeManager } from '../knowledge/KnowledgeManager'
+import type { ExperienceManager } from '../experiences/ExperienceManager'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
 
@@ -28,6 +29,7 @@ interface UseConversationEngineOptions {
   model: string
   maxTokens: number
   contextLength?: number
+  profileId?: string
   adapter: LlmAdapter
   myName: string
   soul: string
@@ -41,6 +43,7 @@ interface UseConversationEngineOptions {
   skillManager: SkillManager
   memoryManager: MemoryManager
   knowledgeManager: KnowledgeManager
+  experienceManager?: ExperienceManager
   skillsDir: string
   platformInfo: PlatformInfo | undefined
   /** Called when a non-active engine transitions to 'completed' status. */
@@ -54,7 +57,6 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     toolManager, skillManager, memoryManager, knowledgeManager,
     skillsDir, platformInfo, onBackgroundComplete, onSkillStateChange, hooks
   } = options
-
   // ── Engine state ──
   const enginesRef = useRef<Map<string, AgentEngine>>(new Map())
   const activeEngineIdRef = useRef<string>('')
@@ -76,6 +78,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     model: options.model,
     maxTokens: options.maxTokens,
     contextLength: options.contextLength,
+    profileId: options.profileId,
     adapter: options.adapter,
     myName: options.myName,
     soul: options.soul,
@@ -84,6 +87,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     skillManager,
     memoryManager,
     knowledgeManager,
+    experienceManager: options.experienceManager,
     platformInfo: platformInfo || undefined,
     workspaceDir: options.workspaceDir,
     skillsDir,
@@ -142,6 +146,11 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     return engine
   }, [buildEngineOptions])
 
+  /** Mark a conversation as the active one (keeps the ref in sync with callers). */
+  const activateEngine = useCallback((convId: string) => {
+    activeEngineIdRef.current = convId
+  }, [])
+
   // ── Keep all engines' options in sync when global deps change ──
   const prevOptionsRef = useRef<Partial<typeof options>>({})
   const optionsChanged =
@@ -149,6 +158,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     prevOptionsRef.current.baseURL !== options.baseURL ||
     prevOptionsRef.current.model !== options.model ||
     prevOptionsRef.current.maxTokens !== options.maxTokens ||
+    prevOptionsRef.current.profileId !== options.profileId ||
     prevOptionsRef.current.myName !== options.myName ||
     prevOptionsRef.current.soul !== options.soul ||
     prevOptionsRef.current.yourName !== options.yourName ||
@@ -160,6 +170,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       baseURL: options.baseURL,
       model: options.model,
       maxTokens: options.maxTokens,
+      profileId: options.profileId,
       myName: options.myName,
       soul: options.soul,
       yourName: options.yourName,
@@ -179,6 +190,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     }
   }, [
     options.apiKey, options.baseURL, options.model, options.maxTokens,
+    options.profileId,
     options.myName, options.soul, options.yourName, options.yoloMode,
     options.locale, buildEngineOptions
   ])
@@ -235,6 +247,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     retryingConvIds,
     getOrCreateEngine,
     buildEngineOptions,
+    activateEngine,
     // State setters exposed for external load/restore operations
     setMessages,
     setAgentStatus,

@@ -76,13 +76,6 @@ export default function RectFrame({ annotation, childAnnotations, isSelected, is
   const settings = useSettings()
   const isDark = settings.settings.theme === 'dark'
 
-  if (!bb) return null
-
-  const screenX = bb.x * zoom + panX
-  const screenY = bb.y * zoom + panY
-  const screenW = bb.width * zoom
-  const screenH = bb.height * zoom
-
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     onStartDrag?.(annotation.id, e)
@@ -95,6 +88,7 @@ export default function RectFrame({ annotation, childAnnotations, isSelected, is
 
   // Draw child annotations on per-rect clipped canvas
   useEffect(() => {
+    if (!bb) return
     const canvas = childCanvasRef.current
     if (!canvas) return
     const dpr = window.devicePixelRatio || 1
@@ -128,6 +122,13 @@ export default function RectFrame({ annotation, childAnnotations, isSelected, is
       }, i, zoom)
     }
   }, [childAnnotations, bb, zoom])
+
+  if (!bb) return null
+
+  const screenX = bb.x * zoom + panX
+  const screenY = bb.y * zoom + panY
+  const screenW = bb.width * zoom
+  const screenH = bb.height * zoom
 
   return (
     <div

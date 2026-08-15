@@ -625,9 +625,17 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     }
   }, [knowledgeManager])
 
-  // Wire up refs to avoid circular dependency between the two callbacks
-  runImportQueueRef.current = runImportQueue
-  runCompileQueueRef.current = runCompileQueue
+  // Wire up refs to avoid circular dependency between the two callbacks.
+  // Done in an effect (after render) so the refs hold the latest callbacks
+  // for event handlers, without mutating them during render. Writing refs in
+  // effects is the standard React pattern; the immutability rule flags it
+  // because the assigned callbacks are hook return values.
+  React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/immutability
+    runImportQueueRef.current = runImportQueue
+    // eslint-disable-next-line react-hooks/immutability
+    runCompileQueueRef.current = runCompileQueue
+  })
 
   /** Reset all knowledge: show confirmation, then clear everything */
   const handleReset = async (): Promise<void> => {
@@ -688,14 +696,25 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       isImporting: _importRunning,
       canCompile: knowledgeManager.canCompile,
     }
+    onStateChange(state)
+  }, [stats, knowledgeManager.canCompile, onStateChange])
+
+  React.useEffect(() => {
+    if (!onStateChange) return
+    const state: KnowledgePanelState = {
+      importProgress: _importRunning ? { current: _importCurrent, total: _importTotal } : null,
+      stats,
+      isImporting: _importRunning,
+      canCompile: knowledgeManager.canCompile,
+    }
     const key = JSON.stringify(state)
     if (key !== prevStateRef.current) {
+      // Ref is a mutable container by design; the immutability rule over-applies.
+      // eslint-disable-next-line react-hooks/immutability
       prevStateRef.current = key
       onStateChange(state)
     }
-  }, [stats, knowledgeManager.canCompile, onStateChange])
-
-  React.useEffect(() => { reportState() }, [reportState])
+  }, [reportState])
 
   /** Open the raw file content in a preview modal. */
   const handleOpenRaw = async (file: KnowledgeFile) => {

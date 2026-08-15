@@ -100,6 +100,14 @@ export const IPC_CHANNELS = {
   SKILLS_ENSURE_BUILT_IN: 'skills:ensure-built-in',
   SKILLS_CHANGED: 'skills:changed',
 
+  // ── Experiences ──
+  EXPERIENCES_LIST: 'experiences:list',
+  EXPERIENCES_SAVE: 'experiences:save',
+  EXPERIENCES_DELETE: 'experiences:delete',
+  EXPERIENCES_READ: 'experiences:read',
+  EXPERIENCES_TOUCH: 'experiences:touch',
+  EXPERIENCES_CHANGED: 'experiences:changed',
+
   // ── Terminal ──
   TERMINAL_EXECUTE: 'terminal:execute',
   TERMINAL_EXEC_SYNC: 'terminal:exec-sync',

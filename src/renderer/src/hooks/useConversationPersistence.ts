@@ -204,7 +204,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       // Move active conversation to top of list
       if (activeConversationKey) {
         const convId = String(activeConversationKey.description || activeConversationKey.toString())
-        bumpConversation(convId)
+      // bumpConversation is declared later via useCallback; this effect body
+      // runs after render when the binding is initialized. Stable identity
+      // (empty deps), so it does not need to be in the dependency list.
+      // eslint-disable-next-line react-hooks/immutability
+      bumpConversation(convId)
       }
     }
   }, [agentStatus, saveCurrentConversation])
@@ -432,6 +436,12 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     )
   }, [setConversations])
 
+  // ── Activate a conversation (state + ref kept in sync) ──
+  const activateConversation = useCallback((key: string) => {
+    setActiveConversationKey(key)
+    convIdRef.current = key
+  }, [setActiveConversationKey])
+
   return {
     // Conversation list
     conversations,
@@ -454,6 +464,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     renameConversation,
     clearAllConversations,
     togglePin,
-    bumpConversation
+    bumpConversation,
+    activateConversation
   }
 }

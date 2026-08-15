@@ -3,6 +3,7 @@ import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
+import { applyLlmRequestHook } from '../llm-hook'
 
 /**
  * Resolve ${VAR_NAME} patterns in a string using environment variables.
@@ -15,21 +16,48 @@ function resolveEnvVars(value: string): string {
   })
 }
 
+interface ApplyProfileHeadersOptions {
+  /**
+   * Only LLM requests should carry the profile's custom headers. Generic
+   * fetches (e.g. the webfetch tool, which can hit arbitrary public URLs)
+   * must never leak credentials like Authorization / x-api-key.
+   */
+  mergeProfileHeaders?: boolean
+  /**
+   * Profile id captured by the renderer when it froze the apiKey/baseURL
+   * for a request loop. Merging headers from the *then-active* profile keeps
+   * headers and credentials in sync even if the user switches profiles
+   * mid-loop. Falls back to the currently active profile when omitted.
+   */
+  profileId?: string
+}
+
 /**
- * Resolve env vars in the request headers, then merge the active profile's
- * custom headers over them (custom wins). Values may reference ${ENV_VAR}.
+ * Resolve env vars in the request headers, then merge a profile's custom
+ * headers over them (custom wins). Values may reference ${ENV_VAR}.
  * Blank-value headers are skipped so an empty UI row never clobbers a default.
+ * Merging is case-insensitive: a custom `authorization` replaces an existing
+ * `Authorization` instead of sending both headers.
  */
-async function applyProfileHeaders(headers?: Record<string, string>): Promise<Record<string, string> | undefined> {
-  const settings = await settingsStore.get()
-  const active = settings.profiles.find(p => p.id === settings.activeProfileId)
+async function applyProfileHeaders(headers?: Record<string, string>, opts: ApplyProfileHeadersOptions = {}): Promise<Record<string, string> | undefined> {
   const base: Record<string, string> = headers
     ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, resolveEnvVars(v)]))
     : {}
-  if (!active?.headers) return Object.keys(base).length ? base : headers
-  for (const [k, v] of Object.entries(active.headers)) {
+  if (opts.mergeProfileHeaders === false) return Object.keys(base).length ? base : headers
+  const settings = await settingsStore.get()
+  const profile = settings.profiles.find(p => p.id === opts.profileId) ?? settings.profiles.find(p => p.id === settings.activeProfileId)
+  if (!profile?.headers) return Object.keys(base).length ? base : headers
+  const seen = new Map<string, string>() // lowercase header name -> actual key in `base`
+  for (const k of Object.keys(base)) seen.set(k.toLowerCase(), k)
+  for (const [k, v] of Object.entries(profile.headers)) {
     if (!v.trim()) continue
+    const existingKey = seen.get(k.toLowerCase())
+    if (existingKey && existingKey !== k) {
+      delete base[existingKey]
+      seen.delete(k.toLowerCase())
+    }
     base[k] = resolveEnvVars(v)
+    seen.set(k.toLowerCase(), k)
   }
   return base
 }
@@ -147,6 +175,7 @@ export function registerApiProxyHandlers(): void {
         method?: string
         headers?: Record<string, string>
         body?: string | Record<string, unknown>
+        profileId?: string
       }
     ) => {
       const webContents = getSender(event)
@@ -172,12 +201,26 @@ export function registerApiProxyHandlers(): void {
       try {
         // Stringify body in main process so the renderer isn't blocked on large JSON.
         const body = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
+        const mergedHeaders = await applyProfileHeaders(options.headers, { profileId: options.profileId })
+        // llm-request hook: only LLM requests carry a profileId (webfetch does not).
+        let finalUrl = url
+        let finalBody = body as string | undefined
+        let finalHeaders = mergedHeaders
+        if (options.profileId !== undefined) {
+          const hookApplied = await applyLlmRequestHook(url, mergedHeaders, body, {
+            profileId: options.profileId,
+            requestId,
+          })
+          finalUrl = hookApplied.url
+          finalBody = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
+          finalHeaders = hookApplied.headers
+        }
         const resolvedOptions: { method?: string; headers?: Record<string, string>; body?: string } = {
           ...options,
-          body: body as string | undefined,
-          headers: await applyProfileHeaders(options.headers)
+          body: finalBody,
+          headers: finalHeaders
         }
-        const response = await fetchWithRetry(url, resolvedOptions, controller.signal, maxRetries, retryCb)
+        const response = await fetchWithRetry(finalUrl, resolvedOptions, controller.signal, maxRetries, retryCb)
 
         console.log(`[API-Proxy] Response status: ${response.status} for ${requestId}`)
 
@@ -276,7 +319,7 @@ export function registerApiProxyHandlers(): void {
   })
 
   // Simple non-streaming fetch for small requests (title generation, etc.)
-  ipcMain.handle(IPC_CHANNELS.API_FETCH, async (_event, url: string, options: { method?: string; headers?: Record<string, string>; body?: string }) => {
+  ipcMain.handle(IPC_CHANNELS.API_FETCH, async (_event, url: string, options: { method?: string; headers?: Record<string, string>; body?: string; withProfileHeaders?: boolean; profileId?: string }) => {
     console.log(`[API-Proxy] Simple fetch: POST ${url}`)
     try { await validateRequestUrl(url) } catch (e) {
       console.error(`[API-Proxy] SSRF blocked: ${url}`)
@@ -288,12 +331,29 @@ export function registerApiProxyHandlers(): void {
       const timeout = setTimeout(() => controller.abort(new Error('Request timed out after 30s')), 30_000)
       try {
         const body2 = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
+        const mergedHeaders2 = await applyProfileHeaders(options.headers, {
+          mergeProfileHeaders: options.withProfileHeaders === true,
+          profileId: options.profileId
+        })
+        // llm-request hook: LLM requests opt in via withProfileHeaders (webfetch does not).
+        let finalUrl2 = url
+        let finalBody2 = body2 as string | undefined
+        let finalHeaders2 = mergedHeaders2
+        if (options.withProfileHeaders === true || options.profileId !== undefined) {
+          const hookApplied = await applyLlmRequestHook(url, mergedHeaders2, body2, {
+            profileId: options.profileId,
+            requestId: 'simple',
+          })
+          finalUrl2 = hookApplied.url
+          finalBody2 = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
+          finalHeaders2 = hookApplied.headers
+        }
         const resolvedOptions2: { method?: string; headers?: Record<string, string>; body?: string } = {
           ...options,
-          body: body2 as string | undefined,
-          headers: await applyProfileHeaders(options.headers)
+          body: finalBody2,
+          headers: finalHeaders2
         }
-        const response = await fetchWithRetry(url, resolvedOptions2, controller.signal)
+        const response = await fetchWithRetry(finalUrl2, resolvedOptions2, controller.signal)
         if (!response.ok) {
           const errText = await response.text().catch(() => 'Unknown error')
           console.error(`[API-Proxy] Simple fetch error: HTTP ${response.status} - ${errText.slice(0, 200)}`)

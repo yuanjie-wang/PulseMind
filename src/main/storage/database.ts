@@ -190,6 +190,21 @@ function createTables(): void {
       processed_conversations TEXT NOT NULL DEFAULT '[]'
     );
 
+    CREATE TABLE IF NOT EXISTS experiences (
+      id                    TEXT PRIMARY KEY,
+      name                  TEXT UNIQUE NOT NULL,
+      title                 TEXT NOT NULL,
+      description           TEXT NOT NULL DEFAULT '',
+      category              TEXT NOT NULL DEFAULT 'general',
+      source_conversation_id TEXT,
+      created_at            TEXT NOT NULL,
+      last_used_at          TEXT,
+      use_count             INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_experiences_created_at ON experiences(created_at);
+    CREATE INDEX IF NOT EXISTS idx_experiences_last_used ON experiences(last_used_at);
+
     CREATE TABLE IF NOT EXISTS subagent_profiles (
       id                  TEXT PRIMARY KEY,
       name                TEXT NOT NULL,

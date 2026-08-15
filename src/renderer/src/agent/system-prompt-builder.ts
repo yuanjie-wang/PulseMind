@@ -17,6 +17,7 @@ export interface BuildSystemPromptParams {
   conversationId?: string
   skillAppendix: string | null
   plan: Plan | null
+  experienceManager?: import('../experiences/ExperienceManager').ExperienceManager
 }
 
 export interface BuildSystemPromptResult {
@@ -110,21 +111,19 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
       }
     }
 
-    // ── Wiki knowledge context (disabled for weak models) ──────────
-    // const km = opts.knowledgeManager
-    // if (km) {
-    //   const currentVersion = km.wikiVersion
-    //   if (wikiContextSnapshot && wikiContextVersion === currentVersion) {
-    //     parts.push(wikiContextSnapshot)
-    //   } else {
-    //     const wikiContext = await km.buildWikiContext()
-    //     if (wikiContext) {
-    //       wikiContextSnapshot = wikiContext
-    //       wikiContextVersion = currentVersion
-    //       parts.push(wikiContext)
-    //     }
-    //   }
-    // }
+    // ── Wiki knowledge context: presence hint only (no index injection) ──
+    // Full wiki index is intentionally NOT injected to keep the prompt lean.
+    // The model is told the knowledge base exists so it knows to look it up
+    // via knowledge_search / knowledge_read when relevant.
+    parts.push(`## Knowledge Base
+
+You have a local knowledge base (compiled wiki) of project documents and past compiled knowledge. It is NOT shown here — look things up on demand with the knowledge_search and knowledge_read tools when relevant.`)
+
+    // ── Experience index (progressive disclosure: titles only) ───────
+    if (params.experienceManager) {
+      const experienceIndex = await params.experienceManager.buildIndex()
+      if (experienceIndex) parts.push(experienceIndex)
+    }
 
     // ── Tool & renderer appendix ─────────────────────────────────────
     const toolManager = opts.toolManager

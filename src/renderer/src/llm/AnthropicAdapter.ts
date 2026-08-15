@@ -334,7 +334,8 @@ export const anthropicAdapter: LlmAdapter = {
       const responseText = await window.electronAPI.apiFetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        withProfileHeaders: true
       })
       if (!responseText) return null
 

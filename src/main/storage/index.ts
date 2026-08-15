@@ -7,6 +7,7 @@ export const DATA_DIR = join(homedir(), '.pulsemind')
 export const CONVERSATIONS_DIR = join(DATA_DIR, 'conversations')
 export const SETTINGS_PATH = join(DATA_DIR, 'settings.json')
 export const SKILLS_DIR = join(DATA_DIR, 'skills')
+export const EXPERIENCES_DIR = join(DATA_DIR, 'experiences')
 export const KNOWLEDGE_DIR = join(DATA_DIR, 'knowledge')
 export const KNOWLEDGE_RAW_DIR = join(KNOWLEDGE_DIR, 'raw')
 export const KNOWLEDGE_WIKI_DIR = join(KNOWLEDGE_DIR, 'wiki')
@@ -70,7 +71,7 @@ export function joinDataPath(...segments: string[]): string {
 
 export function ensureDataDir(): void {
   // Create parent directories if they don't exist
-  for (const dir of [DATA_DIR, SKILLS_DIR, KNOWLEDGE_DIR, KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR, KNOWLEDGE_SCHEMA_DIR, WORKSPACE_DIR, HOOKS_DIR, join(DATA_DIR, 'db'), join(DATA_DIR, 'mcp'), join(DATA_DIR, 'memory'), join(DATA_DIR, 'tmp'), join(DATA_DIR, 'tmp', 'trunc')]) {
+  for (const dir of [DATA_DIR, SKILLS_DIR, EXPERIENCES_DIR, KNOWLEDGE_DIR, KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR, KNOWLEDGE_SCHEMA_DIR, WORKSPACE_DIR, HOOKS_DIR, join(DATA_DIR, 'db'), join(DATA_DIR, 'mcp'), join(DATA_DIR, 'memory'), join(DATA_DIR, 'tmp'), join(DATA_DIR, 'tmp', 'trunc')]) {
     if (!existsSync(dir)) {
       try {
         mkdirSync(dir, { recursive: true })

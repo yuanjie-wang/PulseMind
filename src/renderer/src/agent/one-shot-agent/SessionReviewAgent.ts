@@ -5,6 +5,7 @@ import type { ExtractedMemory } from './MemoryExtractionAgent'
 export interface SessionReviewInput {
   sessionSummary: string
   existingExperiencesText?: string
+  existingMemoriesText?: string
   locale?: string
 }
 
@@ -32,6 +33,8 @@ Extract important facts, decisions, and user preferences. Each memory must have:
 - "type": one of "fact", "decision", "preference"
 - "category": one of "code", "architecture", "user_pref", "decision", "general"
 
+Important: If existing memories are provided, ONLY output memories that are NOT already covered by them. Skip any fact, decision, or preference that duplicates or substantially overlaps an existing memory.
+
 Also generate:
 - "summary": a short phrase (max 200 chars) describing this conversation
 - "keywords": array of search keywords (max 10, prefer Chinese if conversation is in Chinese)
@@ -54,6 +57,8 @@ An experience has:
 
 If this conversation doesn't contain any worthwhile lessons, set "experience" to null.
 
+Important: If existing experiences are provided, ONLY output an experience that is NOT already covered by them. If the insight duplicates an existing experience, set "experience" to null.
+
 ## Output Format
 Return ONLY a JSON object with these keys:
 {
@@ -69,13 +74,17 @@ Return ONLY a JSON object with these keys:
       ? '请用中文编写 experience 的 content。'
       : 'Write the experience content in English.'
 
+    const memoriesSection = input.existingMemoriesText
+      ? `\n\nEXISTING MEMORIES (do NOT output a memory that duplicates any of these):\n${input.existingMemoriesText}`
+      : ''
+
     const existingSection = input.existingExperiencesText
       ? `\n\nEXISTING EXPERIENCES (check if new insight relates to or duplicates any of these):\n${input.existingExperiencesText}`
       : ''
 
     return [{
       role: 'user',
-      content: `Review this conversation and extract memories + optional experience.\n${langInstruction}${existingSection}\n\n${input.sessionSummary}`
+      content: `Review this conversation and extract memories + optional experience.\n${langInstruction}${memoriesSection}${existingSection}\n\n${input.sessionSummary}`
     }]
   }
 

@@ -337,12 +337,10 @@ interface FileRefChipProps {
 }
 
 export function FileRefChip({ text, textRenderer, xmarkdownStyle }: FileRefChipProps): React.ReactElement {
-  // Check if text contains any file/folder references or ![](file://...) patterns
-  FILE_REF_RE.lastIndex = 0
-  MD_IMAGE_FILE_RE.lastIndex = 0
-  MD_FILE_LINK_RE.lastIndex = 0
-  MD_HTTP_LINK_RE.lastIndex = 0
-  const hasRefs = FILE_REF_RE.test(text) || MD_IMAGE_FILE_RE.test(text) || MD_FILE_LINK_RE.test(text) || MD_HTTP_LINK_RE.test(text)
+  // Check if text contains any file/folder references or ![](file://...) patterns.
+  // Use match() instead of test(): with the global flag, test() carries lastIndex
+  // state between calls, whereas match() always starts from index 0.
+  const hasRefs = !!text.match(FILE_REF_RE) || !!text.match(MD_IMAGE_FILE_RE) || !!text.match(MD_FILE_LINK_RE) || !!text.match(MD_HTTP_LINK_RE)
 
   // No refs — render as before
   if (!hasRefs) {

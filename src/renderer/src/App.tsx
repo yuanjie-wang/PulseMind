@@ -113,6 +113,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // Stable refs for memory and knowledge managers (set after useChatController is instantiated)
   const memoryManagerRef = useRef<MemoryManager | null>(null)
   const knowledgeManagerRef = useRef<KnowledgeManager | null>(null)
+  const experienceManagerRef = useRef<import('./experiences/ExperienceManager').ExperienceManager | null>(null)
 
   // Ref for conversationId so the afterSession hook can access it
   // (hooks useMemo runs before useChatController's return values are destructured)
@@ -129,36 +130,27 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
       // Auto-capture memories/summary when session ends (completed, error, or cancelled)
       if (memoryManagerRef.current && apiKey) {
         const mm = memoryManagerRef.current
-        const messages = ctx.messages.map(m => {
-          const parts: string[] = []
-          for (const b of m.contentBlocks) {
-            if (b.type === 'text') {
-              parts.push((b as { type: 'text'; text: string }).text)
-            } else if (b.type === 'tool_use') {
-              const tb = b as { type: 'tool_use'; name: string; input: Record<string, unknown> }
-              const inputStr = JSON.stringify(tb.input).slice(0, 200)
-              parts.push(`[tool_use: ${tb.name}(${inputStr})]`)
-            } else if (b.type === 'tool_result') {
-              const rb = b as { type: 'tool_result'; content: string; is_error?: boolean }
-              const contentStr = (rb.content || '').slice(0, 300)
-              parts.push(`[tool_result${rb.is_error ? ' (error)' : ''}: ${contentStr}]`)
-            }
-          }
-          return { role: m.role, content: parts.join('\n') }
-        }).filter(m => m.content)
+        const messages = ctx.messages.filter(m => m.contentBlocks?.some(b => b.type === 'text'))
 
         if (messages.length > 0) {
-          // Fire-and-forget — single LLM call extracts memories + experience
+          // Fire-and-forget — single LLM call extracts memories + experience.
+          // MemoryManager flattens contentBlocks to text-only messages and
+          // applies the incremental cursor internally.
           mm.extractAndSaveAll(messages, apiKey, baseURL, adapter, model, conversationIdRef.current ?? undefined, settings.locale).then(result => {
             if (result.memories > 0) {
               console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
             }
-            // Save extracted experience to knowledge base (raw/)
-            if (result.experienceContent && knowledgeManagerRef.current) {
-              knowledgeManagerRef.current.saveExperience(result.experienceContent, conversationIdRef.current ?? 'session', result.experienceTitle ?? undefined).then((kf) => {
-                console.log('[SessionReview] Experience saved to knowledge base')
-                if (kf) knowledgeManagerRef.current?.compileFile(kf.id).catch((err: unknown) => console.warn('[SessionReview] Failed to compile experience:', err))
-              })
+            // Save extracted experience as a standalone SKILL (not into the wiki)
+            if (result.experienceContent && experienceManagerRef.current) {
+              experienceManagerRef.current.save({
+                title: result.experienceTitle ?? 'Untitled experience',
+                description: result.experienceContent.slice(0, 120),
+                content: result.experienceContent,
+                category: result.experienceCategory ?? 'general',
+                sourceConversationId: conversationIdRef.current ?? undefined
+              }).then(() => {
+                console.log('[SessionReview] Experience saved to experience skill library')
+              }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
             }
           })
         }
@@ -213,6 +205,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     refreshSkillsFromDisk,
     memoryManager,
     knowledgeManager,
+    experienceManager,
     activeLoopConvIds,
     retryingConvIds,
     togglePin,
@@ -225,6 +218,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     model,
     maxTokens,
     contextLength,
+    profileId: settings.activeProfileId,
     adapter,
     myName: settings.myName,
     soul: settings.soul,
@@ -239,6 +233,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // Wire refs for hook access
   memoryManagerRef.current = memoryManager
   knowledgeManagerRef.current = knowledgeManager
+  experienceManagerRef.current = experienceManager
 
   // Keep conversationId ref in sync for the afterSession hook
   conversationIdRef.current = activeConversationKey

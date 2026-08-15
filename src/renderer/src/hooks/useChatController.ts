@@ -15,6 +15,7 @@ interface UseChatControllerOptions {
   model: string
   maxTokens: number
   contextLength?: number
+  profileId?: string
   adapter: LlmAdapter
   myName: string
   soul: string
@@ -151,10 +152,10 @@ export function useChatController(options: UseChatControllerOptions) {
 
         for (const conv of candidates.slice(0, 10)) {
           try {
-            // Cheap pre-check first: if this conversation was already fully
-            // extracted, skip loading its messages entirely. messageCount comes
-            // from the list query (COUNT(*) over messages), so it equals
-            // getConversation().messages.length without the full row fetch.
+            // Cheap coarse pre-check (fast path only): messageCount counts ALL
+            // message rows, so processedCount >= messageCount implies the
+            // conversation is fully extracted. The authoritative incremental
+            // cursor check happens inside MemoryManager.extractAndSaveExperiences.
             const processedCount = await window.electronAPI.getConversationExperienceExtractedCount(conv.id)
             if (processedCount >= conv.messageCount) {
               processedConvRef.current.add(conv.id)
@@ -189,15 +190,29 @@ export function useChatController(options: UseChatControllerOptions) {
               }
             })
 
+            let toolCallCount = 0
+            let toolErrorCount = 0
+            for (const m of conversation.messages) {
+              for (const b of m.contentBlocks ?? []) {
+                if (b.type === 'tool_use') toolCallCount++
+                else if (b.type === 'tool_result' && (b as any).is_error) toolErrorCount++
+              }
+            }
+
             const result = await managers.memoryManager.extractAndSaveExperiences(
               sessionMessages, apiKey, options.baseURL, options.adapter, options.model,
-              conv.id, options.locale
+              conv.id, options.locale, { toolCallCount, toolErrorCount }
             )
 
             processedConvRef.current.add(conv.id)
             if (result.content) {
-              const kf = await managers.knowledgeManager.saveExperience(result.content, conv.id, result.title ?? undefined)
-              if (kf) managers.knowledgeManager.compileFile(kf.id).catch((err: unknown) => console.warn('[experience] Failed to compile:', err))
+              await managers.experienceManager.save({
+                title: result.title ?? 'Untitled experience',
+                description: result.content.slice(0, 120),
+                content: result.content,
+                category: result.category ?? 'general',
+                sourceConversationId: conv.id
+              })
             }
           } catch (convErr) {
             console.warn('[experience] Failed to process conversation ' + conv.id + ':', convErr)
@@ -254,9 +269,8 @@ export function useChatController(options: UseChatControllerOptions) {
         const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
         convId = `conv_${ts}`
         persistence.addConversation({ key: convId, label: '新对话' }, 'prepend')
-        engine.activeEngineIdRef.current = convId
-        persistence.convIdRef.current = convId
-        persistence.setActiveConversationKey(convId)
+        engine.activateEngine(convId)
+        persistence.activateConversation(convId)
       } else {
         window.electronAPI.touchConversation(convId).catch(() => {})
         persistence.bumpConversation(convId)
@@ -331,6 +345,7 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     importError: managers.importError,
     memoryManager: managers.memoryManager,
     knowledgeManager: managers.knowledgeManager,
+    experienceManager: managers.experienceManager,
     activeLoopConvIds: engine.activeLoopConvIds,
     retryingConvIds: engine.retryingConvIds,
     togglePin: persistence.togglePin,

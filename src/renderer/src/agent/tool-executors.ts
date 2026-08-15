@@ -953,8 +953,27 @@ export class ToolExecutor {
             t.exitCode = 1
           }
         }
+      } else if (t.name === 'experience_read') {
+        const name = String(t.input.name || '')
+        if (!name) {
+          t.output = 'Error: name is required.'; this.addToolResult(t.id, 'Error: name is required.', true); t.exitCode = 1
+        } else {
+          try {
+            const content = await window.electronAPI.readExperienceRecord(name)
+            if (content) {
+              // Touching records that the experience was actually used — feeds the LRU eviction
+              window.electronAPI.touchExperienceRecord(name).catch(() => {})
+              t.output = content.slice(0, UI_PREVIEW_MAX); this.addToolResult(t.id, content, false)
+            } else {
+              t.output = `Experience "${name}" not found.`; this.addToolResult(t.id, `Experience "${name}" not found.`, false)
+            }
+            t.exitCode = 0
+          } catch {
+            t.output = `Error reading experience "${name}".`; this.addToolResult(t.id, `Error reading experience "${name}".`, true)
+            t.exitCode = 1
+          }
+        }
       } else {
-        // Default: shell execution
         const platform = this.opts.platformInfo?.platform || ''
         const command = buildCommandFromSkillInput(t.name, t.input || {}, platform, this.opts.platformInfo?.ripgrepPath)
         const cwd = String(t.input?.cwd || '')

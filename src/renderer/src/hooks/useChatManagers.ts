@@ -3,6 +3,7 @@ import { ToolManager } from '../tools/ToolManager'
 import { SkillManager } from '../skills/SkillManager'
 import { MemoryManager } from '../memory/MemoryManager'
 import { KnowledgeManager } from '../knowledge/KnowledgeManager'
+import { ExperienceManager } from '../experiences/ExperienceManager'
 import type { ToolState } from '../tools/types'
 import type { SkillState } from '../skills/types'
 import { BUILT_IN_SKILLS } from '../skills/built-in-skills'
@@ -58,6 +59,7 @@ export function useChatManagers(options: UseChatManagersOptions) {
   // Stable manager instances
   const memoryManagerRef = useRef<MemoryManager>(new MemoryManager())
   const knowledgeManagerRef = useRef<KnowledgeManager>(new KnowledgeManager())
+  const experienceManagerRef = useRef<ExperienceManager>(new ExperienceManager())
   const toolManagerRef = useRef<ToolManager>(new ToolManager())
   const skillManagerRef = useRef<SkillManager>(new SkillManager())
 
@@ -117,6 +119,14 @@ export function useChatManagers(options: UseChatManagersOptions) {
       }
     }
     loadPrefs()
+
+    // One-time migration: bring the most recent knowledge-base experiences
+    // into the experience skill library (legacy experience files never re-enter the wiki)
+    experienceManagerRef.current.migrateFromKnowledge(knowledgeManagerRef.current)
+      .then(({ migrated }) => {
+        if (migrated > 0) console.log(`[experience] Migrated ${migrated} experience(s) from knowledge base`)
+      })
+      .catch((e) => console.warn('[experience] Knowledge migration failed:', e))
   }, [])
 
   // ── Backfill skill keywords when API key becomes available ──
@@ -284,6 +294,7 @@ export function useChatManagers(options: UseChatManagersOptions) {
   return {
     memoryManager: memoryManagerRef.current,
     knowledgeManager: knowledgeManagerRef.current,
+    experienceManager: experienceManagerRef.current,
     toolManager: toolManagerRef.current,
     skillManager: skillManagerRef.current,
     tools,

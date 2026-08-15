@@ -4,6 +4,7 @@ export interface ExperienceInput {
   conversationText: string
   existingExperiencesText: string
   locale?: string
+  stats?: { toolCallCount: number; toolErrorCount: number }
 }
 
 export interface ExperienceOutput {
@@ -24,9 +25,24 @@ export class ExperienceAgent extends OneShotAgent<ExperienceInput, ExperienceOut
       ? '请用中文编写经验内容。'
       : 'Write the experience content in English.'
 
+    const statsLine = input.stats
+      ? `\nConversation statistics: ${input.stats.toolCallCount} tool call(s), ${input.stats.toolErrorCount} tool error(s).`
+      : ''
+
     const prompt = `Analyze the following conversation and determine if it contains any of:
 - Workflow improvements, shortcuts, or process optimizations worth preserving as a reusable experience
 - User complaints, frustrations, or pain points — negative feedback indicates issues worth recording as lessons learned
+
+QUALIFICATION GATE — ONLY extract an experience if the conversation contains at least ONE of these four situations:
+1. A complex task completed successfully (5+ tool calls were made)
+2. The agent hit a wall (failed attempts, errors, dead ends) and eventually found a viable path — the struggle itself is the lesson
+3. The user corrected the agent's behavior or approach — the correction is worth remembering
+4. A non-trivial workflow was discovered — a multi-step process, ordering, or technique that would save time next time
+
+A casual chat, a simple question answered in one exchange, a one-off decision, or a task with no tools and no friction does NOT qualify.
+If the conversation does NOT match any of the four situations, respond with:
+Content: None
+${statsLine}
 
 Focus on whether there are ways to shorten or optimize repetitive steps, or whether the user expressed dissatisfaction that reveals a recurring problem.
 
@@ -56,10 +72,10 @@ ${langInstruction}
 
 ${input.existingExperiencesText}
 
-If the new insight is already well-covered by an existing experience, respond with:
+STRICT DEDUPLICATION RULE: Before writing a new experience, carefully compare your insight against EVERY existing experience listed above. If the same optimization, lesson, or pain point is already covered — even with different wording — respond with:
 Content: None
 
-Otherwise, provide a unique experience.
+Only provide a NEW, genuinely distinct experience. Duplicates will be rejected.
 
 Respond in this exact format:
 Title: <title>

@@ -138,6 +138,7 @@ export interface AgentEngineOptions {
   model: string
   maxTokens: number
   contextLength?: number
+  profileId?: string
   myName: string
   soul: string
   yourName: string
@@ -149,6 +150,7 @@ export interface AgentEngineOptions {
   platformInfo?: PlatformInfo
   memoryManager?: MemoryManager
   knowledgeManager?: KnowledgeManager
+  experienceManager?: import('../experiences/ExperienceManager').ExperienceManager
   hooks?: HooksConfig
   onSkillStateChange?: () => void
   yoloMode?: boolean
@@ -425,6 +427,7 @@ export class AgentEngine {
       conversationId: opts.conversationId,
       skillAppendix: this.skillAppendix,
       plan: this.planManager.plan,
+      experienceManager: this.opts.experienceManager,
     })
     this.memoryContextSnapshot = spResult.memoryContextSnapshot
     this.wikiContextSnapshot = spResult.wikiContextSnapshot
@@ -660,7 +663,7 @@ export class AgentEngine {
 
       // console.log(`[AgentEngine] POST body: ${(resolvedBody as any).messages?.length ?? 0} messages`)
 
-      await window.electronAPI.apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody })
+      await window.electronAPI.apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody, profileId: this.opts.profileId })
 
       // Await the stream-done IPC event. The main process always sends either
       // API_STREAM_DONE or API_STREAM_ERROR, and both resolve streamDonePromise.
@@ -1429,12 +1432,14 @@ export class AgentEngine {
     const memoryTools = tools.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
     const knowledgeTools = tools.filter(t => isKnowledgeTool(t.name))
+    const isExperienceTool = (name: string): boolean => name === 'experience_read'
+    const experienceTools = tools.filter(t => isExperienceTool(t.name))
     const isMCPTool = (name: string): boolean => this.mcpToolOwner.has(name)
     // Gated (requireApproval) MCP tools behave like otherTools: auto-executed only in
     // YOLO mode, otherwise they wait for user approval in handleToolUseResponse.
     const gatedMcpTools = tools.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
-    const otherTools = tools.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user')
+    const otherTools = tools.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user')
     const isYoloMode = !!this.opts.yoloMode || !!this.spawnSystemPrompt
 
     try {
@@ -1459,6 +1464,7 @@ export class AgentEngine {
       }
       if (memoryTools.length > 0) for (const t of memoryTools) await this.toolExecutor.execOtherTool(t)
       if (knowledgeTools.length > 0) for (const t of knowledgeTools) await this.toolExecutor.execOtherTool(t)
+      if (experienceTools.length > 0) for (const t of experienceTools) await this.toolExecutor.execOtherTool(t)
       if (isYoloMode && otherTools.length > 0) { for (const t of otherTools) await this.toolExecutor.execOtherTool(t) }
     } catch (err) {
       this.isAutoExecuting = false
@@ -1515,18 +1521,20 @@ export class AgentEngine {
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
     const knowledgeTools = toolUses.filter(t => isKnowledgeTool(t.name))
+    const isExperienceTool = (name: string): boolean => name === 'experience_read'
+    const experienceTools = toolUses.filter(t => isExperienceTool(t.name))
     const isMCPTool = (name: string): boolean => this.mcpToolOwner.has(name)
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpAutoTools = toolUses.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
-    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user')
+    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user')
 
     const isYoloMode = !!opts.yoloMode || !!this.spawnSystemPrompt
 
     this.toolUseBlocks = toolUses
     this.pendingToolIds = new Set(toolUses.map(t => t.id))
     this.isAutoExecuting = true
-    for (const t of [...readOnlyTools, ...writeEditTools, ...systemTools, ...memoryTools, ...knowledgeTools, ...mcpAutoTools]) t.status = 'running'
+    for (const t of [...readOnlyTools, ...writeEditTools, ...systemTools, ...memoryTools, ...knowledgeTools, ...experienceTools, ...mcpAutoTools]) t.status = 'running'
     for (const t of askUserTools) t.status = 'running'
     // Gated MCP tools auto-execute in YOLO mode (incl. sub-agents); in mixed mode
     // they stay pending until the user approves.
@@ -1879,7 +1887,7 @@ export class AgentEngine {
   private nanoCompact(messages: AgentMessage[]): AgentMessage[] {
     const TIER_MAP: Record<string, number> = {
       exec: 1, search: 1, find: 1, list_dir: 1,
-      read: 2, knowledge_read: 2, knowledge_search: 2,
+      read: 2, knowledge_read: 2, knowledge_search: 2, experience_read: 2,
       memory_search: 2, memory_save: 2, conversation_search: 2, tool_result_search: 2,
       spawn_agent: 2, edit: 2, write: 2, install: 2, pick_skill: 2, pick_tool: 2, webfetch: 2
     }

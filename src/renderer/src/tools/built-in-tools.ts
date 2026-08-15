@@ -532,6 +532,27 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     availability: 'gated'
   },
 
+  // ── experience_read ────────────────────────────────────────────────
+  {
+    name: 'experience_read',
+    description: 'Read the full content of a past workflow experience (SKILL.md) when it is relevant to the current task.',
+    category: 'experience',
+    triggers: ['experience', 'lesson', 'past experience', '之前经验', '历史经验'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'The name of the experience to read (from the Experience Index).'
+        }
+      },
+      required: ['name']
+    },
+    instructions: toolInstructions.experience_read,
+    builtIn: true,
+    availability: 'gated'
+  },
+
   // ── spawn_agent ────────────────────────────────────────────────────
   {
     name: 'spawn_agent',

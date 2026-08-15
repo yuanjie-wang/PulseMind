@@ -68,6 +68,9 @@ const FADE_MS = 350
 const OVERLAP_MS = 300
 const MIN_SPLASH_MS = 1500
 const MAX_SPLASH_MS = 8000
+// How often to re-check whether the main window is ready before fading the
+// splash. Holds the splash across slow launch hooks instead of leaving a gap.
+const MAIN_WINDOW_CHECK_MS = 50
 let splashCreatedAt: number | null = null
 let splashShownAt: number | null = null
 let fadeTimer: ReturnType<typeof setTimeout> | null = null
@@ -123,6 +126,14 @@ function scheduleSplashFade(): void {
         scheduleSplashFade()
         return
       }
+    } else if (!mainWindow || mainWindow.isDestroyed()) {
+      // Splash painted but the main window isn't created yet (slow launch
+      // hooks). Hold the splash instead of fading to a black gap; re-check
+      // shortly. Gives up after MAX_SPLASH_MS as a safety valve.
+      if (splashCreatedAt !== null && Date.now() - splashCreatedAt < MAX_SPLASH_MS) {
+        fadeTimer = setTimeout(() => { fadeTimer = null; scheduleSplashFade() }, MAIN_WINDOW_CHECK_MS)
+        return
+      }
     }
     // Crossfade: splash fades out while main fades in with overlap
     fadeOutSplash()
@@ -157,7 +168,10 @@ function createSplashWindow(): void {
     frame: false,
     alwaysOnTop: true,
     center: true,
-    show: true,
+    // Hidden until ready-to-show: showing before first paint leaves a blank
+    // window frame on screen while the renderer warms up — especially slow
+    // on Windows where DWM first-paint is expensive. See ready-to-show below.
+    show: false,
     // Opaque black window: transparent frameless windows are composited
     // per-pixel through DWM on Windows and can take hundreds of ms to first
     // paint. The splash page's body is fully black anyway, so opaque costs
@@ -166,7 +180,9 @@ function createSplashWindow(): void {
     backgroundColor: '#000',
     icon: getResourcePath(process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      // No preload: splash.html is pure HTML/CSS/images and never touches
+      // window.electronAPI. Loading the 348-line IPC bridge here only delays
+      // first paint.
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -175,6 +191,8 @@ function createSplashWindow(): void {
   splashWindow.loadFile(getResourcePath('splash', 'splash.html'))
   splashWindow.on('ready-to-show', () => {
     if (!splashWindow || splashWindow.isDestroyed()) return
+    // Reveal only once the page is painted, so the window never appears blank.
+    splashWindow.show()
     splashShownAt = Date.now()
     scheduleSplashFade()
   })
@@ -188,7 +206,6 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundThrottling: false,
     backgroundColor: '#fff',
     icon: getResourcePath(process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'),
     webPreferences: {
@@ -196,7 +213,8 @@ function createWindow(): void {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: true
+      webSecurity: true,
+      backgroundThrottling: false,
     }
   })
 

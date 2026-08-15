@@ -12,6 +12,7 @@ export interface CanvasEngineConfig {
   baseURL: string
   model: string
   maxTokens: number
+  profileId?: string
   workDir: string
   platformInfo?: PlatformInfo
   rectId?: string
@@ -159,6 +160,7 @@ export function createCanvasEngine(config: CanvasEngineConfig, envCfg: { width?:
     baseURL: config.baseURL,
     model: config.model,
     maxTokens: config.maxTokens,
+    profileId: config.profileId,
     myName: '',
     soul: '',
     yourName: '',

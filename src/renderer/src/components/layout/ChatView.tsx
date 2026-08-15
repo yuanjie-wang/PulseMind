@@ -502,6 +502,9 @@ function ChatView({
     }
     setHighlightedMsgId(targetId)
     clearTimeout(scrollTimerRef.current)
+    // Suppress near-bottom collapse while the smooth scroll runs. Must be set
+    // synchronously (not in a timeout) so handleScroll never fires mid-scroll.
+    // eslint-disable-next-line react-hooks/immutability
     suppressPlanScrollRef.current = true
     scrollTimerRef.current = setTimeout(() => {
       document.getElementById(`chat-msg-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })

@@ -7,6 +7,7 @@ import type {
 } from './types'
 import { DEFAULT_MEMORY_PREFERENCES } from './types'
 import type { LlmAdapter } from '../llm/adapter'
+import type { AgentMessage, TextBlock } from '../types/agent'
 import { MemoryCompressionAgent, ExperienceAgent, SessionReviewAgent } from '../agent/one-shot-agent'
 
 /**
@@ -234,6 +235,9 @@ export class MemoryManager {
    * Uses ExperienceAgent to identify workflow optimizations and pain points.
    * Returns the experience content and category — caller is responsible for
    * persisting it to the knowledge base (raw/).
+   *
+   * Incremental: only messages after the stored cursor are analyzed, so a
+   * growing conversation never re-extracts already-processed messages.
    */
   async extractAndSaveExperiences(
     sessionMessages: readonly { role: string; content: string }[],
@@ -242,11 +246,13 @@ export class MemoryManager {
     adapter: LlmAdapter,
     model: string,
     conversationId?: string,
-    locale?: string
+    locale?: string,
+    stats?: { toolCallCount: number; toolErrorCount: number }
   ): Promise<{ title: string | null; content: string | null; category: string | null }> {
     if (!this.prefs.autoCaptureEnabled || !apiKey) return { title: null, content: null, category: null }
 
-    // --- Dedup guard: skip if conversation already processed ---
+    let cursor = 0
+    // --- Incremental cursor: only analyze messages after the last processed one ---
     if (conversationId) {
       const processedCount = await window.electronAPI.getConversationExperienceExtractedCount(conversationId)
       // extractAndSaveAll (afterSession) extracts memories + experiences together and
@@ -258,34 +264,37 @@ export class MemoryManager {
         console.log(`[MemoryManager] Already extracted experiences for conversation ${conversationId} at msg count ${processedCount}, skipping`)
         return { title: null, content: null, category: null }
       }
-      console.log(`[MemoryManager] Extracting experiences for conversation ${conversationId}: ${sessionMessages.length} msgs (prev processed: ${processedCount})`)
+      cursor = processedCount
+      console.log(`[MemoryManager] Extracting experiences for conversation ${conversationId}: ${sessionMessages.length - cursor} new msgs (cursor ${cursor}/${sessionMessages.length})`)
     }
 
-    // Build conversation text (user + assistant text messages)
-    const conversationText = sessionMessages
-      .filter((m) => m.content.trim())
-      .map((m) => `[${m.role}]: ${m.content.slice(0, 1500)}`)
-      .join('\n\n')
-      .slice(0, 30000)
+    // Anchor = last few already-processed messages for context; delta = new messages
+    const anchorStart = Math.max(0, cursor - 3)
+    const anchor = sessionMessages.slice(anchorStart, cursor)
+    const delta = sessionMessages.slice(cursor)
+    if (delta.length === 0) return { title: null, content: null, category: null }
 
-    // Get existing experiences from knowledge base for merge/dedup reference
-    const allFiles = await window.electronAPI.knowledgeListFiles()
-    const expFiles = (allFiles || []).filter((f: { sourceType: string }) => f.sourceType === 'experience')
-    const expContents = await Promise.all(
-      expFiles.map(async (f: { filePath: string }) => {
-        try {
-          const c = await window.electronAPI.knowledgeGetRaw(f.filePath)
-          return `- ${c.slice(0, 300)}`
-        } catch { return '' }
-      })
-    )
-    const existingExpText = expContents.filter(Boolean).length > 0
-      ? 'EXISTING EXPERIENCES (check if new insight relates to or duplicates any of these):\n' + expContents.filter(Boolean).join('\n')
-      : 'No existing experiences yet.'
+    // Build conversation text: anchor (context only) + delta (to analyze)
+    const parts: string[] = []
+    if (stats) {
+      parts.push(`(Conversation statistics: ${stats.toolCallCount} tool call(s), ${stats.toolErrorCount} tool error(s))`)
+    }
+    if (anchor.length > 0) {
+      parts.push('(PREVIOUSLY EXTRACTED MESSAGES — context only, do not extract from these)')
+      parts.push(...anchor.map((m) => `[${m.role}]: ${m.content.slice(0, 1500)}`))
+    }
+    if (delta.length > 0) {
+      parts.push('(NEW MESSAGES — extract experiences from these)')
+      parts.push(...delta.map((m) => `[${m.role}]: ${m.content.slice(0, 1500)}`))
+    }
+    const conversationText = parts.join('\n\n').slice(0, 30000)
+
+    // Get existing experiences from knowledge base for dedup reference (bounded)
+    const existingExpText = await this.buildExistingExperiencesText()
 
     try {
       const result = await this.experienceAgent.execute(
-        { conversationText, existingExperiencesText: existingExpText, locale },
+        { conversationText, existingExperiencesText: existingExpText, locale, stats },
         { llmConfig: { adapter, apiKey, baseURL, model }, maxTokens: 2000 }
       )
 
@@ -328,10 +337,15 @@ export class MemoryManager {
    * LLM call. Saves memories to the DB and returns experience content for the
    * caller to persist to the knowledge base (raw/).
    *
+   * Incremental: only messages after the stored cursor are analyzed, so a
+   * growing conversation never re-extracts already-processed messages.
+   * The cursor counts text-only messages (user/assistant with a text block),
+   * matching the extractAndSaveExperiences pipeline's message count.
+   *
    * Returns { memories count, experienceContent, experienceCategory }.
    */
   async extractAndSaveAll(
-    sessionMessages: readonly { role: string; content: string }[],
+    messages: readonly AgentMessage[],
     apiKey: string,
     baseURL: string,
     adapter: LlmAdapter,
@@ -341,40 +355,60 @@ export class MemoryManager {
   ): Promise<{ memories: number; experienceTitle: string | null; experienceContent: string | null; experienceCategory: string | null }> {
     if (!this.prefs.autoCaptureEnabled || !apiKey) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
 
-    // --- Dedup guard: skip if conversation already processed at this message count ---
+    // Unify on text-only messages (user/assistant with a text block) — same
+    // cursor semantics as extractAndSaveExperiences, so the two pipelines
+    // agree on what "processed" means.
+    const textMessages = MemoryManager.toTextMessages(messages)
+    if (textMessages.length === 0) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+
+    // --- Incremental cursor: skip if conversation fully processed ---
+    let cursor = 0
     if (conversationId) {
       const processedCount = await window.electronAPI.getConversationExtractedMsgCount(conversationId)
-      if (processedCount >= sessionMessages.length) {
+      if (processedCount >= textMessages.length) {
         console.log(`[MemoryManager] Already extracted for conversation ${conversationId} at msg count ${processedCount}, skipping`)
         return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
       }
-      console.log(`[MemoryManager] Extracting memories+experiences for conversation ${conversationId}: ${sessionMessages.length} msgs (prev processed: ${processedCount})`)
+      cursor = processedCount
+      console.log(`[MemoryManager] Extracting memories+experiences for conversation ${conversationId}: ${textMessages.length - cursor} new msgs (cursor ${cursor}/${textMessages.length})`)
     }
 
-    // Build session summary
-    const summary = sessionMessages
-      .map((m) => `[${m.role}]: ${m.content.slice(0, 2000)}`)
-      .join('\n\n')
-      .slice(0, 12000)
+    // Anchor = last few already-processed messages for context; delta = new messages
+    const anchorStart = Math.max(0, cursor - 3)
+    const anchor = textMessages.slice(anchorStart, cursor)
+    const delta = textMessages.slice(cursor)
 
-    // Build existing experiences context for merge/dedup from knowledge base
-    const allFiles = await window.electronAPI.knowledgeListFiles()
-    const expFiles = (allFiles || []).filter((f: { sourceType: string }) => f.sourceType === 'experience')
-    const expContents = await Promise.all(
-      expFiles.map(async (f: { filePath: string }) => {
-        try {
-          const c = await window.electronAPI.knowledgeGetRaw(f.filePath)
-          return `- ${c.slice(0, 300)}`
-        } catch { return '' }
-      })
-    )
-    const existingExperiencesText = expContents.filter(Boolean).length > 0
-      ? 'EXISTING EXPERIENCES (check if new insight relates to or duplicates any of these):\n' + expContents.filter(Boolean).join('\n')
-      : ''
+    // Build session summary: anchor (context only) + delta (to analyze)
+    const summaryParts: string[] = []
+    // Conversation statistics — counts tool usage for the experience qualification gate
+    let toolCallCount = 0
+    let toolErrorCount = 0
+    for (const m of messages) {
+      for (const b of m.contentBlocks ?? []) {
+        if (b.type === 'tool_use') toolCallCount++
+        else if (b.type === 'tool_result' && b.is_error) toolErrorCount++
+      }
+    }
+    summaryParts.push(`(Conversation statistics: ${toolCallCount} tool call(s), ${toolErrorCount} tool error(s))`)
+    if (anchor.length > 0) {
+      summaryParts.push('(PREVIOUSLY EXTRACTED MESSAGES — context only, do not extract from these)')
+      summaryParts.push(...anchor.map((m) => `[${m.role}]: ${m.content.slice(0, 2000)}`))
+    }
+    if (delta.length > 0) {
+      summaryParts.push('(NEW MESSAGES — extract memories and experiences from these)')
+      summaryParts.push(...delta.map((m) => `[${m.role}]: ${m.content.slice(0, 2000)}`))
+    }
+    const summary = summaryParts.join('\n\n').slice(0, 12000)
+
+    // Dedup context: bounded existing experiences + existing memories
+    const [existingExperiencesText, existingMemoriesText] = await Promise.all([
+      this.buildExistingExperiencesText(),
+      this.buildExistingMemoriesText()
+    ])
 
     try {
       const result = await this.sessionReviewAgent.execute(
-        { sessionSummary: summary, existingExperiencesText, locale },
+        { sessionSummary: summary, existingExperiencesText, existingMemoriesText, locale },
         { llmConfig: { adapter, apiKey, baseURL, model }, maxTokens: 4000 }
       )
 
@@ -437,10 +471,10 @@ export class MemoryManager {
       // startup background task (extractAndSaveExperiences) must see this as done
       // or it will re-extract the same experiences from the same conversation.
       if (conversationId) {
-        await window.electronAPI.updateConversationExtractedMsgCount(conversationId, sessionMessages.length).catch((e) => {
+        await window.electronAPI.updateConversationExtractedMsgCount(conversationId, textMessages.length).catch((e) => {
           console.warn('[MemoryManager] Failed to update extracted message count:', e)
         })
-        await window.electronAPI.updateConversationExperienceExtractedCount(conversationId, sessionMessages.length).catch((e) => {
+        await window.electronAPI.updateConversationExperienceExtractedCount(conversationId, textMessages.length).catch((e) => {
           console.warn('[MemoryManager] Failed to update experience extracted count:', e)
         })
       }
@@ -549,5 +583,63 @@ export class MemoryManager {
 
     const result = parts.join('\n')
     return result === '# Memory Context' ? '' : result
+  }
+
+  // ===================================================================
+  // Helpers — shared by the extraction pipelines
+  // ===================================================================
+
+  /**
+   * Flatten AgentMessage[] into text-only {role, content} pairs (user/assistant
+   * with a text block). Used to keep the incremental extraction cursor on the
+   * same unit as extractAndSaveExperiences' caller-built sessionMessages.
+   */
+  private static toTextMessages(messages: readonly AgentMessage[]): { role: string; content: string }[] {
+    const out: { role: string; content: string }[] = []
+    for (const m of messages) {
+      if (m.role !== 'user' && m.role !== 'assistant') continue
+      const texts = (m.contentBlocks ?? [])
+        .filter((b): b is TextBlock => b.type === 'text')
+        .map((b) => b.text)
+      if (texts.length === 0) continue
+      out.push({ role: m.role, content: texts.join('\n') })
+    }
+    return out
+  }
+
+  /**
+   * Bounded reference of existing experiences (newest first) for LLM dedup.
+   * Old code concatenated EVERY experience file's first 300 chars, which
+   * ballooned past context limits and diluted the dedup signal.
+   */
+  private async buildExistingExperiencesText(maxCount = 40, maxLen = 200): Promise<string> {
+    const allFiles = await window.electronAPI.knowledgeListFiles()
+    const expFiles = (allFiles || [])
+      .filter((f: { sourceType: string }) => f.sourceType === 'experience')
+      .slice(0, maxCount)
+    const expContents = await Promise.all(
+      expFiles.map(async (f: { filePath: string }) => {
+        try {
+          const c = await window.electronAPI.knowledgeGetRaw(f.filePath)
+          return `- ${c.slice(0, maxLen)}`
+        } catch { return '' }
+      })
+    )
+    const lines = expContents.filter(Boolean)
+    return lines.length > 0
+      ? 'EXISTING EXPERIENCES (check if new insight relates to or duplicates any of these):\n' + lines.join('\n')
+      : ''
+  }
+
+  /**
+   * Bounded reference of existing memories (newest first) so extraction skips
+   * facts/decisions/preferences already recorded.
+   */
+  private async buildExistingMemoriesText(maxCount = 30, maxLen = 120): Promise<string> {
+    const all = await this.listMemories()
+    const recent = (all || []).slice(0, maxCount)
+    if (recent.length === 0) return ''
+    const lines = recent.map((m) => `- [${m.type}/${m.category}] ${m.content.slice(0, maxLen)}`)
+    return 'EXISTING MEMORIES (do not extract memories that duplicate these):\n' + lines.join('\n')
   }
 }

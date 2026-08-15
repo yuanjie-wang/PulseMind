@@ -671,7 +671,6 @@ export const MessageGroup = React.memo(function MessageGroup({
             onClick={() => {
               const next = !liked
               setLiked(next)
-              msg.liked = next
               window.electronAPI.updateMessageMetadata(msg.id, { liked: next })
             }}
             title={t('chatView.like')}
@@ -685,7 +684,6 @@ export const MessageGroup = React.memo(function MessageGroup({
             onClick={() => {
               const next = !favorited
               setFavorited(next)
-              msg.favorited = next
               window.electronAPI.updateMessageMetadata(msg.id, { favorited: next })
               if (next && conversationId && msg.id) {
                 const text = msg.contentBlocks

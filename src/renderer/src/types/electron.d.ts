@@ -6,6 +6,7 @@ import type { MemoryEntry, MemorySearchInput } from '../memory/types'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../../../shared/types/knowledge'
 import type { SubAgentProfile } from '../../../shared/types/subagent'
 import type { GitAction, GitResult } from '../../../shared/types/git'
+import type { ExperienceRecord, ExperienceDraft } from '../../../shared/types/experience-types'
 
 // --- Platform Info ---
 
@@ -160,6 +161,14 @@ export interface ElectronAPI {
   readSkillRaw: (name: string) => Promise<string | null>
   writeSkill: (skill: SkillDefinition) => Promise<void>
 
+  // Experiences
+  listExperiences: () => Promise<ExperienceRecord[]>
+  saveExperienceRecord: (draft: ExperienceDraft) => Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord }>
+  deleteExperienceRecord: (name: string) => Promise<void>
+  readExperienceRecord: (name: string) => Promise<string | null>
+  touchExperienceRecord: (name: string) => Promise<void>
+  onExperiencesChanged: (callback: () => void) => () => void
+
   // Terminal
   executeCommand: (command: string, cwd?: string, timeoutMs?: number) => Promise<string>
   execCommandSync: (command: string, cwd?: string, timeoutMs?: number) => Promise<{ output: string; code: number | null }>
@@ -172,7 +181,7 @@ export interface ElectronAPI {
   gitInvoke: (action: GitAction) => Promise<GitResult>
 
   // API Proxy
-  apiFetchStream: (requestId: string, url: string, options?: { method?: string; headers?: Record<string, string>; body?: string | object }) => Promise<void>
+  apiFetchStream: (requestId: string, url: string, options?: { method?: string; headers?: Record<string, string>; body?: string | object; profileId?: string }) => Promise<void>
   apiAbortStream: (requestId: string) => Promise<void>
   onApiStreamChunk: (callback: (data: ApiStreamChunkEvent) => void) => () => void
   onApiStreamError: (callback: (data: ApiStreamErrorEvent) => void) => () => void
@@ -185,7 +194,7 @@ export interface ElectronAPI {
   onSkillsChanged: (callback: () => void) => () => void
 
   // Non-streaming fetch (avoids CORS)
-  apiFetch: (url: string, options?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<string | null>
+  apiFetch: (url: string, options?: { method?: string; headers?: Record<string, string>; body?: string; withProfileHeaders?: boolean; profileId?: string }) => Promise<string | null>
 
   // App / Platform Info
   getPlatformInfo: () => Promise<PlatformInfo>

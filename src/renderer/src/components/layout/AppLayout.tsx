@@ -21,7 +21,8 @@ import {
   LinkOutlined,
   ClearOutlined,
   LoadingOutlined,
-  ApartmentOutlined
+  ApartmentOutlined,
+  ExperimentOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
 import { ContextRing, estimateContextUsed } from '../chat/ContextRing'
@@ -37,6 +38,7 @@ import EnvironmentSettings from '../settings/EnvironmentSettings'
 import FavoritesSettings from '../settings/FavoritesSettings'
 import AboutSettings from '../settings/AboutSettings'
 import MCPSettings from '../settings/MCPSettings'
+import ExperiencePanel from '../settings/ExperiencePanel'
 import CanvasView from '../canvas/CanvasView'
 import CanvasToolbar from '../canvas/CanvasToolbar'
 import KnowledgePanel from '../knowledge/KnowledgePanel'
@@ -197,6 +199,8 @@ function AppLayout({
             importError={importError}
           />
         )
+      case 'experiences':
+        return <ExperiencePanel inline open onClose={() => setView('favorites')} />
       case 'tools':
         return (
           <ToolsSettings
@@ -453,6 +457,7 @@ function AppLayout({
                 { key: 'subagent', icon: <ApartmentOutlined />, label: '子代理' },
                 { key: 'mcp', icon: <ApiOutlined />, label: t('appLayout.mcp') },
                 { key: 'skills', icon: <ThunderboltOutlined />, label: t('appLayout.skills') },
+                { key: 'experiences', icon: <ExperimentOutlined />, label: '经验' },
                 { key: 'memory', icon: <BookOutlined />, label: t('appLayout.memory') },
                 { key: 'favorites', icon: <StarOutlined />, label: t('appLayout.favorites') },
               ].map((item) => (
