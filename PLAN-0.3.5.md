@@ -40,23 +40,31 @@ interface AgentHost {
 
 同一份引擎代码 + 渲染 Host(现行为,IPC 实现)= 迁移前;+ 主进程 Host(Node 直连)= 迁移后。**渲染层协议客户端化与引擎迁主分两步落地,中间态始终可发布。**
 
-- [ ] **M1.1 协议包雏形** `src/shared/agent-protocol/`
-  - JSON-RPC envelope、PROTOCOL_VERSION、方法面(以 anywhere `protocol.ts` 为基线;补 `plan_update`/`spawn_progress`/`experience`/`knowledge` 事件类型)
-  - 验收:shared 包内类型自洽,两端可引用,附最小单测
-- [ ] **M1.2 引擎拆分四职责 + AgentHost 接口化**
-  - `AgentEngine.ts`(2391 行)拆为:`engine/loop.ts`(状态机编排)、`engine/stream.ts`(已有 adapters)、`engine/tool-loop.ts`(工具执行收口)、`engine/spawn.ts`(子代理)
-  - **顺手吸收 worker 计划 P0**:工具入参 JSON 改增量解析(引擎入主后该计算在主进程,Web Worker 方案作废)
-  - 迁移完成前保持渲染 Host 全绿(现有 29 测试 + 新增 host 接口 mock 测试)
-- [ ] **M1.3 渲染 Host 实现核对**:现有 `window.electronAPI` 调用面全部归拢到 Host 实现内(纯搬运,不改行为)
-- [ ] **M1.4 主进程 Host 实现 + 会话管理器**:main 内 `sessionManager`(convId→engine,现有 enginesRef 逻辑平移),LLM 直连 fetch(**api-proxy 对引擎退役**,api-proxy 本体保留给非引擎请求)
-- [ ] **M1.5 渲染层协议客户端化**:`useConversationEngine` 重写为协议消费者(IPC 桥:ask/cancel/history + event 推送);ChatView/节流渲染不动
+- [x] **M1.1 协议包雏形** `src/shared/agent-protocol/`(commit 1831844)
+  - JSON-RPC envelope、PROTOCOL_VERSION、方法面(以 anywhere `protocol.ts` 为基线;补 `plan_update`/`spawn_progress`/`usage`/`tool_input_preview` 事件类型)
+  - 验收:shared 包内类型自洽,两端可引用,9 个单测 ✓
+- [x] **M1.2 AgentHost 能力接口 + 引擎去 electronAPI 化**(commit 7953f98;M1.3 并入此项——renderer host 即 `window.electronAPI` 的结构子集 `Pick<ElectronAPI, 47 keys>`,`getHost()` 惰性默认,调用点零接线)
+  - ~~物理拆分四文件~~ **调整为先落 `PulseHost` 缝**(物理拆分待 cutover 后做,避免同文件双重大改):8 个文件 75 处 `window.electronAPI.*` 改 `getHost().*`
+  - **已吸收 worker 计划 P0**:`agent/json-stream.ts` `IncrementalJsonTracker` 取代每 delta `JSON.parse(acc)`(O(n²)→O(total),字符串/转义感知,8 单测)
+  - 全绿:46 测试、web tsc 25=基线、build OK
+- [ ] **M1.4 主进程 Host 实现 + 会话管理器**(cutover 前夜评估已写入,照单执行即可)
+  - **✅ 已验证(tests/engine-node.test.ts):整个引擎图(engine + tool-executors + prompt-builder + mcp-cache + ToolManager/SkillManager)在纯 Node + mock Host 下构造运行,无 DOM 依赖**——cutover 最大不确定点已消除
+  - Manager 可移植性核查结论:
+    - `FeatureRegistry/FeatureManager`(manager.ts)**纯类无 IPC** ✓
+    - `ToolManager`(56 行)/`SkillManager`(94 行)薄壳,偏好读写走 host → 直接随引擎入主
+    - `MemoryManager`(645 行):提取走注入的 adapter+llmConfig(经 host)、持久化走 host.saveMemory → 可移植,工作量中等
+    - `KnowledgeManager`(410 行):main 已有 `storage/knowledge-store.ts` + `extractors/` → **合并替换而非移植**
+    - `mcp-cache.ts`:模块级单例+监听器 → main 实现改为直连 `main/mcp/MCPClient.ts`
+    - `system-prompt-builder`/one-shot agents/AnthropicAdapter:M1.2 后已 host-clean ✓
+  - 执行序:① main 侧组装 ToolManager/SkillManager/SettingsStore ② MemoryManager 主进程化 ③ KnowledgeManager 对接既有 knowledge-store ④ sessionManager(convId→engine) + 协议 IPC 通道 ⑤ LLM 直连 fetch(api-proxy 对引擎退役)
+- [ ] **M1.5 渲染层协议客户端化**:`useConversationEngine` 重写为协议消费者;注意 `useConversationPersistence` 的 `saveAllConversationsSync` 迭代 `enginesRef`——持久化职责需一并移入 main sessionManager
 - [ ] **M1.6 回归与性能基线**:长任务对比重构前(流式 CPU、主进程保存停顿);渲染层 bundle 不再含引擎
 
 ## M2 WS 服务 + 托盘常驻
 
 - [ ] **M2.1 WS 服务**:`127.0.0.1:PORT` + JSON-RPC 分发 + token 鉴权(token 落盘 `~/.pulsemind/service-token`)+ 双向心跳 + EADDRINUSE 退避随机端口(照抄 anywhere/desktop 模式)
 - [ ] **M2.2 会话多客户端化**:conversation 表加 `origin`/`clientId`;同一 clientId 重复连接踢旧;全局并发上限 + FIFO 排队
-- [ ] **M2.3 托盘常驻**:关窗驻留(mac 拦 close / win 隐藏)、托盘菜单(打开窗口/服务状态/退出)、开机自启设置(`app.setLoginItemSettings`)——同时服务定时任务需求
+- [x] **M2.3 托盘常驻**(commit 0fbe5de):macOS 托盘(打开窗口/开机自启 checkbox/退出);`launchAtLogin` 设置项持久化并经 `app.setLoginItemSettings` 应用;win/linux 关窗隐藏待 `residentMode` 设置项(默认不启用)落地后处理
 - [ ] **M2.4 服务设置页**:开关、端口、token 查看/重置、连接状态
 - [ ] **M2.5 存储层线程化(独立可跳过)**:DB 迁入 utilityProcess/worker_threads,主进程经 RPC 访问,消除同步 SQLite 对主进程事件循环的阻塞
 
