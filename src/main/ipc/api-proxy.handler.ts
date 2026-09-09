@@ -4,17 +4,13 @@ import { isIP } from 'node:net'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { applyLlmRequestHook } from '../llm-hook'
+import { resolveEnvVarsInString, findUnresolvedEnvVar } from '../../shared/env'
 
 /**
  * Resolve ${VAR_NAME} patterns in a string using environment variables.
  * If the variable is not set, the original placeholder is kept so the API
  * error message will hint at the missing variable.
  */
-function resolveEnvVars(value: string): string {
-  return value.replace(/\$\{([^}]+)\}/g, (match, name: string) => {
-    return process.env[name] ?? match
-  })
-}
 
 interface ApplyProfileHeadersOptions {
   /**
@@ -41,25 +37,42 @@ interface ApplyProfileHeadersOptions {
  */
 async function applyProfileHeaders(headers?: Record<string, string>, opts: ApplyProfileHeadersOptions = {}): Promise<Record<string, string> | undefined> {
   const base: Record<string, string> = headers
-    ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, resolveEnvVars(v)]))
+    ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, resolveEnvVarsInString(v)]))
     : {}
-  if (opts.mergeProfileHeaders === false) return Object.keys(base).length ? base : headers
-  const settings = await settingsStore.get()
-  const profile = settings.profiles.find(p => p.id === opts.profileId) ?? settings.profiles.find(p => p.id === settings.activeProfileId)
-  if (!profile?.headers) return Object.keys(base).length ? base : headers
-  const seen = new Map<string, string>() // lowercase header name -> actual key in `base`
-  for (const k of Object.keys(base)) seen.set(k.toLowerCase(), k)
-  for (const [k, v] of Object.entries(profile.headers)) {
-    if (!v.trim()) continue
-    const existingKey = seen.get(k.toLowerCase())
-    if (existingKey && existingKey !== k) {
-      delete base[existingKey]
-      seen.delete(k.toLowerCase())
+  let result: Record<string, string> | undefined
+  if (opts.mergeProfileHeaders === false) {
+    result = Object.keys(base).length ? base : headers
+  } else {
+    const settings = await settingsStore.get()
+    const profile = settings.profiles.find(p => p.id === opts.profileId) ?? settings.profiles.find(p => p.id === settings.activeProfileId)
+    if (!profile?.headers) {
+      result = Object.keys(base).length ? base : headers
+    } else {
+      const seen = new Map<string, string>() // lowercase header name -> actual key in `base`
+      for (const k of Object.keys(base)) seen.set(k.toLowerCase(), k)
+      for (const [k, v] of Object.entries(profile.headers)) {
+        if (!v.trim()) continue
+        const existingKey = seen.get(k.toLowerCase())
+        if (existingKey && existingKey !== k) {
+          delete base[existingKey]
+          seen.delete(k.toLowerCase())
+        }
+        base[k] = resolveEnvVarsInString(v)
+        seen.set(k.toLowerCase(), k)
+      }
+      result = base
     }
-    base[k] = resolveEnvVars(v)
-    seen.set(k.toLowerCase(), k)
   }
-  return base
+  // A placeholder that survived resolution means its env var is unset. Sending
+  // it as-is would leak `${VAR}` to the API as broken credentials — fail fast
+  // with a message naming the variable instead.
+  if (result) {
+    for (const [k, v] of Object.entries(result)) {
+      const missing = findUnresolvedEnvVar(v)
+      if (missing) throw new Error(`环境变量 ${missing} 未设置（请求头 ${k} 引用的 \${${missing}} 无法解析，请检查 hooks/app-start.js 或系统环境变量）`)
+    }
+  }
+  return result
 }
 
 /** Check if an IP falls within private/reserved ranges (SSRF prevention). */
@@ -202,19 +215,16 @@ export function registerApiProxyHandlers(): void {
         // Stringify body in main process so the renderer isn't blocked on large JSON.
         const body = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
         const mergedHeaders = await applyProfileHeaders(options.headers, { profileId: options.profileId })
-        // llm-request hook: only LLM requests carry a profileId (webfetch does not).
-        let finalUrl = url
-        let finalBody = body as string | undefined
-        let finalHeaders = mergedHeaders
-        if (options.profileId !== undefined) {
-          const hookApplied = await applyLlmRequestHook(url, mergedHeaders, body, {
-            profileId: options.profileId,
-            requestId,
-          })
-          finalUrl = hookApplied.url
-          finalBody = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
-          finalHeaders = hookApplied.headers
-        }
+        // llm-request hook: the streaming channel is LLM-only (AgentEngine loop +
+        // OpenAIAdapter.callNonStreaming). webfetch goes through the simple fetch
+        // handler, so every request here is an LLM request — always run the hook.
+        const hookApplied = await applyLlmRequestHook(url, mergedHeaders, body, {
+          profileId: options.profileId,
+          requestId,
+        })
+        const finalUrl = hookApplied.url
+        const finalBody = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
+        const finalHeaders = hookApplied.headers
         const resolvedOptions: { method?: string; headers?: Record<string, string>; body?: string } = {
           ...options,
           body: finalBody,
