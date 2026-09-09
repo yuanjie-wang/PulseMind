@@ -1,3 +1,4 @@
+import { getHost } from './host'
 import type { ToolUseBlock, TextBlock } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import type { SpawnSubAgentConfig, SubAgentHandle } from './agent-utils'
@@ -103,7 +104,7 @@ export class ToolExecutor {
       const cmd = isWin
         ? `(Get-Content '${filePath.replace(/'/g, "''")}' -Encoding utf8 | Measure-Object -Line).Lines`
         : `wc -l "${filePath.replace(/"/g, '\\"')}"`
-      const r = await window.electronAPI.execCommandSync(cmd)
+      const r = await getHost().execCommandSync(cmd)
       if (r.code === 0) {
         const trimmed = r.output.trim()
         const n = isWin ? parseInt(trimmed, 10) : parseInt(trimmed.split(/\s+/)[0], 10)
@@ -126,7 +127,7 @@ export class ToolExecutor {
           const limit = Math.min(Number(t.input?.limit) || READ_DEFAULT_LINE_LIMIT, READ_MAX_LINE_LIMIT)
           const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase()
 
-          const stat = await window.electronAPI.getFileStat(filePath)
+          const stat = await getHost().getFileStat(filePath)
           const fileSize = stat?.size ?? 0
 
           let content: string
@@ -134,7 +135,7 @@ export class ToolExecutor {
 
           // markitdown path for binary document formats (cached in tmp/read-cache)
           if (ToolExecutor.CONVERTIBLE_EXTS.has(ext)) {
-            const result = await window.electronAPI.convertFileToMarkdown(filePath)
+            const result = await getHost().convertFileToMarkdown(filePath)
             if (result !== null) {
               const lines = result.content.split('\n')
               totalLines = lines.length
@@ -155,7 +156,7 @@ export class ToolExecutor {
           const cmd = buildCommandFromSkillInput(t.name, { ...t.input, limit }, platform, this.opts.platformInfo?.ripgrepPath)
           const cwd = String(t.input?.cwd || '')
           const timeoutMs = t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined
-          const result = await window.electronAPI.execCommandSync(cmd, cwd || undefined, timeoutMs)
+          const result = await getHost().execCommandSync(cmd, cwd || undefined, timeoutMs)
           content = result.output
           const isError = result.code !== 0 && !content
 
@@ -181,7 +182,7 @@ export class ToolExecutor {
         const cmd = buildCommandFromSkillInput(t.name, t.input || {}, platform, this.opts.platformInfo?.ripgrepPath)
         const cwd = String(t.input?.cwd || '')
         const timeoutMs = t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined
-        const result = await window.electronAPI.execCommandSync(cmd, cwd || undefined, timeoutMs)
+        const result = await getHost().execCommandSync(cmd, cwd || undefined, timeoutMs)
         const output = result.output
         t.status = 'completed'; t.exitCode = result.code; t.output = output
         this.addToolResult(t.id, output || (result.code !== 0 ? `Command failed (exit: ${result.code})` : '(no output)'), result.code !== 0)
@@ -263,7 +264,7 @@ export class ToolExecutor {
     try {
       const cwd = String(t.input?.cwd || this.opts.workspaceDir || '')
       const action = this.buildGitAction(t.name, (t.input || {}) as Record<string, unknown>, cwd)
-      const result = await window.electronAPI.gitInvoke(action)
+      const result = await getHost().gitInvoke(action)
       const text = this.formatGitResult(t.name, result)
       t.exitCode = result.ok ? 0 : 1
       t.status = 'completed'
@@ -303,14 +304,14 @@ export class ToolExecutor {
 
         const diff = String(t.input.diff || '')
         if (diff) {
-          const result = await window.electronAPI.patchFile({ filePath: fp, diff })
+          const result = await getHost().patchFile({ filePath: fp, diff })
           t.output = result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : `Error: ${result.error || 'Patch failed'}`
           this.addToolResult(t.id, result.success ? `Applied ${result.replacements} hunk(s) to ${fp}` : `Error: ${result.error || 'Patch failed'}`, !result.success)
           t.exitCode = result.success ? 0 : 1
         } else {
           const oldStr = String(t.input.old_str || ''); const newStr = String(t.input.new_str || ''); const multi = t.input.multi === true
           if (!oldStr) throw new Error('old_str is required (or use diff parameter)')
-          const result = await window.electronAPI.editFile({ filePath: fp, oldStr, newStr, multi })
+          const result = await getHost().editFile({ filePath: fp, oldStr, newStr, multi })
           t.output = result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : `Error: ${result.error || 'Edit failed'}`
           this.addToolResult(t.id, result.success ? `Replaced ${result.replacements} occurrence(s) in ${fp}` : `Error: ${result.error || 'Edit failed'}`, !result.success)
           t.exitCode = result.success ? 0 : 1
@@ -327,7 +328,7 @@ export class ToolExecutor {
     try {
       const serverId = this.mcpToolOwner.get(t.name)
       if (!serverId) throw new Error(`No MCP server provides tool "${t.name}"`)
-      const result = await window.electronAPI.mcpCallTool(serverId, t.name, { ...t.input })
+      const result = await getHost().mcpCallTool(serverId, t.name, { ...t.input })
       if (result.success) {
         const raw = typeof result.result === 'object' && result.result !== null
           ? JSON.stringify(result.result, null, 2)
@@ -358,7 +359,7 @@ export class ToolExecutor {
       if (installType === 'skill') {
         // ── Install skill from ~/.pulsemind/skills/<name>/SKILL.md ──
         t.output = `Installing skill "${name}"...`; this.notify()
-        const def = await window.electronAPI.installSkill(name)
+        const def = await getHost().installSkill(name)
         if (!def) throw new Error(`Skill "${name}" not found on disk at ~/.pulsemind/skills/${name}/SKILL.md.`)
         const sm = this.opts.skillManager; sm!.registerSkill(def); sm!.enable(def.name)
         this.opts.onSkillStateChange?.()
@@ -366,7 +367,7 @@ export class ToolExecutor {
         this.addToolResult(t.id, `Skill "${def.name}" installed and enabled successfully.`, false)
         // keyword extraction (fire-and-forget)
         try {
-          const rawContent = await window.electronAPI.readSkillRaw(name)
+          const rawContent = await getHost().readSkillRaw(name)
           if (rawContent) {
             const keywords = await this.skillKeywordAgent.execute(
               { rawContent },
@@ -376,9 +377,9 @@ export class ToolExecutor {
               }
             )
             if (keywords.length > 0) {
-              const prefs = await window.electronAPI.getSkillPreferences()
+              const prefs = await getHost().getSkillPreferences()
               const sk = prefs.skillKeywords || {}
-              if (!sk[def.name]) { sk[def.name] = keywords; await window.electronAPI.setSkillPreferences({ ...prefs, skillKeywords: sk }) }
+              if (!sk[def.name]) { sk[def.name] = keywords; await getHost().setSkillPreferences({ ...prefs, skillKeywords: sk }) }
             }
           }
         } catch (err) { console.warn(`[install] Failed to extract keywords for "${def.name}":`, err) }
@@ -386,15 +387,15 @@ export class ToolExecutor {
         // ── Register MCP server from config file ─────────────────────
         t.output = `Registering MCP server "${name}"...`; this.notify()
         const configPath = '~/.pulsemind/mcp/mcp-servers.json'
-        const configStr = await window.electronAPI.readFile(configPath)
+        const configStr = await getHost().readFile(configPath)
         if (!configStr) throw new Error(`MCP config file not found at ${configPath}. Write the MCP server configuration first.`)
         const records = JSON.parse(configStr)
         const record = Array.isArray(records) ? records.find((r: any) => r.config?.name === name || r.name === name) : null
         if (!record) throw new Error(`MCP server "${name}" not found in ${configPath}.`)
         const rawConfig = record.config || record
-        const result = await window.electronAPI.mcpRegisterServer(rawConfig)
+        const result = await getHost().mcpRegisterServer(rawConfig)
         const serverId = result.server?.id || ''
-        if (serverId) await window.electronAPI.mcpStartServer(serverId).catch(() => {})
+        if (serverId) await getHost().mcpStartServer(serverId).catch(() => {})
         window.dispatchEvent(new CustomEvent('mcp-state-changed'))
         t.exitCode = 0; t.status = 'completed'
         this.addToolResult(t.id, `MCP server "${name}" registered and started successfully.`, false)
@@ -470,7 +471,7 @@ export class ToolExecutor {
       const method = String(t.input?.method || 'GET').toUpperCase()
       const headers = t.input?.headers as Record<string, string> | undefined
       const body = t.input?.body !== undefined ? String(t.input.body) : undefined
-      const result = await window.electronAPI.apiFetch(url, { method, headers, body })
+      const result = await getHost().apiFetch(url, { method, headers, body })
       if (result === null) throw new Error('Request failed or was blocked')
 
       // No truncation here — the global guardrail in addToolResult caps it.
@@ -492,7 +493,7 @@ export class ToolExecutor {
       // e.g. `builtin:git`) so the MCP selection logic (names / serverName / intent)
       // applies to them uniformly, mirroring per-server granularity.
       const fetchCandidateTools = async () => {
-        const servers = await window.electronAPI.mcpListServers()
+        const servers = await getHost().mcpListServers()
         const all: Array<{ name: string; serverId: string; description: string; inputSchema: any }> = []
         for (const server of servers) {
           if (server.status !== 'connected') continue
@@ -558,7 +559,7 @@ export class ToolExecutor {
       // ── Mode 2: select by server name (new) ────────────────────────
       const serverNameInput = String(t.input?.serverName || '').trim()
       if (serverNameInput) {
-        const servers = await window.electronAPI.mcpListServers()
+        const servers = await getHost().mcpListServers()
         // Match by id first, then by name (case-insensitive)
         const matchedServer = servers.find(s =>
           s.id.toLowerCase() === serverNameInput.toLowerCase() ||
@@ -618,7 +619,7 @@ export class ToolExecutor {
       }
 
       // Build server-level summary list for the server selection agent
-      const servers2 = await window.electronAPI.mcpListServers()
+      const servers2 = await getHost().mcpListServers()
       let serverList = servers2
         .filter(s => s.status === 'connected')
         .map(s => {
@@ -683,7 +684,7 @@ export class ToolExecutor {
       let basePrompt = ''
       let disabledError: Error | null = null
       try {
-        const profiles = await window.electronAPI.subagentList()
+        const profiles = await getHost().subagentList()
         const profile = profiles.find((p: any) => p.id === subAgentId)
         if (profile) {
           if (profile.enabled === false) {
@@ -809,7 +810,7 @@ export class ToolExecutor {
         if (t.input.updatedAfter) dateFilter.updatedAfter = String(t.input.updatedAfter)
         if (t.input.updatedBefore) dateFilter.updatedBefore = String(t.input.updatedBefore)
         if (query && !convId2) {
-          const results = await window.electronAPI.searchConversationsByKeyword(query)
+          const results = await getHost().searchConversationsByKeyword(query)
           if (results.length === 0) {
             this.addToolResult(t.id, `No conversations found matching "${query}".`, false)
           } else {
@@ -820,7 +821,7 @@ export class ToolExecutor {
           }
           t.exitCode = 0
         } else if (convId2) {
-          const conv = await window.electronAPI.getConversation(convId2)
+          const conv = await getHost().getConversation(convId2)
           if (conv) { const parts = [`**Title:** ${conv.title}`]; if (conv.summary) parts.push(`**Summary:** ${conv.summary}`); parts.push(`**ID:** ${conv.id}`); this.addToolResult(t.id, parts.join('\n'), false) }
           else { this.addToolResult(t.id, `Conversation "${convId2}" not found.`, false) }
           t.exitCode = 0
@@ -833,7 +834,7 @@ export class ToolExecutor {
           this.addToolResult(t.id, 'Error: at least one tool_result_id is required.', true); t.exitCode = 1
         } else {
           try {
-            const results = await window.electronAPI.getToolResult(ids)
+            const results = await getHost().getToolResult(ids)
             if (results.length === 0) {
               this.addToolResult(t.id, `No tool results found for IDs: ${ids.join(', ')}`, false)
             } else {
@@ -990,10 +991,10 @@ export class ToolExecutor {
           t.output = 'Error: name is required.'; this.addToolResult(t.id, 'Error: name is required.', true); t.exitCode = 1
         } else {
           try {
-            const content = await window.electronAPI.readExperienceRecord(name)
+            const content = await getHost().readExperienceRecord(name)
             if (content) {
               // Touching records that the experience was actually used — feeds the LRU eviction
-              window.electronAPI.touchExperienceRecord(name).catch(() => {})
+              getHost().touchExperienceRecord(name).catch(() => {})
               t.output = content.slice(0, UI_PREVIEW_MAX); this.addToolResult(t.id, content, false)
             } else {
               t.output = `Experience "${name}" not found.`; this.addToolResult(t.id, `Experience "${name}" not found.`, false)
@@ -1022,15 +1023,15 @@ export class ToolExecutor {
             this.addToolResult(t.id, formatted, isError)
             unsubList.forEach(fn => fn()); resolve()
           }
-          const uo = window.electronAPI.onTerminalOutput(d => {
+          const uo = getHost().onTerminalOutput(d => {
             if (d.type === 'stderr') stderrBuf += d.data
             else stdoutBuf += d.data
             t.output = stdoutBuf + stderrBuf
             this.notify()
           }); unsubList.push(uo)
-          const ue = window.electronAPI.onTerminalExit(d => finish(d.code, d.code !== 0)); unsubList.push(ue)
-          const uerr = window.electronAPI.onTerminalError(d => { stderrBuf += `\n[Error: ${d.message}]`; finish(-1, true) }); unsubList.push(uerr)
-          window.electronAPI.executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined)
+          const ue = getHost().onTerminalExit(d => finish(d.code, d.code !== 0)); unsubList.push(ue)
+          const uerr = getHost().onTerminalError(d => { stderrBuf += `\n[Error: ${d.message}]`; finish(-1, true) }); unsubList.push(uerr)
+          getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined)
             .then(pid => { this.onProcessStart?.(pid) })
             .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
         })

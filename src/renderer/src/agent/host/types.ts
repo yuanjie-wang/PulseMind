@@ -1,0 +1,73 @@
+import type { ElectronAPI } from '../../types/electron'
+
+/**
+ * The slice of the ElectronAPI surface that the agent graph actually touches
+ * (engine, tool executors, prompt builder, caches, one-shot agents, adapter
+ * non-stream fetch). Declaring it as an explicit seam lets the same agent code
+ * run against:
+ *   - the renderer bridge today  → createRendererHost(window.electronAPI)
+ *   - the main-process host (M1.4, Node natives + direct fetch)
+ *   - a mock host in tests
+ * Keep keys in sync with actual usage; tsc fails loudly when a key drifts.
+ */
+const HOST_METHOD_KEYS = [
+  // LLM transport
+  'apiFetchStream',
+  'apiAbortStream',
+  'apiFetch',
+  'onApiStreamChunk',
+  'onApiStreamError',
+  'onApiStreamDone',
+  'onApiStreamRetry',
+  // terminal
+  'executeCommand',
+  'execCommandSync',
+  'killCommand',
+  'onTerminalOutput',
+  'onTerminalExit',
+  'onTerminalError',
+  // filesystem
+  'readFile',
+  'writeFile',
+  'editFile',
+  'patchFile',
+  'getFileStat',
+  'convertFileToMarkdown',
+  'copyFileToTmp',
+  'saveBase64Image',
+  // git
+  'gitInvoke',
+  // mcp
+  'mcpListServers',
+  'mcpStartServer',
+  'mcpRegisterServer',
+  'mcpUpdateServerSummary',
+  'mcpCallTool',
+  'onMcpServersChanged',
+  'onSkillsChanged',
+  // skills / experience / sub-agents
+  'getSkillPreferences',
+  'setSkillPreferences',
+  'readSkillRaw',
+  'installSkill',
+  'subagentList',
+  'readExperienceRecord',
+  'touchExperienceRecord',
+  // memory / knowledge / conversation store
+  'saveMemory',
+  'searchConversationsByKeyword',
+  'getToolResult',
+  'getConversation',
+  // persistence
+  'saveConversation',
+  'appendConversationMessages',
+  'persistToolResults',
+  'saveConversationPlan',
+  'getConversationPlan',
+  // misc
+  'getSettings',
+] as const
+
+export type HostMethodKey = (typeof HOST_METHOD_KEYS)[number]
+
+export type PulseHost = Pick<ElectronAPI, HostMethodKey>

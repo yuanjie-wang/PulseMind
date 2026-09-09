@@ -1,3 +1,5 @@
+import { getHost } from './host'
+import { IncrementalJsonTracker } from './json-stream'
 import type {
   AgentMessage,
   AgentStatus,
@@ -222,7 +224,7 @@ export class AgentEngine {
   private abortController: AbortController | null = null
   private currentAssistantBlocks: (ContentBlock | undefined)[] = []
   private toolUseBlocks: ToolUseBlock[] = []
-  private jsonAccumulators: Map<number, string> = new Map()
+  private jsonAccumulators: Map<number, IncrementalJsonTracker> = new Map()
   private loopCount = 0
   private maxLoopCount = MAX_LOOP_ITERATIONS
   private terminalCleanups: (() => void)[] = []
@@ -318,7 +320,7 @@ export class AgentEngine {
   private savePlan = async (plan: Plan | null): Promise<void> => {
     if (!this.opts.conversationId) return
     try {
-      await window.electronAPI.saveConversationPlan(this.opts.conversationId, plan ? JSON.stringify(plan) : null)
+      await getHost().saveConversationPlan(this.opts.conversationId, plan ? JSON.stringify(plan) : null)
     } catch (err) {
       console.warn('[AgentEngine] Failed to save plan:', err)
     }
@@ -327,7 +329,7 @@ export class AgentEngine {
   /** Load a persisted plan from DB for an existing conversation. */
   async loadPlan(conversationId: string): Promise<void> {
     try {
-      const json = await window.electronAPI.getConversationPlan(conversationId)
+      const json = await getHost().getConversationPlan(conversationId)
       if (json) {
         this.planManager.plan = JSON.parse(json) as Plan
         this.callbacks.onPlanChanged?.(this.plan)
@@ -357,7 +359,7 @@ export class AgentEngine {
     this.abortController?.abort()
     this.cleanupTerminalListeners()
     if (this.currentRequestId) {
-      window.electronAPI.apiAbortStream(this.currentRequestId)
+      getHost().apiAbortStream(this.currentRequestId)
       this.currentRequestId = null
     }
     for (const subEngine of this.activeSubAgents.values()) {
@@ -392,7 +394,7 @@ export class AgentEngine {
     // Cancel any in-flight request so two don't write to this.messages concurrently
     this.abortController?.abort()
     if (this.currentRequestId) {
-      window.electronAPI.apiAbortStream(this.currentRequestId)
+      getHost().apiAbortStream(this.currentRequestId)
       this.currentRequestId = null
     }
     this.cleanupTerminalListeners()
@@ -604,7 +606,7 @@ export class AgentEngine {
           else if (type === 'redacted_thinking') { this.currentAssistantBlocks[index] = { type: 'redacted_thinking', data: (blockData as any).data || '' } }
           else if (type === 'tool_use') {
             this.currentAssistantBlocks[index] = { type: 'tool_use', id: id || '', name: name || '', input: {}, status: 'pending' }
-            this.jsonAccumulators.set(index, '')
+            this.jsonAccumulators.set(index, new IncrementalJsonTracker())
             this.reportSpawnProgress(`子代理正在生成工具调用: ${name || ''}...`)
           }
         },
@@ -618,10 +620,15 @@ export class AgentEngine {
           else if (delta.type === 'thinking_delta' && block.type === 'thinking') { (block as any).thinking += (delta as any).thinking || '' }
           else if (delta.type === 'signature_delta' && block.type === 'thinking') { (block as any).signature = ((block as any).signature || '') + ((delta as any).signature || '') }
           else if (delta.type === 'input_json_delta' && block.type === 'tool_use') {
-            const acc = this.jsonAccumulators.get(index) || ''
-            const newAcc = acc + (delta.partial_json || '')
-            this.jsonAccumulators.set(index, newAcc)
-            try { block.input = JSON.parse(newAcc) } catch { /* accumulating */ }
+            // Incremental scan: only new chars are inspected; the full
+            // JSON.parse runs exactly once when the top-level object closes
+            // (the old per-delta JSON.parse(acc) was O(n²) and nearly always
+            // threw while the object was incomplete).
+            const tracker = this.jsonAccumulators.get(index)
+            if (tracker) {
+              const r = tracker.push(delta.partial_json || '')
+              if (r.justCompleted) block.input = r.value as Record<string, unknown>
+            }
           }
           this.streamingBlocks = this.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
           this.notifyStreamingCoalesced()
@@ -629,7 +636,7 @@ export class AgentEngine {
         onContentBlockStop: (index) => {
           const block = this.currentAssistantBlocks[index]
           if (block?.type === 'tool_use') {
-            const acc = this.jsonAccumulators.get(index) || ''
+            const acc = this.jsonAccumulators.get(index)?.accumulated() ?? ''
             try { block.input = JSON.parse(acc) } catch {
               if (block.name === 'write') {
                 const fpMatch = acc.match(/"file_path"\s*:\s*"((?:[^"\\]|\\.)*)"/)
@@ -700,11 +707,11 @@ export class AgentEngine {
       })
 
       // Register IPC listeners
-      unsubChunk = window.electronAPI.onApiStreamChunk(data => { if (data.requestId === requestId) dispatcher.processChunk(data.data) })
+      unsubChunk = getHost().onApiStreamChunk(data => { if (data.requestId === requestId) dispatcher.processChunk(data.data) })
 
-      unsubError = window.electronAPI.onApiStreamError(data => { if (data.requestId !== requestId) return; streamError = data.error; streamDeferredResolve() })
-      unsubDone = window.electronAPI.onApiStreamDone(data => { if (data.requestId !== requestId) return; streamDone = true; dispatcher.flush(); streamDeferredResolve() })
-      unsubRetry = window.electronAPI.onApiStreamRetry(data => {
+      unsubError = getHost().onApiStreamError(data => { if (data.requestId !== requestId) return; streamError = data.error; streamDeferredResolve() })
+      unsubDone = getHost().onApiStreamDone(data => { if (data.requestId !== requestId) return; streamDone = true; dispatcher.flush(); streamDeferredResolve() })
+      unsubRetry = getHost().onApiStreamRetry(data => {
         if (data.requestId !== requestId) return
         this.agentStatus = { status: 'retrying', message: data.message, attempt: data.attempt, maxRetries: data.maxRetries, delay: data.delay }
         this.notify()
@@ -714,7 +721,7 @@ export class AgentEngine {
 
       // console.log(`[AgentEngine] POST body: ${(resolvedBody as any).messages?.length ?? 0} messages`)
 
-      await window.electronAPI.apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody, profileId: this.opts.profileId })
+      await getHost().apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody, profileId: this.opts.profileId })
 
       // Await the stream-done IPC event. The main process always sends either
       // API_STREAM_DONE or API_STREAM_ERROR, and both resolve streamDonePromise.
@@ -999,13 +1006,13 @@ export class AgentEngine {
     this.cleanupTerminalListeners()
     let outputBuffer = ''
 
-    const uo = window.electronAPI.onTerminalOutput(d => { outputBuffer += d.data; targetBlock!.output = outputBuffer; this.notifyCoalesced() })
-    const ue = window.electronAPI.onTerminalExit(d => {
+    const uo = getHost().onTerminalOutput(d => { outputBuffer += d.data; targetBlock!.output = outputBuffer; this.notifyCoalesced() })
+    const ue = getHost().onTerminalExit(d => {
       targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.executingProcessId = null; this.cleanupTerminalListeners(); this.notify()
       this.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)
     })
     let terminalErrorReceived = false
-    const uerr = window.electronAPI.onTerminalError(d => {
+    const uerr = getHost().onTerminalError(d => {
       if (terminalErrorReceived) return; terminalErrorReceived = true
       targetBlock!.exitCode = -1; targetBlock!.status = 'completed'; this.executingProcessId = null; targetBlock!.output = d.message; this.cleanupTerminalListeners(); this.notify()
       this.addToolResult(toolUseId, `Error: ${d.message}`, true)
@@ -1014,7 +1021,7 @@ export class AgentEngine {
 
     try {
       const timeoutMs = targetBlock.input.timeout != null ? Number(targetBlock.input.timeout) * 1000 : undefined
-      const processId = await window.electronAPI.executeCommand(resolvedCommand, resolvedCwd || undefined, timeoutMs)
+      const processId = await getHost().executeCommand(resolvedCommand, resolvedCwd || undefined, timeoutMs)
       this.executingProcessId = processId
     } catch (err) {
       targetBlock.status = 'completed'; targetBlock.exitCode = -1; targetBlock.output = `Error: ${err instanceof Error ? err.message : 'Failed'}`
@@ -1034,7 +1041,7 @@ export class AgentEngine {
   }
 
   killTool = (toolUseId: string): void => {
-    if (this.executingProcessId) { window.electronAPI.killCommand(this.executingProcessId); this.executingProcessId = null }
+    if (this.executingProcessId) { getHost().killCommand(this.executingProcessId); this.executingProcessId = null }
     this.cleanupTerminalListeners()
     for (const msg of this.messages) {
       for (const block of msg.contentBlocks) {
@@ -1048,9 +1055,9 @@ export class AgentEngine {
   cancelLoop = (): void => {
     this.isCancelled = true
     this.abortController?.abort()
-    if (this.currentRequestId) { window.electronAPI.apiAbortStream(this.currentRequestId); this.currentRequestId = null }
+    if (this.currentRequestId) { getHost().apiAbortStream(this.currentRequestId); this.currentRequestId = null }
     this.cleanupTerminalListeners()
-    if (this.executingProcessId) { window.electronAPI.killCommand(this.executingProcessId); this.executingProcessId = null }
+    if (this.executingProcessId) { getHost().killCommand(this.executingProcessId); this.executingProcessId = null }
 
     // Pause all active sub-agents (stop streams but keep data + unresolved promises)
     for (const subEngine of this.activeSubAgents.values()) {
@@ -1071,9 +1078,9 @@ export class AgentEngine {
   pauseExecution = (): void => {
     this.isCancelled = true
     this.abortController?.abort()
-    if (this.currentRequestId) { window.electronAPI.apiAbortStream(this.currentRequestId); this.currentRequestId = null }
+    if (this.currentRequestId) { getHost().apiAbortStream(this.currentRequestId); this.currentRequestId = null }
     this.cleanupTerminalListeners()
-    if (this.executingProcessId) { window.electronAPI.killCommand(this.executingProcessId); this.executingProcessId = null }
+    if (this.executingProcessId) { getHost().killCommand(this.executingProcessId); this.executingProcessId = null }
     this.streamingBlocks = []
     this.pendingToolIds = new Set()
     this.notify()
@@ -1096,9 +1103,9 @@ export class AgentEngine {
   stopExecution = (): void => {
     this.isCancelled = true
     this.abortController?.abort()
-    if (this.currentRequestId) { window.electronAPI.apiAbortStream(this.currentRequestId); this.currentRequestId = null }
+    if (this.currentRequestId) { getHost().apiAbortStream(this.currentRequestId); this.currentRequestId = null }
     this.cleanupTerminalListeners()
-    if (this.executingProcessId) { window.electronAPI.killCommand(this.executingProcessId); this.executingProcessId = null }
+    if (this.executingProcessId) { getHost().killCommand(this.executingProcessId); this.executingProcessId = null }
     for (const subEngine of this.activeSubAgents.values()) {
       subEngine.cancelLoop()
     }
@@ -1127,7 +1134,7 @@ export class AgentEngine {
     this.streamIdleRetries = 0
     this.abortController?.abort()
     if (this.currentRequestId) {
-      window.electronAPI.apiAbortStream(this.currentRequestId)
+      getHost().apiAbortStream(this.currentRequestId)
       this.currentRequestId = null
     }
     this.currentAssistantBlocks = []
@@ -1246,7 +1253,7 @@ export class AgentEngine {
       if (msgs.length <= savedCount) return
       const fromIdx = Math.max(0, savedCount - SUB_SAVE_TAIL)
       const conv = agentMessagesToConversation(msgs.slice(fromIdx), subConvId, 'Sub-agent')
-      window.electronAPI.appendConversationMessages(subConvId, 'Sub-agent', conv.messages).catch(() => {})
+      getHost().appendConversationMessages(subConvId, 'Sub-agent', conv.messages).catch(() => {})
       savedCount = msgs.length
     }, SUB_SAVE_INTERVAL)
 
@@ -1299,7 +1306,7 @@ export class AgentEngine {
       const firstText = this.messages[0]?.contentBlocks?.find(b => b.type === 'text')?.text || ''
       const title = firstText || 'Sub-agent'
       const conv = agentMessagesToConversation(this.messages, convId, title)
-      window.electronAPI.saveConversation(conv).catch(err =>
+      getHost().saveConversation(conv).catch(err =>
         console.warn('[AgentEngine] Failed to save sub-agent conversation:', err)
       )
     }
@@ -1329,7 +1336,7 @@ export class AgentEngine {
         const tail = Math.floor((budget * 0.25) / perChar)
         const hidden = text.length - head - tail
         const dest = `~/.pulsemind/tmp/trunc/trunc_${toolUseId.slice(0, 8)}_${Date.now()}.txt`
-        window.electronAPI.writeFile({ filePath: dest, content: text }).catch(() => {})
+        getHost().writeFile({ filePath: dest, content: text }).catch(() => {})
         text = `${text.slice(0, head)}\n\n… [Tool result truncated: ~${estTokens.toLocaleString()} tokens, ${hidden.toLocaleString()} chars omitted — full text saved at ${dest}, use \`read\` to page through it] …\n\n${text.slice(-tail)}`
       }
     }
@@ -1769,7 +1776,7 @@ export class AgentEngine {
     }
     if (entries.length === 0) return
     try {
-      await window.electronAPI.persistToolResults(this.opts.conversationId!, entries)
+      await getHost().persistToolResults(this.opts.conversationId!, entries)
     } catch (err) {
       console.warn('[AgentEngine] persistUnsavedToolResults failed:', err)
     }
@@ -2372,7 +2379,7 @@ export class AgentEngine {
     for (const mem of memories) {
       if (!mem.content || mem.content.length < 10) continue
       try {
-        await window.electronAPI.saveMemory({
+        await getHost().saveMemory({
           id: crypto.randomUUID(),
           content: mem.content.slice(0, 2000),
           type: ['fact', 'decision', 'preference'].includes(mem.type) ? mem.type : 'auto',

@@ -1,3 +1,4 @@
+import { getHost } from './host'
 import type { AgentMessage, TextBlock, Plan } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import { getCachedSkillPrefs } from './mcp-cache'
@@ -109,7 +110,7 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
 
     // ── Git context (snapshot once per conversation, skipped silently if not a repo) ──
     if (workspaceDir) {
-      const settings = await window.electronAPI.getSettings().catch(() => null)
+      const settings = await getHost().getSettings().catch(() => null)
       if (!settings || settings.git?.contextInjection !== false) {
         const gitCtx = await buildGitContext(workspaceDir)
         if (gitCtx) parts.push(gitCtx)
@@ -273,9 +274,9 @@ The chat UI supports enhanced rendering for standard Markdown links and images: 
 /** Snapshot a git status summary for the given cwd. Returns null when not a repo (silent skip). */
 async function buildGitContext(cwd: string): Promise<string | null> {
   try {
-    const isRepo = await window.electronAPI.gitInvoke({ action: 'is_repo', cwd })
+    const isRepo = await getHost().gitInvoke({ action: 'is_repo', cwd })
     if (!isRepo.ok || !(isRepo.data as { isRepo?: boolean } | undefined)?.isRepo) return null
-    const status = await window.electronAPI.gitInvoke({ action: 'status', cwd })
+    const status = await getHost().gitInvoke({ action: 'status', cwd })
     if (!status.ok) return null
     const d = status.data as GitStatusInfo
     if (!d.isRepo) return null

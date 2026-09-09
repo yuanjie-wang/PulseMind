@@ -1,3 +1,4 @@
+import { getHost } from './host'
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 export function generateMsgId(): string {
@@ -14,7 +15,7 @@ export async function writeFileChunked(
   append: boolean
 ): Promise<{ success: boolean; error?: string }> {
   if (content.length <= WRITE_CHUNK_SIZE) {
-    return window.electronAPI.writeFile({ filePath, content, append })
+    return getHost().writeFile({ filePath, content, append })
   }
   const chunks: string[] = []
   let start = 0
@@ -27,10 +28,10 @@ export async function writeFileChunked(
     chunks.push(content.slice(start, end))
     start = end
   }
-  let result = await window.electronAPI.writeFile({ filePath, content: chunks[0], append })
+  let result = await getHost().writeFile({ filePath, content: chunks[0], append })
   if (!result.success) return result
   for (let i = 1; i < chunks.length; i++) {
-    result = await window.electronAPI.writeFile({ filePath, content: chunks[i], append: true })
+    result = await getHost().writeFile({ filePath, content: chunks[i], append: true })
     if (!result.success) return result
   }
   return { success: true }

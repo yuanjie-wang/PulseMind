@@ -1,3 +1,4 @@
+import { getHost } from './host'
 /**
  * MCP server summary generation — standalone service, not tied to AgentEngine.
  *
@@ -59,7 +60,7 @@ export async function generateMcpSummaries(llmCfg: LlmConfig, force?: boolean): 
     if (server.id === 'chrome-devtools') {
       if (!server.summary || force) {
         const summary = 'Browser automation: page navigation, screenshot, click, type, JavaScript evaluation, DOM & console & network control'
-        await window.electronAPI.mcpUpdateServerSummary(server.id, summary)
+        await getHost().mcpUpdateServerSummary(server.id, summary)
       }
       continue
     }
@@ -79,7 +80,7 @@ export async function generateMcpSummaries(llmCfg: LlmConfig, force?: boolean): 
       // so the server gets retried next time.
       if (result && !isFallbackSummary(result)) {
         console.warn(`[generateMcpSummaries] new summary for "${server.name}": ${result.slice(0, 80)}`)
-        await window.electronAPI.mcpUpdateServerSummary(server.id, result)
+        await getHost().mcpUpdateServerSummary(server.id, result)
       } else if (result && isFallbackSummary(result)) {
         console.warn(`[generateMcpSummaries] LLM returned fallback for "${server.name}", NOT persisting (will retry)`)
       } else {

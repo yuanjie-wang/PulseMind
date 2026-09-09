@@ -1,3 +1,4 @@
+import { getHost } from './host'
 // ── Helper: save screenshot images from MCP results to ~/.pulsemind/tmp/screenshot/ ──
 
 function isBase64Image(s: string): boolean {
@@ -19,7 +20,7 @@ export async function saveImagesInText(text: string): Promise<string> {
 
   const replacements = new Map<string, string>()
   await Promise.all(Array.from(paths).map(async (p) => {
-    const r = await window.electronAPI.copyFileToTmp(p)
+    const r = await getHost().copyFileToTmp(p)
     if (r.success) replacements.set(p, r.path)
   }))
 
@@ -39,7 +40,7 @@ export async function saveBase64Images(text: string): Promise<string> {
   const toReplace: Array<{ from: string; to: string }> = []
   while ((m = re.exec(text)) !== null) {
     const data = m[0].slice(1, -1) // strip surrounding quotes
-    const r = await window.electronAPI.saveBase64Image(data)
+    const r = await getHost().saveBase64Image(data)
     if (r.success) {
       const displayPath = r.path.replace(/\\/g, '/')
       toReplace.push({ from: m[0], to: `"${displayPath}"` })

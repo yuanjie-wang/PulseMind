@@ -1,3 +1,5 @@
+import { getHost } from './host'
+import type { PulseHost } from './host/types'
 /**
  * Reactive MCP + sub-agent + skill-preferences cache.
  *
@@ -31,29 +33,30 @@ function ensureChromeSummary(servers: MCPManagedServer[]): MCPManagedServer[] {
 }
 
 /**
- * Defensive wrapper: window.electronAPI.mcpListServers can be missing if the
+ * Defensive wrapper: getHost().mcpListServers can be missing if the
  * running window holds a stale preload (Vite HMR refreshes renderer modules but
  * never the preload bridge). Calling it would SYNC-throw (not a rejection),
  * which .catch() can't absorb — breaking AgentEngine construction. Guard so the
  * app degrades to an empty list instead of crashing.
  */
 function safeMcpListServers(): Promise<MCPManagedServer[]> {
-  const fn = window.electronAPI?.mcpListServers
+  const host = getHost() as Partial<PulseHost>
+  const fn = host.mcpListServers
   if (typeof fn !== 'function') {
-    console.warn('[mcp-cache] window.electronAPI.mcpListServers missing (stale preload?) — treating as empty list')
+    console.warn('[mcp-cache] host.mcpListServers missing (stale preload?) — treating as empty list')
     return Promise.resolve([])
   }
-  return fn.call(window.electronAPI)
+  return fn.call(host)
 }
 
 function refetchMcp(): void {
   safeMcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {})
 }
 function refetchSubAgents(): void {
-  window.electronAPI.subagentList().then(data => { subAgentProfiles = data }).catch(() => {})
+  getHost().subagentList().then(data => { subAgentProfiles = data }).catch(() => {})
 }
 function refetchSkillPrefs(): void {
-  window.electronAPI.getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {})
+  getHost().getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {})
 }
 
 // ── Init ─────────────────────────────────────────────────────────────
@@ -65,18 +68,18 @@ export function ensureCache(): Promise<void> {
   ready = true
 
   unsubs.push(
-    window.electronAPI.onMcpServersChanged(() => {
+    getHost().onMcpServersChanged(() => {
       refetchMcp()
       refetchSubAgents()
     }),
-    window.electronAPI.onSkillsChanged(refetchSkillPrefs),
+    getHost().onSkillsChanged(refetchSkillPrefs),
   )
 
   // Initial fetch — return a promise so callers can wait for cache readiness
   initPromise = Promise.all([
     safeMcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {}),
-    window.electronAPI.subagentList().then(data => { subAgentProfiles = data }).catch(() => {}),
-    window.electronAPI.getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {}),
+    getHost().subagentList().then(data => { subAgentProfiles = data }).catch(() => {}),
+    getHost().getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {}),
   ]).then(() => {})
   return initPromise
 }

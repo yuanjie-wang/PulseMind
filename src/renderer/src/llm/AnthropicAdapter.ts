@@ -1,3 +1,4 @@
+import { getHost } from '../agent/host'
 import type { AgentMessage, ToolUseBlock, ContentBlock } from '../types/agent'
 import type { ToolDefinition } from '../tools/types'
 import type { LlmAdapter } from './adapter'
@@ -331,7 +332,7 @@ export const anthropicAdapter: LlmAdapter = {
     }
 
     try {
-      const responseText = await window.electronAPI.apiFetch(url, {
+      const responseText = await getHost().apiFetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
