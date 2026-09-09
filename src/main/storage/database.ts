@@ -199,7 +199,8 @@ function createTables(): void {
       source_conversation_id TEXT,
       created_at            TEXT NOT NULL,
       last_used_at          TEXT,
-      use_count             INTEGER NOT NULL DEFAULT 0
+      use_count             INTEGER NOT NULL DEFAULT 0,
+      triggers              TEXT NOT NULL DEFAULT '[]'
     );
 
     CREATE INDEX IF NOT EXISTS idx_experiences_created_at ON experiences(created_at);
@@ -240,6 +241,7 @@ function createTables(): void {
   // Ensure tool_results has the is_error column
   try { database.exec('ALTER TABLE tool_results ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE knowledge_files ADD COLUMN wiki_outputs TEXT') } catch (e) {}
+  try { database.exec("ALTER TABLE experiences ADD COLUMN triggers TEXT NOT NULL DEFAULT '[]'") } catch (e) {}
 }
 
 // ── FTS5 helpers ──

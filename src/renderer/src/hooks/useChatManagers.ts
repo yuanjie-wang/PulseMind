@@ -119,14 +119,6 @@ export function useChatManagers(options: UseChatManagersOptions) {
       }
     }
     loadPrefs()
-
-    // One-time migration: bring the most recent knowledge-base experiences
-    // into the experience skill library (legacy experience files never re-enter the wiki)
-    experienceManagerRef.current.migrateFromKnowledge(knowledgeManagerRef.current)
-      .then(({ migrated }) => {
-        if (migrated > 0) console.log(`[experience] Migrated ${migrated} experience(s) from knowledge base`)
-      })
-      .catch((e) => console.warn('[experience] Knowledge migration failed:', e))
   }, [])
 
   // ── Backfill skill keywords when API key becomes available ──

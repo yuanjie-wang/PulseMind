@@ -26,6 +26,16 @@ function localTimestamp(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
+function parseTriggers(raw: unknown): string[] | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((k) => typeof k === 'string') : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function formatExperienceMd(rec: ExperienceRecord, content: string): string {
   const lines = [
     '---',
@@ -35,10 +45,28 @@ function formatExperienceMd(rec: ExperienceRecord, content: string): string {
     `category: ${rec.category}`,
     `createdAt: ${rec.createdAt}`
   ]
+  if (rec.triggers && rec.triggers.length > 0) {
+    lines.push('triggers:', ...rec.triggers.map((t) => `  - ${t}`))
+  }
   if (rec.sourceConversationId) lines.push(`sourceConversationId: ${rec.sourceConversationId}`)
   if (rec.lastUsedAt) lines.push(`lastUsedAt: ${rec.lastUsedAt}`)
   lines.push(`useCount: ${rec.useCount}`, '---', '', content)
   return lines.join('\n')
+}
+
+function rowToRecord(r: any): ExperienceRecord {
+  return {
+    id: r.id,
+    name: r.name,
+    title: r.title,
+    description: r.description,
+    category: r.category,
+    sourceConversationId: r.source_conversation_id ?? undefined,
+    createdAt: r.created_at,
+    lastUsedAt: r.last_used_at,
+    useCount: r.use_count,
+    triggers: parseTriggers(r.triggers)
+  }
 }
 
 export class ExperienceStore {
@@ -48,17 +76,7 @@ export class ExperienceStore {
     const rows = getDb()
       .prepare('SELECT * FROM experiences ORDER BY COALESCE(last_used_at, created_at) DESC')
       .all() as any[]
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      title: r.title,
-      description: r.description,
-      category: r.category,
-      sourceConversationId: r.source_conversation_id ?? undefined,
-      createdAt: r.created_at,
-      lastUsedAt: r.last_used_at,
-      useCount: r.use_count
-    }))
+    return rows.map(rowToRecord)
   }
 
   async read(name: string): Promise<string | null> {
@@ -89,21 +107,25 @@ export class ExperienceStore {
       sourceConversationId: draft.sourceConversationId,
       createdAt: existing?.created_at ?? now,
       lastUsedAt: existing?.last_used_at ?? null,
-      useCount: existing?.use_count ?? 0
+      useCount: existing?.use_count ?? 0,
+      triggers: draft.triggers && draft.triggers.length > 0
+        ? draft.triggers
+        : parseTriggers(existing?.triggers)
     }
     await mkdir(join(EXPERIENCES_DIR, name), { recursive: true })
     await writeFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), formatExperienceMd(record, draft.content), 'utf-8')
     getDb()
       .prepare(
-        `INSERT INTO experiences (id, name, title, description, category, source_conversation_id, created_at, last_used_at, use_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO experiences (id, name, title, description, category, source_conversation_id, created_at, last_used_at, use_count, triggers)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
            category = excluded.category,
-           source_conversation_id = excluded.source_conversation_id`
+           source_conversation_id = excluded.source_conversation_id,
+           triggers = excluded.triggers`
       )
-      .run(record.id, record.name, record.title, record.description, record.category, record.sourceConversationId ?? null, record.createdAt, record.lastUsedAt ?? null, record.useCount)
+      .run(record.id, record.name, record.title, record.description, record.category, record.sourceConversationId ?? null, record.createdAt, record.lastUsedAt ?? null, record.useCount, JSON.stringify(record.triggers ?? []))
     const evicted = await this.enforceLimit()
     return { record, evicted }
   }
@@ -121,17 +143,7 @@ export class ExperienceStore {
       .all(total - MAX_EXPERIENCES) as any[]
     let evicted: ExperienceRecord | undefined
     for (const row of rows) {
-      evicted = {
-        id: row.id,
-        name: row.name,
-        title: row.title,
-        description: row.description,
-        category: row.category,
-        sourceConversationId: row.source_conversation_id ?? undefined,
-        createdAt: row.created_at,
-        lastUsedAt: row.last_used_at,
-        useCount: row.use_count
-      }
+      evicted = rowToRecord(row)
       await this.delete(row.name)
     }
     return evicted

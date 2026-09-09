@@ -1,11 +1,19 @@
 import type { ExperienceRecord, ExperienceDraft } from '../../../shared/types/experience-types'
-import { MAX_EXPERIENCES } from '../../../shared/types/experience-types'
-import type { KnowledgeManager } from '../knowledge/KnowledgeManager'
+import { SkillKeywordAgent } from '../agent/one-shot-agent'
+import type { LlmAdapter } from '../llm/adapter'
+
+export interface ExperienceLlmConfig {
+  adapter: LlmAdapter
+  apiKey: string
+  baseURL: string
+  model: string
+}
 
 export class ExperienceManager {
   private cached: ExperienceRecord[] = []
   private cachedAt = 0
   private readonly CACHE_TTL_MS = 60_000
+  private skillKeywordAgent = new SkillKeywordAgent()
 
   private async ensureCached(): Promise<ExperienceRecord[]> {
     if (Date.now() - this.cachedAt > this.CACHE_TTL_MS) {
@@ -46,54 +54,73 @@ export class ExperienceManager {
   }
 
   /**
-   * Level-0 progressive disclosure index for the system prompt:
-   * one line per experience (title + short description), never the full body.
+   * Trigger-keyword matching (skill-style): return experiences whose triggers
+   * match the latest user message. Zero cost when nothing matches.
    */
-  async buildIndex(): Promise<string | null> {
+  async matchByTriggers(userText: string): Promise<ExperienceRecord[]> {
     const records = await this.ensureCached()
-    if (records.length === 0) return null
-    const lines = records.map((r) => `- ${r.title}${r.description ? ` — ${r.description}` : ''}`)
-    return [
-      '## Experience Index',
-      '',
-      `You have ${records.length}/${MAX_EXPERIENCES} past workflow experiences (lessons learned, optimizations, user preferences discovered in past sessions).`,
-      'Use the experience_read tool to read the full experience when relevant.',
-      '',
-      ...lines,
-    ].join('\n')
+    if (records.length === 0 || !userText) return []
+    const lower = userText.toLowerCase()
+    const matched: ExperienceRecord[] = []
+    for (const rec of records) {
+      if (!rec.triggers || rec.triggers.length === 0) continue
+      if (rec.triggers.some((kw) => kw && lower.includes(kw.toLowerCase()))) matched.push(rec)
+    }
+    return matched
   }
 
   /**
-   * One-time migration: import the latest knowledge-base experiences
-   * (source_type = 'experience') into the dedicated experience store.
-   * Source files are kept untouched.
+   * Name-only index (progressive disclosure level 0, second channel): a
+   * comma-separated list of experience names, ~100 tokens for 20 experiences.
+   * Injected into the system prompt so the model knows the library exists and
+   * can pick_skill an experience by name to read it in full.
    */
-  async migrateFromKnowledge(km: KnowledgeManager): Promise<{ migrated: number }> {
-    const files = await km.listFiles()
-    const experienceFiles = files
-      .filter((f) => f.sourceType === 'experience')
-      .slice(0, MAX_EXPERIENCES)
-    let migrated = 0
-    for (const file of experienceFiles) {
-      try {
-        const raw = await km.readRawContent(file.filePath)
-        if (!raw) continue
-        const { title, content } = parseExperienceMd(raw, file.title)
-        if (!content || content.trim().length < 10) continue
+  async buildNameIndex(): Promise<string | null> {
+    const records = await this.ensureCached()
+    if (records.length === 0) return null
+    return `## Experience Index
+
+Available past experiences (use pick_skill with name to read one in full):
+
+${records.map((r) => r.name).join(', ')}`
+  }
+
+  /**
+   * Extract trigger keywords for an experience (idempotent: skips when the
+   * record already has triggers). Callers run this fire-and-forget after save.
+   */
+  async ensureTriggers(name: string, llm: ExperienceLlmConfig): Promise<void> {
+    const rec = (await this.ensureCached()).find((r) => r.name === name)
+    if (!rec || (rec.triggers && rec.triggers.length > 0)) return
+    const raw = await this.read(name)
+    if (!raw) return
+    try {
+      const keywords = await this.skillKeywordAgent.execute(
+        { rawContent: raw },
+        {
+          llmConfig: { adapter: llm.adapter, apiKey: llm.apiKey, baseURL: llm.baseURL, model: llm.model },
+          maxTokens: 500
+        }
+      )
+      const trimmed = keywords
+        .map((k) => k.trim())
+        .filter((k) => k.length > 0 && k.length <= 40)
+        .slice(0, 12)
+      if (trimmed.length > 0) {
+        const { content } = parseExperienceMd(raw, rec.title)
         await this.save({
-          title: title || file.title || 'Untitled experience',
-          description: content.trim().slice(0, 120),
-          content,
-          category: 'general',
-          sourceConversationId: file.convId ?? undefined,
+          title: rec.title,
+          description: rec.description,
+          content: content || rec.description,
+          category: rec.category,
+          sourceConversationId: rec.sourceConversationId,
+          triggers: trimmed
         })
-        migrated++
-      } catch (e) {
-        console.error('[ExperienceManager] migration failed for', file.title, e)
+        console.log(`[ExperienceManager] Extracted ${trimmed.length} trigger keyword(s) for "${name}"`)
       }
+    } catch (e) {
+      console.warn(`[ExperienceManager] Trigger extraction failed for "${name}":`, e)
     }
-    if (migrated > 0) console.log(`[ExperienceManager] Migrated ${migrated} legacy experiences`)
-    return { migrated }
   }
 }
 

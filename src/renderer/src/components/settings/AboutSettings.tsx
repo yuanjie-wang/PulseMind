@@ -48,7 +48,7 @@ PulseMind 是一款桌面端 AI 助手应用，搭载自主 Agent 引擎，支�
 通过适配器模式同时支持 Anthropic 和 OpenAI 两大协议，可接入任意兼容 OpenAI 接口的服务（包括国内大模型厂商）。支持创建多套 LLM 配置，在提供商、模型、密钥之间自由切换。
 
 ### 工具系统
-内置 21 个工具，覆盖文件操作（读/写/编辑/搜索/修补）、命令执行（终端实时输出、跨平台）、浏览器操作、MCP 工具调用、记忆检索、工具执行结果搜索、内联交互等场景。支持 YOLO 模式一键切换完全自主运行。
+内置 27 个工具，覆盖文件操作（读/写/编辑/搜索/修补）、命令执行（终端实时输出、跨平台）、浏览器操作、MCP 工具调用、记忆检索、知识库检索、经验读取、工具执行结果搜索、内联交互等场景。支持 YOLO 模式一键切换完全自主运行。
 
 ### MCP 协议扩展
 集成 MCP（Model Context Protocol）服务器管理，可注册任意 MCP 服务器扩展 AI 能力。内置 Chrome DevTools MCP，AI 可直接操控浏览器完成导航、点击、输入、截图、内容提取。
@@ -57,13 +57,13 @@ PulseMind 是一款桌面端 AI 助手应用，搭载自主 Agent 引擎，支�
 通过导入 .zip 技能包扩展 AI 能力。每个技能包含 SKILL.md 文件，设有 YAML 头部信息和系统提示模板，可深度塑造 AI 的行为方式。支持触发关键词自动激活。
 
 ### 知识库（LLM Wiki）
-支持导入本地文件、网页 URL 和历史对话经验到知识库。内置多格式提取（PDF、Office、代码文件等），由 LLM 自动将原始材料编译为结构化知识 Wiki —— 按来源摘要、实体、概念、综合文章四个维度组织，并自动构建带摘要的知识索引。LLM 在对话中可通过搜索工具直接检索和引用知识库内容。
+支持导入本地文件、网页 URL 到知识库。内置多格式提取（PDF、Office、代码文件等），由 LLM 自动将原始材料编译为结构化知识 Wiki —— 按来源摘要、实体、概念、综合文章四个维度组织，并自动构建带摘要的知识索引。LLM 在对话中可通过搜索工具直接检索和引用知识库内容。
 
 ### 经验系统
-每次对话结束后自动将有价值的交互模式提炼为「经验」。记录特定场景下的有效工作方式，随着使用不断累积，让 AI 越来越了解您的做事风格。经验可自动入库到知识库进行编译管理。
+每次对话结束后，AI 会评估本次会话是否值得沉淀为「经验」——只有满足特定标准（复杂任务成功、撞墙后找到可行路径、被用户纠正、发现非平凡工作流）的交互才会被提取。经验以 SKILL 形式独立存储管理，最多保留 20 条，超出后按最近触发时间自动淘汰最久未使用的内容。对话中触发关键词自动匹配或 AI 主动检索即可调用经验，避免重复试错。
 
 ### 记忆系统
-三重记忆体系：手动编写持久记忆 + 会话结束后自动提取关键信息 + 最近会话上下文。自动捕获的记忆按事实、决策、偏好等类型分类，支持 SQLite FTS5 全文搜索。经验也作为记忆的一部分统一存储和管理。
+三重记忆体系：手动编写持久记忆 + 会话结束后自动提取关键信息 + 最近会话上下文。自动捕获的记忆按事实、决策、偏好等类型分类，支持 SQLite FTS5 全文搜索。
 
 ### Canvas 页面生成
 可视化 HTML 页面生成模式：AI 生成代码 → iframe 实时预览 → 画布标注反馈 → 迭代优化。支持 WebGL 渐变加载动画、多区域并行生成、一键导出 HTML。
@@ -123,7 +123,7 @@ Create custom agent roles with independently configured tool sets and behavior p
 Supports both Anthropic and OpenAI protocols via an adapter pattern. Compatible with any OpenAI-compatible API service. Create multiple LLM profiles and switch freely between providers, models, and keys.
 
 ### Tool System
-21 built-in tools covering file operations (read/write/edit/search/patch), command execution (real-time terminal output), browser automation, MCP tool calls, memory retrieval, tool result search, and inline interaction. YOLO mode for one-click fully autonomous operation.
+27 built-in tools covering file operations (read/write/edit/search/patch), command execution (real-time terminal output), browser automation, MCP tool calls, memory retrieval, knowledge base search, experience reading, tool result search, and inline interaction. YOLO mode for one-click fully autonomous operation.
 
 ### MCP Protocol Extension
 Built-in MCP (Model Context Protocol) server management — register any MCP server to extend AI capabilities. Comes with Chrome DevTools MCP for browser navigation, clicking, typing, screenshots, and content extraction.
@@ -132,13 +132,13 @@ Built-in MCP (Model Context Protocol) server management — register any MCP ser
 Import .zip skill packs to extend AI capabilities. Each skill includes a SKILL.md file with YAML frontmatter and system prompt template. Supports trigger keywords for automatic activation in relevant contexts.
 
 ### Knowledge Base (LLM Wiki)
-Import local files, web URLs, and conversation experiences into the knowledge base. Built-in multi-format extraction (PDF, Office, code files, etc.) — raw materials are automatically compiled by the LLM into a structured knowledge Wiki organized across four dimensions: source summaries, entities, concepts, and syntheses, with an auto-built indexed catalog. The LLM can search and reference knowledge base content directly during conversations.
+Import local files and web URLs into the knowledge base. Built-in multi-format extraction (PDF, Office, code files, etc.) — raw materials are automatically compiled by the LLM into a structured knowledge Wiki organized across four dimensions: source summaries, entities, concepts, and syntheses, with an auto-built indexed catalog. The LLM can search and reference knowledge base content directly during conversations.
 
 ### Experience System
-After each conversation, valuable interaction patterns are automatically distilled into "experiences" — capturing effective workflows for specific scenarios. Experiences can be automatically saved to the knowledge base for compilation.
+After each conversation, the AI evaluates whether the session deserves to be distilled into an "experience" — only interactions meeting specific criteria (successful complex tasks, finding a viable path after hitting a wall, being corrected by the user, discovering a non-trivial workflow) are extracted. Experiences are stored independently as skills — at most 20, with the least recently used automatically evicted. During conversations, trigger keywords auto-match or the AI proactively looks them up, so you never re-learn the same lesson twice.
 
 ### Memory System
-Triple-tier memory: manually written persistent memories + auto-extracted key information after sessions + recent conversation context. Memories are categorized by type (fact, decision, preference) with SQLite FTS5 full-text search. Experiences are stored as part of the memory system.
+Triple-tier memory: manually written persistent memories + auto-extracted key information after sessions + recent conversation context. Memories are categorized by type (fact, decision, preference) with SQLite FTS5 full-text search.
 
 ### Canvas Page Generation
 Visual HTML page generation mode: AI generates code → iframe live preview → canvas annotation feedback → iterative refinement. Features WebGL gradient loading animations, multi-region parallel generation, and one-click HTML export.

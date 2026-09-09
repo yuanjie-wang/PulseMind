@@ -12,6 +12,7 @@ const DEFAULT_ENABLED_TOOLS = [
   'find', 'spawn_agent',
   'create_plan', 'advance_plan',
   'knowledge_search', 'knowledge_read',
+  'experience_read',
 ]
 
 export class ToolPreferencesStore {

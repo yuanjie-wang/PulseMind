@@ -429,7 +429,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── pick_skill ──────────────────────────────────────────────────────
   {
     name: 'pick_skill',
-    description: 'Select and activate the most relevant skill by intent or name.',
+    description: 'Select and activate the most relevant skill or past experience by intent or name.',
     category: 'system',
     triggers: ['skill', 'pick skill', 'select skill', 'activate skill'],
     input_schema: {

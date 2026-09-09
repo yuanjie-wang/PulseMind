@@ -1,6 +1,6 @@
 {
   "name": "pulsemind",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "PulseMind Desktop AI Chat Application",
   "main": "./out/main/index.js",
   "scripts": {
@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
-    "@eslint/js": "^10.0.1",
+    "@eslint/js": "^9.39.0",
     "@types/adm-zip": "^0.5.8",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",

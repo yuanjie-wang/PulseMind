@@ -291,6 +291,13 @@ export function createCanvasEngine(config: CanvasEngineConfig, envCfg: { width?:
           .then((profiles) => {
             const p = profiles.find((p: any) => p.id === 'subagent-canvas')
 
+            // Respect the enabled toggle — a disabled canvas sub-agent blocks generation
+            if (p?.enabled === false) {
+              pendingGeneration = false
+              rejectStart?.(new Error('画布子代理已关闭，请在 设置 → 子代理管理 中启用后再生成'))
+              return null
+            }
+
             // Apply allowedMcpServers from profile so MCP discovery works
             if (p?.allowedMcpServers) {
               ;(engine as any).allowedMcpServersSet = new Set(p.allowedMcpServers)
@@ -316,6 +323,8 @@ export function createCanvasEngine(config: CanvasEngineConfig, envCfg: { width?:
           })
           .catch(() => CANVAS_SYSTEM_PROMPT)
           .then((basePrompt) => {
+            if (basePrompt === null) return
+
             // Build system prompt from env context + base prompt
             let fullPrompt = buildEnvContext({ ...envCfg, workDir: config.workDir }) + '\n\n' + basePrompt
 

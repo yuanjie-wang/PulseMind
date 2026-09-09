@@ -278,13 +278,11 @@ export default function SubAgentSettings({ inline = true, open, onClose, tools, 
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                {!profile.isBuiltIn && (
-                  <Switch
-                    size="small"
-                    checked={profile.enabled ?? true}
-                    onClick={() => handleToggleEnabled(profile)}
-                  />
-                )}
+                <Switch
+                  size="small"
+                  checked={profile.enabled ?? true}
+                  onClick={() => handleToggleEnabled(profile)}
+                />
                 <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(profile)} />
                 {!profile.isBuiltIn && (
                   <Button size="small" icon={<DeleteOutlined />} onClick={() => handleDelete(profile)} />

@@ -412,26 +412,52 @@ export class ToolExecutor {
       if (skillName) {
         t.output = `Looking up skill: ${skillName}...`; this.notify()
         const skill = sm!.getSkill(skillName)
-        if (!skill) { this.addToolResult(t.id, `Skill "${skillName}" not found.`, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return }
-        this.addToolResult(t.id, `## Selected Skill: ${skill.definition.name}\n\n**Description:** ${skill.definition.description}\n**Category:** ${skill.definition.category}\n\n### Instructions\n${skill.definition.systemPrompt || '(no instructions)'}`, false)
-        t.exitCode = 0; t.status = 'completed'; this.notify(); return
+        if (skill) {
+          this.addToolResult(t.id, `## Selected Skill: ${skill.definition.name}\n\n**Description:** ${skill.definition.description}\n**Category:** ${skill.definition.category}\n\n### Instructions\n${skill.definition.systemPrompt || '(no instructions)'}`, false)
+          t.exitCode = 0; t.status = 'completed'; this.notify(); return
+        }
+        // Fall back to the experience library (skill-style progressive disclosure)
+        const em = this.opts.experienceManager
+        if (em) {
+          const raw = await em.read(skillName)
+          if (raw) {
+            em.touch(skillName).catch(() => {})
+            this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}`, false)
+            t.exitCode = 0; t.status = 'completed'; this.notify(); return
+          }
+        }
+        this.addToolResult(t.id, `Skill or experience "${skillName}" not found.`, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return
       }
       const intent = String(t.input?.intent || '')
       if (!intent) throw new Error('Either "name" or "intent" must be provided')
       t.output = `Selecting best skill for: ${intent.slice(0, 80)}...`; this.notify()
       const enabledSkills2 = sm!.getEnabledSkills()
-      if (enabledSkills2.length === 0) { this.addToolResult(t.id, 'No skills enabled.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
+      const experiences2 = this.opts.experienceManager ? await this.opts.experienceManager.list() : []
+      if (enabledSkills2.length === 0 && experiences2.length === 0) { this.addToolResult(t.id, 'No skills or experiences enabled.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
       const skillsList = enabledSkills2.map(s => `- ${s.definition.name}: ${s.definition.description} (${s.definition.category})`).join('\n')
+      const expList = experiences2.map(e => `- ${e.name}: ${e.description} (experience)`).join('\n')
+      const combinedList = [skillsList, expList].filter(Boolean).join('\n')
       const selectedName = await this.skillSelectionAgent.execute(
-        { intent, skillsList },
+        { intent, skillsList: combinedList },
         { llmConfig: { adapter: this.opts.adapter, apiKey: this.opts.apiKey || '', baseURL: this.opts.baseURL, model: this.opts.model }, maxTokens: 200 }
       )
       if (!selectedName) { this.addToolResult(t.id, 'No matching skill found.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
       const cleanName = selectedName.trim()
       const skill = sm!.getSkill(cleanName)
-      if (!skill) { this.addToolResult(t.id, `Skill "${cleanName}" selected but not available.`, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return }
-      this.addToolResult(t.id, `## Selected Skill: ${cleanName}\n\n**Description:** ${skill.definition.description}\n**Category:** ${skill.definition.category}\n\n### Instructions\n${skill.definition.systemPrompt || '(no instructions)'}`, false)
-      t.exitCode = 0
+      if (skill) {
+        this.addToolResult(t.id, `## Selected Skill: ${cleanName}\n\n**Description:** ${skill.definition.description}\n**Category:** ${skill.definition.category}\n\n### Instructions\n${skill.definition.systemPrompt || '(no instructions)'}`, false)
+        t.exitCode = 0; t.status = 'completed'; this.notify(); return
+      }
+      const em2 = this.opts.experienceManager
+      if (em2) {
+        const raw2 = await em2.read(cleanName)
+        if (raw2) {
+          em2.touch(cleanName).catch(() => {})
+          this.addToolResult(t.id, `## Selected Experience: ${cleanName}\n\n${raw2}`, false)
+          t.exitCode = 0; t.status = 'completed'; this.notify(); return
+        }
+      }
+      this.addToolResult(t.id, `"${cleanName}" selected but not available.`, true); t.exitCode = 1
     } catch (err) { this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'pick_skill failed'}`, true); t.exitCode = -1 }
     t.status = 'completed'; this.notify()
   }
@@ -655,10 +681,14 @@ export class ToolExecutor {
       let maxTokens: number | undefined
       let maxLoopIterations: number | undefined
       let basePrompt = ''
+      let disabledError: Error | null = null
       try {
         const profiles = await window.electronAPI.subagentList()
         const profile = profiles.find((p: any) => p.id === subAgentId)
         if (profile) {
+          if (profile.enabled === false) {
+            disabledError = new Error(`子代理 "${profile.name || subAgentId}" 已关闭，请在 设置 → 子代理管理 中启用后再使用`)
+          }
           if (profile.allowedTools?.length) allowedTools = profile.allowedTools
           if (profile.allowedMcpServers?.length) allowedMcpServers = profile.allowedMcpServers
           if (profile.maxTokens) maxTokens = profile.maxTokens
@@ -668,6 +698,7 @@ export class ToolExecutor {
           console.warn(`[execSpawnAgent] Sub-agent "${subAgentId}" not found, falling back to defaults`)
         }
       } catch { /* fallback */ }
+      if (disabledError) throw disabledError
       if (!basePrompt) {
         basePrompt = `You are a sub-agent executing a delegated task.
 

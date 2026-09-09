@@ -148,8 +148,11 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 content: result.experienceContent,
                 category: result.experienceCategory ?? 'general',
                 sourceConversationId: conversationIdRef.current ?? undefined
-              }).then(() => {
+              }).then(({ record }) => {
                 console.log('[SessionReview] Experience saved to experience skill library')
+                experienceManagerRef.current?.ensureTriggers(record.name, {
+                  adapter, apiKey: apiKey || '', baseURL, model
+                }).catch((err: unknown) => console.warn('[SessionReview] Trigger extraction failed:', err))
               }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
             }
           })

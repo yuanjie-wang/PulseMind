@@ -8,6 +8,8 @@ export interface ExperienceRecord {
   createdAt: string
   lastUsedAt?: string | null
   useCount: number
+  /** Trigger keywords matched against the latest user message to surface this experience. */
+  triggers?: string[]
 }
 
 export interface ExperienceDraft {
@@ -16,6 +18,7 @@ export interface ExperienceDraft {
   content: string
   category: string
   sourceConversationId?: string
+  triggers?: string[]
 }
 
 export const MAX_EXPERIENCES = 20

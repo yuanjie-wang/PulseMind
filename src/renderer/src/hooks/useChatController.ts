@@ -206,13 +206,16 @@ export function useChatController(options: UseChatControllerOptions) {
 
             processedConvRef.current.add(conv.id)
             if (result.content) {
-              await managers.experienceManager.save({
+              const { record } = await managers.experienceManager.save({
                 title: result.title ?? 'Untitled experience',
                 description: result.content.slice(0, 120),
                 content: result.content,
                 category: result.category ?? 'general',
                 sourceConversationId: conv.id
               })
+              managers.experienceManager.ensureTriggers(record.name, {
+                adapter: options.adapter, apiKey: apiKey || '', baseURL: options.baseURL, model: options.model
+              }).catch((e: unknown) => console.warn('[experience] Trigger extraction failed:', e))
             }
           } catch (convErr) {
             console.warn('[experience] Failed to process conversation ' + conv.id + ':', convErr)

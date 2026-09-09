@@ -16,6 +16,7 @@ export interface BuildSystemPromptParams {
   systemPromptCache: Map<string, { prompt: string; time: number }>
   conversationId?: string
   skillAppendix: string | null
+  experienceAppendix: string | null
   plan: Plan | null
   experienceManager?: import('../experiences/ExperienceManager').ExperienceManager
 }
@@ -26,16 +27,20 @@ export interface BuildSystemPromptResult {
   wikiContextSnapshot: string | null
   wikiContextVersion: number
   skillAppendix: string | null
+  experienceAppendix: string | null
 }
 
 export async function buildSystemPrompt(params: BuildSystemPromptParams): Promise<BuildSystemPromptResult> {
   const {
     opts, spawnSystemPrompt, spawnSystemPromptAppendix,
     messages, conversationId, plan,
-    skillAppendix: prevSkillAppendix
+    skillAppendix: prevSkillAppendix,
+    experienceAppendix: prevExperienceAppendix
   } = params
-  let { memoryContextSnapshot, wikiContextSnapshot, wikiContextVersion } = params
+  const { wikiContextSnapshot, wikiContextVersion } = params
+  let { memoryContextSnapshot } = params
   let skillAppendix = prevSkillAppendix
+  let experienceAppendix = prevExperienceAppendix
 
   const convId = conversationId
   const now = Date.now()
@@ -119,16 +124,30 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
 
 You have a local knowledge base (compiled wiki) of project documents and past compiled knowledge. It is NOT shown here — look things up on demand with the knowledge_search and knowledge_read tools when relevant.`)
 
-    // ── Experience index (progressive disclosure: titles only) ───────
+    // ── Experience index: name-only second channel (progressive disclosure) ──
+    // Full experience contents are never injected. The model sees a compact
+    // name list and can pick_skill an experience by name when relevant.
     if (params.experienceManager) {
-      const experienceIndex = await params.experienceManager.buildIndex()
-      if (experienceIndex) parts.push(experienceIndex)
+      const expIndex = await params.experienceManager.buildNameIndex()
+      if (expIndex) parts.push(expIndex)
     }
 
     // ── Tool & renderer appendix ─────────────────────────────────────
     const toolManager = opts.toolManager
     const toolAppendix = toolManager?.getSystemPromptAppendix()
     if (toolAppendix) parts.push(toolAppendix)
+
+    // ── Tool call format ─────────────────────────────────────────────
+    // Some models drift into emitting tool invocations as raw XML text
+    // (`<invoke name="...">`, `<parameter ...>`) instead of the API's
+    // structured tool-call mechanism. The chat API only executes calls made
+    // through the protocol — XML tags in the reply are treated as plain text,
+    // so the model silently "thinks" it called a tool while nothing runs
+    // (seen as unresponsive tool use). Nail the format down up front.
+    parts.push(`\
+## Tool Call Format
+
+Only call tools via the API's structured JSON tool-call mechanism. Never emit XML tags like \`<invoke name="...">\` — such text is treated as prose and will NOT execute. Follow the tool definitions provided with this request.`)
 
     // ── Compressed tool results ──────────────────────────────────────
     // Old tool_result content may be stripped to a placeholder to fit the
@@ -216,12 +235,38 @@ The chat UI supports enhanced rendering for standard Markdown links and images: 
     }
   }
 
+  // ── Experience keyword matching (skill-style triggers, appended to the last user message) ──
+  {
+    const experienceManager = params.experienceManager
+    if (experienceManager) {
+      let userText = ''
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role !== 'user') continue
+        for (const block of messages[i].contentBlocks) {
+          if (block.type === 'text') { userText = (block as TextBlock).text; break }
+        }
+        if (userText) break
+      }
+      if (userText) {
+        try {
+          const matched = await experienceManager.matchByTriggers(userText)
+          if (matched.length > 0) {
+            experienceAppendix = '[Possible experiences: <experiences>' +
+              matched.map(e => `<experience><name>${e.name}</name><description>${e.description}</description></experience>`).join('') +
+              '</experiences>]'
+          } else { experienceAppendix = null }
+        } catch { experienceAppendix = null }
+      }
+    }
+  }
+
   return {
     systemPrompt,
     memoryContextSnapshot,
     wikiContextSnapshot,
     wikiContextVersion,
     skillAppendix,
+    experienceAppendix,
   }
 }
 

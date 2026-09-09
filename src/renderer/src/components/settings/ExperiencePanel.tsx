@@ -118,6 +118,13 @@ function ExperiencePanel({ open, onClose, inline }: ExperiencePanelProps): React
               <span>{exp.lastUsedAt ? `最近触发 ${exp.lastUsedAt}` : '从未触发'}</span>
               <span>触发 {exp.useCount} 次</span>
             </div>
+            {exp.triggers && exp.triggers.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {exp.triggers.map((kw) => (
+                  <span key={kw} style={{ fontSize: 11, color: '#1677ff', background: 'rgba(22,119,255,0.08)', borderRadius: 4, padding: '1px 6px' }}>{kw}</span>
+                ))}
+              </div>
+            )}
           </div>
         ))
       )}

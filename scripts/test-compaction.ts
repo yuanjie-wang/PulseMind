@@ -23,6 +23,7 @@ interface AgentMessage {
   autoSummary?: boolean
   compressedIds?: string[]
   compactBoundary?: boolean
+  inputTokens?: number
 }
 
 // ── Helpers ──
@@ -394,7 +395,8 @@ function testLightCompact(): void {
     contextLength: number,
   ): { messages: AgentMessage[]; didCompact: boolean } {
     const estimatedTokens = estimateTokens(messages)
-    if (estimatedTokens < contextLength * 0.7) {
+    const remainingWindow = contextLength - estimatedTokens
+    if (remainingWindow >= Math.max(contextLength * 0.3, 30000)) {
       return { messages, didCompact: false }
     }
 
@@ -725,6 +727,126 @@ function testEndToEnd(): void {
 }
 
 // ══════════════════════════════════════════════════════════════
+// Test 6: real inputTokens trigger (plan B)
+// ══════════════════════════════════════════════════════════════
+
+function testRealTokenTrigger(): void {
+  console.log('\n── Test 6: real inputTokens trigger ──')
+
+  // Mirrors AgentEngine.contextTokens: prefer the last message's real
+  // cumulative inputTokens, fall back to the char heuristic when absent.
+  function contextTokens(messages: AgentMessage[], fixedOverhead = 0): number {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const t = messages[i].inputTokens
+      if (t && t > 0) {
+        const tail = estimateTokens(messages.slice(i + 1))
+        return Math.max(t + tail, estimateTokens(messages))
+      }
+    }
+    return estimateTokens(messages) + fixedOverhead
+  }
+
+  // 6a: real inputTokens wins over char heuristic
+  {
+    const msgs = [
+      makeAssistantMsg([textBlock('hello world')]),  // 11 chars → 3 tokens heuristic
+      makeAssistantMsg([textBlock('reply')]),        // 5 chars → 1 token heuristic
+    ]
+    msgs[1].inputTokens = 25461  // realistic cumulative API report
+    assertEq(contextTokens(msgs), 25461, '6a: real inputTokens preferred')
+  }
+
+  // 6b: falls back to heuristic when no message reports inputTokens
+  {
+    const msgs = [
+      makeUserMsg([textBlock('Hello, how are you?')]),   // 19 chars
+      makeAssistantMsg([textBlock('I am fine, thanks!')]), // 21 chars
+    ]
+    assertEq(contextTokens(msgs), Math.ceil((19 + 19) / 3.5), '6b: heuristic fallback')
+  }
+
+  // 6b2: fallback adds fixedOverhead (system prompt + tools) so the estimate
+  // doesn't undercount before the first real token report arrives
+  {
+    const msgs = [
+      makeUserMsg([textBlock('Hello, how are you?')]),   // 19 chars
+      makeAssistantMsg([textBlock('I am fine, thanks!')]), // 21 chars
+    ]
+    const overhead = 4000  // e.g. system prompt + tool schemas
+    assertEq(contextTokens(msgs, overhead), Math.ceil((19 + 19) / 3.5) + overhead, '6b2: overhead added on fallback')
+  }
+
+  // 6b3: real inputTokens ignores fixedOverhead (already includes prompt+tools)
+  {
+    const msgs = [makeAssistantMsg([textBlock('hi')])]
+    msgs[0].inputTokens = 12345
+    assertEq(contextTokens(msgs, 4000), 12345, '6b3: real tokens ignore overhead')
+  }
+
+  // 6d: the tool-loop regression — a recent inputTokens report is the baseline,
+  // and messages appended after it (the tool_result for a just-run tool) are
+  // estimated on top so they can't slip past the threshold.
+  {
+    const tuId = 'tu_6d'
+    const msgs = [
+      makeAssistantMsg([textBlock('running')]),
+      makeAssistantMsg([textBlock('calling'), toolUseBlock('exec', tuId)]), // inputTokens 11584
+      makeUserMsg([toolResultBlock(tuId, 'big result ' + 'x'.repeat(500))]), // appended after report
+    ]
+    msgs[1].inputTokens = 11584
+    const tail = estimateTokens(msgs.slice(2)) // the tool_result message only
+    assertEq(contextTokens(msgs), Math.max(11584 + tail, estimateTokens(msgs)), '6d: baseline+tail, floored by full estimate')
+    assertEq(contextTokens(msgs, 4000), Math.max(11584 + tail, estimateTokens(msgs)), '6d: fixedOverhead still ignored when a real baseline exists')
+  }
+
+  // 6e: the compaction-cycle regression — the latest inputTokens report is a
+  // POST-compaction size (what was actually sent, already truncated), so the
+  // full char heuristic must floor it or compaction stops firing and the
+  // context balloons back up (the 69K→25K→78K→… sawtooth in the DB).
+  {
+    const msgs: AgentMessage[] = []
+    for (let i = 0; i < 20; i++) {
+      const tuId = `tu_6e_${i}`
+      msgs.push(makeAssistantMsg([textBlock('short'), toolUseBlock('exec', tuId)]))
+      // 5000 chars → ~1428 tokens per result; 20 cycles ≈ 100k chars ≈ 28.5k tokens
+      msgs.push(makeUserMsg([toolResultBlock(tuId, 'result ' + 'x'.repeat(5000))]))
+    }
+    // Real full context is large, but the last report is a tiny post-compaction
+    // send — a naive baseline would read ~2k and skip.
+    msgs[msgs.length - 1].inputTokens = 2100
+    const full = estimateTokens(msgs)
+    const baselinePlusTail = 2100 + estimateTokens(msgs.slice(msgs.length - 1))
+    assert(full > baselinePlusTail, '6e: full estimate exceeds the stale post-compaction baseline')
+    assertEq(contextTokens(msgs), full, '6e: full char estimate floors the stale baseline')
+    assert(full > 26214 * 0.9, '6e: floored value exceeds hardTruncate threshold (fires)')
+  }
+
+  // 6c: the regression case — UI shows 97% but char heuristic says ~51.8%.
+  // contextLength=26214, real=25461, heuristic≈13578.
+  // Trigger check (hardTruncate, remaining-window semantics):
+  // real > 26214 - max(0.1*26214, 10K) = 16214 → must fire.
+  {
+    const contextLength = 26214
+    const threshold = contextLength - Math.max(contextLength * 0.1, 10000)
+    const msgs: AgentMessage[] = []
+    // Build enough messages that the heuristic stays low but a real report says 25461
+    for (let i = 0; i < 20; i++) {
+      const tuId = `tu_rt_${i}`
+      msgs.push(makeAssistantMsg([textBlock('short'), toolUseBlock('exec', tuId)]))
+      msgs.push(makeUserMsg([toolResultBlock(tuId, 'result ' + 'x'.repeat(100))]))
+    }
+    msgs[msgs.length - 1].inputTokens = 25461
+
+    const real = contextTokens(msgs)
+    const heuristic = estimateTokens(msgs)
+    assert(real > threshold, '6c: real tokens exceed hardTruncate threshold')
+    assert(heuristic <= threshold, '6c: char heuristic alone stays under threshold (the bug)')
+  }
+
+  console.log(`  real token trigger: all passed`)
+}
+
+// ══════════════════════════════════════════════════════════════
 // Run all tests
 // ══════════════════════════════════════════════════════════════
 
@@ -737,6 +859,7 @@ testNanoCompact()
 testCompactBoundary()
 testLightCompact()
 testEndToEnd()
+testRealTokenTrigger()
 
 console.log('\n' + '=' .repeat(60))
 console.log(`Results: ${passed} passed, ${failed} failed`)

@@ -267,7 +267,10 @@ One of "intent" or "name" must be provided.
 ### Guidelines
 - Use "name" when you know the exact skill you want
 - Use "intent" for automatic matching when uncertain
-- If no skill matches, the tool will return "No matching skill found"`,
+- If no skill matches, the tool will return "No matching skill found"
+
+### Past experiences
+The Experience Index in your system prompt lists past experiences (lessons learned from earlier sessions) by name. When a task matches a listed experience, pass its exact name here to read it in full — the experience may contain valuable pitfalls and optimizations for similar work.`,
 
   knowledge_search: `## knowledge_search
 
