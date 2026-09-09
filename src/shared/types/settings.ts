@@ -23,5 +23,7 @@ export interface AppSettings {
   autoCleanup?: boolean
   yoloMode?: boolean
   locale?: 'zh' | 'en'
+  /** Launch the app at OS login (applied via app.setLoginItemSettings; also toggled from the tray). */
+  launchAtLogin?: boolean
   git?: { contextInjection?: boolean }
 }

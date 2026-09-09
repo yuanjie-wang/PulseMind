@@ -10,6 +10,8 @@ import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { runLaunchHooks } from './hooks-runner'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
+import { createTray, applyLaunchAtLogin } from './tray'
+import { settingsStore } from './storage/settings-store'
 import { notifyResume } from './ipc/app.handler'
 
 let mainWindow: BrowserWindow | null = null
@@ -339,6 +341,33 @@ if (gotTheLock) {
 
   createWindow()
   writeLog('INFO', 'startup: main window created')
+
+  // ── Tray residency + launch-at-login (PLAN-0.3.5 M2.3) ──
+  // The tray anchors the resident process (closed window keeps the service
+  // alive) and hosts the launch-at-login toggle; the preference persists in
+  // settings.json and is applied to the OS on every startup.
+  try {
+    const bootSettings = await settingsStore.get()
+    applyLaunchAtLogin(!!bootSettings.launchAtLogin)
+    createTray({
+      getLaunchAtLogin: async () => !!(await settingsStore.get()).launchAtLogin,
+      onToggleLaunchAtLogin: async (enabled) => {
+        const s = await settingsStore.get()
+        await settingsStore.set({ ...s, launchAtLogin: enabled })
+        applyLaunchAtLogin(enabled)
+      },
+      onShowWindow: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return }
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+        mainWindow.focus()
+      },
+      onQuit: () => app.quit(),
+    })
+    writeLog('INFO', 'startup: tray created')
+  } catch (err) {
+    writeLog('WARN', `startup: tray creation failed: ${err}`)
+  }
 
   // Tmp cleanup runs in the background (async fs, fire-and-forget) so it never
   // blocks window creation or the UI event loop. Also swept periodically for

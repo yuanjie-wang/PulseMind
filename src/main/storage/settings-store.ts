@@ -33,7 +33,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   workspaceDir: DEFAULT_WORKSPACE_DIR,
   autoCleanup: false,
   yoloMode: true,
-  locale: 'zh'
+  locale: 'zh',
+  launchAtLogin: false
 }
 
 /**
@@ -89,7 +90,8 @@ export class SettingsStore {
           workspaceDir: readWorkspaceDir(parsed),
           autoCleanup: parsed.autoCleanup ?? false,
           yoloMode: parsed.yoloMode ?? true,
-          locale: parsed.locale ?? 'zh'
+          locale: parsed.locale ?? 'zh',
+          launchAtLogin: parsed.launchAtLogin ?? false,
         }
         cache = { mtimeMs: stats.mtimeMs, settings: result }
         return structuredClone(result)
