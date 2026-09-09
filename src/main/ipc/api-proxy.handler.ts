@@ -176,146 +176,161 @@ async function fetchWithRetry(
   }
 }
 
+export interface LlmStreamSinks {
+  onError(message: string): void
+  onRetry(attempt: number, maxRetries: number, delayMs: number, message: string): void
+  onChunk(text: string): void
+  onDone(): void
+}
+
+export interface LlmStreamOptions {
+  method?: string
+  headers?: Record<string, string>
+  body?: string | Record<string, unknown>
+  profileId?: string
+}
+
+/**
+ * Transport for one streaming LLM request (PLAN-0.3.5 M1.4): validate SSRF →
+ * merge profile headers (env placeholders resolved) → llm-request hook → fetch
+ * with retry → SSE chunk pump with idle timeout. Transport-agnostic: the IPC
+ * handler bridges sinks to the requesting webContents; the main-process agent
+ * host passes callback sinks so the engine consumes chunks in-process.
+ */
+export async function performLlmStream(
+  requestId: string,
+  url: string,
+  options: LlmStreamOptions,
+  sinks: LlmStreamSinks,
+  controller: AbortController,
+  maxRetries = 20,
+): Promise<void> {
+  try { await validateRequestUrl(url) } catch (e) {
+    sinks.onError(e instanceof Error ? e.message : 'SSRF 拦截')
+    return
+  }
+
+  pendingRequests.set(requestId, { controller, url })
+
+  console.log(`[API-Proxy] Starting request: ${requestId} ${options.method || 'POST'} ${url}`)
+
+  const retryCb = (attempt: number, reason: string) => {
+    const delay = (attempt + 4) * 1000
+    sinks.onRetry(attempt, maxRetries, delay, `${reason}，正在重试 (${attempt}/${maxRetries})…`)
+  }
+
+  try {
+    // Stringify body in main process so the renderer isn't blocked on large JSON.
+    const body = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
+    const mergedHeaders = await applyProfileHeaders(options.headers, { profileId: options.profileId })
+    // llm-request hook: the streaming channel is LLM-only (AgentEngine loop +
+    // OpenAIAdapter.callNonStreaming). webfetch goes through the simple fetch
+    // handler, so every request here is an LLM request — always run the hook.
+    const hookApplied = await applyLlmRequestHook(url, mergedHeaders, body, {
+      profileId: options.profileId,
+      requestId,
+    })
+    const finalUrl = hookApplied.url
+    const finalBody = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
+    const finalHeaders = hookApplied.headers
+    const resolvedOptions: { method?: string; headers?: Record<string, string>; body?: string } = {
+      ...options,
+      body: finalBody,
+      headers: finalHeaders
+    }
+    const response = await fetchWithRetry(finalUrl, resolvedOptions, controller.signal, maxRetries, retryCb)
+
+    console.log(`[API-Proxy] Response status: ${response.status} for ${requestId}`)
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => 'Unknown error')
+      // Dump full request body for debugging 400 errors
+      try {
+        const reqBody = JSON.parse(resolvedOptions.body || '{}')
+        const msgs = (reqBody.messages || []).map((m: any, i: number) => {
+          const content = m.content
+          const contentStr = typeof content === 'string' ? JSON.stringify(content) : JSON.stringify(content)
+          return `${i}:${m.role} content=${contentStr} len=${typeof content === 'string' ? content.length : '?'} tool_calls=${m.tool_calls?.length ?? 0}${m.tool_calls ? ' calls=[' + m.tool_calls.map((tc: any) => `${tc.function?.name || '?'}(${(tc.function?.arguments || '').length})`).join(',') + ']' : ''}`
+        })
+        console.error(`[API-Proxy] HTTP ${response.status} full messages:`, msgs.join('\n  '))
+      } catch { /* ignore parse error */ }
+      sinks.onError(`HTTP ${response.status}: ${errText.slice(0, 1000)}`)
+      return
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+      sinks.onError('No response body')
+      return
+    }
+
+    const decoder = new TextDecoder()
+
+    // Idle timeout: if no data received for 60 seconds, abort the stream.
+    // Prevents the app from freezing when the TCP connection hangs
+    // after macOS sleep/resume or other network interruptions.
+    let readTimeout: ReturnType<typeof setTimeout> | undefined
+    function resetReadTimeout(): void {
+      clearTimeout(readTimeout)
+      readTimeout = setTimeout(() => {
+        controller.abort(new Error('Stream idle timeout'))
+      }, 60_000)
+    }
+    resetReadTimeout()
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        resetReadTimeout()
+        const text = decoder.decode(value, { stream: true })
+        sinks.onChunk(text)
+      }
+    } finally {
+      clearTimeout(readTimeout)
+    }
+
+    sinks.onDone()
+    console.log(`[API-Proxy] Stream complete: ${requestId}`)
+  } catch (err) {
+    if (controller.signal.aborted) {
+      const isTimeout = controller.signal.reason instanceof Error
+        && controller.signal.reason.message === 'Stream idle timeout'
+      if (isTimeout) {
+        console.log(`[API-Proxy] Stream idle timeout: ${requestId}`)
+        sinks.onError('连接闲置超时，请重试')
+      } else {
+        console.log(`[API-Proxy] Request aborted: ${requestId}`)
+        sinks.onDone()
+      }
+      return
+    }
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    const detail = err instanceof Error && err.cause ? ` | cause: ${err.cause}` : ''
+    console.error(`[API-Proxy] Request error: ${requestId} - ${message}${detail}`)
+    sinks.onError(`${message}${detail}`)
+  } finally {
+    pendingRequests.delete(requestId)
+  }
+}
+
 export function registerApiProxyHandlers(): void {
-  // Start a proxied streaming HTTP request
+  // Start a proxied streaming HTTP request — bridges performLlmStream sinks to
+  // the requesting renderer's webContents.
   ipcMain.handle(
     IPC_CHANNELS.API_FETCH_STREAM,
-    async (
-      event,
-      requestId: string,
-      url: string,
-      options: {
-        method?: string
-        headers?: Record<string, string>
-        body?: string | Record<string, unknown>
-        profileId?: string
-      }
-    ) => {
+    async (event, requestId: string, url: string, options: LlmStreamOptions) => {
       const webContents = getSender(event)
+      const guard = (send: () => void) => {
+        if (!webContents.isDestroyed()) { try { send() } catch { /* renderer frame disposed */ } }
+      }
       const controller = new AbortController()
-
-      try { await validateRequestUrl(url) } catch (e) {
-        webContents.send(IPC_CHANNELS.API_STREAM_ERROR, {
-          requestId, error: e instanceof Error ? e.message : 'SSRF 拦截'
-        })
-        return
-      }
-
-      pendingRequests.set(requestId, { controller, url })
-
-      console.log(`[API-Proxy] Starting request: ${requestId} ${options.method || 'POST'} ${url}`)
-
-      const maxRetries = 20
-      const retryCb = (attempt: number, reason: string) => {
-        const delay = (attempt + 4) * 1000
-        webContents.send(IPC_CHANNELS.API_STREAM_RETRY, { requestId, attempt, maxRetries, delay, message: `${reason}，正在重试 (${attempt}/${maxRetries})…` })
-      }
-
-      try {
-        // Stringify body in main process so the renderer isn't blocked on large JSON.
-        const body = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
-        const mergedHeaders = await applyProfileHeaders(options.headers, { profileId: options.profileId })
-        // llm-request hook: the streaming channel is LLM-only (AgentEngine loop +
-        // OpenAIAdapter.callNonStreaming). webfetch goes through the simple fetch
-        // handler, so every request here is an LLM request — always run the hook.
-        const hookApplied = await applyLlmRequestHook(url, mergedHeaders, body, {
-          profileId: options.profileId,
-          requestId,
-        })
-        const finalUrl = hookApplied.url
-        const finalBody = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
-        const finalHeaders = hookApplied.headers
-        const resolvedOptions: { method?: string; headers?: Record<string, string>; body?: string } = {
-          ...options,
-          body: finalBody,
-          headers: finalHeaders
-        }
-        const response = await fetchWithRetry(finalUrl, resolvedOptions, controller.signal, maxRetries, retryCb)
-
-        console.log(`[API-Proxy] Response status: ${response.status} for ${requestId}`)
-
-        if (!response.ok) {
-          const errText = await response.text().catch(() => 'Unknown error')
-          // Dump full request body for debugging 400 errors
-          try {
-            const reqBody = JSON.parse(resolvedOptions.body || '{}')
-            const msgs = (reqBody.messages || []).map((m: any, i: number) => {
-              const content = m.content
-              const contentStr = typeof content === 'string' ? JSON.stringify(content) : JSON.stringify(content)
-              return `${i}:${m.role} content=${contentStr} len=${typeof content === 'string' ? content.length : '?'} tool_calls=${m.tool_calls?.length ?? 0}${m.tool_calls ? ' calls=[' + m.tool_calls.map((tc: any) => `${tc.function?.name || '?'}(${(tc.function?.arguments || '').length})`).join(',') + ']' : ''}`
-            })
-            console.error(`[API-Proxy] HTTP ${response.status} full messages:`, msgs.join('\n  '))
-          } catch { /* ignore parse error */ }
-          webContents.send(IPC_CHANNELS.API_STREAM_ERROR, {
-            requestId,
-            error: `HTTP ${response.status}: ${errText.slice(0, 1000)}`
-          })
-          return
-        }
-
-        const reader = response.body?.getReader()
-        if (!reader) {
-          webContents.send(IPC_CHANNELS.API_STREAM_ERROR, {
-            requestId,
-            error: 'No response body'
-          })
-          return
-        }
-
-        const decoder = new TextDecoder()
-
-        // Idle timeout: if no data received for 60 seconds, abort the stream.
-        // Prevents the app from freezing when the TCP connection hangs
-        // after macOS sleep/resume or other network interruptions.
-        let readTimeout: ReturnType<typeof setTimeout> | undefined
-        function resetReadTimeout(): void {
-          clearTimeout(readTimeout)
-          readTimeout = setTimeout(() => {
-            controller.abort(new Error('Stream idle timeout'))
-          }, 60_000)
-        }
-        resetReadTimeout()
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            resetReadTimeout()
-            const text = decoder.decode(value, { stream: true })
-            webContents.send(IPC_CHANNELS.API_STREAM_CHUNK, { requestId, data: text })
-          }
-        } finally {
-          clearTimeout(readTimeout)
-        }
-
-        webContents.send(IPC_CHANNELS.API_STREAM_DONE, { requestId })
-        console.log(`[API-Proxy] Stream complete: ${requestId}`)
-      } catch (err) {
-        if (controller.signal.aborted) {
-          const isTimeout = controller.signal.reason instanceof Error
-            && controller.signal.reason.message === 'Stream idle timeout'
-          if (isTimeout) {
-            console.log(`[API-Proxy] Stream idle timeout: ${requestId}`)
-            webContents.send(IPC_CHANNELS.API_STREAM_ERROR, {
-              requestId,
-              error: '连接闲置超时，请重试'
-            })
-          } else {
-            console.log(`[API-Proxy] Request aborted: ${requestId}`)
-            webContents.send(IPC_CHANNELS.API_STREAM_DONE, { requestId })
-          }
-          return
-        }
-        const message = err instanceof Error ? err.message : 'Unknown error'
-        const detail = err instanceof Error && err.cause ? ` | cause: ${err.cause}` : ''
-        console.error(`[API-Proxy] Request error: ${requestId} - ${message}${detail}`)
-        webContents.send(IPC_CHANNELS.API_STREAM_ERROR, {
-          requestId,
-          error: `${message}${detail}`
-        })
-      } finally {
-        pendingRequests.delete(requestId)
-      }
+      await performLlmStream(requestId, url, options, {
+        onError: (message) => guard(() => webContents.send(IPC_CHANNELS.API_STREAM_ERROR, { requestId, error: message })),
+        onRetry: (attempt, maxRetries, delay, message) => guard(() => webContents.send(IPC_CHANNELS.API_STREAM_RETRY, { requestId, attempt, maxRetries, delay, message })),
+        onChunk: (text) => guard(() => webContents.send(IPC_CHANNELS.API_STREAM_CHUNK, { requestId, data: text })),
+        onDone: () => guard(() => webContents.send(IPC_CHANNELS.API_STREAM_DONE, { requestId })),
+      }, controller)
     }
   )
 
