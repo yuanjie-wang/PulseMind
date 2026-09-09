@@ -190,7 +190,11 @@ function createSplashWindow(): void {
       nodeIntegration: false,
     }
   })
-  splashWindow.loadFile(getResourcePath('splash', 'splash.html'))
+  // Version rides in the query string so the splash never needs a manual bump —
+  // it always shows app.getVersion() (single source of truth: package.json).
+  splashWindow.loadFile(getResourcePath('splash', 'splash.html'), {
+    query: { v: app.getVersion() },
+  })
   splashWindow.on('ready-to-show', () => {
     if (!splashWindow || splashWindow.isDestroyed()) return
     // Reveal only once the page is painted, so the window never appears blank.
