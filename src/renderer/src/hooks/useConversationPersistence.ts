@@ -6,6 +6,11 @@ import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../u
 
 // ── Hook ──
 
+/** Incremental saves re-write this many trailing messages (INSERT OR REPLACE) on
+ *  every tick so in-place updates on the live tail (e.g. exitCode written onto
+ *  tool_use blocks after execution completes) still reach the DB. */
+const INCREMENTAL_TAIL_RESAVE = 8
+
 interface UseConversationPersistenceOptions {
   autoCleanup?: boolean
   messages: AgentMessage[]
@@ -111,6 +116,50 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   }, [conversations, enginesRef])
   saveRef.current = saveCurrentConversation
 
+  /** Incremental save: appends only messages that appeared since the last save,
+   *  plus a small re-saved tail for in-place block updates. Used for the periodic
+   *  save while streaming and the debounced save between loop rounds — a full
+   *  saveConversation rewrite over a long task's history (JSON.stringify of every
+   *  contentBlocks + re-insert of every tool_result) stalls the main process's
+   *  synchronous SQLite on the shared event loop. The full save remains the
+   *  end-of-stream and beforeunload path. */
+  const saveNewMessages = useCallback(async () => {
+    const convId = convIdRef.current
+    if (!convId) return
+    const engine = enginesRef.current.get(convId)
+    const msgs = engine?.messages
+    if (!msgs || msgs.length === 0) return
+
+    const savedIds = savedMsgIdsRef.current.get(convId)
+    if (savedIds && msgs.length < savedIds.size) {
+      // History shrank in memory (compaction/regeneration) — refresh everything.
+      await saveRef.current()
+      return
+    }
+
+    const firstNewIdx = savedIds ? msgs.findIndex(m => !savedIds.has(m.id)) : 0
+    const fromIdx = firstNewIdx === -1
+      ? Math.max(0, msgs.length - INCREMENTAL_TAIL_RESAVE)
+      : Math.max(0, firstNewIdx - INCREMENTAL_TAIL_RESAVE)
+
+    const firstText = msgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
+    const existingConv = conversations.find((c) => String(c.key) === convId)
+    const existingTitle = existingConv?.label && existingConv.label !== '新对话'
+      ? existingConv.label
+      : null
+    const title = existingTitle || firstText || '新对话'
+
+    const toSave = agentMessagesToConversation(msgs.slice(fromIdx), convId, title)
+    try {
+      await window.electronAPI.appendConversationMessages(convId, title, toSave.messages)
+      savedMsgIdsRef.current.set(convId, new Set(msgs.map(m => m.id)))
+    } catch (err) {
+      console.error('[Chat] incremental save failed:', err)
+    }
+  }, [conversations, enginesRef])
+  const saveNewRef = useRef<() => Promise<void>>(null as unknown as () => Promise<void>)
+  saveNewRef.current = saveNewMessages
+
   const saveConversationSync = useCallback(() => {
     const convId = convIdRef.current
     if (!convId) return
@@ -168,7 +217,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   useEffect(() => {
     if (!activeConversationKey || agentStatus.status === 'streaming') return
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(() => { saveRef.current() }, 1000)
+    saveTimerRef.current = setTimeout(() => { saveNewRef.current() }, 1000)
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
   }, [messages, agentStatus.status])
 
@@ -177,7 +226,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   useEffect(() => {
     if (agentStatus.status === 'streaming') {
       if (!periodicSaveRef.current) {
-        periodicSaveRef.current = setInterval(() => { saveRef.current() }, 10000)
+        periodicSaveRef.current = setInterval(() => { saveNewRef.current() }, 10000)
       }
     } else {
       if (periodicSaveRef.current) {

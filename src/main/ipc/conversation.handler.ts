@@ -140,8 +140,6 @@ export function registerConversationHandlers(): void {
     console.log(`[DB] save: ${conversation.id} "${conversation.title}" (${conversation.messages?.length || 0} msgs)`)
     try {
       saveConversation(conversation)
-      const count = listConversations().length
-      console.log(`[DB] save: OK, now ${count} conversations total`)
     } catch (e) {
       console.error('[DB] save error:', e)
     }

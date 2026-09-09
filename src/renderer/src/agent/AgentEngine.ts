@@ -184,9 +184,39 @@ export class AgentEngine {
   private opts: AgentEngineOptions
   private callbacks!: AgentEngineCallbacks
   private notify = (): void => {
+    if (this.notifyTimer !== null) {
+      clearTimeout(this.notifyTimer)
+      this.notifyTimer = null
+    }
     this.callbacks.onMessagesChanged?.(this.messages)
     this.callbacks.onStatusChanged?.(this.agentStatus)
     this.callbacks.onStreamingBlocksChanged?.(this.streamingBlocks)
+  }
+
+  // SSE deltas and terminal output chunks arrive far faster than the render
+  // framerate; each uncoalesced notify fans out into setMessages/setStreamingBlocks
+  // state updates that re-render the whole chat view. Coalesce them to ~12fps.
+  private static readonly NOTIFY_COALESCE_MS = 80
+  private notifyTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** Trailing-edge coalesced full notify — for in-place block mutations driven by
+   *  high-frequency events (e.g. terminal output streaming into tool_use.output). */
+  private notifyCoalesced = (): void => {
+    if (this.notifyTimer !== null) return
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = null
+      this.notify()
+    }, AgentEngine.NOTIFY_COALESCE_MS)
+  }
+
+  /** Coalesced streaming-only notify for the SSE delta path: messages and status
+   *  don't change per delta, so re-emitting them would only churn React identity. */
+  private notifyStreamingCoalesced = (): void => {
+    if (this.notifyTimer !== null) return
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = null
+      this.callbacks.onStreamingBlocksChanged?.(this.streamingBlocks)
+    }, AgentEngine.NOTIFY_COALESCE_MS)
   }
 
   private abortController: AbortController | null = null
@@ -206,6 +236,7 @@ export class AgentEngine {
   private isAutoExecuting = false
   private currentRequestId: string | null = null
   private skillAppendix: string | null = null
+  private experienceAppendix: string | null = null
   private systemPromptCache = new Map<string, { prompt: string; time: number }>()
   /** Frozen snapshot of buildMemoryContext() — preserved across system prompt
    *  rebuilds for prefix cache stability. Cleared when memory tools write. */
@@ -426,6 +457,7 @@ export class AgentEngine {
       systemPromptCache: this.systemPromptCache,
       conversationId: opts.conversationId,
       skillAppendix: this.skillAppendix,
+      experienceAppendix: this.experienceAppendix,
       plan: this.planManager.plan,
       experienceManager: this.opts.experienceManager,
     })
@@ -433,6 +465,7 @@ export class AgentEngine {
     this.wikiContextSnapshot = spResult.wikiContextSnapshot
     this.wikiContextVersion = spResult.wikiContextVersion
     this.skillAppendix = spResult.skillAppendix
+    this.experienceAppendix = spResult.experienceAppendix
     const systemPrompt = spResult.systemPrompt
 
     // ── Tools ──────────────────────────────────────────────────────
@@ -467,11 +500,13 @@ export class AgentEngine {
     }
 
     const skillAppendix = this.skillAppendix
-    // Find the last user message index so we only append skillAppendix to it
-    const lastUserIdx = skillAppendix
+    const experienceAppendix = this.experienceAppendix
+    // Both appendices ride the last user message; find its index first
+    const combinedAppendix = [skillAppendix, experienceAppendix].filter(Boolean).join('\n\n') || null
+    const lastUserIdx = combinedAppendix
       ? (() => { for (let i = this.messages.length - 1; i >= 0; i--) { if (this.messages[i].role === 'user') return i } return -1 })()
       : -1
-    const apiMessages = skillAppendix && lastUserIdx >= 0
+    const apiMessages = combinedAppendix && lastUserIdx >= 0
       ? this.messages.map((msg, idx) => {
           if (msg.role === 'user' && idx === lastUserIdx) {
             const blocks = msg.contentBlocks
@@ -479,7 +514,7 @@ export class AgentEngine {
             const newBlocks = blocks.map(b => ({ ...b } as ContentBlock))
             for (let i = newBlocks.length - 1; i >= 0; i--) {
               if (newBlocks[i].type === 'text') {
-                ;(newBlocks[i] as TextBlock).text += '\n\n' + skillAppendix
+                ;(newBlocks[i] as TextBlock).text += '\n\n' + combinedAppendix
                 break
               }
             }
@@ -490,9 +525,13 @@ export class AgentEngine {
       : this.messages.map(stripToolResultImages)
 
     // ── Compaction pipeline (operates on API copy; this.messages untouched) ──
+    // Fixed overhead the char heuristic never sees: system prompt + tool schemas.
+    // Injected into the fallback estimate so compaction still fires at the right
+    // pressure point before the first API token report arrives.
+    const fixedOverhead = estimateTokens(systemPrompt) + estimateTokens(JSON.stringify(enabledTools))
     const nanoCompacted = this.nanoCompact(apiMessages)
-    const lightCompacted = this.lightCompact(nanoCompacted, opts.contextLength || 128000)
-    const truncatedMessages = this.hardTruncate(lightCompacted, opts.contextLength || 128000)
+    const lightCompacted = this.lightCompact(nanoCompacted, opts.contextLength || 128000, fixedOverhead)
+    const truncatedMessages = this.hardTruncate(lightCompacted, opts.contextLength || 128000, fixedOverhead)
     // After truncation, inject an LLM summary of the dropped region into the API
     // copy so the model keeps the gist. Synthetic message never leaves this scope.
     // Pass the PRE-compaction copy as the summarizer source: nanoCompact has
@@ -585,7 +624,7 @@ export class AgentEngine {
             try { block.input = JSON.parse(newAcc) } catch { /* accumulating */ }
           }
           this.streamingBlocks = this.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
-          this.notify()
+          this.notifyStreamingCoalesced()
         },
         onContentBlockStop: (index) => {
           const block = this.currentAssistantBlocks[index]
@@ -608,7 +647,17 @@ export class AgentEngine {
           if (this.isCancelled) return
 
           const elapsedMs = this.requestStartTime > 0 ? Math.round(performance.now() - this.requestStartTime) : 0
-          const blocks = this.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
+          const rawBlocks = this.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
+          // Fallback: some models (e.g. deepseek-v4-flash via the opencode zen/go
+          // gateway) drift into Codex/Claude-Code style `<invoke name=...>` XML
+          // tool calls emitted as plain text. The adapter only converts
+          // `delta.tool_calls`, so this XML lands in a text block and NEVER
+          // executes — the model "thinks" it called a tool, nothing runs, and it
+          // degenerates into repeat loops. Parse the XML back into real tool_use
+          // blocks so the tools actually run.
+          const extracted = this.extractInvokeToolCalls(rawBlocks)
+          const blocks = extracted.blocks
+          const convertedInvoke = extracted.converted
           const assistantMsg: AgentMessage = {
             id: generateMsgId(),
             role: 'assistant',
@@ -628,7 +677,9 @@ export class AgentEngine {
 
           if (toolUses.length > 0) this.reportSpawnProgress(`子代理第 ${this.loopCount} 轮完成,${toolUses.length} 个工具待执行`, true)
 
-          if (stopReason === 'tool_use' && toolUses.length > 0) {
+          // Execute tools even when the model finished with end_turn/stop but we
+          // recovered XML `<invoke>` calls — otherwise they'd sit unexecuted.
+          if ((stopReason === 'tool_use' || convertedInvoke) && toolUses.length > 0) {
             await this.handleToolUseResponse(toolUses)
             return
           }
@@ -948,7 +999,7 @@ export class AgentEngine {
     this.cleanupTerminalListeners()
     let outputBuffer = ''
 
-    const uo = window.electronAPI.onTerminalOutput(d => { outputBuffer += d.data; targetBlock!.output = outputBuffer; this.notify() })
+    const uo = window.electronAPI.onTerminalOutput(d => { outputBuffer += d.data; targetBlock!.output = outputBuffer; this.notifyCoalesced() })
     const ue = window.electronAPI.onTerminalExit(d => {
       targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.executingProcessId = null; this.cleanupTerminalListeners(); this.notify()
       this.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)
@@ -1183,13 +1234,20 @@ export class AgentEngine {
     // Start loop (async but handle doesn't await it)
     engine.startSpawnLoop(config)
 
-    // Periodic save during sub-agent execution so progress survives crashes
+    // Periodic save during sub-agent execution so progress survives crashes.
+    // Appends only messages newer than the last tick (plus a small re-saved tail
+    // for in-place block updates like exitCode) — a full-conversation rewrite
+    // every 5s stalls the main process once a sub-agent's history grows long.
     const SUB_SAVE_INTERVAL = 5000
+    const SUB_SAVE_TAIL = 8
+    let savedCount = 0
     const saveTimer = setInterval(() => {
-      if (engine.messages.length > 0) {
-        const conv = agentMessagesToConversation(engine.messages, subConvId, 'Sub-agent')
-        window.electronAPI.saveConversation(conv).catch(() => {})
-      }
+      const msgs = engine.messages
+      if (msgs.length <= savedCount) return
+      const fromIdx = Math.max(0, savedCount - SUB_SAVE_TAIL)
+      const conv = agentMessagesToConversation(msgs.slice(fromIdx), subConvId, 'Sub-agent')
+      window.electronAPI.appendConversationMessages(subConvId, 'Sub-agent', conv.messages).catch(() => {})
+      savedCount = msgs.length
     }, SUB_SAVE_INTERVAL)
 
     // Track for cancellation when the (parent) main agent is stopped
@@ -1389,6 +1447,77 @@ export class AgentEngine {
     spawn_agent: { task: 200_000 },
   }
   private static readonly MAX_TOOL_INPUT_JSON_BYTES = 1_000_000 // 1 MB safety net for any tool
+
+  // ── Compaction remaining-window floors ─────────────────────────────────
+  // Compaction triggers on remaining window (contextLength - used). On small
+  // model windows the percentage floor (10%/30%) collapses to tiny headroom,
+  // so a fixed token floor guarantees compaction still fires early enough.
+  private static readonly HARD_TRUNCATE_MIN_REMAINING = 10_000
+  private static readonly LIGHT_COMPACT_MIN_REMAINING = 30_000
+
+  /**
+   * Recover Codex/Claude-Code style tool calls the model emitted as literal XML
+   * in the text stream, e.g. `<invoke name="exec"><parameter name="command">cd ..
+   * && make</parameter></invoke>` (often unclosed). The adapter only understands
+   * structured `delta.tool_calls`, so such XML otherwise lands in a text block
+   * and never executes. Rewrite it into real tool_use blocks (only for tool
+   * names that are actually enabled), stripping the XML from the surrounding
+   * text so it isn't shown/sent as prose.
+   */
+  private extractInvokeToolCalls(blocks: ContentBlock[]): { blocks: ContentBlock[]; converted: boolean } {
+    const enabledNames = new Set(this.opts.toolManager.getEnabledTools().map(t => t.definition.name))
+    let converted = false
+    let callCounter = 0
+    const result: ContentBlock[] = []
+
+    for (const block of blocks) {
+      if (block.type !== 'text') {
+        result.push(block)
+        continue
+      }
+
+      const calls: Array<{ name: string; input: Record<string, unknown> }> = []
+      const invokeRe = /<invoke\s+name\s*=\s*["']([^"']+)["']>([\s\S]*?)(?:<\/invoke>|$)/g
+      let match: RegExpExecArray | null
+      let cleaned = ''
+      let lastIdx = 0
+      while ((match = invokeRe.exec(block.text)) !== null) {
+        const name = match[1].trim()
+        if (!enabledNames.has(name)) continue // unknown tool — leave the XML as text
+        const body = match[2]
+        const input: Record<string, unknown> = {}
+        const paramRe = /<parameter\s+name\s*=\s*["']([^"']+)["']>([\s\S]*?)<\/parameter>/g
+        let pm: RegExpExecArray | null
+        while ((pm = paramRe.exec(body)) !== null) {
+          input[pm[1].trim()] = pm[2].trim()
+        }
+        if (Object.keys(input).length === 0) continue
+        calls.push({ name, input })
+        cleaned += block.text.slice(lastIdx, match.index)
+        lastIdx = invokeRe.lastIndex
+      }
+      if (calls.length === 0) {
+        result.push(block)
+        continue
+      }
+
+      converted = true
+      cleaned += block.text.slice(lastIdx)
+      const trimmed = cleaned.trim()
+      if (trimmed) result.push({ ...block, text: trimmed })
+      for (const call of calls) {
+        result.push({
+          type: 'tool_use',
+          id: `invoke_${Date.now()}_${callCounter++}`,
+          name: call.name,
+          input: call.input,
+          status: 'pending'
+        })
+      }
+    }
+
+    return { blocks: result, converted }
+  }
 
   /** Check all tool inputs against size limits. Returns tools that exceed limits. */
   private validateToolParams(tools: ToolUseBlock[]): ToolUseBlock[] {
@@ -1668,15 +1797,58 @@ export class AgentEngine {
    *  - Keep at least MIN_USER_TURNS (default 2) complete user→assistant cycles
    *    so the LLM has enough conversational context to respond coherently.
    */
-  private hardTruncate(messages: AgentMessage[], contextLength: number): AgentMessage[] {
+  /**
+   * Authoritative context usage for compaction decisions.
+   * Prefers the real cumulative inputTokens reported by the API on the most
+   * recent message — the same value the UI context ring displays — so compaction
+   * fires at the point the user actually sees "context almost full". Falls back
+   * to the char heuristic only when no API measurement exists yet (first turn).
+   * `fixedOverhead` is the system prompt + tool-schema size the heuristic never
+   * counts — added only on the fallback path so the estimate doesn't undercount.
+   */
+  private contextTokens(messages?: AgentMessage[], fixedOverhead = 0): number {
+    const msgs = messages ?? this.messages
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const t = msgs[i].inputTokens
+      if (t && t > 0) {
+        // The reported inputTokens only covers the context up to this message.
+        // Anything appended after it (e.g. the tool_result for a just-run tool,
+        // or a new user turn) is not counted by that report yet — estimate just
+        // that tail so a recent tool cycle doesn't get undercounted and slip
+        // past the compaction threshold.
+        const tail = this.estimateTokens(msgs.slice(i + 1))
+        // An inputTokens report can itself be a post-compaction size (the report
+        // records what was actually SENT, which may already have been truncated).
+        // Since this.messages keeps the full history (compaction only rewrites
+        // the API copy), that stale baseline can read far too small — so guard
+        // with the full char heuristic to guarantee we never undercount.
+        return Math.max(t + tail, this.estimateTokens(msgs))
+      }
+    }
+    return this.estimateTokens(msgs) + fixedOverhead
+  }
+
+  private hardTruncate(messages: AgentMessage[], contextLength: number, fixedOverhead = 0): AgentMessage[] {
     const THRESHOLD = contextLength * 0.9
     const MIN_KEEP = 10
     const MIN_USER_TURNS = 2
 
     if (messages.length <= MIN_KEEP) return messages
 
-    const estimatedTokens = this.estimateTokens(messages)
-    if (estimatedTokens <= THRESHOLD) return messages
+    const estimatedTokens = this.contextTokens(messages, fixedOverhead)
+    // Trigger on remaining window, not usage ratio: when the model window is
+    // small (e.g. 26K), 10% of it is only ~2.6K of headroom — too tight to be
+    // useful. Floor the remaining headroom at a fixed 10K so truncation still
+    // kicks in early enough on small windows.
+    const remainingWindow = contextLength - estimatedTokens
+    if (remainingWindow >= Math.max(contextLength * 0.1, AgentEngine.HARD_TRUNCATE_MIN_REMAINING)) return messages
+
+    // The walk below estimates the remaining content in char-heuristic units,
+    // which never counts the fixed overhead (system prompt + tool schemas).
+    // Re-add that overhead so the kept window actually lands under the
+    // real-token threshold instead of over-retaining.
+    const heuristicTotal = this.estimateTokens(messages)
+    const overhead = Math.max(0, estimatedTokens - heuristicTotal)
 
     // Scan from the end to find the earliest index that satisfies both guarantees
     let keepStart = messages.length
@@ -1698,7 +1870,7 @@ export class AgentEngine {
     // Walk forward from keepStart — estimate what remains to see if we fit
     while (keepStart > 0) {
       const remaining = messages.slice(keepStart - 1)
-      if (this.estimateTokens(remaining) <= THRESHOLD) break
+      if (this.estimateTokens(remaining) + overhead <= THRESHOLD) break
       keepStart--
     }
 
@@ -1732,7 +1904,7 @@ export class AgentEngine {
     const dropped = messages.length - truncated.length
     console.log(
       `[AgentEngine] hardTruncate: dropped ${dropped}/${messages.length} oldest messages ` +
-      `(est. ${estimatedTokens} → keep under ${THRESHOLD} of ${contextLength})`
+      `(context ${estimatedTokens} → keep under ${THRESHOLD} of ${contextLength})`
     )
     return truncated
   }
@@ -1984,11 +2156,14 @@ export class AgentEngine {
    *
    * @returns Compacted messages array (or original if nothing removed).
    */
-  private lightCompact(messages: AgentMessage[], contextLength: number): AgentMessage[] {
+  private lightCompact(messages: AgentMessage[], contextLength: number, fixedOverhead = 0): AgentMessage[] {
     if (!contextLength) return messages
 
-    const estimatedTokens = this.estimateTokens(messages)
-    if (estimatedTokens < contextLength * 0.7) return messages
+    const estimatedTokens = this.contextTokens(messages, fixedOverhead)
+    // Trigger on remaining window, not usage ratio: floor the headroom at 30K so
+    // light compaction still fires early on small model windows.
+    const remainingWindow = contextLength - estimatedTokens
+    if (remainingWindow >= Math.max(contextLength * 0.3, AgentEngine.LIGHT_COMPACT_MIN_REMAINING)) return messages
 
     // Find the last text-containing user message (protected)
     let lastTextUserMsgId: string | null = null
@@ -2063,7 +2238,7 @@ export class AgentEngine {
       }
     }
 
-    console.log(`[AgentEngine] lightCompact: removed ${roundsDeleted} tool cycles (tokens before: ~${estimatedTokens})`)
+    console.log(`[AgentEngine] lightCompact: removed ${roundsDeleted} tool cycles (context tokens: ~${estimatedTokens})`)
     return newMessages
   }
 
@@ -2093,7 +2268,7 @@ export class AgentEngine {
 
     if (Date.now() - this._lastMemExtractionTime < AgentEngine.MEM_EXTRACTION_COOLDOWN) return
 
-    const estimatedTokens = this.estimateTokens()
+    const estimatedTokens = this.contextTokens()
     if (estimatedTokens < (this.opts.contextLength || 128000) * 0.9) return
 
     this._memExtractionInProgress = true
