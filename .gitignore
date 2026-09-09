@@ -20,3 +20,6 @@ release/
 
 # Docs / release assets
 readme30.pdf
+
+# Local working files
+.workbuddy/
