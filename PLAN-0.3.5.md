@@ -16,12 +16,12 @@ M0 基线收尾 → M6 画布统一:MerDraw 移植为 UML 模式(独立支线,�
 
 ## M0 基线收尾
 
-- [ ] **M0.1 提交测试基建**(当前未提交)
+- [x] **M0.1 提交测试基建**(当前未提交)
   - 范围:`vitest.config.ts`、`tests/**`、`src/renderer/src/utils/incremental-save.ts`、`useConversationPersistence` 接线、`package.json`(vitest + test 脚本)
   - 信息:`test: add vitest suite covering env placeholders, settings store, incremental persistence`
-- [ ] **M0.2 提交 AGENTS.md 修正**(编码规范 + 过时信息,当前未提交)
+- [x] **M0.2 提交 AGENTS.md 修正**(编码规范 + 过时信息,当前未提交)
   - 信息:`docs(agents): add coding standards; refresh stale architecture facts`
-- [ ] **M0.3 处理未跟踪文件**:`.workbuddy/` 加入 `.gitignore`;`readme.pdf`、`智能办公场景对比_*.md` 询问用户后决定(默认保持 untracked)
+- [x] **M0.3 处理未跟踪文件**:`.workbuddy/` 加入 `.gitignore`;`readme.pdf`、`智能办公场景对比_*.md` 询问用户后决定(默认保持 untracked)
 
 ## M1 服务内核:引擎出渲染层(最大阶段,可再细分执行)
 
