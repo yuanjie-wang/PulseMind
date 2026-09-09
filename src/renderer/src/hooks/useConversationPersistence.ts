@@ -3,13 +3,9 @@ import useXConversations from '@ant-design/x-sdk/es/x-conversations'
 import type { AgentMessage, AgentStatus } from '../types/agent'
 import type { AgentEngine } from '../agent/AgentEngine'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
+import { planIncrementalSave } from '../utils/incremental-save'
 
 // ── Hook ──
-
-/** Incremental saves re-write this many trailing messages (INSERT OR REPLACE) on
- *  every tick so in-place updates on the live tail (e.g. exitCode written onto
- *  tool_use blocks after execution completes) still reach the DB. */
-const INCREMENTAL_TAIL_RESAVE = 8
 
 interface UseConversationPersistenceOptions {
   autoCleanup?: boolean
@@ -131,16 +127,13 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     if (!msgs || msgs.length === 0) return
 
     const savedIds = savedMsgIdsRef.current.get(convId)
-    if (savedIds && msgs.length < savedIds.size) {
+    const plan = planIncrementalSave(msgs, savedIds)
+    if (plan.mode === 'full') {
       // History shrank in memory (compaction/regeneration) — refresh everything.
       await saveRef.current()
       return
     }
-
-    const firstNewIdx = savedIds ? msgs.findIndex(m => !savedIds.has(m.id)) : 0
-    const fromIdx = firstNewIdx === -1
-      ? Math.max(0, msgs.length - INCREMENTAL_TAIL_RESAVE)
-      : Math.max(0, firstNewIdx - INCREMENTAL_TAIL_RESAVE)
+    const fromIdx = plan.fromIdx
 
     const firstText = msgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
     const existingConv = conversations.find((c) => String(c.key) === convId)
