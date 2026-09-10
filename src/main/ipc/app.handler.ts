@@ -16,7 +16,7 @@ const PLATFORM_NAMES: Record<string, string> = {
   sunos: 'SunOS'
 }
 
-function getBundledRipgrepPath(): string | null {
+export function getBundledRipgrepPath(): string | null {
   const p = platform()
   const a = arch()
   const key = `${p}-${a}`
@@ -46,7 +46,7 @@ export interface DataPaths {
   knowledgeDir: string
 }
 
-function getPlatformName(p: string): string {
+export function getPlatformName(p: string): string {
   return PLATFORM_NAMES[p] || p
 }
 

@@ -355,6 +355,20 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.CANVAS_EXPORT_HTML, rectId),
   canvasOpenInBrowser: (rectId: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.CANVAS_OPEN_IN_BROWSER, rectId),
+  // ── Agent sessions (engines hosted in main) ──
+  agentSessionCreate: (sessionId: string, opts?: { agentId?: string; title?: string }): Promise<{ sessionId: string; agentId: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CREATE, sessionId, opts),
+  agentSessionAsk: (sessionId: string, content: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content),
+  agentSessionCancel: (sessionId: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CANCEL, sessionId),
+  agentSessionHistory: (sessionId: string): Promise<{ messages: unknown[]; agentId: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),
+  onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void): (() => void) => {
+    const listener = (_e: unknown, event: { sessionId: string; data: unknown }): void => callback(event)
+    ipcRenderer.on(IPC_CHANNELS.AGENT_SESSION_EVENT, listener)
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.AGENT_SESSION_EVENT, listener) }
+  },
   canvasExportImage: (rectId: string, viewport?: { width: number; height: number }, htmlContent?: string): Promise<{ success: boolean; error?: string; canceled?: boolean }> =>
     ipcRenderer.invoke(IPC_CHANNELS.CANVAS_EXPORT_IMAGE, rectId, viewport, htmlContent),
   canvasCleanupRect: (rectId: string): Promise<{ success: boolean; deletedConvs: number }> =>

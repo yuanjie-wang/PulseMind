@@ -4,7 +4,10 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "target": "ESNext",
-    "lib": ["ESNext"],
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
     "outDir": "./out",
     "rootDir": "./src",
     "strict": true,
@@ -19,7 +22,19 @@
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
+    "src/renderer/src/agent/**/*.ts",
+    "src/renderer/src/tools/**/*.ts",
+    "src/renderer/src/skills/**/*.ts",
+    "src/renderer/src/memory/**/*.ts",
+    "src/renderer/src/knowledge/**/*.ts",
+    "src/renderer/src/experiences/**/*.ts",
+    "src/renderer/src/llm/**/*.ts",
+    "src/renderer/src/utils/message-utils.ts",
+    "src/renderer/src/utils/incremental-save.ts",
+    "src/renderer/src/types/electron.d.ts",
     "src/renderer/src/agent/host/types.ts",
-    "src/renderer/src/types/electron.d.ts"
+    "src/renderer/src/types/agent.ts",
+    "src/renderer/src/types/hooks.ts",
+    "src/renderer/src/types/manager.ts"
   ]
 }

@@ -138,6 +138,12 @@ export const IPC_CHANNELS = {
   CANVAS_PREPARE_WORK_DIR: 'canvas:prepare-work-dir',
   CANVAS_EXPORT_HTML: 'canvas:export-html',
   CANVAS_OPEN_IN_BROWSER: 'canvas:open-in-browser',
+  // ── Agent sessions (PLAN-0.3.5 M1.4④): engines hosted in main ──
+  AGENT_SESSION_CREATE: 'agent-session:create',
+  AGENT_SESSION_ASK: 'agent-session:ask',
+  AGENT_SESSION_CANCEL: 'agent-session:cancel',
+  AGENT_SESSION_HISTORY: 'agent-session:history',
+  AGENT_SESSION_EVENT: 'agent-session:event',
   CANVAS_EXPORT_IMAGE: 'canvas:export-image',
   CANVAS_CLEANUP_RECT: 'canvas:cleanup-rect',
   CANVAS_CLEAR_ALL: 'canvas:clear-all',

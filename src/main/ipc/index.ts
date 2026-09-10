@@ -9,6 +9,7 @@ import { registerMemoryHandlers } from './memory.handler'
 import { registerAppHandlers } from './app.handler'
 import { registerDialogHandlers } from './dialog.handler'
 import { registerFileOpsHandlers } from './file-ops.handler'
+import { registerAgentSessionHandlers } from './agent-session.handler'
 import { registerFavoriteHandlers } from './favorites.handler'
 import { registerMcpHandlers } from './mcp.handler'
 import { registerCanvasHandlers } from './canvas.handler'
@@ -28,6 +29,7 @@ export function registerIpcHandlers(): void {
   registerAppHandlers()
   registerDialogHandlers()
   registerFileOpsHandlers()
+  registerAgentSessionHandlers()
   registerFavoriteHandlers()
   registerMcpHandlers()
   registerCanvasHandlers()

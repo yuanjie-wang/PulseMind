@@ -290,6 +290,12 @@ export interface ElectronAPI {
   canvasPrepareWorkDir: (rectId: string, existingCode?: string, fresh?: boolean) => Promise<string>
   canvasExportHtml: (rectId: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
   canvasOpenInBrowser: (rectId: string) => Promise<{ success: boolean; error?: string }>
+  // ── Agent sessions (engines hosted in main, PLAN-0.3.5 M1.4) ──
+  agentSessionCreate: (sessionId: string, opts?: { agentId?: string; title?: string }) => Promise<{ sessionId: string; agentId: string }>
+  agentSessionAsk: (sessionId: string, content: string) => Promise<void>
+  agentSessionCancel: (sessionId: string) => Promise<void>
+  agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>
+  onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void) => () => void
   canvasExportImage: (rectId: string, viewport?: { width: number; height: number }, htmlContent?: string) => Promise<{ success: boolean; error?: string; canceled?: boolean }>
   canvasCleanupRect: (rectId: string) => Promise<{ success: boolean; deletedConvs: number }>
   canvasClearAll: () => Promise<{ success: boolean; deletedConvs: number }>
