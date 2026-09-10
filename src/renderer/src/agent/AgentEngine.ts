@@ -27,6 +27,7 @@ import { PlanManager } from './plan-manager'
 import { ensureCache, getCachedMcpServers, getCachedSubAgentProfiles, refreshMcpServers } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
 import { SpawnManager } from './engine/spawn-manager'
+import { ExecutionFlow } from './engine/execution-flow'
 import { ContextCompactor, summarizeToolCall } from './engine/context-compactor'
 import { addTruncatedResults, extractInvokeToolCalls, validateToolParams } from './engine/result-ingestion'
 import { agentMessagesToConversation } from '../utils/message-utils'
@@ -106,6 +107,11 @@ export class AgentEngine {
   /** @internal */
   opts: AgentEngineOptions
   private callbacks!: AgentEngineCallbacks
+  /** @internal - reachable from collaborators (SpawnManager / ExecutionFlow) */
+  getHost() {
+    return getHost()
+  }
+
   /** @internal - reachable from SpawnManager collaborators */
   notify = (): void => {
     if (this.notifyTimer !== null) {
@@ -125,7 +131,8 @@ export class AgentEngine {
 
   /** Trailing-edge coalesced full notify — for in-place block mutations driven by
    *  high-frequency events (e.g. terminal output streaming into tool_use.output). */
-  private notifyCoalesced = (): void => {
+  /** @internal */
+  notifyCoalesced = (): void => {
     if (this.notifyTimer !== null) return
     this.notifyTimer = setTimeout(() => {
       this.notifyTimer = null
@@ -143,7 +150,8 @@ export class AgentEngine {
     }, AgentEngine.NOTIFY_COALESCE_MS)
   }
 
-  private abortController: AbortController | null = null
+  /** @internal */
+  abortController: AbortController | null = null
   private currentAssistantBlocks: (ContentBlock | undefined)[] = []
   private toolUseBlocks: ToolUseBlock[] = []
   private jsonAccumulators: Map<number, IncrementalJsonTracker> = new Map()
@@ -151,8 +159,10 @@ export class AgentEngine {
   loopCount = 0
   /** @internal */
   maxLoopCount = MAX_LOOP_ITERATIONS
-  private terminalCleanups: (() => void)[] = []
-  private executingProcessId: string | null = null
+  /** @internal */
+  terminalCleanups: (() => void)[] = []
+  /** @internal */
+  executingProcessId: string | null = null
   /** @internal */
   isCancelled = false
   private requestStartTime = 0
@@ -162,7 +172,8 @@ export class AgentEngine {
   /** @internal */
   pendingToolIds = new Set<string>()
   private isAutoExecuting = false
-  private currentRequestId: string | null = null
+  /** @internal */
+  currentRequestId: string | null = null
   private skillAppendix: string | null = null
   private experienceAppendix: string | null = null
   private systemPromptCache = new Map<string, { prompt: string; time: number }>()
@@ -174,7 +185,8 @@ export class AgentEngine {
   private wikiContextSnapshot: string | null = null
   private wikiContextVersion = -1
   /** Maps MCP tool name → MCP server ID for routing */
-  private mcpToolOwner = new Map<string, string>()
+  /** @internal */
+  mcpToolOwner = new Map<string, string>()
   /** MCP tool names selected via pick_tool — empty = none selected */
   public selectedMcpTools: string[] = []
   /** Gated built-in tool names activated via pick_tool or keyword trigger — empty = all hidden */
@@ -206,7 +218,8 @@ export class AgentEngine {
   get plan(): Plan | null { return this.planManager.plan }
   // Managers for extracted concerns
   private planManager: PlanManager
-  private toolExecutor: ToolExecutor
+  /** @internal */
+  toolExecutor: ToolExecutor
   private spawnManager = new SpawnManager(this)
   reportSpawnProgress = (msg: string, force = false): void => { this.spawnManager.reportProgress(msg, force) }
   private compactor = new ContextCompactor({
@@ -894,102 +907,6 @@ export class AgentEngine {
 
   // ── Public methods ──────────────────────────────────────────────────
 
-  approveTool = async (toolUseId: string): Promise<void> => {
-    if (!this.opts.apiKey) return
-
-    let targetBlock: ToolUseBlock | undefined
-    for (const msg of this.messages) {
-      for (const block of msg.contentBlocks) {
-        if (block.type === 'tool_use' && block.id === toolUseId) { targetBlock = block; break }
-      }
-      if (targetBlock) break
-    }
-    if (!targetBlock) { this.agentStatus = { status: 'error', error: 'Tool use block not found' }; this.notify(); return }
-
-    targetBlock.status = 'running'; this.notify()
-    this.agentStatus = { status: 'executing', toolUseId }; this.notify()
-
-    const memoryTools: string[] = ['memory_search', 'memory_save', 'conversation_search', 'tool_result_search']
-    if (memoryTools.includes(targetBlock.name)) {
-      await this.toolExecutor.execOtherTool(targetBlock)
-      return
-    }
-    if (targetBlock.name === 'write' || targetBlock.name === 'edit') {
-      await this.toolExecutor.execWorkspaceTool(targetBlock)
-      return
-    }
-    if (this.mcpToolOwner.has(targetBlock.name)) {
-      await this.toolExecutor.execMCPTool(targetBlock)
-      return
-    }
-    if (targetBlock.name === 'spawn_agent') {
-      await this.toolExecutor.execSpawnAgent(targetBlock)
-      return
-    }
-
-    // ask_user — no tool_result yet, wait for respondToTool
-    if (targetBlock.name === 'ask_user') {
-      targetBlock.status = 'running'; this.notify(); return
-    }
-
-    // Shell execution (default)
-    const platform = this.opts.platformInfo?.platform || ''
-    const command = buildCommandFromSkillInput(targetBlock.name, targetBlock.input || {}, platform, this.opts.platformInfo?.ripgrepPath)
-    const cwd = String(targetBlock.input.cwd || '')
-
-    const beforeToolCtx = await safeInvoke(this.opts.hooks?.beforeTool, { toolUseId, toolName: targetBlock.name, toolInput: targetBlock.input, command, cwd }, 'beforeTool')
-    const resolvedCommand = beforeToolCtx.command; const resolvedCwd = beforeToolCtx.cwd
-    if (!resolvedCommand.trim()) { this.addToolResult(toolUseId, 'Tool execution was blocked by beforeTool hook (empty command).', true); return }
-
-    this.cleanupTerminalListeners()
-    let outputBuffer = ''
-
-    const uo = getHost().onTerminalOutput(d => { outputBuffer += d.data; targetBlock!.output = outputBuffer; this.notifyCoalesced() })
-    const ue = getHost().onTerminalExit(d => {
-      targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.executingProcessId = null; this.cleanupTerminalListeners(); this.notify()
-      this.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)
-    })
-    let terminalErrorReceived = false
-    const uerr = getHost().onTerminalError(d => {
-      if (terminalErrorReceived) return; terminalErrorReceived = true
-      targetBlock!.exitCode = -1; targetBlock!.status = 'completed'; this.executingProcessId = null; targetBlock!.output = d.message; this.cleanupTerminalListeners(); this.notify()
-      this.addToolResult(toolUseId, `Error: ${d.message}`, true)
-    })
-    this.terminalCleanups = [uo, ue, uerr].filter(Boolean) as (() => void)[]
-
-    try {
-      const timeoutMs = targetBlock.input.timeout != null ? Number(targetBlock.input.timeout) * 1000 : undefined
-      const processId = await getHost().executeCommand(resolvedCommand, resolvedCwd || undefined, timeoutMs)
-      this.executingProcessId = processId
-    } catch (err) {
-      targetBlock.status = 'completed'; targetBlock.exitCode = -1; targetBlock.output = `Error: ${err instanceof Error ? err.message : 'Failed'}`
-      this.cleanupTerminalListeners(); this.notify()
-      this.addToolResult(toolUseId, targetBlock.output, true)
-    }
-  }
-
-  rejectTool = (toolUseId: string): void => {
-    for (const msg of this.messages) {
-      for (const block of msg.contentBlocks) {
-        if (block.type === 'tool_use' && block.id === toolUseId) { block.status = 'rejected'; break }
-      }
-    }
-    this.notify()
-    this.addToolResult(toolUseId, 'Command execution was rejected by the user.', true)
-  }
-
-  killTool = (toolUseId: string): void => {
-    if (this.executingProcessId) { getHost().killCommand(this.executingProcessId); this.executingProcessId = null }
-    this.cleanupTerminalListeners()
-    for (const msg of this.messages) {
-      for (const block of msg.contentBlocks) {
-        if (block.type === 'tool_use' && block.id === toolUseId) { block.status = 'completed'; block.exitCode = -1; block.output = '(killed by user)'; break }
-      }
-    }
-    this.notify()
-    this.addToolResult(toolUseId, 'Command execution was killed by the user.', true)
-  }
-
   cancelLoop = (): void => {
     this.isCancelled = true
     this.abortController?.abort()
@@ -1012,58 +929,24 @@ export class AgentEngine {
     this.notify()
   }
 
-  /** Pause execution (cancel current work but DON'T resolve spawn completion) */
-  pauseExecution = (): void => {
-    this.isCancelled = true
-    this.abortController?.abort()
-    if (this.currentRequestId) { getHost().apiAbortStream(this.currentRequestId); this.currentRequestId = null }
-    this.cleanupTerminalListeners()
-    if (this.executingProcessId) { getHost().killCommand(this.executingProcessId); this.executingProcessId = null }
-    this.streamingBlocks = []
-    this.pendingToolIds = new Set()
-    this.notify()
-  }
-
-  /** Resume execution (reset cancelled state and restart loop) */
-  resumeExecution = (): void => {
-    for (const subEngine of this.activeSubAgents.values()) {
-      subEngine.resumeExecution()
-    }
-    this.isCancelled = false
-    this.loopCount = 0
-    this.pendingToolIds = new Set()
-    this.agentStatus = { status: 'idle' }
-    this.notify()
-    setTimeout(() => this.continueLoop(), 0)
-  }
-
-  /** Fully stop execution (main agent + abort all sub-agents) */
-  stopExecution = (): void => {
-    this.isCancelled = true
-    this.abortController?.abort()
-    if (this.currentRequestId) { getHost().apiAbortStream(this.currentRequestId); this.currentRequestId = null }
-    this.cleanupTerminalListeners()
-    if (this.executingProcessId) { getHost().killCommand(this.executingProcessId); this.executingProcessId = null }
-    for (const subEngine of this.activeSubAgents.values()) {
-      subEngine.cancelLoop()
-    }
-    this.activeSubAgents.clear()
-    this.agentStatus = { status: 'idle' }
-    this.streamingBlocks = []
-    this.pendingToolIds = new Set()
-    this.resolveCompletionIfSpawned('aborted')
-    this.notify()
-  }
-
   clearError = (): void => {
     this.agentStatus = { status: 'idle' }
     this.notify()
   }
 
+  // ── Tool execution lifecycle delegation (ExecutionFlow, split 4/5) ──
+  private executionFlow = new ExecutionFlow(this)
+  approveTool = async (toolUseId: string): Promise<void> => this.executionFlow.approveTool(toolUseId)
+  rejectTool = (toolUseId: string): void => this.executionFlow.rejectTool(toolUseId)
+  killTool = (toolUseId: string): void => this.executionFlow.killTool(toolUseId)
+  pauseExecution = (): void => this.executionFlow.pauseExecution()
+  resumeExecution = (): void => this.executionFlow.resumeExecution()
+  stopExecution = (): void => this.executionFlow.stopExecution()
+
   // Sub-agent delegation (SpawnManager, split 3/5)
   spawnSubAgent = (config: SpawnSubAgentConfig): SubAgentHandle => this.spawnManager.spawnSubAgent(config)
   startSpawnLoop = (config: SpawnSubAgentConfig): void => this.spawnManager.startSpawnLoop(config)
-  private resolveCompletionIfSpawned = (status: SubAgentResult['status']): void => this.spawnManager.resolveCompletionIfSpawned(status)
+  resolveCompletionIfSpawned = (status: SubAgentResult['status']): void => this.spawnManager.resolveCompletionIfSpawned(status)
 
   /** Re-run the current turn after an error. this.messages already ends with the
    *  triggering user message (no assistant message was committed on failure), so a
@@ -1145,7 +1028,8 @@ export class AgentEngine {
 
   // ── Private helpers ──────────────────────────────────────────────────
 
-  private addToolResult = (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number): void => {
+  /** @internal */
+  addToolResult = (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number): void => {
     // Global guardrail (see MAX_TOOL_RESULT_TOKENS above): errors are kept whole,
     // anything else over the token budget is head+tail truncated and the full text
     // is offloaded to ~/.pulsemind/tmp/trunc/ for the model to `read` back. The length
@@ -1456,11 +1340,6 @@ export class AgentEngine {
     this.resolveCompletionIfSpawned('completed')
   }
 
-  private cleanupTerminalListeners(): void {
-    for (const unsub of this.terminalCleanups) unsub()
-    this.terminalCleanups = []
-  }
-
   // ── Tool result persistence (for tool_result_search) ──────────────────
 
   /**
@@ -1509,6 +1388,12 @@ export class AgentEngine {
   //
   // Background memory extraction replaces the old autoCompact mechanism —
   // saves memories from old tool pairs instead of modifying messages.
+
+  /** @internal - also driven by ExecutionFlow */
+  cleanupTerminalListeners(): void {
+    for (const unsub of this.terminalCleanups) unsub()
+    this.terminalCleanups = []
+  }
 
   /** Run the HistorySummaryAgent non-streaming. Returns '' on LLM failure/empty. */
   private async runHistorySummary(regionText: string): Promise<string> {
