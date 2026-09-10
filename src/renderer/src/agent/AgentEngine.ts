@@ -26,6 +26,7 @@ import { buildSystemPrompt } from './system-prompt-builder'
 import { PlanManager } from './plan-manager'
 import { ensureCache, getCachedMcpServers, getCachedSubAgentProfiles, refreshMcpServers } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
+import { SpawnManager } from './engine/spawn-manager'
 import { ContextCompactor, summarizeToolCall } from './engine/context-compactor'
 import { addTruncatedResults, extractInvokeToolCalls, validateToolParams } from './engine/result-ingestion'
 import { agentMessagesToConversation } from '../utils/message-utils'
@@ -102,9 +103,11 @@ export class AgentEngine {
   streamingBlocks: ContentBlock[] = []
 
   // ── Internal state (was useRef) ─────────────────────────────────
-  private opts: AgentEngineOptions
+  /** @internal */
+  opts: AgentEngineOptions
   private callbacks!: AgentEngineCallbacks
-  private notify = (): void => {
+  /** @internal - reachable from SpawnManager collaborators */
+  notify = (): void => {
     if (this.notifyTimer !== null) {
       clearTimeout(this.notifyTimer)
       this.notifyTimer = null
@@ -144,16 +147,20 @@ export class AgentEngine {
   private currentAssistantBlocks: (ContentBlock | undefined)[] = []
   private toolUseBlocks: ToolUseBlock[] = []
   private jsonAccumulators: Map<number, IncrementalJsonTracker> = new Map()
-  private loopCount = 0
-  private maxLoopCount = MAX_LOOP_ITERATIONS
+  /** @internal */
+  loopCount = 0
+  /** @internal */
+  maxLoopCount = MAX_LOOP_ITERATIONS
   private terminalCleanups: (() => void)[] = []
   private executingProcessId: string | null = null
-  private isCancelled = false
+  /** @internal */
+  isCancelled = false
   private requestStartTime = 0
   private sessionStartTime = 0
   /** Consecutive idle-timeout retries for the current stream. Reset on success. */
   private streamIdleRetries = 0
-  private pendingToolIds = new Set<string>()
+  /** @internal */
+  pendingToolIds = new Set<string>()
   private isAutoExecuting = false
   private currentRequestId: string | null = null
   private skillAppendix: string | null = null
@@ -179,22 +186,29 @@ export class AgentEngine {
   private skillKeywordAgent = new SkillKeywordAgent()
   private skillSelectionAgent = new SkillSelectionAgent()
   // Spawn sub-agent state (set by startSpawnLoop)
-  private resolveCompletion?: (result: SubAgentResult) => void
-  private completionPromise?: Promise<SubAgentResult>
-  private spawnSystemPrompt?: string
+  /** @internal */
+  resolveCompletion?: (result: SubAgentResult) => void
+  /** @internal */
+  completionPromise?: Promise<SubAgentResult>
+  /** @internal */
+  spawnSystemPrompt?: string
   private spawnSystemPromptAppendix?: string
-  private onSpawnProgress?: (summary: string) => void
+  /** @internal */
+  onSpawnProgress?: (summary: string) => void
   /** Last time onSpawnProgress fired — heartbeat updates are throttled to 800ms. */
   private _lastSpawnProgressAt = 0
   private allowedToolsSet?: Set<string>
   private allowedMcpServersSet?: Set<string>
   /** Active spawned sub-agents, keyed by sub-agent id */
-  private activeSubAgents = new Map<string, AgentEngine>()
+  /** @internal */
+  activeSubAgents = new Map<string, AgentEngine>()
   // Public access to plan (delegated to PlanManager)
   get plan(): Plan | null { return this.planManager.plan }
   // Managers for extracted concerns
   private planManager: PlanManager
   private toolExecutor: ToolExecutor
+  private spawnManager = new SpawnManager(this)
+  reportSpawnProgress = (msg: string, force = false): void => { this.spawnManager.reportProgress(msg, force) }
   private compactor = new ContextCompactor({
     runHistorySummary: (regionText) => this.runHistorySummary(regionText),
     getMessages: () => this.messages,
@@ -338,7 +352,8 @@ export class AgentEngine {
     await this.continueLoop()
   }
 
-  private continueLoop = async (): Promise<void> => {
+  /** @internal - driven by SpawnManager for spawned engines */
+  continueLoop = async (): Promise<void> => {
     const opts = this.opts
     if (!opts.apiKey) {
       this.agentStatus = { status: 'error', error: 'API key not configured' }
@@ -1045,6 +1060,11 @@ export class AgentEngine {
     this.notify()
   }
 
+  // Sub-agent delegation (SpawnManager, split 3/5)
+  spawnSubAgent = (config: SpawnSubAgentConfig): SubAgentHandle => this.spawnManager.spawnSubAgent(config)
+  startSpawnLoop = (config: SpawnSubAgentConfig): void => this.spawnManager.startSpawnLoop(config)
+  private resolveCompletionIfSpawned = (status: SubAgentResult['status']): void => this.spawnManager.resolveCompletionIfSpawned(status)
+
   /** Re-run the current turn after an error. this.messages already ends with the
    *  triggering user message (no assistant message was committed on failure), so a
    *  fresh continueLoop() re-issues the request without duplicating input. */
@@ -1122,122 +1142,6 @@ export class AgentEngine {
   }
 
   // ── Spawn sub-agent ──────────────────────────────────────────────────
-
-  /** Push a live progress line to the parent engine's UI (sub-agents only). Throttled to 800ms except forced transition updates. */
-  private reportSpawnProgress = (msg: string, force = false): void => {
-    if (!this.onSpawnProgress || !this.spawnSystemPrompt) return
-    const now = Date.now()
-    if (!force && now - this._lastSpawnProgressAt < 800) return
-    this._lastSpawnProgressAt = now
-    this.onSpawnProgress(msg)
-  }
-
-  spawnSubAgent(config: SpawnSubAgentConfig): SubAgentHandle {
-    const id = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-    const subConvId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-
-    const subOpts: AgentEngineOptions = {
-      ...this.opts,
-      conversationId: subConvId,
-      hooks: undefined,
-      allowedTools: config.allowedTools,
-      allowedMcpServers: config.allowedMcpServers,
-    }
-
-    const engine = new AgentEngine(subOpts)
-
-    // Set spawn state (consumed by continueLoop)
-    engine.spawnSystemPrompt = config.systemPrompt
-    engine.onSpawnProgress = config.onProgress
-    engine.completionPromise = new Promise<SubAgentResult>((resolve) => {
-      engine.resolveCompletion = resolve
-    })
-
-    // Inject initial messages
-    engine.messages = [...config.initialMessages]
-
-    // Set max loop iterations for sub-agent
-    if (config.maxLoopIterations) {
-      engine.maxLoopCount = config.maxLoopIterations
-    }
-
-    // Start loop (async but handle doesn't await it)
-    engine.startSpawnLoop(config)
-
-    // Periodic save during sub-agent execution so progress survives crashes.
-    // Appends only messages newer than the last tick (plus a small re-saved tail
-    // for in-place block updates like exitCode) — a full-conversation rewrite
-    // every 5s stalls the main process once a sub-agent's history grows long.
-    const SUB_SAVE_INTERVAL = 5000
-    const SUB_SAVE_TAIL = 8
-    let savedCount = 0
-    const saveTimer = setInterval(() => {
-      const msgs = engine.messages
-      if (msgs.length <= savedCount) return
-      const fromIdx = Math.max(0, savedCount - SUB_SAVE_TAIL)
-      const conv = agentMessagesToConversation(msgs.slice(fromIdx), subConvId, 'Sub-agent')
-      getHost().appendConversationMessages(subConvId, 'Sub-agent', conv.messages).catch(() => {})
-      savedCount = msgs.length
-    }, SUB_SAVE_INTERVAL)
-
-    // Track for cancellation when the (parent) main agent is stopped
-    const cleanup = (): void => {
-      clearInterval(saveTimer)
-      this.activeSubAgents.delete(id)
-    }
-    engine.completionPromise!.then(cleanup, cleanup)
-
-    const handle: SubAgentHandle = {
-      id,
-      subConvId,
-      get messages() { return engine.messages },
-      get agentStatus() { return engine.agentStatus },
-      abort: () => engine.cancelLoop(),
-      waitForCompletion: () => engine.completionPromise!,
-    }
-
-    this.activeSubAgents.set(id, engine)
-    return handle
-  }
-
-  /** Simplified loop entry for spawned agents — skips session/hooks/userMsg setup. */
-  private startSpawnLoop(config: SpawnSubAgentConfig): void {
-    this.loopCount = 0
-    this.maxLoopCount = config.maxLoopIterations ?? 10
-    this.isCancelled = false
-    this.pendingToolIds = new Set()
-    this.opts.adapter.reconcileMessages?.(this.messages)
-    if (this.messages.length === 0) {
-      this.messages = [{
-        id: `spawn_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-        role: 'user',
-        contentBlocks: [{ type: 'text', text: 'Please execute the task described in the system prompt.' }],
-        createdAt: new Date().toISOString()
-      }]
-    }
-    this.continueLoop()
-  }
-
-  /** Resolve the spawn completion promise if this is a spawned agent. */
-  private resolveCompletionIfSpawned(status: SubAgentResult['status']): void {
-    if (!this.resolveCompletion) return
-    const outputTokens = this.messages.reduce((sum, m) => sum + (m.outputTokens || 0), 0)
-
-    // Save conversation for token usage statistics
-    const convId = this.opts.conversationId
-    if (convId && this.messages.length > 0) {
-      const firstText = this.messages[0]?.contentBlocks?.find(b => b.type === 'text')?.text || ''
-      const title = firstText || 'Sub-agent'
-      const conv = agentMessagesToConversation(this.messages, convId, title)
-      getHost().saveConversation(conv).catch(err =>
-        console.warn('[AgentEngine] Failed to save sub-agent conversation:', err)
-      )
-    }
-
-    this.resolveCompletion({ messages: this.messages, status, outputTokens, subConversationId: convId ?? undefined })
-    this.resolveCompletion = undefined
-    this.completionPromise = undefined
-  }
 
   // ── Private helpers ──────────────────────────────────────────────────
 
