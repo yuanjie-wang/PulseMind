@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import { setHost } from '../src/renderer/src/agent/host'
 import { AgentEngine } from '../src/renderer/src/agent/AgentEngine'
+import { collectEnabledTools } from '../src/renderer/src/agent/engine/tool-collection'
 import { ToolManager } from '../src/renderer/src/tools/ToolManager'
 import { SkillManager } from '../src/renderer/src/skills/SkillManager'
 
@@ -86,10 +87,9 @@ describe('agent graph under plain Node (M1.4 precondition)', () => {
       myName: '', soul: '', yourName: '', adapter: {} as never,
       toolManager: tm, skillManager: new SkillManager(), conversationId: 'conv_test',
     })
-    // collectEnabledTools is private + async; exercise it through the cast and
-    // await so its internal host/cache reads complete inside the test.
-    const tools = await (engine as unknown as { collectEnabledTools: (tm: ToolManager) => Promise<unknown[]> })
-      .collectEnabledTools(tm)
+    // collectEnabledTools is now a standalone function over a deps object —
+    // the engine instance satisfies ToolCollectionDeps structurally.
+    const tools = await collectEnabledTools(engine, tm)
     expect(Array.isArray(tools)).toBe(true)
   })
 })
