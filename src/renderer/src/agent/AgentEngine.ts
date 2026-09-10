@@ -28,6 +28,7 @@ import { ensureCache, getCachedMcpServers, getCachedSubAgentProfiles, refreshMcp
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
 import { SpawnManager } from './engine/spawn-manager'
 import { collectEnabledTools } from './engine/tool-collection'
+import { scheduleMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
 import { ContextCompactor, summarizeToolCall } from './engine/context-compactor'
 import { addTruncatedResults, extractInvokeToolCalls, validateToolParams } from './engine/result-ingestion'
@@ -225,7 +226,8 @@ export class AgentEngine {
   toolExecutor: ToolExecutor
   private spawnManager = new SpawnManager(this)
   reportSpawnProgress = (msg: string, force = false): void => { this.spawnManager.reportProgress(msg, force) }
-  private compactor = new ContextCompactor({
+  /** @internal */
+  compactor = new ContextCompactor({
     runHistorySummary: (regionText) => this.runHistorySummary(regionText),
     getMessages: () => this.messages,
   })
@@ -462,11 +464,11 @@ export class AgentEngine {
 
     // ── Persist tool_results for tool_result_search ──────────────
     if (this.opts.conversationId) {
-      await this.persistUnsavedToolResults()
+      await persistUnsavedToolResults(this)
     }
 
     // ── Background memory extraction (fire-and-forget, doesn't block request) ──
-    this.scheduleMemoryExtraction()
+    scheduleMemoryExtraction(this)
 
     // Strip image data from tool_results before sending to LLM (keep originals for UI)
     const stripToolResultImages = (msg: AgentMessage): AgentMessage => {
@@ -1204,38 +1206,6 @@ export class AgentEngine {
   /**
    * Persist all unsaved tool_results to the tool_results table.
    * Saves original content before nanoCompact replaces it with placeholders in the API copy.
-   * to ensure original content is never lost.
-   */
-  private async persistUnsavedToolResults(): Promise<void> {
-    const entries: Array<{
-      ref_id: string; message_id: string; block_index: number;
-      tool_use_id: string; content: string; is_error: number
-    }> = []
-    for (const msg of this.messages) {
-      if (msg.role !== 'user') continue
-      for (let bi = 0; bi < msg.contentBlocks.length; bi++) {
-        const block = msg.contentBlocks[bi]
-        if (block.type !== 'tool_result') continue
-        const tr = block as ToolResultBlock
-        if (tr.tool_result_id && tr.content && !tr.content.startsWith('[tool_result_id:') && !tr.content.startsWith('[Tool Result:')) {
-          entries.push({
-            ref_id: tr.tool_result_id,
-            message_id: msg.id,
-            block_index: bi,
-            tool_use_id: tr.tool_use_id,
-            content: tr.content,
-            is_error: tr.is_error ? 1 : 0
-          })
-        }
-      }
-    }
-    if (entries.length === 0) return
-    try {
-      await getHost().persistToolResults(this.opts.conversationId!, entries)
-    } catch (err) {
-      console.warn('[AgentEngine] persistUnsavedToolResults failed:', err)
-    }
-  }
 
   // ── Compaction pipeline ──────────────────────────────────────────────
   //
@@ -1280,146 +1250,11 @@ export class AgentEngine {
   // ── Background memory extraction (replaces old autoCompact) ──────────
 
   /** Prevents concurrent memory extraction runs */
-  private _memExtractionInProgress = false
+  /** @internal */
+  _memExtractionInProgress = false
   /** Cooldown timestamp for memory extraction */
-  private _lastMemExtractionTime = 0
-  private static readonly MEM_EXTRACTION_COOLDOWN = 30_000
-
-  /**
-   * Fire-and-forget memory extraction from old tool pairs.
-   * Triggered when context pressure exceeds 90% — aligned with hardTruncate
-   * (Layer 3), i.e. right before messages would actually be dropped, so we
-   * salvage the tool pairs that are about to be lost rather than re-extracting
-   * content that lightCompact can still carry without LLM calls.
-   * Unlike autoCompact, this does NOT modify this.messages or DB —
-   * it only saves extracted memories to the memory store.
-   */
-  private scheduleMemoryExtraction(): void {
-    if (this._memExtractionInProgress) return
-    if (this.spawnSystemPrompt) return
-    if (!this.opts.conversationId) return
-
-    if (Date.now() - this._lastMemExtractionTime < AgentEngine.MEM_EXTRACTION_COOLDOWN) return
-
-    const estimatedTokens = this.compactor.contextTokens()
-    if (estimatedTokens < (this.opts.contextLength || 128000) * 0.9) return
-
-    this._memExtractionInProgress = true
-    this._lastMemExtractionTime = Date.now()
-
-    Promise.resolve().then(async () => {
-      try {
-        await this.extractMemoriesFromOldToolPairs()
-      } catch (err) {
-        console.warn('[AgentEngine] Memory extraction failed:', err)
-      } finally {
-        this._memExtractionInProgress = false
-      }
-    })
-  }
-
-  /**
-   * Find old tool_use → tool_result pairs and extract memories from them.
-   * Same pair detection as the old autoCompact, but saves memories instead of
-   * modifying messages.
-   */
-  private async extractMemoriesFromOldToolPairs(): Promise<void> {
-    // Find compressible assistant+user pairs (same logic as old autoCompact)
-    const compressible: Array<{ assistant: AgentMessage; user: AgentMessage }> = []
-
-    for (let i = 0; i < this.messages.length - 1; i++) {
-      if (compressible.length >= 3) break
-
-      const current = this.messages[i]
-      const next = this.messages[i + 1]
-
-      if (current.role !== 'assistant' || next.role !== 'user') continue
-      if (current.autoSummary || next.autoSummary) continue
-      if (i >= this.messages.length - 4) continue
-
-      const hasToolUses = current.contentBlocks.some(b => b.type === 'tool_use')
-      const hasToolResults = next.contentBlocks.some(b => b.type === 'tool_result')
-      if (!hasToolUses || !hasToolResults) continue
-      if (next.contentBlocks.some(b => b.type === 'text')) continue
-
-      compressible.push({ assistant: current, user: next })
-    }
-
-    if (compressible.length === 0) return
-
-    // Build a summary of tool pairs for extraction
-    const pairTexts: string[] = []
-    for (const pair of compressible) {
-      const textBlocks = pair.assistant.contentBlocks
-        .filter(b => b.type === 'text')
-        .map(b => (b as TextBlock).text)
-      const toolNames = pair.assistant.contentBlocks
-        .filter(b => b.type === 'tool_use')
-        .map(b => (b as ToolUseBlock).name)
-      const line = textBlocks.length > 0
-        ? `AI: ${textBlocks.join('\n').slice(0, 1000)} [Tools: ${toolNames.join(', ')}]`
-        : `[Tools: ${toolNames.join(', ')}]`
-      pairTexts.push(line)
-    }
-
-    const summary = pairTexts.join('\n---\n').slice(0, 3000)
-
-    // Call LLM for memory extraction
-    const prompt = 'You are a memory extraction system. Given AI reasoning and tool execution, extract any important facts, decisions, file paths, or user preferences that should be saved for future reference. Return a JSON array of memories, each with: "content" (string), "type" (one of: "fact", "decision", "preference"), "category" (one of: "code", "architecture", "user_pref", "decision", "general"). Only include genuinely important, durable information. Return ONLY the JSON array, no other text.'
-
-    let raw: string | null = null
-    try {
-      raw = await this.opts.adapter.callNonStreaming(
-        this.opts.apiKey || '',
-        this.opts.baseURL || '',
-        this.opts.model || '',
-        prompt,
-        [{ role: 'user' as const, content: summary }],
-        500
-      )
-    } catch (err) {
-      console.warn('[AgentEngine] Memory extraction LLM call failed:', err)
-      return
-    }
-
-    if (!raw) return
-
-    // Parse response
-    let memories: Array<{ content: string; type: string; category: string }> = []
-    try {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) {
-        memories = parsed
-      } else if (parsed && Array.isArray((parsed as any).memories)) {
-        memories = (parsed as any).memories
-      }
-    } catch {
-      // Try to extract JSON from the response
-      const match = raw.match(/\[.*?\]/s) || raw.match(/\{[^]*"memories"[^]*\}/s)
-      if (match) {
-        try { memories = JSON.parse(match[0]) } catch {}
-      }
-    }
-
-    // Save memories
-    for (const mem of memories) {
-      if (!mem.content || mem.content.length < 10) continue
-      try {
-        await getHost().saveMemory({
-          id: crypto.randomUUID(),
-          content: mem.content.slice(0, 2000),
-          type: ['fact', 'decision', 'preference'].includes(mem.type) ? mem.type : 'auto',
-          category: ['code', 'architecture', 'user_pref', 'decision', 'general'].includes(mem.category) ? mem.category : 'general',
-          source: `conversation:${this.opts.conversationId}`
-        })
-      } catch (err) {
-        console.warn('[AgentEngine] Failed to save extracted memory:', err)
-      }
-    }
-
-    if (memories.length > 0) {
-      console.log(`[AgentEngine] Memory extraction: saved ${memories.length} memories from ${compressible.length} old tool pairs`)
-    }
-  }
+  /** @internal */
+  _lastMemExtractionTime = 0
+  static readonly MEM_EXTRACTION_COOLDOWN = 30_000
 
 }
