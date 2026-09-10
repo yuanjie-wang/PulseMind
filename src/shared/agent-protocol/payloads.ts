@@ -82,6 +82,8 @@ export type AgentEventData =
   /** Transport-level events for UI parity with the renderer engine (M1.5):
    *  full message list / coalesced streaming block snapshots. */
   | { type: 'messages'; messages: unknown[] }
+  /** Incremental transport: items appended at fromIndex (full 'messages' event on truncation). */
+  | { type: 'messages_append'; fromIndex: number; items: unknown[] }
   | { type: 'streaming_blocks'; blocks: unknown[] }
   | { type: 'token'; blockType: 'text' | 'thinking'; text: string }
   | { type: 'block_start'; blockType: 'text' | 'thinking' | 'tool_use'; toolName?: string }

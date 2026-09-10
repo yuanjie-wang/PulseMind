@@ -33,4 +33,20 @@ export function registerAgentSessionHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_HISTORY, (_event, sessionId: string) => {
     return agentSessionManager.history(sessionId)
   })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_HYDRATE, (_event, sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null) => {
+    agentSessionManager.hydrate(sessionId, messages as never, historySummary ?? null)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_SNAPSHOT, (_event, sessionId: string) => {
+    return agentSessionManager.snapshot(sessionId)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_ENGINE_CALL, async (_event, sessionId: string, method: string, args: unknown[]) => {
+    return agentSessionManager.engineCall(sessionId, method, args ?? [])
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_REFRESH_OPTIONS, async (_event, sessionId: string) => {
+    await agentSessionManager.refreshOptions(sessionId)
+  })
 }

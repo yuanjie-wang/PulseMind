@@ -26,6 +26,7 @@ import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
 import type { LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../ipc/app.handler'
 import type { AgentEventData, PlanSnapshot } from '../../shared/agent-protocol'
+import type { HooksConfig } from '../../renderer/src/types/hooks'
 
 interface Managers {
   toolManager: ToolManager
@@ -62,6 +63,8 @@ class AgentSessionManagerImpl {
   private managersPromise: Promise<Managers> | null = null
   private managers: Managers | null = null
   private eventSinks = new Set<SessionEventSink>()
+  /** Per-session length of the last 'messages' snapshot for append diffing. */
+  private lastSentLen = new Map<string, number>()
 
   /** Subscribe to session events (the IPC bridge forwards these to renderers). */
   onEvent(sink: SessionEventSink): () => void {
@@ -71,6 +74,51 @@ class AgentSessionManagerImpl {
 
   private emit(sessionId: string, data: AgentEventData): void {
     for (const sink of this.eventSinks) sink(sessionId, data)
+  }
+
+  private emitMessages(sessionId: string, messages: AgentMessage[]): void {
+    const lastLen = this.lastSentLen.get(sessionId) ?? 0
+    if (messages.length >= lastLen) {
+      this.emit(sessionId, { type: 'messages_append', fromIndex: lastLen, items: messages.slice(lastLen) as unknown[] })
+    } else {
+      // Truncation (regeneration/compaction) — ship the full list.
+      this.emit(sessionId, { type: 'messages', messages: messages as unknown[] })
+    }
+    this.lastSentLen.set(sessionId, messages.length)
+  }
+
+  /** Port of App.tsx afterSession hook: auto-capture memories + experience. */
+  private buildHooks(
+    profile: LlmProfile,
+    managers: Managers,
+    sessionId: string,
+  ): HooksConfig {
+    return {
+      afterSession: (ctx) => {
+        const llmConfig = { adapter: createLlmAdapter(profile.provider ?? 'anthropic'), apiKey: profile.apiKey ?? '', baseURL: profile.baseURL, model: profile.model }
+        const messages = ctx.messages.filter((m) => m.contentBlocks?.some((b) => b.type === 'text'))
+        if (messages.length === 0) return
+        // Fire-and-forget — single LLM call extracts memories + experience.
+        managers.memoryManager.extractAndSaveAll(
+          messages, profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
+          profile.model, sessionId, undefined,
+        ).then((result) => {
+          if (result.memories > 0) console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
+          if (result.experienceContent) {
+            managers.experienceManager.save({
+              title: result.experienceTitle ?? 'Untitled experience',
+              description: result.experienceContent.slice(0, 120),
+              content: result.experienceContent,
+              category: result.experienceCategory ?? 'general',
+              sourceConversationId: sessionId,
+            }).then(({ record }) => {
+              managers.experienceManager.ensureTriggers(record.name, llmConfig).catch((err: unknown) =>
+                console.warn('[SessionReview] Trigger extraction failed:', err))
+            }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
+          }
+        }).catch((err) => console.warn('[SessionReview] extraction failed:', err))
+      },
+    }
   }
 
   /** Assemble the shared managers once (mirrors useChatManagers.loadPrefs). */
@@ -154,9 +202,11 @@ class AgentSessionManagerImpl {
       skillsDir: SKILLS_DIR,
       yoloMode: settings.yoloMode ?? false,
       locale: settings.locale === 'en' ? 'en' : 'zh',
+      hooks: this.buildHooks(profile, managers, sessionId),
       conversationId: sessionId,
     }
     const engine = new AgentEngine(engineOptions, this.makeCallbacks(sessionId))
+    this.lastSentLen.set(sessionId, 0)
     this.sessions.set(sessionId, { engine, agentId: opts.agentId ?? 'default', title: opts.title, createdAt: new Date().toISOString() })
     return { sessionId, agentId: opts.agentId ?? 'default' }
   }
@@ -184,10 +234,90 @@ class AgentSessionManagerImpl {
     return { messages: entry.engine.messages as unknown[], agentId: entry.agentId }
   }
 
+  /** Seed a restored conversation's history into the main-hosted engine. */
+  hydrate(sessionId: string, messages: AgentMessage[], historySummary?: { text: string; firstKeptId: string } | null): void {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) throw new Error(`session not found: ${sessionId}`)
+    entry.engine.loadConversation(messages)
+    if (historySummary) {
+      entry.engine.seedHistorySummary(historySummary.text, historySummary.firstKeptId)
+    }
+    entry.engine.loadPlan(sessionId)
+    this.lastSentLen.set(sessionId, messages.length)
+  }
+
+  /** UI snapshot for (re)activating a session. */
+  snapshot(sessionId: string): {
+    messages: AgentMessage[]; status: { status: string }; streamingBlocks: unknown[]; plan: PlanSnapshot | null
+  } | null {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) return null
+    return {
+      messages: entry.engine.messages,
+      status: { status: entry.engine.agentStatus.status },
+      streamingBlocks: entry.engine.streamingBlocks as unknown[],
+      plan: (entry.engine.plan as unknown as PlanSnapshot | null) ?? null,
+    }
+  }
+
+  /** Whitelisted engine method calls from the renderer (approvals, loop control…). */
+  async engineCall(sessionId: string, method: string, args: unknown[]): Promise<unknown> {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) throw new Error(`session not found: ${sessionId}`)
+    const engine = entry.engine as unknown as Record<string, (...a: unknown[]) => unknown>
+    switch (method) {
+      case 'approveTool': return engine.approveTool(args[0] as string)
+      case 'rejectTool': return engine.rejectTool(args[0] as string)
+      case 'killTool': return engine.killTool(args[0] as string)
+      case 'respondToTool': return engine.respondToTool(args[0] as string, args[1] as string)
+      case 'extendLoop': return engine.extendLoop()
+      case 'stopExecution': return engine.stopExecution()
+      case 'resumeExecution': return engine.resumeExecution()
+      case 'clearError': return engine.clearError()
+      case 'retryLastTurn': return engine.retryLastTurn()
+      case 'getHistorySummary': return engine.getHistorySummary()
+      case 'reset': entry.engine.reset(); return undefined
+      case 'dispose': entry.engine.dispose(); this.sessions.delete(sessionId); this.lastSentLen.delete(sessionId); return undefined
+      default: throw new Error(`engine method not allowed: ${method}`)
+    }
+  }
+
+  /** Rebuild engine options from current settings/profile and hot-swap them. */
+  async refreshOptions(sessionId: string): Promise<void> {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) return
+    const managers = await this.ensureManagers()
+    const settings = await settingsStore.get()
+    const profile = await this.resolveProfile()
+    entry.engine.updateOptions({
+      apiKey: profile.apiKey ?? null,
+      baseURL: profile.baseURL,
+      model: profile.model,
+      maxTokens: profile.maxTokens ?? 32768,
+      contextLength: profile.contextLength,
+      profileId: profile.id,
+      adapter: createLlmAdapter(profile.provider ?? 'anthropic'),
+      myName: settings.myName,
+      soul: settings.soul,
+      yourName: settings.yourName,
+      toolManager: managers.toolManager,
+      skillManager: managers.skillManager,
+      memoryManager: managers.memoryManager,
+      knowledgeManager: managers.knowledgeManager,
+      experienceManager: managers.experienceManager,
+      platformInfo: managers.platformInfo,
+      workspaceDir: settings.workspaceDir ?? WORKSPACE_DIR,
+      skillsDir: SKILLS_DIR,
+      yoloMode: settings.yoloMode ?? false,
+      locale: settings.locale === 'en' ? 'en' : 'zh',
+      conversationId: sessionId,
+    })
+  }
+
   /** Map engine callbacks onto protocol session events. */
   private makeCallbacks(sessionId: string) {
     return {
-      onMessagesChanged: (messages: AgentMessage[]) => this.emit(sessionId, { type: 'messages', messages: messages as unknown[] }),
+      onMessagesChanged: (messages: AgentMessage[]) => this.emitMessages(sessionId, messages),
       onStatusChanged: (status: AgentStatus) => this.emit(sessionId, { type: 'status', status: status.status }),
       onStreamingBlocksChanged: (blocks: ContentBlock[]) => this.emit(sessionId, { type: 'streaming_blocks', blocks: blocks as unknown[] }),
       onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan: plan as unknown as PlanSnapshot | null }),

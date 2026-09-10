@@ -1,16 +1,15 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { AgentEngine, type AgentEngineOptions } from '../agent/AgentEngine'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentStatus, ContentBlock, Plan } from '../types/agent'
-import type { LlmAdapter } from '../llm/adapter'
+import type { AgentEngineOptions } from '../agent/AgentEngine'
+import type { AgentEventData } from '../../../shared/agent-protocol'
 import type { ToolManager } from '../tools/ToolManager'
 import type { SkillManager } from '../skills/SkillManager'
 import type { MemoryManager } from '../memory/MemoryManager'
 import type { KnowledgeManager } from '../knowledge/KnowledgeManager'
 import type { ExperienceManager } from '../experiences/ExperienceManager'
+import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
-
-// ── Internal: tracking active loop convs ──
 
 function isActiveStatus(status: AgentStatus): boolean {
   return status.status === 'streaming'
@@ -21,9 +20,55 @@ function isActiveStatus(status: AgentStatus): boolean {
     || status.status === 'retrying'
 }
 
-// ── Hook ──
+// ── Client-side session state ────────────────────────────────────────
+// Engines are hosted in the main process (M1.4 session manager); this hook is
+// a protocol client that mirrors their observable state and forwards commands
+// over the agent-session IPC channels.
 
-interface UseConversationEngineOptions {
+interface SessionState {
+  messages: AgentMessage[]
+  agentStatus: AgentStatus
+  streamingBlocks: ContentBlock[]
+  plan: Plan | null
+  /** Last known windowed-history summary (best-effort cache for sync saves). */
+  historySummary: { firstKeptId: string; text: string } | null
+}
+
+function freshSessionState(): SessionState {
+  return { messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [], plan: null, historySummary: null }
+}
+
+/**
+ * Facade returned by getOrCreateEngine — preserves the AgentEngine surface the
+ * rest of the renderer consumes (persistence, controller) while every call is
+ * forwarded to the main-hosted engine over the agent-session IPC channels.
+ */
+export interface SessionEngineHandle {
+  readonly messages: AgentMessage[]
+  readonly agentStatus: AgentStatus
+  readonly streamingBlocks: ContentBlock[]
+  readonly plan: Plan | null
+  getHistorySummary(): { firstKeptId: string; text: string } | null
+  reset(): void
+  loadConversation(messages: AgentMessage[]): void
+  seedHistorySummary(text?: string, firstKeptId?: string): void
+  loadPlan(convId: string): void
+  startLoop(userMessage: string): Promise<void>
+  approveTool(toolUseId: string): void
+  rejectTool(toolUseId: string): void
+  killTool(toolUseId: string): void
+  respondToTool(toolUseId: string, response: string): void
+  extendLoop(): void
+  stopExecution(): void
+  resumeExecution(): void
+  clearError(): void
+  retryLastTurn(): void
+  cancelLoop(): void
+  dispose(): void
+  updateOptions(_opts: AgentEngineOptions): void
+}
+
+export interface UseConversationEngineOptions {
   apiKey: string | null
   baseURL: string
   model: string
@@ -38,7 +83,8 @@ interface UseConversationEngineOptions {
   yoloMode?: boolean
   hooks?: HooksConfig
   locale?: 'zh' | 'en'
-  // Injected managers
+  // Injected managers — accepted for interface compatibility; engine assembly
+  // now happens in the main-process session manager.
   toolManager: ToolManager
   skillManager: SkillManager
   memoryManager: MemoryManager
@@ -47,18 +93,14 @@ interface UseConversationEngineOptions {
   skillsDir: string
   platformInfo: PlatformInfo | undefined
   /** Called when a non-active engine transitions to 'completed' status. */
-  onBackgroundComplete?: (convId: string, engine: AgentEngine) => void
+  onBackgroundComplete?: (convId: string) => void
   /** Called when a tool/skill state changes (e.g. install_skill). */
   onSkillStateChange?: () => void
 }
 
 export function useConversationEngine(options: UseConversationEngineOptions) {
-  const {
-    toolManager, skillManager, memoryManager, knowledgeManager,
-    skillsDir, platformInfo, onBackgroundComplete, onSkillStateChange, hooks
-  } = options
-  // ── Engine state ──
-  const enginesRef = useRef<Map<string, AgentEngine>>(new Map())
+  const statesRef = useRef<Map<string, SessionState>>(new Map())
+  const enginesRef = useRef<Map<string, SessionEngineHandle>>(new Map())
   const activeEngineIdRef = useRef<string>('')
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
@@ -67,91 +109,161 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const [activeLoopConvIds, setActiveLoopConvIds] = useState<string[]>([])
   const [retryingConvIds, setRetryingConvIds] = useState<string[]>([])
 
-  // Stable ref for the background-complete callback so engine closures always read the latest
-  const onBackgroundCompleteRef = useRef(onBackgroundComplete)
-  onBackgroundCompleteRef.current = onBackgroundComplete
+  // ── Session registry ──
+  const ensureSession = useCallback((convId: string): SessionState => {
+    let st = statesRef.current.get(convId)
+    if (!st) {
+      st = freshSessionState()
+      statesRef.current.set(convId, st)
+      void window.electronAPI.agentSessionCreate(convId)
+    }
+    return st
+  }, [])
 
-  /** Build engine options for a given conversation. */
-  const buildEngineOptions = useCallback((convId: string): AgentEngineOptions => ({
-    apiKey: options.apiKey,
-    baseURL: options.baseURL,
-    model: options.model,
-    maxTokens: options.maxTokens,
-    contextLength: options.contextLength,
-    profileId: options.profileId,
-    adapter: options.adapter,
-    myName: options.myName,
-    soul: options.soul,
-    yourName: options.yourName,
-    toolManager,
-    skillManager,
-    memoryManager,
-    knowledgeManager,
-    experienceManager: options.experienceManager,
-    platformInfo: platformInfo || undefined,
-    workspaceDir: options.workspaceDir,
-    skillsDir,
-    yoloMode: options.yoloMode ?? false,
-    hooks,
-    conversationId: convId,
-    onSkillStateChange: onSkillStateChange || (() => {})
-  }), [options, toolManager, skillManager, memoryManager, knowledgeManager, skillsDir, platformInfo, onSkillStateChange, hooks])
+  const makeHandle = useCallback((convId: string, st: SessionState): SessionEngineHandle => ({
+    get messages() { return st.messages },
+    get agentStatus() { return st.agentStatus },
+    get streamingBlocks() { return st.streamingBlocks },
+    get plan() { return st.plan },
+    getHistorySummary() { return st.historySummary },
+    reset() {
+      st.messages = []
+      st.agentStatus = { status: 'idle' }
+      st.streamingBlocks = []
+      st.plan = null
+      st.historySummary = null
+    },
+    loadConversation(msgs: AgentMessage[]) {
+      st.messages = msgs
+      void window.electronAPI.agentSessionHydrate(convId, msgs, null)
+    },
+    seedHistorySummary(text?: string, firstKeptId?: string) {
+      if (text === undefined) return
+      st.historySummary = { text, firstKeptId: firstKeptId ?? '' }
+      void window.electronAPI.agentSessionHydrate(convId, st.messages, { text, firstKeptId: firstKeptId ?? '' })
+    },
+    loadPlan(_convId: string) {
+      // The main-side hydrate loads the persisted plan alongside history.
+    },
+    startLoop(userMessage: string) {
+      return window.electronAPI.agentSessionAsk(convId, userMessage)
+    },
+    approveTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId]) },
+    rejectTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'rejectTool', [toolUseId]) },
+    killTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'killTool', [toolUseId]) },
+    respondToTool: (toolUseId, response) => { void window.electronAPI.agentSessionEngineCall(convId, 'respondToTool', [toolUseId, response]) },
+    extendLoop: () => { void window.electronAPI.agentSessionEngineCall(convId, 'extendLoop', []) },
+    stopExecution: () => { void window.electronAPI.agentSessionEngineCall(convId, 'stopExecution', []) },
+    resumeExecution: () => { void window.electronAPI.agentSessionEngineCall(convId, 'resumeExecution', []) },
+    clearError: () => { void window.electronAPI.agentSessionEngineCall(convId, 'clearError', []) },
+    retryLastTurn: () => { void window.electronAPI.agentSessionEngineCall(convId, 'retryLastTurn', []) },
+    cancelLoop() { void window.electronAPI.agentSessionCancel(convId) },
+  dispose() { void window.electronAPI.agentSessionEngineCall(convId, 'dispose', []) },
+    updateOptions(_opts: AgentEngineOptions) {
+      // Options are rebuilt main-side; the client only signals WHEN they change.
+      void window.electronAPI.agentSessionRefreshOptions(convId)
+    },
+  }), [])
 
-  /** Get or create an engine for a conversation. */
-  const getOrCreateEngine = useCallback((convId: string): AgentEngine => {
-    let engine = enginesRef.current.get(convId)
-    if (!engine) {
-      engine = new AgentEngine(buildEngineOptions(convId), {
-        onMessagesChanged: (messages) => {
-          if (activeEngineIdRef.current === convId) {
-            setMessages([...messages])
-          }
-        },
-        onStatusChanged: (status) => {
+  const getOrCreateEngine = useCallback((convId: string): SessionEngineHandle => {
+    let handle = enginesRef.current.get(convId)
+    if (!handle) {
+      const st = ensureSession(convId)
+      handle = makeHandle(convId, st)
+      enginesRef.current.set(convId, handle)
+    }
+    return handle
+  }, [ensureSession, makeHandle])
+
+  // ── Global session event subscription ──
+  useEffect(() => {
+    const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
+      const data = raw as AgentEventData
+      const st = statesRef.current.get(sessionId)
+      if (!st) return
+
+      switch (data.type) {
+        case 'messages_append': {
+          const items = data.items as AgentMessage[]
+          st.messages = [...st.messages.slice(0, data.fromIndex), ...items]
+          break
+        }
+        case 'messages': {
+          st.messages = data.messages as AgentMessage[]
+          break
+        }
+        case 'streaming_blocks': {
+          st.streamingBlocks = data.blocks as ContentBlock[]
+          break
+        }
+        case 'status': {
+          st.agentStatus = { status: data.status } as AgentStatus
           setActiveLoopConvIds((prev) => {
-            const isActive = isActiveStatus(status)
-            const alreadyTracked = prev.includes(convId)
-            if (isActive && !alreadyTracked) return [...prev, convId]
-            if (!isActive && alreadyTracked) return prev.filter((id) => id !== convId)
+            const isActive = isActiveStatus(st.agentStatus)
+            const tracked = prev.includes(sessionId)
+            if (isActive && !tracked) return [...prev, sessionId]
+            if (!isActive && tracked) return prev.filter((id) => id !== sessionId)
             return prev
           })
           setRetryingConvIds((prev) => {
-            const isRetrying = status.status === 'retrying'
-            const alreadyTracked = prev.includes(convId)
-            if (isRetrying && !alreadyTracked) return [...prev, convId]
-            if (!isRetrying && alreadyTracked) return prev.filter((id) => id !== convId)
+            const isRetrying = st.agentStatus.status === 'retrying'
+            const tracked = prev.includes(sessionId)
+            if (isRetrying && !tracked) return [...prev, sessionId]
+            if (!isRetrying && tracked) return prev.filter((id) => id !== sessionId)
             return prev
           })
-          if (activeEngineIdRef.current === convId) {
-            setAgentStatus(status)
-          } else {
-            if (status.status === 'completed') {
-              onBackgroundCompleteRef.current?.(convId, engine!)
-            }
+          if (st.agentStatus.status === 'completed' && activeEngineIdRef.current !== sessionId) {
+            options.onBackgroundComplete?.(sessionId)
           }
-        },
-        onStreamingBlocksChanged: (blocks) => {
-          if (activeEngineIdRef.current === convId) {
-            setStreamingBlocks([...blocks])
-          }
-        },
-        onPlanChanged: (plan) => {
-          if (activeEngineIdRef.current === convId) {
-            setPlan(plan ? { ...plan, steps: plan.steps.map(s => ({ ...s })) } : null)
-          }
-        },
-      })
-      enginesRef.current.set(convId, engine)
-    }
-    return engine
-  }, [buildEngineOptions])
+          break
+        }
+        case 'plan_update': {
+          st.plan = (data.plan as Plan | null) ?? null
+          break
+        }
+        case 'error': {
+          st.agentStatus = { status: 'error', error: data.message }
+          break
+        }
+        default:
+          return
+      }
+
+      // Best-effort refresh of the cached history summary (fire-and-forget).
+      void window.electronAPI.agentSessionEngineCall(sessionId, 'getHistorySummary', [])
+        .then((v) => { st.historySummary = (v as SessionState['historySummary']) ?? null })
+        .catch(() => {})
+
+      // React state follows only the ACTIVE conversation.
+      if (activeEngineIdRef.current === sessionId) {
+        setMessages([...st.messages])
+        setAgentStatus(st.agentStatus)
+        setStreamingBlocks([...st.streamingBlocks])
+        setPlan(st.plan ? { ...st.plan, steps: st.plan.steps.map((s) => ({ ...s })) } : null)
+      }
+    })
+    return unsub
+    // options.onBackgroundComplete is bridged through a ref below — not a dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const onBackgroundCompleteRef = useRef(options.onBackgroundComplete)
+  onBackgroundCompleteRef.current = options.onBackgroundComplete
 
   /** Mark a conversation as the active one (keeps the ref in sync with callers). */
   const activateEngine = useCallback((convId: string) => {
     activeEngineIdRef.current = convId
+    // Rehydrate React state from the mirrored session (events keep it fresh).
+    const st = statesRef.current.get(convId)
+    if (st) {
+      setMessages([...st.messages])
+      setAgentStatus(st.agentStatus)
+      setStreamingBlocks([...st.streamingBlocks])
+      setPlan(st.plan ? { ...st.plan, steps: st.plan.steps.map((s) => ({ ...s })) } : null)
+    }
   }, [])
 
-  // ── Keep all engines' options in sync when global deps change ──
+  // ── Signal option changes to the main-hosted engines ──
   const prevOptionsRef = useRef<Partial<typeof options>>({})
   const optionsChanged =
     prevOptionsRef.current.apiKey !== options.apiKey ||
@@ -180,61 +292,36 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   }
   useEffect(() => {
     if (!optionsChanged) return
-    console.log(`[useConversationEngine] options changed, updating ${enginesRef.current.size} engine(s)`, {
-      model: options.model,
-      baseURL: options.baseURL,
-      apiKey: options.apiKey ? `${options.apiKey.slice(0, 8)}...` : null
-    })
-    for (const [convId, engine] of enginesRef.current) {
-      engine.updateOptions(buildEngineOptions(convId))
+    for (const convId of enginesRef.current.keys()) {
+      void window.electronAPI.agentSessionRefreshOptions(convId)
     }
   }, [
     options.apiKey, options.baseURL, options.model, options.maxTokens,
     options.profileId,
     options.myName, options.soul, options.yourName, options.yoloMode,
-    options.locale, buildEngineOptions
+    options.locale, optionsChanged
   ])
 
-  // ── Engine method proxies ──
-  const approveTool = useCallback((toolUseId: string) => {
-    enginesRef.current.get(activeEngineIdRef.current)?.approveTool(toolUseId)
+  // ── Engine method proxies (active conversation) ──
+  const callActive = useCallback((method: string, ...args: unknown[]) => {
+    const convId = activeEngineIdRef.current
+    if (!convId) return
+    void window.electronAPI.agentSessionEngineCall(convId, method, args)
   }, [])
 
-  const rejectTool = useCallback((toolUseId: string) => {
-    enginesRef.current.get(activeEngineIdRef.current)?.rejectTool(toolUseId)
-  }, [])
-
-  const killTool = useCallback((toolUseId: string) => {
-    enginesRef.current.get(activeEngineIdRef.current)?.killTool(toolUseId)
-  }, [])
-
-  const respondToTool = useCallback((toolUseId: string, response: string) => {
-    enginesRef.current.get(activeEngineIdRef.current)?.respondToTool(toolUseId, response)
-  }, [])
-
+  const approveTool = useCallback((toolUseId: string) => callActive('approveTool', toolUseId), [callActive])
+  const rejectTool = useCallback((toolUseId: string) => callActive('rejectTool', toolUseId), [callActive])
+  const killTool = useCallback((toolUseId: string) => callActive('killTool', toolUseId), [callActive])
+  const respondToTool = useCallback((toolUseId: string, response: string) => callActive('respondToTool', toolUseId, response), [callActive])
+  const extendLoop = useCallback(() => callActive('extendLoop'), [callActive])
+  const stopExecution = useCallback(() => callActive('stopExecution'), [callActive])
+  const resumeExecution = useCallback(() => callActive('resumeExecution'), [callActive])
+  const clearError = useCallback(() => callActive('clearError'), [callActive])
+  const retryLast = useCallback(() => callActive('retryLastTurn'), [callActive])
   const cancelLoop = useCallback(() => {
-    enginesRef.current.get(activeEngineIdRef.current)?.cancelLoop()
-  }, [])
-
-  const extendLoop = useCallback(() => {
-    enginesRef.current.get(activeEngineIdRef.current)?.extendLoop()
-  }, [])
-
-  const stopExecution = useCallback(() => {
-    enginesRef.current.get(activeEngineIdRef.current)?.stopExecution()
-  }, [])
-
-  const resumeExecution = useCallback(() => {
-    enginesRef.current.get(activeEngineIdRef.current)?.resumeExecution()
-  }, [])
-
-  const clearError = useCallback(() => {
-    enginesRef.current.get(activeEngineIdRef.current)?.clearError()
-  }, [])
-
-  const retryLast = useCallback(() => {
-    enginesRef.current.get(activeEngineIdRef.current)?.retryLastTurn()
-  }, [])
+    const convId = activeEngineIdRef.current
+    if (convId) void window.electronAPI.agentSessionCancel(convId)
+  }, [activeEngineIdRef])
 
   return {
     enginesRef,
@@ -246,7 +333,6 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     activeLoopConvIds,
     retryingConvIds,
     getOrCreateEngine,
-    buildEngineOptions,
     activateEngine,
     // State setters exposed for external load/restore operations
     setMessages,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import useXConversations from '@ant-design/x-sdk/es/x-conversations'
 import type { AgentMessage, AgentStatus } from '../types/agent'
-import type { AgentEngine } from '../agent/AgentEngine'
+import type { SessionEngineHandle } from './useConversationEngine'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
 import { planIncrementalSave } from '../utils/incremental-save'
 
@@ -12,9 +12,9 @@ interface UseConversationPersistenceOptions {
   messages: AgentMessage[]
   agentStatus: AgentStatus
   // Engine integration
-  enginesRef: React.MutableRefObject<Map<string, AgentEngine>>
+  enginesRef: React.MutableRefObject<Map<string, SessionEngineHandle>>
   activeEngineIdRef: React.MutableRefObject<string>
-  getOrCreateEngine: (convId: string) => AgentEngine
+  getOrCreateEngine: (convId: string) => SessionEngineHandle
   setMessages: React.Dispatch<React.SetStateAction<AgentMessage[]>>
   setAgentStatus: React.Dispatch<React.SetStateAction<AgentStatus>>
   setStreamingBlocks: React.Dispatch<React.SetStateAction<any[]>>

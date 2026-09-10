@@ -364,6 +364,14 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CANCEL, sessionId),
   agentSessionHistory: (sessionId: string): Promise<{ messages: unknown[]; agentId: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),
+  agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HYDRATE, sessionId, messages, historySummary),
+  agentSessionSnapshot: (sessionId: string): Promise<{ messages: unknown[]; status: { status: string }; streamingBlocks: unknown[]; plan: unknown } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_SNAPSHOT, sessionId),
+  agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]): Promise<unknown> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ENGINE_CALL, sessionId, method, args ?? []),
+  agentSessionRefreshOptions: (sessionId: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_REFRESH_OPTIONS, sessionId),
   onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void): (() => void) => {
     const listener = (_e: unknown, event: { sessionId: string; data: unknown }): void => callback(event)
     ipcRenderer.on(IPC_CHANNELS.AGENT_SESSION_EVENT, listener)

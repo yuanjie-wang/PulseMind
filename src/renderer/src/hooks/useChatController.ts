@@ -5,6 +5,7 @@ import { useConversationPersistence } from './useConversationPersistence'
 import { TitleAgent } from '../agent/one-shot-agent'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
+import type { AgentMessage } from '../types/agent'
 import type { HooksConfig } from '../types/hooks'
 
 // ── Options ──
@@ -43,22 +44,29 @@ export function useChatController(options: UseChatControllerOptions) {
   // ── 3. Engine (with background-complete callback for title gen) ──
   // Forward ref for generateTitle (breaks circular dep: engine ← persistence ← generateTitle ← onBackgroundComplete)
   const generateTitleRef = useRef<(typeof generateTitle)>(null as any)
-  const onBackgroundComplete = useCallback((convId: string, engine: AgentEngine) => {
+  // Ref bridges: the engine hook is constructed below but needs this callback,
+  // and the callback needs the engine's session mirror (same pattern as
+  // generateTitleRef — breaks the circular dependency).
+  const onBackgroundCompleteRef = useRef<(convId: string) => void>(null as any)
+  const engineBridgeRef = useRef<{ getOrCreateEngine: (convId: string) => { messages: AgentMessage[] } } | null>(null)
+  const onBackgroundComplete = useCallback((convId: string) => {
     if (pendingTitleGenRef.current !== convId) return
     if (titleGeneratedRef.current.has(convId)) return
     pendingTitleGenRef.current = null
     titleGeneratedRef.current.add(convId)
 
-    generateTitleRef.current(convId, engine.messages, { llmFallback: '', stripFileMarkers: true })
+    generateTitleRef.current(convId, engineBridgeRef.current!.getOrCreateEngine(convId).messages, { llmFallback: '', stripFileMarkers: true })
   }, [])
 
   const engine = useConversationEngine({
     ...options,
     ...managers,
     platformInfo: managers.platformInfo ?? undefined,
-    onBackgroundComplete,
+    onBackgroundComplete: (convId: string) => onBackgroundCompleteRef.current(convId),
     onSkillStateChange: managers.refreshSkills
   })
+  engineBridgeRef.current = engine
+  onBackgroundCompleteRef.current = onBackgroundComplete
 
   // ── 4. Persistence (save/load conversations) ──
   const persistence = useConversationPersistence({

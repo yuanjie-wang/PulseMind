@@ -295,6 +295,10 @@ export interface ElectronAPI {
   agentSessionAsk: (sessionId: string, content: string) => Promise<void>
   agentSessionCancel: (sessionId: string) => Promise<void>
   agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>
+  agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null) => Promise<void>
+  agentSessionSnapshot: (sessionId: string) => Promise<{ messages: unknown[]; status: { status: string }; streamingBlocks: unknown[]; plan: unknown } | null>
+  agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]) => Promise<unknown>
+  agentSessionRefreshOptions: (sessionId: string) => Promise<void>
   onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void) => () => void
   canvasExportImage: (rectId: string, viewport?: { width: number; height: number }, htmlContent?: string) => Promise<{ success: boolean; error?: string; canceled?: boolean }>
   canvasCleanupRect: (rectId: string) => Promise<{ success: boolean; deletedConvs: number }>
