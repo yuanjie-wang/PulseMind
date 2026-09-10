@@ -30,6 +30,7 @@ import { SpawnManager } from './engine/spawn-manager'
 import { collectEnabledTools } from './engine/tool-collection'
 import { scheduleMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
+import { StreamRunner } from './engine/stream-runner'
 import { ContextCompactor, summarizeToolCall } from './engine/context-compactor'
 import { addTruncatedResults, extractInvokeToolCalls, validateToolParams } from './engine/result-ingestion'
 import { agentMessagesToConversation } from '../utils/message-utils'
@@ -144,7 +145,8 @@ export class AgentEngine {
 
   /** Coalesced streaming-only notify for the SSE delta path: messages and status
    *  don't change per delta, so re-emitting them would only churn React identity. */
-  private notifyStreamingCoalesced = (): void => {
+  /** @internal */
+  notifyStreamingCoalesced = (): void => {
     if (this.notifyTimer !== null) return
     this.notifyTimer = setTimeout(() => {
       this.notifyTimer = null
@@ -154,9 +156,12 @@ export class AgentEngine {
 
   /** @internal */
   abortController: AbortController | null = null
-  private currentAssistantBlocks: (ContentBlock | undefined)[] = []
-  private toolUseBlocks: ToolUseBlock[] = []
-  private jsonAccumulators: Map<number, IncrementalJsonTracker> = new Map()
+  /** @internal */
+  currentAssistantBlocks: (ContentBlock | undefined)[] = []
+  /** @internal */
+  toolUseBlocks: ToolUseBlock[] = []
+  /** @internal */
+  jsonAccumulators: Map<number, IncrementalJsonTracker> = new Map()
   /** @internal */
   loopCount = 0
   /** @internal */
@@ -167,10 +172,12 @@ export class AgentEngine {
   executingProcessId: string | null = null
   /** @internal */
   isCancelled = false
-  private requestStartTime = 0
+  /** @internal */
+  requestStartTime = 0
   private sessionStartTime = 0
   /** Consecutive idle-timeout retries for the current stream. Reset on success. */
-  private streamIdleRetries = 0
+  /** @internal */
+  streamIdleRetries = 0
   /** @internal */
   pendingToolIds = new Set<string>()
   private isAutoExecuting = false
@@ -225,6 +232,8 @@ export class AgentEngine {
   /** @internal */
   toolExecutor: ToolExecutor
   private spawnManager = new SpawnManager(this)
+  private streamRunner = new StreamRunner(this)
+  private runLlmStream = (opts: AgentEngineOptions, req: { apiUrl: string; headers: Record<string, string>; resolvedBody: unknown }): Promise<void> => this.streamRunner.run(opts, req)
   reportSpawnProgress = (msg: string, force = false): void => { this.spawnManager.reportProgress(msg, force) }
   /** @internal */
   compactor = new ContextCompactor({
@@ -574,196 +583,6 @@ export class AgentEngine {
     return { apiUrl, headers, resolvedBody }
   }
 
-  /** Run the prepared LLM stream: wire the parser, pump chunks, idle-retry. */
-  private runLlmStream = async (
-    opts: AgentEngineOptions,
-    req: { apiUrl: string; headers: Record<string, string>; resolvedBody: unknown },
-  ): Promise<void> => {
-    const { apiUrl, headers, resolvedBody } = req
-
-    // Variables for cleanup — hoisted outside try so catch can access them
-    let requestId: string
-    let streamError: string | null = null
-    let unsubChunk: () => void
-    let unsubError: () => void
-    let unsubDone: () => void
-    let unsubRetry: () => void
-    let cleanupListeners: (() => void) | undefined = undefined
-    let streamDeferredResolve: () => void
-    const streamDonePromise = new Promise<void>(resolve => { streamDeferredResolve = resolve })
-    let streamDone = false
-
-    try {
-      requestId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-      this.currentRequestId = requestId
-
-      const dispatcher = opts.adapter.createStreamParser({
-        onContentBlockStart: (index, blockData) => {
-          const { type, id, name } = blockData
-          if (type === 'text') { this.currentAssistantBlocks[index] = { type: 'text', text: '' } }
-          else if (type === 'thinking') { this.currentAssistantBlocks[index] = { type: 'thinking', thinking: (blockData as any).thinking || '', signature: (blockData as any).signature || undefined } }
-          else if (type === 'redacted_thinking') { this.currentAssistantBlocks[index] = { type: 'redacted_thinking', data: (blockData as any).data || '' } }
-          else if (type === 'tool_use') {
-            this.currentAssistantBlocks[index] = { type: 'tool_use', id: id || '', name: name || '', input: {}, status: 'pending' }
-            this.jsonAccumulators.set(index, new IncrementalJsonTracker())
-            this.reportSpawnProgress(`子代理正在生成工具调用: ${name || ''}...`)
-          }
-        },
-        onContentBlockDelta: (index, delta) => {
-          const block = this.currentAssistantBlocks[index]
-          if (!block) return
-          if (delta.type === 'text_delta' && block.type === 'text') {
-            block.text += delta.text || ''
-            this.reportSpawnProgress(`子代理思考中... (第${this.loopCount}轮)`)
-          }
-          else if (delta.type === 'thinking_delta' && block.type === 'thinking') { (block as any).thinking += (delta as any).thinking || '' }
-          else if (delta.type === 'signature_delta' && block.type === 'thinking') { (block as any).signature = ((block as any).signature || '') + ((delta as any).signature || '') }
-          else if (delta.type === 'input_json_delta' && block.type === 'tool_use') {
-            // Incremental scan: only new chars are inspected; the full
-            // JSON.parse runs exactly once when the top-level object closes
-            // (the old per-delta JSON.parse(acc) was O(n²) and nearly always
-            // threw while the object was incomplete).
-            const tracker = this.jsonAccumulators.get(index)
-            if (tracker) {
-              const r = tracker.push(delta.partial_json || '')
-              if (r.justCompleted) block.input = r.value as Record<string, unknown>
-            }
-          }
-          this.streamingBlocks = this.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
-          this.notifyStreamingCoalesced()
-        },
-        onContentBlockStop: (index) => {
-          const block = this.currentAssistantBlocks[index]
-          if (block?.type === 'tool_use') {
-            const acc = this.jsonAccumulators.get(index)?.accumulated() ?? ''
-            try { block.input = JSON.parse(acc) } catch {
-              if (block.name === 'write') {
-                const fpMatch = acc.match(/"file_path"\s*:\s*"((?:[^"\\]|\\.)*)"/)
-                if (fpMatch) { (block as any)._partialFilePath = fpMatch[1] }
-              }
-              block.input = {}
-              ;(block as any)._jsonTruncated = true
-            }
-            this.reportSpawnProgress(`工具参数就绪: ${summarizeToolCall(block.name, block.input)}`, true)
-          }
-          this.streamingBlocks = this.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
-          this.notify()
-        },
-        onStreamComplete: async (stopReason, usage) => {
-          if (this.isCancelled) return
-
-          const elapsedMs = this.requestStartTime > 0 ? Math.round(performance.now() - this.requestStartTime) : 0
-          const rawBlocks = this.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
-          // Fallback: some models (e.g. deepseek-v4-flash via the opencode zen/go
-          // gateway) drift into Codex/Claude-Code style `<invoke name=...>` XML
-          // tool calls emitted as plain text. The adapter only converts
-          // `delta.tool_calls`, so this XML lands in a text block and NEVER
-          // executes — the model "thinks" it called a tool, nothing runs, and it
-          // degenerates into repeat loops. Parse the XML back into real tool_use
-          // blocks so the tools actually run.
-          const extracted = extractInvokeToolCalls(this.opts, rawBlocks)
-          const blocks = extracted.blocks
-          const convertedInvoke = extracted.converted
-          const assistantMsg: AgentMessage = {
-            id: generateMsgId(),
-            role: 'assistant',
-            contentBlocks: blocks,
-            createdAt: new Date().toISOString(),
-            processingMs: elapsedMs,
-            inputTokens: usage?.inputTokens,
-            outputTokens: usage?.outputTokens,
-            promptCacheHitTokens: usage?.promptCacheHitTokens
-          }
-
-          this.messages = [...this.messages, assistantMsg]
-          this.streamingBlocks = []
-          this.notify()
-
-          const toolUses = blocks.filter((b): b is ToolUseBlock => b.type === 'tool_use')
-
-          if (toolUses.length > 0) this.reportSpawnProgress(`子代理第 ${this.loopCount} 轮完成,${toolUses.length} 个工具待执行`, true)
-
-          // Execute tools even when the model finished with end_turn/stop but we
-          // recovered XML `<invoke>` calls — otherwise they'd sit unexecuted.
-          if ((stopReason === 'tool_use' || convertedInvoke) && toolUses.length > 0) {
-            await this.handleToolUseResponse(toolUses)
-            return
-          }
-
-          if (stopReason === 'max_tokens') {
-            await this.handleMaxTokensResponse(toolUses)
-            return
-          }
-
-          // end_turn / stop_sequence
-          this.handleEndTurnResponse(stopReason)
-        },
-
-        onError: (error) => {
-          console.error('[AgentEngine] SSE error:', error)
-          if (!this.isCancelled) streamError = error
-        }
-      })
-
-      // Register IPC listeners
-      unsubChunk = getHost().onApiStreamChunk(data => { if (data.requestId === requestId) dispatcher.processChunk(data.data) })
-
-      unsubError = getHost().onApiStreamError(data => { if (data.requestId !== requestId) return; streamError = data.error; streamDeferredResolve() })
-      unsubDone = getHost().onApiStreamDone(data => { if (data.requestId !== requestId) return; streamDone = true; dispatcher.flush(); streamDeferredResolve() })
-      unsubRetry = getHost().onApiStreamRetry(data => {
-        if (data.requestId !== requestId) return
-        this.agentStatus = { status: 'retrying', message: data.message, attempt: data.attempt, maxRetries: data.maxRetries, delay: data.delay }
-        this.notify()
-      })
-
-      cleanupListeners = () => { unsubChunk(); unsubError(); unsubDone(); unsubRetry(); if (this.currentRequestId === requestId) this.currentRequestId = null }
-
-      // console.log(`[AgentEngine] POST body: ${(resolvedBody as any).messages?.length ?? 0} messages`)
-
-      await getHost().apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody as string | object, profileId: this.opts.profileId })
-
-      // Await the stream-done IPC event. The main process always sends either
-      // API_STREAM_DONE or API_STREAM_ERROR, and both resolve streamDonePromise.
-      // No timeout needed — IPC event arrives in the next event loop tick.
-      if (!streamDone && !streamError) {
-        await streamDonePromise
-      }
-      if (streamError) { cleanupListeners(); throw new Error(streamError) }
-      cleanupListeners()
-      this.streamIdleRetries = 0 // a stream succeeded — reset consecutive-retry counter
-    } catch (err) {
-      cleanupListeners?.()
-      const message = err instanceof Error ? err.message : 'Unknown error'
-      const isCancel = this.isCancelled
-
-      // Auto-retry on stream idle timeout (main-process aborts after 120s idle):
-      // the connection stalled mid-stream (long silent thinking, network blip).
-      // this.messages is untouched until onStreamComplete, so discard the partial
-      // streaming state and re-issue the request from scratch.
-      const isIdleTimeout = AgentEngine.STREAM_IDLE_TIMEOUT_MARKERS.some(m => message.includes(m))
-      if (!isCancel && isIdleTimeout && this.streamIdleRetries < AgentEngine.MAX_STREAM_IDLE_RETRIES) {
-        this.streamIdleRetries += 1
-        console.warn(`[AgentEngine] Stream idle timeout (${this.streamIdleRetries}/${AgentEngine.MAX_STREAM_IDLE_RETRIES}) — retrying`)
-        this.currentAssistantBlocks = []
-        this.streamingBlocks = []
-        this.jsonAccumulators = new Map()
-        this.toolUseBlocks = []
-        this.agentStatus = { status: 'retrying', message: `连接闲置超时，自动重试 (${this.streamIdleRetries}/${AgentEngine.MAX_STREAM_IDLE_RETRIES})…`, attempt: this.streamIdleRetries, maxRetries: AgentEngine.MAX_STREAM_IDLE_RETRIES, delay: 0 }
-        this.notify()
-        await this.continueLoop()
-        return
-      }
-      this.streamIdleRetries = 0
-
-      if (!isCancel) { this.agentStatus = { status: 'error', error: message }; this.notify() }
-      safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: null, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterLlmCall')
-      safeInvokeObserver(opts.hooks?.afterSession, { messages: this.messages, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterSession')
-      if (!isCancel) this.resolveCompletionIfSpawned('error')
-      if (isCancel) return
-      this.notify()
-    }
-  }
-
   // ── Tool building ────────────────────────────────────────────────────
 
   // ── Public methods ──────────────────────────────────────────────────
@@ -995,8 +814,8 @@ export class AgentEngine {
   // thinking, network blips). Instead of failing, re-issue the request a few
   // times — the messages array is untouched until onStreamComplete, so a retry
   // simply re-generates from scratch.
-  private static readonly MAX_STREAM_IDLE_RETRIES = 2
-  private static readonly STREAM_IDLE_TIMEOUT_MARKERS = ['闲置超时', 'Stream idle timeout']
+  static readonly MAX_STREAM_IDLE_RETRIES = 2
+  static readonly STREAM_IDLE_TIMEOUT_MARKERS = ['闲置超时', 'Stream idle timeout']
 
   // ── Tool parameter size limits ──────────────────────────────────────────
   // Prevents the LLM from passing overly large arguments (e.g. write content,
@@ -1074,7 +893,8 @@ export class AgentEngine {
     }
   }
 
-  private async handleToolUseResponse(toolUses: ToolUseBlock[]): Promise<void> {
+  /** @internal */
+  async handleToolUseResponse(toolUses: ToolUseBlock[]): Promise<void> {
     const opts = this.opts
 
     const hasTruncated = toolUses.some(t => (t as any)._jsonTruncated === true)
@@ -1180,13 +1000,15 @@ export class AgentEngine {
     this.notify()
   }
 
-  private async handleMaxTokensResponse(toolUses: ToolUseBlock[]): Promise<void> {
+  /** @internal */
+  async handleMaxTokensResponse(toolUses: ToolUseBlock[]): Promise<void> {
     if (toolUses.length > 0) { addTruncatedResults(this.messages, toolUses); this.notify() }
     safeInvokeObserver(this.opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: 'max_tokens', status: { status: 'streaming' } }, 'afterLlmCall')
     this.continueLoop()
   }
 
-  private handleEndTurnResponse(stopReason: string | null): void {
+  /** @internal */
+  handleEndTurnResponse(stopReason: string | null): void {
     // Update last assistant message with total session time (user input → loop end)
     if (this.sessionStartTime > 0) {
       const totalMs = Math.round(performance.now() - this.sessionStartTime)
