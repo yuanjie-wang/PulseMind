@@ -57,7 +57,7 @@ interface AgentHost {
     - `mcp-cache.ts`:模块级单例+监听器 → main 实现改为直连 `main/mcp/MCPClient.ts`
     - `system-prompt-builder`/one-shot agents/AnthropicAdapter:M1.2 后已 host-clean ✓
   - 执行序:① main 侧组装 ToolManager/SkillManager/SettingsStore ② MemoryManager 主进程化 ③ KnowledgeManager 对接既有 knowledge-store ④ sessionManager(convId→engine) + 协议 IPC 通道 ⑤ LLM 直连 fetch(api-proxy 对引擎退役)
-- [ ] **M1.5 渲染层协议客户端化**:`useConversationEngine` 重写为协议消费者;注意 `useConversationPersistence` 的 `saveAllConversationsSync` 迭代 `enginesRef`——持久化职责需一并移入 main sessionManager
+- [x] **M1.5 渲染层协议客户端化**:`useConversationEngine` 重写为协议消费者;注意 `useConversationPersistence` 的 `saveAllConversationsSync` 迭代 `enginesRef`——持久化职责需一并移入 main sessionManager
 - [ ] **M1.6 回归与性能基线**:长任务对比重构前(流式 CPU、主进程保存停顿);渲染层 bundle 不再含引擎
 
 ## M2 WS 服务 + 托盘常驻
