@@ -60,6 +60,10 @@ function sessionPlatformInfo(): PlatformInfo {
 
 class AgentSessionManagerImpl {
   private sessions = new Map<string, SessionEntry>()
+  /** In-flight creations — ask/cancel/history/engineCall await these so a
+   *  command that races the create (renderer fires both back-to-back) lands
+   *  after the session is registered. */
+  private pendingCreates = new Map<string, Promise<void>>()
   private managersPromise: Promise<Managers> | null = null
   private managers: Managers | null = null
   private eventSinks = new Set<SessionEventSink>()
@@ -177,6 +181,32 @@ class AgentSessionManagerImpl {
       const existing = this.sessions.get(sessionId)!
       return { sessionId, agentId: existing.agentId }
     }
+    const pending = this.pendingCreates.get(sessionId)
+    if (pending) {
+      await pending
+      return { sessionId, agentId: this.sessions.get(sessionId)!.agentId }
+    }
+    const creation = this.doCreateSession(sessionId, opts)
+    this.pendingCreates.set(sessionId, creation)
+    creation.then(() => {}, () => {})
+    try {
+      await creation
+    } finally {
+      this.pendingCreates.delete(sessionId)
+    }
+    return { sessionId, agentId: this.sessions.get(sessionId)!.agentId }
+  }
+
+  /** Wait for an in-flight creation, then return the entry (throws if absent). */
+  private async ensureEntry(sessionId: string): Promise<SessionEntry> {
+    const pending = this.pendingCreates.get(sessionId)
+    if (pending) await pending
+    const entry = this.sessions.get(sessionId)
+    if (!entry) throw new Error(`session not found: ${sessionId}`)
+    return entry
+  }
+
+  private async doCreateSession(sessionId: string, opts: { agentId?: string; title?: string }): Promise<void> {
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
     const profile = await this.resolveProfile()
@@ -208,7 +238,6 @@ class AgentSessionManagerImpl {
     const engine = new AgentEngine(engineOptions, this.makeCallbacks(sessionId))
     this.lastSentLen.set(sessionId, 0)
     this.sessions.set(sessionId, { engine, agentId: opts.agentId ?? 'default', title: opts.title, createdAt: new Date().toISOString() })
-    return { sessionId, agentId: opts.agentId ?? 'default' }
   }
 
   hasSession(sessionId: string): boolean {
@@ -217,27 +246,24 @@ class AgentSessionManagerImpl {
 
   /** Kick off an agent loop; progress arrives as session events. */
   async ask(sessionId: string, content: string): Promise<void> {
-    const entry = this.sessions.get(sessionId)
-    if (!entry) throw new Error(`session not found: ${sessionId}`)
+    const entry = await this.ensureEntry(sessionId)
     void entry.engine.startLoop(content).catch((err) => {
       this.emit(sessionId, { type: 'error', message: err instanceof Error ? err.message : String(err) })
     })
   }
 
   cancel(sessionId: string): void {
-    this.sessions.get(sessionId)?.engine.cancelLoop()
+    void this.ensureEntry(sessionId).then((entry) => entry.engine.cancelLoop()).catch(() => {})
   }
 
-  history(sessionId: string): { messages: unknown[]; agentId: string } {
-    const entry = this.sessions.get(sessionId)
-    if (!entry) throw new Error(`session not found: ${sessionId}`)
+  async history(sessionId: string): Promise<{ messages: unknown[]; agentId: string }> {
+    const entry = await this.ensureEntry(sessionId)
     return { messages: entry.engine.messages as unknown[], agentId: entry.agentId }
   }
 
   /** Seed a restored conversation's history into the main-hosted engine. */
-  hydrate(sessionId: string, messages: AgentMessage[], historySummary?: { text: string; firstKeptId: string } | null): void {
-    const entry = this.sessions.get(sessionId)
-    if (!entry) throw new Error(`session not found: ${sessionId}`)
+  async hydrate(sessionId: string, messages: AgentMessage[], historySummary?: { text: string; firstKeptId: string } | null): Promise<void> {
+    const entry = await this.ensureEntry(sessionId)
     entry.engine.loadConversation(messages)
     if (historySummary) {
       entry.engine.seedHistorySummary(historySummary.text, historySummary.firstKeptId)
@@ -247,10 +273,11 @@ class AgentSessionManagerImpl {
   }
 
   /** UI snapshot for (re)activating a session. */
-  snapshot(sessionId: string): {
+  async snapshot(sessionId: string): Promise<{
     messages: AgentMessage[]; status: { status: string }; streamingBlocks: unknown[]; plan: PlanSnapshot | null
-  } | null {
-    const entry = this.sessions.get(sessionId)
+  } | null> {
+    if (!this.sessions.has(sessionId) && !this.pendingCreates.has(sessionId)) return null
+    const entry = await this.ensureEntry(sessionId).catch(() => null)
     if (!entry) return null
     return {
       messages: entry.engine.messages,
@@ -262,8 +289,7 @@ class AgentSessionManagerImpl {
 
   /** Whitelisted engine method calls from the renderer (approvals, loop control…). */
   async engineCall(sessionId: string, method: string, args: unknown[]): Promise<unknown> {
-    const entry = this.sessions.get(sessionId)
-    if (!entry) throw new Error(`session not found: ${sessionId}`)
+    const entry = await this.ensureEntry(sessionId)
     const engine = entry.engine as unknown as Record<string, (...a: unknown[]) => unknown>
     switch (method) {
       case 'approveTool': return engine.approveTool(args[0] as string)
@@ -284,7 +310,7 @@ class AgentSessionManagerImpl {
 
   /** Rebuild engine options from current settings/profile and hot-swap them. */
   async refreshOptions(sessionId: string): Promise<void> {
-    const entry = this.sessions.get(sessionId)
+    const entry = await this.ensureEntry(sessionId).catch(() => null)
     if (!entry) return
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
