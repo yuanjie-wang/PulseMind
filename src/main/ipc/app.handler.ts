@@ -8,9 +8,6 @@ import { execFile } from 'node:child_process'
 import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR } from '../storage'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 
-}
-
-
 export interface PlatformInfo {
   platform: string
   platformName: string
