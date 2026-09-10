@@ -174,13 +174,15 @@ export class AgentEngine {
   isCancelled = false
   /** @internal */
   requestStartTime = 0
-  private sessionStartTime = 0
+  /** @internal */
+  sessionStartTime = 0
   /** Consecutive idle-timeout retries for the current stream. Reset on success. */
   /** @internal */
   streamIdleRetries = 0
   /** @internal */
   pendingToolIds = new Set<string>()
-  private isAutoExecuting = false
+  /** @internal */
+  isAutoExecuting = false
   /** @internal */
   currentRequestId: string | null = null
   private skillAppendix: string | null = null
@@ -228,7 +230,8 @@ export class AgentEngine {
   // Public access to plan (delegated to PlanManager)
   get plan(): Plan | null { return this.planManager.plan }
   // Managers for extracted concerns
-  private planManager: PlanManager
+  /** @internal */
+  planManager: PlanManager
   /** @internal */
   toolExecutor: ToolExecutor
   private spawnManager = new SpawnManager(this)
@@ -388,6 +391,11 @@ export class AgentEngine {
 
     await this.continueLoop()
   }
+
+  // stopReason dispatch delegation (ExecutionFlow, split 8)
+  async handleToolUseResponse(toolUses: ToolUseBlock[]): Promise<void> { return this.executionFlow.handleToolUseResponse(toolUses) }
+  async handleMaxTokensResponse(toolUses: ToolUseBlock[]): Promise<void> { return this.executionFlow.handleMaxTokensResponse(toolUses) }
+  handleEndTurnResponse(stopReason: string | null): void { this.executionFlow.handleEndTurnResponse(stopReason) }
 
   /** @internal - driven by SpawnManager for spawned engines */
   continueLoop = async (): Promise<void> => {
@@ -831,197 +839,6 @@ export class AgentEngine {
   // Compaction triggers on remaining window (contextLength - used). On small
   // model windows the percentage floor (10%/30%) collapses to tiny headroom,
   private static readonly LIGHT_COMPACT_MIN_REMAINING = 30_000
-
-  /** True when the MCP server owning a tool has requireApproval enabled. */
-  private mcpRequiresApproval(toolName: string): boolean {
-    const serverId = this.mcpToolOwner.get(toolName)
-    if (!serverId) return false
-    return getCachedMcpServers().find(s => s.id === serverId)?.config?.requireApproval === true
-  }
-
-  /** Categorize and execute tool_use blocks. Shared by normal path and oversized-param skip path. */
-  private async dispatchToolExecution(tools: ToolUseBlock[]): Promise<void> {
-    const readOnlyTools = tools.filter(t => t.name === 'read' || t.name === 'list_dir' || t.name === 'find' || t.name === 'search' || t.name === 'git_status' || t.name === 'git_diff' || t.name === 'git_log')
-    const writeEditTools = tools.filter(t => t.name === 'write' || t.name === 'edit' || t.name === 'git_commit' || t.name === 'git_restore')
-    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch'
-    const systemTools = tools.filter(t => isSystemTool(t.name))
-    const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
-    const memoryTools = tools.filter(t => isMemoryTool(t.name))
-    const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
-    const knowledgeTools = tools.filter(t => isKnowledgeTool(t.name))
-    const isExperienceTool = (name: string): boolean => name === 'experience_read'
-    const experienceTools = tools.filter(t => isExperienceTool(t.name))
-    const isMCPTool = (name: string): boolean => this.mcpToolOwner.has(name)
-    // Gated (requireApproval) MCP tools behave like otherTools: auto-executed only in
-    // YOLO mode, otherwise they wait for user approval in handleToolUseResponse.
-    const gatedMcpTools = tools.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
-    const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
-    const otherTools = tools.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user')
-    const isYoloMode = !!this.opts.yoloMode || !!this.spawnSystemPrompt
-
-    try {
-      if (readOnlyTools.length > 0) await this.toolExecutor.execReadOnlyTools(readOnlyTools)
-      if (writeEditTools.length > 0) for (const t of writeEditTools) await this.toolExecutor.execWorkspaceTool(t)
-      if (mcpTools.length > 0) for (const t of mcpTools) await this.toolExecutor.execMCPTool(t)
-      if (isYoloMode && gatedMcpTools.length > 0) for (const t of gatedMcpTools) await this.toolExecutor.execMCPTool(t)
-      for (const t of systemTools) {
-        if (t.name === 'pick_skill') await this.toolExecutor.execPickSkill(t)
-        else if (t.name === 'pick_tool') await this.toolExecutor.execPickTool(t, (names) => {
-          // Classify by built-in definition set (not mcpToolOwner): an MCP tool from a
-          // server that connected after this loop's discovery is still a valid MCP pick.
-          const builtinNames = new Set(this.opts.toolManager.getEnabledTools().map(x => x.definition.name))
-          this.selectedMcpTools = names.filter(n => !builtinNames.has(n))
-          this.selectedBuiltinTools = names.filter(n => builtinNames.has(n))
-        })
-        else if (t.name === 'install') await this.toolExecutor.execInstall(t)
-        else if (t.name === 'spawn_agent') await this.toolExecutor.execSpawnAgent(t)
-        else if (t.name === 'webfetch') await this.toolExecutor.execWebFetch(t)
-        else if (t.name === 'create_plan') await this.planManager.execCreatePlan(t)
-        else if (t.name === 'advance_plan') await this.planManager.execAdvancePlan(t)
-      }
-      if (memoryTools.length > 0) for (const t of memoryTools) await this.toolExecutor.execOtherTool(t)
-      if (knowledgeTools.length > 0) for (const t of knowledgeTools) await this.toolExecutor.execOtherTool(t)
-      if (experienceTools.length > 0) for (const t of experienceTools) await this.toolExecutor.execOtherTool(t)
-      if (isYoloMode && otherTools.length > 0) { for (const t of otherTools) await this.toolExecutor.execOtherTool(t) }
-    } catch (err) {
-      this.isAutoExecuting = false
-      const msg = err instanceof Error ? err.message : 'Tool execution failed'
-      console.error('[AgentEngine] Tool execution error:', msg)
-      this.agentStatus = { status: 'error', error: msg }
-      this.notify()
-      return
-    }
-  }
-
-  /** @internal */
-  async handleToolUseResponse(toolUses: ToolUseBlock[]): Promise<void> {
-    const opts = this.opts
-
-    const hasTruncated = toolUses.some(t => (t as any)._jsonTruncated === true)
-    if (hasTruncated) {
-      addTruncatedResults(this.messages, toolUses)
-      this.notify()
-      this.continueLoop()
-      return
-    }
-
-    // Reject tools with oversized parameters before dispatching
-    const oversized = validateToolParams(toolUses)
-    if (oversized.length > 0) {
-      const oversizedIds = new Set(oversized.map(t => t.id))
-      const oversizedResults: ContentBlock[] = oversized.map(t => {
-        t.status = 'completed'
-        const limits = AgentEngine.TOOL_PARAM_LIMITS[t.name] || {}
-        const details = Object.entries(limits)
-          .filter(([key]) => typeof t.input?.[key] === 'string')
-          .map(([key, max]) => `${key}: ${String(t.input?.[key] ?? '').length} chars (max ${max})`)
-          .join(', ')
-        const msg = `Tool "${t.name}" was rejected: parameter(s) too large (${details}). Please split the work into smaller calls.`
-        return { type: 'tool_result' as const, tool_use_id: t.id, content: msg, is_error: true, tool_result_id: crypto.randomUUID() }
-      })
-      this.messages = [...this.messages, { id: generateMsgId(), role: 'user' as const, contentBlocks: oversizedResults, createdAt: new Date().toISOString() }]
-      // Execute non-oversized tools
-      const validTools = toolUses.filter(t => !oversizedIds.has(t.id))
-      if (validTools.length > 0) {
-        await this.dispatchToolExecution(validTools)
-      }
-      this.notify()
-      this.continueLoop()
-      return
-    }
-
-    const readOnlyTools = toolUses.filter(t => t.name === 'read' || t.name === 'list_dir' || t.name === 'find' || t.name === 'search' || t.name === 'git_status' || t.name === 'git_diff' || t.name === 'git_log')
-    const writeEditTools = toolUses.filter(t => t.name === 'write' || t.name === 'edit' || t.name === 'git_commit' || t.name === 'git_restore')
-    const askUserTools = toolUses.filter(t => t.name === 'ask_user')
-    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch'
-    const systemTools = toolUses.filter(t => isSystemTool(t.name))
-    const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
-    const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
-    const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
-    const knowledgeTools = toolUses.filter(t => isKnowledgeTool(t.name))
-    const isExperienceTool = (name: string): boolean => name === 'experience_read'
-    const experienceTools = toolUses.filter(t => isExperienceTool(t.name))
-    const isMCPTool = (name: string): boolean => this.mcpToolOwner.has(name)
-    const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
-    const mcpAutoTools = toolUses.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
-    const mcpTools = toolUses.filter(t => isMCPTool(t.name))
-    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user')
-
-    const isYoloMode = !!opts.yoloMode || !!this.spawnSystemPrompt
-
-    this.toolUseBlocks = toolUses
-    this.pendingToolIds = new Set(toolUses.map(t => t.id))
-    this.isAutoExecuting = true
-    for (const t of [...readOnlyTools, ...writeEditTools, ...systemTools, ...memoryTools, ...knowledgeTools, ...experienceTools, ...mcpAutoTools]) t.status = 'running'
-    for (const t of askUserTools) t.status = 'running'
-    // Gated MCP tools auto-execute in YOLO mode (incl. sub-agents); in mixed mode
-    // they stay pending until the user approves.
-    if (isYoloMode) for (const t of [...otherTools, ...mcpApprovalTools]) t.status = 'running'
-    else for (const t of mcpApprovalTools) t.status = 'pending'
-    this.notify()
-
-    await this.dispatchToolExecution(toolUses)
-
-    this.isAutoExecuting = false
-    // Report progress for spawned agents after each tool execution batch
-    if (this.onSpawnProgress && this.spawnSystemPrompt) {
-      const completed = toolUses.filter(t => t.status === 'completed').length
-      this.onSpawnProgress(`子代理进度: [${completed}/${toolUses.length}] ${toolUses.map(t => t.name).join(', ')}`)
-    }
-
-    // YOLO mode (incl. sub-agents) bypasses the approval gate — gated MCP tools were
-    // already executed by dispatchToolExecution. Only mixed mode holds them for approval.
-    const shouldAutoExecAll = isYoloMode || (otherTools.length === 0 && mcpApprovalTools.length === 0)
-    if (shouldAutoExecAll) {
-      if (askUserTools.length > 0) {
-        if (this.spawnSystemPrompt) {
-          for (const t of askUserTools) {
-            this.addToolResult(t.id, 'ask_user is not available in sub-agent mode.', true)
-            t.status = 'completed'
-          }
-          if (this.pendingToolIds.size === 0) this.continueLoop()
-          else { this.agentStatus = { status: 'completed' }; this.notify(); this.resolveCompletionIfSpawned('completed') }
-        } else {
-          this.agentStatus = { status: 'awaiting_user_input', tools: askUserTools }
-        }
-      } else if (this.pendingToolIds.size === 0) this.continueLoop()
-      else { this.agentStatus = { status: 'completed' }; this.resolveCompletionIfSpawned('completed') }
-      this.notify()
-      safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: 'tool_use', status: this.agentStatus }, 'afterLlmCall')
-      return
-    }
-
-    // Mixed mode: show approval UI (gated MCP tools are held for approval — only YOLO mode auto-executes them)
-    this.toolUseBlocks = toolUses
-    const approvalTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !mcpAutoTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t))
-    this.pendingToolIds = new Set(approvalTools.map(t => t.id))
-    this.agentStatus = { status: 'awaiting_approval', tools: toolUses }
-    safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: 'tool_use', status: { status: 'awaiting_approval', tools: toolUses } }, 'afterLlmCall')
-    this.notify()
-  }
-
-  /** @internal */
-  async handleMaxTokensResponse(toolUses: ToolUseBlock[]): Promise<void> {
-    if (toolUses.length > 0) { addTruncatedResults(this.messages, toolUses); this.notify() }
-    safeInvokeObserver(this.opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: 'max_tokens', status: { status: 'streaming' } }, 'afterLlmCall')
-    this.continueLoop()
-  }
-
-  /** @internal */
-  handleEndTurnResponse(stopReason: string | null): void {
-    // Update last assistant message with total session time (user input → loop end)
-    if (this.sessionStartTime > 0) {
-      const totalMs = Math.round(performance.now() - this.sessionStartTime)
-      const lastMsg = this.messages[this.messages.length - 1]
-      if (lastMsg?.role === 'assistant') lastMsg.processingMs = totalMs
-      this.sessionStartTime = 0
-    }
-    this.agentStatus = { status: 'completed' }
-    this.notify()
-    safeInvokeObserver(this.opts.hooks?.afterLlmCall, { messages: this.messages, stopReason, status: { status: 'completed' } }, 'afterLlmCall')
-    safeInvokeObserver(this.opts.hooks?.afterSession, { messages: this.messages, status: { status: 'completed' } }, 'afterSession')
-    this.resolveCompletionIfSpawned('completed')
-  }
 
   // ── Tool result persistence (for tool_result_search) ──────────────────
 
