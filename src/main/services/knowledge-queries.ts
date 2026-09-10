@@ -75,23 +75,23 @@ function collectSupportedFiles(folderPath: string): string[] {
   return files
 }
 
-export function svcListAdvanced(opts: unknown): unknown {
+export function svcListAdvanced(opts: unknown) {
   return listAllFilesAdvanced(opts as any)
 }
 
-export function svcListFiles(status?: string): unknown {
+export function svcListFiles(status?: string) {
   return listAllFiles(status)
 }
 
-export function svcGetFile(id: string): unknown {
+export function svcGetFile(id: string) {
   return getFile(id)
 }
 
-export function svcPrepareImport(filePaths: string[]): unknown {
+export function svcPrepareImport(filePaths: string[]) {
   return prepareImport(filePaths)
 }
 
-export async function svcAddFile(filePaths: string[]): Promise<unknown[]> {
+export async function svcAddFile(filePaths: string[]) {
   const results = []
   for (const fp of filePaths) {
     results.push(await importLocalFile(fp))
@@ -103,7 +103,7 @@ export async function svcScanFolder(folderPath: string): Promise<string[]> {
   return collectSupportedFiles(folderPath)
 }
 
-export async function svcAddFolder(folderPath: string): Promise<unknown[]> {
+export async function svcAddFolder(folderPath: string) {
   const results = []
   for (const fp of collectSupportedFiles(folderPath)) {
     results.push(await importLocalFile(fp))
@@ -111,7 +111,7 @@ export async function svcAddFolder(folderPath: string): Promise<unknown[]> {
   return results
 }
 
-export function svcAddUrl(url: string): unknown {
+export function svcAddUrl(url: string) {
   return importUrl(url)
 }
 
@@ -123,7 +123,7 @@ export function svcDelete(id: string): void {
   deleteFile(id)
 }
 
-export function svcGetRaw(relativePath: string): unknown {
+export function svcGetRaw(relativePath: string): string {
   resolveSafeRelative(KNOWLEDGE_RAW_DIR, relativePath) // validates traversal
   return readRawContent(relativePath)
 }
@@ -141,11 +141,11 @@ export function svcReadWiki(relativePath?: string): { content: string | null; fi
   return { content: null, files: listWikiFiles() }
 }
 
-export function svcWriteExperience(data: { content: string; convId: string; title?: string }): unknown {
+export function svcWriteExperience(data: { content: string; convId: string; title?: string }) {
   return saveExperienceToRaw(data.content, data.convId, data.title)
 }
 
-export function svcGetStats(): unknown {
+export function svcGetStats() {
   return getStats()
 }
 
@@ -169,11 +169,11 @@ export function svcRebuildIndex(): void {
   rebuildWikiIndex()
 }
 
-export function svcSearchContent(query: string): unknown {
+export function svcSearchContent(query: string) {
   return searchContent(query)
 }
 
-export function svcClearAll(): unknown {
+export function svcClearAll() {
   return clearAllKnowledge()
 }
 

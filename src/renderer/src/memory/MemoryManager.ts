@@ -9,6 +9,7 @@ import { DEFAULT_MEMORY_PREFERENCES } from './types'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentMessage, TextBlock } from '../types/agent'
 import { MemoryCompressionAgent, ExperienceAgent, SessionReviewAgent } from '../agent/one-shot-agent'
+import { getHost } from '../agent/host'
 
 /**
  * Manages memory capture, storage, and retrieval.
@@ -65,12 +66,12 @@ export class MemoryManager {
 
   /** Load the Manual Memories text content from disk. */
   async getMemoryMd(): Promise<string> {
-    return window.electronAPI.getMemoryMd()
+    return getHost().getMemoryMd()
   }
 
   /** Save the Manual Memories text content to disk (full overwrite). */
   async saveMemoryMd(content: string): Promise<void> {
-    await window.electronAPI.saveMemoryMd(content)
+    await getHost().saveMemoryMd(content)
   }
 
   // ===================================================================
@@ -79,13 +80,13 @@ export class MemoryManager {
   // ===================================================================
 
   async listMemories(category?: string): Promise<MemoryEntry[]> {
-    const result = await window.electronAPI.listMemories(category)
+    const result = await getHost().listMemories(category)
     return Array.isArray(result) ? result : []
   }
 
   async saveMemory(input: MemoryCreateInput): Promise<MemoryEntry | null> {
     const id = `mem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-    const entry = await window.electronAPI.saveMemory({
+    const entry = await getHost().saveMemory({
       id,
       content: input.content,
       type: input.type ?? 'auto',
@@ -97,15 +98,15 @@ export class MemoryManager {
   }
 
   async updateMemory(id: string, input: MemoryUpdateInput): Promise<void> {
-    await window.electronAPI.updateMemory(id, input)
+    await getHost().updateMemory(id, input)
   }
 
   async deleteMemory(id: string): Promise<void> {
-    await window.electronAPI.deleteMemory(id)
+    await getHost().deleteMemory(id)
   }
 
   async searchMemories(input: MemorySearchInput): Promise<MemoryEntry[]> {
-    return window.electronAPI.searchMemories(input)
+    return getHost().searchMemories(input)
   }
 
   /**
@@ -121,7 +122,7 @@ export class MemoryManager {
       const extractedTypes = ['auto', 'fact', 'decision', 'preference']
       let count: number
       try {
-        count = await window.electronAPI.countMemories(extractedTypes)
+        count = await getHost().countMemories(extractedTypes)
       } catch (err: any) {
         // Database not yet initialized — transient startup condition, silently skip
         if (err?.message?.includes?.('Database not initialized')) return false
@@ -189,11 +190,11 @@ export class MemoryManager {
     const twentyFourHAgo = new Date(now - 24 * 60 * 60 * 1000).toISOString()
 
     const [recentSessions, olderSessions] = await Promise.all([
-      window.electronAPI.listConversationsForMemory({
+      getHost().listConversationsForMemory({
         afterTime: twentyFourHAgo,
         beforeTime: oneMinAgo
       }),
-      window.electronAPI.listConversationsForMemory({
+      getHost().listConversationsForMemory({
         beforeTime: twentyFourHAgo,
         limit: 50
       })
@@ -254,12 +255,12 @@ export class MemoryManager {
     let cursor = 0
     // --- Incremental cursor: only analyze messages after the last processed one ---
     if (conversationId) {
-      const processedCount = await window.electronAPI.getConversationExperienceExtractedCount(conversationId)
+      const processedCount = await getHost().getConversationExperienceExtractedCount(conversationId)
       // extractAndSaveAll (afterSession) extracts memories + experiences together and
       // bumps the memory counter; a satisfied memory counter means this conversation's
       // experiences were already reviewed, so skip too (prevents the two extraction
       // paths from double-extracting the same conversation).
-      const memProcessed = await window.electronAPI.getConversationExtractedMsgCount(conversationId)
+      const memProcessed = await getHost().getConversationExtractedMsgCount(conversationId)
       if (processedCount >= sessionMessages.length || memProcessed >= sessionMessages.length) {
         console.log(`[MemoryManager] Already extracted experiences for conversation ${conversationId} at msg count ${processedCount}, skipping`)
         return { title: null, content: null, category: null }
@@ -301,7 +302,7 @@ export class MemoryManager {
       if (!result) {
         console.log(`[MemoryManager] No valuable experience insights — skipping`)
         if (conversationId) {
-          await window.electronAPI.updateConversationExperienceExtractedCount(conversationId, sessionMessages.length).catch((e) => {
+          await getHost().updateConversationExperienceExtractedCount(conversationId, sessionMessages.length).catch((e) => {
             console.warn('[MemoryManager] Failed to update experience extracted count:', e)
           })
         }
@@ -315,7 +316,7 @@ export class MemoryManager {
       const experienceCategory = validCategories.includes(category) ? category : 'general'
 
       if (conversationId) {
-        await window.electronAPI.updateConversationExperienceExtractedCount(conversationId, sessionMessages.length).catch((e) => {
+        await getHost().updateConversationExperienceExtractedCount(conversationId, sessionMessages.length).catch((e) => {
           console.warn('[MemoryManager] Failed to update experience extracted count:', e)
         })
       }
@@ -364,7 +365,7 @@ export class MemoryManager {
     // --- Incremental cursor: skip if conversation fully processed ---
     let cursor = 0
     if (conversationId) {
-      const processedCount = await window.electronAPI.getConversationExtractedMsgCount(conversationId)
+      const processedCount = await getHost().getConversationExtractedMsgCount(conversationId)
       if (processedCount >= textMessages.length) {
         console.log(`[MemoryManager] Already extracted for conversation ${conversationId} at msg count ${processedCount}, skipping`)
         return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
@@ -417,7 +418,7 @@ export class MemoryManager {
       // --- Save conversation summary ---
       if (conversationId && result.summary) {
         const trimmed = result.summary.slice(0, 200)
-        await window.electronAPI.updateConversationSummary(conversationId, trimmed).catch((e) => {
+        await getHost().updateConversationSummary(conversationId, trimmed).catch((e) => {
           console.warn('[MemoryManager] Failed to save conversation summary:', e)
         })
       }
@@ -429,7 +430,7 @@ export class MemoryManager {
           .slice(0, 10)
           .join('、')
         if (joined) {
-          await window.electronAPI.updateConversationKeywords(conversationId, joined).catch((e) => {
+          await getHost().updateConversationKeywords(conversationId, joined).catch((e) => {
             console.warn('[MemoryManager] Failed to save conversation keywords:', e)
           })
         }
@@ -471,10 +472,10 @@ export class MemoryManager {
       // startup background task (extractAndSaveExperiences) must see this as done
       // or it will re-extract the same experiences from the same conversation.
       if (conversationId) {
-        await window.electronAPI.updateConversationExtractedMsgCount(conversationId, textMessages.length).catch((e) => {
+        await getHost().updateConversationExtractedMsgCount(conversationId, textMessages.length).catch((e) => {
           console.warn('[MemoryManager] Failed to update extracted message count:', e)
         })
-        await window.electronAPI.updateConversationExperienceExtractedCount(conversationId, textMessages.length).catch((e) => {
+        await getHost().updateConversationExperienceExtractedCount(conversationId, textMessages.length).catch((e) => {
           console.warn('[MemoryManager] Failed to update experience extracted count:', e)
         })
       }
@@ -504,7 +505,7 @@ export class MemoryManager {
     let migrated = 0
     for (const mem of experienceMemories) {
       try {
-        await window.electronAPI.knowledgeWriteExperience({
+        await getHost().knowledgeWriteExperience({
           content: mem.content,
           convId: mem.source || 'migration'
         })
@@ -613,14 +614,14 @@ export class MemoryManager {
    * ballooned past context limits and diluted the dedup signal.
    */
   private async buildExistingExperiencesText(maxCount = 40, maxLen = 200): Promise<string> {
-    const allFiles = await window.electronAPI.knowledgeListFiles()
+    const allFiles = await getHost().knowledgeListFiles()
     const expFiles = (allFiles || [])
       .filter((f: { sourceType: string }) => f.sourceType === 'experience')
       .slice(0, maxCount)
     const expContents = await Promise.all(
       expFiles.map(async (f: { filePath: string }) => {
         try {
-          const c = await window.electronAPI.knowledgeGetRaw(f.filePath)
+          const c = await getHost().knowledgeGetRaw(f.filePath)
           return `- ${c.slice(0, maxLen)}`
         } catch { return '' }
       })

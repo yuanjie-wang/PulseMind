@@ -8,7 +8,7 @@ import type { MCPClientConfig } from '../mcp/MCPClient'
 // Public-facing server type (no client field)
 type McpServerInfo = Omit<MCPManagedServer, 'client'>
 
-function validateMcpConfig(config: unknown): config is MCPClientConfig {
+export function validateMcpConfig(config: unknown): config is MCPClientConfig {
   if (!config || typeof config !== 'object') throw new Error('配置必须是对象')
   const c = config as Record<string, unknown>
   if (typeof c.name !== 'string' || !c.name.trim()) throw new Error('服务器名称不能为空')
@@ -77,7 +77,7 @@ async function registerServers(): Promise<void> {
 }
 
 // Persist current custom servers to store
-async function persistCustomServers(): Promise<void> {
+export async function persistCustomServers(): Promise<void> {
   const allServers = serverManager.listServers()
   // Only persist non-built-in servers (Chrome DevTools is the only built-in)
   const customServers = allServers.filter((s) => s.id !== 'chrome-devtools')

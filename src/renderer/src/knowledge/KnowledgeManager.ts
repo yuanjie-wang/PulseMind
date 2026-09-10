@@ -2,6 +2,7 @@ import { KnowledgeCompilerAgent } from '../agent/one-shot-agent/KnowledgeCompile
 import { ExperienceCompressionAgent } from '../agent/one-shot-agent/ExperienceCompressionAgent'
 import type { LlmAdapter } from '../llm/adapter'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../../../shared/types/knowledge'
+import { getHost } from '../agent/host'
 
 /**
  * Renderer-side manager for the Knowledge Base system.
@@ -40,86 +41,86 @@ export class KnowledgeManager {
 
   /** List all knowledge files, optionally filtered by status. */
   async listFiles(status?: 'raw' | 'compiled'): Promise<KnowledgeFile[]> {
-    return window.electronAPI.knowledgeListFiles(status)
+    return getHost().knowledgeListFiles(status)
   }
 
   /** List knowledge files with advanced options: filter, sort, search, pagination */
   async listFilesAdvanced(opts?: KnowledgeListOptions): Promise<KnowledgeListResult> {
-    return window.electronAPI.knowledgeListAdvanced(opts)
+    return getHost().knowledgeListAdvanced(opts)
   }
 
   /** Get a single knowledge file by ID. */
   async getFile(id: string): Promise<KnowledgeFile | null> {
-    return window.electronAPI.knowledgeGetFile(id)
+    return getHost().knowledgeGetFile(id)
   }
 
   /** Delete a knowledge file by ID. */
   async deleteFile(id: string): Promise<void> {
-    return window.electronAPI.knowledgeDelete(id)
+    return getHost().knowledgeDelete(id)
   }
 
   /** Get aggregate stats (total / raw / compiled). */
   async getStats(): Promise<KnowledgeStats> {
-    return window.electronAPI.knowledgeGetStats()
+    return getHost().knowledgeGetStats()
   }
 
   // ─── Import ─────────────────────────────────────────────────────────
 
   /** Import one or more local files into the knowledge base. */
   async importFiles(filePaths: string[]): Promise<KnowledgeImportResult[]> {
-    return window.electronAPI.knowledgeAddFile(filePaths)
+    return getHost().knowledgeAddFile(filePaths)
   }
 
   /** Check each file path against DB; returns existing + new. */
   async prepareImport(filePaths: string[]): Promise<{ existing: { id: string; filePath: string }[]; new: string[] }> {
-    return window.electronAPI.knowledgePrepareImport(filePaths)
+    return getHost().knowledgePrepareImport(filePaths)
   }
 
   /** Scan a folder and return the count of importable files (without importing). */
   async scanFolder(folderPath: string): Promise<{ fileCount: number; filePaths: string[] }> {
-    return window.electronAPI.knowledgeScanFolder(folderPath)
+    return getHost().knowledgeScanFolder(folderPath)
   }
 
   /** Import all supported files from a folder (recursive). */
   async importFolder(folderPath: string): Promise<KnowledgeImportResult[]> {
-    return window.electronAPI.knowledgeAddFolder(folderPath)
+    return getHost().knowledgeAddFolder(folderPath)
   }
 
   /** Import a remote URL into the knowledge base. */
   async importUrl(url: string): Promise<KnowledgeImportResult> {
-    return window.electronAPI.knowledgeAddUrl(url)
+    return getHost().knowledgeAddUrl(url)
   }
 
   /** Get the absolute file-system path of a raw knowledge file. */
   async getRawFilePath(relativePath: string): Promise<string> {
-    return window.electronAPI.knowledgeGetRawPath(relativePath)
+    return getHost().knowledgeGetRawPath(relativePath)
   }
 
   /** Search raw file content for a query string. Returns matches with context excerpts. */
   async searchContent(query: string): Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>> {
-    return window.electronAPI.knowledgeSearchContent(query)
+    return getHost().knowledgeSearchContent(query)
   }
 
   /** Search compiled wiki pages via ripgrep. Returns matching wiki paths with snippets. */
   async searchWiki(query: string): Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>> {
-    return window.electronAPI.knowledgeSearchWiki(query)
+    return getHost().knowledgeSearchWiki(query)
   }
 
   /** Rebuild wiki/index.md from actual page files, grouped by type with descriptions. */
   async rebuildWikiIndex(): Promise<void> {
-    return window.electronAPI.knowledgeRebuildIndex()
+    return getHost().knowledgeRebuildIndex()
   }
 
   // ─── Content Access ────────────────────────────────────────────────
 
   /** Read the raw content of a knowledge file by its relative path. */
   async readRawContent(relativePath: string): Promise<string> {
-    return window.electronAPI.knowledgeGetRaw(relativePath)
+    return getHost().knowledgeGetRaw(relativePath)
   }
 
   /** Read wiki content or list wiki directory. */
   async readWiki(relativePath?: string): Promise<{ content: string | null; files: string[] | null }> {
-    return window.electronAPI.knowledgeReadWiki(relativePath)
+    return getHost().knowledgeReadWiki(relativePath)
   }
 
   // ─── Compilation ───────────────────────────────────────────────────
@@ -189,7 +190,7 @@ export class KnowledgeManager {
       if (result.actions.length === 0) continue
 
       // 6. Apply wiki changes via IPC
-      const applyResult = await window.electronAPI.knowledgeApplyWikiChanges({
+      const applyResult = await getHost().knowledgeApplyWikiChanges({
         actions: result.actions,
         logEntry: result.logEntry,
         compiledIds: batch.map(f => f.id)
@@ -260,7 +261,7 @@ export class KnowledgeManager {
     }
 
     // Apply wiki changes
-    const applyResult = await window.electronAPI.knowledgeApplyWikiChanges({
+    const applyResult = await getHost().knowledgeApplyWikiChanges({
       actions: result.actions,
       logEntry: result.logEntry,
       compiledIds: [file.id]
@@ -287,12 +288,12 @@ export class KnowledgeManager {
 
   /** Save a conversation experience directly into the knowledge raw directory. */
   async saveExperience(content: string, convId: string, title?: string): Promise<KnowledgeFile> {
-    return window.electronAPI.knowledgeWriteExperience({ content, convId, title })
+    return getHost().knowledgeWriteExperience({ content, convId, title })
   }
 
   /** Clear all knowledge: delete all files and DB records. */
   async clearAll(): Promise<{ deletedRaw: number; deletedWiki: number }> {
-    return window.electronAPI.knowledgeClearAll()
+    return getHost().knowledgeClearAll()
   }
 
   /**

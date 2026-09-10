@@ -9,6 +9,20 @@ export function deriveConvType(id: string): string {
   return 'normal'
 }
 
+/** Batch-persist tool results (called before nanoCompact / by the agent host). */
+export function persistToolResults(convId: string, results: Array<{ ref_id: string; conversation_id: string; message_id: string; block_index: number; tool_use_id: string; content: string; is_error: number }>): void {
+  if (results.length === 0) return
+  const database = getDb()
+  // Ensure conversation exists (may be a new conversation not yet saved)
+  database.prepare('INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at, type, rect_id) VALUES (?, ?, ?, ?, ?, ?)').run(convId, '', new Date().toISOString(), new Date().toISOString(), deriveConvType(convId), deriveRectId(convId))
+  const stmt = database.prepare(
+    'INSERT OR IGNORE INTO tool_results (ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  )
+  database.transaction(() => {
+    for (const r of results) stmt.run(r.ref_id, convId, r.message_id, r.block_index, r.tool_use_id, r.content, r.is_error)
+  })()
+}
+
 /** Extract rect_id from canvas conversation IDs (canvas_<rectId>_<ts>_<rand>). */
 export function deriveRectId(id: string): string | null {
   if (!id.startsWith('canvas_')) return null

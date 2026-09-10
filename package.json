@@ -116,6 +116,14 @@
         "to": "resources/pulseMind.png"
       },
       {
+        "from": "resources/pulseMind_tray.png",
+        "to": "resources/pulseMind_tray.png"
+      },
+      {
+        "from": "resources/pulseMind_tray@2x.png",
+        "to": "resources/pulseMind_tray@2x.png"
+      },
+      {
         "from": "templates",
         "to": "templates",
         "filter": [

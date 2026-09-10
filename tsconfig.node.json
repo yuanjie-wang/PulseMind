@@ -18,6 +18,8 @@
   "include": [
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
-    "src/shared/**/*.ts"
+    "src/shared/**/*.ts",
+    "src/renderer/src/agent/host/types.ts",
+    "src/renderer/src/types/electron.d.ts"
   ]
 }

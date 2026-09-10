@@ -7,6 +7,7 @@ import {
   hydrateConversation,
   saveConversation,
   appendConversationMessages,
+  persistToolResults,
   deriveConvType,
   deriveRectId,
   updateMessageMetadata,
@@ -179,17 +180,8 @@ export function registerConversationHandlers(): void {
 
   // Batch persist tool_results (called before nanoCompact to prevent data loss)
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_PERSIST_TOOL_RESULTS, async (_event, convId: string, results: ToolResultBatchEntry[]) => {
-    if (results.length === 0) return
     try {
-      const db = getDb()
-      // Ensure conversation exists (may be a new conversation not yet saved)
-      db.prepare('INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at, type, rect_id) VALUES (?, ?, ?, ?, ?, ?)').run(convId, '', new Date().toISOString(), new Date().toISOString(), deriveConvType(convId), deriveRectId(convId))
-      const stmt = db.prepare(
-        'INSERT OR IGNORE INTO tool_results (ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      )
-      db.transaction(() => {
-        for (const r of results) stmt.run(r.ref_id, convId, r.message_id, r.block_index, r.tool_use_id, r.content, r.is_error)
-      })()
+      persistToolResults(convId, results as never)
     } catch (e) {
       console.error('[DB] error persist-tool-results:', e)
     }

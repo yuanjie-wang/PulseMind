@@ -26,9 +26,12 @@ function resourcePath(...segments: string[]): string {
  * automations and the local agent service.
  */
 export function createTray(deps: TrayDeps): Tray {
-  const icon = nativeImage
-    .createFromPath(resourcePath('pulseMind.png'))
-    .resize({ width: 16, height: 16 })
+  // pulseMind_tray.png (16px) + pulseMind_tray@2x.png (32px) — nativeImage picks up
+  // both representations automatically. Template image: macOS recolors the badge
+  // from its alpha channel, so the knocked-out pulse glyph stays visible on both
+  // light and dark menu bars.
+  const icon = nativeImage.createFromPath(resourcePath('pulseMind_tray.png'))
+  icon.setTemplateImage(true)
   const tray = new Tray(icon)
   tray.setToolTip('PulseMind')
 

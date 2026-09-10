@@ -186,7 +186,7 @@ export interface LlmStreamSinks {
 export interface LlmStreamOptions {
   method?: string
   headers?: Record<string, string>
-  body?: string | Record<string, unknown>
+  body?: string | object
   profileId?: string
 }
 
@@ -336,87 +336,105 @@ export function registerApiProxyHandlers(): void {
 
   // Abort an ongoing streaming request
   ipcMain.handle(IPC_CHANNELS.API_ABORT_STREAM, async (_event, requestId: string) => {
-    const entry = pendingRequests.get(requestId)
-    if (entry) {
-      entry.controller.abort()
-      pendingRequests.delete(requestId)
-    }
+    abortLlmStream(requestId)
   })
 
   // Simple non-streaming fetch for small requests (title generation, etc.)
-  ipcMain.handle(IPC_CHANNELS.API_FETCH, async (_event, url: string, options: { method?: string; headers?: Record<string, string>; body?: string; withProfileHeaders?: boolean; profileId?: string }) => {
-    console.log(`[API-Proxy] Simple fetch: POST ${url}`)
-    try { await validateRequestUrl(url) } catch (e) {
-      console.error(`[API-Proxy] SSRF blocked: ${url}`)
-      return null
-    }
-    const MAX_RESPONSE_SIZE = 50 * 1024 * 1024 // 50MB
-    try {
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(new Error('Request timed out after 30s')), 30_000)
-      try {
-        const body2 = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
-        const mergedHeaders2 = await applyProfileHeaders(options.headers, {
-          mergeProfileHeaders: options.withProfileHeaders === true,
-          profileId: options.profileId
-        })
-        // llm-request hook: LLM requests opt in via withProfileHeaders (webfetch does not).
-        let finalUrl2 = url
-        let finalBody2 = body2 as string | undefined
-        let finalHeaders2 = mergedHeaders2
-        if (options.withProfileHeaders === true || options.profileId !== undefined) {
-          const hookApplied = await applyLlmRequestHook(url, mergedHeaders2, body2, {
-            profileId: options.profileId,
-            requestId: 'simple',
-          })
-          finalUrl2 = hookApplied.url
-          finalBody2 = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
-          finalHeaders2 = hookApplied.headers
-        }
-        const resolvedOptions2: { method?: string; headers?: Record<string, string>; body?: string } = {
-          ...options,
-          body: finalBody2,
-          headers: finalHeaders2
-        }
-        const response = await fetchWithRetry(finalUrl2, resolvedOptions2, controller.signal)
-        if (!response.ok) {
-          const errText = await response.text().catch(() => 'Unknown error')
-          console.error(`[API-Proxy] Simple fetch error: HTTP ${response.status} - ${errText.slice(0, 200)}`)
-          return null
-        }
-        // Check content-length header first
-        const contentLength = response.headers.get('content-length')
-        if (contentLength && parseInt(contentLength, 10) > MAX_RESPONSE_SIZE) {
-          console.error(`[API-Proxy] Response too large: ${contentLength} bytes > ${MAX_RESPONSE_SIZE}`)
-          return null
-        }
-        // Stream body with size limit
-        const reader = response.body?.getReader()
-        if (!reader) return null
-        const decoder = new TextDecoder()
-        let result = ''
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          result += decoder.decode(value, { stream: true })
-          if (result.length > MAX_RESPONSE_SIZE) {
-            reader.cancel()
-            console.error(`[API-Proxy] Response exceeded ${MAX_RESPONSE_SIZE} bytes, truncated`)
-            return null
-          }
-        }
-        // Final decode flush
-        result += decoder.decode()
-        return result
-      } finally {
-        clearTimeout(timeout)
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error'
-      console.error(`[API-Proxy] Simple fetch failed: ${message}`)
-      return null
-    }
+  ipcMain.handle(IPC_CHANNELS.API_FETCH, async (_event, url: string, options: SimpleFetchOptions): Promise<string | null> => {
+    return performSimpleFetch(url, options)
   })
+}
+
+export interface SimpleFetchOptions {
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+  withProfileHeaders?: boolean
+  profileId?: string
+}
+
+/** Abort one streaming request by id (no-op when already finished). */
+export function abortLlmStream(requestId: string): void {
+  const entry = pendingRequests.get(requestId)
+  if (entry) {
+    entry.controller.abort()
+    pendingRequests.delete(requestId)
+  }
+}
+
+/** Simple non-streaming fetch: SSRF-validated, 30s timeout, 50MB cap, returns text. */
+export async function performSimpleFetch(url: string, options: SimpleFetchOptions): Promise<string | null> {
+  console.log(`[API-Proxy] Simple fetch: POST ${url}`)
+  try { await validateRequestUrl(url) } catch (e) {
+    console.error(`[API-Proxy] SSRF blocked: ${url}`)
+    return null
+  }
+  const MAX_RESPONSE_SIZE = 50 * 1024 * 1024 // 50MB
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(new Error('Request timed out after 30s')), 30_000)
+    try {
+      const body2 = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
+      const mergedHeaders2 = await applyProfileHeaders(options.headers, {
+        mergeProfileHeaders: options.withProfileHeaders === true,
+        profileId: options.profileId
+      })
+      // llm-request hook: LLM requests opt in via withProfileHeaders (webfetch does not).
+      let finalUrl2 = url
+      let finalBody2 = body2 as string | undefined
+      let finalHeaders2 = mergedHeaders2
+      if (options.withProfileHeaders === true || options.profileId !== undefined) {
+        const hookApplied = await applyLlmRequestHook(url, mergedHeaders2, body2, {
+          profileId: options.profileId,
+          requestId: 'simple',
+        })
+        finalUrl2 = hookApplied.url
+        finalBody2 = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
+        finalHeaders2 = hookApplied.headers
+      }
+      const resolvedOptions2: { method?: string; headers?: Record<string, string>; body?: string } = {
+        ...options,
+        body: finalBody2,
+        headers: finalHeaders2
+      }
+      const response = await fetchWithRetry(finalUrl2, resolvedOptions2, controller.signal)
+      if (!response.ok) {
+        const errText = await response.text().catch(() => 'Unknown error')
+        console.error(`[API-Proxy] Simple fetch error: HTTP ${response.status} - ${errText.slice(0, 200)}`)
+        return null
+      }
+      // Check content-length header first
+      const contentLength = response.headers.get('content-length')
+      if (contentLength && parseInt(contentLength, 10) > MAX_RESPONSE_SIZE) {
+        console.error(`[API-Proxy] Response too large: ${contentLength} bytes > ${MAX_RESPONSE_SIZE}`)
+        return null
+      }
+      // Stream body with size limit
+      const reader = response.body?.getReader()
+      if (!reader) return null
+      const decoder = new TextDecoder()
+      let result = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        result += decoder.decode(value, { stream: true })
+        if (result.length > MAX_RESPONSE_SIZE) {
+          reader.cancel()
+          console.error(`[API-Proxy] Response exceeded ${MAX_RESPONSE_SIZE} bytes, truncated`)
+          return null
+        }
+      }
+      // Final decode flush
+      result += decoder.decode()
+      return result
+    } finally {
+      clearTimeout(timeout)
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    console.error(`[API-Proxy] Simple fetch failed: ${message}`)
+    return null
+  }
 }
 
 /** Abort all active streaming requests (used after system sleep/resume). */
