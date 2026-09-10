@@ -781,6 +781,17 @@ export class ToolExecutor {
   async execOtherTool(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {
+      if (await this.execMemoryTool(t)) return
+      if (await this.execConversationTool(t)) return
+      if (await this.execKnowledgeTool(t)) return
+      if (await this.execExperienceTool(t)) return
+      this.addToolResult(t.id, `Unknown tool: ${t.name}`, true)
+    } catch (err) {
+      this.addToolResult(t.id, `Tool failed: ${err instanceof Error ? err.message : String(err)}`, true)
+    }
+  }
+
+  private async execMemoryTool(t: ToolUseBlock): Promise<boolean> {
       if (t.name === 'memory_search') {
         const mm = this.opts.memoryManager
         if (mm) {
@@ -789,7 +800,9 @@ export class ToolExecutor {
           const formatted = results.length > 0 ? results.map((r, i) => `[${i + 1}] ${r.content} (${r.type}, ${r.category}, ${new Date(r.createdAt).toLocaleDateString()})`).join('\n') : 'No matching memories found.'
           t.output = formatted.slice(0, MEMORY_PREVIEW_MAX); this.addToolResult(t.id, formatted, false); t.exitCode = 0
         } else { t.output = 'Memory manager not available'; this.addToolResult(t.id, 'Memory manager not available', true); t.exitCode = 1 }
-      } else if (t.name === 'memory_save') {
+      return true
+      }
+      if (t.name === 'memory_save') {
         const mm = this.opts.memoryManager; const content = String(t.input.content || '')
         if (!content.trim()) { this.addToolResult(t.id, 'Nothing to save — content was empty.', true); t.exitCode = 1 }
         else {
@@ -801,7 +814,13 @@ export class ToolExecutor {
           t.output = entry ? content.slice(0,200) : 'Already in memory'; this.addToolResult(t.id, entry ? `Saved to memory: "${content}" (${type}, ${cat})` : `Already in memory (duplicate): "${content}"`, false)
           t.exitCode = 0
         }
-      } else if (t.name === 'conversation_search') {
+      return true
+      }
+    return false
+  }
+
+  private async execConversationTool(t: ToolUseBlock): Promise<boolean> {
+      if (t.name === 'conversation_search') {
         const query = String(t.input.query || '').trim()
         const convId2 = String(t.input.id || '').trim()
         const dateFilter: Record<string, string> = {}
@@ -828,7 +847,9 @@ export class ToolExecutor {
         } else {
           this.addToolResult(t.id, 'Error: provide either "query" (keyword search) or "id" (direct lookup).', true); t.exitCode = 1
         }
-      } else if (t.name === 'tool_result_search') {
+      return true
+      }
+      if (t.name === 'tool_result_search') {
         const ids = t.input.ids as string[] | undefined
         if (!ids || ids.length === 0) {
           this.addToolResult(t.id, 'Error: at least one tool_result_id is required.', true); t.exitCode = 1
@@ -848,7 +869,13 @@ export class ToolExecutor {
             this.addToolResult(t.id, `Error looking up tool results: ${e}`, true); t.exitCode = 1
           }
         }
-      } else if (t.name === 'knowledge_search') {
+      return true
+      }
+    return false
+  }
+
+  private async execKnowledgeTool(t: ToolUseBlock): Promise<boolean> {
+      if (t.name === 'knowledge_search') {
         const km = this.opts.knowledgeManager
         if (!km) {
           t.output = 'Knowledge base not available.'; this.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
@@ -957,7 +984,9 @@ export class ToolExecutor {
           }
           t.exitCode = 0
         }
-      } else if (t.name === 'knowledge_read') {
+      return true
+      }
+      if (t.name === 'knowledge_read') {
         const km = this.opts.knowledgeManager
         const filePath = String(t.input.path || '')
         const readType = String(t.input.type || 'wiki')
@@ -985,7 +1014,13 @@ export class ToolExecutor {
             t.exitCode = 1
           }
         }
-      } else if (t.name === 'experience_read') {
+      return true
+      }
+    return false
+  }
+
+  private async execExperienceTool(t: ToolUseBlock): Promise<boolean> {
+      if (t.name === 'experience_read') {
         const name = String(t.input.name || '')
         if (!name) {
           t.output = 'Error: name is required.'; this.addToolResult(t.id, 'Error: name is required.', true); t.exitCode = 1
@@ -1035,8 +1070,9 @@ export class ToolExecutor {
             .then(pid => { this.onProcessStart?.(pid) })
             .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
         })
+      return true
       }
-    } catch (err) { this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'exec failed'}`, true); t.exitCode = -1 }
-    t.status = 'completed'; this.notify()
+
+    return false
   }
 }
