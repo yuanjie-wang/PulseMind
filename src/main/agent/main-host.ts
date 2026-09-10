@@ -193,6 +193,9 @@ export const mainHost: PulseHost = {
   readSkillRaw: (name) => Promise.resolve(skillStore.readRawContent(name)),
   installSkill: (name) => Promise.resolve(skillStore.install(name)),
   subagentList: async () => subAgentStore.getAll(),
+  listExperiences: async () => experienceStore.list(),
+  saveExperienceRecord: async (draft) => experienceStore.save(draft),
+  deleteExperienceRecord: async (name) => { experienceStore.delete(name) },
   readExperienceRecord: (name) => Promise.resolve(experienceStore.read(name)),
   touchExperienceRecord: async (name) => { experienceStore.touch(name) },
 

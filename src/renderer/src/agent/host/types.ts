@@ -51,6 +51,9 @@ const HOST_METHOD_KEYS = [
   'readSkillRaw',
   'installSkill',
   'subagentList',
+  'listExperiences',
+  'saveExperienceRecord',
+  'deleteExperienceRecord',
   'readExperienceRecord',
   'touchExperienceRecord',
   // memory / knowledge / conversation store

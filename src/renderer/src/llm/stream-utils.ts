@@ -1,4 +1,5 @@
 import type { StreamParser } from './stream-types'
+import { getHost } from '../agent/host'
 
 /**
  * Fetch all SSE chunks from the streaming API proxy in the main process.
@@ -12,20 +13,20 @@ export function fetchStreamChunks(
 ): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const chunks: string[] = []
-    const unsubChunk = window.electronAPI.onApiStreamChunk(data => {
+    const unsubChunk = getHost().onApiStreamChunk(data => {
       if (data.requestId === requestId) chunks.push(data.data)
     })
-    const unsubError = window.electronAPI.onApiStreamError(data => {
+    const unsubError = getHost().onApiStreamError(data => {
       if (data.requestId !== requestId) return
       unsubChunk(); unsubError(); unsubDone()
       reject(new Error(data.error))
     })
-    const unsubDone = window.electronAPI.onApiStreamDone(data => {
+    const unsubDone = getHost().onApiStreamDone(data => {
       if (data.requestId !== requestId) return
       unsubChunk(); unsubError(); unsubDone()
       resolve(chunks)
     })
-    window.electronAPI.apiFetchStream(requestId, url, { method: 'POST', headers, body })
+    getHost().apiFetchStream(requestId, url, { method: 'POST', headers, body })
       .catch(err => { unsubChunk(); unsubError(); unsubDone(); reject(err) })
   })
 }

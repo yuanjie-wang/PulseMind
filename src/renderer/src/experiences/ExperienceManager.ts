@@ -1,6 +1,7 @@
 import type { ExperienceRecord, ExperienceDraft } from '../../../shared/types/experience-types'
 import { SkillKeywordAgent } from '../agent/one-shot-agent'
 import type { LlmAdapter } from '../llm/adapter'
+import { getHost } from '../agent/host'
 
 export interface ExperienceLlmConfig {
   adapter: LlmAdapter
@@ -17,7 +18,7 @@ export class ExperienceManager {
 
   private async ensureCached(): Promise<ExperienceRecord[]> {
     if (Date.now() - this.cachedAt > this.CACHE_TTL_MS) {
-      this.cached = await window.electronAPI.listExperiences()
+      this.cached = await getHost().listExperiences()
       this.cachedAt = Date.now()
     }
     return this.cached
@@ -28,28 +29,28 @@ export class ExperienceManager {
   }
 
   async refresh(): Promise<ExperienceRecord[]> {
-    this.cached = await window.electronAPI.listExperiences()
+    this.cached = await getHost().listExperiences()
     this.cachedAt = Date.now()
     return this.cached
   }
 
   async save(draft: ExperienceDraft): Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord }> {
-    const result = await window.electronAPI.saveExperienceRecord(draft)
+    const result = await getHost().saveExperienceRecord(draft)
     this.cachedAt = 0
     return result
   }
 
   async delete(name: string): Promise<void> {
-    await window.electronAPI.deleteExperienceRecord(name)
+    await getHost().deleteExperienceRecord(name)
     this.cachedAt = 0
   }
 
   async read(name: string): Promise<string | null> {
-    return window.electronAPI.readExperienceRecord(name)
+    return getHost().readExperienceRecord(name)
   }
 
   async touch(name: string): Promise<void> {
-    await window.electronAPI.touchExperienceRecord(name)
+    await getHost().touchExperienceRecord(name)
     this.cachedAt = 0
   }
 
