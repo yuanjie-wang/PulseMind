@@ -396,6 +396,29 @@ export class AgentEngine {
     }
 
     this.requestStartTime = performance.now()
+    try {
+      const req = await this.prepareLoopRequest(opts)
+      await this.runLlmStream(opts, req)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      console.error('[AgentEngine] loop request failed:', message)
+      this.agentStatus = { status: 'error', error: message }
+      this.notify()
+      safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: null, status: { status: 'error', error: message } }, 'afterLlmCall')
+      safeInvokeObserver(opts.hooks?.afterSession, { messages: this.messages, status: { status: 'error', error: message } }, 'afterSession')
+      this.resolveCompletionIfSpawned('error')
+    }
+  }
+
+  /**
+   * Build the loop's LLM request: system prompt, tool schemas, compaction
+   * pipeline and hook processing. Returns transport-ready request parts.
+   */
+  private prepareLoopRequest = async (opts: AgentEngineOptions): Promise<{
+    apiUrl: string
+    headers: Record<string, string>
+    resolvedBody: unknown
+  }> => {
     const toolManager = opts.toolManager
 
     // ── Build system prompt ───────────────────────────────────────
@@ -493,7 +516,7 @@ export class AgentEngine {
     // (incl. failures) and let the summary fabricate outcomes.
     const finalMessages = await this.compactor.injectHistorySummary(apiMessages, lightCompacted, truncatedMessages)
 
-    const { url: apiUrl, headers, body } = opts.adapter.buildRequest(opts.baseURL, opts.apiKey, {
+    const { url: apiUrl, headers, body } = opts.adapter.buildRequest(opts.baseURL, opts.apiKey ?? '', {
       model: opts.model,
       maxTokens: Math.floor(opts.maxTokens * 1.5),
       messages: finalMessages,
@@ -532,6 +555,16 @@ export class AgentEngine {
       const beforeLlmCallCtx = await safeInvoke(opts.hooks?.beforeLlmCall, { body, messages: this.messages }, 'beforeLlmCall')
       resolvedBody = beforeLlmCallCtx.body
     }
+
+    return { apiUrl, headers, resolvedBody }
+  }
+
+  /** Run the prepared LLM stream: wire the parser, pump chunks, idle-retry. */
+  private runLlmStream = async (
+    opts: AgentEngineOptions,
+    req: { apiUrl: string; headers: Record<string, string>; resolvedBody: unknown },
+  ): Promise<void> => {
+    const { apiUrl, headers, resolvedBody } = req
 
     // Variables for cleanup — hoisted outside try so catch can access them
     let requestId: string
@@ -672,7 +705,7 @@ export class AgentEngine {
 
       // console.log(`[AgentEngine] POST body: ${(resolvedBody as any).messages?.length ?? 0} messages`)
 
-      await getHost().apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody, profileId: this.opts.profileId })
+      await getHost().apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody as string | object, profileId: this.opts.profileId })
 
       // Await the stream-done IPC event. The main process always sends either
       // API_STREAM_DONE or API_STREAM_ERROR, and both resolve streamDonePromise.
