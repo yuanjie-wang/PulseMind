@@ -9,6 +9,11 @@ export function deriveConvType(id: string): string {
   return 'normal'
 }
 
+/** Tag a conversation's client origin (local UI vs ws extension session). */
+export function updateConversationOrigin(id: string, origin: string): void {
+  getDb().prepare('UPDATE conversations SET origin = ? WHERE id = ?').run(origin, id)
+}
+
 /** Batch-persist tool results (called before nanoCompact / by the agent host). */
 export function persistToolResults(convId: string, results: Array<{ ref_id: string; conversation_id: string; message_id: string; block_index: number; tool_use_id: string; content: string; is_error: number }>): void {
   if (results.length === 0) return

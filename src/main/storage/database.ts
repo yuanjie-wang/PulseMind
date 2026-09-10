@@ -227,6 +227,7 @@ function createTables(): void {
   try { database.exec('ALTER TABLE conversations ADD COLUMN keywords TEXT') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN plan_json TEXT') } catch (e) {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN origin TEXT') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN extracted_msg_count INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN experience_extracted_count INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary TEXT') } catch (e) {}

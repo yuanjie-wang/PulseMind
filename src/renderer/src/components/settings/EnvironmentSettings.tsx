@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Drawer, Input, Button, Typography, Space, message, Select } from 'antd'
+import { Drawer, Input, Button, Typography, Space, message, Select, Switch } from 'antd'
 import { SaveOutlined, DesktopOutlined, ClockCircleOutlined, FolderOutlined, FolderOpenOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -27,6 +27,12 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   const [localWorkspaceDir, setLocalWorkspaceDir] = useState(settings.workspaceDir || '')
   const [currentTime, setCurrentTime] = useState(formatCurrentTime())
   const [messageApi, contextHolder] = message.useMessage()
+  const [service, setService] = useState<{ enabled: boolean; port: number; running: boolean; token: string } | null>(null)
+  const [serviceBusy, setServiceBusy] = useState(false)
+
+  const refreshService = () => {
+    window.electronAPI.serviceGetStatus().then(setService).catch(() => {})
+  }
 
   // Load platform info and data paths on open
   useEffect(() => {
@@ -36,6 +42,7 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
       window.electronAPI.getPlatformInfo().then(setPlatformInfo).catch(() => {
         setPlatformInfo({ platform: 'Unknown', platformName: '', release: '', arch: '', ripgrepPath: null })
       })
+      window.electronAPI.serviceGetStatus().then(setService).catch(() => {})
       window.electronAPI.getDataPaths().then(setDataPaths).catch(() => {
         setDataPaths(null)
       })
@@ -181,6 +188,71 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
             }}
           />
         </Space.Compact>
+      </div>
+
+      {/* ── Local agent service (PLAN-0.3.5 M2.4) ── */}
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+        <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+          本地 Agent 服务
+        </Text>
+        <div style={{ marginBottom: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            在本地回环地址开放 Agent 服务,供浏览器扩展等客户端连接。
+          </Text>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <Text>启用服务</Text>
+          <Switch
+            checked={service?.enabled ?? false}
+            loading={serviceBusy}
+            onChange={async (checked) => {
+              setServiceBusy(true)
+              try {
+                const r = await window.electronAPI.serviceSetEnabled(checked)
+                messageApi.success(checked ? `服务已启动 :${r.port}` : '服务已停止')
+                refreshService()
+              } catch { messageApi.error('操作失败') } finally { setServiceBusy(false) }
+            }}
+          />
+        </div>
+        {service?.running && (
+          <div style={{ marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>运行端口</Text>
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              <Input value={String(service.port)} readOnly size="small" />
+              <Button size="small" onClick={refreshService}>刷新</Button>
+            </div>
+          </div>
+        )}
+        {service?.enabled && (
+          <div style={{ marginBottom: 8 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>连接 Token(扩展配置用)</Text>
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              <Input.Password value={service?.token || ''} readOnly size="small" />
+              <Button
+                size="small"
+                onClick={() => { navigator.clipboard?.writeText(service?.token || ''); messageApi.success('Token 已复制') }}
+              >
+                复制
+              </Button>
+              <Button
+                size="small"
+                danger
+                loading={serviceBusy}
+                onClick={async () => {
+                  setServiceBusy(true)
+                  try {
+                    const r = await window.electronAPI.serviceResetToken()
+                    messageApi.success('Token 已重置,请更新扩展配置')
+                    setService((prev) => prev ? { ...prev, token: r.token } : prev)
+                  } catch { messageApi.error('重置失败') } finally { setServiceBusy(false) }
+                }}
+              >
+                重置
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Save Button */}

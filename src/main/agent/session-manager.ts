@@ -23,6 +23,7 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
+import { updateConversationOrigin } from '../storage/conversation.db'
 import type { LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import type { AgentEventData, PlanSnapshot } from '../../shared/agent-protocol'
@@ -43,7 +44,13 @@ interface SessionEntry {
   agentId: string
   title?: string
   createdAt: string
+  /** Client that owns the session: 'local' (desktop UI) or a ws clientId. */
+  clientId: string
 }
+
+/** Global concurrency guard (M2.2): at most N agent loops run at once;
+ *  extra asks queue FIFO and start in arrival order. */
+const MAX_CONCURRENT_LOOPS = 2
 
 type SessionEventSink = (sessionId: string, data: AgentEventData) => void
 
@@ -69,6 +76,8 @@ class AgentSessionManagerImpl {
   private eventSinks = new Set<SessionEventSink>()
   /** Per-session length of the last 'messages' snapshot for append diffing. */
   private lastSentLen = new Map<string, number>()
+  private runningLoops = 0
+  private waitingLoops: Array<() => void> = []
   /** Per-session registry of tool_use runtime state (status|exitCode|outputLen) for in-place diffing. */
   private toolStatusRegistry = new Map<string, Map<string, string>>()
 
@@ -213,7 +222,7 @@ class AgentSessionManagerImpl {
     return profile
   }
 
-  async createSession(sessionId: string, opts: { agentId?: string; title?: string } = {}): Promise<{ sessionId: string; agentId: string }> {
+  async createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string } = {}): Promise<{ sessionId: string; agentId: string }> {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId)!
       return { sessionId, agentId: existing.agentId }
@@ -243,7 +252,7 @@ class AgentSessionManagerImpl {
     return entry
   }
 
-  private async doCreateSession(sessionId: string, opts: { agentId?: string; title?: string }): Promise<void> {
+  private async doCreateSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string }): Promise<void> {
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
     const profile = await this.resolveProfile()
@@ -274,19 +283,37 @@ class AgentSessionManagerImpl {
     }
     const engine = new AgentEngine(engineOptions, this.makeCallbacks(sessionId))
     this.lastSentLen.set(sessionId, 0)
-    this.sessions.set(sessionId, { engine, agentId: opts.agentId ?? 'default', title: opts.title, createdAt: new Date().toISOString() })
+    this.sessions.set(sessionId, {
+      engine,
+      agentId: opts.agentId ?? 'default',
+      title: opts.title,
+      createdAt: new Date().toISOString(),
+      clientId: opts.clientId ?? 'local',
+    })
+    try { updateConversationOrigin(sessionId, opts.clientId ?? 'local') } catch { /* origin is best-effort */ }
   }
 
   hasSession(sessionId: string): boolean {
     return this.sessions.has(sessionId)
   }
 
-  /** Kick off an agent loop; progress arrives as session events. */
+  /** Kick off an agent loop; progress arrives as session events. Requests
+   *  beyond the global concurrency cap queue FIFO. */
   async ask(sessionId: string, content: string): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
-    void entry.engine.startLoop(content).catch((err) => {
-      this.emit(sessionId, { type: 'error', message: err instanceof Error ? err.message : String(err) })
-    })
+    if (this.runningLoops >= MAX_CONCURRENT_LOOPS) {
+      this.emit(sessionId, { type: 'status', status: 'queued', attempt: this.waitingLoops.length + 1 })
+      await new Promise<void>((resolve) => this.waitingLoops.push(resolve))
+    }
+    this.runningLoops += 1
+    void entry.engine.startLoop(content)
+      .catch((err) => {
+        this.emit(sessionId, { type: 'error', message: err instanceof Error ? err.message : String(err) })
+      })
+      .finally(() => {
+        this.runningLoops -= 1
+        this.waitingLoops.shift()?.()
+      })
   }
 
   cancel(sessionId: string): void {

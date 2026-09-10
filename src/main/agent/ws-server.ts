@@ -78,6 +78,9 @@ export async function startAgentService(opts: { port?: number } = {}): Promise<A
 
   const wss = new WebSocketServer({ server: httpServer })
   const conns = new Set<ClientConn>()
+  /** clientId → current connection. A newer connection with the same clientId
+   *  (browser restart, profile duplicate) replaces — kicks — the old one. */
+  const byClient = new Map<string, ClientConn>()
 
   wss.on('connection', (socket, req) => {
     // Token auth at upgrade: ?token= must equal the service token.
@@ -114,6 +117,13 @@ export async function startAgentService(opts: { port?: number } = {}): Promise<A
           case Methods.hello: {
             const clientVersion = typeof params.clientVersion === 'string' ? params.clientVersion : 'unknown'
             conn.clientId = typeof params.clientId === 'string' && params.clientId ? params.clientId : 'anonymous'
+            // Same-clientId replacement: kick the ghost connection (M2.2).
+            const prior = byClient.get(conn.clientId)
+            if (prior && prior !== conn) {
+              prior.socket.close(4409, 'replaced by a newer connection')
+              conns.delete(prior)
+            }
+            byClient.set(conn.clientId, conn)
             if (params.protocolVersion !== PROTOCOL_VERSION) {
               send(makeError(msg.id ?? null, ErrorCodes.protocolVersionMismatch,
                 `protocol version mismatch: client ${String(params.protocolVersion)}, service ${PROTOCOL_VERSION}`))
@@ -126,7 +136,7 @@ export async function startAgentService(opts: { port?: number } = {}): Promise<A
             const sessionId = `ws_${Date.now()}_${randomUUID().slice(0, 8)}`
             const agentId = typeof params.agentId === 'string' ? params.agentId : undefined
             const title = typeof params.title === 'string' ? params.title : undefined
-            agentSessionManager.createSession(sessionId, { agentId, title })
+            agentSessionManager.createSession(sessionId, { agentId, title, clientId: conn.clientId })
               .then((r) => { conn.sessions.add(sessionId); send(makeResult(msg.id ?? null, r)) })
               .catch((err) => send(makeError(msg.id ?? null, ErrorCodes.internal, err instanceof Error ? err.message : String(err))))
             break
@@ -163,14 +173,18 @@ export async function startAgentService(opts: { port?: number } = {}): Promise<A
       }
     })
 
-    socket.on('close', () => conns.delete(conn))
-    socket.on('error', () => conns.delete(conn))
+    const drop = (): void => {
+      conns.delete(conn)
+      if (byClient.get(conn.clientId) === conn) byClient.delete(conn.clientId)
+    }
+    socket.on('close', drop)
+    socket.on('error', drop)
   })
 
   // ── Heartbeat: terminate half-open connections ──
   const heartbeat = setInterval(() => {
     for (const conn of conns) {
-      if (!conn.alive) { conn.socket.terminate(); conns.delete(conn); continue }
+      if (!conn.alive) { conn.socket.terminate(); conns.delete(conn); if (byClient.get(conn.clientId) === conn) byClient.delete(conn.clientId); continue }
       conn.alive = false
       conn.socket.ping()
     }

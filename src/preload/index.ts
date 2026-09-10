@@ -372,6 +372,14 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ENGINE_CALL, sessionId, method, args ?? []),
   agentSessionRefreshOptions: (sessionId: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_REFRESH_OPTIONS, sessionId),
+  serviceGetStatus: (): Promise<{ enabled: boolean; port: number; running: boolean; token: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SERVICE_GET_STATUS),
+  serviceSetEnabled: (enabled: boolean): Promise<{ running: boolean; port: number | null }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SERVICE_SET_ENABLED, enabled),
+  serviceSetPort: (port: number): Promise<{ running: boolean; port: number | null }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SERVICE_SET_PORT, port),
+  serviceResetToken: (): Promise<{ token: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SERVICE_RESET_TOKEN),
   onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void): (() => void) => {
     const listener = (_e: unknown, event: { sessionId: string; data: unknown }): void => callback(event)
     ipcRenderer.on(IPC_CHANNELS.AGENT_SESSION_EVENT, listener)
