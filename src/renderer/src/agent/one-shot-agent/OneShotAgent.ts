@@ -20,7 +20,7 @@ export abstract class OneShotAgent<TInput, TOutput> {
           options.llmConfig.model,
           this.buildSystemPrompt(input),
           this.buildUserMessages(input),
-          options.maxTokens ?? 1000,
+          options.maxTokens ?? 4096,
         )
         if (!raw) {
           if (attempt === 0) {

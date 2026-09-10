@@ -27,7 +27,7 @@ async function backfillSkillKeywords(
 
     const keywords = await agent.execute(
       { rawContent },
-      { llmConfig, maxTokens: 500 }
+      { llmConfig, maxTokens: 4096 }
     )
 
     if (keywords.length > 0) {
