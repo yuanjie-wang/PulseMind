@@ -63,9 +63,9 @@ interface AgentHost {
 ## M2 WS 服务 + 托盘常驻
 
 - [ ] **M2.1 WS 服务**:`127.0.0.1:PORT` + JSON-RPC 分发 + token 鉴权(token 落盘 `~/.pulsemind/service-token`)+ 双向心跳 + EADDRINUSE 退避随机端口(照抄 anywhere/desktop 模式)
-- [ ] **M2.2 会话多客户端化**:conversation 表加 `origin`/`clientId`;同一 clientId 重复连接踢旧;全局并发上限 + FIFO 排队
+- [x] **M2.2 会话多客户端化**:conversation 表加 `origin`/`clientId`;同一 clientId 重复连接踢旧;全局并发上限 + FIFO 排队
 - [x] **M2.3 托盘常驻**(commit 0fbe5de):macOS 托盘(打开窗口/开机自启 checkbox/退出);`launchAtLogin` 设置项持久化并经 `app.setLoginItemSettings` 应用;win/linux 关窗隐藏待 `residentMode` 设置项(默认不启用)落地后处理
-- [ ] **M2.4 服务设置页**:开关、端口、token 查看/重置、连接状态
+- [x] **M2.4 服务设置页**:开关、端口、token 查看/重置、连接状态
 - [ ] **M2.5 存储层线程化(独立可跳过)**:DB 迁入 utilityProcess/worker_threads,主进程经 RPC 访问,消除同步 SQLite 对主进程事件循环的阻塞
 
 ## M3 托管工具 + 审批链
