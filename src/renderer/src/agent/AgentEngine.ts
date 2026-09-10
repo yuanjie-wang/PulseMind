@@ -227,6 +227,16 @@ export class AgentEngine {
     getMessages: () => this.messages,
   })
 
+  /** Current history-summary cache (persisted with the conversation). */
+  getHistorySummary(): { firstKeptId: string; text: string } | null {
+    return this.compactor.getHistorySummary()
+  }
+
+  /** Restore the persisted history summary after rehydration. */
+  seedHistorySummary(text?: string, frontierId?: string): void {
+    this.compactor.seedHistorySummary(text, frontierId)
+  }
+
   constructor(opts: AgentEngineOptions, callbacks?: AgentEngineCallbacks) {
     this.opts = opts
     this.callbacks = callbacks || {}
