@@ -47,7 +47,7 @@ interface AgentHost {
   - ~~物理拆分四文件~~ **调整为先落 `PulseHost` 缝**(物理拆分待 cutover 后做,避免同文件双重大改):8 个文件 75 处 `window.electronAPI.*` 改 `getHost().*`
   - **已吸收 worker 计划 P0**:`agent/json-stream.ts` `IncrementalJsonTracker` 取代每 delta `JSON.parse(acc)`(O(n²)→O(total),字符串/转义感知,8 单测)
   - 全绿:46 测试、web tsc 25=基线、build OK
-- [x] **M1.4 主进程 Host 实现**(services 提取 + main-host 80 方法 + Node 冒烟测试;会话管理器随 M1.5 cutover 一起落地)
+- [x] **M1.4 主进程 Host 实现 + 会话管理器**(services 提取 + main-host 80 方法 + sessionManager/协议 IPC 通道/preload 桥;Node 冒烟测试 53 用例全绿)
   - **✅ 已验证(tests/engine-node.test.ts):整个引擎图(engine + tool-executors + prompt-builder + mcp-cache + ToolManager/SkillManager)在纯 Node + mock Host 下构造运行,无 DOM 依赖**——cutover 最大不确定点已消除
   - Manager 可移植性核查结论:
     - `FeatureRegistry/FeatureManager`(manager.ts)**纯类无 IPC** ✓
