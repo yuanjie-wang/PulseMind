@@ -11,6 +11,7 @@ import { runLaunchHooks } from './hooks-runner'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
 import { createTray, applyLaunchAtLogin } from './tray'
+import { startAgentService, type AgentServiceHandle } from './agent/ws-server'
 import { settingsStore } from './storage/settings-store'
 import { notifyResume } from './ipc/app.handler'
 
@@ -353,7 +354,19 @@ if (gotTheLock) {
   try {
     const bootSettings = await settingsStore.get()
     applyLaunchAtLogin(!!bootSettings.launchAtLogin)
+    // ── Local agent service (M2.1): loopback WS for browser extensions ──
+    let agentService: AgentServiceHandle | null = null
+    if (bootSettings.serviceEnabled !== false) {
+      try {
+        agentService = await startAgentService({ port: bootSettings.servicePort })
+        writeLog('INFO', `startup: agent service on :${agentService.port}`)
+      } catch (err) {
+        writeLog('WARN', `startup: agent service failed: ${err}`)
+      }
+    }
+    app.on('before-quit', () => { void agentService?.close() })
     createTray({
+      getServiceStatus: async () => agentService ? `服务运行中 :${agentService.port}` : '服务未运行',
       getLaunchAtLogin: async () => !!(await settingsStore.get()).launchAtLogin,
       onToggleLaunchAtLogin: async (enabled) => {
         const s = await settingsStore.get()

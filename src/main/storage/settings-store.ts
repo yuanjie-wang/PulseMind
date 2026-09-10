@@ -34,7 +34,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   autoCleanup: false,
   yoloMode: true,
   locale: 'zh',
-  launchAtLogin: false
+  launchAtLogin: false,
+  serviceEnabled: true
 }
 
 /**
@@ -92,6 +93,8 @@ export class SettingsStore {
           yoloMode: parsed.yoloMode ?? true,
           locale: parsed.locale ?? 'zh',
           launchAtLogin: parsed.launchAtLogin ?? false,
+          serviceEnabled: parsed.serviceEnabled ?? true,
+          servicePort: parsed.servicePort ?? undefined,
         }
         cache = { mtimeMs: stats.mtimeMs, settings: result }
         return structuredClone(result)

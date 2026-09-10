@@ -25,5 +25,8 @@ export interface AppSettings {
   locale?: 'zh' | 'en'
   /** Launch the app at OS login (applied via app.setLoginItemSettings; also toggled from the tray). */
   launchAtLogin?: boolean
+  /** Local agent service (loopback WebSocket for browser extensions). Default on. */
+  serviceEnabled?: boolean
+  servicePort?: number
   git?: { contextInjection?: boolean }
 }

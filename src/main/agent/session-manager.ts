@@ -24,7 +24,7 @@ import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
 import type { LlmProfile } from '../../shared/types/settings'
-import { getBundledRipgrepPath, getPlatformName } from '../ipc/app.handler'
+import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import type { AgentEventData, PlanSnapshot } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 

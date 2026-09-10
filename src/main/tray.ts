@@ -5,6 +5,8 @@ import { join } from 'node:path'
 export interface TrayDeps {
   /** Read the persisted launch-at-login preference. */
   getLaunchAtLogin(): Promise<boolean>
+  /** One-line service status for the menu header (e.g. '服务运行中 :8765'). */
+  getServiceStatus(): Promise<string>
   /** Persist a new launch-at-login preference (caller also applies setLoginItemSettings). */
   onToggleLaunchAtLogin(enabled: boolean): Promise<void>
   /** Show & focus the main window. */
@@ -37,9 +39,11 @@ export function createTray(deps: TrayDeps): Tray {
 
   const rebuild = async (): Promise<void> => {
     const launchAtLogin = await deps.getLaunchAtLogin().catch(() => false)
+    const serviceStatus = await deps.getServiceStatus().catch(() => '服务未运行')
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: '打开 PulseMind', click: () => deps.onShowWindow() },
+        { label: serviceStatus, enabled: false },
         { type: 'separator' },
         {
           label: '开机自启',

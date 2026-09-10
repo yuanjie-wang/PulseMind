@@ -6,29 +6,10 @@ import { existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR } from '../storage'
+import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 
-const PLATFORM_NAMES: Record<string, string> = {
-  darwin: 'macOS',
-  win32: 'Windows',
-  linux: 'Linux',
-  freebsd: 'FreeBSD',
-  openbsd: 'OpenBSD',
-  sunos: 'SunOS'
 }
 
-export function getBundledRipgrepPath(): string | null {
-  const p = platform()
-  const a = arch()
-  const key = `${p}-${a}`
-  const binaryName = p === 'win32' ? 'rg.exe' : 'rg'
-  // Production: inside app resources
-  const prodPath = join(process.resourcesPath, 'bin', key, binaryName)
-  if (existsSync(prodPath)) return prodPath
-  // Dev mode: look in project resources/bin/
-  const devPath = join(__dirname, '../../resources/bin', key, binaryName)
-  if (existsSync(devPath)) return devPath
-  return null
-}
 
 export interface PlatformInfo {
   platform: string
@@ -46,9 +27,6 @@ export interface DataPaths {
   knowledgeDir: string
 }
 
-export function getPlatformName(p: string): string {
-  return PLATFORM_NAMES[p] || p
-}
 
 // ── Sleep/resume ack tracking ───────────────────────────────────────
 // The renderer acknowledges resume so the main process can avoid a full reload.
