@@ -84,6 +84,8 @@ export type AgentEventData =
   | { type: 'messages'; messages: unknown[] }
   /** Incremental transport: items appended at fromIndex (full 'messages' event on truncation). */
   | { type: 'messages_append'; fromIndex: number; items: unknown[] }
+  /** In-place tool_use block mutations (status/exitCode/output) — diffed, only changed entries. */
+  | { type: 'tool_status'; updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string }> }
   | { type: 'streaming_blocks'; blocks: unknown[] }
   | { type: 'token'; blockType: 'text' | 'thinking'; text: string }
   | { type: 'block_start'; blockType: 'text' | 'thinking' | 'tool_use'; toolName?: string }

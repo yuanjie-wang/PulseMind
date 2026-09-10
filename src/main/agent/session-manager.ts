@@ -69,6 +69,8 @@ class AgentSessionManagerImpl {
   private eventSinks = new Set<SessionEventSink>()
   /** Per-session length of the last 'messages' snapshot for append diffing. */
   private lastSentLen = new Map<string, number>()
+  /** Per-session registry of tool_use runtime state (status|exitCode|outputLen) for in-place diffing. */
+  private toolStatusRegistry = new Map<string, Map<string, string>>()
 
   /** Subscribe to session events (the IPC bridge forwards these to renderers). */
   onEvent(sink: SessionEventSink): () => void {
@@ -87,8 +89,43 @@ class AgentSessionManagerImpl {
     } else {
       // Truncation (regeneration/compaction) — ship the full list.
       this.emit(sessionId, { type: 'messages', messages: messages as unknown[] })
+      this.toolStatusRegistry.delete(sessionId)
     }
     this.lastSentLen.set(sessionId, messages.length)
+    this.emitToolStatusDiff(sessionId, messages)
+  }
+
+  /**
+   * tool_use blocks mutate IN PLACE (pending → running → completed, exitCode,
+   * terminal output) without changing the messages array length. Diff each
+   * block's runtime signature and ship only the changed entries so the
+   * renderer's mirror reflects approvals/progress/completion.
+   */
+  private emitToolStatusDiff(sessionId: string, messages: AgentMessage[]): void {
+    const registry = this.toolStatusRegistry.get(sessionId) ?? new Map<string, string>()
+    const updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string }> = []
+    for (const msg of messages) {
+      for (const block of msg.contentBlocks ?? []) {
+        if (block.type !== 'tool_use') continue
+        const tu = block as { id?: string; status?: string; exitCode?: number; output?: string }
+        const key = `${msg.id}:${tu.id ?? ''}`
+        const output = typeof tu.output === 'string' ? tu.output : undefined
+        const cappedOutput = output && output.length > 200_000 ? output.slice(0, 200_000) : output
+        const signature = `${tu.status ?? ''}|${tu.exitCode ?? ''}|${cappedOutput ? cappedOutput.length : 0}|${cappedOutput ? cappedOutput.slice(-80) : ''}`
+        if (registry.get(key) === signature) continue
+        registry.set(key, signature)
+        updates.push({
+          messageId: msg.id,
+          toolUseId: tu.id ?? '',
+          status: tu.status,
+          exitCode: tu.exitCode,
+          output: cappedOutput,
+        })
+      }
+    }
+    if (registry.size > 4000) registry.clear() // runaway guard for very long sessions
+    this.toolStatusRegistry.set(sessionId, registry)
+    if (updates.length > 0) this.emit(sessionId, { type: 'tool_status', updates })
   }
 
   /** Port of App.tsx afterSession hook: auto-capture memories + experience. */

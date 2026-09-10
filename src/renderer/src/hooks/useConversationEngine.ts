@@ -221,6 +221,23 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
           st.plan = (data.plan as Plan | null) ?? null
           break
         }
+        case 'tool_status': {
+          // In-place tool_use mutations arrive diffed — patch the mirrored
+          // messages by (messageId, toolUseId).
+          const byId = new Map(st.messages.map((m) => [m.id, m]))
+          for (const u of data.updates) {
+            const msg = byId.get(u.messageId)
+            if (!msg) continue
+            for (const block of msg.contentBlocks ?? []) {
+              if (block.type !== 'tool_use' || (block as { id?: string }).id !== u.toolUseId) continue
+              const tu = block as { status?: string; exitCode?: number; output?: string }
+              if (u.status !== undefined) tu.status = u.status
+              if (u.exitCode !== undefined) tu.exitCode = u.exitCode
+              if (u.output !== undefined) tu.output = u.output
+            }
+          }
+          break
+        }
         case 'error': {
           st.agentStatus = { status: 'error', error: data.message }
           break
