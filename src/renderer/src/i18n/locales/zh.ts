@@ -373,6 +373,14 @@ const zh = {
     rename: '重命名',
     renameTitle: '重命名会话',
     renamePlaceholder: '输入新名称',
+    time: {
+      justNow: '刚刚',
+      minutesAgo: '{{count}}分钟前',
+      hoursAgo: '{{count}}小时前',
+      daysAgo: '{{count}}天前',
+      date: '{{month}}月{{day}}日',
+      dateWithYear: '{{year}}年{{month}}月{{day}}日',
+    },
   },
   errorBoundary: {
     title: '出现了一些问题',

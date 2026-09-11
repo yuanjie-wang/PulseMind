@@ -375,6 +375,14 @@ const en: TranslationDict = {
     rename: 'Rename',
     renameTitle: 'Rename conversation',
     renamePlaceholder: 'Enter new name',
+    time: {
+      justNow: 'Just now',
+      minutesAgo: '{{count}}m ago',
+      hoursAgo: '{{count}}h ago',
+      daysAgo: '{{count}}d ago',
+      date: '{{month}}/{{day}}',
+      dateWithYear: '{{year}}/{{month}}/{{day}}',
+    },
   },
   errorBoundary: {
     title: 'Something went wrong',
