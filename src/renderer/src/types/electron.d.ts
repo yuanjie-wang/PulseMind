@@ -8,6 +8,9 @@ import type { SubAgentProfile } from '../../../shared/types/subagent'
 import type { GitAction, GitResult } from '../../../shared/types/git'
 import type { ExperienceRecord, ExperienceDraft } from '../../../shared/types/experience-types'
 import type { WindowControlsLayout } from '../../../shared/window-chrome'
+import type { Project, ProjectCreateInput, ProjectUpdateInput } from '../../../shared/types/project'
+import type { ProjectSandboxPolicy } from '../../../shared/sandbox/policy'
+import type { AuditEntry } from '../../../main/storage/audit-store'
 
 // --- Platform Info ---
 
@@ -200,6 +203,15 @@ export interface ElectronAPI {
   // App / Platform Info
   getPlatformInfo: () => Promise<PlatformInfo>
   getWindowControls: () => WindowControlsLayout
+
+  // ── Projects / sandbox / audit (PLAN-0.4.0 M3) ──
+  projectList: () => Promise<Project[]>
+  projectGet: (id: string) => Promise<Project | null>
+  projectCreate: (input: ProjectCreateInput) => Promise<Project>
+  projectUpdate: (id: string, patch: ProjectUpdateInput) => Promise<Project | null>
+  projectDelete: (id: string) => Promise<{ removedConversations: number }>
+  auditList: (limit?: number) => Promise<AuditEntry[]>
+  sandboxDetect: () => Promise<boolean>
   getDataPaths: () => Promise<DataPaths>
   openFolder: (folderPath: string) => Promise<void>
   openExternal: (url: string) => Promise<void>

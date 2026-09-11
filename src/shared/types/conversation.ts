@@ -10,6 +10,8 @@ export interface ConversationIndexEntry {
   summary?: string
   keywords?: string
   pinned?: boolean
+  /** Owning project (PLAN-0.4.0 M3); always present on list results. */
+  projectId?: string
 }
 
 export interface Message {

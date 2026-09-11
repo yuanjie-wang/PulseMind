@@ -23,7 +23,10 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject } from '../storage/conversation.db'
+import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
+import { normalizeSandboxPolicy } from '../../shared/sandbox/policy'
+import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import type { LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import type { AgentEventData, PlanSnapshot } from '../../shared/agent-protocol'
@@ -229,7 +232,7 @@ class AgentSessionManagerImpl {
     return profile
   }
 
-  async createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string } = {}): Promise<{ sessionId: string; agentId: string }> {
+  async createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown } = {}): Promise<{ sessionId: string; agentId: string }> {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId)!
       return { sessionId, agentId: existing.agentId }
@@ -259,7 +262,7 @@ class AgentSessionManagerImpl {
     return entry
   }
 
-  private async doCreateSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string }): Promise<void> {
+  private async doCreateSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown }): Promise<void> {
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
     const profile = await this.resolveProfile()
@@ -281,9 +284,15 @@ class AgentSessionManagerImpl {
       knowledgeManager: managers.knowledgeManager,
       experienceManager: managers.experienceManager,
       platformInfo: managers.platformInfo,
-      workspaceDir: settings.workspaceDir ?? WORKSPACE_DIR,
+      workspaceDir: opts.workspaceDir || settings.workspaceDir || WORKSPACE_DIR,
       skillsDir: SKILLS_DIR,
-      yoloMode: settings.yoloMode ?? false,
+      // Project sessions derive the shell approval mode from their sandbox
+      // policy (D2): 'auto' behaves like YOLO, the other modes ask. Sessions
+      // without an explicit policy (default project / ws clients) keep the
+      // global toggle's behavior.
+      yoloMode: opts.sandbox !== undefined
+        ? normalizeSandboxPolicy(opts.sandbox).approval === 'auto'
+        : (settings.yoloMode ?? false),
       locale: settings.locale === 'en' ? 'en' : 'zh',
       hooks: this.buildHooks(profile, managers, sessionId),
       conversationId: sessionId,
@@ -297,8 +306,21 @@ class AgentSessionManagerImpl {
       createdAt: new Date().toISOString(),
       clientId: opts.clientId ?? 'local',
     })
+    // Per-session sandbox context: wrapped around every tool-executing entry
+    // point (ask / engineCall) so the file-ops and terminal services can
+    // adjudicate against the right workspace + policy (PLAN-0.4.0 M3.5).
+    this.sandboxContexts.set(sessionId, {
+      sessionId,
+      workspaceDir: opts.workspaceDir || settings.workspaceDir || WORKSPACE_DIR,
+      policy: normalizeSandboxPolicy(opts.sandbox),
+    })
     try { updateConversationOrigin(sessionId, opts.clientId ?? 'local') } catch { /* origin is best-effort */ }
+    if (opts.projectId && opts.projectId !== DEFAULT_PROJECT_ID) {
+      try { setConversationProject(sessionId, opts.projectId) } catch { /* best-effort */ }
+    }
   }
+
+  private sandboxContexts = new Map<string, SessionSandboxContext>()
 
   hasSession(sessionId: string): boolean {
     return this.sessions.has(sessionId)
@@ -313,7 +335,9 @@ class AgentSessionManagerImpl {
       await new Promise<void>((resolve) => this.waitingLoops.push(resolve))
     }
     this.runningLoops += 1
-    void entry.engine.startLoop(content)
+    const sandboxCtx = this.sandboxContexts.get(sessionId)
+    const startLoop = () => entry.engine.startLoop(content)
+    void (sandboxCtx ? sessionSandbox.run(sandboxCtx, startLoop) : startLoop())
       .catch((err) => {
         this.emit(sessionId, { type: 'error', message: err instanceof Error ? err.message : String(err) })
       })
@@ -362,6 +386,13 @@ class AgentSessionManagerImpl {
   async engineCall(sessionId: string, method: string, args: unknown[]): Promise<unknown> {
     const entry = await this.ensureEntry(sessionId)
     const engine = entry.engine as unknown as Record<string, (...a: unknown[]) => unknown>
+    const sandboxCtx = this.sandboxContexts.get(sessionId)
+    const dispatch = () => this.dispatchEngineCall(sessionId, entry, method, args)
+    return sandboxCtx ? sessionSandbox.run(sandboxCtx, dispatch) : dispatch()
+  }
+
+  private dispatchEngineCall(sessionId: string, entry: { engine: AgentEngine }, method: string, args: unknown[]): unknown {
+    const engine = entry.engine as unknown as Record<string, (...a: unknown[]) => unknown>
     switch (method) {
       case 'approveTool': return engine.approveTool(args[0] as string)
       case 'rejectTool': return engine.rejectTool(args[0] as string)
@@ -374,7 +405,7 @@ class AgentSessionManagerImpl {
       case 'retryLastTurn': return engine.retryLastTurn()
       case 'getHistorySummary': return engine.getHistorySummary()
       case 'reset': entry.engine.reset(); return undefined
-      case 'dispose': entry.engine.dispose(); this.sessions.delete(sessionId); this.lastSentLen.delete(sessionId); return undefined
+      case 'dispose': entry.engine.dispose(); this.sessions.delete(sessionId); this.lastSentLen.delete(sessionId); this.sandboxContexts.delete(sessionId); return undefined
       default: throw new Error(`engine method not allowed: ${method}`)
     }
   }

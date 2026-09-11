@@ -18,7 +18,7 @@ export function registerAgentSessionHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CREATE, async (_event, sessionId: string, opts?: { agentId?: string; title?: string }) => {
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CREATE, async (_event, sessionId: string, opts?: { agentId?: string; title?: string; clientId?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown }) => {
     return agentSessionManager.createSession(sessionId, opts)
   })
 

@@ -81,7 +81,7 @@ export function listConversations(): ConversationIndexEntry[] {
   const rows = database
     .prepare(
       `SELECT
-        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at,
+        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id,
         (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
       FROM conversations c
@@ -91,13 +91,14 @@ export function listConversations(): ConversationIndexEntry[] {
     .all() as Array<{
       id: string; title: string; summary: string | null; keywords: string | null
       pinned: number; created_at: string; updated_at: string
-      last_message: string | null; message_count: number
+      last_message: string | null; message_count: number; project_id: string | null
     }>
 
   return rows.map((r) => ({
     id: r.id, title: r.title,
     summary: r.summary || undefined, keywords: r.keywords || undefined,
     pinned: r.pinned === 1, lastMessage: r.last_message?.slice(0, 100) || null,
+    projectId: r.project_id || 'default',
     messageCount: r.message_count, createdAt: r.created_at, updatedAt: r.updated_at
   }))
 }
@@ -239,6 +240,11 @@ export function updateMessageMetadata(
   if (updates.length === 0) return
   params.push(msgId)
   database.prepare(`UPDATE messages SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+}
+
+/** Attach a conversation to a project (PLAN-0.4.0 M3.6). Best-effort. */
+export function setConversationProject(id: string, projectId: string): void {
+  getDb().prepare('UPDATE conversations SET project_id = ? WHERE id = ?').run(projectId, id)
 }
 
 export function deleteConversation(id: string): void {

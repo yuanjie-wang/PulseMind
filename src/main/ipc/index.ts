@@ -17,6 +17,7 @@ import { registerCanvasHandlers } from './canvas.handler'
 import { registerKnowledgeHandlers } from './knowledge.handler'
 import { registerSubAgentHandlers } from './subagent.handler'
 import { registerGitHandlers } from './git.handler'
+import { registerProjectHandlers } from './project.handler'
 
 export function registerIpcHandlers(): void {
   registerConversationHandlers()
@@ -38,4 +39,5 @@ export function registerIpcHandlers(): void {
   registerKnowledgeHandlers()
   registerSubAgentHandlers()
   registerGitHandlers()
+  registerProjectHandlers()
 }

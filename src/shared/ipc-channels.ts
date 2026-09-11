@@ -185,6 +185,15 @@ export const IPC_CHANNELS = {
   KNOWLEDGE_REBUILD_INDEX: 'knowledge:rebuild-index',
   KNOWLEDGE_ABORT_IMPORT: 'knowledge:abort-import',
   KNOWLEDGE_SEARCH_WIKI: 'knowledge:search-wiki',
+
+  // ── PLAN-0.4.0 M3: projects, sandbox, audit ──
+  PROJECT_LIST: 'project:list',
+  PROJECT_GET: 'project:get',
+  PROJECT_CREATE: 'project:create',
+  PROJECT_UPDATE: 'project:update',
+  PROJECT_DELETE: 'project:delete',
+  AUDIT_LIST: 'audit:list',
+  SANDBOX_DETECT: 'sandbox:detect',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

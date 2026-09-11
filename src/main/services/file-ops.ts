@@ -9,6 +9,7 @@ import * as os from 'node:os'
 import { patchContent } from '../utils/patch-utils'
 import { DATA_DIR } from '../storage'
 import { getOrConvert } from '../storage/read-cache'
+import { guardFsTarget, checkFsTarget } from '../sandbox/guard'
 
 export interface EditFileInput {
   filePath: string
@@ -150,6 +151,8 @@ export async function svcCopyFile(input: { sourceUrl?: string; destination: stri
 
 export async function svcReadFile(filePath: string): Promise<string | null> {
   try {
+    const guard = await checkFsTarget(filePath, 'read')
+    if (!guard.ok) return null
     return await readFile(resolvePath(filePath), 'utf-8')
   } catch {
     return null
@@ -158,6 +161,8 @@ export async function svcReadFile(filePath: string): Promise<string | null> {
 
 export async function svcEditFile(input: EditFileInput): Promise<EditFileResult> {
   try {
+    const guard = await guardFsTarget(input.filePath, 'write')
+    if (!guard.ok) return { success: false, replacements: 0, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
     const content = await readFile(safePath, 'utf-8')
     // Line-ending tolerance: model-generated old_str is always LF, but files
@@ -191,6 +196,8 @@ export async function svcEditFile(input: EditFileInput): Promise<EditFileResult>
 
 export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResult> {
   try {
+    const guard = await guardFsTarget(input.filePath, 'write')
+    if (!guard.ok) return { success: false, replacements: 0, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
     const content = await readFile(safePath, 'utf-8')
     const result = patchContent(content, input.diff)
@@ -211,6 +218,8 @@ export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResu
 export async function svcWriteFile(input: WriteFileInput): Promise<WriteFileResult> {
   try {
     const { content, append } = input
+    const guard = await guardFsTarget(input.filePath, 'write')
+    if (!guard.ok) return { success: false, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
     if (append) {
       await appendFile(safePath, content, 'utf-8')
@@ -236,6 +245,8 @@ export async function svcConvertToMarkdown(filePath: string): Promise<{ content:
 
 export async function svcFileStat(filePath: string): Promise<{ size: number; birthtime: string; mtime: string } | null> {
   try {
+    const guard = await checkFsTarget(filePath, 'read')
+    if (!guard.ok) return null
     const s = await stat(filePath)
     return { size: s.size, birthtime: s.birthtime.toISOString(), mtime: s.mtime.toISOString() }
   } catch {

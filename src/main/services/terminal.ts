@@ -7,6 +7,10 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { getHookEnv } from '../hooks-runner'
+import { currentSessionSandbox } from '../sandbox/session-context'
+import { planSandboxSpawn } from '../sandbox/exec-sandbox'
+import { auditStore } from '../storage/audit-store'
+import { DATA_DIR } from '../storage'
 
 interface ProcessEntry {
   process: ChildProcess
@@ -76,8 +80,27 @@ export function svcExecuteCommand(
     ? ['powershell.exe', ['-NoProfile', '-Command', `${WIN_PS_UTF8_PREFIX}${command}`]]
     : [process.env.SHELL || '/bin/bash', ['-c', command]]
 
-  const child = spawn(shell, shellArgs, {
-    cwd: cwd || getHomeDir(),
+  // PLAN-0.4.0 M3.9: project sessions confine the default cwd to the workspace
+  // and, when hard isolation is on and the platform supports it, wrap the
+  // spawn in an OS sandbox. Without hard isolation this is a SOFT sandbox —
+  // approval + audit are the only controls (documented in the UI).
+  const sandboxCtx = currentSessionSandbox()
+  const effectiveCwd = cwd || sandboxCtx?.workspaceDir || getHomeDir()
+  let spawnFile = shell
+  let spawnArgs = shellArgs
+  if (sandboxCtx) {
+    const plan = planSandboxSpawn(sandboxCtx.policy, sandboxCtx.workspaceDir, `${DATA_DIR}/tmp`)
+    if (plan) {
+      spawnFile = plan.prefix[0]
+      spawnArgs = [...plan.prefix.slice(1), shell, ...shellArgs]
+      auditStore.record({ scope: 'project', actor: sandboxCtx.sessionId, action: 'exec', target: command.slice(0, 160), decision: 'sandboxed', policyJson: JSON.stringify(sandboxCtx.policy) })
+    } else {
+      auditStore.record({ scope: 'project', actor: sandboxCtx.sessionId, action: 'exec', target: command.slice(0, 160), decision: 'allowed', policyJson: JSON.stringify(sandboxCtx.policy) })
+    }
+  }
+
+  const child = spawn(spawnFile, spawnArgs, {
+    cwd: effectiveCwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ...getHookEnv() },
     // On Windows, prevent console window from flashing

@@ -243,6 +243,38 @@ function createTables(): void {
   try { database.exec('ALTER TABLE tool_results ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE knowledge_files ADD COLUMN wiki_outputs TEXT') } catch (e) {}
   try { database.exec("ALTER TABLE experiences ADD COLUMN triggers TEXT NOT NULL DEFAULT '[]'") } catch (e) {}
+
+  // ── PLAN-0.4.0 M3: projects, project-scoped conversations, audit log ──
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      workspace_dir TEXT NOT NULL,
+      icon          TEXT,
+      sandbox_json  TEXT NOT NULL,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id          TEXT PRIMARY KEY,
+      ts          TEXT NOT NULL,
+      scope       TEXT NOT NULL,
+      actor       TEXT,
+      action      TEXT NOT NULL,
+      target      TEXT,
+      decision    TEXT NOT NULL,
+      policy_json TEXT,
+      meta_json   TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+  `)
+  try { database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT') } catch (e) {}
+  // Every pre-0.4.0 conversation — and any row that slips through without a
+  // project — belongs to the synthesized default project.
+  try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch (e) {}
 }
 
 // ── FTS5 helpers ──
