@@ -6,6 +6,7 @@ import enUS from 'antd/locale/en_US'
 import AppLayout from './components/layout/AppLayout'
 import ChatView from './components/layout/ChatView'
 import { PlanPanel } from './components/layout/PlanPanel'
+import { InstallNotifier } from './components/chat/InstallNotifier'
 import ErrorBoundary from './components/ErrorBoundary'
 import { useChatController } from './hooks/useChatController'
 import { SettingsProvider, useSettings } from './hooks/SettingsContext'
@@ -391,6 +392,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             />
           </AppLayout>
           {activeView === 'chat' && <PlanPanel plan={plan} onJumpToStep={setPlanScrollToMsgId} />}
+          <InstallNotifier messages={messages} />
           </AntdApp>
         </ConfigProvider>
       </XProvider>

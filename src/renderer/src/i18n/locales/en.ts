@@ -374,6 +374,11 @@ const en: TranslationDict = {
     knowledge: 'Knowledge Center',
     tools: 'Tool Center',
   },
+  install: {
+    installedSkill: 'New skill installed',
+    installedMcp: 'New MCP server installed',
+    view: 'View',
+  },
   sessionManager: {
     sessions: 'Sessions',
     autoCleanup: 'Auto Cleanup',

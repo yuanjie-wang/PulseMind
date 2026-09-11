@@ -12,6 +12,8 @@ import CanvasToolbar from '../canvas/CanvasToolbar'
 import KnowledgePanel from '../knowledge/KnowledgePanel'
 import type { KnowledgePanelHandle, KnowledgePanelState } from '../knowledge/KnowledgePanel'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
+import type { ToolState } from '../../tools/types'
+import type { SkillState } from '../../skills/types'
 import ProjectView from '../project/ProjectView'
 import RoutineCenter from '../routine/RoutineCenter'
 import CapabilityCenter from '../capability/CapabilityCenter'
@@ -21,6 +23,13 @@ const LazyCanvasView = lazy(() => import('../canvas/CanvasView'))
 
 export interface ViewHostProps {
   knowledgeManager?: KnowledgeManager
+  tools?: ToolState[]
+  skills?: SkillState[]
+  onToggleSkill?: (name: string) => void
+  onImportSkill?: () => void
+  onRefreshSkills?: () => void
+  onDeleteSkill?: (name: string) => void
+  importError?: string | null
 }
 
 /** The knowledge pane's own toolbar — moved out of the global header (M1.5) so
@@ -118,7 +127,7 @@ function KnowledgePane({ knowledgeManager }: { knowledgeManager: KnowledgeManage
   )
 }
 
-export function ViewHost({ knowledgeManager }: ViewHostProps): React.ReactElement | null {
+export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError }: ViewHostProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
   const handleCanvasClearAll = () => {
     window.electronAPI.canvasClearAll().catch((err: unknown) =>
@@ -147,7 +156,18 @@ export function ViewHost({ knowledgeManager }: ViewHostProps): React.ReactElemen
     case 'routines':
       return <RoutineCenter />
     case 'capability':
-      return <CapabilityCenter />
+      return (
+        <CapabilityCenter
+          initialTab={view.capabilityTab}
+          tools={tools}
+          skills={skills}
+          onToggleSkill={onToggleSkill}
+          onImportSkill={onImportSkill}
+          onRefreshSkills={onRefreshSkills}
+          onDeleteSkill={onDeleteSkill}
+          importError={importError}
+        />
+      )
     case 'tools':
       return <ToolCenter />
     default:

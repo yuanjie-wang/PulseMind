@@ -180,21 +180,21 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
 
 > 纯搬家 + 收拢,复用现有组件,不重写逻辑。
 
-- [ ] **M2.1 能力中心视图与页签**
+- [x] **M2.1 能力中心视图与页签**
   - 范围:新增 `src/renderer/src/components/capability/CapabilityCenter.tsx`(antd `Tabs`,懒挂载);四个页签分别内嵌 `settings/MCPSettings.tsx`、`settings/SkillSettings.tsx`+`SkillsPanel.tsx`、`settings/SubAgentSettings.tsx`、`settings/ExperiencePanel.tsx`
   - 交付:先梳理四个组件当前的 props 依赖(它们此前由设置弹窗传入),改为自取数据或由 ViewHost 注入
   - 验收:四个页签功能与现状逐项对齐(增删改查全部可用)
 
-- [ ] **M2.2 设置弹窗瘦身**
+- [x] **M2.2 设置弹窗瘦身**
   - 范围:从 `AppLayout.tsx:494-525` 导航数组与 `renderView()`(`203-250`)移除 `tools`/`subagent`/`mcp`/`skills`/`experiences`
   - 保留:LLM 设置 / 助手 / 环境 / 记忆 / 收藏 / 统计 / 关于
   - 验收:设置弹窗无残留能力入口,无死代码分支
 
-- [ ] **M2.3 运行期跳转**
+- [x] **M2.3 运行期跳转**
   - 范围:agent 经 `install` 工具装好 MCP/技能后的提示改为可点击跳转能力中心(经 `navigationStore`)
   - 验收:装完点提示能直接到对应页签
 
-- [ ] **M2.4 i18n 与验收**
+- [x] **M2.4 i18n 与验收**
   - 范围:`i18n/locales/zh.ts` / `en.ts` 新增能力中心相关 key,移除已迁走的设置项 key
   - 验收:双语无失效 key,`MCPSettings` 等组件无 i18n 回归
   - 信息:`feat(capability): relocate MCP/skill/subagent config into capability center`

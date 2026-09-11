@@ -8,13 +8,8 @@ import {
   MenuUnfoldOutlined,
   StarOutlined,
   BookOutlined,
-  ThunderboltOutlined,
-  ToolOutlined,
   UserOutlined,
-  DesktopOutlined,
-  ApartmentOutlined,
-  ExperimentOutlined,
-  ApiOutlined
+  DesktopOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
 import { AppMenu } from './AppMenu'
@@ -25,16 +20,11 @@ import { useNavigationStore } from '../../stores/navigationStore'
 import SessionManager from './SessionManager'
 import StatisticsDrawer from './StatisticsDrawer'
 import LlmSettings from '../settings/LlmSettings'
-import ToolsSettings from '../settings/ToolSettings'
-import SkillsSettings from '../settings/SkillSettings'
-import SubAgentSettings from '../settings/SubAgentSettings'
 import AgentSettings from '../settings/AgentSettings'
 import MemorySettings from '../settings/MemorySettings'
 import EnvironmentSettings from '../settings/EnvironmentSettings'
 import FavoritesSettings from '../settings/FavoritesSettings'
 import AboutSettings from '../settings/AboutSettings'
-import MCPSettings from '../settings/MCPSettings'
-import ExperiencePanel from '../settings/ExperiencePanel'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { ToolState } from '../../tools/types'
@@ -156,48 +146,16 @@ function AppLayout({
         return <FavoritesSettings inline open onClose={() => setSettingsView('favorites')} />
       case 'memory':
         return memoryManager ? <MemorySettings inline open onClose={() => setSettingsView('favorites')} memoryManager={memoryManager} /> : null
-      case 'skills':
-        return (
-          <SkillsSettings
-            inline open onClose={() => setSettingsView('favorites')}
-            skills={skills || []}
-            onToggleSkill={onToggleSkill || (() => {})}
-            onImportSkill={onImportSkill}
-            onRefreshSkills={onRefreshSkills}
-            onDeleteSkill={onDeleteSkill}
-            importError={importError}
-          />
-        )
-      case 'experiences':
-        return <ExperiencePanel inline open onClose={() => setSettingsView('favorites')} />
-      case 'tools':
-        return (
-          <ToolsSettings
-            inline open onClose={() => setSettingsView('favorites')}
-            tools={tools || []}
-            onToggleTool={onToggleTool || (() => {})}
-          />
-        )
       case 'assistant':
         return <AgentSettings inline open onClose={() => setSettingsView('favorites')} />
       case 'settings':
         return <LlmSettings inline open onClose={() => {}} />
-      case 'subagent':
-        return (
-          <SubAgentSettings
-            inline open onClose={() => setSettingsView('favorites')}
-            tools={tools}
-            skills={skills}
-          />
-        )
-      case 'mcp':
-        return <MCPSettings inline open onClose={() => setSettingsView('favorites')} />
       case 'environment':
         return <EnvironmentSettings inline open onClose={() => setSettingsView('favorites')} />
       default:
         return null
     }
-  }, [skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, tools, onToggleTool, memoryManager])
+  }, [memoryManager])
 
   // With the sidebar collapsed the header starts at the window's left edge, so the
   // macOS traffic lights land on it and its content has to move out of their way.
@@ -351,7 +309,16 @@ function AppLayout({
               </div>
             </div>
             {view.kind !== 'chat' && (
-              <ViewHost knowledgeManager={knowledgeManager} />
+              <ViewHost
+                knowledgeManager={knowledgeManager}
+                tools={tools}
+                skills={skills}
+                onToggleSkill={onToggleSkill}
+                onImportSkill={onImportSkill}
+                onRefreshSkills={onRefreshSkills}
+                onDeleteSkill={onDeleteSkill}
+                importError={importError}
+              />
             )}
           </div>
         </Content>
@@ -374,11 +341,6 @@ function AppLayout({
                 { key: 'environment', icon: <DesktopOutlined />, label: t('appLayout.environment') },
                 { key: 'settings', icon: <SettingOutlined />, label: t('appLayout.settings') },
                 { key: 'assistant', icon: <UserOutlined />, label: t('appLayout.assistant') },
-                { key: 'tools', icon: <ToolOutlined />, label: t('appLayout.tools') },
-                { key: 'subagent', icon: <ApartmentOutlined />, label: '子代理' },
-                { key: 'mcp', icon: <ApiOutlined />, label: t('appLayout.mcp') },
-                { key: 'skills', icon: <ThunderboltOutlined />, label: t('appLayout.skills') },
-                { key: 'experiences', icon: <ExperimentOutlined />, label: '经验' },
                 { key: 'memory', icon: <BookOutlined />, label: t('appLayout.memory') },
                 { key: 'favorites', icon: <StarOutlined />, label: t('appLayout.favorites') },
               ].map((item) => (

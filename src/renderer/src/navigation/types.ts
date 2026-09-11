@@ -16,6 +16,8 @@ export interface AppView {
   projectId?: string
   /** `tools` detail: which user tool is open. Absent = gallery. */
   toolId?: string
+  /** `capability`: which tab is active (used by jump entries, e.g. after `install`). */
+  capabilityTab?: 'mcp' | 'skills' | 'subagent' | 'experiences'
 }
 
 export const CHAT_VIEW: AppView = { kind: 'chat' }

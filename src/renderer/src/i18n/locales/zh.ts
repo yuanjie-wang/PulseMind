@@ -372,6 +372,11 @@ const zh = {
     knowledge: '知识中心',
     tools: '工具中心',
   },
+  install: {
+    installedSkill: '新技能已安装',
+    installedMcp: '新 MCP 服务已安装',
+    view: '查看',
+  },
   sessionManager: {
     sessions: '会话',
     autoCleanup: '自动清理',
