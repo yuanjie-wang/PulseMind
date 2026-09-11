@@ -1,13 +1,10 @@
 // ── Navigation registry ──
-// PLAN-0.4.0 M1.1: the single source of truth for the top-left menu. Adding a
-// new top-level view means adding an entry here — nothing else.
-//
-// Items come in three flavours:
-//   action — performs something (new chat) without changing the view
-//   view   — navigates to a top-level content view
-//   modal  — opens an AppLayout-owned modal (settings, about)
+// PLAN-0.4.0 M1.1, revised 2026-09-12 (user decision D4-rev): primary
+// navigation is a persistent sidebar button column — NOT a hamburger popover.
+// This file is the single source of truth: adding a top-level view means
+// adding an entry here and a case in ViewHost.
 
-import type { ComponentType } from 'react'
+import type { ComponentType, CSSProperties } from 'react'
 import {
   MessageOutlined,
   ProjectOutlined,
@@ -15,33 +12,26 @@ import {
   AppstoreOutlined,
   DatabaseOutlined,
   ToolOutlined,
-  SettingOutlined,
-  InfoCircleOutlined
 } from '@ant-design/icons'
 import type { AppViewKind } from './types'
 
-export interface MenuActionItem {
-  type: 'action'
-  id: 'new-chat' | 'new-project'
+export interface SidebarNavItem {
   labelKey: string
-  icon: ComponentType
-}
-
-export interface MenuViewItem {
-  type: 'view'
+  icon: ComponentType<{ style?: CSSProperties }>
   view: AppViewKind
-  labelKey: string
-  icon: ComponentType
+  /** Action items (新建对话) perform extra work on top of navigating. */
+  isAction?: boolean
 }
 
-export interface MenuModalItem {
-  type: 'modal'
-  id: 'settings' | 'about'
-  labelKey: string
-  icon: ComponentType
-}
-
-export type MenuItem = MenuActionItem | MenuViewItem | MenuModalItem
+/** The sidebar's nav column, top to bottom. */
+export const SIDEBAR_NAV: SidebarNavItem[] = [
+  { labelKey: 'menu.newChat', icon: MessageOutlined, view: 'chat', isAction: true },
+  { labelKey: 'menu.newProject', icon: ProjectOutlined, view: 'project' },
+  { labelKey: 'menu.routines', icon: ScheduleOutlined, view: 'routines' },
+  { labelKey: 'menu.capability', icon: AppstoreOutlined, view: 'capability' },
+  { labelKey: 'menu.knowledge', icon: DatabaseOutlined, view: 'knowledge' },
+  { labelKey: 'menu.tools', icon: ToolOutlined, view: 'tools' },
+]
 
 /** Header title for each view kind. Chat shows the active conversation's title
  *  instead (AppLayout), so its entry here is only a fallback. */
@@ -54,21 +44,3 @@ export const VIEW_TITLE_KEY: Record<AppViewKind, string> = {
   tools: 'viewTitle.tools',
   canvas: 'appLayout.newCanvas',
 }
-
-/** Menu groups, rendered top to bottom with separators between groups. */
-export const MENU_GROUPS: MenuItem[][] = [
-  [
-    { type: 'action', id: 'new-chat', labelKey: 'menu.newChat', icon: MessageOutlined },
-    { type: 'view', view: 'project', labelKey: 'menu.newProject', icon: ProjectOutlined },
-  ],
-  [
-    { type: 'view', view: 'routines', labelKey: 'menu.routines', icon: ScheduleOutlined },
-    { type: 'view', view: 'capability', labelKey: 'menu.capability', icon: AppstoreOutlined },
-    { type: 'view', view: 'knowledge', labelKey: 'menu.knowledge', icon: DatabaseOutlined },
-    { type: 'view', view: 'tools', labelKey: 'menu.tools', icon: ToolOutlined },
-  ],
-  [
-    { type: 'modal', id: 'settings', labelKey: 'menu.settings', icon: SettingOutlined },
-    { type: 'modal', id: 'about', labelKey: 'menu.about', icon: InfoCircleOutlined },
-  ],
-]

@@ -3,19 +3,18 @@ import { Layout, Button, theme, Switch, Modal, Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
   SettingOutlined,
-  MessageOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   StarOutlined,
   BookOutlined,
   UserOutlined,
-  DesktopOutlined
+  DesktopOutlined,
+  InfoCircleOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
-import { AppMenu } from './AppMenu'
 import { ViewHost } from './ViewHost'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
-import { VIEW_TITLE_KEY } from '../../navigation/registry'
+import { SIDEBAR_NAV, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
 import SessionManager from './SessionManager'
 import StatisticsDrawer from './StatisticsDrawer'
@@ -231,9 +230,24 @@ function AppLayout({
           />
         </div>
         <div style={{ padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <Button className="new-chat-btn" onClick={() => { navigate({ kind: 'chat' }); onCreateNew() }} icon={<MessageOutlined style={{ fontSize: 18 }} />} disabled={!canCreateNew}>
-            {t('appLayout.newChat')}
-          </Button>
+          {SIDEBAR_NAV.map((item) => {
+            const Icon = item.icon
+            const active = view.kind === item.view
+            return (
+              <Button
+                key={item.view}
+                className={`new-chat-btn${active ? ' active-mode-btn' : ''}`}
+                onClick={() => {
+                  navigate({ kind: item.view })
+                  if (item.isAction) onCreateNew()
+                }}
+                icon={<Icon style={{ fontSize: 18 }} />}
+                disabled={item.isAction && !canCreateNew}
+              >
+                {t(item.labelKey)}
+              </Button>
+            )
+          })}
         </div>
         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
           {conversations.length > 0 && (
@@ -252,6 +266,14 @@ function AppLayout({
             activeLoopConvIds={activeLoopConvIds}
             retryingConvIds={retryingConvIds}
           />
+        </div>
+        <div style={{ padding: '4px 8px 8px', display: 'flex', flexDirection: 'column', gap: 2, borderTop: '1px solid #f0f0f0' }}>
+          <Button className="new-chat-btn" onClick={() => { setSettingsView('settings'); setSettingsOpen(true) }} icon={<SettingOutlined style={{ fontSize: 16 }} />}>
+            {t('menu.settings')}
+          </Button>
+          <Button className="new-chat-btn" onClick={() => setAboutOpen(true)} icon={<InfoCircleOutlined style={{ fontSize: 16 }} />}>
+            {t('menu.about')}
+          </Button>
         </div>
         <SessionManager
           totalSessions={totalSessions}
@@ -276,13 +298,8 @@ function AppLayout({
             WebkitAppRegion: 'drag'
           } as React.CSSProperties}
         >
-          {/* App menu + sidebar toggle. */}
-          <div style={{ position: 'absolute', left: 12 + headerLeft, display: 'flex', alignItems: 'center', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-            <AppMenu
-              onCreateNew={() => { navigate({ kind: 'chat' }); onCreateNew() }}
-              onOpenSettings={() => { setSettingsView('settings'); setSettingsOpen(true) }}
-              onOpenAbout={() => setAboutOpen(true)}
-            />
+          {/* Sidebar toggle. */}
+          <div style={{ position: 'absolute', left: 24 + headerLeft, display: 'flex', alignItems: 'center', gap: 8, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             {sidebarToggle}
           </div>
 
