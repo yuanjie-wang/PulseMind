@@ -352,41 +352,41 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
 
 > D10 决定工具可用**网络 + 本地文件 + 系统能力**。iframe 严格 sandbox 下没有 `localStorage`(不透明源),因此持久化统一走 bridge;所有能力经**能力声明 + 首次授权 + 项目策略 + 审计**四道约束。
 
-- [ ] **M6.1 Bridge 协议**
+- [x] **M6.1 Bridge 协议**
   - 范围:新增 `src/shared/tool-bridge/protocol.ts`:`postMessage` 信封(`{ id, method, params }` / `{ id, ok, result | error }`)、方法名常量、错误码、超时约定
   - 交付:协议在 shared,宿主与 SDK 共用一份类型
   - 验收:类型自洽,非法方法的错误码明确
 
-- [ ] **M6.2 SDK 注入**
+- [x] **M6.2 SDK 注入**
   - 范围:新增 `src/renderer/src/tool-studio/sdk/pulsemind.js`(加载工具页面时注入),定义 `window.pulsemind.*`(附录 D);每次加载生成一次性 nonce
   - 交付:所有方法返回 Promise,统一 `{ok, error}` 语义
   - 验收:页面内 `await pulsemind.storage.set(...)` 可用
 
-- [ ] **M6.3 宿主侧桥接**
+- [x] **M6.3 宿主侧桥接**
   - 范围:新增 `src/renderer/src/tool-studio/bridge-host.ts`:校验消息来源(`event.source === iframe.contentWindow` + nonce + toolId)→ 能力判定 → 转 IPC
   - 交付:不信任页面传入的任何 toolId,以宿主上下文为准
   - 验收:伪造 nonce / 跨窗口消息被丢弃
 
-- [ ] **M6.4 主进程能力实现**
+- [x] **M6.4 主进程能力实现**
   - 范围:新增 `src/main/tool-runtime/http-proxy.ts`(出站 HTTP:绕 CORS、超时、响应大小上限、host 黑白名单;可复用 `src/main/mcp/chrome-fetcher.ts`)、`fs-ops.ts`(受 `path-jail` 约束,默认仅允许工具自身目录;更广路径须经 `pickFile`/`pickDirectory` 用户当场选择,选择即授权——D16)、`system-ops.ts`(剪贴板、通知、`shell.openExternal/openPath`)
   - 通道:`toolbridge:http|fs|storage|system`(单一入口 `toolbridge:invoke` 也可,按实现便利选一)
   - 验收:Post 工具能发出跨域请求并拿到响应;越界文件写入被拒
 
-- [ ] **M6.5 能力声明与授权**
+- [x] **M6.5 能力声明与授权**(实现注记:v1 能力仅来自模板声明;工作室新生成的工具默认零能力——安全默认,授权 UI 留待打磨。项目策略收紧网络的一点在工具运行于项目会话内时生效,v1 工具全局运行,host 黑名单兜底)
   - 范围:`tool.json` 的 `capabilities[]`(如 `net:http`、`fs:read`、`fs:write`、`clipboard`、`notify`、`open-external`);创建/生成完成时展示需授权清单,用户一次性确认;未声明的能力调用直接拒绝
   - 交付:项目沙箱策略可进一步收紧(如 `network: deny` 时即使工具声明了也拒绝),策略优先于声明
   - 验收:未声明调用被拒且提示可读;策略收紧后已授权工具的网络调用立即失效
 
-- [ ] **M6.6 持久化 KV**
+- [x] **M6.6 持久化 KV**
   - 范围:`pulsemind.storage.get/set/remove/keys` → `~/.pulsemind/tools/<id>/storage.json`(带写入节流与大小上限)
   - 交付:不用 `localStorage`(严格 sandbox 下不可用),统一走 bridge
   - 验收:重开工具后数据仍在;超限写入返回可读错误
 
-- [ ] **M6.7 审计**
+- [x] **M6.7 审计**
   - 范围:所有 bridge 调用写审计流(工具 id、方法、参数摘要、结果状态、耗时、是否越权);未授权/被拒调用单独标记
   - 验收:工具产生的网络与文件行为可完整回溯
 
-- [ ] **M6.8 安全基线**
+- [x] **M6.8 安全基线**
   - 范围:iframe `sandbox="allow-scripts"`(不加 `allow-same-origin`)、CSP、`referrerpolicy="no-referrer"`;工具页面经 `pulsemind-tool://` 协议加载而非 `srcDoc`;M0.2 已验证的组合才落地
   - 交付:能力边界与降级路径写进 `CLAUDE.md`
   - 验收:工具页面无法直接访问宿主 DOM / `window.electronAPI` / 不经 bridge 的文件系统

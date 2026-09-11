@@ -22,6 +22,8 @@ export interface DataPaths {
   workspaceDir: string
   settingsPath: string
   knowledgeDir: string
+  /** User tools (tool studio), PLAN-0.4.0 M5. */
+  toolsDir: string
 }
 
 

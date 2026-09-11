@@ -3,9 +3,12 @@
 import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { toolStore } from '../storage/tool-store'
+import { svcToolBridgeInvoke } from '../tool-runtime'
 import type { ToolCreateInput, ToolUpdateInput } from '../../shared/types/user-tool'
 
 export function registerToolStudioHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.TOOLBRIDGE_INVOKE, (_event, toolId: string, method: string, params: Record<string, unknown>) =>
+    svcToolBridgeInvoke(toolId, method, params))
   ipcMain.handle(IPC_CHANNELS.TOOL_LIST, () => toolStore.list())
   ipcMain.handle(IPC_CHANNELS.TOOL_LIST_TEMPLATES, () => toolStore.listTemplates())
   ipcMain.handle(IPC_CHANNELS.TOOL_GET, (_event, id: string) => toolStore.get(id))

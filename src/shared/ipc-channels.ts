@@ -217,6 +217,7 @@ export const IPC_CHANNELS = {
   TOOL_READ_HTML: 'tool:read-html',
   TOOL_READ_TEMPLATE_HTML: 'tool:read-template-html',
   TOOL_WRITE_HTML: 'tool:write-html',
+  TOOLBRIDGE_INVOKE: 'toolbridge:invoke',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

@@ -234,6 +234,7 @@ export interface ElectronAPI {
   toolReadHtml: (id: string) => Promise<string | null>
   toolReadTemplateHtml: (templateId: string) => Promise<string | null>
   toolWriteHtml: (id: string, html: string) => Promise<void>
+  toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) => Promise<unknown>
   sandboxDetect: () => Promise<boolean>
   getDataPaths: () => Promise<DataPaths>
   openFolder: (folderPath: string) => Promise<void>

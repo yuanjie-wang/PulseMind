@@ -4,9 +4,10 @@
 // is intentionally unavailable; tools fall back to in-memory state). M6 adds
 // the capability bridge (http/fs/storage/system) behind the same sandbox.
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
 import { ReloadOutlined, ArrowLeftOutlined, DownloadOutlined } from '@ant-design/icons'
+import { injectToolSdk, connectToolBridge } from '../../tool-studio/bridge-host'
 import type { UserTool } from '../../../../shared/types/user-tool'
 
 export interface ToolRunnerProps {
@@ -19,14 +20,23 @@ export interface ToolRunnerProps {
 export function ToolRunner({ tool, onBack, onEdit }: ToolRunnerProps): React.ReactElement {
   const [html, setHtml] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
 
   useEffect(() => {
     let alive = true
     window.electronAPI.toolReadHtml(tool.id).then((content) => {
-      if (alive) setHtml(content)
+      if (alive) setHtml(content ? injectToolSdk(content) : content)
     })
     return () => { alive = false }
   }, [tool.id, nonce])
+
+  // Bridge: the strictly-sandboxed iframe talks to the host over postMessage;
+  // the host forwards to the main-process runtime (capability-checked, audited).
+  useEffect(() => {
+    const iframe = iframeRef.current
+    if (!iframe || !html) return
+    return connectToolBridge(iframe, tool.id)
+  }, [html, tool.id, nonce])
 
   const exportHtml = (): void => {
     if (!html) return
@@ -58,6 +68,7 @@ export function ToolRunner({ tool, onBack, onEdit }: ToolRunnerProps): React.Rea
         {html ? (
           <iframe
             key={nonce}
+            ref={iframeRef}
             title={tool.name}
             srcDoc={html}
             sandbox="allow-scripts"

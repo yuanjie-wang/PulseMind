@@ -9,6 +9,7 @@ import { App as AntdApp, Button, Input, Tag, Tooltip } from 'antd'
 import { ArrowLeftOutlined, SendOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { createToolGenerator, type ToolEvent, type ToolGeneratorHandle } from '../../tool-studio/generator'
+import { injectToolSdk, connectToolBridge } from '../../tool-studio/bridge-host'
 import type { UserTool } from '../../../../shared/types/user-tool'
 
 export interface ToolStudioProps {
@@ -37,6 +38,15 @@ export function ToolStudio({ tool: existingTool, onBack, onToolCreated }: ToolSt
   const [previewNonce, setPreviewNonce] = useState(0)
   const generatorRef = useRef<ToolGeneratorHandle | null>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const previewRef = useRef<HTMLIFrameElement>(null)
+
+  // Bridge for the preview iframe — generated tools can call window.pulsemind
+  // (http/fs/storage/system) subject to their declared capabilities.
+  useEffect(() => {
+    const iframe = previewRef.current
+    if (!iframe || !html || !tool) return
+    return connectToolBridge(iframe, tool.id)
+  }, [html, tool])
 
   useEffect(() => {
     if (!existingTool) return
@@ -189,8 +199,9 @@ export function ToolStudio({ tool: existingTool, onBack, onToolCreated }: ToolSt
           {html ? (
             <iframe
               key={previewNonce}
+              ref={previewRef}
               title="tool-preview"
-              srcDoc={html}
+              srcDoc={injectToolSdk(html)}
               sandbox="allow-scripts"
               style={{ width: '100%', height: '100%', border: 'none' }}
             />

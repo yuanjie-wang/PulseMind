@@ -49,6 +49,8 @@ const electronAPI = {
   toolReadHtml: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_READ_HTML, id),
   toolReadTemplateHtml: (templateId: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_READ_TEMPLATE_HTML, templateId),
   toolWriteHtml: (id: string, html: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_WRITE_HTML, id, html),
+  toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TOOLBRIDGE_INVOKE, toolId, method, params),
   sandboxDetect: () => ipcRenderer.invoke(IPC_CHANNELS.SANDBOX_DETECT),
 
 dbCheck: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.DB_CHECK),
