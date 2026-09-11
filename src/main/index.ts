@@ -1,7 +1,8 @@
-import { app, BrowserWindow, shell, nativeImage, protocol, powerMonitor } from 'electron'
+import { app, BrowserWindow, shell, nativeImage, protocol, powerMonitor, screen } from 'electron'
 import { homedir } from 'node:os'
 import { join, extname } from 'node:path'
-import { readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs'
+import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { registerIpcHandlers } from './ipc'
 import { ensureDataDir } from './storage'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
@@ -9,6 +10,7 @@ import { skillStore } from './storage/skill-store'
 import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { runLaunchHooks } from './hooks-runner'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
+import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
 import { createTray, applyLaunchAtLogin } from './tray'
 import { serviceRuntime } from './service-runtime'
@@ -17,6 +19,9 @@ import { notifyResume } from './ipc/app.handler'
 
 let mainWindow: BrowserWindow | null = null
 let splashWindow: BrowserWindow | null = null
+// Pending unresponsive-renderer recovery timer (see createWindow); module-level
+// so a re-created window's handler can clear a stale one.
+let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null
 
 // ── Startup & crash log ──────────────────────────────────────────────
 // Packaged builds on Windows have no visible console, so a silent first-run
@@ -24,7 +29,7 @@ let splashWindow: BrowserWindow | null = null
 // uncaught exception) leaves no trace. Record every startup step and any
 // fatal error to ~/.pulsemind/logs/main.log to make it diagnosable.
 const LOG_DIR = join(homedir(), '.pulsemind', 'logs')
-function writeLog(level: 'INFO' | 'WARN' | 'FATAL', message: string): void {
+function writeLog(level: 'INFO' | 'WARN' | 'ERROR' | 'FATAL', message: string): void {
   try {
     mkdirSync(LOG_DIR, { recursive: true })
     appendFileSync(join(LOG_DIR, 'main.log'), `[${new Date().toISOString()}] [${level}] ${message}\n`)
@@ -34,6 +39,17 @@ function writeLog(level: 'INFO' | 'WARN' | 'FATAL', message: string): void {
 }
 
 let startupComplete = false
+let isQuitting = false
+
+// A closed parent terminal turns every console write into EPIPE. Without this
+// guard, the exception handlers below rethrow EPIPE from their own
+// console.error and loop-crash the process (observed as the repeated FATAL
+// `write EPIPE` entries on 2026-08-24 in main.log).
+for (const stream of [process.stdout, process.stderr]) {
+  stream?.on?.('error', (err: NodeJS.ErrnoException) => {
+    if (err.code !== 'EPIPE') throw err
+  })
+}
 
 // Keep the process alive long enough to record the failure. Without a handler
 // an uncaught exception kills the app with no trace; during the critical
@@ -59,10 +75,46 @@ app.on('render-process-gone', (_e, wc, details) => {
   try { url = wc.getURL() } catch {}
   writeLog('WARN', `render-process-gone: reason=${details.reason} exitCode=${details.exitCode} url=${url}`)
   console.warn('[Main] render-process-gone:', details, url)
+  // Auto-recover: a dead renderer (crash/OOM — including the forced crash
+  // from the unresponsive watchdog in createWindow) leaves a white/frozen
+  // window the user previously had to restart the whole app for. Reload in
+  // place unless the app is quitting. 'killed' is skipped deliberately:
+  // SIGTERM shutdowns arrive as killed, and racing a reload against quit
+  // can re-spawn windows.
+  if (isQuitting) return
+  if ((details.reason === 'crashed' || details.reason === 'oom') && !wc.isDestroyed()) {
+    try {
+      writeLog('INFO', 'render-process-gone: reloading window to recover')
+      wc.reload()
+    } catch { /* webContents may already be gone */ }
+  }
 })
 app.on('child-process-gone', (_e, details) => {
   writeLog('WARN', `child-process-gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`)
 })
+
+// ── Event-loop stall watchdog ──
+// Long-idle freezes (especially after macOS sleep/wake) leave no trace in
+// main.log because everything downstream of the stall is frozen too — the log
+// only ever showed clean startups. A drifting interval records the stall right
+// after it ends: a stall here means the MAIN process was blocked (sync
+// SQLite/fs, retry storms…), not just the renderer. Drifts above the sleep
+// ceiling are treated as system sleep rather than a stall (timers pause while
+// asleep; suspend/resume log lines bracket those), and repeats are throttled.
+const WATCHDOG_INTERVAL_MS = 2_000
+const WATCHDOG_STALL_THRESHOLD_MS = 5_000
+const WATCHDOG_SLEEP_CEILING_MS = 10 * 60_000
+let watchdogLastTick = Date.now()
+let watchdogLastLogAt = 0
+setInterval(() => {
+  const now = Date.now()
+  const drift = now - watchdogLastTick - WATCHDOG_INTERVAL_MS
+  watchdogLastTick = now
+  if (drift <= WATCHDOG_STALL_THRESHOLD_MS || drift > WATCHDOG_SLEEP_CEILING_MS) return
+  if (now - watchdogLastLogAt < 60_000) return
+  watchdogLastLogAt = now
+  writeLog('WARN', `watchdog: main event loop stalled ~${Math.round(drift / 100) / 10}s`)
+}, WATCHDOG_INTERVAL_MS)
 
 // Splash timing is anchored to the splash's first paint (ready-to-show), not to
 // window creation, so a slow Windows compositor can't get the splash closed
@@ -206,12 +258,66 @@ function createSplashWindow(): void {
   splashWindow.on('closed', () => { splashWindow = null })
 }
 
+// Total margin left between the window and the usable screen area, keeping the
+// window visibly inset from the menu bar / dock instead of filling the screen.
+// Height keeps a smaller margin: the work area already excludes the menu bar, so
+// a wide horizontal inset only wastes vertical room on a short laptop screen.
+const WINDOW_WIDTH_INSET = 100
+const WINDOW_HEIGHT_INSET = 50
+// Ceiling for the work-area-derived size, so a large external monitor gets a
+// comfortable window rather than a near-full-screen one.
+const MAX_WINDOW_WIDTH = 1800
+const MAX_WINDOW_HEIGHT = 1200
+const MIN_WINDOW_WIDTH = 800
+const MIN_WINDOW_HEIGHT = 600
+// Fraction of the leftover vertical space left above the window. 0.5 centers it
+// in the work area; lower values bias it upward.
+const WINDOW_VERTICAL_POSITION = 0.5
+
+// Place and size the window from the current display's work area (screen minus
+// menu bar, dock and taskbar) rather than fixed pixels: a hardcoded size either
+// overflows a small laptop screen — pushing the title bar under the menu bar or
+// off-screen entirely — or wastes space on a large monitor. The work area is
+// inset by a fixed margin and then capped, so the window shrinks to fit a small
+// screen but never grows past MAX_* on a big one.
+//
+// The position is set explicitly because Electron's default centering (when x/y
+// are omitted) centers on the full screen, not the work area. On a display with
+// a dock the window ends up flush against the dock and visibly low — measured at
+// 47px below the menu bar vs 3px above the dock — where centering in the work
+// area gives an even split.
+//
+// Resolved per call so a window re-created on another display (macOS activate,
+// tray restore) picks up that display's metrics. Must run after app ready:
+// `screen` is unavailable before.
+function resolveWindowBounds(): {
+  x: number
+  y: number
+  width: number
+  height: number
+  minWidth: number
+  minHeight: number
+} {
+  const { x: workAreaX, y: workAreaY, width: workAreaWidth, height: workAreaHeight } =
+    screen.getPrimaryDisplay().workArea
+  const width = Math.min(MAX_WINDOW_WIDTH, Math.max(1, workAreaWidth - WINDOW_WIDTH_INSET))
+  const height = Math.min(MAX_WINDOW_HEIGHT, Math.max(1, workAreaHeight - WINDOW_HEIGHT_INSET))
+  return {
+    x: workAreaX + Math.round((workAreaWidth - width) / 2),
+    y: workAreaY + Math.round((workAreaHeight - height) * WINDOW_VERTICAL_POSITION),
+    width,
+    height,
+    // Never let a minimum exceed the size we open at: Electron would otherwise
+    // be asked for a window smaller than its own resize floor.
+    minWidth: Math.min(MIN_WINDOW_WIDTH, width),
+    minHeight: Math.min(MIN_WINDOW_HEIGHT, height),
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 800,
-    minHeight: 600,
+    ...resolveWindowBounds(),
+    ...resolveTitleBarOptions(),
     show: false,
     backgroundColor: '#fff',
     icon: getResourcePath(process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'),
@@ -228,6 +334,32 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  // ── Unresponsive-renderer recovery ──
+  // 'unresponsive' fires when the renderer's JS loop is stuck (long sync task,
+  // GC death spiral) — the "app frozen but not crashed" state that used to
+  // require a full app restart. Give it a grace period; if it doesn't come
+  // back, crash it deliberately: render-process-gone above then reloads the
+  // window, converting a permanent freeze into a brief reload.
+  mainWindow.webContents.on('unresponsive', () => {
+    if (rendererRecoveryTimer) return // recovery already pending
+    const wc = mainWindow?.webContents
+    if (!wc || wc.isDestroyed() || isQuitting) return
+    writeLog('WARN', 'renderer unresponsive — will crash+reload in 15s unless it recovers')
+    rendererRecoveryTimer = setTimeout(() => {
+      rendererRecoveryTimer = null
+      if (!wc || wc.isDestroyed() || isQuitting) return
+      writeLog('WARN', 'renderer still unresponsive after 15s — forcing crash to recover')
+      try { wc.forcefullyCrashRenderer() } catch { /* already gone */ }
+    }, 15_000)
+    wc.once('responsive', () => {
+      if (rendererRecoveryTimer) {
+        clearTimeout(rendererRecoveryTimer)
+        rendererRecoveryTimer = null
+      }
+      writeLog('INFO', 'renderer responsive again')
+    })
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -263,9 +395,13 @@ if (gotTheLock) {
 
   app.whenReady().then(async () => {
   // Custom protocol to serve local files to sandboxed renderer.
-  // Uses fs.readFileSync instead of net.fetch to avoid redirect/encoding issues
-  // on Windows and to properly handle binary files (images).
-  protocol.handle('local-file', (request) => {
+  // Reads via fs/promises instead of net.fetch to avoid redirect/encoding
+  // issues on Windows and to properly handle binary files (images). Async on
+  // purpose: conversation images (tool screenshots etc.) all route through
+  // here, and a sync read of a large file — or the first read after wake,
+  // while the disk is still spinning up — would block the whole main-process
+  // event loop and freeze every IPC handler with it.
+  protocol.handle('local-file', async (request) => {
     // Use URL API to extract pathname reliably (avoids regex issues with custom schemes)
     let filePath: string
     try {
@@ -305,7 +441,7 @@ if (gotTheLock) {
       '.pdf': 'application/pdf',
     }
     try {
-      const content = readFileSync(filePath)
+      const content = await readFile(filePath)
       const mime = MIME[ext] || 'application/octet-stream'
       return new Response(content, {
         status: 200,
@@ -344,6 +480,10 @@ if (gotTheLock) {
     app.dock.setIcon(nativeImage.createFromPath(iconPath))
   }
 
+  // The caption button overlay colour follows the theme, and it has to be right at
+  // window creation — bootSettings below is read too late for that.
+  setTitleBarTheme((await settingsStore.get()).theme, null)
+
   createWindow()
   writeLog('INFO', 'startup: main window created')
 
@@ -364,7 +504,7 @@ if (gotTheLock) {
         writeLog('WARN', `startup: agent service failed: ${err}`)
       }
     }
-    app.on('before-quit', () => { void serviceRuntime.handle?.close() })
+    app.on('before-quit', () => { isQuitting = true; void serviceRuntime.handle?.close() })
     createTray({
       getServiceStatus: async () => serviceRuntime.handle ? `服务运行中 :${serviceRuntime.handle.port}` : '服务未运行',
       getLaunchAtLogin: async () => !!(await settingsStore.get()).launchAtLogin,
@@ -402,34 +542,43 @@ if (gotTheLock) {
 
   // ── Sleep/resume resilience ──
   // System sleep can freeze SSE streams (fetch hangs), SQLite, and GPU context.
+  powerMonitor.on('suspend', () => {
+    writeLog('INFO', 'power: system suspending')
+  })
   powerMonitor.on('resume', () => {
-    console.log('[Power] System resumed from sleep')
-    const win = mainWindow
-    if (!win) return
+    writeLog('INFO', 'power: system resumed from sleep')
 
     // Give network stack time to come back before any recovery actions
     setTimeout(() => {
-      // 1. Abort all hanging API streams (SSE fetch readers block forever after sleep)
+      // 1. Abort all hanging API streams (SSE fetch readers block forever
+      //    after sleep). Runs regardless of window state: main-hosted agent
+      //    sessions (ws :8765) keep streaming with no UI attached.
       try {
         cancelAllRequests()
       } catch (err) {
-        console.warn('[Power] cancelAllRequests failed:', err)
+        writeLog('WARN', `power: cancelAllRequests failed: ${err}`)
       }
 
       // 2. Reinitialize database connection (SQLite may have stale locks)
       try {
         ensureDbHealthy()
       } catch (err) {
-        console.error('[Power] DB reinit failed:', err)
+        writeLog('ERROR', `power: DB reinit failed: ${err}`)
       }
 
       // 3. Notify renderer to recover gracefully (GPU context, WebGL, timers).
       //    If renderer doesn't ack within 5s, fall back to a full reload.
+      const win = mainWindow
+      if (!win || win.isDestroyed()) return
       notifyResume(win, 5000, () => {
         try {
-          console.log('[Power] Renderer unresponsive — reloading')
+          // Reload only helps something on screen. A hidden/closed window has
+          // nothing to recover visually — reloading it would just reset its
+          // state for no benefit.
+          if (!win.isVisible()) return
+          writeLog('WARN', 'power: renderer did not ack resume — reloading')
           win.webContents.reload()
-        } catch (_) { /* window may be destroyed */ }
+        } catch { /* window may be destroyed */ }
       })
     }, 3000)
   })

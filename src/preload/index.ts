@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
+import { resolveWindowControlsLayout } from '../shared/window-chrome'
+import type { WindowControlsLayout } from '../shared/window-chrome'
 import type { Conversation, ConversationIndexEntry, Message, TokenStats, ToolResultBatchEntry } from '../shared/types/conversation'
 import type { AppSettings } from '../shared/types/settings'
 import type { TerminalOutputEvent, TerminalExitEvent, ApiStreamChunkEvent, ApiStreamErrorEvent, ApiStreamDoneEvent, ApiStreamRetryEvent, PlatformInfo, DataPaths } from '../renderer/src/types/electron'
@@ -13,6 +15,10 @@ import type { SubAgentProfile } from '../shared/types/subagent'
 import type { GitAction, GitResult } from '../shared/types/git'
 
 const electronAPI = {
+  // Window chrome. Static for the process lifetime, so the renderer can reserve room
+  // for the native window controls synchronously on first paint.
+  getWindowControls: (): WindowControlsLayout => resolveWindowControlsLayout(process.platform),
+
   // Debug
   dbCheck: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.DB_CHECK),
 

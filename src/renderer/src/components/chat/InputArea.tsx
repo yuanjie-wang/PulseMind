@@ -3,6 +3,7 @@ import { Sender } from '@ant-design/x'
 import { Button, Dropdown, Modal, App } from 'antd'
 import { PlusOutlined, FolderOutlined, FileOutlined, SwapOutlined, ArrowUpOutlined, LoadingOutlined, CloseOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { ContextRing } from './ContextRing'
 import type { LlmProfile } from '../../types/settings'
 
 interface ChromeTab {
@@ -23,7 +24,9 @@ export function InputArea({
   onCancel,
   profiles,
   activeProfileId,
-  onSelectProfile
+  onSelectProfile,
+  contextUsed,
+  contextLength
 }: {
   isRequesting: boolean
   isStreaming: boolean
@@ -35,6 +38,8 @@ export function InputArea({
   profiles?: LlmProfile[]
   activeProfileId?: string
   onSelectProfile?: (profileId: string) => void
+  contextUsed?: number
+  contextLength?: number
 }): React.ReactElement {
   const [inputValue, setInputValue] = useState('')
   const { t } = useTranslation()
@@ -318,30 +323,41 @@ export function InputArea({
                 {activeModelLabel}
               </Button>
             </Dropdown>
-            <Button size="small" type="primary" shape="circle" icon={isRequesting ? <LoadingOutlined /> : <ArrowUpOutlined />} disabled={!isRequesting && !inputValue.trim()} style={{ marginLeft: 'auto' }} onClick={() => {
-              if (isRequesting) {
-                onCancel()
-                return
-              }
-              const val = inputValue.trim()
-              if (val) {
-                const parts = [
-                  ...selectedUrls.map(u => `[${u.title}](${u.url})` + (u.pageId ? `\n[chrome: pageId=${u.pageId}]` : '')),
-                  ...selectedFiles.map(p => `[${getFileName(p)}](file:///${p.replace(/\\/g, '/')})`),
-                  ...selectedFolders.map(p => `[${getFileName(p)}](file:///${p.replace(/\\/g, '/')})`),
-                ]
-                const message = parts.length > 0 ? parts.join('\n') + (val ? '\n' + val : '') : val
-                if (inputHistoryRef.current.length === 0 || inputHistoryRef.current[inputHistoryRef.current.length - 1] !== message) {
-                  inputHistoryRef.current.push(message)
+            {/* The ring and the send button share one auto-margined group, so the ring
+                lands against the button's left edge. The margin has to sit on the group:
+                on the button it would open the gap between the two instead. 24px is the
+                send button's diameter (antd size="small" circle), which the ring matches. */}
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {hasMessages && contextLength != null && contextLength > 0 && (
+                <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
+                  <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={24} />
+                </span>
+              )}
+              <Button size="small" type="primary" shape="circle" icon={isRequesting ? <LoadingOutlined /> : <ArrowUpOutlined />} disabled={!isRequesting && !inputValue.trim()} onClick={() => {
+                if (isRequesting) {
+                  onCancel()
+                  return
                 }
-                historyIndexRef.current = -1
-                onSendMessage(message)
-                setInputValue('')
-                setSelectedFiles([])
-                setSelectedFolders([])
-                setSelectedUrls([])
-              }
-            }} />
+                const val = inputValue.trim()
+                if (val) {
+                  const parts = [
+                    ...selectedUrls.map(u => `[${u.title}](${u.url})` + (u.pageId ? `\n[chrome: pageId=${u.pageId}]` : '')),
+                    ...selectedFiles.map(p => `[${getFileName(p)}](file:///${p.replace(/\\/g, '/')})`),
+                    ...selectedFolders.map(p => `[${getFileName(p)}](file:///${p.replace(/\\/g, '/')})`),
+                  ]
+                  const message = parts.length > 0 ? parts.join('\n') + (val ? '\n' + val : '') : val
+                  if (inputHistoryRef.current.length === 0 || inputHistoryRef.current[inputHistoryRef.current.length - 1] !== message) {
+                    inputHistoryRef.current.push(message)
+                  }
+                  historyIndexRef.current = -1
+                  onSendMessage(message)
+                  setInputValue('')
+                  setSelectedFiles([])
+                  setSelectedFolders([])
+                  setSelectedUrls([])
+                }
+              }} />
+            </div>
           </div>
         }
         value={inputValue}

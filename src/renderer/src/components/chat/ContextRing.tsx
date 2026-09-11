@@ -4,31 +4,44 @@ import type { AgentMessage, ToolUseBlock, ToolResultBlock } from '../../types/ag
 
 // ── Context usage ring ────────────────────────────────────────────────
 
-export function ContextRing({ used, total }: { used: number; total: number }): React.ReactElement | null {
+// The ring is drawn inside a fixed box, and the drawn circle is inset within it, so the
+// box is both the layout size and the largest circle that fits.
+const RING_BOX = 24
+const RING_CENTER = RING_BOX / 2
+const RING_STROKE = 2.5
+const DEFAULT_RING_RADIUS = 9
+// Keeps the stroke's outer edge off the box edge, where it would be antialiased away.
+const RING_INSET = 0.25
+
+export function ContextRing({ used, total, diameter }: { used: number; total: number; diameter?: number }): React.ReactElement | null {
   if (total <= 0) return null
   const pct = Math.min(used / total, 1)
-  const r = 9
+  // `diameter` asks for the drawn circle's on-screen size, for lining it up with a control
+  // of that size. The box does not change, so this never shifts the surrounding layout.
+  const r = diameter == null ? DEFAULT_RING_RADIUS : (diameter - RING_STROKE) / 2 - RING_INSET
   const circ = 2 * Math.PI * r
   const offset = circ * (1 - pct)
+  // Shared by the ring's own label and the tooltip, so the two never disagree.
+  const percent = Math.round(pct * 100)
   const formatNum = (n: number) => n >= 10240 ? `${(n / 1024).toFixed(n % 1024 === 0 ? 0 : 1)}k` : n.toLocaleString()
 
   return (
-    <Tooltip title={`${formatNum(used)} / ${formatNum(total)}`}>
-      <svg width={24} height={24} viewBox="0 0 24 24" style={{ display: 'block' }}>
-        <circle cx={12} cy={12} r={r} fill="none" stroke="#d9d9d9" strokeWidth={2.5} />
+    <Tooltip title={`${formatNum(used)}/${formatNum(total)}｜${percent}%`}>
+      <svg width={RING_BOX} height={RING_BOX} viewBox={`0 0 ${RING_BOX} ${RING_BOX}`} style={{ display: 'block' }}>
+        <circle cx={RING_CENTER} cy={RING_CENTER} r={r} fill="none" stroke="#d9d9d9" strokeWidth={RING_STROKE} />
         <circle
-          cx={12} cy={12} r={r} fill="none"
-          stroke="#666" strokeWidth={2.5} strokeLinecap="round"
+          cx={RING_CENTER} cy={RING_CENTER} r={r} fill="none"
+          stroke="#666" strokeWidth={RING_STROKE} strokeLinecap="round"
           strokeDasharray={circ} strokeDashoffset={offset}
-          transform="rotate(-90 12 12)"
+          transform={`rotate(-90 ${RING_CENTER} ${RING_CENTER})`}
           style={{ transition: 'stroke-dashoffset 0.3s ease' }}
         />
         <text
-          x={12} y={12} textAnchor="middle" dominantBaseline="central"
+          x={RING_CENTER} y={RING_CENTER} textAnchor="middle" dominantBaseline="central"
           fill="#888" fontSize={7.5} fontWeight={700}
           fontFamily="'SF Mono', 'Menlo', 'Consolas', monospace"
         >
-          {Math.round(pct * 100)}
+          {percent}
         </text>
       </svg>
     </Tooltip>

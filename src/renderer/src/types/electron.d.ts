@@ -7,6 +7,7 @@ import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeLis
 import type { SubAgentProfile } from '../../../shared/types/subagent'
 import type { GitAction, GitResult } from '../../../shared/types/git'
 import type { ExperienceRecord, ExperienceDraft } from '../../../shared/types/experience-types'
+import type { WindowControlsLayout } from '../../../shared/window-chrome'
 
 // --- Platform Info ---
 
@@ -198,6 +199,7 @@ export interface ElectronAPI {
 
   // App / Platform Info
   getPlatformInfo: () => Promise<PlatformInfo>
+  getWindowControls: () => WindowControlsLayout
   getDataPaths: () => Promise<DataPaths>
   openFolder: (folderPath: string) => Promise<void>
   openExternal: (url: string) => Promise<void>
