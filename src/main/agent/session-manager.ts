@@ -94,7 +94,14 @@ class AgentSessionManagerImpl {
   private emitMessages(sessionId: string, messages: AgentMessage[]): void {
     const lastLen = this.lastSentLen.get(sessionId) ?? 0
     if (messages.length >= lastLen) {
-      this.emit(sessionId, { type: 'messages_append', fromIndex: lastLen, items: messages.slice(lastLen) as unknown[] })
+      const items = messages.slice(lastLen)
+      // A zero-item append is a no-op for an up-to-date client, but a client
+      // whose mirror is ahead of `lastLen` (it hydrated optimistically before
+      // this session existed) would apply it as a truncation to empty and tear
+      // its view down. Nothing to append means nothing to send.
+      if (items.length > 0) {
+        this.emit(sessionId, { type: 'messages_append', fromIndex: lastLen, items: items as unknown[] })
+      }
     } else {
       // Truncation (regeneration/compaction) — ship the full list.
       this.emit(sessionId, { type: 'messages', messages: messages as unknown[] })

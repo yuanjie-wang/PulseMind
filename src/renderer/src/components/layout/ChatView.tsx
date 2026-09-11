@@ -9,13 +9,18 @@ import { CodeBlock } from '../chat/CodeBlock'
 import { ErrorDisplay } from '../chat/ErrorDisplay'
 import { ExtensionPrompt, SubAgentStopPrompt } from '../chat/ExtensionPrompt'
 import { InputArea } from '../chat/InputArea'
+import { estimateContextUsed } from '../chat/ContextRing'
 import { WelcomeContent } from '../chat/WelcomeContent'
+import { startBottomPin } from '../../utils/bottom-pin'
 
 // --- Props ---
 
 interface ChatViewProps {
   messages: AgentMessage[]
   isRequesting: boolean
+  /** True while a switched-to conversation is still loading from the DB —
+   *  suppresses the welcome screen so it doesn't flash before messages land. */
+  isLoadingConversation?: boolean
   agentStatus: AgentStatus
   streamingBlocks: ContentBlock[]
   hasApiKey: boolean
@@ -161,6 +166,7 @@ function groupMessages(messages: AgentMessage[]): Segment[] {
 function ChatView({
   messages,
   isRequesting,
+  isLoadingConversation,
   agentStatus,
   streamingBlocks,
   onSendMessage,
@@ -189,6 +195,9 @@ function ChatView({
   contextLength
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
+  // Context usage for the input area's ring: real input tokens from the API when
+  // available, otherwise estimated from the message contents.
+  const contextUsed = useMemo(() => estimateContextUsed(messages), [messages])
   const animName = `ecg-scroll-${uid.replace(/[:.]/g, '')}`
   const scrollRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
@@ -217,10 +226,11 @@ function ChatView({
     if (!el) return
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
     isNearBottomRef.current = nearBottom
-    // While a plan jump's smooth scroll is animating, don't collapse the widened
-    // window or trigger lazy-load — the animation's early frames near the old
-    // bottom would otherwise fight the widened window back to the tail.
-    if (suppressPlanScrollRef.current) return
+    // While a landing is running (conversation switch) or a plan jump's smooth
+    // scroll is animating, don't collapse the widened window or trigger
+    // lazy-load: our own writes move scrollTop, and the early frames near the
+    // top would otherwise widen the window and fight the landing back to the tail.
+    if (landingRef.current || suppressPlanScrollRef.current) return
     if (nearBottom) {
       setExtraTop(0)
       return
@@ -239,29 +249,55 @@ function ChatView({
   const prevConvIdRef = useRef(conversationId)
   const pendingScrollRef = useRef(false)
   const scrollRafRef = useRef<number>(0)
+  // Cancel handle for the bottom-pinner started after a conversation switch —
+  // content height keeps growing for frames after the messages commit
+  // (XMarkdown renders null on first pass; images/code/mermaid load later), so
+  // a one-shot scroll lands mid-content. See utils/bottom-pin.ts.
+  const cancelPinRef = useRef<(() => void) | null>(null)
+  // True while the bottom-pinner owns the viewport. handleScroll must not
+  // lazy-load or collapse the window during that window — the pin's own writes
+  // move scrollTop, and reacting to them would fight the landing.
+  const landingRef = useRef(false)
+
   useEffect(() => {
     const isConvSwitch = prevConvIdRef.current !== conversationId
     if (isConvSwitch) {
       pendingScrollRef.current = true
       prevConvIdRef.current = conversationId
+      cancelPinRef.current?.()
+      cancelPinRef.current = null
       setExtraTop(0)
     }
 
-    if (!isNearBottomRef.current || messages.length === 0) return
-    setExtraTop(0)
+    if (messages.length === 0) return
 
     if (pendingScrollRef.current) {
-      // Conversation switch with async-loaded messages: wait for DOM to settle
+      // Conversation switch: always land at the tail, regardless of where the
+      // previous conversation was scrolled — isNearBottomRef describes the old
+      // viewport and must not veto this. Scroll synchronously (DOM is already
+      // committed) so the switch never paints the new conversation at the old
+      // scroll offset, then pin while the content height settles.
       pendingScrollRef.current = false
-      cancelAnimationFrame(scrollRafRef.current)
-      scrollRafRef.current = requestAnimationFrame(() => {
-        scrollRafRef.current = requestAnimationFrame(scrollToBottom)
+      isNearBottomRef.current = true
+      setExtraTop(0)
+      const el = scrollRef.current
+      if (el) el.scrollTop = el.scrollHeight
+      cancelPinRef.current?.()
+      // Must be set synchronously with starting the pin so handleScroll (which
+      // reads it) never reacts to the landing's own scroll writes.
+      // eslint-disable-next-line react-hooks/immutability
+      landingRef.current = true
+      cancelPinRef.current = startBottomPin(() => scrollRef.current, {
+        onStop: () => { landingRef.current = false }
       })
-    } else {
-      // Use rAF to let DOM layout settle before measuring scrollHeight
-      cancelAnimationFrame(scrollRafRef.current)
-      scrollRafRef.current = requestAnimationFrame(scrollToBottom)
+      return
     }
+
+    if (!isNearBottomRef.current) return
+    setExtraTop(0)
+    // Use rAF to let DOM layout settle before measuring scrollHeight
+    cancelAnimationFrame(scrollRafRef.current)
+    scrollRafRef.current = requestAnimationFrame(scrollToBottom)
   }, [messages, streamingBlocks, scrollToBottom, conversationId])
 
   // When streaming completes, scroll again after DOM settles (double rAF)
@@ -279,7 +315,10 @@ function ChatView({
 
   // Cleanup rAF on unmount
   useEffect(() => {
-    return () => cancelAnimationFrame(scrollRafRef.current)
+    return () => {
+      cancelAnimationFrame(scrollRafRef.current)
+      cancelPinRef.current?.()
+    }
   }, [])
 
   const isStreaming = agentStatus.status === 'streaming'
@@ -608,8 +647,11 @@ function ChatView({
 
   // ── Render ──
 
-  // Welcome page when no messages and not streaming
-  if (!hasMessages && !isStreaming) {
+  // Welcome page when no messages and not streaming. While a conversation
+  // switch is still loading its messages from the DB, skip the welcome screen —
+  // falling through to the (empty) message view keeps the layout stable so the
+  // loaded content replaces it without a visible flash.
+  if (!hasMessages && !isStreaming && !isLoadingConversation) {
     return (
       <div
         style={{
@@ -650,6 +692,8 @@ function ChatView({
           profiles={profiles}
           activeProfileId={activeProfileId}
           onSelectProfile={onSelectProfile}
+          contextUsed={contextUsed}
+          contextLength={contextLength}
         />
 
         <style>{`
@@ -689,7 +733,11 @@ function ChatView({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        style={{ height: '100%', overflow: 'auto' }}
+        // overflowAnchor: none — when content above the viewport grows after a
+        // conversation opens (markdown bodies, images, tool blocks), Chrome's
+        // scroll anchoring would otherwise adjust scrollTop to keep the old
+        // anchor node stable and drag the view off the tail.
+        style={{ height: '100%', overflow: 'auto', overflowAnchor: 'none' }}
       >
         <div style={{ height: 24 }} />
 
@@ -799,6 +847,8 @@ function ChatView({
         profiles={profiles}
         activeProfileId={activeProfileId}
         onSelectProfile={onSelectProfile}
+        contextUsed={contextUsed}
+        contextLength={contextLength}
       />
 
       {/* Global keyframes */}

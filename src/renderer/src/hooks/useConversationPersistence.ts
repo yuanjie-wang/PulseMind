@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import useXConversations from '@ant-design/x-sdk/es/x-conversations'
 import type { AgentMessage, AgentStatus } from '../types/agent'
 import type { SessionEngineHandle } from './useConversationEngine'
@@ -59,6 +59,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   const saveRef = useRef<() => Promise<void>>(null as unknown as () => Promise<void>)
   /** Tracks persisted message IDs per conversation to enable incremental saves. */
   const savedMsgIdsRef = useRef<Map<string, Set<string>>>(new Map())
+
+  // True while a conversation's messages are being loaded from the DB after a
+  // switch. ChatView suppresses the welcome screen during this window so the
+  // user doesn't see it flash between the old and new conversation's messages.
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false)
 
   const saveCurrentConversation = useCallback(async () => {
     const convId = convIdRef.current
@@ -292,6 +297,8 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
 
     if (key) {
       if (enginesRef.current.has(key)) {
+        // Cached engine: messages set synchronously, no loading window needed.
+        setIsLoadingConversation(false)
         const engine = enginesRef.current.get(key)!
         setMessages([...engine.messages])
         setAgentStatus(engine.agentStatus)
@@ -302,10 +309,15 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       } else {
         setMessages([])
         setPlan(null)
+        setIsLoadingConversation(true)
         getOrCreateEngine(key).reset()
 
         window.electronAPI.getConversation(key).then(async conv => {
-          if (!conv || conv.messages.length === 0) return
+          if (!conv || conv.messages.length === 0) {
+            // Genuinely empty conversation — welcome should show once loading clears.
+            if (activeEngineIdRef.current === key) setIsLoadingConversation(false)
+            return
+          }
           if (activeEngineIdRef.current !== key) return
           const engine = enginesRef.current.get(key)
           if (engine && engine.messages.length > 0) return
@@ -323,10 +335,16 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
           if (activeEngineIdRef.current === key) {
             setMessages(agentMsgs)
             setAgentStatus({ status: 'idle' })
+            setIsLoadingConversation(false)
           }
           // Mark all loaded messages as already saved
           savedMsgIdsRef.current.set(key, new Set(conv.messages.map(m => m.id)))
-        }).catch(err => console.error('[Chat] Failed to load conversation:', err))
+        }).catch(err => {
+          console.error('[Chat] Failed to load conversation:', err)
+          // Never leave the view stuck blank if the load fails while the user
+          // is still on this conversation.
+          if (activeEngineIdRef.current === key) setIsLoadingConversation(false)
+        })
       }
     }
 
@@ -368,6 +386,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
 
     // Clear state FIRST (synchronously) so handleRequest can't race and
     // target the old conversation if the user types before the async save completes.
+    setIsLoadingConversation(false)
     setMessages([])
     setAgentStatus({ status: 'idle' })
     setStreamingBlocks([])
@@ -493,6 +512,8 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     removeConversation,
     setConversations,
     conversationsRef,
+    // Conversation switch loading window (welcome-screen suppression)
+    isLoadingConversation,
     // Save
     saveCurrentConversation,
     saveConversationSync,

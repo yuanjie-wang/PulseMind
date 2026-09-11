@@ -83,17 +83,13 @@ function AppContent(): React.ReactElement {
   // ── Sleep/resume recovery ──
   useEffect(() => {
     const unsub = window.electronAPI?.onSystemResumed(() => {
-      console.log('[App] System resumed from sleep — attempting recovery')
-
-      // Give the renderer a moment to settle (timers, GPU context)
-      requestAnimationFrame(() => {
-        // Send ack to main so it doesn't fall back to a full reload
-        try { window.electronAPI.systemResumedAck() } catch {}
-
-        // If WebGL/Canvas contexts are truly unrecoverable, the error will
-        // surface naturally through the rendering pipeline. The user can
-        // manually refresh if needed.
-      })
+      console.log('[App] System resumed from sleep — acknowledging')
+      // Ack immediately, NOT inside requestAnimationFrame: rAF never fires
+      // while the window is hidden/occluded (the compositor is suspended),
+      // so an rAF-gated ack silently times out and the main process falls
+      // back to a full reload — resetting app state on every wake that
+      // happens while the window is not on screen.
+      try { window.electronAPI.systemResumedAck() } catch {}
     })
     return unsub
   }, [])
@@ -178,6 +174,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   const {
     conversations,
     activeConversationKey,
+    isLoadingConversation,
     messages,
     isRequesting,
     createNewConversation,
@@ -332,14 +329,14 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             conversations={conversations.map((c: any) => ({
                 key: c.key,
                 label: c.label,
-                pinned: c.pinned
+                pinned: c.pinned,
+                updatedAt: c.updatedAt
               }))}
             activeConversationKey={activeConversationKey}
             totalSessions={conversations.length}
             autoCleanup={settings.autoCleanup ?? false}
             onClearAllConversations={clearAllConversations}
             onToggleAutoCleanup={(checked) => saveSettings({ ...settings, autoCleanup: checked })}
-            messages={messages}
             onCreateNew={() => { createNewConversation(); regenerateGreeting() }}
             onDeleteConversation={deleteConversation}
             onRenameConversation={renameConversation}
@@ -359,12 +356,12 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             onToggleYoloMode={(checked: boolean) => saveSettings({ ...settings, yoloMode: checked })}
             activeLoopConvIds={activeLoopConvIds}
             retryingConvIds={retryingConvIds}
-            contextLength={contextLength}
             onViewChange={setActiveView}
           >
             <ChatView
               messages={messages}
               isRequesting={isRequesting}
+              isLoadingConversation={isLoadingConversation}
               agentStatus={agentStatus}
               streamingBlocks={streamingBlocks}
               hasApiKey={hasApiKey}

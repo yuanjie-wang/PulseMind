@@ -10,6 +10,7 @@ import type { ExperienceManager } from '../experiences/ExperienceManager'
 import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
+import { applyMessagesAppend } from '../utils/session-messages'
 
 function isActiveStatus(status: AgentStatus): boolean {
   return status.status === 'streaming'
@@ -185,7 +186,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       switch (data.type) {
         case 'messages_append': {
           const items = data.items as AgentMessage[]
-          st.messages = [...st.messages.slice(0, data.fromIndex), ...items]
+          st.messages = applyMessagesAppend(st.messages, data.fromIndex, items)
           break
         }
         case 'messages': {
