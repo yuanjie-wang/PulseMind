@@ -35,7 +35,9 @@ class RoutineScheduler {
   tick(): void {
     if (this.running) return
     this.running = true
-    void this.tickAsync().finally(() => { this.running = false })
+    // Swallow: a tick must never produce an unhandled rejection (DB not ready,
+    // transient IO) — the next tick retries.
+    this.tickAsync().catch((err) => console.warn('[RoutineScheduler] tick failed:', err)).finally(() => { this.running = false })
   }
 
   private async tickAsync(): Promise<void> {

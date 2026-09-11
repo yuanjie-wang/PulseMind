@@ -66,6 +66,7 @@ function createTables(): void {
       summary   TEXT,
       keywords  TEXT,
       pinned    INTEGER NOT NULL DEFAULT 0,
+      project_id TEXT,
       plan_json TEXT,
       extracted_msg_count INTEGER NOT NULL DEFAULT 0,
       experience_extracted_count INTEGER NOT NULL DEFAULT 0,
@@ -281,10 +282,15 @@ function createTables(): void {
       meta_json   TEXT
     );
 
+  `)
+  // MUST run before the idx_conversations_project index below: existing
+  // databases get the column here. (Ordering bug shipped in 0.4.0 M3:
+  // index-before-column crashed initializeDatabase on real databases.)
+  try { database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT') } catch (e) {}
+  database.exec(`
     CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
   `)
-  try { database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT') } catch (e) {}
   // Every pre-0.4.0 conversation — and any row that slips through without a
   // project — belongs to the synthesized default project.
   try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch (e) {}
