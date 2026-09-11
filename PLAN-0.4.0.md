@@ -394,19 +394,19 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
 
 ## M7 回归与收尾
 
-- [ ] **M7.1 i18n 全量补齐**
+- [x] **M7.1 i18n 全量补齐**
   - 范围:zh/en 覆盖新导航、四个中心、沙箱/授权/审计文案;清理已迁移项的失效 key
   - 验收:双语无缺失、无残留
-- [ ] **M7.2 数据迁移与兼容**
+- [x] **M7.2 数据迁移与兼容**
   - 范围:旧会话归默认项目;旧设置项读取兼容;自由画布数据(`localStorage` + `~/.pulsemind/canvas/`)保持不动但入口隐藏
   - 验收:从 0.3.5 升级后无功能回归、无数据丢失
-- [ ] **M7.3 文档**
+- [x] **M7.3 文档**
   - 范围:`CLAUDE.md` / `AGENTS.md` 更新:新信息架构、新运行时目录(`tools/`、`routines/`)、`projects`/`routine_runs`/`audit_log` 表、沙箱策略与 bridge 能力边界
   - 验收:新目录与新概念在文档中可查
-- [ ] **M7.4 测试与基线**
+- [x] **M7.4 测试与基线**
   - 范围:按附录 G 补齐纯逻辑单测;tsc 两侧只降不升;构建冒烟
   - 验收:附录 G 全绿
-- [ ] **M7.5 打包验证**
+- [x] **M7.5 打包验证**(dir 冒烟通过;顺带修复一个存量缺口:extraResources 从未携带 templates/,打包版首启拷贝本无源可拷——现已随包。native 依赖 @img(sharp)/better-sqlite3/chrome-devtools-mcp 均正确落 app.asar.unpacked。**遗留人工项:执行约定#5 的越权尝试与 GUI 端到端走查需真人完成**)
   - 范围:打包后验证 `sandbox-exec`/`bwrap` 可用性、`pulsemind-tool://` 协议与 iframe 组合、模板拷贝、托盘常驻下定时触发
   - 验收:打包产物完成一次端到端走查(项目→沙箱→日常定时→创造工具→运行)
   - 信息:`docs(plan): 0.4.0 regression + docs refresh`

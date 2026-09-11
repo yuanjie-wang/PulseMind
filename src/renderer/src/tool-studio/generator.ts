@@ -37,7 +37,7 @@ Output contract — app.html must be a COMPLETE standalone document:
 - NO external CDNs, fonts, icon libraries or network resources — inline SVG or Unicode for icons
 - Polish matters: clean layout, good spacing, sensible defaults, @media (prefers-color-scheme: dark) support
 - The tool must WORK: wire up every button and input; validate inputs; handle empty and error states
-- Persistence: localStorage may be UNAVAILABLE (the preview runs in a sandbox). If the tool benefits from saved state, wrap it in a safe helper that try/catches localStorage and falls back to in-memory storage; prefer `window.pulsemind.storage` (get/set) when the bridge is present
+- Persistence: localStorage may be UNAVAILABLE (the preview runs in a sandbox). If the tool benefits from saved state, wrap it in a safe helper that try/catches localStorage and falls back to in-memory storage; prefer window.pulsemind.storage (get/set) when the bridge is present
 
 Workflow:
 1. ALWAYS start by reading app.html if it exists — iterate on what is there
