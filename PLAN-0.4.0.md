@@ -143,35 +143,36 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
 
 > 现状:`AppLayout.tsx:140-185` 用 `canvasMode`/`knowledgeMode` 两个布尔 + 设置弹窗内 `view` 字符串控制一切;导航数组硬编码在 `AppLayout.tsx:314-327`。先抽骨架,后续中心只是往注册表加条目。
 
-- [ ] **M1.1 视图类型与注册表**
+- [x] **M1.1 视图类型与注册表**
   - 范围:新增 `src/renderer/src/navigation/types.ts`(`AppView` 联合类型、`MenuItem` 类型)、`src/renderer/src/navigation/registry.ts`(六个菜单项 + 分隔分组 + 图标 + i18n key + 懒加载组件映射)
   - `AppView`:`chat | project | routines | capability | knowledge | tools`;`canvas` 保留为不可从菜单到达的隐藏视图
   - 交付:注册表是导航唯一事实源,新增视图只改一处
   - 验收:类型完备,无 `any`
 
-- [ ] **M1.2 导航状态集中**
+- [x] **M1.2 导航状态集中**
   - 范围:新增 `src/renderer/src/stores/navigationStore.ts`(zustand,与 `stores/canvasStore.ts` 同模式):`view` / `params` / `menuOpen` / `navigate(view, params)` / `back()`
   - 交付:取代 `AppLayout.tsx:140-142,182-183` 的布尔与字符串
   - 验收:导航状态可被任意组件读写,不再靠 props 层层传递
 
-- [ ] **M1.3 左上角菜单按钮**
+- [x] **M1.3 左上角菜单按钮**
   - 范围:新增 `src/renderer/src/components/layout/AppMenu.tsx`(antd `Popover` + 分组列表);替换 `AppLayout.tsx:314-327` 的四个硬编码按钮
   - 分组:①新建对话/新建项目 ②日常工作/能力中心/知识中心/工具中心 ③设置/关于
   - 交付:菜单项全部走 M1.1 注册表
   - 验收:六个主入口 + 设置/关于均可点击到达(新视图先落占位页)
 
-- [ ] **M1.4 统一视图容器**
+- [x] **M1.4 统一视图容器**
   - 范围:新增 `src/renderer/src/components/layout/ViewHost.tsx`;按注册表渲染,非聊天视图 `React.lazy`;沿用 `AppLayout.tsx:452-477` 的"聊天常驻 `display:none`"策略避免打断流式
   - 交付:AppLayout 只负责布局与聊天挂载
   - 验收:视图切换不重挂聊天,流式输出不中断
 
-- [ ] **M1.5 AppLayout 瘦身 + 头部动作区归位**
+- [x] **M1.5 AppLayout 瘦身 + 头部动作区归位**
   - 范围:移除 `canvasMode`/`knowledgeMode`/`view`/`menuOpen` 状态;把知识模式专用的三个头部按钮(`AppLayout.tsx:371-398`)迁入知识视图自身的头部
   - 交付:AppLayout 目标 ≤450 行(现 646)
   - 验收:`AppLayout.tsx` 不再出现任何业务视图分支
 
-- [ ] **M1.6 自由画布入口隐藏**
-  - 范围:移除菜单/侧边栏的画布入口,`canvas` 视图保留但不注册到菜单;在 `CanvasView.tsx` 顶部加 `@deprecated 0.4.0 — 入口已隐藏,代码保留待评估` 说明
+- [x] **M1.5 完成注记**:AppLayout 646 → 525 行;头部不再有任何业务视图分支,知识导入工具条与进度条已迁入知识视图自身(ViewHost.KnowledgePane)。≤450 目标未达,余量是设置弹窗与全局样式块(M2 瘦身后继续降)
+- [x] **M1.6 自由画布入口隐藏**
+  - 范围:移除菜单/侧边栏的画布入口,`canvas` 视图保留但不注册到菜单;在 `CanvasView.tsx` 顶部加 `@deprecated 0.4.0 — 入口已隐藏,代码保留待评估` 说明 ✓(deprecated 标注已加,`npm test`/tsc 不受影响)
   - 验收:用户无法从 UI 到达自由画布;`npm test`/tsc 不因隐藏而失败
   - 信息:`refactor(nav): menu-driven view registry; hide legacy canvas entry`
 

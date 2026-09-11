@@ -1,3 +1,7 @@
+// @deprecated 0.4.0 (PLAN-0.4.0 D7/M1.6) — the free canvas is no longer reachable
+// from the menu; code is retained pending evaluation and still rendered via the
+// hidden 'canvas' navigation kind. The HTML generation core it uses is being
+// extracted into the tool studio (M5.2), so keep it compiling and smoke-tested.
 import React, { useRef, useCallback, useEffect, useState } from 'react'
 import { useCanvasStore } from '../../stores/canvasStore'
 import type { Annotation, Point, ToolType, BoundingBox } from '../../types/canvas'

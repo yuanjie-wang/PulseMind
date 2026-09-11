@@ -17,6 +17,7 @@ import { generateMcpSummaries } from './agent/mcp-summary-service'
 import { useGreeting } from './hooks/useGreeting'
 import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
+import { useNavigationStore } from './stores/navigationStore'
 
 function App(): React.ReactElement {
   return (
@@ -307,7 +308,9 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
 
   // Plan panel scroll-to-message
   const [planScrollToMsgId, setPlanScrollToMsgId] = useState<string | null>(null)
-  const [activeView, setActiveView] = useState<'chat' | 'canvas' | 'knowledge'>('chat')
+  // Top-level view lives in the navigation store (PLAN-0.4.0 M1.2); the chat
+  // check only decides whether the plan panel floats above the chat.
+  const activeView = useNavigationStore((s) => s.view.kind)
 
   return (
     <ErrorBoundary>
@@ -356,7 +359,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             onToggleYoloMode={(checked: boolean) => saveSettings({ ...settings, yoloMode: checked })}
             activeLoopConvIds={activeLoopConvIds}
             retryingConvIds={retryingConvIds}
-            onViewChange={setActiveView}
           >
             <ChatView
               messages={messages}

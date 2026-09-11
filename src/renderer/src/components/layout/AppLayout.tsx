@@ -1,31 +1,27 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react'
-import { Layout, Button, theme, Switch, Modal, Tooltip, Progress, Dropdown } from 'antd'
+import React, { useState, useCallback } from 'react'
+import { Layout, Button, theme, Switch, Modal, Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
-  ApiOutlined,
   SettingOutlined,
   MessageOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  LayoutOutlined,
   StarOutlined,
   BookOutlined,
   ThunderboltOutlined,
   ToolOutlined,
   UserOutlined,
   DesktopOutlined,
-  DatabaseOutlined,
-  PlusOutlined,
-  FolderOpenOutlined,
-  FileTextOutlined,
-  LinkOutlined,
-  ClearOutlined,
-  LoadingOutlined,
   ApartmentOutlined,
-  ExperimentOutlined
+  ExperimentOutlined,
+  ApiOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
+import { AppMenu } from './AppMenu'
+import { ViewHost } from './ViewHost'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
+import { VIEW_TITLE_KEY } from '../../navigation/registry'
+import { useNavigationStore } from '../../stores/navigationStore'
 import SessionManager from './SessionManager'
 import StatisticsDrawer from './StatisticsDrawer'
 import LlmSettings from '../settings/LlmSettings'
@@ -39,10 +35,6 @@ import FavoritesSettings from '../settings/FavoritesSettings'
 import AboutSettings from '../settings/AboutSettings'
 import MCPSettings from '../settings/MCPSettings'
 import ExperiencePanel from '../settings/ExperiencePanel'
-import CanvasView from '../canvas/CanvasView'
-import CanvasToolbar from '../canvas/CanvasToolbar'
-import KnowledgePanel from '../knowledge/KnowledgePanel'
-import type { KnowledgePanelHandle, KnowledgePanelState } from '../knowledge/KnowledgePanel'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { ToolState } from '../../tools/types'
@@ -62,7 +54,6 @@ const MAX_SESSIONS = 100
 // blank the window.
 const windowControls = window.electronAPI.getWindowControls?.() ?? { side: 'right' as const, inset: 0 }
 const CONTROLS_ON_LEFT = windowControls.side === 'left'
-const HEADER_RIGHT_INSET = CONTROLS_ON_LEFT ? 0 : windowControls.inset
 
 // Space reserved at the top of the sidebar for the macOS traffic lights, which the OS
 // draws over the app's top-left corner. Zero on Windows/Linux: their window controls sit
@@ -105,7 +96,6 @@ interface AppLayoutProps {
   onToggleYoloMode?: (checked: boolean) => void
   activeLoopConvIds?: string[]
   retryingConvIds?: string[]
-  onViewChange?: (view: 'chat' | 'canvas' | 'knowledge') => void
 }
 
 function AppLayout({
@@ -134,58 +124,18 @@ function AppLayout({
   onToggleYoloMode,
   activeLoopConvIds,
   retryingConvIds,
-  onViewChange,
   children
 }: AppLayoutProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
-  const [canvasMode, setCanvasMode] = useState(false)
-  const [knowledgeMode, setKnowledgeMode] = useState(false)
+  const view = useNavigationStore((s) => s.view)
+  const navigate = useNavigationStore((s) => s.navigate)
 
-  // Notify parent of view changes
-  useEffect(() => {
-    const view = canvasMode ? 'canvas' : knowledgeMode ? 'knowledge' : 'chat'
-    onViewChange?.(view)
-  }, [canvasMode, knowledgeMode, onViewChange])
-
-  const handleCanvasClearAll = useCallback(() => {
-    window.electronAPI.canvasClearAll().catch((err: unknown) =>
-      console.warn('[AppLayout] Failed to clear all canvas data:', err)
-    )
-  }, [])
-
-  const knowledgeRef = useRef<KnowledgePanelHandle>(null)
-  const [knowledgeState, setKnowledgeState] = useState<KnowledgePanelState | null>(null)
-
-  // ── Import progress bar fade-out ──
-  const lastImportRef = useRef<{ current: number; total: number } | null>(null)
-  const [displayImport, setDisplayImport] = useState<{ current: number; total: number } | null>(null)
-  const [importFading, setImportFading] = useState(false)
-  const importFadeTimer = useRef<ReturnType<typeof setTimeout>>()
-
-  useEffect(() => {
-    if (knowledgeState?.importProgress) {
-      lastImportRef.current = knowledgeState.importProgress
-      setDisplayImport(knowledgeState.importProgress)
-      setImportFading(false)
-      if (importFadeTimer.current) clearTimeout(importFadeTimer.current)
-    } else if (lastImportRef.current && !knowledgeState?.isImporting) {
-      lastImportRef.current = null
-      setImportFading(true)
-      importFadeTimer.current = setTimeout(() => {
-        setDisplayImport(null)
-        setImportFading(false)
-      }, 1000)
-    }
-    return () => { if (importFadeTimer.current) clearTimeout(importFadeTimer.current) }
-  }, [knowledgeState?.importProgress, knowledgeState?.isImporting])
-
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [view, setView] = useState<string>('environment')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsView, setSettingsView] = useState<string>('environment')
   const [statisticsOpen, setStatisticsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const { token } = theme.useToken()
   const { t } = useTranslation()
-
 
   const canCreateNew = autoCleanup || totalSessions < MAX_SESSIONS
   const activeConvTitle = typeof activeConversationKey === 'string'
@@ -195,21 +145,21 @@ function AppLayout({
   // Inject layout-owned callbacks into children (onOpenSettings, onOpenAbout)
   const childrenWithLayoutProps = React.isValidElement(children)
     ? React.cloneElement(children, {
-        onOpenSettings: () => { setView('settings'); setMenuOpen(true) },
+        onOpenSettings: () => { setSettingsView('settings'); setSettingsOpen(true) },
         onOpenAbout: () => setAboutOpen(true)
       } as Record<string, unknown>)
     : children
 
-  const renderView = useCallback((key: string) => {
+  const renderSettingsView = useCallback((key: string) => {
     switch (key) {
       case 'favorites':
-        return <FavoritesSettings inline open onClose={() => setView('favorites')} />
+        return <FavoritesSettings inline open onClose={() => setSettingsView('favorites')} />
       case 'memory':
-        return memoryManager ? <MemorySettings inline open onClose={() => setView('favorites')} memoryManager={memoryManager} /> : null
+        return memoryManager ? <MemorySettings inline open onClose={() => setSettingsView('favorites')} memoryManager={memoryManager} /> : null
       case 'skills':
         return (
           <SkillsSettings
-            inline open onClose={() => setView('favorites')}
+            inline open onClose={() => setSettingsView('favorites')}
             skills={skills || []}
             onToggleSkill={onToggleSkill || (() => {})}
             onImportSkill={onImportSkill}
@@ -219,35 +169,35 @@ function AppLayout({
           />
         )
       case 'experiences':
-        return <ExperiencePanel inline open onClose={() => setView('favorites')} />
+        return <ExperiencePanel inline open onClose={() => setSettingsView('favorites')} />
       case 'tools':
         return (
           <ToolsSettings
-            inline open onClose={() => setView('favorites')}
+            inline open onClose={() => setSettingsView('favorites')}
             tools={tools || []}
             onToggleTool={onToggleTool || (() => {})}
           />
         )
       case 'assistant':
-        return <AgentSettings inline open onClose={() => setView('favorites')} />
+        return <AgentSettings inline open onClose={() => setSettingsView('favorites')} />
       case 'settings':
         return <LlmSettings inline open onClose={() => {}} />
       case 'subagent':
         return (
           <SubAgentSettings
-            inline open onClose={() => setView('favorites')}
+            inline open onClose={() => setSettingsView('favorites')}
             tools={tools}
             skills={skills}
           />
         )
       case 'mcp':
-        return <MCPSettings inline open onClose={() => setView('favorites')} />
+        return <MCPSettings inline open onClose={() => setSettingsView('favorites')} />
       case 'environment':
-        return <EnvironmentSettings inline open onClose={() => setView('favorites')} />
+        return <EnvironmentSettings inline open onClose={() => setSettingsView('favorites')} />
       default:
         return null
     }
-  }, [knowledgeManager, skills, onToggleSkill, onImportSkill, onDeleteSkill, importError, tools, onToggleTool, memoryManager])
+  }, [skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, tools, onToggleTool, memoryManager])
 
   // With the sidebar collapsed the header starts at the window's left edge, so the
   // macOS traffic lights land on it and its content has to move out of their way.
@@ -312,17 +262,8 @@ function AppLayout({
           />
         </div>
         <div style={{ padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <Button className="new-chat-btn" onClick={() => { setCanvasMode(false); setKnowledgeMode(false); onCreateNew() }} icon={<MessageOutlined style={{ fontSize: 18 }} />} disabled={!canCreateNew}>
+          <Button className="new-chat-btn" onClick={() => { navigate({ kind: 'chat' }); onCreateNew() }} icon={<MessageOutlined style={{ fontSize: 18 }} />} disabled={!canCreateNew}>
             {t('appLayout.newChat')}
-          </Button>
-          <Button className={`new-chat-btn${canvasMode ? ' active-mode-btn' : ''}`} icon={<LayoutOutlined style={{ fontSize: 18 }} />} onClick={() => { setCanvasMode(true); setKnowledgeMode(false) }}>
-            {t('appLayout.newCanvas')}
-          </Button>
-          <Button className={`new-chat-btn${knowledgeMode ? ' active-mode-btn' : ''}`} icon={<DatabaseOutlined style={{ fontSize: 18 }} />} onClick={() => { setCanvasMode(false); setKnowledgeMode(true) }}>
-            {t('appLayout.knowledgeManagement')}
-          </Button>
-          <Button className="new-chat-btn" icon={<SettingOutlined style={{ fontSize: 18 }} />} onClick={() => setMenuOpen(true)}>
-            {t('appLayout.functionSettings')}
           </Button>
         </div>
         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
@@ -333,8 +274,8 @@ function AppLayout({
           )}
           <ConversationSidebar
             conversations={conversations}
-            activeKey={canvasMode || knowledgeMode ? undefined : activeConversationKey}
-            onSelect={(key: string) => { setCanvasMode(false); setKnowledgeMode(false); onSelectConversation(key) }}
+            activeKey={view.kind === 'chat' ? activeConversationKey : undefined}
+            onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
             onDelete={onDeleteConversation}
             onRename={onRenameConversation}
             onTogglePin={onTogglePinConversation}
@@ -365,83 +306,31 @@ function AppLayout({
             WebkitAppRegion: 'drag'
           } as React.CSSProperties}
         >
-          {/* Sidebar toggle, then whatever actions the current view adds to it. */}
-          <div style={{ position: 'absolute', left: 24 + headerLeft, display: 'flex', alignItems: 'center', gap: 8, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {/* App menu + sidebar toggle. */}
+          <div style={{ position: 'absolute', left: 12 + headerLeft, display: 'flex', alignItems: 'center', gap: 2, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <AppMenu
+              onCreateNew={() => { navigate({ kind: 'chat' }); onCreateNew() }}
+              onOpenSettings={() => { setSettingsView('settings'); setSettingsOpen(true) }}
+              onOpenAbout={() => setAboutOpen(true)}
+            />
             {sidebarToggle}
-            {knowledgeMode && (
-              <>
-                <Dropdown
-                  menu={{
-                    items: [
-                      { key: 'file', icon: <FileTextOutlined />, label: '导入文件', onClick: () => knowledgeRef.current?.handleAddFile() },
-                      { key: 'folder', icon: <FolderOpenOutlined />, label: '导入文件夹', onClick: () => knowledgeRef.current?.handleAddFolder() },
-                      { key: 'url', icon: <LinkOutlined />, label: '导入链接', onClick: () => knowledgeRef.current?.setShowUrlInput(true) },
-                    ]
-                  }}
-                  placement="bottomLeft"
-                  trigger={['click']}
-                >
-                  <Tooltip title="导入知识">
-                    <Button type="text" icon={<PlusOutlined style={{ fontSize: 16 }} />} />
-                  </Tooltip>
-                </Dropdown>
-                <Tooltip title="打开知识库目录">
-                  <Button type="text" icon={<FolderOpenOutlined style={{ fontSize: 16 }} />} onClick={async () => {
-                    const { knowledgeDir } = await window.electronAPI.getDataPaths()
-                    await window.electronAPI.openFolder(knowledgeDir)
-                  }} />
-                </Tooltip>
-                <Tooltip title="重置知识库">
-                  <Button type="text" icon={<ClearOutlined style={{ fontSize: 16 }} />} onClick={() => knowledgeRef.current?.handleReset()} />
-                </Tooltip>
-              </>
-            )}
           </div>
 
-          {/* Center content */}
-          {canvasMode ? (
-            <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <CanvasToolbar onClearAll={handleCanvasClearAll} />
-            </div>
-          ) : knowledgeMode ? (
-            <span style={{ fontSize: 15, fontWeight: 600, color: '#333' }}>{t('appLayout.knowledgeManagement')}</span>
-          ) : (
-            <span style={{ fontSize: 15, fontWeight: 600, color: '#333', maxWidth: '55%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {activeConvTitle || ''}
-            </span>
-          )}
-
-          {/* Right side: stats summary / import progress bar */}
-          {knowledgeMode ? (
-            <div style={{ position: 'absolute', right: 24 + HEADER_RIGHT_INSET, display: 'flex', alignItems: 'center', gap: 6, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              {displayImport ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: importFading ? 0 : 1, transition: 'opacity 0.6s ease' }}>
-                  <LoadingOutlined style={{ color: '#000', fontSize: 14, marginRight: 10 }} />
-                  <div style={{ position: 'relative', width: 140, height: 4 }}>
-                    {displayImport.total > 0 && (
-                      <Progress
-                        percent={Math.round((displayImport.current / displayImport.total) * 100)}
-                        size="small"
-                        strokeColor="#52c41a"
-                        status="active"
-                        style={{ position: 'absolute', top: 0, left: 0, right: 0, margin: 0, lineHeight: 1 }}
-                        format={() => ''}
-                      />
-                    )}
-                  </div>
-                  <span style={{ fontSize: 10, color: '#999', whiteSpace: 'nowrap' }}>
-                    {`${displayImport.current}/${displayImport.total}`}
-                  </span>
-                </div>
-              ) : knowledgeState?.stats ? (
-                <Tooltip title={<span style={{ fontSize: 11 }}>源文件总数 / 已编译文件数 / Wiki页面数</span>} align={{ offset: [-10, 10] }}>
-                  <span style={{ fontSize: 12, color: '#bbb', cursor: 'pointer', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-                    {knowledgeState.stats.total}/{knowledgeState.stats.compiled}/{knowledgeState.stats.wikiFileCount}
-                  </span>
-                </Tooltip>
-              ) : <span style={{ width: 32 }} />}
-            </div>
-          ) : null}
+          {/* Center content: the chat view shows the conversation title, every other
+              view shows its own name. */}
+          <span
+            style={{
+              fontSize: 15,
+              fontWeight: 600,
+              color: '#333',
+              maxWidth: '55%',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {view.kind === 'chat' ? (activeConvTitle || '') : t(VIEW_TITLE_KEY[view.kind])}
+          </span>
         </Header>
         <Content
           style={{
@@ -449,12 +338,11 @@ function AppLayout({
             overflow: 'hidden'
           }}
         >
-          {/* Single filler div — all views mounted simultaneously, only active visible */}
+          {/* Chat stays mounted; only the active view is visible. */}
           <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
-            {/* Chat */}
             <div style={{
               height: '100%',
-              display: canvasMode || knowledgeMode ? 'none' : 'flex',
+              display: view.kind === 'chat' ? 'flex' : 'none',
               flexDirection: 'column',
               overflow: 'hidden', minWidth: 0
             }}>
@@ -462,25 +350,16 @@ function AppLayout({
                 {childrenWithLayoutProps}
               </div>
             </div>
-            {/* Canvas (conditionally rendered — Zustand store persists state across mount/unmount) */}
-            {canvasMode && (
-              <div style={{ height: '100%', overflow: 'hidden' }}>
-                <CanvasView />
-              </div>
-            )}
-            {/* Knowledge (conditionally rendered) */}
-            {knowledgeMode && knowledgeManager && (
-              <div style={{ height: '100%', overflow: 'auto', padding: 24, background: '#fff' }}>
-                <KnowledgePanel knowledgeManager={knowledgeManager} ref={knowledgeRef} onStateChange={setKnowledgeState} />
-              </div>
+            {view.kind !== 'chat' && (
+              <ViewHost knowledgeManager={knowledgeManager} />
             )}
           </div>
         </Content>
       </Layout>
 
       <Modal
-        open={menuOpen}
-        onCancel={() => setMenuOpen(false)}
+        open={settingsOpen}
+        onCancel={() => setSettingsOpen(false)}
         footer={null}
         width={700}
         closable={false}
@@ -505,18 +384,18 @@ function AppLayout({
               ].map((item) => (
                 <div
                   key={item.key}
-                  onClick={() => setView(item.key)}
+                  onClick={() => setSettingsView(item.key)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8,
                     padding: '9px 12px', borderRadius: 6, cursor: 'pointer',
                     fontSize: 13, color: '#333', transition: 'background 0.15s',
-                    background: view === item.key ? '#f0f0f0' : 'transparent'
+                    background: settingsView === item.key ? '#f0f0f0' : 'transparent'
                   }}
                   onMouseEnter={(e) => {
-                    if (view !== item.key) e.currentTarget.style.background = '#f5f5f5'
+                    if (settingsView !== item.key) e.currentTarget.style.background = '#f5f5f5'
                   }}
                   onMouseLeave={(e) => {
-                    if (view !== item.key) e.currentTarget.style.background = 'transparent'
+                    if (settingsView !== item.key) e.currentTarget.style.background = 'transparent'
                   }}
                 >
                   <span style={{ fontSize: 15, flexShrink: 0 }}>{item.icon}</span>
@@ -534,7 +413,7 @@ function AppLayout({
           {/* Right content area */}
           <div style={{ flex: 1, overflow: 'auto' }} className="settings-scroll">
             <div style={{ padding: '0 20px' }}>
-              {renderView(view)}
+              {renderSettingsView(settingsView)}
             </div>
           </div>
         </div>
