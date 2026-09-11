@@ -4,23 +4,9 @@
 
 import { randomUUID } from 'node:crypto'
 import { getDb } from './database'
+import type { AuditEntry } from '../../shared/types/audit'
 
-export interface AuditEntry {
-  id: string
-  ts: string
-  /** project | tool | routine */
-  scope: string
-  /** conversationId | toolId | 'scheduler' */
-  actor?: string
-  /** fs.read | fs.write | exec | http | clipboard | notify | open-external | ... */
-  action: string
-  /** Path / command summary / URL host */
-  target?: string
-  /** allowed | denied | approved | rejected | auto */
-  decision: string
-  policyJson?: string
-  metaJson?: string
-}
+export type { AuditEntry }
 
 export const auditStore = {
   record(entry: Omit<AuditEntry, 'id' | 'ts'>): void {

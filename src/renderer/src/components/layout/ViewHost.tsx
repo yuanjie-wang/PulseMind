@@ -12,6 +12,7 @@ import CanvasToolbar from '../canvas/CanvasToolbar'
 import KnowledgePanel from '../knowledge/KnowledgePanel'
 import type { KnowledgePanelHandle, KnowledgePanelState } from '../knowledge/KnowledgePanel'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
+import type { ConversationListItem } from '../../types/conversation'
 import type { ToolState } from '../../tools/types'
 import type { SkillState } from '../../skills/types'
 import ProjectView from '../project/ProjectView'
@@ -30,6 +31,9 @@ export interface ViewHostProps {
   onRefreshSkills?: () => void
   onDeleteSkill?: (name: string) => void
   importError?: string | null
+  conversations?: ConversationListItem[]
+  onSelectConversation?: (key: string) => void
+  onCreateProjectConversation?: (projectId: string) => void
 }
 
 /** The knowledge pane's own toolbar — moved out of the global header (M1.5) so
@@ -127,7 +131,7 @@ function KnowledgePane({ knowledgeManager }: { knowledgeManager: KnowledgeManage
   )
 }
 
-export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError }: ViewHostProps): React.ReactElement | null {
+export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation, onCreateProjectConversation }: ViewHostProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
   const handleCanvasClearAll = () => {
     window.electronAPI.canvasClearAll().catch((err: unknown) =>
@@ -152,7 +156,13 @@ export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImp
     case 'knowledge':
       return knowledgeManager ? <KnowledgePane knowledgeManager={knowledgeManager} /> : null
     case 'project':
-      return <ProjectView />
+      return (
+        <ProjectView
+          conversations={conversations ?? []}
+          onSelectConversation={onSelectConversation ?? (() => {})}
+          onCreateConversation={onCreateProjectConversation ?? (() => {})}
+        />
+      )
     case 'routines':
       return <RoutineCenter />
     case 'capability':

@@ -242,9 +242,24 @@ export function updateMessageMetadata(
   database.prepare(`UPDATE messages SET ${updates.join(', ')} WHERE id = ?`).run(...params)
 }
 
-/** Attach a conversation to a project (PLAN-0.4.0 M3.6). Best-effort. */
+/** Attach a conversation to a project (PLAN-0.4.0 M3.6).
+ *  Called at conversation creation — usually before the row exists — so it
+ *  stub-inserts the row. `saveConversation` later upserts without touching
+ *  project_id, so the binding survives. */
 export function setConversationProject(id: string, projectId: string): void {
-  getDb().prepare('UPDATE conversations SET project_id = ? WHERE id = ?').run(projectId, id)
+  const db = getDb()
+  const r = db.prepare('UPDATE conversations SET project_id = ? WHERE id = ?').run(projectId, id)
+  if (r.changes === 0 && projectId !== 'default') {
+    const now = new Date().toISOString()
+    db.prepare("INSERT INTO conversations (id, title, type, project_id, created_at, updated_at) VALUES (?, '新对话', 'normal', ?, ?, ?)")
+      .run(id, projectId, now, now)
+  }
+}
+
+/** Resolve a conversation's project binding ('default' when unbound). */
+export function getConversationProjectId(id: string): string {
+  const row = getDb().prepare('SELECT project_id FROM conversations WHERE id = ?').get(id) as { project_id: string | null } | undefined
+  return row?.project_id || 'default'
 }
 
 export function deleteConversation(id: string): void {

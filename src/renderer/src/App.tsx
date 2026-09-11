@@ -334,7 +334,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 key: c.key,
                 label: c.label,
                 pinned: c.pinned,
-                updatedAt: c.updatedAt
+                updatedAt: c.updatedAt,
+                projectId: c.projectId
               }))}
             activeConversationKey={activeConversationKey}
             totalSessions={conversations.length}
@@ -360,6 +361,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             onToggleYoloMode={(checked: boolean) => saveSettings({ ...settings, yoloMode: checked })}
             activeLoopConvIds={activeLoopConvIds}
             retryingConvIds={retryingConvIds}
+            onCreateProjectConversation={(projectId) => { createNewConversation(projectId); regenerateGreeting() }}
           >
             <ChatView
               messages={messages}

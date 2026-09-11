@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Conversations } from '@ant-design/x'
 import { Modal, Input } from 'antd'
-import { PushpinOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { PushpinOutlined, EditOutlined, DeleteOutlined, FolderOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { describeRelativeTime } from '../../utils/relative-time'
 import type { ConversationListItem } from '../../types/conversation'
@@ -14,6 +14,8 @@ const CLOCK_TICK_MS = 60_000
 interface ConversationSidebarProps {
   conversations: ConversationListItem[]
   activeKey: string | Symbol | undefined
+  /** Project id → display name, for the project group headers (D14). */
+  projectNamesById?: Record<string, string>
   onSelect: (key: string) => void
   onDelete: (key: string) => void
   onRename: (key: string, newLabel: string) => void
@@ -25,6 +27,7 @@ interface ConversationSidebarProps {
 function ConversationSidebar({
   conversations,
   activeKey,
+  projectNamesById,
   onSelect,
   onDelete,
   onRename,
@@ -36,6 +39,7 @@ function ConversationSidebar({
   const [renameModalOpen, setRenameModalOpen] = useState(false)
   const [renamingKey, setRenamingKey] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
 
   // "Now" is an input to the rendered times, so tick it to keep them current.
   const [now, setNow] = useState(() => Date.now())
@@ -72,40 +76,55 @@ function ConversationSidebar({
     return bTime.localeCompare(aTime)
   })
 
-  const items = sorted.map((conv) => {
-    const isActive = activeLoopConvIds.includes(conv.key)
-    const isRetrying = retryingConvIds.includes(conv.key)
-    const timeText = formatTime(conv.updatedAt)
-    return {
-      key: conv.key,
-      title: conv.label,
-      label: (
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', minWidth: 0 }}>
-          {/* The light sits in a reserved gutter rather than in the flow, so a running task
-              never shifts the title sideways. */}
-          <span style={{ width: STATUS_GUTTER_WIDTH, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
-            {(isActive || isRetrying) && (
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: isRetrying ? '#faad14' : '#1677ff',
-                animation: isRetrying ? 'none' : 'ant-status-processing 1.2s infinite ease-in-out'
-              }} />
-            )}
-          </span>
-          <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#444', lineHeight: '18px' }}>
-              {conv.label}
-            </span>
-            {timeText && (
-              <span style={{ color: '#999', fontSize: 11, lineHeight: '15px' }}>{timeText}</span>
-            )}
-          </span>
-          {conv.pinned && <PushpinOutlined className="pin-icon" style={{ fontSize: 13, color: '#bbb', flexShrink: 0 }} />}
-        </span>
-      ),
-      ...(conv.pinned ? { 'data-pinned': 'true' } : {})
+  // Group by project (D14). The default group renders exactly like the old
+  // flat list when it is the only one — no header, no visual churn.
+  const groups = useMemo(() => {
+    const byProject = new Map<string, ConversationListItem[]>()
+    for (const conv of sorted) {
+      const pid = conv.projectId || 'default'
+      const bucket = byProject.get(pid)
+      if (bucket) bucket.push(conv)
+      else byProject.set(pid, [conv])
     }
-  })
+    return [...byProject.entries()]
+  }, [sorted])
+  const hasMultipleGroups = groups.length > 1
+
+  const buildItems = (groupConversations: ConversationListItem[]) =>
+    groupConversations.map((conv) => {
+      const isActive = activeLoopConvIds.includes(conv.key)
+      const isRetrying = retryingConvIds.includes(conv.key)
+      const timeText = formatTime(conv.updatedAt)
+      return {
+        key: conv.key,
+        title: conv.label,
+        label: (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', minWidth: 0 }}>
+            {/* The light sits in a reserved gutter rather than in the flow, so a running task
+                never shifts the title sideways. */}
+            <span style={{ width: STATUS_GUTTER_WIDTH, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+              {(isActive || isRetrying) && (
+                <span style={{
+                  width: 6, height: 6, borderRadius: '50%',
+                  background: isRetrying ? '#faad14' : '#1677ff',
+                  animation: isRetrying ? 'none' : 'ant-status-processing 1.2s infinite ease-in-out'
+                }} />
+              )}
+            </span>
+            <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#444', lineHeight: '18px' }}>
+                {conv.label}
+              </span>
+              {timeText && (
+                <span style={{ color: '#999', fontSize: 11, lineHeight: '15px' }}>{timeText}</span>
+              )}
+            </span>
+            {conv.pinned && <PushpinOutlined className="pin-icon" style={{ fontSize: 13, color: '#bbb', flexShrink: 0 }} />}
+          </span>
+        ),
+        ...(conv.pinned ? { 'data-pinned': 'true' } : {})
+      }
+    })
 
   const openRenameModal = (key: string) => {
     const conv = conversations.find((c) => c.key === key)
@@ -129,6 +148,39 @@ function ConversationSidebar({
     setRenameValue('')
   }
 
+  const toggleGroup = (pid: string): void => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(pid)) next.delete(pid)
+      else next.add(pid)
+      return next
+    })
+  }
+
+  const menuFor = (convs: ConversationListItem[]) => (item: { key: string }) => ({
+      items: [
+        {
+          label: t(convs.find(c => c.key === item.key)?.pinned ? 'conversationSidebar.unpin' : 'conversationSidebar.pin'),
+          icon: <PushpinOutlined />,
+          key: 'pin',
+          onClick: () => onTogglePin(item.key, !convs.find(c => c.key === item.key)?.pinned)
+        },
+        {
+          label: t('conversationSidebar.rename'),
+          icon: <EditOutlined />,
+          key: 'rename',
+          onClick: () => openRenameModal(item.key)
+        },
+        {
+          label: t('conversationSidebar.delete'),
+          icon: <DeleteOutlined />,
+          key: 'delete',
+          danger: true,
+          onClick: () => onDelete(item.key)
+        }
+      ]
+    })
+
   return (
     <>
       <style>{`
@@ -140,42 +192,46 @@ function ConversationSidebar({
           100% { transform: scale(2.4); opacity: 0; }
         }
       `}</style>
-      <Conversations
-        items={items}
-        activeKey={activeKey as string}
-        onActiveChange={(key) => {
-          onSelect(key as string)
-        }}
-        menu={(item) => ({
-            items: [
-              {
-                label: t(conversations.find(c => c.key === item.key)?.pinned ? 'conversationSidebar.unpin' : 'conversationSidebar.pin'),
-                icon: <PushpinOutlined />,
-                key: 'pin',
-                onClick: () => onTogglePin(item.key, !conversations.find(c => c.key === item.key)?.pinned)
-              },
-              {
-                label: t('conversationSidebar.rename'),
-                icon: <EditOutlined />,
-                key: 'rename',
-                onClick: () => openRenameModal(item.key)
-              },
-              {
-                label: t('conversationSidebar.delete'),
-                icon: <DeleteOutlined />,
-                key: 'delete',
-                danger: true,
-                onClick: () => onDelete(item.key)
-              }
-            ]
-          })}
-        style={{ padding: '8px' }}
-        // The two-line label needs a taller item than the component's fixed 40px, and an item
-        // style is applied inline, which beats the component's own stylesheet. box-sizing is
-        // pinned because the app loads no global reset, so the height would otherwise be
-        // content-box and gain the item's padding on top of it.
-        styles={{ item: { boxSizing: 'border-box', height: 'auto', minHeight: 46, padding: '5px 8px' } }}
-      />
+      {groups.map(([projectId, groupConversations]) => {
+        const isCollapsed = collapsedGroups.has(projectId)
+        const groupName = projectId === 'default'
+          ? t('appLayout.conversationHistory')
+          : (projectNamesById?.[projectId] ?? projectId)
+        return (
+          <div key={projectId}>
+            {hasMultipleGroups && (
+              <div
+                onClick={() => toggleGroup(projectId)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '8px 16px 4px', fontSize: 11, color: '#999',
+                  cursor: 'pointer', userSelect: 'none'
+                }}
+              >
+                <FolderOutlined style={{ fontSize: 11 }} />
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{groupName}</span>
+                <span>{isCollapsed ? '▸' : '▾'}</span>
+              </div>
+            )}
+            {!isCollapsed && (
+              <Conversations
+                items={buildItems(groupConversations)}
+                activeKey={activeKey as string}
+                onActiveChange={(key) => {
+                  onSelect(key as string)
+                }}
+                menu={menuFor(groupConversations)}
+                style={{ padding: '8px' }}
+                // The two-line label needs a taller item than the component's fixed 40px, and an item
+                // style is applied inline, which beats the component's own stylesheet. box-sizing is
+                // pinned because the app loads no global reset, so the height would otherwise be
+                // content-box and gain the item's padding on top of it.
+                styles={{ item: { boxSizing: 'border-box', height: 'auto', minHeight: 46, padding: '5px 8px' } }}
+              />
+            )}
+          </div>
+        )
+      })}
       <Modal
         title={t('conversationSidebar.renameTitle')}
         open={renameModalOpen}

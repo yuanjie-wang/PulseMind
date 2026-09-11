@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { Layout, Button, theme, Switch, Modal, Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
@@ -86,6 +86,8 @@ interface AppLayoutProps {
   onToggleYoloMode?: (checked: boolean) => void
   activeLoopConvIds?: string[]
   retryingConvIds?: string[]
+  /** Create a conversation bound to a project (from ProjectView). */
+  onCreateProjectConversation?: (projectId: string) => void
 }
 
 function AppLayout({
@@ -114,11 +116,20 @@ function AppLayout({
   onToggleYoloMode,
   activeLoopConvIds,
   retryingConvIds,
+  onCreateProjectConversation,
   children
 }: AppLayoutProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
   const view = useNavigationStore((s) => s.view)
   const navigate = useNavigationStore((s) => s.navigate)
+
+  // Project names for the sidebar's project groups (D14); loaded once.
+  const [projectNames, setProjectNames] = useState<Record<string, string>>({})
+  useEffect(() => {
+    window.electronAPI.projectList?.()
+      .then((projects) => setProjectNames(Object.fromEntries(projects.map((p) => [p.id, p.name]))))
+      .catch(() => {})
+  }, [])
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<string>('environment')
@@ -232,6 +243,7 @@ function AppLayout({
           )}
           <ConversationSidebar
             conversations={conversations}
+            projectNamesById={projectNames}
             activeKey={view.kind === 'chat' ? activeConversationKey : undefined}
             onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
             onDelete={onDeleteConversation}
@@ -318,6 +330,9 @@ function AppLayout({
                 onRefreshSkills={onRefreshSkills}
                 onDeleteSkill={onDeleteSkill}
                 importError={importError}
+                conversations={conversations}
+                onSelectConversation={onSelectConversation}
+                onCreateProjectConversation={onCreateProjectConversation}
               />
             )}
           </div>

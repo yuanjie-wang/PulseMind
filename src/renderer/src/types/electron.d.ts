@@ -10,7 +10,7 @@ import type { ExperienceRecord, ExperienceDraft } from '../../../shared/types/ex
 import type { WindowControlsLayout } from '../../../shared/window-chrome'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from '../../../shared/types/project'
 import type { ProjectSandboxPolicy } from '../../../shared/sandbox/policy'
-import type { AuditEntry } from '../../../main/storage/audit-store'
+import type { AuditEntry } from '../../../shared/types/audit'
 
 // --- Platform Info ---
 
@@ -210,6 +210,7 @@ export interface ElectronAPI {
   projectCreate: (input: ProjectCreateInput) => Promise<Project>
   projectUpdate: (id: string, patch: ProjectUpdateInput) => Promise<Project | null>
   projectDelete: (id: string) => Promise<{ removedConversations: number }>
+  setConversationProject: (id: string, projectId: string) => Promise<void>
   auditList: (limit?: number) => Promise<AuditEntry[]>
   sandboxDetect: () => Promise<boolean>
   getDataPaths: () => Promise<DataPaths>

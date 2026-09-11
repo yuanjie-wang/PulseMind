@@ -15,4 +15,6 @@ export type ConversationListItem = {
   label: string
   pinned?: boolean
   updatedAt?: string
+  /** Owning project (PLAN-0.4.0 M3); absent = default project. */
+  projectId?: string
 }

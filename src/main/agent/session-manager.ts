@@ -23,7 +23,8 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin, setConversationProject } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject, getConversationProjectId } from '../storage/conversation.db'
+import { projectStore } from '../storage/project-store'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
 import { normalizeSandboxPolicy } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
@@ -322,6 +323,24 @@ class AgentSessionManagerImpl {
 
   private sandboxContexts = new Map<string, SessionSandboxContext>()
 
+  /** Re-resolve the session's sandbox context from the conversation's project
+   *  binding (M3.6). The renderer binds a conversation to its project when the
+   *  conversation is created — before the first message — so resolving here is
+   *  authoritative, and ws-client sessions inherit it for free. Also syncs the
+   *  engine's workspaceDir so prompts and relative paths follow the project. */
+  private async refreshSandboxContext(sessionId: string, entry: { engine: AgentEngine }): Promise<void> {
+    try {
+      const projectId = getConversationProjectId(sessionId)
+      if (projectId === DEFAULT_PROJECT_ID) return
+      const project = await projectStore.get(projectId)
+      if (!project) return
+      this.sandboxContexts.set(sessionId, { sessionId, workspaceDir: project.workspaceDir, policy: project.sandbox })
+      entry.engine.opts.workspaceDir = project.workspaceDir
+    } catch (err) {
+      console.warn('[SessionManager] refreshSandboxContext failed:', err)
+    }
+  }
+
   hasSession(sessionId: string): boolean {
     return this.sessions.has(sessionId)
   }
@@ -330,6 +349,7 @@ class AgentSessionManagerImpl {
    *  beyond the global concurrency cap queue FIFO. */
   async ask(sessionId: string, content: string): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
+    await this.refreshSandboxContext(sessionId, entry)
     if (this.runningLoops >= MAX_CONCURRENT_LOOPS) {
       this.emit(sessionId, { type: 'status', status: 'queued', attempt: this.waitingLoops.length + 1 })
       await new Promise<void>((resolve) => this.waitingLoops.push(resolve))

@@ -192,6 +192,7 @@ export const IPC_CHANNELS = {
   PROJECT_CREATE: 'project:create',
   PROJECT_UPDATE: 'project:update',
   PROJECT_DELETE: 'project:delete',
+  CONVERSATION_SET_PROJECT: 'conversation:set-project',
   AUDIT_LIST: 'audit:list',
   SANDBOX_DETECT: 'sandbox:detect',
 } as const

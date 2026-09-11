@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { isAbsolute } from 'node:path'
+import { currentSessionSandbox } from '../sandbox/session-context'
 
 // ── Transport Interface ─────────────────────────────────────────────
 
@@ -46,6 +47,9 @@ export class StdioTransport implements MCPTransport {
         env: this.env,
         windowsHide: true,
         shell: needsShell,
+        // M3.11: MCP subprocesses inherit the session's project workspace so
+        // relative-path servers land inside the jailed root.
+        cwd: currentSessionSandbox()?.workspaceDir,
       })
       this.process = child
 

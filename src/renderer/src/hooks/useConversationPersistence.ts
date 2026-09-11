@@ -370,7 +370,18 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   }
 
   // ── Create new conversation ──
-  const createNewConversation = useCallback(async () => {
+  // Project binding for the NEXT lazily-created conversation (M3.6): set by
+  // createNewConversation(projectId), consumed when handleRequest materializes
+  // the conversation row.
+  const pendingProjectIdRef = useRef<string | null>(null)
+  const takePendingProjectId = useCallback((): string | undefined => {
+    const v = pendingProjectIdRef.current
+    pendingProjectIdRef.current = null
+    return v ?? undefined
+  }, [])
+
+  const createNewConversation = useCallback(async (projectId?: string) => {
+    pendingProjectIdRef.current = projectId ?? null
     const MAX_SESSIONS = 100
     if (autoCleanup && conversations.length >= MAX_SESSIONS) {
       const toRemove = conversations.length - MAX_SESSIONS + 1
@@ -514,6 +525,8 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     conversationsRef,
     // Conversation switch loading window (welcome-screen suppression)
     isLoadingConversation,
+    // Project binding for the next lazily-created conversation (M3.6)
+    takePendingProjectId,
     // Save
     saveCurrentConversation,
     saveConversationSync,

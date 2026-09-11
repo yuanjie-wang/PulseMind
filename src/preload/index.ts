@@ -28,6 +28,7 @@ const electronAPI = {
   projectUpdate: (id: string, patch: { name?: string; workspaceDir?: string; icon?: string; sandbox?: unknown }) =>
     ipcRenderer.invoke(IPC_CHANNELS.PROJECT_UPDATE, id, patch),
   projectDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
+  setConversationProject: (id: string, projectId: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROJECT, id, projectId),
   auditList: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.AUDIT_LIST, limit),
   sandboxDetect: () => ipcRenderer.invoke(IPC_CHANNELS.SANDBOX_DETECT),
 

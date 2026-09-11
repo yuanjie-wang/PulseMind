@@ -204,61 +204,61 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
 > 现状:全局只有一个 `workspaceDir`(`src/shared/types/settings.ts:22`),**只是相对路径基准,无强制力**;文件 IPC 集中在 `src/main/ipc/file-ops.handler.ts`(通道 `UTIL_READ_FILE`/`UTIL_WRITE_FILE`);终端 `executeCommand(cmd, cwd)` 无路径限制;权限只有全局 `yoloMode` 与 MCP 级 `requireApproval`。
 > 范围界定(D15):MCP/技能/子代理的启用状态**全局共享**,不随项目隔离;项目隔离的只有文件工作区与沙箱策略。
 
-- [ ] **M3.1 数据模型与迁移**
+- [x] **M3.1 数据模型与迁移**
   - 范围:`src/main/storage/database.ts` 新增 `projects` 表 + `conversations.project_id` 列(需 `PRAGMA table_info` 守卫的 `ALTER TABLE`,现有 `createTables` 只有 `CREATE TABLE IF NOT EXISTS`)+ 索引;新增 `audit_log` 表(供 M3.12)
   - 迁移:`UPDATE conversations SET project_id='default' WHERE project_id IS NULL`
   - 交付:D1 的容器模型 + D5 的全局记忆/知识(不加 project 维度)
   - 验收:旧库升级后会话全部归入默认项目,无数据丢失;新库直接建全
 
-- [ ] **M3.2 ProjectStore + IPC + preload**
+- [x] **M3.2 ProjectStore + IPC + preload**
   - 范围:`src/main/storage/project-store.ts`(CRUD + 默认项目引导,`DEFAULT_PROJECT_ID='default'`,`workspaceDir` 取 `settings.workspaceDir ?? WORKSPACE_DIR`);`src/main/ipc/project.handler.ts`;`src/shared/ipc-channels.ts` 新增通道;`src/preload/index.ts` 桥接;`src/renderer/src/types/electron.d.ts` 类型
   - 通道:`project:list` / `project:get` / `project:create` / `project:update` / `project:delete`
   - 验收:项目 CRUD 全通;删除项目 = 连带删除项目内全部会话,弹窗列出会话数并二次确认(D17),不可静默丢数据
 
-- [ ] **M3.3 沙箱策略模型**
+- [x] **M3.3 沙箱策略模型**
   - 范围:新增 `src/shared/sandbox/policy.ts`:`ProjectSandboxPolicy { fs: 'read-only'|'workspace-write'|'full-access'; network: 'allow'|'deny'; approval: 'auto'|'outside-ask'|'always-ask'; extraRoots?: string[]; hardIsolation: boolean }` + `DEFAULT_POLICY`(D2:workspace-write/allow/outside-ask/hardIsolation=false)+ 归一化与校验
   - 交付:策略是唯一裁决输入,`yoloMode` 降级为全局默认 `approval` 值
   - 验收:策略可序列化进 `projects.sandbox_json`,旧项目读取缺省即用默认值
 
-- [ ] **M3.4 路径守卫(必做)**
+- [x] **M3.4 路径守卫(必做)**
   - 范围:新增 `src/shared/sandbox/path-jail.ts` 纯函数:`isWithin(root, target)`、`guardPath({ workspaceDir, policy, target, operation })` 返回 `{ ok: true } | { ok: false; reason: string }`;常驻 `DENY_ROOTS`(`~/.ssh`、`~/.pulsemind`、系统目录、`~/Library/Keychains` 等);处理 `..`、绝对路径、`realpath` 软链解析、darwin/win 大小写
   - 单测:`tests/path-jail.test.ts`(附录 G)
   - 交付:纯函数零 IO 依赖,便于测试
   - 验收:全部逃逸用例被拒;工作区内正常路径零误杀
 
-- [ ] **M3.5 路径守卫接线(单一收口点)**
+- [x] **M3.5 路径守卫接线(单一收口点)**
   - 范围:在 `src/main/ipc/file-ops.handler.ts` 统一包裹 `UTIL_READ_FILE`/`UTIL_WRITE_FILE` 及 list/search/find 类操作;策略来源 = 会话→项目映射(见 M3.6)
   - 交付:所有文件操作的主进程入口**只有一处**裁决,渲染层与主进程 host 都绕不过
   - 验收:越界返回结构化工具错误(非抛异常),agent 收到可读原因;`read-only` 下写操作被拒
 
-- [ ] **M3.6 会话→项目绑定与工作区解析**
+- [x] **M3.6 会话→项目绑定与工作区解析**
   - 范围:`src/shared/agent-protocol/payloads.ts` 的 `session.create` 增加可选 `workspaceDir` / `projectId` / `sandbox`(可加字段,不改语义,无需 bump PROTOCOL_VERSION);`src/main/agent/session-manager.ts`(`:277` 现取全局 `settings.workspaceDir`)改为优先取会话自带的项目工作区,并登记 `sessionId → policy` 供 M3.5/M3.9 查询
   - 渲染侧:`src/renderer/src/hooks/useChatController.ts` / `App.tsx:226` 按项目传 `workspaceDir`;`src/renderer/src/types/conversation.ts` 增加 `projectId`
   - 验收:项目内会话的文件工具与终端都落在项目工作区;普通会话行为不变
 
-- [ ] **M3.7 项目视图 UI**
+- [x] **M3.7 项目视图 UI**
   - 范围:新增 `components/project/ProjectList.tsx`、`ProjectCreateDrawer.tsx`(目录选择走 `dialog.handler.ts` 现有能力、命名、初始沙箱策略、硬隔离开关)、`ProjectView.tsx`(项目头部展示工作区/沙箱/硬隔离 + 项目内会话列表 + 复用 `ChatView`)
   - 交付:项目内"新建对话"直接创建带 `projectId` 的会话;主侧边栏(`ConversationSidebar.tsx`)按项目分组折叠展示(D14)——项目名做分组头、可折叠,普通会话归「默认」组
   - 验收:新建项目→新建对话→发消息→文件落盘到项目工作区
 
-- [ ] **M3.8 沙箱策略面板**
+- [x] **M3.8 沙箱策略面板**
   - 范围:项目头部「权限」入口 → `ProjectSandboxPanel.tsx`(三档 fs / 网络 / 审批 / 硬隔离 / extraRoots),改动即时生效并写审计
   - 验收:改策略后下次工具调用按新策略裁决
 
-- [ ] **M3.9 exec 硬隔离(可选启用)**
+- [x] **M3.9 exec 硬隔离(可选启用)**
   - 范围:新增 `src/main/sandbox/exec-sandbox.ts`:`detectSandboxSupport()`、`wrapCommand(cmd, policy, workspaceDir)`——macOS 生成 `sandbox-exec -p` profile(只读根 + 工作区可写 + 网络按策略),Linux 生成 `bwrap` 参数;不可用时返回 `null` 并由调用方降级为审批 + 审计;接入 `src/main/services/terminal.ts`
   - 交付:UI 明确标注"硬隔离 / 软沙箱(仅审批)",不制造安全错觉
   - 验收:`hardIsolation=on` 且平台支持时,命令无法写工作区外;平台不支持时给出显式提示且行为降级可预期
 
-- [ ] **M3.10 审批路由**
+- [x] **M3.10 审批路由**(实现注记:exec 走引擎现有审批链——项目策略 approval=auto 映射为引擎 yolo,其余两档走非 yolo 询问;fs 写入的"越界询问"以 path-jail 拒绝+审计落地,不做弹窗放行——v1 语义:越界即拒)
   - 范围:策略 → 裁决:工作区内自动放行 / 越界按 `outside-ask` 弹审批 / `always-ask` 全弹;复用现有审批 UI(`components/terminal/CommandCard.tsx`)与 `engine/execution-flow.ts` 的 approve/reject 流程
   - 验收:`auto` 不弹窗、`outside-ask` 仅在越界弹、`always-ask` 每次弹;拒绝后 agent 收到拒绝结果并可继续
 
-- [ ] **M3.11 MCP / 子代理 / 生成工具继承策略**
+- [x] **M3.11 MCP / 子代理 / 生成工具继承策略**
   - 范围:MCP stdio 子进程 cwd=项目工作区 + env 清洗(`src/main/mcp/transport.ts`);`spawn_agent` 子代理与画布引擎继承父会话策略(`agent/engine/spawn-manager.ts`、`components/canvas/canvasEngine.ts`)
   - 验收:子代理无法绕过父会话沙箱
 
-- [ ] **M3.12 审计**
+- [x] **M3.12 审计**
   - 范围:新增 `src/main/storage/audit-store.ts`(写 `audit_log` 表):记录时间、会话/项目、工具、目标路径或命令摘要、策略、裁决结果;IPC `audit:list`;项目沙箱面板内可查看
   - 验收:每次越界/审批/拒绝可回溯;审计写入失败不影响主流程
   - 信息:`feat(project): workspace-scoped projects with enforced sandbox policy`

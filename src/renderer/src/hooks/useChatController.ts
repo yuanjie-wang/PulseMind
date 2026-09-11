@@ -279,7 +279,11 @@ export function useChatController(options: UseChatControllerOptions) {
         const now = new Date()
         const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
         convId = `conv_${ts}`
-        persistence.addConversation({ key: convId, label: '新对话', updatedAt: now.toISOString() }, 'prepend')
+        // A project-scoped "new conversation" leaves a pending binding; consume
+        // it here so the row is bound before the first ask (M3.6).
+        const projectId = persistence.takePendingProjectId()
+        persistence.addConversation({ key: convId, label: '新对话', updatedAt: now.toISOString(), projectId }, 'prepend')
+        if (projectId) void window.electronAPI.setConversationProject?.(convId, projectId)
         engine.activateEngine(convId)
         persistence.activateConversation(convId)
       } else {
