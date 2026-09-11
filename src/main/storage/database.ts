@@ -256,6 +256,19 @@ function createTables(): void {
       updated_at    TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS routine_runs (
+      id              TEXT PRIMARY KEY,
+      routine_id      TEXT NOT NULL,
+      conversation_id TEXT,
+      status          TEXT NOT NULL,
+      trigger         TEXT NOT NULL,
+      started_at      TEXT NOT NULL,
+      finished_at     TEXT,
+      error           TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_routine_runs_routine ON routine_runs(routine_id, started_at DESC);
+
     CREATE TABLE IF NOT EXISTS audit_log (
       id          TEXT PRIMARY KEY,
       ts          TEXT NOT NULL,

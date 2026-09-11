@@ -18,6 +18,7 @@ import { registerKnowledgeHandlers } from './knowledge.handler'
 import { registerSubAgentHandlers } from './subagent.handler'
 import { registerGitHandlers } from './git.handler'
 import { registerProjectHandlers } from './project.handler'
+import { registerRoutineHandlers } from './routine.handler'
 
 export function registerIpcHandlers(): void {
   registerConversationHandlers()
@@ -40,4 +41,5 @@ export function registerIpcHandlers(): void {
   registerSubAgentHandlers()
   registerGitHandlers()
   registerProjectHandlers()
+  registerRoutineHandlers()
 }

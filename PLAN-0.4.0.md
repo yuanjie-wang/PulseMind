@@ -267,40 +267,40 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
 
 > 现状:**无任何调度能力**;技能(`SkillDefinition`)是纯提示注入,不可独立执行。D3 决定二者概念分离。
 
-- [ ] **M4.1 Routine 模型与存储**
+- [x] **M4.1 Routine 模型与存储**
   - 范围:新增 `src/shared/types/routine.ts`(`Routine`、`RoutineRun`);定义落 `~/.pulsemind/routines/<id>.json`;运行历史落 SQLite 新表 `routine_runs`(id/routine_id/conversation_id/status/trigger/started_at/finished_at/error)
   - 交付:`params` 为轻量参数声明(`{key,label,required,default}`),不支持复杂类型(v1)
   - 验收:读写往返一致,损坏 JSON 不影响启动
 
-- [ ] **M4.2 RoutineStore + IPC + preload**
+- [x] **M4.2 RoutineStore + IPC + preload**
   - 范围:`src/main/storage/routine-store.ts`;`src/main/ipc/routine.handler.ts`;通道 `routine:list|get|create|update|delete|toggle|run|runs`;preload 与 `electron.d.ts`
   - 验收:CRUD + 运行 + 历史查询全通
 
-- [ ] **M4.3 日常工作视图**
+- [x] **M4.3 日常工作视图**
   - 范围:新增 `components/routine/RoutineList.tsx`(启停开关、下次运行时间、最近一次状态、手动「立即运行」)、`RoutineEditor.tsx`(Drawer:名称/描述/提示词/参数/计划(Cron 文本框 + 常用预设)/启用/绑定项目)、`RoutineRunHistory.tsx`(状态、耗时、跳转产物会话)
   - 交付:cron 表达式经 `cron-parser` 做合法性校验,非法即时报错并给出首个下次运行时间
   - 验收:手动运行产出会话并出现在历史中
 
-- [ ] **M4.4 从对话提取**
+- [x] **M4.4 从对话提取**(实现注记:v1 入口在日常工作页「从对话提取」选会话;消息级悬浮入口留待 M7 打磨)
   - 范围:新增 `src/renderer/src/agent/one-shot-agent/RoutineExtractionAgent.ts`(复用现有 one-shot 模式),入口为消息右键/悬浮的「存为日常工作」;结果先落草稿进审阅 Drawer,确认后入库
   - 交付:提取内容为 名称 + 描述 + 提示词 + 建议计划,用户可改
   - 验收:一段普通对话能提取出可运行的 routine,且不覆盖已有同名项
 
-- [ ] **M4.5 RoutineRunner(主进程)**
+- [x] **M4.5 RoutineRunner(主进程)**
   - 范围:新增 `src/main/routine/routine-runner.ts`:经 `agentSessionManager.createSession({ title, agentId, workspaceDir, projectId })` 建 `type='routine'` 会话 → `ask(渲染后的提示词)` → 完成后写 `routine_runs` → 通知;参数以模板变量替换注入提示词
   - 交付:运行即产出真实会话,可追溯、token 计入 `token_usage`;无人值守审批(D13)——定时触发时工作区内自动放行,越界/需审批一律自动拒绝,记入 `routine_runs.error` 并在产物会话标记被跳过的步骤,支持人工补跑
   - 验收:手动与定时触发走同一条运行路径;定时运行遇审批操作不挂起、不丢记录
 
-- [ ] **M4.6 RoutineScheduler(主进程)**
+- [x] **M4.6 RoutineScheduler(主进程)**
   - 范围:新增 `src/main/routine/routine-scheduler.ts`:`cron-parser` 计算下次运行、30s tick、`next_run_at` 持久化(重启续期)、错过补跑策略(可配:补跑一次 / 跳过)、上次未完成则重叠跳过、全局并发上限(复用 M2.2 的 FIFO 排队);随 `app.whenReady` 启动,托盘常驻下持续运行
   - 交付:调度器与运行器解耦,便于单测调度决策
   - 验收:窗口关闭(托盘常驻)仍按时触发;错过的计划按策略补跑;不会并发堆叠同一 routine
 
-- [ ] **M4.7 通知**
+- [x] **M4.7 通知**
   - 范围:完成/失败经托盘(`src/main/tray.ts`)+ 系统 `Notification`;点击打开对应产物会话
   - 验收:通知可点击跳转;失败通知带错误摘要
 
-- [ ] **M4.8 技能注入边界**
+- [x] **M4.8 技能注入边界**
   - 范围:routine 可选绑定技能,运行时经 `SkillManager.getSystemPromptAppendix()` 注入;**不读写技能的 `enabledSkills` 全局状态**(D3)
   - 验收:绑定技能只影响该 routine 的运行,不改动能力中心的技能启用状态
   - 信息:`feat(routine): schedulable daily-work routines with cron and run history`

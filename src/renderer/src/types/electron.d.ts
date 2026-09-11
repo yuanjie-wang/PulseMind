@@ -11,6 +11,7 @@ import type { WindowControlsLayout } from '../../../shared/window-chrome'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from '../../../shared/types/project'
 import type { ProjectSandboxPolicy } from '../../../shared/sandbox/policy'
 import type { AuditEntry } from '../../../shared/types/audit'
+import type { Routine, RoutineRun } from '../../../shared/types/routine'
 
 // --- Platform Info ---
 
@@ -212,6 +213,14 @@ export interface ElectronAPI {
   projectDelete: (id: string) => Promise<{ removedConversations: number }>
   setConversationProject: (id: string, projectId: string) => Promise<void>
   auditList: (limit?: number) => Promise<AuditEntry[]>
+  routineList: () => Promise<Routine[]>
+  routineGet: (id: string) => Promise<Routine | null>
+  routineCreate: (input: Partial<Routine>) => Promise<Routine>
+  routineUpdate: (id: string, patch: Partial<Routine>) => Promise<Routine | null>
+  routineDelete: (id: string) => Promise<void>
+  routineToggle: (id: string, enabled: boolean) => Promise<Routine | null>
+  routineRun: (id: string, params?: Record<string, string>) => Promise<RoutineRun>
+  routineRuns: (routineId?: string, limit?: number) => Promise<RoutineRun[]>
   sandboxDetect: () => Promise<boolean>
   getDataPaths: () => Promise<DataPaths>
   openFolder: (folderPath: string) => Promise<void>

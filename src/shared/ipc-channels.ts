@@ -195,6 +195,16 @@ export const IPC_CHANNELS = {
   CONVERSATION_SET_PROJECT: 'conversation:set-project',
   AUDIT_LIST: 'audit:list',
   SANDBOX_DETECT: 'sandbox:detect',
+
+  // ── PLAN-0.4.0 M4: routines ──
+  ROUTINE_LIST: 'routine:list',
+  ROUTINE_GET: 'routine:get',
+  ROUTINE_CREATE: 'routine:create',
+  ROUTINE_UPDATE: 'routine:update',
+  ROUTINE_DELETE: 'routine:delete',
+  ROUTINE_TOGGLE: 'routine:toggle',
+  ROUTINE_RUN: 'routine:run',
+  ROUTINE_RUNS: 'routine:runs',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

@@ -13,6 +13,7 @@ import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
 import { createTray, applyLaunchAtLogin } from './tray'
+import { routineScheduler } from './routine/routine-scheduler'
 import { serviceRuntime } from './service-runtime'
 import { settingsStore } from './storage/settings-store'
 import { notifyResume } from './ipc/app.handler'
@@ -504,7 +505,9 @@ if (gotTheLock) {
         writeLog('WARN', `startup: agent service failed: ${err}`)
       }
     }
-    app.on('before-quit', () => { isQuitting = true; void serviceRuntime.handle?.close() })
+    // Routine scheduler: ticks for due cron schedules (works under tray residency).
+    routineScheduler.start()
+    app.on('before-quit', () => { isQuitting = true; routineScheduler.stop(); void serviceRuntime.handle?.close() })
     createTray({
       getServiceStatus: async () => serviceRuntime.handle ? `服务运行中 :${serviceRuntime.handle.port}` : '服务未运行',
       getLaunchAtLogin: async () => !!(await settingsStore.get()).launchAtLogin,
