@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JSON 格式化</title><style>
+:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+
+.wrap { max-width: 900px; margin: 20px auto; display: flex; flex-direction: column; gap: 12px; padding: 0 16px; }
+.btns button { border: none; border-radius: 8px; padding: 9px 18px; margin-right: 8px; cursor: pointer; background: var(--accent); color: var(--bg); font-size: 13px; }
+.btns button.ghost { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+textarea { width: 100%; min-height: 320px; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.6; resize: vertical; }
+.msg { font-size: 13px; min-height: 20px; }
+.ok { color: #52c41a; } .bad { color: #cf1322; }
+@media (prefers-color-scheme: dark) { .bad { color: #ff7875; } }
+</style></head><body>
+<div class="wrap">
+  <div class="btns">
+    <button onclick="fmt(2)">格式化</button>
+    <button onclick="fmt(4)">格式化(4空格)</button>
+    <button class="ghost" onclick="minify()">压缩</button>
+    <button class="ghost" onclick="copyOut()">复制结果</button>
+    <button class="ghost" onclick="document.getElementById('io').value=''; setMsg('','')">清空</button>
+  </div>
+  <div class="msg" id="msg"></div>
+  <textarea id="io" placeholder='粘贴 JSON，例如 {"a":1,"b":[2,3]}'></textarea>
+</div>
+<script>
+let lastOut = '';
+function setMsg(text, cls) { const el = document.getElementById('msg'); el.textContent = text; el.className = 'msg ' + cls; }
+function fmt(indent) {
+  const v = document.getElementById('io').value.trim();
+  if (!v) return setMsg('请先粘贴 JSON', 'bad');
+  try {
+    lastOut = JSON.stringify(JSON.parse(v), null, indent);
+    document.getElementById('io').value = lastOut;
+    setMsg('✓ 合法 JSON，已格式化', 'ok');
+  } catch (e) { setMsg('✗ 解析失败：' + e.message, 'bad'); }
+}
+function minify() {
+  const v = document.getElementById('io').value.trim();
+  try { lastOut = JSON.stringify(JSON.parse(v)); document.getElementById('io').value = lastOut; setMsg('✓ 已压缩', 'ok'); }
+  catch (e) { setMsg('✗ 解析失败：' + e.message, 'bad'); }
+}
+async function copyOut() {
+  try { await navigator.clipboard.writeText(lastOut || document.getElementById('io').value); setMsg('已复制', 'ok'); }
+  catch (e) { try { await window.pulsemind.system.clipboard.writeText(lastOut); setMsg('已复制', 'ok'); } catch (e2) { setMsg('复制失败', 'bad'); } }
+}
+</script></body></html>

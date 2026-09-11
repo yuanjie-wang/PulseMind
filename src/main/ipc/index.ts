@@ -19,6 +19,7 @@ import { registerSubAgentHandlers } from './subagent.handler'
 import { registerGitHandlers } from './git.handler'
 import { registerProjectHandlers } from './project.handler'
 import { registerRoutineHandlers } from './routine.handler'
+import { registerToolStudioHandlers } from './tool.handler'
 
 export function registerIpcHandlers(): void {
   registerConversationHandlers()
@@ -42,4 +43,5 @@ export function registerIpcHandlers(): void {
   registerGitHandlers()
   registerProjectHandlers()
   registerRoutineHandlers()
+  registerToolHandlers()
 }

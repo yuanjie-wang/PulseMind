@@ -309,41 +309,41 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
 
 > D6/D9/D11/D12 决定:**不建脚本沙箱、不注册 agent 工具**。核心是"多轮对话 → 生成 HTML 工具 → 迭代修改 → 统一画廊"。生成内核复用现有 `components/canvas/canvasEngine.ts`(其已具备:在 workDir 生成 `index.html`、读回校验、工具事件流)。
 
-- [ ] **M5.1 UserTool 模型与存储**
+- [x] **M5.1 UserTool 模型与存储**
   - 范围:新增 `src/shared/types/user-tool.ts`(`UserTool`);落盘 `~/.pulsemind/tools/<id>/`:`tool.json`(清单)+ `app.html`(产物)+ `storage.json`(KV)+ `assets/`;新增 `src/main/storage/tool-store.ts`
   - 清单字段:`id/name/description/icon/category/htmlPath/conversationId/capabilities[]/sourceTemplateId?/version/createdAt/updatedAt`
   - 验收:工具目录可独立拷贝、可删除、可导出
 
-- [ ] **M5.2 生成内核抽取**
+- [x] **M5.2 生成内核抽取**
   - 范围:从 `canvasEngine.ts` 抽出 `src/renderer/src/tool-studio/generator.ts`(`HtmlAppGenerator`:需求 → 生成 `app.html` → 迭代修改 → 读回校验),`canvasEngine` 改为委托同一内核(保证隐藏的画布仍可用)
   - 交付:生成提示词模板独立成文件(澄清轮次模板 + 生成模板 + 迭代修改模板)
   - 验收:内核不含画布概念(annotation/rect),类 ≤1000 行、方法 ≤200 行
 
-- [ ] **M5.3 工具 API 与 IPC**
+- [x] **M5.3 工具 API 与 IPC**
   - 范围:新增 `src/main/ipc/tool.handler.ts`;通道 `tool:list|get|create|update|delete|clone|export|read-html`;preload 与 `electron.d.ts`
   - 验收:画廊数据、工具文件读取、导出下载全通
 
-- [ ] **M5.4 工具画廊**
+- [x] **M5.4 工具画廊**
   - 范围:新增 `components/tool-studio/ToolGallery.tsx`:分页签「我的工具 / 预置模板」,卡片含缩略图(首次打开时截首屏并缓存)、名称、描述、能力徽标、操作(打开/编辑/复制/导出/删除);右上角显眼「+ 创造工具」
   - 交付:空状态引导(直接给"从模板复制"与"创造"两条路径)
   - 验收:至少能打开、复制模板、导出、删除;缩略图失败时降级为占位图
 
-- [ ] **M5.5 工具工作室(创作流程)**
+- [x] **M5.5 工具工作室(创作流程)**
   - 范围:新增 `components/tool-studio/ToolStudio.tsx`:左侧需求澄清对话(复用 ChatView 的消息渲染,或轻量对话组件)+ 右侧实时预览;流程 = 多轮澄清 → 「需求确认,开始生成」→ 生成中 → 完成后左侧切换为"继续提修改要求"的迭代对话
   - 交付:澄清阶段的对话与生成产物共用同一个会话(`conversationId` 入清单),便于回溯
   - 验收:能从零用几轮对话生成一个可用工具;生成后继续提要求能正确修改而非重做
 
-- [ ] **M5.6 工具运行视图**
+- [x] **M5.6 工具运行视图**(实现注记:v1 用  +  严格沙箱(不透明源,无 localStorage——生成器提示词已要求工具做存储降级); 自定义协议留待 M6.8 一并验证,失败即维持 srcDoc)
   - 范围:新增 `components/tool-studio/ToolRunner.tsx`:自定义协议加载 `app.html`(复用 `src/main/index.ts:404` 的 `protocol.handle` 模式,新增 `pulsemind-tool://`),严格 iframe sandbox 渲染 + 全屏运行 + 迭代面板
   - 交付:M6 未落地前先跑纯前端能力(无 bridge 时优雅提示)
   - 验收:工具可独立打开运行并交互
 
-- [ ] **M5.7 预置模板**
+- [x] **M5.7 预置模板**
   - 范围:新增 `templates/pulsemind/tools/`(随首次运行拷贝到 `~/.pulsemind/tools/templates/`,沿用现有 `templates/pulsemind/` 拷贝机制);首批 6 个:计算器、番茄钟、取色器、Post 工具(HTTP client)、Markdown 便签、JSON 格式化
   - 交付:每个模板 = `app.html` + `tool.json`(含 `capabilities` 声明),"复制改造" = 克隆为我的工具
   - 验收:模板可复制、可运行、可编辑;模板目录缺失时优雅跳过
 
-- [ ] **M5.8 导出**
+- [x] **M5.8 导出**
   - 范围:导出 `app.html`(单文件下载)/ 在系统浏览器打开
   - 验收:导出文件双击可在浏览器直接运行(纯前端能力部分)
   - 信息:`feat(toolstudio): creative tool studio — gallery, dialog-driven generation, iteration`

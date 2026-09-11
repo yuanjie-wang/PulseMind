@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
-import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR } from '../storage'
+import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR, TOOLS_DIR } from '../storage'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 
 export interface PlatformInfo {
@@ -85,6 +85,7 @@ export function registerAppHandlers(): void {
       dataDir: DATA_DIR,
       skillsDir: SKILLS_DIR,
       workspaceDir: WORKSPACE_DIR,
+      toolsDir: TOOLS_DIR,
       settingsPath: SETTINGS_PATH,
       knowledgeDir: KNOWLEDGE_DIR
     }

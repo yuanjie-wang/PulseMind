@@ -12,6 +12,7 @@ import type { Project, ProjectCreateInput, ProjectUpdateInput } from '../../../s
 import type { ProjectSandboxPolicy } from '../../../shared/sandbox/policy'
 import type { AuditEntry } from '../../../shared/types/audit'
 import type { Routine, RoutineRun } from '../../../shared/types/routine'
+import type { UserTool } from '../../../shared/types/user-tool'
 
 // --- Platform Info ---
 
@@ -29,6 +30,8 @@ export interface DataPaths {
   workspaceDir: string
   settingsPath: string
   knowledgeDir: string
+  /** User tools (tool studio), PLAN-0.4.0 M5. */
+  toolsDir?: string
 }
 
 // --- Terminal Event Types ---
@@ -221,6 +224,16 @@ export interface ElectronAPI {
   routineToggle: (id: string, enabled: boolean) => Promise<Routine | null>
   routineRun: (id: string, params?: Record<string, string>) => Promise<RoutineRun>
   routineRuns: (routineId?: string, limit?: number) => Promise<RoutineRun[]>
+  toolList: () => Promise<UserTool[]>
+  toolListTemplates: () => Promise<Array<UserTool & { isTemplate: true }>>
+  toolGet: (id: string) => Promise<UserTool | null>
+  toolCreate: (input: { name: string; description?: string; category?: string; capabilities?: string[]; sourceTemplateId?: string }) => Promise<UserTool>
+  toolUpdate: (id: string, patch: Record<string, unknown>) => Promise<UserTool | null>
+  toolDelete: (id: string) => Promise<void>
+  toolCloneTemplate: (templateId: string, name?: string) => Promise<UserTool>
+  toolReadHtml: (id: string) => Promise<string | null>
+  toolReadTemplateHtml: (templateId: string) => Promise<string | null>
+  toolWriteHtml: (id: string, html: string) => Promise<void>
   sandboxDetect: () => Promise<boolean>
   getDataPaths: () => Promise<DataPaths>
   openFolder: (folderPath: string) => Promise<void>

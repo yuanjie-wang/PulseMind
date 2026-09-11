@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>番茄钟</title><style>
+:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+
+.wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 20px; }
+.mode { font-size: 14px; color: var(--muted); letter-spacing: 2px; }
+.clock { font-size: 88px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.circle { width: 240px; height: 240px; border-radius: 50%; display:flex; align-items:center; justify-content:center; border: 6px solid var(--border); }
+.running { border-color: var(--accent); animation: pulse 2s infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 12px rgba(0,0,0,.04); } }
+.btns button { border: none; border-radius: 10px; padding: 12px 26px; font-size: 15px; margin: 0 6px; background: var(--accent); color: var(--bg); cursor: pointer; }
+.btns button.ghost { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+.count { color: var(--muted); font-size: 13px; }
+</style></head><body>
+<div class="wrap">
+  <div class="mode" id="mode">专注 · 25:00</div>
+  <div class="circle" id="circle"><div class="clock" id="clock">25:00</div></div>
+  <div class="btns">
+    <button id="start">开始</button>
+    <button class="ghost" id="reset">重置</button>
+    <button class="ghost" id="skip">跳过</button>
+  </div>
+  <div class="count" id="count">今日完成 0 个番茄</div>
+</div>
+<script>
+const WORK = 25 * 60, BREAK = 5 * 60;
+let left = WORK, working = true, timer = null, done = 0;
+const fmt = s => String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+function render() {
+  document.getElementById('clock').textContent = fmt(left);
+  document.getElementById('mode').textContent = (working ? '专注' : '休息') + ' · ' + (working ? '25:00' : '05:00');
+  document.getElementById('circle').className = 'circle' + (timer ? ' running' : '');
+  document.getElementById('count').textContent = '今日完成 ' + done + ' 个番茄';
+}
+function tick() {
+  left--;
+  if (left <= 0) {
+    if (working) { done++; notify('番茄完成！', '休息 5 分钟'); left = BREAK; working = false; }
+    else { notify('休息结束', '开始下一个番茄'); left = WORK; working = true; stop(); }
+  }
+  render();
+}
+function notify(title, body) {
+  try { window.pulsemind.system.notify({ title, body }); } catch (e) { /* bridge 未就绪，忽略 */ }
+}
+function start() { if (timer) return; timer = setInterval(tick, 1000); render(); }
+function stop() { clearInterval(timer); timer = null; render(); }
+document.getElementById('start').onclick = () => timer ? stop() : start();
+document.getElementById('reset').onclick = () => { stop(); left = WORK; working = true; render(); };
+document.getElementById('skip').onclick = () => { stop(); working = !working; left = working ? WORK : BREAK; render(); };
+render();
+</script></body></html>

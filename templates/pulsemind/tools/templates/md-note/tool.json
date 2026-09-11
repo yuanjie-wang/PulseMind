@@ -1,0 +1,14 @@
+{
+  "id": "md-note",
+  "name": "Markdown 便签",
+  "description": "随手记的 Markdown 便签，支持实时预览与导出。",
+  "category": "notes",
+  "htmlPath": "app.html",
+  "capabilities": [
+    "fs:read",
+    "fs:write"
+  ],
+  "version": 1,
+  "createdAt": "2026-09-12T00:00:00.000Z",
+  "updatedAt": "2026-09-12T00:00:00.000Z"
+}

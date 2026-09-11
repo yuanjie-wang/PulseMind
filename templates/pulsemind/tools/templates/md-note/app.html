@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Markdown 便签</title><style>
+:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+
+.wrap { display: flex; height: 100vh; }
+.pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.pane + .pane { border-left: 1px solid var(--border); }
+.bar { padding: 8px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.bar button { border: none; border-radius: 6px; padding: 5px 12px; cursor: pointer; background: var(--accent); color: var(--bg); font-size: 12px; }
+textarea { flex: 1; border: none; outline: none; resize: none; padding: 16px; background: var(--card); color: var(--fg); font-family: ui-monospace, Menlo, monospace; font-size: 14px; line-height: 1.7; }
+.preview { flex: 1; overflow: auto; padding: 16px; line-height: 1.7; }
+.preview h1,.preview h2,.preview h3 { margin: .6em 0 .3em; }
+.preview code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.preview pre { background: var(--bg); padding: 10px; border-radius: 8px; overflow: auto; }
+@media (max-width: 720px) { .wrap { flex-direction: column; } .pane + .pane { border-left: none; border-top: 1px solid var(--border); } }
+</style></head><body>
+<div class="wrap">
+  <div class="pane"><div class="bar">Markdown<button onclick="exportMd()">导出 .md</button><span id="saved" style="margin-left:auto"></span></div>
+  <textarea id="src" placeholder="# 便签&#10;随手写，右边实时预览。"></textarea></div>
+  <div class="pane"><div class="bar">预览</div><div class="preview" id="out"></div></div>
+</div>
+<script>
+// 极简 md 渲染（标题/粗体/斜体/行内码/代码块/引用/列表/链接）
+function md(src) {
+  let html = src
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/```([\s\S]*?)```/g, (_, c) => '<pre><code>' + c.trim() + '</code></pre>')
+    .replace(/^### (.*)$/gm, '<h3>$1</h3>').replace(/^## (.*)$/gm, '<h2>$1</h2>').replace(/^# (.*)$/gm, '<h1>$1</h1>')
+    .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')
+    .replace(/^[-*] (.*)$/gm, '<li>$1</li>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\n\n/g, '<br><br>').replace(/(?<!>)\n/g, '<br>');
+  html = html.replace(/<li>([\s\S]*?)<br><br>/g, '<li>$1</li><ul>').replace(/(<li>(?![\s\S]*<li>)[\s\S]*?)(?!<\/li>)$/,'$1</li>');
+  return html;
+}
+let mem = '';
+try { mem = localStorage.getItem('mdnote') || ''; } catch (e) { mem = ''; }
+document.getElementById('src').value = mem;
+function renderSave() {
+  const v = document.getElementById('src').value;
+  document.getElementById('out').innerHTML = md(v);
+  try { localStorage.setItem('mdnote', v); document.getElementById('saved').textContent = ''; }
+  catch (e) { document.getElementById('saved').textContent = '（沙箱内暂不持久化）'; }
+}
+document.getElementById('src').oninput = renderSave;
+function exportMd() {
+  const blob = new Blob([document.getElementById('src').value], { type: 'text/markdown' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'note.md'; a.click();
+}
+renderSave();
+</script></body></html>

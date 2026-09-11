@@ -38,6 +38,17 @@ const electronAPI = {
   routineToggle: (id: string, enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_TOGGLE, id, enabled),
   routineRun: (id: string, params?: Record<string, string>) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUN, id, params),
   routineRuns: (routineId?: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUNS, routineId, limit),
+  toolList: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_LIST),
+  toolListTemplates: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_LIST_TEMPLATES),
+  toolGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_GET, id),
+  toolCreate: (input: { name: string; description?: string; category?: string; capabilities?: string[]; sourceTemplateId?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TOOL_CREATE, input),
+  toolUpdate: (id: string, patch: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_UPDATE, id, patch),
+  toolDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_DELETE, id),
+  toolCloneTemplate: (templateId: string, name?: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_CLONE_TEMPLATE, templateId, name),
+  toolReadHtml: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_READ_HTML, id),
+  toolReadTemplateHtml: (templateId: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_READ_TEMPLATE_HTML, templateId),
+  toolWriteHtml: (id: string, html: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_WRITE_HTML, id, html),
   sandboxDetect: () => ipcRenderer.invoke(IPC_CHANNELS.SANDBOX_DETECT),
 
 dbCheck: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.DB_CHECK),

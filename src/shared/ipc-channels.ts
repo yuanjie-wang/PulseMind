@@ -205,6 +205,18 @@ export const IPC_CHANNELS = {
   ROUTINE_TOGGLE: 'routine:toggle',
   ROUTINE_RUN: 'routine:run',
   ROUTINE_RUNS: 'routine:runs',
+
+  // ── PLAN-0.4.0 M5: user tools (tool studio) ──
+  TOOL_LIST: 'tool:list',
+  TOOL_LIST_TEMPLATES: 'tool:list-templates',
+  TOOL_GET: 'tool:get',
+  TOOL_CREATE: 'tool:create',
+  TOOL_UPDATE: 'tool:update',
+  TOOL_DELETE: 'tool:delete',
+  TOOL_CLONE_TEMPLATE: 'tool:clone-template',
+  TOOL_READ_HTML: 'tool:read-html',
+  TOOL_READ_TEMPLATE_HTML: 'tool:read-template-html',
+  TOOL_WRITE_HTML: 'tool:write-html',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

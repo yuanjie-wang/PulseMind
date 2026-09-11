@@ -1,0 +1,11 @@
+{
+  "id": "calculator",
+  "name": "计算器",
+  "description": "简洁的计算器，支持键盘输入与历史记录。",
+  "category": "utility",
+  "htmlPath": "app.html",
+  "capabilities": [],
+  "version": 1,
+  "createdAt": "2026-09-12T00:00:00.000Z",
+  "updatedAt": "2026-09-12T00:00:00.000Z"
+}

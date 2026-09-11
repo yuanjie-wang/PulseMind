@@ -15,6 +15,7 @@ export const KNOWLEDGE_SCHEMA_DIR = join(KNOWLEDGE_DIR, '.schemas')
 export const HOOKS_DIR = join(DATA_DIR, 'hooks')
 export const MEMORY_MD_PATH = join(DATA_DIR, 'memory', 'MEMORY.md')
 export const WORKSPACE_DIR = join(DATA_DIR, 'workspace')
+export const TOOLS_DIR = join(DATA_DIR, 'tools')
 
 /**
  * Resolve the built-in template directory path.

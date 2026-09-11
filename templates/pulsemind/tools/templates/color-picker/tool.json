@@ -1,0 +1,13 @@
+{
+  "id": "color-picker",
+  "name": "取色器",
+  "description": "调色取色，复制 HEX / RGB 颜色值到剪贴板。",
+  "category": "utility",
+  "htmlPath": "app.html",
+  "capabilities": [
+    "clipboard"
+  ],
+  "version": 1,
+  "createdAt": "2026-09-12T00:00:00.000Z",
+  "updatedAt": "2026-09-12T00:00:00.000Z"
+}

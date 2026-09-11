@@ -1,0 +1,13 @@
+{
+  "id": "http-client",
+  "name": "Post 工具",
+  "description": "轻量 HTTP 调试器：发送 GET/POST 请求，查看响应（经由应用网络桥）。",
+  "category": "network",
+  "htmlPath": "app.html",
+  "capabilities": [
+    "net:http"
+  ],
+  "version": 1,
+  "createdAt": "2026-09-12T00:00:00.000Z",
+  "updatedAt": "2026-09-12T00:00:00.000Z"
+}
