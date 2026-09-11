@@ -127,13 +127,16 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
 
 ## M0 基线冻结与前置决策
 
-- [ ] **M0.1 迁移对象盘点与基线记录**
+- [x] **M0.1 迁移对象盘点与基线记录**
   - 范围:确认附录 A 对照表无遗漏;把 `npm test` 通过数与 tsc 两侧错误数写入本文件
-  - 验收:基线数字落纸,后续只降不升
+  - **基线(2026-09-11,feature_0.4.0 起点)**:`npm test` 77 passed / 12 files;web tsc 25(=基线);node tsc 27(**存量漂移**:PLAN-0.3.5 记录 19,由 0.3.5 后期提交引入,与本 Plan 无关——0.4.0 期间以 25/27 为锚点,只降不升)
+  - 验收:基线数字落纸,后续只降不升 ✓
   - 信息:`chore(plan): 0.4.0 kickoff — baseline + migration inventory`
-- [ ] **M0.2 依赖与能力探测**
-  - 范围:加入 `cron-parser` 依赖;手工验证 `sandbox-exec`(macOS)/`bwrap`(Linux)可用性、打包后是否仍可用;验证 Electron 自定义协议 + iframe 严格 sandbox 组合可行
-  - 验收:三种探测结论落纸,决定 M3.9 与 M6.8 的实现路径
+- [x] **M0.2 依赖与能力探测**
+  - **cron-parser@^4.9(CJS)**:安装并通过冒烟(`parseExpression('0 9 * * 1-5')` 下次运行计算正确;注意 v5 是纯 ESM,主进程 external require 只能配 v4)
+  - **sandbox-exec(darwin 24,macOS 15)**:`/usr/bin/sandbox-exec` 可用,`deny file-write*` 生效,`allow file-write* (subpath ...)` 正向放行生效 ✓。**关键经验:profile 里的路径必须用 realpath 解析后的路径**——`/tmp` 软链到 `/private/tmp`,literal 匹配不到。Apple 已标记废弃,按 R1 方案封装 `detectSandboxSupport()` + 降级
+  - **bwrap(Linux)**:本机为 macOS,无法实测;实现为运行时探测,探测不到走降级路径
+  - **自定义协议 + iframe sandbox**:留待 M5.6/M6.8 实现时验证,回退方案 `srcDoc` + 显式 CSP(R4)
   - 信息:`chore(deps): add cron-parser; probe OS sandbox + custom protocol`
 
 ## M1 导航骨架:菜单按钮 + 统一视图路由
