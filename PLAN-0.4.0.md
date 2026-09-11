@@ -333,7 +333,7 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
   - 交付:澄清阶段的对话与生成产物共用同一个会话(`conversationId` 入清单),便于回溯
   - 验收:能从零用几轮对话生成一个可用工具;生成后继续提要求能正确修改而非重做
 
-- [x] **M5.6 工具运行视图**(实现注记:v1 用  +  严格沙箱(不透明源,无 localStorage——生成器提示词已要求工具做存储降级); 自定义协议留待 M6.8 一并验证,失败即维持 srcDoc)
+- [x] **M5.6 工具运行视图**(实现注记:v1 用 srcDoc + sandbox="allow-scripts" 严格沙箱——不透明源,无 localStorage,生成器提示词已要求工具做存储降级;pulsemind-tool:// 自定义协议留待 M6.8 一并验证,不可行则维持 srcDoc)(实现注记:v1 用  +  严格沙箱(不透明源,无 localStorage——生成器提示词已要求工具做存储降级); 自定义协议留待 M6.8 一并验证,失败即维持 srcDoc)
   - 范围:新增 `components/tool-studio/ToolRunner.tsx`:自定义协议加载 `app.html`(复用 `src/main/index.ts:404` 的 `protocol.handle` 模式,新增 `pulsemind-tool://`),严格 iframe sandbox 渲染 + 全屏运行 + 迭代面板
   - 交付:M6 未落地前先跑纯前端能力(无 bridge 时优雅提示)
   - 验收:工具可独立打开运行并交互
