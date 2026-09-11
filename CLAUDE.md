@@ -496,3 +496,14 @@ On first launch, the app migrates data from the old `~/.pulseai/` directory to `
 - Sub-agents execute as full AgentEngine instances — the parent agent blocks on `await handle.waitForCompletion()`. Consider this performance impact: each sub-agent LLM call goes through the full streaming path.
 - The `chrome-fetcher.ts` module handles Chrome DevTools MCP lifecycle (start/stop/wait) plus cross-origin iframe crawling. It's a standalone module called by `knowledge-store.ts` during URL imports.
 - Canvas work directories are persisted via `~/.pulsemind/canvas/manifest.json` mapping rectId → directory path, surviving app restarts. Orphaned directories (not in manifest) are cleaned up on startup.
+
+
+---
+
+## PLAN-0.4.0 additions (信息架构与工具中心)
+
+- **导航**：`src/renderer/src/navigation/`（`registry.ts` = 唯一视图注册表）+ `stores/navigationStore.ts` + `components/layout/AppMenu.tsx`（左上角菜单）/`ViewHost.tsx`。`canvas` 视图保留但不在菜单（deprecated，入口隐藏）。
+- **能力中心** `components/capability/CapabilityCenter.tsx`：MCP / 技能 / 子代理 / 经验四个页签，组件自设置弹窗原样迁入；设置弹窗只留 LLM/助手/环境/记忆/收藏。
+- **项目 + 沙箱**：`projects` 表（`conversations.project_id`，默认项目 `default` 合成、不落库，workspace 跟随全局设置）。策略模型 `src/shared/sandbox/policy.ts`，纯路径裁决 `src/shared/sandbox/path-jail.ts`；强制点= `services/file-ops.ts`（fs）+ `services/terminal.ts` + `mcp/transport.ts`（spawn cwd）。会话上下文走 AsyncLocalStorage（`main/sandbox/session-context.ts`），session-manager 在 ask/engineCall 包裹。硬隔离 `main/sandbox/exec-sandbox.ts`（sandbox-exec/bwrap，探测降级）。
+- **日常工作**：`~/.pulsemind/routines/*.json` + SQLite `routine_runs`。调度器 `main/routine/routine-scheduler.ts`（30s tick、纯判定 `shared/schedule/schedule-decision.ts`）、运行器 `routine-runner.ts`（无人值守 D13：审批自动拒绝、ask_user 自动跳过、15 分钟超时）。cron 解析 `shared/schedule/cron.ts`（cron-parser v4 CJS）。
+- **工具中心（创意工作室）**：`~/.pulsemind/tools/<id>/`（tool.json/app.html/storage.json）+ `tools/templates/`（6 个预置模板，首启随 templates 拷贝）。生成内核 `renderer/src/tool-studio/generator.ts`（复刻 canvasEngine 模式，产出独立 HTML app）。iframe 严格沙箱（allow-scripts，不透明源），SDK 由 `tool-studio/sdk.ts` 注入、`bridge-host.ts` 校验 event.source 转发；主进程 `main/tool-runtime/` 按 tool.json 的 capabilities 裁决（http 代理封禁 loopback/云元数据、fs 监禁在工具目录、storage KV 1MB 上限、system 剪贴板/通知/外链）并全量审计。

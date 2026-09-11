@@ -48,14 +48,22 @@ IPC types: `src/renderer/src/types/electron.d.ts` (~311 lines).
 - `hooks/` — user hook scripts: `app-start.js` (main-process launch), `llm-request.js` (per LLM request)
 - `skills/` — installed ZIP-based skill packs; `experiences/` — skill-format experience records (max 20, LRU)
 - `knowledge/` — knowledge base (`raw/` sources, `wiki/` compiled); `workspace/` — agent file workspace; `canvas/`, `logs/`, `mcp/`, `tmp/`
+- `routines/` — daily-work routines (one JSON each, PLAN-0.4.0 M4); run history in SQLite `routine_runs`
+- `tools/<id>/` — user tools from the tool studio (`tool.json` manifest + `app.html` + `storage.json` KV); `tools/templates/` — preset templates (PLAN-0.4.0 M5)
+- `projects` / `routine_runs` / `audit_log` — SQLite tables added by PLAN-0.4.0 (project container model, run history, sandbox/capability audit)
 
 ## Gotchas
 
 - **Always `cd` to project root** before running commands. Workspace root contains unrelated projects.
 - `browsers/` is gitignored — contains installed Playwright Chromium binary (installed via `npm run browsers:install`).
 - `node_modules/better-sqlite3` is unpacked from asar (native module, listed in `asarUnpack`). `adm-zip` is also unpacked.
+- `cron-parser` is pinned to v4 (CJS) — v5 is ESM-only and the main process resolves deps via `require()` at runtime.
 - No opencode.json or `.opencode/` config exists at repo level.
 - Agent engine lives in `agent/AgentEngine.ts` (the class). Renderer creates one engine per conversation in `hooks/useConversationEngine.ts` — there is no separate loop-wrapper hook.
+
+Navigation is menu-driven (PLAN-0.4.0): the top-left menu (`components/layout/AppMenu.tsx`) reads `navigation/registry.ts` — the single source of truth for top-level views (`chat | project | routines | capability | knowledge | tools`; `canvas` is hidden). View state lives in `stores/navigationStore.ts`; `ViewHost.tsx` renders non-chat views. Capability configs (MCP/skills/subagents/experiences) live in the Capability Center, not the settings modal.
+
+Sandbox (PLAN-0.4.0 M3): project conversations get a per-project `workspaceDir` + `ProjectSandboxPolicy`. Enforcement points: `src/shared/sandbox/path-jail.ts` (pure decision) wired into `src/main/services/file-ops.ts`; shell commands go through `src/main/sandbox/exec-sandbox.ts` (macOS `sandbox-exec` / Linux bwrap, opt-in `hardIsolation`) and the session's AsyncLocalStorage context (`src/main/sandbox/session-context.ts`). Tool studio bridge calls are capability-checked + audited in `src/main/tool-runtime/`.
 - Provider adapter pattern: new provider = implement `LlmAdapter` interface + factory key in `llm/index.ts`.
 - API calls route through main process IPC proxy (`main/ipc/api-proxy.handler.ts`, avoids CORS in sandboxed renderer).
 - `tsconfig.json` is a project-reference root pointing to `tsconfig.node.json` (main+preload) and `tsconfig.web.json` (renderer). Node config excludes DOM lib. Web config enables `react-jsx`.
