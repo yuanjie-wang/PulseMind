@@ -7,17 +7,25 @@ const EXTERNAL = [
   ...Object.keys(pkg.dependencies || {})
 ]
 
+/** Shared esbuild options for all Node-side targets (main, worker, preload) */
+function nodeTarget(external) {
+  return {
+    bundle: true,
+    minify: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'cjs',
+    external,
+    tsconfig: 'tsconfig.node.json'
+  }
+}
+
 async function main() {
   // Main process
   await build({
     entryPoints: ['src/main/index.ts'],
     outdir: 'out/main',
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'cjs',
-    external: EXTERNAL,
-    tsconfig: 'tsconfig.node.json'
+    ...nodeTarget(EXTERNAL)
   })
   console.log('✓ Main process built → out/main/index.js')
 
@@ -25,12 +33,7 @@ async function main() {
   await build({
     entryPoints: ['src/main/storage/extractors/extract-worker.ts'],
     outdir: 'out/main',
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'cjs',
-    external: EXTERNAL,
-    tsconfig: 'tsconfig.node.json'
+    ...nodeTarget(EXTERNAL)
   })
   console.log('✓ Extract worker built → out/main/storage/extractors/extract-worker.js')
 
@@ -38,12 +41,7 @@ async function main() {
   await build({
     entryPoints: ['src/preload/index.ts'],
     outdir: 'out/preload',
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'cjs',
-    external: ['electron'],
-    tsconfig: 'tsconfig.node.json'
+    ...nodeTarget(['electron'])
   })
   console.log('✓ Preload built        → out/preload/index.js')
 }
