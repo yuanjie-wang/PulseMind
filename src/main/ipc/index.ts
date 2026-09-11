@@ -43,5 +43,5 @@ export function registerIpcHandlers(): void {
   registerGitHandlers()
   registerProjectHandlers()
   registerRoutineHandlers()
-  registerToolHandlers()
+  registerToolStudioHandlers()
 }
