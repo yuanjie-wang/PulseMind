@@ -517,10 +517,14 @@ function AppLayout({
           background: #000 !important;
         }
 
-        /* Centers switcher: bold labels, black thumb with white text, no slide
-           animation — antd Segmented has no animated prop (the motion is a CSS
-           transition on the thumb), so it is disabled here. The selected
-           background sits on both the item and the thumb; both are overridden. */
+        /* Centers switcher: bold labels on a bare track (no gray pill), black
+           thumb with white text, no slide animation — antd Segmented has no
+           animated prop (the motion is a CSS transition on the thumb), so it is
+           disabled here. The selected background sits on both the item and the
+           thumb; both are overridden. */
+        .centers-segmented {
+          background: transparent !important;
+        }
         .centers-segmented .ant-segmented-item-label {
           font-weight: 600;
         }
