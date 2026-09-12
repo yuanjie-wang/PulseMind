@@ -174,9 +174,11 @@ function AppLayout({
 
   // The three centers share one page (D4a revision); their switcher lives in the
   // header, right of the sidebar toggle, and the tab is the view kind itself.
+  // The switcher doubles as the page title, so the centered header title is skipped.
   const isCentersView = view.kind === 'capability' || view.kind === 'knowledge' || view.kind === 'tools'
   const centersSwitcher = isCentersView ? (
     <Segmented
+      className="centers-segmented"
       value={view.kind}
       onChange={(value) => navigate({ kind: value as typeof view.kind })}
       options={[
@@ -303,20 +305,23 @@ function AppLayout({
           </div>
 
           {/* Center content: the chat view shows the conversation title, every other
-              view shows its own name. */}
-          <span
-            style={{
-              fontSize: 15,
-              fontWeight: 600,
-              color: '#333',
-              maxWidth: '55%',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap'
-            }}
-          >
-            {view.kind === 'chat' ? (activeConvTitle || '') : t(VIEW_TITLE_KEY[view.kind])}
-          </span>
+              view shows its own name. Skipped for the centers page — its Segmented
+              switcher already says which center is open. */}
+          {!isCentersView && (
+            <span
+              style={{
+                fontSize: 15,
+                fontWeight: 600,
+                color: '#333',
+                maxWidth: '55%',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              {view.kind === 'chat' ? (activeConvTitle || '') : t(VIEW_TITLE_KEY[view.kind])}
+            </span>
+          )}
         </Header>
         <Content
           style={{
@@ -510,6 +515,21 @@ function AppLayout({
         }
         .knowledge-header-tabs > .ant-tabs-nav .ant-tabs-ink-bar {
           background: #000 !important;
+        }
+
+        /* Centers switcher: bold labels, dark-gray thumb with white text. The
+           selected background sits on both the item and the sliding thumb, so
+           both are overridden — the thumb is the one actually visible. */
+        .centers-segmented .ant-segmented-item-label {
+          font-weight: 600;
+        }
+        .centers-segmented .ant-segmented-item-selected,
+        .centers-segmented .ant-segmented-thumb {
+          background: #333 !important;
+        }
+        .centers-segmented .ant-segmented-item-selected,
+        .centers-segmented .ant-segmented-item-selected .ant-segmented-item-label {
+          color: #fff !important;
         }
       `}</style>
     </Layout>
