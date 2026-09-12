@@ -24,6 +24,10 @@ let splashWindow: BrowserWindow | null = null
 // Pending unresponsive-renderer recovery timer (see createWindow); module-level
 // so a re-created window's handler can clear a stale one.
 let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null
+// Set right before forcefullyCrashRenderer(): render-process-gone then reports
+// reason 'killed' for our own recovery kill, which must be reloaded (external
+// SIGTERM kills are not).
+let forcedRendererRecovery = false
 
 // ── Startup & crash log ──────────────────────────────────────────────
 // Packaged builds on Windows have no visible console, so a silent first-run
@@ -80,15 +84,23 @@ app.on('render-process-gone', (_e, wc, details) => {
   // Auto-recover: a dead renderer (crash/OOM — including the forced crash
   // from the unresponsive watchdog in createWindow) leaves a white/frozen
   // window the user previously had to restart the whole app for. Reload in
-  // place unless the app is quitting. 'killed' is skipped deliberately:
-  // SIGTERM shutdowns arrive as killed, and racing a reload against quit
-  // can re-spawn windows.
+  // place unless the app is quitting. Plain 'killed' is skipped deliberately:
+  // SIGTERM shutdowns arrive as killed, and racing a reload against quit can
+  // re-spawn windows — but the watchdog's own forced crash sets
+  // forcedRendererRecovery so its kill DOES reload (observed 2026-09-12:
+  // forced crash succeeded, reload was skipped, window stayed dead for hours).
+  const selfInflicted = details.reason === 'killed' && forcedRendererRecovery
+  forcedRendererRecovery = false
   if (isQuitting) return
-  if ((details.reason === 'crashed' || details.reason === 'oom') && !wc.isDestroyed()) {
+  if ((details.reason === 'crashed' || details.reason === 'oom' || selfInflicted) && !wc.isDestroyed()) {
     try {
-      writeLog('INFO', 'render-process-gone: reloading window to recover')
+      writeLog('INFO', `render-process-gone: reloading window to recover (reason=${details.reason})`)
       wc.reload()
     } catch { /* webContents may already be gone */ }
+  }
+  if (rendererRecoveryTimer) {
+    clearTimeout(rendererRecoveryTimer)
+    rendererRecoveryTimer = null
   }
 })
 app.on('child-process-gone', (_e, details) => {
@@ -103,16 +115,24 @@ app.on('child-process-gone', (_e, details) => {
 // SQLite/fs, retry storms…), not just the renderer. Drifts above the sleep
 // ceiling are treated as system sleep rather than a stall (timers pause while
 // asleep; suspend/resume log lines bracket those), and repeats are throttled.
+// Drifts overlapping a suspend (or a dark-wake blip mid-sleep, observed
+// 2026-09-12: 283s "stall" logged while the machine was still asleep) are
+// suppressed via lastSuspendAt/lastResumeAt — those are sleep, not stalls.
 const WATCHDOG_INTERVAL_MS = 2_000
 const WATCHDOG_STALL_THRESHOLD_MS = 5_000
 const WATCHDOG_SLEEP_CEILING_MS = 10 * 60_000
 let watchdogLastTick = Date.now()
 let watchdogLastLogAt = 0
+export const powerEventTimestamps = { lastSuspendAt: 0, lastResumeAt: 0 }
 setInterval(() => {
   const now = Date.now()
   const drift = now - watchdogLastTick - WATCHDOG_INTERVAL_MS
   watchdogLastTick = now
   if (drift <= WATCHDOG_STALL_THRESHOLD_MS || drift > WATCHDOG_SLEEP_CEILING_MS) return
+  // Overlap with a suspend/resume boundary → the machine slept through it.
+  const { lastSuspendAt, lastResumeAt } = powerEventTimestamps
+  if ((lastSuspendAt && now - lastSuspendAt <= drift + 30_000)
+    || (lastResumeAt && now - lastResumeAt <= drift + 30_000)) return
   if (now - watchdogLastLogAt < 60_000) return
   watchdogLastLogAt = now
   writeLog('WARN', `watchdog: main event loop stalled ~${Math.round(drift / 100) / 10}s`)
@@ -353,6 +373,7 @@ function createWindow(): void {
       rendererRecoveryTimer = null
       if (!wc || wc.isDestroyed() || isQuitting) return
       writeLog('WARN', 'renderer still unresponsive after 15s — forcing crash to recover')
+      forcedRendererRecovery = true
       try { wc.forcefullyCrashRenderer() } catch { /* already gone */ }
     }, 15_000)
     wc.once('responsive', () => {
@@ -548,9 +569,11 @@ if (gotTheLock) {
   // ── Sleep/resume resilience ──
   // System sleep can freeze SSE streams (fetch hangs), SQLite, and GPU context.
   powerMonitor.on('suspend', () => {
+    powerEventTimestamps.lastSuspendAt = Date.now()
     writeLog('INFO', 'power: system suspending')
   })
   powerMonitor.on('resume', () => {
+    powerEventTimestamps.lastResumeAt = Date.now()
     writeLog('INFO', 'power: system resumed from sleep')
 
     // Give network stack time to come back before any recovery actions

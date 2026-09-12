@@ -60,7 +60,7 @@ async function registerServers(): Promise<void> {
       if (serverManager.getServer(record.id)) continue
       try {
         serverManager.register(record.config, record.id)
-        if (record.summary) serverManager.setSummary(record.id, record.summary)
+        restoreSummary(record.id, record.summary)
         if (record.autoStart) {
           serverManager.markAutoStart(record.id, true)
         }
@@ -74,6 +74,12 @@ async function registerServers(): Promise<void> {
   } catch (err) {
     console.log('[MCP] Failed to load custom servers:', err)
   }
+}
+
+// register() rebuilds from config alone, dropping metadata the config does not carry
+// (the summary). Disk cannot be re-read here — persistCustomServers() writes memory.
+function restoreSummary(id: string, summary: string | undefined): void {
+  if (summary) serverManager.setSummary(id, summary)
 }
 
 // Persist current custom servers to store
@@ -175,12 +181,15 @@ export function registerMcpHandlers(): void {
           const sameConfig = JSON.stringify(existing.config) === JSON.stringify(record.config)
           if (!sameConfig) {
             const wasConnected = existing.status === 'connected'
+            const summary = existing.summary
             serverManager.unregister(record.id)
             serverManager.register(record.config, record.id)
+            restoreSummary(record.id, summary)
             if (wasConnected) serverManager.start(record.id).catch(() => {})
           }
         } else {
           serverManager.register(record.config, record.id)
+          restoreSummary(record.id, record.summary)
           if (record.autoStart) {
             serverManager.markAutoStart(record.id, true)
             serverManager.start(record.id).catch(() => {})
@@ -226,9 +235,12 @@ export function registerMcpHandlers(): void {
     try {
       validateMcpConfig(config)
       // Re-register: unregister then register with same id
-      const needRestart = serverManager.getServer(id)?.status === 'connected'
+      const previous = serverManager.getServer(id)
+      const needRestart = previous?.status === 'connected'
+      const summary = previous?.summary
       serverManager.unregister(id)
       serverManager.register(config, id)
+      restoreSummary(id, summary)
       if (needRestart) {
         await serverManager.start(id).catch(() => {})
       }

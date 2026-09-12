@@ -21,7 +21,18 @@ import { registerProjectHandlers } from './project.handler'
 import { registerRoutineHandlers } from './routine.handler'
 import { registerToolStudioHandlers } from './tool.handler'
 
+// Idempotence guard: ipcMain.handle throws 'second handler' if a channel is
+// registered twice, which aborts the whole startup (observed 2026-09-11 21:56,
+// cause unclear — likely a dev-restart bundle race). A second invocation is a
+// bug, but failing the boot over it is worse: skip and log instead.
+let handlersRegistered = false
+
 export function registerIpcHandlers(): void {
+  if (handlersRegistered) {
+    console.warn('[IPC] registerIpcHandlers called twice — skipping')
+    return
+  }
+  handlersRegistered = true
   registerConversationHandlers()
   registerSettingsHandlers()
   registerTerminalHandlers()
