@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react'
-import { Layout, Button, theme, Switch, Modal, Tooltip, Segmented } from 'antd'
+import { Layout, Button, theme, Switch, Modal, Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
   SettingOutlined,
@@ -15,7 +15,7 @@ import ConversationSidebar from './ConversationSidebar'
 import SidebarNav from './SidebarNav'
 import { ViewHost } from './ViewHost'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
-import { VIEW_TITLE_KEY } from '../../navigation/registry'
+import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
 import SessionManager from './SessionManager'
 import StatisticsDrawer from './StatisticsDrawer'
@@ -175,19 +175,23 @@ function AppLayout({
   // The three centers share one page (D4a revision); their switcher lives in the
   // header, right of the sidebar toggle, and the tab is the view kind itself.
   // The switcher doubles as the page title, so the centered header title is skipped.
+  // Plain buttons driven by the registry's centers submenu — one data source for the
+  // sidebar flyout and this switcher, and no antd-internal styling to fight.
   const isCentersView = view.kind === 'capability' || view.kind === 'knowledge' || view.kind === 'tools'
   const centersSwitcher = isCentersView ? (
-    <Segmented
-      className="centers-segmented"
-      value={view.kind}
-      onChange={(value) => navigate({ kind: value as typeof view.kind })}
-      options={[
-        { label: t('menu.capability'), value: 'capability' },
-        { label: t('menu.knowledge'), value: 'knowledge' },
-        { label: t('menu.tools'), value: 'tools' },
-      ]}
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-    />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      {CENTERS_SUBMENU.map((item) => (
+        <Button
+          key={item.view}
+          type="text"
+          className={`centers-switch-btn${view.kind === item.view ? ' active-mode-btn' : ''}`}
+          onClick={() => navigate({ kind: item.view })}
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          {t(item.labelKey)}
+        </Button>
+      ))}
+    </div>
   ) : null
 
   // Sits at the left of the header's action cluster, where it keeps its place whether the
@@ -305,7 +309,7 @@ function AppLayout({
           </div>
 
           {/* Center content: the chat view shows the conversation title, every other
-              view shows its own name. Skipped for the centers page — its Segmented
+              view shows its own name. Skipped for the centers page — its switcher
               switcher already says which center is open. */}
           {!isCentersView && (
             <span
@@ -517,27 +521,23 @@ function AppLayout({
           background: #000 !important;
         }
 
-        /* Centers switcher: bold labels on a bare track (no gray pill), black
-           thumb with white text, no slide animation — antd Segmented has no
-           animated prop (the motion is a CSS transition on the thumb), so it is
-           disabled here. The selected background sits on both the item and the
-           thumb; both are overridden. */
-        .centers-segmented {
+        /* Centers switcher: plain text buttons, the active one black with white
+           text. Scoped here so the sidebar's gray .active-mode-btn stays as is. */
+        .centers-switch-btn {
           background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          color: #333 !important;
+          font-weight: 600 !important;
+          height: 30px !important;
+          padding: 0 12px !important;
         }
-        .centers-segmented .ant-segmented-item-label {
-          font-weight: 600;
+        .centers-switch-btn:hover {
+          background: rgba(0, 0, 0, 0.06) !important;
+          color: #000 !important;
         }
-        .centers-segmented .ant-segmented-item-selected,
-        .centers-segmented .ant-segmented-thumb {
+        .centers-switch-btn.active-mode-btn {
           background: #000 !important;
-        }
-        .centers-segmented .ant-segmented-thumb {
-          transition: none !important;
-          animation: none !important;
-        }
-        .centers-segmented .ant-segmented-item-selected,
-        .centers-segmented .ant-segmented-item-selected .ant-segmented-item-label {
           color: #fff !important;
         }
       `}</style>

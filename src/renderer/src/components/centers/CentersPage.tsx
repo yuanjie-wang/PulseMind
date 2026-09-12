@@ -1,7 +1,7 @@
 // ── Centers page ──
 // PLAN-0.4.0 D4a/D4b revision: 能力中心 / 知识中心 / 工具中心 share one page.
 // The selected tab IS the view kind (capability | knowledge | tools), so the header
-// title, the header Segmented, sidebar highlighting and deep links (e.g. the install
+// title, the header switcher, sidebar highlighting and deep links (e.g. the install
 // notifier's capabilityTab jump) all keep working without a separate tab state.
 
 import React, { useRef, useState } from 'react'
