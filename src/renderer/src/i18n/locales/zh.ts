@@ -362,7 +362,7 @@ const zh = {
     experiences: '经验',
     memory: '记忆',
     skills: '技能',
-    mcp: 'MCP 服务',
+    mcp: '连接器',
     tools: '工具',
     assistant: '助手设置',
     settings: 'LLM 设置',

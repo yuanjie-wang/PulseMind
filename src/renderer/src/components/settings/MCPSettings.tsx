@@ -1,19 +1,14 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Button, Tag, Typography, Divider, Tooltip, Modal, Input, Form, Drawer, Radio, Segmented } from 'antd'
+import { Button, Card, Tag, Tooltip, Modal, Input, Form, Radio, Segmented } from 'antd'
 import {
   ApiOutlined,
   ReloadOutlined,
   PlayCircleOutlined,
   StopOutlined,
-  CheckCircleOutlined,
   CloseCircleOutlined,
-  MinusCircleOutlined,
-  LoadingOutlined,
+  LinkOutlined,
   ToolOutlined,
-  CaretRightOutlined,
-  CaretDownOutlined,
   PlusOutlined,
-  EditOutlined,
   DeleteOutlined
 } from '@ant-design/icons'
 import type { MCPManagedServer, MCPClientConfig } from '../../types/electron'
@@ -21,25 +16,304 @@ import { useAppSettings } from '../../hooks/useAppSettings'
 import { createLlmAdapter } from '../../llm'
 import { generateMcpSummaries } from '../../agent/mcp-summary-service'
 
-const { Text, Title } = Typography
-
-const statusConfig: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
-  connected: { color: 'green', icon: <CheckCircleOutlined />, label: '已连接' },
-  connecting: { color: 'blue', icon: <LoadingOutlined />, label: '连接中' },
-  stopped: { color: 'default', icon: <MinusCircleOutlined />, label: '已停止' },
-  error: { color: 'red', icon: <CloseCircleOutlined />, label: '错误' },
+/** A dot, not a filled Tag: on a ~320px card a colored status pill competes with
+ *  the server name for the eye, which is exactly the crowding we're removing. */
+const STATUS: Record<MCPManagedServer['status'], { color: string; label: string; pulse?: boolean }> = {
+  connected: { color: '#52c41a', label: '已连接' },
+  connecting: { color: '#1677ff', label: '连接中', pulse: true },
+  stopped: { color: '#d9d9d9', label: '已停止' },
+  error: { color: '#ff4d4f', label: '错误' },
 }
 
-interface MCPSettingsProps {
-  inline?: boolean
-  open?: boolean
-  onClose?: () => void
+const TRANSPORT_LABEL: Record<string, string> = {
+  stdio: '本地',
+  sse: 'SSE',
+  'streamable-http': 'HTTP',
 }
 
-export default function MCPSettings({ inline = true, open, onClose }: MCPSettingsProps) {
+/** Connectors the app registers for itself: no editable config, and not deletable. */
+const BUILT_IN_IDS = new Set(['chrome-devtools'])
+
+/** The form edits headers as key/value rows; MCPClientConfig stores a record. */
+interface HeaderRow {
+  key: string
+  value: string
+}
+
+function toHeaderRows(headers?: Record<string, string>): HeaderRow[] {
+  return Object.entries(headers ?? {}).map(([key, value]) => ({ key, value }))
+}
+
+/** A row with a blank name is one the user added but never filled — drop it. */
+function fromHeaderRows(rows?: Array<Partial<HeaderRow>>): Record<string, string> | undefined {
+  const entries = (rows ?? [])
+    .map((row) => [(row?.key ?? '').trim(), row?.value ?? ''] as const)
+    .filter(([key]) => key)
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
+const CARD_CSS = `
+  @keyframes mcp-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+`
+
+const ICON_TILE: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0,
+  background: 'rgba(0, 0, 0, 0.05)',
+  color: '#555',
+}
+
+const TOOL_TAG: React.CSSProperties = {
+  fontSize: 11,
+  margin: 0,
+  border: 'none',
+  background: 'rgba(0, 0, 0, 0.05)',
+  color: '#666',
+}
+
+function ServerStatusLine({ status }: { status: MCPManagedServer['status'] }): React.ReactElement {
+  const cfg = STATUS[status] ?? STATUS.stopped
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0, color: '#888' }}>
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: '50%',
+          background: cfg.color,
+          boxShadow: `0 0 0 3px ${cfg.color}1f`,
+          animation: cfg.pulse ? 'mcp-dot-pulse 1.2s ease-in-out infinite' : undefined,
+        }}
+      />
+      {cfg.label}
+    </span>
+  )
+}
+
+interface McpServerCardProps {
+  server: MCPManagedServer
+  busy: boolean
+  onOpenEditor: () => void
+  onStart: () => void
+  onStop: () => void
+  onRestart: () => void
+  onDelete: () => void
+}
+
+/** Connector card. Card's own title/extra/actions bands are deliberately unused —
+ *  three chrome rows on a narrow card was the bulk of the old card's clutter.
+ *  Header, a one-line endpoint and the collapsed tool list all live in the body.
+ *  Custom connectors open the edit dialog on card click; the built-in one does
+ *  not, because its config is regenerated on every boot. */
+function McpServerCard({
+  server,
+  busy,
+  onOpenEditor,
+  onStart,
+  onStop,
+  onRestart,
+  onDelete
+}: McpServerCardProps): React.ReactElement {
+  const isBuiltIn = BUILT_IN_IDS.has(server.id)
+  const editable = !isBuiltIn
+  const openEditor = editable ? onOpenEditor : undefined
+  const transport = server.config.transportType || 'stdio'
+  const isRemote = transport === 'sse' || transport === 'streamable-http'
+  const connected = server.status === 'connected'
+  const endpoint = isRemote
+    ? server.config.url || ''
+    : [server.config.command, ...(server.config.args ?? [])].filter(Boolean).join(' ')
+
+  // One muted line carries what used to be serverInfo + status + a separate row.
+  const meta: string[] = [TRANSPORT_LABEL[transport] ?? transport]
+  if (server.tools.length > 0) meta.push(`${server.tools.length} 个工具`)
+  if (server.serverInfo?.version) meta.push(`v${server.serverInfo.version}`)
+
+  // Keyboard parity for the click-to-edit card; inner buttons must keep their
+  // own key handling, so only the card's own target counts.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (!openEditor || e.target !== e.currentTarget) return
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      openEditor()
+    }
+  }
+
+  return (
+    <Card
+      hoverable={editable}
+      onClick={openEditor}
+      onKeyDown={handleKeyDown}
+      tabIndex={editable ? 0 : undefined}
+      style={{ borderRadius: 10, height: '100%', cursor: editable ? 'pointer' : undefined }}
+      styles={{
+        body: { padding: 14, height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <div style={{ ...ICON_TILE, width: 30, height: 30, borderRadius: 9 }}>
+          <ApiOutlined style={{ fontSize: 15 }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <span style={{ fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {server.name}
+            </span>
+            {isBuiltIn && (
+              <Tag style={{ ...TOOL_TAG, lineHeight: '15px', padding: '0 5px', color: '#888', flexShrink: 0 }}>
+                内置
+              </Tag>
+            )}
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              columnGap: 6,
+              rowGap: 2,
+              marginTop: 4,
+              fontSize: 11,
+              color: '#999',
+              minWidth: 0
+            }}
+          >
+            <ServerStatusLine status={server.status} />
+            <span style={{ color: '#e0e0e0' }}>·</span>
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meta.join(' · ')}</span>
+          </div>
+        </div>
+        {/* Always-visible actions. Clicks are kept off the card so an action
+            never doubles as "open the editor". */}
+        <div
+          style={{ display: 'flex', alignItems: 'center', flexShrink: 0, marginTop: -2, marginRight: -6 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {connected ? (
+            <>
+              <Tooltip title="停止">
+                <Button type="text" size="small" icon={<StopOutlined />} onClick={onStop} />
+              </Tooltip>
+              <Tooltip title="重启">
+                <Button type="text" size="small" icon={<ReloadOutlined />} disabled={busy} onClick={onRestart} />
+              </Tooltip>
+            </>
+          ) : (
+            <Tooltip title="启动">
+              <Button
+                type="text"
+                size="small"
+                icon={<PlayCircleOutlined />}
+                loading={busy}
+                disabled={server.status === 'connecting'}
+                onClick={onStart}
+              />
+            </Tooltip>
+          )}
+          {!isBuiltIn && (
+            <Tooltip title="删除">
+              <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={onDelete} />
+            </Tooltip>
+          )}
+        </div>
+      </div>
+
+      {/* One ellipsized line instead of N wrapped code chips. */}
+      {endpoint && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginTop: 10,
+            padding: '5px 8px',
+            borderRadius: 6,
+            background: '#f7f7f7',
+            minWidth: 0
+          }}
+        >
+          {isRemote ? (
+            <LinkOutlined style={{ fontSize: 11, color: '#c0c0c0', flexShrink: 0 }} />
+          ) : (
+            <span style={{ fontSize: 11, color: '#c0c0c0', flexShrink: 0, fontFamily: 'monospace' }}>$</span>
+          )}
+          <Tooltip title={endpoint}>
+            <code style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {endpoint}
+            </code>
+          </Tooltip>
+        </div>
+      )}
+
+      {server.error && (
+        <Tooltip title={server.error}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 6,
+              marginTop: 8,
+              padding: '6px 8px',
+              borderRadius: 6,
+              background: 'rgba(255, 77, 79, 0.06)',
+              fontSize: 11.5,
+              lineHeight: 1.5,
+              color: '#cf1322'
+            }}
+          >
+            <CloseCircleOutlined style={{ marginTop: 2, flexShrink: 0 }} />
+            <span
+              style={{
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+                wordBreak: 'break-word'
+              }}
+            >
+              {server.error}
+            </span>
+          </div>
+        </Tooltip>
+      )}
+
+      {/* Every card gets the tool row so a not-yet-connected connector matches its
+          neighbours in height; it is a plain count, not a disclosure — expanding the
+          tool list grew the card and broke that. The spacer pins it to the bottom so
+          a stretched grid row keeps the rows aligned. */}
+      <div style={{ flex: 1, minHeight: 10 }} />
+      <div style={{ paddingTop: 8, borderTop: '1px solid #f2f2f2' }}>
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            height: 20,
+            padding: '0 4px',
+            marginLeft: -4,
+            fontSize: 12,
+            color: server.tools.length > 0 ? '#666' : '#c8c8c8'
+          }}
+        >
+          <ToolOutlined style={{ fontSize: 12 }} />
+          {`工具 · ${server.tools.length}`}
+        </span>
+      </div>
+    </Card>
+  )
+}
+
+/** Header actions the capability center renders next to its pill tabs. */
+export interface MCPSettingsHandle {
+  reloadFromDisk: () => void
+  openAddModal: () => void
+}
+
+const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_props, ref) {
   const [servers, setServers] = useState<MCPManagedServer[]>([])
   const [loading, setLoading] = useState<Record<string, boolean>>({})
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const [formOpen, setFormOpen] = useState(false)
   const [transportCategory, setTransportCategory] = useState('local')
   const [editingServer, setEditingServer] = useState<MCPManagedServer | null>(null)
@@ -106,7 +380,7 @@ export default function MCPSettings({ inline = true, open, onClose }: MCPSetting
   const openAddModal = () => {
     setEditingServer(null)
     form.resetFields()
-    form.setFieldsValue({ transportType: 'stdio', args: '', envKey: '', envValue: '' })
+    form.setFieldsValue({ transportType: 'stdio', args: '', envKey: '', envValue: '', headers: [] })
     setTransportCategory('local')
     setFormOpen(true)
   }
@@ -121,17 +395,17 @@ export default function MCPSettings({ inline = true, open, onClose }: MCPSetting
       command: server.config.command,
       args: (server.config.args || []).join('\n'),
       url: server.config.url || '',
-      headers: server.config.headers ? JSON.stringify(server.config.headers, null, 2) : '',
+      headers: toHeaderRows(server.config.headers),
     })
     setTransportCategory(tt === 'stdio' ? 'local' : 'http')
     setFormOpen(true)
   }
 
   const handleDelete = async (server: MCPManagedServer) => {
-    if (server.id === 'chrome-devtools') return
+    if (BUILT_IN_IDS.has(server.id)) return
     Modal.confirm({
       title: '确认删除',
-      content: `确定要删除 MCP 服务器 "${server.name}" 吗？`,
+      content: `确定要删除连接器 "${server.name}" 吗？`,
       onOk: async () => {
         await window.electronAPI.mcpUnregisterServer(server.id)
         await refresh()
@@ -151,9 +425,7 @@ export default function MCPSettings({ inline = true, open, onClose }: MCPSetting
 
       if (config.transportType === 'sse' || config.transportType === 'streamable-http') {
         config.url = values.url
-        config.headers = values.headers ? (() => {
-          try { return JSON.parse(values.headers) } catch { return undefined }
-        })() : undefined
+        config.headers = fromHeaderRows(values.headers)
       } else {
         config.command = values.command
         config.args = values.args
@@ -178,180 +450,70 @@ export default function MCPSettings({ inline = true, open, onClose }: MCPSetting
           locale: settings.locale,
         }).catch(() => {})
       }
-    } catch (err) {
+    } catch {
       // validation failed, form will show errors
     }
   }
 
+  // Expose the former title-row actions to the capability center's pill row.
+  React.useImperativeHandle(ref, () => ({ reloadFromDisk, openAddModal }))
+
+  // The built-in connector stays registered for the agent, but it has no user-facing
+  // config to show — its card is hidden until the browser tool is reworked.
+  const visibleServers = servers.filter((s) => !BUILT_IN_IDS.has(s.id))
+
   const content = (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
-        <Title level={5} style={{ margin: 0 }}>MCP 服务器</Title>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <Tooltip title="从配置文件重新加载">
-            <Button size="small" icon={<ReloadOutlined />} onClick={reloadFromDisk} />
-          </Tooltip>
-          <Tooltip title="添加服务器">
-            <Button size="small" icon={<PlusOutlined />} onClick={openAddModal} />
-          </Tooltip>
-        </div>
-      </div>
-
-      {servers.length === 0 ? (
-        <div style={{ padding: 32, textAlign: 'center', color: '#999' }}>
-          <ApiOutlined style={{ fontSize: 32, display: 'block', marginBottom: 8 }} />
-          <Text type="secondary">没有注册的 MCP 服务器</Text>
+      <style>{CARD_CSS}</style>
+      {visibleServers.length === 0 ? (
+        <div style={{ padding: '56px 24px', textAlign: 'center' }}>
+          <div style={{ ...ICON_TILE, width: 44, height: 44, borderRadius: 13, margin: '0 auto 12px', background: 'rgba(0, 0, 0, 0.04)' }}>
+            <ApiOutlined style={{ fontSize: 20, color: '#bbb' }} />
+          </div>
+          <div style={{ fontSize: 13, color: '#666' }}>还没有连接器</div>
+          <div style={{ fontSize: 12, color: '#bbb', marginTop: 4 }}>
+            点右上角「添加连接器」新建，或用「重新加载」读取配置文件
+          </div>
         </div>
       ) : (
-        servers.map((server) => {
-          const cfg = statusConfig[server.status] || statusConfig.stopped
-          const isBuiltIn = server.id === 'chrome-devtools'
-          return (
-            <div
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+            gap: 14
+          }}
+        >
+          {visibleServers.map((server) => (
+            <McpServerCard
               key={server.id}
-              style={{
-                border: '1px solid #f0f0f0',
-                borderRadius: 8,
-                padding: 16,
-                marginBottom: 12,
-                background: '#fafafa'
-              }}
-            >
-              {/* Header */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <ApiOutlined style={{ fontSize: 18, color: '#666' }} />
-                  <Text strong>{server.name}</Text>
-                  {isBuiltIn && <Tag style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>内置</Tag>}
-                  <Tag icon={cfg.icon} color={cfg.color}>{cfg.label}</Tag>
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {server.status !== 'connected' && (
-                    <Tooltip title="启动">
-                      <Button
-                        size="small"
-                        icon={<PlayCircleOutlined />}
-                        onClick={() => handleStart(server.id)}
-                        loading={loading[server.id]}
-                        disabled={server.status === 'connecting'}
-                      />
-                    </Tooltip>
-                  )}
-                  {server.status === 'connected' && (
-                    <>
-                      <Tooltip title="停止">
-                        <Button
-                          size="small"
-                          icon={<StopOutlined />}
-                          onClick={() => handleStop(server.id)}
-                          loading={loading[server.id]}
-                        />
-                      </Tooltip>
-                      <Tooltip title="重启">
-                        <Button
-                          size="small"
-                          icon={<ReloadOutlined />}
-                          onClick={() => handleRestart(server.id)}
-                          loading={loading[server.id]}
-                        />
-                      </Tooltip>
-                    </>
-                  )}
-                  {!isBuiltIn && (
-                    <>
-                      <Tooltip title="编辑">
-                        <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(server)} />
-                      </Tooltip>
-                      <Tooltip title="删除">
-                        <Button size="small" icon={<DeleteOutlined />} onClick={() => handleDelete(server)} />
-                      </Tooltip>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* Config detail */}
-              <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
-                {server.config.transportType === 'sse' || server.config.transportType === 'streamable-http' ? (
-                  <span>
-                    <ApiOutlined style={{ marginRight: 4 }} />
-                    <code style={{ background: '#f0f0f0', padding: '1px 4px', borderRadius: 3 }}>{server.config.url}</code>
-                  </span>
-                ) : (
-                  <>
-                    <code style={{ background: '#f0f0f0', padding: '1px 4px', borderRadius: 3 }}>{server.config.command}</code>
-                    {server.config.args.length > 0 && (
-                      <span style={{ marginLeft: 4 }}>
-                        {server.config.args.map((a, i) => (
-                          <code key={i} style={{ background: '#f0f0f0', padding: '1px 4px', borderRadius: 3, marginLeft: 2 }}>{a}</code>
-                        ))}
-                      </span>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {/* Server info */}
-              {server.serverInfo && (
-                <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
-                  {server.serverInfo.name} v{server.serverInfo.version}
-                </div>
-              )}
-
-              {/* Error */}
-              {server.error && (
-                <div style={{ fontSize: 12, color: 'red', marginBottom: 4 }}>
-                  {server.error}
-                </div>
-              )}
-
-              {/* Tools */}
-              {server.tools.length > 0 && (
-                <>
-                  <Divider style={{ margin: '8px 0' }} />
-                  <div
-                    style={{ fontSize: 12, color: '#666', marginBottom: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}
-                    onClick={() => {
-                      setExpandedTools((prev) => {
-                        const next = new Set(prev)
-                        if (next.has(server.id)) next.delete(server.id)
-                        else next.add(server.id)
-                        return next
-                      })
-                    }}
-                  >
-                    {expandedTools.has(server.id) ? <CaretDownOutlined /> : <CaretRightOutlined />}
-                    <ToolOutlined />
-                    可用工具 ({server.tools.length})
-                  </div>
-                  {expandedTools.has(server.id) && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                      {server.tools.map((tool) => (
-                        <Tag key={tool.name} style={{ fontSize: 11 }}>{tool.name}</Tag>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )
-        })
+              server={server}
+              busy={!!loading[server.id]}
+              onOpenEditor={() => openEditModal(server)}
+              onStart={() => handleStart(server.id)}
+              onStop={() => handleStop(server.id)}
+              onRestart={() => handleRestart(server.id)}
+              onDelete={() => handleDelete(server)}
+            />
+          ))}
+        </div>
       )}
 
-      {/* Add / Edit Drawer */}
-      <Drawer
-        title={editingServer ? '编辑 MCP 服务器' : '添加 MCP 服务器'}
+      {/* Add / Edit dialog — one surface for both the header button and a card click */}
+      <Modal
+        title={editingServer ? '编辑连接器' : '添加连接器'}
         open={formOpen}
-        onClose={() => setFormOpen(false)}
-        size="default"
-        footer={
-          <div style={{ textAlign: 'right' }}>
-            <Button onClick={() => setFormOpen(false)} style={{ marginRight: 8 }}>取消</Button>
-            <Button type="primary" onClick={handleSubmit} style={{ background: '#000', borderColor: '#000' }}>
-              {editingServer ? '保存' : '添加'}
-            </Button>
-          </div>
-        }
+        onCancel={() => setFormOpen(false)}
+        width={520}
+        maskClosable={false}
+        styles={{ body: { maxHeight: '62vh', overflowY: 'auto', paddingTop: 4 } }}
+        footer={[
+          <Button key="cancel" onClick={() => setFormOpen(false)}>
+            取消
+          </Button>,
+          <Button key="submit" type="primary" onClick={handleSubmit} style={{ background: '#000', borderColor: '#000' }}>
+            {editingServer ? '保存' : '添加'}
+          </Button>
+        ]}
       >
         <Form form={form} layout="vertical" autoComplete="off">
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入服务器名称' }]}>
@@ -398,23 +560,41 @@ export default function MCPSettings({ inline = true, open, onClose }: MCPSetting
               <Form.Item name="url" label="URL 地址" rules={[{ required: true, message: '请输入 URL' }]}>
                 <Input placeholder="例如: https://mcp.amap.com/mcp?key=xxx" />
               </Form.Item>
-              <Form.Item name="headers" label="自定义请求头 (JSON 格式)">
-                <Input.TextArea rows={3} placeholder='{"Authorization": "Bearer xxx"}' />
-              </Form.Item>
+              <Form.List name="headers">
+                {(fields, { add, remove }) => (
+                  <Form.Item label="自定义请求头">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {fields.map(({ key, name }) => (
+                        <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Form.Item name={[name, 'key']} noStyle>
+                            <Input placeholder="名称，如 Authorization" />
+                          </Form.Item>
+                          <Form.Item name={[name, 'value']} noStyle>
+                            <Input placeholder="值，如 Bearer xxx" />
+                          </Form.Item>
+                          <Button
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={() => remove(name)}
+                          />
+                        </div>
+                      ))}
+                      <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add({ key: '', value: '' })}>
+                        添加请求头
+                      </Button>
+                    </div>
+                  </Form.Item>
+                )}
+              </Form.List>
             </div>
           )}
         </Form>
-      </Drawer>
+      </Modal>
     </>
   )
 
-  if (inline) {
-    return <div style={{ height: '100%', overflow: 'auto' }}>{content}</div>
-  }
+  return <div style={{ height: '100%', overflow: 'auto' }}>{content}</div>
+})
 
-  return (
-    <Drawer title="MCP 服务器" open={open} onClose={onClose} size={400}>
-      {content}
-    </Drawer>
-  )
-}
+export default MCPSettings

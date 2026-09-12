@@ -364,7 +364,7 @@ const en: TranslationDict = {
     experiences: 'Experiences',
     memory: 'Memory',
     skills: 'Skills',
-    mcp: 'MCP Servers',
+    mcp: 'Connectors',
     tools: 'Tools',
     assistant: 'Assistant Settings',
     settings: 'LLM Settings',

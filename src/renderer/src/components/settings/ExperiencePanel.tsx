@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Drawer, Modal, Tag, Typography, Alert, Button, Tooltip, Popconfirm, Empty, Spin } from 'antd'
-import { DeleteOutlined, EyeOutlined, ExperimentOutlined } from '@ant-design/icons'
+import { Modal, Tag, Typography, Alert, Button, Tooltip, Popconfirm, Empty, Spin, Card } from 'antd'
+import { DeleteOutlined, EyeOutlined } from '@ant-design/icons'
 import { MAX_EXPERIENCES } from '../../../../shared/types/experience-types'
 import type { ExperienceRecord } from '../../../../shared/types/experience-types'
 
-const { Text, Paragraph } = Typography
+const { Paragraph } = Typography
 
 const CATEGORY_COLORS: Record<string, string> = {
   code: 'blue',
@@ -14,13 +14,12 @@ const CATEGORY_COLORS: Record<string, string> = {
   general: 'default'
 }
 
-interface ExperiencePanelProps {
-  open: boolean
-  onClose: () => void
-  inline?: boolean
+/** Header action the capability center renders next to its pill tabs. */
+export interface ExperiencePanelHandle {
+  refresh: () => void
 }
 
-function ExperiencePanel({ open, onClose, inline }: ExperiencePanelProps): React.ReactElement {
+const ExperiencePanel = React.forwardRef<ExperiencePanelHandle>(function ExperiencePanel(_props, ref) {
   const [experiences, setExperiences] = useState<ExperienceRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [viewName, setViewName] = useState<string | null>(null)
@@ -66,14 +65,11 @@ function ExperiencePanel({ open, onClose, inline }: ExperiencePanelProps): React
     }
   }, [refresh])
 
+  // Expose the former title-row action to the capability center's pill row.
+  React.useImperativeHandle(ref, () => ({ refresh }))
+
   const content = (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
-        <Text strong style={{ fontSize: 16 }}>经验</Text>
-        <Tooltip title="刷新列表">
-          <Button size="small" icon={<ExperimentOutlined />} onClick={refresh} />
-        </Tooltip>
-      </div>
       <Alert
         type="info"
         showIcon
@@ -85,66 +81,59 @@ function ExperiencePanel({ open, onClose, inline }: ExperiencePanelProps): React
       ) : experiences.length === 0 ? (
         <Empty description="暂无经验" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 24 }} />
       ) : (
-        experiences.map((exp) => (
-          <div
-            key={exp.name}
-            style={{
-              border: '1px solid #f0f0f0', borderRadius: 8, padding: '10px 12px', marginBottom: 8,
-              display: 'flex', flexDirection: 'column', gap: 4
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                <Text strong style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{exp.title}</Text>
-                <Tag color={CATEGORY_COLORS[exp.category] ?? 'default'} style={{ marginInlineEnd: 0, fontSize: 11 }}>{exp.category}</Tag>
-              </div>
-              <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                <Tooltip title="查看全文（记录触发）">
-                  <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => openView(exp.name)} />
-                </Tooltip>
-                <Popconfirm title="删除该经验？" onConfirm={() => handleDelete(exp.name)}>
-                  <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-                </Popconfirm>
-              </div>
-            </div>
-            <Paragraph
-              style={{ margin: 0, fontSize: 12, color: '#888' }}
-              ellipsis={{ rows: 2 }}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+          {experiences.map((exp) => (
+            <Card
+              key={exp.name}
+              size="small"
+              hoverable
+              style={{ borderRadius: 10 }}
+              onClick={() => openView(exp.name)}
+              title={
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>{exp.title}</span>
+                  <Tag color={CATEGORY_COLORS[exp.category] ?? 'default'} style={{ marginInlineEnd: 0, fontSize: 11, flexShrink: 0 }}>{exp.category}</Tag>
+                </span>
+              }
+              extra={
+                <span style={{ display: 'inline-flex', gap: 2 }} onClick={(e) => e.stopPropagation()}>
+                  <Tooltip title="查看全文（记录触发）">
+                    <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => openView(exp.name)} />
+                  </Tooltip>
+                  <Popconfirm title="删除该经验？" onConfirm={() => handleDelete(exp.name)}>
+                    <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </span>
+              }
             >
-              {exp.description}
-            </Paragraph>
-            <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#aaa' }}>
-              <span>创建 {exp.createdAt}</span>
-              <span>{exp.lastUsedAt ? `最近触发 ${exp.lastUsedAt}` : '从未触发'}</span>
-              <span>触发 {exp.useCount} 次</span>
-            </div>
-            {exp.triggers && exp.triggers.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                {exp.triggers.map((kw) => (
-                  <span key={kw} style={{ fontSize: 11, color: '#1677ff', background: 'rgba(22,119,255,0.08)', borderRadius: 4, padding: '1px 6px' }}>{kw}</span>
-                ))}
+              <Paragraph
+                style={{ margin: 0, fontSize: 12, color: '#888' }}
+                ellipsis={{ rows: 2 }}
+              >
+                {exp.description}
+              </Paragraph>
+              <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#aaa', marginTop: 6 }}>
+                <span>创建 {exp.createdAt}</span>
+                <span>{exp.lastUsedAt ? `最近触发 ${exp.lastUsedAt}` : '从未触发'}</span>
+                <span>触发 {exp.useCount} 次</span>
               </div>
-            )}
-          </div>
-        ))
+              {exp.triggers && exp.triggers.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                  {exp.triggers.map((kw) => (
+                    <span key={kw} style={{ fontSize: 11, color: '#1677ff', background: 'rgba(22,119,255,0.08)', borderRadius: 4, padding: '1px 6px' }}>{kw}</span>
+                  ))}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
       )}
     </>
   )
 
   return (
     <>
-      {inline ? (
-        <div style={{ height: '100%', overflow: 'auto' }}>{content}</div>
-      ) : (
-        <Drawer
-          title={<span><ExperimentOutlined style={{ marginRight: 8 }} />经验</span>}
-          open={open}
-          onClose={onClose}
-          size={420}
-        >
-          {content}
-        </Drawer>
-      )}
+      <div style={{ height: '100%', overflow: 'auto' }}>{content}</div>
       <Modal
         title={viewName}
         open={viewName !== null}
@@ -158,6 +147,6 @@ function ExperiencePanel({ open, onClose, inline }: ExperiencePanelProps): React
       </Modal>
     </>
   )
-}
+})
 
 export default ExperiencePanel

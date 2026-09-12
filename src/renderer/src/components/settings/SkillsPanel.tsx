@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import {
   Button,
+  Card,
   Switch,
   Tag,
   Typography,
@@ -42,21 +43,22 @@ function SkillsPanel({
     localStorage.setItem(LS_KEY, 'true')
     setTipDismissed(true)
   }
+  const visibleSkills = skills.filter(s => !s.definition.name.startsWith('ex.'))
 
   return (
     <div style={{ background: 'transparent' }}>
-      {skills.filter(s => !s.definition.name.startsWith('ex.')).length === 0 && (
-        <Text type="secondary">{t('skills.noSkills')}</Text>
-      )}
+      {visibleSkills.length === 0 && <Text type="secondary">{t('skills.noSkills')}</Text>}
 
-      {skills.filter(s => !s.definition.name.startsWith('ex.')).map((skill) => (
-        <SkillCard
-          key={skill.definition.name}
-          skill={skill}
-          onToggle={onToggleSkill}
-          onDeleteSkill={onDeleteSkill}
-        />
-      ))}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12, padding: '4px 0 0' }}>
+        {visibleSkills.map((skill) => (
+          <SkillCard
+            key={skill.definition.name}
+            skill={skill}
+            onToggle={onToggleSkill}
+            onDeleteSkill={onDeleteSkill}
+          />
+        ))}
+      </div>
 
       {/* ── Internet search tip ── */}
       {!tipDismissed && (
@@ -87,44 +89,26 @@ function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.Re
   const { definition, enabled } = skill
 
   return (
-    <div
-      style={{
-        padding: '12px 0',
-        borderBottom: '1px solid #f0f0f0'
-      }}
-    >
-      {/* Header row: icon + name + badges + actions */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-          cursor: 'pointer'
-        }}
-        onClick={() => setExpanded(!expanded)}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            flex: 1,
-            minWidth: 0
-          }}
-        >
-          {CATEGORY_ICONS[definition.category] || <ThunderboltOutlined />}
-          <Text strong style={{ fontSize: 14, color: enabled ? undefined : '#bbb' }} ellipsis>
+    <Card
+      size="small"
+      hoverable
+      style={{ borderRadius: 10, opacity: enabled ? undefined : 0.65 }}
+      onClick={() => setExpanded(!expanded)}
+      title={
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          <span style={{ flexShrink: 0, display: 'inline-flex' }}>{CATEGORY_ICONS[definition.category] || <ThunderboltOutlined />}</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: enabled ? undefined : '#bbb' }}>
             {definition.name}
-          </Text>
+          </span>
           {definition.builtIn && (
-            <Tag color='default' style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
+            <Tag color='default' style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', marginInlineEnd: 0 }}>
               {t('common.builtIn')}
             </Tag>
           )}
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} onClick={(e) => e.stopPropagation()}>
+        </span>
+      }
+      extra={
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} onClick={(e) => e.stopPropagation()}>
           {!definition.builtIn && onDeleteSkill && (
             <Button
               type="text"
@@ -144,14 +128,14 @@ function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.Re
               onToggle(definition.name)
             }}
           />
-        </div>
-      </div>
-
-      {/* Description */}
+        </span>
+      }
+    >
+      {/* Description — click the card to expand the full prompt preview */}
       <Paragraph
         style={{
           fontSize: 12,
-          margin: '4px 0 0 0',
+          margin: 0,
           lineHeight: '1.4',
           color: '#888'
         }}
@@ -159,7 +143,6 @@ function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.Re
       >
         {definition.description}
       </Paragraph>
-
 
       {/* Expanded: full prompt preview */}
       {expanded && definition.systemPrompt && (
@@ -180,7 +163,7 @@ function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.Re
           {definition.systemPrompt}
         </div>
       )}
-    </div>
+    </Card>
   )
 }
 
