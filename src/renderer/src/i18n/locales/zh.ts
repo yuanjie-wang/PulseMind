@@ -361,7 +361,7 @@ const zh = {
     newProject: '新建项目',
     search: '搜索',
     routines: '日常 • 自动化',
-    centers: '能力、知识、工具',
+    centers: '能力 • 知识 • 工具',
     capability: '能力中心',
     knowledge: '知识中心',
     tools: '工具中心',

@@ -1,8 +1,8 @@
 // ── Sidebar navigation column ──
 // The app's primary navigation (PLAN-0.4.0 D4a), rendered from navigation/registry.ts.
 // An entry that declares a `submenu` behaves as a split button: hovering reveals its
-// sub-entries (新建任务 → 对话 / 项目, 能力、知识、工具 → 三个中心) while clicking the
-// entry opens its own default, so the most frequent path stays one click. Everything
+// sub-entries (新建任务 → 对话 / 项目, 能力 • 知识 • 工具 → 三个中心) while clicking
+// the entry opens its own default, so the most frequent path stays one click. Everything
 // else is one button per view.
 
 import React from 'react'

@@ -363,7 +363,7 @@ const en: TranslationDict = {
     newProject: 'New Project',
     search: 'Search',
     routines: 'Daily • Automation',
-    centers: 'Capability, Knowledge, Tools',
+    centers: 'Capability • Knowledge • Tools',
     capability: 'Capability Center',
     knowledge: 'Knowledge Center',
     tools: 'Tool Center',

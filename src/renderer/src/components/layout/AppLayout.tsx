@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react'
-import { Layout, Button, theme, Switch, Modal, Tooltip } from 'antd'
+import { Layout, Button, theme, Switch, Modal, Tooltip, Segmented } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
   SettingOutlined,
@@ -172,6 +172,22 @@ function AppLayout({
   // macOS traffic lights land on it and its content has to move out of their way.
   const headerLeft = headerLeftInset(collapsed)
 
+  // The three centers share one page (D4a revision); their switcher lives in the
+  // header, right of the sidebar toggle, and the tab is the view kind itself.
+  const isCentersView = view.kind === 'capability' || view.kind === 'knowledge' || view.kind === 'tools'
+  const centersSwitcher = isCentersView ? (
+    <Segmented
+      value={view.kind}
+      onChange={(value) => navigate({ kind: value as typeof view.kind })}
+      options={[
+        { label: t('menu.capability'), value: 'capability' },
+        { label: t('menu.knowledge'), value: 'knowledge' },
+        { label: t('menu.tools'), value: 'tools' },
+      ]}
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+    />
+  ) : null
+
   // Sits at the left of the header's action cluster, where it keeps its place whether the
   // sidebar is open or shut. It must never be a *sibling* of a drag region: there the
   // no-drag opt-out is ignored and the click is swallowed as a window drag.
@@ -280,9 +296,10 @@ function AppLayout({
             WebkitAppRegion: 'drag'
           } as React.CSSProperties}
         >
-          {/* Sidebar toggle. */}
-          <div style={{ position: 'absolute', left: 24 + headerLeft, display: 'flex', alignItems: 'center', gap: 8, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {/* Sidebar toggle, then the centers switcher when one of them is open. */}
+          <div style={{ position: 'absolute', left: 24 + headerLeft, display: 'flex', alignItems: 'center', gap: 12, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             {sidebarToggle}
+            {centersSwitcher}
           </div>
 
           {/* Center content: the chat view shows the conversation title, every other

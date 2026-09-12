@@ -34,7 +34,8 @@ export const NEW_TASK_SUBMENU: SidebarNavItem[] = [
   { labelKey: 'menu.newProject', icon: ProjectOutlined, view: 'project' },
 ]
 
-/** Behind 能力、知识、工具 — the three configuration centers. */
+/** Behind 能力 • 知识 • 工具 — the three centers, which share one page whose tab
+ *  is the view kind itself (CentersPage + the header Segmented). */
 export const CENTERS_SUBMENU: SidebarNavItem[] = [
   { labelKey: 'menu.capability', icon: AppstoreOutlined, view: 'capability' },
   { labelKey: 'menu.knowledge', icon: DatabaseOutlined, view: 'knowledge' },
