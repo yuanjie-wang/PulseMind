@@ -17,6 +17,12 @@ interface SidebarNavProps {
   onCreateNew: () => void
 }
 
+// Submenus fly out to the right of the entry, top-aligned, 4px clear of it.
+// Dropdown's `placement` only accepts the top/bottom variants, so the side placement
+// comes from `align`, whose points pair is [popup point, trigger point] — the same
+// pair antd's own `rightTop` placement is built from.
+const SUBMENU_ALIGN = { points: ['tl', 'tr'], offset: [4, 0] }
+
 function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.ReactElement {
   const { t } = useTranslation()
   const view = useNavigationStore((s) => s.view)
@@ -64,7 +70,7 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
         })
 
         return (
-          <Dropdown key={item.view} menu={{ items }} trigger={['hover']} placement="bottomLeft">
+          <Dropdown key={item.view} menu={{ items }} trigger={['hover']} align={SUBMENU_ALIGN}>
             {button}
           </Dropdown>
         )
