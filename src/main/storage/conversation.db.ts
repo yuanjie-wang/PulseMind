@@ -269,6 +269,13 @@ export function getConversationProjectId(id: string): string {
   return row?.project_id || 'default'
 }
 
+/** The conversation's resolved working directory (M8), or null before the
+ *  first session — used to jail browser file uploads (A-M4). */
+export function getConversationWorkspaceDir(id: string): string | null {
+  const row = getDb().prepare('SELECT workspace_dir FROM conversations WHERE id = ?').get(id) as { workspace_dir: string | null } | undefined
+  return row?.workspace_dir || null
+}
+
 /** Store the conversation's resolved working directory (PLAN-0.4.0 M8).
  *  Like setConversationProject, this can run before the row exists (the row is
  *  materialized by the first save), so it stub-inserts when needed. */

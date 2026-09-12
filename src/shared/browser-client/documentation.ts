@@ -54,10 +54,6 @@ const APP_VIEW_BODY = `## App-view backend (lookup, this backend only)
 
 Tabs can be visible INSIDE the app window. \`agent.browsers.user.openTabs()\` lists what the user sees; \`agent.browsers.user.claimTab(id)\` adopts one as controlled. The pane auto-expands while you act on a claimed tab and folds back after.`
 
-const RECORDING_BODY = `## Recording (lookup, app-view only)
-
-\`tab.record()\` captures the tab to a .webm in the conversation workspace. Start before the scenario, stop by closing the tab; the file path is returned.`
-
 const TROUBLESHOOTING_BODY = `## Troubleshooting (lookup)
 
 - "Tab 不存在" → the tab was closed (by user or code). Re-run tabs.list(), rebind.
@@ -70,8 +66,8 @@ const DOCUMENTS: BrowserDocument[] = [
   { name: 'workflow', title: 'Workflow protocol', mode: 'included', body: WORKFLOW_BODY },
   { name: 'safety', title: 'Safety boundaries', mode: 'included', body: SAFETY_BODY },
   { name: 'screenshots', title: 'Screenshots', mode: 'lookup', body: SCREENSHOTS_BODY },
+  { name: 'downloads', title: 'Downloads', mode: 'lookup', body: `## Downloads (lookup)\n\nWhen a page saves a file, it lands in THIS conversation's workspace automatically (never the user's ~/Downloads). \`agent.browsers.downloads()\` lists what arrived, newest first — then use the file tools to move/read the path, or setInputFiles to feed it to another page (workspace-jailed).` },
   { name: 'app-view', title: 'App-view backend', mode: 'lookup', when: (d) => d.type === 'app-view', body: APP_VIEW_BODY },
-  { name: 'recording', title: 'Recording', mode: 'lookup', when: (d) => d.type === 'app-view', body: RECORDING_BODY },
   { name: 'troubleshooting', title: 'Troubleshooting', mode: 'lookup', body: TROUBLESHOOTING_BODY },
 ]
 

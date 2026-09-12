@@ -35,6 +35,7 @@ export type BrowserCommand =
   | { method: 'userOpenTabs' }
   | { method: 'claimTab'; tabId: string }
   | { method: 'listTabs' }
+  | { method: 'listDownloads' }
   | { method: 'newTab'; url?: string }
   | { method: 'getState'; tabId: string }
   | { method: 'navigate'; tabId: string; url: string }

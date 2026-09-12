@@ -49,8 +49,7 @@ describe('documentation', () => {
     expect(managedList.map((d) => d.name)).not.toContain('app-view')
     expect(documentationText(managed)).not.toContain('## Screenshots (lookup)')
     expect(getDocument('screenshots', managed)).toContain('screenshot()')
-    expect(getDocument('recording', managed)).toBeNull()
-    expect(getDocument('recording', appView)).toContain('.webm')
+    expect(getDocument('downloads', managed)).toContain('workspace')
     expect(getDocument('no-such-doc', appView)).toBeNull()
   })
   it('effectiveApiText lists tab members with signatures', () => {

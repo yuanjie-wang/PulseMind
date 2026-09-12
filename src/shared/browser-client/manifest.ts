@@ -90,12 +90,11 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
       // Requires the in-app view backend (M3) — hidden entirely on managed.
       unsupportedByDefaultIn: ['managed'],
     },
-    'recording': {
-      summary: 'Session recording to a workspace .webm.',
+    'agent.downloads': {
+      summary: 'Files a page downloaded land in this conversation\u2019s workspace — list them here.',
       members: {
-        start: { signature: 'tab.record(): Promise<void>', summary: 'Record the tab (app-view only)' },
+        list: { signature: 'downloads(): Promise<Array<{name, path, size, savedAt}>>', summary: 'Newest first; read/upload the files via the file tools' },
       },
-      unsupportedByDefaultIn: ['managed'],
     },
   },
 }

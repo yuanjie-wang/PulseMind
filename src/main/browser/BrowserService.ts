@@ -7,6 +7,9 @@
 // in PlaywrightCommands, launching in the backend adapters.
 
 import { randomUUID } from 'node:crypto'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import {
   assertAllowedUrl,
   browserError,
@@ -15,7 +18,12 @@ import {
   type BrowserCommandResult,
   type BrowserTabInfo,
 } from '../../shared/browser-client/protocol'
+import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
+import { DEFAULT_SANDBOX_POLICY } from '../../shared/sandbox/policy'
+import { WORKSPACE_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
+import { settingsStore } from '../storage/settings-store'
+import { getConversationWorkspaceDir } from '../storage/conversation.db'
 import type { BackendAdapter } from './backends/BackendAdapter'
 import { ManagedBackend } from './backends/ManagedBackend'
 import { AppViewBackend } from './backends/AppViewBackend'
@@ -46,10 +54,22 @@ export class BrowserService {
   private tabs = new Map<string, ServiceTab>()
   /** Per-conversation backend choice (协议 §5.1: one choice per task). */
   private activeBackend = new Map<string, 'managed' | 'app-view'>()
+  /** Settings-derived defaults, loaded once at construction. */
+  private defaultBackend: 'managed' | 'app-view' = 'managed'
+  private defaultTimeoutMs: number | undefined
 
   constructor() {
     // `managed` is the v1 default; `app-view` joins lazily on first use.
     this.backends.set('managed', new ManagedBackend())
+    void this.loadDefaults()
+  }
+
+  private async loadDefaults(): Promise<void> {
+    try {
+      const browser = (await settingsStore.get()).browser
+      if (browser?.backend) this.defaultBackend = browser.backend
+      if (browser?.timeoutMs) this.defaultTimeoutMs = browser.timeoutMs
+    } catch { /* defaults stand */ }
   }
 
   /** Entry behind the BROWSER_RUN_CODE channel (registered in ipc/browser.handler.ts). */
@@ -103,13 +123,16 @@ export class BrowserService {
         }
         case 'listTabs':
           return browserOk(this.listTabs(scopeId))
+        case 'listDownloads':
+          return browserOk(this.listDownloads(scopeId))
         case 'newTab': {
           if (cmd.url) assertAllowedUrl(cmd.url)
           const backendId = this.activeBackendId(scopeId)
           const backend = this.backendFor(backendId)
           await backend.start()
           const id = `tab_${randomUUID().slice(0, 8)}`
-          const created = await backend.newTab({ url: cmd.url, tabId: id })
+          const downloadsDir = backendId === 'managed' ? join(WORKSPACE_DIR, 'downloads', scopeId) : undefined
+          const created = await backend.newTab({ url: cmd.url, tabId: id, downloadsDir })
           this.tabs.set(id, { id, backendId, scopeId, createdAt: new Date().toISOString(), tab: created })
           return browserOk(await this.tabInfo(this.tabs.get(id)!))
         }
@@ -139,8 +162,24 @@ export class BrowserService {
         }
         case 'evaluate':
           return browserOk(await page.evaluate(cmd.expression))
-        case 'playwright':
+        case 'playwright': {
+          // setInputFiles uploads local files into a page — jail them to the
+          // conversation's workspace so a page can't exfiltrate arbitrary paths.
+          if (cmd.op === 'setInputFiles') {
+            const wsDir = getConversationWorkspaceDir(scopeId)
+            if (wsDir) {
+              const decision = guardPath({
+                denyRoots: buildBaselineDenyRoots(homedir(), process.platform),
+                workspaceDir: wsDir,
+                policy: DEFAULT_SANDBOX_POLICY,
+                target: cmd.arg ?? '',
+                operation: 'read',
+              })
+              if (!decision.ok) return browserError('PATH_DENIED', `文件上传被拒绝：${decision.reason}`)
+            }
+          }
           return browserOk(await runPlaywrightOp(page, { selector: cmd.selector, op: cmd.op, arg: cmd.arg, timeoutMs: cmd.timeoutMs }))
+        }
         case 'playwrightWaitForTimeout':
           await page.waitForTimeout(Math.min(Math.max(cmd.ms, 0), 30_000))
           return browserOk()
@@ -158,7 +197,22 @@ export class BrowserService {
   /** ── internals ── */
 
   private activeBackendId(scopeId: string): 'managed' | 'app-view' {
-    return this.activeBackend.get(scopeId) ?? 'managed'
+    return this.activeBackend.get(scopeId) ?? this.defaultBackend
+  }
+
+  /** Files saved by page downloads in this conversation's workspace. */
+  private listDownloads(scopeId: string): Array<{ name: string; path: string; size: number; savedAt: string }> {
+    const dir = join(WORKSPACE_DIR, 'downloads', scopeId)
+    if (!existsSync(dir)) return []
+    const out: Array<{ name: string; path: string; size: number; savedAt: string }> = []
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name)
+      try {
+        const st = statSync(full)
+        if (st.isFile()) out.push({ name, path: full, size: st.size, savedAt: st.mtime.toISOString() })
+      } catch { /* vanished between list and stat */ }
+    }
+    return out.sort((a, b) => b.savedAt.localeCompare(a.savedAt))
   }
 
   /** Lazy backend factory — app-view instantiates (and connects) on demand. */
@@ -239,7 +293,7 @@ export class BrowserService {
 
   /** Run one kernel call — exposed for the main-process agent host (M1.4). */
   runCode(code: string, timeoutMs: number | undefined, scopeId: string): Promise<BrowserRunOutput> {
-    return runBrowserCode({ code, timeoutMs }, (cmd) => this.executeCommand(cmd, scopeId))
+    return runBrowserCode({ code, timeoutMs: timeoutMs ?? this.defaultTimeoutMs }, (cmd) => this.executeCommand(cmd, scopeId))
   }
 }
 

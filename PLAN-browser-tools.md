@@ -573,3 +573,20 @@ i18n:沿用 ToolCenter 现状(页内中文直书),不新增 key;`viewTitle.tools
 |--------|------|
 | 合并文档形态 | 本文档替代原两份;`PLAN-browser-use.md` / `DESIGN-tools-center.md` 已删除(git 4afd3ef 可追溯) |
 | 两线总执行顺序 | **B 线整线先行、A 线随后**(用户裁定 2026-09-13 晚):B1 → B2 → B3 → B4 → A-M1 → A-M2 → A-M3 → A-M4;今晚完成开发 |
+
+## 合并层 · 实施记录(2026-09-13 凌晨)
+
+| 里程碑 | 状态 | 提交 |
+|--------|------|------|
+| B1-B4 工具中心改版 | ✅ 已落地 | 8d6efd5 |
+| A-M1 浏览器运行时骨架 | ✅ 已落地 | cd34a32 |
+| A-M2 文档/技能闭环 + 随包 Chromium + 移除 chrome-devtools-mcp | ✅ 已落地 | f24d5b0 |
+| A-M3 app-view 后端(回环 CDP + 停靠窗格) | ✅ 已落地 | b556e72 |
+| A-M4 增强(下载/setInputFiles/设置页/web-gui-tester) | ✅ 已落地 | 见 git log |
+
+**顺延项:录屏(app-view .webm)** —— CDP `Page.startScreencast` 只产出帧序列,组装 .webm 需要引入混流依赖(ffmpeg 二进制或 wasm 编码器),属新依赖决策,本次不引入;manifest 与文档系统**未暴露** recording,保持文档与可调用面一致。恢复排期时一并补 `tab.record()`。
+
+**遗留人工项**(按仓库惯例,浏览器/GUI 链路不做 CI,需真人完成):
+- 端到端走查(开发态):`打开 example.com → 快照 → 点击 → 截图 emit` 全程;app-view 后端下同一套技能文档生效(设置切换默认后端 → `agent.browsers.setActiveBackend('app-view')`);停靠窗格随新建/认领展开、随关闭收起
+- 打包(dir)冒烟:`npm run browsers:install && npm run browsers:ensure` 后打包,零系统浏览器开箱即用;预置工具播种/恢复可用
+- B 线手工验证:旧数据启动晋升(templates → preset_)、新装播种、聊天列表无 toolstudio 泄漏、三态切换与选中保持、工作室多轮迭代 + 切走切回上下文保持、复制副本与原件互不影响

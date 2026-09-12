@@ -7,10 +7,11 @@
 // Headless by default (screenshots + snapshots work headless); the settings
 // toggle arrives with M4. One BrowserContext per tab keeps storage isolated.
 
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import { chromium, type Browser, type BrowserContext } from 'playwright-core'
+import { settingsStore } from '../../storage/settings-store'
 import type { BackendAdapter, BackendTab } from './BackendAdapter'
 import type { BackendDescriptor } from '../../../shared/browser-client/protocol'
 
@@ -40,7 +41,9 @@ export class ManagedBackend implements BackendAdapter {
 
   async start(): Promise<void> {
     if (this.browser?.isConnected?.()) return
-    const launch = await resolveLaunchOptions()
+    let headless = true
+    try { headless = (await settingsStore.get()).browser?.headless ?? true } catch { /* default */ }
+    const launch = await resolveLaunchOptions(headless)
     this.browser = await chromium.launch(launch)
   }
 
@@ -51,11 +54,21 @@ export class ManagedBackend implements BackendAdapter {
     }
   }
 
-  async newTab(options: { url?: string; tabId: string }): Promise<BackendTab> {
+  async newTab(options: { url?: string; tabId: string; downloadsDir?: string }): Promise<BackendTab> {
     void options.tabId
     await this.start()
-    const context = await this.browser!.newContext({ viewport: DEFAULT_VIEWPORT })
+    const context = await this.browser!.newContext({ viewport: DEFAULT_VIEWPORT, acceptDownloads: true })
     const page = await context.newPage()
+    if (options.downloadsDir) {
+      // A-M4 下载: every download in this tab lands in the conversation's
+      // workspace — nothing goes to the user's ~/Downloads unasked.
+      mkdirSync(options.downloadsDir, { recursive: true })
+      page.on('download', (download) => {
+        const name = download.suggestedFilename() || `download_${Date.now()}`
+        download.saveAs(join(options.downloadsDir!, name)).catch((err) =>
+          console.warn('[browser] download save failed:', err instanceof Error ? err.message : err))
+      })
+    }
     if (options.url) await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 15_000 })
     return {
       page,

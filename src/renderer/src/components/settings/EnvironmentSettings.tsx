@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Drawer, Input, Button, Typography, Space, message, Select, Switch } from 'antd'
+import { Drawer, Input, Button, Typography, Space, message, Select, Switch, InputNumber } from 'antd'
 import { SaveOutlined, DesktopOutlined, ClockCircleOutlined, FolderOutlined, FolderOpenOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -29,6 +29,10 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   const [messageApi, contextHolder] = message.useMessage()
   const [service, setService] = useState<{ enabled: boolean; port: number; running: boolean; token: string } | null>(null)
   const [serviceBusy, setServiceBusy] = useState(false)
+  // Browser runtime (A-M4) — saved immediately on change; synced from settings here.
+  const [localBrowserBackend, setLocalBrowserBackend] = useState<'managed' | 'app-view'>(settings.browser?.backend ?? 'managed')
+  const [localBrowserHeadless, setLocalBrowserHeadless] = useState<boolean>(settings.browser?.headless ?? true)
+  const [localBrowserTimeoutSec, setLocalBrowserTimeoutSec] = useState<number>(Math.round((settings.browser?.timeoutMs ?? 60_000) / 1000))
 
   const refreshService = () => {
     window.electronAPI.serviceGetStatus().then(setService).catch(() => {})
@@ -38,6 +42,9 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   useEffect(() => {
     if (open) {
       setLocalWorkspaceDir(settings.workspaceDir || '')
+      setLocalBrowserBackend(settings.browser?.backend ?? 'managed')
+      setLocalBrowserHeadless(settings.browser?.headless ?? true)
+      setLocalBrowserTimeoutSec(Math.round((settings.browser?.timeoutMs ?? 60_000) / 1000))
       setCurrentTime(formatCurrentTime())
       window.electronAPI.getPlatformInfo().then(setPlatformInfo).catch(() => {
         setPlatformInfo({ platform: 'Unknown', platformName: '', release: '', arch: '', ripgrepPath: null })
@@ -47,7 +54,7 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
         setDataPaths(null)
       })
     }
-  }, [open, settings.workspaceDir])
+  }, [open, settings.workspaceDir, settings.browser])
 
   // Update clock every second while drawer is open
   useEffect(() => {
@@ -253,6 +260,53 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
             </div>
           </div>
         )}
+      </div>
+
+      {/* ── Browser runtime (A-M4) ── */}
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+        <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+          浏览器内核
+        </Text>
+        <div style={{ marginBottom: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            浏览器工具使用的内核与启动方式。默认托管内核(随包 Chromium 或系统 Chrome/Edge),也可选应用内嵌窗格。
+          </Text>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <Text>默认后端</Text>
+          <Select
+            size="small"
+            style={{ minWidth: 150 }}
+            value={localBrowserBackend}
+            onChange={(v) => { setLocalBrowserBackend(v); void saveSettings({ ...settings, browser: { ...settings.browser, backend: v } }) }}
+            options={[
+              { value: 'managed', label: '托管内核（推荐）' },
+              { value: 'app-view', label: '应用内嵌窗格' },
+            ]}
+          />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <Text>无头模式（不显示窗口）</Text>
+          <Switch
+            checked={localBrowserHeadless}
+            onChange={(checked) => { setLocalBrowserHeadless(checked); void saveSettings({ ...settings, browser: { ...settings.browser, headless: checked } }) }}
+          />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <Text>单次调用上限（秒）</Text>
+          <InputNumber
+            size="small"
+            min={10}
+            max={300}
+            value={localBrowserTimeoutSec}
+            onChange={(v) => {
+              const sec = typeof v === 'number' ? v : 60
+              setLocalBrowserTimeoutSec(sec)
+              void saveSettings({ ...settings, browser: { ...settings.browser, timeoutMs: Math.round(sec * 1000) } })
+            }}
+            style={{ width: 90 }}
+          />
+        </div>
       </div>
 
       {/* Save Button */}

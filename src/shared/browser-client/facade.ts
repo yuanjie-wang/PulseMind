@@ -62,6 +62,8 @@ export interface BrowserApi {
     openTabs: () => Promise<BrowserTabInfo[]>
     claimTab: (id: string) => Promise<TabApi>
   }
+  /** Files saved by page downloads in this conversation's workspace. */
+  downloads: () => Promise<Array<{ name: string; path: string; size: number; savedAt: string }>>
   /** One-shot full readout: backend + effective API + included documents. */
   documentation: () => Promise<string>
   /** Lookup documents (screenshots/app-view/recording/…), when available. */
@@ -128,6 +130,7 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
           return makeTab(id)
         },
       },
+      downloads: () => invoke({ method: 'listDownloads' }) as Promise<Array<{ name: string; path: string; size: number; savedAt: string }>>,
       documentation: async () => documentationText((await invoke({ method: 'getDescriptor' })) as BackendDescriptor),
       documentationList: async () => listDocuments((await invoke({ method: 'getDescriptor' })) as BackendDescriptor),
       documentationGet: async (name: string) => {

@@ -13,7 +13,7 @@ const READ_OPS = new Set([
 ])
 const MUTATING_OPS = new Set([
   'click', 'dblclick', 'fill', 'pressSequentially', 'press', 'hover', 'check', 'uncheck',
-  'selectOption', 'focus', 'waitFor', 'screenshot', 'dragTo',
+  'selectOption', 'focus', 'waitFor', 'screenshot', 'dragTo', 'setInputFiles',
 ])
 export const PLAYWRIGHT_OPS = new Set([...READ_OPS, ...MUTATING_OPS])
 
@@ -53,6 +53,7 @@ export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput): Pro
     case 'check': await locator.check({ timeout }); return 'checked'
     case 'uncheck': await locator.uncheck({ timeout }); return 'unchecked'
     case 'selectOption': await locator.selectOption(input.arg ?? '', { timeout }); return 'selected'
+    case 'setInputFiles': await locator.setInputFiles(input.arg ?? '', { timeout }); return 'files set'
     case 'focus': await locator.focus(); return 'focused'
     case 'waitFor': await locator.waitFor({ state: (input.arg as 'visible' | 'hidden' | 'attached' | 'detached') ?? 'visible', timeout }); return 'waited'
     case 'screenshot': {
