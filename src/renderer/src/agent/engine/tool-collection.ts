@@ -165,16 +165,17 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
           }
         }
 
-        // Auto-inject Chrome DevTools MCP tools when user references a URL
-        // (same principle as skill keyword matching — message content triggers tool availability)
+        // Browser tool activation: a URL reference in the user's message
+        // activates the builtin (same principle as skill keyword matching).
+        // A-M1: the chrome-devtools five-tool auto-injection is gone — the
+        // `browser` tool covers the whole capability.
         const hasUrlRef = deps.messages.some(m =>
           m.role === 'user' && m.contentBlocks?.some(b => b.type === 'text' && /https?:\/\/[^\s)]+/.test((b as TextBlock).text))
         )
-        const chromeTools = ['list_pages', 'select_page', 'navigate_page', 'evaluate_script', 'take_screenshot']
-        const selectedSet = new Set(deps.selectedMcpTools)
-        if (hasUrlRef) {
-          for (const name of chromeTools) selectedSet.add(name)
+        if (hasUrlRef && !deps.selectedBuiltinTools.includes('browser')) {
+          deps.selectedBuiltinTools = [...deps.selectedBuiltinTools, 'browser']
         }
+        const selectedSet = new Set(deps.selectedMcpTools)
 
         for (const t of mcpToolList) {
           if (selectedSet.size === 0 || !selectedSet.has(t.name)) continue

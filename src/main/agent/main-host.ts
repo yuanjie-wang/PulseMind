@@ -39,6 +39,7 @@ import type { ElectronAPI } from '../../renderer/src/types/electron'
 import type { PulseHost } from '../../renderer/src/agent/host/types'
 import type { MemoryEntry } from '../../renderer/src/memory/types'
 import type { KnowledgeImportResult, KnowledgeFile, KnowledgeStats, KnowledgeListResult } from '../../shared/types/knowledge'
+import { browserService } from '../browser/BrowserService'
 
 // ── API stream event bus ─────────────────────────────────────────────
 // The renderer bridge delivers stream events over IPC channels; in-process the
@@ -267,6 +268,11 @@ export const mainHost: PulseHost = {
   updateConversationExtractedMsgCount: async (id, count) => { updateConversationExtractedMsgCount(id, count) },
   updateConversationKeywords: async (id, keywords) => { updateConversationKeywords(id, keywords) },
   updateConversationSummary: async (id, summary) => { updateConversationSummary(id, summary) },
+  // Browser Use (A-M1): in the main-process host the kernel is a direct call.
+  browserRunCode: (code, opts) => {
+    const scopeId = opts?.conversationId || 'unscoped'
+    return browserService.runCode(code, opts?.timeoutMs, scopeId)
+  },
 } satisfies PulseHost
 
 // ElectronAPI import kept out of runtime: PulseHost is a structural Pick of it.

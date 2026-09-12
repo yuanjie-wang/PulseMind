@@ -178,7 +178,7 @@ export class ExecutionFlow {
   private async dispatchToolExecution(tools: ToolUseBlock[]): Promise<void> {
     const readOnlyTools = tools.filter(t => t.name === 'read' || t.name === 'list_dir' || t.name === 'find' || t.name === 'search' || t.name === 'git_status' || t.name === 'git_diff' || t.name === 'git_log')
     const writeEditTools = tools.filter(t => t.name === 'write' || t.name === 'edit' || t.name === 'git_commit' || t.name === 'git_restore')
-    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch'
+    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = tools.filter(t => isSystemTool(t.name))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
     const memoryTools = tools.filter(t => isMemoryTool(t.name))
@@ -211,6 +211,7 @@ export class ExecutionFlow {
         else if (t.name === 'install') await this.engine.toolExecutor.execInstall(t)
         else if (t.name === 'spawn_agent') await this.engine.toolExecutor.execSpawnAgent(t)
         else if (t.name === 'webfetch') await this.engine.toolExecutor.execWebFetch(t)
+        else if (t.name === 'browser') await this.engine.toolExecutor.execBrowser(t)
         else if (t.name === 'create_plan') await this.engine.planManager.execCreatePlan(t)
         else if (t.name === 'advance_plan') await this.engine.planManager.execAdvancePlan(t)
       }
@@ -268,7 +269,7 @@ export class ExecutionFlow {
     const readOnlyTools = toolUses.filter(t => t.name === 'read' || t.name === 'list_dir' || t.name === 'find' || t.name === 'search' || t.name === 'git_status' || t.name === 'git_diff' || t.name === 'git_log')
     const writeEditTools = toolUses.filter(t => t.name === 'write' || t.name === 'edit' || t.name === 'git_commit' || t.name === 'git_restore')
     const askUserTools = toolUses.filter(t => t.name === 'ask_user')
-    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch'
+    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = toolUses.filter(t => isSystemTool(t.name))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))

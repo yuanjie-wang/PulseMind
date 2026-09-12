@@ -766,4 +766,34 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     builtIn: true,
     availability: 'gated'
   },
+
+  // ── browser (Browser Use A-M1) ─────────────────────────────────────
+  // One tool for the whole browser capability: `code` runs against the
+  // host-side facade (agent.browsers). The full calling convention lives in
+  // the returned documentation()/the browser-use skill — the model bootstraps
+  // by reading it, never by guessing member names.
+  {
+    name: 'browser',
+    description:
+      'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts.',
+    category: 'browser',
+    triggers: ['http://', 'https://', 'browser', '网页', '浏览器', '截图', '自动化', '打开页面', '点', '填表', '登录', '下单'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        code: {
+          type: 'string',
+          description: 'JS to run against `agent.browsers` (tabs, domSnapshot, playwright ops, screenshots via emitImage). Fresh scope per call — rebind tabs every call.'
+        },
+        timeoutMs: {
+          type: 'integer',
+          description: 'Wall-clock budget for this call (default 60000, max 300000).'
+        }
+      },
+      required: ['code']
+    },
+    instructions: toolInstructions.browser,
+    builtIn: true,
+    availability: 'gated'
+  },
 ]

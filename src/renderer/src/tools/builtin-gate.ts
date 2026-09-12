@@ -10,6 +10,7 @@ export const BUILTIN_CATEGORY_SUMMARIES: Record<string, string> = {
   git: 'Git operations: status, diff, log, commit, restore — branch/commit/merge workflows',
   memory: 'Long-term memory: search/save memories, search past conversations and tool results',
   knowledge: 'Knowledge base: search and read compiled wiki documents',
+  browser: 'Real browser automation: open URLs, AI/ARIA snapshots, click/type via locators, screenshots — one JS-code tool (agent.browsers)',
 }
 
 export const builtinCategoryServerId = (category: string): string => `builtin:${category}`

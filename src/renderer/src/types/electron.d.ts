@@ -237,6 +237,9 @@ export interface ElectronAPI {
   toolWriteHtml: (id: string, html: string) => Promise<void>
   toolGetDeletedPresets: () => Promise<string[]>
   toolRestorePresets: () => Promise<UserTool[]>
+  /** Browser Use (A-M1): run a JS snippet against the host browser runtime. */
+  browserRunCode: (code: string, opts?: { timeoutMs?: number; conversationId?: string }) =>
+    Promise<{ result: string; truncated: boolean; images: Array<{ mime: string; base64: string }>; console: string[]; error?: string }>
   toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) => Promise<unknown>
   sandboxDetect: () => Promise<boolean>
   getDataPaths: () => Promise<DataPaths>

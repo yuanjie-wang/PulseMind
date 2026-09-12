@@ -385,6 +385,36 @@ export class ToolExecutor {
     t.status = 'completed'; this.notify()
   }
 
+  /** Browser Use (A-M1): run a JS snippet against the host browser runtime.
+   *  Screenshots come back as images[] and flow through the existing
+   *  base64→tmp-file channel so they render inline in the transcript. */
+  async execBrowser(t: ToolUseBlock): Promise<void> {
+    t.status = 'running'; this.notify()
+    try {
+      const code = String(t.input?.code || '')
+      if (!code.trim()) throw new Error('code is required')
+      const timeoutMs = Number(t.input?.timeoutMs) || undefined
+      const r = await getHost().browserRunCode(code, { timeoutMs, conversationId: this.opts.conversationId })
+      const parts: string[] = []
+      if (r.error) parts.push(`Error: ${r.error}`)
+      parts.push(`Result: ${r.result}`)
+      if (r.console.length > 0) parts.push(`Console:\n${r.console.slice(0, 20).join('\n')}`)
+      if (r.images.length > 0) parts.push(`[${r.images.length} 张截图已附加]`)
+      t.exitCode = r.error ? 1 : 0
+      t.status = 'completed'
+      const text = parts.join('\n\n')
+      // imageData is raw base64 (UI prepends the data: prefix); the model gets
+      // the textual summary — visual reasoning keeps riding the snapshot.
+      const firstImage = r.images[0]
+      this.addToolResult(t.id, text, !!r.error, firstImage?.base64)
+    } catch (err) {
+      t.exitCode = -1
+      t.status = 'completed'
+      this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'browser run failed'}`, true)
+    }
+    this.notify()
+  }
+
   async execWebFetch(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {

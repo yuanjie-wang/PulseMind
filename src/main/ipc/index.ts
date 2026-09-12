@@ -20,6 +20,7 @@ import { registerGitHandlers } from './git.handler'
 import { registerProjectHandlers } from './project.handler'
 import { registerRoutineHandlers } from './routine.handler'
 import { registerToolStudioHandlers } from './tool.handler'
+import { registerBrowserHandlers } from './browser.handler'
 
 // Idempotence guard: ipcMain.handle throws 'second handler' if a channel is
 // registered twice, which aborts the whole startup (observed 2026-09-11 21:56,
@@ -55,4 +56,5 @@ export function registerIpcHandlers(): void {
   registerProjectHandlers()
   registerRoutineHandlers()
   registerToolStudioHandlers()
+  registerBrowserHandlers()
 }

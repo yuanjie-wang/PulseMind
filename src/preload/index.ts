@@ -49,6 +49,8 @@ const electronAPI = {
   toolWriteHtml: (id: string, html: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_WRITE_HTML, id, html),
   toolGetDeletedPresets: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_DELETED_PRESETS),
   toolRestorePresets: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_RESTORE_PRESETS),
+  browserRunCode: (code: string, opts?: { timeoutMs?: number; conversationId?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_RUN_CODE, { code, timeoutMs: opts?.timeoutMs, scopeId: opts?.conversationId }),
   toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) =>
     ipcRenderer.invoke(IPC_CHANNELS.TOOLBRIDGE_INVOKE, toolId, method, params),
   sandboxDetect: () => ipcRenderer.invoke(IPC_CHANNELS.SANDBOX_DETECT),

@@ -15,6 +15,7 @@ import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
 import { createTray, applyLaunchAtLogin } from './tray'
 import { routineScheduler } from './routine/routine-scheduler'
+import { browserService } from './browser/BrowserService'
 import { toolStore } from './storage/tool-store'
 import { serviceRuntime } from './service-runtime'
 import { settingsStore } from './storage/settings-store'
@@ -539,7 +540,7 @@ if (gotTheLock) {
     toolStore.migrateLegacyTemplates()
     // Routine scheduler: ticks for due cron schedules (works under tray residency).
     routineScheduler.start()
-    app.on('before-quit', () => { isQuitting = true; routineScheduler.stop(); void serviceRuntime.handle?.close() })
+    app.on('before-quit', () => { isQuitting = true; routineScheduler.stop(); void serviceRuntime.handle?.close(); void browserService.stopAll() })
     createTray({
       getServiceStatus: async () => serviceRuntime.handle ? `服务运行中 :${serviceRuntime.handle.port}` : '服务未运行',
       getLaunchAtLogin: async () => !!(await settingsStore.get()).launchAtLogin,

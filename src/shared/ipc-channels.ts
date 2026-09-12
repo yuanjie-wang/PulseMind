@@ -219,6 +219,9 @@ export const IPC_CHANNELS = {
   TOOL_DELETED_PRESETS: 'tool:deleted-presets',
   TOOL_RESTORE_PRESETS: 'tool:restore-presets',
   TOOLBRIDGE_INVOKE: 'toolbridge:invoke',
+
+  // ── Browser Use (A-M1): one channel for the whole capability ──
+  BROWSER_RUN_CODE: 'browser:run-code',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

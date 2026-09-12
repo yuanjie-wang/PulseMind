@@ -44,6 +44,8 @@ const HOST_METHOD_KEYS = [
   'mcpUpdateServerSummary',
   'mcpCallTool',
   'onMcpServersChanged',
+  // browser (A-M1)
+  'browserRunCode',
   'onSkillsChanged',
   // skills / experience / sub-agents
   'getSkillPreferences',
