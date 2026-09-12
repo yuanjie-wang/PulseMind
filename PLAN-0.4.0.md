@@ -413,6 +413,33 @@ M0 基线冻结 ─→ M1 导航骨架 ─┬─→ M2 能力中心(低风险,�
   - 验收:打包产物完成一次端到端走查(项目→沙箱→日常定时→创造工具→运行)
   - 信息:`docs(plan): 0.4.0 regression + docs refresh`
 
+## M8 会话工作目录 + 欢迎页形态切换(2026-09-12 增补)
+
+> **目标**:把「对话」与「项目」做成欢迎页里可切换的两种开工形态——「对话」在全局 workspace 下懒创建 `yyyyMMddHHmmss` 时间戳目录作为本会话工作目录(会话间文件隔离);「项目」由用户显式指定工作目录(复用 M3 项目容器)。
+> **决策**(用户裁定 2026-09-12):①目录懒创建,首条消息时才建;②存量会话回填为全局 workspace,行为不变;③对话形态不加 `extraRoots`,会话间默认隔离;④侧边栏「新建任务 → 项目」改为落到欢迎页并预选项目形态(ProjectView 后续另行重构,经欢迎页「管理项目」入口可达)。
+> **前置缺陷修复(M8.1)**:`path-jail` 的会话级 deny roots 包含 `~/.pulsemind` 整体,而默认工作区在其下——守卫先查 deny roots 会把 agent 对自己工作区的全部写入判为 "Path is protected"。M8.1 增加工作区豁免。
+
+- [x] **M8.1 路径守卫工作区豁免**
+  - 范围:`src/shared/sandbox/path-jail.ts` `guardPath`:目标(词汇解析 + realpath 双重判定)位于会话 `workspaceDir` 内时跳过 deny-root 检查,写操作仍受 fs 档位约束;软链逃逸不豁免
+  - 单测:`tests/path-jail.test.ts` 补「工作区在 deny root 之下」用例组(可写/禁区外路径仍拒/软链逃逸仍拒/基线不变)
+  - 验收:默认工作区可写;`~/.pulsemind` 其余路径读写仍拒
+- [x] **M8.2 会话工作目录模型与解析服务**
+  - 范围:`database.ts` 加 `conversations.workspace_dir` 列(`try/catch ALTER` + CREATE TABLE 同步);新增 `src/shared/workspace-naming.ts`(纯函数:`yyyyMMddHHmmss` 格式化/`conv_` 前缀映射/`-2` 冲突后缀,vitest 可覆盖);新增 `src/main/storage/conversation-workspace.ts`:`resolveConversationWorkspace(convId, projectId?)` 单一收口(已存 → 原样;绑项目 → 项目工作区;否则 → 全局 workspace 下建时间戳目录),`backfillConversationWorkspaces()` 一次性回填存量行(带 `created_at < 进程启动` 守卫防竞态);`conversation.db.ts` 加 `setConversationWorkspaceDir`(stub-insert,同 `setConversationProject` 模式)与 `listConversations` 透出 `workspaceDir`
+  - 验收:同秒并发不冲突;mkdir 失败结构化报错不静默放宽
+- [x] **M8.3 会话创建接线**
+  - 范围:`agent-session.handler.ts` 在 `AGENT_SESSION_CREATE` 内对本地普通会话(`deriveConvType === 'normal'` 且未显式带 workspaceDir)解析工作目录并随 `createSession` 下发;`session-manager.createSession` 返回值增加 `workspaceDir`(取自 sandboxContexts);preload / `electron.d.ts` 类型同步;routine/ws/spawn 路径不经过此 handler,行为不变
+  - 验收:重启恢复会话幂等(行上已有目录直接复用,不新建)
+- [x] **M8.4 欢迎页形态切换**
+  - 范围:新增 `stores/newTaskStore.ts`(mode/projectId);`WelcomeContent` 加「对话/项目」Segmented——对话模式提示工作目录预告,项目模式提供项目选择器(下拉懒加载,`onOpenChange` 触发)+「新建项目」(复用抽出的 `components/project/ProjectDrawer.tsx`,目录即身份:目录已被占用时自动选中既有项目)+「管理项目」跳转;`registry.ts` 新任务子菜单两态均落 chat 视图并预选形态(`newTaskMode`);`useChatController.handleRequest` 物化会话行时消费 store(pendingProjectId 优先,项目模式未选目录则拦截发送);i18n zh/en 补齐
+  - 验收:切换形态不产生任何目录/会话副作用,发送才物化
+- [x] **M8.5 工作目录信息透出**
+  - 范围:引擎侧 `agentSessionCreate` 回传的 `workspaceDir` 存入 SessionState(`getWorkspaceDir` 经 useChatController/App 传至 ChatView);会话消息区顶部展示目录条(点击经 `openFolder` 打开);欢迎页对话模式展示全局 workspace 预告
+  - 验收:发首条消息后目录条出现且指向真实目录
+- [x] **M8.6 测试与验证**
+  - 范围:`tests/workspace-naming.test.ts`(格式化/前缀映射/冲突后缀);`npm test` 全绿(138);tsconfig.node/web 两侧 tsc 无新增错误(仅存量基线问题);eslint 触及文件对比基线零净增;`npm run build` 通过
+  - **遗留人工项**:执行约定#5 越权尝试 + GUI 端到端走查(新建对话→时间戳目录落盘→重启续聊目录不变;欢迎页切项目→选目录→消息入项目分组)需真人完成
+  - 信息:`feat(centers): per-conversation workspaces with welcome-page task switching`
+
 ---
 
 ## 附录 A:迁移对象对照表
