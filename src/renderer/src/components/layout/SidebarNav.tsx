@@ -1,8 +1,9 @@
 // ── Sidebar navigation column ──
-// The app's primary navigation (PLAN-0.4.0 D4a): one button per top-level view,
-// rendered from navigation/registry.ts. An entry that declares a `submenu` behaves
-// as a split button — hovering reveals its sub-entries (新建任务 → 对话 / 项目) while
-// clicking the entry runs its own default, so the most frequent path stays one click.
+// The app's primary navigation (PLAN-0.4.0 D4a), rendered from navigation/registry.ts.
+// An entry that declares a `submenu` behaves as a split button: hovering reveals its
+// sub-entries (新建任务 → 对话 / 项目, 能力、知识、工具 → 三个中心) while clicking the
+// entry opens its own default, so the most frequent path stays one click. Everything
+// else is one button per view.
 
 import React from 'react'
 import { Button, Dropdown, type MenuProps } from 'antd'
@@ -70,11 +71,19 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
         })
 
         return (
-          <Dropdown key={item.view} menu={{ items }} trigger={['hover']} align={SUBMENU_ALIGN}>
+          <Dropdown key={item.view} menu={{ items }} trigger={['hover']} align={SUBMENU_ALIGN} classNames={{ root: 'nav-submenu' }}>
             {button}
           </Dropdown>
         )
       })}
+      <style>{`
+        /* rc-dropdown stretches its overlay to the trigger's width by default
+           (stretch: 'minWidth', applied as an inline style), which made a two-label
+           flyout as wide as the 264px nav button. A flyout should hug its labels. */
+        .nav-submenu {
+          min-width: 0 !important;
+        }
+      `}</style>
     </div>
   )
 }

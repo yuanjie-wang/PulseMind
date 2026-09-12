@@ -25,13 +25,19 @@ export const NEW_TASK_SUBMENU: SidebarNavItem[] = [
   { labelKey: 'menu.newProject', icon: ProjectOutlined, view: 'project' },
 ]
 
-/** The sidebar's nav column, top to bottom. */
-export const SIDEBAR_NAV: SidebarNavItem[] = [
-  { labelKey: 'menu.newTask', icon: PlusOutlined, view: 'chat', isAction: true, submenu: NEW_TASK_SUBMENU },
-  { labelKey: 'menu.routines', icon: ScheduleOutlined, view: 'routines' },
+/** Behind 能力、知识、工具 — the three configuration centers. */
+export const CENTERS_SUBMENU: SidebarNavItem[] = [
   { labelKey: 'menu.capability', icon: AppstoreOutlined, view: 'capability' },
   { labelKey: 'menu.knowledge', icon: DatabaseOutlined, view: 'knowledge' },
   { labelKey: 'menu.tools', icon: ToolOutlined, view: 'tools' },
+]
+
+/** The sidebar's nav column, top to bottom. An entry's own `view` is what
+ *  clicking it opens — for a grouped entry, its first sub-entry. */
+export const SIDEBAR_NAV: SidebarNavItem[] = [
+  { labelKey: 'menu.newTask', icon: PlusOutlined, view: 'chat', isAction: true, submenu: NEW_TASK_SUBMENU },
+  { labelKey: 'menu.routines', icon: ScheduleOutlined, view: 'routines' },
+  { labelKey: 'menu.centers', icon: AppstoreOutlined, view: 'capability', submenu: CENTERS_SUBMENU },
 ]
 
 /** Header title for each view kind. Chat shows the active conversation's title

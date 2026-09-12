@@ -360,6 +360,7 @@ const zh = {
     newChat: '新建对话',
     newProject: '新建项目',
     routines: '日常工作',
+    centers: '能力、知识、工具',
     capability: '能力中心',
     knowledge: '知识中心',
     tools: '工具中心',

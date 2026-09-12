@@ -362,6 +362,7 @@ const en: TranslationDict = {
     newChat: 'New Chat',
     newProject: 'New Project',
     routines: 'Daily Work',
+    centers: 'Capability, Knowledge, Tools',
     capability: 'Capability Center',
     knowledge: 'Knowledge Center',
     tools: 'Tool Center',
