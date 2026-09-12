@@ -4,7 +4,7 @@ import { join, extname } from 'node:path'
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { registerIpcHandlers } from './ipc'
-import { ensureDataDir } from './storage'
+import { ensureDataDir, getBundlePresetsDir } from './storage'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
 import { backfillConversationWorkspaces } from './storage/conversation-workspace'
 import { skillStore } from './storage/skill-store'
@@ -533,6 +533,10 @@ if (gotTheLock) {
       }
     }
     toolStore.init()
+    // Preset tools (M5R): stamp bundle distributions into real tool dirs and
+    // promote pre-M5R legacy template copies (both idempotent).
+    toolStore.seedPresets(getBundlePresetsDir())
+    toolStore.migrateLegacyTemplates()
     // Routine scheduler: ticks for due cron schedules (works under tray residency).
     routineScheduler.start()
     app.on('before-quit', () => { isQuitting = true; routineScheduler.stop(); void serviceRuntime.handle?.close() })

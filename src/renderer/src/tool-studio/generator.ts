@@ -9,6 +9,7 @@ import { ToolManager } from '../tools/ToolManager'
 import { SkillManager } from '../skills/SkillManager'
 import { createLlmAdapter } from '../llm'
 import type { LLMProvider } from '../llm/types'
+import type { AgentMessage } from '../types/agent'
 import type { PlatformInfo } from '../types/electron'
 import { agentMessagesToConversation } from '../utils/message-utils'
 
@@ -23,6 +24,8 @@ export interface ToolGeneratorConfig {
   toolDir: string
   /** Stable conversation id so iteration keeps history across runs. */
   conversationId: string
+  /** Conversation title in the tool-session store (= tool name, M5R §4.4). */
+  title?: string
   platformInfo?: PlatformInfo
   skillsDir?: string
 }
@@ -79,8 +82,30 @@ export interface ToolGeneratorHandle {
   run: (userPrompt: string) => Promise<string>
   cancel: () => void
   onToolEvent: (cb: (event: ToolEvent) => void) => void
+  /** Full agent message list on every engine notify — the workspace folds
+   *  user/assistant conversation entries out of it (M5R §4.4). */
+  onMessages: (cb: (msgs: AgentMessage[]) => void) => void
+  /** Restore a persisted conversation: engine history for context on the next
+   *  iteration + a message notify so the UI replays the transcript. */
+  loadHistory: (msgs: AgentMessage[]) => void
   /** True while a run is in flight. */
   isRunning: () => boolean
+}
+
+// ── Module-level registry (M5R §4.4) ──
+// One generator per studio conversation, keyed by conversationId. Remounting
+// the workspace reuses the instance, so a run in flight keeps going while the
+// pane is unmounted (disk writes go through main-process IPC, independent of
+// component lifecycle). Instance count = tool count — no LRU needed (非目标).
+const generatorRegistry = new Map<string, ToolGeneratorHandle>()
+
+/** Get-or-create the generator for a studio conversation. */
+export function getToolGenerator(config: ToolGeneratorConfig): ToolGeneratorHandle {
+  const existing = generatorRegistry.get(config.conversationId)
+  if (existing) return existing
+  const handle = createToolGenerator(config)
+  generatorRegistry.set(config.conversationId, handle)
+  return handle
 }
 
 export function createToolGenerator(config: ToolGeneratorConfig): ToolGeneratorHandle {
@@ -89,11 +114,31 @@ export function createToolGenerator(config: ToolGeneratorConfig): ToolGeneratorH
   const skillManager = new SkillManager()
 
   let toolEventCb: ((event: ToolEvent) => void) | null = null
+  let messagesCb: ((msgs: AgentMessage[]) => void) | null = null
   let resolveRun: ((html: string) => void) | null = null
   let rejectRun: ((err: Error) => void) | null = null
   let prefsLoaded = false
   let pendingRun = false
   const emitted = new Set<string>()
+
+  /** Tool-event extraction: fold engine messages into running/done events. */
+  const emitToolEvents = (messages: AgentMessage[]): void => {
+    if (!toolEventCb) return
+    for (const msg of messages) {
+      for (const block of msg.contentBlocks) {
+        if (block.type !== 'tool_use') continue
+        const tb = block as { id: string; status?: string; name: string; input?: Record<string, unknown>; output?: string }
+        const key = `${tb.id}:${tb.status}`
+        if (emitted.has(key)) continue
+        emitted.add(key)
+        if (tb.status === 'running') {
+          toolEventCb({ toolName: tb.name, args: extractToolArgs(tb.name, tb.input ?? {}), status: 'running' })
+        } else if (tb.status === 'completed') {
+          toolEventCb({ toolName: tb.name, args: extractToolArgs(tb.name, tb.input ?? {}), status: 'done', summary: (tb.output ?? '').slice(0, 100) })
+        }
+      }
+    }
+  }
 
   const options: AgentEngineOptions = {
     adapter,
@@ -115,21 +160,8 @@ export function createToolGenerator(config: ToolGeneratorConfig): ToolGeneratorH
 
   const engine = new AgentEngine(options, {
     onMessagesChanged: (messages) => {
-      if (!toolEventCb) return
-      for (const msg of messages) {
-        for (const block of msg.contentBlocks) {
-          if (block.type !== 'tool_use') continue
-          const tb = block as { id: string; status?: string; name: string; input?: Record<string, unknown>; output?: string }
-          const key = `${tb.id}:${tb.status}`
-          if (emitted.has(key)) continue
-          emitted.add(key)
-          if (tb.status === 'running') {
-            toolEventCb({ toolName: tb.name, args: extractToolArgs(tb.name, tb.input ?? {}), status: 'running' })
-          } else if (tb.status === 'completed') {
-            toolEventCb({ toolName: tb.name, args: extractToolArgs(tb.name, tb.input ?? {}), status: 'done', summary: (tb.output ?? '').slice(0, 100) })
-          }
-        }
-      }
+      emitToolEvents(messages)
+      messagesCb?.(messages)
     },
     onStatusChanged: (status) => {
       if (!pendingRun) return
@@ -137,7 +169,7 @@ export function createToolGenerator(config: ToolGeneratorConfig): ToolGeneratorH
         pendingRun = false
         const msgs = engine.messages
         if (msgs.length > 0) {
-          const conv = agentMessagesToConversation(msgs, config.conversationId, '工具工作室')
+          const conv = agentMessagesToConversation(msgs, config.conversationId, config.title || '工具工作室')
           window.electronAPI.saveConversation(conv).catch(() => {})
         }
         readAppHtml(config.toolDir).then((html) => {
@@ -203,6 +235,22 @@ export function createToolGenerator(config: ToolGeneratorConfig): ToolGeneratorH
     },
     onToolEvent(cb: (event: ToolEvent) => void) {
       toolEventCb = cb
+    },
+    onMessages(cb: (msgs: AgentMessage[]) => void) {
+      messagesCb = cb
+    },
+    loadHistory(msgs: AgentMessage[]) {
+      // Historical tool_use blocks are context, not new events — pre-mark them
+      // so the extractor never replays them onto the workspace's status strip.
+      for (const msg of msgs) {
+        for (const block of msg.contentBlocks) {
+          if (block.type === 'tool_use') {
+            const tb = block as { id: string; status?: string }
+            emitted.add(`${tb.id}:${tb.status}`)
+          }
+        }
+      }
+      engine.loadConversation(msgs)
     },
     isRunning: () => pendingRun,
   }

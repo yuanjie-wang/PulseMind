@@ -39,16 +39,16 @@ const electronAPI = {
   routineRun: (id: string, params?: Record<string, string>) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUN, id, params),
   routineRuns: (routineId?: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUNS, routineId, limit),
   toolList: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_LIST),
-  toolListTemplates: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_LIST_TEMPLATES),
   toolGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_GET, id),
-  toolCreate: (input: { name: string; description?: string; category?: string; capabilities?: string[]; sourceTemplateId?: string }) =>
+  toolCreate: (input: { name: string; description?: string; category?: string; capabilities?: string[] }) =>
     ipcRenderer.invoke(IPC_CHANNELS.TOOL_CREATE, input),
   toolUpdate: (id: string, patch: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_UPDATE, id, patch),
   toolDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_DELETE, id),
-  toolCloneTemplate: (templateId: string, name?: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_CLONE_TEMPLATE, templateId, name),
+  toolDuplicate: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_DUPLICATE, id),
   toolReadHtml: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_READ_HTML, id),
-  toolReadTemplateHtml: (templateId: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_READ_TEMPLATE_HTML, templateId),
   toolWriteHtml: (id: string, html: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_WRITE_HTML, id, html),
+  toolGetDeletedPresets: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_DELETED_PRESETS),
+  toolRestorePresets: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_RESTORE_PRESETS),
   toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) =>
     ipcRenderer.invoke(IPC_CHANNELS.TOOLBRIDGE_INVOKE, toolId, method, params),
   sandboxDetect: () => ipcRenderer.invoke(IPC_CHANNELS.SANDBOX_DETECT),

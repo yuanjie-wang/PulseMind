@@ -120,6 +120,7 @@ function AppLayout({
   const [collapsed, setCollapsed] = useState(false)
   const view = useNavigationStore((s) => s.view)
   const navigate = useNavigationStore((s) => s.navigate)
+  const navigateKind = useNavigationStore((s) => s.navigateKind)
 
   // Project names for the sidebar's project groups (D14); loaded once.
   const [projectNames, setProjectNames] = useState<Record<string, string>>({})
@@ -185,7 +186,7 @@ function AppLayout({
           key={item.view}
           type="text"
           className={`centers-switch-btn${view.kind === item.view ? ' active-mode-btn' : ''}`}
-          onClick={() => navigate({ kind: item.view })}
+          onClick={() => navigateKind(item.view)}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           {t(item.labelKey)}

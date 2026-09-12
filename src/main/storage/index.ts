@@ -28,6 +28,14 @@ function getTemplatesDir(): string {
 }
 
 /**
+ * Bundle-distributed preset tools (M5R). Seeded into ~/.pulsemind/tools/preset_<id>/
+ * by toolStore.seedPresets — deliberately NOT handled by the generic copy below.
+ */
+export function getBundlePresetsDir(): string {
+  return join(getTemplatesDir(), 'tools', 'presets')
+}
+
+/**
  * Recursively copy template files to DATA_DIR, but only for files
  * that don't already exist (never overwrite user data).
  */
@@ -40,6 +48,10 @@ function copyTemplatesToDataDir(templatesDir: string): void {
     for (const entry of entries) {
       const srcPath = join(dir, entry.name)
       const relPath = relative(templatesDir, srcPath)
+      // tools/presets is the preset-tool distribution: the seeder takes it
+      // (stamped manifests), a plain copy would be dead weight.
+      const segs = relPath.split(/[\\/]/)
+      if (segs[0] === 'tools' && segs[1] === 'presets') continue
       const destPath = join(DATA_DIR, relPath)
       if (entry.isDirectory()) {
         if (!existsSync(destPath)) {

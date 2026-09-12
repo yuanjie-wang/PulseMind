@@ -1,8 +1,10 @@
-// ── Tool studio IPC handlers (PLAN-0.4.0 M5.3) ──
+// ── Tool studio IPC handlers (PLAN-0.4.0 M5.3; presets per M5R) ──
 
 import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { toolStore } from '../storage/tool-store'
+import { getBundlePresetsDir } from '../storage'
+import { deleteConversation } from '../storage/conversation.db'
 import { svcToolBridgeInvoke } from '../tool-runtime'
 import type { ToolCreateInput, ToolUpdateInput } from '../../shared/types/user-tool'
 
@@ -10,7 +12,6 @@ export function registerToolStudioHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.TOOLBRIDGE_INVOKE, (_event, toolId: string, method: string, params: Record<string, unknown>) =>
     svcToolBridgeInvoke(toolId, method, params))
   ipcMain.handle(IPC_CHANNELS.TOOL_LIST, () => toolStore.list())
-  ipcMain.handle(IPC_CHANNELS.TOOL_LIST_TEMPLATES, () => toolStore.listTemplates())
   ipcMain.handle(IPC_CHANNELS.TOOL_GET, (_event, id: string) => toolStore.get(id))
 
   ipcMain.handle(IPC_CHANNELS.TOOL_CREATE, (_event, input: ToolCreateInput) => {
@@ -21,16 +22,27 @@ export function registerToolStudioHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.TOOL_UPDATE, (_event, id: string, patch: ToolUpdateInput) => toolStore.update(id, patch))
-  ipcMain.handle(IPC_CHANNELS.TOOL_DELETE, (_event, id: string) => toolStore.remove(id))
 
-  ipcMain.handle(IPC_CHANNELS.TOOL_CLONE_TEMPLATE, (_event, templateId: string, name?: string) => {
-    return toolStore.create({ name: name || '我的工具', sourceTemplateId: templateId })
+  ipcMain.handle(IPC_CHANNELS.TOOL_DELETE, (_event, id: string) => {
+    toolStore.remove(id)
+    // Cascade: the tool's studio conversation (and its messages) would
+    // otherwise linger forever. Best-effort — tool removal must not fail
+    // because of conversation cleanup.
+    try {
+      deleteConversation(`toolstudio_${id}`)
+    } catch (err) {
+      console.warn(`[tool] failed to clean studio conversation for ${id}:`, err)
+    }
   })
 
+  ipcMain.handle(IPC_CHANNELS.TOOL_DUPLICATE, (_event, id: string) => toolStore.duplicate(id))
+
   ipcMain.handle(IPC_CHANNELS.TOOL_READ_HTML, (_event, id: string) => toolStore.readHtml(id))
-  ipcMain.handle(IPC_CHANNELS.TOOL_READ_TEMPLATE_HTML, (_event, templateId: string) => toolStore.readTemplateHtml(templateId))
 
   ipcMain.handle(IPC_CHANNELS.TOOL_WRITE_HTML, (_event, id: string, html: string) => {
     toolStore.writeHtml(id, html)
   })
+
+  ipcMain.handle(IPC_CHANNELS.TOOL_DELETED_PRESETS, () => toolStore.getDeletedPresets())
+  ipcMain.handle(IPC_CHANNELS.TOOL_RESTORE_PRESETS, () => toolStore.restorePresets(getBundlePresetsDir()))
 }

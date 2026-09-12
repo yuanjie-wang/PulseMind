@@ -24,8 +24,11 @@ export interface UserTool {
   /** Capabilities the tool requests from the runtime bridge (M6). Declared at
    *  creation; enforced by the bridge host. */
   capabilities: ToolCapability[]
-  /** Template this tool was cloned from, if any. */
-  sourceTemplateId?: string
+  /** Preset tool distributed with the app (M5R): a first-class tool the user
+   *  can run, edit in place, duplicate and delete — same rights as any other. */
+  preset?: boolean
+  /** Bundle distribution id (preset tools only, used by restore re-seeding). */
+  presetId?: string
   version: number
   createdAt: string
   updatedAt: string
@@ -36,7 +39,6 @@ export interface ToolCreateInput {
   description?: string
   category?: string
   capabilities?: ToolCapability[]
-  sourceTemplateId?: string
 }
 
 export interface ToolUpdateInput {

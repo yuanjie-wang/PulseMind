@@ -1,23 +1,24 @@
-// ── Tool runner view (PLAN-0.4.0 M5.6) ──
+// ── Tool runner view (PLAN-0.4.0 M5.6; slimmed in M5R) ──
 // Renders a tool's app.html in a strictly sandboxed iframe. M5 runs pure
 // frontend capabilities (sandbox="allow-scripts", opaque origin — localStorage
 // is intentionally unavailable; tools fall back to in-memory state). M6 adds
 // the capability bridge (http/fs/storage/system) behind the same sandbox.
+// No back button in M5R — going back IS the list (ToolListPage owns the split).
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
-import { ReloadOutlined, ArrowLeftOutlined, DownloadOutlined } from '@ant-design/icons'
+import { ReloadOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons'
 import { injectToolSdk, connectToolBridge } from '../../tool-studio/bridge-host'
 import type { UserTool } from '../../../../shared/types/user-tool'
+import { exportToolHtml } from './tool-export'
 
 export interface ToolRunnerProps {
   tool: UserTool
-  onBack: () => void
-  /** Open the studio to keep iterating on this tool. */
+  /** Open the studio to keep iterating on this tool (nav: toolEditing). */
   onEdit: (tool: UserTool) => void
 }
 
-export function ToolRunner({ tool, onBack, onEdit }: ToolRunnerProps): React.ReactElement {
+export function ToolRunner({ tool, onEdit }: ToolRunnerProps): React.ReactElement {
   const [html, setHtml] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -38,21 +39,9 @@ export function ToolRunner({ tool, onBack, onEdit }: ToolRunnerProps): React.Rea
     return connectToolBridge(iframe, tool.id)
   }, [html, tool.id, nonce])
 
-  const exportHtml = (): void => {
-    if (!html) return
-    const blob = new Blob([html], { type: 'text/html' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${tool.name}.html`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fff' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderBottom: '1px solid #f0f0f0' }}>
-        <Button type="text" icon={<ArrowLeftOutlined />} onClick={onBack} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: '1px solid #f0f0f0' }}>
         <span style={{ fontWeight: 600 }}>{tool.name}</span>
         {tool.description && <span style={{ fontSize: 12, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.description}</span>}
         <span style={{ marginInlineStart: 'auto' }} />
@@ -60,9 +49,9 @@ export function ToolRunner({ tool, onBack, onEdit }: ToolRunnerProps): React.Rea
           <Button type="text" icon={<ReloadOutlined />} onClick={() => setNonce((n) => n + 1)} />
         </Tooltip>
         <Tooltip title="导出 HTML">
-          <Button type="text" icon={<DownloadOutlined />} onClick={exportHtml} />
+          <Button type="text" icon={<DownloadOutlined />} onClick={() => void exportToolHtml(tool)} />
         </Tooltip>
-        <Button size="small" onClick={() => onEdit(tool)}>继续修改</Button>
+        <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(tool)}>在工作区编辑</Button>
       </div>
       <div style={{ flex: 1, overflow: 'hidden' }}>
         {html ? (
@@ -75,7 +64,7 @@ export function ToolRunner({ tool, onBack, onEdit }: ToolRunnerProps): React.Rea
             style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
           />
         ) : (
-          <div style={{ padding: 24, color: '#999' }}>该工具还没有内容，去工作室生成一个。</div>
+          <div style={{ padding: 24, color: '#999' }}>该工具还没有内容，去工作区生成一个。</div>
         )}
       </div>
     </div>

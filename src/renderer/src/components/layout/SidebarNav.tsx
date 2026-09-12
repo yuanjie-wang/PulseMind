@@ -30,6 +30,7 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
   const { t } = useTranslation()
   const view = useNavigationStore((s) => s.view)
   const navigate = useNavigationStore((s) => s.navigate)
+  const navigateKind = useNavigationStore((s) => s.navigateKind)
 
   const activate = (item: SidebarNavItem): void => {
     // New-task entries land on the empty chat view and preselect the welcome
@@ -40,7 +41,9 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
       if (item.isAction && canCreateNew) onCreateNew()
       return
     }
-    navigate({ kind: item.view })
+    // navigateKind restores the kind's remembered params (e.g. the tool center's
+    // selected tool / capability tab) instead of resetting to the bare kind.
+    navigateKind(item.view)
     if (item.isAction && canCreateNew) onCreateNew()
   }
 

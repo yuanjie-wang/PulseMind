@@ -299,6 +299,10 @@ function createTables(): void {
   // Every pre-0.4.0 conversation — and any row that slips through without a
   // project — belongs to the synthesized default project.
   try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch (e) {}
+  // ── M5R: retype legacy tool-studio conversations ──
+  // They used to derive as 'normal' and leak into the chat list; upsert's
+  // ON CONFLICT never updates type, so existing rows need this one-time sweep.
+  try { database.exec("UPDATE conversations SET type='tool' WHERE id LIKE 'toolstudio_%'") } catch (e) {}
 }
 
 // ── FTS5 helpers ──

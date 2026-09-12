@@ -14,8 +14,11 @@ export interface AppView {
   kind: AppViewKind
   /** `project` detail: which project is open. Absent = project list. */
   projectId?: string
-  /** `tools` detail: which user tool is open. Absent = gallery. */
+  /** `tools` detail: which user tool is open. Absent = browse (list + empty pane). */
   toolId?: string
+  /** `tools` studio state (M5R): true = 工作室 (live preview + conversation);
+   *  without `toolId` this is the create-from-scratch flow. */
+  toolEditing?: boolean
   /** `capability`: which tab is active (used by jump entries, e.g. after `install`). */
   capabilityTab?: 'mcp' | 'skills' | 'subagent' | 'experiences'
 }

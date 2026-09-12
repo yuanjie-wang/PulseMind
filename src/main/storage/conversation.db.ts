@@ -7,6 +7,10 @@ import { getDb } from './database'
 export function deriveConvType(id: string): string {
   if (id.startsWith('canvas_')) return 'canvas'
   if (id.startsWith('spawn_') || id.startsWith('sub_')) return 'spawn'
+  // Tool-studio conversations (M5R): owned by the tool center, never listed
+  // as chat conversations — and not 'normal', so M8 workspace resolution
+  // never mints them a working directory.
+  if (id.startsWith('toolstudio_')) return 'tool'
   return 'normal'
 }
 

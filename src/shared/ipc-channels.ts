@@ -207,17 +207,17 @@ export const IPC_CHANNELS = {
   ROUTINE_RUN: 'routine:run',
   ROUTINE_RUNS: 'routine:runs',
 
-  // ── PLAN-0.4.0 M5: user tools (tool studio) ──
+  // ── PLAN-0.4.0 M5: user tools (tool studio; presets per M5R) ──
   TOOL_LIST: 'tool:list',
-  TOOL_LIST_TEMPLATES: 'tool:list-templates',
   TOOL_GET: 'tool:get',
   TOOL_CREATE: 'tool:create',
   TOOL_UPDATE: 'tool:update',
   TOOL_DELETE: 'tool:delete',
-  TOOL_CLONE_TEMPLATE: 'tool:clone-template',
+  TOOL_DUPLICATE: 'tool:duplicate',
   TOOL_READ_HTML: 'tool:read-html',
-  TOOL_READ_TEMPLATE_HTML: 'tool:read-template-html',
   TOOL_WRITE_HTML: 'tool:write-html',
+  TOOL_DELETED_PRESETS: 'tool:deleted-presets',
+  TOOL_RESTORE_PRESETS: 'tool:restore-presets',
   TOOLBRIDGE_INVOKE: 'toolbridge:invoke',
 } as const
 
