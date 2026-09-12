@@ -398,7 +398,7 @@ dbCheck: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.DB_CHECK),
   canvasOpenInBrowser: (rectId: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.CANVAS_OPEN_IN_BROWSER, rectId),
   // ── Agent sessions (engines hosted in main) ──
-  agentSessionCreate: (sessionId: string, opts?: { agentId?: string; title?: string }): Promise<{ sessionId: string; agentId: string }> =>
+  agentSessionCreate: (sessionId: string, opts?: { agentId?: string; title?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown }): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CREATE, sessionId, opts),
   agentSessionAsk: (sessionId: string, content: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content),

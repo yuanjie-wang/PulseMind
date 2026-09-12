@@ -33,6 +33,8 @@ interface SessionState {
   plan: Plan | null
   /** Last known windowed-history summary (best-effort cache for sync saves). */
   historySummary: { firstKeptId: string; text: string } | null
+  /** Resolved working directory (PLAN-0.4.0 M8), reported back on session create. */
+  workspaceDir?: string
 }
 
 function freshSessionState(): SessionState {
@@ -114,9 +116,15 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const ensureSession = useCallback((convId: string): SessionState => {
     let st = statesRef.current.get(convId)
     if (!st) {
-      st = freshSessionState()
-      statesRef.current.set(convId, st)
-      void window.electronAPI.agentSessionCreate(convId)
+      const fresh = freshSessionState()
+      statesRef.current.set(convId, fresh)
+      // Main resolves the conversation's working directory here (M8): project
+      // conversations get their project workspace, plain ones a timestamped
+      // folder under the global workspace. Report it back for UI display.
+      window.electronAPI.agentSessionCreate(convId)
+        .then((r) => { if (r?.workspaceDir) fresh.workspaceDir = r.workspaceDir })
+        .catch(() => { /* session create failures surface via ask */ })
+      st = fresh
     }
     return st
   }, [])
@@ -341,6 +349,11 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     if (convId) void window.electronAPI.agentSessionCancel(convId)
   }, [activeEngineIdRef])
 
+  /** Resolved working directory of a conversation (M8), undefined until the
+   *  main-side session creation reports back. */
+  const getWorkspaceDir = useCallback((convId: string): string | undefined =>
+    statesRef.current.get(convId)?.workspaceDir, [])
+
   return {
     enginesRef,
     activeEngineIdRef,
@@ -352,6 +365,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     retryingConvIds,
     getOrCreateEngine,
     activateEngine,
+    getWorkspaceDir,
     // State setters exposed for external load/restore operations
     setMessages,
     setAgentStatus,

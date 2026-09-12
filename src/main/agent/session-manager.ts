@@ -233,15 +233,15 @@ class AgentSessionManagerImpl {
     return profile
   }
 
-  async createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown } = {}): Promise<{ sessionId: string; agentId: string }> {
+  async createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown } = {}): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId)!
-      return { sessionId, agentId: existing.agentId }
+      return { sessionId, agentId: existing.agentId, workspaceDir: this.sandboxContexts.get(sessionId)?.workspaceDir }
     }
     const pending = this.pendingCreates.get(sessionId)
     if (pending) {
       await pending
-      return { sessionId, agentId: this.sessions.get(sessionId)!.agentId }
+      return { sessionId, agentId: this.sessions.get(sessionId)!.agentId, workspaceDir: this.sandboxContexts.get(sessionId)?.workspaceDir }
     }
     const creation = this.doCreateSession(sessionId, opts)
     this.pendingCreates.set(sessionId, creation)
@@ -251,7 +251,7 @@ class AgentSessionManagerImpl {
     } finally {
       this.pendingCreates.delete(sessionId)
     }
-    return { sessionId, agentId: this.sessions.get(sessionId)!.agentId }
+    return { sessionId, agentId: this.sessions.get(sessionId)!.agentId, workspaceDir: this.sandboxContexts.get(sessionId)?.workspaceDir }
   }
 
   /** Wait for an in-flight creation, then return the entry (throws if absent). */

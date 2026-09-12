@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises'
 import { registerIpcHandlers } from './ipc'
 import { ensureDataDir } from './storage'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
+import { backfillConversationWorkspaces } from './storage/conversation-workspace'
 import { skillStore } from './storage/skill-store'
 import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { runLaunchHooks } from './hooks-runner'
@@ -487,6 +488,10 @@ if (gotTheLock) {
   // Initialize DB before hooks (needed by settings, skills, etc.)
   await initializeDatabase()
   writeLog('INFO', 'startup: database initialized')
+  // Backfill conversations.workspace_dir before any session can be created
+  // (PLAN-0.4.0 M8): old conversations keep the global workspace, new ones
+  // mint their own timestamped folder on first use.
+  await backfillConversationWorkspaces()
   // Run hooks first to collect env vars (before MCP servers start)
   await runLaunchHooks()
   writeLog('INFO', 'startup: launch hooks completed')
