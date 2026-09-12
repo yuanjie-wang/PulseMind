@@ -1,7 +1,6 @@
 import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { serverManager, type MCPManagedServer } from '../mcp/MCPServerManager'
-import { createChromeDevToolsConfig } from '../mcp/servers/chrome-devtools'
 import { mcpServerStore } from '../storage/mcp-server-store'
 import type { MCPClientConfig } from '../mcp/MCPClient'
 
@@ -40,18 +39,9 @@ export function validateMcpConfig(config: unknown): config is MCPClientConfig {
 
 // Register default + persisted custom servers on startup
 async function registerServers(): Promise<void> {
-  // Chrome DevTools (built-in)
-  try {
-    const server = serverManager.register(createChromeDevToolsConfig())
-    // Windows: Chrome auto-connect can be slow on first launch
-    const startTimeout = process.platform === 'win32' ? 120_000 : 60_000
-    serverManager.start(server.id, 2, startTimeout).catch((err) =>
-      console.warn(`[MCP] Chrome DevTools auto-start deferred:`, err)
-    )
-    console.log('[MCP] Chrome DevTools server registered')
-  } catch (err) {
-    console.log('[MCP] Failed to register Chrome DevTools:', err)
-  }
+  // Browser capability is native now (src/main/browser) — chrome-devtools-mcp
+  // was removed in A-M2; advanced users re-add DevTools tooling as a custom
+  // MCP server via the connectors UI.
 
   // Custom servers from store
   try {
@@ -85,8 +75,7 @@ function restoreSummary(id: string, summary: string | undefined): void {
 // Persist current custom servers to store
 export async function persistCustomServers(): Promise<void> {
   const allServers = serverManager.listServers()
-  // Only persist non-built-in servers (Chrome DevTools is the only built-in)
-  const customServers = allServers.filter((s) => s.id !== 'chrome-devtools')
+  const customServers = allServers
   await mcpServerStore.save(
     customServers.map((s) => ({ id: s.id, config: s.config, autoStart: serverManager.isAutoStart(s.id), summary: s.summary }))
   )
@@ -165,9 +154,8 @@ export function registerMcpHandlers(): void {
       const records = await mcpServerStore.getAll()
       const currentIds = new Set(serverManager.listServers().map((s) => s.id))
 
-      // Unregister servers that are no longer in config (except chrome-devtools)
+      // Unregister servers that are no longer in config
       for (const id of currentIds) {
-        if (id === 'chrome-devtools') continue
         if (!records.find((r) => r.id === id)) {
           serverManager.unregister(id)
         }

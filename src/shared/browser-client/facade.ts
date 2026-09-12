@@ -14,6 +14,7 @@ import {
 } from './protocol'
 import { playwrightSugar, type LocatorSugar } from './playwright-sugar'
 import { selectTabForUrl } from './selection'
+import { documentationText, getDocument, listDocuments } from './documentation'
 
 export interface FacadeImage {
   mime: string
@@ -54,6 +55,11 @@ export interface BrowserApi {
     get: (id: string) => Promise<TabApi>
     new: (options?: { url?: string }) => Promise<TabApi>
   }
+  /** One-shot full readout: backend + effective API + included documents. */
+  documentation: () => Promise<string>
+  /** Lookup documents (screenshots/app-view/recording/…), when available. */
+  documentationList: () => Promise<Array<{ name: string; mode: string; title: string }>>
+  documentationGet: (name: string) => Promise<string>
 }
 
 function unwrap(value: BrowserCommandResult): unknown {
@@ -104,6 +110,13 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
     playwright: playwrightSugar,
     browsers: {
       descriptor: () => invoke({ method: 'getDescriptor' }) as Promise<BackendDescriptor>,
+      documentation: async () => documentationText((await invoke({ method: 'getDescriptor' })) as BackendDescriptor),
+      documentationList: async () => listDocuments((await invoke({ method: 'getDescriptor' })) as BackendDescriptor),
+      documentationGet: async (name: string) => {
+        const body = getDocument(name, (await invoke({ method: 'getDescriptor' })) as BackendDescriptor)
+        if (!body) throw new Error(`文档不存在或当前后端不可用：${name}（用 documentationList() 查看）`)
+        return body
+      },
       open: async (url: string) => {
         const normalized = assertAllowedUrl(url)
         const tabs = (await invoke({ method: 'listTabs' })) as BrowserTabInfo[]

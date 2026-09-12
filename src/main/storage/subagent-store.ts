@@ -52,7 +52,7 @@ const DEFAULT_PROFILES: SubAgentProfile[] = [
     name: '通用子代理',
     basePrompt: GENERAL_PROMPT,
     allowedTools: [...BASE_TOOLS, ...BUILTIN_LOCKED_TOOLS],
-    allowedMcpServers: ['chrome-devtools'],
+    allowedMcpServers: [],
     allowedSkills: [],
     maxLoopIterations: 20,
     isBuiltIn: true,

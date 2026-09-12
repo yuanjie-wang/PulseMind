@@ -14,13 +14,13 @@
     "format:fix": "prettier --write src/",
     "preview": "vite preview",
     "postinstall": "electron-builder install-app-deps",
-    "test": "vitest run"
+    "test": "vitest run",
+    "browsers:ensure": "node scripts/ensure-chromium.js"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "adm-zip": "^0.5.17",
     "better-sqlite3": "^12.9.0",
-    "chrome-devtools-mcp": "^1.6.0",
     "cron-parser": "^4.9.0",
     "jsdom": "^26.1.0",
     "markitdown-js": "^0.0.14",
@@ -72,8 +72,7 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*",
-      "node_modules/@img/**/*",
-      "node_modules/chrome-devtools-mcp/**/*"
+      "node_modules/@img/**/*"
     ],
     "icon": "resources/pulseMind.png",
     "compression": "maximum",
@@ -122,6 +121,13 @@
       {
         "from": "templates",
         "to": "templates",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/chromium",
+        "to": "chromium",
         "filter": [
           "**/*"
         ]

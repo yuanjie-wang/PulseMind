@@ -129,6 +129,28 @@ export class BrowserService {
 
   /** ── internals ── */
 
+  /** Rendered page HTML via the managed backend — the internal read-web
+   *  channel (knowledge import etc.). First internal consumer, before the
+   *  agent tool. Audited like any browser command. */
+  async fetchRendered(url: string): Promise<string | null> {
+    auditStore.record({ scope: 'browser', actor: 'internal', action: 'browser.fetchRendered', target: url, decision: 'allowed' })
+    const backend = this.backends.get('managed')!
+    try {
+      await backend.start()
+      const tab = await backend.newTab(assertAllowedUrl(url))
+      try {
+        await tab.page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {})
+        await tab.page.waitForTimeout(800) // let SPA hydration begin
+        return await tab.page.content()
+      } finally {
+        await tab.close().catch(() => {})
+      }
+    } catch (err) {
+      console.warn('[browser] fetchRendered failed:', err instanceof Error ? err.message : err)
+      return null
+    }
+  }
+
   private listTabs(scopeId: string): BrowserTabInfo[] {
     return [...this.tabs.values()]
       .filter((t) => t.scopeId === scopeId)
