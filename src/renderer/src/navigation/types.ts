@@ -6,7 +6,7 @@
 
 /** Kinds of top-level content views. `canvas` is kept rendered but is not
  *  reachable from the nav column (PLAN-0.4.0 D7 — entry hidden, code retained). */
-export type AppViewKind = 'chat' | 'project' | 'routines' | 'capability' | 'knowledge' | 'tools' | 'canvas'
+export type AppViewKind = 'chat' | 'search' | 'project' | 'routines' | 'capability' | 'knowledge' | 'tools' | 'canvas'
 
 /** The currently displayed top-level view. Extra fields are params consumed by
  *  specific kinds; they are ignored by the rest. */

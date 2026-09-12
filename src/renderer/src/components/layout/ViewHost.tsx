@@ -19,6 +19,7 @@ import ProjectView from '../project/ProjectView'
 import RoutineCenter from '../routine/RoutineCenter'
 import CapabilityCenter from '../capability/CapabilityCenter'
 import ToolCenter from '../tool-studio/ToolCenter'
+import { SearchView } from '../search/SearchView'
 
 const LazyCanvasView = lazy(() => import('../canvas/CanvasView'))
 
@@ -34,6 +35,8 @@ export interface ViewHostProps {
   conversations?: ConversationListItem[]
   onSelectConversation?: (key: string) => void
   onCreateProjectConversation?: (projectId: string) => void
+  /** Reveal the memory manager (a settings-modal page) from a search result. */
+  onOpenMemory?: () => void
 }
 
 /** The knowledge pane's own toolbar — moved out of the global header (M1.5) so
@@ -131,7 +134,7 @@ function KnowledgePane({ knowledgeManager }: { knowledgeManager: KnowledgeManage
   )
 }
 
-export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation, onCreateProjectConversation }: ViewHostProps): React.ReactElement | null {
+export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation, onCreateProjectConversation, onOpenMemory }: ViewHostProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
   const handleCanvasClearAll = () => {
     window.electronAPI.canvasClearAll().catch((err: unknown) =>
@@ -155,6 +158,8 @@ export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImp
       )
     case 'knowledge':
       return knowledgeManager ? <KnowledgePane knowledgeManager={knowledgeManager} /> : null
+    case 'search':
+      return <SearchView onOpenConversation={onSelectConversation} onOpenMemory={onOpenMemory} />
     case 'project':
       return (
         <ProjectView

@@ -140,6 +140,9 @@ export interface ElectronAPI {
   searchConversationsByKeyword: (query: string, limit?: number) => Promise<
     Array<{ id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string }>
   >
+  searchMessagesByKeyword: (query: string, limit?: number) => Promise<
+    Array<{ conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; snippet: string; createdAt: string }>
+  >
   saveConversationPlan: (id: string, planJson: string | null) => Promise<void>
   getConversationPlan: (id: string) => Promise<string | null>
   getToolResult: (ids: string[]) => Promise<Array<{ ref_id: string; conversation_id: string; message_id: string; block_index: number; tool_use_id: string; content: string; is_error: number }>>

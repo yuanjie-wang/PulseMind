@@ -1,5 +1,6 @@
 import type { Conversation, ConversationIndexEntry, Message } from '../../shared/types/conversation'
 import type { ContentBlock, ToolResultBlock } from '../../shared/types/agent'
+import { extractSnippet } from '../../shared/search/snippet'
 import { getDb } from './database'
 
 /** Derive conversation type from ID for backward compatibility. */
@@ -466,4 +467,30 @@ export function searchConversationsByKeyword(
   ).all(...params) as Array<{
     id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string
   }>
+}
+
+/**
+ * Search message bodies, for the search center's message group. LIKE over
+ * messages.content — same full-scan trade-off as the conversation keyword search,
+ * and the same type filter so canvas/spawn transcripts stay out of results.
+ * Each hit carries a one-line snippet around the match.
+ */
+export function searchMessagesByKeyword(
+  query: string, limit = 20
+): Array<{
+  conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; snippet: string; createdAt: string
+}> {
+  const rows = getDb().prepare(
+    `SELECT m.conversation_id AS conversationId, c.title AS conversationTitle,
+            m.role, m.content, m.created_at AS createdAt
+     FROM messages m
+     JOIN conversations c ON c.id = m.conversation_id
+     WHERE c.type = 'normal' AND m.content LIKE ?
+     ORDER BY m.created_at DESC
+     LIMIT ?`
+  ).all(`%${query}%`, limit) as Array<{
+    conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; content: string; createdAt: string
+  }>
+
+  return rows.map(({ content, ...row }) => ({ ...row, snippet: extractSnippet(content, query) }))
 }

@@ -24,6 +24,7 @@ import {
   touchConversation,
   listConversationsForMemory,
   searchConversationsByKeyword,
+  searchMessagesByKeyword,
   saveConversationPlan,
   getConversationPlan,
   getToolResultsByIds,
@@ -135,6 +136,7 @@ export function registerConversationHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_EXPERIENCE_EXTRACTED_COUNT, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_EXPERIENCE_EXTRACTED_COUNT, updateConversationExperienceExtractedCount))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST_FOR_MEMORY, passThrough(IPC_CHANNELS.CONVERSATION_LIST_FOR_MEMORY, listConversationsForMemory, []))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SEARCH_KEYWORD, passThrough(IPC_CHANNELS.CONVERSATION_SEARCH_KEYWORD, (query: string, limit?: number, dateFilter?: Record<string, string>) => searchConversationsByKeyword(query, limit, dateFilter), []))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SEARCH_MESSAGES, passThrough(IPC_CHANNELS.CONVERSATION_SEARCH_MESSAGES, (query: string, limit?: number) => searchMessagesByKeyword(query, limit), []))
 
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_TOGGLE_PIN, voidHandler(IPC_CHANNELS.CONVERSATION_TOGGLE_PIN, (id: string, pinned: boolean) => updateConversationPinned(id, pinned)))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_TOUCH, voidHandler(IPC_CHANNELS.CONVERSATION_TOUCH, (id: string) => touchConversation(id)))

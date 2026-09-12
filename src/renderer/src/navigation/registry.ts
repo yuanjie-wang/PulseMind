@@ -5,7 +5,16 @@
 // adding an entry here and a case in ViewHost.
 
 import type { ComponentType, CSSProperties } from 'react'
-import { MessageOutlined, ProjectOutlined, PlusOutlined, ScheduleOutlined, AppstoreOutlined, DatabaseOutlined, ToolOutlined } from '@ant-design/icons'
+import {
+  MessageOutlined,
+  ProjectOutlined,
+  PlusOutlined,
+  SearchOutlined,
+  ScheduleOutlined,
+  AppstoreOutlined,
+  DatabaseOutlined,
+  ToolOutlined,
+} from '@ant-design/icons'
 import type { AppViewKind } from './types'
 
 export interface SidebarNavItem {
@@ -36,6 +45,7 @@ export const CENTERS_SUBMENU: SidebarNavItem[] = [
  *  clicking it opens — for a grouped entry, its first sub-entry. */
 export const SIDEBAR_NAV: SidebarNavItem[] = [
   { labelKey: 'menu.newTask', icon: PlusOutlined, view: 'chat', isAction: true, submenu: NEW_TASK_SUBMENU },
+  { labelKey: 'menu.search', icon: SearchOutlined, view: 'search' },
   { labelKey: 'menu.routines', icon: ScheduleOutlined, view: 'routines' },
   { labelKey: 'menu.centers', icon: AppstoreOutlined, view: 'capability', submenu: CENTERS_SUBMENU },
 ]
@@ -44,6 +54,7 @@ export const SIDEBAR_NAV: SidebarNavItem[] = [
  *  instead (AppLayout), so its entry here is only a fallback. */
 export const VIEW_TITLE_KEY: Record<AppViewKind, string> = {
   chat: 'menu.newChat',
+  search: 'viewTitle.search',
   project: 'viewTitle.project',
   routines: 'viewTitle.routines',
   capability: 'viewTitle.capability',

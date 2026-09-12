@@ -105,6 +105,9 @@ dbCheck: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.DB_CHECK),
   searchConversationsByKeyword: (query: string, limit?: number, dateFilter?: Record<string, string>): Promise<
     Array<{ id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string }>
   > => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SEARCH_KEYWORD, query, limit, dateFilter),
+  searchMessagesByKeyword: (query: string, limit?: number): Promise<
+    Array<{ conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; snippet: string; createdAt: string }>
+  > => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SEARCH_MESSAGES, query, limit),
 
   // Token Statistics
   getTokenStats: (): Promise<TokenStats> =>

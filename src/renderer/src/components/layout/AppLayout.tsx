@@ -332,6 +332,7 @@ function AppLayout({
                 conversations={conversations}
                 onSelectConversation={onSelectConversation}
                 onCreateProjectConversation={onCreateProjectConversation}
+                onOpenMemory={() => { setSettingsView('memory'); setSettingsOpen(true) }}
               />
             )}
           </div>

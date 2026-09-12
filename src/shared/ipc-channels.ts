@@ -41,6 +41,7 @@ export const IPC_CHANNELS = {
   CONVERSATION_REPLACE_MESSAGES: 'conversation:replace-messages',
   CONVERSATION_PERSIST_TOOL_RESULTS: 'conversation:persist-tool-results',
   CONVERSATION_SEARCH_KEYWORD: 'conversation:search-keyword',
+  CONVERSATION_SEARCH_MESSAGES: 'conversation:search-messages',
 
   // ── Database ──
   DB_CHECK: 'db:check',
