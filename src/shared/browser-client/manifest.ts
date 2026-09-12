@@ -32,6 +32,7 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
       summary: 'Entry point: pick a browser backend, open URLs, manage tabs.',
       members: {
         descriptor: { signature: 'descriptor(): Promise<Descriptor>', summary: 'Current backend id/type/capabilities' },
+        setActiveBackend: { signature: "setActiveBackend('managed' | 'app-view'): Promise<Descriptor>", summary: "Switch this conversation's backend — ONE choice per task (workflow §1)" },
         open: { signature: 'open(url): Promise<Tab>', summary: 'Open a URL — reuses a same-site tab (exact > same-origin > same-host), else creates one' },
       },
     },

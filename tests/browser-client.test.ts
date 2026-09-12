@@ -118,4 +118,22 @@ describe('facade against a mock execute', () => {
     })
     await expect(facade.agent.browsers.tabs.get('ghost')).rejects.toThrow(/tabs\.list/)
   })
+
+  it('routes backend switching and user surfaces to commands', async () => {
+    const sent: BrowserCommand[] = []
+    const facade = createBrowserFacade({
+      execute: (cmd) => {
+        sent.push(cmd)
+        if (cmd.method === 'setActiveBackend') return { ok: true, value: { id: 'app-view', type: 'app-view', capabilities: { browser: [], tab: [] } } }
+        if (cmd.method === 'userOpenTabs') return { ok: true, value: [{ id: 'u1', url: 'https://pane.dev/', title: 'Pane' }] }
+        return { ok: true }
+      },
+      emitImage: () => {},
+    })
+    await facade.agent.browsers.setActiveBackend('app-view')
+    const tabs = await facade.agent.browsers.user.openTabs()
+    await facade.agent.browsers.user.claimTab('u1')
+    expect(sent.map((c) => c.method)).toEqual(['setActiveBackend', 'userOpenTabs', 'claimTab'])
+    expect(tabs[0].id).toBe('u1')
+  })
 })

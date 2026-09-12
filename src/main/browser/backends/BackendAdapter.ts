@@ -21,9 +21,15 @@ export interface BackendAdapter {
   start(): Promise<void>
   /** Release everything (app quit). */
   stop(): Promise<void>
-  newTab(url?: string): Promise<BackendTab>
+  /** `tabId` is the service-assigned id — app-view uses it for user-surface
+   *  listing; managed ignores it. */
+  newTab(options: { url?: string; tabId: string }): Promise<BackendTab>
   /** Backends may keep browser-level state (the launch browser itself). */
   rawBrowser(): Browser | null
   /** Context of a tab, when the backend associates one (managed: per-tab). */
   contextOf(tab: BackendTab): BrowserContext | null
+  /** Tabs the user can see in the app pane (app-view only). */
+  userOpenTabs?(): Promise<Array<{ id: string; url: string; title: string }>>
+  /** Adopt a user-visible tab as controlled (app-view only). */
+  claimTab?(tabId: string): Promise<void>
 }

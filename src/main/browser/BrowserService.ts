@@ -18,11 +18,13 @@ import {
 import { auditStore } from '../storage/audit-store'
 import type { BackendAdapter } from './backends/BackendAdapter'
 import { ManagedBackend } from './backends/ManagedBackend'
+import { AppViewBackend } from './backends/AppViewBackend'
+import { readDevToolsPort } from './cdp-port'
 import { runPlaywrightOp } from './PlaywrightCommands'
 import { runBrowserCode, type BrowserRunOutput } from './kernel'
 
 /** Playwright ops that change page state — the audit-worthy subset. */
-const MUTATING_METHODS = new Set(['navigate', 'back', 'forward', 'reload', 'close', 'evaluate', 'newTab', 'playwright'])
+const MUTATING_METHODS = new Set(['navigate', 'back', 'forward', 'reload', 'close', 'evaluate', 'newTab', 'playwright', 'setActiveBackend', 'claimTab'])
 
 interface ServiceTab {
   id: string
@@ -42,9 +44,11 @@ export interface BrowserRunPayload {
 export class BrowserService {
   private backends = new Map<string, BackendAdapter>()
   private tabs = new Map<string, ServiceTab>()
+  /** Per-conversation backend choice (协议 §5.1: one choice per task). */
+  private activeBackend = new Map<string, 'managed' | 'app-view'>()
 
   constructor() {
-    // v1 registers only `managed`; app-view joins the registry in M3.
+    // `managed` is the v1 default; `app-view` joins lazily on first use.
     this.backends.set('managed', new ManagedBackend())
   }
 
@@ -69,20 +73,44 @@ export class BrowserService {
     try {
       this.audit(cmd, scopeId)
       switch (cmd.method) {
-        case 'getDescriptor': {
-          // v1 registers only `managed`; app-view appears here in M3.
-          const managed = this.backends.get('managed')!
-          return browserOk(managed.descriptor())
+        case 'getDescriptor':
+          return browserOk(this.backendFor(this.activeBackendId(scopeId)).descriptor())
+        case 'setActiveBackend': {
+          if (cmd.backend === 'app-view' && !readDevToolsPort()) {
+            return browserError('APP_VIEW_UNAVAILABLE', '应用内嵌浏览器后端不可用（调试端口未就绪）')
+          }
+          const backend = this.backendFor(cmd.backend)
+          try {
+            await backend.start()
+          } catch (err) {
+            this.activeBackend.set(scopeId, 'managed')
+            return browserError('APP_VIEW_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+          }
+          this.activeBackend.set(scopeId, cmd.backend)
+          return browserOk(backend.descriptor())
+        }
+        case 'userOpenTabs': {
+          const backend = this.backendFor(this.activeBackendId(scopeId))
+          if (!backend.userOpenTabs) return browserError('UNSUPPORTED_BACKEND', '当前后端没有应用窗格')
+          return browserOk(await backend.userOpenTabs())
+        }
+        case 'claimTab': {
+          const entry = this.resolveTab(cmd.tabId, scopeId)
+          const backend = this.backendFor(entry.backendId)
+          if (!backend.claimTab) return browserError('UNSUPPORTED_BACKEND', '当前后端没有应用窗格')
+          await backend.claimTab(entry.id)
+          return browserOk(await this.tabInfo(entry))
         }
         case 'listTabs':
           return browserOk(this.listTabs(scopeId))
         case 'newTab': {
           if (cmd.url) assertAllowedUrl(cmd.url)
-          const backend = this.backends.get('managed')!
+          const backendId = this.activeBackendId(scopeId)
+          const backend = this.backendFor(backendId)
           await backend.start()
-          const created = await backend.newTab(cmd.url)
           const id = `tab_${randomUUID().slice(0, 8)}`
-          this.tabs.set(id, { id, backendId: 'managed', scopeId, createdAt: new Date().toISOString(), tab: created })
+          const created = await backend.newTab({ url: cmd.url, tabId: id })
+          this.tabs.set(id, { id, backendId, scopeId, createdAt: new Date().toISOString(), tab: created })
           return browserOk(await this.tabInfo(this.tabs.get(id)!))
         }
         default:
@@ -129,6 +157,24 @@ export class BrowserService {
 
   /** ── internals ── */
 
+  private activeBackendId(scopeId: string): 'managed' | 'app-view' {
+    return this.activeBackend.get(scopeId) ?? 'managed'
+  }
+
+  /** Lazy backend factory — app-view instantiates (and connects) on demand. */
+  private backendFor(id: string): BackendAdapter {
+    let backend = this.backends.get(id)
+    if (!backend) {
+      if (id === 'app-view') {
+        backend = new AppViewBackend()
+        this.backends.set(id, backend)
+      } else {
+        throw new Error(`未知后端：${id}`)
+      }
+    }
+    return backend
+  }
+
   /** Rendered page HTML via the managed backend — the internal read-web
    *  channel (knowledge import etc.). First internal consumer, before the
    *  agent tool. Audited like any browser command. */
@@ -137,7 +183,7 @@ export class BrowserService {
     const backend = this.backends.get('managed')!
     try {
       await backend.start()
-      const tab = await backend.newTab(assertAllowedUrl(url))
+      const tab = await backend.newTab({ url: assertAllowedUrl(url), tabId: 'internal_fetch' })
       try {
         await tab.page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {})
         await tab.page.waitForTimeout(800) // let SPA hydration begin

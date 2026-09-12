@@ -51,11 +51,12 @@ export class ManagedBackend implements BackendAdapter {
     }
   }
 
-  async newTab(url?: string): Promise<BackendTab> {
+  async newTab(options: { url?: string; tabId: string }): Promise<BackendTab> {
+    void options.tabId
     await this.start()
     const context = await this.browser!.newContext({ viewport: DEFAULT_VIEWPORT })
     const page = await context.newPage()
-    if (url) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+    if (options.url) await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 15_000 })
     return {
       page,
       close: async () => {

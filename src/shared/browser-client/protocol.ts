@@ -31,6 +31,9 @@ export interface BrowserTabInfo {
 
 export type BrowserCommand =
   | { method: 'getDescriptor' }
+  | { method: 'setActiveBackend'; backend: 'managed' | 'app-view' }
+  | { method: 'userOpenTabs' }
+  | { method: 'claimTab'; tabId: string }
   | { method: 'listTabs' }
   | { method: 'newTab'; url?: string }
   | { method: 'getState'; tabId: string }

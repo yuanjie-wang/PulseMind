@@ -16,6 +16,13 @@ import { cancelAllRequests } from './ipc/api-proxy.handler'
 import { createTray, applyLaunchAtLogin } from './tray'
 import { routineScheduler } from './routine/routine-scheduler'
 import { browserService } from './browser/BrowserService'
+import { enableAppViewDebugPort } from './browser/cdp-port'
+import { appViewDock } from './browser/app-view-dock'
+
+// Must run before app ready: the app-view backend (A-M3) drives in-window
+// tabs over the loopback DevTools protocol; port 0 → Chromium picks a free
+// loopback port and records it in DevToolsActivePort.
+enableAppViewDebugPort()
 import { toolStore } from './storage/tool-store'
 import { serviceRuntime } from './service-runtime'
 import { settingsStore } from './storage/settings-store'
@@ -354,6 +361,7 @@ function createWindow(): void {
       backgroundThrottling: false,
     }
   })
+  appViewDock.attach(mainWindow)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)

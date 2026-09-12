@@ -48,12 +48,19 @@ export interface TabApi {
 
 export interface BrowserApi {
   descriptor: () => Promise<BackendDescriptor>
+  /** Switch this conversation's backend (managed | app-view). One choice per task (协议 §5.1). */
+  setActiveBackend: (backend: 'managed' | 'app-view') => Promise<BackendDescriptor>
   /** Preferred entry: same-site tab reuse + in-place navigation (协议 §5.3). */
   open: (url: string) => Promise<TabApi>
   tabs: {
     list: () => Promise<BrowserTabInfo[]>
     get: (id: string) => Promise<TabApi>
     new: (options?: { url?: string }) => Promise<TabApi>
+  }
+  /** Tabs visible in the app pane (app-view backend only). */
+  user: {
+    openTabs: () => Promise<BrowserTabInfo[]>
+    claimTab: (id: string) => Promise<TabApi>
   }
   /** One-shot full readout: backend + effective API + included documents. */
   documentation: () => Promise<string>
@@ -110,6 +117,17 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
     playwright: playwrightSugar,
     browsers: {
       descriptor: () => invoke({ method: 'getDescriptor' }) as Promise<BackendDescriptor>,
+      setActiveBackend: async (backend: 'managed' | 'app-view') => {
+        const d = (await invoke({ method: 'setActiveBackend', backend })) as BackendDescriptor
+        return d
+      },
+      user: {
+        openTabs: () => invoke({ method: 'userOpenTabs' }) as Promise<BrowserTabInfo[]>,
+        claimTab: async (id: string) => {
+          await invoke({ method: 'claimTab', tabId: id })
+          return makeTab(id)
+        },
+      },
       documentation: async () => documentationText((await invoke({ method: 'getDescriptor' })) as BackendDescriptor),
       documentationList: async () => listDocuments((await invoke({ method: 'getDescriptor' })) as BackendDescriptor),
       documentationGet: async (name: string) => {
