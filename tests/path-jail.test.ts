@@ -91,6 +91,37 @@ describe('guardPath — baseline (no session)', () => {
   })
 })
 
+describe('guardPath — workspace under a deny root (M8.1)', () => {
+  // The default PulseMind workspace sits inside the protected ~/.pulsemind root;
+  // the session's own workspace must stay writable despite the ancestor deny.
+  const buried = `${HOME}/.pulsemind/workspace/20260912103000`
+  const buriedBase = { denyRoots, workspaceDir: buried, policy: { ...DEFAULT_SANDBOX_POLICY } }
+
+  it('allow writes inside a workspace that lives under ~/.pulsemind', () => {
+    expect(guardPath({ ...buriedBase, target: 'notes/a.md', operation: 'write' }).ok).toBe(true)
+    expect(guardPath({ ...buriedBase, target: buried, operation: 'write' }).ok).toBe(true)
+  })
+  it('allow reads inside the buried workspace', () => {
+    expect(guardPath({ ...buriedBase, target: 'notes/a.md', operation: 'read' }).ok).toBe(true)
+  })
+  it('still deny ~/.pulsemind paths outside the buried workspace', () => {
+    const d = guardPath({ ...buriedBase, target: `${HOME}/.pulsemind/db/pulsemind.db`, operation: 'write' })
+    expect(d.ok).toBe(false)
+    expect(guardPath({ ...buriedBase, target: `${HOME}/.pulsemind/settings.json`, operation: 'read' }).ok).toBe(false)
+  })
+  it('still deny writes to secrets outside the buried workspace', () => {
+    expect(guardPath({ ...buriedBase, target: `${HOME}/.ssh/id_rsa`, operation: 'write' }).ok).toBe(false)
+  })
+  it('deny a symlink from the workspace into a protected root (realpath governs)', () => {
+    const d = guardPath({ ...buriedBase, target: `${buried}/link`, operation: 'write', realTarget: `${HOME}/.pulsemind/memory/MEMORY.md` })
+    expect(d.ok).toBe(false)
+  })
+  it('keep baseline (no session) deny behavior unchanged', () => {
+    const baselineRoots = buildBaselineDenyRoots(HOME, 'darwin')
+    expect(guardPath({ denyRoots: baselineRoots, target: `${HOME}/.pulsemind/workspace/x`, operation: 'write' }).ok).toBe(true)
+  })
+})
+
 describe('buildDenyRoots', () => {
   it('adds the macOS keychain only on darwin', () => {
     expect(buildDenyRoots(HOME, 'darwin').some((r) => r.includes('Keychains'))).toBe(true)

@@ -95,7 +95,19 @@ export function guardPath(input: GuardPathInput): PathDecision {
   const resolved = resolveTarget(input.workspaceDir, input.target)
   const extra: { realTarget?: string | null } = input.realTarget != null ? { realTarget: input.realTarget } : {}
 
-  if (hitsDenyRoots({ denyRoots: input.denyRoots, resolved, ...extra })) {
+  // The session's own workspace is exempt from deny roots: the default workspace
+  // lives under the protected ~/.pulsemind root, so a blanket deny would lock the
+  // agent out of its own working directory (PLAN-0.4.0 M8.1). Writes stay jailed
+  // by the policy below. The exemption needs BOTH the lexical target and the
+  // realpath (when known) inside the workspace — a symlink that leads out does
+  // not count, keeping deny roots effective for link escapes.
+  const lexicalInside = !!input.workspaceDir && isSubpath(input.workspaceDir, resolved)
+  const realInside = input.workspaceDir && input.realTarget != null
+    ? isSubpath(input.workspaceDir, input.realTarget)
+    : null
+  const inWorkspace = lexicalInside && realInside !== false
+
+  if (!inWorkspace && hitsDenyRoots({ denyRoots: input.denyRoots, resolved, ...extra })) {
     return { ok: false, resolved, reason: `Path is protected: ${resolved}` }
   }
 
