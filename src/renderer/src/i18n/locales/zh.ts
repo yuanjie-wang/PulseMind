@@ -356,6 +356,7 @@ const zh = {
   },
   menu: {
     title: '菜单',
+    newTask: '新建任务',
     newChat: '新建对话',
     newProject: '新建项目',
     routines: '日常工作',

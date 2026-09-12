@@ -9,16 +9,11 @@ import { CHAT_VIEW, type AppView } from '../navigation/types'
 interface NavigationState {
   /** The currently displayed top-level view. */
   view: AppView
-  /** Whether the top-left menu popover is open. */
-  menuOpen: boolean
-  /** Navigate to a view and close the menu. */
+  /** Navigate to a view. */
   navigate: (view: AppView) => void
-  setMenuOpen: (open: boolean) => void
 }
 
 export const useNavigationStore = create<NavigationState>((set) => ({
   view: CHAT_VIEW,
-  menuOpen: false,
-  navigate: (view) => set({ view, menuOpen: false }),
-  setMenuOpen: (menuOpen) => set({ menuOpen }),
+  navigate: (view) => set({ view }),
 }))

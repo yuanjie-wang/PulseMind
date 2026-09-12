@@ -12,9 +12,10 @@ import {
   InfoCircleOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
+import SidebarNav from './SidebarNav'
 import { ViewHost } from './ViewHost'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
-import { SIDEBAR_NAV, VIEW_TITLE_KEY } from '../../navigation/registry'
+import { VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
 import SessionManager from './SessionManager'
 import StatisticsDrawer from './StatisticsDrawer'
@@ -229,26 +230,7 @@ function AppLayout({
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           />
         </div>
-        <div style={{ padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {SIDEBAR_NAV.map((item) => {
-            const Icon = item.icon
-            const active = view.kind === item.view
-            return (
-              <Button
-                key={item.view}
-                className={`new-chat-btn${active ? ' active-mode-btn' : ''}`}
-                onClick={() => {
-                  navigate({ kind: item.view })
-                  if (item.isAction) onCreateNew()
-                }}
-                icon={<Icon style={{ fontSize: 18 }} />}
-                disabled={item.isAction && !canCreateNew}
-              >
-                {t(item.labelKey)}
-              </Button>
-            )
-          })}
-        </div>
+        <SidebarNav canCreateNew={canCreateNew} onCreateNew={onCreateNew} />
         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
           {conversations.length > 0 && (
           <div style={{ padding: '10px 16px 5px', color: '#999', fontSize: 12 }}>

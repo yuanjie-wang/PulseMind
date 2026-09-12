@@ -5,28 +5,29 @@
 // adding an entry here and a case in ViewHost.
 
 import type { ComponentType, CSSProperties } from 'react'
-import {
-  MessageOutlined,
-  ProjectOutlined,
-  ScheduleOutlined,
-  AppstoreOutlined,
-  DatabaseOutlined,
-  ToolOutlined,
-} from '@ant-design/icons'
+import { MessageOutlined, ProjectOutlined, PlusOutlined, ScheduleOutlined, AppstoreOutlined, DatabaseOutlined, ToolOutlined } from '@ant-design/icons'
 import type { AppViewKind } from './types'
 
 export interface SidebarNavItem {
   labelKey: string
   icon: ComponentType<{ style?: CSSProperties }>
   view: AppViewKind
-  /** Action items (新建对话) perform extra work on top of navigating. */
+  /** Action items (新建任务) perform extra work on top of navigating. */
   isAction?: boolean
+  /** Hover submenu. A non-empty list turns the entry into a split button:
+   *  hovering reveals these, and the entry itself runs its own default. */
+  submenu?: SidebarNavItem[]
 }
+
+/** Behind 新建任务 — the two ways to start work. */
+export const NEW_TASK_SUBMENU: SidebarNavItem[] = [
+  { labelKey: 'menu.newChat', icon: MessageOutlined, view: 'chat', isAction: true },
+  { labelKey: 'menu.newProject', icon: ProjectOutlined, view: 'project' },
+]
 
 /** The sidebar's nav column, top to bottom. */
 export const SIDEBAR_NAV: SidebarNavItem[] = [
-  { labelKey: 'menu.newChat', icon: MessageOutlined, view: 'chat', isAction: true },
-  { labelKey: 'menu.newProject', icon: ProjectOutlined, view: 'project' },
+  { labelKey: 'menu.newTask', icon: PlusOutlined, view: 'chat', isAction: true, submenu: NEW_TASK_SUBMENU },
   { labelKey: 'menu.routines', icon: ScheduleOutlined, view: 'routines' },
   { labelKey: 'menu.capability', icon: AppstoreOutlined, view: 'capability' },
   { labelKey: 'menu.knowledge', icon: DatabaseOutlined, view: 'knowledge' },

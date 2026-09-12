@@ -358,6 +358,7 @@ const en: TranslationDict = {
   },
   menu: {
     title: 'Menu',
+    newTask: 'New Task',
     newChat: 'New Chat',
     newProject: 'New Project',
     routines: 'Daily Work',
