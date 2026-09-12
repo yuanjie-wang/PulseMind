@@ -67,6 +67,7 @@ function createTables(): void {
       keywords  TEXT,
       pinned    INTEGER NOT NULL DEFAULT 0,
       project_id TEXT,
+      workspace_dir TEXT,
       plan_json TEXT,
       extracted_msg_count INTEGER NOT NULL DEFAULT 0,
       experience_extracted_count INTEGER NOT NULL DEFAULT 0,
@@ -291,6 +292,10 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
   `)
+  // ── PLAN-0.4.0 M8: per-conversation working directory ──
+  // Backfill for existing rows happens in conversation-workspace.ts at startup
+  // (it needs settings.workspaceDir, which is not readable synchronously here).
+  try { database.exec('ALTER TABLE conversations ADD COLUMN workspace_dir TEXT') } catch { /* column may already exist */ }
   // Every pre-0.4.0 conversation — and any row that slips through without a
   // project — belongs to the synthesized default project.
   try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch (e) {}

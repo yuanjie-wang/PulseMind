@@ -82,7 +82,7 @@ export function listConversations(): ConversationIndexEntry[] {
   const rows = database
     .prepare(
       `SELECT
-        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id,
+        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id, c.workspace_dir,
         (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
       FROM conversations c
@@ -93,6 +93,7 @@ export function listConversations(): ConversationIndexEntry[] {
       id: string; title: string; summary: string | null; keywords: string | null
       pinned: number; created_at: string; updated_at: string
       last_message: string | null; message_count: number; project_id: string | null
+      workspace_dir: string | null
     }>
 
   return rows.map((r) => ({
@@ -100,6 +101,7 @@ export function listConversations(): ConversationIndexEntry[] {
     summary: r.summary || undefined, keywords: r.keywords || undefined,
     pinned: r.pinned === 1, lastMessage: r.last_message?.slice(0, 100) || null,
     projectId: r.project_id || 'default',
+    workspaceDir: r.workspace_dir || undefined,
     messageCount: r.message_count, createdAt: r.created_at, updatedAt: r.updated_at
   }))
 }
@@ -261,6 +263,19 @@ export function setConversationProject(id: string, projectId: string): void {
 export function getConversationProjectId(id: string): string {
   const row = getDb().prepare('SELECT project_id FROM conversations WHERE id = ?').get(id) as { project_id: string | null } | undefined
   return row?.project_id || 'default'
+}
+
+/** Store the conversation's resolved working directory (PLAN-0.4.0 M8).
+ *  Like setConversationProject, this can run before the row exists (the row is
+ *  materialized by the first save), so it stub-inserts when needed. */
+export function setConversationWorkspaceDir(id: string, workspaceDir: string): void {
+  const db = getDb()
+  const r = db.prepare('UPDATE conversations SET workspace_dir = ? WHERE id = ?').run(workspaceDir, id)
+  if (r.changes === 0) {
+    const now = new Date().toISOString()
+    db.prepare("INSERT INTO conversations (id, title, type, workspace_dir, created_at, updated_at) VALUES (?, '新对话', 'normal', ?, ?, ?)")
+      .run(id, workspaceDir, now, now)
+  }
 }
 
 export function deleteConversation(id: string): void {

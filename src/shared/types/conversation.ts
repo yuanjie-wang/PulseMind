@@ -12,6 +12,8 @@ export interface ConversationIndexEntry {
   pinned?: boolean
   /** Owning project (PLAN-0.4.0 M3); always present on list results. */
   projectId?: string
+  /** Resolved working directory (PLAN-0.4.0 M8); absent until first session. */
+  workspaceDir?: string
 }
 
 export interface Message {
