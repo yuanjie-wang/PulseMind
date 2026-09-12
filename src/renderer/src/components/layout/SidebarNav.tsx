@@ -6,10 +6,12 @@
 // else is one button per view.
 
 import React from 'react'
+import { RightOutlined } from '@ant-design/icons'
 import { Button, Dropdown, type MenuProps } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import { SIDEBAR_NAV, type SidebarNavItem } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
+import { useNewTaskStore } from '../../stores/newTaskStore'
 
 interface SidebarNavProps {
   /** False once the session cap is reached with auto-cleanup off. */
@@ -30,6 +32,14 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
   const navigate = useNavigationStore((s) => s.navigate)
 
   const activate = (item: SidebarNavItem): void => {
+    // New-task entries land on the empty chat view and preselect the welcome
+    // page's 对话/项目 switcher (M8.4) — 项目 no longer opens ProjectView.
+    if (item.newTaskMode) {
+      useNewTaskStore.getState().setMode(item.newTaskMode)
+      navigate({ kind: 'chat' })
+      if (item.isAction && canCreateNew) onCreateNew()
+      return
+    }
     navigate({ kind: item.view })
     if (item.isAction && canCreateNew) onCreateNew()
   }
@@ -53,7 +63,15 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
             icon={<Icon style={{ fontSize: 18 }} />}
             disabled={isDisabled(item)}
           >
-            {t(item.labelKey)}
+            {/* A caret on the far edge signals the hover flyout on split entries. */}
+            {item.submenu?.length ? (
+              <span className="nav-split">
+                {t(item.labelKey)}
+                <RightOutlined style={{ fontSize: 10, color: 'rgba(0, 0, 0, 0.45)' }} />
+              </span>
+            ) : (
+              t(item.labelKey)
+            )}
           </Button>
         )
 
@@ -62,7 +80,10 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
         const items: MenuProps['items'] = item.submenu.map((sub) => {
           const SubIcon = sub.icon
           return {
-            key: sub.view,
+            // rc-menu marks the hovered item by key, so the key must be unique per
+            // sub-entry even when two share a view (新建对话/新建项目 both land on
+            // chat) — duplicate keys highlight together.
+            key: sub.newTaskMode ?? sub.view,
             icon: <SubIcon style={{ fontSize: 16 }} />,
             label: t(sub.labelKey),
             disabled: isDisabled(sub),
@@ -82,6 +103,15 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
            flyout as wide as the 264px nav button. A flyout should hug its labels. */
         .nav-submenu {
           min-width: 0 !important;
+        }
+        /* .new-chat-btn is a flex row pinned to flex-start; the label wrapper
+           flexes to the button's far edge and space-between parks the caret
+           there. Degrades to caret-after-label if antd wraps children. */
+        .nav-split {
+          flex: 1;
+          display: inline-flex;
+          align-items: center;
+          justify-content: space-between;
         }
       `}</style>
     </div>

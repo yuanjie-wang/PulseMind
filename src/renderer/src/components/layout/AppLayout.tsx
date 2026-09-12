@@ -9,16 +9,17 @@ import {
   BookOutlined,
   UserOutlined,
   DesktopOutlined,
-  InfoCircleOutlined
+  InfoCircleOutlined,
+  BarChartOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
+import ProjectSidebarList from './ProjectSidebarList'
 import SidebarNav from './SidebarNav'
 import { ViewHost } from './ViewHost'
+import StatisticsDrawer from './StatisticsDrawer'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
-import SessionManager from './SessionManager'
-import StatisticsDrawer from './StatisticsDrawer'
 import LlmSettings from '../settings/LlmSettings'
 import AgentSettings from '../settings/AgentSettings'
 import MemorySettings from '../settings/MemorySettings'
@@ -63,10 +64,9 @@ interface AppLayoutProps {
   children?: React.ReactNode
   conversations: ConversationListItem[]
   activeConversationKey: string | Symbol | undefined
+  /** Session-cap inputs: creating is capped unless auto-cleanup is on. */
   totalSessions: number
   autoCleanup: boolean
-  onClearAllConversations: () => Promise<void>
-  onToggleAutoCleanup: (checked: boolean) => void
   onCreateNew: () => void
   onDeleteConversation: (key: string) => void
   onRenameConversation: (key: string, newLabel: string) => void
@@ -95,8 +95,6 @@ function AppLayout({
   activeConversationKey,
   totalSessions,
   autoCleanup,
-  onClearAllConversations,
-  onToggleAutoCleanup,
   onCreateNew,
   onDeleteConversation,
   onRenameConversation,
@@ -133,6 +131,8 @@ function AppLayout({
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsView, setSettingsView] = useState<string>('environment')
+  // The history area's tab: the conversation list or the project list.
+  const [listTab, setListTab] = useState<'chats' | 'projects'>('chats')
   const [statisticsOpen, setStatisticsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const { token } = theme.useToken()
@@ -254,38 +254,69 @@ function AppLayout({
         </div>
         <SidebarNav canCreateNew={canCreateNew} onCreateNew={onCreateNew} />
         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-          {conversations.length > 0 && (
-          <div style={{ padding: '10px 16px 5px', color: '#999', fontSize: 12 }}>
-            {t('appLayout.conversationHistory')}
+          <div className="sidebar-list-track">
+            <Button type="text" className={`sidebar-list-tab${listTab === 'chats' ? ' on' : ''}`} onClick={() => setListTab('chats')}>
+              {t('appLayout.listTabChats')}
+            </Button>
+            <Button type="text" className={`sidebar-list-tab${listTab === 'projects' ? ' on' : ''}`} onClick={() => setListTab('projects')}>
+              {t('appLayout.listTabProjects')}
+            </Button>
           </div>
+          {listTab === 'chats' ? (
+            conversations.length === 0 ? (
+              <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>
+                {t('appLayout.noConversations')}
+              </div>
+            ) : (
+              <ConversationSidebar
+              conversations={conversations}
+              projectNamesById={projectNames}
+              activeKey={view.kind === 'chat' ? activeConversationKey : undefined}
+              onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
+              onDelete={onDeleteConversation}
+              onRename={onRenameConversation}
+              onTogglePin={onTogglePinConversation}
+              activeLoopConvIds={activeLoopConvIds}
+              retryingConvIds={retryingConvIds}
+              />
+            )
+          ) : (
+            <ProjectSidebarList
+              conversations={conversations}
+              onOpenProject={(projectId) => navigate({ kind: 'project', projectId })}
+              onOpenConversation={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
+            />
           )}
-          <ConversationSidebar
-            conversations={conversations}
-            projectNamesById={projectNames}
-            activeKey={view.kind === 'chat' ? activeConversationKey : undefined}
-            onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
-            onDelete={onDeleteConversation}
-            onRename={onRenameConversation}
-            onTogglePin={onTogglePinConversation}
-            activeLoopConvIds={activeLoopConvIds}
-            retryingConvIds={retryingConvIds}
-          />
         </div>
-        <div style={{ padding: '4px 8px 8px', display: 'flex', flexDirection: 'column', gap: 2, borderTop: '1px solid #f0f0f0' }}>
-          <Button className="new-chat-btn" onClick={() => { setSettingsView('settings'); setSettingsOpen(true) }} icon={<SettingOutlined style={{ fontSize: 16 }} />}>
-            {t('menu.settings')}
-          </Button>
-          <Button className="new-chat-btn" onClick={() => setAboutOpen(true)} icon={<InfoCircleOutlined style={{ fontSize: 16 }} />}>
-            {t('menu.about')}
-          </Button>
+        <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 4, borderTop: '1px solid #f0f0f0' }}>
+          <Tooltip title={t('menu.settings')}>
+            <Button
+              type="text"
+              className="sidebar-icon-btn"
+              aria-label={t('menu.settings')}
+              icon={<SettingOutlined style={{ fontSize: 16 }} />}
+              onClick={() => { setSettingsView('settings'); setSettingsOpen(true) }}
+            />
+          </Tooltip>
+          <Tooltip title={t('sessionManager.statsTooltip')}>
+            <Button
+              type="text"
+              className="sidebar-icon-btn"
+              aria-label={t('sessionManager.statsTooltip')}
+              icon={<BarChartOutlined style={{ fontSize: 16 }} />}
+              onClick={() => setStatisticsOpen(true)}
+            />
+          </Tooltip>
+          <Tooltip title={t('menu.about')}>
+            <Button
+              type="text"
+              className="sidebar-icon-btn"
+              aria-label={t('menu.about')}
+              icon={<InfoCircleOutlined style={{ fontSize: 16 }} />}
+              onClick={() => setAboutOpen(true)}
+            />
+          </Tooltip>
         </div>
-        <SessionManager
-          totalSessions={totalSessions}
-          autoCleanup={autoCleanup}
-          onClearAll={onClearAllConversations}
-          onToggleAutoCleanup={onToggleAutoCleanup}
-          onOpenStatistics={() => setStatisticsOpen(true)}
-        />
       </Sider>
 
       <Layout style={{ minHeight: 0, overflow: 'hidden' }}>
@@ -492,6 +523,52 @@ function AppLayout({
         }
         .new-chat-btn .ant-btn-icon {
           margin-inline-end: 4px !important;
+        }
+
+        /* Sidebar bottom: icon-only entries (settings/about). */
+        .sidebar-icon-btn {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          color: #000 !important;
+          width: 32px !important;
+          height: 32px !important;
+          padding: 0 !important;
+          border-radius: 6px !important;
+        }
+        .sidebar-icon-btn:hover {
+          background: rgba(0, 0, 0, 0.06) !important;
+        }
+
+        /* History area switcher: a shared light-gray pill track, sized to the
+           labels; the open tab is a black pill with white text. */
+        .sidebar-list-track {
+          display: inline-flex;
+          align-items: center;
+          margin: 10px 12px 6px;
+          padding: 2px;
+          background: rgba(0, 0, 0, 0.06);
+          border-radius: 999px;
+        }
+        .sidebar-list-tab {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          color: #666 !important;
+          font-weight: 600 !important;
+          font-size: 13px !important;
+          height: 24px !important;
+          padding: 0 14px !important;
+          border-radius: 999px !important;
+        }
+        .sidebar-list-tab:hover {
+          background: transparent !important;
+          color: #000 !important;
+        }
+        .sidebar-list-tab.on,
+        .sidebar-list-tab.on:hover {
+          color: #fff !important;
+          background: #000 !important;
         }
 
         .settings-scroll::-webkit-scrollbar {

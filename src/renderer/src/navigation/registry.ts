@@ -26,12 +26,16 @@ export interface SidebarNavItem {
   /** Hover submenu. A non-empty list turns the entry into a split button:
    *  hovering reveals these, and the entry itself runs its own default. */
   submenu?: SidebarNavItem[]
+  /** New-task form to preselect on the welcome page (M8.4): the entry lands on
+   *  the (empty) chat view and flips the welcome page's 对话/项目 switcher. */
+  newTaskMode?: 'chat' | 'project'
 }
 
-/** Behind 新建任务 — the two ways to start work. */
+/** Behind 新建任务 — the two ways to start work. Both land on the empty chat
+ *  view; the welcome page's switcher is preselected accordingly. */
 export const NEW_TASK_SUBMENU: SidebarNavItem[] = [
-  { labelKey: 'menu.newChat', icon: MessageOutlined, view: 'chat', isAction: true },
-  { labelKey: 'menu.newProject', icon: ProjectOutlined, view: 'project' },
+  { labelKey: 'menu.newChat', icon: MessageOutlined, view: 'chat', isAction: true, newTaskMode: 'chat' },
+  { labelKey: 'menu.newProject', icon: ProjectOutlined, view: 'chat', isAction: true, newTaskMode: 'project' },
 ]
 
 /** Behind 能力 • 知识 • 工具 — the three centers, which share one page whose tab
@@ -45,7 +49,7 @@ export const CENTERS_SUBMENU: SidebarNavItem[] = [
 /** The sidebar's nav column, top to bottom. An entry's own `view` is what
  *  clicking it opens — for a grouped entry, its first sub-entry. */
 export const SIDEBAR_NAV: SidebarNavItem[] = [
-  { labelKey: 'menu.newTask', icon: PlusOutlined, view: 'chat', isAction: true, submenu: NEW_TASK_SUBMENU },
+  { labelKey: 'menu.newTask', icon: PlusOutlined, view: 'chat', isAction: true, newTaskMode: 'chat', submenu: NEW_TASK_SUBMENU },
   { labelKey: 'menu.search', icon: SearchOutlined, view: 'search' },
   { labelKey: 'menu.routines', icon: ScheduleOutlined, view: 'routines' },
   { labelKey: 'menu.centers', icon: AppstoreOutlined, view: 'capability', submenu: CENTERS_SUBMENU },

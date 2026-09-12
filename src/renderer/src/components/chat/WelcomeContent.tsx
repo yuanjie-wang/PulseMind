@@ -1,7 +1,11 @@
-import React from 'react'
-import { Typography, Button, Tooltip } from 'antd'
-import { KeyOutlined, ArrowRightOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import React, { useCallback, useState } from 'react'
+import { Typography, Button, Tooltip, Select } from 'antd'
+import { KeyOutlined, ArrowRightOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { useNavigationStore } from '../../stores/navigationStore'
+import { useNewTaskStore } from '../../stores/newTaskStore'
+import { ProjectDrawer } from '../project/ProjectDrawer'
+import type { Project } from '../../../../shared/types/project'
 import pulsemindLogo from '../../assets/pulseMind-black.png'
 
 const LOGO_SIZE_WIDTH = 120
@@ -19,15 +23,32 @@ export function WelcomeContent({
   hasApiKey,
   onOpenSettings,
   onOpenAbout,
-  animName
+  animName,
+  workspaceBaseDir
 }: {
   greeting?: string | null
   hasApiKey: boolean
   onOpenSettings?: () => void
   onOpenAbout?: () => void
   animName: string
+  /** Global workspace dir — plain conversations mint a timestamped folder under it (M8.4). */
+  workspaceBaseDir?: string
 }): React.ReactElement {
   const { t } = useTranslation()
+  const navigate = useNavigationStore((s) => s.navigate)
+  const { mode, projectId, setProjectId } = useNewTaskStore()
+  const [projects, setProjects] = useState<Project[]>([])
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
+  // Project options load lazily when the picker opens (and after the create
+  // drawer saves) — no effect needed, so nothing re-renders on mode flips.
+  const reloadProjects = useCallback(async () => {
+    try {
+      setProjects(await window.electronAPI.projectList())
+    } catch (err) {
+      console.warn('[WelcomeContent] project list failed:', err)
+    }
+  }, [])
 
   return (
     <div style={{ textAlign: 'center', padding: '24px', marginTop: -100, width: '100%' }}>
@@ -60,7 +81,7 @@ export function WelcomeContent({
           <InfoCircleOutlined style={{ fontSize: 12, color: '#bbb', cursor: 'help', marginTop: 4 }} />
         </Tooltip>
       </div>
-      <Typography.Text type="secondary" style={{ fontSize: 16, maxWidth: 400, display: 'block', margin: '0 auto', marginBottom: 32, marginTop: 20 }}>
+      <Typography.Text type="secondary" style={{ fontSize: 16, maxWidth: 400, display: 'block', margin: '0 auto', marginBottom: 24, marginTop: 20 }}>
         {t('welcome.subtitle')}
         <Tooltip title={t('welcome.about')}>
           <ArrowRightOutlined
@@ -69,6 +90,47 @@ export function WelcomeContent({
           />
         </Tooltip>
       </Typography.Text>
+
+      {/* Task form is picked by the capsule switcher at the top of the view
+          (moved out of this component in M8.4-rev); this block reacts to it.
+          Nothing is created here — the choice is consumed on the first message. */}
+
+      {mode === 'chat' && workspaceBaseDir && (
+        <Typography.Text type="secondary" style={{ display: 'block', maxWidth: 460, margin: '0 auto 20px', fontSize: 12 }}>
+          {t('welcome.workspaceHint', { dir: workspaceBaseDir })}
+        </Typography.Text>
+      )}
+
+      {mode === 'project' && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+          <Select
+            showSearch
+            optionFilterProp="label"
+            style={{ width: 240, textAlign: 'left' }}
+            placeholder={t('welcome.selectProject')}
+            value={projectId ?? undefined}
+            onChange={(v) => setProjectId(v)}
+            onOpenChange={(open) => { if (open) void reloadProjects() }}
+            notFoundContent={t('welcome.noProjects')}
+            options={projects.filter((p) => p.id !== 'default').map((p) => ({ value: p.id, label: p.name }))}
+          />
+          <Button icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
+            {t('welcome.newProject')}
+          </Button>
+          <Button type="text" size="small" onClick={() => navigate({ kind: 'project' })}>
+            {t('welcome.manageProjects')}
+          </Button>
+        </div>
+      )}
+      <ProjectDrawer
+        open={drawerOpen}
+        editing={null}
+        onClose={() => setDrawerOpen(false)}
+        onSaved={(project) => {
+          void reloadProjects()
+          if (project) setProjectId(project.id)
+        }}
+      />
 
       {!hasApiKey && (
         <div style={{

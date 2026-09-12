@@ -1,7 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react'
+import { App as AntdApp } from 'antd'
 import { useChatManagers } from './useChatManagers'
 import { useConversationEngine } from './useConversationEngine'
 import { useConversationPersistence } from './useConversationPersistence'
+import { useNewTaskStore } from '../stores/newTaskStore'
+import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
@@ -32,6 +35,8 @@ interface UseChatControllerOptions {
 
 export function useChatController(options: UseChatControllerOptions) {
   const { apiKey, baseURL, autoCleanup } = options
+  const { t } = useTranslation()
+  const { message } = AntdApp.useApp()
 
   // ── 1. Managers ──
   const managers = useChatManagers(options)
@@ -276,12 +281,21 @@ export function useChatController(options: UseChatControllerOptions) {
       let convId = persistence.activeConversationKey ? String(persistence.activeConversationKey) : ''
 
       if (!convId) {
+        // Materialize the conversation row here. Its working directory comes
+        // from the welcome page's task form (M8.4): project mode binds the
+        // selected project (main resolves the project workspace); chat mode
+        // gets a lazily-created timestamped folder under the global workspace.
+        const task = useNewTaskStore.getState()
+        if (task.mode === 'project' && !task.projectId) {
+          message.warning(t('welcome.selectProjectFirst'))
+          return
+        }
         const now = new Date()
         const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
         convId = `conv_${ts}`
-        // A project-scoped "new conversation" leaves a pending binding; consume
-        // it here so the row is bound before the first ask (M3.6).
-        const projectId = persistence.takePendingProjectId()
+        // An explicit "new conversation in project X" (ProjectView) leaves a
+        // pending binding — it wins over the welcome switcher (M3.6).
+        const projectId = persistence.takePendingProjectId() ?? (task.mode === 'project' ? task.projectId! : undefined)
         persistence.addConversation({ key: convId, label: '新对话', updatedAt: now.toISOString(), projectId }, 'prepend')
         if (projectId) void window.electronAPI.setConversationProject?.(convId, projectId)
         engine.activateEngine(convId)
@@ -307,7 +321,7 @@ export function useChatController(options: UseChatControllerOptions) {
     },
     [apiKey, persistence.activeConversationKey, persistence.addConversation,
      persistence.setActiveConversationKey, persistence.updateConversationTitleInList,
-     persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, options]
+     persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, options, t, message]
   )
 
   // ── 8. Return ──
@@ -324,6 +338,8 @@ export function useChatController(options: UseChatControllerOptions) {
       engine.agentStatus.status !== 'awaiting_extension' &&
       engine.agentStatus.status !== 'awaiting_continue',
     createNewConversation: persistence.createNewConversation,
+    /** Resolved working directory for a conversation (M8), for UI display. */
+    getWorkspaceDir: engine.getWorkspaceDir,
     deleteConversation: async (key: string) => {
       titleGeneratedRef.current.delete(key)
       return persistence.deleteConversation(key)

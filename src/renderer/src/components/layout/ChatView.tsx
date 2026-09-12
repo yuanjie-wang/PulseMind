@@ -3,6 +3,8 @@ import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock } from '../.
 import type { LlmProfile } from '../../types/settings'
 import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
+import { Tooltip, Segmented } from 'antd'
+import { FolderOpenOutlined } from '@ant-design/icons'
 import { MessageGroup } from '../chat/MessageGroup'
 import { ExecutionSegment } from '../chat/ExecutionSegment'
 import { CodeBlock } from '../chat/CodeBlock'
@@ -12,6 +14,8 @@ import { InputArea } from '../chat/InputArea'
 import { estimateContextUsed } from '../chat/ContextRing'
 import { WelcomeContent } from '../chat/WelcomeContent'
 import { startBottomPin } from '../../utils/bottom-pin'
+import { useTranslation } from '../../i18n/useTranslation'
+import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 
 // --- Props ---
 
@@ -50,6 +54,12 @@ interface ChatViewProps {
    *  message/window change and yanks the viewport back to the step. */
   onPlanScrollHandled?: () => void
   contextLength?: number
+  /** Global workspace dir — shown on the welcome page as where the timestamped
+   *  conversation folder will be created (M8.4). */
+  workspaceBaseDir?: string
+  /** Resolved working directory of the active conversation (M8.5); shown above
+   *  the message list once the main-side session creation reports back. */
+  workspaceDir?: string
 }
 
 // --- Message grouping: break at text / ask_user, group tools between them ---
@@ -192,9 +202,14 @@ function ChatView({
   greeting,
   planScrollToMsgId,
   onPlanScrollHandled,
-  contextLength
+  contextLength,
+  workspaceBaseDir,
+  workspaceDir
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
+  const { t } = useTranslation()
+  const taskMode = useNewTaskStore((s) => s.mode)
+  const setTaskMode = useNewTaskStore((s) => s.setMode)
   // Context usage for the input area's ring: real input tokens from the API when
   // available, otherwise estimated from the message contents.
   const contextUsed = useMemo(() => estimateContextUsed(messages), [messages])
@@ -660,6 +675,22 @@ function ChatView({
           background: '#fff'
         }}
       >
+        {/* Task form switcher (M8.4-rev): 对话 / 项目, pinned to the top of the
+            view as an enlarged capsule. Drives the same store the welcome page
+            panels and handleRequest consume. */}
+        <div style={{ position: 'absolute', top: 16, left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 1 }}>
+          <Segmented
+            className="task-switch"
+            size="large"
+            value={taskMode}
+            onChange={(v) => setTaskMode(v as NewTaskMode)}
+            options={[
+              { label: t('welcome.modeChat'), value: 'chat' },
+              { label: t('welcome.modeProject'), value: 'project' },
+            ]}
+          />
+        </div>
+
         <div
           style={{
             height: '100%',
@@ -674,6 +705,7 @@ function ChatView({
             onOpenSettings={onOpenSettings}
             onOpenAbout={onOpenAbout}
             animName={animName}
+            workspaceBaseDir={workspaceBaseDir}
           />
         </div>
 
@@ -706,6 +738,12 @@ function ChatView({
             100% { opacity: 1; transform: translateY(0); }
           }
           .ant-sender-actions-btn { display: none !important; }
+          /* Task switcher: enlarged capsule (M8.4-rev) — !important beats antd's
+             own item/thumb radii, which would otherwise square off the pill */
+          .task-switch { padding: 4px; border-radius: 999px !important; }
+          .task-switch .ant-segmented-item { border-radius: 999px !important; }
+          .task-switch .ant-segmented-thumb { border-radius: 999px !important; }
+          .task-switch .ant-segmented-item-label { padding: 8px 34px !important; font-size: 16px; font-weight: 600; }
           .ant-sender {
             background: ${isWin ? '#fff' : 'rgba(255,255,255,0.85)'} !important;
             ${isWin ? '' : 'backdrop-filter: blur(12px);'}
@@ -740,6 +778,23 @@ function ChatView({
         style={{ height: '100%', overflow: 'auto', overflowAnchor: 'none' }}
       >
         <div style={{ height: 24 }} />
+
+        {/* Resolved working directory (M8.5) — appears once the main-side
+            session creation reports back; click opens the folder. */}
+        {workspaceDir && (
+          <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px', marginBottom: 8 }}>
+            <span style={{ fontSize: 11, color: '#999', display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(0,0,0,0.03)', borderRadius: 12, padding: '2px 10px', maxWidth: '100%' }}>
+              {t('chatView.workspaceDir')}
+              <code style={{ fontSize: 11, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{workspaceDir}</code>
+              <Tooltip title={t('chatView.openWorkspaceDir')}>
+                <FolderOpenOutlined
+                  style={{ cursor: 'pointer', color: '#999', flexShrink: 0 }}
+                  onClick={() => void window.electronAPI.openFolder(workspaceDir)}
+                />
+              </Tooltip>
+            </span>
+          </div>
+        )}
 
         {renderedSegments.map((seg, i) => (
           <React.Fragment key={getSegmentKey(seg)}>

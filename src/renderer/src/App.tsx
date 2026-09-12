@@ -180,8 +180,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     messages,
     isRequesting,
     createNewConversation,
+    getWorkspaceDir,
     deleteConversation,
-    clearAllConversations,
     renameConversation,
     setActiveConversationKey,
     handleRequest,
@@ -340,8 +340,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             activeConversationKey={activeConversationKey}
             totalSessions={conversations.length}
             autoCleanup={settings.autoCleanup ?? false}
-            onClearAllConversations={clearAllConversations}
-            onToggleAutoCleanup={(checked) => saveSettings({ ...settings, autoCleanup: checked })}
             onCreateNew={() => { createNewConversation(); regenerateGreeting() }}
             onDeleteConversation={deleteConversation}
             onRenameConversation={renameConversation}
@@ -391,6 +389,12 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               greeting={greeting}
               planScrollToMsgId={planScrollToMsgId}
               onPlanScrollHandled={() => setPlanScrollToMsgId(null)}
+              workspaceBaseDir={settings.workspaceDir}
+              workspaceDir={
+                typeof activeConversationKey === 'string'
+                  ? getWorkspaceDir(activeConversationKey)
+                  : undefined
+              }
             />
           </AppLayout>
           {activeView === 'chat' && <PlanPanel plan={plan} onJumpToStep={setPlanScrollToMsgId} />}
