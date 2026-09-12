@@ -517,15 +517,20 @@ function AppLayout({
           background: #000 !important;
         }
 
-        /* Centers switcher: bold labels, dark-gray thumb with white text. The
-           selected background sits on both the item and the sliding thumb, so
-           both are overridden — the thumb is the one actually visible. */
+        /* Centers switcher: bold labels, black thumb with white text, no slide
+           animation — antd Segmented has no animated prop (the motion is a CSS
+           transition on the thumb), so it is disabled here. The selected
+           background sits on both the item and the thumb; both are overridden. */
         .centers-segmented .ant-segmented-item-label {
           font-weight: 600;
         }
         .centers-segmented .ant-segmented-item-selected,
         .centers-segmented .ant-segmented-thumb {
-          background: #333 !important;
+          background: #000 !important;
+        }
+        .centers-segmented .ant-segmented-thumb {
+          transition: none !important;
+          animation: none !important;
         }
         .centers-segmented .ant-segmented-item-selected,
         .centers-segmented .ant-segmented-item-selected .ant-segmented-item-label {
