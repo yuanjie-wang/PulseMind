@@ -135,19 +135,27 @@ export interface ElectronAPI {
   updateConversationExtractedMsgCount: (id: string, count: number) => Promise<void>
   getConversationExperienceExtractedCount: (id: string) => Promise<number>
   updateConversationExperienceExtractedCount: (id: string, count: number) => Promise<void>
-  listConversationsForMemory: (opts: { afterTime?: string; beforeTime?: string; limit?: number }) => Promise<
-    Array<{ id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string }>
-  >
-  searchConversationsByKeyword: (query: string, limit?: number) => Promise<
-    Array<{ id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string }>
-  >
-  searchMessagesByKeyword: (query: string, limit?: number) => Promise<
-    Array<{ conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; snippet: string; createdAt: string }>
-  >
+  listConversationsForMemory: (opts: {
+    afterTime?: string
+    beforeTime?: string
+    limit?: number
+  }) => Promise<Array<{ id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string }>>
+  searchConversationsByKeyword: (
+    query: string,
+    limit?: number,
+  ) => Promise<Array<{ id: string; title: string; summary: string | null; keywords: string | null; updatedAt: string }>>
+  searchMessagesByKeyword: (
+    query: string,
+    limit?: number,
+  ) => Promise<Array<{ conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; snippet: string; createdAt: string }>>
   saveConversationPlan: (id: string, planJson: string | null) => Promise<void>
   getConversationPlan: (id: string) => Promise<string | null>
-  getToolResult: (ids: string[]) => Promise<Array<{ ref_id: string; conversation_id: string; message_id: string; block_index: number; tool_use_id: string; content: string; is_error: number }>>
-  persistToolResults:(convId: string, results: ToolResultBatchEntry[]) => Promise<void>
+  getToolResult: (
+    ids: string[],
+  ) => Promise<
+    Array<{ ref_id: string; conversation_id: string; message_id: string; block_index: number; tool_use_id: string; content: string; is_error: number }>
+  >
+  persistToolResults: (convId: string, results: ToolResultBatchEntry[]) => Promise<void>
 
   // Token Statistics
   getTokenStats: () => Promise<TokenStats>
@@ -193,7 +201,11 @@ export interface ElectronAPI {
   gitInvoke: (action: GitAction) => Promise<GitResult>
 
   // API Proxy
-  apiFetchStream: (requestId: string, url: string, options?: { method?: string; headers?: Record<string, string>; body?: string | object; profileId?: string }) => Promise<void>
+  apiFetchStream: (
+    requestId: string,
+    url: string,
+    options?: { method?: string; headers?: Record<string, string>; body?: string | object; profileId?: string },
+  ) => Promise<void>
   apiAbortStream: (requestId: string) => Promise<void>
   onApiStreamChunk: (callback: (data: ApiStreamChunkEvent) => void) => () => void
   onApiStreamError: (callback: (data: ApiStreamErrorEvent) => void) => () => void
@@ -206,7 +218,10 @@ export interface ElectronAPI {
   onSkillsChanged: (callback: () => void) => () => void
 
   // Non-streaming fetch (avoids CORS)
-  apiFetch: (url: string, options?: { method?: string; headers?: Record<string, string>; body?: string; withProfileHeaders?: boolean; profileId?: string }) => Promise<string | null>
+  apiFetch: (
+    url: string,
+    options?: { method?: string; headers?: Record<string, string>; body?: string; withProfileHeaders?: boolean; profileId?: string },
+  ) => Promise<string | null>
 
   // App / Platform Info
   getPlatformInfo: () => Promise<PlatformInfo>
@@ -239,8 +254,22 @@ export interface ElectronAPI {
   toolGetDeletedPresets: () => Promise<string[]>
   toolRestorePresets: () => Promise<UserTool[]>
   /** Browser Use (A-M1): run a JS snippet against the host browser runtime. */
-  browserRunCode: (code: string, opts?: { timeoutMs?: number; conversationId?: string }) =>
-    Promise<{ result: string; truncated: boolean; images: Array<{ mime: string; base64: string }>; console: string[]; error?: string }>
+  browserRunCode: (
+    code: string,
+    opts?: { timeoutMs?: number; conversationId?: string },
+  ) => Promise<{ result: string; truncated: boolean; images: Array<{ mime: string; base64: string }>; console: string[]; error?: string }>
+  /** Browser pane (A-M5). */
+  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number }) => Promise<void>
+  browserPaneSetWidth: (width: number) => Promise<void>
+  browserPaneAction: (action: Record<string, unknown>) => Promise<void>
+  onBrowserPaneUpdate: (
+    cb: (update: {
+      visible: boolean
+      width: number
+      conversationId: string | null
+      tabs: Array<{ id: string; url: string; title: string; active: boolean }>
+    }) => void,
+  ) => () => void
   toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) => Promise<unknown>
   sandboxDetect: () => Promise<boolean>
   getDataPaths: () => Promise<DataPaths>
@@ -249,9 +278,20 @@ export interface ElectronAPI {
   getFileStat: (filePath: string) => Promise<{ size: number; birthtime: string; mtime: string } | null>
 
   // Dialog (cross-platform ask_user)
-  showDialog: (options: { type: 'choice' | 'prompt'; title: string; message: string; choices?: string[] }) => Promise<{ value: string | null; cancelled: boolean }>
-  showSaveDialog: (options: { defaultName?: string; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<{ filePath: string | null; canceled: boolean }>
-  showOpenDialog: (options?: { properties?: Array<'openFile' | 'openDirectory' | 'multiSelections'>; filters?: Array<{ name: string; extensions: string[] }> }) => Promise<{ filePaths: string[]; canceled: boolean }>
+  showDialog: (options: {
+    type: 'choice' | 'prompt'
+    title: string
+    message: string
+    choices?: string[]
+  }) => Promise<{ value: string | null; cancelled: boolean }>
+  showSaveDialog: (options: {
+    defaultName?: string
+    filters?: Array<{ name: string; extensions: string[] }>
+  }) => Promise<{ filePath: string | null; canceled: boolean }>
+  showOpenDialog: (options?: {
+    properties?: Array<'openFile' | 'openDirectory' | 'multiSelections'>
+    filters?: Array<{ name: string; extensions: string[] }>
+  }) => Promise<{ filePaths: string[]; canceled: boolean }>
 
   readFile: (filePath: string) => Promise<string | null>
   editFile: (input: { filePath: string; oldStr: string; newStr: string; multi: boolean }) => Promise<{ success: boolean; replacements: number; error?: string }>
@@ -284,16 +324,18 @@ export interface ElectronAPI {
     contentBlocks?: string | null
   }) => Promise<{ success: boolean; error?: string }>
   removeFavorite: (messageId: string) => Promise<{ success: boolean; error?: string }>
-  listFavorites: () => Promise<Array<{
-    id: string
-    messageId: string
-    conversationId: string
-    conversationTitle: string
-    role: string
-    content: string
-    contentBlocks?: any
-    createdAt: string
-  }>>
+  listFavorites: () => Promise<
+    Array<{
+      id: string
+      messageId: string
+      conversationId: string
+      conversationTitle: string
+      role: string
+      content: string
+      contentBlocks?: any
+      createdAt: string
+    }>
+  >
 
   // MCP - Model Context Protocol
   mcpListServers: () => Promise<MCPManagedServer[]>
@@ -323,7 +365,11 @@ export interface ElectronAPI {
   knowledgeReadWiki: (relativePath?: string) => Promise<{ content: string | null; files: string[] | null }>
   knowledgeWriteExperience: (data: { content: string; convId: string; title?: string }) => Promise<KnowledgeFile>
   knowledgeGetStats: () => Promise<KnowledgeStats>
-  knowledgeApplyWikiChanges: (data: { actions: { filePath: string; content: string }[]; logEntry?: string; compiledIds?: string[] }) => Promise<{ written: number; logAppended: boolean; markedCompiled: number }>
+  knowledgeApplyWikiChanges: (data: {
+    actions: { filePath: string; content: string }[]
+    logEntry?: string
+    compiledIds?: string[]
+  }) => Promise<{ written: number; logAppended: boolean; markedCompiled: number }>
   knowledgeUpdateStatus: (data: { id: string; status: 'compiled' }) => Promise<void>
   knowledgeClearAll: () => Promise<{ deletedRaw: number; deletedWiki: number }>
   knowledgeSearchContent: (query: string) => Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>>
@@ -349,7 +395,11 @@ export interface ElectronAPI {
   serviceSetPort: (port: number) => Promise<{ running: boolean; port: number | null }>
   serviceResetToken: () => Promise<{ token: string }>
   onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void) => () => void
-  canvasExportImage: (rectId: string, viewport?: { width: number; height: number }, htmlContent?: string) => Promise<{ success: boolean; error?: string; canceled?: boolean }>
+  canvasExportImage: (
+    rectId: string,
+    viewport?: { width: number; height: number },
+    htmlContent?: string,
+  ) => Promise<{ success: boolean; error?: string; canceled?: boolean }>
   canvasCleanupRect: (rectId: string) => Promise<{ success: boolean; deletedConvs: number }>
   canvasClearAll: () => Promise<{ success: boolean; deletedConvs: number }>
 

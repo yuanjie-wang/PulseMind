@@ -1,23 +1,44 @@
-// ── App-view backend (A-M3) ──
+// ── App-view backend (A-M3, pane integration A-M5) ──
 // Tabs are WebContentsViews docked inside the app window; control happens
 // over the loopback DevTools protocol (connectOverCDP), so the SAME
 // PlaywrightCommands executor drives them — the command layer is unchanged,
 // exactly as planned (§8 M3). A token injected into each view maps CDP
 // targets back to Electron views without touching the user's own windows.
+//
+// A-M5: the backend no longer docks views itself — BrowserService decides
+// visibility (the pane shows the ACTIVE conversation's ACTIVE tab and folds
+// otherwise; folding never destroys). Tabs carry an origin ('user' via the
+// pane chrome | 'agent' via the tool): downloads from user tabs go to
+// ~/Downloads, agent tabs stay jailed to the conversation workspace
+// (download split, decision 2026-09-13).
 
 import { randomUUID } from 'node:crypto'
-import { app, WebContentsView } from 'electron'
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
+import { existsSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { app, session, WebContentsView } from 'electron'
+import { chromium, type Browser, type BrowserContext, type Page, type WebContents } from 'playwright-core'
 import { appViewDock } from '../app-view-dock'
 import { readDevToolsPort } from '../cdp-port'
+import { WORKSPACE_DIR } from '../../storage'
 import type { BackendAdapter, BackendTab } from './BackendAdapter'
 import type { BackendDescriptor } from '../../../shared/browser-client/protocol'
 
 const MARKER_KEY = '__pulsemindAgentTab'
 
+export type PaneTabOrigin = 'user' | 'agent'
+
+interface DownloadMeta {
+  origin: PaneTabOrigin
+  scopeId: string
+}
+
 export class AppViewBackend implements BackendAdapter {
   private browser: Browser | null = null
   private views = new Map<string, WebContentsView>()
+  private downloadMeta = new WeakMap<WebContents, DownloadMeta>()
+  private downloadsWired = false
+  /** Tab URL/title changes → BrowserService re-broadcasts the pane state. */
+  onTabActivity: ((tabId: string) => void) | null = null
 
   descriptor(): BackendDescriptor {
     return {
@@ -58,20 +79,33 @@ export class AppViewBackend implements BackendAdapter {
     }
   }
 
-  async newTab(options: { url?: string; tabId: string }): Promise<BackendTab> {
+  async newTab(options: { url?: string; tabId: string; origin?: PaneTabOrigin; scopeId?: string }): Promise<BackendTab> {
     await this.start()
-    const view = new WebContentsView({ webPreferences: { sandbox: true } })
+    const origin: PaneTabOrigin = options.origin ?? 'agent'
+    const scopeId = options.scopeId ?? 'unscoped'
+    const view = new WebContentsView({
+      webPreferences: {
+        sandbox: true,
+        // Folded panes keep executing agent tasks — no timer throttling.
+        backgroundThrottling: false,
+      },
+    })
     const token = `tok_${randomUUID().slice(0, 12)}`
     this.views.set(options.tabId, view)
-    appViewDock.addView(view)
+    this.wireDownloadRouting()
+    this.downloadMeta.set(view.webContents, { origin, scopeId })
+    const notify = () => this.onTabActivity?.(options.tabId)
+    view.webContents.on('did-navigate', notify)
+    view.webContents.on('did-navigate-in-page', notify)
+    view.webContents.on('page-title-updated', notify)
     await view.webContents.loadURL('about:blank')
     await view.webContents.executeJavaScript(`${MARKER_KEY} = ${JSON.stringify(token)}`, true)
     let page: Page
     try {
       page = await this.findPageByToken(token)
     } catch (err) {
-      // The view was already docked — tear it down so a failed newTab never
-      // leaves an orphaned blank pane behind.
+      // The view was already registered — tear it down so a failed newTab
+      // never leaves an orphaned blank pane behind.
       this.views.delete(options.tabId)
       this.destroyView(view)
       throw err
@@ -81,10 +115,14 @@ export class AppViewBackend implements BackendAdapter {
       page,
       close: async () => {
         this.views.delete(options.tabId)
-        appViewDock.removeView(view)
+        appViewDock.detach(view)
         this.destroyView(view)
       },
     }
+  }
+
+  viewOf(tabId: string): WebContentsView | null {
+    return this.views.get(tabId) ?? null
   }
 
   async userOpenTabs(): Promise<Array<{ id: string; url: string; title: string }>> {
@@ -95,18 +133,19 @@ export class AppViewBackend implements BackendAdapter {
     }))
   }
 
+  /** User tabs already live in the shared registry — claiming only validates
+   *  membership; BrowserService owns pane visibility. */
   async claimTab(tabId: string): Promise<void> {
     if (!this.views.has(tabId)) throw new Error(`应用窗格中没有这个标签页：${tabId}`)
-    appViewDock.addViewToTop(this.views.get(tabId)!)
   }
 
   /** ── internals ── */
 
   private destroyView(view: WebContentsView): void {
     try {
-      appViewDock.removeView(view)
+      appViewDock.detach(view)
     } catch {
-      /* already removed */
+      /* already detached */
     }
     try {
       if (!view.webContents.isDestroyed()) view.webContents.close()
@@ -132,5 +171,26 @@ export class AppViewBackend implements BackendAdapter {
       await new Promise((r) => setTimeout(r, 100))
     }
     throw new Error(`未能通过 CDP 定位到新标签页（app=${app.isPackaged ? 'packaged' : 'dev'}）`)
+  }
+
+  /** One session-level will-download handler routes every pane download by
+   *  the owning tab's origin: user → ~/Downloads, agent → the conversation
+   *  workspace. Downloads from webContents we don't own are left untouched. */
+  private wireDownloadRouting(): void {
+    if (this.downloadsWired) return
+    this.downloadsWired = true
+    session.defaultSession.on('will-download', (_event, item, webContents) => {
+      const meta = this.downloadMeta.get(webContents)
+      if (!meta) return
+      const dir = meta.origin === 'agent' ? join(WORKSPACE_DIR, 'downloads', meta.scopeId) : app.getPath('downloads')
+      try {
+        mkdirSync(dir, { recursive: true })
+      } catch {
+        /* exists */
+      }
+      let name = item.getFilename() || `download_${Date.now()}`
+      if (existsSync(join(dir, name))) name = `${Date.now()}_${name}`
+      item.setSavePath(join(dir, name))
+    })
   }
 }

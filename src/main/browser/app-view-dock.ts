@@ -1,61 +1,79 @@
-// ── App-view dock (A-M3) ──
-// Hosts the browser pane: a stack of WebContentsViews docked to the right
-// edge of the main window, below the title bar. Adding a view expands the
-// pane; removing the last one folds it. Pure layout — no browser policy.
+// ── App-view dock (A-M5) ──
+// Single-slot host for the in-app browser pane: at most ONE WebContentsView
+// (the active tab of the active conversation) is attached at the right edge;
+// folding is zero bounds, never destruction — tabs and running agent tasks
+// survive panel switches (decision 2026-09-13: 折叠保留). The chrome (tab
+// strip + address bar) is renderer DOM; this side only positions the native
+// WebView below it, using the shared 16:9 layout math.
 
 import { BrowserWindow, WebContentsView } from 'electron'
 import { TITLE_BAR_HEIGHT } from '../../shared/window-chrome'
-
-const PANE_WIDTH = 380
+import { webviewBox } from '../../shared/browser/pane'
 
 class AppViewDock {
   private window: BrowserWindow | null = null
-  private views: WebContentsView[] = []
+  private attached: WebContentsView | null = null
+  private width = 380
+  private visible = false
 
   attach(win: BrowserWindow): void {
     if (this.window === win) return
     this.window = win
     win.on('resize', () => this.layout())
-    win.on('closed', () => { this.window = null; this.views = [] })
+    win.on('closed', () => {
+      this.window = null
+      this.attached = null
+    })
   }
 
-  addView(view: WebContentsView): void {
-    if (!this.window) throw new Error('app-view dock: no main window')
-    this.views.push(view)
-    this.window.contentView.addChildView(view)
+  getWindow(): BrowserWindow | null {
+    return this.window
+  }
+
+  /** Swap the visible tab (null = nothing to show for this scope). */
+  show(view: WebContentsView | null): void {
+    if (this.attached === view) {
+      this.layout()
+      return
+    }
+    if (this.attached) this.window?.contentView.removeChildView(this.attached)
+    this.attached = view
+    if (this.attached) this.window?.contentView.addChildView(this.attached)
     this.layout()
   }
 
-  removeView(view: WebContentsView): void {
-    const idx = this.views.indexOf(view)
-    if (idx >= 0) this.views.splice(idx, 1)
+  /** Detach a view that is being destroyed (no-op unless it is the shown one). */
+  detach(view: WebContentsView): void {
+    if (this.attached !== view) return
+    this.attached = null
     this.window?.contentView.removeChildView(view)
-    if (this.views.length === 0) this.layout() // fold (zero-width)
-  }
-
-  /** Re-add an existing view so it stacks on top and the pane stays open. */
-  addViewToTop(view: WebContentsView): void {
-    const idx = this.views.indexOf(view)
-    if (idx >= 0) this.views.splice(idx, 1)
-    this.views.push(view)
-    this.window?.contentView.removeChildView(view)
-    this.window?.contentView.addChildView(view)
     this.layout()
   }
 
-  /** Whether any agent tab is currently docked. */
-  hasViews(): boolean {
-    return this.views.length > 0
+  setWidth(px: number): void {
+    const next = Math.max(0, Math.round(px))
+    if (next === this.width) return
+    this.width = next
+    this.layout()
+  }
+
+  setVisible(visible: boolean): void {
+    if (visible === this.visible) return
+    this.visible = visible
+    this.layout()
   }
 
   private layout(): void {
     const win = this.window
     if (!win) return
-    const [width, height] = win.getContentSize()
-    const paneWidth = this.views.length > 0 ? Math.min(PANE_WIDTH, Math.max(240, width - 200)) : 0
-    for (const view of this.views) {
-      view.setBounds({ x: width - paneWidth, y: TITLE_BAR_HEIGHT, width: paneWidth, height: Math.max(0, height - TITLE_BAR_HEIGHT) })
+    if (!this.visible || !this.attached || this.width <= 0) {
+      this.attached?.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      return
     }
+    const [w, h] = win.getContentSize()
+    const box = webviewBox(this.width, TITLE_BAR_HEIGHT, Math.max(0, h - TITLE_BAR_HEIGHT))
+    box.x = Math.max(0, w - this.width)
+    this.attached.setBounds(box)
   }
 }
 

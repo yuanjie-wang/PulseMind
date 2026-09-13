@@ -23,8 +23,10 @@ export interface BackendAdapter {
   stop(): Promise<void>
   /** `tabId` is the service-assigned id — app-view uses it for user-surface
    *  listing; managed ignores it. `downloadsDir` routes page downloads into
-   *  the conversation's workspace (managed). */
-  newTab(options: { url?: string; tabId: string; downloadsDir?: string }): Promise<BackendTab>
+   *  the conversation's workspace (managed). `origin`/`scopeId` let the
+   *  app-view backend route downloads by actor (user → ~/Downloads,
+   *  agent → workspace). */
+  newTab(options: { url?: string; tabId: string; downloadsDir?: string; origin?: 'user' | 'agent'; scopeId?: string }): Promise<BackendTab>
   /** Backends may keep browser-level state (the launch browser itself). */
   rawBrowser(): Browser | null
   /** Context of a tab, when the backend associates one (managed: per-tab). */

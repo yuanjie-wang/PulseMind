@@ -222,6 +222,11 @@ export const IPC_CHANNELS = {
 
   // ── Browser Use (A-M1): one channel for the whole capability ──
   BROWSER_RUN_CODE: 'browser:run-code',
+  // ── Browser pane (A-M5): in-app browser chrome ──
+  BROWSER_PANE_STATE: 'browser:pane-state',
+  BROWSER_PANE_WIDTH: 'browser:pane-width',
+  BROWSER_PANE_ACTION: 'browser:pane-action',
+  BROWSER_PANE_UPDATE: 'browser:pane-update',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

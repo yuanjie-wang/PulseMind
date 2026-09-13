@@ -12,6 +12,9 @@ import { InputArea } from '../chat/InputArea'
 import { estimateContextUsed } from '../chat/ContextRing'
 import { WelcomeContent } from '../chat/WelcomeContent'
 import { startBottomPin } from '../../utils/bottom-pin'
+import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
+import { useBrowserPaneStore } from '../../stores/browserPaneStore'
+import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 
@@ -95,7 +98,7 @@ function ChatView({
   onPlanScrollHandled,
   contextLength,
   workspaceBaseDir,
-  workspaceDir
+  workspaceDir,
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
   const { t } = useTranslation()
@@ -145,6 +148,11 @@ function ChatView({
   }, [])
 
   const prevConvIdRef = useRef(conversationId)
+  // In-app browser pane (A-M5): live state from the host store + the
+  // binding that pushes what is on screen and folds/restores the WebView.
+  const browserPane = useBrowserPaneStore((s) => s.update)
+  const paneRootRef = useRef<HTMLDivElement | null>(null)
+  const browserPaneBinding = useBrowserPaneBinding(conversationId, paneRootRef)
   const pendingScrollRef = useRef(false)
   const scrollRafRef = useRef<number>(0)
   // Cancel handle for the bottom-pinner started after a conversation switch —
@@ -186,7 +194,9 @@ function ChatView({
       // eslint-disable-next-line react-hooks/immutability
       landingRef.current = true
       cancelPinRef.current = startBottomPin(() => scrollRef.current, {
-        onStop: () => { landingRef.current = false }
+        onStop: () => {
+          landingRef.current = false
+        },
       })
       return
     }
@@ -226,10 +236,19 @@ function ChatView({
   const isRetrying = agentStatus.status === 'retrying'
   const [retryCountdown, setRetryCountdown] = useState(0)
   useEffect(() => {
-    if (agentStatus.status !== 'retrying') { setRetryCountdown(0); return }
+    if (agentStatus.status !== 'retrying') {
+      setRetryCountdown(0)
+      return
+    }
     setRetryCountdown(Math.ceil(agentStatus.delay / 1000) - 1)
     const interval = setInterval(() => {
-      setRetryCountdown(prev => { if (prev <= 1) { clearInterval(interval); return 0 }; return prev - 1 })
+      setRetryCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval)
+          return 0
+        }
+        return prev - 1
+      })
     }, 1000)
     return () => clearInterval(interval)
   }, [isRetrying ? agentStatus.attempt : -1])
@@ -274,11 +293,8 @@ function ChatView({
     if (!el) return
     if (windowTop <= 0) return
     const topSeg = renderedSegments[0]
-    const anchorId = topSeg?.type === 'single'
-      ? topSeg.msg.id.replace(/__\w+$/, '')
-      : topSeg?.type === 'execution'
-        ? topSeg.msgs[0]?.id?.replace(/__\w+$/, '')
-        : undefined
+    const anchorId =
+      topSeg?.type === 'single' ? topSeg.msg.id.replace(/__\w+$/, '') : topSeg?.type === 'execution' ? topSeg.msgs[0]?.id?.replace(/__\w+$/, '') : undefined
     if (!anchorId) return
     const anchorEl = document.getElementById(`chat-msg-${anchorId}`)
     const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null
@@ -287,14 +303,16 @@ function ChatView({
     setExtraTop((e) => Math.min(allSegments.length, e + PAGE_SIZE))
 
     // Double rAF: wait for React to commit the new segments before restoring scroll.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      loadMoreBusyRef.current = false
-      const elAfter = scrollRef.current
-      const anchorAfter = document.getElementById(`chat-msg-${anchorId}`)
-      if (elAfter && anchorAfter && anchorTop !== null) {
-        elAfter.scrollTop += anchorAfter.getBoundingClientRect().top - anchorTop
-      }
-    }))
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        loadMoreBusyRef.current = false
+        const elAfter = scrollRef.current
+        const anchorAfter = document.getElementById(`chat-msg-${anchorId}`)
+        if (elAfter && anchorAfter && anchorTop !== null) {
+          elAfter.scrollTop += anchorAfter.getBoundingClientRect().top - anchorTop
+        }
+      }),
+    )
   }, [windowTop, renderedSegments, allSegments.length])
 
   // handleScroll is stable (deps: []) and reads the latest loadMore via this
@@ -317,10 +335,13 @@ function ChatView({
   // Set while the plan jump's smooth scroll is animating so handleScroll doesn't
   // collapse the widened window mid-animation (see handleScroll).
   const suppressPlanScrollRef = useRef(false)
-  useEffect(() => () => {
-    clearTimeout(highlightTimerRef.current)
-    clearTimeout(scrollTimerRef.current)
-  }, [])
+  useEffect(
+    () => () => {
+      clearTimeout(highlightTimerRef.current)
+      clearTimeout(scrollTimerRef.current)
+    },
+    [],
+  )
 
   // Map any message id to the chat-msg-* anchor of its segment. Execution
   // segments merge several assistant messages but expose only one DOM anchor
@@ -374,7 +395,9 @@ function ChatView({
       // after the user scrolled away and re-widened the window after it was
       // collapsed to the tail. Clearing also lets the same step be re-clicked later
       // to jump again.
-      setTimeout(() => { suppressPlanScrollRef.current = false }, 700)
+      setTimeout(() => {
+        suppressPlanScrollRef.current = false
+      }, 700)
       onPlanScrollHandledRef.current?.()
     }, 100)
     highlightTimerRef.current = setTimeout(() => setHighlightedMsgId(null), 2000)
@@ -382,22 +405,25 @@ function ChatView({
 
   // ── Render helpers ──
 
-  const renderSegment = useCallback((seg: Segment, index: number) => (
-    <SegmentBlock
-      seg={seg}
-      nextSeg={allSegments[index + 1]}
-      isLastSegment={index === allSegments.length - 1}
-      highlightedMsgId={highlightedMsgId}
-      isRequesting={isRequesting}
-      onApproveTool={onApproveTool}
-      onRejectTool={onRejectTool}
-      onKillTool={onKillTool ?? onRejectTool}
-      onRespondToTool={onRespondToTool}
-      conversationId={conversationId}
-      conversationTitle={conversationTitle}
-      contextLength={contextLength}
-    />
-  ), [highlightedMsgId, allSegments, isRequesting, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, contextLength])
+  const renderSegment = useCallback(
+    (seg: Segment, index: number) => (
+      <SegmentBlock
+        seg={seg}
+        nextSeg={allSegments[index + 1]}
+        isLastSegment={index === allSegments.length - 1}
+        highlightedMsgId={highlightedMsgId}
+        isRequesting={isRequesting}
+        onApproveTool={onApproveTool}
+        onRejectTool={onRejectTool}
+        onKillTool={onKillTool ?? onRejectTool}
+        onRespondToTool={onRespondToTool}
+        conversationId={conversationId}
+        conversationTitle={conversationTitle}
+        contextLength={contextLength}
+      />
+    ),
+    [highlightedMsgId, allSegments, isRequesting, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, contextLength],
+  )
 
   // ── Render ──
 
@@ -411,7 +437,7 @@ function ChatView({
         style={{
           position: 'relative',
           height: '100%',
-          background: '#fff'
+          background: '#fff',
         }}
       >
         {/* Task form switcher (M8.4-rev): 对话 / 项目, pinned to the top of the
@@ -435,7 +461,7 @@ function ChatView({
             height: '100%',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center'
+            justifyContent: 'center',
           }}
         >
           <WelcomeContent
@@ -482,10 +508,14 @@ function ChatView({
   // Chat view
   return (
     <div
+      ref={paneRootRef}
       style={{
         position: 'relative',
         height: '100%',
-        background: '#fff'
+        background: '#fff',
+        // Reserve the pane strip so chat content never flows under the
+        // WebView; transitions off — the drag handle needs 1:1 tracking.
+        paddingRight: browserPane.visible ? browserPane.width : 0,
       }}
     >
       <div
@@ -503,7 +533,19 @@ function ChatView({
             session creation reports back; click opens the folder. */}
         {workspaceDir && (
           <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px', marginBottom: 8 }}>
-            <span style={{ fontSize: 11, color: '#999', display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(0,0,0,0.03)', borderRadius: 12, padding: '2px 10px', maxWidth: '100%' }}>
+            <span
+              style={{
+                fontSize: 11,
+                color: '#999',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'rgba(0,0,0,0.03)',
+                borderRadius: 12,
+                padding: '2px 10px',
+                maxWidth: '100%',
+              }}
+            >
               {t('chatView.workspaceDir')}
               <code style={{ fontSize: 11, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{workspaceDir}</code>
               <Tooltip title={t('chatView.openWorkspaceDir')}>
@@ -517,9 +559,7 @@ function ChatView({
         )}
 
         {renderedSegments.map((seg, i) => (
-          <React.Fragment key={getSegmentKey(seg)}>
-            {renderSegment(seg, windowTop + i)}
-          </React.Fragment>
+          <React.Fragment key={getSegmentKey(seg)}>{renderSegment(seg, windowTop + i)}</React.Fragment>
         ))}
 
         <div style={{ minHeight: 1, paddingBottom: 160 }}>
@@ -529,23 +569,28 @@ function ChatView({
           {/* Error state */}
           {isError && (
             <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
-              <ErrorDisplay
-                message={'error' in agentStatus ? agentStatus.error : 'Unknown error'}
-                onDismiss={onClearError}
-                onRetry={onRetryLast}
-              />
+              <ErrorDisplay message={'error' in agentStatus ? agentStatus.error : 'Unknown error'} onDismiss={onClearError} onRetry={onRetryLast} />
             </div>
           )}
 
           {/* Retry indicator */}
           {isRetrying && (
             <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                padding: '8px 16px', margin: '0 16px',
-                background: 'rgba(255,149,0,0.08)', border: '1px solid rgba(255,149,0,0.25)',
-                borderRadius: 8, fontSize: 12, color: '#b84d00',
-              }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  margin: '0 16px',
+                  background: 'rgba(255,149,0,0.08)',
+                  border: '1px solid rgba(255,149,0,0.25)',
+                  borderRadius: 8,
+                  fontSize: 12,
+                  color: '#b84d00',
+                }}
+              >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ff9500" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
                   <circle cx="12" cy="12" r="10" stroke="rgba(255,149,0,0.25)" strokeWidth="2.5" />
                   <path d="M12 2a10 10 0 0 1 10 10" strokeDasharray="31.4 31.4" strokeDashoffset="0">
@@ -563,10 +608,7 @@ function ChatView({
           {/* Pause — resume or fully stop */}
           {isAwaitingContinue && (
             <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
-              <SubAgentStopPrompt
-                onConfirm={onStopExecution}
-                onResume={onResumeExecution}
-              />
+              <SubAgentStopPrompt onConfirm={onStopExecution} onResume={onResumeExecution} />
             </div>
           )}
 
@@ -583,6 +625,15 @@ function ChatView({
           )}
         </div>
       </div>
+
+      {browserPane.visible && (
+        <BrowserPaneChrome
+          pane={browserPane}
+          chatAreaWidth={browserPaneBinding.chatAreaWidth}
+          onWidth={browserPaneBinding.pushWidth}
+          onAction={browserPaneBinding.action}
+        />
+      )}
 
       <InputArea
         key={conversationId ?? 'new'}

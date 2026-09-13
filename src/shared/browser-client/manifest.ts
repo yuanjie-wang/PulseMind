@@ -32,7 +32,10 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
       summary: 'Entry point: pick a browser backend, open URLs, manage tabs.',
       members: {
         descriptor: { signature: 'descriptor(): Promise<Descriptor>', summary: 'Current backend id/type/capabilities' },
-        setActiveBackend: { signature: "setActiveBackend('managed' | 'app-view'): Promise<Descriptor>", summary: "Switch this conversation's backend — ONE choice per task (workflow §1)" },
+        setActiveBackend: {
+          signature: "setActiveBackend('managed' | 'app-view'): Promise<Descriptor>",
+          summary: "Switch this conversation's backend — ONE choice per task (workflow §1)",
+        },
         open: { signature: 'open(url): Promise<Tab>', summary: 'Open a URL — reuses a same-site tab (exact > same-origin > same-host), else creates one' },
       },
     },
@@ -56,16 +59,22 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
         reload: { signature: 'reload(): Promise<void>', summary: 'Reload (domcontentloaded)' },
         close: { signature: 'close(): Promise<void>', summary: 'Close the tab; after this the id is dead' },
         domSnapshot: { signature: 'domSnapshot(): Promise<string>', summary: 'AI/ARIA tree — the default and primary observation' },
-        screenshot: { signature: 'screenshot({ fullPage?, selector? }?): Promise<{emitted}>', summary: 'Screenshot emitted inline in the same call — never returned as bytes' },
+        screenshot: {
+          signature: 'screenshot({ fullPage?, selector? }?): Promise<{emitted}>',
+          summary: 'Screenshot emitted inline in the same call — never returned as bytes',
+        },
         evaluate: { signature: 'evaluate(expression): Promise<unknown>', summary: 'Run JS in the page (page context, not the kernel)' },
-        playwright: { signature: 'playwright(selector, op, arg?, { timeoutMs }?): Promise<unknown>', summary: 'The selector engine: one locator op — click/fill/count/textContent/…' },
+        playwright: {
+          signature: 'playwright(selector, op, arg?, { timeoutMs }?): Promise<unknown>',
+          summary: 'The selector engine: one locator op — click/fill/count/textContent/…',
+        },
         waitForTimeout: { signature: 'waitForTimeout(ms): Promise<void>', summary: 'Bounded sleep (≤30s). Prefer domSnapshot re-checks over waiting' },
       },
     },
     'agent.playwright': {
       summary: 'Locator sugar: getBy* chains serialize to Playwright internal selectors.',
       members: {
-        getByRole: { signature: "getByRole(role, { name?, exact?, checked?, disabled?, level? })", summary: 'ARIA role locator' },
+        getByRole: { signature: 'getByRole(role, { name?, exact?, checked?, disabled?, level? })', summary: 'ARIA role locator' },
         getByText: { signature: 'getByText(text, { exact? })', summary: 'Text content locator' },
         getByLabel: { signature: 'getByLabel(text, { exact? })', summary: 'Form label locator' },
         getByPlaceholder: { signature: 'getByPlaceholder(text, { exact? })', summary: 'Input placeholder locator' },
@@ -82,10 +91,16 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
       },
     },
     'tab.user': {
-      summary: 'User-facing browser surfaces: see and adopt the tabs shown in the app pane.',
+      summary: 'Pane surfaces (A-M5): the pane is bound to this conversation; user tabs share the tabs registry.',
       members: {
-        openTabs: { signature: 'user.openTabs(): Promise<Array<{id, url, title}>>', summary: 'Tabs the user can see in the app pane' },
-        claimTab: { signature: 'claimTab(id): Promise<Tab>', summary: 'Adopt a user-visible tab as controlled' },
+        openTabs: {
+          signature: 'user.openTabs(): Promise<Array<{id, url, title}>>',
+          summary: 'This conversation\u2019s pane tabs (user-created ones included)',
+        },
+        claimTab: {
+          signature: 'claimTab(id): Promise<Tab>',
+          summary: 'Validate a pane tab belongs to this conversation — user tabs are already in tabs.list()',
+        },
       },
       // Requires the in-app view backend (M3) — hidden entirely on managed.
       unsupportedByDefaultIn: ['managed'],

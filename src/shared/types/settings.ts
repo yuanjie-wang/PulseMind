@@ -37,5 +37,7 @@ export interface AppSettings {
     headless?: boolean
     /** Per-call wall-clock budget in ms (default 60000, cap 300000). */
     timeoutMs?: number
+    /** In-app pane width in px (A-M5) — remembered globally across sessions. */
+    paneWidth?: number
   }
 }

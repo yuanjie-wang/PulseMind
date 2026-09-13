@@ -52,7 +52,7 @@ Trigger conditions: the user asked for a picture, you need pixel judgment the sn
 
 const APP_VIEW_BODY = `## App-view backend (lookup, this backend only)
 
-Tabs can be visible INSIDE the app window. \`agent.browsers.user.openTabs()\` lists what the user sees; \`agent.browsers.user.claimTab(id)\` adopts one as controlled. The pane auto-expands while you act on a claimed tab and folds back after.`
+Tabs dock into the pane on the right edge of the app window, bound to THIS conversation: the pane shows this conversation's tabs; other conversations' tabs stay invisible; switching to a settings page folds the pane — tabs keep running, nothing is destroyed. The USER browses there too (tab strip + address bar), and user-created tabs live in the SAME tabs.list() registry as yours — no claiming ceremony, just tabs.get(id). The pane appears when the conversation gains its first tab and folds when the user leaves the chat view.`
 
 const TROUBLESHOOTING_BODY = `## Troubleshooting (lookup)
 
@@ -66,7 +66,12 @@ const DOCUMENTS: BrowserDocument[] = [
   { name: 'workflow', title: 'Workflow protocol', mode: 'included', body: WORKFLOW_BODY },
   { name: 'safety', title: 'Safety boundaries', mode: 'included', body: SAFETY_BODY },
   { name: 'screenshots', title: 'Screenshots', mode: 'lookup', body: SCREENSHOTS_BODY },
-  { name: 'downloads', title: 'Downloads', mode: 'lookup', body: `## Downloads (lookup)\n\nWhen a page saves a file, it lands in THIS conversation's workspace automatically (never the user's ~/Downloads). \`agent.browsers.downloads()\` lists what arrived, newest first — then use the file tools to move/read the path, or setInputFiles to feed it to another page (workspace-jailed).` },
+  {
+    name: 'downloads',
+    title: 'Downloads',
+    mode: 'lookup',
+    body: `## Downloads (lookup)\n\nWhen a page saves a file, it lands in THIS conversation's workspace automatically (never the user's ~/Downloads). \`agent.browsers.downloads()\` lists what arrived, newest first — then use the file tools to move/read the path, or setInputFiles to feed it to another page (workspace-jailed).`,
+  },
   { name: 'app-view', title: 'App-view backend', mode: 'lookup', when: (d) => d.type === 'app-view', body: APP_VIEW_BODY },
   { name: 'troubleshooting', title: 'Troubleshooting', mode: 'lookup', body: TROUBLESHOOTING_BODY },
 ]
@@ -101,9 +106,7 @@ export function documentationText(descriptor: BackendDescriptor): string {
 }
 
 export function listDocuments(descriptor: BackendDescriptor): Array<{ name: string; mode: string; title: string }> {
-  return DOCUMENTS
-    .filter((d) => !d.when || d.when(descriptor))
-    .map(({ name, mode, title }) => ({ name, mode, title }))
+  return DOCUMENTS.filter((d) => !d.when || d.when(descriptor)).map(({ name, mode, title }) => ({ name, mode, title }))
 }
 
 export function getDocument(name: string, descriptor: BackendDescriptor): string | null {

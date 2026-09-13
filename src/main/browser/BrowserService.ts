@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { shell, type WebContents, type WebContentsView } from 'electron'
 import {
   assertAllowedUrl,
   browserError,
@@ -18,6 +19,15 @@ import {
   type BrowserCommandResult,
   type BrowserTabInfo,
 } from '../../shared/browser-client/protocol'
+import {
+  clampPaneWidth,
+  defaultPaneWidth,
+  type BrowserPaneAction,
+  type BrowserPaneState,
+  type BrowserPaneUpdate,
+  type PaneTabInfo,
+} from '../../shared/browser/pane'
+import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
 import { DEFAULT_SANDBOX_POLICY } from '../../shared/sandbox/policy'
 import { WORKSPACE_DIR } from '../storage'
@@ -27,6 +37,7 @@ import { getConversationWorkspaceDir } from '../storage/conversation.db'
 import type { BackendAdapter } from './backends/BackendAdapter'
 import { ManagedBackend } from './backends/ManagedBackend'
 import { AppViewBackend } from './backends/AppViewBackend'
+import { appViewDock } from './app-view-dock'
 import { readDevToolsPort } from './cdp-port'
 import { runPlaywrightOp } from './PlaywrightCommands'
 import { runBrowserCode, type BrowserRunOutput } from './kernel'
@@ -39,6 +50,9 @@ interface ServiceTab {
   backendId: string
   /** Owning conversation — tabs.list() is scoped to it (§4.1 Tab 归属). */
   scopeId: string
+  /** Pane chrome (user) or browser tool (agent) — decides download routing
+   *  (user → ~/Downloads, agent → conversation workspace). */
+  origin: 'user' | 'agent'
   createdAt: string
   tab: import('./backends/BackendAdapter').BackendTab
 }
@@ -60,6 +74,13 @@ export class BrowserService {
    *  (headless) remains selectable via settings or setActiveBackend. */
   private defaultBackend: 'managed' | 'app-view' = 'app-view'
   private defaultTimeoutMs: number | undefined
+  /** What the renderer is showing right now — drives pane visibility. */
+  private paneState: BrowserPaneState = { viewKind: 'other', conversationId: null, chatAreaWidth: 1300 }
+  /** Persisted pane width (settings.browser.paneWidth); null = never dragged. */
+  private paneWidth: number | null = null
+  /** The user's selected tab per conversation inside the pane. */
+  private paneActiveTab = new Map<string, string>()
+  private paneSender: WebContents | null = null
 
   constructor() {
     // Both backends instantiate lazily on first use.
@@ -72,6 +93,7 @@ export class BrowserService {
       const browser = (await settingsStore.get()).browser
       if (browser?.backend) this.defaultBackend = browser.backend
       if (browser?.timeoutMs) this.defaultTimeoutMs = browser.timeoutMs
+      if (browser?.paneWidth) this.paneWidth = browser.paneWidth
     } catch {
       /* defaults stand */
     }
@@ -84,6 +106,83 @@ export class BrowserService {
     }
     const scopeId = typeof payload.scopeId === 'string' && payload.scopeId ? payload.scopeId : 'unscoped'
     return this.runCode(payload.code, payload.timeoutMs, scopeId)
+  }
+
+  /** ── Pane (A-M5): chrome state, width, user tab actions ── */
+
+  handlePaneState(state: BrowserPaneState, sender: WebContents): void {
+    this.paneSender = sender
+    this.paneState = state
+    this.syncPane()
+  }
+
+  async handlePaneWidth(width: number, sender: WebContents): Promise<void> {
+    this.paneSender = sender
+    const clamped = clampPaneWidth(width, this.paneState.chatAreaWidth)
+    if (clamped !== this.paneWidth) {
+      this.paneWidth = clamped
+      try {
+        const s = await settingsStore.get()
+        await settingsStore.set({ ...s, browser: { ...s.browser, paneWidth: clamped } })
+      } catch {
+        /* width stays session-only */
+      }
+    }
+    appViewDock.setWidth(this.resolvePaneWidth())
+    this.pushPaneUpdates()
+  }
+
+  async handlePaneAction(action: BrowserPaneAction, sender: WebContents): Promise<void> {
+    this.paneSender = sender
+    const scope = this.paneState.conversationId
+    if (!scope) return
+    switch (action.op) {
+      case 'newTab': {
+        const backend = this.backendFor('app-view') as AppViewBackend
+        await backend.start()
+        const id = `tab_${randomUUID().slice(0, 8)}`
+        const created = await backend.newTab({ tabId: id, origin: 'user', scopeId: scope })
+        this.tabs.set(id, { id, backendId: 'app-view', scopeId: scope, origin: 'user', createdAt: new Date().toISOString(), tab: created })
+        this.paneActiveTab.set(scope, id)
+        auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNewTab', target: 'about:blank', decision: 'allowed' })
+        break
+      }
+      case 'closeTab': {
+        const entry = this.resolveTab(action.tabId, scope)
+        await this.closeTab(entry.id)
+        auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneCloseTab', target: action.tabId, decision: 'allowed' })
+        break
+      }
+      case 'selectTab':
+        if (this.tabs.get(action.tabId)?.scopeId === scope) this.paneActiveTab.set(scope, action.tabId)
+        break
+      case 'navigate': {
+        const entry = this.resolveTab(action.tabId, scope)
+        const url = assertAllowedUrl(action.url)
+        auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNavigate', target: url, decision: 'allowed' })
+        await entry.tab.page.goto(url, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
+        break
+      }
+      case 'back':
+        await this.resolveTab(action.tabId, scope)
+          .tab.page.goBack({ waitUntil: 'commit', timeout: 20_000 })
+          .catch(() => {})
+        break
+      case 'forward':
+        await this.resolveTab(action.tabId, scope)
+          .tab.page.goForward({ waitUntil: 'commit', timeout: 20_000 })
+          .catch(() => {})
+        break
+      case 'reload':
+        await this.resolveTab(action.tabId, scope)
+          .tab.page.reload({ waitUntil: 'commit', timeout: 20_000 })
+          .catch(() => {})
+        break
+      case 'openExternal':
+        await shell.openExternal(assertAllowedUrl(action.url))
+        return
+    }
+    this.syncPane()
   }
 
   /** Release every tab + stop backends (app quit). */
@@ -121,7 +220,8 @@ export class BrowserService {
         case 'userOpenTabs': {
           const backend = this.backendFor(this.activeBackendId(scopeId))
           if (!backend.userOpenTabs) return browserError('UNSUPPORTED_BACKEND', '当前后端没有应用窗格')
-          return browserOk(await backend.userOpenTabs())
+          const all = await backend.userOpenTabs()
+          return browserOk(all.filter((t) => this.tabs.get(t.id)?.scopeId === scopeId))
         }
         case 'claimTab': {
           const entry = this.resolveTab(cmd.tabId, scopeId)
@@ -131,7 +231,7 @@ export class BrowserService {
           return browserOk(await this.tabInfo(entry))
         }
         case 'listTabs':
-          return browserOk(this.listTabs(scopeId))
+          return browserOk(await this.listTabs(scopeId))
         case 'listDownloads':
           return browserOk(this.listDownloads(scopeId))
         case 'newTab': {
@@ -141,8 +241,9 @@ export class BrowserService {
           await backend.start()
           const id = `tab_${randomUUID().slice(0, 8)}`
           const downloadsDir = backendId === 'managed' ? join(WORKSPACE_DIR, 'downloads', scopeId) : undefined
-          const created = await backend.newTab({ url: cmd.url, tabId: id, downloadsDir })
-          this.tabs.set(id, { id, backendId, scopeId, createdAt: new Date().toISOString(), tab: created })
+          const created = await backend.newTab({ url: cmd.url, tabId: id, downloadsDir, origin: 'agent', scopeId })
+          this.tabs.set(id, { id, backendId, scopeId, origin: 'agent', createdAt: new Date().toISOString(), tab: created })
+          this.syncPane()
           return browserOk(await this.tabInfo(this.tabs.get(id)!))
         }
         default:
@@ -169,6 +270,7 @@ export class BrowserService {
           return browserOk()
         case 'close':
           await this.closeTab(entry.id)
+          this.syncPane()
           return browserOk()
         case 'snapshot':
           return browserOk(await page.locator('html').ariaSnapshot())
@@ -238,7 +340,9 @@ export class BrowserService {
     let backend = this.backends.get(id)
     if (!backend) {
       if (id === 'app-view') {
-        backend = new AppViewBackend()
+        const appView = new AppViewBackend()
+        appView.onTabActivity = () => this.pushPaneUpdates()
+        backend = appView
         this.backends.set(id, backend)
       } else {
         throw new Error(`未知后端：${id}`)
@@ -269,8 +373,69 @@ export class BrowserService {
     }
   }
 
-  private listTabs(scopeId: string): BrowserTabInfo[] {
-    return [...this.tabs.values()].filter((t) => t.scopeId === scopeId).map((t) => ({ id: t.id, url: t.tab.page.url() }))
+  private async listTabs(scopeId: string): Promise<BrowserTabInfo[]> {
+    const scopeTabs = [...this.tabs.values()].filter((t) => t.scopeId === scopeId)
+    return Promise.all(scopeTabs.map(async (t) => ({ id: t.id, url: t.tab.page.url(), title: await t.tab.page.title().catch(() => '') })))
+  }
+
+  /** ── pane internals (A-M5) ── */
+
+  private resolvePaneWidth(): number {
+    return clampPaneWidth(this.paneWidth ?? defaultPaneWidth(this.paneState.chatAreaWidth), this.paneState.chatAreaWidth)
+  }
+
+  private paneScopeTabs(scope: string | null): Array<{ entry: ServiceTab; view: WebContentsView | null }> {
+    if (!scope) return []
+    const backend = this.backends.get('app-view') as AppViewBackend | undefined
+    if (!backend) return []
+    return [...this.tabs.values()].filter((t) => t.scopeId === scope && t.backendId === 'app-view').map((entry) => ({ entry, view: backend.viewOf(entry.id) }))
+  }
+
+  /** Apply the pane snapshot to the native dock. Folding (no tabs, or not on
+   *  the chat view) keeps tabs alive — bounds go zero, nothing is destroyed. */
+  private syncPane(): void {
+    const { viewKind, conversationId } = this.paneState
+    const scopeTabs = viewKind === 'chat' ? this.paneScopeTabs(conversationId) : []
+    appViewDock.setWidth(this.resolvePaneWidth())
+    if (scopeTabs.length === 0) {
+      appViewDock.show(null)
+      appViewDock.setVisible(false)
+      this.pushPaneUpdates()
+      return
+    }
+    const scope = conversationId as string
+    let activeId = this.paneActiveTab.get(scope)
+    if (!activeId || !scopeTabs.some((t) => t.entry.id === activeId)) {
+      activeId = scopeTabs[scopeTabs.length - 1].entry.id
+      this.paneActiveTab.set(scope, activeId)
+    }
+    const active = scopeTabs.find((t) => t.entry.id === activeId)!
+    appViewDock.show(active.view)
+    appViewDock.setVisible(true)
+    this.pushPaneUpdates()
+  }
+
+  private pushPaneUpdates(): void {
+    const target = this.paneSender ?? appViewDock.getWindow()?.webContents
+    if (!target || target.isDestroyed()) return
+    const { viewKind, conversationId } = this.paneState
+    const scope = viewKind === 'chat' ? conversationId : null
+    const scopeTabs = this.paneScopeTabs(scope)
+    let activeId = scope ? (this.paneActiveTab.get(scope) ?? null) : null
+    if (activeId && !scopeTabs.some((t) => t.entry.id === activeId)) activeId = scopeTabs[scopeTabs.length - 1]?.entry.id ?? null
+    const tabs: PaneTabInfo[] = scopeTabs.map((t) => ({
+      id: t.entry.id,
+      url: t.view?.webContents.getURL() ?? '',
+      title: t.view?.webContents.getTitle() ?? '',
+      active: t.entry.id === activeId,
+    }))
+    const update: BrowserPaneUpdate = {
+      visible: viewKind === 'chat' && scopeTabs.length > 0,
+      width: this.resolvePaneWidth(),
+      conversationId: scope,
+      tabs,
+    }
+    target.send(IPC_CHANNELS.BROWSER_PANE_UPDATE, update)
   }
 
   private resolveTab(tabId: string, scopeId: string): ServiceTab {
