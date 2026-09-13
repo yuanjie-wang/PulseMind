@@ -7,11 +7,7 @@
 import vm from 'node:vm'
 import { createBrowserFacade, type FacadeImage } from '../../shared/browser-client/facade'
 import { serializeResult } from '../../shared/browser-client/serialize'
-import {
-  BROWSER_DEFAULT_TIMEOUT_MS,
-  type BrowserCommand,
-  type BrowserCommandResult,
-} from '../../shared/browser-client/protocol'
+import { BROWSER_DEFAULT_TIMEOUT_MS, type BrowserCommand, type BrowserCommandResult } from '../../shared/browser-client/protocol'
 
 export interface BrowserRunInput {
   code: string
@@ -27,10 +23,7 @@ export interface BrowserRunOutput {
   error?: string
 }
 
-export async function runBrowserCode(
-  input: BrowserRunInput,
-  execute: (cmd: BrowserCommand) => Promise<BrowserCommandResult>,
-): Promise<BrowserRunOutput> {
+export async function runBrowserCode(input: BrowserRunInput, execute: (cmd: BrowserCommand) => Promise<BrowserCommandResult>): Promise<BrowserRunOutput> {
   const images: FacadeImage[] = []
   const consoleLines: string[] = []
 
@@ -57,17 +50,22 @@ export async function runBrowserCode(
   try {
     value = await Promise.race([
       Promise.resolve(execution),
-      new Promise((_, reject) => setTimeout(() => {
-        timedOut = true
-        reject(new Error(`执行超时（${Math.round(budgetMs / 1000)}s）——把工作拆成多次调用，或用更短的等待`))
-      }, budgetMs)),
+      new Promise((_, reject) =>
+        setTimeout(() => {
+          timedOut = true
+          reject(new Error(`执行超时（${Math.round(budgetMs / 1000)}s）——把工作拆成多次调用，或用更短的等待`))
+        }, budgetMs),
+      ),
     ])
   } catch (err) {
     if (!timedOut) {
       return { result: 'null', truncated: false, images, console: consoleLines, error: err instanceof Error ? err.message : String(err) }
     }
     return {
-      result: 'null', truncated: false, images, console: consoleLines,
+      result: 'null',
+      truncated: false,
+      images,
+      console: consoleLines,
       error: err instanceof Error ? err.message : String(err),
     }
   }
