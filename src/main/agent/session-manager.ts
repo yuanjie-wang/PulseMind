@@ -30,7 +30,7 @@ import { normalizeSandboxPolicy } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import type { LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
-import type { AgentEventData, PlanSnapshot } from '../../shared/agent-protocol'
+import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 
 interface Managers {
@@ -50,6 +50,15 @@ interface SessionEntry {
   createdAt: string
   /** Client that owns the session: 'local' (desktop UI) or a ws clientId. */
   clientId: string
+  /** Per-session engine config that a settings-driven refresh must not clobber:
+   *  prompt/tool overrides (also engine instance state) and the approval mode a
+   *  session was created with (sandbox policy or explicit override). */
+  pinned: {
+    systemPromptOverride?: string
+    allowedTools?: string[]
+    /** Set only when the session pinned its own approval mode. */
+    yoloMode?: boolean
+  }
 }
 
 /** Global concurrency guard (M2.2): at most N agent loops run at once;
@@ -233,7 +242,7 @@ class AgentSessionManagerImpl {
     return profile
   }
 
-  async createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown } = {}): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> {
+  async createSession(sessionId: string, opts: AgentSessionCreateOptions = {}): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId)!
       return { sessionId, agentId: existing.agentId, workspaceDir: this.sandboxContexts.get(sessionId)?.workspaceDir }
@@ -263,10 +272,16 @@ class AgentSessionManagerImpl {
     return entry
   }
 
-  private async doCreateSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown }): Promise<void> {
+  private async doCreateSession(sessionId: string, opts: AgentSessionCreateOptions): Promise<void> {
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
     const profile = await this.resolveProfile()
+    const workspaceDir = opts.workspaceDir || settings.workspaceDir || WORKSPACE_DIR
+    // Approval precedence: an explicit per-session override (derived sessions
+    // run unattended) > the project sandbox policy > the global toggle.
+    const yoloMode = opts.yoloMode ?? (opts.sandbox !== undefined
+      ? normalizeSandboxPolicy(opts.sandbox).approval === 'auto'
+      : (settings.yoloMode ?? false))
 
     const engineOptions: AgentEngineOptions = {
       apiKey: profile.apiKey ?? null,
@@ -285,18 +300,16 @@ class AgentSessionManagerImpl {
       knowledgeManager: managers.knowledgeManager,
       experienceManager: managers.experienceManager,
       platformInfo: managers.platformInfo,
-      workspaceDir: opts.workspaceDir || settings.workspaceDir || WORKSPACE_DIR,
+      workspaceDir,
       skillsDir: SKILLS_DIR,
-      // Project sessions derive the shell approval mode from their sandbox
-      // policy (D2): 'auto' behaves like YOLO, the other modes ask. Sessions
-      // without an explicit policy (default project / ws clients) keep the
-      // global toggle's behavior.
-      yoloMode: opts.sandbox !== undefined
-        ? normalizeSandboxPolicy(opts.sandbox).approval === 'auto'
-        : (settings.yoloMode ?? false),
+      yoloMode,
       locale: settings.locale === 'en' ? 'en' : 'zh',
-      hooks: this.buildHooks(profile, managers, sessionId),
+      // A derived session (prompt override) is not a user conversation: its
+      // transcript must not feed the memory/experience pipeline.
+      hooks: opts.systemPromptOverride ? undefined : this.buildHooks(profile, managers, sessionId),
       conversationId: sessionId,
+      systemPromptOverride: opts.systemPromptOverride,
+      allowedTools: opts.allowedTools,
     }
     const engine = new AgentEngine(engineOptions, this.makeCallbacks(sessionId))
     this.lastSentLen.set(sessionId, 0)
@@ -306,13 +319,20 @@ class AgentSessionManagerImpl {
       title: opts.title,
       createdAt: new Date().toISOString(),
       clientId: opts.clientId ?? 'local',
+      pinned: {
+        systemPromptOverride: opts.systemPromptOverride,
+        allowedTools: opts.allowedTools,
+        // Only an explicit request or a sandbox policy pins the approval mode;
+        // plain sessions keep following the global toggle.
+        yoloMode: opts.yoloMode ?? (opts.sandbox !== undefined ? yoloMode : undefined),
+      },
     })
     // Per-session sandbox context: wrapped around every tool-executing entry
     // point (ask / engineCall) so the file-ops and terminal services can
     // adjudicate against the right workspace + policy (PLAN-0.4.0 M3.5).
     this.sandboxContexts.set(sessionId, {
       sessionId,
-      workspaceDir: opts.workspaceDir || settings.workspaceDir || WORKSPACE_DIR,
+      workspaceDir,
       policy: normalizeSandboxPolicy(opts.sandbox),
     })
     try { updateConversationOrigin(sessionId, opts.clientId ?? 'local') } catch { /* origin is best-effort */ }
@@ -328,7 +348,7 @@ class AgentSessionManagerImpl {
    *  conversation is created — before the first message — so resolving here is
    *  authoritative, and ws-client sessions inherit it for free. Also syncs the
    *  engine's workspaceDir so prompts and relative paths follow the project. */
-  private async refreshSandboxContext(sessionId: string, entry: { engine: AgentEngine }): Promise<void> {
+  private async refreshSandboxContext(sessionId: string, entry: SessionEntry): Promise<void> {
     try {
       const projectId = getConversationProjectId(sessionId)
       if (projectId === DEFAULT_PROJECT_ID) return
@@ -336,6 +356,14 @@ class AgentSessionManagerImpl {
       if (!project) return
       this.sandboxContexts.set(sessionId, { sessionId, workspaceDir: project.workspaceDir, policy: project.sandbox })
       entry.engine.opts.workspaceDir = project.workspaceDir
+      // A project's policy owns the approval mode for its conversations (D2), so
+      // adopt it now and pin it: a later settings refresh must not silently
+      // re-open every tool call. A session created with an explicit per-session
+      // override keeps that instead.
+      if (entry.pinned.yoloMode === undefined) {
+        entry.pinned.yoloMode = project.sandbox.approval === 'auto'
+        entry.engine.opts.yoloMode = entry.pinned.yoloMode
+      }
     } catch (err) {
       console.warn('[SessionManager] refreshSandboxContext failed:', err)
     }
@@ -430,7 +458,10 @@ class AgentSessionManagerImpl {
     }
   }
 
-  /** Rebuild engine options from current settings/profile and hot-swap them. */
+  /** Rebuild engine options from current settings/profile and hot-swap them.
+   *  Per-session pins (workspace, approval mode, prompt/tool overrides) survive:
+   *  a settings change must not move a session off its working directory, flip
+   *  its approval mode, or widen a derived session's toolset mid-run. */
   async refreshOptions(sessionId: string): Promise<void> {
     const entry = await this.ensureEntry(sessionId).catch(() => null)
     if (!entry) return
@@ -454,11 +485,16 @@ class AgentSessionManagerImpl {
       knowledgeManager: managers.knowledgeManager,
       experienceManager: managers.experienceManager,
       platformInfo: managers.platformInfo,
-      workspaceDir: settings.workspaceDir ?? WORKSPACE_DIR,
+      workspaceDir: this.sandboxContexts.get(sessionId)?.workspaceDir ?? settings.workspaceDir ?? WORKSPACE_DIR,
       skillsDir: SKILLS_DIR,
-      yoloMode: settings.yoloMode ?? false,
+      yoloMode: entry.pinned.yoloMode ?? settings.yoloMode ?? false,
       locale: settings.locale === 'en' ? 'en' : 'zh',
       conversationId: sessionId,
+      // updateOptions replaces the option bag wholesale — re-attach the pins
+      // (and the session-review hooks, which the refresh used to drop).
+      hooks: entry.pinned.systemPromptOverride ? undefined : this.buildHooks(profile, managers, sessionId),
+      systemPromptOverride: entry.pinned.systemPromptOverride,
+      allowedTools: entry.pinned.allowedTools,
     })
   }
 

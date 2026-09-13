@@ -29,6 +29,26 @@ export interface SessionCreateResult {
   agentId: string
 }
 
+/** Session creation options as passed by the local renderer over the Electron
+ *  bridge: the WS client's [SessionCreateParams] plus the local working
+ *  directory / project binding, and the per-session engine overrides that
+ *  derived sessions (tool studio) pin for their whole lifetime. */
+export interface AgentSessionCreateOptions {
+  agentId?: string
+  title?: string
+  /** Owning client: 'local' (desktop UI) or a ws clientId. */
+  clientId?: string
+  projectId?: string
+  workspaceDir?: string
+  sandbox?: unknown
+  /** Full system-prompt replacement for derived sessions. */
+  systemPromptOverride?: string
+  /** Tool allowlist for the session; omitted = every enabled tool. */
+  allowedTools?: string[]
+  /** Per-session approval override; omitted = sandbox policy, then the global toggle. */
+  yoloMode?: boolean
+}
+
 export interface SessionListResult {
   sessions: Array<{
     sessionId: string

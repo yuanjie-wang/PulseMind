@@ -4,19 +4,24 @@
 // params so it survives detours to other centers (navigateKind memory).
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { App as AntdApp, Button } from 'antd'
+import { App as AntdApp, Button, Input, Modal } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { useNavigationStore } from '../../stores/navigationStore'
+import { studioConversationId } from '../../tool-studio/tool-prompt'
 import type { UserTool } from '../../../../shared/types/user-tool'
 import { ToolList } from './ToolList'
 import { ToolRunner } from './ToolRunner'
-import { exportToolHtml } from './tool-export'
 
 export function ToolListPage({ selectedId }: { selectedId: string | null }): React.ReactElement {
   const { modal, message } = AntdApp.useApp()
   const navigate = useNavigationStore((s) => s.navigate)
   const [tools, setTools] = useState<UserTool[]>([])
   const [deletedPresets, setDeletedPresets] = useState<string[]>([])
+  // Create flow: the tool is named first, so it exists before the workspace
+  // opens (no unnamed record, no name guessed from the prompt).
+  const [nameModalOpen, setNameModalOpen] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [creating, setCreating] = useState(false)
 
   const load = useCallback((): Promise<void> => {
     return Promise.all([
@@ -33,8 +38,37 @@ export function ToolListPage({ selectedId }: { selectedId: string | null }): Rea
   useEffect(() => { void load() }, [load])
 
   const openTool = useCallback((id: string) => navigate({ kind: 'tools', toolId: id }), [navigate])
-  const createNew = useCallback(() => navigate({ kind: 'tools', toolEditing: true }), [navigate])
   const editTool = useCallback((tool: UserTool) => navigate({ kind: 'tools', toolId: tool.id, toolEditing: true }), [navigate])
+
+  // A rename in the run view's header updates the manifest; mirror it into the
+  // list so the row and the runner's iframe title agree without a reload.
+  const handleRenamed = useCallback((updated: UserTool) => {
+    setTools((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+  }, [])
+
+  const openCreateModal = useCallback(() => {
+    setNewName('')
+    setNameModalOpen(true)
+  }, [])
+
+  const confirmCreate = useCallback(async () => {
+    const name = newName.trim()
+    if (!name) {
+      message.warning('请输入工具名')
+      return
+    }
+    setCreating(true)
+    try {
+      const tool = await window.electronAPI.toolCreate({ name })
+      setNameModalOpen(false)
+      await load()
+      navigate({ kind: 'tools', toolId: tool.id, toolEditing: true })
+    } catch (err) {
+      message.error(`创建失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setCreating(false)
+    }
+  }, [newName, message, load, navigate])
 
   const duplicateTool = useCallback(async (tool: UserTool) => {
     try {
@@ -60,6 +94,11 @@ export function ToolListPage({ selectedId }: { selectedId: string | null }): Rea
       cancelText: '取消',
       onOk: async () => {
         await window.electronAPI.toolDelete(tool.id)
+        // Drop the tool's build session with it — the conversation row is gone,
+        // so a live engine would only keep writing into nothing.
+        void window.electronAPI
+          .agentSessionEngineCall(studioConversationId(tool.id), 'dispose', [])
+          .catch(() => { /* no session was ever opened */ })
         if (tool.id === selectedId) navigate({ kind: 'tools' })
         await load()
       },
@@ -85,27 +124,46 @@ export function ToolListPage({ selectedId }: { selectedId: string | null }): Rea
         selectedId={selectedId}
         hasDeletedPresets={deletedPresets.length > 0}
         onOpen={openTool}
-        onCreate={createNew}
+        onCreate={openCreateModal}
         onEdit={editTool}
         onDuplicate={(tool) => void duplicateTool(tool)}
-        onExport={(tool) => void exportToolHtml(tool).catch((err) => message.warning(err instanceof Error ? err.message : String(err)))}
         onDelete={removeTool}
         onRestorePresets={() => void restorePresets()}
       />
       <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
         {selected ? (
-          <ToolRunner key={selected.id} tool={selected} onEdit={editTool} />
+          <ToolRunner key={selected.id} tool={selected} onEdit={editTool} onRenamed={handleRenamed} />
         ) : (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
             <div style={{ fontSize: 16, fontWeight: 600 }}>创造你的第一个工具</div>
             <div style={{ fontSize: 13, color: '#999', maxWidth: 380, textAlign: 'center', lineHeight: 1.8 }}>
-              用一句话描述需求，工作室对话会生成一个可直接使用的 HTML 小工具。
-              左侧预置工具（计算器、番茄钟等）开箱即用，也可以就地编辑或复制一份改造。
+              先给工具起个名字，再用一句话描述需求，工作室对话会生成一个可直接使用的小工具。
+              预置工具开箱即用，也可以就地编辑或复制一份改造。
             </div>
-            <Button type="primary" icon={<PlusOutlined />} onClick={createNew}>新建工具</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>新建工具</Button>
           </div>
         )}
       </div>
+
+      <Modal
+        title="新建工具"
+        open={nameModalOpen}
+        okText="创建"
+        cancelText="取消"
+        confirmLoading={creating}
+        onOk={() => void confirmCreate()}
+        onCancel={() => setNameModalOpen(false)}
+        width={360}
+      >
+        <Input
+          autoFocus
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onPressEnter={() => void confirmCreate()}
+          placeholder="工具名，例如：接口调试器"
+          maxLength={40}
+        />
+      </Modal>
     </div>
   )
 }

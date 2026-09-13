@@ -13,6 +13,7 @@ import type { ProjectSandboxPolicy } from '../../../shared/sandbox/policy'
 import type { AuditEntry } from '../../../shared/types/audit'
 import type { Routine, RoutineRun } from '../../../shared/types/routine'
 import type { UserTool } from '../../../shared/types/user-tool'
+import type { AgentSessionCreateOptions } from '../../../shared/agent-protocol'
 
 // --- Platform Info ---
 
@@ -335,7 +336,7 @@ export interface ElectronAPI {
   canvasExportHtml: (rectId: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
   canvasOpenInBrowser: (rectId: string) => Promise<{ success: boolean; error?: string }>
   // ── Agent sessions (engines hosted in main, PLAN-0.3.5 M1.4) ──
-  agentSessionCreate: (sessionId: string, opts?: { agentId?: string; title?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown }) => Promise<{ sessionId: string; agentId: string; workspaceDir?: string }>
+  agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions) => Promise<{ sessionId: string; agentId: string; workspaceDir?: string }>
   agentSessionAsk: (sessionId: string, content: string) => Promise<void>
   agentSessionCancel: (sessionId: string) => Promise<void>
   agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>

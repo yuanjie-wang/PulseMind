@@ -87,6 +87,11 @@ export interface AgentEngineOptions {
   allowedTools?: string[]
   allowedMcpServers?: string[]
   systemPromptAppendix?: string
+  /** Replace the built system prompt wholesale (derived sessions such as the
+   *  tool studio, whose prompt is a builder contract rather than the assistant
+   *  persona). Same code path as a spawned agent's prompt — see
+   *  buildSystemPrompt's spawnSystemPrompt branch. */
+  systemPromptOverride?: string
 }
 
 // ── AgentEngine Callbacks ───────────────────────────────────────────
@@ -259,6 +264,7 @@ export class AgentEngine {
     this.callbacks = callbacks || {}
     if (opts.allowedTools) this.allowedToolsSet = new Set(opts.allowedTools)
     if (opts.systemPromptAppendix) this.spawnSystemPromptAppendix = opts.systemPromptAppendix
+    if (opts.systemPromptOverride) this.spawnSystemPrompt = opts.systemPromptOverride
     if (opts.allowedMcpServers) this.allowedMcpServersSet = new Set(opts.allowedMcpServers)
 
     // Initialise the shared cache (safe to call multiple times — no-op after first).

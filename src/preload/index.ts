@@ -13,6 +13,7 @@ import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeLis
 import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../renderer/src/types/electron'
 import type { SubAgentProfile } from '../shared/types/subagent'
 import type { GitAction, GitResult } from '../shared/types/git'
+import type { AgentSessionCreateOptions } from '../shared/agent-protocol'
 
 const electronAPI = {
   // Window chrome. Static for the process lifetime, so the renderer can reserve room
@@ -25,7 +26,7 @@ const electronAPI = {
   projectGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_GET, id),
   projectCreate: (input: { name: string; workspaceDir: string; icon?: string; sandbox?: unknown }) =>
     ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, input),
-  projectUpdate: (id: string, patch: { name?: string; workspaceDir?: string; icon?: string; sandbox?: unknown }) =>
+  projectUpdate: (id: string, patch: { name?: string; icon?: string; sandbox?: unknown }) =>
     ipcRenderer.invoke(IPC_CHANNELS.PROJECT_UPDATE, id, patch),
   projectDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
   setConversationProject: (id: string, projectId: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROJECT, id, projectId),
@@ -400,7 +401,7 @@ dbCheck: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.DB_CHECK),
   canvasOpenInBrowser: (rectId: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.CANVAS_OPEN_IN_BROWSER, rectId),
   // ── Agent sessions (engines hosted in main) ──
-  agentSessionCreate: (sessionId: string, opts?: { agentId?: string; title?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown }): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> =>
+  agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CREATE, sessionId, opts),
   agentSessionAsk: (sessionId: string, content: string): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content),

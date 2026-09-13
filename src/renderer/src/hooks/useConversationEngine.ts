@@ -10,36 +10,13 @@ import type { ExperienceManager } from '../experiences/ExperienceManager'
 import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
-import { applyMessagesAppend } from '../utils/session-messages'
-
-function isActiveStatus(status: AgentStatus): boolean {
-  return status.status === 'streaming'
-    || status.status === 'awaiting_approval'
-    || status.status === 'awaiting_user_input'
-    || status.status === 'executing'
-    || status.status === 'awaiting_extension'
-    || status.status === 'retrying'
-}
+import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../utils/session-mirror'
 
 // ── Client-side session state ────────────────────────────────────────
 // Engines are hosted in the main process (M1.4 session manager); this hook is
-// a protocol client that mirrors their observable state and forwards commands
-// over the agent-session IPC channels.
-
-interface SessionState {
-  messages: AgentMessage[]
-  agentStatus: AgentStatus
-  streamingBlocks: ContentBlock[]
-  plan: Plan | null
-  /** Last known windowed-history summary (best-effort cache for sync saves). */
-  historySummary: { firstKeptId: string; text: string } | null
-  /** Resolved working directory (PLAN-0.4.0 M8), reported back on session create. */
-  workspaceDir?: string
-}
-
-function freshSessionState(): SessionState {
-  return { messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [], plan: null, historySummary: null }
-}
+// a protocol client that mirrors their observable state (see
+// utils/session-mirror) and forwards commands over the agent-session IPC
+// channels.
 
 /**
  * Facade returned by getOrCreateEngine — preserves the AgentEngine surface the
@@ -190,69 +167,28 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       const data = raw as AgentEventData
       const st = statesRef.current.get(sessionId)
       if (!st) return
+      // Transport-only events (token/tool_start/usage/…) are not mirrored; the
+      // follow-up below must not run for them.
+      if (!applySessionEvent(st, data)) return
 
-      switch (data.type) {
-        case 'messages_append': {
-          const items = data.items as AgentMessage[]
-          st.messages = applyMessagesAppend(st.messages, data.fromIndex, items)
-          break
+      if (data.type === 'status') {
+        setActiveLoopConvIds((prev) => {
+          const isActive = isActiveStatus(st.agentStatus)
+          const tracked = prev.includes(sessionId)
+          if (isActive && !tracked) return [...prev, sessionId]
+          if (!isActive && tracked) return prev.filter((id) => id !== sessionId)
+          return prev
+        })
+        setRetryingConvIds((prev) => {
+          const isRetrying = st.agentStatus.status === 'retrying'
+          const tracked = prev.includes(sessionId)
+          if (isRetrying && !tracked) return [...prev, sessionId]
+          if (!isRetrying && tracked) return prev.filter((id) => id !== sessionId)
+          return prev
+        })
+        if (st.agentStatus.status === 'completed' && activeEngineIdRef.current !== sessionId) {
+          options.onBackgroundComplete?.(sessionId)
         }
-        case 'messages': {
-          st.messages = data.messages as AgentMessage[]
-          break
-        }
-        case 'streaming_blocks': {
-          st.streamingBlocks = data.blocks as ContentBlock[]
-          break
-        }
-        case 'status': {
-          st.agentStatus = { status: data.status } as AgentStatus
-          setActiveLoopConvIds((prev) => {
-            const isActive = isActiveStatus(st.agentStatus)
-            const tracked = prev.includes(sessionId)
-            if (isActive && !tracked) return [...prev, sessionId]
-            if (!isActive && tracked) return prev.filter((id) => id !== sessionId)
-            return prev
-          })
-          setRetryingConvIds((prev) => {
-            const isRetrying = st.agentStatus.status === 'retrying'
-            const tracked = prev.includes(sessionId)
-            if (isRetrying && !tracked) return [...prev, sessionId]
-            if (!isRetrying && tracked) return prev.filter((id) => id !== sessionId)
-            return prev
-          })
-          if (st.agentStatus.status === 'completed' && activeEngineIdRef.current !== sessionId) {
-            options.onBackgroundComplete?.(sessionId)
-          }
-          break
-        }
-        case 'plan_update': {
-          st.plan = (data.plan as Plan | null) ?? null
-          break
-        }
-        case 'tool_status': {
-          // In-place tool_use mutations arrive diffed — patch the mirrored
-          // messages by (messageId, toolUseId).
-          const byId = new Map(st.messages.map((m) => [m.id, m]))
-          for (const u of data.updates) {
-            const msg = byId.get(u.messageId)
-            if (!msg) continue
-            for (const block of msg.contentBlocks ?? []) {
-              if (block.type !== 'tool_use' || (block as { id?: string }).id !== u.toolUseId) continue
-              const tu = block as { status?: string; exitCode?: number; output?: string }
-              if (u.status !== undefined) tu.status = u.status
-              if (u.exitCode !== undefined) tu.exitCode = u.exitCode
-              if (u.output !== undefined) tu.output = u.output
-            }
-          }
-          break
-        }
-        case 'error': {
-          st.agentStatus = { status: 'error', error: data.message }
-          break
-        }
-        default:
-          return
       }
 
       // Best-effort refresh of the cached history summary (fire-and-forget).

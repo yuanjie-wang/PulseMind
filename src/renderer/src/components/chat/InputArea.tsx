@@ -1,9 +1,9 @@
-import React, { useRef, useEffect, useState } from 'react'
-import { Sender } from '@ant-design/x'
+import React, { useEffect, useState } from 'react'
 import { Button, Dropdown, Modal, App } from 'antd'
-import { PlusOutlined, FolderOutlined, FileOutlined, SwapOutlined, ArrowUpOutlined, LoadingOutlined, CloseOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, FolderOutlined, FileOutlined, SwapOutlined, CloseOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
+import { Composer, useInputHistory } from './Composer'
 import type { LlmProfile } from '../../types/settings'
 
 interface ChromeTab {
@@ -45,17 +45,7 @@ export function InputArea({
   const { t } = useTranslation()
   const { message } = App.useApp()
 
-  const inputHistoryRef = useRef<string[]>([])
-  const historyIndexRef = useRef(-1)
-  const savedDraftRef = useRef('')
-  const senderContainerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!hasMessages && senderContainerRef.current) {
-      const textarea = senderContainerRef.current.querySelector('textarea')
-      textarea?.focus()
-    }
-  }, [hasMessages])
+  const history = useInputHistory()
 
   const isInputDisabled = isAwaitingApproval || isAwaitingInput
 
@@ -268,12 +258,51 @@ export function InputArea({
     onClick: () => onSelectProfile?.(p.id)
   })) ?? []
 
+  const hasAttachments = selectedFiles.length + selectedFolders.length + selectedUrls.length > 0
+
+  /** Compose the outgoing message: attachment refs first, then the typed text. */
+  const buildMessage = (text: string): string => {
+    const parts = [
+      ...selectedUrls.map(u => `[${u.title}](${u.url})` + (u.pageId ? `\n[chrome: pageId=${u.pageId}]` : '')),
+      ...selectedFiles.map(p => `[file:${p}]`),
+      ...selectedFolders.map(p => `[folder:${p}]`),
+    ]
+    return parts.length > 0 ? parts.join('\n') + (text ? '\n' + text : '') : text
+  }
+
+  const submit = (raw: string): void => {
+    const text = raw.trim()
+    if (!text && !hasAttachments) return
+    const outgoing = buildMessage(text)
+    history.push(outgoing)
+    onSendMessage(outgoing)
+    setInputValue('')
+    setSelectedFiles([])
+    setSelectedFolders([])
+    setSelectedUrls([])
+  }
+
   return (
-    <div ref={senderContainerRef} style={{ position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, padding: '12px 24px 24px' }}>
-      <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-      <Sender
-        autoSize={{ minRows: 1, maxRows: 8 }}
-        header={selectedFiles.length + selectedFolders.length + selectedUrls.length > 0 ? (
+    <>
+      <Composer
+        value={inputValue}
+        onChange={setInputValue}
+        onSubmit={submit}
+        onCancel={onCancel}
+        isRequesting={isRequesting}
+        disabled={isInputDisabled}
+        loading={isRequesting && !isInputDisabled}
+        autoFocus={!hasMessages}
+        placeholder={
+          isAwaitingApproval
+            ? t('chatView.sender.approving')
+            : isAwaitingInput
+            ? t('chatView.sender.awaitingInput')
+            : isStreaming
+            ? t('chatView.sender.streaming')
+            : t('chatView.sender.default')
+        }
+        header={hasAttachments ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4, padding: '5px 0 0 5px' }}>
             {selectedUrls.map((u, i) => (
               <span key={`u-${i}`} style={{
@@ -313,8 +342,8 @@ export function InputArea({
             ))}
           </div>
         ) : undefined}
-        footer={
-          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+        footerLeft={
+          <>
             <Button size="small" type="text" icon={<PlusOutlined style={{ fontSize: 14 }} />} onClick={handlePickFile} style={{ fontSize: 12, color: '#666' }} />
             <Button size="small" type="text" icon={<FolderOutlined style={{ fontSize: 14 }} />} onClick={handlePickFolder} style={{ fontSize: 12, color: '#666' }} />
             <Button size="small" type="text" icon={<LinkOutlined style={{ fontSize: 14 }} />} onClick={handlePickUrl} loading={chromeTabsLoading} disabled={!chromeMcpReady} style={{ fontSize: 12, color: '#666' }} />
@@ -323,105 +352,15 @@ export function InputArea({
                 {activeModelLabel}
               </Button>
             </Dropdown>
-            {/* The ring and the send button share one auto-margined group, so the ring
-                lands against the button's left edge. The margin has to sit on the group:
-                on the button it would open the gap between the two instead. 24px is the
-                send button's diameter (antd size="small" circle), which the ring matches. */}
-            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {hasMessages && contextLength != null && contextLength > 0 && (
-                <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
-                  <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={24} />
-                </span>
-              )}
-              <Button size="small" type="primary" shape="circle" icon={isRequesting ? <LoadingOutlined /> : <ArrowUpOutlined />} disabled={!isRequesting && !inputValue.trim()} onClick={() => {
-                if (isRequesting) {
-                  onCancel()
-                  return
-                }
-                const val = inputValue.trim()
-                if (val) {
-                  const parts = [
-                    ...selectedUrls.map(u => `[${u.title}](${u.url})` + (u.pageId ? `\n[chrome: pageId=${u.pageId}]` : '')),
-                    ...selectedFiles.map(p => `[${getFileName(p)}](file:///${p.replace(/\\/g, '/')})`),
-                    ...selectedFolders.map(p => `[${getFileName(p)}](file:///${p.replace(/\\/g, '/')})`),
-                  ]
-                  const message = parts.length > 0 ? parts.join('\n') + (val ? '\n' + val : '') : val
-                  if (inputHistoryRef.current.length === 0 || inputHistoryRef.current[inputHistoryRef.current.length - 1] !== message) {
-                    inputHistoryRef.current.push(message)
-                  }
-                  historyIndexRef.current = -1
-                  onSendMessage(message)
-                  setInputValue('')
-                  setSelectedFiles([])
-                  setSelectedFolders([])
-                  setSelectedUrls([])
-                }
-              }} />
-            </div>
-          </div>
+          </>
         }
-        value={inputValue}
-        onChange={(v) => setInputValue(v as string)}
-        loading={isRequesting && !isInputDisabled}
-        placeholder={
-          isAwaitingApproval
-            ? t('chatView.sender.approving')
-            : isAwaitingInput
-            ? t('chatView.sender.awaitingInput')
-            : isStreaming
-            ? t('chatView.sender.streaming')
-            : t('chatView.sender.default')
-        }
-        disabled={isInputDisabled}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowUp') {
-            if (inputHistoryRef.current.length === 0) return
-            e.preventDefault()
-            if (historyIndexRef.current === -1) {
-              savedDraftRef.current = inputValue
-              historyIndexRef.current = inputHistoryRef.current.length - 1
-            } else if (historyIndexRef.current > 0) {
-              historyIndexRef.current--
-            } else {
-              return
-            }
-            setInputValue(inputHistoryRef.current[historyIndexRef.current])
-          } else if (e.key === 'ArrowDown') {
-            if (historyIndexRef.current === -1) return
-            e.preventDefault()
-            if (historyIndexRef.current < inputHistoryRef.current.length - 1) {
-              historyIndexRef.current++
-              setInputValue(inputHistoryRef.current[historyIndexRef.current])
-            } else {
-              historyIndexRef.current = -1
-              setInputValue(savedDraftRef.current)
-            }
-          }
-        }}
-        onSubmit={(val) => {
-          if (val && typeof val === 'string') {
-            const trimmed = val.trim()
-            if (!trimmed && selectedFiles.length === 0 && selectedFolders.length === 0 && selectedUrls.length === 0) return
-            const parts = [
-              ...selectedUrls.map(u => `[${u.title}](${u.url})` + (u.pageId ? `\n[chrome: pageId=${u.pageId}]` : '')),
-              ...selectedFiles.map(p => `[file:${p}]`),
-              ...selectedFolders.map(p => `[folder:${p}]`),
-            ]
-            const message = parts.length > 0 ? parts.join('\n') + (trimmed ? '\n' + trimmed : '') : trimmed
-            if (inputHistoryRef.current.length === 0 || inputHistoryRef.current[inputHistoryRef.current.length - 1] !== message) {
-              inputHistoryRef.current.push(message)
-            }
-            historyIndexRef.current = -1
-            onSendMessage(message)
-            setInputValue('')
-            setSelectedFiles([])
-            setSelectedFolders([])
-            setSelectedUrls([])
-          }
-        }}
-        onCancel={onCancel}
+        trailing={hasMessages && contextLength != null && contextLength > 0 ? (
+          <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
+            <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={24} />
+          </span>
+        ) : undefined}
+        onKeyDown={(e) => history.onKeyDown(e, inputValue, setInputValue)}
       />
-      </div>
 
       <Modal
         title={<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>选择 Chrome 标签页<Button size="small" type="text" icon={<ReloadOutlined />} loading={chromeTabsLoading} onClick={refreshChromeTabs} /></div>}
@@ -462,6 +401,6 @@ export function InputArea({
           ))}
         </div>
       </Modal>
-    </div>
+    </>
   )
 }

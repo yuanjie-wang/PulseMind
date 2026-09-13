@@ -34,6 +34,9 @@ export class SpawnManager {
       hooks: undefined,
       allowedTools: config.allowedTools,
       allowedMcpServers: config.allowedMcpServers,
+      // The sub-agent's own prompt is set below; never inherit a parent
+      // session's prompt override through the spread.
+      systemPromptOverride: undefined,
     }
 
     const engine = new AgentEngine(subOpts)

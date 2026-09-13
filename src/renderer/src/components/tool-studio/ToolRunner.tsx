@@ -7,18 +7,20 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
-import { ReloadOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons'
+import { ReloadOutlined, EditOutlined } from '@ant-design/icons'
 import { injectToolSdk, connectToolBridge } from '../../tool-studio/bridge-host'
 import type { UserTool } from '../../../../shared/types/user-tool'
-import { exportToolHtml } from './tool-export'
+import { ToolNameEditor } from './ToolNameEditor'
 
 export interface ToolRunnerProps {
   tool: UserTool
   /** Open the studio to keep iterating on this tool (nav: toolEditing). */
   onEdit: (tool: UserTool) => void
+  /** A rename landed — the list owns the tool array and has to re-read it. */
+  onRenamed: (tool: UserTool) => void
 }
 
-export function ToolRunner({ tool, onEdit }: ToolRunnerProps): React.ReactElement {
+export function ToolRunner({ tool, onEdit, onRenamed }: ToolRunnerProps): React.ReactElement {
   const [html, setHtml] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -42,14 +44,11 @@ export function ToolRunner({ tool, onEdit }: ToolRunnerProps): React.ReactElemen
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fff' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: '1px solid #f0f0f0' }}>
-        <span style={{ fontWeight: 600 }}>{tool.name}</span>
+        <ToolNameEditor tool={tool} onRenamed={onRenamed} />
         {tool.description && <span style={{ fontSize: 12, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.description}</span>}
         <span style={{ marginInlineStart: 'auto' }} />
         <Tooltip title="重新加载">
           <Button type="text" icon={<ReloadOutlined />} onClick={() => setNonce((n) => n + 1)} />
-        </Tooltip>
-        <Tooltip title="导出 HTML">
-          <Button type="text" icon={<DownloadOutlined />} onClick={() => void exportToolHtml(tool)} />
         </Tooltip>
         <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(tool)}>在工作区编辑</Button>
       </div>

@@ -7,7 +7,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { agentSessionManager } from '../agent/session-manager'
-import type { AgentEventData } from '../../shared/agent-protocol'
+import type { AgentEventData, AgentSessionCreateOptions } from '../../shared/agent-protocol'
 import { deriveConvType, getConversationProjectId } from '../storage/conversation.db'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 
@@ -20,7 +20,7 @@ export function registerAgentSessionHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CREATE, async (_event, sessionId: string, opts: { agentId?: string; title?: string; clientId?: string; projectId?: string; workspaceDir?: string; sandbox?: unknown } = {}) => {
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CREATE, async (_event, sessionId: string, opts: AgentSessionCreateOptions = {}) => {
     // Local UI conversations resolve their working directory here (PLAN-0.4.0
     // M8): project-bound ones use the project's fixed workspace, plain ones get
     // a lazily-created timestamped folder under the global workspace. Canvas /
