@@ -24,3 +24,6 @@ readme30.pdf
 # Local working files
 .workbuddy/
 resources/chromium/
+
+# Local agent workspace state
+.zcode/
