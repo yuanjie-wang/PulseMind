@@ -42,14 +42,22 @@ export class ManagedBackend implements BackendAdapter {
   async start(): Promise<void> {
     if (this.browser?.isConnected?.()) return
     let headless = true
-    try { headless = (await settingsStore.get()).browser?.headless ?? true } catch { /* default */ }
+    try {
+      headless = (await settingsStore.get()).browser?.headless ?? true
+    } catch {
+      /* default */
+    }
     const launch = await resolveLaunchOptions(headless)
     this.browser = await chromium.launch(launch)
   }
 
   async stop(): Promise<void> {
     if (this.browser) {
-      try { await this.browser.close() } catch { /* already gone */ }
+      try {
+        await this.browser.close()
+      } catch {
+        /* already gone */
+      }
       this.browser = null
     }
   }
@@ -65,15 +73,20 @@ export class ManagedBackend implements BackendAdapter {
       mkdirSync(options.downloadsDir, { recursive: true })
       page.on('download', (download) => {
         const name = download.suggestedFilename() || `download_${Date.now()}`
-        download.saveAs(join(options.downloadsDir!, name)).catch((err) =>
-          console.warn('[browser] download save failed:', err instanceof Error ? err.message : err))
+        download
+          .saveAs(join(options.downloadsDir!, name))
+          .catch((err) => console.warn('[browser] download save failed:', err instanceof Error ? err.message : err))
       })
     }
     if (options.url) await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 15_000 })
     return {
       page,
       close: async () => {
-        try { await context.close() } catch { /* already gone */ }
+        try {
+          await context.close()
+        } catch {
+          /* already gone */
+        }
       },
     }
   }
@@ -102,21 +115,28 @@ export async function resolveLaunchOptions(headless = true): Promise<LaunchOptio
       const probe = await chromium.launch(options)
       await probe.close()
       return options
-    } catch { /* try the next candidate */ }
+    } catch {
+      /* try the next candidate */
+    }
   }
   throw new Error(
-    '没有可用的浏览器内核：未找到随包 Chromium，也未安装系统 Chrome/Edge。' +
-    '可安装 Chrome，或设置 PULSEMIND_CHROMIUM_PATH 指向一个 Chromium 可执行文件。')
+    '没有可用的浏览器内核：未找到随包 Chromium，也未安装系统 Chrome/Edge。' + '可安装 Chrome，或设置 PULSEMIND_CHROMIUM_PATH 指向一个 Chromium 可执行文件。',
+  )
 }
 
-/** Bundled Chromium executable (packaged builds; M2 fills this directory). */
+/** Bundled Chromium executable (packaged builds; filled by browsers:ensure).
+ *  macOS layout differs by playwright version: newer builds ship
+ *  "Google Chrome for Testing.app", older ones "Chromium.app". */
 function bundledChromiumPath(): string | null {
   if (!app.isPackaged) return null
   const base = join(process.resourcesPath, 'chromium')
-  const win = join(base, 'chrome-win', 'chrome.exe')
-  const mac = join(base, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium')
-  const linux = join(base, 'chrome-linux', 'chrome')
-  for (const p of [win, mac, linux]) {
+  const candidates = [
+    join(base, 'chrome-win', 'chrome.exe'),
+    join(base, 'chrome-mac', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
+    join(base, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
+    join(base, 'chrome-linux', 'chrome'),
+  ]
+  for (const p of candidates) {
     if (existsSync(p)) return p
   }
   return null

@@ -7,7 +7,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { app, WebContentsView } from 'electron'
-import { chromium, type Browser, type BrowserContext } from 'playwright-core'
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
 import { appViewDock } from '../app-view-dock'
 import { readDevToolsPort } from '../cdp-port'
 import type { BackendAdapter, BackendTab } from './BackendAdapter'
@@ -49,7 +49,11 @@ export class AppViewBackend implements BackendAdapter {
     for (const [, view] of this.views) this.destroyView(view)
     this.views.clear()
     if (this.browser) {
-      try { this.browser.close() } catch { /* already gone */ }
+      try {
+        this.browser.close()
+      } catch {
+        /* already gone */
+      }
       this.browser = null
     }
   }
@@ -62,7 +66,16 @@ export class AppViewBackend implements BackendAdapter {
     appViewDock.addView(view)
     await view.webContents.loadURL('about:blank')
     await view.webContents.executeJavaScript(`${MARKER_KEY} = ${JSON.stringify(token)}`, true)
-    const page = await this.findPageByToken(token)
+    let page: Page
+    try {
+      page = await this.findPageByToken(token)
+    } catch (err) {
+      // The view was already docked — tear it down so a failed newTab never
+      // leaves an orphaned blank pane behind.
+      this.views.delete(options.tabId)
+      this.destroyView(view)
+      throw err
+    }
     if (options.url) await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 20_000 })
     return {
       page,
@@ -92,10 +105,14 @@ export class AppViewBackend implements BackendAdapter {
   private destroyView(view: WebContentsView): void {
     try {
       appViewDock.removeView(view)
-    } catch { /* already removed */ }
+    } catch {
+      /* already removed */
+    }
     try {
       if (!view.webContents.isDestroyed()) view.webContents.close()
-    } catch { /* already gone */ }
+    } catch {
+      /* already gone */
+    }
   }
 
   private async findPageByToken(token: string) {
@@ -105,9 +122,12 @@ export class AppViewBackend implements BackendAdapter {
     while (Date.now() < deadline) {
       for (const page of context.pages()) {
         try {
-          const marker = await page.evaluate(`(window as any)[${JSON.stringify(MARKER_KEY)}]`)
+          // Evaluated as PAGE JavaScript — plain JS only, no TS syntax here.
+          const marker = await page.evaluate(`window[${JSON.stringify(MARKER_KEY)}]`)
           if (marker === token) return page
-        } catch { /* not ours, or not ready */ }
+        } catch {
+          /* not ours, or not ready */
+        }
       }
       await new Promise((r) => setTimeout(r, 100))
     }

@@ -7,7 +7,7 @@
     "dev": "node scripts/build.js && concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "node scripts/dev-renderer.js",
     "dev:electron": "wait-on http://localhost:5173 && cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron .",
-    "build": "node scripts/build.js && vite build",
+    "build": "node scripts/build.js && vite build && node scripts/ensure-chromium.js",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --check src/",
@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "postinstall": "electron-builder install-app-deps",
     "test": "vitest run",
+    "browsers:install": "playwright-core install chromium",
     "browsers:ensure": "node scripts/ensure-chromium.js"
   },
   "dependencies": {

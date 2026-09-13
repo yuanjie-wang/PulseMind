@@ -8,11 +8,14 @@ import type { BrowserCommand, BrowserCommandResult } from '../src/shared/browser
 
 describe('playwright-sugar', () => {
   it('serializes getByRole with name', () => {
-    expect(playwrightSugar.getByRole('button', { name: '登录' }).selector).toBe('internal:role=button[name="登录"]')
+    expect(playwrightSugar.getByRole('button', { name: '登录' }).selector).toBe('internal:role=button[name="登录"i]')
   })
   it('serializes role options as extra attribute brackets', () => {
     const s = playwrightSugar.getByRole('heading', { level: 1, name: /summary/i })
     expect(s.selector).toBe('internal:role=heading[name=/summary/i][level=1]')
+  })
+  it('serializes exact role names with the s suffix the engine parses', () => {
+    expect(playwrightSugar.getByRole('button', { name: '登录', exact: true }).selector).toBe('internal:role=button[name="登录"s]')
   })
   it('chains child locators with >>', () => {
     const s = playwrightSugar.getByRole('list').getByRole('listitem').first()
@@ -21,9 +24,9 @@ describe('playwright-sugar', () => {
   it('serializes text/label/placeholder/testid', () => {
     expect(playwrightSugar.getByText('提交', { exact: true }).selector).toBe('internal:text="提交"s')
     expect(playwrightSugar.getByText(/loading/i).selector).toBe('internal:text=/loading/i')
-    expect(playwrightSugar.getByLabel('用户名').selector).toBe('internal:label="用户名"')
-    expect(playwrightSugar.getByPlaceholder('搜索').selector).toBe('internal:placeholder="搜索"')
-    expect(playwrightSugar.getByTestId('submit-btn').selector).toBe('internal:testid="submit-btn"')
+    expect(playwrightSugar.getByLabel('用户名').selector).toBe('internal:label="用户名"i')
+    expect(playwrightSugar.getByPlaceholder('搜索').selector).toBe('internal:attr=[placeholder="搜索"i]')
+    expect(playwrightSugar.getByTestId('submit-btn').selector).toBe('internal:testid=[data-testid="submit-btn"]')
   })
   it('selectorOf passes raw strings through', () => {
     expect(selectorOf('div > a')).toBe('div > a')
@@ -113,7 +116,7 @@ describe('facade against a mock execute', () => {
   })
   it('tabs.get fails loudly on a stale id (批前重绑定协议)', async () => {
     const facade = createBrowserFacade({
-      execute: (cmd) => cmd.method === 'listTabs' ? { ok: true, value: [] } : { ok: true },
+      execute: (cmd) => (cmd.method === 'listTabs' ? { ok: true, value: [] } : { ok: true }),
       emitImage: () => {},
     })
     await expect(facade.agent.browsers.tabs.get('ghost')).rejects.toThrow(/tabs\.list/)

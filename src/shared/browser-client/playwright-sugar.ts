@@ -2,13 +2,19 @@
 // The client-side sugar is pure syntax: getBy* chains serialize into
 // Playwright `internal:*` selector strings; execution happens on the host via
 // a single `playwright` command {selector, op} (客户端薄、宿主厚, ZCode §2.3).
-// Pure string building — no Playwright import, fully unit-testable.
+// Pure string building — no Playwright import, fully unit-testable. The exact
+// engine syntax lives in Playwright's internals, not a public contract, so
+// every form here is pinned by tests/browser-selector-smoke.test.ts against a
+// live engine: role names take the `s` suffix when exact (bare = substring),
+// and placeholder/testid must use the attr/testid engines' bracketed forms.
+
+type RoleOptions = { name?: string | RegExp; exact?: boolean; checked?: boolean; disabled?: boolean; level?: number }
 
 /** Serializable locator handle: a selector string with sugar chain methods. */
 export interface LocatorSugar {
   /** The serialized Playwright internal selector. */
   selector: string
-  getByRole: (role: string, options?: { name?: string | RegExp; exact?: boolean; checked?: boolean; disabled?: boolean; level?: number }) => LocatorSugar
+  getByRole: (role: string, options?: RoleOptions) => LocatorSugar
   getByText: (text: string | RegExp, options?: { exact?: boolean }) => LocatorSugar
   getByLabel: (text: string | RegExp, options?: { exact?: boolean }) => LocatorSugar
   getByPlaceholder: (text: string | RegExp, options?: { exact?: boolean }) => LocatorSugar
@@ -23,36 +29,39 @@ function quote(value: string): string {
 }
 
 function regexToText(re: RegExp): string {
-  // internal:text supports /regex/flags syntax: internal:text="/pattern/i"
+  // internal:text and internal:attr accept /regex/flags values
   return `/${re.source}/${re.flags}`
 }
 
-function toStringLike(text: string | RegExp, exact?: boolean): string {
-  if (typeof text === 'string') return exact ? quote(text) : quote(text) // substring is default; exact flag carried on role only
+/** One matcher value in engine syntax: a quoted string always carries the
+ *  suffix — `s` = whole-string case-sensitive (exact), `i` = case-insensitive
+ *  substring (default; a BARE quoted string is whole-string, not substring) —
+ *  or a /regex/flags literal (exact does not apply to regexes). */
+function textMatcher(text: string | RegExp, exact?: boolean): string {
+  if (typeof text === 'string') return `${quote(text)}${exact ? 's' : 'i'}`
   return regexToText(text)
+}
+
+function roleSelector(role: string, options?: RoleOptions): string {
+  const parts: string[] = []
+  if (options?.name !== undefined) parts.push(`name=${textMatcher(options.name, options.exact)}`)
+  if (options?.checked !== undefined) parts.push(`checked=${options.checked}`)
+  if (options?.disabled !== undefined) parts.push(`disabled=${options.disabled}`)
+  if (options?.level !== undefined) parts.push(`level=${options.level}`)
+  return `internal:role=${role}${parts.length ? `[${parts.join('][')}]` : ''}`
 }
 
 function makeLocator(selector: string): LocatorSugar {
   const chain = (next: string): LocatorSugar => makeLocator(`${selector} >> ${next}`)
   return {
     selector,
-    getByRole: (role, options) => {
-      const parts: string[] = []
-      if (options?.name !== undefined) parts.push(`name=${typeof options.name === 'string' ? quote(options.name) : regexToText(options.name)}`)
-      if (options?.exact) parts.push('exact=true')
-      if (options?.checked !== undefined) parts.push(`checked=${options.checked}`)
-      if (options?.disabled !== undefined) parts.push(`disabled=${options.disabled}`)
-      if (options?.level !== undefined) parts.push(`level=${options.level}`)
-      return chain(`internal:role=${role}${parts.length ? `[${parts.join('][')}]` : ''}`)
-    },
-    getByText: (text, options) => {
-      // internal:text defaults to case-insensitive substring; the `s` flag = exact.
-      const body = typeof text === 'string' ? `"${text}"${options?.exact ? 's' : ''}` : regexToText(text)
-      return chain(`internal:text=${body}`)
-    },
-    getByLabel: (text, options) => chain(`internal:label=${toStringLike(text, options?.exact)}`),
-    getByPlaceholder: (text, options) => chain(`internal:placeholder=${toStringLike(text, options?.exact)}`),
-    getByTestId: (id) => chain(`internal:testid=${quote(id)}`),
+    getByRole: (role, options) => chain(roleSelector(role, options)),
+    getByText: (text, options) => chain(`internal:text=${textMatcher(text, options?.exact)}`),
+    getByLabel: (text, options) => chain(`internal:label=${textMatcher(text, options?.exact)}`),
+    // no dedicated placeholder engine — only the attr engine's bracketed form parses
+    getByPlaceholder: (text, options) => chain(`internal:attr=[placeholder=${textMatcher(text, options?.exact)}]`),
+    // the testid engine parses an attribute selector, not a bare literal
+    getByTestId: (id) => chain(`internal:testid=[data-testid=${quote(id)}]`),
     first: () => chain('nth=0'),
     last: () => chain('nth=-1'),
     nth: (index) => chain(`nth=${index}`),
@@ -61,30 +70,14 @@ function makeLocator(selector: string): LocatorSugar {
 
 /** Root sugar factories, exposed to the kernel as `agent.playwright`. */
 export const playwrightSugar = {
-  getByRole: (role: string, options?: Parameters<LocatorSugar['getByRole']>[1]): LocatorSugar =>
-    makeLocator(buildRole(role, options)),
-  getByText: (text: string | RegExp, options?: { exact?: boolean }): LocatorSugar => {
-    // internal:text defaults to case-insensitive substring; the `s` flag = exact.
-    const body = typeof text === 'string' ? `"${text}"${options?.exact ? 's' : ''}` : regexToText(text)
-    return makeLocator(`internal:text=${body}`)
-  },
-  getByLabel: (text: string | RegExp, options?: { exact?: boolean }): LocatorSugar =>
-    makeLocator(`internal:label=${toStringLike(text, options?.exact)}`),
+  getByRole: (role: string, options?: RoleOptions): LocatorSugar => makeLocator(roleSelector(role, options)),
+  getByText: (text: string | RegExp, options?: { exact?: boolean }): LocatorSugar => makeLocator(`internal:text=${textMatcher(text, options?.exact)}`),
+  getByLabel: (text: string | RegExp, options?: { exact?: boolean }): LocatorSugar => makeLocator(`internal:label=${textMatcher(text, options?.exact)}`),
   getByPlaceholder: (text: string | RegExp, options?: { exact?: boolean }): LocatorSugar =>
-    makeLocator(`internal:placeholder=${toStringLike(text, options?.exact)}`),
-  getByTestId: (id: string): LocatorSugar => makeLocator(`internal:testid=${quote(id)}`),
+    makeLocator(`internal:attr=[placeholder=${textMatcher(text, options?.exact)}]`),
+  getByTestId: (id: string): LocatorSugar => makeLocator(`internal:testid=[data-testid=${quote(id)}]`),
   /** Accept a raw CSS/XPath selector as an escape hatch. */
   selector: (raw: string): LocatorSugar => makeLocator(raw),
-}
-
-function buildRole(role: string, options?: Parameters<LocatorSugar['getByRole']>[1]): string {
-  const parts: string[] = []
-  if (options?.name !== undefined) parts.push(`name=${typeof options.name === 'string' ? quote(options.name) : regexToText(options.name)}`)
-  if (options?.exact) parts.push('exact=true')
-  if (options?.checked !== undefined) parts.push(`checked=${options.checked}`)
-  if (options?.disabled !== undefined) parts.push(`disabled=${options.disabled}`)
-  if (options?.level !== undefined) parts.push(`level=${options.level}`)
-  return `internal:role=${role}${parts.length ? `[${parts.join('][')}]` : ''}`
 }
 
 /** Accept either a sugar locator or a raw selector string. */
