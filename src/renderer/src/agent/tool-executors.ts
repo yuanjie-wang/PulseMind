@@ -8,6 +8,7 @@ import { buildCommandFromSkillInput } from './command-builder'
 import { SkillKeywordAgent, SkillSelectionAgent, ServerSelectionAgent } from './one-shot-agent'
 import { saveImagesInText } from './image-utils'
 import { getCachedMcpServers } from './mcp-cache'
+import { composeExpertInstructions } from './expert-context'
 import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId, isBuiltinServerId } from '../tools/builtin-gate'
 import type { KnowledgeFile } from '../../../shared/types/knowledge'
 import type { GitAction, GitResult, GitStatusInfo, GitDiffResult, GitLogEntry, GitCommitResult, GitRestorePreview } from '../../../shared/types/git'
@@ -332,6 +333,13 @@ export class ToolExecutor {
     t.status = 'running'; this.notify()
     try {
       const sm = this.opts.skillManager; const skillName = String(t.input?.name || '').trim()
+      // Expert/spawn skill whitelist: skills outside the pack are off-limits
+      // (experiences stay readable — they're progressive-disclosure records).
+      const allowedSkillSet = this.opts.allowedSkills?.length ? new Set(this.opts.allowedSkills) : null
+      if (skillName && allowedSkillSet && !allowedSkillSet.has(skillName)) {
+        const msg = `Skill "${skillName}" is not in this session's allowed skills (${[...allowedSkillSet].join(', ')}). Work with what's available.`
+        this.addToolResult(t.id, msg, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return
+      }
       if (skillName) {
         t.output = `Looking up skill: ${skillName}...`; this.notify()
         const skill = sm!.getSkill(skillName)
@@ -354,7 +362,7 @@ export class ToolExecutor {
       const intent = String(t.input?.intent || '')
       if (!intent) throw new Error('Either "name" or "intent" must be provided')
       t.output = `Selecting best skill for: ${intent.slice(0, 80)}...`; this.notify()
-      const enabledSkills2 = sm!.getEnabledSkills()
+      const enabledSkills2 = sm!.getEnabledSkills().filter(s => !allowedSkillSet || allowedSkillSet.has(s.definition.name))
       const experiences2 = this.opts.experienceManager ? await this.opts.experienceManager.list() : []
       if (enabledSkills2.length === 0 && experiences2.length === 0) { this.addToolResult(t.id, 'No skills or experiences enabled.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
       const skillsList = enabledSkills2.map(s => `- ${s.definition.name}: ${s.definition.description} (${s.definition.category})`).join('\n')
@@ -366,6 +374,10 @@ export class ToolExecutor {
       )
       if (!selectedName) { this.addToolResult(t.id, 'No matching skill found.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
       const cleanName = selectedName.trim()
+      if (allowedSkillSet && !allowedSkillSet.has(cleanName)) {
+        this.addToolResult(t.id, `"${cleanName}" selected but it is outside this session's allowed skills. Pick from: ${[...allowedSkillSet].join(', ')}.`, true)
+        t.exitCode = 1; t.status = 'completed'; this.notify(); return
+      }
       const skill = sm!.getSkill(cleanName)
       if (skill) {
         this.addToolResult(t.id, `## Selected Skill: ${cleanName}\n\n**Description:** ${skill.definition.description}\n**Category:** ${skill.definition.category}\n\n### Instructions\n${skill.definition.systemPrompt || '(no instructions)'}`, false)
@@ -631,36 +643,56 @@ export class ToolExecutor {
 
       let allowedTools: string[] = ['read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec']
       let allowedMcpServers: string[] = ['chrome-devtools']
+      let allowedSkills: string[] | undefined
       let maxTokens: number | undefined
       let maxLoopIterations: number | undefined
-      let basePrompt = ''
+      let profile: any = null
       let disabledError: Error | null = null
       try {
         const profiles = await getHost().subagentList()
-        const profile = profiles.find((p: any) => p.id === subAgentId)
+        profile = profiles.find((p: any) => p.id === subAgentId) || null
         if (profile) {
           if (profile.enabled === false) {
-            disabledError = new Error(`子代理 "${profile.name || subAgentId}" 已关闭，请在 设置 → 子代理管理 中启用后再使用`)
+            disabledError = new Error(`子代理 "${profile.name || subAgentId}" 已关闭，请在能力中心 → 专家 中启用后再使用`)
           }
           if (profile.allowedTools?.length) allowedTools = profile.allowedTools
           if (profile.allowedMcpServers?.length) allowedMcpServers = profile.allowedMcpServers
+          if (profile.allowedSkills?.length) allowedSkills = profile.allowedSkills
           if (profile.maxTokens) maxTokens = profile.maxTokens
           if (profile.maxLoopIterations) maxLoopIterations = profile.maxLoopIterations
-          basePrompt = profile.basePrompt || ''
         } else {
           console.warn(`[execSpawnAgent] Sub-agent "${subAgentId}" not found, falling back to defaults`)
         }
       } catch { /* fallback */ }
       if (disabledError) throw disabledError
-      if (!basePrompt) {
-        basePrompt = `You are a sub-agent executing a delegated task.
 
-    Guidelines:
-    - Focus exclusively on the task above. Ignore anything not relevant to it.
-    - You CANNOT install skills or modify tool preferences.
-    - When you complete the task, provide a concise summary of your findings.
-    - Do NOT ask the user for input — work autonomously.`
+      // Expert config pack: compose the four structured sections instead of a
+      // bare basePrompt; bound knowledge files ride along as a Bound Knowledge
+      // index (the sub-session's knowledge tools stay global here — the pack's
+      // file list already tells the model where to look).
+      const basePrompt = profile?.basePrompt || ''
+      const knowledgeFiles: Array<{ id: string; title: string; filePath: string }> = []
+      if (profile?.knowledgeFileIds?.length) {
+        const km = this.opts.knowledgeManager
+        if (km) {
+          const rows = await Promise.all((profile.knowledgeFileIds as string[]).map(id => km.getFile(id).catch(() => null)))
+          for (const f of rows) {
+            if (f) knowledgeFiles.push({ id: f.id, title: f.title || f.filePath, filePath: f.filePath })
+          }
+        }
       }
+      const expertBlock = profile
+        ? composeExpertInstructions(
+            { name: profile.name || subAgentId, basePrompt, methodology: profile.methodology, outputSpec: profile.outputSpec, constraints: profile.constraints },
+            knowledgeFiles
+          )
+        : `You are a sub-agent executing a delegated task.
+
+Guidelines:
+- Focus exclusively on the task above. Ignore anything not relevant to it.
+- You CANNOT install skills or modify tool preferences.
+- When you complete the task, provide a concise summary of your findings.
+- Do NOT ask the user for input — work autonomously.`
 
       const toolList = allowedTools.map(t => `- \`${t}\``).join('\n')
       const mcpList = allowedMcpServers.map(id => `- ${id}`).join('\n')
@@ -672,9 +704,9 @@ export class ToolExecutor {
         if (skillsAppendix) skillsCtx = '\n\n' + skillsAppendix
       } catch { /* non-critical */ }
 
-      const systemPrompt = `${basePrompt}\n\n## Your Task\n${task}\n\n## Available Tools\n${toolList}\n\n## Available MCP Servers\n${mcpList || '(none)'}${skillsCtx}`
+      const systemPrompt = `${expertBlock}\n\n## Your Task\n${task}\n\n## Available Tools\n${toolList}\n\n## Available MCP Servers\n${mcpList || '(none)'}${skillsCtx}`
 
-      console.log(`[spawn_agent] subAgentId="${subAgentId}" basePrompt length=${basePrompt.length} first 200 chars:`, basePrompt.slice(0, 200))
+      console.log(`[spawn_agent] subAgentId="${subAgentId}" prompt length=${systemPrompt.length} first 200 chars:`, systemPrompt.slice(0, 200))
       t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
       this.notify()
 
@@ -683,6 +715,7 @@ export class ToolExecutor {
         initialMessages: [],
         allowedTools,
         allowedMcpServers,
+        allowedSkills,
         maxTokens: maxTokens || this.opts.maxTokens,
         maxLoopIterations: maxLoopIterations || 20,
         onProgress: (summary) => {
@@ -826,6 +859,19 @@ export class ToolExecutor {
     return false
   }
 
+  /** Expert knowledge scope (null = unrestricted): when an expert config pack
+   *  with bound knowledge files is active, knowledge_search results and
+   *  knowledge_read paths are confined to those files (+ their wiki outputs). */
+  private getExpertKnowledgeScope(): { ids: Set<string>; rawPaths: Set<string>; wikiPaths: Set<string> } | null {
+    const files = this.opts.expert?.knowledgeFiles
+    if (!files || files.length === 0) return null
+    return {
+      ids: new Set(files.map((f) => f.id)),
+      rawPaths: new Set(files.map((f) => f.filePath)),
+      wikiPaths: new Set(files.flatMap((f) => f.wikiPages || [])),
+    }
+  }
+
   private async execKnowledgeTool(t: ToolUseBlock): Promise<boolean> {
       if (t.name === 'knowledge_search') {
         const km = this.opts.knowledgeManager
@@ -837,6 +883,7 @@ export class ToolExecutor {
           const sourceType = String(t.input.sourceType || '')
           const status = String(t.input.status || '')
           const doContentSearch = (mode === 'content' || mode === 'both') && !!query
+          const scope = this.getExpertKnowledgeScope()
 
           let contentMatchIds = new Set<string>()
           let contentExcerpts = new Map<string, string[]>()
@@ -860,7 +907,8 @@ export class ToolExecutor {
 
           if (mode === 'wiki') {
             // Wiki mode: ripgrep search across compiled wiki pages (fastest path)
-            const matches = query ? await km.searchWiki(query) : []
+            let matches = query ? await km.searchWiki(query) : []
+            if (scope) matches = matches.filter(m => scope.wikiPaths.has(m.wikiPath))
             if (matches.length === 0) {
               t.output = 'No matching wiki pages found.'; this.addToolResult(t.id, 'No matching wiki pages found.', false)
             } else {
@@ -913,8 +961,13 @@ export class ToolExecutor {
             }
           }
 
+          // Expert scope: confine the merged result list to the bound files
+          if (scope) filtered = filtered.filter(f => scope.ids.has(f.id))
+
           if (filtered.length === 0) {
-            t.output = 'No matching knowledge files found.'; this.addToolResult(t.id, 'No matching knowledge files found.', false)
+            t.output = 'No matching knowledge files found.'; this.addToolResult(t.id, scope
+              ? 'No matching knowledge files found in this expert\'s bound knowledge base.'
+              : 'No matching knowledge files found.', false)
           } else {
             const lines = filtered.map(f => {
               let readSuggestion: string
@@ -942,8 +995,16 @@ export class ToolExecutor {
         const km = this.opts.knowledgeManager
         const filePath = String(t.input.path || '')
         const readType = String(t.input.type || 'wiki')
+        const readScope = this.getExpertKnowledgeScope()
+        const outOfScope = readScope && (
+          readType === 'raw' ? !readScope.rawPaths.has(filePath) : !readScope.wikiPaths.has(filePath)
+        )
         if (!filePath) {
           t.output = 'Error: path is required.'; this.addToolResult(t.id, 'Error: path is required.', true); t.exitCode = 1
+        } else if (outOfScope) {
+          const bound = [...(readScope!.rawPaths), ...(readScope!.wikiPaths)]
+          const msg = `Out of scope: this session's expert only has these knowledge documents bound:\n${bound.map(p => `- ${p}`).join('\n')}\nUse one of those paths.`
+          t.output = msg; this.addToolResult(t.id, msg, true); t.exitCode = 1
         } else if (!km) {
           t.output = 'Knowledge base not available.'; this.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
         } else {

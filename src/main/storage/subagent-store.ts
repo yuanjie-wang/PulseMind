@@ -46,6 +46,7 @@ Guidelines:
 - When you complete the task, provide a concise summary of your findings.
 - Do NOT ask the user for input — work autonomously.`
 
+/** 基础设施内置项：spawn/canvas 运行所需的子代理人设，不进入 @ 召唤列表。 */
 const DEFAULT_PROFILES: SubAgentProfile[] = [
   {
     id: 'subagent-general',
@@ -69,11 +70,64 @@ const DEFAULT_PROFILES: SubAgentProfile[] = [
   },
 ]
 
+/** 示例专家（预置）：展示「人设 + 方法论 + 输出规范 + 边界约束」结构化配置包。
+ *  可编辑、可删除；「重置默认」时恢复。空数组 = 不限制（沿用工具绑定语义）。 */
+const PRESET_EXPERTS: SubAgentProfile[] = [
+  {
+    id: 'expert-writing',
+    name: '写作专家',
+    icon: '✍️',
+    description: '深度文章与商业文案写作顾问，从审题到成稿全流程陪跑',
+    basePrompt: '资深中文写作顾问，10 年以上内容行业经验，擅长深度文章、公众号长文与商业文案。文风克制精准，重视逻辑与节奏，反对空话套话。',
+    methodology: '五步工作法：\n1. 审题——明确读者、目标与核心观点；\n2. 搭结构——先给大纲（开头钩子 / 论点分层 / 结尾收束），与用户确认后再动笔；\n3. 初稿——一次成稿，不求完美；\n4. 打磨——逐段检查逻辑链、删冗余、调节奏；\n5. 标题——提供 3 个备选标题并说明理由。',
+    outputSpec: '默认输出 Markdown；长文先大纲后成稿；修改意见用「问题 → 示例 → 建议」三段式；每个建议都给出理由，而非只给结论。',
+    constraints: '不编造数据、案例与引用；用户素材不足时先提问再动笔；不改动用户已明确认可的段落，除非指出事实或逻辑错误。',
+    allowedTools: [],
+    allowedMcpServers: [],
+    allowedSkills: [],
+    enabled: true,
+  },
+  {
+    id: 'expert-code-review',
+    name: '代码审查专家',
+    icon: '🔍',
+    description: '严格但务实的代码审查专家，按严重度分级输出可执行建议',
+    basePrompt: '资深代码审查工程师，精通 TypeScript / Python / Go，长期负责大型项目的 Code Review。审查风格严格但务实：先看正确性再看风格，永远给出可执行的修改建议而非空洞批评。',
+    methodology: '审查顺序：\n1. 正确性——边界条件、错误处理、并发安全；\n2. 安全——注入、越权、敏感信息泄露；\n3. 可维护性——命名、重复、耦合；\n4. 性能——只在有明显问题时提出。\n先用 read/search/git 工具阅读上下文，不凭代码片段下结论。',
+    outputSpec: '按严重度分级输出：🔴 必须修复（正确性 / 安全）、🟡 建议修复（可维护性）、🟢 可选优化。每个问题包含：位置（文件:行为）、问题说明、修改建议（必要时给 diff 片段）。结尾给一句总体评价。',
+    constraints: '只审查，不擅自大改；对拿不准的上下文先用工具确认；不评论与代码无关的内容；涉及安全问题时明确标注风险等级。',
+    allowedTools: ['read', 'search', 'find', 'list_dir', 'exec', 'git_status', 'git_diff', 'git_log'],
+    allowedMcpServers: [],
+    allowedSkills: [],
+    enabled: true,
+  },
+  {
+    id: 'expert-translation',
+    name: '翻译专家',
+    icon: '🌐',
+    description: '中英互译专家，信达雅优先，术语全文一致',
+    basePrompt: '资深中英双语译者，10 年以上本地化与文学翻译经验。信达雅为纲：先忠实原意，再通顺流畅，最后兼顾文采。熟悉技术文档、商业合同与文学文本的不同语域。',
+    methodology: '流程：\n1. 判断文本类型与目标读者，确定语域；\n2. 术语表先行——识别关键术语并保持全文一致；\n3. 意译为主，避免逐词硬译；\n4. 交付后附「翻译要点」说明取舍（如有）。',
+    outputSpec: '译文以引用块给出；专有名词首次出现附原文括注；用户未指明目标语言时，中文文本译英、英文文本译中；长文分段对照（原文 / 译文）。',
+    constraints: '不增删原文实质信息；含糊或歧义处不擅自取舍，列出多种译法并说明差异；金额、日期、单位等关键数字翻译后自校一遍。',
+    allowedTools: [],
+    allowedMcpServers: [],
+    allowedSkills: [],
+    enabled: true,
+  },
+]
+
 function rowToProfile(row: any): SubAgentProfile {
   return {
     id: row.id,
     name: row.name,
     basePrompt: row.base_prompt,
+    description: row.description || undefined,
+    icon: row.icon || undefined,
+    methodology: row.methodology || undefined,
+    outputSpec: row.output_spec || undefined,
+    constraints: row.constraints || undefined,
+    knowledgeFileIds: JSON.parse(row.knowledge_file_ids || '[]'),
     allowedTools: JSON.parse(row.allowed_tools || '[]'),
     allowedMcpServers: JSON.parse(row.allowed_mcp_servers || '[]'),
     allowedSkills: JSON.parse(row.allowed_skills || '[]'),
@@ -90,6 +144,12 @@ function profileToRow(p: SubAgentProfile): Record<string, any> {
     id: p.id,
     name: p.name,
     base_prompt: p.basePrompt || '',
+    description: p.description || '',
+    icon: p.icon || null,
+    methodology: p.methodology || '',
+    output_spec: p.outputSpec || '',
+    constraints: p.constraints || '',
+    knowledge_file_ids: JSON.stringify(p.knowledgeFileIds || []),
     allowed_tools: JSON.stringify(p.allowedTools || []),
     allowed_mcp_servers: JSON.stringify(p.allowedMcpServers || []),
     allowed_skills: JSON.stringify(p.allowedSkills || []),
@@ -101,12 +161,19 @@ function profileToRow(p: SubAgentProfile): Record<string, any> {
   }
 }
 
+const INSERT_SQL = `INSERT INTO subagent_profiles
+  (id, name, base_prompt, description, icon, methodology, output_spec, constraints, knowledge_file_ids,
+   allowed_tools, allowed_mcp_servers, allowed_skills, profile_id, max_tokens, max_loop_iterations, is_built_in, enabled)
+  VALUES (@id, @name, @base_prompt, @description, @icon, @methodology, @output_spec, @constraints, @knowledge_file_ids,
+   @allowed_tools, @allowed_mcp_servers, @allowed_skills, @profile_id, @max_tokens, @max_loop_iterations, @is_built_in, @enabled)`
+
 export class SubAgentStore {
   getAll(): SubAgentProfile[] {
     const rows = getDb().prepare('SELECT * FROM subagent_profiles ORDER BY is_built_in DESC, id ASC').all() as any[]
     if (rows.length === 0) {
-      this.save(DEFAULT_PROFILES)
-      return DEFAULT_PROFILES
+      const seeded = [...DEFAULT_PROFILES, ...PRESET_EXPERTS]
+      this.save(seeded)
+      return seeded
     }
 
     const parsed = rows.map(rowToProfile)
@@ -119,7 +186,8 @@ export class SubAgentStore {
         merged.push({ ...def })
         changed = true
       } else if (existing.isBuiltIn) {
-        if (!existing.basePrompt || (existing as any).description) {
+        // 内置项：缺提示词时回填，锁定工具强制合并。
+        if (!existing.basePrompt) {
           existing.basePrompt = def.basePrompt
           changed = true
         }
@@ -135,22 +203,12 @@ export class SubAgentStore {
         }
         merged.push({ ...existing, allowedTools: allTools })
       } else {
-        const oldDesc = (existing as any).description
-        if (!existing.basePrompt && oldDesc) {
-          (existing as any).basePrompt = oldDesc
-          changed = true
-        }
         merged.push(existing)
       }
     }
 
     for (const p of parsed) {
       if (!merged.find((m) => m.id === p.id)) {
-        const oldDesc = (p as any).description
-        if (!p.basePrompt && oldDesc) {
-          (p as any).basePrompt = oldDesc
-          changed = true
-        }
         merged.push(p)
       }
     }
@@ -161,22 +219,33 @@ export class SubAgentStore {
     return merged
   }
 
+  getById(id: string): SubAgentProfile | null {
+    const row = getDb().prepare('SELECT * FROM subagent_profiles WHERE id = ?').get(id) as any
+    return row ? rowToProfile(row) : null
+  }
+
   save(profiles: SubAgentProfile[]): void {
     const db = getDb()
     db.transaction(() => {
       db.prepare('DELETE FROM subagent_profiles').run()
-      const insert = db.prepare(`INSERT INTO subagent_profiles
-        (id, name, base_prompt, allowed_tools, allowed_mcp_servers, allowed_skills, profile_id, max_tokens, max_loop_iterations, is_built_in, enabled)
-        VALUES (@id, @name, @base_prompt, @allowed_tools, @allowed_mcp_servers, @allowed_skills, @profile_id, @max_tokens, @max_loop_iterations, @is_built_in, @enabled)`)
+      const insert = db.prepare(INSERT_SQL)
       for (const p of profiles) {
         insert.run(profileToRow(p))
       }
     })()
   }
 
+  /** 恢复默认：内置基础设施与示例专家按 id 覆盖回默认值，用户自定义保留。
+   *  （旧实现会 DELETE 全表，与 UI「自定义配置将被保留」的承诺不符。） */
   reset(): SubAgentProfile[] {
-    this.save(DEFAULT_PROFILES)
-    return DEFAULT_PROFILES
+    const db = getDb()
+    db.transaction(() => {
+      const upsert = db.prepare(INSERT_SQL)
+      for (const p of [...DEFAULT_PROFILES, ...PRESET_EXPERTS]) {
+        upsert.run(profileToRow(p))
+      }
+    })()
+    return this.getAll()
   }
 }
 

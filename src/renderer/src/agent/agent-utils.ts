@@ -167,6 +167,7 @@ export interface SpawnSubAgentConfig {
   initialMessages: import('../types/agent').AgentMessage[]
   allowedTools?: string[]
   allowedMcpServers?: string[]
+  allowedSkills?: string[]
   maxTokens?: number
   maxLoopIterations?: number
   onProgress?: (summary: string) => void

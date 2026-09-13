@@ -1,10 +1,10 @@
 // ── Capability center ──
 // PLAN-0.4.0 M2.1: one first-class home for everything the agent can draw on —
-// MCP servers, skills, sub-agents and experiences. The four panels are the exact
-// components that used to live in the settings modal, re-embedded below a pill
-// tab row. Their own section titles were dropped (the pills already name the
-// tab) and their title-row actions moved up beside the pills, exposed via the
-// panels' imperative handles.
+// MCP servers, skills and sub-agents. The panels are the exact components that
+// used to live in the settings modal, re-embedded below a pill tab row. Their
+// own section titles were dropped (the pills already name the tab) and their
+// title-row actions moved up beside the pills, exposed via the panels'
+// imperative handles. 经验 moved to 设置 (its own section + master switch).
 
 import React, { useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
@@ -12,7 +12,6 @@ import {
   ApiOutlined,
   ThunderboltOutlined,
   ApartmentOutlined,
-  ExperimentOutlined,
   PlusOutlined,
   ReloadOutlined,
   UndoOutlined
@@ -21,14 +20,12 @@ import { useTranslation } from '../../i18n/useTranslation'
 import MCPSettings from '../settings/MCPSettings'
 import SkillsSettings from '../settings/SkillSettings'
 import SubAgentSettings from '../settings/SubAgentSettings'
-import ExperiencePanel from '../settings/ExperiencePanel'
 import type { MCPSettingsHandle } from '../settings/MCPSettings'
 import type { SubAgentSettingsHandle } from '../settings/SubAgentSettings'
-import type { ExperiencePanelHandle } from '../settings/ExperiencePanel'
 import type { ToolState } from '../../tools/types'
 import type { SkillState } from '../../skills/types'
 
-export type CapabilityTab = 'mcp' | 'skills' | 'subagent' | 'experiences'
+export type CapabilityTab = 'mcp' | 'skills' | 'subagent'
 
 export interface CapabilityCenterProps {
   /** Pre-select a tab (used by jump-to-capability entries, e.g. after `install`). */
@@ -61,13 +58,11 @@ export default function CapabilityCenter({
   const [visited, setVisited] = useState<ReadonlySet<CapabilityTab>>(() => new Set([initialTab ?? 'mcp']))
   const mcpRef = useRef<MCPSettingsHandle>(null)
   const subAgentRef = useRef<SubAgentSettingsHandle>(null)
-  const experiencesRef = useRef<ExperiencePanelHandle>(null)
 
   const tabs: Array<{ key: CapabilityTab; icon: React.ReactNode; label: string }> = [
     { key: 'mcp', icon: <ApiOutlined />, label: t('appLayout.mcp') },
     { key: 'skills', icon: <ThunderboltOutlined />, label: t('appLayout.skills') },
-    { key: 'subagent', icon: <ApartmentOutlined />, label: '专家' },
-    { key: 'experiences', icon: <ExperimentOutlined />, label: '经验' }
+    { key: 'subagent', icon: <ApartmentOutlined />, label: t('expertCenter.tabLabel') }
   ]
 
   const selectTab = (key: CapabilityTab): void => {
@@ -111,19 +106,14 @@ export default function CapabilityCenter({
     subagent: (
       <>
         <Button size="small" icon={<PlusOutlined />} onClick={() => subAgentRef.current?.openAddModal()}>
-          新建专家
+          {t('expertCenter.newExpert')}
         </Button>
-        <Tooltip title="重置默认配置">
+        <Tooltip title={t('expertCenter.resetConfirmTitle')}>
           <Button size="small" icon={<UndoOutlined />} onClick={() => subAgentRef.current?.resetToDefaults()}>
-            重置默认
+            {t('expertCenter.resetDefaults')}
           </Button>
         </Tooltip>
       </>
-    ),
-    experiences: (
-      <Button size="small" icon={<ExperimentOutlined />} onClick={() => experiencesRef.current?.refresh()}>
-        刷新
-      </Button>
     )
   }
 
@@ -137,8 +127,7 @@ export default function CapabilityCenter({
         importError={importError}
       />
     ),
-    subagent: <SubAgentSettings ref={subAgentRef} tools={tools} skills={skills} />,
-    experiences: <ExperiencePanel ref={experiencesRef} />
+    subagent: <SubAgentSettings ref={subAgentRef} tools={tools} skills={skills} />
   }
 
   return (

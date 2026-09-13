@@ -79,7 +79,17 @@ export async function resolveConversationWorkspace(convId: string, explicitProje
   let dir: string | undefined
   if (boundProjectId) {
     const project = await projectStore.get(boundProjectId).catch(() => null)
-    if (project?.workspaceDir) dir = project.workspaceDir
+    if (project?.workspaceDir) {
+      // The project's dir is normally materialized at creation; recreate it if
+      // it was deleted on disk. Failing hard (instead of falling through to a
+      // timestamped dir) keeps the jail root and the sandbox policy consistent.
+      try {
+        await mkdir(project.workspaceDir, { recursive: true })
+      } catch (err) {
+        throw new Error(`项目工作区目录不可用（${project.workspaceDir}）：${err instanceof Error ? err.message : String(err)}`)
+      }
+      dir = project.workspaceDir
+    }
   }
   if (!dir) dir = await createTimestampedWorkspaceDir(convId)
 

@@ -23,6 +23,7 @@ import { SkillKeywordAgent, SkillSelectionAgent, HistorySummaryAgent } from './o
 import { sanitizeSchema, safeInvoke, safeInvokeObserver, MAX_LOOP_ITERATIONS, generateMsgId, type SubAgentResult, type SpawnSubAgentConfig, type SubAgentHandle } from './agent-utils'
 import { buildCommandFromSkillInput } from './command-builder'
 import { buildSystemPrompt } from './system-prompt-builder'
+import type { ExpertRuntimeContext } from '../../../shared/types/subagent'
 import { PlanManager } from './plan-manager'
 import { ensureCache, getCachedMcpServers, getCachedSubAgentProfiles, refreshMcpServers } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
@@ -86,6 +87,12 @@ export interface AgentEngineOptions {
   // Spawn sub-agent options
   allowedTools?: string[]
   allowedMcpServers?: string[]
+  /** Session-level skill whitelist (expert config pack / spawn). Empty/absent = no restriction. */
+  allowedSkills?: string[]
+  /** @-summoned expert config pack: composed instructions + bound knowledge.
+   *  Replaces the basic persona section in the system prompt (see
+   *  system-prompt-builder) and scopes knowledge_search/knowledge_read. */
+  expert?: ExpertRuntimeContext
   systemPromptAppendix?: string
   /** Replace the built system prompt wholesale (derived sessions such as the
    *  tool studio, whose prompt is a builder contract rather than the assistant
@@ -334,6 +341,38 @@ export class AgentEngine {
     })
     this.opts = opts
     this.toolExecutor.updateOptions(opts)
+  }
+
+  /** Swap the @-summoned expert config pack (and its tool bindings) at runtime.
+   *  Expert state lives on opts (single source of truth for the prompt builder);
+   *  this re-derives the session whitelist sets from the given bindings and
+   *  invalidates the 6h system-prompt cache when the expert changed, so the
+   *  next loop rebuilds the prompt with the new role. Called by session-manager
+   *  before each ask — cheap no-op when nothing moved. */
+  applyExpertContext(
+    next: ExpertRuntimeContext | null,
+    bindings?: { allowedTools?: string[]; allowedMcpServers?: string[]; allowedSkills?: string[] }
+  ): void {
+    const expertChanged = JSON.stringify(this.opts.expert ?? null) !== JSON.stringify(next ?? null)
+    const toolsChanged = !!bindings && (
+      JSON.stringify(this.opts.allowedTools ?? null) !== JSON.stringify(bindings.allowedTools ?? null) ||
+      JSON.stringify(this.opts.allowedMcpServers ?? null) !== JSON.stringify(bindings.allowedMcpServers ?? null) ||
+      JSON.stringify(this.opts.allowedSkills ?? null) !== JSON.stringify(bindings.allowedSkills ?? null)
+    )
+    if (!expertChanged && !toolsChanged) return
+
+    this.opts.expert = next ?? undefined
+    if (bindings) {
+      this.opts.allowedTools = bindings.allowedTools
+      this.opts.allowedMcpServers = bindings.allowedMcpServers
+      this.opts.allowedSkills = bindings.allowedSkills
+      this.allowedToolsSet = bindings.allowedTools?.length ? new Set(bindings.allowedTools) : undefined
+      this.allowedMcpServersSet = bindings.allowedMcpServers?.length ? new Set(bindings.allowedMcpServers) : undefined
+    }
+    if (expertChanged && this.opts.conversationId) {
+      this.systemPromptCache.delete(this.opts.conversationId)
+      console.log(`[AgentEngine] expert context ${next ? `→ ${next.id}` : 'cleared'}, prompt cache invalidated`)
+    }
   }
 
   /** Dispose — cleanup all listeners and sub-agents */

@@ -212,6 +212,12 @@ function createTables(): void {
       id                  TEXT PRIMARY KEY,
       name                TEXT NOT NULL,
       base_prompt         TEXT NOT NULL DEFAULT '',
+      description         TEXT NOT NULL DEFAULT '',
+      icon                TEXT,
+      methodology         TEXT NOT NULL DEFAULT '',
+      output_spec         TEXT NOT NULL DEFAULT '',
+      constraints         TEXT NOT NULL DEFAULT '',
+      knowledge_file_ids  TEXT NOT NULL DEFAULT '[]',
       allowed_tools       TEXT NOT NULL DEFAULT '[]',
       allowed_mcp_servers TEXT NOT NULL DEFAULT '[]',
       allowed_skills      TEXT NOT NULL DEFAULT '[]',
@@ -299,6 +305,14 @@ function createTables(): void {
   // Every pre-0.4.0 conversation — and any row that slips through without a
   // project — belongs to the synthesized default project.
   try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch (e) {}
+  // ── 专家配置包 (expert config packs): extended subagent_profiles + per-conversation binding ──
+  for (const col of ['description TEXT', 'methodology TEXT', 'output_spec TEXT', 'constraints TEXT', 'knowledge_file_ids TEXT']) {
+    try { database.exec(`ALTER TABLE subagent_profiles ADD COLUMN ${col}`) } catch (e) {}
+  }
+  try { database.exec('ALTER TABLE subagent_profiles ADD COLUMN icon TEXT') } catch (e) {}
+  try { database.exec("UPDATE subagent_profiles SET description = '' WHERE description IS NULL") } catch (e) {}
+  try { database.exec("UPDATE subagent_profiles SET knowledge_file_ids = '[]' WHERE knowledge_file_ids IS NULL") } catch (e) {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN expert_id TEXT') } catch (e) {}
   // ── M5R: retype legacy tool-studio conversations ──
   // They used to derive as 'normal' and leak into the chat list; upsert's
   // ON CONFLICT never updates type, so existing rows need this one-time sweep.

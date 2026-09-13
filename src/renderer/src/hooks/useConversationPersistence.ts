@@ -42,7 +42,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   useEffect(() => { conversationsRef.current = conversations }, [conversations])
 
   // Sort by pinned first, then by updatedAt descending
-  const sortConversations = (items: Array<{ key: string; label: string; pinned?: boolean; updatedAt?: string }>) => {
+  const sortConversations = (items: Array<{ key: string; label: string; pinned?: boolean; updatedAt?: string; projectId?: string }>) => {
     return [...items].sort((a, b) => {
       if (a.pinned && !b.pinned) return -1
       if (!a.pinned && b.pinned) return 1
@@ -265,7 +265,17 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     async function loadConversations() {
       const convList = await window.electronAPI.listConversations()
       const items = sortConversations(
-        convList.map((c) => ({ key: c.id, label: c.title, pinned: c.pinned, updatedAt: c.updatedAt }))
+        convList.map((c) => ({
+          key: c.id,
+          label: c.title,
+          pinned: c.pinned,
+          updatedAt: c.updatedAt,
+          // Keep the project binding or the sidebar loses its grouping on
+          // every reload ('default' normalizes to absent per the list type).
+          projectId: c.projectId && c.projectId !== 'default' ? c.projectId : undefined,
+          // Same for the @-summoned expert binding (drives the input-area chip).
+          expertId: c.expertId || undefined
+        }))
       )
       setConversations(items)
     }
@@ -508,6 +518,18 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     )
   }, [setConversations])
 
+  // ── Summoned expert binding (expert config pack refactor) ──
+  // Mirrors the project binding: list item updated for the chip + IPC persists
+  // the DB column (stub-inserts the row, so it may run before the first save).
+  const updateConversationExpert = useCallback((convId: string, expertId: string | null) => {
+    setConversations(
+      conversationsRef.current.map((c: any) =>
+        String(c.key) === convId ? { ...c, expertId: expertId ?? undefined } : c
+      )
+    )
+    void window.electronAPI.setConversationExpert?.(convId, expertId)
+  }, [setConversations])
+
   // ── Activate a conversation (state + ref kept in sync) ──
   const activateConversation = useCallback((key: string) => {
     setActiveConversationKey(key)
@@ -541,6 +563,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     clearAllConversations,
     togglePin,
     bumpConversation,
+    updateConversationExpert,
     activateConversation
   }
 }

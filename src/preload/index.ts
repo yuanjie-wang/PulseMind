@@ -37,6 +37,7 @@ const electronAPI = {
   projectUpdate: (id: string, patch: { name?: string; icon?: string; sandbox?: unknown }) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_UPDATE, id, patch),
   projectDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
   setConversationProject: (id: string, projectId: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROJECT, id, projectId),
+  setConversationExpert: (id: string, expertId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_EXPERT, id, expertId),
   auditList: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.AUDIT_LIST, limit),
   routineList: () => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_LIST),
   routineGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_GET, id),
@@ -125,6 +126,8 @@ const electronAPI = {
     limit?: number,
   ): Promise<Array<{ conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; snippet: string; createdAt: string }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SEARCH_MESSAGES, query, limit),
+  getConversationLastUserMessage: (id: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_LAST_USER_MESSAGE, id),
 
   // Token Statistics
   getTokenStats: (): Promise<TokenStats> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_TOKEN_STATS),

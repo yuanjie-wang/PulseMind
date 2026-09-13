@@ -67,6 +67,16 @@ export function getKnowledgeFile(id: string): KnowledgeFileRow | null {
   return row ?? null
 }
 
+/** Batch fetch by ids (expert knowledge binding): used to build the Bound
+ *  Knowledge section and scope searches. Missing ids are silently skipped. */
+export function getKnowledgeFilesByIds(ids: string[]): KnowledgeFileRow[] {
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  return getDb()
+    .prepare(`SELECT * FROM knowledge_files WHERE id IN (${placeholders})`)
+    .all(...ids) as KnowledgeFileRow[]
+}
+
 export function getKnowledgeFileByPath(filePath: string): KnowledgeFileRow | null {
   const row = getDb().prepare('SELECT * FROM knowledge_files WHERE file_path = ?').get(filePath) as KnowledgeFileRow | undefined
   return row ?? null

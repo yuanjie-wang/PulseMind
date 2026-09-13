@@ -6,6 +6,8 @@ import { useConversationPersistence } from './useConversationPersistence'
 import { useNewTaskStore } from '../stores/newTaskStore'
 import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
+import { parseExpertMention } from '../agent/expert-context'
+import type { SubAgentProfile } from '../../../shared/types/subagent'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
 import type { AgentMessage } from '../types/agent'
@@ -27,6 +29,8 @@ interface UseChatControllerOptions {
   workspaceDir?: string
   autoCleanup?: boolean
   yoloMode?: boolean
+  /** 设置 → 经验 master switch: gates the old-conversation experience backfill. */
+  experienceEnabled?: boolean
   hooks?: HooksConfig
   locale?: 'zh' | 'en'
 }
@@ -139,7 +143,10 @@ export function useChatController(options: UseChatControllerOptions) {
   // ── 5. Experience auto-extraction (from conversations with 5+ rounds) ──
   const summarizerRunningRef = useRef(false)
   const processedConvRef = useRef<Set<string>>(new Set())
+  const experienceEnabled = options.experienceEnabled
   useEffect(() => {
+    // 设置 → 经验 master switch: off means no experience distillation at all.
+    if (experienceEnabled === false) return
     if (!apiKey) return
     if (!managers.prefsLoadedRef.current) return
     if (summarizerRunningRef.current) return
@@ -240,7 +247,7 @@ export function useChatController(options: UseChatControllerOptions) {
       summarizerRunningRef.current = false
     }
     run()
-  }, [apiKey])
+  }, [apiKey, experienceEnabled])
 
   // ── 6. Auto-title generation (active engine) ──
   //
@@ -272,13 +279,35 @@ export function useChatController(options: UseChatControllerOptions) {
 
   // ── 7. handleRequest (send message) ──
   const handleRequest = useCallback(
-    (content: string) => {
+    async (content: string) => {
       if (!apiKey) {
         console.warn('[ChatController] handleRequest blocked: no API key')
         return
       }
 
       let convId = persistence.activeConversationKey ? String(persistence.activeConversationKey) : ''
+      const isNewConversation = !convId
+
+      // ── @-summon: resolve an expert mention before anything else ──
+      // The mention must resolve against an enabled, non-builtin expert and is
+      // stripped from the outgoing text. Binding only (no send) is allowed on
+      // an existing conversation — that's the switch/unbind-free summon UX; on
+      // a brand-new conversation it would materialize a ghost row, so refuse.
+      let experts: SubAgentProfile[] = []
+      try { experts = await window.electronAPI.subagentList() } catch { /* non-critical */ }
+      const mention = parseExpertMention(content, experts)
+      if (mention.expert) {
+        content = mention.text
+        if (!content.trim()) {
+          if (isNewConversation) {
+            message.warning(t('chatView.expert.needTaskWithSummon'))
+            return
+          }
+          persistence.updateConversationExpert(convId, mention.expert.id)
+          message.success(t('chatView.expert.switched', { name: mention.expert.name }))
+          return
+        }
+      }
 
       if (!convId) {
         // Materialize the conversation row here. Its working directory comes
@@ -305,6 +334,12 @@ export function useChatController(options: UseChatControllerOptions) {
         persistence.bumpConversation(convId)
       }
 
+      // Bind the summoned expert AFTER the row materialization so the
+      // stub-insert contract holds, and BEFORE session creation — the main-side
+      // doCreateSession → refreshExpertContext reads the DB binding, so the
+      // very first loop already runs as the expert.
+      if (mention.expert) persistence.updateConversationExpert(convId, mention.expert.id)
+
       if (import.meta.env.DEV) console.log(`[ChatController] handleRequest: model=${options.model} baseURL=${options.baseURL}`)
       pendingTitleGenRef.current = convId
 
@@ -321,6 +356,7 @@ export function useChatController(options: UseChatControllerOptions) {
     },
     [apiKey, persistence.activeConversationKey, persistence.addConversation,
      persistence.setActiveConversationKey, persistence.updateConversationTitleInList,
+     persistence.updateConversationExpert,
      persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, options, t, message]
   )
 
@@ -381,6 +417,7 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     activeLoopConvIds: engine.activeLoopConvIds,
     retryingConvIds: engine.retryingConvIds,
     togglePin: persistence.togglePin,
-    bumpConversation: persistence.bumpConversation
+    bumpConversation: persistence.bumpConversation,
+    updateConversationExpert: persistence.updateConversationExpert
   }
 }

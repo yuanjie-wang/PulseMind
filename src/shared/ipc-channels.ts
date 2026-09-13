@@ -42,6 +42,7 @@ export const IPC_CHANNELS = {
   CONVERSATION_PERSIST_TOOL_RESULTS: 'conversation:persist-tool-results',
   CONVERSATION_SEARCH_KEYWORD: 'conversation:search-keyword',
   CONVERSATION_SEARCH_MESSAGES: 'conversation:search-messages',
+  CONVERSATION_LAST_USER_MESSAGE: 'conversation:last-user-message',
 
   // ── Database ──
   DB_CHECK: 'db:check',
@@ -194,6 +195,7 @@ export const IPC_CHANNELS = {
   PROJECT_UPDATE: 'project:update',
   PROJECT_DELETE: 'project:delete',
   CONVERSATION_SET_PROJECT: 'conversation:set-project',
+  CONVERSATION_SET_EXPERT: 'conversation:set-expert',
   AUDIT_LIST: 'audit:list',
   SANDBOX_DETECT: 'sandbox:detect',
 

@@ -132,7 +132,13 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       // The main-side hydrate loads the persisted plan alongside history.
     },
     startLoop(userMessage: string) {
-      return window.electronAPI.agentSessionAsk(convId, userMessage)
+      return window.electronAPI.agentSessionAsk(convId, userMessage).catch((err: unknown) => {
+        // A failed ask (session creation blew up, profile missing, …) must be
+        // visible in the conversation, not swallowed as an unhandled rejection
+        // — that silence is how a dead first message used to look like nothing.
+        st.agentStatus = { status: 'error', error: err instanceof Error ? err.message : String(err) }
+        if (activeEngineIdRef.current === convId) setAgentStatus(st.agentStatus)
+      })
     },
     approveTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId]) },
     rejectTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'rejectTool', [toolUseId]) },

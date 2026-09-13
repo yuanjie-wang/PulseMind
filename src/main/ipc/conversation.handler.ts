@@ -13,6 +13,7 @@ import {
   updateMessageMetadata,
   deleteConversation,
   setConversationProject,
+  setConversationExpert,
   updateConversationTitle,
   updateConversationSummary,
   updateConversationKeywords,
@@ -25,6 +26,7 @@ import {
   listConversationsForMemory,
   searchConversationsByKeyword,
   searchMessagesByKeyword,
+  getConversationLastUserMessage,
   saveConversationPlan,
   getConversationPlan,
   getToolResultsByIds,
@@ -124,6 +126,7 @@ export function registerConversationHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST, passThrough(IPC_CHANNELS.CONVERSATION_LIST, listConversations, []))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_PROJECT, (_event, id: string, projectId: string) => setConversationProject(id, projectId))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_EXPERT, (_event, id: string, expertId: string | null) => setConversationExpert(id, expertId))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET, passThrough(IPC_CHANNELS.CONVERSATION_GET, getConversation, null))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_HYDRATE, passThrough(IPC_CHANNELS.CONVERSATION_HYDRATE, hydrateConversation, null))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_DELETE, voidHandler(IPC_CHANNELS.CONVERSATION_DELETE, deleteConversation))
@@ -137,6 +140,7 @@ export function registerConversationHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST_FOR_MEMORY, passThrough(IPC_CHANNELS.CONVERSATION_LIST_FOR_MEMORY, listConversationsForMemory, []))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SEARCH_KEYWORD, passThrough(IPC_CHANNELS.CONVERSATION_SEARCH_KEYWORD, (query: string, limit?: number, dateFilter?: Record<string, string>) => searchConversationsByKeyword(query, limit, dateFilter), []))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SEARCH_MESSAGES, passThrough(IPC_CHANNELS.CONVERSATION_SEARCH_MESSAGES, (query: string, limit?: number) => searchMessagesByKeyword(query, limit), []))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_LAST_USER_MESSAGE, passThrough(IPC_CHANNELS.CONVERSATION_LAST_USER_MESSAGE, (id: string) => getConversationLastUserMessage(id), null))
 
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_TOGGLE_PIN, voidHandler(IPC_CHANNELS.CONVERSATION_TOGGLE_PIN, (id: string, pinned: boolean) => updateConversationPinned(id, pinned)))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_TOUCH, voidHandler(IPC_CHANNELS.CONVERSATION_TOUCH, (id: string) => touchConversation(id)))

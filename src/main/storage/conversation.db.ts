@@ -11,6 +11,11 @@ export function deriveConvType(id: string): string {
   // as chat conversations — and not 'normal', so M8 workspace resolution
   // never mints them a working directory.
   if (id.startsWith('toolstudio_')) return 'tool'
+  // Routine runs (M4) are main-authored artifacts, not user chats: a distinct
+  // type keeps them out of every 'normal'-filtered surface (sidebar list,
+  // title/message search, memory pipeline) — they are reached through the
+  // routine center's run history instead.
+  if (id.startsWith('routine_')) return 'routine'
   return 'normal'
 }
 
@@ -86,7 +91,7 @@ export function listConversations(): ConversationIndexEntry[] {
   const rows = database
     .prepare(
       `SELECT
-        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id, c.workspace_dir,
+        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id, c.workspace_dir, c.expert_id,
         (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
       FROM conversations c
@@ -97,7 +102,7 @@ export function listConversations(): ConversationIndexEntry[] {
       id: string; title: string; summary: string | null; keywords: string | null
       pinned: number; created_at: string; updated_at: string
       last_message: string | null; message_count: number; project_id: string | null
-      workspace_dir: string | null
+      workspace_dir: string | null; expert_id: string | null
     }>
 
   return rows.map((r) => ({
@@ -106,6 +111,7 @@ export function listConversations(): ConversationIndexEntry[] {
     pinned: r.pinned === 1, lastMessage: r.last_message?.slice(0, 100) || null,
     projectId: r.project_id || 'default',
     workspaceDir: r.workspace_dir || undefined,
+    expertId: r.expert_id || undefined,
     messageCount: r.message_count, createdAt: r.created_at, updatedAt: r.updated_at
   }))
 }
@@ -269,6 +275,25 @@ export function getConversationProjectId(id: string): string {
   return row?.project_id || 'default'
 }
 
+/** Bind (or unbind, expertId=null) the conversation's summoned expert.
+ *  Same stub-insert contract as setConversationProject: may run before the row
+ *  exists; later upserts never touch expert_id, so the binding survives. */
+export function setConversationExpert(id: string, expertId: string | null): void {
+  const db = getDb()
+  const r = db.prepare('UPDATE conversations SET expert_id = ? WHERE id = ?').run(expertId, id)
+  if (r.changes === 0 && expertId) {
+    const now = new Date().toISOString()
+    db.prepare("INSERT INTO conversations (id, title, type, expert_id, created_at, updated_at) VALUES (?, '新对话', 'normal', ?, ?, ?)")
+      .run(id, expertId, now, now)
+  }
+}
+
+/** Resolve a conversation's summoned expert id (null when unbound). */
+export function getConversationExpertId(id: string): string | null {
+  const row = getDb().prepare('SELECT expert_id FROM conversations WHERE id = ?').get(id) as { expert_id: string | null } | undefined
+  return row?.expert_id || null
+}
+
 /** The conversation's resolved working directory (M8), or null before the
  *  first session — used to jail browser file uploads (A-M4). */
 export function getConversationWorkspaceDir(id: string): string | null {
@@ -291,6 +316,16 @@ export function setConversationWorkspaceDir(id: string, workspaceDir: string): v
 
 export function deleteConversation(id: string): void {
   getDb().prepare('DELETE FROM conversations WHERE id = ?').run(id)
+}
+
+/** One-shot data migration: routine-run conversations persisted before routine
+ *  conversations got their own type were stamped 'normal' and surfaced in the
+ *  user's chat list. Re-type them so they live only behind the routine center.
+ *  Idempotent — safe to call on every startup. */
+export function migrateRoutineConversationTypes(): void {
+  getDb()
+    .prepare("UPDATE conversations SET type = 'routine' WHERE type = 'normal' AND id LIKE 'routine\\_%' ESCAPE '\\'")
+    .run()
 }
 
 // ── Conversation metadata ──
@@ -519,4 +554,25 @@ export function searchMessagesByKeyword(
   }>
 
   return rows.map(({ content, ...row }) => ({ ...row, snippet: extractSnippet(content, query) }))
+}
+
+/** Longest preview the welcome page renders; keeps IPC payloads small. */
+const LAST_USER_MESSAGE_MAX = 300
+
+/**
+ * Text of the user's most recent input in a conversation — what the welcome
+ * page echoes back as "you last said …". Tool results are also persisted under
+ * role 'user' with empty content, so rows without text are skipped; assistant
+ * replies are skipped on purpose: the user's own words are the anchor for
+ * resuming.
+ */
+export function getConversationLastUserMessage(id: string): string | null {
+  const row = getDb().prepare(
+    `SELECT content FROM messages
+     WHERE conversation_id = ? AND role = 'user' AND TRIM(COALESCE(content, '')) <> ''
+     ORDER BY created_at DESC
+     LIMIT 1`
+  ).get(id) as { content: string } | undefined
+  const text = row?.content?.trim()
+  return text ? text.slice(0, LAST_USER_MESSAGE_MAX) : null
 }

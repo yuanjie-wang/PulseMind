@@ -66,7 +66,11 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   if (skillManager) {
     const pickSkillIdx = enabledTools.findIndex((t) => t.name === 'pick_skill')
     if (pickSkillIdx !== -1) {
-      const eSkills = skillManager.getEnabledSkills()
+      // Expert/spawn skill whitelist: empty/absent = no restriction (mirrors
+      // allowedTools/allowedMcpServers semantics).
+      const allowedSkills = deps.opts.allowedSkills
+      const allowedSkillSet = allowedSkills?.length ? new Set(allowedSkills) : null
+      const eSkills = skillManager.getEnabledSkills().filter((s) => !allowedSkillSet || allowedSkillSet.has(s.definition.name))
       if (eSkills.length > 0) {
         const skillNames = eSkills.map((s) => s.definition.name).join(', ')
         enabledTools[pickSkillIdx] = {
@@ -85,7 +89,11 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
       const available = profiles.filter((p: any) => p.id !== 'subagent-canvas' && !p.isCanvasAgent && (p.enabled ?? true))
       if (available.length > 0) {
         const listStr = available
-          .map((p: any) => `- **${p.name}** (ID: \`${p.id}\`)${p.basePrompt ? ': ' + p.basePrompt.slice(0, 120).replace(/\n/g, ' ') : ''}`)
+          .map((p: any) => {
+            // Prefer the curated one-liner; fall back to a persona snippet.
+            const blurb = p.description?.trim() || p.basePrompt?.slice(0, 120).replace(/\n/g, ' ')
+            return `- **${p.name}** (ID: \`${p.id}\`)${blurb ? ': ' + blurb : ''}`
+          })
           .join('\n')
         enabledTools[spawnAgentIdx] = {
           ...enabledTools[spawnAgentIdx],

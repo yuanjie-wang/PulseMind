@@ -98,7 +98,7 @@ export interface AgentEventParams {
 /** Streaming progress events. One notification per event; ordering within a
  *  session is guaranteed per-connection. */
 export type AgentEventData =
-  | { type: 'status'; status: string; attempt?: number; delayMs?: number; toolUseId?: string }
+  | { type: 'status'; status: string; attempt?: number; delayMs?: number; toolUseId?: string; error?: string }
   /** Transport-level events for UI parity with the renderer engine (M1.5):
    *  full message list / coalesced streaming block snapshots. */
   | { type: 'messages'; messages: unknown[] }

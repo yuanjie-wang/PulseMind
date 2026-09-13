@@ -23,12 +23,17 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin, setConversationProject, getConversationProjectId } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, deriveConvType } from '../storage/conversation.db'
+import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { projectStore } from '../storage/project-store'
+import { subAgentStore } from '../storage/subagent-store'
+import { getKnowledgeFilesByIds } from '../storage/knowledge.db'
+import { composeExpertInstructions } from '../../renderer/src/agent/expert-context'
+import type { ExpertRuntimeContext } from '../../shared/types/subagent'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
 import { normalizeSandboxPolicy } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
-import type { LlmProfile } from '../../shared/types/settings'
+import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
@@ -58,6 +63,16 @@ interface SessionEntry {
     allowedTools?: string[]
     /** Set only when the session pinned its own approval mode. */
     yoloMode?: boolean
+  }
+  /** Last expert context resolved by refreshExpertContext. refreshOptions
+   *  replaces the option bag wholesale, so the expert pack + its tool
+   *  bindings must be re-attached there (a settings refresh mid-session must
+   *  not silently strip the @-summoned role). */
+  expertState?: {
+    expert: ExpertRuntimeContext | null
+    allowedTools?: string[]
+    allowedMcpServers?: string[]
+    allowedSkills?: string[]
   }
 }
 
@@ -165,14 +180,22 @@ class AgentSessionManagerImpl {
   ): HooksConfig {
     return {
       afterSession: (ctx) => {
-        const llmConfig = { adapter: createLlmAdapter(profile.provider ?? 'anthropic'), apiKey: profile.apiKey ?? '', baseURL: profile.baseURL, model: profile.model }
-        const messages = ctx.messages.filter((m) => m.contentBlocks?.some((b) => b.type === 'text'))
-        if (messages.length === 0) return
-        // Fire-and-forget — single LLM call extracts memories + experience.
-        managers.memoryManager.extractAndSaveAll(
-          messages, profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
-          profile.model, sessionId, undefined,
-        ).then((result) => {
+        void (async () => {
+          // Master switches (设置 → 记忆/经验) are read at session end, so a
+          // toggle takes effect on the next session without touching engines.
+          const settings = await settingsStore.get()
+          const memoryOn = settings.memoryEnabled ?? true
+          const experienceOn = settings.experienceEnabled ?? true
+          if (!memoryOn && !experienceOn) return
+
+          const llmConfig = { adapter: createLlmAdapter(profile.provider ?? 'anthropic'), apiKey: profile.apiKey ?? '', baseURL: profile.baseURL, model: profile.model }
+          const messages = ctx.messages.filter((m) => m.contentBlocks?.some((b) => b.type === 'text'))
+          if (messages.length === 0) return
+          // Fire-and-forget — single LLM call extracts memories + experience.
+          const result = await managers.memoryManager.extractAndSaveAll(
+            messages, profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
+            profile.model, sessionId, undefined, { memory: memoryOn, experience: experienceOn },
+          )
           if (result.memories > 0) console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
           if (result.experienceContent) {
             managers.experienceManager.save({
@@ -186,7 +209,7 @@ class AgentSessionManagerImpl {
                 console.warn('[SessionReview] Trigger extraction failed:', err))
             }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
           }
-        }).catch((err) => console.warn('[SessionReview] extraction failed:', err))
+        })().catch((err) => console.warn('[SessionReview] extraction failed:', err))
       },
     }
   }
@@ -228,10 +251,26 @@ class AgentSessionManagerImpl {
           skillKeywordAgent: new SkillKeywordAgent(),
           platformInfo: sessionPlatformInfo(),
         }
+        await this.syncFeatureToggles(this.managers, await settingsStore.get())
         return this.managers
       })()
     }
     return this.managersPromise
+  }
+
+  /** Mirror the 设置 → 记忆/经验 master switches onto the shared managers.
+   *  memoryEnabled maps onto MemoryPreferences (auto capture + prompt injection);
+   *  experienceEnabled onto ExperienceManager's own flag. */
+  private syncFeatureToggles(managers: Managers, settings: AppSettings): void {
+    const memoryOn = settings.memoryEnabled ?? true
+    managers.memoryManager.setPreferences({ autoCaptureEnabled: memoryOn, autoInjectEnabled: memoryOn })
+    managers.experienceManager.setEnabled(settings.experienceEnabled ?? true)
+  }
+
+  /** Re-apply the master switches after a settings save (settings.handler). */
+  async applyFeatureToggles(settings: AppSettings): Promise<void> {
+    const managers = await this.ensureManagers()
+    this.syncFeatureToggles(managers, settings)
   }
 
   /** Resolve the active LLM profile from settings (falls back to first profile). */
@@ -276,7 +315,23 @@ class AgentSessionManagerImpl {
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
     const profile = await this.resolveProfile()
-    const workspaceDir = opts.workspaceDir || settings.workspaceDir || WORKSPACE_DIR
+    // Local UI conversations resolve their working directory here (PLAN-0.4.0
+    // M8): project-bound ones use the project's fixed workspace, plain ones get
+    // a lazily-created timestamped folder under the global workspace. Canvas /
+    // spawn ids and callers with an explicit workspaceDir keep the old fallback.
+    // Gated on clientId because routines/ws extensions create sessions directly
+    // and never went through the IPC handler's resolution. Resolving INSIDE
+    // doCreateSession matters for ordering: createSession registers the pending
+    // create synchronously before awaiting this, so an ask that races the
+    // create waits on it instead of failing "session not found" (which lost
+    // the first message of every conversation).
+    const isLocalUiSession = !opts.clientId || opts.clientId === 'local'
+    let workspaceDir = opts.workspaceDir
+    if (!workspaceDir && isLocalUiSession && deriveConvType(sessionId) === 'normal') {
+      const projectId = opts.projectId ?? getConversationProjectId(sessionId)
+      workspaceDir = await resolveConversationWorkspace(sessionId, projectId)
+    }
+    workspaceDir = workspaceDir || settings.workspaceDir || WORKSPACE_DIR
     // Approval precedence: an explicit per-session override (derived sessions
     // run unattended) > the project sandbox policy > the global toggle.
     const yoloMode = opts.yoloMode ?? (opts.sandbox !== undefined
@@ -339,6 +394,10 @@ class AgentSessionManagerImpl {
     if (opts.projectId && opts.projectId !== DEFAULT_PROJECT_ID) {
       try { setConversationProject(sessionId, opts.projectId) } catch { /* best-effort */ }
     }
+    // The renderer binds the @-summoned expert before the first message lands —
+    // resolve it now so the very first loop already runs as the expert.
+    const entry = this.sessions.get(sessionId)
+    if (entry) await this.refreshExpertContext(sessionId, entry)
   }
 
   private sandboxContexts = new Map<string, SessionSandboxContext>()
@@ -369,6 +428,53 @@ class AgentSessionManagerImpl {
     }
   }
 
+  /** Re-resolve the session's @-summoned expert config pack from the
+   *  conversation's expert_id binding. Runs at session creation and before
+   *  every ask (next to refreshSandboxContext) so @ switches and unbinds take
+   *  effect immediately; a deleted/disabled expert falls back to an ordinary
+   *  session. engine.applyExpertContext invalidates the system-prompt cache
+   *  when the expert changed. Derived prompt sessions (tool studio etc.) keep
+   *  their pinned override — an expert never applies to them. */
+  private async refreshExpertContext(sessionId: string, entry: SessionEntry): Promise<void> {
+    if (entry.pinned.systemPromptOverride) return
+    try {
+      const expertId = getConversationExpertId(sessionId)
+      if (!expertId && !entry.engine.opts.expert) return // ordinary session, nothing to do
+      let next: ExpertRuntimeContext | null = null
+      let profile: import('../../shared/types/subagent').SubAgentProfile | null = null
+      if (expertId) {
+        profile = subAgentStore.getById(expertId)
+        if (profile && profile.enabled !== false) {
+          const knowledgeFiles = getKnowledgeFilesByIds(profile.knowledgeFileIds || []).map((f) => {
+            let wikiPages: string[] = []
+            try { wikiPages = f.wiki_outputs ? JSON.parse(f.wiki_outputs) : [] } catch { /* uncompiled */ }
+            return { id: f.id, title: f.title || f.file_path, filePath: f.file_path, wikiPages }
+          })
+          next = {
+            id: profile.id,
+            name: profile.name,
+            instructions: composeExpertInstructions(profile, knowledgeFiles),
+            knowledgeFiles,
+          }
+        } else {
+          console.warn(`[SessionManager] expert "${expertId}" missing or disabled — falling back to ordinary session`)
+          profile = null
+        }
+      }
+      // Always pass the bindings object (all-undefined when unbound) so a
+      // previous expert's tool whitelists get cleared on unbind/switch.
+      const bindings = {
+        allowedTools: profile?.allowedTools,
+        allowedMcpServers: profile?.allowedMcpServers,
+        allowedSkills: profile?.allowedSkills,
+      }
+      entry.engine.applyExpertContext(next, bindings)
+      entry.expertState = { expert: next, ...bindings }
+    } catch (err) {
+      console.warn('[SessionManager] refreshExpertContext failed:', err)
+    }
+  }
+
   hasSession(sessionId: string): boolean {
     return this.sessions.has(sessionId)
   }
@@ -378,6 +484,7 @@ class AgentSessionManagerImpl {
   async ask(sessionId: string, content: string): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
     await this.refreshSandboxContext(sessionId, entry)
+    await this.refreshExpertContext(sessionId, entry)
     if (this.runningLoops >= MAX_CONCURRENT_LOOPS) {
       this.emit(sessionId, { type: 'status', status: 'queued', attempt: this.waitingLoops.length + 1 })
       await new Promise<void>((resolve) => this.waitingLoops.push(resolve))
@@ -494,7 +601,10 @@ class AgentSessionManagerImpl {
       // (and the session-review hooks, which the refresh used to drop).
       hooks: entry.pinned.systemPromptOverride ? undefined : this.buildHooks(profile, managers, sessionId),
       systemPromptOverride: entry.pinned.systemPromptOverride,
-      allowedTools: entry.pinned.allowedTools,
+      allowedTools: entry.pinned.allowedTools ?? entry.expertState?.allowedTools,
+      allowedMcpServers: entry.expertState?.allowedMcpServers,
+      allowedSkills: entry.expertState?.allowedSkills,
+      expert: entry.expertState?.expert ?? undefined,
     })
   }
 
@@ -502,7 +612,13 @@ class AgentSessionManagerImpl {
   private makeCallbacks(sessionId: string) {
     return {
       onMessagesChanged: (messages: AgentMessage[]) => this.emitMessages(sessionId, messages),
-      onStatusChanged: (status: AgentStatus) => this.emit(sessionId, { type: 'status', status: status.status }),
+      onStatusChanged: (status: AgentStatus) => this.emit(sessionId, {
+        type: 'status',
+        status: status.status,
+        // Loop failures carry their reason ({ status: 'error', error } —
+        // renderer types/agent.ts); unattended consumers settle on this.
+        ...(status.status === 'error' ? { error: status.error } : {}),
+      }),
       onStreamingBlocksChanged: (blocks: ContentBlock[]) => this.emit(sessionId, { type: 'streaming_blocks', blocks: blocks as unknown[] }),
       onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan: plan as unknown as PlanSnapshot | null }),
     }

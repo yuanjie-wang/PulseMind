@@ -34,9 +34,12 @@ export class SpawnManager {
       hooks: undefined,
       allowedTools: config.allowedTools,
       allowedMcpServers: config.allowedMcpServers,
-      // The sub-agent's own prompt is set below; never inherit a parent
-      // session's prompt override through the spread.
+      allowedSkills: config.allowedSkills,
+      // The sub-agent runs its own prompt wholesale and must never inherit the
+      // parent session's @-summoned expert pack (its prompt override AND its
+      // knowledge/skill scoping) through the spread.
       systemPromptOverride: undefined,
+      expert: undefined,
     }
 
     const engine = new AgentEngine(subOpts)

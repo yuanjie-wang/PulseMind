@@ -140,6 +140,8 @@ export function scheduleMemoryExtraction(engine: AgentEngine): void {
     if (engine._memExtractionInProgress) return
     if (engine.spawnSystemPrompt) return
     if (!engine.opts.conversationId) return
+    // Feature master switch (设置 → 记忆): the shared manager's prefs mirror it.
+    if (engine.opts.memoryManager && !engine.opts.memoryManager.getPreferences().autoCaptureEnabled) return
 
     if (Date.now() - engine._lastMemExtractionTime < AgentEngine.MEM_EXTRACTION_COOLDOWN) return
 

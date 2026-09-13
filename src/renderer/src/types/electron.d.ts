@@ -148,6 +148,7 @@ export interface ElectronAPI {
     query: string,
     limit?: number,
   ) => Promise<Array<{ conversationId: string; conversationTitle: string; role: 'user' | 'assistant'; snippet: string; createdAt: string }>>
+  getConversationLastUserMessage: (id: string) => Promise<string | null>
   saveConversationPlan: (id: string, planJson: string | null) => Promise<void>
   getConversationPlan: (id: string) => Promise<string | null>
   getToolResult: (
@@ -234,6 +235,7 @@ export interface ElectronAPI {
   projectUpdate: (id: string, patch: ProjectUpdateInput) => Promise<Project | null>
   projectDelete: (id: string) => Promise<{ removedConversations: number }>
   setConversationProject: (id: string, projectId: string) => Promise<void>
+  setConversationExpert: (id: string, expertId: string | null) => Promise<void>
   auditList: (limit?: number) => Promise<AuditEntry[]>
   routineList: () => Promise<Routine[]>
   routineGet: (id: string) => Promise<Routine | null>
@@ -415,6 +417,7 @@ declare global {
   interface Window {
     electronAPI: ElectronAPI
   }
+  // Vite define (vite.config.ts). This file is a module (type-only imports above),
+  // so the declaration has to live in `declare global` to be visible everywhere.
+  var __APP_VERSION__: string
 }
-
-declare const __APP_VERSION__: string

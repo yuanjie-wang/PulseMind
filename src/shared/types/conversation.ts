@@ -14,6 +14,8 @@ export interface ConversationIndexEntry {
   projectId?: string
   /** Resolved working directory (PLAN-0.4.0 M8); absent until first session. */
   workspaceDir?: string
+  /** Summoned expert bound to this conversation (@-mention); absent when unbound. */
+  expertId?: string
 }
 
 export interface Message {

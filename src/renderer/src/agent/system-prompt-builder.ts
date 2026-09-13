@@ -60,11 +60,22 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     const parts: string[] = []
     const { myName, soul, yourName, locale, platformInfo, workspaceDir, memoryManager } = opts
 
-    const personaParts: string[] = []
-    if (myName) personaParts.push(`The user's name is ${myName}.`)
-    if (yourName) personaParts.push(`You are ${yourName}.`)
-    if (soul) personaParts.push(soul)
-    if (personaParts.length > 0) { parts.push('# Basic Persona & Identity'); parts.push(personaParts.join('\n')) }
+    // ── Expert config pack (@-summoned role switch) ─────────────────
+    // The expert's composed instructions REPLACE the basic persona: identity
+    // precedence is the whole point of the summon. myName survives (it's
+    // context about the user, not the assistant); soul/yourName do not.
+    // Everything else (environment / memory / git / tool format) is kept —
+    // it's infrastructure, not identity.
+    if (opts.expert) {
+      parts.push(opts.expert.instructions)
+      if (myName) parts.push(`The user's name is ${myName}.`)
+    } else {
+      const personaParts: string[] = []
+      if (myName) personaParts.push(`The user's name is ${myName}.`)
+      if (yourName) personaParts.push(`You are ${yourName}.`)
+      if (soul) personaParts.push(soul)
+      if (personaParts.length > 0) { parts.push('# Basic Persona & Identity'); parts.push(personaParts.join('\n')) }
+    }
 
     const envParts: string[] = ['## System Info']
     if (platformInfo) envParts.push(`- Operating System: ${platformInfo.platformName} ${platformInfo.release} (${platformInfo.arch})`)
@@ -121,9 +132,13 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     // Full wiki index is intentionally NOT injected to keep the prompt lean.
     // The model is told the knowledge base exists so it knows to look it up
     // via knowledge_search / knowledge_read when relevant.
-    parts.push(`## Knowledge Base
+    // An expert with bound files already carries its own Bound Knowledge
+    // section (scoped search) — skip the generic hint to avoid double-listing.
+    if (!opts.expert || opts.expert.knowledgeFiles.length === 0) {
+      parts.push(`## Knowledge Base
 
 You have a local knowledge base (compiled wiki) of project documents and past compiled knowledge. It is NOT shown here — look things up on demand with the knowledge_search and knowledge_read tools when relevant.`)
+    }
 
     // ── Experience index: name-only second channel (progressive disclosure) ──
     // Full experience contents are never injected. The model sees a compact
