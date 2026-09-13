@@ -12,7 +12,7 @@
 // ~/Downloads, agent tabs stay jailed to the conversation workspace
 // (download split, decision 2026-09-13).
 
-import { randomUUID } from 'node:crypto'
+import { prefixedId } from '../../utils/id'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, session, WebContentsView } from 'electron'
@@ -90,7 +90,7 @@ export class AppViewBackend implements BackendAdapter {
         backgroundThrottling: false,
       },
     })
-    const token = `tok_${randomUUID().slice(0, 12)}`
+    const token = prefixedId('tok', 12)
     this.views.set(options.tabId, view)
     this.wireDownloadRouting()
     this.downloadMeta.set(view.webContents, { origin, scopeId })

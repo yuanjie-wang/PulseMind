@@ -4,7 +4,7 @@
 // its workspace follows the global `workspaceDir` setting, so pre-0.4.0
 // installs keep behaving exactly as before. It is never stored as a row.
 
-import { randomUUID } from 'node:crypto'
+import { prefixedId } from '../utils/id'
 import { access, constants, mkdir } from 'node:fs/promises'
 import { getDb } from './database'
 import { settingsStore } from './settings-store'
@@ -93,7 +93,7 @@ export const projectStore = {
     await ensureWorkspaceDir(input.workspaceDir)
     const now = new Date().toISOString()
     const project: Project = {
-      id: `proj_${randomUUID().slice(0, 8)}`,
+      id: prefixedId('proj'),
       name,
       workspaceDir: input.workspaceDir,
       icon: input.icon,

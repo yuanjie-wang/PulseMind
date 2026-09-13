@@ -6,7 +6,7 @@
 // Registry + orchestration only (≤1000-line rule) — command execution lives
 // in PlaywrightCommands, launching in the backend adapters.
 
-import { randomUUID } from 'node:crypto'
+import { prefixedId } from '../utils/id'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -141,7 +141,7 @@ export class BrowserService {
       case 'newTab': {
         const backend = this.backendFor('app-view') as AppViewBackend
         await backend.start()
-        const id = `tab_${randomUUID().slice(0, 8)}`
+        const id = prefixedId('tab')
         const created = await backend.newTab({ tabId: id, origin: 'user', scopeId: scope })
         this.tabs.set(id, { id, backendId: 'app-view', scopeId: scope, origin: 'user', createdAt: new Date().toISOString(), tab: created })
         this.paneActiveTab.set(scope, id)
@@ -240,7 +240,7 @@ export class BrowserService {
           const backendId = this.activeBackendId(scopeId)
           const backend = this.backendFor(backendId)
           await backend.start()
-          const id = `tab_${randomUUID().slice(0, 8)}`
+          const id = prefixedId('tab')
           const downloadsDir = backendId === 'managed' ? join(WORKSPACE_DIR, 'downloads', scopeId) : undefined
           const created = await backend.newTab({ url: cmd.url, tabId: id, downloadsDir, origin: 'agent', scopeId })
           this.tabs.set(id, { id, backendId, scopeId, origin: 'agent', createdAt: new Date().toISOString(), tab: created })

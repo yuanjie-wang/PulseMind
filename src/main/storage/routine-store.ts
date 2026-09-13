@@ -3,7 +3,7 @@
 // user-editable artifacts, mirroring the skills directory convention. Run
 // history is relational and goes to the SQLite `routine_runs` table.
 
-import { randomUUID } from 'node:crypto'
+import { prefixedId } from '../utils/id'
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getDb } from './database'
@@ -74,7 +74,7 @@ export const routineStore = {
 
   create(input: Omit<Routine, 'id' | 'createdAt' | 'updatedAt'>): Routine {
     const now = new Date().toISOString()
-    const routine: Routine = { ...input, id: `routine_${randomUUID().slice(0, 8)}`, createdAt: now, updatedAt: now }
+    const routine: Routine = { ...input, id: prefixedId('routine'), createdAt: now, updatedAt: now }
     writeRoutine(routine)
     return routine
   },
@@ -95,7 +95,7 @@ export const routineStore = {
 
   startRun(routineId: string, trigger: RoutineRun['trigger']): RoutineRun {
     const run: RoutineRun = {
-      id: `run_${randomUUID().slice(0, 12)}`,
+      id: prefixedId('run', 12),
       routineId,
       status: 'running',
       trigger,

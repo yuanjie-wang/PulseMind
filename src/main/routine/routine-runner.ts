@@ -10,7 +10,7 @@
 // Nothing ever hangs waiting for a user who isn't there.
 
 import { BrowserWindow, Notification } from 'electron'
-import { randomUUID } from 'node:crypto'
+import { shortUuid } from '../utils/id'
 import { agentSessionManager } from '../agent/session-manager'
 import { routineStore } from '../storage/routine-store'
 import { auditStore } from '../storage/audit-store'
@@ -85,7 +85,7 @@ export const routineRunner = {
   },
 
   async execute(run: RoutineRun, routine: Routine, params?: Record<string, string>): Promise<void> {
-    const convId = `routine_${Date.now()}_${randomUUID().slice(0, 6)}`
+    const convId = `routine_${Date.now()}_${shortUuid(6)}`
     let settled = false
     let unsubscribe: (() => void) | null = null
     const finish = (status: RoutineRun['status'], error?: string): void => {

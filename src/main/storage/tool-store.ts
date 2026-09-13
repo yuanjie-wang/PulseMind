@@ -9,7 +9,7 @@
 // delete, D-R2). Deletions are recorded in .presets.deleted.json so an app
 // upgrade never resurrects them (D-R3), and「恢复预置工具」re-seeds on demand.
 
-import { randomUUID } from 'node:crypto'
+import { prefixedId } from '../utils/id'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { TOOLS_DIR } from './index'
@@ -156,7 +156,7 @@ export const toolStore = {
     const src = readManifest(id)
     if (!src) return null
     const now = new Date().toISOString()
-    const newId = `tool_${randomUUID().slice(0, 8)}`
+    const newId = prefixedId('tool')
     const copy: UserTool = {
       ...src,
       id: newId,
@@ -192,7 +192,7 @@ export const toolStore = {
   /** Create a tool (studio-driven creation only). */
   create(input: ToolCreateInput): UserTool {
     const now = new Date().toISOString()
-    const id = `tool_${randomUUID().slice(0, 8)}`
+    const id = prefixedId('tool')
     const tool: UserTool = {
       id,
       name: input.name.trim() || '未命名工具',

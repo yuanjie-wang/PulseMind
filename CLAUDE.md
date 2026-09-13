@@ -203,12 +203,13 @@ App.tsx                         # Root: SettingsProvider > TranslationProvider >
 │   ├── ZoomControls.tsx
 │   └── AnnotationNotePopup.tsx
 ├── hooks/
-│   ├── useChatController.ts    # (~1020 lines) Orchestrator: settings, tools, skills, memory, persistence
+│   ├── useChatController.ts    # (~420 lines) Orchestrator: settings, tools, skills, memory, persistence
 │   ├── useAppSettings.ts
 │   ├── useGreeting.ts
 │   └── SettingsContext.tsx
 ├── agent/                      # Agent engine (shared by chat + canvas modes)
-│   ├── AgentEngine.ts          # (~1560 lines) State machine: SSE dispatch, tool execution, three-layer compaction
+│   ├── AgentEngine.ts          # (~940 lines) State machine: SSE dispatch, tool execution, three-layer compaction
+│   ├── engine/                 # Strategy modules extracted from the engine (stream-runner, execution-flow, context-compactor, …)
 │   ├── tool-executors.ts       # Tool execution implementations (execSpawnAgent, execCommand, etc.)
 │   ├── system-prompt-builder.ts # System prompt assembly with caching (6h TTL for main, no cache for sub-agents)
 │   ├── command-builder.ts      # Shell command builder (find/search/exec/ask_user)
@@ -291,9 +292,9 @@ CRUD lives in `src/main/storage/conversation.db.ts` (not in individual handlers)
 
 ### Sub-Agent System
 
-Sub-agents are spawned via the `spawn_agent` tool (defined in `built-in-tools.ts:504`):
-1. **Tool execution** — `tool-executors.ts:196` extracts `subAgentId` and `task` from the LLM's tool call, looks up profile via IPC
-2. **`AgentEngine.spawnSubAgent`** (AgentEngine.ts:864) — creates a new full AgentEngine instance with a fresh conversation (`sub_<timestamp>_<random>`)
+Sub-agents are spawned via the `spawn_agent` tool (defined in `built-in-tools.ts:559`):
+1. **Tool execution** — `tool-executors.ts:639` extracts `subAgentId` and `task` from the LLM's tool call, looks up profile via IPC
+2. **`AgentEngine.spawnSubAgent`** (AgentEngine.ts:680, delegating to `engine/spawn-manager.ts`) — creates a new full AgentEngine instance with a fresh conversation (`sub_<timestamp>_<random>`)
 3. **Execution** — runs as an independent agent loop (`startSpawnLoop`) with maxLoopIterations defaulting to 20. The parent agent blocks on `await handle.waitForCompletion()` until the sub-agent finishes
 4. **Result** — sub-agent conversation is saved to DB; result text is injected back into the parent's tool_results
 5. **Profiles** — stored in `subagent_profiles` SQLite table; managed via `subagent.handler.ts` IPC; default profiles include `subagent-general` and `subagent-canvas`
@@ -400,10 +401,10 @@ ESLint applies `no-require-imports: off` for main/preload (CommonJS). Renderer g
 
 | File | Lines | Why |
 |------|-------|-----|
-| `agent/AgentEngine.ts` | ~1646 | Agent state machine, SSE dispatch, tool execution loop, microCompact |
-| `components/canvas/CanvasView.tsx` | ~1447 | Canvas: pan/zoom, drag/resize, annotations, generation lifecycle |
-| `components/knowledge/KnowledgePanel.tsx` | ~960 | Knowledge import, compile queue, wiki view |
-| `agent/tool-executors.ts` | ~820 | Tool execution implementations (spawn, command, read, etc.) |
+| `agent/AgentEngine.ts` | ~940 | Agent state machine, SSE dispatch, tool execution loop, microCompact (plus `engine/` strategy modules) |
+| `components/canvas/CanvasView.tsx` | ~1450 | Canvas (deprecated 0.4.0): pan/zoom, drag/resize, annotations, generation lifecycle |
+| `components/knowledge/KnowledgePanel.tsx` | ~980 | Knowledge import, compile queue, wiki view |
+| `agent/tool-executors.ts` | ~1090 | Tool execution implementations (spawn, command, read, etc.) |
 | `main/storage/knowledge-store.ts` | ~765 | Knowledge file registry, import pipeline, wiki management |
 | `components/layout/ChatView.tsx` | ~680 | Message list, input, cursor composition, segment grouping |
 | `components/layout/AppLayout.tsx` | ~654 | App shell with sidebar, chat, settings modal orchestration |

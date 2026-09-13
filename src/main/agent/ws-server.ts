@@ -9,6 +9,7 @@
  */
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import { shortUuid } from '../utils/id'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
   ErrorCodes,
@@ -133,7 +134,7 @@ export async function startAgentService(opts: { port?: number } = {}): Promise<A
             break
           }
           case Methods.sessionCreate: {
-            const sessionId = `ws_${Date.now()}_${randomUUID().slice(0, 8)}`
+            const sessionId = `ws_${Date.now()}_${shortUuid(8)}`
             const agentId = typeof params.agentId === 'string' ? params.agentId : undefined
             const title = typeof params.title === 'string' ? params.title : undefined
             agentSessionManager.createSession(sessionId, { agentId, title, clientId: conn.clientId })

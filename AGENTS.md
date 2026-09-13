@@ -34,11 +34,11 @@ IPC types: `src/renderer/src/types/electron.d.ts` (~311 lines).
 
 ## Complexity Hotspots
 
-- `agent/AgentEngine.ts` (2391 lines) — agent state machine, SSE dispatch, tool execution loop
-- `hooks/useChatController.ts` (357 lines) — orchestrator wiring settings, tools, skills, memory, persistence
+- `agent/AgentEngine.ts` (944 lines) + `agent/engine/` strategy modules — agent state machine, SSE dispatch, tool execution loop (the 2391-line monolith was split; engine modules hold a back-reference to the engine class)
+- `hooks/useChatController.ts` (423 lines) — orchestrator wiring settings, tools, skills, memory, persistence
 - `llm/OpenAIAdapter.ts` / `AnthropicAdapter.ts` — provider-specific SSE parsers (adapter pattern)
-- `memory/MemoryManager.ts` (645 lines) — auto-extraction + compression pipeline
-- `main/ipc/api-proxy.handler.ts` (414 lines) — SSE streaming proxy with abort/retry, env-placeholder resolution
+- `memory/MemoryManager.ts` (653 lines) — auto-extraction + compression pipeline
+- `main/ipc/api-proxy.handler.ts` (447 lines) — SSE streaming proxy with abort/retry, env-placeholder resolution
 
 ## Runtime Data (`~/.pulsemind/`)
 
