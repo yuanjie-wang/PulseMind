@@ -1,3 +1,7 @@
+// ── Experience settings section ──
+// 设置 → 经验: the experienceEnabled master switch plus the LRU experience
+// record list (max MAX_EXPERIENCES) with view/delete. Rendered inline in the
+// settings page next to 记忆.
 import React, { useCallback, useEffect, useState } from 'react'
 import { Modal, Tag, Typography, Alert, Button, Tooltip, Popconfirm, Empty, Spin, Card } from 'antd'
 import { DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'

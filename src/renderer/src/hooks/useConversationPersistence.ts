@@ -1,3 +1,11 @@
+// ── Conversation persistence & lifecycle ──
+// Owns the conversation LIST (useXConversations state: keys, labels, pinning)
+// and the save pipeline that flushes engine messages to SQLite — debounced,
+// incremental (only unsaved message ids), and serialized through one in-flight
+// promise so overlapping renders can't double-save. Also handles conversation
+// switching (flush-then-swap), deletion with engine teardown, and auto-cleanup.
+// Engine construction itself lives in useConversationEngine; this hook drives it.
+
 import { useEffect, useRef, useCallback, useState } from 'react'
 import useXConversations from '@ant-design/x-sdk/es/x-conversations'
 import type { AgentMessage, AgentStatus } from '../types/agent'

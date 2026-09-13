@@ -1,3 +1,12 @@
+// ── Tool executors ──
+// One ToolExecutor per engine (constructed in useChatManagers / session-manager)
+// that maps a tool_use block to its implementation: built-in file/shell/memory/
+// knowledge tools, MCP dispatch, git, and spawn_agent delegation. Results flow
+// back through the injected addToolResult callback (which owns the global
+// context-size guardrail) — executors themselves no longer truncate.
+// NOTE: exceeds the 1000-line class budget; candidate for splitting into
+// per-domain executor modules (files/shell vs memory/knowledge vs mcp/git).
+
 import { getHost } from './host'
 import { execGitTool } from './engine/git-tools'
 import type { ToolUseBlock, TextBlock } from '../types/agent'

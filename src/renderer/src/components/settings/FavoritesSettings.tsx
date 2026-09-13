@@ -1,3 +1,7 @@
+// ── Favorites browser ──
+// Lists the starred messages persisted in SQLite (favorites table): search,
+// expand/collapse the full markdown body, copy, delete, and export. Rendered
+// inline inside the settings page.
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { Drawer, Typography, Empty, Spin, message, Tag, Input } from 'antd'
 import { StarOutlined, MessageOutlined, DeleteOutlined, CopyOutlined, CheckOutlined, DownOutlined, UpOutlined, DownloadOutlined } from '@ant-design/icons'

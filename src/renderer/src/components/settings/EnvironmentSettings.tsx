@@ -1,3 +1,7 @@
+// ── Environment settings section ──
+// 设置 → 环境: workspace directory, data paths, proxy/env vars and other
+// runtime environment fields. Drawer-capable but rendered inline in the
+// settings page.
 import React, { useState, useEffect } from 'react'
 import { Drawer, Input, Button, Typography, Space, message, Select, Switch, InputNumber } from 'antd'
 import { SaveOutlined, DesktopOutlined, ClockCircleOutlined, FolderOutlined, FolderOpenOutlined, GlobalOutlined } from '@ant-design/icons'

@@ -1,3 +1,9 @@
+// ── Session review one-shot ──
+// Runs once at session end (afterSession hook, both renderer and main hosts):
+// a single LLM pass over the transcript that extracts memories, a title
+// summary + search keywords, and optionally an experience record in one call.
+// Dedupes against existing memories passed in via the prompt.
+
 import { OneShotAgent } from './OneShotAgent'
 import { extractJson } from './json-utils'
 import type { ExtractedMemory } from './MemoryExtractionAgent'

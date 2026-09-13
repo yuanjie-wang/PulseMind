@@ -1,3 +1,4 @@
+// ── WebGL noise backdrop for canvas regions (deprecated 0.4.0 canvas) ── ogl shader mesh driven by hex color + grain uniforms.
 import { useEffect, useRef } from 'react'
 import { Renderer, Program, Mesh, Triangle } from 'ogl'
 

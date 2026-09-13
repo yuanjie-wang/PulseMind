@@ -1,3 +1,4 @@
+// ── Canvas region config popover (deprecated 0.4.0 canvas) ── per-region prompt input + generate button, pinned to its RectFrame.
 import React, { useState, useRef, useEffect } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { ThunderboltOutlined } from '@ant-design/icons'

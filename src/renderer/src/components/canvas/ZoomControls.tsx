@@ -1,3 +1,4 @@
+// ── Canvas zoom controls (deprecated 0.4.0 canvas) ── floating +/- / percentage pill.
 import { useState, useRef, useEffect } from 'react'
 import { Tooltip } from 'antd'
 

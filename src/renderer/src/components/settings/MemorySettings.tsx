@@ -1,3 +1,7 @@
+// ── Memory settings section ──
+// 设置 → 记忆: the memoryEnabled master switch (FeatureSwitch, mirrored to the
+// shared MemoryManager by App.tsx / settings.handler) plus manual memory CRUD
+// and search against the live MemoryManager instance.
 import React, { useState, useEffect, useCallback } from 'react'
 import { Drawer, Typography, Space, Button, Tag, Empty, Popconfirm, Input, message, Spin, Card } from 'antd'
 import { BookOutlined, ClearOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'

@@ -1,3 +1,6 @@
+// ── Agent persona settings (灵魂/名字/人设) ──
+// Edits the persona fields of settings.json via SettingsContext; supports
+// drawer and inline (settings page section) mounting.
 import React, { useState, useEffect } from 'react'
 import { Drawer, Input, Button, Typography, Space, message } from 'antd'
 import { SaveOutlined } from '@ant-design/icons'

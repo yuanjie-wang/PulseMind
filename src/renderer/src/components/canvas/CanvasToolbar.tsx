@@ -1,3 +1,4 @@
+// ── Canvas top toolbar (deprecated 0.4.0 canvas) ── select/pan tools, add-region, undo/redo and clear, with shortcut hints.
 import React from 'react'
 import { Tooltip, Modal } from 'antd'
 import { ExclamationCircleFilled } from '@ant-design/icons'

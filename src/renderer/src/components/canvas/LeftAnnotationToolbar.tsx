@@ -1,3 +1,4 @@
+// ── Canvas per-annotation action rail (deprecated 0.4.0 canvas) ── icons for run/relaunch/export/delete/open-in-browser on the selected region.
 import React, { useState, useRef, useEffect } from 'react'
 import { ArrowRightOutlined, ReloadOutlined, ExportOutlined, DeleteOutlined, FileTextOutlined, ChromeOutlined, PictureOutlined } from '@ant-design/icons'
 import type { Annotation, ToolType } from '../../types/canvas'

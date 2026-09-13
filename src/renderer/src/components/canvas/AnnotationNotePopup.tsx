@@ -1,3 +1,4 @@
+// ── Canvas note popup (deprecated 0.4.0 canvas) ── tiny auto-focus textarea for entering an annotation note at click position.
 import { useState, useRef, useEffect } from 'react'
 
 interface AnnotationNotePopupProps {

@@ -1,3 +1,4 @@
+// ── Canvas region frame (deprecated 0.4.0 canvas) ── renders one draggable/resizable annotation rectangle over the <canvas>, including its WebGL Grainient backdrop and inline RegionConfig popover.
 import React, { useCallback, useRef, useEffect } from 'react'
 import type { Annotation } from '../../types/canvas'
 import { drawAnnotation } from '../../utils/canvasDrawUtils'
