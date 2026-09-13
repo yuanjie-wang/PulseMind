@@ -1,13 +1,13 @@
 {
   "id": "pomodoro",
   "name": "番茄钟",
-  "description": "25 分钟专注 + 5 分钟休息的番茄工作法计时器，结束时可发送系统通知。",
+  "description": "25 分钟专注 + 5 分钟休息的番茄工作法计时器，结束时发送系统通知并记录当日完成数。",
   "category": "timer",
   "htmlPath": "app.html",
   "capabilities": [
     "notify"
   ],
-  "version": 1,
+  "version": 3,
   "createdAt": "2026-09-12T00:00:00.000Z",
-  "updatedAt": "2026-09-12T00:00:00.000Z"
+  "updatedAt": "2026-09-13T00:00:00.000Z"
 }

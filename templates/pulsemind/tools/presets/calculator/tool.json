@@ -1,11 +1,11 @@
 {
   "id": "calculator",
   "name": "计算器",
-  "description": "简洁的计算器，支持键盘输入与历史记录。",
+  "description": "简洁的计算器，支持四则运算、括号与百分比，可用键盘输入。",
   "category": "utility",
   "htmlPath": "app.html",
   "capabilities": [],
-  "version": 1,
+  "version": 2,
   "createdAt": "2026-09-12T00:00:00.000Z",
-  "updatedAt": "2026-09-12T00:00:00.000Z"
+  "updatedAt": "2026-09-13T00:00:00.000Z"
 }

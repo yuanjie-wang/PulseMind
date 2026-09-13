@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>计算器</title><style>
-:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; }
+:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; --danger:#d4380d; }
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; }
+  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; --danger:#ff7875; }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
@@ -12,11 +12,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .screen { background: var(--bg); border-radius: 10px; padding: 14px; text-align: right; margin-bottom: 12px; }
 .expr { color: var(--muted); font-size: 13px; min-height: 18px; word-break: break-all; }
 .result { font-size: 32px; font-weight: 700; word-break: break-all; }
+.result.error { color: var(--danger); font-size: 22px; }
 .keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 button { border: none; border-radius: 10px; padding: 14px 0; font-size: 17px; background: var(--bg); color: var(--fg); cursor: pointer; }
 button:active { transform: scale(.96); }
 .op { background: rgba(0,0,0,.06); }
-.eq { background: var(--accent); color: var(--bg); grid-column: span 2; }
+/* 20 个普通键铺满 5 行,`=` 独占第 6 行通栏:21 个键正好填满 6×4 的格子,不留空洞
+   (少一个键、或多占一格的键,都会让最后一行缺角)。 */
+.eq { background: var(--accent); color: var(--bg); grid-column: span 4; }
 @media (prefers-color-scheme: dark) { .op { background: rgba(255,255,255,.08); } }
 </style></head><body>
 <div class="calc">
@@ -24,7 +27,7 @@ button:active { transform: scale(.96); }
   <div class="keys" id="keys"></div>
 </div>
 <script>
-const keys = ['C','(','\u2190','/','7','8','9','*','4','5','6','-','1','2','3','+','0','.','%','='];
+const keys = ['C','(',')','\u2190','7','8','9','/','4','5','6','*','1','2','3','-','0','.','%','+','='];
 const grid = document.getElementById('keys');
 keys.forEach(k => {
   const b = document.createElement('button');
@@ -34,23 +37,178 @@ keys.forEach(k => {
   b.onclick = () => press(k);
   grid.appendChild(b);
 });
-let expr = '';
-function press(k) {
-  if (k === 'C') expr = '';
-  else if (k === '\u2190') expr = expr.slice(0, -1);
-  else if (k === '=') {
-    try {
-      const safe = expr.replace(/[^0-9+\-*/().%]/g, '');
-      const val = Function('"use strict";return (' + safe + ')')();
-      expr = String(val);
-    } catch (e) { document.getElementById('result').textContent = '错误'; return; }
-  } else expr += k;
-  document.getElementById('expr').textContent = expr;
-  document.getElementById('result').textContent = expr || '0';
+
+const exprEl = document.getElementById('expr'), resultEl = document.getElementById('result');
+const OPS = '+-*/';
+let expr = '', shown = '0', error = false, justEvaluated = false;
+
+// ── 表达式求值 ──
+// 手写解析器而非 Function():`%` 是后缀运算符(除以 100),JS 语法里没有这种写法,
+// 而语法错误也只有自己捕获才能变成干净的“错误”提示,而不是抛出的 SyntaxError。
+function tokenize(src) {
+  const out = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (/[0-9.]/.test(ch)) {
+      let j = i, dots = 0;
+      while (j < src.length && /[0-9.]/.test(src[j])) { if (src[j] === '.') dots++; j++; }
+      const raw = src.slice(i, j);
+      if (dots > 1 || raw === '.') throw new Error('bad number: ' + raw);
+      out.push({ t: 'num', v: parseFloat(raw) });
+      i = j;
+      continue;
+    }
+    if ('+-*/()%'.includes(ch)) { out.push({ t: ch }); i++; continue; }
+    throw new Error('bad char: ' + ch);
+  }
+  return out;
 }
+
+function parse(tokens) {
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const eat = (t) => { if (peek() && peek().t === t) { pos++; return true; } return false; };
+
+  const additive = () => {
+    let v = multiplicative();
+    for (;;) {
+      if (eat('+')) v += multiplicative();
+      else if (eat('-')) v -= multiplicative();
+      else return v;
+    }
+  };
+  const multiplicative = () => {
+    let v = unary();
+    for (;;) {
+      if (eat('*')) v *= unary();
+      else if (eat('/')) {
+        const d = unary();
+        if (d === 0) throw new Error('divide by zero');
+        v /= d;
+      } else return v;
+    }
+  };
+  const unary = () => {
+    if (eat('-')) return -unary();
+    if (eat('+')) return unary();
+    return postfix();
+  };
+  const postfix = () => {
+    let v = primary();
+    while (eat('%')) v /= 100;
+    return v;
+  };
+  const primary = () => {
+    if (eat('(')) {
+      const v = additive();
+      if (!eat(')')) throw new Error('missing )');
+      return v;
+    }
+    const tk = peek();
+    if (tk && tk.t === 'num') { pos++; return tk.v; }
+    throw new Error('unexpected token');
+  };
+
+  const value = additive();
+  if (pos !== tokens.length) throw new Error('trailing token');
+  return value;
+}
+
+function evaluate(src) {
+  const tokens = tokenize(src);
+  if (tokens.length === 0) throw new Error('empty');
+  const value = parse(tokens);
+  if (!Number.isFinite(value)) throw new Error('not finite');
+  return value;
+}
+
+/** 12 位有效数字,顺带抹掉 0.1+0.2 这类浮点噪声。 */
+function format(n) {
+  return Number.isInteger(n) ? String(n) : String(Number(n.toPrecision(12)));
+}
+
+/** 输入过程中的实时结果;表达式还不完整时返回 null(保留上一个有效值)。 */
+function preview() {
+  if (!expr) return '0';
+  try { return format(evaluate(expr)); } catch (e) { return null; }
+}
+
+function render() {
+  exprEl.textContent = expr;
+  if (error) {
+    resultEl.textContent = '错误';
+    resultEl.className = 'result error';
+    return;
+  }
+  const live = preview();
+  // 只在前缀可求值时才刷新:输入 "2+" 的过程中大字号应停留在 "2",而不是掉回 0。
+  if (live !== null) shown = live;
+  resultEl.textContent = shown;
+  resultEl.className = 'result';
+}
+
+/** 把当前表达式收敛成一个数:`=` 与键盘 Enter 都走这里。 */
+function commit() {
+  error = false;
+  if (!expr) { expr = ''; shown = '0'; render(); return; }
+  try {
+    expr = format(evaluate(expr));
+    shown = expr;
+  } catch (e) {
+    error = true;   // 保留原表达式,用户可以继续改
+  }
+  justEvaluated = true;
+  render();
+}
+
+/** 允许输入的 `(`/`)` 是否配平,`(` 只等未闭合的那个。 */
+function unbalanced() {
+  let depth = 0;
+  for (const ch of expr) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+  }
+  return depth;
+}
+
+function press(k) {
+  if (k === 'C') { expr = ''; shown = '0'; error = false; justEvaluated = false; return render(); }
+  if (k === '\u2190') { expr = expr.slice(0, -1); error = false; justEvaluated = false; return render(); }
+  if (k === '=') return commit();
+
+  error = false;
+  if (justEvaluated) {
+    // `=` 之后输入数字或 `(` 重新开始,输入运算符则接着结果继续算。
+    if (/[0-9.(]/.test(k)) expr = '';
+    justEvaluated = false;
+  }
+
+  const tail = expr.slice(-1);
+  const isOp = OPS.includes(k);
+  if (isOp && (expr === '' || tail === '(') && k !== '-') return render();  // 运算符前必须有操作数(负号除外)
+  if (isOp && OPS.includes(tail)) {                                         // 连按运算符:替换而不是叠加
+    if (k === '-' && tail !== '-') { expr += k; return render(); }           // 5*-3 合法
+    expr = expr.slice(0, -1) + k;
+    return render();
+  }
+  if (k === ')' && (unbalanced() <= 0 || isOp || expr === '')) return render();  // 没有可闭合的括号
+  if (k === '(' && /[0-9.)%]/.test(tail)) return render();                       // 不猜隐式乘法:`5(` 视为误触
+  if (k === '.') {
+    const num = expr.match(/[0-9.]*$/)[0];
+    if (num.includes('.')) return render();                                 // 一个小数只能有一个点
+    if (num === '') expr += '0';                                            // `.5` 记作 `0.5`
+  }
+  expr += k;
+  render();
+}
+
 document.addEventListener('keydown', e => {
-  const map = { Enter: '=', Backspace: '\u2190', Escape: 'C' };
+  const map = { Enter: '=', Backspace: '\u2190', Escape: 'C', Delete: 'C' };
   const k = map[e.key] || e.key;
-  if (keys.includes(k)) press(k);
+  if (!keys.includes(k)) return;
+  e.preventDefault();
+  press(k);
 });
+render();
 </script></body></html>

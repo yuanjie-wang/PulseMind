@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>二维码</title><style>
+:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+
+.qr { max-width: 360px; margin: 24px auto; background: var(--card); border-radius: 16px; padding: 16px; box-shadow: 0 4px 24px rgba(0,0,0,.08); display: flex; flex-direction: column; gap: 12px; }
+textarea { width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--fg); font: inherit; resize: vertical; }
+textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+.opts { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); }
+select { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--bg); color: var(--fg); font: inherit; }
+/* 画布恒为黑码白底:反色或低对比的二维码多数扫码器读不出,所以不跟随主题 */
+#qr { display: block; margin: 0 auto; width: 100%; max-width: 300px; height: auto; background: #fff; border: 1px solid var(--border); border-radius: 8px; }
+.status { font-size: 13px; color: var(--muted); text-align: center; min-height: 18px; word-break: break-all; }
+.hist-head { display: none; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.hist-head.show { display: flex; }
+.hist-head button { border: none; background: none; color: var(--muted); font-size: 12px; cursor: pointer; }
+.hist-head button:hover { color: var(--fg); }
+.hist { display: flex; flex-direction: column; gap: 6px; }
+.hist button { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); padding: 8px 10px; font-size: 13px; text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist button:hover { border-color: var(--accent); }
+</style></head><body>
+<div class="qr">
+  <textarea id="content" rows="3" placeholder="输入文本或链接，自动生成二维码"></textarea>
+  <div class="opts">
+    <span>纠错级别越高越抗遮挡，可容纳的内容越少</span>
+    <select id="ec">
+      <option value="L">L · 低</option>
+      <option value="M" selected>M · 中</option>
+      <option value="Q">Q · 较高</option>
+      <option value="H">H · 高</option>
+    </select>
+  </div>
+  <canvas id="qr" width="240" height="240"></canvas>
+  <div class="status" id="status">输入文本或链接，自动生成</div>
+  <div class="hist-head" id="hist-head"><span>最近生成</span><button type="button" id="clear">清空</button></div>
+  <div class="hist" id="hist"></div>
+</div>
+<script>
+// ── 二维码生成(ISO/IEC 18004 字节模式,纯前端实现,无外部依赖)──
+// 预置工具按单文件分发(stampPresetDir 只复制平铺文件),所以编码器必须内联。
+// 算法骨架沿用 Project Nayuki 的 QRCode-generator 这一公开规范实现:
+// 选版本 → 码字流 → Reed-Solomon 纠错 → 分块交错 → 函数图形 → 8 个掩码择优。
+const ECL_LEVELS = ['L', 'M', 'Q', 'H'];
+const ECC_FORMAT_BITS = [1, 0, 3, 2];   // L/M/Q/H 的格式信息段
+// 每块的纠错码字数与块数,按 [纠错级别][版本] 索引(版本 1..40)
+const ECC_CODEWORDS_PER_BLOCK = [
+  [-1, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28, 30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+  [-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28],
+  [-1, 13, 22, 18, 26, 18, 24, 18, 22, 20, 24, 28, 26, 24, 20, 30, 24, 28, 28, 26, 30, 28, 30, 30, 30, 30, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+  [-1, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28, 24, 28, 22, 24, 24, 30, 28, 28, 26, 28, 30, 24, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+];
+const NUM_ECC_BLOCKS = [
+  [-1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 24, 25],
+  [-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49],
+  [-1, 1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 8, 10, 12, 16, 12, 17, 16, 18, 21, 20, 23, 23, 25, 27, 29, 34, 34, 35, 38, 40, 43, 45, 48, 51, 53, 56, 59, 62, 65, 68],
+  [-1, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8, 11, 11, 16, 16, 18, 16, 19, 21, 25, 25, 25, 34, 30, 32, 35, 37, 40, 42, 45, 48, 51, 54, 57, 60, 63, 66, 70, 74, 77, 81],
+];
+const MASKS = [
+  (x, y) => (x + y) % 2 == 0,
+  (x, y) => y % 2 == 0,
+  (x, y) => x % 3 == 0,
+  (x, y) => (x + y) % 3 == 0,
+  (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 == 0,
+  (x, y) => ((x * y) % 2 + (x * y) % 3) == 0,
+  (x, y) => ((x * y) % 2 + (x * y) % 3) % 2 == 0,
+  (x, y) => ((x + y) % 2 + (x * y) % 3) % 2 == 0,
+];
+
+function getBit(x, i) { return ((x >>> i) & 1) != 0; }
+
+// ── GF(256) 与 Reed-Solomon(本原多项式 0x11D)──
+function gfMul(x, y) {
+  let z = 0;
+  for (let i = 7; i >= 0; i--) {
+    z = (z << 1) ^ ((z >>> 7) * 0x11D);
+    z ^= ((y >>> i) & 1) * x;
+  }
+  return z & 0xFF;
+}
+
+/** 纠错生成多项式的系数,最高次在前。 */
+function rsDivisor(degree) {
+  const result = new Array(degree).fill(0);
+  result[degree - 1] = 1;
+  let root = 1;
+  for (let i = 0; i < degree; i++) {
+    for (let j = 0; j < degree; j++) {
+      result[j] = gfMul(result[j], root);
+      if (j + 1 < degree) result[j] ^= result[j + 1];
+    }
+    root = gfMul(root, 0x02);
+  }
+  return result;
+}
+
+/** 数据码字对生成多项式取余,得到 degree 字节的纠错码。 */
+function rsRemainder(data, divisor) {
+  const result = new Array(divisor.length).fill(0);
+  for (const b of data) {
+    const factor = b ^ result.shift();
+    result.push(0);
+    for (let i = 0; i < divisor.length; i++) result[i] ^= gfMul(divisor[i], factor);
+  }
+  return result;
+}
+
+// ── 容量与布局 ──
+function rawDataModules(ver) {
+  let result = (16 * ver + 128) * ver + 64;
+  if (ver >= 2) {
+    const numAlign = Math.floor(ver / 7) + 2;
+    result -= (25 * numAlign - 10) * numAlign - 55;
+    if (ver >= 7) result -= 36;
+  }
+  return result;
+}
+
+function dataCodewords(ver, ecl) {
+  return Math.floor(rawDataModules(ver) / 8) - ECC_CODEWORDS_PER_BLOCK[ecl][ver] * NUM_ECC_BLOCKS[ecl][ver];
+}
+
+function alignmentPositions(ver) {
+  if (ver == 1) return [];                            // 版本 1 没有校正图形
+  const numAlign = Math.floor(ver / 7) + 2;
+  const step = ver == 32 ? 26 : Math.ceil((ver * 4 + 4) / (numAlign * 2 - 2)) * 2;
+  const result = [6];
+  for (let pos = ver * 4 + 10; result.length < numAlign; pos -= step) result.splice(1, 0, pos);
+  return result;
+}
+
+// ── 码字流 ──
+function appendBits(val, len, bb) {
+  for (let i = len - 1; i >= 0; i--) bb.push((val >>> i) & 1);
+}
+
+/** 模式头 + 长度 + 数据 + 终止符 + 0xEC/0x11 填充,恰好装满数据区。 */
+function buildCodewords(bytes, ver, ecl) {
+  const bb = [];
+  appendBits(0x4, 4, bb);                               // 字节模式
+  appendBits(bytes.length, ver < 10 ? 8 : 16, bb);
+  for (const b of bytes) appendBits(b, 8, bb);
+  const capBits = dataCodewords(ver, ecl) * 8;
+  appendBits(0, Math.min(4, capBits - bb.length), bb);  // 终止符
+  appendBits(0, (8 - (bb.length % 8)) % 8, bb);         // 对齐到字节边界
+  for (let pad = 0xEC; bb.length < capBits; pad ^= 0xEC ^ 0x11) appendBits(pad, 8, bb);
+  const cw = [];
+  for (let i = 0; i < bb.length; i += 8) {
+    let b = 0;
+    for (let j = 0; j < 8; j++) b = (b << 1) | bb[i + j];
+    cw.push(b);
+  }
+  return cw;
+}
+
+/** 分块计算纠错码,再按规范交错成最终码字序列。 */
+function interleaveEcc(data, ver, ecl) {
+  const numBlocks = NUM_ECC_BLOCKS[ecl][ver];
+  const blockEccLen = ECC_CODEWORDS_PER_BLOCK[ecl][ver];
+  const rawCw = Math.floor(rawDataModules(ver) / 8);
+  const numShortBlocks = numBlocks - (rawCw % numBlocks);
+  const shortBlockLen = Math.floor(rawCw / numBlocks);
+  const blocks = [];
+  const divisor = rsDivisor(blockEccLen);
+  for (let i = 0, k = 0; i < numBlocks; i++) {
+    const dat = data.slice(k, k + shortBlockLen - blockEccLen + (i < numShortBlocks ? 0 : 1));
+    k += dat.length;
+    const ecc = rsRemainder(dat, divisor);
+    if (i < numShortBlocks) dat.push(0);                // 占位:短块补齐位,交错时跳过
+    blocks.push(dat.concat(ecc));
+  }
+  const result = [];
+  for (let i = 0; i < blocks[0].length; i++) {
+    blocks.forEach((block, j) => {
+      if (i != shortBlockLen - blockEccLen || j >= numShortBlocks) result.push(block[i]);
+    });
+  }
+  return result;
+}
+
+// ── 模块矩阵 ──
+class QrMatrix {
+  constructor(ver) {
+    this.ver = ver;
+    this.size = ver * 4 + 17;
+    this.modules = [];
+    this.isFunc = [];
+    for (let i = 0; i < this.size; i++) {
+      this.modules.push(new Array(this.size).fill(false));
+      this.isFunc.push(new Array(this.size).fill(false));
+    }
+  }
+
+  setFunc(x, y, dark) {
+    this.modules[y][x] = dark;
+    this.isFunc[y][x] = true;
+  }
+
+  drawFunctionPatterns(ecl) {
+    for (let i = 0; i < this.size; i++) {               // 时序图形
+      this.setFunc(6, i, i % 2 == 0);
+      this.setFunc(i, 6, i % 2 == 0);
+    }
+    this.drawFinder(3, 3);
+    this.drawFinder(this.size - 4, 3);
+    this.drawFinder(3, this.size - 4);
+    const pos = alignmentPositions(this.ver);
+    for (let i = 0; i < pos.length; i++) {
+      for (let j = 0; j < pos.length; j++) {
+        const corner = (i == 0 && j == 0) || (i == 0 && j == pos.length - 1) || (i == pos.length - 1 && j == 0);
+        if (!corner) this.drawAlignment(pos[i], pos[j]);
+      }
+    }
+    this.drawFormatBits(ecl, 0);                        // 掩码位先占位,择优后重画
+    this.drawVersion();
+  }
+
+  drawFinder(cx, cy) {
+    for (let dy = -4; dy <= 4; dy++) {
+      for (let dx = -4; dx <= 4; dx++) {
+        const x = cx + dx, y = cy + dy;
+        if (x < 0 || x >= this.size || y < 0 || y >= this.size) continue;
+        const dist = Math.max(Math.abs(dx), Math.abs(dy));
+        this.setFunc(x, y, dist != 2 && dist != 4);     // 同心环:0/3 黑,2 白,4 是分隔符
+      }
+    }
+  }
+
+  drawAlignment(cx, cy) {
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        this.setFunc(cx + dx, cy + dy, Math.max(Math.abs(dx), Math.abs(dy)) != 1);
+      }
+    }
+  }
+
+  drawFormatBits(ecl, mask) {
+    const data = ECC_FORMAT_BITS[ecl] << 3 | mask;
+    let rem = data;
+    for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+    const bits = (data << 10 | rem) ^ 0x5412;
+    for (let i = 0; i <= 5; i++) this.setFunc(8, i, getBit(bits, i));
+    this.setFunc(8, 7, getBit(bits, 6));
+    this.setFunc(8, 8, getBit(bits, 7));
+    this.setFunc(7, 8, getBit(bits, 8));
+    for (let i = 9; i < 15; i++) this.setFunc(14 - i, 8, getBit(bits, i));
+    for (let i = 0; i < 8; i++) this.setFunc(this.size - 1 - i, 8, getBit(bits, i));
+    for (let i = 8; i < 15; i++) this.setFunc(8, this.size - 15 + i, getBit(bits, i));
+    this.setFunc(8, this.size - 8, true);               // 恒黑模块
+  }
+
+  drawVersion() {
+    if (this.ver < 7) return;
+    let rem = this.ver;
+    for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+    const bits = this.ver << 12 | rem;
+    for (let i = 0; i < 18; i++) {
+      const a = this.size - 11 + (i % 3), b = Math.floor(i / 3);
+      this.setFunc(a, b, getBit(bits, i));
+      this.setFunc(b, a, getBit(bits, i));
+    }
+  }
+
+  /** 码字按之字形填入非功能区;不足的补位保持白色(剩余比特)。 */
+  placeCodewords(cw) {
+    let i = 0;
+    for (let right = this.size - 1; right >= 1; right -= 2) {
+      if (right == 6) right = 5;                        // 让开时序图形所在的第 6 列
+      for (let vert = 0; vert < this.size; vert++) {
+        for (let j = 0; j < 2; j++) {
+          const x = right - j;
+          const upward = ((right + 1) & 2) == 0;
+          const y = upward ? this.size - 1 - vert : vert;
+          if (!this.isFunc[y][x] && i < cw.length * 8) {
+            this.modules[y][x] = getBit(cw[i >>> 3], 7 - (i & 7));
+            i++;
+          }
+        }
+      }
+    }
+  }
+
+  applyMask(mask) {
+    for (let y = 0; y < this.size; y++) {
+      for (let x = 0; x < this.size; x++) {
+        if (MASKS[mask](x, y) && !this.isFunc[y][x]) this.modules[y][x] = !this.modules[y][x];
+      }
+    }
+  }
+
+  /** 8 个掩码逐一评分,留下罚分最低(最难误读)的一个。 */
+  bestMask(ecl) {
+    let best = 0, minPenalty = Infinity;
+    for (let m = 0; m < 8; m++) {
+      this.applyMask(m);
+      this.drawFormatBits(ecl, m);
+      const p = this.penalty();
+      if (p < minPenalty) { minPenalty = p; best = m; }
+      this.applyMask(m);                                // 评分完撤销,再试下一个
+    }
+    this.applyMask(best);
+    this.drawFormatBits(ecl, best);
+  }
+
+  penalty() {
+    let result = 0;
+    // 规则 1:成排同色(≥5 罚 3,更长递增)+ 规则 3:仿定位图形的 1:1:3:1:1 结构
+    for (let y = 0; y < this.size; y++) result += this.penaltyLine(y, false);
+    for (let x = 0; x < this.size; x++) result += this.penaltyLine(x, true);
+    // 规则 2:2×2 同色块
+    for (let y = 0; y < this.size - 1; y++) {
+      for (let x = 0; x < this.size - 1; x++) {
+        const c = this.modules[y][x];
+        if (c == this.modules[y][x + 1] && c == this.modules[y + 1][x] && c == this.modules[y + 1][x + 1]) result += 3;
+      }
+    }
+    // 规则 4:明暗比例偏离 50% 的程度
+    let dark = 0;
+    for (const row of this.modules) for (const c of row) if (c) dark++;
+    const total = this.size * this.size;
+    const k = Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1;
+    return result + k * 10;
+  }
+
+  /** 沿一行或一列做规则 1 + 规则 3 的评分;vertical 表示按列扫描。 */
+  penaltyLine(fixed, vertical) {
+    const S = this.size;
+    const cell = i => (vertical ? this.modules[i][fixed] : this.modules[fixed][i]);
+    let result = 0, runColor = false, runLen = 0;
+    const hist = [0, 0, 0, 0, 0, 0, 0];
+    for (let i = 0; i < S; i++) {
+      if (cell(i) == runColor) {
+        runLen++;
+        if (runLen == 5) result += 3;
+        else if (runLen > 5) result++;
+      } else {
+        this.penaltyAddHistory(runLen, hist);
+        if (!runColor) result += penaltyCountPatterns(hist) * 40;
+        runColor = cell(i);
+        runLen = 1;
+      }
+    }
+    // 收尾:结束当前色段,并把边界外的浅色计入,再数一次图形结构
+    if (runColor) this.penaltyAddHistory(runLen, hist);
+    this.penaltyAddHistory((runColor ? 0 : runLen) + S, hist);
+    result += penaltyCountPatterns(hist) * 40;
+    return result;
+  }
+
+  penaltyAddHistory(runLen, hist) {
+    if (hist[0] == 0) runLen += this.size;              // 首段若贴着浅色边界,补上边框宽度
+    hist.pop();
+    hist.unshift(runLen);
+  }
+}
+
+/** 最近 7 段行程里是否藏着定位图形的 1:1:3:1:1 深浅结构(两侧均可)。 */
+function penaltyCountPatterns(hist) {
+  const n = hist[1];
+  const core = n > 0 && hist[2] == n && hist[3] == n * 3 && hist[4] == n && hist[5] == n;
+  return (core && hist[0] >= n * 4 && hist[6] >= n ? 1 : 0)
+       + (core && hist[6] >= n * 4 && hist[0] >= n ? 1 : 0);
+}
+
+/** 生成二维码模块矩阵(深色为 true);内容超出该纠错级别的容量时返回 null。 */
+function qrMatrix(text, ecl) {
+  const bytes = new TextEncoder().encode(text);
+  const li = Math.max(0, ECL_LEVELS.indexOf(ecl));
+  let ver = 0;
+  for (let v = 1; v <= 40; v++) {
+    const headerBits = 4 + (v < 10 ? 8 : 16);
+    if (bytes.length * 8 + headerBits <= dataCodewords(v, li) * 8) { ver = v; break; }
+  }
+  if (ver == 0) return null;
+  const cw = interleaveEcc(buildCodewords(bytes, ver, li), ver, li);
+  const m = new QrMatrix(ver);
+  m.drawFunctionPatterns(li);
+  m.placeCodewords(cw);
+  m.bestMask(li);
+  return m.modules;
+}
+
+// ── 界面 ──
+const el = id => document.getElementById(id);
+const ta = el('content'), ecSel = el('ec'), canvas = el('qr'), statusEl = el('status');
+const histEl = el('hist'), histHead = el('hist-head');
+const HISTORY_KEY = 'qrcode.history';
+const HISTORY_MAX = 8;
+let items = [];
+let histTimer = null;
+
+/** 工具自带的 KV(bridge 注入)。预览沙箱外或桥未就绪时静默降级为不持久化。 */
+function storage() {
+  try { return (window.pulsemind && window.pulsemind.storage) || null; } catch (e) { return null; }
+}
+
+function loadHistory() {
+  const store = storage();
+  if (!store) return;
+  store.get(HISTORY_KEY).then(v => {
+    if (!Array.isArray(v)) return;
+    items = v.filter(it => it && typeof it.text === 'string').slice(0, HISTORY_MAX);
+    renderHistory();
+  }).catch(() => { /* 读不到就当没有历史 */ });
+}
+
+/** 生成稳定 800ms 后才落历史,避免逐键写盘。 */
+function noteHistory(text, ecl) {
+  clearTimeout(histTimer);
+  histTimer = setTimeout(() => commitHistory(text, ecl), 800);
+}
+
+/** 同内容重新生成则置顶并更新纠错级别,最多保留 HISTORY_MAX 条。 */
+function commitHistory(text, ecl) {
+  items = items.filter(it => it.text !== text);
+  items.unshift({ text, ecl, ts: Date.now() });
+  items = items.slice(0, HISTORY_MAX);
+  renderHistory();
+  const store = storage();
+  if (store) store.set(HISTORY_KEY, items).catch(() => { /* 写失败不影响生成 */ });
+}
+
+function clearHistory() {
+  items = [];
+  renderHistory();
+  const store = storage();
+  if (store) store.set(HISTORY_KEY, items).catch(() => {});
+}
+
+function renderHistory() {
+  histHead.classList.toggle('show', items.length > 0);
+  histEl.textContent = '';
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = it.text.replace(/\s+/g, ' ').slice(0, 32) || ' ';
+    b.onclick = () => {
+      ta.value = it.text;
+      ecSel.value = ECL_LEVELS.includes(it.ecl) ? it.ecl : 'M';
+      render();
+    };
+    histEl.appendChild(b);
+  }
+}
+
+function draw(matrix) {
+  if (!canvas.getContext) return;                       // 测试桩没有 2D 上下文
+  const ctx = canvas.getContext('2d');
+  const n = matrix ? matrix.length : 0;
+  const quiet = 4;                                      // 规范要求的静区
+  const scale = Math.max(4, Math.ceil(640 / (n + quiet * 2)));
+  const px = (n + quiet * 2) * scale;
+  canvas.width = px;
+  canvas.height = px;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, px, px);
+  if (!matrix) return;
+  ctx.fillStyle = '#000';
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      if (matrix[y][x]) ctx.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
+    }
+  }
+}
+
+function render() {
+  const text = ta.value || '';
+  if (!text) {
+    draw(null);
+    statusEl.textContent = '输入文本或链接，自动生成';
+    return;
+  }
+  const ecl = ECL_LEVELS.includes(ecSel.value) ? ecSel.value : 'M';
+  const matrix = qrMatrix(text, ecl);
+  if (!matrix) {
+    draw(null);
+    statusEl.textContent = '内容过长：该纠错级别放不下，请缩短内容或降低纠错级别';
+    return;
+  }
+  draw(matrix);
+  statusEl.textContent = '版本 ' + ((matrix.length - 17) / 4) + ' · ' + matrix.length + '\u00d7' + matrix.length + ' · 纠错 ' + ecl;
+  noteHistory(text, ecl);
+}
+
+ta.oninput = render;
+ecSel.onchange = render;
+el('clear').onclick = clearHistory;
+render();
+loadHistory();
+</script></body></html>

@@ -10,17 +10,28 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 20px; }
 .mode { font-size: 14px; color: var(--muted); letter-spacing: 2px; }
-.clock { font-size: 88px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.circle { width: 240px; height: 240px; border-radius: 50%; display:flex; align-items:center; justify-content:center; border: 6px solid var(--border); }
-.running { border-color: var(--accent); animation: pulse 2s infinite; }
+.dial { position: relative; width: 240px; height: 240px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.dial.running { animation: pulse 2s infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 12px rgba(0,0,0,.04); } }
+/* 圆环是倒计时本身(240 的视图里 r=115、描边 6,刚好内缩 2px 不裁切):SVG 铺满
+   表盘,数字作为兄弟节点叠在中间,两者互不挤压,所以 5 位数字也不会压到环上。 */
+.dial svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.track { fill: none; stroke: var(--border); stroke-width: 6; }
+.progress { fill: none; stroke: var(--accent); stroke-width: 6; stroke-linecap: round; }
+.clock { font-size: 54px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -1px; white-space: nowrap; }
 .btns button { border: none; border-radius: 10px; padding: 12px 26px; font-size: 15px; margin: 0 6px; background: var(--accent); color: var(--bg); cursor: pointer; }
 .btns button.ghost { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
 .count { color: var(--muted); font-size: 13px; }
 </style></head><body>
 <div class="wrap">
   <div class="mode" id="mode">专注 · 25:00</div>
-  <div class="circle" id="circle"><div class="clock" id="clock">25:00</div></div>
+  <div class="dial" id="dial">
+    <svg viewBox="0 0 240 240" aria-hidden="true">
+      <circle class="track" cx="120" cy="120" r="115"></circle>
+      <circle class="progress" id="progress" cx="120" cy="120" r="115"></circle>
+    </svg>
+    <div class="clock" id="clock">25:00</div>
+  </div>
   <div class="btns">
     <button id="start">开始</button>
     <button class="ghost" id="reset">重置</button>
@@ -30,29 +41,103 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 </div>
 <script>
 const WORK = 25 * 60, BREAK = 5 * 60;
-let left = WORK, working = true, timer = null, done = 0;
-const fmt = s => String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
-function render() {
-  document.getElementById('clock').textContent = fmt(left);
-  document.getElementById('mode').textContent = (working ? '专注' : '休息') + ' · ' + (working ? '25:00' : '05:00');
-  document.getElementById('circle').className = 'circle' + (timer ? ' running' : '');
-  document.getElementById('count').textContent = '今日完成 ' + done + ' 个番茄';
+// 周长:dasharray 取整圈,dashoffset 从 0 走到整圈,环就随剩余时间收缩。
+const R = 115, C = 2 * Math.PI * R;
+// 今日完成数存成 { date, count }:日期变了就按 0 起算,所以“今日完成”跨天自动归零。
+const STORE_KEY = 'pomodoro.done';
+const el = id => document.getElementById(id);
+const fmt = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+
+let left = WORK, total = WORK, working = true, endAt = 0, timer = null, done = 0;
+
+/** 本地时区的日期键。 */
+function dayKey(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
+
+/** 工具自带的 KV(bridge 注入)。预览沙箱外或桥未就绪时静默降级为不持久化。 */
+function storage() {
+  try { return (window.pulsemind && window.pulsemind.storage) || null; } catch (e) { return null; }
+}
+
+// 启动读一次就够:宿主保证监听器先于工具文档就位,所以这次请求不会丢。
+function loadDone() {
+  const store = storage();
+  if (!store) return;
+  store.get(STORE_KEY).then(rec => {
+    // 不是今天的记录就保持 0(下一次完成会覆盖它)。
+    if (!rec || rec.date !== dayKey(Date.now())) return;
+    done = Number(rec.count) || 0;
+    render();
+  }).catch(() => { /* 读不到就按 0 处理 */ });
+}
+
+function saveDone() {
+  const store = storage();
+  if (!store) return;
+  store.set(STORE_KEY, { date: dayKey(Date.now()), count: done })
+    .catch(() => { /* 写失败不影响计时 */ });
+}
+
+function render() {
+  el('clock').textContent = fmt(Math.max(0, left));
+  el('mode').textContent = (working ? '专注' : '休息') + ' · ' + fmt(total);
+  el('dial').classList.toggle('running', timer !== null);
+  el('start').textContent = timer ? '暂停' : '开始';
+  el('count').textContent = '今日完成 ' + done + ' 个番茄';
+  const ring = el('progress');
+  ring.style.strokeDasharray = C;
+  // 夹在 [0,1]:剩余时间理论上不会超过本阶段总时长,但一旦越界,负的 dashoffset
+  // 会让圆环反向绕出来,而不是简单地显示为满环。
+  ring.style.strokeDashoffset = C * (1 - Math.min(1, Math.max(0, left) / total));
+}
+
+// 以「结束时刻」为准而不是逐秒自减:这个工具跑在 iframe 里,定时器会被后台节流,
+// 自减一旦丢拍就永久走慢,而 deadline 换算每次都能算回正确的剩余秒数。
 function tick() {
-  left--;
-  if (left <= 0) {
-    if (working) { done++; notify('番茄完成！', '休息 5 分钟'); left = BREAK; working = false; }
-    else { notify('休息结束', '开始下一个番茄'); left = WORK; working = true; stop(); }
+  const remaining = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+  if (remaining > 0) { left = remaining; render(); return; }
+  finishPhase();
+}
+
+function finishPhase() {
+  if (working) {
+    done++;
+    saveDone();
+    notify('番茄完成！', '休息 ' + (BREAK / 60) + ' 分钟');
+    working = false;
+    total = BREAK;
+    left = BREAK;
+    endAt = Date.now() + left * 1000;   // 专注结束自动进入休息
+    render();
+    return;
   }
+  // 休息结束就停下等用户开始下一轮,不留一个不会走的倒计时。
+  notify('休息结束', '开始下一个番茄');
+  working = true;
+  total = WORK;
+  left = WORK;
+  stopTimer();
   render();
 }
+
 function notify(title, body) {
-  try { window.pulsemind.system.notify({ title, body }); } catch (e) { /* bridge 未就绪，忽略 */ }
+  try { window.pulsemind.system.notify({ title, body }); } catch (e) { /* bridge 未就绪,忽略 */ }
 }
-function start() { if (timer) return; timer = setInterval(tick, 1000); render(); }
-function stop() { clearInterval(timer); timer = null; render(); }
-document.getElementById('start').onclick = () => timer ? stop() : start();
-document.getElementById('reset').onclick = () => { stop(); left = WORK; working = true; render(); };
-document.getElementById('skip').onclick = () => { stop(); working = !working; left = working ? WORK : BREAK; render(); };
+function stopTimer() { clearInterval(timer); timer = null; }
+function start() {
+  if (timer) return;
+  endAt = Date.now() + left * 1000;
+  timer = setInterval(tick, 250);
+  render();
+}
+function reset() { stopTimer(); working = true; total = WORK; left = WORK; render(); }
+function skip() { stopTimer(); working = !working; total = working ? WORK : BREAK; left = total; render(); }
+
+el('start').onclick = () => { if (timer) { stopTimer(); render(); } else start(); };
+el('reset').onclick = reset;
+el('skip').onclick = skip;
 render();
+loadDone();
 </script></body></html>
