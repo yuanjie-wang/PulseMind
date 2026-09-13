@@ -3,7 +3,7 @@
 // role switch (system-prompt-builder) and the spawn_agent delegation
 // (tool-executors). No I/O here — composition in, markdown out.
 
-import type { SubAgentProfile } from '../../../shared/types/subagent'
+import type { SubAgentProfile } from './types/subagent'
 
 export interface ExpertKnowledgeFile {
   id: string

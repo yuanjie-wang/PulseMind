@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { composeExpertInstructions, parseExpertMention } from '../src/renderer/src/agent/expert-context'
+import { composeExpertInstructions, parseExpertMention } from '../src/shared/expert-context'
 import type { SubAgentProfile } from '../src/shared/types/subagent'
 
 // ── Test doubles ──
