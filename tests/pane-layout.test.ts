@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { PANE_CHROME_HEIGHT, PANE_MIN_WIDTH, clampPaneWidth, defaultPaneWidth, webviewBox, zoomForWidth } from '../src/shared/browser/pane'
+import {
+  PANE_CHROME_HEIGHT,
+  PANE_MIN_WIDTH,
+  clampPaneWidth,
+  defaultPaneWidth,
+  normalizeAddressBarInput,
+  webviewBox,
+  zoomForWidth,
+} from '../src/shared/browser/pane'
 
 describe('pane width clamp', () => {
   it('defaults to 40% of the chat area', () => {
@@ -41,5 +49,18 @@ describe('proportional page zoom', () => {
     expect(zoomForWidth(1280)).toBe(1)
     expect(zoomForWidth(1600)).toBe(1) // never zoom in beyond 100%
     expect(zoomForWidth(100)).toBe(0.2)
+  })
+})
+
+describe('address-bar normalization', () => {
+  it('completes bare hosts with https:// (mail.163.com case)', () => {
+    expect(normalizeAddressBarInput('mail.163.com')).toBe('https://mail.163.com')
+    expect(normalizeAddressBarInput('localhost:5173')).toBe('https://localhost:5173')
+    expect(normalizeAddressBarInput('  example.com/path?q=1  ')).toBe('https://example.com/path?q=1')
+  })
+  it('passes through schemed urls untouched', () => {
+    expect(normalizeAddressBarInput('http://a.com/')).toBe('http://a.com/')
+    expect(normalizeAddressBarInput('HTTPS://A.COM/x')).toBe('HTTPS://A.COM/x')
+    expect(normalizeAddressBarInput('about:blank')).toBe('about:blank')
   })
 })

@@ -50,6 +50,16 @@ export function zoomForWidth(paneWidth: number): number {
   return Math.min(1, Math.max(0.2, paneWidth / PANE_DESIGN_WIDTH))
 }
 
+/** Address-bar normalization: bare hosts like `mail.163.com` or
+ *  `localhost:5173` become `https://…` — the URL whitelist requires a scheme
+ *  and a real browser completes one silently. Anything already schemed
+ *  passes through untouched. */
+export function normalizeAddressBarInput(raw: string): string {
+  const input = raw.trim()
+  if (/^(https?:\/\/|about:)/i.test(input)) return input
+  return `https://${input}`
+}
+
 /** WebView box for a pane: full pane width, strict 16:9, vertically centered
  *  in the space below the chrome. When the window is too short for the box,
  *  it hugs the chrome (top-aligned) instead of overflowing. */

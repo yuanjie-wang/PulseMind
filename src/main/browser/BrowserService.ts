@@ -22,6 +22,7 @@ import {
 import {
   clampPaneWidth,
   defaultPaneWidth,
+  normalizeAddressBarInput,
   type BrowserPaneAction,
   type BrowserPaneState,
   type BrowserPaneUpdate,
@@ -158,7 +159,7 @@ export class BrowserService {
         break
       case 'navigate': {
         const entry = this.resolveTab(action.tabId, scope)
-        const url = assertAllowedUrl(action.url)
+        const url = assertAllowedUrl(normalizeAddressBarInput(action.url))
         auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNavigate', target: url, decision: 'allowed' })
         await entry.tab.page.goto(url, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
         break

@@ -55,7 +55,11 @@ export function useBrowserPaneBinding(
   }, [])
 
   const action = useCallback((a: BrowserPaneAction) => {
-    void window.electronAPI.browserPaneAction(a as unknown as Record<string, unknown>)
+    window.electronAPI.browserPaneAction(a as unknown as Record<string, unknown>).catch((err) => {
+      // Bad input (e.g. an unparseable host) rejects the invoke — keep it out
+      // of the unhandled-rejection channel; the tab simply stays put.
+      console.warn('[browser-pane] action failed:', err instanceof Error ? err.message : err)
+    })
   }, [])
 
   return { chatAreaWidth, pushWidth, action }

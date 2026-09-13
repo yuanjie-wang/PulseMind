@@ -7,7 +7,14 @@
 
 import React, { useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Plus, X } from 'lucide-react'
-import { PANE_DRAG_HANDLE_WIDTH, PANE_MIN_WIDTH, PANE_MAX_CHAT_RATIO, type BrowserPaneAction, type BrowserPaneUpdate } from '../../../../shared/browser/pane'
+import {
+  PANE_DRAG_HANDLE_WIDTH,
+  PANE_MIN_WIDTH,
+  PANE_MAX_CHAT_RATIO,
+  normalizeAddressBarInput,
+  type BrowserPaneAction,
+  type BrowserPaneUpdate,
+} from '../../../../shared/browser/pane'
 
 interface Props {
   pane: BrowserPaneUpdate
@@ -59,7 +66,7 @@ export function BrowserPaneChrome({ pane, chatAreaWidth, onWidth, onAction }: Pr
 
   const navigateDraft = () => {
     if (active && draft.tabId === active.id && draft.text && draft.text.trim()) {
-      onAction({ op: 'navigate', tabId: active.id, url: draft.text.trim() })
+      onAction({ op: 'navigate', tabId: active.id, url: normalizeAddressBarInput(draft.text) })
     }
     setDraft({ tabId: active?.id ?? '', text: null })
   }
