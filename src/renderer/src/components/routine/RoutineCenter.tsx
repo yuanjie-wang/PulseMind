@@ -1,32 +1,119 @@
 // ── Routine center (日常工作) ──
-// PLAN-0.4.0 M4.3 / M4.4: list + editor + run history + "extract from
-// conversation". Routines are user-triggered / scheduled prompt tasks (D3),
-// distinct from skills.
+// PLAN-0.4.0 M4.3 / M4.4: card grid, and a three-pane run workspace (task
+// list · run history · run transcript — see RoutineWorkspace) entered from a
+// card's 运行历史 action. Routines are user-triggered / scheduled prompt tasks
+// (D3), distinct from skills. Schedules are configured in friendly terms
+// (每天/每周/每月/每隔) via utils/schedule-builder; raw cron is the "高级"
+// escape hatch.
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { App as AntdApp, Button, Drawer, Input, Modal, Select, Space, Switch, Tag, Tooltip } from 'antd'
-import { DeleteOutlined, EditOutlined, PlayCircleOutlined, HistoryOutlined, PlusOutlined, ImportOutlined, LoadingOutlined } from '@ant-design/icons'
+import { App as AntdApp, Button, Drawer, Input, InputNumber, Modal, Select, Space, Switch, Tag, Tooltip } from 'antd'
+import { ClockCircleOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, HistoryOutlined, PlusOutlined, ImportOutlined, LoadingOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
+import { useNavigationStore } from '../../stores/navigationStore'
 import { createLlmAdapter } from '../../llm'
 import { RoutineExtractionAgent } from '../../agent/one-shot-agent'
 import { checkCron, nextRun } from '../../../../shared/schedule/cron'
+import { describeCron } from '../../utils/schedule-text'
+import { parseCronToConfig, configToCron, WEEKDAY_LABELS } from '../../utils/schedule-builder'
+import { describeRelativeTimeText } from '../../utils/relative-time'
+import { RoutineWorkspace, RUN_STATUS_TAG } from './RoutineWorkspace'
+import type { ScheduleConfig } from '../../utils/schedule-builder'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
 import type { Project } from '../../../../shared/types/project'
 
-const CRON_PRESETS = [
-  { label: '每天 09:00', value: '0 9 * * *' },
-  { label: '每小时', value: '0 * * * *' },
-  { label: '每 30 分钟', value: '*/30 * * * *' },
-  { label: '每周五 18:00', value: '0 18 * * 5' },
-  { label: '每月 1 号', value: '0 0 1 * *' },
+/** Editor modes for the schedule, ordered by how common they are. */
+const SCHEDULE_MODES = [
+  { value: 'daily', label: '每天 · 固定时间' },
+  { value: 'weekly', label: '每周 · 指定星期' },
+  { value: 'monthly', label: '每月 · 指定日期' },
+  { value: 'interval', label: '每隔一段时间' },
+  { value: 'custom', label: '高级 · cron 表达式' },
 ]
 
-const RUN_STATUS_TAG: Record<RoutineRun['status'], { color?: string; text: string }> = {
-  running: { color: 'processing', text: '运行中' },
-  success: { color: 'success', text: '成功' },
-  failed: { color: 'error', text: '失败' },
-  skipped: { text: '已跳过' },
+/** Weekday options in display order (周一 first; cron 0=周日 stays last). */
+const WEEKDAY_OPTIONS = [1, 2, 3, 4, 5, 6, 0].map((d) => ({ value: d, label: WEEKDAY_LABELS[d] }))
+
+const DEFAULT_TIME = '09:00'
+const SCHED_DEFAULTS: Record<'daily' | 'weekly' | 'monthly' | 'interval', ScheduleConfig> = {
+  daily: { kind: 'daily', time: DEFAULT_TIME },
+  weekly: { kind: 'weekly', weekdays: [1], time: DEFAULT_TIME },
+  monthly: { kind: 'monthly', day: 1, time: DEFAULT_TIME },
+  interval: { kind: 'interval', unit: 'hour', every: 1 },
+}
+
+const ROW_LABEL = { fontSize: 12, color: '#666' } as const
+
+/** One editor row per friendly schedule kind; each receives its already-narrowed
+ *  config so the union never leaks into the input callbacks. */
+function DailyScheduleRow({ sched, onChange }: { sched: Extract<ScheduleConfig, { kind: 'daily' }>; onChange: (sched: ScheduleConfig) => void }): React.ReactElement {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+      <span style={ROW_LABEL}>每天</span>
+      <Input type="time" style={{ width: 120 }} value={sched.time} onChange={(e) => onChange({ kind: 'daily', time: e.target.value || DEFAULT_TIME })} />
+      <span style={ROW_LABEL}>执行一次</span>
+    </div>
+  )
+}
+
+function WeeklyScheduleRow({ sched, onChange }: { sched: Extract<ScheduleConfig, { kind: 'weekly' }>; onChange: (sched: ScheduleConfig) => void }): React.ReactElement {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+      <Select
+        mode="multiple"
+        placeholder="选择星期"
+        style={{ minWidth: 220, flex: 1 }}
+        value={sched.weekdays}
+        onChange={(weekdays) => onChange({ kind: 'weekly', weekdays, time: sched.time })}
+        options={WEEKDAY_OPTIONS}
+      />
+      <Input type="time" style={{ width: 120 }} value={sched.time} onChange={(e) => onChange({ kind: 'weekly', weekdays: sched.weekdays, time: e.target.value || DEFAULT_TIME })} />
+    </div>
+  )
+}
+
+function MonthlyScheduleRow({ sched, onChange }: { sched: Extract<ScheduleConfig, { kind: 'monthly' }>; onChange: (sched: ScheduleConfig) => void }): React.ReactElement {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+      <span style={ROW_LABEL}>每月</span>
+      <InputNumber min={1} max={31} value={sched.day} onChange={(day) => onChange({ kind: 'monthly', day: day ?? 1, time: sched.time })} />
+      <span style={ROW_LABEL}>日</span>
+      <Input type="time" style={{ width: 120 }} value={sched.time} onChange={(e) => onChange({ kind: 'monthly', day: sched.day, time: e.target.value || DEFAULT_TIME })} />
+    </div>
+  )
+}
+
+function IntervalScheduleRow({ sched, onChange }: { sched: Extract<ScheduleConfig, { kind: 'interval' }>; onChange: (sched: ScheduleConfig) => void }): React.ReactElement {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+      <span style={ROW_LABEL}>每隔</span>
+      <InputNumber
+        min={1}
+        max={sched.unit === 'minute' ? 59 : 23}
+        value={sched.every}
+        onChange={(every) => onChange({ kind: 'interval', unit: sched.unit, every: every ?? 1 })}
+      />
+      <Select
+        style={{ width: 90 }}
+        value={sched.unit}
+        onChange={(unit) => onChange({ kind: 'interval', unit, every: sched.every })}
+        options={[{ value: 'minute', label: '分钟' }, { value: 'hour', label: '小时' }]}
+      />
+      <span style={ROW_LABEL}>执行一次</span>
+    </div>
+  )
+}
+
+function CustomScheduleRow({ sched, onChange }: { sched: Extract<ScheduleConfig, { kind: 'custom' }>; onChange: (sched: ScheduleConfig) => void }): React.ReactElement {
+  return (
+    <Input
+      style={{ marginTop: 8 }}
+      value={sched.cron}
+      onChange={(e) => onChange({ kind: 'custom', cron: e.target.value })}
+      placeholder="0 9 * * 1-5"
+    />
+  )
 }
 
 interface RoutineDraftState {
@@ -34,34 +121,44 @@ interface RoutineDraftState {
   name: string
   description: string
   prompt: string
-  cron: string
+  scheduleEnabled: boolean
+  sched: ScheduleConfig
   catchUp: 'once' | 'skip'
   enabled: boolean
   projectId?: string
+  sourceConversationId?: string
   params: Array<{ key: string; label: string; required?: boolean; default?: string }>
 }
 
 const EMPTY_DRAFT: RoutineDraftState = {
-  name: '', description: '', prompt: '', cron: '', catchUp: 'once', enabled: true, params: [],
+  name: '', description: '', prompt: '', scheduleEnabled: false,
+  sched: SCHED_DEFAULTS.daily, catchUp: 'once', enabled: true, params: [],
 }
 
-function describeCron(cron: string): string | null {
-  if (!cron) return null
-  const check = checkCron(cron)
-  if (!check.valid) return `无效表达式：${cron}`
-  const next = nextRun(cron)
-  return next ? new Date(next).toLocaleString() : cron
+/** Draft schedule fields for a stored cron; unparseable expressions land in
+ *  the custom editor so they survive a round-trip. */
+function draftScheduleFromCron(cron: string): Pick<RoutineDraftState, 'scheduleEnabled' | 'sched'> {
+  return cron ? { scheduleEnabled: true, sched: parseCronToConfig(cron) } : { scheduleEnabled: false, sched: SCHED_DEFAULTS.daily }
 }
 
-function RoutineCenter(): React.ReactElement {
+export interface RoutineCenterProps {
+  /** Open a run's produced conversation in the chat view. */
+  onOpenConversation?: (conversationKey: string) => void
+}
+
+function RoutineCenter({ onOpenConversation }: RoutineCenterProps): React.ReactElement {
   const { t } = useTranslation()
   const { modal, message } = AntdApp.useApp()
   const { settings } = useSettings()
+  const navigate = useNavigationStore((s) => s.navigate)
   const [routines, setRoutines] = useState<Routine[]>([])
   const [projects, setProjects] = useState<Project[]>([])
+  const [recentRuns, setRecentRuns] = useState<RoutineRun[]>([])
+  /** When recentRuns were fetched — render stays pure by not calling Date.now(). */
+  const [runsFetchedAt, setRunsFetchedAt] = useState(0)
   const [draft, setDraft] = useState<RoutineDraftState | null>(null)
-  const [runsFor, setRunsFor] = useState<Routine | null>(null)
-  const [runs, setRuns] = useState<RoutineRun[]>([])
+  /** Non-null = the run workspace is open for this task (three-pane mode). */
+  const [historyOfId, setHistoryOfId] = useState<string | null>(null)
   const [extracting, setExtracting] = useState(false)
   const [extractOpen, setExtractOpen] = useState(false)
   const [extractTarget, setExtractTarget] = useState<string | null>(null)
@@ -71,6 +168,8 @@ function RoutineCenter(): React.ReactElement {
     try {
       setRoutines(await window.electronAPI.routineList())
       setProjects(await window.electronAPI.projectList())
+      setRecentRuns(await window.electronAPI.routineRuns(undefined, 200))
+      setRunsFetchedAt(Date.now())
     } catch (err) {
       console.warn('[RoutineCenter] load failed:', err)
     }
@@ -78,26 +177,48 @@ function RoutineCenter(): React.ReactElement {
 
   useEffect(() => { void reload() }, [reload])
 
-  const loadRuns = useCallback(async (routine: Routine) => {
-    setRuns(await window.electronAPI.routineRuns(routine.id, 30))
-  }, [])
+  // Runs come back newest-first; the first hit per routine is its latest run.
+  const lastRunByRoutine = new Map<string, RoutineRun>()
+  for (const run of recentRuns) {
+    if (!lastRunByRoutine.has(run.routineId)) lastRunByRoutine.set(run.routineId, run)
+  }
 
-  const cronCheck = draft?.cron ? checkCron(draft.cron) : null
+  const cronCheck = draft?.scheduleEnabled && draft.sched.kind === 'custom' ? checkCron(draft.sched.cron) : null
+
+  /** Hint line under the schedule editor: next fire time or the invalid cron. */
+  const scheduleHint = (): React.ReactNode => {
+    if (!draft?.scheduleEnabled) return '不设置定时，只能手动执行。'
+    if (draft.sched.kind === 'custom') {
+      return cronCheck?.valid
+        ? `下次运行：${new Date(nextRun(draft.sched.cron)!).toLocaleString()}`
+        : `表达式无效：${cronCheck?.error ?? ''}`
+    }
+    const next = nextRun(configToCron(draft.sched))
+    return next ? `下次运行：${new Date(next).toLocaleString()}` : null
+  }
 
   const saveDraft = async (): Promise<void> => {
     if (!draft) return
-    if (draft.cron && !checkCron(draft.cron).valid) {
-      message.error('cron 表达式无效')
-      return
+    if (draft.scheduleEnabled) {
+      if (draft.sched.kind === 'custom' && !checkCron(draft.sched.cron).valid) {
+        message.error('cron 表达式无效')
+        return
+      }
+      if (draft.sched.kind === 'weekly' && draft.sched.weekdays.length === 0) {
+        message.error('请至少选择一个星期')
+        return
+      }
     }
+    const cron = draft.scheduleEnabled ? configToCron(draft.sched) : ''
     const base = {
       name: draft.name.trim() || '未命名任务',
       description: draft.description,
       prompt: draft.prompt,
       enabled: draft.enabled,
       projectId: draft.projectId,
+      sourceConversationId: draft.sourceConversationId,
       params: draft.params.filter((p) => p.key.trim()),
-      schedule: draft.cron ? { cron: draft.cron, catchUp: draft.catchUp } : undefined,
+      schedule: cron ? { cron, catchUp: draft.catchUp } : undefined,
     }
     if (draft.id) await window.electronAPI.routineUpdate(draft.id, base)
     else await window.electronAPI.routineCreate(base)
@@ -168,9 +289,9 @@ function RoutineCenter(): React.ReactElement {
         name: draftResult.name,
         description: draftResult.description,
         prompt: draftResult.prompt,
-        cron: draftResult.cron,
+        ...draftScheduleFromCron(draftResult.cron),
         sourceConversationId: extractTarget,
-      } as RoutineDraftState)
+      })
     } catch (err) {
       console.error('[RoutineCenter] extract failed:', err)
       message.error('提取失败')
@@ -179,92 +300,137 @@ function RoutineCenter(): React.ReactElement {
     }
   }
 
+  /** Fill the editor draft from a stored routine (card action + workspace). */
+  const openEditor = (routine: Routine): void => {
+    setDraft({
+      id: routine.id,
+      name: routine.name,
+      description: routine.description,
+      prompt: routine.prompt,
+      ...draftScheduleFromCron(routine.schedule?.cron ?? ''),
+      catchUp: routine.schedule?.catchUp ?? 'once',
+      enabled: routine.enabled,
+      projectId: routine.projectId,
+      sourceConversationId: routine.sourceConversationId,
+      params: routine.params ?? [],
+    })
+  }
+
+  const openRunConversation = (conversationKey: string): void => {
+    navigate({ kind: 'chat' })
+    onOpenConversation?.(conversationKey)
+  }
+
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: 24, background: '#fff' }}>
-      <style>{`
-        .routine-row:hover { background: rgba(0,0,0,0.03); }
+    <div style={{ height: '100%', background: '#fff', overflow: 'hidden' }}>
+      {historyOfId != null ? (
+        <RoutineWorkspace
+          routines={routines}
+          initialRoutineId={historyOfId}
+          onBack={() => setHistoryOfId(null)}
+          onEdit={openEditor}
+          onRunNow={(r) => void runNow(r)}
+          onOpenConversation={openRunConversation}
+        />
+      ) : (
+        <div style={{ height: '100%', overflow: 'auto', padding: 24 }}>
+          <style>{`
+        .routine-card { transition: box-shadow 0.2s, border-color 0.2s; }
+        .routine-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-color: #d9d9d9; }
+        .routine-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; background: #f5f5f5; color: #666; font-size: 11px; line-height: 18px; white-space: nowrap; }
       `}</style>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <span style={{ fontSize: 18, fontWeight: 700 }}>{t('viewTitle.routines')}</span>
-        <Space>
-          <Button icon={<ImportOutlined />} onClick={() => {
-            setExtractTarget(null)
-            setExtractOpen(true)
-            void window.electronAPI.listConversations().then((list) => {
-              setConversations(list.map((c) => ({ id: c.id, title: c.title })))
-            }).catch(() => {})
-          }}>
-            从对话提取
-          </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setDraft({ ...EMPTY_DRAFT })}>
-            新建任务
-          </Button>
-        </Space>
-      </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <span style={{ fontSize: 18, fontWeight: 700 }}>{t('viewTitle.routines')}</span>
+            <Space>
+              <Button icon={<ImportOutlined />} onClick={() => {
+                setExtractTarget(null)
+                setExtractOpen(true)
+                void window.electronAPI.listConversations().then((list) => {
+                  setConversations(list.map((c) => ({ id: c.id, title: c.title })))
+                }).catch(() => {})
+              }}>
+                从对话提取
+              </Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setDraft({ ...EMPTY_DRAFT })}>
+                新建任务
+              </Button>
+            </Space>
+          </div>
 
-      {routines.length === 0 && (
-        <div style={{ color: '#999', padding: '32px 0', fontSize: 13 }}>
-          还没有日常工作。新建一个提示词任务，或从一段对话中提炼；可以立即执行，也可以绑定 cron 定时跑。
-        </div>
-      )}
+          {routines.length === 0 && (
+            <div style={{ color: '#999', padding: '32px 0', fontSize: 13 }}>
+              还没有日常工作。新建一个提示词任务，或从一段对话中提炼；可以立即执行，也可以设定每天/每周等固定时间自动跑。
+            </div>
+          )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
         {routines.map((routine) => {
-          const nextAt = routine.enabled && routine.schedule ? describeCron(routine.schedule.cron) : null
+          const scheduleText = routine.enabled && routine.schedule
+            ? `下次运行：${describeCron(routine.schedule.cron)}`
+            : routine.enabled ? '手动执行' : '已停用'
+          const lastRun = lastRunByRoutine.get(routine.id)
+          const lastRunText = lastRun
+            ? `${RUN_STATUS_TAG[lastRun.status].text} · ${describeRelativeTimeText(lastRun.startedAt, runsFetchedAt, t) ?? ''}`
+            : null
+          const description = routine.description || (routine.prompt ? `提示词：${routine.prompt}` : '')
+          const projectName = routine.projectId && routine.projectId !== 'default'
+            ? projects.find((p) => p.id === routine.projectId)?.name ?? routine.projectId
+            : null
           return (
             <div
               key={routine.id}
-              className="routine-row"
-              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 10, border: '1px solid #f0f0f0' }}
+              className="routine-card"
+              style={{ display: 'flex', flexDirection: 'column', borderRadius: 12, border: '1px solid #f0f0f0', padding: '14px 16px' }}
             >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontWeight: 600 }}>{routine.name}</span>
-                  {routine.schedule?.cron && checkCron(routine.schedule.cron).valid && <Tag color="black">定时</Tag>}
-                  {routine.projectId && routine.projectId !== 'default' && (
-                    <Tag>{projects.find((p) => p.id === routine.projectId)?.name ?? routine.projectId}</Tag>
-                  )}
-                </div>
-                {routine.description && (
-                  <div style={{ fontSize: 12, color: '#888', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {routine.description}
-                  </div>
-                )}
-                <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>
-                  {routine.enabled && nextAt ? `下次运行：${nextAt}` : routine.enabled ? '手动执行' : '已停用'}
-                </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {routine.name}
+                </span>
+                {routine.schedule?.cron && checkCron(routine.schedule.cron).valid && <Tag color="black">定时</Tag>}
+                {projectName && <Tag>{projectName}</Tag>}
               </div>
-              <Switch
-                size="small"
-                checked={routine.enabled}
-                onChange={(checked) => void window.electronAPI.routineToggle(routine.id, checked).then(reload)}
-              />
-              <Tooltip title="立即运行">
-                <Button type="text" icon={<PlayCircleOutlined style={{ fontSize: 17 }} />} onClick={() => void runNow(routine)} />
-              </Tooltip>
-              <Tooltip title="运行历史">
-                <Button type="text" icon={<HistoryOutlined style={{ fontSize: 16 }} />} onClick={() => { setRunsFor(routine); void loadRuns(routine) }} />
-              </Tooltip>
-              <Tooltip title="编辑">
-                <Button type="text" icon={<EditOutlined style={{ fontSize: 15 }} />} onClick={() => setDraft({
-                  id: routine.id,
-                  name: routine.name,
-                  description: routine.description,
-                  prompt: routine.prompt,
-                  cron: routine.schedule?.cron ?? '',
-                  catchUp: routine.schedule?.catchUp ?? 'once',
-                  enabled: routine.enabled,
-                  projectId: routine.projectId,
-                  params: routine.params ?? [],
-                })} />
-              </Tooltip>
-              <Tooltip title="删除">
-                <Button type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeRoutine(routine)} />
-              </Tooltip>
+              <div
+                title={description}
+                style={{
+                  fontSize: 12, color: '#888', marginTop: 6, minHeight: 36,
+                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                }}
+              >
+                {description}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                <span className="routine-pill"><ClockCircleOutlined />{scheduleText}</span>
+                {lastRunText && <span className="routine-pill">{lastRunText}</span>}
+                {(routine.params?.length ?? 0) > 0 && (
+                  <span className="routine-pill">参数 {routine.params!.map((p) => p.key).join(' · ')}</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 10, paddingTop: 10, borderTop: '1px solid #f5f5f5' }}>
+                <Switch
+                  size="small"
+                  checked={routine.enabled}
+                  onChange={(checked) => void window.electronAPI.routineToggle(routine.id, checked).then(reload)}
+                />
+                <span style={{ flex: 1 }} />
+                <Tooltip title="立即运行">
+                  <Button type="text" icon={<PlayCircleOutlined style={{ fontSize: 17 }} />} onClick={() => void runNow(routine)} />
+                </Tooltip>
+                <Tooltip title="运行历史">
+                  <Button type="text" icon={<HistoryOutlined style={{ fontSize: 16 }} />} onClick={() => setHistoryOfId(routine.id)} />
+                </Tooltip>
+                <Tooltip title="编辑">
+                  <Button type="text" icon={<EditOutlined style={{ fontSize: 15 }} />} onClick={() => openEditor(routine)} />
+                </Tooltip>
+                <Tooltip title="删除">
+                  <Button type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeRoutine(routine)} />
+                </Tooltip>
+              </div>
             </div>
           )
         })}
       </div>
+        </div>
+      )}
 
       {/* Editor */}
       <Drawer
@@ -319,38 +485,46 @@ function RoutineCenter(): React.ReactElement {
               </Button>
             </div>
             <div>
-              <div style={{ marginBottom: 6, fontSize: 13 }}>定时计划（cron，留空 = 仅手动）</div>
-              <Space.Compact style={{ width: '100%' }}>
-                <Input value={draft.cron} onChange={(e) => setDraft({ ...draft, cron: e.target.value })} placeholder="0 9 * * 1-5" />
-                <Select
-                  style={{ width: 140 }}
-                  placeholder="预设"
-                  options={CRON_PRESETS}
-                  onChange={(v) => setDraft({ ...draft, cron: v })}
-                />
-              </Space.Compact>
-              <div style={{ fontSize: 11, marginTop: 4, color: cronCheck && !cronCheck.valid ? '#cf1322' : '#999' }}>
-                {draft.cron
-                  ? cronCheck?.valid
-                    ? `下次运行：${new Date(nextRun(draft.cron)!).toLocaleString()}`
-                    : `表达式无效：${cronCheck?.error}`
-                  : '不设置定时，只能手动执行'}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ fontSize: 13 }}>定时执行</span>
+                <Switch size="small" checked={draft.scheduleEnabled} onChange={(scheduleEnabled) => setDraft({ ...draft, scheduleEnabled })} />
               </div>
+              {draft.scheduleEnabled && (
+                <>
+                  <Select
+                    style={{ width: '100%' }}
+                    value={draft.sched.kind}
+                    onChange={(kind) => setDraft({
+                      ...draft,
+                      sched: kind === 'custom'
+                        ? { kind: 'custom', cron: draft.sched.kind === 'custom' ? draft.sched.cron : '0 9 * * *' }
+                        : { ...SCHED_DEFAULTS[kind], ...(('time' in draft.sched) ? { time: draft.sched.time } : {}) },
+                    })}
+                    options={SCHEDULE_MODES}
+                  />
+                  {draft.sched.kind === 'daily' && <DailyScheduleRow sched={draft.sched} onChange={(sched) => setDraft({ ...draft, sched })} />}
+                  {draft.sched.kind === 'weekly' && <WeeklyScheduleRow sched={draft.sched} onChange={(sched) => setDraft({ ...draft, sched })} />}
+                  {draft.sched.kind === 'monthly' && <MonthlyScheduleRow sched={draft.sched} onChange={(sched) => setDraft({ ...draft, sched })} />}
+                  {draft.sched.kind === 'interval' && <IntervalScheduleRow sched={draft.sched} onChange={(sched) => setDraft({ ...draft, sched })} />}
+                  {draft.sched.kind === 'custom' && <CustomScheduleRow sched={draft.sched} onChange={(sched) => setDraft({ ...draft, sched })} />}
+                  <div style={{ fontSize: 11, marginTop: 6, color: cronCheck && !cronCheck.valid ? '#cf1322' : '#999' }}>
+                    {scheduleHint()}
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ marginBottom: 6, fontSize: 13 }}>错过计划时（应用没开着）</div>
+                    <Select
+                      value={draft.catchUp}
+                      onChange={(catchUp) => setDraft({ ...draft, catchUp })}
+                      options={[
+                        { value: 'once', label: '打开应用后补跑一次' },
+                        { value: 'skip', label: '跳过，等下一个计划点' },
+                      ]}
+                      style={{ width: 240 }}
+                    />
+                  </div>
+                </>
+              )}
             </div>
-            {draft.cron && (
-              <div>
-                <div style={{ marginBottom: 6, fontSize: 13 }}>错过计划时（应用没开着）</div>
-                <Select
-                  value={draft.catchUp}
-                  onChange={(catchUp) => setDraft({ ...draft, catchUp })}
-                  options={[
-                    { value: 'once', label: '打开应用后补跑一次' },
-                    { value: 'skip', label: '跳过，等下一个计划点' },
-                  ]}
-                  style={{ width: 240 }}
-                />
-              </div>
-            )}
             <div>
               <div style={{ marginBottom: 6, fontSize: 13 }}>执行项目（决定工作区与沙箱）</div>
               <Select
@@ -364,38 +538,6 @@ function RoutineCenter(): React.ReactElement {
             </div>
           </div>
         )}
-      </Drawer>
-
-      {/* Run history */}
-      <Drawer
-        title={`运行历史 · ${runsFor?.name ?? ''}`}
-        open={runsFor != null}
-        onClose={() => setRunsFor(null)}
-        width={480}
-      >
-        {runs.length === 0 && <div style={{ color: '#999', fontSize: 13 }}>还没有运行记录。</div>}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {runs.map((run) => (
-            <div key={run.id} style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Tag color={RUN_STATUS_TAG[run.status].color}>{RUN_STATUS_TAG[run.status].text}</Tag>
-                <span style={{ fontSize: 12, color: '#888' }}>{run.trigger === 'schedule' ? '定时' : '手动'}</span>
-                <span style={{ fontSize: 11, color: '#bbb', marginInlineStart: 'auto' }}>{new Date(run.startedAt).toLocaleString()}</span>
-              </div>
-              {run.error && <div style={{ fontSize: 12, color: '#cf1322', marginTop: 6 }}>{run.error}</div>}
-              {run.conversationId && (
-                <Button
-                  type="link"
-                  size="small"
-                  style={{ paddingInlineStart: 0 }}
-                  onClick={() => setRunsFor(null)}
-                >
-                  会话 {run.conversationId.slice(0, 18)}…
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
       </Drawer>
 
       {/* Extract-from-conversation picker */}

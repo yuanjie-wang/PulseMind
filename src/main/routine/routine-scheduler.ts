@@ -11,6 +11,7 @@ import { routineStore } from '../storage/routine-store'
 import { decideScheduleFire } from '../../shared/schedule/schedule-decision'
 import { routineRunner } from './routine-runner'
 import { auditStore } from '../storage/audit-store'
+import { migrateRoutineConversationTypes } from '../storage/conversation.db'
 import type { Routine } from '../../shared/types/routine'
 
 const TICK_MS = 30_000
@@ -19,12 +20,20 @@ class RoutineScheduler {
   private timer: NodeJS.Timeout | null = null
   private running = false
   private executingIds = new Set<string>()
+  private bootedAt = new Date().toISOString()
 
   start(): void {
     if (this.timer) return
+    this.bootedAt = new Date().toISOString()
     this.timer = setInterval(() => this.tick(), TICK_MS)
     // First tick after a short delay so app startup (DB init, settings) settles.
-    setTimeout(() => this.tick(), 5_000)
+    // Stale 'running' rows from a previous process must be settled before any
+    // fire decision — otherwise the overlap guard blocks the routine forever.
+    setTimeout(() => {
+      try { migrateRoutineConversationTypes() } catch (err) { console.warn('[RoutineScheduler] conversation-type migration failed:', err) }
+      try { routineStore.failStaleRuns(this.bootedAt) } catch (err) { console.warn('[RoutineScheduler] stale-run recovery failed:', err) }
+      this.tick()
+    }, 5_000)
   }
 
   stop(): void {

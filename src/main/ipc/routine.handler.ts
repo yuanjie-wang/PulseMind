@@ -18,7 +18,14 @@ export function registerRoutineHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_UPDATE, (_event, id: string, patch: Partial<Routine>) => {
     assertCron(patch)
-    return routineStore.update(id, normalizeInput(patch))
+    const existing = routineStore.get(id)
+    const normalized = normalizeInput(patch)
+    // A changed cron invalidates the persisted next-fire time — otherwise the
+    // scheduler fires against the old phase (possibly immediately on save).
+    if (existing && normalized.schedule?.cron && normalized.schedule.cron !== existing.schedule?.cron) {
+      normalized.nextRunAt = undefined
+    }
+    return routineStore.update(id, normalized)
   })
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_DELETE, (_event, id: string) => routineStore.remove(id))

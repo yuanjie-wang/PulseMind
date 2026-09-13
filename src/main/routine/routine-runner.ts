@@ -14,7 +14,10 @@ import { randomUUID } from 'node:crypto'
 import { agentSessionManager } from '../agent/session-manager'
 import { routineStore } from '../storage/routine-store'
 import { auditStore } from '../storage/audit-store'
+import { saveConversation } from '../storage/conversation.db'
+import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
 import type { AgentEventData } from '../../shared/agent-protocol'
+import type { AgentMessage } from '../../renderer/src/types/agent'
 import type { Routine, RoutineRun } from '../../shared/types/routine'
 
 /** Hard ceiling for one routine run (a hung run must not hold the slot forever). */
@@ -58,6 +61,20 @@ function notify(title: string, body: string): void {
   } catch { /* notifications are best-effort */ }
 }
 
+/** Write the run's transcript into the conversations store — main-hosted
+ *  sessions have no renderer to persist for them, and run-history click-through
+ *  reads from this store. The conversation carries the 'routine' type (derived
+ *  from its id), so it never surfaces in the user's chat list or search. */
+async function persistTranscript(convId: string, routine: Routine): Promise<void> {
+  try {
+    const { messages } = await agentSessionManager.history(convId)
+    if (!Array.isArray(messages) || messages.length === 0) return
+    saveConversation(agentMessagesToConversation(messages as AgentMessage[], convId, `[日常] ${routine.name}`))
+  } catch (err) {
+    console.warn('[RoutineRunner] transcript persistence failed:', err)
+  }
+}
+
 export const routineRunner = {
   /** Fire-and-forget execution; resolves immediately with the run record while
    *  the run continues in the background (scheduler ticks must not block). */
@@ -77,10 +94,13 @@ export const routineRunner = {
       clearTimeout(timeout)
       unsubscribe?.()
       routineStore.finishRun(run.id, { status, conversationId: convId, error })
-      notify(
-        status === 'success' ? `日常任务完成：${routine.name}` : `日常任务失败：${routine.name}`,
-        status === 'success' ? '点击查看结果' : (error ?? '').slice(0, 120),
-      )
+      // Persist before announcing: a click-through must find the conversation.
+      void persistTranscript(convId, routine).then(() => {
+        notify(
+          status === 'success' ? `日常任务完成：${routine.name}` : `日常任务失败：${routine.name}`,
+          status === 'success' ? '点击查看结果' : (error ?? '').slice(0, 120),
+        )
+      })
     }
     const timeout = setTimeout(() => {
       void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
@@ -107,7 +127,18 @@ export const routineRunner = {
           if (toolUseId) void agentSessionManager.engineCall(convId, 'respondToTool', [toolUseId, '（无人值守运行：已自动跳过此提问）'])
         })
       } else if (data.type === 'status' && (data.status === 'awaiting_continue' || data.status === 'awaiting_extension')) {
+        // Unattended: nobody will click 继续. stopExecution only parks the
+        // engine at idle — it emits no done/error — so the run must be settled
+        // here or it hangs 'running' until the timeout marks it failed.
         void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
+        finish('success')
+      } else if (data.type === 'status' && data.status === 'completed') {
+        // A finished loop is reported as a status, not a 'done' event — the
+        // main-hosted session manager never emits 'done'/'error' (only the ws
+        // protocol defines them), so settlement must key off statuses.
+        finish('success')
+      } else if (data.type === 'status' && data.status === 'error') {
+        finish('failed', data.error ?? '任务执行出错')
       } else if (data.type === 'done') {
         finish('success')
       } else if (data.type === 'error') {
@@ -117,7 +148,14 @@ export const routineRunner = {
     unsubscribe = agentSessionManager.onEvent(onEvent)
 
     try {
-      await agentSessionManager.createSession(convId, { title: `[日常] ${routine.name}`, clientId: 'routine' })
+      // Bind the project BEFORE the first ask: ask() re-resolves the sandbox
+      // context from the conversation's project row (workspace + policy), so
+      // the editor's 执行项目 setting actually governs where the run works.
+      await agentSessionManager.createSession(convId, {
+        title: `[日常] ${routine.name}`,
+        clientId: 'routine',
+        projectId: routine.projectId,
+      })
       await agentSessionManager.ask(convId, renderRoutinePrompt(routine, params))
     } catch (err) {
       finish('failed', err instanceof Error ? err.message : String(err))

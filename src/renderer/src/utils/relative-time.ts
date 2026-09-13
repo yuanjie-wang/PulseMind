@@ -36,3 +36,28 @@ export function describeRelativeTime(timestamp: string | number | Date | null | 
   if (elapsed < DAYS_BEFORE_ABSOLUTE_DATE * DAY_MS) return { unit: 'day', value: Math.floor(elapsed / DAY_MS), ...calendar }
   return { unit: 'date', value: 0, ...calendar }
 }
+
+/** Minimal structural type of the i18n translator, so this util stays decoupled
+ *  from the React context. */
+type Translate = (path: string, values?: Record<string, string | number>) => string
+
+/** Localized text for describeRelativeTime — shared by the sidebar and the
+ *  welcome page's recent list. Returns null when there is nothing to show. */
+export function describeRelativeTimeText(timestamp: string | undefined, now: number, t: Translate): string | null {
+  const relative = describeRelativeTime(timestamp, now)
+  if (!relative) return null
+  switch (relative.unit) {
+    case 'justNow':
+      return t('conversationSidebar.time.justNow')
+    case 'minute':
+      return t('conversationSidebar.time.minutesAgo', { count: relative.value })
+    case 'hour':
+      return t('conversationSidebar.time.hoursAgo', { count: relative.value })
+    case 'day':
+      return t('conversationSidebar.time.daysAgo', { count: relative.value })
+    default:
+      return relative.year === new Date(now).getFullYear()
+        ? t('conversationSidebar.time.date', { month: relative.month, day: relative.day })
+        : t('conversationSidebar.time.dateWithYear', { year: relative.year, month: relative.month, day: relative.day })
+  }
+}

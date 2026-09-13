@@ -121,6 +121,17 @@ export const routineStore = {
     return row != null
   },
 
+  /** Startup recovery: a run left 'running' by a previous process (quit or
+   *  crash mid-run) never gets finishRun, so its overlap guard would block
+   *  every future scheduled fire of that routine. Only rows started before
+   *  `bootedAt` are settled, so runs already started by this process survive.
+   *  Call once at app start, before the scheduler's first tick. */
+  failStaleRuns(bootedAt: string): void {
+    getDb()
+      .prepare("UPDATE routine_runs SET status = 'failed', finished_at = ?, error = COALESCE(error, '应用退出，运行被中断') WHERE status = 'running' AND started_at < ?")
+      .run(new Date().toISOString(), bootedAt)
+  },
+
   listRuns(routineId?: string, limit = 50): RoutineRun[] {
     const rows = routineId
       ? getDb().prepare('SELECT * FROM routine_runs WHERE routine_id = ? ORDER BY started_at DESC LIMIT ?').all(routineId, limit) as RoutineRunRow[]
