@@ -54,12 +54,15 @@ export class BrowserService {
   private tabs = new Map<string, ServiceTab>()
   /** Per-conversation backend choice (协议 §5.1: one choice per task). */
   private activeBackend = new Map<string, 'managed' | 'app-view'>()
-  /** Settings-derived defaults, loaded once at construction. */
-  private defaultBackend: 'managed' | 'app-view' = 'managed'
+  /** Settings-derived defaults; re-read on every runCode call so settings
+   *  changes apply without an app restart. The in-app pane is the default —
+   *  browser work should be visible where the user is looking; managed
+   *  (headless) remains selectable via settings or setActiveBackend. */
+  private defaultBackend: 'managed' | 'app-view' = 'app-view'
   private defaultTimeoutMs: number | undefined
 
   constructor() {
-    // `managed` is the v1 default; `app-view` joins lazily on first use.
+    // Both backends instantiate lazily on first use.
     this.backends.set('managed', new ManagedBackend())
     void this.loadDefaults()
   }
@@ -69,7 +72,9 @@ export class BrowserService {
       const browser = (await settingsStore.get()).browser
       if (browser?.backend) this.defaultBackend = browser.backend
       if (browser?.timeoutMs) this.defaultTimeoutMs = browser.timeoutMs
-    } catch { /* defaults stand */ }
+    } catch {
+      /* defaults stand */
+    }
   }
 
   /** Entry behind the BROWSER_RUN_CODE channel (registered in ipc/browser.handler.ts). */
@@ -85,7 +90,11 @@ export class BrowserService {
   async stopAll(): Promise<void> {
     for (const [id] of this.tabs) await this.closeTab(id)
     for (const backend of this.backends.values()) {
-      try { await backend.stop() } catch { /* best-effort */ }
+      try {
+        await backend.stop()
+      } catch {
+        /* best-effort */
+      }
     }
   }
 
@@ -149,15 +158,22 @@ export class BrowserService {
         case 'navigate':
           await page.goto(assertAllowedUrl(cmd.url), { waitUntil: 'domcontentloaded', timeout: 20_000 })
           return browserOk({ url: page.url(), title: await page.title() })
-        case 'back': await page.goBack({ waitUntil: 'domcontentloaded', timeout: 20_000 }); return browserOk()
-        case 'forward': await page.goForward({ waitUntil: 'domcontentloaded', timeout: 20_000 }); return browserOk()
-        case 'reload': await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 }); return browserOk()
-        case 'close': await this.closeTab(entry.id); return browserOk()
-        case 'snapshot': return browserOk(await page.locator('html').ariaSnapshot())
+        case 'back':
+          await page.goBack({ waitUntil: 'domcontentloaded', timeout: 20_000 })
+          return browserOk()
+        case 'forward':
+          await page.goForward({ waitUntil: 'domcontentloaded', timeout: 20_000 })
+          return browserOk()
+        case 'reload':
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 })
+          return browserOk()
+        case 'close':
+          await this.closeTab(entry.id)
+          return browserOk()
+        case 'snapshot':
+          return browserOk(await page.locator('html').ariaSnapshot())
         case 'screenshot': {
-          const buffer = cmd.selector
-            ? await page.locator(cmd.selector).screenshot()
-            : await page.screenshot({ fullPage: cmd.fullPage })
+          const buffer = cmd.selector ? await page.locator(cmd.selector).screenshot() : await page.screenshot({ fullPage: cmd.fullPage })
           return browserOk({ mime: 'image/png', base64: buffer.toString('base64') })
         }
         case 'evaluate':
@@ -210,7 +226,9 @@ export class BrowserService {
       try {
         const st = statSync(full)
         if (st.isFile()) out.push({ name, path: full, size: st.size, savedAt: st.mtime.toISOString() })
-      } catch { /* vanished between list and stat */ }
+      } catch {
+        /* vanished between list and stat */
+      }
     }
     return out.sort((a, b) => b.savedAt.localeCompare(a.savedAt))
   }
@@ -252,9 +270,7 @@ export class BrowserService {
   }
 
   private listTabs(scopeId: string): BrowserTabInfo[] {
-    return [...this.tabs.values()]
-      .filter((t) => t.scopeId === scopeId)
-      .map((t) => ({ id: t.id, url: t.tab.page.url() }))
+    return [...this.tabs.values()].filter((t) => t.scopeId === scopeId).map((t) => ({ id: t.id, url: t.tab.page.url() }))
   }
 
   private resolveTab(tabId: string, scopeId: string): ServiceTab {
@@ -272,16 +288,25 @@ export class BrowserService {
     const entry = this.tabs.get(id)
     if (!entry) return
     this.tabs.delete(id)
-    try { await entry.tab.close() } catch { /* already gone */ }
+    try {
+      await entry.tab.close()
+    } catch {
+      /* already gone */
+    }
   }
 
   private audit(cmd: BrowserCommand, scopeId: string): void {
     if (!MUTATING_METHODS.has(cmd.method)) return
-    const target = 'url' in cmd ? cmd.url
-      : 'expression' in cmd ? cmd.expression.slice(0, 120)
-      : 'op' in cmd ? `${cmd.op} ${cmd.selector.slice(0, 80)}`
-      : 'tabId' in cmd ? cmd.tabId
-      : cmd.method
+    const target =
+      'url' in cmd
+        ? cmd.url
+        : 'expression' in cmd
+          ? cmd.expression.slice(0, 120)
+          : 'op' in cmd
+            ? `${cmd.op} ${cmd.selector.slice(0, 80)}`
+            : 'tabId' in cmd
+              ? cmd.tabId
+              : cmd.method
     auditStore.record({
       scope: 'browser',
       actor: scopeId,
@@ -292,7 +317,8 @@ export class BrowserService {
   }
 
   /** Run one kernel call — exposed for the main-process agent host (M1.4). */
-  runCode(code: string, timeoutMs: number | undefined, scopeId: string): Promise<BrowserRunOutput> {
+  async runCode(code: string, timeoutMs: number | undefined, scopeId: string): Promise<BrowserRunOutput> {
+    await this.loadDefaults()
     return runBrowserCode({ code, timeoutMs: timeoutMs ?? this.defaultTimeoutMs }, (cmd) => this.executeCommand(cmd, scopeId))
   }
 }

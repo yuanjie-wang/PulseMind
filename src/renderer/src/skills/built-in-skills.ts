@@ -14,10 +14,7 @@ export const BUILT_IN_SKILLS: SkillDefinition[] = [
       'Guides the AI to help users create, edit, or package custom skills for PulseMind. Walks through SKILL.md structure, YAML frontmatter, and zip packaging.',
     category: 'pulsemind',
     builtIn: true,
-    triggers: [
-      'skill',
-      '技能'
-    ],
+    triggers: ['skill', '技能'],
     systemPrompt: `## Active Skill: Create Skill
 
 When the user wants to create or edit a PulseMind skill, follow this process:
@@ -59,9 +56,7 @@ Full system prompt instructions go here...
       'Guides the AI to help users configure and register MCP (Model Context Protocol) servers for PulseMind. Covers mcp-servers.json format, transport modes, and installation.',
     category: 'pulsemind',
     builtIn: true,
-    triggers: [
-      'mcp'
-    ],
+    triggers: ['mcp'],
     systemPrompt: `## Active Skill: Create MCP Server
 
 When the user wants to configure and register an MCP server for PulseMind, follow this process:
@@ -125,9 +120,7 @@ MCP server configurations are stored in \`~/.pulsemind/mcp/mcp-servers.json\` as
       'Mandatory workflow for driving the built-in `browser` tool: snapshot-first observation, rebind-before-use tab protocol, locator sugar, screenshots and safety boundaries. Loaded automatically when a task involves URLs, web pages or browser automation.',
     category: 'pulsemind',
     builtIn: true,
-    triggers: [
-      'browser', 'http://', 'https://', '网页', '浏览器', '打开页面', '截图', '自动化', '填表', '网页测试', '登录网站',
-    ],
+    triggers: ['browser', 'http://', 'https://', '网页', '浏览器', '网站', '上网', '截图', '自动化', '填表', '网页测试', '登录网站'],
     systemPrompt: `## Active Skill: Browser Use
 
 When driving the \`browser\` tool, everything happens inside the \`code\` param — one JS program per call. The kernel is STATELESS: variables do not survive between calls; tabs live in the host and persist for the app lifetime. This protocol is mandatory, not advisory.

@@ -30,29 +30,41 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   const [service, setService] = useState<{ enabled: boolean; port: number; running: boolean; token: string } | null>(null)
   const [serviceBusy, setServiceBusy] = useState(false)
   // Browser runtime (A-M4) — saved immediately on change; synced from settings here.
-  const [localBrowserBackend, setLocalBrowserBackend] = useState<'managed' | 'app-view'>(settings.browser?.backend ?? 'managed')
+  const [localBrowserBackend, setLocalBrowserBackend] = useState<'managed' | 'app-view'>(settings.browser?.backend ?? 'app-view')
   const [localBrowserHeadless, setLocalBrowserHeadless] = useState<boolean>(settings.browser?.headless ?? true)
   const [localBrowserTimeoutSec, setLocalBrowserTimeoutSec] = useState<number>(Math.round((settings.browser?.timeoutMs ?? 60_000) / 1000))
 
   const refreshService = () => {
-    window.electronAPI.serviceGetStatus().then(setService).catch(() => {})
+    window.electronAPI
+      .serviceGetStatus()
+      .then(setService)
+      .catch(() => {})
   }
 
   // Load platform info and data paths on open
   useEffect(() => {
     if (open) {
       setLocalWorkspaceDir(settings.workspaceDir || '')
-      setLocalBrowserBackend(settings.browser?.backend ?? 'managed')
+      setLocalBrowserBackend(settings.browser?.backend ?? 'app-view')
       setLocalBrowserHeadless(settings.browser?.headless ?? true)
       setLocalBrowserTimeoutSec(Math.round((settings.browser?.timeoutMs ?? 60_000) / 1000))
       setCurrentTime(formatCurrentTime())
-      window.electronAPI.getPlatformInfo().then(setPlatformInfo).catch(() => {
-        setPlatformInfo({ platform: 'Unknown', platformName: '', release: '', arch: '', ripgrepPath: null })
-      })
-      window.electronAPI.serviceGetStatus().then(setService).catch(() => {})
-      window.electronAPI.getDataPaths().then(setDataPaths).catch(() => {
-        setDataPaths(null)
-      })
+      window.electronAPI
+        .getPlatformInfo()
+        .then(setPlatformInfo)
+        .catch(() => {
+          setPlatformInfo({ platform: 'Unknown', platformName: '', release: '', arch: '', ripgrepPath: null })
+        })
+      window.electronAPI
+        .serviceGetStatus()
+        .then(setService)
+        .catch(() => {})
+      window.electronAPI
+        .getDataPaths()
+        .then(setDataPaths)
+        .catch(() => {
+          setDataPaths(null)
+        })
     }
   }, [open, settings.workspaceDir, settings.browser])
 
@@ -77,254 +89,268 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
     saveSettings({ ...settings, locale: newLocale })
   }
 
-  const platformLabel = platformInfo
-    ? `${platformInfo.platformName} ${platformInfo.release} (${platformInfo.arch})`
-    : t('environmentDrawer.loading')
+  const platformLabel = platformInfo ? `${platformInfo.platformName} ${platformInfo.release} (${platformInfo.arch})` : t('environmentDrawer.loading')
 
   const body = (
     <>
-      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>{t('environmentDrawer.title')}</Text>
+      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+        {t('environmentDrawer.title')}
+      </Text>
       <Space orientation="vertical" size="large" style={{ width: '100%' }}>
-      {/* Language Selector — top */}
-      <div>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          <GlobalOutlined style={{ marginRight: 6 }} />
-          {t('environmentDrawer.language')}
-        </Text>
-        <Select
-          value={locale}
-          onChange={handleLocaleChange}
-          style={{ width: '100%' }}
-          options={[
-            { value: 'zh', label: '中文' },
-            { value: 'en', label: 'English' }
-          ]}
-        />
-      </div>
-
-      {/* OS Info */}
-      <div>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          <DesktopOutlined style={{ marginRight: 6 }} />
-          {t('environmentDrawer.operatingSystem')}
-        </Text>
-        <Input
-          value={platformLabel}
-          readOnly
-          variant="filled"
-        />
-      </div>
-
-      {/* Current Time */}
-      <div>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          <ClockCircleOutlined style={{ marginRight: 6 }} />
-          {t('environmentDrawer.currentTime')}
-        </Text>
-        <Input
-          value={currentTime}
-          readOnly
-          variant="filled"
-        />
-      </div>
-
-      {/* Config Directory */}
-      <div>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          <FolderOutlined style={{ marginRight: 6 }} />
-          {t('environmentDrawer.configDirectory')}
-        </Text>
-        <Space.Compact style={{ width: '100%' }}>
-          <Input
-            value={dataPaths?.dataDir || (platformInfo?.platform === 'win32' ? '%USERPROFILE%\\.pulsemind' : '~/.pulsemind')}
-            readOnly
-            variant="filled"
-          />
-          <Button
-            type="text"
-            size="small"
-            icon={<FolderOpenOutlined />}
-            style={{marginLeft: 8, marginTop: 4}}
-            onClick={() => dataPaths?.dataDir && window.electronAPI.openFolder(dataPaths.dataDir)}
-          />
-        </Space.Compact>
-      </div>
-
-      {/* Skills Directory */}
-      <div>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          <FolderOutlined style={{ marginRight: 6 }} />
-          {t('environmentDrawer.skillsDirectory')}
-        </Text>
-        <Space.Compact style={{ width: '100%' }}>
-          <Input
-            value={dataPaths?.skillsDir || (platformInfo?.platform === 'win32' ? '%USERPROFILE%\\.pulsemind\\skills' : '~/.pulsemind/skills')}
-            readOnly
-            variant="filled"
-          />
-          <Button
-            type="text"
-            size="small"
-            icon={<FolderOpenOutlined />}
-            style={{marginLeft: 8, marginTop: 4}}
-            onClick={() => dataPaths?.skillsDir && window.electronAPI.openFolder(dataPaths.skillsDir)}
-          />
-        </Space.Compact>
-      </div>
-
-      {/* Workspace Directory */}
-      <div>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          <FolderOutlined style={{ marginRight: 6 }} />
-          {t('environmentDrawer.workspace')}
-        </Text>
-        <Space.Compact style={{ width: '100%' }}>
-          <Input
-            placeholder={dataPaths?.workspaceDir || t('environmentDrawer.workspacePlaceholder')}
-            value={localWorkspaceDir}
-            onChange={(e) => setLocalWorkspaceDir(e.target.value)}
-          />
-          <Button
-            type="text"
-            size="small"
-            icon={<FolderOpenOutlined />}
-            style={{marginLeft: 8, marginTop: 4}}
-            onClick={() => {
-              const dir = localWorkspaceDir || dataPaths?.workspaceDir
-              if (dir) window.electronAPI.openFolder(dir)
-            }}
-          />
-        </Space.Compact>
-      </div>
-
-      {/* ── Local agent service (PLAN-0.3.5 M2.4) ── */}
-      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
-        <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
-          本地 Agent 服务
-        </Text>
-        <div style={{ marginBottom: 12 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            在本地回环地址开放 Agent 服务,供浏览器扩展等客户端连接。
+        {/* Language Selector — top */}
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            <GlobalOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.language')}
           </Text>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <Text>启用服务</Text>
-          <Switch
-            checked={service?.enabled ?? false}
-            loading={serviceBusy}
-            onChange={async (checked) => {
-              setServiceBusy(true)
-              try {
-                const r = await window.electronAPI.serviceSetEnabled(checked)
-                messageApi.success(checked ? `服务已启动 :${r.port}` : '服务已停止')
-                refreshService()
-              } catch { messageApi.error('操作失败') } finally { setServiceBusy(false) }
-            }}
-          />
-        </div>
-        {service?.running && (
-          <div style={{ marginBottom: 12 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>运行端口</Text>
-            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-              <Input value={String(service.port)} readOnly size="small" />
-              <Button size="small" onClick={refreshService}>刷新</Button>
-            </div>
-          </div>
-        )}
-        {service?.enabled && (
-          <div style={{ marginBottom: 8 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>连接 Token(扩展配置用)</Text>
-            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-              <Input.Password value={service?.token || ''} readOnly size="small" />
-              <Button
-                size="small"
-                onClick={() => { navigator.clipboard?.writeText(service?.token || ''); messageApi.success('Token 已复制') }}
-              >
-                复制
-              </Button>
-              <Button
-                size="small"
-                danger
-                loading={serviceBusy}
-                onClick={async () => {
-                  setServiceBusy(true)
-                  try {
-                    const r = await window.electronAPI.serviceResetToken()
-                    messageApi.success('Token 已重置,请更新扩展配置')
-                    setService((prev) => prev ? { ...prev, token: r.token } : prev)
-                  } catch { messageApi.error('重置失败') } finally { setServiceBusy(false) }
-                }}
-              >
-                重置
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ── Browser runtime (A-M4) ── */}
-      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
-        <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
-          浏览器内核
-        </Text>
-        <div style={{ marginBottom: 12 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            浏览器工具使用的内核与启动方式。默认托管内核(随包 Chromium 或系统 Chrome/Edge),也可选应用内嵌窗格。
-          </Text>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <Text>默认后端</Text>
           <Select
-            size="small"
-            style={{ minWidth: 150 }}
-            value={localBrowserBackend}
-            onChange={(v) => { setLocalBrowserBackend(v); void saveSettings({ ...settings, browser: { ...settings.browser, backend: v } }) }}
+            value={locale}
+            onChange={handleLocaleChange}
+            style={{ width: '100%' }}
             options={[
-              { value: 'managed', label: '托管内核（推荐）' },
-              { value: 'app-view', label: '应用内嵌窗格' },
+              { value: 'zh', label: '中文' },
+              { value: 'en', label: 'English' },
             ]}
           />
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <Text>无头模式（不显示窗口）</Text>
-          <Switch
-            checked={localBrowserHeadless}
-            onChange={(checked) => { setLocalBrowserHeadless(checked); void saveSettings({ ...settings, browser: { ...settings.browser, headless: checked } }) }}
-          />
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <Text>单次调用上限（秒）</Text>
-          <InputNumber
-            size="small"
-            min={10}
-            max={300}
-            value={localBrowserTimeoutSec}
-            onChange={(v) => {
-              const sec = typeof v === 'number' ? v : 60
-              setLocalBrowserTimeoutSec(sec)
-              void saveSettings({ ...settings, browser: { ...settings.browser, timeoutMs: Math.round(sec * 1000) } })
-            }}
-            style={{ width: 90 }}
-          />
-        </div>
-      </div>
 
-      {/* Save Button */}
-      <Button
-        type="primary"
-        block
-        icon={<SaveOutlined />}
-        loading={saving}
-        onClick={handleSave}
-      >
-        {t('environmentDrawer.save')}
-      </Button>
-    </Space>
+        {/* OS Info */}
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            <DesktopOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.operatingSystem')}
+          </Text>
+          <Input value={platformLabel} readOnly variant="filled" />
+        </div>
+
+        {/* Current Time */}
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            <ClockCircleOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.currentTime')}
+          </Text>
+          <Input value={currentTime} readOnly variant="filled" />
+        </div>
+
+        {/* Config Directory */}
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            <FolderOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.configDirectory')}
+          </Text>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              value={dataPaths?.dataDir || (platformInfo?.platform === 'win32' ? '%USERPROFILE%\\.pulsemind' : '~/.pulsemind')}
+              readOnly
+              variant="filled"
+            />
+            <Button
+              type="text"
+              size="small"
+              icon={<FolderOpenOutlined />}
+              style={{ marginLeft: 8, marginTop: 4 }}
+              onClick={() => dataPaths?.dataDir && window.electronAPI.openFolder(dataPaths.dataDir)}
+            />
+          </Space.Compact>
+        </div>
+
+        {/* Skills Directory */}
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            <FolderOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.skillsDirectory')}
+          </Text>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              value={dataPaths?.skillsDir || (platformInfo?.platform === 'win32' ? '%USERPROFILE%\\.pulsemind\\skills' : '~/.pulsemind/skills')}
+              readOnly
+              variant="filled"
+            />
+            <Button
+              type="text"
+              size="small"
+              icon={<FolderOpenOutlined />}
+              style={{ marginLeft: 8, marginTop: 4 }}
+              onClick={() => dataPaths?.skillsDir && window.electronAPI.openFolder(dataPaths.skillsDir)}
+            />
+          </Space.Compact>
+        </div>
+
+        {/* Workspace Directory */}
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            <FolderOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.workspace')}
+          </Text>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              placeholder={dataPaths?.workspaceDir || t('environmentDrawer.workspacePlaceholder')}
+              value={localWorkspaceDir}
+              onChange={(e) => setLocalWorkspaceDir(e.target.value)}
+            />
+            <Button
+              type="text"
+              size="small"
+              icon={<FolderOpenOutlined />}
+              style={{ marginLeft: 8, marginTop: 4 }}
+              onClick={() => {
+                const dir = localWorkspaceDir || dataPaths?.workspaceDir
+                if (dir) window.electronAPI.openFolder(dir)
+              }}
+            />
+          </Space.Compact>
+        </div>
+
+        {/* ── Local agent service (PLAN-0.3.5 M2.4) ── */}
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+          <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+            本地 Agent 服务
+          </Text>
+          <div style={{ marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              在本地回环地址开放 Agent 服务,供浏览器扩展等客户端连接。
+            </Text>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text>启用服务</Text>
+            <Switch
+              checked={service?.enabled ?? false}
+              loading={serviceBusy}
+              onChange={async (checked) => {
+                setServiceBusy(true)
+                try {
+                  const r = await window.electronAPI.serviceSetEnabled(checked)
+                  messageApi.success(checked ? `服务已启动 :${r.port}` : '服务已停止')
+                  refreshService()
+                } catch {
+                  messageApi.error('操作失败')
+                } finally {
+                  setServiceBusy(false)
+                }
+              }}
+            />
+          </div>
+          {service?.running && (
+            <div style={{ marginBottom: 12 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                运行端口
+              </Text>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <Input value={String(service.port)} readOnly size="small" />
+                <Button size="small" onClick={refreshService}>
+                  刷新
+                </Button>
+              </div>
+            </div>
+          )}
+          {service?.enabled && (
+            <div style={{ marginBottom: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                连接 Token(扩展配置用)
+              </Text>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <Input.Password value={service?.token || ''} readOnly size="small" />
+                <Button
+                  size="small"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(service?.token || '')
+                    messageApi.success('Token 已复制')
+                  }}
+                >
+                  复制
+                </Button>
+                <Button
+                  size="small"
+                  danger
+                  loading={serviceBusy}
+                  onClick={async () => {
+                    setServiceBusy(true)
+                    try {
+                      const r = await window.electronAPI.serviceResetToken()
+                      messageApi.success('Token 已重置,请更新扩展配置')
+                      setService((prev) => (prev ? { ...prev, token: r.token } : prev))
+                    } catch {
+                      messageApi.error('重置失败')
+                    } finally {
+                      setServiceBusy(false)
+                    }
+                  }}
+                >
+                  重置
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Browser runtime (A-M4) ── */}
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+          <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+            浏览器内核
+          </Text>
+          <div style={{ marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              浏览器工具使用的内核与启动方式。默认应用内嵌窗格（页面停靠在主窗口右侧，操作全程可见）；托管内核为无头 Chromium，在后台执行。
+            </Text>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text>默认后端</Text>
+            <Select
+              size="small"
+              style={{ minWidth: 150 }}
+              value={localBrowserBackend}
+              onChange={(v) => {
+                setLocalBrowserBackend(v)
+                void saveSettings({ ...settings, browser: { ...settings.browser, backend: v } })
+              }}
+              options={[
+                { value: 'app-view', label: '应用内嵌窗格（推荐）' },
+                { value: 'managed', label: '托管内核（无头）' },
+              ]}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text>无头模式（不显示窗口）</Text>
+            <Switch
+              checked={localBrowserHeadless}
+              onChange={(checked) => {
+                setLocalBrowserHeadless(checked)
+                void saveSettings({ ...settings, browser: { ...settings.browser, headless: checked } })
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text>单次调用上限（秒）</Text>
+            <InputNumber
+              size="small"
+              min={10}
+              max={300}
+              value={localBrowserTimeoutSec}
+              onChange={(v) => {
+                const sec = typeof v === 'number' ? v : 60
+                setLocalBrowserTimeoutSec(sec)
+                void saveSettings({ ...settings, browser: { ...settings.browser, timeoutMs: Math.round(sec * 1000) } })
+              }}
+              style={{ width: 90 }}
+            />
+          </div>
+        </div>
+
+        {/* Save Button */}
+        <Button type="primary" block icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
+          {t('environmentDrawer.save')}
+        </Button>
+      </Space>
     </>
   )
 
   if (inline) {
-    return <div style={{ height: '100%', overflow: 'auto' }}>{contextHolder}{body}</div>
+    return (
+      <div style={{ height: '100%', overflow: 'auto' }}>
+        {contextHolder}
+        {body}
+      </div>
+    )
   }
 
   return (

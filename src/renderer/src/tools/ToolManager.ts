@@ -13,9 +13,15 @@ export class ToolManager extends FeatureManager<ToolDefinition> {
 
   // --- Domain alias methods ---
 
-  getAllTools() { return this.getAll() }
-  getEnabledTools() { return this.getEnabled() }
-  getTool(name: string) { return this.get(name) }
+  getAllTools() {
+    return this.getAll()
+  }
+  getEnabledTools() {
+    return this.getEnabled()
+  }
+  getTool(name: string) {
+    return this.get(name)
+  }
 
   /** Register a user-installed tool with auto-enable. */
   registerTool(definition: ToolDefinition): boolean {
@@ -30,7 +36,10 @@ export class ToolManager extends FeatureManager<ToolDefinition> {
   }
 
   getPreferences(): ToolPreferences {
-    return { enabledTools: this.registry.getPreferences() }
+    // knownTools round-trips every registered name so the store can persist
+    // explicit enabled=0 rows — without it, "absent from prefs" is ambiguous
+    // between "new built-in" and "user disabled it".
+    return { enabledTools: this.registry.getPreferences(), knownTools: this.registry.getAll().map((s) => s.definition.name) }
   }
 
   // --- LLM Integration ---
@@ -40,7 +49,7 @@ export class ToolManager extends FeatureManager<ToolDefinition> {
     return this.getEnabled().map((t) => ({
       name: t.definition.name,
       description: t.definition.description,
-      input_schema: t.definition.input_schema
+      input_schema: t.definition.input_schema,
     }))
   }
 

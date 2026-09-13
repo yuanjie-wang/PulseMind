@@ -21,25 +21,25 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         file_path: {
           type: 'string',
-          description: 'Absolute path to the file to read.'
+          description: 'Absolute path to the file to read.',
         },
         offset: {
           type: 'integer',
-          description: 'Start line (1-based).'
+          description: 'Start line (1-based).',
         },
         limit: {
           type: 'integer',
-          description: 'Max lines to read (default 200, hard cap 500).'
+          description: 'Max lines to read (default 200, hard cap 500).',
         },
         binary: {
           type: 'boolean',
-          description: 'Output hex dump via xxd instead of text.'
-        }
+          description: 'Output hex dump via xxd instead of text.',
+        },
       },
-      required: ['file_path']
+      required: ['file_path'],
     },
     instructions: toolInstructions.read,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── write ─────────────────────────────────────────────────────────
@@ -54,21 +54,21 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         file_path: {
           type: 'string',
-          description: 'Absolute path to the target file.'
+          description: 'Absolute path to the target file.',
         },
         content: {
           type: 'string',
-          description: 'The text content to write.'
+          description: 'The text content to write.',
         },
         append: {
           type: 'boolean',
-          description: 'Append instead of overwrite.'
-        }
+          description: 'Append instead of overwrite.',
+        },
       },
-      required: ['file_path', 'content']
+      required: ['file_path', 'content'],
     },
     instructions: toolInstructions.write,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── edit ──────────────────────────────────────────────────────────
@@ -82,29 +82,30 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         file_path: {
           type: 'string',
-          description: 'Absolute path to the file to edit.'
+          description: 'Absolute path to the file to edit.',
         },
         old_str: {
           type: 'string',
-          description: '(search/replace mode) The exact text to find and replace. Must match uniquely (or set multi: true). Not needed when using diff.'
+          description: '(search/replace mode) The exact text to find and replace. Must match uniquely (or set multi: true). Not needed when using diff.',
         },
         new_str: {
           type: 'string',
-          description: '(search/replace mode) The replacement text. Not needed when using diff.'
+          description: '(search/replace mode) The replacement text. Not needed when using diff.',
         },
         multi: {
           type: 'boolean',
-          description: 'Replace ALL occurrences of old_str.'
+          description: 'Replace ALL occurrences of old_str.',
         },
         diff: {
           type: 'string',
-          description: '(diff mode) Unified diff to apply. More token-efficient than search/replace. Include 1-2 context lines. See instructions for format details.'
-        }
+          description:
+            '(diff mode) Unified diff to apply. More token-efficient than search/replace. Include 1-2 context lines. See instructions for format details.',
+        },
       },
-      required: ['file_path']
+      required: ['file_path'],
     },
     instructions: toolInstructions.edit,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── list_dir ──────────────────────────────────────────────────────
@@ -118,25 +119,25 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         dir_path: {
           type: 'string',
-          description: 'Absolute path to the directory to list.'
+          description: 'Absolute path to the directory to list.',
         },
         recursive: {
           type: 'boolean',
-          description: 'List recursively (fixed depth 2). To explore deeper, call list_dir again on a subdirectory.'
+          description: 'List recursively (fixed depth 2). To explore deeper, call list_dir again on a subdirectory.',
         },
         limit: {
           type: 'integer',
-          description: 'Max entries to return. Use with offset to paginate. Omit for first 100 entries.'
+          description: 'Max entries to return. Use with offset to paginate. Omit for first 100 entries.',
         },
         offset: {
           type: 'integer',
-          description: 'Entries to skip (use with limit for pagination).'
-        }
+          description: 'Entries to skip (use with limit for pagination).',
+        },
       },
-      required: ['dir_path']
+      required: ['dir_path'],
     },
     instructions: toolInstructions.list_dir,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── search ────────────────────────────────────────────────────────
@@ -150,25 +151,25 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         query: {
           type: 'string',
-          description: 'The search query or regex pattern.'
+          description: 'The search query or regex pattern.',
         },
         search_dir: {
           type: 'string',
-          description: 'Directory to search in.'
+          description: 'Directory to search in.',
         },
         include: {
           type: 'string',
-          description: 'File glob pattern(s) to include. Comma-separated for multiple (e.g. "*.ts" or "*.tsx,*.ts,*.js").'
+          description: 'File glob pattern(s) to include. Comma-separated for multiple (e.g. "*.ts" or "*.tsx,*.ts,*.js").',
         },
         exclude: {
           type: 'string',
-          description: 'File glob pattern(s) to exclude. Comma-separated for multiple (e.g. "*.test.ts" or "node_modules,dist").'
-        }
+          description: 'File glob pattern(s) to exclude. Comma-separated for multiple (e.g. "*.test.ts" or "node_modules,dist").',
+        },
       },
-      required: ['query']
+      required: ['query'],
     },
     instructions: toolInstructions.search,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── find ─────────────────────────────────────────────────────────
@@ -182,29 +183,30 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         pattern: {
           type: 'string',
-          description: 'File name pattern (glob syntax, case-insensitive). Omit to match all files (useful with type filter).'
+          description: 'File name pattern (glob syntax, case-insensitive). Omit to match all files (useful with type filter).',
         },
         search_dir: {
           type: 'string',
-          description: 'Directory to search in.'
+          description: 'Directory to search in.',
         },
         max_depth: {
           type: 'integer',
-          description: 'Max directory depth.'
+          description: 'Max directory depth.',
         },
         type: {
           type: 'string',
-          description: 'File type filter: "f" for files only, "d" for directories only. Omit for both.'
+          description: 'File type filter: "f" for files only, "d" for directories only. Omit for both.',
         },
         extra_args: {
           type: 'string',
-          description: 'Additional find arguments (e.g. "-o -name \\"*.env*\\"" for OR patterns, "-type f" for file filter). Overrides pattern if more control needed.'
-        }
+          description:
+            'Additional find arguments (e.g. "-o -name \\"*.env*\\"" for OR patterns, "-type f" for file filter). Overrides pattern if more control needed.',
+        },
       },
-      required: []
+      required: [],
     },
     instructions: toolInstructions.find,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── ask_user ──────────────────────────────────────────────────────
@@ -218,25 +220,25 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         prompt: {
           type: 'string',
-          description: 'The question or prompt shown to the user'
+          description: 'The question or prompt shown to the user',
         },
         choices: {
           type: 'array',
           items: {
-            type: 'string'
+            type: 'string',
           },
-          description: 'List of available options as string array, cannot be empty'
+          description: 'List of available options as string array, cannot be empty',
         },
         multi: {
           type: 'boolean',
           description: 'Allow multiple selections; default false for single choice',
-          default: false
-        }
+          default: false,
+        },
       },
-      required: ['prompt', 'choices']
+      required: ['prompt', 'choices'],
     },
     instructions: toolInstructions.ask_user,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── exec ──────────────────────────────────────────────────────────
@@ -250,25 +252,25 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         command: {
           type: 'string',
-          description: 'The shell command to execute. Supports pipes, redirects, and chaining.'
+          description: 'The shell command to execute. Supports pipes, redirects, and chaining.',
         },
         cwd: {
           type: 'string',
-          description: 'Working directory for the command.'
+          description: 'Working directory for the command.',
         },
         timeout: {
           type: 'integer',
-          description: 'Idle timeout in seconds. Killed if no output for this duration.'
+          description: 'Idle timeout in seconds. Killed if no output for this duration.',
         },
         sudo: {
           type: 'boolean',
-          description: 'Run with admin/root privileges (sudo/UAC).'
-        }
+          description: 'Run with admin/root privileges (sudo/UAC).',
+        },
       },
-      required: ['command']
+      required: ['command'],
     },
     instructions: toolInstructions.exec,
-    builtIn: true
+    builtIn: true,
   },
 
   {
@@ -282,17 +284,19 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         type: {
           type: 'string',
           enum: ['skill', 'mcp'],
-          description: '"skill" — install a skill from ~/.pulsemind/skills/<name>/SKILL.md (use create_skill first). "mcp" — register an MCP server from ~/.pulsemind/mcp/mcp-servers.json (use create_mcp first).'
+          description:
+            '"skill" — install a skill from ~/.pulsemind/skills/<name>/SKILL.md (use create_skill first). "mcp" — register an MCP server from ~/.pulsemind/mcp/mcp-servers.json (use create_mcp first).',
         },
         name: {
           type: 'string',
-          description: 'For "skill": the skill directory name under ~/.pulsemind/skills/. For "mcp": the server name (config.name) in mcp-servers.json. Refer to the create_skill or create_mcp skill for full setup instructions.'
-        }
+          description:
+            'For "skill": the skill directory name under ~/.pulsemind/skills/. For "mcp": the server name (config.name) in mcp-servers.json. Refer to the create_skill or create_mcp skill for full setup instructions.',
+        },
       },
-      required: ['type', 'name']
+      required: ['type', 'name'],
     },
     instructions: toolInstructions.install,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── webfetch ───────────────────────────────────────────────────────
@@ -307,12 +311,15 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         method: { type: 'string', enum: ['GET', 'POST'], description: 'HTTP method (GET or POST).' },
         headers: { type: 'object', description: 'Optional HTTP headers as key-value pairs (e.g. {"Authorization": "Bearer xxx"}).' },
         body: { type: 'string', description: 'Request body for POST requests.' },
-        maxLength: { type: 'integer', description: 'Maximum characters to return (default: no limit, but large responses are automatically truncated with head+tail).' },
+        maxLength: {
+          type: 'integer',
+          description: 'Maximum characters to return (default: no limit, but large responses are automatically truncated with head+tail).',
+        },
       },
-      required: ['url']
+      required: ['url'],
     },
     instructions: toolInstructions.webfetch,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── memory_search ──────────────────────────────────────────────────
@@ -326,23 +333,23 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         query: {
           type: 'string',
-          description: 'The search query to find relevant memories.'
+          description: 'The search query to find relevant memories.',
         },
         category: {
           type: 'string',
           description: 'Filter by category (optional).',
-          enum: ['code', 'architecture', 'user_pref', 'decision', 'general']
+          enum: ['code', 'architecture', 'user_pref', 'decision', 'general'],
         },
         limit: {
           type: 'integer',
-          description: 'Max results to return.'
-        }
+          description: 'Max results to return.',
+        },
       },
-      required: ['query']
+      required: ['query'],
     },
     instructions: toolInstructions.memory_search,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── memory_save ────────────────────────────────────────────────────
@@ -356,24 +363,24 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         content: {
           type: 'string',
-          description: 'The fact, decision, or preference to remember. Be specific and include context.'
+          description: 'The fact, decision, or preference to remember. Be specific and include context.',
         },
         type: {
           type: 'string',
           description: 'The type of memory.',
-          enum: ['fact', 'decision', 'preference']
+          enum: ['fact', 'decision', 'preference'],
         },
         category: {
           type: 'string',
           description: 'The category of memory.',
-          enum: ['code', 'architecture', 'user_pref', 'decision', 'general']
-        }
+          enum: ['code', 'architecture', 'user_pref', 'decision', 'general'],
+        },
       },
-      required: ['content']
+      required: ['content'],
     },
     instructions: toolInstructions.memory_save,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── conversation_search ────────────────────────────────
@@ -387,18 +394,18 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         id: {
           type: 'string',
-          description: 'Look up a specific conversation by ID (e.g. "conv_20260430152243").'
+          description: 'Look up a specific conversation by ID (e.g. "conv_20260430152243").',
         },
         query: {
           type: 'string',
-          description: 'Keyword to search in titles, summaries, and keywords (max 20 results).'
-        }
+          description: 'Keyword to search in titles, summaries, and keywords (max 20 results).',
+        },
       },
-      required: []
+      required: [],
     },
     instructions: toolInstructions.conversation_search,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── tool_result_search ────────────────────────────────────────────────
@@ -413,17 +420,17 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         ids: {
           type: 'array',
           items: { type: 'string' },
-          description: 'One or more tool_result_id values to look up.'
-        }
+          description: 'One or more tool_result_id values to look up.',
+        },
       },
-      required: ['ids']
+      required: ['ids'],
     },
     instructions: toolInstructions.tool_result_search,
     builtIn: true,
     // Always available: compacted tool_results surface as [tool_result_id: xxx]
     // placeholders mid-conversation, and the model must be able to resolve them
     // without relying on user-text keyword triggers.
-    availability: 'always'
+    availability: 'always',
   },
 
   // ── pick_skill ──────────────────────────────────────────────────────
@@ -437,20 +444,18 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         intent: {
           type: 'string',
-          description: 'A clear description of what the user wants to accomplish, used to select the most relevant skill. Ignored if "name" is provided.'
+          description: 'A clear description of what the user wants to accomplish, used to select the most relevant skill. Ignored if "name" is provided.',
         },
         name: {
           type: 'string',
-          description: 'The exact name of a skill to activate directly. When provided, the skill is looked up by name instead of using LLM-based intent matching.'
-        }
+          description:
+            'The exact name of a skill to activate directly. When provided, the skill is looked up by name instead of using LLM-based intent matching.',
+        },
       },
-      oneOf: [
-        { required: ['intent'] },
-        { required: ['name'] }
-      ]
+      oneOf: [{ required: ['intent'] }, { required: ['name'] }],
     },
     instructions: toolInstructions.pick_skill,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── pick_tool ──────────────────────────────────────────────────────
@@ -463,26 +468,24 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         intent: {
           type: 'string',
-          description: 'A clear description of what you want to accomplish, used to select the most relevant MCP tools. Ignored if "names" or "serverName" is provided.'
+          description:
+            'A clear description of what you want to accomplish, used to select the most relevant MCP tools. Ignored if "names" or "serverName" is provided.',
         },
         names: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Exact MCP tool names to activate directly. When provided, intent is ignored.'
+          description: 'Exact MCP tool names to activate directly. When provided, intent is ignored.',
         },
         serverName: {
           type: 'string',
-          description: 'Name of an MCP server to activate all its tools. Use this to load every tool from a specific MCP server. Ignored if "names" is provided.'
-        }
+          description:
+            'Name of an MCP server to activate all its tools. Use this to load every tool from a specific MCP server. Ignored if "names" is provided.',
+        },
       },
-      oneOf: [
-        { required: ['intent'] },
-        { required: ['names'] },
-        { required: ['serverName'] }
-      ]
+      oneOf: [{ required: ['intent'] }, { required: ['names'] }, { required: ['serverName'] }],
     },
     instructions: toolInstructions.pick_tool,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── knowledge_search ───────────────────────────────────────────────
@@ -496,14 +499,14 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         query: {
           type: 'string',
-          description: 'Search term to filter knowledge files by title and/or content (depends on mode).'
-        }
+          description: 'Search term to filter knowledge files by title and/or content (depends on mode).',
+        },
       },
-      required: []
+      required: [],
     },
     instructions: toolInstructions.knowledge_search,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── knowledge_read ─────────────────────────────────────────────────
@@ -517,19 +520,19 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         path: {
           type: 'string',
-          description: 'The file path or wiki page name to read (e.g. "index.md" for wiki index, or a raw file path from knowledge_search results).'
+          description: 'The file path or wiki page name to read (e.g. "index.md" for wiki index, or a raw file path from knowledge_search results).',
         },
         type: {
           type: 'string',
           description: 'Whether to read from the wiki (compiled) or raw (source) directory.',
-          enum: ['wiki', 'raw']
-        }
+          enum: ['wiki', 'raw'],
+        },
       },
-      required: ['path']
+      required: ['path'],
     },
     instructions: toolInstructions.knowledge_read,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── experience_read ────────────────────────────────────────────────
@@ -543,14 +546,14 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         name: {
           type: 'string',
-          description: 'The name of the experience to read (from the Experience Index).'
-        }
+          description: 'The name of the experience to read (from the Experience Index).',
+        },
       },
-      required: ['name']
+      required: ['name'],
     },
     instructions: toolInstructions.experience_read,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── spawn_agent ────────────────────────────────────────────────────
@@ -564,23 +567,26 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         subAgentId: {
           type: 'string',
-          description: 'The ID of the sub-agent to use. Choose the most suitable one from the available sub-agent list (see instructions for the full list with descriptions).'
+          description:
+            'The ID of the sub-agent to use. Choose the most suitable one from the available sub-agent list (see instructions for the full list with descriptions).',
         },
         task: {
           type: 'string',
-          description: 'Detailed description of the task to delegate. Be specific about what you want the sub-agent to accomplish, what context to use, and what format the results should be in.'
-        }
+          description:
+            'Detailed description of the task to delegate. Be specific about what you want the sub-agent to accomplish, what context to use, and what format the results should be in.',
+        },
       },
-      required: ['subAgentId', 'task']
+      required: ['subAgentId', 'task'],
     },
     instructions: toolInstructions.spawn_agent,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── create_plan ──────────────────────────────────────────────────
   {
     name: 'create_plan',
-    description: 'Create a step-by-step execution plan for complex multi-step tasks. You MUST call advance_plan after completing each individual step — the plan does not auto-advance.',
+    description:
+      'Create a step-by-step execution plan for complex multi-step tasks. You MUST call advance_plan after completing each individual step — the plan does not auto-advance.',
     category: 'system',
     triggers: ['plan', 'strategy', '步骤', '计划'],
     input_schema: {
@@ -588,24 +594,25 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         objective: {
           type: 'string',
-          description: 'A concise statement of what the plan aims to achieve.'
+          description: 'A concise statement of what the plan aims to achieve.',
         },
         steps: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Ordered list of steps to accomplish the objective. Each step should be a clear, actionable description.'
+          description: 'Ordered list of steps to accomplish the objective. Each step should be a clear, actionable description.',
         },
       },
-      required: ['objective', 'steps']
+      required: ['objective', 'steps'],
     },
     instructions: toolInstructions.create_plan,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── advance_plan ─────────────────────────────────────────────────
   {
     name: 'advance_plan',
-    description: 'MANDATORY: call after EVERY completed step to mark it done and move to the next. The plan never advances without this call — without it the plan remains stuck on the current step.',
+    description:
+      'MANDATORY: call after EVERY completed step to mark it done and move to the next. The plan never advances without this call — without it the plan remains stuck on the current step.',
     category: 'system',
     triggers: ['next step', 'step complete', 'done', '进度', '下一步'],
     input_schema: {
@@ -614,17 +621,18 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         action: {
           type: 'string',
           enum: ['complete', 'fail', 'finish'],
-          description: '"complete" — marks current step done and advances to next. "fail" — marks current step as failed (stay on same step). "finish" — marks entire plan complete.'
+          description:
+            '"complete" — marks current step done and advances to next. "fail" — marks current step as failed (stay on same step). "finish" — marks entire plan complete.',
         },
         notes: {
           type: 'string',
-          description: 'Optional notes about what happened in this step. Will be injected into the plan context for the LLM.'
-        }
+          description: 'Optional notes about what happened in this step. Will be injected into the plan context for the LLM.',
+        },
       },
-      required: ['action']
+      required: ['action'],
     },
     instructions: toolInstructions.advance_plan,
-    builtIn: true
+    builtIn: true,
   },
 
   // ── git_status ────────────────────────────────────────────────────
@@ -638,14 +646,14 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         cwd: {
           type: 'string',
-          description: 'Directory to run git in (default: workspace). Must be inside a git repo.'
-        }
+          description: 'Directory to run git in (default: workspace). Must be inside a git repo.',
+        },
       },
-      required: []
+      required: [],
     },
     instructions: toolInstructions.git_status,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── git_diff ──────────────────────────────────────────────────────
@@ -659,27 +667,27 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         cwd: {
           type: 'string',
-          description: 'Directory to run git in.'
+          description: 'Directory to run git in.',
         },
         files: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional list of paths to restrict the diff to.'
+          description: 'Optional list of paths to restrict the diff to.',
         },
         staged: {
           type: 'boolean',
-          description: 'If true, show only staged (index) changes.'
+          description: 'If true, show only staged (index) changes.',
         },
         statOnly: {
           type: 'boolean',
-          description: 'If true, show only a --stat summary instead of the full diff.'
-        }
+          description: 'If true, show only a --stat summary instead of the full diff.',
+        },
       },
-      required: []
+      required: [],
     },
     instructions: toolInstructions.git_diff,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── git_log ───────────────────────────────────────────────────────
@@ -693,24 +701,25 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         cwd: {
           type: 'string',
-          description: 'Directory to run git in.'
+          description: 'Directory to run git in.',
         },
         n: {
           type: 'integer',
-          description: 'Number of commits to show (default 20).'
-        }
+          description: 'Number of commits to show (default 20).',
+        },
       },
-      required: []
+      required: [],
     },
     instructions: toolInstructions.git_log,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── git_commit ────────────────────────────────────────────────────
   {
     name: 'git_commit',
-    description: 'Create a commit in the git repository. Stages the given files (or the current staged changes) and commits with a Conventional Commits message.',
+    description:
+      'Create a commit in the git repository. Stages the given files (or the current staged changes) and commits with a Conventional Commits message.',
     category: 'git',
     triggers: ['git commit', 'commit', '提交'],
     input_schema: {
@@ -718,23 +727,23 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         cwd: {
           type: 'string',
-          description: 'Directory to run git in.'
+          description: 'Directory to run git in.',
         },
         message: {
           type: 'string',
-          description: 'Commit message following Conventional Commits (feat:, fix:, refactor:, docs:, chore:).'
+          description: 'Commit message following Conventional Commits (feat:, fix:, refactor:, docs:, chore:).',
         },
         files: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional list of paths to stage and commit. If omitted, commits the currently staged changes.'
-        }
+          description: 'Optional list of paths to stage and commit. If omitted, commits the currently staged changes.',
+        },
       },
-      required: ['message']
+      required: ['message'],
     },
     instructions: toolInstructions.git_commit,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── git_restore ───────────────────────────────────────────────────
@@ -748,23 +757,23 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         cwd: {
           type: 'string',
-          description: 'Directory to run git in.'
+          description: 'Directory to run git in.',
         },
         files: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Paths to restore (required).'
+          description: 'Paths to restore (required).',
         },
         confirm: {
           type: 'boolean',
-          description: 'Must be true to actually execute. Without it, returns a preview of what would be restored.'
-        }
+          description: 'Must be true to actually execute. Without it, returns a preview of what would be restored.',
+        },
       },
-      required: ['files']
+      required: ['files'],
     },
     instructions: toolInstructions.git_restore,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 
   // ── browser (Browser Use A-M1) ─────────────────────────────────────
@@ -777,23 +786,24 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     description:
       'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts.',
     category: 'browser',
-    triggers: ['http://', 'https://', 'browser', '网页', '浏览器', '截图', '自动化', '打开页面', '点', '填表', '登录', '下单'],
+    triggers: ['http://', 'https://', 'browser', '网页', '浏览器', '网站', '截图', '自动化', '打开', '点', '填表', '登录', '下单'],
     input_schema: {
       type: 'object',
       properties: {
         code: {
           type: 'string',
-          description: 'JS to run against `agent.browsers` (tabs, domSnapshot, playwright ops, screenshots via emitImage). Fresh scope per call — rebind tabs every call.'
+          description:
+            'JS to run against `agent.browsers` (tabs, domSnapshot, playwright ops, screenshots via emitImage). Fresh scope per call — rebind tabs every call.',
         },
         timeoutMs: {
           type: 'integer',
-          description: 'Wall-clock budget for this call (default 60000, max 300000).'
-        }
+          description: 'Wall-clock budget for this call (default 60000, max 300000).',
+        },
       },
-      required: ['code']
+      required: ['code'],
     },
     instructions: toolInstructions.browser,
     builtIn: true,
-    availability: 'gated'
+    availability: 'gated',
   },
 ]
