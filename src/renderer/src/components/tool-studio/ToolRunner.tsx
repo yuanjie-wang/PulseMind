@@ -8,7 +8,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
 import { ReloadOutlined, EditOutlined } from '@ant-design/icons'
-import { injectToolSdk, connectToolBridge } from '../../tool-studio/bridge-host'
+import { mountToolDocument } from '../../tool-studio/bridge-host'
 import type { UserTool } from '../../../../shared/types/user-tool'
 import { ToolNameEditor } from './ToolNameEditor'
 
@@ -28,17 +28,18 @@ export function ToolRunner({ tool, onEdit, onRenamed }: ToolRunnerProps): React.
   useEffect(() => {
     let alive = true
     window.electronAPI.toolReadHtml(tool.id).then((content) => {
-      if (alive) setHtml(content ? injectToolSdk(content) : content)
+      if (alive) setHtml(content ?? null)
     })
     return () => { alive = false }
   }, [tool.id, nonce])
 
-  // Bridge: the strictly-sandboxed iframe talks to the host over postMessage;
-  // the host forwards to the main-process runtime (capability-checked, audited).
+  // Bridge + document: the helper attaches the listener before the tool's own
+  // script can run (see mountToolDocument), so a tool that reads the bridge
+  // during startup is not talking into the void.
   useEffect(() => {
     const iframe = iframeRef.current
     if (!iframe || !html) return
-    return connectToolBridge(iframe, tool.id)
+    return mountToolDocument(iframe, tool.id, html)
   }, [html, tool.id, nonce])
 
   return (
@@ -58,7 +59,6 @@ export function ToolRunner({ tool, onEdit, onRenamed }: ToolRunnerProps): React.
             key={nonce}
             ref={iframeRef}
             title={tool.name}
-            srcDoc={html}
             sandbox="allow-scripts"
             style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
           />

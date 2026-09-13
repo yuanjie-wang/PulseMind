@@ -211,6 +211,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     activeLoopConvIds,
     retryingConvIds,
     togglePin,
+    updateConversationExpert,
     plan,
     stopExecution,
     resumeExecution
@@ -229,6 +230,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     autoCleanup: settings.autoCleanup,
     yoloMode: settings.yoloMode,
     locale: settings.locale,
+    experienceEnabled: settings.experienceEnabled,
     hooks
   })
 
@@ -236,6 +238,15 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   memoryManagerRef.current = memoryManager
   knowledgeManagerRef.current = knowledgeManager
   experienceManagerRef.current = experienceManager
+
+  // Mirror the 设置 → 记忆/经验 master switches onto the renderer-side managers
+  // (session backfill, startup compression). The main-side managers are synced
+  // in settings.handler on every save.
+  useEffect(() => {
+    const memoryOn = settings.memoryEnabled ?? true
+    memoryManager.setPreferences({ autoCaptureEnabled: memoryOn, autoInjectEnabled: memoryOn })
+    experienceManager.setEnabled(settings.experienceEnabled ?? true)
+  }, [memoryManager, experienceManager, settings.memoryEnabled, settings.experienceEnabled])
 
   // Keep conversationId ref in sync for the afterSession hook
   conversationIdRef.current = activeConversationKey
@@ -254,8 +265,9 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
 
   // Check if memory compression is needed on startup and when API key becomes available.
   // Retry on failure (LLM may return bad JSON) with exponential backoff.
+  // Skipped entirely while the 记忆 master switch is off.
   useEffect(() => {
-    if (!apiKey) return
+    if (!apiKey || settings.memoryEnabled === false) return
     let attempts = 0
     let timer: ReturnType<typeof setTimeout>
     const attempt = () => {
@@ -270,7 +282,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     }
     attempt()
     return () => clearTimeout(timer)
-  }, [apiKey])
+  }, [apiKey, settings.memoryEnabled])
 
   // One-time migration: existing type='experience' memories → knowledge base raw/
   useEffect(() => {
@@ -389,12 +401,27 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               greeting={greeting}
               planScrollToMsgId={planScrollToMsgId}
               onPlanScrollHandled={() => setPlanScrollToMsgId(null)}
-              workspaceBaseDir={settings.workspaceDir}
               workspaceDir={
                 typeof activeConversationKey === 'string'
                   ? getWorkspaceDir(activeConversationKey)
                   : undefined
               }
+              conversations={conversations.map((c: any) => ({
+                key: c.key,
+                label: c.label,
+                pinned: c.pinned,
+                updatedAt: c.updatedAt,
+                projectId: c.projectId,
+                expertId: c.expertId
+              }))}
+              activeLoopConvIds={activeLoopConvIds}
+              onOpenConversation={setActiveConversationKey}
+              activeExpertId={
+                typeof activeConversationKey === 'string'
+                  ? conversations.find((c: any) => c.key === activeConversationKey)?.expertId
+                  : undefined
+              }
+              onUnbindExpert={(convId) => updateConversationExpert(convId, null)}
             />
           </AppLayout>
           {activeView === 'chat' && <PlanPanel plan={plan} onJumpToStep={setPlanScrollToMsgId} />}

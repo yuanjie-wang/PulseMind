@@ -21,6 +21,29 @@ export function injectToolSdk(html: string): string {
 }
 
 /**
+ * Mount a tool document into `iframe` with the bridge already listening.
+ *
+ * The order is the whole point, and it must not be left to React. `srcDoc` as a
+ * JSX prop is applied during the commit, so the tool's script can start running
+ * before a `useEffect` ever attaches the message listener — and a tool that
+ * calls the bridge while starting up (reading its storage, say) has that
+ * request dropped outright, not queued. The SDK only rejects after its 30s
+ * timeout, so the bug presents as a hang, not as an error. Attaching first and
+ * assigning srcdoc afterwards makes "a listener exists" a precondition of the
+ * document existing at all.
+ *
+ * Re-assigning an unchanged document is skipped: StrictMode double-invokes the
+ * effect in dev, and a second assignment would reload the tool on every mount.
+ * A genuine reload changes the html or the element (callers key the iframe).
+ */
+export function mountToolDocument(iframe: HTMLIFrameElement, toolId: string, html: string): () => void {
+  const detach = connectToolBridge(iframe, toolId)
+  const doc = injectToolSdk(html)
+  if (iframe.srcdoc !== doc) iframe.srcdoc = doc
+  return detach
+}
+
+/**
  * Attach bridge plumbing to one iframe. Returns a detach function.
  * Requests are forwarded to the main process via `invoke` (default:
  * electronAPI.toolBridgeInvoke); the main process enforces capabilities,

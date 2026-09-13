@@ -92,7 +92,7 @@ export function Composer({
       style={
         layout === 'floating'
           ? { position: 'absolute', bottom: 0, left: 0, right: rightInset, zIndex: 10, padding: '12px 24px 24px' }
-          : { padding: '8px 10px 10px', borderTop: '1px solid #f0f0f0' }
+          : undefined
       }
     >
       <div style={layout === 'floating' ? { maxWidth: 1000, margin: '0 auto' } : undefined}>
@@ -141,7 +141,9 @@ export function Composer({
           ${isWin ? '' : '-webkit-backdrop-filter: blur(12px);'}
           border: 1px solid rgba(0,0,0,0.08);
           border-radius: 20px !important;
-          max-width: 750px;
+          /* One content column everywhere: as wide as the chat message column
+             (maxWidth 1000 minus its 24px paddings) and the welcome cards. */
+          max-width: 952px;
           margin: 0 auto;
           box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%) !important;
         }

@@ -1,17 +1,17 @@
 /**
- * Studio transcript: the same message stream the main chat renders
+ * Transcript view: the same message stream the main chat renders
  * (chat/message-segments + chat/SegmentView), minus the chat's windowing and
- * plan-jump machinery — a studio conversation is short and always follows the
- * live tail.
+ * plan-jump machinery — for short, settled or live conversations that always
+ * follow the tail (tool studio, routine run records).
  */
 import React, { useEffect, useMemo, useRef } from 'react'
 import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
-import { buildSegments, getSegmentKey, type Segment } from '../chat/message-segments'
-import { SegmentBlock } from '../chat/SegmentView'
-import { StreamingCursor } from '../chat/StreamingCursor'
-import { ErrorDisplay } from '../chat/ErrorDisplay'
+import { buildSegments, getSegmentKey, type Segment } from './message-segments'
+import { SegmentBlock } from './SegmentView'
+import { StreamingCursor } from './StreamingCursor'
+import { ErrorDisplay } from './ErrorDisplay'
 
-export interface StudioTranscriptProps {
+export interface TranscriptViewProps {
   messages: AgentMessage[]
   agentStatus: AgentStatus
   streamingBlocks: ContentBlock[]
@@ -26,7 +26,7 @@ export interface StudioTranscriptProps {
   onRetry: () => void
 }
 
-export function StudioTranscript({
+export function TranscriptView({
   messages,
   agentStatus,
   streamingBlocks,
@@ -39,7 +39,7 @@ export function StudioTranscript({
   onRespondToTool,
   onClearError,
   onRetry,
-}: StudioTranscriptProps): React.ReactElement {
+}: TranscriptViewProps): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const isStreaming = agentStatus.status === 'streaming'

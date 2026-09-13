@@ -9,10 +9,10 @@ import { Button, Tooltip } from 'antd'
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useNavigationStore } from '../../stores/navigationStore'
-import { injectToolSdk, connectToolBridge } from '../../tool-studio/bridge-host'
+import { mountToolDocument } from '../../tool-studio/bridge-host'
 import { useStudioSession } from '../../tool-studio/useStudioSession'
 import { studioConversationId } from '../../tool-studio/tool-prompt'
-import { StudioTranscript } from './StudioTranscript'
+import { TranscriptView } from '../chat/TranscriptView'
 import { StudioComposer } from './StudioComposer'
 import { ToolNameEditor } from './ToolNameEditor'
 import type { UserTool } from '../../../../shared/types/user-tool'
@@ -58,12 +58,13 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
 
   // ── Preview: the iframe is keyed by the read counter, so it rebuilds on every
   // new build and on an explicit refresh — no per-html effect needed.
-  // Bridge for the preview iframe — generated tools can call window.pulsemind
-  // (http/fs/storage/system) subject to their declared capabilities.
+  // The listener goes on before the tool document does, so generated tools can
+  // call window.pulsemind (http/fs/storage/system) from their startup code
+  // without racing the host (see mountToolDocument).
   useEffect(() => {
     const iframe = previewRef.current
     if (!iframe || !html) return
-    return connectToolBridge(iframe, toolId)
+    return mountToolDocument(iframe, toolId, html)
   }, [html, toolId, session.htmlVersion])
 
   const goBack = useCallback((): void => {
@@ -102,7 +103,6 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
               key={session.htmlVersion}
               ref={previewRef}
               title="tool-preview"
-              srcDoc={injectToolSdk(html)}
               sandbox="allow-scripts"
               style={{ width: '100%', height: '100%', border: 'none' }}
             />
@@ -115,7 +115,7 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
 
         {/* Right: the build conversation */}
         <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <StudioTranscript
+          <TranscriptView
             messages={session.messages}
             agentStatus={session.agentStatus}
             streamingBlocks={session.streamingBlocks}

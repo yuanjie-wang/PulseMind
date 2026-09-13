@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Button, Dropdown, Modal, App } from 'antd'
-import { PlusOutlined, FolderOutlined, FileOutlined, SwapOutlined, CloseOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, FolderOutlined, FileOutlined, SwapOutlined, CloseOutlined, LinkOutlined, ReloadOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
 import { Composer, useInputHistory } from './Composer'
+import { useComposerDraftStore } from '../../stores/composerDraftStore'
 import type { LlmProfile } from '../../types/settings'
+import type { SubAgentProfile } from '../../../../shared/types/subagent'
 
 interface ChromeTab {
   id: string
@@ -28,6 +30,9 @@ export function InputArea({
   contextUsed,
   contextLength,
   rightInset,
+  layout,
+  boundExpertId,
+  onUnbindExpert,
 }: {
   isRequesting: boolean
   isStreaming: boolean
@@ -43,8 +48,66 @@ export function InputArea({
   contextLength?: number
   /** Horizontal inset (px) from the right edge — clears the browser pane. */
   rightInset?: number
+  /** Composer layout: 'floating' (default) pins it to the bottom of the view;
+   *  'inline' lays it out in place (welcome view's flex column). */
+  layout?: 'floating' | 'inline'
+  /** Expert bound to the active conversation (@-summon); shows the chip. */
+  boundExpertId?: string
+  /** Clear the bound expert (chip ×). */
+  onUnbindExpert?: () => void
 }): React.ReactElement {
   const [inputValue, setInputValue] = useState('')
+
+  // ── Expert config pack state ──
+  // Summonable experts power both the @-selector and the bound-expert chip.
+  // Loaded once per mount; the list only changes in the capability center.
+  const [experts, setExperts] = useState<SubAgentProfile[]>([])
+  useEffect(() => {
+    window.electronAPI.subagentList?.()
+      .then(setExperts)
+      .catch(() => {})
+  }, [])
+  const summonableExperts = useMemo(
+    () => experts.filter((e) => (e.enabled ?? true) && !e.isBuiltIn),
+    [experts]
+  )
+  const boundExpert = experts.find((e) => e.id === boundExpertId)
+
+  // ── @-mention popup ──
+  // Active while the caret-text ends with an @token (@ at word start). Selecting
+  // an expert rewrites the token; sending the raw text also works — the
+  // controller parses `@<name>` on submit, so the popup is pure assistance.
+  const [mentionNavIdx, setMentionNavIdx] = useState(0)
+  const atIdx = inputValue.lastIndexOf('@')
+  const mentionActive = atIdx >= 0 && (atIdx === 0 || /\s/.test(inputValue[atIdx - 1]))
+  const mentionQuery = mentionActive ? inputValue.slice(atIdx + 1) : ''
+  const mentionMatches = useMemo(() => {
+    if (!mentionActive) return []
+    const q = mentionQuery.trim().toLowerCase()
+    const list = q
+      ? summonableExperts.filter((e) => e.name.toLowerCase().includes(q) || (e.description || '').toLowerCase().includes(q))
+      : summonableExperts
+    return list.slice(0, 8)
+  }, [mentionActive, mentionQuery, summonableExperts])
+
+  const handleInputChange = (v: string): void => {
+    setInputValue(v)
+    setMentionNavIdx(0)
+  }
+
+  const selectMention = (expert: SubAgentProfile): void => {
+    setInputValue(`${inputValue.slice(0, atIdx)}@${expert.name} `)
+  }
+
+  // Welcome starters drop their text here through the one-shot draft store:
+  // subscribe (event-style, not render-driven) so a click lands in the input
+  // whenever it happens, then the draft is consumed.
+  useEffect(() => useComposerDraftStore.subscribe((s) => {
+    if (s.draft !== null) {
+      setInputValue(s.draft)
+      useComposerDraftStore.getState().clearDraft()
+    }
+  }), [])
   const { t } = useTranslation()
   const { message } = App.useApp()
 
@@ -279,6 +342,19 @@ export function InputArea({
 
   const hasAttachments = selectedFiles.length + selectedFolders.length + selectedUrls.length > 0
 
+  const handleComposerKeyDown = (e: React.KeyboardEvent<Element>): void => {
+    // @-popup owns the navigation keys while it's open; the input-history hook
+    // must not eat ArrowUp/Down then.
+    if (mentionActive && mentionMatches.length > 0 && ['ArrowUp', 'ArrowDown', 'Escape'].includes(e.key)) {
+      e.preventDefault()
+      if (e.key === 'Escape') return
+      if (e.key === 'ArrowUp') setMentionNavIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length)
+      else setMentionNavIdx((i) => (i + 1) % mentionMatches.length)
+      return
+    }
+    history.onKeyDown(e, inputValue, setInputValue)
+  }
+
   /** Compose the outgoing message: attachment refs first, then the typed text. */
   const buildMessage = (text: string): string => {
     const parts = [
@@ -302,16 +378,65 @@ export function InputArea({
   }
 
   return (
-    <>
+    <div style={{ position: 'relative' }}>
+      {/* @-mention selector: floats above the composer while the input ends in
+          an @token. Sending the raw text works too (controller parses it). */}
+      {mentionActive && mentionMatches.length > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 'calc(100% + 8px)',
+            left: 12,
+            zIndex: 100,
+            width: 300,
+            maxHeight: 264,
+            overflow: 'auto',
+            background: '#fff',
+            border: '1px solid rgba(0,0,0,0.08)',
+            borderRadius: 10,
+            boxShadow: '0 6px 24px rgba(0,0,0,0.12)',
+            padding: 4,
+          }}
+        >
+          <div style={{ fontSize: 11, color: '#999', padding: '4px 8px 2px' }}>{t('chatView.expert.summonTitle')}</div>
+          {mentionMatches.map((expert, i) => (
+            <div
+              key={expert.id}
+              onClick={() => selectMention(expert)}
+              onMouseEnter={() => setMentionNavIdx(i)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 8px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                background: i === mentionNavIdx ? 'rgba(0,0,0,0.05)' : 'transparent',
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0, width: 20, textAlign: 'center' }}>
+                {expert.icon || <UserOutlined style={{ fontSize: 13, color: '#999' }} />}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.name}</div>
+                {expert.description && (
+                  <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.description}</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <Composer
         value={inputValue}
-        onChange={setInputValue}
+        onChange={handleInputChange}
         onSubmit={submit}
         onCancel={onCancel}
         isRequesting={isRequesting}
         disabled={isInputDisabled}
         loading={isRequesting && !isInputDisabled}
         rightInset={rightInset}
+        layout={layout}
         autoFocus={!hasMessages}
         placeholder={
           isAwaitingApproval
@@ -323,8 +448,35 @@ export function InputArea({
                 : t('chatView.sender.default')
         }
         header={
-          hasAttachments ? (
+          boundExpert || hasAttachments ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4, padding: '5px 0 0 5px' }}>
+              {/* Bound-expert chip: the conversation's summoned expert config pack. */}
+              {boundExpert && (
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    background: '#f0f0f0',
+                    border: '1px solid rgba(0,0,0,0.06)',
+                    borderRadius: 12,
+                    padding: '2px 6px',
+                    fontSize: 12,
+                    maxWidth: 220,
+                  }}
+                  title={boundExpert.description || boundExpert.name}
+                >
+                  <span style={{ fontSize: 13, lineHeight: 1 }}>{boundExpert.icon || <UserOutlined style={{ fontSize: 11, color: '#666' }} />}</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{boundExpert.name}</span>
+                  <span
+                    onClick={onUnbindExpert}
+                    style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                    title={t('chatView.expert.unbind')}
+                  >
+                    <CloseOutlined style={{ fontSize: 12 }} />
+                  </span>
+                </span>
+              )}
               {selectedUrls.map((u, i) => (
                 <span
                   key={`u-${i}`}
@@ -440,7 +592,7 @@ export function InputArea({
             </span>
           ) : undefined
         }
-        onKeyDown={(e) => history.onKeyDown(e, inputValue, setInputValue)}
+        onKeyDown={handleComposerKeyDown}
       />
 
       <Modal
@@ -494,6 +646,6 @@ export function InputArea({
           ))}
         </div>
       </Modal>
-    </>
+    </div>
   )
 }

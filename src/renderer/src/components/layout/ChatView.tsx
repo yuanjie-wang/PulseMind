@@ -17,6 +17,7 @@ import { useBrowserPaneStore } from '../../stores/browserPaneStore'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
+import type { ConversationListItem } from '../../types/conversation'
 
 // --- Props ---
 
@@ -35,8 +36,6 @@ interface ChatViewProps {
   onRejectTool: (toolUseId: string) => void
   onKillTool?: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
-  onOpenSettings?: () => void
-  onOpenAbout?: () => void
   onClearError: () => void
   onRetryLast?: () => void
   profiles?: LlmProfile[]
@@ -55,12 +54,19 @@ interface ChatViewProps {
    *  message/window change and yanks the viewport back to the step. */
   onPlanScrollHandled?: () => void
   contextLength?: number
-  /** Global workspace dir — shown on the welcome page as where the timestamped
-   *  conversation folder will be created (M8.4). */
-  workspaceBaseDir?: string
   /** Resolved working directory of the active conversation (M8.5); shown above
    *  the message list once the main-side session creation reports back. */
   workspaceDir?: string
+  /** Conversation list feeding the welcome page's quick entries. */
+  conversations: ConversationListItem[]
+  /** Conversations with a running loop — status lights in the quick entries. */
+  activeLoopConvIds?: string[]
+  /** Switch to a conversation picked from the welcome page's quick entries. */
+  onOpenConversation: (key: string) => void
+  /** The active conversation's summoned expert id (@-mention); absent = unbound. */
+  activeExpertId?: string
+  /** Clear the active conversation's expert binding (chip ×). */
+  onUnbindExpert?: (convId: string) => void
 }
 
 // --- Message grouping lives in chat/message-segments (shared with the tool studio) ---
@@ -86,8 +92,6 @@ function ChatView({
   onResumeExecution,
   onStopExecution,
   onSaveConversation,
-  onOpenSettings,
-  onOpenAbout,
   conversationId,
   conversationTitle,
   profiles,
@@ -97,8 +101,12 @@ function ChatView({
   planScrollToMsgId,
   onPlanScrollHandled,
   contextLength,
-  workspaceBaseDir,
   workspaceDir,
+  conversations,
+  activeLoopConvIds,
+  onOpenConversation,
+  activeExpertId,
+  onUnbindExpert,
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
   const { t } = useTranslation()
@@ -435,15 +443,17 @@ function ChatView({
     return (
       <div
         style={{
-          position: 'relative',
           height: '100%',
           background: '#fff',
+          display: 'flex',
+          flexDirection: 'column',
         }}
       >
-        {/* Task form switcher (M8.4-rev): 对话 / 项目, pinned to the top of the
-            view as an enlarged capsule. Drives the same store the welcome page
-            panels and handleRequest consume. */}
-        <div style={{ position: 'absolute', top: 16, left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 1 }}>
+        {/* Task form switcher (M8.4-rev): 对话 / 项目, its own top band so
+            short windows can never slide the content over it (it used to be
+            absolutely pinned, and the centered logo overlapped it). Drives the
+            same store the welcome page panels and handleRequest consume. */}
+        <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 8px' }}>
           <Segmented
             className="task-switch"
             size="large"
@@ -456,44 +466,41 @@ function ChatView({
           />
         </div>
 
-        <div
-          style={{
-            height: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
+        {/* Welcome content: auto-margin centering that degrades to scrolling
+            when the window is too short (alignItems:center would clip the top
+            under the switcher instead). */}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex' }}>
           <WelcomeContent
             greeting={greeting}
             hasApiKey={hasApiKey}
-            onOpenSettings={onOpenSettings}
-            onOpenAbout={onOpenAbout}
             animName={animName}
-            workspaceBaseDir={workspaceBaseDir}
+            conversations={conversations}
+            activeLoopConvIds={activeLoopConvIds}
+            onOpenConversation={onOpenConversation}
           />
         </div>
 
-        <InputArea
-          key={conversationId ?? 'new'}
-          isRequesting={isRequesting}
-          isStreaming={isStreaming}
-          isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
-          isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
-          hasMessages={hasMessages}
-          rightInset={browserPane.visible ? browserPane.width : 0}
-          onSendMessage={(content: string) => {
-            isNearBottomRef.current = true
-            onSendMessage(content)
-          }}
-          onCancel={onCancel}
-          profiles={profiles}
-          activeProfileId={activeProfileId}
-          onSelectProfile={onSelectProfile}
-          contextUsed={contextUsed}
-          contextLength={contextLength}
-        />
-
+        <div style={{ flexShrink: 0, padding: '0 24px 16px', maxWidth: 1048, margin: '0 auto', width: '100%' }}>
+          <InputArea
+            key={conversationId ?? 'new'}
+            layout="inline"
+            isRequesting={isRequesting}
+            isStreaming={isStreaming}
+            isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
+            isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
+            hasMessages={hasMessages}
+            onSendMessage={(content: string) => {
+              isNearBottomRef.current = true
+              onSendMessage(content)
+            }}
+            onCancel={onCancel}
+            profiles={profiles}
+            activeProfileId={activeProfileId}
+            onSelectProfile={onSelectProfile}
+            contextUsed={contextUsed}
+            contextLength={contextLength}
+          />
+        </div>
         <style>{`
           /* Task switcher: enlarged capsule (M8.4-rev) — !important beats antd's
              own item/thumb radii, which would otherwise square off the pill */
@@ -654,6 +661,8 @@ function ChatView({
         onSelectProfile={onSelectProfile}
         contextUsed={contextUsed}
         contextLength={contextLength}
+        boundExpertId={activeExpertId}
+        onUnbindExpert={() => conversationId && onUnbindExpert?.(conversationId)}
       />
     </div>
   )
