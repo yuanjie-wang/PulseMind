@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PANE_CHROME_HEIGHT, PANE_MIN_WIDTH, clampPaneWidth, defaultPaneWidth, webviewBox } from '../src/shared/browser/pane'
+import { PANE_CHROME_HEIGHT, PANE_MIN_WIDTH, clampPaneWidth, defaultPaneWidth, webviewBox, zoomForWidth } from '../src/shared/browser/pane'
 
 describe('pane width clamp', () => {
   it('defaults to 40% of the chat area', () => {
@@ -32,5 +32,14 @@ describe('webview 16:9 box', () => {
     const box = webviewBox(0, 48, 852)
     expect(box.width).toBe(0)
     expect(box.height).toBe(0)
+  })
+})
+
+describe('proportional page zoom', () => {
+  it('scales from the 1280 design width, capped at 1, floored at 0.2', () => {
+    expect(zoomForWidth(640)).toBe(0.5)
+    expect(zoomForWidth(1280)).toBe(1)
+    expect(zoomForWidth(1600)).toBe(1) // never zoom in beyond 100%
+    expect(zoomForWidth(100)).toBe(0.2)
   })
 })

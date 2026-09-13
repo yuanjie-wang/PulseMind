@@ -481,6 +481,7 @@ function ChatView({
           isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
           isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
           hasMessages={hasMessages}
+          rightInset={browserPane.visible ? browserPane.width : 0}
           onSendMessage={(content: string) => {
             isNearBottomRef.current = true
             onSendMessage(content)
@@ -642,6 +643,7 @@ function ChatView({
         isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
         isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
         hasMessages={hasMessages}
+        rightInset={browserPane.visible ? browserPane.width : 0}
         onSendMessage={(content: string) => {
           isNearBottomRef.current = true
           onSendMessage(content)

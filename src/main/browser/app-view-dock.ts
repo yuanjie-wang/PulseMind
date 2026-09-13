@@ -8,7 +8,7 @@
 
 import { BrowserWindow, WebContentsView } from 'electron'
 import { TITLE_BAR_HEIGHT } from '../../shared/window-chrome'
-import { webviewBox } from '../../shared/browser/pane'
+import { webviewBox, zoomForWidth } from '../../shared/browser/pane'
 
 class AppViewDock {
   private window: BrowserWindow | null = null
@@ -74,6 +74,9 @@ class AppViewDock {
     const box = webviewBox(this.width, TITLE_BAR_HEIGHT, Math.max(0, h - TITLE_BAR_HEIGHT))
     box.x = Math.max(0, w - this.width)
     this.attached.setBounds(box)
+    // Pages lay out at the design width and scale down to fit the 16:9 box —
+    // the whole page stays visible (等比缩放) instead of cropping a 1:1 render.
+    this.attached.webContents.setZoomFactor(zoomForWidth(this.width))
   }
 }
 

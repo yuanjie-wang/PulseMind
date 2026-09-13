@@ -37,6 +37,19 @@ export function defaultPaneWidth(chatAreaWidth: number): number {
   return clampPaneWidth(Math.floor(chatAreaWidth * PANE_DEFAULT_CHAT_RATIO), chatAreaWidth)
 }
 
+/** The viewport width pages are authored against — the pane scales pages
+ *  down from here so a 16:9 box shows the WHOLE page, proportionally
+ *  (setZoomFactor), instead of cropping a 1:1 render. Matches the managed
+ *  backend's viewport. */
+export const PANE_DESIGN_WIDTH = 1280
+
+/** Proportional page scale for a pane width: pane / design width, never
+ *  above 1 (no pointless zoom-in on wide panes), floored so tiny panes stay
+ *  at least legible-ish. */
+export function zoomForWidth(paneWidth: number): number {
+  return Math.min(1, Math.max(0.2, paneWidth / PANE_DESIGN_WIDTH))
+}
+
 /** WebView box for a pane: full pane width, strict 16:9, vertically centered
  *  in the space below the chrome. When the window is too short for the box,
  *  it hugs the chrome (top-aligned) instead of overflowing. */

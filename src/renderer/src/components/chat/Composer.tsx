@@ -33,6 +33,9 @@ export interface ComposerProps {
   /** 'floating' pins the composer to the bottom of the view (chat);
    *  'inline' lays it out in place (studio panel). */
   layout?: 'floating' | 'inline'
+  /** Horizontal inset (px) from the right edge while floating — clears the
+   *  in-app browser pane so the composer is never underneath it. */
+  rightInset?: number
   maxRows?: number
   onKeyDown?: (e: React.KeyboardEvent<Element>) => void
   /** Focus the textarea once mounted. */
@@ -52,6 +55,7 @@ export function Composer({
   footerLeft,
   trailing,
   layout = 'floating',
+  rightInset = 0,
   maxRows = 8,
   onKeyDown,
   autoFocus,
@@ -60,9 +64,12 @@ export function Composer({
   const [isWin, setIsWin] = useState(false)
 
   useEffect(() => {
-    window.electronAPI.getPlatformInfo()
+    window.electronAPI
+      .getPlatformInfo()
       .then((info) => setIsWin(info.platform === 'win32'))
-      .catch(() => { /* default to the frosted look */ })
+      .catch(() => {
+        /* default to the frosted look */
+      })
   }, [])
 
   useEffect(() => {
@@ -82,9 +89,11 @@ export function Composer({
   return (
     <div
       ref={containerRef}
-      style={layout === 'floating'
-        ? { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, padding: '12px 24px 24px' }
-        : { padding: '8px 10px 10px', borderTop: '1px solid #f0f0f0' }}
+      style={
+        layout === 'floating'
+          ? { position: 'absolute', bottom: 0, left: 0, right: rightInset, zIndex: 10, padding: '12px 24px 24px' }
+          : { padding: '8px 10px 10px', borderTop: '1px solid #f0f0f0' }
+      }
     >
       <div style={layout === 'floating' ? { maxWidth: 1000, margin: '0 auto' } : undefined}>
         <Sender
@@ -117,7 +126,9 @@ export function Composer({
           placeholder={placeholder}
           disabled={disabled}
           onKeyDown={onKeyDown}
-          onSubmit={(val) => { if (val && typeof val === 'string') send() }}
+          onSubmit={(val) => {
+            if (val && typeof val === 'string') send()
+          }}
           onCancel={onCancel}
         />
       </div>
@@ -156,11 +167,7 @@ export function useInputHistory() {
     indexRef.current = -1
   }
 
-  const onKeyDown = (
-    e: React.KeyboardEvent<Element>,
-    value: string,
-    setValue: (v: string) => void,
-  ): void => {
+  const onKeyDown = (e: React.KeyboardEvent<Element>, value: string, setValue: (v: string) => void): void => {
     if (e.key === 'ArrowUp') {
       if (historyRef.current.length === 0) return
       e.preventDefault()

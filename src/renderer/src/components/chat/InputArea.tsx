@@ -26,7 +26,8 @@ export function InputArea({
   activeProfileId,
   onSelectProfile,
   contextUsed,
-  contextLength
+  contextLength,
+  rightInset,
 }: {
   isRequesting: boolean
   isStreaming: boolean
@@ -40,6 +41,8 @@ export function InputArea({
   onSelectProfile?: (profileId: string) => void
   contextUsed?: number
   contextLength?: number
+  /** Horizontal inset (px) from the right edge — clears the browser pane. */
+  rightInset?: number
 }): React.ReactElement {
   const [inputValue, setInputValue] = useState('')
   const { t } = useTranslation()
@@ -49,10 +52,8 @@ export function InputArea({
 
   const isInputDisabled = isAwaitingApproval || isAwaitingInput
 
-  const activeProfile = profiles?.find(p => p.id === activeProfileId)
-  const activeModelLabel = activeProfile
-    ? activeProfile.name
-    : t('chatView.selectModel')
+  const activeProfile = profiles?.find((p) => p.id === activeProfileId)
+  const activeModelLabel = activeProfile ? activeProfile.name : t('chatView.selectModel')
 
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
@@ -69,19 +70,27 @@ export function InputArea({
       console.warn('[InputArea] window.electronAPI.mcpListServers missing (stale preload?) — chrome-tab feature disabled')
       return
     }
-    const check = () => listServers().then(servers => {
-      if (cancelled) return
-      const srv = servers.find(s =>
-        s.id === 'chrome-devtools' || s.id === 'chromedevtools' || s.name === 'Chrome DevTools'
-      )
-      setChromeMcpReady(srv?.status === 'connected')
-    }).catch(() => {})
+    const check = () =>
+      listServers()
+        .then((servers) => {
+          if (cancelled) return
+          const srv = servers.find((s) => s.id === 'chrome-devtools' || s.id === 'chromedevtools' || s.name === 'Chrome DevTools')
+          setChromeMcpReady(srv?.status === 'connected')
+        })
+        .catch(() => {})
 
     // Retry a few times since MCP server registration may not be ready on mount
     check()
-    const timer = setInterval(() => { if (!cancelled) check() }, 1500)
-    setTimeout(() => { clearInterval(timer) }, 7500)
-    return () => { cancelled = true; clearInterval(timer) }
+    const timer = setInterval(() => {
+      if (!cancelled) check()
+    }, 1500)
+    setTimeout(() => {
+      clearInterval(timer)
+    }, 7500)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
   }, [])
 
   const getFileName = (path: string) => path.replace(/^.*[\\/]/, '')
@@ -89,32 +98,32 @@ export function InputArea({
   const handlePickFile = async () => {
     const result = await window.electronAPI.showOpenDialog({
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'All Files', extensions: ['*'] }]
+      filters: [{ name: 'All Files', extensions: ['*'] }],
     })
     if (!result.canceled && result.filePaths.length > 0) {
-      setSelectedFiles(prev => [...prev, ...result.filePaths])
+      setSelectedFiles((prev) => [...prev, ...result.filePaths])
     }
   }
 
   const handlePickFolder = async () => {
     const result = await window.electronAPI.showOpenDialog({
-      properties: ['openDirectory']
+      properties: ['openDirectory'],
     })
     if (!result.canceled && result.filePaths.length > 0) {
-      setSelectedFolders(prev => [...prev, ...result.filePaths])
+      setSelectedFolders((prev) => [...prev, ...result.filePaths])
     }
   }
 
   const removeFile = (index: number) => {
-    setSelectedFiles(prev => prev.filter((_, i) => i !== index))
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
   const removeFolder = (index: number) => {
-    setSelectedFolders(prev => prev.filter((_, i) => i !== index))
+    setSelectedFolders((prev) => prev.filter((_, i) => i !== index))
   }
 
   const removeUrl = (index: number) => {
-    setSelectedUrls(prev => prev.filter((_, i) => i !== index))
+    setSelectedUrls((prev) => prev.filter((_, i) => i !== index))
   }
 
   const fetchChromeTabs = async (): Promise<ChromeTab[] | null> => {
@@ -125,7 +134,7 @@ export function InputArea({
       }
       // Check if Chrome DevTools MCP is connected
       const servers = await window.electronAPI.mcpListServers()
-      const chromeServer = servers.find(s => s.id === 'chrome-devtools')
+      const chromeServer = servers.find((s) => s.id === 'chrome-devtools')
       if (!chromeServer) {
         message.warning('Chrome DevTools MCP 未注册')
         return null
@@ -161,7 +170,7 @@ export function InputArea({
       if (tabs.length === 0) {
         // Fallback: try parsing the text content as JSON
         const content = mcpResult?.content as Array<{ type: string; text?: string }> | undefined
-        const textItem = content?.find(c => c.type === 'text')
+        const textItem = content?.find((c) => c.type === 'text')
         const rawText = textItem?.text || ''
         if (!rawText) {
           message.warning('未获取到标签页信息')
@@ -182,15 +191,24 @@ export function InputArea({
         } catch {
           // Last resort: extract URL + pageId from text format:
           //   "{pageId}: Title (url)"  or  "{pageId}: url"
-          const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean)
+          const lines = rawText
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean)
           for (const line of lines) {
             const urlMatch = line.match(/https?:\/\/[^\s)]+/)
             if (urlMatch) {
               const idMatch = line.match(/^(\d+):/)
               tabs.push({
                 id: idMatch ? idMatch[1] : '',
-                title: line.replace(urlMatch[0], '').replace(/^[\d]+:\s*/, '').replace(/\s*\[selected\]\s*/, '').replace(/\s*\(\)\s*$/, '').trim() || '(无标题)',
-                url: urlMatch[0]
+                title:
+                  line
+                    .replace(urlMatch[0], '')
+                    .replace(/^[\d]+:\s*/, '')
+                    .replace(/\s*\[selected\]\s*/, '')
+                    .replace(/\s*\(\)\s*$/, '')
+                    .trim() || '(无标题)',
+                url: urlMatch[0],
               })
             }
           }
@@ -252,20 +270,21 @@ export function InputArea({
     }
   }
 
-  const modelItems = profiles?.map(p => ({
-    key: p.id,
-    label: p.name || `${p.provider ?? ''}:${p.model}`,
-    onClick: () => onSelectProfile?.(p.id)
-  })) ?? []
+  const modelItems =
+    profiles?.map((p) => ({
+      key: p.id,
+      label: p.name || `${p.provider ?? ''}:${p.model}`,
+      onClick: () => onSelectProfile?.(p.id),
+    })) ?? []
 
   const hasAttachments = selectedFiles.length + selectedFolders.length + selectedUrls.length > 0
 
   /** Compose the outgoing message: attachment refs first, then the typed text. */
   const buildMessage = (text: string): string => {
     const parts = [
-      ...selectedUrls.map(u => `[${u.title}](${u.url})` + (u.pageId ? `\n[chrome: pageId=${u.pageId}]` : '')),
-      ...selectedFiles.map(p => `[file:${p}]`),
-      ...selectedFolders.map(p => `[folder:${p}]`),
+      ...selectedUrls.map((u) => `[${u.title}](${u.url})` + (u.pageId ? `\n[chrome: pageId=${u.pageId}]` : '')),
+      ...selectedFiles.map((p) => `[file:${p}]`),
+      ...selectedFolders.map((p) => `[folder:${p}]`),
     ]
     return parts.length > 0 ? parts.join('\n') + (text ? '\n' + text : '') : text
   }
@@ -292,61 +311,121 @@ export function InputArea({
         isRequesting={isRequesting}
         disabled={isInputDisabled}
         loading={isRequesting && !isInputDisabled}
+        rightInset={rightInset}
         autoFocus={!hasMessages}
         placeholder={
           isAwaitingApproval
             ? t('chatView.sender.approving')
             : isAwaitingInput
-            ? t('chatView.sender.awaitingInput')
-            : isStreaming
-            ? t('chatView.sender.streaming')
-            : t('chatView.sender.default')
+              ? t('chatView.sender.awaitingInput')
+              : isStreaming
+                ? t('chatView.sender.streaming')
+                : t('chatView.sender.default')
         }
-        header={hasAttachments ? (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4, padding: '5px 0 0 5px' }}>
-            {selectedUrls.map((u, i) => (
-              <span key={`u-${i}`} style={{
-                display: 'inline-flex', alignItems: 'center', gap: 3,
-                background: '#e8e8e8', borderRadius: 12, padding: '2px 6px', fontSize: 12
-              }}>
-                <LinkOutlined style={{ fontSize: 12, color: '#666' }} />
-                <span style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
-                  {u.title}
+        header={
+          hasAttachments ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4, padding: '5px 0 0 5px' }}>
+              {selectedUrls.map((u, i) => (
+                <span
+                  key={`u-${i}`}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    background: '#e8e8e8',
+                    borderRadius: 12,
+                    padding: '2px 6px',
+                    fontSize: 12,
+                  }}
+                >
+                  <LinkOutlined style={{ fontSize: 12, color: '#666' }} />
+                  <span style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{u.title}</span>
+                  <span
+                    onClick={() => removeUrl(i)}
+                    style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                  >
+                    <CloseOutlined style={{ fontSize: 12 }} />
+                  </span>
                 </span>
-                <span onClick={() => removeUrl(i)} style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}><CloseOutlined style={{fontSize:12}} /></span>
-              </span>
-            ))}
-            {selectedFolders.map((fp, i) => (
-              <span key={`f-${i}`} style={{
-                display: 'inline-flex', alignItems: 'center', gap: 3,
-                background: '#e8e8e8', borderRadius: 12, padding: '2px 6px', fontSize: 12
-              }}>
-                <FolderOutlined style={{ fontSize: 12, color: '#666' }} />
-                <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
-                  {getFileName(fp)}
+              ))}
+              {selectedFolders.map((fp, i) => (
+                <span
+                  key={`f-${i}`}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    background: '#e8e8e8',
+                    borderRadius: 12,
+                    padding: '2px 6px',
+                    fontSize: 12,
+                  }}
+                >
+                  <FolderOutlined style={{ fontSize: 12, color: '#666' }} />
+                  <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
+                    {getFileName(fp)}
+                  </span>
+                  <span
+                    onClick={() => removeFolder(i)}
+                    style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                  >
+                    <CloseOutlined style={{ fontSize: 12 }} />
+                  </span>
                 </span>
-                <span onClick={() => removeFolder(i)} style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}><CloseOutlined style={{fontSize:12}} /></span>
-              </span>
-            ))}
-            {selectedFiles.map((fp, i) => (
-              <span key={`fi-${i}`} style={{
-                display: 'inline-flex', alignItems: 'center', gap: 3,
-                background: '#e8e8e8', borderRadius: 12, padding: '2px 6px', fontSize: 12
-              }}>
-                <FileOutlined style={{ fontSize: 12, color: '#666' }} />
-                <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
-                  {getFileName(fp)}
+              ))}
+              {selectedFiles.map((fp, i) => (
+                <span
+                  key={`fi-${i}`}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    background: '#e8e8e8',
+                    borderRadius: 12,
+                    padding: '2px 6px',
+                    fontSize: 12,
+                  }}
+                >
+                  <FileOutlined style={{ fontSize: 12, color: '#666' }} />
+                  <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
+                    {getFileName(fp)}
+                  </span>
+                  <span
+                    onClick={() => removeFile(i)}
+                    style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                  >
+                    <CloseOutlined style={{ fontSize: 12 }} />
+                  </span>
                 </span>
-                <span onClick={() => removeFile(i)} style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}><CloseOutlined style={{fontSize:12}} /></span>
-              </span>
-            ))}
-          </div>
-        ) : undefined}
+              ))}
+            </div>
+          ) : undefined
+        }
         footerLeft={
           <>
-            <Button size="small" type="text" icon={<PlusOutlined style={{ fontSize: 14 }} />} onClick={handlePickFile} style={{ fontSize: 12, color: '#666' }} />
-            <Button size="small" type="text" icon={<FolderOutlined style={{ fontSize: 14 }} />} onClick={handlePickFolder} style={{ fontSize: 12, color: '#666' }} />
-            <Button size="small" type="text" icon={<LinkOutlined style={{ fontSize: 14 }} />} onClick={handlePickUrl} loading={chromeTabsLoading} disabled={!chromeMcpReady} style={{ fontSize: 12, color: '#666' }} />
+            <Button
+              size="small"
+              type="text"
+              icon={<PlusOutlined style={{ fontSize: 14 }} />}
+              onClick={handlePickFile}
+              style={{ fontSize: 12, color: '#666' }}
+            />
+            <Button
+              size="small"
+              type="text"
+              icon={<FolderOutlined style={{ fontSize: 14 }} />}
+              onClick={handlePickFolder}
+              style={{ fontSize: 12, color: '#666' }}
+            />
+            <Button
+              size="small"
+              type="text"
+              icon={<LinkOutlined style={{ fontSize: 14 }} />}
+              onClick={handlePickUrl}
+              loading={chromeTabsLoading}
+              disabled={!chromeMcpReady}
+              style={{ fontSize: 12, color: '#666' }}
+            />
             <Dropdown menu={{ items: modelItems }} trigger={['click']}>
               <Button size="small" type="text" icon={<SwapOutlined />} style={{ fontSize: 12, color: '#666' }}>
                 {activeModelLabel}
@@ -354,16 +433,23 @@ export function InputArea({
             </Dropdown>
           </>
         }
-        trailing={hasMessages && contextLength != null && contextLength > 0 ? (
-          <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
-            <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={24} />
-          </span>
-        ) : undefined}
+        trailing={
+          hasMessages && contextLength != null && contextLength > 0 ? (
+            <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
+              <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={24} />
+            </span>
+          ) : undefined
+        }
         onKeyDown={(e) => history.onKeyDown(e, inputValue, setInputValue)}
       />
 
       <Modal
-        title={<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>选择 Chrome 标签页<Button size="small" type="text" icon={<ReloadOutlined />} loading={chromeTabsLoading} onClick={refreshChromeTabs} /></div>}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            选择 Chrome 标签页
+            <Button size="small" type="text" icon={<ReloadOutlined />} loading={chromeTabsLoading} onClick={refreshChromeTabs} />
+          </div>
+        }
         open={chromeTabsModalOpen}
         onCancel={() => setChromeTabsModalOpen(false)}
         footer={null}
@@ -374,28 +460,35 @@ export function InputArea({
             <div
               key={tab.id || i}
               onClick={() => {
-                setSelectedUrls(prev => prev.some(u => u.url === tab.url) ? prev : [...prev, { url: tab.url, title: tab.title || tab.url, pageId: tab.pageId }])
+                setSelectedUrls((prev) =>
+                  prev.some((u) => u.url === tab.url) ? prev : [...prev, { url: tab.url, title: tab.title || tab.url, pageId: tab.pageId }],
+                )
                 setChromeTabsModalOpen(false)
               }}
               style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '10px 12px', cursor: 'pointer', borderRadius: 6,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '10px 12px',
+                cursor: 'pointer',
+                borderRadius: 6,
                 transition: 'background 0.15s',
               }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f5f5f5' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+              onMouseEnter={(e) => {
+                ;(e.currentTarget as HTMLElement).style.background = '#f5f5f5'
+              }}
+              onMouseLeave={(e) => {
+                ;(e.currentTarget as HTMLElement).style.background = 'transparent'
+              }}
             >
-              {tab.favicon
-                ? <img src={tab.favicon} style={{ width: 16, height: 16, flexShrink: 0 }} alt="" />
-                : <LinkOutlined style={{ fontSize: 14, color: '#999', flexShrink: 0 }} />
-              }
+              {tab.favicon ? (
+                <img src={tab.favicon} style={{ width: 16, height: 16, flexShrink: 0 }} alt="" />
+              ) : (
+                <LinkOutlined style={{ fontSize: 14, color: '#999', flexShrink: 0 }} />
+              )}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {tab.title || '(无标题)'}
-                </div>
-                <div style={{ fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {tab.url}
-                </div>
+                <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.title || '(无标题)'}</div>
+                <div style={{ fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.url}</div>
               </div>
             </div>
           ))}
