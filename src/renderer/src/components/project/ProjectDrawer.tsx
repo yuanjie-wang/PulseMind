@@ -74,11 +74,12 @@ export function ProjectDrawer({ open, editing, onClose, onSaved }: {
   }
 
   const save = async (): Promise<void> => {
-    if (!name.trim() || !workspaceDir.trim()) return
+    if (!name.trim() || (!editing && !workspaceDir.trim())) return
     setSaving(true)
     try {
       if (editing) {
-        const patch: ProjectUpdateInput = { name, workspaceDir, sandbox }
+        // workspaceDir is fixed at creation — renames/sandbox edits only.
+        const patch: ProjectUpdateInput = { name, sandbox }
         await window.electronAPI.projectUpdate(editing.id, patch)
         onSaved()
       } else {
@@ -98,6 +99,9 @@ export function ProjectDrawer({ open, editing, onClose, onSaved }: {
         onSaved(project)
       }
       onClose()
+    } catch (err) {
+      // Duplicate names / unusable workspace dirs surface from the main process.
+      message.error(err instanceof Error ? err.message : String(err))
     } finally {
       setSaving(false)
     }
@@ -108,7 +112,7 @@ export function ProjectDrawer({ open, editing, onClose, onSaved }: {
       footer={
         <div style={{ textAlign: 'right' }}>
           <Button onClick={onClose} style={{ marginInlineEnd: 8 }}>取消</Button>
-          <Button type="primary" loading={saving} disabled={!name.trim() || !workspaceDir.trim()} onClick={save}>
+          <Button type="primary" loading={saving} disabled={!name.trim() || (!editing && !workspaceDir.trim())} onClick={save}>
             {editing ? '保存' : '创建'}
           </Button>
         </div>
@@ -119,13 +123,20 @@ export function ProjectDrawer({ open, editing, onClose, onSaved }: {
           <div style={{ marginBottom: 6, fontSize: 13 }}>项目名称</div>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：my-app" autoFocus />
         </div>
-        <div>
-          <div style={{ marginBottom: 6, fontSize: 13 }}>固定工作区（对话的文件读写都锁定在这里）</div>
-          <Space.Compact style={{ width: '100%' }}>
-            <Input value={workspaceDir} onChange={(e) => setWorkspaceDir(e.target.value)} placeholder="/path/to/workspace" />
-            <Button icon={<FolderOpenOutlined />} onClick={pickDir} />
-          </Space.Compact>
-        </div>
+        {editing ? (
+          <div>
+            <div style={{ marginBottom: 6, fontSize: 13 }}>固定工作区（创建后不可修改）</div>
+            <code style={{ fontSize: 12, color: '#666', wordBreak: 'break-all' }}>{editing.workspaceDir}</code>
+          </div>
+        ) : (
+          <div>
+            <div style={{ marginBottom: 6, fontSize: 13 }}>固定工作区（对话的文件读写都锁定在这里）</div>
+            <Space.Compact style={{ width: '100%' }}>
+              <Input value={workspaceDir} onChange={(e) => setWorkspaceDir(e.target.value)} placeholder="/path/to/workspace" />
+              <Button icon={<FolderOpenOutlined />} onClick={pickDir} />
+            </Space.Compact>
+          </div>
+        )}
         <div>
           <div style={{ marginBottom: 6, fontSize: 13 }}>沙箱策略</div>
           <SandboxControls value={sandbox} onChange={setSandbox} />

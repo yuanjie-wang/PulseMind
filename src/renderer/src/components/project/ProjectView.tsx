@@ -3,11 +3,12 @@
 // conversations). Creating a conversation here binds it to the project; the
 // main chat area then runs it under the project's workspace + sandbox.
 
-import React, { useCallback, useEffect, useState } from 'react'
-import { Button, Card, Modal, Tag, Tooltip, App as AntdApp } from 'antd'
+import React, { useEffect, useState } from 'react'
+import { Button, Card, Tag, Tooltip, App as AntdApp } from 'antd'
 import { PlusOutlined, FolderOpenOutlined, DeleteOutlined, ArrowLeftOutlined, EditOutlined, SettingOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
+import { useProjectStore } from '../../stores/projectStore'
 import type { Project } from '../../../../shared/types/project'
 import type { ProjectSandboxPolicy } from '../../../../shared/sandbox/policy'
 import { ProjectDrawer, SandboxControls, FS_OPTIONS, NETWORK_OPTIONS, APPROVAL_OPTIONS } from './ProjectDrawer'
@@ -36,7 +37,6 @@ export default function ProjectView({ conversations, onSelectConversation, onCre
   const { modal } = AntdApp.useApp()
   const view = useNavigationStore((s) => s.view)
   const navigate = useNavigationStore((s) => s.navigate)
-  const [projects, setProjects] = useState<Project[]>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<Project | null>(null)
   const [hardIsolationSupported, setHardIsolationSupported] = useState<boolean | null>(null)
@@ -49,13 +49,10 @@ export default function ProjectView({ conversations, onSelectConversation, onCre
     navigate(id ? { kind: 'project', projectId: id } : { kind: 'project' })
   }
 
-  const reload = useCallback(async () => {
-    try {
-      setProjects(await window.electronAPI.projectList())
-    } catch (err) {
-      console.warn('[ProjectView] load failed:', err)
-    }
-  }, [])
+  // Projects come from the shared store, so sidebar/welcome stay in sync with
+  // edits made here.
+  const projects = useProjectStore((s) => s.projects)
+  const reload = useProjectStore((s) => s.reload)
 
   useEffect(() => { void reload() }, [reload])
   useEffect(() => {
