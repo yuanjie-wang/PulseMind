@@ -4,24 +4,30 @@
 // (display:none while another view is active) so streaming is never interrupted.
 // The heavy canvas view is lazy: it only loads when first navigated to.
 // The three centers (capability/knowledge/tools) share one page (D4a revision);
-// their tab is the view kind itself.
+// their tab is the view kind itself. Settings / usage / about are the former
+// modal & drawers, promoted to standard views.
 
 import React, { Suspense, lazy } from 'react'
 import { useNavigationStore } from '../../stores/navigationStore'
 import CanvasToolbar from '../canvas/CanvasToolbar'
 import CentersPage from '../centers/CentersPage'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
+import type { MemoryManager } from '../../memory/MemoryManager'
 import type { ToolState } from '../../tools/types'
 import type { SkillState } from '../../skills/types'
 import type { ConversationListItem } from '../../types/conversation'
 import ProjectView from '../project/ProjectView'
 import RoutineCenter from '../routine/RoutineCenter'
 import { SearchView } from '../search/SearchView'
+import SettingsPage from '../settings/SettingsPage'
+import AboutPage from '../settings/AboutPage'
+import StatisticsPage from './StatisticsPage'
 
 const LazyCanvasView = lazy(() => import('../canvas/CanvasView'))
 
 export interface ViewHostProps {
   knowledgeManager?: KnowledgeManager
+  memoryManager?: MemoryManager
   tools?: ToolState[]
   skills?: SkillState[]
   onToggleSkill?: (name: string) => void
@@ -32,11 +38,9 @@ export interface ViewHostProps {
   conversations?: ConversationListItem[]
   onSelectConversation?: (key: string) => void
   onCreateProjectConversation?: (projectId: string) => void
-  /** Reveal the memory manager (a settings-modal page) from a search result. */
-  onOpenMemory?: () => void
 }
 
-export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation, onCreateProjectConversation, onOpenMemory }: ViewHostProps): React.ReactElement | null {
+export function ViewHost({ knowledgeManager, memoryManager, tools, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation, onCreateProjectConversation }: ViewHostProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
   const handleCanvasClearAll = () => {
     window.electronAPI.canvasClearAll().catch((err: unknown) =>
@@ -59,7 +63,13 @@ export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImp
         </Suspense>
       )
     case 'search':
-      return <SearchView onOpenConversation={onSelectConversation} onOpenMemory={onOpenMemory} />
+      return <SearchView onOpenConversation={onSelectConversation} />
+    case 'settings':
+      return <SettingsPage memoryManager={memoryManager} />
+    case 'usage':
+      return <StatisticsPage />
+    case 'about':
+      return <AboutPage />
     case 'project':
       return (
         <ProjectView
@@ -69,7 +79,7 @@ export function ViewHost({ knowledgeManager, tools, skills, onToggleSkill, onImp
         />
       )
     case 'routines':
-      return <RoutineCenter />
+      return <RoutineCenter onOpenConversation={onSelectConversation} />
     case 'capability':
     case 'knowledge':
     case 'tools':

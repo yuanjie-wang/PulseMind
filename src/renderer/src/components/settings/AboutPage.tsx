@@ -1,5 +1,10 @@
+// ── About page ──
+// Formerly AboutSettings (a drawer), a standard view since PLAN-0.4.0. Renders
+// the product intro markdown; the window header carries the page title, so the
+// drawer chrome is gone.
+
 import React from 'react'
-import { Drawer, Typography } from 'antd'
+import { Typography } from 'antd'
 import { XMarkdown } from '@ant-design/x-markdown'
 import '@ant-design/x-markdown/themes/light.css'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -156,43 +161,24 @@ Multi-step task planning (create_plan / advance_plan) — AI can create structur
 Built-in Chinese and English interface with instant switching. The current language is automatically injected into the system prompt to ensure the AI responds in the correct language.
 `
 
-interface AboutSettingsProps {
-  open: boolean
-  onClose: () => void
-  inline?: boolean
-}
-
-function AboutSettings({ open, onClose, inline }: AboutSettingsProps): React.ReactElement {
-  const { t, locale } = useTranslation()
+function AboutPage(): React.ReactElement {
+  const { locale } = useTranslation()
   const content = locale === 'zh' ? productIntroMdZh : productIntroMdEn
 
-  const body = (
-    <>
-      <div className="x-markdown-light" style={{ fontSize: 14, lineHeight: 1.8 }}>
-        <XMarkdown content={content} />
-      </div>
-      <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0', textAlign: 'center' }}>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          PulseMind v{__APP_VERSION__}
-        </Text>
-      </div>
-    </>
-  )
-
-  if (inline) {
-    return <div style={{ height: '100%', overflow: 'auto' }}>{body}</div>
-  }
-
   return (
-    <Drawer
-      title={t('welcome.aboutTitle')}
-      open={open}
-      onClose={onClose}
-      size={480}
-    >
-      {body}
-    </Drawer>
+    <div style={{ height: '100%', overflow: 'auto', background: '#fff' }} className="settings-scroll">
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '8px 24px 24px' }}>
+        <div className="x-markdown-light" style={{ fontSize: 14, lineHeight: 1.8 }}>
+          <XMarkdown content={content} />
+        </div>
+        <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0', textAlign: 'center' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            PulseMind v{__APP_VERSION__}
+          </Text>
+        </div>
+      </div>
+    </div>
   )
 }
 
-export default AboutSettings
+export default AboutPage

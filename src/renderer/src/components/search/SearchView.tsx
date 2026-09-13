@@ -54,8 +54,6 @@ interface SearchState {
 export interface SearchViewProps {
   /** Open a conversation in the chat view. */
   onOpenConversation?: (conversationKey: string) => void
-  /** Reveal the memory manager, where memories are edited. */
-  onOpenMemory?: () => void
 }
 
 /** A group heading plus its rows; renders nothing when the group came back empty. */
@@ -100,7 +98,7 @@ function Row({
   )
 }
 
-export function SearchView({ onOpenConversation, onOpenMemory }: SearchViewProps): React.ReactElement {
+export function SearchView({ onOpenConversation }: SearchViewProps): React.ReactElement {
   const { t } = useTranslation()
   const navigate = useNavigationStore((s) => s.navigate)
   const [query, setQuery] = useState('')
@@ -202,7 +200,7 @@ export function SearchView({ onOpenConversation, onOpenMemory }: SearchViewProps
 
             <Group title={t('search.groups.memories')} count={results!.memories.length}>
               {results!.memories.map((hit) => (
-                <Row key={hit.id} icon={<BulbOutlined />} title={hit.content} meta={t('search.openMemory')} onClick={() => onOpenMemory?.()} />
+                <Row key={hit.id} icon={<BulbOutlined />} title={hit.content} meta={t('search.openMemory')} onClick={() => navigate({ kind: 'settings', settingsTab: 'memory' })} />
               ))}
             </Group>
 

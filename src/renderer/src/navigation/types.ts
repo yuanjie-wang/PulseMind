@@ -6,7 +6,7 @@
 
 /** Kinds of top-level content views. `canvas` is kept rendered but is not
  *  reachable from the nav column (PLAN-0.4.0 D7 — entry hidden, code retained). */
-export type AppViewKind = 'chat' | 'search' | 'project' | 'routines' | 'capability' | 'knowledge' | 'tools' | 'canvas'
+export type AppViewKind = 'chat' | 'search' | 'project' | 'routines' | 'capability' | 'knowledge' | 'tools' | 'settings' | 'usage' | 'about' | 'canvas'
 
 /** The currently displayed top-level view. Extra fields are params consumed by
  *  specific kinds; they are ignored by the rest. */
@@ -20,7 +20,9 @@ export interface AppView {
    *  without `toolId` this is the create-from-scratch flow. */
   toolEditing?: boolean
   /** `capability`: which tab is active (used by jump entries, e.g. after `install`). */
-  capabilityTab?: 'mcp' | 'skills' | 'subagent' | 'experiences'
+  capabilityTab?: 'mcp' | 'skills' | 'subagent'
+  /** `settings`: which section to open (jump entries, e.g. search → 记忆). */
+  settingsTab?: 'environment' | 'settings' | 'assistant' | 'memory' | 'experiences' | 'favorites'
 }
 
 export const CHAT_VIEW: AppView = { kind: 'chat' }

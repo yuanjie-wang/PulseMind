@@ -1,14 +1,10 @@
-import React, { useState, useCallback, useEffect } from 'react'
-import { Layout, Button, theme, Switch, Modal, Tooltip } from 'antd'
+import React, { useState } from 'react'
+import { Layout, Button, theme, Switch, Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
   SettingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  StarOutlined,
-  BookOutlined,
-  UserOutlined,
-  DesktopOutlined,
   InfoCircleOutlined,
   BarChartOutlined
 } from '@ant-design/icons'
@@ -16,16 +12,9 @@ import ConversationSidebar from './ConversationSidebar'
 import ProjectSidebarList from './ProjectSidebarList'
 import SidebarNav from './SidebarNav'
 import { ViewHost } from './ViewHost'
-import StatisticsDrawer from './StatisticsDrawer'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
-import LlmSettings from '../settings/LlmSettings'
-import AgentSettings from '../settings/AgentSettings'
-import MemorySettings from '../settings/MemorySettings'
-import EnvironmentSettings from '../settings/EnvironmentSettings'
-import FavoritesSettings from '../settings/FavoritesSettings'
-import AboutSettings from '../settings/AboutSettings'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { ToolState } from '../../tools/types'
@@ -122,20 +111,8 @@ function AppLayout({
   const navigate = useNavigationStore((s) => s.navigate)
   const navigateKind = useNavigationStore((s) => s.navigateKind)
 
-  // Project names for the sidebar's project groups (D14); loaded once.
-  const [projectNames, setProjectNames] = useState<Record<string, string>>({})
-  useEffect(() => {
-    window.electronAPI.projectList?.()
-      .then((projects) => setProjectNames(Object.fromEntries(projects.map((p) => [p.id, p.name]))))
-      .catch(() => {})
-  }, [])
-
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsView, setSettingsView] = useState<string>('environment')
   // The history area's tab: the conversation list or the project list.
   const [listTab, setListTab] = useState<'chats' | 'projects'>('chats')
-  const [statisticsOpen, setStatisticsOpen] = useState(false)
-  const [aboutOpen, setAboutOpen] = useState(false)
   const { token } = theme.useToken()
   const { t } = useTranslation()
 
@@ -143,31 +120,11 @@ function AppLayout({
   const activeConvTitle = typeof activeConversationKey === 'string'
     ? conversations.find((c) => c.key === activeConversationKey)?.label
     : undefined
-
-  // Inject layout-owned callbacks into children (onOpenSettings, onOpenAbout)
-  const childrenWithLayoutProps = React.isValidElement(children)
-    ? React.cloneElement(children, {
-        onOpenSettings: () => { setSettingsView('settings'); setSettingsOpen(true) },
-        onOpenAbout: () => setAboutOpen(true)
-      } as Record<string, unknown>)
-    : children
-
-  const renderSettingsView = useCallback((key: string) => {
-    switch (key) {
-      case 'favorites':
-        return <FavoritesSettings inline open onClose={() => setSettingsView('favorites')} />
-      case 'memory':
-        return memoryManager ? <MemorySettings inline open onClose={() => setSettingsView('favorites')} memoryManager={memoryManager} /> : null
-      case 'assistant':
-        return <AgentSettings inline open onClose={() => setSettingsView('favorites')} />
-      case 'settings':
-        return <LlmSettings inline open onClose={() => {}} />
-      case 'environment':
-        return <EnvironmentSettings inline open onClose={() => setSettingsView('favorites')} />
-      default:
-        return null
-    }
-  }, [memoryManager])
+  // Sidebar highlight key: only while a chat view is open. Both history tabs
+  // (对话 and 项目) take it, so the open conversation reads as active in either.
+  const activeChatKey = view.kind === 'chat' && typeof activeConversationKey === 'string'
+    ? activeConversationKey
+    : undefined
 
   // With the sidebar collapsed the header starts at the window's left edge, so the
   // macOS traffic lights land on it and its content has to move out of their way.
@@ -240,7 +197,7 @@ function AppLayout({
           justifyContent: 'space-between',
           WebkitAppRegion: 'drag'
         } as React.CSSProperties}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#000', cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => setAboutOpen(true)}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#000', cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigateKind('about')}>
             {t('appLayout.title')}
           </div>
           <Switch
@@ -254,8 +211,11 @@ function AppLayout({
           />
         </div>
         <SidebarNav canCreateNew={canCreateNew} onCreateNew={onCreateNew} />
-        <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-          <div className="sidebar-list-track">
+        {/* Tab switcher is pinned; only the list below it scrolls. */}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          {/* alignSelf: the track is a pill sized to its labels (inline-flex in
+              the stylesheet); as a flex child it would otherwise stretch full-width. */}
+          <div className="sidebar-list-track" style={{ flexShrink: 0, alignSelf: 'flex-start' }}>
             <Button type="text" className={`sidebar-list-tab${listTab === 'chats' ? ' on' : ''}`} onClick={() => setListTab('chats')}>
               {t('appLayout.listTabChats')}
             </Button>
@@ -263,58 +223,66 @@ function AppLayout({
               {t('appLayout.listTabProjects')}
             </Button>
           </div>
-          {listTab === 'chats' ? (
-            conversations.length === 0 ? (
-              <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>
-                {t('appLayout.noConversations')}
-              </div>
+          <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+            {listTab === 'chats' ? (
+              conversations.length === 0 ? (
+                <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>
+                  {t('appLayout.noConversations')}
+                </div>
+              ) : (
+                <ConversationSidebar
+                conversations={conversations}
+                activeKey={activeChatKey}
+                onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
+                onDelete={onDeleteConversation}
+                onRename={onRenameConversation}
+                onTogglePin={onTogglePinConversation}
+                activeLoopConvIds={activeLoopConvIds}
+                retryingConvIds={retryingConvIds}
+                />
+              )
             ) : (
-              <ConversationSidebar
-              conversations={conversations}
-              projectNamesById={projectNames}
-              activeKey={view.kind === 'chat' ? activeConversationKey : undefined}
-              onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
-              onDelete={onDeleteConversation}
-              onRename={onRenameConversation}
-              onTogglePin={onTogglePinConversation}
-              activeLoopConvIds={activeLoopConvIds}
-              retryingConvIds={retryingConvIds}
+              <ProjectSidebarList
+                conversations={conversations}
+                activeKey={activeChatKey}
+                activeLoopConvIds={activeLoopConvIds}
+                retryingConvIds={retryingConvIds}
+                onOpenProject={(projectId) => navigate({ kind: 'project', projectId })}
+                onOpenConversation={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
+                onDelete={onDeleteConversation}
+                onRename={onRenameConversation}
+                onTogglePin={onTogglePinConversation}
               />
-            )
-          ) : (
-            <ProjectSidebarList
-              conversations={conversations}
-              onOpenProject={(projectId) => navigate({ kind: 'project', projectId })}
-              onOpenConversation={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
-            />
-          )}
+            )}
+          </div>
         </div>
         <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 4, borderTop: '1px solid #f0f0f0' }}>
+          {/* Bottom entries navigate to standard views (the former modal/drawers). */}
           <Tooltip title={t('menu.settings')}>
             <Button
               type="text"
-              className="sidebar-icon-btn"
+              className={`sidebar-icon-btn${view.kind === 'settings' ? ' active-mode-btn' : ''}`}
               aria-label={t('menu.settings')}
               icon={<SettingOutlined style={{ fontSize: 16 }} />}
-              onClick={() => { setSettingsView('settings'); setSettingsOpen(true) }}
+              onClick={() => navigateKind('settings')}
             />
           </Tooltip>
           <Tooltip title={t('sessionManager.statsTooltip')}>
             <Button
               type="text"
-              className="sidebar-icon-btn"
+              className={`sidebar-icon-btn${view.kind === 'usage' ? ' active-mode-btn' : ''}`}
               aria-label={t('sessionManager.statsTooltip')}
               icon={<BarChartOutlined style={{ fontSize: 16 }} />}
-              onClick={() => setStatisticsOpen(true)}
+              onClick={() => navigateKind('usage')}
             />
           </Tooltip>
           <Tooltip title={t('menu.about')}>
             <Button
               type="text"
-              className="sidebar-icon-btn"
+              className={`sidebar-icon-btn${view.kind === 'about' ? ' active-mode-btn' : ''}`}
               aria-label={t('menu.about')}
               icon={<InfoCircleOutlined style={{ fontSize: 16 }} />}
-              onClick={() => setAboutOpen(true)}
+              onClick={() => navigateKind('about')}
             />
           </Tooltip>
         </div>
@@ -374,12 +342,13 @@ function AppLayout({
               overflow: 'hidden', minWidth: 0
             }}>
               <div style={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
-                {childrenWithLayoutProps}
+                {children}
               </div>
             </div>
             {view.kind !== 'chat' && (
               <ViewHost
                 knowledgeManager={knowledgeManager}
+                memoryManager={memoryManager}
                 tools={tools}
                 skills={skills}
                 onToggleSkill={onToggleSkill}
@@ -390,78 +359,11 @@ function AppLayout({
                 conversations={conversations}
                 onSelectConversation={onSelectConversation}
                 onCreateProjectConversation={onCreateProjectConversation}
-                onOpenMemory={() => { setSettingsView('memory'); setSettingsOpen(true) }}
               />
             )}
           </div>
         </Content>
       </Layout>
-
-      <Modal
-        open={settingsOpen}
-        onCancel={() => setSettingsOpen(false)}
-        footer={null}
-        width={700}
-        closable={false}
-        style={{ top: 60 }}
-      >
-        <div style={{ display: 'flex', height: 520 }}>
-          {/* Left sidebar menu */}
-          <div style={{ width: 150, flexShrink: 0, borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ paddingRight: 8, overflow: 'auto', flex: 1 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {[
-                { key: 'environment', icon: <DesktopOutlined />, label: t('appLayout.environment') },
-                { key: 'settings', icon: <SettingOutlined />, label: t('appLayout.settings') },
-                { key: 'assistant', icon: <UserOutlined />, label: t('appLayout.assistant') },
-                { key: 'memory', icon: <BookOutlined />, label: t('appLayout.memory') },
-                { key: 'favorites', icon: <StarOutlined />, label: t('appLayout.favorites') },
-              ].map((item) => (
-                <div
-                  key={item.key}
-                  onClick={() => setSettingsView(item.key)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '9px 12px', borderRadius: 6, cursor: 'pointer',
-                    fontSize: 13, color: '#333', transition: 'background 0.15s',
-                    background: settingsView === item.key ? '#f0f0f0' : 'transparent'
-                  }}
-                  onMouseEnter={(e) => {
-                    if (settingsView !== item.key) e.currentTarget.style.background = '#f5f5f5'
-                  }}
-                  onMouseLeave={(e) => {
-                    if (settingsView !== item.key) e.currentTarget.style.background = 'transparent'
-                  }}
-                >
-                  <span style={{ fontSize: 15, flexShrink: 0 }}>{item.icon}</span>
-                  <span>{item.label}</span>
-                </div>
-              ))}
-            </div>
-            </div>
-
-            <div style={{ padding: '16px 12px 8px', fontSize: 11, color: '#bbb', textAlign: 'left' }}>
-              PulseMind v{__APP_VERSION__}
-            </div>
-          </div>
-
-          {/* Right content area */}
-          <div style={{ flex: 1, overflow: 'auto' }} className="settings-scroll">
-            <div style={{ padding: '0 20px' }}>
-              {renderSettingsView(settingsView)}
-            </div>
-          </div>
-        </div>
-      </Modal>
-
-      <StatisticsDrawer
-        open={statisticsOpen}
-        onClose={() => setStatisticsOpen(false)}
-      />
-      <AboutSettings
-        open={aboutOpen}
-        onClose={() => setAboutOpen(false)}
-      />
 
       {/* Force antd's sider-children wrapper to be a flex column so our flex:1 on the conversation list works */}
       <style>{`
@@ -539,6 +441,10 @@ function AppLayout({
         }
         .sidebar-icon-btn:hover {
           background: rgba(0, 0, 0, 0.06) !important;
+        }
+        /* The open view (settings/usage/about) keeps its entry highlighted. */
+        .sidebar-icon-btn.active-mode-btn {
+          background: rgba(0, 0, 0, 0.08) !important;
         }
 
         /* History area switcher: a shared light-gray pill track, sized to the

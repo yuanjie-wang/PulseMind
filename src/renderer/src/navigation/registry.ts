@@ -65,5 +65,8 @@ export const VIEW_TITLE_KEY: Record<AppViewKind, string> = {
   capability: 'viewTitle.capability',
   knowledge: 'viewTitle.knowledge',
   tools: 'viewTitle.tools',
+  settings: 'viewTitle.settings',
+  usage: 'viewTitle.usage',
+  about: 'viewTitle.about',
   canvas: 'appLayout.newCanvas',
 }

@@ -1,6 +1,10 @@
+// ── Usage statistics page ──
+// Formerly StatisticsDrawer, a standard view since PLAN-0.4.0. Fetches on mount
+// (the page unmounts when the user leaves the view, so every visit re-fetches)
+// and renders the hourly/daily/monthly stacked token charts.
+
 import React, { useEffect, useRef, useState } from 'react'
-import { Drawer, Typography, Spin, Empty, theme } from 'antd'
-import { BarChartOutlined } from '@ant-design/icons'
+import { Typography, Spin, Empty, theme } from 'antd'
 import * as echarts from 'echarts'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { TokenStats } from '../../types/conversation'
@@ -10,26 +14,24 @@ const { Text, Title } = Typography
 const OUTPUT_COLOR = '#1d1d1f'
 const INPUT_COLOR = '#d4d4d4'
 
-interface StatisticsDrawerProps {
-  open: boolean
-  onClose: () => void
-}
-
-function StatisticsDrawer({ open, onClose }: StatisticsDrawerProps): React.ReactElement {
+function StatisticsPage(): React.ReactElement {
   const { t } = useTranslation()
   const { token } = theme.useToken()
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [stats, setStats] = useState<TokenStats | null>(null)
   const isDark = token.colorBgElevated === '#1c1c1e'
 
   useEffect(() => {
-    if (!open) return
-    setLoading(true)
+    let cancelled = false
     window.electronAPI.getTokenStats().then((data) => {
+      if (cancelled) return
       setStats(data)
       setLoading(false)
     })
-  }, [open])
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const hasData =
     stats &&
@@ -41,63 +43,57 @@ function StatisticsDrawer({ open, onClose }: StatisticsDrawerProps): React.React
     })()
 
   return (
-    <Drawer
-      title={
-        <span>
-          <BarChartOutlined style={{ marginRight: 8 }} />
-          {t('statisticsDrawer.title')}
-        </span>
-      }
-      open={open}
-      onClose={onClose}
-      size={680}
-    >
-      {loading ? (
-        <div style={{ textAlign: 'center', paddingTop: 80 }}>
-          <Spin size="large" />
-        </div>
-      ) : !hasData ? (
-        <Empty
-          description={<Text type="secondary">{t('statisticsDrawer.noData')}</Text>}
-        />
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 40, paddingBottom: 24 }}>
-          <ChartSection
-            title={t('statisticsDrawer.hourlyTitle')}
-            data={stats!.hourly.map((d) => ({
-              label: d.time.slice(11, 16),
-              input: d.inputTokens,
-              output: d.outputTokens
-            }))}
-            inputLabel={t('statisticsDrawer.inputLabel')}
-            outputLabel={t('statisticsDrawer.outputLabel')}
-            isDark={isDark}
-          />
-          <ChartSection
-            title={t('statisticsDrawer.dailyTitle')}
-            data={stats!.daily.map((d) => ({
-              label: d.date.slice(5),
-              input: d.inputTokens,
-              output: d.outputTokens
-            }))}
-            inputLabel={t('statisticsDrawer.inputLabel')}
-            outputLabel={t('statisticsDrawer.outputLabel')}
-            isDark={isDark}
-          />
-          <ChartSection
-            title={t('statisticsDrawer.monthlyTitle')}
-            data={stats!.monthly.map((d) => ({
-              label: d.month,
-              input: d.inputTokens,
-              output: d.outputTokens
-            }))}
-            inputLabel={t('statisticsDrawer.inputLabel')}
-            outputLabel={t('statisticsDrawer.outputLabel')}
-            isDark={isDark}
-          />
-        </div>
-      )}
-    </Drawer>
+    <div style={{ height: '100%', overflow: 'auto', background: '#fff' }} className="settings-scroll">
+      <div style={{ maxWidth: 760, margin: '0 auto', padding: '8px 24px 24px' }}>
+        {loading ? (
+          <div style={{ textAlign: 'center', paddingTop: 80 }}>
+            <Spin size="large" />
+          </div>
+        ) : !hasData ? (
+          <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 80 }}>
+            <Empty
+              description={<Text type="secondary">{t('statisticsDrawer.noData')}</Text>}
+            />
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 40, paddingBottom: 24 }}>
+            <ChartSection
+              title={t('statisticsDrawer.hourlyTitle')}
+              data={stats!.hourly.map((d) => ({
+                label: d.time.slice(11, 16),
+                input: d.inputTokens,
+                output: d.outputTokens
+              }))}
+              inputLabel={t('statisticsDrawer.inputLabel')}
+              outputLabel={t('statisticsDrawer.outputLabel')}
+              isDark={isDark}
+            />
+            <ChartSection
+              title={t('statisticsDrawer.dailyTitle')}
+              data={stats!.daily.map((d) => ({
+                label: d.date.slice(5),
+                input: d.inputTokens,
+                output: d.outputTokens
+              }))}
+              inputLabel={t('statisticsDrawer.inputLabel')}
+              outputLabel={t('statisticsDrawer.outputLabel')}
+              isDark={isDark}
+            />
+            <ChartSection
+              title={t('statisticsDrawer.monthlyTitle')}
+              data={stats!.monthly.map((d) => ({
+                label: d.month,
+                input: d.inputTokens,
+                output: d.outputTokens
+              }))}
+              inputLabel={t('statisticsDrawer.inputLabel')}
+              outputLabel={t('statisticsDrawer.outputLabel')}
+              isDark={isDark}
+            />
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -196,4 +192,4 @@ function ChartSection({ title, data, inputLabel, outputLabel, isDark }: ChartSec
   )
 }
 
-export default StatisticsDrawer
+export default StatisticsPage
