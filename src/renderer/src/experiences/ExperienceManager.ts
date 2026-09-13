@@ -15,6 +15,17 @@ export class ExperienceManager {
   private cachedAt = 0
   private readonly CACHE_TTL_MS = 60_000
   private skillKeywordAgent = new SkillKeywordAgent()
+  /** Feature master switch (设置 → 经验). Off = the agent neither sees the
+   *  experience index nor trigger-matches; existing records stay browsable. */
+  private enabled = true
+
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled
+  }
+
+  isEnabled(): boolean {
+    return this.enabled
+  }
 
   private async ensureCached(): Promise<ExperienceRecord[]> {
     if (Date.now() - this.cachedAt > this.CACHE_TTL_MS) {
@@ -59,6 +70,7 @@ export class ExperienceManager {
    * match the latest user message. Zero cost when nothing matches.
    */
   async matchByTriggers(userText: string): Promise<ExperienceRecord[]> {
+    if (!this.enabled) return []
     const records = await this.ensureCached()
     if (records.length === 0 || !userText) return []
     const lower = userText.toLowerCase()
@@ -77,6 +89,7 @@ export class ExperienceManager {
    * can pick_skill an experience by name to read it in full.
    */
   async buildNameIndex(): Promise<string | null> {
+    if (!this.enabled) return null
     const records = await this.ensureCached()
     if (records.length === 0) return null
     return `## Experience Index

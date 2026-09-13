@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { Modal, Tag, Typography, Alert, Button, Tooltip, Popconfirm, Empty, Spin, Card } from 'antd'
-import { DeleteOutlined, EyeOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
 import { MAX_EXPERIENCES } from '../../../../shared/types/experience-types'
 import type { ExperienceRecord } from '../../../../shared/types/experience-types'
+import { useSettings } from '../../hooks/SettingsContext'
+import FeatureSwitch from './FeatureSwitch'
 
-const { Paragraph } = Typography
+const { Text, Paragraph } = Typography
 
 const CATEGORY_COLORS: Record<string, string> = {
   code: 'blue',
@@ -14,12 +16,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   general: 'default'
 }
 
-/** Header action the capability center renders next to its pill tabs. */
-export interface ExperiencePanelHandle {
-  refresh: () => void
-}
-
-const ExperiencePanel = React.forwardRef<ExperiencePanelHandle>(function ExperiencePanel(_props, ref) {
+/** 设置 → 经验：经验列表（原能力中心面板，连同其全局开关一并迁入）。 */
+const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
+  const { settings, saveSettings } = useSettings()
+  const experienceOn = settings.experienceEnabled ?? true
   const [experiences, setExperiences] = useState<ExperienceRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [viewName, setViewName] = useState<string | null>(null)
@@ -65,11 +65,21 @@ const ExperiencePanel = React.forwardRef<ExperiencePanelHandle>(function Experie
     }
   }, [refresh])
 
-  // Expose the former title-row action to the capability center's pill row.
-  React.useImperativeHandle(ref, () => ({ refresh }))
-
   const content = (
     <>
+      {/* Section title + refresh — matches the 记忆 section's title row. */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+        <Text strong style={{ fontSize: 16 }}>经验</Text>
+        <Tooltip title="重新加载经验列表">
+          <Button size="small" icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>
+        </Tooltip>
+      </div>
+      <FeatureSwitch
+        label="自动沉淀经验"
+        help="开启后，符合条件（任务复杂、有纠错或非平凡流程）的对话结束时会自动提炼经验；关闭后不再自动沉淀，已有经验保留可查看。"
+        checked={experienceOn}
+        onChange={(checked) => saveSettings({ ...settings, experienceEnabled: checked })}
+      />
       <Alert
         type="info"
         showIcon
@@ -147,6 +157,6 @@ const ExperiencePanel = React.forwardRef<ExperiencePanelHandle>(function Experie
       </Modal>
     </>
   )
-})
+}
 
 export default ExperiencePanel

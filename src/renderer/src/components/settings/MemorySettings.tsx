@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Drawer, Typography, Space, Button, Tag, Empty, Popconfirm, Input, message, Spin } from 'antd'
+import { Drawer, Typography, Space, Button, Tag, Empty, Popconfirm, Input, message, Spin, Card } from 'antd'
 import { BookOutlined, ClearOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { useSettings } from '../../hooks/SettingsContext'
 import { MemoryManager } from '../../memory/MemoryManager'
 import type { MemoryEntry } from '../../memory/types'
+import FeatureSwitch from './FeatureSwitch'
 
-const { Text } = Typography
+const { Text, Paragraph } = Typography
 
 interface MemorySettingsProps {
   open: boolean
@@ -30,6 +32,9 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
   const [mdContent, setMdContent] = useState('')
   const [messageApi, contextHolder] = message.useMessage()
   const { t } = useTranslation()
+  const { settings, saveSettings } = useSettings()
+  // 设置 → 记忆 master switch: gates auto extraction + prompt injection.
+  const memoryOn = settings.memoryEnabled ?? true
 
   const TYPE_LABELS: Record<string, string> = {
     fact: t('memoryDrawer.type.fact'),
@@ -76,11 +81,9 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
 
   useEffect(() => {
     if (open) {
-      const t0 = performance.now()
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- async data load, no cascading renders
       loadMemories()
       loadMd()
-      setSearchQuery('')
-      console.log(`[MemoryPanel] view mounted, effect scheduled at ${(performance.now() - t0).toFixed(1)}ms`)
     }
   }, [open, loadMemories, loadMd, memoryManager])
 
@@ -131,6 +134,14 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
       {contextHolder}
 
       <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>{t('memoryDrawer.title')}</Text>
+
+      {/* ── Master switch (设置 → 记忆) ── */}
+      <FeatureSwitch
+        label={t('memoryDrawer.masterSwitch')}
+        help={t('memoryDrawer.masterSwitchHelp')}
+        checked={memoryOn}
+        onChange={(checked) => saveSettings({ ...settings, memoryEnabled: checked })}
+      />
 
       {/* ── Manual Memories Editor ── */}
       <div style={{ marginBottom: 16 }}>
@@ -205,7 +216,7 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
         </Space>
       </div>
 
-      {/* ── Memory list ── */}
+      {/* ── Memory cards ── */}
       {loading ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           <Spin />
@@ -215,24 +226,17 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
           description={t('memoryDrawer.empty')}
         />
       ) : (
-        <div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
           {memories.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                padding: '8px 0',
-                borderBottom: '1px solid #f0f0f0'
-              }}
-            >
-              {/* Top row: tags + buttons */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <Space size={4}>
-                  <Tag color={CATEGORY_COLORS[item.category] || 'default'}>
+            <Card key={item.id} size="small" style={{ borderRadius: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 4, marginBottom: 6 }}>
+                <Space size={4} wrap style={{ minWidth: 0 }}>
+                  <Tag color={CATEGORY_COLORS[item.category] || 'default'} style={{ marginInlineEnd: 0 }}>
                     {CATEGORY_LABELS[item.category] || item.category}
                   </Tag>
-                  <Tag>{TYPE_LABELS[item.type] || item.type}</Tag>
+                  <Tag style={{ marginInlineEnd: 0 }}>{TYPE_LABELS[item.type] || item.type}</Tag>
                 </Space>
-                <Space size={2}>
+                <Space size={0} style={{ flexShrink: 0 }}>
                   <Button type="text" size="small" icon={<CopyOutlined style={{ color: '#bbb' }} />} onClick={() => {
                     navigator.clipboard.writeText(item.content)
                     messageApi.success(t('common.copy'))
@@ -248,15 +252,16 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
                   </Popconfirm>
                 </Space>
               </div>
-              {/* Content */}
-              <Text style={{ fontSize: 13, display: 'block' }}>{item.content}</Text>
-              <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+              <Paragraph style={{ margin: 0, fontSize: 13 }} ellipsis={{ rows: 3, expandable: true }}>
+                {item.content}
+              </Paragraph>
+              <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
                 {(() => {
                   const d = new Date(item.createdAt)
                   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
                 })()}
               </Text>
-            </div>
+            </Card>
           ))}
         </div>
       )}

@@ -250,7 +250,9 @@ export class MemoryManager {
     locale?: string,
     stats?: { toolCallCount: number; toolErrorCount: number }
   ): Promise<{ title: string | null; content: string | null; category: string | null }> {
-    if (!this.prefs.autoCaptureEnabled || !apiKey) return { title: null, content: null, category: null }
+    // Experience enablement is the caller's concern (settings-driven backfill);
+    // the memory autoCapture pref must not gate this experience-only pipeline.
+    if (!apiKey) return { title: null, content: null, category: null }
 
     let cursor = 0
     // --- Incremental cursor: only analyze messages after the last processed one ---
@@ -352,9 +354,13 @@ export class MemoryManager {
     adapter: LlmAdapter,
     model: string,
     conversationId?: string,
-    locale?: string
+    locale?: string,
+    /** Feature master switches (设置 → 记忆/经验). Absent = both on. */
+    featureFlags?: { memory?: boolean; experience?: boolean }
   ): Promise<{ memories: number; experienceTitle: string | null; experienceContent: string | null; experienceCategory: string | null }> {
-    if (!this.prefs.autoCaptureEnabled || !apiKey) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+    const memoryOn = featureFlags?.memory !== false
+    const experienceOn = featureFlags?.experience !== false
+    if (!apiKey || (!memoryOn && !experienceOn)) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
 
     // Unify on text-only messages (user/assistant with a text block) — same
     // cursor semantics as extractAndSaveExperiences, so the two pipelines
@@ -413,8 +419,6 @@ export class MemoryManager {
         { llmConfig: { adapter, apiKey, baseURL, model }, maxTokens: 4000 }
       )
 
-      let memoriesSaved = 0
-
       // --- Save conversation summary ---
       if (conversationId && result.summary) {
         const trimmed = result.summary.slice(0, 200)
@@ -440,23 +444,26 @@ export class MemoryManager {
       const validTypes = ['auto', 'manual', 'fact', 'decision', 'preference']
       const validCategories = ['code', 'architecture', 'user_pref', 'decision', 'general']
 
-      for (const mem of result.memories) {
-        if (!mem.content || mem.content.length < 10) continue
-        const entry = await this.saveMemory({
-          content: mem.content,
-          type: validTypes.includes(mem.type) ? (mem.type as MemoryCreateInput['type']) : 'auto',
-          category: validCategories.includes(mem.category)
-            ? (mem.category as MemoryCreateInput['category'])
-            : 'general'
-        })
-        if (entry) memoriesSaved++
+      let memoriesSaved = 0
+      if (memoryOn) {
+        for (const mem of result.memories) {
+          if (!mem.content || mem.content.length < 10) continue
+          const entry = await this.saveMemory({
+            content: mem.content,
+            type: validTypes.includes(mem.type) ? (mem.type as MemoryCreateInput['type']) : 'auto',
+            category: validCategories.includes(mem.category)
+              ? (mem.category as MemoryCreateInput['category'])
+              : 'general'
+          })
+          if (entry) memoriesSaved++
+        }
       }
 
       // --- Extract experience (don't save to memories — caller saves to knowledge base) ---
       let experienceTitle: string | null = null
       let experienceContent: string | null = null
       let experienceCategory: string | null = null
-      if (result.experience && result.experience.content) {
+      if (experienceOn && result.experience && result.experience.content) {
         const title = result.experience.title
         experienceTitle = typeof title === 'string' && title ? title : null
         const cat = result.experience.category
@@ -465,7 +472,7 @@ export class MemoryManager {
       }
 
       // Check if memory compression is needed
-      await this.ensureMemoryCompressed()
+      if (memoryOn) await this.ensureMemoryCompressed()
 
       // Mark conversation as processed — bump BOTH counters (memory + experience).
       // extractAndSaveAll extracts memories AND experiences together, so the

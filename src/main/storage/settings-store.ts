@@ -35,7 +35,9 @@ const FALLBACK_SETTINGS: AppSettings = {
   yoloMode: true,
   locale: 'zh',
   launchAtLogin: false,
-  serviceEnabled: true
+  serviceEnabled: true,
+  memoryEnabled: true,
+  experienceEnabled: true
 }
 
 /**
@@ -95,6 +97,8 @@ export class SettingsStore {
           launchAtLogin: parsed.launchAtLogin ?? false,
           serviceEnabled: parsed.serviceEnabled ?? true,
           servicePort: parsed.servicePort ?? undefined,
+          memoryEnabled: parsed.memoryEnabled ?? true,
+          experienceEnabled: parsed.experienceEnabled ?? true,
         }
         cache = { mtimeMs: stats.mtimeMs, settings: result }
         return structuredClone(result)
@@ -133,7 +137,9 @@ export class SettingsStore {
       workspaceDir: DEFAULT_WORKSPACE_DIR,
       autoCleanup: false,
       yoloMode: true,
-      locale: 'zh'
+      locale: 'zh',
+      memoryEnabled: true,
+      experienceEnabled: true
     }
   }
 

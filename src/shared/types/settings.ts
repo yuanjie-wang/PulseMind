@@ -29,6 +29,10 @@ export interface AppSettings {
   serviceEnabled?: boolean
   servicePort?: number
   git?: { contextInjection?: boolean }
+  /** 记忆系统总开关：会话后自动提取 + 记忆注入系统提示。默认开。手动记忆编辑不受影响。 */
+  memoryEnabled?: boolean
+  /** 经验系统总开关：会话后自动沉淀 + 经验索引注入系统提示。默认开。已有经验保留可查看。 */
+  experienceEnabled?: boolean
   /** Browser runtime (A-M4). */
   browser?: {
     /** Default backend for conversations that never chose one ('managed'). */
