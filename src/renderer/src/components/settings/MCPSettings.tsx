@@ -1,10 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Button, Card, Tag, Tooltip, Modal, Input, Form, Radio, Segmented } from 'antd'
+import { Button, Card, Switch, Tag, Tooltip, Modal, Input, Form, Radio, Segmented } from 'antd'
 import {
   ApiOutlined,
   ReloadOutlined,
-  PlayCircleOutlined,
-  StopOutlined,
   CloseCircleOutlined,
   LinkOutlined,
   ToolOutlined,
@@ -30,9 +28,6 @@ const TRANSPORT_LABEL: Record<string, string> = {
   sse: 'SSE',
   'streamable-http': 'HTTP',
 }
-
-/** Connectors the app registers for itself: no editable config, and not deletable. */
-const BUILT_IN_IDS = new Set(['chrome-devtools'])
 
 /** The form edits headers as key/value rows; MCPClientConfig stores a record. */
 interface HeaderRow {
@@ -63,14 +58,6 @@ const ICON_TILE: React.CSSProperties = {
   flexShrink: 0,
   background: 'rgba(0, 0, 0, 0.05)',
   color: '#555',
-}
-
-const TOOL_TAG: React.CSSProperties = {
-  fontSize: 11,
-  margin: 0,
-  border: 'none',
-  background: 'rgba(0, 0, 0, 0.05)',
-  color: '#666',
 }
 
 function ServerStatusLine({ status }: { status: MCPManagedServer['status'] }): React.ReactElement {
@@ -105,8 +92,7 @@ interface McpServerCardProps {
 /** Connector card. Card's own title/extra/actions bands are deliberately unused —
  *  three chrome rows on a narrow card was the bulk of the old card's clutter.
  *  Header, a one-line endpoint and the collapsed tool list all live in the body.
- *  Custom connectors open the edit dialog on card click; the built-in one does
- *  not, because its config is regenerated on every boot. */
+ *  The whole card is the edit affordance. */
 function McpServerCard({
   server,
   busy,
@@ -116,12 +102,11 @@ function McpServerCard({
   onRestart,
   onDelete
 }: McpServerCardProps): React.ReactElement {
-  const isBuiltIn = BUILT_IN_IDS.has(server.id)
-  const editable = !isBuiltIn
-  const openEditor = editable ? onOpenEditor : undefined
   const transport = server.config.transportType || 'stdio'
   const isRemote = transport === 'sse' || transport === 'streamable-http'
   const connected = server.status === 'connected'
+  // The switch reads "on" while connecting too; flipping it stops/starts the server.
+  const active = connected || server.status === 'connecting'
   const endpoint = isRemote
     ? server.config.url || ''
     : [server.config.command, ...(server.config.args ?? [])].filter(Boolean).join(' ')
@@ -134,20 +119,20 @@ function McpServerCard({
   // Keyboard parity for the click-to-edit card; inner buttons must keep their
   // own key handling, so only the card's own target counts.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (!openEditor || e.target !== e.currentTarget) return
+    if (e.target !== e.currentTarget) return
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      openEditor()
+      onOpenEditor()
     }
   }
 
   return (
     <Card
-      hoverable={editable}
-      onClick={openEditor}
+      hoverable
+      onClick={onOpenEditor}
       onKeyDown={handleKeyDown}
-      tabIndex={editable ? 0 : undefined}
-      style={{ borderRadius: 10, height: '100%', cursor: editable ? 'pointer' : undefined }}
+      tabIndex={0}
+      style={{ borderRadius: 10, height: '100%', cursor: 'pointer' }}
       styles={{
         body: { padding: 14, height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }
       }}
@@ -161,11 +146,6 @@ function McpServerCard({
             <span style={{ fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {server.name}
             </span>
-            {isBuiltIn && (
-              <Tag style={{ ...TOOL_TAG, lineHeight: '15px', padding: '0 5px', color: '#888', flexShrink: 0 }}>
-                内置
-              </Tag>
-            )}
           </div>
           <div
             style={{
@@ -186,37 +166,29 @@ function McpServerCard({
           </div>
         </div>
         {/* Always-visible actions. Clicks are kept off the card so an action
-            never doubles as "open the editor". */}
+            never doubles as "open the editor". Same switch-first row as the
+            skill and expert cards. */}
         <div
           style={{ display: 'flex', alignItems: 'center', flexShrink: 0, marginTop: -2, marginRight: -6 }}
           onClick={(e) => e.stopPropagation()}
         >
-          {connected ? (
-            <>
-              <Tooltip title="停止">
-                <Button type="text" size="small" icon={<StopOutlined />} onClick={onStop} />
-              </Tooltip>
-              <Tooltip title="重启">
-                <Button type="text" size="small" icon={<ReloadOutlined />} disabled={busy} onClick={onRestart} />
-              </Tooltip>
-            </>
-          ) : (
-            <Tooltip title="启动">
-              <Button
-                type="text"
-                size="small"
-                icon={<PlayCircleOutlined />}
-                loading={busy}
-                disabled={server.status === 'connecting'}
-                onClick={onStart}
-              />
+          <Tooltip title={active ? '停止' : '启动'}>
+            <Switch
+              size="small"
+              checked={active}
+              loading={busy}
+              disabled={server.status === 'connecting'}
+              onClick={() => (active ? onStop() : onStart())}
+            />
+          </Tooltip>
+          {connected && (
+            <Tooltip title="重启">
+              <Button type="text" size="small" icon={<ReloadOutlined />} disabled={busy} onClick={onRestart} />
             </Tooltip>
           )}
-          {!isBuiltIn && (
-            <Tooltip title="删除">
-              <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={onDelete} />
-            </Tooltip>
-          )}
+          <Tooltip title="删除">
+            <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={onDelete} />
+          </Tooltip>
         </div>
       </div>
 
@@ -402,7 +374,6 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
   }
 
   const handleDelete = async (server: MCPManagedServer) => {
-    if (BUILT_IN_IDS.has(server.id)) return
     Modal.confirm({
       title: '确认删除',
       content: `确定要删除连接器 "${server.name}" 吗？`,
@@ -458,14 +429,10 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
   // Expose the former title-row actions to the capability center's pill row.
   React.useImperativeHandle(ref, () => ({ reloadFromDisk, openAddModal }))
 
-  // The built-in connector stays registered for the agent, but it has no user-facing
-  // config to show — its card is hidden until the browser tool is reworked.
-  const visibleServers = servers.filter((s) => !BUILT_IN_IDS.has(s.id))
-
   const content = (
     <>
       <style>{CARD_CSS}</style>
-      {visibleServers.length === 0 ? (
+      {servers.length === 0 ? (
         <div style={{ padding: '56px 24px', textAlign: 'center' }}>
           <div style={{ ...ICON_TILE, width: 44, height: 44, borderRadius: 13, margin: '0 auto 12px', background: 'rgba(0, 0, 0, 0.04)' }}>
             <ApiOutlined style={{ fontSize: 20, color: '#bbb' }} />
@@ -483,7 +450,7 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
             gap: 14
           }}
         >
-          {visibleServers.map((server) => (
+          {servers.map((server) => (
             <McpServerCard
               key={server.id}
               server={server}

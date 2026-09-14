@@ -70,6 +70,10 @@ Workflow:
 4. For complex pages, build incrementally: generate a basic structure first, then refine
 5. When you are done, output the final HTML in a code block (no need to call finish — the result is captured automatically)`
 
+/** Tool whitelist for the canvas runtime: file/shell work plus skill invocation,
+ *  pinned per rectangle so a generation can never reach the wider toolset. */
+const CANVAS_TOOLS = ['read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec', 'pick_skill']
+
 export const STYLE_GUIDES: Record<string, string> = {
   phoneApp: 'Design it as a mobile app interface (iOS/Android style) with native-feeling UI components, tab bars, and mobile navigation patterns.',
   tabletApp: 'Design it as a tablet app interface with split-view capable layouts, sidebar navigation, and larger touch targets.',
@@ -286,60 +290,24 @@ export function createCanvasEngine(config: CanvasEngineConfig, envCfg: { width?:
         rejectStart = reject
         pendingGeneration = true
 
-        // Fetch profile from canvas sub-agent, fall back to hardcoded defaults
-        window.electronAPI.subagentList()
-          .then((profiles) => {
-            const p = profiles.find((p: any) => p.id === 'subagent-canvas')
+        // Canvas runs its own persona and tool whitelist — it is a specialized
+        // runtime, not an expert profile, so nothing is resolved from the DB.
+        ;(engine as any).allowedToolsSet = new Set(CANVAS_TOOLS)
 
-            // Respect the enabled toggle — a disabled canvas sub-agent blocks generation
-            if (p?.enabled === false) {
-              pendingGeneration = false
-              rejectStart?.(new Error('画布子代理已关闭，请在 设置 → 子代理管理 中启用后再生成'))
-              return null
-            }
+        // Build system prompt from env context + base prompt
+        let fullPrompt = buildEnvContext({ ...envCfg, workDir: config.workDir }) + '\n\n' + CANVAS_SYSTEM_PROMPT
 
-            // Apply allowedMcpServers from profile so MCP discovery works
-            if (p?.allowedMcpServers) {
-              ;(engine as any).allowedMcpServersSet = new Set(p.allowedMcpServers)
-            }
+        // Append available skills context so LLM always sees them
+        const skillsCtx = skillManager.getSystemPromptAppendix(config.skillsDir)
+        if (skillsCtx) {
+          fullPrompt += '\n\n' + skillsCtx
+        }
 
-            // Apply allowedTools from profile (with fallback)
-            const allowedTools = p?.allowedTools?.length
-              ? p.allowedTools
-              : ['read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec', 'pick_skill']
-            ;(engine as any).allowedToolsSet = new Set(allowedTools)
-
-            // Apply allowedSkills from profile — disable skills not in the list
-            if (p?.allowedSkills?.length) {
-              const allCanvasSkills = skillManager.getAllSkills()
-              for (const s of allCanvasSkills) {
-                if (!p.allowedSkills.includes(s.definition.name)) {
-                  skillManager.disable(s.definition.name)
-                }
-              }
-            }
-
-            return p?.basePrompt || CANVAS_SYSTEM_PROMPT
-          })
-          .catch(() => CANVAS_SYSTEM_PROMPT)
-          .then((basePrompt) => {
-            if (basePrompt === null) return
-
-            // Build system prompt from env context + base prompt
-            let fullPrompt = buildEnvContext({ ...envCfg, workDir: config.workDir }) + '\n\n' + basePrompt
-
-            // Append available skills context so LLM always sees them
-            const skillsCtx = skillManager.getSystemPromptAppendix(config.skillsDir)
-            if (skillsCtx) {
-              fullPrompt += '\n\n' + skillsCtx
-            }
-
-            ;(engine as any).spawnSystemPrompt = fullPrompt
-            engine.startLoop(userPrompt).catch((err: any) => {
-              pendingGeneration = false
-              reject(err?.message === 'cancelled' ? new Error('cancelled') : (err || new Error('Engine loop failed')))
-            })
-          })
+        ;(engine as any).spawnSystemPrompt = fullPrompt
+        engine.startLoop(userPrompt).catch((err: any) => {
+          pendingGeneration = false
+          reject(err?.message === 'cancelled' ? new Error('cancelled') : (err || new Error('Engine loop failed')))
+        })
       })
     },
 
