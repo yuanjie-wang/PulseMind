@@ -16,6 +16,41 @@ export const PANE_DEFAULT_CHAT_RATIO = 0.4
 /** Left-edge drag handle thickness (renderer DOM). */
 export const PANE_DRAG_HANDLE_WIDTH = 6
 
+// ── Pane state contract (A-M5) ──
+// Renderer → main: what is on screen (drives fold/restore and width clamping).
+export interface BrowserPaneState {
+  viewKind: string
+  conversationId: string | null
+  chatAreaWidth: number
+}
+
+/** One row in the pane's tab strip. */
+export interface PaneTabInfo {
+  id: string
+  url: string
+  title: string
+  active: boolean
+}
+
+/** Main → renderer: the pane snapshot the chrome and chat layout render from. */
+export interface BrowserPaneUpdate {
+  visible: boolean
+  width: number
+  conversationId: string | null
+  tabs: PaneTabInfo[]
+}
+
+/** User gestures from the pane chrome (tab strip, address bar, buttons). */
+export type BrowserPaneAction =
+  | { op: 'newTab' }
+  | { op: 'selectTab'; tabId: string }
+  | { op: 'closeTab'; tabId: string }
+  | { op: 'navigate'; tabId: string; url: string }
+  | { op: 'back'; tabId: string }
+  | { op: 'forward'; tabId: string }
+  | { op: 'reload'; tabId: string }
+  | { op: 'openExternal'; url: string }
+
 export interface PaneBox {
   /** Native WebView bounds, relative to the window content area. */
   x: number
