@@ -9,6 +9,10 @@ import { Button } from 'antd'
 import { RefreshCw, ExternalLink } from 'lucide-react'
 import { detectFileKind, isPreviewable, type FileKind } from '../../../../shared/preview/file-kind'
 import { MarkdownPreview } from './MarkdownPreview'
+import { TextPreview } from './TextPreview'
+import { CsvPreview } from './CsvPreview'
+import { HtmlPreview } from './HtmlPreview'
+import { LocalImage } from '../chat/LocalImage'
 import { useTranslation } from '../../i18n/useTranslation'
 
 type LoadState =
@@ -58,12 +62,11 @@ function ErrorCard({ missing, onRetry }: { missing: boolean; onRetry: () => void
 }
 
 function ImagePreview({ path }: { path: string }): React.ReactElement {
-  // local-file:// serves any absolute path (main protocol handler);
-  // backslashes must be normalized like LocalImage does for file:// sources.
-  const src = `local-file://${path.replace(/\\/g, '/')}`
+  // LocalImage normalizes the path to local-file:// and opens the shared
+  // lightbox (ImageViewer) on click — same behavior as chat images.
   return (
     <div style={{ padding: 16, display: 'flex', justifyContent: 'center', alignItems: 'flex-start' }}>
-      <img src={src} alt="" style={{ maxWidth: '100%', borderRadius: 4 }} />
+      <LocalImage src={`local-file://${path.replace(/\\/g, '/')}`} style={{ maxHeight: 'none' }} />
     </div>
   )
 }
@@ -109,25 +112,6 @@ function FallbackCard({ path, kind }: { path: string; kind: FileKind }): React.R
   )
 }
 
-function PlainTextPreview({ text }: { text: string }): React.ReactElement {
-  return (
-    <pre
-      style={{
-        margin: 0,
-        padding: '12px 16px',
-        fontSize: 12,
-        lineHeight: 1.6,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        color: '#333',
-        fontFamily: 'ui-monospace, Menlo, monospace',
-      }}
-    >
-      {text}
-    </pre>
-  )
-}
-
 export function PreviewContent({ path, reloadTick }: { path: string; reloadTick: number }): React.ReactElement {
   const kind = detectFileKind(path)
   const { state, reload } = usePreviewFile(path, kind, reloadTick)
@@ -142,7 +126,8 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
     return <ErrorCard missing={state.status === 'missing'} onRetry={reload} />
   }
   if (kind === 'markdown') return <MarkdownPreview text={state.text} />
-  if (kind === 'text') return <PlainTextPreview text={state.text} />
-  // T3: dedicated csv (table) and html (sandboxed iframe) renderers.
+  if (kind === 'text') return <TextPreview text={state.text} path={path} />
+  if (kind === 'csv') return <CsvPreview text={state.text} path={path} />
+  if (kind === 'html') return <HtmlPreview path={path} reloadTick={reloadTick} />
   return <FallbackCard path={path} kind={kind} />
 }
