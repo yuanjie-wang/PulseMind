@@ -35,9 +35,9 @@ import { performLlmStream, performSimpleFetch, abortLlmStream } from '../ipc/api
 import { svcExecuteCommand, svcKillCommand, svcExecSync } from '../services/terminal'
 import * as fileOps from '../services/file-ops'
 import * as kq from '../services/knowledge-queries'
-import type { ElectronAPI } from '../../renderer/src/types/electron'
+import type { ElectronAPI } from '../../shared/types/electron-bridge'
 import type { PulseHost } from '../../renderer/src/agent/host/types'
-import type { MemoryEntry } from '../../renderer/src/memory/types'
+import type { MemoryEntry } from '../../shared/types/memory'
 import type { KnowledgeImportResult, KnowledgeFile, KnowledgeStats, KnowledgeListResult } from '../../shared/types/knowledge'
 import { browserService } from '../browser/BrowserService'
 

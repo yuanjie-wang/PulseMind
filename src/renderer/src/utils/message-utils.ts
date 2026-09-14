@@ -1,4 +1,4 @@
-import type { Conversation, Message } from '../types/conversation'
+import type { Conversation, Message } from '../../../shared/types/conversation'
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../types/agent'
 
 /** Strip runtime-only fields from content blocks before persistence. */
@@ -7,7 +7,8 @@ function sanitizeContentBlocks(blocks: ContentBlock[]): ContentBlock[] {
     if (b.type === 'tool_use') {
       // status is a runtime UI-only concern — never persist it,
       // otherwise partially-executed tools can show stale 'running' status on reload.
-      const { status, ...rest } = b as ToolUseBlock & { status?: string }
+      const rest = { ...b } as ToolUseBlock & { status?: string }
+      delete rest.status
       return rest as ContentBlock
     }
     return b

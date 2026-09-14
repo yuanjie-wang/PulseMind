@@ -13,13 +13,13 @@ import type {
   ApiStreamRetryEvent,
   PlatformInfo,
   DataPaths,
-} from '../renderer/src/types/electron'
+} from '../shared/types/electron-bridge'
 import type { ToolPreferences } from '../shared/types/tool-types'
 import type { SkillPreferences, SkillDefinition } from '../shared/types/skill-types'
 import type { ExperienceRecord, ExperienceDraft } from '../shared/types/experience-types'
-import type { MemoryEntry, MemorySearchInput } from '../renderer/src/memory/types'
+import type { MemoryEntry, MemorySearchInput } from '../shared/types/memory'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../shared/types/knowledge'
-import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../renderer/src/types/electron'
+import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../shared/types/electron-bridge'
 import type { SubAgentProfile } from '../shared/types/subagent'
 import type { GitAction, GitResult } from '../shared/types/git'
 import type { AgentSessionCreateOptions } from '../shared/agent-protocol'

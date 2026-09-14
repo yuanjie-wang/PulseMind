@@ -30,6 +30,10 @@ const P2 = (SCROLL_DURATION * SCROLL_CYCLES / CYCLE_DURATION) * 100
  *  cards and input read as one aligned band instead of a narrow strip. */
 const QUICK_AREA_HEIGHT = 224
 const QUICK_AREA_MAX_WIDTH = 952
+/** Horizontal room the band reserves so its scrollbar thumb never sits on the
+ *  cards' right edge; the 952 column stays centered inside it. An overlay
+ *  thumb is ~10px wide, hence 24 (12px of clear space per side). */
+const SCROLL_GUTTER = 24
 
 export function WelcomeContent({
   greeting,
@@ -95,15 +99,17 @@ export function WelcomeContent({
       {/* Quick band: the assistant's proactive suggestions + starter prompts
           (chat mode), or the project picker (project mode). One shared fixed
           height keeps the greeting at the same Y in both modes. */}
-      <div style={{ width: '100%', maxWidth: QUICK_AREA_MAX_WIDTH, margin: '0 auto', height: QUICK_AREA_HEIGHT, overflow: 'auto' }}>
-        {mode === 'chat' ? (
-          <WelcomeSuggestions
-            activeLoopConvIds={activeLoopConvIds}
-            onOpenConversation={onOpenConversation}
-          />
-        ) : (
-          <ProjectCards conversations={conversations} onOpenConversation={onOpenConversation} />
-        )}
+      <div style={{ width: '100%', maxWidth: QUICK_AREA_MAX_WIDTH + SCROLL_GUTTER, margin: '0 auto', height: QUICK_AREA_HEIGHT, overflowY: 'auto', overflowX: 'hidden' }}>
+        <div style={{ maxWidth: QUICK_AREA_MAX_WIDTH, margin: '0 auto' }}>
+          {mode === 'chat' ? (
+            <WelcomeSuggestions
+              activeLoopConvIds={activeLoopConvIds}
+              onOpenConversation={onOpenConversation}
+            />
+          ) : (
+            <ProjectCards conversations={conversations} onOpenConversation={onOpenConversation} />
+          )}
+        </div>
       </div>
 
       {!hasApiKey && (
