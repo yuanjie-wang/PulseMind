@@ -7,6 +7,7 @@ import { getDb } from './database'
 const SKILL_PREFS_FALLBACK: SkillPreferences = { enabledSkills: ['create_skill', 'create_mcp'] }
 import { withZipExtraction, findSkillFiles } from '../utils/zip-extractor'
 import { parseSkillMarkdown } from '../utils/skill-parser'
+import { parseJsonColumn } from '../utils/json'
 
 /** Format a skill as a valid SKILL.md document with YAML frontmatter. */
 function formatSkillMd(skill: SkillDefinition): string {
@@ -29,9 +30,9 @@ export class SkillStore {
     const row = getDb().prepare('SELECT * FROM skill_preferences WHERE id = 1').get() as any
     if (!row) return { ...SKILL_PREFS_FALLBACK }
     return {
-      enabledSkills: JSON.parse(row.enabled_skills),
-      skillKeywords: JSON.parse(row.skill_keywords),
-      processedConversations: JSON.parse(row.processed_conversations)
+      enabledSkills: parseJsonColumn(row.enabled_skills, SKILL_PREFS_FALLBACK.enabledSkills),
+      skillKeywords: parseJsonColumn(row.skill_keywords, SKILL_PREFS_FALLBACK.skillKeywords ?? {}),
+      processedConversations: parseJsonColumn(row.processed_conversations, [])
     }
   }
 

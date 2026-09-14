@@ -1,4 +1,5 @@
 import type { SubAgentProfile } from '../../shared/types/subagent'
+import { parseJsonColumn } from '../utils/json'
 import { getDb } from './database'
 
 const BUILTIN_LOCKED_TOOLS = [
@@ -127,10 +128,10 @@ function rowToProfile(row: any): SubAgentProfile {
     methodology: row.methodology || undefined,
     outputSpec: row.output_spec || undefined,
     constraints: row.constraints || undefined,
-    knowledgeFileIds: JSON.parse(row.knowledge_file_ids || '[]'),
-    allowedTools: JSON.parse(row.allowed_tools || '[]'),
-    allowedMcpServers: JSON.parse(row.allowed_mcp_servers || '[]'),
-    allowedSkills: JSON.parse(row.allowed_skills || '[]'),
+    knowledgeFileIds: parseJsonColumn<string[]>(row.knowledge_file_ids, []),
+    allowedTools: parseJsonColumn<string[]>(row.allowed_tools, []),
+    allowedMcpServers: parseJsonColumn<string[]>(row.allowed_mcp_servers, []),
+    allowedSkills: parseJsonColumn<string[]>(row.allowed_skills, []),
     profileId: row.profile_id || undefined,
     maxTokens: row.max_tokens ?? undefined,
     maxLoopIterations: row.max_loop_iterations ?? undefined,
