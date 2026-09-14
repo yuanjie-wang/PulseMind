@@ -12,6 +12,7 @@ import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
 import type { AgentMessage } from '../types/agent'
 import type { HooksConfig } from '../types/hooks'
+import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 
 // ── Options ──
 
@@ -28,7 +29,6 @@ interface UseChatControllerOptions {
   yourName: string
   workspaceDir?: string
   autoCleanup?: boolean
-  yoloMode?: boolean
   /** 设置 → 经验 master switch: gates the old-conversation experience backfill. */
   experienceEnabled?: boolean
   hooks?: HooksConfig
@@ -418,6 +418,7 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     retryingConvIds: engine.retryingConvIds,
     togglePin: persistence.togglePin,
     bumpConversation: persistence.bumpConversation,
-    updateConversationExpert: persistence.updateConversationExpert
+    updateConversationExpert: persistence.updateConversationExpert,
+    updateConversationApproval: persistence.updateConversationApproval
   }
 }

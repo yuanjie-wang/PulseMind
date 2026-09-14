@@ -1,20 +1,24 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { Button, Dropdown, Modal, App } from 'antd'
-import { PlusOutlined, FolderOutlined, FileOutlined, SwapOutlined, CloseOutlined, LinkOutlined, ReloadOutlined, UserOutlined } from '@ant-design/icons'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Button, Dropdown } from 'antd'
+import { PlusOutlined, FolderOutlined, FileOutlined, DownOutlined, CloseOutlined, UserOutlined, LockOutlined, SafetyOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
-import { Composer, useInputHistory } from './Composer'
+import { Composer, useInputHistory, COMPOSER_MAX_WIDTH } from './Composer'
+import type { ComposerHandle } from './Composer'
 import { useComposerDraftStore } from '../../stores/composerDraftStore'
 import type { LlmProfile } from '../../types/settings'
-import type { SubAgentProfile } from '../../../../shared/types/subagent'
+import type { ExpertProfile } from '../../../../shared/types/expert'
+import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 
-interface ChromeTab {
-  id: string
-  pageId?: number
-  title: string
-  url: string
-  favicon?: string
-}
+/** Approval levels, most restrictive first — the order the dropdown lists them
+ *  in. The icons are chosen for distinct silhouettes, not for a family: antd's
+ *  safety / safety-certificate pair is two shields that read as one glyph at
+ *  14px, so the loosest level uses a bolt (goes straight through) instead. */
+const APPROVAL_LEVELS: Array<{ mode: SandboxApprovalMode; icon: React.ReactNode }> = [
+  { mode: 'always-ask', icon: <LockOutlined style={{ fontSize: 14 }} /> },
+  { mode: 'outside-ask', icon: <SafetyOutlined style={{ fontSize: 14 }} /> },
+  { mode: 'auto', icon: <ThunderboltOutlined style={{ fontSize: 14 }} /> },
+]
 
 export function InputArea({
   isRequesting,
@@ -29,10 +33,14 @@ export function InputArea({
   onSelectProfile,
   contextUsed,
   contextLength,
-  rightInset,
   layout,
+  placeholder,
+  autoFocus,
   boundExpertId,
   onUnbindExpert,
+  approvalMode,
+  onChangeApprovalMode,
+  features,
 }: {
   isRequesting: boolean
   isStreaming: boolean
@@ -46,29 +54,58 @@ export function InputArea({
   onSelectProfile?: (profileId: string) => void
   contextUsed?: number
   contextLength?: number
-  /** Horizontal inset (px) from the right edge — clears the browser pane. */
-  rightInset?: number
   /** Composer layout: 'floating' (default) pins it to the bottom of the view;
    *  'inline' lays it out in place (welcome view's flex column). */
   layout?: 'floating' | 'inline'
+  /** Overrides the status-derived placeholder (reuse sites whose input is not
+   *  a chat turn, e.g. the expert editor's form filler). */
+  placeholder?: string
+  /** Focus the composer on mount. Defaults to the chat rule (only while the
+   *  conversation is empty); pass false when the view has a form to work in. */
+  autoFocus?: boolean
   /** Expert bound to the active conversation (@-summon); shows the chip. */
   boundExpertId?: string
   /** Clear the bound expert (chip ×). */
   onUnbindExpert?: () => void
+  /** How tool calls are approved for this conversation — the effective mode,
+   *  i.e. the project's policy when the conversation belongs to one. */
+  approvalMode?: SandboxApprovalMode
+  /** Pick a different level. */
+  onChangeApprovalMode?: (mode: SandboxApprovalMode) => void
+  /** Feature chrome subset for reuse outside the main chat (e.g. the routine
+   *  run workspace). Omit for the full chat; a partial object exposes only the
+   *  listed features. */
+  features?: {
+    attachments?: boolean
+    modelPicker?: boolean
+    experts?: boolean
+    authorization?: boolean
+  }
 }): React.ReactElement {
+  // Everything on when the prop is absent (the chat); a reuse site lists only
+  // what it exposes.
+  const showAttachments = features?.attachments ?? features === undefined
+  const showModelPicker = features?.modelPicker ?? features === undefined
+  const showExperts = features?.experts ?? features === undefined
+  const showAuthorization = (features?.authorization ?? features === undefined) && onChangeApprovalMode !== undefined
+  /** The composer-draft store is a chat/welcome mechanism (starter prompts);
+   *  reuse sites must not consume those drafts. */
+  const acceptsComposerDrafts = features === undefined
   const [inputValue, setInputValue] = useState('')
+  /** The composer's textarea, so the @ button can put the caret back in it. */
+  const composerRef = useRef<ComposerHandle>(null)
 
   // ── Expert config pack state ──
-  // Summonable experts power both the @-selector and the bound-expert chip.
+  // Enabled experts power both the @-selector and the bound-expert chip.
   // Loaded once per mount; the list only changes in the capability center.
-  const [experts, setExperts] = useState<SubAgentProfile[]>([])
+  const [experts, setExperts] = useState<ExpertProfile[]>([])
   useEffect(() => {
-    window.electronAPI.subagentList?.()
+    window.electronAPI.expertList?.()
       .then(setExperts)
       .catch(() => {})
   }, [])
   const summonableExperts = useMemo(
-    () => experts.filter((e) => (e.enabled ?? true) && !e.isBuiltIn),
+    () => experts.filter((e) => e.enabled ?? true),
     [experts]
   )
   const boundExpert = experts.find((e) => e.id === boundExpertId)
@@ -79,7 +116,7 @@ export function InputArea({
   // controller parses `@<name>` on submit, so the popup is pure assistance.
   const [mentionNavIdx, setMentionNavIdx] = useState(0)
   const atIdx = inputValue.lastIndexOf('@')
-  const mentionActive = atIdx >= 0 && (atIdx === 0 || /\s/.test(inputValue[atIdx - 1]))
+  const mentionActive = showExperts && atIdx >= 0 && (atIdx === 0 || /\s/.test(inputValue[atIdx - 1]))
   const mentionQuery = mentionActive ? inputValue.slice(atIdx + 1) : ''
   const mentionMatches = useMemo(() => {
     if (!mentionActive) return []
@@ -95,21 +132,34 @@ export function InputArea({
     setMentionNavIdx(0)
   }
 
-  const selectMention = (expert: SubAgentProfile): void => {
+  const selectMention = (expert: ExpertProfile): void => {
     setInputValue(`${inputValue.slice(0, atIdx)}@${expert.name} `)
+  }
+
+  /** The @ button: write an @-token into the input so the summon popup opens. A
+   *  separator space comes along when the text would otherwise run the @ into a
+   *  word — the popup only arms on an @ that starts one. */
+  const insertMention = (): void => {
+    setInputValue((prev) => (prev === '' || /\s$/.test(prev) ? `${prev}@` : `${prev} @`))
+    setMentionNavIdx(0)
+    // The click parked focus on the button; the popup reads typed keys and arrows
+    // from the textarea, so hand it back.
+    composerRef.current?.focus()
   }
 
   // Welcome starters drop their text here through the one-shot draft store:
   // subscribe (event-style, not render-driven) so a click lands in the input
   // whenever it happens, then the draft is consumed.
-  useEffect(() => useComposerDraftStore.subscribe((s) => {
-    if (s.draft !== null) {
-      setInputValue(s.draft)
-      useComposerDraftStore.getState().clearDraft()
-    }
-  }), [])
+  useEffect(() => {
+    if (!acceptsComposerDrafts) return
+    return useComposerDraftStore.subscribe((s) => {
+      if (s.draft !== null) {
+        setInputValue(s.draft)
+        useComposerDraftStore.getState().clearDraft()
+      }
+    })
+  }, [acceptsComposerDrafts])
   const { t } = useTranslation()
-  const { message } = App.useApp()
 
   const history = useInputHistory()
 
@@ -118,43 +168,13 @@ export function InputArea({
   const activeProfile = profiles?.find((p) => p.id === activeProfileId)
   const activeModelLabel = activeProfile ? activeProfile.name : t('chatView.selectModel')
 
+  // 授权 button: the conversation's level drives the icon, the label and the
+  // tooltip; the label repeats in the dropdown next to the same icon.
+  const approvalLabel = approvalMode ?? 'auto'
+  const approvalHint = t('chatView.approval.tooltip', { level: t(`chatView.approval.${approvalLabel}`) })
+
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
-  const [selectedUrls, setSelectedUrls] = useState<Array<{ url: string; title: string; pageId?: number }>>([])
-  const [chromeTabs, setChromeTabs] = useState<ChromeTab[]>([])
-  const [chromeTabsModalOpen, setChromeTabsModalOpen] = useState(false)
-  const [chromeTabsLoading, setChromeTabsLoading] = useState(false)
-  const [chromeMcpReady, setChromeMcpReady] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    const listServers = window.electronAPI?.mcpListServers
-    if (typeof listServers !== 'function') {
-      console.warn('[InputArea] window.electronAPI.mcpListServers missing (stale preload?) — chrome-tab feature disabled')
-      return
-    }
-    const check = () =>
-      listServers()
-        .then((servers) => {
-          if (cancelled) return
-          const srv = servers.find((s) => s.id === 'chrome-devtools' || s.id === 'chromedevtools' || s.name === 'Chrome DevTools')
-          setChromeMcpReady(srv?.status === 'connected')
-        })
-        .catch(() => {})
-
-    // Retry a few times since MCP server registration may not be ready on mount
-    check()
-    const timer = setInterval(() => {
-      if (!cancelled) check()
-    }, 1500)
-    setTimeout(() => {
-      clearInterval(timer)
-    }, 7500)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  }, [])
 
   const getFileName = (path: string) => path.replace(/^.*[\\/]/, '')
 
@@ -185,154 +205,6 @@ export function InputArea({
     setSelectedFolders((prev) => prev.filter((_, i) => i !== index))
   }
 
-  const removeUrl = (index: number) => {
-    setSelectedUrls((prev) => prev.filter((_, i) => i !== index))
-  }
-
-  const fetchChromeTabs = async (): Promise<ChromeTab[] | null> => {
-    try {
-      if (typeof window.electronAPI?.mcpListServers !== 'function') {
-        message.warning('Chrome DevTools MCP 不可用（preload 未加载，请重启应用）')
-        return null
-      }
-      // Check if Chrome DevTools MCP is connected
-      const servers = await window.electronAPI.mcpListServers()
-      const chromeServer = servers.find((s) => s.id === 'chrome-devtools')
-      if (!chromeServer) {
-        message.warning('Chrome DevTools MCP 未注册')
-        return null
-      }
-      if (chromeServer.status !== 'connected') {
-        message.info('正在连接 Chrome DevTools MCP...')
-        const startResult = await window.electronAPI.mcpStartServer('chrome-devtools')
-        if (!startResult.success) {
-          message.error('Chrome DevTools MCP 连接失败: ' + (startResult.error || '未知错误'))
-          return null
-        }
-        const updated = await window.electronAPI.mcpGetServer('chrome-devtools')
-        if (!updated || updated.status !== 'connected') {
-          message.error('Chrome DevTools MCP 未能成功启动')
-          return null
-        }
-      }
-
-      // Call list_pages to get open tabs
-      const result = await window.electronAPI.mcpCallTool('chrome-devtools', 'list_pages', {})
-      if (!result.success) {
-        message.error('获取标签页失败: ' + (result.error || '未知错误'))
-        return null
-      }
-
-      // Parse tabs from result — prefer structuredContent.pages (canonical JSON
-      // from chrome-devtools-mcp) over text-based parsing, since the text format
-      // "id: title (url)" causes the URL regex to capture a trailing ")".
-      const mcpResult = result.result as Record<string, unknown>
-      const structuredPages = mcpResult?.structuredContent as { pages?: ChromeTab[] } | undefined
-      let tabs: ChromeTab[] = structuredPages?.pages ?? []
-
-      if (tabs.length === 0) {
-        // Fallback: try parsing the text content as JSON
-        const content = mcpResult?.content as Array<{ type: string; text?: string }> | undefined
-        const textItem = content?.find((c) => c.type === 'text')
-        const rawText = textItem?.text || ''
-        if (!rawText) {
-          message.warning('未获取到标签页信息')
-          return null
-        }
-
-        try {
-          const parsed = JSON.parse(rawText)
-          if (Array.isArray(parsed)) {
-            tabs = parsed
-          } else if (parsed.tabs && Array.isArray(parsed.tabs)) {
-            tabs = parsed.tabs
-          } else if (parsed.pages && Array.isArray(parsed.pages)) {
-            tabs = parsed.pages
-          } else if (parsed.results && Array.isArray(parsed.results)) {
-            tabs = parsed.results
-          }
-        } catch {
-          // Last resort: extract URL + pageId from text format:
-          //   "{pageId}: Title (url)"  or  "{pageId}: url"
-          const lines = rawText
-            .split('\n')
-            .map((l) => l.trim())
-            .filter(Boolean)
-          for (const line of lines) {
-            const urlMatch = line.match(/https?:\/\/[^\s)]+/)
-            if (urlMatch) {
-              const idMatch = line.match(/^(\d+):/)
-              tabs.push({
-                id: idMatch ? idMatch[1] : '',
-                title:
-                  line
-                    .replace(urlMatch[0], '')
-                    .replace(/^[\d]+:\s*/, '')
-                    .replace(/\s*\[selected\]\s*/, '')
-                    .replace(/\s*\(\)\s*$/, '')
-                    .trim() || '(无标题)',
-                url: urlMatch[0],
-              })
-            }
-          }
-        }
-      }
-
-      if (tabs.length === 0) {
-        message.warning('无法从 Chrome 获取标签页列表')
-        return null
-      }
-
-      // Map MCP page id to pageId so the LLM can call select_page directly
-      for (const tab of tabs) {
-        const rawId = (tab as any).id ?? (tab as any).pageId
-        tab.pageId = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10) || undefined
-      }
-
-      // Windows Chrome MCP 不返回 title，从 URL 提取
-      for (const tab of tabs) {
-        if (!tab.title || tab.title === '(无标题)') {
-          try {
-            const u = new URL(tab.url)
-            tab.title = u.hostname.replace(/^www\./, '')
-          } catch {
-            tab.title = tab.url.split('/').filter(Boolean)[0] || tab.url
-          }
-        }
-      }
-
-      return tabs
-    } catch (err) {
-      message.error('获取 Chrome 标签页失败: ' + (err instanceof Error ? err.message : String(err)))
-      return null
-    }
-  }
-
-  const handlePickUrl = async () => {
-    setChromeTabsLoading(true)
-    try {
-      const tabs = await fetchChromeTabs()
-      if (tabs && tabs.length > 0) {
-        setChromeTabs(tabs)
-        setChromeTabsModalOpen(true)
-      }
-    } finally {
-      setChromeTabsLoading(false)
-    }
-  }
-
-  const refreshChromeTabs = async () => {
-    setChromeTabsLoading(true)
-    try {
-      const tabs = await fetchChromeTabs()
-      if (tabs && tabs.length > 0) {
-        setChromeTabs(tabs)
-      }
-    } finally {
-      setChromeTabsLoading(false)
-    }
-  }
-
   const modelItems =
     profiles?.map((p) => ({
       key: p.id,
@@ -340,7 +212,7 @@ export function InputArea({
       onClick: () => onSelectProfile?.(p.id),
     })) ?? []
 
-  const hasAttachments = selectedFiles.length + selectedFolders.length + selectedUrls.length > 0
+  const hasAttachments = selectedFiles.length + selectedFolders.length > 0
 
   const handleComposerKeyDown = (e: React.KeyboardEvent<Element>): void => {
     // @-popup owns the navigation keys while it's open; the input-history hook
@@ -358,7 +230,6 @@ export function InputArea({
   /** Compose the outgoing message: attachment refs first, then the typed text. */
   const buildMessage = (text: string): string => {
     const parts = [
-      ...selectedUrls.map((u) => `[${u.title}](${u.url})` + (u.pageId ? `\n[chrome: pageId=${u.pageId}]` : '')),
       ...selectedFiles.map((p) => `[file:${p}]`),
       ...selectedFolders.map((p) => `[folder:${p}]`),
     ]
@@ -374,21 +245,26 @@ export function InputArea({
     setInputValue('')
     setSelectedFiles([])
     setSelectedFolders([])
-    setSelectedUrls([])
   }
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* @-mention selector: floats above the composer while the input ends in
-          an @token. Sending the raw text works too (controller parses it). */}
+      {/* @-mention selector: floats above the composer at full composer width
+          while the input ends in an @token. Sending the raw text works too
+          (controller parses it). */}
       {mentionActive && mentionMatches.length > 0 && (
         <div
           style={{
             position: 'absolute',
             bottom: 'calc(100% + 8px)',
-            left: 12,
+            left: 0,
+            right: 0,
+            // Mirror the visible .ant-sender box (COMPOSER_MAX_WIDTH, centered):
+            // the Composer wrapper is wider, so left/right alone would let the
+            // selector outgrow the input box it belongs to.
+            maxWidth: COMPOSER_MAX_WIDTH,
+            margin: '0 auto',
             zIndex: 100,
-            width: 300,
             maxHeight: 264,
             overflow: 'auto',
             background: '#fff',
@@ -414,9 +290,6 @@ export function InputArea({
                 background: i === mentionNavIdx ? 'rgba(0,0,0,0.05)' : 'transparent',
               }}
             >
-              <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0, width: 20, textAlign: 'center' }}>
-                {expert.icon || <UserOutlined style={{ fontSize: 13, color: '#999' }} />}
-              </span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.name}</div>
                 {expert.description && (
@@ -428,6 +301,7 @@ export function InputArea({
         </div>
       )}
       <Composer
+        ref={composerRef}
         value={inputValue}
         onChange={handleInputChange}
         onSubmit={submit}
@@ -435,17 +309,17 @@ export function InputArea({
         isRequesting={isRequesting}
         disabled={isInputDisabled}
         loading={isRequesting && !isInputDisabled}
-        rightInset={rightInset}
         layout={layout}
-        autoFocus={!hasMessages}
+        autoFocus={autoFocus ?? !hasMessages}
         placeholder={
-          isAwaitingApproval
+          placeholder ??
+          (isAwaitingApproval
             ? t('chatView.sender.approving')
             : isAwaitingInput
               ? t('chatView.sender.awaitingInput')
               : isStreaming
                 ? t('chatView.sender.streaming')
-                : t('chatView.sender.default')
+                : t('chatView.sender.default'))
         }
         header={
           boundExpert || hasAttachments ? (
@@ -466,7 +340,9 @@ export function InputArea({
                   }}
                   title={boundExpert.description || boundExpert.name}
                 >
-                  <span style={{ fontSize: 13, lineHeight: 1 }}>{boundExpert.icon || <UserOutlined style={{ fontSize: 11, color: '#666' }} />}</span>
+                  <span style={{ fontSize: 13, lineHeight: 1 }}>
+                    <UserOutlined style={{ fontSize: 11, color: '#666' }} />
+                  </span>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{boundExpert.name}</span>
                   <span
                     onClick={onUnbindExpert}
@@ -477,29 +353,6 @@ export function InputArea({
                   </span>
                 </span>
               )}
-              {selectedUrls.map((u, i) => (
-                <span
-                  key={`u-${i}`}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 3,
-                    background: '#e8e8e8',
-                    borderRadius: 12,
-                    padding: '2px 6px',
-                    fontSize: 12,
-                  }}
-                >
-                  <LinkOutlined style={{ fontSize: 12, color: '#666' }} />
-                  <span style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{u.title}</span>
-                  <span
-                    onClick={() => removeUrl(i)}
-                    style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
-                  >
-                    <CloseOutlined style={{ fontSize: 12 }} />
-                  </span>
-                </span>
-              ))}
               {selectedFolders.map((fp, i) => (
                 <span
                   key={`f-${i}`}
@@ -555,97 +408,91 @@ export function InputArea({
         }
         footerLeft={
           <>
-            <Button
-              size="small"
-              type="text"
-              icon={<PlusOutlined style={{ fontSize: 14 }} />}
-              onClick={handlePickFile}
-              style={{ fontSize: 12, color: '#666' }}
-            />
-            <Button
-              size="small"
-              type="text"
-              icon={<FolderOutlined style={{ fontSize: 14 }} />}
-              onClick={handlePickFolder}
-              style={{ fontSize: 12, color: '#666' }}
-            />
-            <Button
-              size="small"
-              type="text"
-              icon={<LinkOutlined style={{ fontSize: 14 }} />}
-              onClick={handlePickUrl}
-              loading={chromeTabsLoading}
-              disabled={!chromeMcpReady}
-              style={{ fontSize: 12, color: '#666' }}
-            />
-            <Dropdown menu={{ items: modelItems }} trigger={['click']}>
-              <Button size="small" type="text" icon={<SwapOutlined />} style={{ fontSize: 12, color: '#666' }}>
-                {activeModelLabel}
-              </Button>
-            </Dropdown>
+            {showAttachments && (
+              <>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<PlusOutlined style={{ fontSize: 14 }} />}
+                  onClick={handlePickFile}
+                  style={{ fontSize: 12, color: '#666' }}
+                />
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<FolderOutlined style={{ fontSize: 14 }} />}
+                  onClick={handlePickFolder}
+                  style={{ fontSize: 12, color: '#666' }}
+                />
+              </>
+            )}
+            {showExperts && (
+              <Button
+                size="small"
+                type="text"
+                icon={<span style={{ fontSize: 14, fontWeight: 600 }}>@</span>}
+                onClick={insertMention}
+                title={t('chatView.expert.summonTitle')}
+                style={{ fontSize: 12, color: '#666' }}
+              />
+            )}
+            {showAuthorization && (
+              <Dropdown
+                trigger={['click']}
+                // selectable + selectedKeys is what marks the active level; the
+                // level itself is the item key.
+                menu={{
+                  items: APPROVAL_LEVELS.map(({ mode, icon }) => ({
+                    key: mode,
+                    icon,
+                    label: t(`chatView.approval.${mode}`),
+                  })),
+                  selectable: true,
+                  selectedKeys: [approvalLabel],
+                  onClick: ({ key }) => onChangeApprovalMode?.(key as SandboxApprovalMode),
+                }}
+              >
+                <Button
+                  size="small"
+                  type="text"
+                  icon={APPROVAL_LEVELS.find((l) => l.mode === approvalLabel)?.icon}
+                  title={approvalHint}
+                  aria-label={approvalHint}
+                  style={{ fontSize: 12, color: '#666' }}
+                >
+                  {t(`chatView.approval.${approvalLabel}`)}
+                  <DownOutlined style={{ fontSize: 10, color: '#bbb', marginLeft: 4 }} />
+                </Button>
+              </Dropdown>
+            )}
           </>
         }
         trailing={
-          hasMessages && contextLength != null && contextLength > 0 ? (
-            <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
-              <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={24} />
-            </span>
-          ) : undefined
+          <>
+            {/* Right cluster order: context ring, model picker, send button. */}
+            {hasMessages && contextLength != null && contextLength > 0 && (
+              <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
+                <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={16} />
+              </span>
+            )}
+            {showModelPicker && (
+              <Dropdown menu={{ items: modelItems }} trigger={['click']}>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<DownOutlined />}
+                  iconPlacement="end"
+                  style={{ fontSize: 12, color: '#666' }}
+                >
+                  {activeModelLabel}
+                </Button>
+              </Dropdown>
+            )}
+          </>
         }
         onKeyDown={handleComposerKeyDown}
       />
 
-      <Modal
-        title={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            选择 Chrome 标签页
-            <Button size="small" type="text" icon={<ReloadOutlined />} loading={chromeTabsLoading} onClick={refreshChromeTabs} />
-          </div>
-        }
-        open={chromeTabsModalOpen}
-        onCancel={() => setChromeTabsModalOpen(false)}
-        footer={null}
-        width={520}
-      >
-        <div style={{ maxHeight: 400, overflow: 'auto' }}>
-          {chromeTabs.map((tab, i) => (
-            <div
-              key={tab.id || i}
-              onClick={() => {
-                setSelectedUrls((prev) =>
-                  prev.some((u) => u.url === tab.url) ? prev : [...prev, { url: tab.url, title: tab.title || tab.url, pageId: tab.pageId }],
-                )
-                setChromeTabsModalOpen(false)
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: '10px 12px',
-                cursor: 'pointer',
-                borderRadius: 6,
-                transition: 'background 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                ;(e.currentTarget as HTMLElement).style.background = '#f5f5f5'
-              }}
-              onMouseLeave={(e) => {
-                ;(e.currentTarget as HTMLElement).style.background = 'transparent'
-              }}
-            >
-              {tab.favicon ? (
-                <img src={tab.favicon} style={{ width: 16, height: 16, flexShrink: 0 }} alt="" />
-              ) : (
-                <LinkOutlined style={{ fontSize: 14, color: '#999', flexShrink: 0 }} />
-              )}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.title || '(无标题)'}</div>
-                <div style={{ fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.url}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </Modal>
     </div>
   )
 }

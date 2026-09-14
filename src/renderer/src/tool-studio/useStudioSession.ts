@@ -95,7 +95,7 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
       workspaceDir: toolDir,
       systemPromptOverride: TOOL_SYSTEM_PROMPT,
       allowedTools: TOOL_STUDIO_ALLOWED_TOOLS,
-      yoloMode: true,
+      approvalMode: 'auto',
     }).then(() => undefined).catch((err) => {
       console.warn('[ToolStudio] session create failed:', err)
     })

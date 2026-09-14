@@ -11,10 +11,29 @@ import type { ToolUseBlock, ContentBlock } from '../../types/agent'
 import { buildCommandFromSkillInput } from '../command-builder'
 import { safeInvoke, safeInvokeObserver } from '../agent-utils'
 import { TOOL_PARAM_LIMITS } from './engine-constants'
+import { requiresApproval } from '../../../../shared/sandbox/policy'
+import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import type { EngineCore } from './engine-core'
+
+/** Built-in tools that only look — the 'read' tier, never gated.
+ *  `built-in-tools.ts` holds the definitions; the approval ladder needs the
+ *  membership test at three sites (dispatch, gate, approve). */
+const READ_TIER_TOOLS = new Set(['read', 'list_dir', 'find', 'search', 'git_status', 'git_diff', 'git_log'])
+const WRITE_TIER_TOOLS = new Set(['write', 'edit', 'git_commit', 'git_restore'])
 
 export class ExecutionFlow {
   constructor(private engine: EngineCore) {}
+
+  /** The tiers this engine's approval mode holds back for the user to confirm.
+   *  A sub-agent run is unattended, so it holds nothing at all. */
+  private heldTiers(): Set<SandboxToolTier> {
+    const held = new Set<SandboxToolTier>()
+    if (this.engine.spawnSystemPrompt) return held
+    const mode = this.engine.opts.approvalMode ?? 'auto'
+    if (requiresApproval(mode, 'write')) held.add('write')
+    if (requiresApproval(mode, 'exec')) held.add('exec')
+    return held
+  }
 
   cleanup(): void {
     this.engine.terminalCleanups.forEach((fn: () => void) => { try { fn() } catch { /* ignore */ } })
@@ -46,7 +65,10 @@ export class ExecutionFlow {
       await this.engine.toolExecutor.execOtherTool(targetBlock)
       return
     }
-    if (targetBlock.name === 'write' || targetBlock.name === 'edit') {
+    // A held write reaches the executor from here (the gate skipped it in
+    // dispatchToolExecution); the git tools run through execFile there, so they
+    // must not fall through to the shell path below.
+    if (WRITE_TIER_TOOLS.has(targetBlock.name)) {
       await this.engine.toolExecutor.execWorkspaceTool(targetBlock)
       return
     }
@@ -177,8 +199,8 @@ export class ExecutionFlow {
 
   /** Categorize and execute tool_use blocks. Shared by normal path and oversized-param skip path. */
   private async dispatchToolExecution(tools: ToolUseBlock[]): Promise<void> {
-    const readOnlyTools = tools.filter(t => t.name === 'read' || t.name === 'list_dir' || t.name === 'find' || t.name === 'search' || t.name === 'git_status' || t.name === 'git_diff' || t.name === 'git_log')
-    const writeEditTools = tools.filter(t => t.name === 'write' || t.name === 'edit' || t.name === 'git_commit' || t.name === 'git_restore')
+    const readOnlyTools = tools.filter(t => READ_TIER_TOOLS.has(t.name))
+    const writeEditTools = tools.filter(t => WRITE_TIER_TOOLS.has(t.name))
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = tools.filter(t => isSystemTool(t.name))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
@@ -188,18 +210,17 @@ export class ExecutionFlow {
     const isExperienceTool = (name: string): boolean => name === 'experience_read'
     const experienceTools = tools.filter(t => isExperienceTool(t.name))
     const isMCPTool = (name: string): boolean => this.engine.mcpToolOwner.has(name)
-    // Gated (requireApproval) MCP tools behave like otherTools: auto-executed only in
-    // YOLO mode, otherwise they wait for user approval in handleToolUseResponse.
+    // Gated (requireApproval) MCP tools behave like otherTools: held for approval
+    // at any level above 'auto', auto-executed otherwise.
     const gatedMcpTools = tools.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const otherTools = tools.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user')
-    const isYoloMode = !!this.engine.opts.yoloMode || !!this.engine.spawnSystemPrompt
-
+    const held = this.heldTiers()
     try {
       if (readOnlyTools.length > 0) await this.engine.toolExecutor.execReadOnlyTools(readOnlyTools)
-      if (writeEditTools.length > 0) for (const t of writeEditTools) await this.engine.toolExecutor.execWorkspaceTool(t)
+      if (!held.has('write') && writeEditTools.length > 0) for (const t of writeEditTools) await this.engine.toolExecutor.execWorkspaceTool(t)
       if (mcpTools.length > 0) for (const t of mcpTools) await this.engine.toolExecutor.execMCPTool(t)
-      if (isYoloMode && gatedMcpTools.length > 0) for (const t of gatedMcpTools) await this.engine.toolExecutor.execMCPTool(t)
+      if (!held.has('exec') && gatedMcpTools.length > 0) for (const t of gatedMcpTools) await this.engine.toolExecutor.execMCPTool(t)
       for (const t of systemTools) {
         if (t.name === 'pick_skill') await this.engine.toolExecutor.execPickSkill(t)
         else if (t.name === 'pick_tool') await this.engine.toolExecutor.execPickTool(t, (names) => {
@@ -219,7 +240,7 @@ export class ExecutionFlow {
       if (memoryTools.length > 0) for (const t of memoryTools) await this.engine.toolExecutor.execOtherTool(t)
       if (knowledgeTools.length > 0) for (const t of knowledgeTools) await this.engine.toolExecutor.execOtherTool(t)
       if (experienceTools.length > 0) for (const t of experienceTools) await this.engine.toolExecutor.execOtherTool(t)
-      if (isYoloMode && otherTools.length > 0) { for (const t of otherTools) await this.engine.toolExecutor.execOtherTool(t) }
+      if (!held.has('exec') && otherTools.length > 0) { for (const t of otherTools) await this.engine.toolExecutor.execOtherTool(t) }
     } catch (err) {
       this.engine.isAutoExecuting = false
       const msg = err instanceof Error ? err.message : 'Tool execution failed'
@@ -267,8 +288,8 @@ export class ExecutionFlow {
       return
     }
 
-    const readOnlyTools = toolUses.filter(t => t.name === 'read' || t.name === 'list_dir' || t.name === 'find' || t.name === 'search' || t.name === 'git_status' || t.name === 'git_diff' || t.name === 'git_log')
-    const writeEditTools = toolUses.filter(t => t.name === 'write' || t.name === 'edit' || t.name === 'git_commit' || t.name === 'git_restore')
+    const readOnlyTools = toolUses.filter(t => READ_TIER_TOOLS.has(t.name))
+    const writeEditTools = toolUses.filter(t => WRITE_TIER_TOOLS.has(t.name))
     const askUserTools = toolUses.filter(t => t.name === 'ask_user')
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = toolUses.filter(t => isSystemTool(t.name))
@@ -284,17 +305,21 @@ export class ExecutionFlow {
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
     const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user')
 
-    const isYoloMode = !!opts.yoloMode || !!this.engine.spawnSystemPrompt
+    // The approval ladder decides what waits: shell / ungrouped / gated MCP
+    // calls at 'outside-ask' and above, file writes as well at 'always-ask'.
+    const held = this.heldTiers()
+    const heldTools = [
+      ...(held.has('write') ? writeEditTools : []),
+      ...(held.has('exec') ? [...otherTools, ...mcpApprovalTools] : []),
+    ]
 
     this.engine.toolUseBlocks = toolUses
     this.engine.pendingToolIds = new Set(toolUses.map(t => t.id))
     this.engine.isAutoExecuting = true
     for (const t of [...readOnlyTools, ...writeEditTools, ...systemTools, ...memoryTools, ...knowledgeTools, ...experienceTools, ...mcpAutoTools]) t.status = 'running'
     for (const t of askUserTools) t.status = 'running'
-    // Gated MCP tools auto-execute in YOLO mode (incl. sub-agents); in mixed mode
-    // they stay pending until the user approves.
-    if (isYoloMode) for (const t of [...otherTools, ...mcpApprovalTools]) t.status = 'running'
-    else for (const t of mcpApprovalTools) t.status = 'pending'
+    // What the ladder holds stays pending until the user approves it.
+    for (const t of heldTools) t.status = 'pending'
     this.engine.notify()
 
     await this.dispatchToolExecution(toolUses)
@@ -306,10 +331,9 @@ export class ExecutionFlow {
       this.engine.onSpawnProgress(`子代理进度: [${completed}/${toolUses.length}] ${toolUses.map(t => t.name).join(', ')}`)
     }
 
-    // YOLO mode (incl. sub-agents) bypasses the approval gate — gated MCP tools were
-    // already executed by dispatchToolExecution. Only mixed mode holds them for approval.
-    const shouldAutoExecAll = isYoloMode || (otherTools.length === 0 && mcpApprovalTools.length === 0)
-    if (shouldAutoExecAll) {
+    // Nothing to confirm: the batch either ran to completion above or is still
+    // draining asynchronously (a running command's exit closes the loop).
+    if (heldTools.length === 0) {
       if (askUserTools.length > 0) {
         if (this.engine.spawnSystemPrompt) {
           for (const t of askUserTools) {
@@ -328,10 +352,9 @@ export class ExecutionFlow {
       return
     }
 
-    // Mixed mode: show approval UI (gated MCP tools are held for approval — only YOLO mode auto-executes them)
-    this.engine.toolUseBlocks = toolUses
-    const approvalTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !mcpAutoTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t))
-    this.engine.pendingToolIds = new Set(approvalTools.map(t => t.id))
+    // Held: the approval UI owns the loop from here. Only an explicit approval
+    // (or rejection) settles each held tool, so the pending set is exactly them.
+    this.engine.pendingToolIds = new Set(heldTools.map(t => t.id))
     this.engine.agentStatus = { status: 'awaiting_approval', tools: toolUses }
     safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'tool_use', status: { status: 'awaiting_approval', tools: toolUses } }, 'afterLlmCall')
     this.engine.notify()

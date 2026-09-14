@@ -20,6 +20,8 @@ import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { useNavigationStore } from './stores/navigationStore'
 
+import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
+
 function App(): React.ReactElement {
   return (
     <SettingsProvider>
@@ -197,8 +199,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     clearError,
     retryLast,
     extendLoop,
-    tools,
-    toggleTool,
     skills,
     toggleSkill,
     importSkill,
@@ -212,6 +212,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     retryingConvIds,
     togglePin,
     updateConversationExpert,
+    updateConversationApproval,
     plan,
     stopExecution,
     resumeExecution
@@ -228,7 +229,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     yourName: settings.yourName,
     workspaceDir: settings.workspaceDir,
     autoCleanup: settings.autoCleanup,
-    yoloMode: settings.yoloMode,
     locale: settings.locale,
     experienceEnabled: settings.experienceEnabled,
     hooks
@@ -256,6 +256,17 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   const activeConvTitle = typeof activeConversationKey === 'string'
     ? conversations.find((c) => c.key === activeConversationKey)?.label
     : undefined
+
+  // ── 授权档位 (composer's 授权 button, formerly the sidebar YOLO switch) ──
+  // Approval belongs to the conversation, not to its project or to a global
+  // setting: each conversation carries its own level (absent = 全部允许), and the
+  // session manager re-reads it on every ask so a change lands on the next message.
+  const approvalMode: SandboxApprovalMode = typeof activeConversationKey === 'string'
+    ? (conversations.find((c: any) => c.key === activeConversationKey)?.approvalMode ?? 'auto')
+    : 'auto'
+  const changeApprovalMode = (mode: SandboxApprovalMode): void => {
+    if (typeof activeConversationKey === 'string') updateConversationApproval(activeConversationKey, mode)
+  }
 
   // Set MemoryManager and KnowledgeManager config so background tasks can call the API
   if (apiKey) {
@@ -357,8 +368,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             onRenameConversation={renameConversation}
             onSelectConversation={setActiveConversationKey}
             onTogglePinConversation={togglePin}
-            tools={tools}
-            onToggleTool={toggleTool}
             skills={skills}
             onToggleSkill={toggleSkill}
             onImportSkill={importSkill}
@@ -367,8 +376,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             importError={importError}
             memoryManager={memoryManager}
             knowledgeManager={knowledgeManager}
-            yoloMode={settings.yoloMode ?? true}
-            onToggleYoloMode={(checked: boolean) => saveSettings({ ...settings, yoloMode: checked })}
             activeLoopConvIds={activeLoopConvIds}
             retryingConvIds={retryingConvIds}
             onCreateProjectConversation={(projectId) => { createNewConversation(projectId); regenerateGreeting() }}
@@ -422,6 +429,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                   : undefined
               }
               onUnbindExpert={(convId) => updateConversationExpert(convId, null)}
+              approvalMode={approvalMode}
+              onChangeApprovalMode={changeApprovalMode}
             />
           </AppLayout>
           {activeView === 'chat' && <PlanPanel plan={plan} onJumpToStep={setPlanScrollToMsgId} />}

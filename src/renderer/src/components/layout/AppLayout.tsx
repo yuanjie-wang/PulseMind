@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Layout, Button, theme, Switch, Tooltip } from 'antd'
+import { Layout, Button, theme, Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
   SettingOutlined,
@@ -76,8 +76,6 @@ interface AppLayoutProps {
   importError?: string | null
   memoryManager?: MemoryManager
   knowledgeManager?: KnowledgeManager
-  yoloMode?: boolean
-  onToggleYoloMode?: (checked: boolean) => void
   activeLoopConvIds?: string[]
   retryingConvIds?: string[]
   /** Create a conversation bound to a project (from ProjectView). */
@@ -104,8 +102,6 @@ function AppLayout({
   importError,
   memoryManager,
   knowledgeManager,
-  yoloMode,
-  onToggleYoloMode,
   activeLoopConvIds,
   retryingConvIds,
   onCreateProjectConversation,
@@ -231,7 +227,7 @@ function AppLayout({
         {SIDEBAR_TOP_BAND_HEIGHT > 0 && (
           <div style={{ height: SIDEBAR_TOP_BAND_HEIGHT, flexShrink: 0, WebkitAppRegion: 'drag' } as React.CSSProperties} />
         )}
-        {/* Sidebar header; the title and the switch opt out of dragging. */}
+        {/* Sidebar header; the title opts out of dragging. */}
         <div style={{
           padding: `${SIDEBAR_TITLE_PADDING_TOP}px 16px 8px`,
           display: 'flex',
@@ -242,15 +238,6 @@ function AppLayout({
           <div style={{ fontSize: 16, fontWeight: 700, color: '#000', cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigateKind('about')}>
             {t('appLayout.title')}
           </div>
-          <Switch
-            checked={yoloMode}
-            onChange={onToggleYoloMode}
-            checkedChildren={t('appLayout.yoloMode')}
-            unCheckedChildren={t('appLayout.yoloMode')}
-            size="small"
-            className={yoloMode ? 'yolo-switch-on' : ''}
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          />
         </div>
         <SidebarNav canCreateNew={canCreateNew} onCreateNew={onCreateNew} />
         {/* Tab switcher is pinned; only the list below it scrolls. */}
@@ -456,12 +443,6 @@ function AppLayout({
           min-height: 0;
         }
 
-        .yolo-switch-on {
-          background: #52c41a !important;
-        }
-        .yolo-switch-on .ant-switch-handle::before {
-          background-color: #fff !important;
-        }
         .ant-switch:focus-visible {
           outline: none;
         }

@@ -10,7 +10,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   yourName: '',
   workspaceDir: '',
   autoCleanup: false,
-  yoloMode: true,
   locale: 'zh'
 }
 

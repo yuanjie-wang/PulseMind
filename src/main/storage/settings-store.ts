@@ -32,7 +32,6 @@ const FALLBACK_SETTINGS: AppSettings = {
   yourName: '',
   workspaceDir: DEFAULT_WORKSPACE_DIR,
   autoCleanup: false,
-  yoloMode: true,
   locale: 'zh',
   launchAtLogin: false,
   serviceEnabled: true,
@@ -92,7 +91,6 @@ export class SettingsStore {
           yourName: parsed.yourName ?? '',
           workspaceDir: readWorkspaceDir(parsed),
           autoCleanup: parsed.autoCleanup ?? false,
-          yoloMode: parsed.yoloMode ?? true,
           locale: parsed.locale ?? 'zh',
           launchAtLogin: parsed.launchAtLogin ?? false,
           serviceEnabled: parsed.serviceEnabled ?? true,
@@ -136,7 +134,6 @@ export class SettingsStore {
       yourName: '',
       workspaceDir: DEFAULT_WORKSPACE_DIR,
       autoCleanup: false,
-      yoloMode: true,
       locale: 'zh',
       memoryEnabled: true,
       experienceEnabled: true

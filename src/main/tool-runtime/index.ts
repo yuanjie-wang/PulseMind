@@ -14,6 +14,7 @@ import { toolStore } from '../storage/tool-store'
 import { TOOLS_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
 import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
+import { DEFAULT_SANDBOX_POLICY } from '../../shared/sandbox/policy'
 import { homedir, platform } from 'node:os'
 import type { UserTool } from '../../shared/types/user-tool'
 
@@ -121,7 +122,7 @@ function resolveToolPath(toolId: string, target: unknown): string {
     operation: 'write', // strictest read for both read/write ops is equivalent here: deny-root check
     denyRoots: buildBaselineDenyRoots(homedir(), platform()),
     workspaceDir: toolDir,
-    policy: { fs: 'workspace-write', network: 'allow', approval: 'auto', hardIsolation: false, extraRoots: [] },
+    policy: DEFAULT_SANDBOX_POLICY,
   })
   if (!decision.ok) throw bridgeError('PATH_OUTSIDE_TOOL_DIR', decision.reason)
   return decision.resolved

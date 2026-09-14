@@ -23,7 +23,7 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, deriveConvType } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, deriveConvType } from '../storage/conversation.db'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { projectStore } from '../storage/project-store'
 import { subAgentStore } from '../storage/subagent-store'
@@ -31,7 +31,8 @@ import { getKnowledgeFilesByIds } from '../storage/knowledge.db'
 import { composeExpertInstructions } from '../../shared/expert-context'
 import type { ExpertRuntimeContext } from '../../shared/types/subagent'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
-import { normalizeSandboxPolicy } from '../../shared/sandbox/policy'
+import { normalizeSandboxPolicy, pickApprovalMode } from '../../shared/sandbox/policy'
+import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
@@ -57,12 +58,13 @@ interface SessionEntry {
   clientId: string
   /** Per-session engine config that a settings-driven refresh must not clobber:
    *  prompt/tool overrides (also engine instance state) and the approval mode a
-   *  session was created with (sandbox policy or explicit override). */
+   *  session was created with (explicit override for unattended sessions). */
   pinned: {
     systemPromptOverride?: string
     allowedTools?: string[]
-    /** Set only when the session pinned its own approval mode. */
-    yoloMode?: boolean
+    /** Approval mode the session's creator demanded (derived sessions run
+     *  unattended). Set = nothing else can change it, ever. */
+    approvalOverride?: SandboxApprovalMode
   }
   /** Last expert context resolved by refreshExpertContext. refreshOptions
    *  replaces the option bag wholesale, so the expert pack + its tool
@@ -117,6 +119,14 @@ class AgentSessionManagerImpl {
 
   private emit(sessionId: string, data: AgentEventData): void {
     for (const sink of this.eventSinks) sink(sessionId, data)
+  }
+
+  /** Approval precedence, in one place: an explicit per-session override (derived
+   *  sessions run unattended) > the conversation's own stored choice (the
+   *  composer's 授权 button writes it) > 'auto'. Re-read per call, so changing
+   *  the level takes effect on the conversation's next message. */
+  private effectiveApprovalMode(sessionId: string, entry: SessionEntry): SandboxApprovalMode {
+    return pickApprovalMode(entry.pinned.approvalOverride, getConversationApprovalMode(sessionId))
   }
 
   private emitMessages(sessionId: string, messages: AgentMessage[]): void {
@@ -333,10 +343,8 @@ class AgentSessionManagerImpl {
     }
     workspaceDir = workspaceDir || settings.workspaceDir || WORKSPACE_DIR
     // Approval precedence: an explicit per-session override (derived sessions
-    // run unattended) > the project sandbox policy > the global toggle.
-    const yoloMode = opts.yoloMode ?? (opts.sandbox !== undefined
-      ? normalizeSandboxPolicy(opts.sandbox).approval === 'auto'
-      : (settings.yoloMode ?? false))
+    // run unattended) > the conversation's own stored choice > 'auto'.
+    const approvalMode = pickApprovalMode(opts.approvalMode, getConversationApprovalMode(sessionId))
 
     const engineOptions: AgentEngineOptions = {
       apiKey: profile.apiKey ?? null,
@@ -357,7 +365,7 @@ class AgentSessionManagerImpl {
       platformInfo: managers.platformInfo,
       workspaceDir,
       skillsDir: SKILLS_DIR,
-      yoloMode,
+      approvalMode,
       locale: settings.locale === 'en' ? 'en' : 'zh',
       // A derived session (prompt override) is not a user conversation: its
       // transcript must not feed the memory/experience pipeline.
@@ -377,9 +385,10 @@ class AgentSessionManagerImpl {
       pinned: {
         systemPromptOverride: opts.systemPromptOverride,
         allowedTools: opts.allowedTools,
-        // Only an explicit request or a sandbox policy pins the approval mode;
-        // plain sessions keep following the global toggle.
-        yoloMode: opts.yoloMode ?? (opts.sandbox !== undefined ? yoloMode : undefined),
+        // Only an explicit request pins the approval mode; an ordinary session
+        // keeps following its conversation's own choice — see
+        // refreshSandboxContext.
+        approvalOverride: opts.approvalMode,
       },
     })
     // Per-session sandbox context: wrapped around every tool-executing entry
@@ -408,6 +417,12 @@ class AgentSessionManagerImpl {
    *  authoritative, and ws-client sessions inherit it for free. Also syncs the
    *  engine's workspaceDir so prompts and relative paths follow the project. */
   private async refreshSandboxContext(sessionId: string, entry: SessionEntry): Promise<void> {
+    // Approval is per conversation, not per project, so it is re-read even for
+    // the default project: the 授权 button's choice lands on the next message
+    // instead of being frozen at the session's first turn.
+    if (entry.pinned.approvalOverride === undefined) {
+      entry.engine.opts.approvalMode = this.effectiveApprovalMode(sessionId, entry)
+    }
     try {
       const projectId = getConversationProjectId(sessionId)
       if (projectId === DEFAULT_PROJECT_ID) return
@@ -415,14 +430,6 @@ class AgentSessionManagerImpl {
       if (!project) return
       this.sandboxContexts.set(sessionId, { sessionId, workspaceDir: project.workspaceDir, policy: project.sandbox })
       entry.engine.opts.workspaceDir = project.workspaceDir
-      // A project's policy owns the approval mode for its conversations (D2), so
-      // adopt it now and pin it: a later settings refresh must not silently
-      // re-open every tool call. A session created with an explicit per-session
-      // override keeps that instead.
-      if (entry.pinned.yoloMode === undefined) {
-        entry.pinned.yoloMode = project.sandbox.approval === 'auto'
-        entry.engine.opts.yoloMode = entry.pinned.yoloMode
-      }
     } catch (err) {
       console.warn('[SessionManager] refreshSandboxContext failed:', err)
     }
@@ -594,7 +601,7 @@ class AgentSessionManagerImpl {
       platformInfo: managers.platformInfo,
       workspaceDir: this.sandboxContexts.get(sessionId)?.workspaceDir ?? settings.workspaceDir ?? WORKSPACE_DIR,
       skillsDir: SKILLS_DIR,
-      yoloMode: entry.pinned.yoloMode ?? settings.yoloMode ?? false,
+      approvalMode: this.effectiveApprovalMode(sessionId, entry),
       locale: settings.locale === 'en' ? 'en' : 'zh',
       conversationId: sessionId,
       // updateOptions replaces the option bag wholesale — re-attach the pins

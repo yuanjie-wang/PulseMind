@@ -14,6 +14,7 @@ import {
   deleteConversation,
   setConversationProject,
   setConversationExpert,
+  setConversationApprovalMode,
   updateConversationTitle,
   updateConversationSummary,
   updateConversationKeywords,
@@ -127,6 +128,7 @@ export function registerConversationHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST, passThrough(IPC_CHANNELS.CONVERSATION_LIST, listConversations, []))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_PROJECT, (_event, id: string, projectId: string) => setConversationProject(id, projectId))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_EXPERT, (_event, id: string, expertId: string | null) => setConversationExpert(id, expertId))
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, voidHandler(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, setConversationApprovalMode))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET, passThrough(IPC_CHANNELS.CONVERSATION_GET, getConversation, null))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_HYDRATE, passThrough(IPC_CHANNELS.CONVERSATION_HYDRATE, hydrateConversation, null))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_DELETE, voidHandler(IPC_CHANNELS.CONVERSATION_DELETE, deleteConversation))

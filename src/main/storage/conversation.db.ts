@@ -1,5 +1,7 @@
 import type { Conversation, ConversationIndexEntry, Message } from '../../shared/types/conversation'
 import type { ContentBlock, ToolResultBlock } from '../../shared/types/agent'
+import { toSandboxApprovalMode } from '../../shared/sandbox/policy'
+import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { extractSnippet } from '../../shared/search/snippet'
 import { getDb } from './database'
 
@@ -108,7 +110,7 @@ export function listConversations(): ConversationIndexEntry[] {
   const rows = database
     .prepare(
       `SELECT
-        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id, c.workspace_dir, c.expert_id,
+        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id, c.workspace_dir, c.expert_id, c.approval_mode,
         (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
       FROM conversations c
@@ -119,7 +121,7 @@ export function listConversations(): ConversationIndexEntry[] {
       id: string; title: string; summary: string | null; keywords: string | null
       pinned: number; created_at: string; updated_at: string
       last_message: string | null; message_count: number; project_id: string | null
-      workspace_dir: string | null; expert_id: string | null
+      workspace_dir: string | null; expert_id: string | null; approval_mode: string | null
     }>
 
   return rows.map((r) => ({
@@ -129,6 +131,7 @@ export function listConversations(): ConversationIndexEntry[] {
     projectId: r.project_id || 'default',
     workspaceDir: r.workspace_dir || undefined,
     expertId: r.expert_id || undefined,
+    approvalMode: toSandboxApprovalMode(r.approval_mode),
     messageCount: r.message_count, createdAt: r.created_at, updatedAt: r.updated_at
   }))
 }
@@ -315,6 +318,24 @@ export function getConversationExpertId(id: string): string | null {
   return row?.expert_id || null
 }
 
+/** Store the conversation's tool-approval choice. Same stub-insert contract as
+ *  setConversationExpert: may run before the row exists, and later upserts never
+ *  touch approval_mode, so the choice survives. */
+export function setConversationApprovalMode(id: string, mode: SandboxApprovalMode): void {
+  const db = getDb()
+  const r = db.prepare('UPDATE conversations SET approval_mode = ? WHERE id = ?').run(mode, id)
+  if (r.changes === 0) {
+    const now = new Date().toISOString()
+    db.prepare("INSERT INTO conversations (id, title, type, approval_mode, created_at, updated_at) VALUES (?, '新对话', 'normal', ?, ?, ?)")
+      .run(id, mode, now, now)
+  }
+}
+
+/** Resolve a conversation's approval choice (undefined = never chosen). */
+export function getConversationApprovalMode(id: string): SandboxApprovalMode | undefined {
+  const row = getDb().prepare('SELECT approval_mode FROM conversations WHERE id = ?').get(id) as { approval_mode: string | null } | undefined
+  return toSandboxApprovalMode(row?.approval_mode)
+}
 
 /** The conversation's resolved working directory (M8), or null before the
  *  first session — used to jail browser file uploads (A-M4). */

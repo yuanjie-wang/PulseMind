@@ -168,7 +168,7 @@ export function createCanvasEngine(config: CanvasEngineConfig, envCfg: { width?:
     skillManager,
     workspaceDir: config.workDir,
     platformInfo: config.platformInfo,
-    yoloMode: true,
+    approvalMode: 'auto',
     conversationId: convId,
   }
 

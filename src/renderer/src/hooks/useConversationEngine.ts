@@ -10,6 +10,7 @@ import type { ExperienceManager } from '../experiences/ExperienceManager'
 import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
+import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../utils/session-mirror'
 
 // ── Client-side session state ────────────────────────────────────────
@@ -60,7 +61,6 @@ export interface UseConversationEngineOptions {
   soul: string
   yourName: string
   workspaceDir?: string
-  yoloMode?: boolean
   hooks?: HooksConfig
   locale?: 'zh' | 'en'
   // Injected managers — accepted for interface compatibility; engine assembly
@@ -242,7 +242,6 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     prevOptionsRef.current.myName !== options.myName ||
     prevOptionsRef.current.soul !== options.soul ||
     prevOptionsRef.current.yourName !== options.yourName ||
-    prevOptionsRef.current.yoloMode !== options.yoloMode ||
     prevOptionsRef.current.locale !== options.locale
   if (optionsChanged) {
     prevOptionsRef.current = {
@@ -254,7 +253,6 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       myName: options.myName,
       soul: options.soul,
       yourName: options.yourName,
-      yoloMode: options.yoloMode,
       locale: options.locale
     }
   }
@@ -266,7 +264,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   }, [
     options.apiKey, options.baseURL, options.model, options.maxTokens,
     options.profileId,
-    options.myName, options.soul, options.yourName, options.yoloMode,
+    options.myName, options.soul, options.yourName,
     options.locale, optionsChanged
   ])
 

@@ -38,6 +38,7 @@ const electronAPI = {
   projectDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
   setConversationProject: (id: string, projectId: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROJECT, id, projectId),
   setConversationExpert: (id: string, expertId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_EXPERT, id, expertId),
+  setConversationApprovalMode: (id: string, mode: unknown) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, id, mode),
   auditList: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.AUDIT_LIST, limit),
   routineList: () => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_LIST),
   routineGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_GET, id),

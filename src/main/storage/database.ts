@@ -313,6 +313,8 @@ function createTables(): void {
   try { database.exec("UPDATE subagent_profiles SET description = '' WHERE description IS NULL") } catch (e) {}
   try { database.exec("UPDATE subagent_profiles SET knowledge_file_ids = '[]' WHERE knowledge_file_ids IS NULL") } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN expert_id TEXT') } catch (e) {}
+  // 授权档位按会话存储；缺失 = 从未选择（按 'auto' 处理）。
+  try { database.exec('ALTER TABLE conversations ADD COLUMN approval_mode TEXT') } catch (e) {}
   // ── M5R: retype legacy tool-studio conversations ──
   // They used to derive as 'normal' and leak into the chat list; upsert's
   // ON CONFLICT never updates type, so existing rows need this one-time sweep.

@@ -12,6 +12,7 @@ import type { AgentMessage, AgentStatus } from '../types/agent'
 import type { SessionEngineHandle } from './useConversationEngine'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
 import { planIncrementalSave } from '../utils/incremental-save'
+import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 
 // ── Hook ──
 
@@ -289,7 +290,9 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
           // every reload ('default' normalizes to absent per the list type).
           projectId: c.projectId && c.projectId !== 'default' ? c.projectId : undefined,
           // Same for the @-summoned expert binding (drives the input-area chip).
-          expertId: c.expertId || undefined
+          expertId: c.expertId || undefined,
+          // And the conversation's own approval level (composer's 授权 control).
+          approvalMode: c.approvalMode
         }))
       )
       setConversations(items)
@@ -545,6 +548,28 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     void window.electronAPI.setConversationExpert?.(convId, expertId)
   }, [setConversations])
 
+  // ── Approval level binding (授权, per conversation) ──
+  // Same optimistic pattern: the list item carries the level the composer shows,
+  // and the DB column (stub-inserting the row when needed) is the durable copy
+  // the main-side session manager re-reads on every ask.
+  const updateConversationApproval = useCallback((convId: string, mode: SandboxApprovalMode) => {
+    setConversations(
+      conversationsRef.current.map((c) =>
+        String(c.key) === convId ? { ...c, approvalMode: mode } : c
+      )
+    )
+    // Refresh after the write lands: the session manager re-reads the column on
+    // its own at the next ask, but this also applies a mid-loop change now.
+    void (async () => {
+      try {
+        await window.electronAPI.setConversationApprovalMode?.(convId, mode)
+        await window.electronAPI.agentSessionRefreshOptions?.(convId)
+      } catch (err) {
+        console.warn('[Persistence] approval update failed:', err)
+      }
+    })()
+  }, [setConversations])
+
   // ── Activate a conversation (state + ref kept in sync) ──
   const activateConversation = useCallback((key: string) => {
     setActiveConversationKey(key)
@@ -579,6 +604,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     togglePin,
     bumpConversation,
     updateConversationExpert,
+    updateConversationApproval,
     activateConversation
   }
 }

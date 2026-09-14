@@ -196,6 +196,7 @@ export const IPC_CHANNELS = {
   PROJECT_DELETE: 'project:delete',
   CONVERSATION_SET_PROJECT: 'conversation:set-project',
   CONVERSATION_SET_EXPERT: 'conversation:set-expert',
+  CONVERSATION_SET_APPROVAL_MODE: 'conversation:set-approval-mode',
   AUDIT_LIST: 'audit:list',
   SANDBOX_DETECT: 'sandbox:detect',
 

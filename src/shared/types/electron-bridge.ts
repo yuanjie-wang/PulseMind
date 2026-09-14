@@ -18,6 +18,7 @@ import type { ExperienceRecord, ExperienceDraft } from './experience-types'
 import type { WindowControlsLayout } from '../window-chrome'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from './project'
 import type { AuditEntry } from './audit'
+import type { SandboxApprovalMode } from '../sandbox/policy'
 import type { Routine, RoutineRun } from './routine'
 import type { UserTool } from './user-tool'
 import type { AgentSessionCreateOptions } from '../agent-protocol'
@@ -99,7 +100,7 @@ export interface MCPClientConfig {
   url?: string
   /** Custom HTTP headers for SSE transport (e.g. Authorization) */
   headers?: Record<string, string>
-  /** When true, this server's tools require user approval before execution in mixed mode (auto-executed in YOLO mode). */
+  /** When true, this server's tools wait for user approval unless the session's approval mode is 'auto'. */
   requireApproval?: boolean
 }
 
@@ -243,6 +244,7 @@ export interface ElectronAPI {
   projectDelete: (id: string) => Promise<{ removedConversations: number }>
   setConversationProject: (id: string, projectId: string) => Promise<void>
   setConversationExpert: (id: string, expertId: string | null) => Promise<void>
+  setConversationApprovalMode: (id: string, mode: SandboxApprovalMode) => Promise<void>
   auditList: (limit?: number) => Promise<AuditEntry[]>
   routineList: () => Promise<Routine[]>
   routineGet: (id: string) => Promise<Routine | null>

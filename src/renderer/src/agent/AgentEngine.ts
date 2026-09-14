@@ -24,6 +24,7 @@ import { sanitizeSchema, safeInvoke, safeInvokeObserver, MAX_LOOP_ITERATIONS, ge
 import { buildCommandFromSkillInput } from './command-builder'
 import { buildSystemPrompt } from './system-prompt-builder'
 import type { ExpertRuntimeContext } from '../../../shared/types/subagent'
+import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { PlanManager } from './plan-manager'
 import { ensureCache, getCachedMcpServers, getCachedSubAgentProfiles, refreshMcpServers } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
@@ -81,7 +82,10 @@ export interface AgentEngineOptions {
   experienceManager?: import('../experiences/ExperienceManager').ExperienceManager
   hooks?: HooksConfig
   onSkillStateChange?: () => void
-  yoloMode?: boolean
+  /** How tool calls are gated for this engine (shared ladder; a project's
+   *  sandbox policy is what the session manager resolves onto it). Absent =
+   *  'auto' — derived sessions (tool studio, canvas) run unattended. */
+  approvalMode?: SandboxApprovalMode
   locale?: 'zh' | 'en'
   conversationId?: string
 
