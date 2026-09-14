@@ -31,6 +31,7 @@ import { LocalImage } from './LocalImage'
 import { ThinkingBlockView } from './ThinkingBlockView'
 import { FileRefChip } from './FileRefChip'
 import { ContextRing, estimateContextUsed } from './ContextRing'
+import { openInPreviewPane } from '../../stores/previewPaneStore'
 
 // Blinking cursor keyframe for live sub-agent preview
 const cursorKeyframe = `@keyframes pulsemind-blink-cursor {
@@ -159,6 +160,12 @@ function CollapsibleToolBlock({
   const summary = toolBlockSummary(block)
   const needsAction = block.status === 'pending' && !!onApproveTool
 
+  // File preview button (PLAN-preview-pane): completed write/edit calls with
+  // a file path open the file in the chat's right preview pane.
+  const inputFilePath = typeof block.input?.file_path === 'string' ? (block.input.file_path as string) : ''
+  const toolSucceeded = (block.status === 'completed' || (block.status === undefined && completedFromResult)) && block.exitCode === undefined
+  const previewableFile = (block.name === 'write' || block.name === 'edit') && inputFilePath && toolSucceeded ? inputFilePath : null
+
   // ── Sub-agent preview ──
   const subConvId = (block as any)._subConvId
   const subAgentHandle = (block as any)._subAgentHandle as SubAgentHandle | undefined
@@ -284,6 +291,18 @@ function CollapsibleToolBlock({
         {block.status === undefined && !completedFromResult && (
           <span style={{ color: '#999', fontSize: 11, flexShrink: 0, fontWeight: 500 }}>
             指令生成中...
+          </span>
+        )}
+        {/* File preview button */}
+        {previewableFile && (
+          <span
+            onClick={(e) => {
+              e.stopPropagation()
+              openInPreviewPane(previewableFile)
+            }}
+            style={{ flexShrink: 0, lineHeight: 1, cursor: 'pointer' }}
+          >
+            <EyeOutlined style={{ color: '#888', fontSize: 14 }} title="预览文件" />
           </span>
         )}
         {/* Sub-agent preview button */}

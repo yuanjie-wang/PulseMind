@@ -74,3 +74,15 @@ export function isPreviewable(kind: FileKind): boolean {
 export function shouldAutoOpen(path: string): boolean {
   return isPreviewable(detectFileKind(path))
 }
+
+/** Resolve a tool-input file path to an absolute preview target. Tool inputs
+ *  may be workspace-relative (the executor resolves them main-side); the
+ *  renderer must resolve the same way before readFile/openFile. Absolute,
+ *  drive-letter and ~ paths pass through. */
+export function resolvePreviewPath(rawPath: string, workspaceDir: string | null | undefined): string {
+  const raw = rawPath.trim()
+  if (!raw) return raw
+  if (/^([A-Za-z]:[\\/]|\/|~)/.test(raw)) return raw
+  if (!workspaceDir) return raw
+  return `${workspaceDir.replace(/[\\/]+$/, '')}/${raw.replace(/^[\\/]+/, '')}`
+}

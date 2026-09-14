@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { baseName, extensionOf, detectFileKind, isPreviewable, shouldAutoOpen } from '../src/shared/preview/file-kind'
+import { baseName, extensionOf, detectFileKind, isPreviewable, shouldAutoOpen, resolvePreviewPath } from '../src/shared/preview/file-kind'
 
 describe('baseName / extensionOf', () => {
   it('handles both separators and strips query/hash', () => {
@@ -59,5 +59,29 @@ describe('isPreviewable / shouldAutoOpen', () => {
     expect(shouldAutoOpen('/w/chart.png')).toBe(true)
     expect(shouldAutoOpen('/w/data.xlsx')).toBe(false)
     expect(shouldAutoOpen('/w/thing.bin')).toBe(false)
+  })
+})
+
+describe('resolvePreviewPath', () => {
+  const ws = '/Users/u/.pulsemind/workspace/20260914120000'
+
+  it('passes through absolute / drive-letter / ~ paths', () => {
+    expect(resolvePreviewPath('/abs/x.md', ws)).toBe('/abs/x.md')
+    expect(resolvePreviewPath('C:\\abs\\x.md', ws)).toBe('C:\\abs\\x.md')
+    expect(resolvePreviewPath('~/x.md', ws)).toBe('~/x.md')
+  })
+
+  it('joins relative paths onto the workspace, trimming extra slashes', () => {
+    expect(resolvePreviewPath('report.md', ws)).toBe(`${ws}/report.md`)
+    expect(resolvePreviewPath('a/b.md', `${ws}/`)).toBe(`${ws}/a/b.md`)
+    // Leading "/" is ABSOLUTE — same semantics as the executor's
+    // resolveWorkspacePath (tool-executors.ts), not workspace-relative.
+    expect(resolvePreviewPath('/lead.md', ws)).toBe('/lead.md')
+  })
+
+  it('tolerates missing workspace and blank input', () => {
+    expect(resolvePreviewPath('rel.md', null)).toBe('rel.md')
+    expect(resolvePreviewPath('rel.md', undefined)).toBe('rel.md')
+    expect(resolvePreviewPath('', ws)).toBe('')
   })
 })

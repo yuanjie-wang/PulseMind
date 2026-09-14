@@ -9,6 +9,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { openTabInList, closeTabInList, type PreviewTab } from './preview-tabs'
+import { resolvePreviewPath } from '../../../shared/preview/file-kind'
 
 /** Key for conversations that have no id yet (new-task draft). */
 export const DRAFT_CONVERSATION_KEY = '__draft__'
@@ -22,6 +23,9 @@ interface PreviewPaneState {
   open: boolean
   width: number
   activeConversationId: string | null
+  /** Resolved working directory of the conversation currently on screen —
+   *  entry points resolve tool-relative paths against it before opening. */
+  workspaceDir: string | null
   tabsByConversation: Record<string, PreviewTab[]>
   /** path of the active tab per conversation */
   activeByConversation: Record<string, string | null>
@@ -32,6 +36,7 @@ interface PreviewPaneState {
   setActive: (conversationId: string | null, path: string) => void
   setWidth: (width: number) => void
   setOpen: (open: boolean) => void
+  setWorkspaceDir: (dir: string | null) => void
   switchConversation: (conversationId: string | null) => void
   bumpReload: (path: string) => void
   forgetConversation: (conversationId: string) => void
@@ -45,9 +50,12 @@ export const usePreviewPaneStore = create<PreviewPaneState>()(
       open: false,
       width: DEFAULT_PREVIEW_WIDTH,
       activeConversationId: null,
+      workspaceDir: null,
       tabsByConversation: {},
       activeByConversation: {},
       reloadTicks: {},
+
+      setWorkspaceDir: (dir) => set({ workspaceDir: dir }),
 
       openFile: (conversationId, path) => {
         const key = convKey(conversationId)
@@ -120,4 +128,12 @@ function touch(map: Record<string, PreviewTab[]>, key: string, tabs: PreviewTab[
   const entries = Object.entries(map).filter(([k]) => k !== key)
   entries.push([key, tabs])
   return Object.fromEntries(entries.slice(entries.length - MAX_CONVERSATION_MAPS))
+}
+
+/** Entry point for chat-side previews (tool cards, file chips): resolves
+ *  tool-relative paths against the on-screen conversation's workspace and
+ *  opens in the active conversation's tab strip. */
+export function openInPreviewPane(rawPath: string): void {
+  const s = usePreviewPaneStore.getState()
+  s.openFile(s.activeConversationId, resolvePreviewPath(rawPath, s.workspaceDir))
 }

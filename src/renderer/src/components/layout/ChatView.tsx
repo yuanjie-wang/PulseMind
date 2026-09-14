@@ -17,6 +17,7 @@ import { useBrowserPaneStore } from '../../stores/browserPaneStore'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { PreviewPane } from '../preview/PreviewPane'
+import { usePreviewPaneSync } from '../../hooks/usePreviewPaneSync'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import type { ConversationListItem } from '../../types/conversation'
@@ -178,6 +179,13 @@ function ChatView({
   useEffect(() => {
     usePreviewPaneStore.getState().switchConversation(conversationId ?? null)
   }, [conversationId])
+  // The pane resolves tool-relative paths against this conversation's
+  // workspace; keep the store in sync for the entry-point helpers.
+  useEffect(() => {
+    usePreviewPaneStore.getState().setWorkspaceDir(workspaceDir ?? null)
+  }, [workspaceDir])
+  // write → auto-open, write/edit → refresh open tabs (D3/D7)
+  usePreviewPaneSync(conversationId, workspaceDir)
   const pendingScrollRef = useRef(false)
   const scrollRafRef = useRef<number>(0)
   // Cancel handle for the bottom-pinner started after a conversation switch —

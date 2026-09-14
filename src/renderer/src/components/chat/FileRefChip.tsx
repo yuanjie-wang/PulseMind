@@ -5,6 +5,7 @@ import Latex from '@ant-design/x-markdown/plugins/Latex'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage, IMAGE_EXTS, getExt } from './LocalImage'
 import { stringToHue } from '../../utils/hash-color'
+import { openInPreviewPane } from '../../stores/previewPaneStore'
 
 // Match [file:/path/to/file] or [folder:/path/to/folder], optionally with |timestamp
 const FILE_REF_RE = /\[(file|folder):([^\]]+?)(?:\|([^\]]*))?\]/g
@@ -119,6 +120,7 @@ export function FileChipComponent(attrs: Record<string, any>): React.ReactElemen
   const path = (attrs.dataPath || attrs['data-path'] || '') as string
   const ext = (attrs.dataExt || attrs['data-ext'] || '') as string
   const letter = (attrs.dataLetter || attrs['data-letter'] || 'F') as string
+  const dataType = (attrs.dataType || attrs['data-type'] || 'file') as string
   const dataTime = (attrs.dataTime || attrs['data-time']) as string | undefined
   const [birthtime, setBirthtime] = useState<string | null>(null)
 
@@ -147,7 +149,12 @@ export function FileChipComponent(attrs: Record<string, any>): React.ReactElemen
   return (
     <Tooltip title={path}>
       <span
-        onClick={() => openInOs(path)}
+        onClick={() => {
+          // Files open the in-app preview pane (PLAN-preview-pane); folders
+          // still go to the system file manager.
+          if (dataType === 'folder') openInOs(path)
+          else openInPreviewPane(path)
+        }}
         style={{
           display: 'inline-flex',
           position: 'relative',
