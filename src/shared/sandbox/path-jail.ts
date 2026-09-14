@@ -3,6 +3,13 @@
 // No IO, no Electron — the caller (main-process services) resolves symlinks
 // and supplies the deny-root list; this module only decides.
 //
+// MAIN-PROCESS ONLY despite living in shared/: it imports `node:path` and
+// reads `process.platform`, neither of which exists in the sandboxed
+// renderer. If renderer-side reuse is ever needed, this file must be
+// rewritten self-contained (pure string path logic) — and re-tested, since
+// these are security decisions. Renderer path filtering goes through
+// main's file-ops instead.
+//
 // Semantics:
 //   read   — allowed everywhere except DENY_ROOTS (agent may look around, not
 //            into secrets or PulseMind's own data)

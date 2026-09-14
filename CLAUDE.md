@@ -486,7 +486,8 @@ On first launch, the app migrates data from the old `~/.pulseai/` directory to `
 - Packaging config is in `package.json`'s `"build"` key; there is no `electron-builder.yml`. `appId` is `com.pulsemind.app`.
 - `tsconfig.json` is a project-reference root pointing to `tsconfig.node.json` (main+preload) and `tsconfig.web.json` (renderer).
 - Agent engine logic lives in `agent/AgentEngine.ts`. Both chat and canvas modes use the same engine; only the presentation layer differs. Engine state (`agentStatus`) must be reset to `idle` before each `startLoop()` to prevent stale `completed` status from premature promise resolution.
-- The settings modal is an Ant Design `Modal` (not Drawer) with side-by-side 150px left menu + right content area. Settings panel components use the `inline` prop pattern.
+- **`src/renderer/src/agent/`, `memory/`, `knowledge/`, `experiences/`, `skills/`, `llm/`, `tools/` are de-facto shared code**: the main process imports them directly (`src/main/agent/session-manager.ts` hosts AgentEngine + the manager stack; `api-proxy.handler.ts` builds LLM adapters). Keep these directories free of DOM/window access; genuinely shared pure logic goes in `src/shared/`.
+- There is no settings modal anymore (removed 0.4.0): `SettingsPage.tsx` renders the five sections inline under a left menu; the panels keep their drawer-era `inline`/`open`/`onClose` contract, and several still open standalone Drawers/Modals when invoked from outside the page (e.g. capability center, LLM profile editor).
 - Adding a new built-in tool requires updating 3 files: tool definition in `built-in-tools.ts`, command builder in `command-builder.ts`, and tool categorization in `AgentEngine.ts`.
 - `agent-utils.ts` contains `shEscape()` and `psEscape()` for shell argument escaping — use these when building shell commands to prevent injection.
 - The `find` tool's `extra_args` parameter works on macOS/Linux only (PowerShell can't translate `find -o` expressions).
