@@ -8,11 +8,14 @@ import { AgentEngine, type AgentEngineOptions } from '../AgentEngine'
 import type { SubAgentResult, SpawnSubAgentConfig, SubAgentHandle } from '../agent-utils'
 import { agentMessagesToConversation } from '../../utils/message-utils'
 import { getHost } from '../host'
+import type { EngineCore } from './engine-core'
 
 export class SpawnManager {
   private _lastSpawnProgressAt = 0
 
-  constructor(private engine: AgentEngine) {}
+  // Needs the concrete class (not just EngineCore): this module is the engine
+  // FACTORY — spawnSubAgent constructs full AgentEngine instances.
+  constructor(private engine: EngineCore) {}
 
   /** Push a live progress line to the parent engine's UI (sub-agents only). Throttled to 800ms except forced transition updates. */
   reportProgress(msg: string, force = false): void {

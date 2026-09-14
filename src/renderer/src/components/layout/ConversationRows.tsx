@@ -37,8 +37,9 @@ interface ConversationRowsProps {
   onTogglePin: (key: string, pinned: boolean) => void
 }
 
-/** Pinned first, then most recently updated — the order both history tabs share. */
-function byPinnedThenRecency(a: ConversationListItem, b: ConversationListItem): number {
+/** Pinned first, then most recently updated — the order both history tabs share
+ *  (and the manage modal, so its rows read exactly like the list behind it). */
+export function byPinnedThenRecency(a: ConversationListItem, b: ConversationListItem): number {
   if (a.pinned && !b.pinned) return -1
   if (!a.pinned && b.pinned) return 1
   return (b.updatedAt || '').localeCompare(a.updatedAt || '')

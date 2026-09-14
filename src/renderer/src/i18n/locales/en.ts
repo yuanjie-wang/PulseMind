@@ -418,6 +418,8 @@ const en: TranslationDict = {
     settings: 'LLM Settings',
     environment: 'Environment Settings',
     toggleSidebar: 'Toggle sidebar',
+    manageChats: 'Manage Chats',
+    manageProjects: 'Manage Projects',
   },
   menu: {
     title: 'Menu',
@@ -491,6 +493,16 @@ const en: TranslationDict = {
       date: '{{month}}/{{day}}',
       dateWithYear: '{{year}}/{{month}}/{{day}}',
     },
+  },
+  manageChatsModal: {
+    title: 'Manage Chats',
+    selectAll: 'Select all',
+    selectedCount: '{{n}} selected',
+    deleteSelected: 'Delete selected',
+    confirmTitle: 'Delete selected chats?',
+    confirmContent: '{{n}} chats will be deleted permanently.',
+    cancel: 'Cancel',
+    empty: 'No conversations yet',
   },
   errorBoundary: {
     title: 'Something went wrong',

@@ -2,13 +2,14 @@
  * LLM stream runner (PLAN-0.3.5 refactor, split 7/5): parser wiring, chunk
  * pump, stream-done await and idle-retry, extracted from AgentEngine.
  */
-import { AgentEngine } from '../AgentEngine'
+import { MAX_STREAM_IDLE_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS } from './engine-constants'
 import { IncrementalJsonTracker } from '../json-stream'
 import { extractInvokeToolCalls } from './result-ingestion'
 import { summarizeToolCall } from './context-compactor'
 import { generateMsgId, safeInvoke, safeInvokeObserver } from '../agent-utils'
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import type { AgentEngineOptions } from '../AgentEngine'
+import type { EngineCore } from './engine-core'
 
 interface PreparedRequest {
   apiUrl: string
@@ -17,7 +18,7 @@ interface PreparedRequest {
 }
 
 export class StreamRunner {
-  constructor(private engine: AgentEngine) {}
+  constructor(private engine: EngineCore) {}
 
   async run(opts: AgentEngineOptions, req: PreparedRequest): Promise<void> {
     const { apiUrl, headers, resolvedBody } = req
@@ -182,15 +183,15 @@ export class StreamRunner {
       // the connection stalled mid-stream (long silent thinking, network blip).
       // this.engine.messages is untouched until onStreamComplete, so discard the partial
       // streaming state and re-issue the request from scratch.
-      const isIdleTimeout = AgentEngine.STREAM_IDLE_TIMEOUT_MARKERS.some(m => message.includes(m))
-      if (!isCancel && isIdleTimeout && this.engine.streamIdleRetries < AgentEngine.MAX_STREAM_IDLE_RETRIES) {
+      const isIdleTimeout = STREAM_IDLE_TIMEOUT_MARKERS.some(m => message.includes(m))
+      if (!isCancel && isIdleTimeout && this.engine.streamIdleRetries < MAX_STREAM_IDLE_RETRIES) {
         this.engine.streamIdleRetries += 1
-        console.warn(`[AgentEngine] Stream idle timeout (${this.engine.streamIdleRetries}/${AgentEngine.MAX_STREAM_IDLE_RETRIES}) — retrying`)
+        console.warn(`[AgentEngine] Stream idle timeout (${this.engine.streamIdleRetries}/${MAX_STREAM_IDLE_RETRIES}) — retrying`)
         this.engine.currentAssistantBlocks = []
         this.engine.streamingBlocks = []
         this.engine.jsonAccumulators = new Map()
         this.engine.toolUseBlocks = []
-        this.engine.agentStatus = { status: 'retrying', message: `连接闲置超时，自动重试 (${this.engine.streamIdleRetries}/${AgentEngine.MAX_STREAM_IDLE_RETRIES})…`, attempt: this.engine.streamIdleRetries, maxRetries: AgentEngine.MAX_STREAM_IDLE_RETRIES, delay: 0 }
+        this.engine.agentStatus = { status: 'retrying', message: `连接闲置超时，自动重试 (${this.engine.streamIdleRetries}/${MAX_STREAM_IDLE_RETRIES})…`, attempt: this.engine.streamIdleRetries, maxRetries: MAX_STREAM_IDLE_RETRIES, delay: 0 }
         this.engine.notify()
         await this.engine.continueLoop()
         return

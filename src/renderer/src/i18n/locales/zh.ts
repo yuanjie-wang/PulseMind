@@ -416,6 +416,8 @@ const zh = {
     settings: 'LLM 设置',
     environment: '环境设置',
     toggleSidebar: '切换侧边栏',
+    manageChats: '管理对话',
+    manageProjects: '管理项目',
   },
   menu: {
     title: '菜单',
@@ -489,6 +491,16 @@ const zh = {
       date: '{{month}}月{{day}}日',
       dateWithYear: '{{year}}年{{month}}月{{day}}日',
     },
+  },
+  manageChatsModal: {
+    title: '管理对话',
+    selectAll: '全选',
+    selectedCount: '已选 {{n}} 项',
+    deleteSelected: '删除所选',
+    confirmTitle: '删除所选对话？',
+    confirmContent: '将删除选中的 {{n}} 个对话，且不可恢复。',
+    cancel: '取消',
+    empty: '暂无对话',
   },
   errorBoundary: {
     title: '出现了一些问题',

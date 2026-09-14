@@ -5,7 +5,8 @@
  */
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import { generateMsgId } from '../agent-utils'
-import { AgentEngine, type AgentEngineOptions } from '../AgentEngine'
+import { TOOL_PARAM_LIMITS, MAX_TOOL_INPUT_JSON_BYTES } from './engine-constants'
+import type { AgentEngineOptions } from '../AgentEngine'
 
 
   export function addTruncatedResults(messages: AgentMessage[], tools: ToolUseBlock[]): void {
@@ -86,9 +87,9 @@ import { AgentEngine, type AgentEngineOptions } from '../AgentEngine'
   export function validateToolParams(tools: ToolUseBlock[]): ToolUseBlock[] {
     const oversized: ToolUseBlock[] = []
     for (const t of tools) {
-      const limits = AgentEngine.TOOL_PARAM_LIMITS[t.name]
+      const limits = TOOL_PARAM_LIMITS[t.name]
       const inputJson = JSON.stringify(t.input)
-      if (inputJson.length > AgentEngine.MAX_TOOL_INPUT_JSON_BYTES) {
+      if (inputJson.length > MAX_TOOL_INPUT_JSON_BYTES) {
         oversized.push(t)
         console.warn(`[AgentEngine] Tool "${t.name}" input exceeds 1 MB safety net (${inputJson.length} bytes)`)
         continue

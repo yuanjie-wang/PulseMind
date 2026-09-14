@@ -2,11 +2,12 @@
  * Background memory extraction + tool-result persistence (PLAN-0.3.5 split):
  * extracted from AgentEngine. Functions take the engine back-reference.
  */
-import { AgentEngine } from '../AgentEngine'
+import { MEM_EXTRACTION_COOLDOWN } from './engine-constants'
+import type { EngineCore } from './engine-core'
 import { getHost } from '../host'
 import type { AgentMessage, TextBlock, ToolUseBlock, ToolResultBlock } from '../../types/agent'
 
-export async function extractMemoriesFromOldToolPairs(engine: AgentEngine): Promise<void> {
+export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promise<void> {
     // Find compressible assistant+user pairs (same logic as old autoCompact)
     const compressible: Array<{ assistant: AgentMessage; user: AgentMessage }> = []
 
@@ -105,7 +106,7 @@ export async function extractMemoriesFromOldToolPairs(engine: AgentEngine): Prom
     }
   }
 
-export async function persistUnsavedToolResults(engine: AgentEngine): Promise<void> {
+export async function persistUnsavedToolResults(engine: EngineCore): Promise<void> {
     const entries: Array<{
       ref_id: string; message_id: string; block_index: number;
       tool_use_id: string; content: string; is_error: number
@@ -136,14 +137,14 @@ export async function persistUnsavedToolResults(engine: AgentEngine): Promise<vo
     }
   }
 
-export function scheduleMemoryExtraction(engine: AgentEngine): void {
+export function scheduleMemoryExtraction(engine: EngineCore): void {
     if (engine._memExtractionInProgress) return
     if (engine.spawnSystemPrompt) return
     if (!engine.opts.conversationId) return
     // Feature master switch (设置 → 记忆): the shared manager's prefs mirror it.
     if (engine.opts.memoryManager && !engine.opts.memoryManager.getPreferences().autoCaptureEnabled) return
 
-    if (Date.now() - engine._lastMemExtractionTime < AgentEngine.MEM_EXTRACTION_COOLDOWN) return
+    if (Date.now() - engine._lastMemExtractionTime < MEM_EXTRACTION_COOLDOWN) return
 
     const estimatedTokens = engine.compactor.contextTokens()
     if (estimatedTokens < (engine.opts.contextLength || 128000) * 0.9) return

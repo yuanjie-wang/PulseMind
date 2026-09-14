@@ -33,6 +33,7 @@ import { scheduleMemoryExtraction, persistUnsavedToolResults } from './engine/me
 import { ExecutionFlow } from './engine/execution-flow'
 import { StreamRunner } from './engine/stream-runner'
 import { ContextCompactor, summarizeToolCall } from './engine/context-compactor'
+import type { EngineCore } from './engine/engine-core'
 import { addTruncatedResults, extractInvokeToolCalls, validateToolParams } from './engine/result-ingestion'
 import { agentMessagesToConversation } from '../utils/message-utils'
 import { stripImageData } from './image-utils'
@@ -112,7 +113,9 @@ export interface AgentEngineCallbacks {
 
 // ── AgentEngine ───────────────────────────────────────────────────────
 
-export class AgentEngine {
+// `implements EngineCore` keeps the class honest against the strategy
+// modules' declared dependency surface (engine/engine-core.ts).
+export class AgentEngine implements EngineCore {
   // ── Observable state (read by React wrapper) ────────────────────
   messages: AgentMessage[] = []
   agentStatus: AgentStatus = { status: 'idle' }
@@ -862,24 +865,6 @@ export class AgentEngine {
     }
   }
 
-  // ── Stream idle-timeout retry ──────────────────────────────────────────
-  // The main-process proxy aborts streams that stay idle for 120s (long silent
-  // thinking, network blips). Instead of failing, re-issue the request a few
-  // times — the messages array is untouched until onStreamComplete, so a retry
-  // simply re-generates from scratch.
-  static readonly MAX_STREAM_IDLE_RETRIES = 2
-  static readonly STREAM_IDLE_TIMEOUT_MARKERS = ['闲置超时', 'Stream idle timeout']
-
-  // ── Tool parameter size limits ──────────────────────────────────────────
-  // Prevents the LLM from passing overly large arguments (e.g. write content,
-  // edit diffs) that would waste tokens or cause memory issues.
-  static readonly TOOL_PARAM_LIMITS: Record<string, Record<string, number>> = {
-    write: { content: 500_000 },
-    edit: { diff: 200_000, new_str: 200_000 },
-    spawn_agent: { task: 200_000 },
-  }
-  static readonly MAX_TOOL_INPUT_JSON_BYTES = 1_000_000 // 1 MB safety net for any tool
-
   // ── Compaction remaining-window floors ─────────────────────────────────
   // Compaction triggers on remaining window (contextLength - used). On small
   // model windows the percentage floor (10%/30%) collapses to tiny headroom,
@@ -939,6 +924,4 @@ export class AgentEngine {
   /** Cooldown timestamp for memory extraction */
   /** @internal */
   _lastMemExtractionTime = 0
-  static readonly MEM_EXTRACTION_COOLDOWN = 30_000
-
 }

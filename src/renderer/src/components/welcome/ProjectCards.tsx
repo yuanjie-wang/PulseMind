@@ -47,9 +47,26 @@ export function ProjectCards({ conversations, onOpenConversation }: {
         fontSize: 15, fontWeight: 600, color: '#333',
       }}>
         {t('welcome.pickProjectTitle')}
-        <ArrowRightOutlined style={{ fontSize: 12, color: '#999' }} />
+        {/* Trailing action of the row: the column's right edge is the flex
+            content edge, so the pill lines up with the cards below it. */}
+        <button
+          type="button"
+          onClick={() => setDrawerOpen(true)}
+          style={{
+            marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
+            border: 'none', background: 'transparent', cursor: 'pointer',
+            padding: '5px 10px', borderRadius: 999,
+            fontSize: 13, fontWeight: 500, color: '#888',
+            transition: 'background 0.15s, color 0.15s',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = CARD_BG; e.currentTarget.style.color = '#333' }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#888' }}
+        >
+          <PlusOutlined style={{ fontSize: 12 }} />
+          {t('welcome.newProject')}
+        </button>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 }}>
         {userProjects.map((project) => (
           <ProjectCard
             key={project.id}
@@ -66,11 +83,6 @@ export function ProjectCards({ conversations, onOpenConversation }: {
             <div style={{ fontSize: 16, fontWeight: 600, color: '#666' }}>{t('welcome.noProjects')}</div>
             <div style={{ marginTop: 6, fontSize: 13, lineHeight: '19px', color: '#999' }}>
               {t('welcome.noProjectsHint')}
-            </div>
-            <div style={{ marginTop: 10, fontSize: 12 }}>
-              <a style={{ cursor: 'pointer' }} onClick={() => setDrawerOpen(true)}>
-                <PlusOutlined /> {t('welcome.newProject')}
-              </a>
             </div>
           </div>
         )}

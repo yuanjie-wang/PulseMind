@@ -6,15 +6,20 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   InfoCircleOutlined,
-  BarChartOutlined
+  BarChartOutlined,
+  PlusOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
+import ConversationManageModal from './ConversationManageModal'
 import ProjectSidebarList from './ProjectSidebarList'
 import SidebarNav from './SidebarNav'
 import { ViewHost } from './ViewHost'
+import { ProjectDrawer } from '../project/ProjectDrawer'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
+import { useNewTaskStore } from '../../stores/newTaskStore'
+import { useProjectStore } from '../../stores/projectStore'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { ToolState } from '../../tools/types'
@@ -116,10 +121,47 @@ function AppLayout({
   const { token } = theme.useToken()
   const { t } = useTranslation()
 
+  // Switcher-row actions (PLAN-0.4.0): 管理 + 新增 sit right of the 对话/项目
+  // pill, and what they open follows the selected task type.
+  const [manageOpen, setManageOpen] = useState(false)
+  const [projectDrawerOpen, setProjectDrawerOpen] = useState(false)
+  const reloadProjects = useProjectStore((s) => s.reload)
+
   const canCreateNew = autoCleanup || totalSessions < MAX_SESSIONS
   const activeConvTitle = typeof activeConversationKey === 'string'
     ? conversations.find((c) => c.key === activeConversationKey)?.label
     : undefined
+  // The 对话 tab (and its manage modal) covers the loose — project-less —
+  // conversations only; project-bound ones live under the 项目 tab.
+  const looseConversations = conversations.filter((c) => !c.projectId)
+
+  // 管理: chats tab → the batch-delete modal for its loose conversations;
+  // projects tab → the project center, which already carries create/edit/delete.
+  const handleTabManage = (): void => {
+    if (listTab === 'projects') {
+      navigate({ kind: 'project' })
+      return
+    }
+    setManageOpen(true)
+  }
+
+  // 新增: chats tab → a fresh conversation (mirrors SidebarNav's 新建对话
+  // entry: preselect the welcome switcher, land on the chat view, then create);
+  // projects tab → the project create drawer.
+  const handleTabAdd = (): void => {
+    if (listTab === 'projects') {
+      setProjectDrawerOpen(true)
+      return
+    }
+    useNewTaskStore.getState().setMode('chat')
+    navigate({ kind: 'chat' })
+    if (canCreateNew) onCreateNew()
+  }
+
+  const handleDeleteConversations = (keys: string[]): void => {
+    keys.forEach((key) => onDeleteConversation(key))
+  }
+
   // Sidebar highlight key: only while a chat view is open. Both history tabs
   // (对话 and 项目) take it, so the open conversation reads as active in either.
   const activeChatKey = view.kind === 'chat' && typeof activeConversationKey === 'string'
@@ -213,15 +255,40 @@ function AppLayout({
         <SidebarNav canCreateNew={canCreateNew} onCreateNew={onCreateNew} />
         {/* Tab switcher is pinned; only the list below it scrolls. */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          {/* alignSelf: the track is a pill sized to its labels (inline-flex in
-              the stylesheet); as a flex child it would otherwise stretch full-width. */}
-          <div className="sidebar-list-track" style={{ flexShrink: 0, alignSelf: 'flex-start' }}>
-            <Button type="text" className={`sidebar-list-tab${listTab === 'chats' ? ' on' : ''}`} onClick={() => setListTab('chats')}>
-              {t('appLayout.listTabChats')}
-            </Button>
-            <Button type="text" className={`sidebar-list-tab${listTab === 'projects' ? ' on' : ''}`} onClick={() => setListTab('projects')}>
-              {t('appLayout.listTabProjects')}
-            </Button>
+          {/* One row: the 对话/项目 pill on the left, its 管理/新增 actions on
+              the right — both follow the selected task type (see handlers). */}
+          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            {/* Inline margins override the stylesheet's `10px 12px 6px` so the
+                actions cluster can hug the row's right edge. */}
+            <div className="sidebar-list-track" style={{ margin: '10px 0 6px 12px' }}>
+              <Button type="text" className={`sidebar-list-tab${listTab === 'chats' ? ' on' : ''}`} onClick={() => setListTab('chats')}>
+                {t('appLayout.listTabChats')}
+              </Button>
+              <Button type="text" className={`sidebar-list-tab${listTab === 'projects' ? ' on' : ''}`} onClick={() => setListTab('projects')}>
+                {t('appLayout.listTabProjects')}
+              </Button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginRight: 8 }}>
+              <Tooltip title={listTab === 'chats' ? t('appLayout.manageChats') : t('appLayout.manageProjects')}>
+                <Button
+                  type="text"
+                  className="sidebar-list-action"
+                  aria-label={listTab === 'chats' ? t('appLayout.manageChats') : t('appLayout.manageProjects')}
+                  icon={<SettingOutlined style={{ fontSize: 14 }} />}
+                  onClick={handleTabManage}
+                />
+              </Tooltip>
+              <Tooltip title={listTab === 'chats' ? t('menu.newChat') : t('menu.newProject')}>
+                <Button
+                  type="text"
+                  className="sidebar-list-action"
+                  aria-label={listTab === 'chats' ? t('menu.newChat') : t('menu.newProject')}
+                  icon={<PlusOutlined style={{ fontSize: 14 }} />}
+                  disabled={listTab === 'chats' && !canCreateNew}
+                  onClick={handleTabAdd}
+                />
+              </Tooltip>
+            </div>
           </div>
           <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
             {listTab === 'chats' ? (
@@ -365,6 +432,21 @@ function AppLayout({
         </Content>
       </Layout>
 
+      {/* Switcher-row actions' surfaces: the chats tab's manage modal and the
+          projects tab's create drawer. Both portal out of the sidebar. */}
+      <ConversationManageModal
+        open={manageOpen}
+        conversations={looseConversations}
+        onClose={() => setManageOpen(false)}
+        onDeleteMany={handleDeleteConversations}
+      />
+      <ProjectDrawer
+        open={projectDrawerOpen}
+        editing={null}
+        onClose={() => setProjectDrawerOpen(false)}
+        onSaved={() => { void reloadProjects() }}
+      />
+
       {/* Force antd's sider-children wrapper to be a flex column so our flex:1 on the conversation list works */}
       <style>{`
         .ant-layout-sider-children {
@@ -476,6 +558,29 @@ function AppLayout({
         .sidebar-list-tab.on:hover {
           color: #fff !important;
           background: #000 !important;
+        }
+
+        /* Switcher-row actions (管理 / 新增): quiet icon buttons that match the
+           pill track's scale; the disabled 新增 keeps the session-cap state visible. */
+        .sidebar-list-action {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          color: #666 !important;
+          width: 26px !important;
+          height: 26px !important;
+          padding: 0 !important;
+          border-radius: 6px !important;
+        }
+        .sidebar-list-action .ant-btn-icon {
+          margin-inline-end: 0 !important;
+        }
+        .sidebar-list-action:hover {
+          background: rgba(0, 0, 0, 0.06) !important;
+          color: #000 !important;
+        }
+        .sidebar-list-action:disabled {
+          color: #ccc !important;
         }
 
         .settings-scroll::-webkit-scrollbar {

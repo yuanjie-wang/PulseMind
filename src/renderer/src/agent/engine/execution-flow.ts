@@ -3,7 +3,6 @@
  * rejection, terminal process kill and pause/resume/stop flows, extracted from
  * AgentEngine with a back-reference to the owning engine.
  */
-import { AgentEngine } from '../AgentEngine'
 import { getHost } from '../host'
 import { getCachedMcpServers } from '../mcp-cache'
 import { addTruncatedResults, validateToolParams } from './result-ingestion'
@@ -11,9 +10,11 @@ import { generateMsgId } from '../agent-utils'
 import type { ToolUseBlock, ContentBlock } from '../../types/agent'
 import { buildCommandFromSkillInput } from '../command-builder'
 import { safeInvoke, safeInvokeObserver } from '../agent-utils'
+import { TOOL_PARAM_LIMITS } from './engine-constants'
+import type { EngineCore } from './engine-core'
 
 export class ExecutionFlow {
-  constructor(private engine: AgentEngine) {}
+  constructor(private engine: EngineCore) {}
 
   cleanup(): void {
     this.engine.terminalCleanups.forEach((fn: () => void) => { try { fn() } catch { /* ignore */ } })
@@ -247,7 +248,7 @@ export class ExecutionFlow {
       const oversizedIds = new Set(oversized.map(t => t.id))
       const oversizedResults: ContentBlock[] = oversized.map(t => {
         t.status = 'completed'
-        const limits = AgentEngine.TOOL_PARAM_LIMITS[t.name] || {}
+        const limits = TOOL_PARAM_LIMITS[t.name] || {}
         const details = Object.entries(limits)
           .filter(([key]) => typeof t.input?.[key] === 'string')
           .map(([key, max]) => `${key}: ${String(t.input?.[key] ?? '').length} chars (max ${max})`)
