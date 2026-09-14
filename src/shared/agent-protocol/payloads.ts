@@ -19,15 +19,22 @@ export interface HelloResult {
 // ── session ──────────────────────────────────────────────────────────
 
 export interface SessionCreateParams {
+  /** Resume this session: when storage still has it, the service rehydrates
+   *  the engine from the conversation row instead of creating a fresh one. */
+  sessionId?: string
   /** Explicit agent instance; omitted → resolved from clientId / site rules (M5). */
   agentId?: string
   /** Optional label shown in the session list. */
   title?: string
+  /** Page the client is on at creation time (title seeds the session title). */
+  pageContext?: PageContext
 }
 
 export interface SessionCreateResult {
   sessionId: string
   agentId: string
+  /** True when an existing stored session was resumed rather than created. */
+  resumed?: boolean
 }
 
 /** Session creation options as passed by the local renderer over the Electron
@@ -98,10 +105,22 @@ export interface AgentEventParams {
   data: AgentEventData
 }
 
+/** Tool summaries carried on `awaiting_approval` / `awaiting_user_input`
+ *  status events so a remote client can render confirmation cards without
+ *  holding engine internals. */
+export interface StatusToolInfo {
+  toolUseId: string
+  name: string
+  /** Short JSON preview of the call input (first ~200 chars). */
+  detail?: string
+  /** Full input, only for small interactive payloads (ask_user prompt/choices). */
+  args?: unknown
+}
+
 /** Streaming progress events. One notification per event; ordering within a
  *  session is guaranteed per-connection. */
 export type AgentEventData =
-  | { type: 'status'; status: string; attempt?: number; delayMs?: number; toolUseId?: string; error?: string }
+  | { type: 'status'; status: string; attempt?: number; delayMs?: number; toolUseId?: string; error?: string; tools?: StatusToolInfo[] }
   /** Transport-level events for UI parity with the renderer engine (M1.5):
    *  full message list / coalesced streaming block snapshots. */
   | { type: 'messages'; messages: unknown[] }
@@ -146,7 +165,9 @@ export interface ToolCallResultParams {
 
 // ── approvals / ask_user ─────────────────────────────────────────────
 
-export type ApprovalKind = 'write' | 'shell' | 'browser_write' | 'mcp'
+/** kinds: 'write' (fs) · 'shell' (command exec) · 'browser_write' (page click/
+ *  input/select) · 'page_exec' (arbitrary JS in the page context) · 'mcp'. */
+export type ApprovalKind = 'write' | 'shell' | 'browser_write' | 'page_exec' | 'mcp'
 
 export interface ApprovalRequestParams {
   sessionId: string
@@ -178,6 +199,7 @@ export interface IterationLimitParams {
 }
 
 export interface IterationLimitResponseParams {
+  sessionId: string
   approved: boolean
 }
 

@@ -46,6 +46,8 @@ const HOST_METHOD_KEYS = [
   'onMcpServersChanged',
   // browser (A-M1)
   'browserRunCode',
+  // hosted page tools (browser extension reverse RPC, PLAN-browser-extension M0.2)
+  'hostedToolCall',
   'onSkillsChanged',
   // skills / experience / experts
   'getSkillPreferences',

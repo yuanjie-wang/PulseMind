@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>PulseMind Agent 设置</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      margin: 0; padding: 24px; max-width: 480px;
+      font-size: 14px; line-height: 1.6;
+    }
+    h1 { font-size: 16px; margin: 0 0 4px; }
+    .hint { color: gray; margin: 0 0 20px; font-size: 12px; }
+    .row { margin-bottom: 14px; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; }
+    input {
+      width: 100%; box-sizing: border-box; padding: 8px 10px;
+      border: 1px solid rgba(128,128,128,.4); border-radius: 8px;
+      background: transparent; color: inherit; font-size: 13px;
+    }
+    .buttons { display: flex; gap: 10px; margin-top: 18px; }
+    button {
+      padding: 8px 16px; border-radius: 8px; border: 1px solid rgba(128,128,128,.4);
+      background: transparent; color: inherit; cursor: pointer; font-size: 13px;
+    }
+    button.primary { background: #4f6bed; border-color: #4f6bed; color: #fff; }
+    #status { margin-top: 18px; padding: 10px 12px; border-radius: 8px; background: rgba(128,128,128,.12); font-size: 13px; }
+    #status.ok { color: #1a7f37; }
+    #status.bad { color: #c0392b; }
+    .saved { color: #1a7f37; font-size: 12px; margin-left: 8px; }
+  </style>
+</head>
+<body>
+  <h1>PulseMind Agent 设置</h1>
+  <p class="hint">连接到桌面端 PulseMind 的本地 Agent 服务（默认自动发现 127.0.0.1:8765–8779 并配对）。桌面端需在运行。</p>
+  <div class="row">
+    <label for="serviceUrl">服务地址（留空自动发现）</label>
+    <input id="serviceUrl" type="text" placeholder="ws://127.0.0.1:8765" />
+  </div>
+  <div class="row">
+    <label for="token">Token（留空自动配对）</label>
+    <input id="token" type="text" placeholder="自动从桌面端获取" />
+  </div>
+  <div class="buttons">
+    <button id="save" class="primary">保存并重连</button>
+    <button id="refresh">刷新状态</button>
+  </div>
+  <div id="status">正在检查连接…</div>
+  <script src="options.js"></script>
+</body>
+</html>

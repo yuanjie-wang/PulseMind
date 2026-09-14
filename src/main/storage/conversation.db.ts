@@ -26,7 +26,20 @@ export function updateConversationOrigin(id: string, origin: string): void {
   getDb().prepare('UPDATE conversations SET origin = ? WHERE id = ?').run(origin, id)
 }
 
+/** Read a conversation's client origin (null when never stamped). */
+export function getConversationOrigin(id: string): string | null {
+  const row = getDb().prepare('SELECT origin FROM conversations WHERE id = ?').get(id) as { origin: string | null } | undefined
+  return row?.origin ?? null
+}
 
+/** Recent conversations for one client origin — the browser extension's
+ *  session list (PLAN-browser-extension M0.4, `session.list`). */
+export function listConversationsByOrigin(origin: string, limit = 50): Array<{ id: string; title: string; updatedAt: string }> {
+  const rows = getDb()
+    .prepare('SELECT id, title, updated_at FROM conversations WHERE origin = ? ORDER BY updated_at DESC LIMIT ?')
+    .all(origin, limit) as Array<{ id: string; title: string; updated_at: string }>
+  return rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updated_at }))
+}
 
 /** Batch-persist tool results (called before nanoCompact / by the agent host). */
 export function persistToolResults(convId: string, results: Array<{ ref_id: string; conversation_id: string; message_id: string; block_index: number; tool_use_id: string; content: string; is_error: number }>): void {
@@ -105,8 +118,15 @@ function newestMessageAt(messages: ReadonlyArray<{ createdAt?: string }>, fallba
   return newest || fallback
 }
 
+/** Hosted (browser-extension) client origins — their sessions never surface in
+ *  the desktop chat list (裁定 3, PLAN-browser-extension). Kept in sync with
+ *  client-registry.HOSTED_CLIENT_IDS (duplicated here to keep the DB layer
+ *  free of agent-module imports). */
+const HOSTED_ORIGINS = ['pulsemind-extension', 'anywhere-extension']
+
 export function listConversations(): ConversationIndexEntry[] {
   const database = getDb()
+  const originPlaceholders = HOSTED_ORIGINS.map(() => '?').join(', ')
   const rows = database
     .prepare(
       `SELECT
@@ -115,9 +135,10 @@ export function listConversations(): ConversationIndexEntry[] {
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
       FROM conversations c
       WHERE c.type = 'normal'
+        AND (c.origin IS NULL OR c.origin NOT IN (${originPlaceholders}))
       ORDER BY c.pinned DESC, c.created_at DESC`
     )
-    .all() as Array<{
+    .all(...HOSTED_ORIGINS) as Array<{
       id: string; title: string; summary: string | null; keywords: string | null
       pinned: number; created_at: string; updated_at: string
       last_message: string | null; message_count: number; project_id: string | null

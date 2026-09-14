@@ -40,6 +40,8 @@ import type { PulseHost } from '../../renderer/src/agent/host/types'
 import type { MemoryEntry } from '../../shared/types/memory'
 import type { KnowledgeImportResult, KnowledgeFile, KnowledgeStats, KnowledgeListResult } from '../../shared/types/knowledge'
 import { browserService } from '../browser/BrowserService'
+import { agentClientRegistry } from './client-registry'
+import { hostedToolProxy } from './hosted/proxy'
 
 // ── API stream event bus ─────────────────────────────────────────────
 // The renderer bridge delivers stream events over IPC channels; in-process the
@@ -273,6 +275,10 @@ export const mainHost: PulseHost = {
     const scopeId = opts?.conversationId || 'unscoped'
     return browserService.runCode(code, opts?.timeoutMs, scopeId)
   },
+  // Hosted page tools (PLAN-browser-extension M0.2): forwarded to the browser
+  // extension currently bound to this session; rejects when none is.
+  hostedToolCall: (tool, args, opts) =>
+    hostedToolProxy.call(agentClientRegistry.get(opts.sessionId), opts.sessionId, tool, args, opts.timeoutMs),
 } satisfies PulseHost
 
 // ElectronAPI import kept out of runtime: PulseHost is a structural Pick of it.

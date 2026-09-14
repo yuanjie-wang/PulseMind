@@ -64,6 +64,8 @@ const electronAPI = {
   toolRestorePresets: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_RESTORE_PRESETS),
   browserRunCode: (code: string, opts?: { timeoutMs?: number; conversationId?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_RUN_CODE, { code, timeoutMs: opts?.timeoutMs, scopeId: opts?.conversationId }),
+  hostedToolCall: (tool: string, args: Record<string, unknown>, opts: { sessionId: string; timeoutMs?: number }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.HOSTED_TOOL_CALL, tool, args, opts),
   // Browser pane (A-M5): chrome state / width / user tab actions + live updates.
   browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number }) =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_STATE, state),
@@ -149,13 +151,16 @@ const electronAPI = {
   setSkillPreferences: (prefs: SkillPreferences): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_SET_PREFERENCES, prefs),
 
   // Skills - Import
-  importSkill: (): Promise<{ imported: SkillDefinition[]; errors: string[] } | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_IMPORT),
+  importSkill: (): Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_IMPORT),
   listImportedSkills: (): Promise<SkillDefinition[]> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_IMPORTED),
   deleteImportedSkill: (name: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_DELETE_IMPORTED, name),
   ensureBuiltInSkills: (skills: SkillDefinition[]): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_ENSURE_BUILT_IN, skills),
   installSkill: (name: string): Promise<SkillDefinition | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_INSTALL, name),
   readSkillRaw: (name: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ_RAW, name),
   writeSkill: (skill: SkillDefinition): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_WRITE, skill),
+  listSkillFiles: (name: string): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_FILES, name),
+  readSkillFile: (name: string, relPath: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ_FILE, name, relPath),
 
   // Experiences
   listExperiences: (): Promise<ExperienceRecord[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_LIST),

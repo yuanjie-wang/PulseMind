@@ -182,13 +182,17 @@ export interface ElectronAPI {
   setSkillPreferences: (prefs: SkillPreferences) => Promise<void>
 
   // Skills - Import
-  importSkill: () => Promise<{ imported: SkillDefinition[]; errors: string[] } | null>
+  importSkill: () => Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null>
   listImportedSkills: () => Promise<SkillDefinition[]>
   deleteImportedSkill: (name: string) => Promise<void>
   ensureBuiltInSkills: (skills: SkillDefinition[]) => Promise<void>
   installSkill: (name: string) => Promise<SkillDefinition | null>
   readSkillRaw: (name: string) => Promise<string | null>
   writeSkill: (skill: SkillDefinition) => Promise<void>
+  /** Relative file paths of a skill directory (recursive), e.g. ['SKILL.md', 'scripts/run.py']. */
+  listSkillFiles: (name: string) => Promise<string[]>
+  /** Read one file inside the skill directory by its skill-relative path. */
+  readSkillFile: (name: string, relPath: string) => Promise<string | null>
 
   // Experiences
   listExperiences: () => Promise<ExperienceRecord[]>
@@ -275,6 +279,14 @@ export interface ElectronAPI {
     code: string,
     opts?: { timeoutMs?: number; conversationId?: string },
   ) => Promise<{ result: string; truncated: boolean; images: Array<{ mime: string; base64: string }>; console: string[]; error?: string }>
+  /** Hosted (reverse-RPC) page tool: forwarded over the local agent service to
+   *  the browser extension that is driving the session (PLAN-browser-extension
+   *  M0.2). Only sessions with a connected hosted client can execute. */
+  hostedToolCall: (
+    tool: string,
+    args: Record<string, unknown>,
+    opts: { sessionId: string; timeoutMs?: number },
+  ) => Promise<unknown>
   /** Browser pane (A-M5). */
   browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number }) => Promise<void>
   browserPaneSetWidth: (width: number) => Promise<void>

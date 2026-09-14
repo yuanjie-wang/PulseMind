@@ -25,16 +25,16 @@ export function writeToken(token: string): void {
   writeFileSync(tokenPath(), token, 'utf-8')
 }
 
-/** (Re)start the service with current settings. Stops a running instance first. */
+/** (Re)start the service with current settings. Stops a running instance first.
+ *  EADDRINUSE is handled INSIDE startAgentService with a deterministic +0..+14
+ *  scan (PLAN-browser-extension G6) so the extension can discover the bound
+ *  port — a random listen(0) fallback would be unfindable. */
 export async function restartService(): Promise<{ port: number } | null> {
   await serviceRuntime.handle?.close()
   serviceRuntime.handle = null
   const settings = await settingsStore.get()
   if (settings.serviceEnabled === false) return null
-  const handle = await startAgentService({ port: settings.servicePort }).catch(async (err: NodeJS.ErrnoException) => {
-    if (err.code !== 'EADDRINUSE') throw err
-    return startAgentService({ port: 0 })
-  })
+  const handle = await startAgentService({ port: settings.servicePort })
   serviceRuntime.handle = handle
   return { port: handle.port }
 }

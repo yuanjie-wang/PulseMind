@@ -101,6 +101,8 @@ export const IPC_CHANNELS = {
   SKILLS_INSTALL: 'skills:install',
   SKILLS_ENSURE_BUILT_IN: 'skills:ensure-built-in',
   SKILLS_CHANGED: 'skills:changed',
+  SKILLS_LIST_FILES: 'skills:list-files',
+  SKILLS_READ_FILE: 'skills:read-file',
 
   // ── Experiences ──
   EXPERIENCES_LIST: 'experiences:list',
@@ -154,6 +156,8 @@ export const IPC_CHANNELS = {
   AGENT_SESSION_SNAPSHOT: 'agent-session:snapshot',
   AGENT_SESSION_ENGINE_CALL: 'agent-session:engine-call',
   AGENT_SESSION_REFRESH_OPTIONS: 'agent-session:refresh-options',
+  // ── Hosted (reverse-RPC) page tools (PLAN-browser-extension M0.2) ──
+  HOSTED_TOOL_CALL: 'hosted:tool-call',
   CANVAS_EXPORT_IMAGE: 'canvas:export-image',
   CANVAS_CLEANUP_RECT: 'canvas:cleanup-rect',
   CANVAS_CLEAR_ALL: 'canvas:clear-all',

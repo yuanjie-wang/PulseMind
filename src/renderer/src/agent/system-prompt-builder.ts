@@ -219,6 +219,19 @@ The chat UI supports enhanced rendering for standard Markdown links and images: 
     systemPrompt += lines.join('\n')
   }
 
+  // ── Current page context (injected dynamically, NOT cached) ──────
+  // Browser-extension sessions carry the tab the user is looking at. This is
+  // per-turn state (the user navigates), so — like the plan block above — it
+  // must never enter the cached prefix. The page CONTENT itself arrives via
+  // the page_* tools; only the page's identity lives here.
+  if (opts.pageContext?.url || opts.pageContext?.title) {
+    const lines = ['', '## Current Page']
+    if (opts.pageContext.title) lines.push(`- Title: ${opts.pageContext.title}`)
+    if (opts.pageContext.url) lines.push(`- URL: ${opts.pageContext.url}`)
+    lines.push('The user is looking at this page right now. Read or act on it with the `page_*` tools; do not assume its content from the URL alone.')
+    systemPrompt += lines.join('\n')
+  }
+
   // ── Skill keyword matching (always runs, reads from shared cache) ──
   {
     const prefs = getCachedSkillPrefs()

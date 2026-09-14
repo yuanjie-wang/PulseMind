@@ -37,7 +37,7 @@ import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
-import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions } from '../../shared/agent-protocol'
+import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 
 interface Managers {
@@ -487,6 +487,7 @@ class AgentSessionManagerImpl {
    *  beyond the global concurrency cap queue FIFO. `pageContext` (the browser
    *  extension's current tab) is per-turn state: it rides on the engine opts
    *  and lands in the prompt's dynamic (non-cached) Current Page section. */
+  async ask(sessionId: string, content: string, pageContext?: PageContext): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
     await this.refreshSandboxContext(sessionId, entry)
     await this.refreshExpertContext(sessionId, entry)
@@ -622,6 +623,18 @@ class AgentSessionManagerImpl {
         // Loop failures carry their reason ({ status: 'error', error } —
         // renderer types/agent.ts); unattended consumers settle on this.
         ...(status.status === 'error' ? { error: status.error } : {}),
+        // Held tools ride along on the two "the user must decide" statuses so
+        // a remote client (browser extension) can render confirmation cards
+        // without holding engine internals. args ships in full only for the
+        // small interactive payloads (ask_user prompt/choices).
+        ...((status.status === 'awaiting_approval' || status.status === 'awaiting_user_input') && 'tools' in status
+          ? { tools: status.tools.map((t): StatusToolInfo => ({
+              toolUseId: t.id,
+              name: t.name,
+              detail: JSON.stringify(t.input ?? {}).slice(0, 200),
+              ...(t.name === 'ask_user' ? { args: t.input } : {}),
+            })) }
+          : {}),
       }),
       onStreamingBlocksChanged: (blocks: ContentBlock[]) => this.emit(sessionId, { type: 'streaming_blocks', blocks: blocks as unknown[] }),
       onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan: plan as unknown as PlanSnapshot | null }),
