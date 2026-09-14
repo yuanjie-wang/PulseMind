@@ -1,0 +1,325 @@
+// ── Memory / conversation / knowledge / experience tools (moved out of
+// ToolExecutor 0.4.1) ── dispatched by execOtherTool; expert knowledge scope
+// confines knowledge_search/knowledge_read to the bound expert files.
+
+import { getHost } from '../host'
+import { buildCommandFromSkillInput } from '../command-builder'
+import type { ToolUseBlock } from '../../types/agent'
+import type { KnowledgeFile } from '../../../../shared/types/knowledge'
+import { UI_PREVIEW_MAX, type ToolExecContext } from './context'
+
+/** memory_search: tool block .output preview. */
+const MEMORY_PREVIEW_MAX = 2000
+
+export async function execMemoryTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+    if (t.name === 'memory_search') {
+      const mm = ex.opts.memoryManager
+      if (mm) {
+        const q = String(t.input.query || ''); const cat = String(t.input.category || '') as any; const lim = Number(t.input.limit) || 5
+        const results = await mm.searchMemories({ query: q, category: cat, limit: lim })
+        const formatted = results.length > 0 ? results.map((r, i) => `[${i + 1}] ${r.content} (${r.type}, ${r.category}, ${new Date(r.createdAt).toLocaleDateString()})`).join('\n') : 'No matching memories found.'
+        t.output = formatted.slice(0, MEMORY_PREVIEW_MAX); ex.addToolResult(t.id, formatted, false); t.exitCode = 0
+      } else { t.output = 'Memory manager not available'; ex.addToolResult(t.id, 'Memory manager not available', true); t.exitCode = 1 }
+    return true
+    }
+    if (t.name === 'memory_save') {
+      const mm = ex.opts.memoryManager; const content = String(t.input.content || '')
+      if (!content.trim()) { ex.addToolResult(t.id, 'Nothing to save — content was empty.', true); t.exitCode = 1 }
+      else {
+        const type = (String(t.input.type || 'fact') as any); const cat = (String(t.input.category || 'general') as any)
+        const entry = await mm!.saveMemory({ content, type, category: cat })
+        if (entry) {
+          ex.onMemorySaved?.()
+        }
+        t.output = entry ? content.slice(0,200) : 'Already in memory'; ex.addToolResult(t.id, entry ? `Saved to memory: "${content}" (${type}, ${cat})` : `Already in memory (duplicate): "${content}"`, false)
+        t.exitCode = 0
+      }
+    return true
+    }
+  return false
+}
+
+export async function execConversationTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+    if (t.name === 'conversation_search') {
+      const query = String(t.input.query || '').trim()
+      const convId2 = String(t.input.id || '').trim()
+      const dateFilter: Record<string, string> = {}
+      if (t.input.createdAfter) dateFilter.createdAfter = String(t.input.createdAfter)
+      if (t.input.createdBefore) dateFilter.createdBefore = String(t.input.createdBefore)
+      if (t.input.updatedAfter) dateFilter.updatedAfter = String(t.input.updatedAfter)
+      if (t.input.updatedBefore) dateFilter.updatedBefore = String(t.input.updatedBefore)
+      if (query && !convId2) {
+        const results = await getHost().searchConversationsByKeyword(query)
+        if (results.length === 0) {
+          ex.addToolResult(t.id, `No conversations found matching "${query}".`, false)
+        } else {
+          const parts = results.map(r =>
+            `- **${r.title}** (ID: \`${r.id}\`)\n  Summary: ${r.summary || '(no summary)'}\n  Keywords: ${r.keywords || '(none)'}\n  Updated: ${r.updatedAt}`
+          )
+          ex.addToolResult(t.id, `## Conversations matching "${query}"\n\nFound ${results.length} conversation(s):\n\n` + parts.join('\n\n'), false)
+        }
+        t.exitCode = 0
+      } else if (convId2) {
+        const conv = await getHost().getConversation(convId2)
+        if (conv) { const parts = [`**Title:** ${conv.title}`]; if (conv.summary) parts.push(`**Summary:** ${conv.summary}`); parts.push(`**ID:** ${conv.id}`); ex.addToolResult(t.id, parts.join('\n'), false) }
+        else { ex.addToolResult(t.id, `Conversation "${convId2}" not found.`, false) }
+        t.exitCode = 0
+      } else {
+        ex.addToolResult(t.id, 'Error: provide either "query" (keyword search) or "id" (direct lookup).', true); t.exitCode = 1
+      }
+    return true
+    }
+    if (t.name === 'tool_result_search') {
+      const ids = t.input.ids as string[] | undefined
+      if (!ids || ids.length === 0) {
+        ex.addToolResult(t.id, 'Error: at least one tool_result_id is required.', true); t.exitCode = 1
+      } else {
+        try {
+          const results = await getHost().getToolResult(ids)
+          if (results.length === 0) {
+            ex.addToolResult(t.id, `No tool results found for IDs: ${ids.join(', ')}`, false)
+          } else {
+            const parts = results.map(r =>
+              `[ref_id: ${r.ref_id}]\nConversation: ${r.conversation_id}\nTool use: ${r.tool_use_id}\n\n${r.content}`
+            )
+            ex.addToolResult(t.id, parts.join('\n\n---\n\n'), false)
+          }
+          t.exitCode = 0
+        } catch (e) {
+          ex.addToolResult(t.id, `Error looking up tool results: ${e}`, true); t.exitCode = 1
+        }
+      }
+    return true
+    }
+  return false
+}
+
+/** Expert knowledge scope (null = unrestricted): when an expert config pack
+ *  with bound knowledge files is active, knowledge_search results and
+ *  knowledge_read paths are confined to those files (+ their wiki outputs). */
+export function getExpertKnowledgeScope(ex: ToolExecContext): { ids: Set<string>; rawPaths: Set<string>; wikiPaths: Set<string> } | null {
+  const files = ex.opts.expert?.knowledgeFiles
+  if (!files || files.length === 0) return null
+  return {
+    ids: new Set(files.map((f) => f.id)),
+    rawPaths: new Set(files.map((f) => f.filePath)),
+    wikiPaths: new Set(files.flatMap((f) => f.wikiPages || [])),
+  }
+}
+
+export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+    if (t.name === 'knowledge_search') {
+      const km = ex.opts.knowledgeManager
+      if (!km) {
+        t.output = 'Knowledge base not available.'; ex.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
+      } else {
+        const query = String(t.input.query || '').toLowerCase()
+        const mode = String(t.input.mode || 'title')
+        const sourceType = String(t.input.sourceType || '')
+        const status = String(t.input.status || '')
+        const doContentSearch = (mode === 'content' || mode === 'both') && !!query
+        const scope = getExpertKnowledgeScope(ex)
+
+        const contentMatchIds = new Set<string>()
+        const contentExcerpts = new Map<string, string[]>()
+        if (doContentSearch) {
+          const matches = await km.searchContent(query)
+          for (const m of matches) {
+            contentMatchIds.add(m.id)
+            contentExcerpts.set(m.id, m.excerpts)
+          }
+        }
+
+        // Push filtering to SQL instead of pulling all files into memory
+        let filtered: KnowledgeFile[] = []
+        const buildOpts = (search?: string) => {
+          const opts: Record<string, any> = { pageSize: 200 }
+          if (search) opts.search = search
+          if (sourceType) opts.sourceType = sourceType
+          if (status) opts.status = status
+          return opts
+        }
+
+        if (mode === 'wiki') {
+          // Wiki mode: ripgrep search across compiled wiki pages (fastest path)
+          let matches = query ? await km.searchWiki(query) : []
+          if (scope) matches = matches.filter(m => scope.wikiPaths.has(m.wikiPath))
+          if (matches.length === 0) {
+            t.output = 'No matching wiki pages found.'; ex.addToolResult(t.id, 'No matching wiki pages found.', false)
+          } else {
+            const lines = matches.map(m => {
+              const typeLabel: Record<string, string> = { sources: '原始资料', entities: '实体', concepts: '概念', syntheses: '综合' }
+              return [
+                `- **${m.title}** (${typeLabel[m.type] || m.type})`,
+                `  路径: \`${m.wikiPath}\``,
+                `  片段: ${m.content}`,
+                `  \`knowledge_read\` 参数: path="${m.wikiPath}", type="wiki"`
+              ].join('\n')
+            })
+            const stats = `找到 ${matches.length} 个 wiki 页面 (mode=wiki):\n` + lines.join('\n')
+            t.output = stats.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, stats, false)
+          }
+          t.exitCode = 0
+        } else if (mode === 'content') {
+          // Content-only: SQL filters sourceType/status, JS narrows by FTS5
+          const result = await km.listFilesAdvanced(buildOpts())
+          filtered = result.items.filter(f => contentMatchIds.has(f.id))
+        } else if (mode === 'both') {
+          // Both: SQL filters by title/path + sourceType/status, merge FTS5 matches
+          const result = await km.listFilesAdvanced(buildOpts(query))
+          filtered = result.items
+          if (contentMatchIds.size > 0) {
+            const titleMatchIds = new Set(filtered.map(f => f.id))
+            const extraIds = [...contentMatchIds].filter(id => !titleMatchIds.has(id))
+            if (extraIds.length > 0) {
+              const extra = await km.listFilesAdvanced(buildOpts())
+              for (const f of extra.items) {
+                if (extraIds.includes(f.id)) filtered.push(f)
+              }
+            }
+          }
+        } else {
+          // Title mode (default) — SQL handles title/path LIKE + sourceType/status
+          const result = await km.listFilesAdvanced(buildOpts(query))
+          filtered = result.items
+          // Fallback: no title match → try content search (for CJK queries)
+          if (filtered.length === 0 && query) {
+            const fallbackMatches = await km.searchContent(query)
+            if (fallbackMatches.length > 0) {
+              const fallbackIds = new Set(fallbackMatches.map(m => m.id))
+              const fallback = await km.listFilesAdvanced(buildOpts())
+              filtered = fallback.items.filter(f => fallbackIds.has(f.id))
+              for (const m of fallbackMatches) {
+                contentExcerpts.set(m.id, m.excerpts)
+              }
+            }
+          }
+        }
+
+        // Expert scope: confine the merged result list to the bound files
+        if (scope) filtered = filtered.filter(f => scope.ids.has(f.id))
+
+        if (filtered.length === 0) {
+          t.output = 'No matching knowledge files found.'; ex.addToolResult(t.id, scope
+            ? 'No matching knowledge files found in this expert\'s bound knowledge base.'
+            : 'No matching knowledge files found.', false)
+        } else {
+          const lines = filtered.map(f => {
+            let readSuggestion: string
+            if (f.status === 'compiled' && f.wikiOutputs && f.wikiOutputs.length > 0) {
+              const wikiCmds = f.wikiOutputs.map(wp => `\`knowledge_read\` 参数: path="${wp}", type="wiki"`).join('\n  ')
+              readSuggestion = `${wikiCmds}\n  \`knowledge_read\` 参数: path="${f.filePath}", type="raw"`
+            } else {
+              readSuggestion = `\`knowledge_read\` 参数: path="${f.filePath}", type="raw"`
+            }
+            const line = `- **${f.title || f.filePath}** (${f.sourceType === 'url' ? '链接' : f.sourceType === 'file' ? '文件' : f.sourceType}, ${f.status === 'compiled' ? '已编译' : '原始'})\n  ${readSuggestion}`
+            const ex = contentExcerpts.get(f.id)
+            if (ex && ex.length > 0) {
+              return line + '\n  ' + ex.map(e => `...${e}...`).join('\n  ')
+            }
+            return line
+          })
+          const stats = `找到 ${filtered.length} 个知识文件:\n` + lines.join('\n')
+          t.output = stats.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, stats, false)
+        }
+        t.exitCode = 0
+      }
+    return true
+    }
+    if (t.name === 'knowledge_read') {
+      const km = ex.opts.knowledgeManager
+      const filePath = String(t.input.path || '')
+      const readType = String(t.input.type || 'wiki')
+      const readScope = getExpertKnowledgeScope(ex)
+      const outOfScope = readScope && (
+        readType === 'raw' ? !readScope.rawPaths.has(filePath) : !readScope.wikiPaths.has(filePath)
+      )
+      if (!filePath) {
+        t.output = 'Error: path is required.'; ex.addToolResult(t.id, 'Error: path is required.', true); t.exitCode = 1
+      } else if (outOfScope) {
+        const bound = [...(readScope!.rawPaths), ...(readScope!.wikiPaths)]
+        const msg = `Out of scope: this session's expert only has these knowledge documents bound:\n${bound.map(p => `- ${p}`).join('\n')}\nUse one of those paths.`
+        t.output = msg; ex.addToolResult(t.id, msg, true); t.exitCode = 1
+      } else if (!km) {
+        t.output = 'Knowledge base not available.'; ex.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
+      } else {
+        try {
+          let content: string | null = null
+          if (readType === 'raw') {
+            content = await km.readRawContent(filePath)
+          } else {
+            const result = await km.readWiki(filePath)
+            content = result.content
+          }
+          if (content) {
+            t.output = content.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, content, false)
+          } else {
+            t.output = `File "${filePath}" not found in knowledge base.`; ex.addToolResult(t.id, `File "${filePath}" not found in knowledge base.`, false)
+          }
+          t.exitCode = 0
+        } catch {
+          t.output = `Error reading "${filePath}" from knowledge base.`; ex.addToolResult(t.id, `Error reading "${filePath}" from knowledge base.`, true)
+          t.exitCode = 1
+        }
+      }
+    return true
+    }
+  return false
+}
+
+export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+    if (t.name === 'experience_read') {
+      const name = String(t.input.name || '')
+      if (!name) {
+        t.output = 'Error: name is required.'; ex.addToolResult(t.id, 'Error: name is required.', true); t.exitCode = 1
+      } else {
+        try {
+          const content = await getHost().readExperienceRecord(name)
+          if (content) {
+            // Touching records that the experience was actually used — feeds the LRU eviction
+            getHost().touchExperienceRecord(name).catch(() => {})
+            t.output = content.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, content, false)
+          } else {
+            t.output = `Experience "${name}" not found.`; ex.addToolResult(t.id, `Experience "${name}" not found.`, false)
+          }
+          t.exitCode = 0
+        } catch {
+          t.output = `Error reading experience "${name}".`; ex.addToolResult(t.id, `Error reading experience "${name}".`, true)
+          t.exitCode = 1
+        }
+      }
+    } else {
+      const platform = ex.opts.platformInfo?.platform || ''
+      const command = buildCommandFromSkillInput(t.name, t.input || {}, platform, ex.opts.platformInfo?.ripgrepPath)
+      const cwd = String(t.input?.cwd || '')
+      t.output = ''; ex.notify()
+      await new Promise<void>((resolve) => {
+        let stdoutBuf = ''
+        let stderrBuf = ''
+        let settled = false
+        const unsubList: (() => void)[] = []
+        const finish = (exitCode: number | null, isError: boolean) => {
+          if (settled) return; settled = true
+          t.exitCode = exitCode
+          const formatted = ex.formatExecResult(exitCode, stdoutBuf, stderrBuf)
+          t.output = formatted
+          ex.addToolResult(t.id, formatted, isError)
+          unsubList.forEach(fn => fn()); resolve()
+        }
+        const uo = getHost().onTerminalOutput(d => {
+          if (d.type === 'stderr') stderrBuf += d.data
+          else stdoutBuf += d.data
+          t.output = stdoutBuf + stderrBuf
+          ex.notify()
+        }); unsubList.push(uo)
+        const ue = getHost().onTerminalExit(d => finish(d.code, d.code !== 0)); unsubList.push(ue)
+        const uerr = getHost().onTerminalError(d => { stderrBuf += `\n[Error: ${d.message}]`; finish(-1, true) }); unsubList.push(uerr)
+        getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined)
+          .then(pid => { ex.onProcessStart?.(pid) })
+          .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
+      })
+    return true
+    }
+
+  return false
+}

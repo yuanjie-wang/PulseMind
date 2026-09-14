@@ -29,6 +29,7 @@ function ConversationManageModal({
 }: ConversationManageModalProps): React.ReactElement {
   const { t } = useTranslation()
   const { modal } = AntdApp.useApp()
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   // Rendered times are relative, so snapshot "now" when the modal opens — a
   // transient dialog doesn't need ConversationRows' minute clock. Both this
   // and the selection reset run as the open event callback (not an effect, so
@@ -77,6 +78,7 @@ function ConversationManageModal({
       title={t('manageChatsModal.title')}
       open={open}
       onCancel={onClose}
+      afterOpenChange={afterOpenChange}
       width={440}
       footer={[
         <Button key="cancel" onClick={onClose}>{t('manageChatsModal.cancel')}</Button>,

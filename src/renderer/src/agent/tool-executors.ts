@@ -1,52 +1,70 @@
-// ── Tool executors ──
+// ── Tool executor facade ──
 // One ToolExecutor per engine (constructed in useChatManagers / session-manager)
-// that maps a tool_use block to its implementation: built-in file/shell/memory/
-// knowledge tools, MCP dispatch, git, and spawn_agent delegation. Results flow
-// back through the injected addToolResult callback (which owns the global
-// context-size guardrail) — executors themselves no longer truncate.
-// NOTE: exceeds the 1000-line class budget; candidate for splitting into
-// per-domain executor modules (files/shell vs memory/knowledge vs mcp/git).
+// that maps a tool_use block to its implementation. This file keeps the small /
+// built-in-file tools and the dispatch surface the engine calls; the larger
+// per-domain implementations live in executors/* (pick_tool, spawn_agent,
+// memory/conversation/knowledge/experience) behind the ToolExecContext
+// interface. Results flow back through the injected addToolResult callback
+// (which owns the global context-size guardrail) — executors themselves no
+// longer truncate.
 
 import { getHost } from './host'
 import { execGitTool } from './engine/git-tools'
-import type { ToolUseBlock, TextBlock } from '../types/agent'
+import type { ToolUseBlock } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import type { SpawnSubAgentConfig, SubAgentHandle } from './agent-utils'
 import { writeFileChunked } from './agent-utils'
 import { buildCommandFromSkillInput } from './command-builder'
-import { SkillKeywordAgent, SkillSelectionAgent, ServerSelectionAgent } from './one-shot-agent'
+import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
 import { saveImagesInText } from './image-utils'
-import { getCachedMcpServers } from './mcp-cache'
-import { composeExpertInstructions } from '../../../shared/expert-context'
-import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId, isBuiltinServerId } from '../tools/builtin-gate'
-import type { KnowledgeFile } from '../../../shared/types/knowledge'
-import type { GitAction, GitResult, GitStatusInfo, GitDiffResult, GitLogEntry, GitCommitResult, GitRestorePreview } from '../../../shared/types/git'
+import type { ToolExecContext } from './executors/context'
+import { execPickTool as pickToolImpl } from './executors/pick-tool'
+import { execSpawnAgent as spawnAgentImpl } from './executors/spawn-tool'
+import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool } from './executors/domain-tools'
 
 export type SpawnSubAgentFn = (config: SpawnSubAgentConfig) => SubAgentHandle
+export { UI_PREVIEW_MAX } from './executors/context'
 
 // ── Remaining per-tool limits ───────────────────────────────────────
 // Executors no longer truncate tool results for context — the global guardrail
 // in AgentEngine (MAX_TOOL_RESULT_TOKENS) is the single backstop. These limits
-// stay only where they serve a non-context purpose: UI previews and the read
-// tool's paging (an intrinsic part of how the model reads large files).
-export const UI_PREVIEW_MAX = 3000          // tool block .output preview rendered in the UI
+// stay only where they serve a non-context purpose: UI previews (see
+// executors/context.ts) and the read tool's paging (an intrinsic part of how
+// the model reads large files).
 const READ_DEFAULT_LINE_LIMIT = 200        // read: default lines per page
 const READ_MAX_LINE_LIMIT = 500            // read: hard cap on lines per page (read bypasses the token guardrail, so this is its only bound)
-const SUBAGENT_TEXT_MAX = 10_000           // spawn_agent: assistant text fed back to parent
-const MEMORY_PREVIEW_MAX = 2000            // memory_search: tool block .output preview
 
-export class ToolExecutor {
+export class ToolExecutor implements ToolExecContext {
   constructor(
-    private opts: AgentEngineOptions,
+    /** @internal shared with the executors/* modules via ToolExecContext */
+    opts: AgentEngineOptions,
     private mcpToolOwner: Map<string, string>,
     private skillKeywordAgent: SkillKeywordAgent,
     private skillSelectionAgent: SkillSelectionAgent,
-    private addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void,
-    private notify: () => void,
-    private onProcessStart?: (pid: string) => void,
-    private onMemorySaved?: () => void,
-    private spawnSubAgent?: SpawnSubAgentFn,
-  ) { }
+    /** @internal shared with the executors/* modules via ToolExecContext */
+    addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void,
+    /** @internal shared with the executors/* modules via ToolExecContext */
+    notify: () => void,
+    onProcessStart?: (pid: string) => void,
+    /** @internal shared with the executors/* modules via ToolExecContext */
+    onMemorySaved?: () => void,
+    /** @internal shared with the executors/* modules via ToolExecContext */
+    spawnSubAgent?: SpawnSubAgentFn,
+  ) {
+    this.opts = opts
+    this.addToolResult = addToolResult
+    this.notify = notify
+    this.onProcessStart = onProcessStart
+    this.onMemorySaved = onMemorySaved
+    this.spawnSubAgent = spawnSubAgent
+  }
+
+  opts: AgentEngineOptions
+  addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void
+  notify: () => void
+  onMemorySaved?: () => void
+  onProcessStart?: (pid: string) => void
+  spawnSubAgent?: SpawnSubAgentFn
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
@@ -64,7 +82,9 @@ export class ToolExecutor {
   }
 
   /** Format exec tool result with exit code and stdout/stderr separation. No truncation — the global guardrail in addToolResult caps it. */
-  private formatExecResult(exitCode: number | null, stdout: string, stderr: string): string {
+  /** Format exec tool result with exit code and stdout/stderr separation. No truncation — the global guardrail in addToolResult caps it.
+   *  @internal shared with the executors/* modules via ToolExecContext */
+  formatExecResult(exitCode: number | null, stdout: string, stderr: string): string {
     // Normalize line endings (Windows PowerShell uses \r\n)
     stdout = stdout.replace(/\r\n/g, '\n')
     stderr = stderr.replace(/\r\n/g, '\n')
@@ -459,642 +479,27 @@ export class ToolExecutor {
   }
 
   async execPickTool(t: ToolUseBlock, setSelectedTools: (names: string[]) => void): Promise<void> {
-    t.status = 'running'; this.notify()
-    try {
-      // Helper: fetch all candidate tools — connected MCP tools + gated built-in tools.
-      // Gated built-ins wear synthetic per-category serverIds (`builtin:<category>`,
-      // e.g. `builtin:git`) so the MCP selection logic (names / serverName / intent)
-      // applies to them uniformly, mirroring per-server granularity.
-      const fetchCandidateTools = async () => {
-        const servers = await getHost().mcpListServers()
-        const all: Array<{ name: string; serverId: string; description: string; inputSchema: any }> = []
-        for (const server of servers) {
-          if (server.status !== 'connected') continue
-          for (const tool of server.tools) {
-            all.push({ name: tool.name, serverId: server.id, description: tool.description, inputSchema: tool.inputSchema })
-          }
-        }
-        for (const def of this.opts.toolManager.getEnabledTools().map(t => t.definition)) {
-          if (def.availability !== 'gated') continue
-          all.push({ name: def.name, serverId: builtinCategoryServerId(def.category), description: def.description, inputSchema: def.input_schema })
-        }
-        return all
-      }
-
-      // Helper: format tool selection result for display
-      const srcLabel = (serverId: string): string => isBuiltinServerId(serverId) ? `built-in ${serverId.slice('builtin:'.length)}` : serverId
-      const selectHeader = (tools: Array<{ serverId: string }>): string => {
-        const hasMcp = tools.some(t => !isBuiltinServerId(t.serverId))
-        const hasBuiltin = tools.some(t => isBuiltinServerId(t.serverId))
-        if (hasMcp && hasBuiltin) return '## Selected Tools'
-        return hasBuiltin ? '## Selected Built-in Tools' : '## Selected MCP Tools'
-      }
-      const formatResult = (tools: Array<{ name: string; serverId: string; description: string; inputSchema: any }>, header: string): string => {
-        const lines = tools.map(t =>
-          `- **${t.name}** (from \`${srcLabel(t.serverId)}\`): ${t.description || '(no description)'}`
-        )
-        const schemas = tools.map(t => {
-          const schema = t.inputSchema && Object.keys(t.inputSchema).length > 0
-            ? `\`\`\`json\n${JSON.stringify(t.inputSchema, null, 2)}\n\`\`\``
-            : '*No parameters*'
-          return `**${t.name}** (from \`${srcLabel(t.serverId)}\`)\n\n${schema}`
-        }).join('\n\n---\n\n')
-        const hasBuiltin = tools.some(t => isBuiltinServerId(t.serverId))
-        const hasMcp = tools.some(t => !isBuiltinServerId(t.serverId))
-        const availability = hasBuiltin && hasMcp
-          ? 'These MCP and built-in tools are now available for you to use.'
-          : hasBuiltin
-            ? 'These built-in tools are now available for you to use.'
-            : 'These MCP tools are now available for you to use.'
-        return `${header}\n\n${lines.join('\n')}\n\n### Tool Signatures\n\n${schemas}\n\n${availability}`
-      }
-
-      // ── Mode 1: direct name lookup (MCP or gated built-in tools) ──
-      const namesInput = t.input?.names as string[] | undefined
-      if (namesInput && Array.isArray(namesInput) && namesInput.length > 0) {
-        const allTools = await fetchCandidateTools()
-        const validNames: string[] = []
-        const notFound: string[] = []
-        for (const name of namesInput) {
-          if (allTools.some(t => t.name === name)) validNames.push(name)
-          else notFound.push(name)
-        }
-        if (validNames.length === 0) {
-          this.addToolResult(t.id, `No MCP or built-in tools found matching names: ${notFound.join(', ')}.`, true)
-          t.exitCode = 1; t.status = 'completed'; this.notify(); return
-        }
-        const matched = allTools.filter(t => validNames.includes(t.name))
-        setSelectedTools(validNames)
-        this.addToolResult(t.id, formatResult(matched, selectHeader(matched)), false)
-        t.exitCode = 0; t.status = 'completed'; this.notify(); return
-      }
-
-      // ── Mode 2: select by server name (new) ────────────────────────
-      const serverNameInput = String(t.input?.serverName || '').trim()
-      if (serverNameInput) {
-        const servers = await getHost().mcpListServers()
-        // Match by id first, then by name (case-insensitive)
-        const matchedServer = servers.find(s =>
-          s.id.toLowerCase() === serverNameInput.toLowerCase() ||
-          s.name.toLowerCase() === serverNameInput.toLowerCase()
-        )
-        if (matchedServer && matchedServer.status === 'connected') {
-          const serverTools = matchedServer.tools.map(t => ({
-            name: t.name,
-            serverId: matchedServer.id,
-            description: t.description,
-            inputSchema: t.inputSchema
-          }))
-          const toolNames = serverTools.map(t => t.name)
-          const summary = getCachedMcpServers().find(s => s.id === matchedServer.id)?.summary
-          const header = summary
-            ? `## Server "${matchedServer.name}" Loaded\n\n${summary}`
-            : `## Server "${matchedServer.name}" Loaded (${toolNames.length} tools)`
-          setSelectedTools(toolNames)
-          this.addToolResult(t.id, formatResult(serverTools, header), false)
-          t.exitCode = 0; t.status = 'completed'; this.notify(); return
-        }
-
-        // Built-in category fallback: serverName matches a gated category
-        // (e.g. "git", "memory", "knowledge", or "builtin:git")
-        const category = serverNameInput.replace(/^builtin:/, '').toLowerCase()
-        const catDefs = this.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.availability === 'gated' && d.category === category)
-        if (catDefs.length > 0) {
-          const catTools = catDefs.map(d => ({
-            name: d.name,
-            serverId: builtinCategoryServerId(d.category),
-            description: d.description,
-            inputSchema: d.input_schema
-          }))
-          const names = catTools.map(t => t.name)
-          const summary = BUILTIN_CATEGORY_SUMMARIES[category]
-          const header = summary
-            ? `## Built-in category "${category}" Loaded\n\n${summary}`
-            : `## Built-in category "${category}" Loaded (${names.length} tools)`
-          setSelectedTools(names)
-          this.addToolResult(t.id, formatResult(catTools, header), false)
-          t.exitCode = 0; t.status = 'completed'; this.notify(); return
-        }
-
-        this.addToolResult(t.id, `Server or category "${serverNameInput}" not found. Available servers: ${servers.filter(s => s.status === 'connected').map(s => s.id).join(', ') || '(none)'}. Available built-in categories: ${Object.keys(BUILTIN_CATEGORY_SUMMARIES).join(', ')}.`, true)
-        t.exitCode = 1; t.status = 'completed'; this.notify(); return
-      }
-
-      // ── Mode 3: intent-based matching (server level) ───────────────
-      const intent = String(t.input?.intent || '')
-      if (!intent) throw new Error('One of "names", "serverName", or "intent" must be provided')
-
-      t.output = `Matching intent to MCP servers and built-in tools: ${intent.slice(0, 80)}...`; this.notify()
-      const allTools2 = await fetchCandidateTools()
-      if (allTools2.length === 0) {
-        this.addToolResult(t.id, 'No MCP or built-in tools available.', false)
-        t.exitCode = 0; t.status = 'completed'; this.notify(); return
-      }
-
-      // Build server-level summary list for the server selection agent
-      const servers2 = await getHost().mcpListServers()
-      let serverList = servers2
-        .filter(s => s.status === 'connected')
-        .map(s => {
-          const summary = getCachedMcpServers().find(ss => ss.id === s.id)?.summary
-          return summary
-            ? `- [${s.id}] ${summary}`
-            : `- [${s.id}] ${s.name} (${s.tools.length} tools)`
-        })
-        .join('\n')
-      // Synthetic rows (one per gated built-in category) so the selection agent can
-      // pick built-ins at the same granularity as MCP servers.
-      const gatedBuiltins = this.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.availability === 'gated')
-      const builtinByCat = new Map<string, number>()
-      for (const d of gatedBuiltins) builtinByCat.set(d.category, (builtinByCat.get(d.category) || 0) + 1)
-      for (const [cat, count] of builtinByCat) {
-        const summary = BUILTIN_CATEGORY_SUMMARIES[cat]
-        serverList += `\n- [${builtinCategoryServerId(cat)}] ${summary || `${cat} (${count} tools)`}`
-      }
-
-      const svAgent = new ServerSelectionAgent()
-      const selectedServerIds = await svAgent.execute(
-        { intent, serverList },
-        { llmConfig: { adapter: this.opts.adapter, apiKey: this.opts.apiKey || '', baseURL: this.opts.baseURL, model: this.opts.model }, maxTokens: 200 }
-      )
-
-      if (selectedServerIds.length === 0) {
-        this.addToolResult(t.id, 'No matching servers or categories found.', false)
-        t.exitCode = 0; t.status = 'completed'; this.notify(); return
-      }
-
-      // Load ALL tools from matched servers
-      const matchedTools = allTools2.filter(t => selectedServerIds.includes(t.serverId))
-      if (matchedTools.length === 0) {
-        this.addToolResult(t.id, `No tools found for servers: ${selectedServerIds.join(', ')}.`, false)
-        t.exitCode = 0; t.status = 'completed'; this.notify(); return
-      }
-
-      const selectedNames2 = matchedTools.map(t => t.name)
-      const serverNames2 = [...new Set(matchedTools.map(t => t.serverId))].join(', ')
-      setSelectedTools(selectedNames2)
-      const headerTitle = selectHeader(matchedTools).replace('## ', '')
-      this.addToolResult(t.id, formatResult(matchedTools, `## ${headerTitle} from: ${serverNames2}`), false)
-      t.exitCode = 0
-    } catch (err) { this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'pick_tool failed'}`, true); t.exitCode = -1 }
-    t.status = 'completed'; this.notify()
+    return pickToolImpl(this, t, setSelectedTools)
   }
-
-  // ── Spawn agent tool ───────────────────────────────────────────────────
 
   async execSpawnAgent(t: ToolUseBlock): Promise<void> {
-    t.status = 'running'; this.notify()
-    try {
-      const subAgentId = String(t.input?.subAgentId || '').trim()
-      const task = String(t.input?.task || '')
-      if (!subAgentId) throw new Error('subAgentId is required — select the most suitable sub-agent from the available list')
-      if (!task.trim()) throw new Error('task is required')
-
-      let allowedTools: string[] = ['read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec']
-      let allowedMcpServers: string[] = ['chrome-devtools']
-      let allowedSkills: string[] | undefined
-      let maxTokens: number | undefined
-      let maxLoopIterations: number | undefined
-      let profile: any = null
-      let disabledError: Error | null = null
-      try {
-        const profiles = await getHost().subagentList()
-        profile = profiles.find((p: any) => p.id === subAgentId) || null
-        if (profile) {
-          if (profile.enabled === false) {
-            disabledError = new Error(`子代理 "${profile.name || subAgentId}" 已关闭，请在能力中心 → 专家 中启用后再使用`)
-          }
-          if (profile.allowedTools?.length) allowedTools = profile.allowedTools
-          if (profile.allowedMcpServers?.length) allowedMcpServers = profile.allowedMcpServers
-          if (profile.allowedSkills?.length) allowedSkills = profile.allowedSkills
-          if (profile.maxTokens) maxTokens = profile.maxTokens
-          if (profile.maxLoopIterations) maxLoopIterations = profile.maxLoopIterations
-        } else {
-          console.warn(`[execSpawnAgent] Sub-agent "${subAgentId}" not found, falling back to defaults`)
-        }
-      } catch { /* fallback */ }
-      if (disabledError) throw disabledError
-
-      // Expert config pack: compose the four structured sections instead of a
-      // bare basePrompt; bound knowledge files ride along as a Bound Knowledge
-      // index (the sub-session's knowledge tools stay global here — the pack's
-      // file list already tells the model where to look).
-      const basePrompt = profile?.basePrompt || ''
-      const knowledgeFiles: Array<{ id: string; title: string; filePath: string }> = []
-      if (profile?.knowledgeFileIds?.length) {
-        const km = this.opts.knowledgeManager
-        if (km) {
-          const rows = await Promise.all((profile.knowledgeFileIds as string[]).map(id => km.getFile(id).catch(() => null)))
-          for (const f of rows) {
-            if (f) knowledgeFiles.push({ id: f.id, title: f.title || f.filePath, filePath: f.filePath })
-          }
-        }
-      }
-      const expertBlock = profile
-        ? composeExpertInstructions(
-            { name: profile.name || subAgentId, basePrompt, methodology: profile.methodology, outputSpec: profile.outputSpec, constraints: profile.constraints },
-            knowledgeFiles
-          )
-        : `You are a sub-agent executing a delegated task.
-
-Guidelines:
-- Focus exclusively on the task above. Ignore anything not relevant to it.
-- You CANNOT install skills or modify tool preferences.
-- When you complete the task, provide a concise summary of your findings.
-- Do NOT ask the user for input — work autonomously.`
-
-      const toolList = allowedTools.map(t => `- \`${t}\``).join('\n')
-      const mcpList = allowedMcpServers.map(id => `- ${id}`).join('\n')
-
-      // Append available skills context
-      let skillsCtx = ''
-      try {
-        const skillsAppendix = this.opts.skillManager?.getSystemPromptAppendix()
-        if (skillsAppendix) skillsCtx = '\n\n' + skillsAppendix
-      } catch { /* non-critical */ }
-
-      const systemPrompt = `${expertBlock}\n\n## Your Task\n${task}\n\n## Available Tools\n${toolList}\n\n## Available MCP Servers\n${mcpList || '(none)'}${skillsCtx}`
-
-      console.log(`[spawn_agent] subAgentId="${subAgentId}" prompt length=${systemPrompt.length} first 200 chars:`, systemPrompt.slice(0, 200))
-      t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
-      this.notify()
-
-      const handle = this.spawnSubAgent!({
-        systemPrompt,
-        initialMessages: [],
-        allowedTools,
-        allowedMcpServers,
-        allowedSkills,
-        maxTokens: maxTokens || this.opts.maxTokens,
-        maxLoopIterations: maxLoopIterations || 20,
-        onProgress: (summary) => {
-          // Rolling activity log (cap 8 lines) so the user sees the sub-agent moving live.
-          const lines = (t.output || '').split('\n')
-          lines.push(summary)
-          while (lines.length > 8) lines.shift()
-          t.output = lines.join('\n')
-          this.notify()
-        },
-      })
-
-      // Set _subConvId immediately so parent conversation saves link to sub-agent conversation
-      // even if the app restarts before the sub-agent completes.
-      ;(t as any)._subConvId = handle.subConvId
-      // Keep handle reference for live preview while the sub-agent is running.
-      // Non-enumerable so JSON.stringify skips it — avoids serializing the entire engine state.
-      Object.defineProperty(t, '_subAgentHandle', { value: handle, writable: true, enumerable: false, configurable: true })
-      this.notify()
-
-      const result = await handle.waitForCompletion()
-      const subAssistantTexts = result.messages
-        .filter(m => m.role === 'assistant')
-        .flatMap(m => m.contentBlocks)
-      const subText = subAssistantTexts.filter(b => b.type === 'text').map(b => (b as TextBlock).text).join('\n\n').slice(0, SUBAGENT_TEXT_MAX)
-      const subTools = subAssistantTexts.filter(b => b.type === 'tool_use').map(b => `[tool_use: ${(b as ToolUseBlock).name}]`).join(', ')
-      const errorDetail = result.status !== 'completed'
-        ? `\n\n### Sub-agent Status: ${result.status}\n` + (subText ? `**Partial Output:**\n${subText}` : '') + (subTools ? `\n**Tool Calls Attempted:** ${subTools}` : '')
-        : ''
-      const summary = result.status === 'completed'
-        ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
-        : `## Sub-Agent Result (${result.status})\n\nThe sub-agent did not complete successfully.${errorDetail}`
-
-      t.exitCode = result.status === 'completed' ? 0 : 1
-      t.status = 'completed'
-      this.addToolResult(t.id, summary, result.status === 'error')
-      t.output = `子代理已完成. ${subText}`
-    } catch (err) {
-      t.exitCode = -1
-      t.status = 'completed'
-      this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'spawn_agent failed'}`, true)
-    }
-    this.notify()
+    return spawnAgentImpl(this, t)
   }
+
 
   // ── Catch-all tool executor ───────────────────────────────────────────
 
   async execOtherTool(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {
-      if (await this.execMemoryTool(t)) return
-      if (await this.execConversationTool(t)) return
-      if (await this.execKnowledgeTool(t)) return
-      if (await this.execExperienceTool(t)) return
+      if (await execMemoryTool(this, t)) return
+      if (await execConversationTool(this, t)) return
+      if (await execKnowledgeTool(this, t)) return
+      if (await execExperienceTool(this, t)) return
       this.addToolResult(t.id, `Unknown tool: ${t.name}`, true)
     } catch (err) {
       this.addToolResult(t.id, `Tool failed: ${err instanceof Error ? err.message : String(err)}`, true)
     }
   }
 
-  private async execMemoryTool(t: ToolUseBlock): Promise<boolean> {
-      if (t.name === 'memory_search') {
-        const mm = this.opts.memoryManager
-        if (mm) {
-          const q = String(t.input.query || ''); const cat = String(t.input.category || '') as any; const lim = Number(t.input.limit) || 5
-          const results = await mm.searchMemories({ query: q, category: cat, limit: lim })
-          const formatted = results.length > 0 ? results.map((r, i) => `[${i + 1}] ${r.content} (${r.type}, ${r.category}, ${new Date(r.createdAt).toLocaleDateString()})`).join('\n') : 'No matching memories found.'
-          t.output = formatted.slice(0, MEMORY_PREVIEW_MAX); this.addToolResult(t.id, formatted, false); t.exitCode = 0
-        } else { t.output = 'Memory manager not available'; this.addToolResult(t.id, 'Memory manager not available', true); t.exitCode = 1 }
-      return true
-      }
-      if (t.name === 'memory_save') {
-        const mm = this.opts.memoryManager; const content = String(t.input.content || '')
-        if (!content.trim()) { this.addToolResult(t.id, 'Nothing to save — content was empty.', true); t.exitCode = 1 }
-        else {
-          const type = (String(t.input.type || 'fact') as any); const cat = (String(t.input.category || 'general') as any)
-          const entry = await mm!.saveMemory({ content, type, category: cat })
-          if (entry) {
-            this.onMemorySaved?.()
-          }
-          t.output = entry ? content.slice(0,200) : 'Already in memory'; this.addToolResult(t.id, entry ? `Saved to memory: "${content}" (${type}, ${cat})` : `Already in memory (duplicate): "${content}"`, false)
-          t.exitCode = 0
-        }
-      return true
-      }
-    return false
-  }
-
-  private async execConversationTool(t: ToolUseBlock): Promise<boolean> {
-      if (t.name === 'conversation_search') {
-        const query = String(t.input.query || '').trim()
-        const convId2 = String(t.input.id || '').trim()
-        const dateFilter: Record<string, string> = {}
-        if (t.input.createdAfter) dateFilter.createdAfter = String(t.input.createdAfter)
-        if (t.input.createdBefore) dateFilter.createdBefore = String(t.input.createdBefore)
-        if (t.input.updatedAfter) dateFilter.updatedAfter = String(t.input.updatedAfter)
-        if (t.input.updatedBefore) dateFilter.updatedBefore = String(t.input.updatedBefore)
-        if (query && !convId2) {
-          const results = await getHost().searchConversationsByKeyword(query)
-          if (results.length === 0) {
-            this.addToolResult(t.id, `No conversations found matching "${query}".`, false)
-          } else {
-            const parts = results.map(r =>
-              `- **${r.title}** (ID: \`${r.id}\`)\n  Summary: ${r.summary || '(no summary)'}\n  Keywords: ${r.keywords || '(none)'}\n  Updated: ${r.updatedAt}`
-            )
-            this.addToolResult(t.id, `## Conversations matching "${query}"\n\nFound ${results.length} conversation(s):\n\n` + parts.join('\n\n'), false)
-          }
-          t.exitCode = 0
-        } else if (convId2) {
-          const conv = await getHost().getConversation(convId2)
-          if (conv) { const parts = [`**Title:** ${conv.title}`]; if (conv.summary) parts.push(`**Summary:** ${conv.summary}`); parts.push(`**ID:** ${conv.id}`); this.addToolResult(t.id, parts.join('\n'), false) }
-          else { this.addToolResult(t.id, `Conversation "${convId2}" not found.`, false) }
-          t.exitCode = 0
-        } else {
-          this.addToolResult(t.id, 'Error: provide either "query" (keyword search) or "id" (direct lookup).', true); t.exitCode = 1
-        }
-      return true
-      }
-      if (t.name === 'tool_result_search') {
-        const ids = t.input.ids as string[] | undefined
-        if (!ids || ids.length === 0) {
-          this.addToolResult(t.id, 'Error: at least one tool_result_id is required.', true); t.exitCode = 1
-        } else {
-          try {
-            const results = await getHost().getToolResult(ids)
-            if (results.length === 0) {
-              this.addToolResult(t.id, `No tool results found for IDs: ${ids.join(', ')}`, false)
-            } else {
-              const parts = results.map(r =>
-                `[ref_id: ${r.ref_id}]\nConversation: ${r.conversation_id}\nTool use: ${r.tool_use_id}\n\n${r.content}`
-              )
-              this.addToolResult(t.id, parts.join('\n\n---\n\n'), false)
-            }
-            t.exitCode = 0
-          } catch (e) {
-            this.addToolResult(t.id, `Error looking up tool results: ${e}`, true); t.exitCode = 1
-          }
-        }
-      return true
-      }
-    return false
-  }
-
-  /** Expert knowledge scope (null = unrestricted): when an expert config pack
-   *  with bound knowledge files is active, knowledge_search results and
-   *  knowledge_read paths are confined to those files (+ their wiki outputs). */
-  private getExpertKnowledgeScope(): { ids: Set<string>; rawPaths: Set<string>; wikiPaths: Set<string> } | null {
-    const files = this.opts.expert?.knowledgeFiles
-    if (!files || files.length === 0) return null
-    return {
-      ids: new Set(files.map((f) => f.id)),
-      rawPaths: new Set(files.map((f) => f.filePath)),
-      wikiPaths: new Set(files.flatMap((f) => f.wikiPages || [])),
-    }
-  }
-
-  private async execKnowledgeTool(t: ToolUseBlock): Promise<boolean> {
-      if (t.name === 'knowledge_search') {
-        const km = this.opts.knowledgeManager
-        if (!km) {
-          t.output = 'Knowledge base not available.'; this.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
-        } else {
-          const query = String(t.input.query || '').toLowerCase()
-          const mode = String(t.input.mode || 'title')
-          const sourceType = String(t.input.sourceType || '')
-          const status = String(t.input.status || '')
-          const doContentSearch = (mode === 'content' || mode === 'both') && !!query
-          const scope = this.getExpertKnowledgeScope()
-
-          let contentMatchIds = new Set<string>()
-          let contentExcerpts = new Map<string, string[]>()
-          if (doContentSearch) {
-            const matches = await km.searchContent(query)
-            for (const m of matches) {
-              contentMatchIds.add(m.id)
-              contentExcerpts.set(m.id, m.excerpts)
-            }
-          }
-
-          // Push filtering to SQL instead of pulling all files into memory
-          let filtered: KnowledgeFile[] = []
-          const buildOpts = (search?: string) => {
-            const opts: Record<string, any> = { pageSize: 200 }
-            if (search) opts.search = search
-            if (sourceType) opts.sourceType = sourceType
-            if (status) opts.status = status
-            return opts
-          }
-
-          if (mode === 'wiki') {
-            // Wiki mode: ripgrep search across compiled wiki pages (fastest path)
-            let matches = query ? await km.searchWiki(query) : []
-            if (scope) matches = matches.filter(m => scope.wikiPaths.has(m.wikiPath))
-            if (matches.length === 0) {
-              t.output = 'No matching wiki pages found.'; this.addToolResult(t.id, 'No matching wiki pages found.', false)
-            } else {
-              const lines = matches.map(m => {
-                const typeLabel: Record<string, string> = { sources: '原始资料', entities: '实体', concepts: '概念', syntheses: '综合' }
-                return [
-                  `- **${m.title}** (${typeLabel[m.type] || m.type})`,
-                  `  路径: \`${m.wikiPath}\``,
-                  `  片段: ${m.content}`,
-                  `  \`knowledge_read\` 参数: path="${m.wikiPath}", type="wiki"`
-                ].join('\n')
-              })
-              const stats = `找到 ${matches.length} 个 wiki 页面 (mode=wiki):\n` + lines.join('\n')
-              t.output = stats.slice(0, UI_PREVIEW_MAX); this.addToolResult(t.id, stats, false)
-            }
-            t.exitCode = 0
-          } else if (mode === 'content') {
-            // Content-only: SQL filters sourceType/status, JS narrows by FTS5
-            const result = await km.listFilesAdvanced(buildOpts())
-            filtered = result.items.filter(f => contentMatchIds.has(f.id))
-          } else if (mode === 'both') {
-            // Both: SQL filters by title/path + sourceType/status, merge FTS5 matches
-            const result = await km.listFilesAdvanced(buildOpts(query))
-            filtered = result.items
-            if (contentMatchIds.size > 0) {
-              const titleMatchIds = new Set(filtered.map(f => f.id))
-              const extraIds = [...contentMatchIds].filter(id => !titleMatchIds.has(id))
-              if (extraIds.length > 0) {
-                const extra = await km.listFilesAdvanced(buildOpts())
-                for (const f of extra.items) {
-                  if (extraIds.includes(f.id)) filtered.push(f)
-                }
-              }
-            }
-          } else {
-            // Title mode (default) — SQL handles title/path LIKE + sourceType/status
-            const result = await km.listFilesAdvanced(buildOpts(query))
-            filtered = result.items
-            // Fallback: no title match → try content search (for CJK queries)
-            if (filtered.length === 0 && query) {
-              const fallbackMatches = await km.searchContent(query)
-              if (fallbackMatches.length > 0) {
-                const fallbackIds = new Set(fallbackMatches.map(m => m.id))
-                const fallback = await km.listFilesAdvanced(buildOpts())
-                filtered = fallback.items.filter(f => fallbackIds.has(f.id))
-                for (const m of fallbackMatches) {
-                  contentExcerpts.set(m.id, m.excerpts)
-                }
-              }
-            }
-          }
-
-          // Expert scope: confine the merged result list to the bound files
-          if (scope) filtered = filtered.filter(f => scope.ids.has(f.id))
-
-          if (filtered.length === 0) {
-            t.output = 'No matching knowledge files found.'; this.addToolResult(t.id, scope
-              ? 'No matching knowledge files found in this expert\'s bound knowledge base.'
-              : 'No matching knowledge files found.', false)
-          } else {
-            const lines = filtered.map(f => {
-              let readSuggestion: string
-              if (f.status === 'compiled' && f.wikiOutputs && f.wikiOutputs.length > 0) {
-                const wikiCmds = f.wikiOutputs.map(wp => `\`knowledge_read\` 参数: path="${wp}", type="wiki"`).join('\n  ')
-                readSuggestion = `${wikiCmds}\n  \`knowledge_read\` 参数: path="${f.filePath}", type="raw"`
-              } else {
-                readSuggestion = `\`knowledge_read\` 参数: path="${f.filePath}", type="raw"`
-              }
-              const line = `- **${f.title || f.filePath}** (${f.sourceType === 'url' ? '链接' : f.sourceType === 'file' ? '文件' : f.sourceType}, ${f.status === 'compiled' ? '已编译' : '原始'})\n  ${readSuggestion}`
-              const ex = contentExcerpts.get(f.id)
-              if (ex && ex.length > 0) {
-                return line + '\n  ' + ex.map(e => `...${e}...`).join('\n  ')
-              }
-              return line
-            })
-            const stats = `找到 ${filtered.length} 个知识文件:\n` + lines.join('\n')
-            t.output = stats.slice(0, UI_PREVIEW_MAX); this.addToolResult(t.id, stats, false)
-          }
-          t.exitCode = 0
-        }
-      return true
-      }
-      if (t.name === 'knowledge_read') {
-        const km = this.opts.knowledgeManager
-        const filePath = String(t.input.path || '')
-        const readType = String(t.input.type || 'wiki')
-        const readScope = this.getExpertKnowledgeScope()
-        const outOfScope = readScope && (
-          readType === 'raw' ? !readScope.rawPaths.has(filePath) : !readScope.wikiPaths.has(filePath)
-        )
-        if (!filePath) {
-          t.output = 'Error: path is required.'; this.addToolResult(t.id, 'Error: path is required.', true); t.exitCode = 1
-        } else if (outOfScope) {
-          const bound = [...(readScope!.rawPaths), ...(readScope!.wikiPaths)]
-          const msg = `Out of scope: this session's expert only has these knowledge documents bound:\n${bound.map(p => `- ${p}`).join('\n')}\nUse one of those paths.`
-          t.output = msg; this.addToolResult(t.id, msg, true); t.exitCode = 1
-        } else if (!km) {
-          t.output = 'Knowledge base not available.'; this.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
-        } else {
-          try {
-            let content: string | null = null
-            if (readType === 'raw') {
-              content = await km.readRawContent(filePath)
-            } else {
-              const result = await km.readWiki(filePath)
-              content = result.content
-            }
-            if (content) {
-              t.output = content.slice(0, UI_PREVIEW_MAX); this.addToolResult(t.id, content, false)
-            } else {
-              t.output = `File "${filePath}" not found in knowledge base.`; this.addToolResult(t.id, `File "${filePath}" not found in knowledge base.`, false)
-            }
-            t.exitCode = 0
-          } catch {
-            t.output = `Error reading "${filePath}" from knowledge base.`; this.addToolResult(t.id, `Error reading "${filePath}" from knowledge base.`, true)
-            t.exitCode = 1
-          }
-        }
-      return true
-      }
-    return false
-  }
-
-  private async execExperienceTool(t: ToolUseBlock): Promise<boolean> {
-      if (t.name === 'experience_read') {
-        const name = String(t.input.name || '')
-        if (!name) {
-          t.output = 'Error: name is required.'; this.addToolResult(t.id, 'Error: name is required.', true); t.exitCode = 1
-        } else {
-          try {
-            const content = await getHost().readExperienceRecord(name)
-            if (content) {
-              // Touching records that the experience was actually used — feeds the LRU eviction
-              getHost().touchExperienceRecord(name).catch(() => {})
-              t.output = content.slice(0, UI_PREVIEW_MAX); this.addToolResult(t.id, content, false)
-            } else {
-              t.output = `Experience "${name}" not found.`; this.addToolResult(t.id, `Experience "${name}" not found.`, false)
-            }
-            t.exitCode = 0
-          } catch {
-            t.output = `Error reading experience "${name}".`; this.addToolResult(t.id, `Error reading experience "${name}".`, true)
-            t.exitCode = 1
-          }
-        }
-      } else {
-        const platform = this.opts.platformInfo?.platform || ''
-        const command = buildCommandFromSkillInput(t.name, t.input || {}, platform, this.opts.platformInfo?.ripgrepPath)
-        const cwd = String(t.input?.cwd || '')
-        t.output = ''; this.notify()
-        await new Promise<void>((resolve) => {
-          let stdoutBuf = ''
-          let stderrBuf = ''
-          let settled = false
-          const unsubList: (() => void)[] = []
-          const finish = (exitCode: number | null, isError: boolean) => {
-            if (settled) return; settled = true
-            t.exitCode = exitCode
-            const formatted = this.formatExecResult(exitCode, stdoutBuf, stderrBuf)
-            t.output = formatted
-            this.addToolResult(t.id, formatted, isError)
-            unsubList.forEach(fn => fn()); resolve()
-          }
-          const uo = getHost().onTerminalOutput(d => {
-            if (d.type === 'stderr') stderrBuf += d.data
-            else stdoutBuf += d.data
-            t.output = stdoutBuf + stderrBuf
-            this.notify()
-          }); unsubList.push(uo)
-          const ue = getHost().onTerminalExit(d => finish(d.code, d.code !== 0)); unsubList.push(ue)
-          const uerr = getHost().onTerminalError(d => { stderrBuf += `\n[Error: ${d.message}]`; finish(-1, true) }); unsubList.push(uerr)
-          getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined)
-            .then(pid => { this.onProcessStart?.(pid) })
-            .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
-        })
-      return true
-      }
-
-    return false
-  }
 }

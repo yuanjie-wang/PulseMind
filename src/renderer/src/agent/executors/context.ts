@@ -1,0 +1,27 @@
+// ── ToolExecContext: what the extracted executor modules may touch ──
+// tool-executors.ts used to be one 1100-line class; the per-domain
+// implementations now live in executors/*.ts as free functions that receive
+// this context instead of reaching into the class. ToolExecutor implements
+// it — the compiler keeps the surface honest (same pattern as EngineCore).
+
+import type { ToolUseBlock } from '../../types/agent'
+import type { AgentEngineOptions } from '../AgentEngine'
+import type { SpawnSubAgentFn } from '../tool-executors'
+
+/** Tool-block output preview cap shared by executors and the engine. */
+export const UI_PREVIEW_MAX = 3000
+
+export interface ToolExecContext {
+  opts: AgentEngineOptions
+  addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void
+  notify: () => void
+  spawnSubAgent?: SpawnSubAgentFn
+  /** Called after a memory_save lands (experience distillation nudge). */
+  onMemorySaved?: () => void
+  /** Long-running exec tools report the spawned pid (terminal card wiring). */
+  onProcessStart?: (pid: string) => void
+  /** Format exec tool result with exit code and stdout/stderr separation. */
+  formatExecResult(exitCode: number | null, stdout: string, stderr: string): string
+}
+
+export type { ToolUseBlock }
