@@ -14,7 +14,7 @@ import ConversationManageModal from './ConversationManageModal'
 import ProjectSidebarList from './ProjectSidebarList'
 import SidebarNav from './SidebarNav'
 import { ViewHost } from './ViewHost'
-import { ProjectDrawer } from '../project/ProjectDrawer'
+import { ProjectModal } from '../project/ProjectModal'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -22,7 +22,6 @@ import { useNewTaskStore } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
-import type { ToolState } from '../../tools/types'
 import type { SkillState } from '../../skills/types'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 
@@ -66,8 +65,6 @@ interface AppLayoutProps {
   onRenameConversation: (key: string, newLabel: string) => void
   onSelectConversation: (key: string) => void
   onTogglePinConversation: (key: string, pinned: boolean) => void
-  tools?: ToolState[]
-  onToggleTool?: (name: string) => void
   skills?: SkillState[]
   onToggleSkill?: (name: string) => void
   onImportSkill?: () => void
@@ -92,8 +89,6 @@ function AppLayout({
   onRenameConversation,
   onSelectConversation,
   onTogglePinConversation,
-  tools,
-  onToggleTool,
   skills,
   onToggleSkill,
   onImportSkill,
@@ -120,7 +115,7 @@ function AppLayout({
   // Switcher-row actions (PLAN-0.4.0): 管理 + 新增 sit right of the 对话/项目
   // pill, and what they open follows the selected task type.
   const [manageOpen, setManageOpen] = useState(false)
-  const [projectDrawerOpen, setProjectDrawerOpen] = useState(false)
+  const [projectModalOpen, setProjectModalOpen] = useState(false)
   const reloadProjects = useProjectStore((s) => s.reload)
 
   const canCreateNew = autoCleanup || totalSessions < MAX_SESSIONS
@@ -143,10 +138,10 @@ function AppLayout({
 
   // 新增: chats tab → a fresh conversation (mirrors SidebarNav's 新建对话
   // entry: preselect the welcome switcher, land on the chat view, then create);
-  // projects tab → the project create drawer.
+  // projects tab → the project create modal.
   const handleTabAdd = (): void => {
     if (listTab === 'projects') {
-      setProjectDrawerOpen(true)
+      setProjectModalOpen(true)
       return
     }
     useNewTaskStore.getState().setMode('chat')
@@ -156,6 +151,16 @@ function AppLayout({
 
   const handleDeleteConversations = (keys: string[]): void => {
     keys.forEach((key) => onDeleteConversation(key))
+  }
+
+  // 项目行's 新建任务: land on the welcome form with the project preselected —
+  // the same deferred flow as the sidebar's 新建任务 entry (M8.4), where nothing
+  // is created until a message is actually sent.
+  const handleProjectNewTask = (projectId: string): void => {
+    useNewTaskStore.getState().setMode('project')
+    useNewTaskStore.getState().setProjectId(projectId)
+    navigate({ kind: 'chat' })
+    if (canCreateNew) onCreateNew()
   }
 
   // Sidebar highlight key: only while a chat view is open. Both history tabs
@@ -301,7 +306,7 @@ function AppLayout({
                 activeKey={activeChatKey}
                 activeLoopConvIds={activeLoopConvIds}
                 retryingConvIds={retryingConvIds}
-                onOpenProject={(projectId) => navigate({ kind: 'project', projectId })}
+                onCreateTask={handleProjectNewTask}
                 onOpenConversation={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
                 onDelete={onDeleteConversation}
                 onRename={onRenameConversation}
@@ -403,7 +408,6 @@ function AppLayout({
               <ViewHost
                 knowledgeManager={knowledgeManager}
                 memoryManager={memoryManager}
-                tools={tools}
                 skills={skills}
                 onToggleSkill={onToggleSkill}
                 onImportSkill={onImportSkill}
@@ -420,17 +424,17 @@ function AppLayout({
       </Layout>
 
       {/* Switcher-row actions' surfaces: the chats tab's manage modal and the
-          projects tab's create drawer. Both portal out of the sidebar. */}
+          projects tab's create modal. Both portal out of the sidebar. */}
       <ConversationManageModal
         open={manageOpen}
         conversations={looseConversations}
         onClose={() => setManageOpen(false)}
         onDeleteMany={handleDeleteConversations}
       />
-      <ProjectDrawer
-        open={projectDrawerOpen}
+      <ProjectModal
+        open={projectModalOpen}
         editing={null}
-        onClose={() => setProjectDrawerOpen(false)}
+        onClose={() => setProjectModalOpen(false)}
         onSaved={() => { void reloadProjects() }}
       />
 

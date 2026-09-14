@@ -11,7 +11,7 @@ import { useNavigationStore } from '../../stores/navigationStore'
 import { useProjectStore } from '../../stores/projectStore'
 import type { Project } from '../../../../shared/types/project'
 import type { ProjectSandboxPolicy } from '../../../../shared/sandbox/policy'
-import { ProjectDrawer, SandboxControls, FS_OPTIONS, NETWORK_OPTIONS, APPROVAL_OPTIONS } from './ProjectDrawer'
+import { ProjectModal, SandboxControls, FS_OPTIONS, NETWORK_OPTIONS } from './ProjectModal'
 import type { ConversationListItem } from '../../types/conversation'
 
 export interface ProjectViewProps {
@@ -26,7 +26,6 @@ function sandboxTags(policy: ProjectSandboxPolicy): React.ReactNode {
     <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
       <Tag>{FS_OPTIONS.find((o) => o.value === policy.fs)?.label ?? policy.fs}</Tag>
       <Tag>{NETWORK_OPTIONS.find((o) => o.value === policy.network)?.label}</Tag>
-      <Tag>{APPROVAL_OPTIONS.find((o) => o.value === policy.approval)?.label}</Tag>
       {policy.hardIsolation && <Tag color="green">硬隔离</Tag>}
     </span>
   )
@@ -37,7 +36,7 @@ export default function ProjectView({ conversations, onSelectConversation, onCre
   const { modal } = AntdApp.useApp()
   const view = useNavigationStore((s) => s.view)
   const navigate = useNavigationStore((s) => s.navigate)
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Project | null>(null)
   const [hardIsolationSupported, setHardIsolationSupported] = useState<boolean | null>(null)
 
@@ -77,11 +76,11 @@ export default function ProjectView({ conversations, onSelectConversation, onCre
     if (project.id === 'default') return
     const count = conversations.filter((c) => (c.projectId || 'default') === project.id).length
     modal.confirm({
-      title: `删除项目「${project.name}」？`,
-      content: count > 0 ? `项目内的 ${count} 个会话将一并删除，且不可恢复。` : '该项目没有会话。',
-      okText: '删除',
+      title: `确定要删除「${project.name}」吗？`,
+      content: count > 0 ? `项目内的 ${count} 个会话会一并删除，删除后将无法找回，请谨慎操作。` : '这是一个空项目，删除后将无法恢复。',
+      okText: '确认删除',
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: '再想想',
       onOk: async () => {
         await window.electronAPI.projectDelete(project.id)
         openDetail(null)
@@ -104,7 +103,7 @@ export default function ProjectView({ conversations, onSelectConversation, onCre
             <span style={{ fontSize: 18, fontWeight: 700 }}>{detail.name}</span>
             {detail.id !== 'default' && (
               <>
-                <Button type="text" icon={<EditOutlined />} onClick={() => { setEditing(detail); setDrawerOpen(true) }} />
+                <Button type="text" icon={<EditOutlined />} onClick={() => { setEditing(detail); setModalOpen(true) }} />
                 <Button type="text" danger icon={<DeleteOutlined />} onClick={() => removeProject(detail)} />
               </>
             )}
@@ -185,10 +184,10 @@ export default function ProjectView({ conversations, onSelectConversation, onCre
             </div>
           </Card>
 
-          <ProjectDrawer
-            open={drawerOpen}
+          <ProjectModal
+            open={modalOpen}
             editing={editing}
-            onClose={() => setDrawerOpen(false)}
+            onClose={() => setModalOpen(false)}
             onSaved={reload}
           />
         </div>
@@ -202,7 +201,7 @@ export default function ProjectView({ conversations, onSelectConversation, onCre
       <div style={{ maxWidth: 1048, margin: '0 auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <span style={{ fontSize: 18, fontWeight: 700 }}>{t('viewTitle.project')}</span>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); setDrawerOpen(true) }}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); setModalOpen(true) }}>
             新建项目
           </Button>
         </div>
@@ -230,10 +229,10 @@ export default function ProjectView({ conversations, onSelectConversation, onCre
           })}
         </div>
 
-        <ProjectDrawer
-          open={drawerOpen}
+        <ProjectModal
+          open={modalOpen}
           editing={editing}
-          onClose={() => setDrawerOpen(false)}
+          onClose={() => setModalOpen(false)}
           onSaved={reload}
         />
       </div>

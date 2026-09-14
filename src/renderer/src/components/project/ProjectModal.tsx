@@ -1,8 +1,10 @@
-// ── Project create/edit drawer (PLAN-0.4.0 M3.7, extracted from ProjectView
-// for M8.4 so the welcome page's project panel can reuse it) ──
+// ── Project create/edit modal (PLAN-0.4.0 M3.7, extracted from ProjectView
+// for M8.4 so the welcome page's project panel can reuse it; M8.x revision:
+// the side drawer became a modal and creation only collects name + workspace
+// — the sandbox policy starts at its defaults and is tuned in 项目设置) ──
 
 import React, { useState } from 'react'
-import { Button, Drawer, Input, Select, Space, Switch, Tooltip, App as AntdApp } from 'antd'
+import { App as AntdApp, Button, Input, Modal, Select, Space, Switch, Tooltip } from 'antd'
 import { FolderOpenOutlined } from '@ant-design/icons'
 import { DEFAULT_SANDBOX_POLICY, type ProjectSandboxPolicy } from '../../../../shared/sandbox/policy'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from '../../../../shared/types/project'
@@ -15,11 +17,6 @@ export const FS_OPTIONS = [
 export const NETWORK_OPTIONS = [
   { value: 'allow', label: '允许联网' },
   { value: 'deny', label: '禁止联网' },
-]
-export const APPROVAL_OPTIONS = [
-  { value: 'outside-ask', label: '越界询问（推荐）' },
-  { value: 'auto', label: '自动执行' },
-  { value: 'always-ask', label: '每次询问' },
 ]
 
 export function SandboxControls({ value, onChange }: {
@@ -35,8 +32,6 @@ export function SandboxControls({ value, onChange }: {
         <Select size="small" options={NETWORK_OPTIONS} value={value.network} onChange={(network) => onChange({ ...value, network })} style={{ minWidth: 120 }} />
       </Space>
       <Space wrap>
-        <span style={{ fontSize: 12, color: '#888' }}>命令审批</span>
-        <Select size="small" options={APPROVAL_OPTIONS} value={value.approval} onChange={(approval) => onChange({ ...value, approval })} style={{ minWidth: 170 }} />
         <Tooltip title="开启后命令在 OS 沙箱内运行（macOS sandbox-exec / Linux bwrap）；平台不支持时自动降级为软沙箱（仅审批+审计）">
           <span style={{ fontSize: 12, color: '#888' }}>硬隔离</span>
         </Tooltip>
@@ -46,7 +41,7 @@ export function SandboxControls({ value, onChange }: {
   )
 }
 
-export function ProjectDrawer({ open, editing, onClose, onSaved }: {
+export function ProjectModal({ open, editing, onClose, onSaved }: {
   open: boolean
   editing: Project | null
   onClose: () => void
@@ -59,7 +54,7 @@ export function ProjectDrawer({ open, editing, onClose, onSaved }: {
   const [sandbox, setSandbox] = useState<ProjectSandboxPolicy>({ ...DEFAULT_SANDBOX_POLICY })
   const [saving, setSaving] = useState(false)
 
-  // Form fields repopulate from `editing` when the drawer finishes opening —
+  // Form fields repopulate from `editing` when the modal finishes opening —
   // an event callback rather than a state-resetting effect.
   const afterOpenChange = (open: boolean): void => {
     if (!open) return
@@ -107,27 +102,36 @@ export function ProjectDrawer({ open, editing, onClose, onSaved }: {
     }
   }
 
+  const canSubmit = Boolean(name.trim() && (editing || workspaceDir.trim()))
+
   return (
-    <Drawer title={editing ? '项目设置' : '新建项目'} open={open} onClose={onClose} width={480} afterOpenChange={afterOpenChange}
-      footer={
-        <div style={{ textAlign: 'right' }}>
-          <Button onClick={onClose} style={{ marginInlineEnd: 8 }}>取消</Button>
-          <Button type="primary" loading={saving} disabled={!name.trim() || (!editing && !workspaceDir.trim())} onClick={save}>
-            {editing ? '保存' : '创建'}
-          </Button>
-        </div>
-      }
+    <Modal
+      title={editing ? '项目设置' : '新建项目'}
+      open={open}
+      onCancel={onClose}
+      onOk={save}
+      afterOpenChange={afterOpenChange}
+      width={480}
+      cancelText="取消"
+      okText={editing ? '保存' : '创建'}
+      okButtonProps={{ loading: saving, disabled: !canSubmit }}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, paddingTop: 4 }}>
         <div>
           <div style={{ marginBottom: 6, fontSize: 13 }}>项目名称</div>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：my-app" autoFocus />
         </div>
         {editing ? (
-          <div>
-            <div style={{ marginBottom: 6, fontSize: 13 }}>固定工作区（创建后不可修改）</div>
-            <code style={{ fontSize: 12, color: '#666', wordBreak: 'break-all' }}>{editing.workspaceDir}</code>
-          </div>
+          <>
+            <div>
+              <div style={{ marginBottom: 6, fontSize: 13 }}>固定工作区（创建后不可修改）</div>
+              <code style={{ fontSize: 12, color: '#666', wordBreak: 'break-all' }}>{editing.workspaceDir}</code>
+            </div>
+            <div>
+              <div style={{ marginBottom: 6, fontSize: 13 }}>沙箱策略</div>
+              <SandboxControls value={sandbox} onChange={setSandbox} />
+            </div>
+          </>
         ) : (
           <div>
             <div style={{ marginBottom: 6, fontSize: 13 }}>固定工作区（对话的文件读写都锁定在这里）</div>
@@ -137,11 +141,7 @@ export function ProjectDrawer({ open, editing, onClose, onSaved }: {
             </Space.Compact>
           </div>
         )}
-        <div>
-          <div style={{ marginBottom: 6, fontSize: 13 }}>沙箱策略</div>
-          <SandboxControls value={sandbox} onChange={setSandbox} />
-        </div>
       </div>
-    </Drawer>
+    </Modal>
   )
 }
