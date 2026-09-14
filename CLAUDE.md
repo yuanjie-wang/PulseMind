@@ -20,7 +20,7 @@ npm run lint:fix        # ESLint auto-fix
 npm run format          # Prettier check
 npm run format:fix      # Prettier format
 npx tsx scripts/test-compaction.ts  # Run compaction verification tests (no test runner needed)
-npm run browsers:install        # Install Playwright Chromium (puppeteer-based browser automation)
+npm run browsers:install        # Install Playwright Chromium for the native browser (playwright-core)
 ```
 
 ## Architecture
@@ -111,7 +111,6 @@ src/main/
 ├── mcp/                   # MCP server lifecycle management
 │   ├── MCPServerManager.ts
 │   ├── MCPClient.ts
-│   ├── chrome-fetcher.ts      # Chrome DevTools MCP page navigation + HTML extraction (used by knowledge import)
 │   └── transport.ts           # STDIO and SSE MCP transport layer
 ├── utils/                 # Main-process utilities
 │   ├── patch-utils.ts         # Unified file patching (apply diffs, string replacement, edit matching)
@@ -144,9 +143,9 @@ The `deriveConvType(id)` function at `conversation.db.ts:7` maps conversation ID
 
 Settings stored in `~/.pulsemind/settings.json`:
 - **Profiles** — array of `LlmProfile[]` (provider, apiKey, baseURL, model, maxTokens)
-- **Global settings** — theme, persona (soul), locale, yoloMode, autoCleanup, workspaceDir
-- **Migration** from old single-profile format handled in `SettingsStore.migrate()`
-- **Template**: default settings in `templates/pulsemind/settings.json` — includes default soul/persona prompt, empty profiles array, theme light, locale zh, yoloMode true
+- **Global settings** — theme, persona (soul), locale, autoCleanup, workspaceDir
+- **Migration** from old single-profile format handled in `SettingsStore.migrate()`. The pre-0.4 `yoloMode` boolean and the short-lived `approvalMode` key are both dropped: approval is per conversation now (`conversations.approval_mode`)
+- **Template**: default settings in `templates/pulsemind/settings.json` — includes default soul/persona prompt, empty profiles array, theme light, locale zh
 
 ### Renderer-Side Managers
 
@@ -261,8 +260,8 @@ User message → AgentEngine → adapter.buildRequest() → IPC proxy (main) →
                 │                                                ↓        │
                 │                              React state (message list) │
                 ↑                                                        │
-                │                    tool_use → approval (or auto-exec in  │
-                │                              YOLO mode)                │
+                │                    tool_use → approval (or auto-exec per  │
+                │                          the conversation's approvalMode)│
                 └──────── tool_result (→ continueLoop with microCompact) ──┘
                      ↑
                 Auto-title (non-streaming LLM call via TitleAgent)
@@ -362,11 +361,20 @@ Collapsed header shows lifecycle in priority order:
 
 After `onStreamComplete`, tools are categorized and dispatched:
 - **readOnlyTools**: `read`, `list_dir`, `find` — always auto-executed
-- **writeEditTools**: `write`, `edit` — auto-executed in YOLO mode, pending approval in mixed mode
+- **writeEditTools**: `write`, `edit`, `git_commit`, `git_restore` — auto-executed except at `always-ask`
 - **systemTools**: `install_skill`, `pick_skill`, `spawn_agent` — auto-executed
 - **memoryTools**: `memory_search`, `memory_save`, `conversation_search` — auto-executed
-- **mcpTools**: MCP-discovered tools — auto-executed
-- **otherTools**: unlisted tools — auto-executed only in YOLO mode
+- **mcpTools**: MCP-discovered tools — auto-executed (gated ones only when `approvalMode` is `auto`)
+- **otherTools**: unlisted tools — held for approval unless `approvalMode` is `auto`
+
+Gating is the `requiresApproval(mode, tier)` ladder (`shared/sandbox/policy.ts`):
+`auto` runs everything, `outside-ask` holds shell/ungrouped/gated-MCP calls,
+`always-ask` also holds writes. Sub-agent runs hold nothing.
+The mode comes from the conversation itself — `conversations.approval_mode`, written
+by the composer's 授权 button, with an explicit per-session override for derived
+sessions (`pickApprovalMode(override, conversation)` in session-manager); the
+session manager re-reads it on every ask, so a change lands on the next message.
+Scheduled routine runs pin `outside-ask` (unattended D13: the runner auto-rejects).
 - **askUserTools**: always require user response
 
 Tool blocks transition: `pending` → `running` → `completed` or `rejected`.
@@ -454,7 +462,7 @@ ESLint applies `no-require-imports: off` for main/preload (CommonJS). Renderer g
 
 On first launch, the app migrates data from the old `~/.pulseai/` directory to `~/.pulsemind/` and renames `pulseai.db` → `pulsemind.db` if present.
 
-- `settings.json` — profiles (provider, apiKey, baseURL, model, maxTokens), theme, persona, locale, yoloMode, autoCleanup
+- `settings.json` — profiles (provider, apiKey, baseURL, model, maxTokens), theme, persona, locale, autoCleanup
 - `pulsemind.db` — SQLite (WAL mode + FTS5): conversations, messages, memories, favorites, token_usage, knowledge_files
 - `MEMORY.md` — auto-injected into every system prompt
 - `tool-preferences.json` / `skill-preferences.json` — enabled/disabled state
@@ -482,7 +490,7 @@ On first launch, the app migrates data from the old `~/.pulseai/` directory to `
 ## Gotchas
 
 - **Always `cd` to project root** before running commands. Workspace root contains unrelated projects.
-- `better-sqlite3`, `@img`, `adm-zip`, `markitdown-js`, `jsdom`, `@mozilla/readability`, `turndown`, and `chrome-devtools-mcp` are unpacked from asar (native modules and runtime deps, listed in `asarUnpack`/`extraFiles`). `chrome-devtools-mcp` must stay unpacked — it's spawned as a subprocess, which can't read inside asar.
+- `better-sqlite3` and `@img` (sharp) are unpacked from asar — native modules that can't be loaded from inside the archive, both listed in `package.json`'s `asarUnpack`. Everything else (`adm-zip`, `jsdom`, `markitdown-js`, `turndown`, `playwright-core`) resolves from the asar.
 - Packaging config is in `package.json`'s `"build"` key; there is no `electron-builder.yml`. `appId` is `com.pulsemind.app`.
 - `tsconfig.json` is a project-reference root pointing to `tsconfig.node.json` (main+preload) and `tsconfig.web.json` (renderer).
 - Agent engine logic lives in `agent/AgentEngine.ts`. Both chat and canvas modes use the same engine; only the presentation layer differs. Engine state (`agentStatus`) must be reset to `idle` before each `startLoop()` to prevent stale `completed` status from premature promise resolution.
@@ -496,8 +504,9 @@ On first launch, the app migrates data from the old `~/.pulseai/` directory to `
 - Knowledge import uses a forked `extract-worker.ts` child process; the worker is built by `scripts/build.js` to `out/main/extract-worker.js`. Long-running knowledge compilations are backed by module-level singleton queues so they survive `KnowledgePanel` unmount.
 - Sub-agent conversations use `sub_` prefix IDs and are stored with `type='spawn'` in the DB, which excludes them from the main conversation list (`WHERE type = 'normal'`).
 - Sub-agents execute as full AgentEngine instances — the parent agent blocks on `await handle.waitForCompletion()`. Consider this performance impact: each sub-agent LLM call goes through the full streaming path.
-- The `chrome-fetcher.ts` module handles Chrome DevTools MCP lifecycle (start/stop/wait) plus cross-origin iframe crawling. It's a standalone module called by `knowledge-store.ts` during URL imports.
+- The `browser/rendered-fetcher.ts` module returns post-JS page HTML for knowledge import by delegating to `BrowserService.fetchRendered` — the same managed backend the agent's `browser` tool drives, so a URL renders identically in both paths. Callers fall back to a plain HTTP fetch when it returns null.
 - Canvas work directories are persisted via `~/.pulsemind/canvas/manifest.json` mapping rectId → directory path, surviving app restarts. Orphaned directories (not in manifest) are cleaned up on startup.
+- File preview pane (PLAN-preview-pane): chat's right-side renderer-local panel (`components/preview/` + `previewPaneStore`, per-conversation tabs). Same geometry pattern as the browser pane (absolute overlay + root `paddingRight`); they stack (preview offsets by the browser pane's width). Write/edit tool cards get an eye button and file chips open the pane instead of the OS; auto-open fires only on successful `write` of a previewable kind, refresh rides `tool_status` diffs in `usePreviewPaneSync` (no fs.watch). `resolvePreviewPath` (shared/preview/file-kind.ts) is the only place tool-relative paths become absolute. CSP was opened to `frame-src local-file:` for the HTML preview iframe; office files show a fallback card by design (phase-2 = `convertFileToMarkdown`).
 
 
 ---
@@ -506,6 +515,6 @@ On first launch, the app migrates data from the old `~/.pulseai/` directory to `
 
 - **导航**：`src/renderer/src/navigation/`（`registry.ts` = 唯一视图注册表）+ `stores/navigationStore.ts` + `components/layout/AppMenu.tsx`（左上角菜单）/`ViewHost.tsx`。`canvas` 视图保留但不在菜单（deprecated，入口隐藏）。
 - **能力中心** `components/capability/CapabilityCenter.tsx`：MCP / 技能 / 子代理 / 经验四个页签，组件自设置弹窗原样迁入；设置弹窗只留 LLM/助手/环境/记忆/收藏。
-- **项目 + 沙箱**：`projects` 表（`conversations.project_id`，默认项目 `default` 合成、不落库，workspace 跟随全局设置）。策略模型 `src/shared/sandbox/policy.ts`，纯路径裁决 `src/shared/sandbox/path-jail.ts`；强制点= `services/file-ops.ts`（fs）+ `services/terminal.ts` + `mcp/transport.ts`（spawn cwd）。会话上下文走 AsyncLocalStorage（`main/sandbox/session-context.ts`），session-manager 在 ask/engineCall 包裹。硬隔离 `main/sandbox/exec-sandbox.ts`（sandbox-exec/bwrap，探测降级）。
+- **项目 + 沙箱**：`projects` 表（`conversations.project_id`，默认项目 `default` 合成、不落库，workspace 跟随全局设置）。策略模型 `src/shared/sandbox/policy.ts`（fs/网络/硬隔离，**不含审批**：审批档位按会话存 `conversations.approval_mode`，由输入框的授权控件写入），纯路径裁决 `src/shared/sandbox/path-jail.ts`；强制点= `services/file-ops.ts`（fs）+ `services/terminal.ts` + `mcp/transport.ts`（spawn cwd）。会话上下文走 AsyncLocalStorage（`main/sandbox/session-context.ts`），session-manager 在 ask/engineCall 包裹。硬隔离 `main/sandbox/exec-sandbox.ts`（sandbox-exec/bwrap，探测降级）。
 - **日常工作**：`~/.pulsemind/routines/*.json` + SQLite `routine_runs`。调度器 `main/routine/routine-scheduler.ts`（30s tick、纯判定 `shared/schedule/schedule-decision.ts`）、运行器 `routine-runner.ts`（无人值守 D13：审批自动拒绝、ask_user 自动跳过、15 分钟超时）。cron 解析 `shared/schedule/cron.ts`（cron-parser v4 CJS）。
 - **工具中心（创意工作室）**：`~/.pulsemind/tools/<id>/`（tool.json/app.html/storage.json）+ `tools/templates/`（6 个预置模板，首启随 templates 拷贝）。生成内核 `renderer/src/tool-studio/generator.ts`（复刻 canvasEngine 模式，产出独立 HTML app）。iframe 严格沙箱（allow-scripts，不透明源），SDK 由 `tool-studio/sdk.ts` 注入、`bridge-host.ts` 校验 event.source 转发；主进程 `main/tool-runtime/` 按 tool.json 的 capabilities 裁决（http 代理封禁 loopback/云元数据、fs 监禁在工具目录、storage KV 1MB 上限、system 剪贴板/通知/外链）并全量审计。

@@ -42,7 +42,7 @@ IPC types: `src/renderer/src/types/electron.d.ts` (~311 lines).
 
 ## Runtime Data (`~/.pulsemind/`)
 
-- `settings.json` — profiles (provider, apiKey, baseURL, model, maxTokens, headers), theme, persona, locale, yoloMode, autoCleanup. `apiKey`/`headers` may hold `${ENV_VAR}` placeholders — resolved per-request in the API proxy, never rewritten on save.
+- `settings.json` — profiles (provider, apiKey, baseURL, model, maxTokens, headers), theme, persona, locale, autoCleanup. `apiKey`/`headers` may hold `${ENV_VAR}` placeholders — resolved per-request in the API proxy, never rewritten on save.
 - `db/pulsemind.db` — SQLite (WAL+FTS5): conversations, messages, memories, experiences, tool_preferences, tool_results, token_usage
 - `memory/MEMORY.md` — auto-injected into every system prompt
 - `hooks/` — user hook scripts: `app-start.js` (main-process launch), `llm-request.js` (per LLM request)
@@ -64,7 +64,9 @@ IPC types: `src/renderer/src/types/electron.d.ts` (~311 lines).
 
 Navigation is a persistent sidebar button column (PLAN-0.4.0, revised 2026-09-12 after user feedback): entries come from `navigation/registry.ts` (`SIDEBAR_NAV`) — the single source of truth for top-level views (`chat | search | project | routines | capability | knowledge | tools`; `canvas` is hidden). An entry declaring a `submenu` renders as a split button that reveals it on hover — 新建任务 → 对话/项目, 能力 • 知识 • 工具 → the three centers — rendered by `components/layout/SidebarNav.tsx`. The three centers share one page (`components/centers/CentersPage.tsx`): the tab IS the view kind, so the plain-button switcher in the header (right of the sidebar toggle, fed by the same `CENTERS_SUBMENU` data) and deep links like the install notifier's `capabilityTab` jump all read the same state. 搜索 aggregates four stores (conversation titles, message bodies, memories, knowledge) in `components/search/SearchView.tsx`; message-body search is main-side (`searchMessagesByKeyword` in `storage/conversation.db.ts`). View state lives in `stores/navigationStore.ts`; `ViewHost.tsx` renders non-chat views; 设置/用量统计/关于 sit at the sidebar's bottom as icon entries that navigate to standard views (the former settings modal and drawers are gone — `SettingsPage.tsx`, `StatisticsPage.tsx`, `AboutPage.tsx`; the settings section IS the `settingsTab` view param). There is deliberately no hamburger menu. Capability configs (MCP/skills/subagents) live in the Capability Center, not the settings page; 经验 lives in the settings page next to 记忆, both behind master switches (`memoryEnabled` / `experienceEnabled` in settings.json, mirrored onto the shared managers by `settings.handler` + `session-manager.syncFeatureToggles`).
 
-Sandbox (PLAN-0.4.0 M3): project conversations get a per-project `workspaceDir` + `ProjectSandboxPolicy`. Enforcement points: `src/shared/sandbox/path-jail.ts` (pure decision) wired into `src/main/services/file-ops.ts`; shell commands go through `src/main/sandbox/exec-sandbox.ts` (macOS `sandbox-exec` / Linux bwrap, opt-in `hardIsolation`) and the session's AsyncLocalStorage context (`src/main/sandbox/session-context.ts`). Tool studio bridge calls are capability-checked + audited in `src/main/tool-runtime/`.
+Sandbox (PLAN-0.4.0 M3): project conversations get a per-project `workspaceDir` + `ProjectSandboxPolicy` (fs / network / hardIsolation — approval is NOT part of it; the tool-approval level is per conversation in `conversations.approval_mode`, written by the composer's 授权 button). Enforcement points: `src/shared/sandbox/path-jail.ts` (pure decision) wired into `src/main/services/file-ops.ts`; shell commands go through `src/main/sandbox/exec-sandbox.ts` (macOS `sandbox-exec` / Linux bwrap, opt-in `hardIsolation`) and the session's AsyncLocalStorage context (`src/main/sandbox/session-context.ts`). Tool studio bridge calls are capability-checked + audited in `src/main/tool-runtime/`.
+
+File preview pane (PLAN-preview-pane): the chat view's right side hosts a renderer-local file preview panel — `components/preview/` + `stores/previewPaneStore.ts` (tabs scoped per conversation, LRU-capped), geometry mirrors the browser pane (absolute overlay, root `paddingRight` reserve, `shared/browser/pane.ts` clamp). Entries: completed write/edit tool cards' eye button, file chips (`FileChipComponent` now previews in-app; folders still open in OS), and auto-open when a `write` succeeds on a previewable kind — `resolvePreviewPath` in `shared/preview/file-kind.ts` is the single place that turns tool-relative paths absolute (leading `/` is absolute, matching `tool-executors.resolveWorkspacePath`). Tab refresh is event-driven (`hooks/usePreviewPaneSync.ts` rides `tool_status` completion diffs; no fs.watch). CSP `frame-src local-file:` exists for the HTML preview iframe (`sandbox="allow-scripts"`, no same-origin); office formats deliberately show a fallback card (D1) — markitdown (`convertFileToMarkdown`, already bridged) is the phase-2 path.
 - Provider adapter pattern: new provider = implement `LlmAdapter` interface + factory key in `llm/index.ts`.
 - API calls route through main process IPC proxy (`main/ipc/api-proxy.handler.ts`, avoids CORS in sandboxed renderer).
 - `tsconfig.json` is a project-reference root pointing to `tsconfig.node.json` (main+preload) and `tsconfig.web.json` (renderer). Node config excludes DOM lib. Web config enables `react-jsx`.
@@ -79,6 +81,16 @@ Sandbox (PLAN-0.4.0 M3): project conversations get a per-project `workspaceDir` 
 - **提取公共方法**：同一段逻辑出现第二次时就应提取为公共方法；方法只做一层事——要么编排流程，要么实现细节，不混在一起。
 - **使用公共的工具方法**：写新工具函数前先检索项目已有的 utils（如 `src/shared/`、`src/renderer/src/utils/`、`src/main/utils/`），能复用绝不重写；通用工具一律放公共位置并导出，不允许在业务代码里私藏副本。
 
+## 界面复用
+
+- **全项目只有一套对话界面，禁止新造 GUI**：任何「消息列表 + 输入框」的场景（设置页里的助手面板、嵌入式工作区、子流程、预览窗口……）都必须复用 `src/renderer/src/components/chat/` 里的现有组件，不允许手写气泡列表、textarea + 发送按钮，也不允许自造滚动跟随、思考中指示、错误提示这些附属 UI。
+- **复用入口**：
+  - `chat/TranscriptView` — 消息流（吃 `AgentMessage[]` + `agentStatus`），已有复用方 `routine/RoutineWorkspace.tsx`、`tool-studio/ToolWorkspace.tsx`。
+  - `chat/InputArea` — 输入框；非主对话场景用 `layout="inline"` 并显式传 `features`（只列出要暴露的部件：附件 / 模型选择 / 专家 @ / 授权），漏传 `features` 会去消费主对话的草稿 store。
+  - Markdown、代码块、思考块、工具卡片的渲染都在 `chat/MessageGroup` / `chat/SegmentView` 内，不要另行渲染 Markdown。
+- **非持久化会话**（没有 conversation 记录、消息 id 是临时的）复用 `TranscriptView` 时传 `showActions={false}`，否则点赞 / 收藏会回写到不存在的消息。
+- 共享组件缺能力时**改共享组件并给默认值**，不要在调用方 fork：新增 prop 必须可选，默认行为与现状完全一致。
+
 ## 硬性限制
 
 - **单个方法不超过 200 行**：超限说明职责过多，按步骤拆分为多个私有方法再编排。
@@ -92,4 +104,5 @@ Sandbox (PLAN-0.4.0 M3): project conversations get a per-project `workspaceDir` 
 2. 新增能力是否放进了正确的模块？（→ 高内聚）
 3. 是否复用了已有工具方法？（→ 检索 utils 后再动手）
 4. 方法 / 类行数是否超限？（→ 拆分）
+5. 是否又写了一套对话 UI？（→ 复用 `components/chat/TranscriptView` + `InputArea`，见「界面复用」）
 
