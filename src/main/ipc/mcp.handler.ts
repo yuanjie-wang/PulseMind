@@ -37,11 +37,10 @@ export function validateMcpConfig(config: unknown): config is MCPClientConfig {
   return true
 }
 
-// Register default + persisted custom servers on startup
+// Register persisted custom servers on startup
 async function registerServers(): Promise<void> {
-  // Browser capability is native now (src/main/browser) — chrome-devtools-mcp
-  // was removed in A-M2; advanced users re-add DevTools tooling as a custom
-  // MCP server via the connectors UI.
+  // No built-in servers: browser capability is native (src/main/browser), so
+  // every connector here comes from the user's own store.
 
   // Custom servers from store
   try {

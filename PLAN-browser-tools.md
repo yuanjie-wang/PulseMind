@@ -240,6 +240,7 @@ M1-M4 全部纳入 0.4.0 周期,按序执行。
 - **新增直接依赖 `playwright-core`**(库本体零 postinstall,不触发浏览器下载)。
 - **Chromium 随包**(已定):构建期脚本(`scripts/ensure-chromium.js`)经 playwright-core 的浏览器 registry 把 Chromium 取到 `resources/chromium/`,electron-builder `extraResources` 随包分发;运行时按平台解析 executablePath,首次解析后缓存。开发态(不经 electron-builder)回退系统 `channel: 'chrome' | 'msedge'` 探测与 `PULSEMIND_CHROMIUM_PATH` 环境变量。
 - `chrome-devtools-mcp` M2 验收后**彻底移除**:npm 依赖、服务器预设、`asarUnpack` 条目一并清掉;安装包净体积先增(Chromium 随包)后减(去 MCP 包)。
+  - 注记:f24d5b0 只清掉了 npm 依赖 / lockfile / `asarUnpack` / 启动预设。**残留清理**(vendored `chrome-devtools-mcp/` 目录、InputArea 的 Chrome 标签页选择器与 `[chrome: pageId=N]` 标记、`BUILT_IN_IDS` 内置连接器机制、`ensureChromeSummary`、`spawn-tool` 的 `allowedMcpServers` 默认值、`chrome-fetcher.ts` 命名)于后续一轮补齐。
 - facade/policy/docs 为纯 TS,main 与 shared 共用;renderer 不引入 playwright。
 
 ### 10. 风险与备选
@@ -581,6 +582,7 @@ i18n:沿用 ToolCenter 现状(页内中文直书),不新增 key;`viewTitle.tools
 | B1-B4 工具中心改版 | ✅ 已落地 | 8d6efd5 |
 | A-M1 浏览器运行时骨架 | ✅ 已落地 | cd34a32 |
 | A-M2 文档/技能闭环 + 随包 Chromium + 移除 chrome-devtools-mcp | ✅ 已落地 | f24d5b0 |
+| A-M2 残留清理(见下表注记) | ✅ 已落地 | 见 git log |
 | A-M3 app-view 后端(回环 CDP + 停靠窗格) | ✅ 已落地 | b556e72 |
 | A-M4 增强(下载/setInputFiles/设置页/web-gui-tester) | ✅ 已落地 | 见 git log |
 

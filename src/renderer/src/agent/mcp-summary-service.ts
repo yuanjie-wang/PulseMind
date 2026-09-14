@@ -56,15 +56,6 @@ export async function generateMcpSummaries(llmCfg: LlmConfig, force?: boolean): 
     console.warn(`[generateMcpSummaries] server="${server.name}" summary="${existing.slice(0, 80)}" isFallback=${isFallback} skip=${skip}`)
     if (skip) continue
 
-    // Pre-seed chrome-devtools (fixed tool set, no LLM call needed)
-    if (server.id === 'chrome-devtools') {
-      if (!server.summary || force) {
-        const summary = 'Browser automation: page navigation, screenshot, click, type, JavaScript evaluation, DOM & console & network control'
-        await getHost().mcpUpdateServerSummary(server.id, summary)
-      }
-      continue
-    }
-
     console.warn(`[generateMcpSummaries] generating summary for "${server.name}" (existing: ${server.summary ? server.summary.slice(0, 50) : 'none'})`)
     try {
       const result = await summaryAgent.execute(

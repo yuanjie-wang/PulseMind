@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { join, basename, dirname, relative } from 'node:path'
 import { fork, execFile } from 'node:child_process'
 import { randomBytes, createHash } from 'node:crypto'
-import { fetchUrlViaChromeMCP } from '../mcp/chrome-fetcher'
+import { fetchRenderedHtml } from '../browser/rendered-fetcher'
 import {
   listKnowledgeFiles,
   getKnowledgeFile,
@@ -474,8 +474,8 @@ export function abortKnowledgeImport(): void {
   _importAbortController?.abort()
 }
 
-/** Import a remote URL: Chrome MCP → Readability → turndown → write to raw/ */
-export async function importUrl(url: string, preFetchedHtml?: string): Promise<KnowledgeImportResult> {
+/** Import a remote URL: rendered fetch → Readability → turndown → write to raw/ */
+export async function importUrl(url: string): Promise<KnowledgeImportResult> {
   // Validate URL format — only http/https allowed
   if (!/^https?:\/\/.+/.test(url)) {
     return { success: false, error: `不支持的链接格式: ${url.slice(0, 100)}。仅支持 http/https 链接。` }
@@ -487,18 +487,11 @@ export async function importUrl(url: string, preFetchedHtml?: string): Promise<K
   const signal = _importAbortController.signal
 
   try {
-    let html: string
-
-    if (preFetchedHtml) {
-      html = preFetchedHtml
-    } else {
-      if (signal.aborted) return { success: false, error: 'cancelled' }
-      // Use Chrome DevTools MCP for full JS-rendered content
-      const fetched = await fetchUrlViaChromeMCP(url, 0, signal)
-      if (signal.aborted) return { success: false, error: 'cancelled' }
-      if (!fetched) return { success: false, error: 'Failed to fetch URL via Chrome MCP' }
-      html = fetched
-    }
+    if (signal.aborted) return { success: false, error: 'cancelled' }
+    // Render through the native browser for full JS-rendered content
+    const html = await fetchRenderedHtml(url, signal)
+    if (signal.aborted) return { success: false, error: 'cancelled' }
+    if (!html) return { success: false, error: 'Failed to fetch rendered URL' }
 
     const existingRow = getKnowledgeFileBySource('', url)
     if (existingRow) {
