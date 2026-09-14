@@ -16,6 +16,7 @@ import {
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { SkillState } from '../../skills/types'
+import SkillBrowser from './SkillBrowser'
 
 const { Text, Paragraph } = Typography
 
@@ -39,11 +40,26 @@ function SkillsPanel({
   const { t } = useTranslation()
   const LS_KEY = 'pulsemind_dismissed_skills_tip'
   const [tipDismissed, setTipDismissed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
+  // Non-null = a card was clicked and the three-column browser replaced the grid.
+  const [viewing, setViewing] = useState<string | null>(null)
   const dismissTip = () => {
     localStorage.setItem(LS_KEY, 'true')
     setTipDismissed(true)
   }
   const visibleSkills = skills.filter(s => !s.definition.name.startsWith('ex.'))
+
+  if (viewing && visibleSkills.some(s => s.definition.name === viewing)) {
+    return (
+      <div style={{ height: '100%' }}>
+        <SkillBrowser
+          skills={visibleSkills}
+          activeName={viewing}
+          onSelect={setViewing}
+          onBack={() => setViewing(null)}
+        />
+      </div>
+    )
+  }
 
   return (
     <div style={{ background: 'transparent' }}>
@@ -56,6 +72,7 @@ function SkillsPanel({
             skill={skill}
             onToggle={onToggleSkill}
             onDeleteSkill={onDeleteSkill}
+            onOpen={setViewing}
           />
         ))}
       </div>
@@ -81,10 +98,10 @@ interface SkillCardProps {
   skill: SkillState
   onToggle: (name: string) => void
   onDeleteSkill?: (name: string) => void
+  onOpen: (name: string) => void
 }
 
-function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.ReactElement {
-  const [expanded, setExpanded] = useState(false)
+function SkillCard({ skill, onToggle, onDeleteSkill, onOpen }: SkillCardProps): React.ReactElement {
   const { t } = useTranslation()
   const { definition, enabled } = skill
 
@@ -92,12 +109,12 @@ function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.Re
     <Card
       size="small"
       hoverable
-      style={{ borderRadius: 10, opacity: enabled ? undefined : 0.65 }}
-      onClick={() => setExpanded(!expanded)}
+      style={{ borderRadius: 10 }}
+      onClick={() => onOpen(definition.name)}
       title={
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
           <span style={{ flexShrink: 0, display: 'inline-flex' }}>{CATEGORY_ICONS[definition.category] || <ThunderboltOutlined />}</span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: enabled ? undefined : '#bbb' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {definition.name}
           </span>
           {definition.builtIn && (
@@ -131,7 +148,7 @@ function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.Re
         </span>
       }
     >
-      {/* Description — click the card to expand the full prompt preview */}
+      {/* Description — clicking the card opens the file browser instead */}
       <Paragraph
         style={{
           fontSize: 12,
@@ -139,30 +156,10 @@ function SkillCard({ skill, onToggle, onDeleteSkill }: SkillCardProps): React.Re
           lineHeight: '1.4',
           color: '#888'
         }}
-        ellipsis={!expanded ? { rows: 2 } : false}
+        ellipsis={{ rows: 4 }}
       >
         {definition.description}
       </Paragraph>
-
-      {/* Expanded: full prompt preview */}
-      {expanded && definition.systemPrompt && (
-        <div
-          style={{
-            marginTop: 8,
-            padding: 8,
-            background: '#fafafa',
-            borderRadius: 6,
-            fontSize: 12,
-            maxHeight: 200,
-            overflow: 'auto',
-            whiteSpace: 'pre-wrap',
-            fontFamily: 'monospace',
-            lineHeight: '1.5'
-          }}
-        >
-          {definition.systemPrompt}
-        </div>
-      )}
     </Card>
   )
 }

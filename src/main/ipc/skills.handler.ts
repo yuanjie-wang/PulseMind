@@ -54,4 +54,14 @@ export function registerSkillHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SKILLS_WRITE, async (_event, skill: SkillDefinition) => {
     await skillStore.write(skill)
   })
+
+  // List a skill directory's files (skill-relative paths) for the browser view
+  ipcMain.handle(IPC_CHANNELS.SKILLS_LIST_FILES, async (_event, name: string) => {
+    return skillStore.listFiles(name)
+  })
+
+  // Read one file inside a skill directory (skill-relative path)
+  ipcMain.handle(IPC_CHANNELS.SKILLS_READ_FILE, async (_event, name: string, relPath: string) => {
+    return skillStore.readFileContent(name, relPath)
+  })
 }

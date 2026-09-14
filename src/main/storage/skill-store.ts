@@ -1,26 +1,31 @@
 import { readFile, writeFile, mkdir, rm, readdir, cp } from 'node:fs/promises'
-import { join, basename, dirname } from 'node:path'
+import { join, basename, dirname, relative } from 'node:path'
 import type { SkillPreferences, SkillDefinition } from '../../shared/types/skill-types'
 import { SKILLS_DIR } from './index'
 import { getDb } from './database'
 
 const SKILL_PREFS_FALLBACK: SkillPreferences = { enabledSkills: ['create_skill', 'create_mcp'] }
 import { withZipExtraction, findSkillFiles } from '../utils/zip-extractor'
-import { parseSkillMarkdown } from '../utils/skill-parser'
+import { parseSkillMarkdown, formatSkillMd, validateSkillSpec, type ParsedFrontmatter } from '../utils/skill-parser'
 import { parseJsonColumn } from '../utils/json'
 
-/** Format a skill as a valid SKILL.md document with YAML frontmatter. */
-function formatSkillMd(skill: SkillDefinition): string {
-  const lines = ['---', `name: ${skill.name}`, `description: ${skill.description}`]
-  if (skill.category) lines.push(`category: ${skill.category}`)
-  if (skill.triggers?.length) {
-    lines.push('triggers:')
-    for (const t of skill.triggers) lines.push(`  - ${t}`)
+/** Map parsed frontmatter onto a user-installed SkillDefinition, keeping spec/extra fields. */
+function toDefinition(parsed: ParsedFrontmatter): SkillDefinition {
+  return {
+    name: parsed.name,
+    description: parsed.description,
+    category: parsed.category,
+    triggers: parsed.triggers,
+    systemPrompt: parsed.systemPrompt,
+    builtIn: false,
+    sourceConversationId: parsed.sourceConversationId,
+    createdAt: parsed.createdAt,
+    license: parsed.license,
+    compatibility: parsed.compatibility,
+    metadata: parsed.metadata,
+    allowedTools: parsed.allowedTools,
+    extra: parsed.extra
   }
-  if (skill.sourceConversationId) lines.push(`sourceConversationId: ${skill.sourceConversationId}`)
-  if (skill.createdAt) lines.push(`createdAt: ${skill.createdAt}`)
-  lines.push('---', '', skill.systemPrompt)
-  return lines.join('\n')
 }
 
 export class SkillStore {
@@ -91,14 +96,16 @@ export class SkillStore {
     await mkdir(SKILLS_DIR, { recursive: true })
   }
 
-  /** Import skills from a .zip file. Returns imported definitions + any errors. */
+  /** Import skills from a .zip file. Returns imported definitions + any errors/warnings. */
   async importFromZip(zipPath: string): Promise<{
     imported: SkillDefinition[]
     errors: string[]
+    warnings: string[]
   }> {
     await this.ensureSkillsDir()
     const imported: SkillDefinition[] = []
     const errors: string[] = []
+    const warnings: string[] = []
 
     await withZipExtraction(zipPath, async (extractDir) => {
       const skillFiles = await findSkillFiles(extractDir)
@@ -117,6 +124,9 @@ export class SkillStore {
           errors.push(err instanceof Error ? err.message : `Failed to parse ${basename(filePath)}`)
           continue
         }
+        warnings.push(
+          ...validateSkillSpec(parsed, basename(dirname(filePath))).map((w) => `${parsed.name}: ${w}`)
+        )
 
         // Check for duplicate
         const skillDir = join(SKILLS_DIR, parsed.name)
@@ -134,20 +144,11 @@ export class SkillStore {
         const skillSrcDir = dirname(filePath)
         await cp(skillSrcDir, skillDir, { recursive: true })
 
-        imported.push({
-          name: parsed.name,
-          description: parsed.description,
-          category: parsed.category,
-          triggers: parsed.triggers,
-          systemPrompt: parsed.systemPrompt,
-          builtIn: false,
-          sourceConversationId: parsed.sourceConversationId,
-          createdAt: parsed.createdAt
-        })
+        imported.push(toDefinition(parsed))
       }
     })
 
-    return { imported, errors }
+    return { imported, errors, warnings }
   }
 
   /** List all imported skill definitions from disk. */
@@ -172,16 +173,7 @@ export class SkillStore {
       try {
         const content = await readFile(mdPath, 'utf-8')
         const parsed = parseSkillMarkdown(content, `${dir}/SKILL.md`)
-        results.push({
-          name: parsed.name,
-          description: parsed.description,
-          category: parsed.category,
-          triggers: parsed.triggers,
-          systemPrompt: parsed.systemPrompt,
-          builtIn: false,
-          sourceConversationId: parsed.sourceConversationId,
-          createdAt: parsed.createdAt
-        })
+        results.push(toDefinition(parsed))
       } catch {
         // Skip broken skill files — don't block startup
       }
@@ -206,16 +198,7 @@ export class SkillStore {
     try {
       const content = await readFile(mdPath, 'utf-8')
       const parsed = parseSkillMarkdown(content, `${name}/SKILL.md`)
-      return {
-        name: parsed.name,
-        description: parsed.description,
-        category: parsed.category,
-        triggers: parsed.triggers,
-        systemPrompt: parsed.systemPrompt,
-        builtIn: false,
-        sourceConversationId: parsed.sourceConversationId,
-        createdAt: parsed.createdAt
-      }
+      return toDefinition(parsed)
     } catch {
       return null
     }
@@ -238,6 +221,54 @@ export class SkillStore {
     const mdPath = join(SKILLS_DIR, name, 'SKILL.md')
     try {
       return await readFile(mdPath, 'utf-8')
+    } catch {
+      return null
+    }
+  }
+
+  /** The skill directory, or null when the name is empty or escapes SKILLS_DIR. */
+  private resolveSkillDir(name: string): string | null {
+    if (!name) return null
+    const skillDir = join(SKILLS_DIR, name)
+    return relative(SKILLS_DIR, skillDir).startsWith('..') ? null : skillDir
+  }
+
+  /**
+   * List every file in a skill directory as skill-relative paths (recursive),
+   * e.g. ['SKILL.md', 'scripts/run.py']. Returns [] for unknown skills.
+   */
+  async listFiles(name: string): Promise<string[]> {
+    const skillDir = this.resolveSkillDir(name)
+    if (!skillDir) return []
+
+    const files: string[] = []
+    const walk = async (dir: string, prefix: string): Promise<void> => {
+      const entries = await readdir(dir, { withFileTypes: true }).catch(() => null)
+      if (!entries) return
+      for (const entry of entries) {
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+        if (entry.isDirectory()) {
+          await walk(join(dir, entry.name), rel)
+        } else if (entry.isFile()) {
+          files.push(rel)
+        }
+      }
+    }
+    await walk(skillDir, '')
+    return files.sort()
+  }
+
+  /**
+   * Read a file inside a skill directory by skill-relative path.
+   * Rejects paths that escape the skill directory; returns null on failure.
+   */
+  async readFileContent(name: string, relPath: string): Promise<string | null> {
+    const skillDir = this.resolveSkillDir(name)
+    if (!skillDir || !relPath) return null
+    const filePath = join(skillDir, relPath)
+    if (relative(skillDir, filePath).startsWith('..')) return null
+    try {
+      return await readFile(filePath, 'utf-8')
     } catch {
       return null
     }
