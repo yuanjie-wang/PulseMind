@@ -4,6 +4,7 @@ import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage, IMAGE_EXTS, getExt } from './LocalImage'
+import { stringToHue } from '../../utils/hash-color'
 
 // Match [file:/path/to/file] or [folder:/path/to/folder], optionally with |timestamp
 const FILE_REF_RE = /\[(file|folder):([^\]]+?)(?:\|([^\]]*))?\]/g
@@ -15,9 +16,7 @@ const MD_IMAGE_FILE_RE = /!\[[^\]]*\]\(file:\/{1,3}([^)]+)\)/g
 const MD_FILE_LINK_RE = /(?<!!)\[([^\]]*?)\]\(file:\/{1,3}([^)]+)\)/g
 
 // Match markdown http/https links: [text](http://...) or [text](https://...)
-// Optionally consumes a following [page_id: N] line and embeds it as a data attribute
-// on the WebChip so it's not visible to the user but preserved for the LLM.
-const MD_HTTP_LINK_RE = /(?<!!)\[([^\]]*?)\]\((https?:\/\/[^)]+)\)(?:\s*\[chrome:\s*pageId=(\d+)\])?/g
+const MD_HTTP_LINK_RE = /(?<!!)\[([^\]]*?)\]\((https?:\/\/[^)]+)\)/g
 
 function getBaseName(path: string): string {
   return path.replace(/^.*[/\\]/, '') || path
@@ -33,13 +32,7 @@ function getFileExtension(path: string): string {
 
 /** Hash first 2 chars of extension → hue in [0, 360). */
 function extToHue(ext: string): number {
-  const s = ext.slice(0, 2)
-  let hash = 0
-  for (let i = 0; i < s.length; i++) {
-    hash = ((hash << 5) - hash) + s.charCodeAt(i)
-    hash |= 0
-  }
-  return Math.abs(hash) % 360
+  return stringToHue(ext.slice(0, 2))
 }
 
 function extToColor(ext: string): string {
@@ -72,8 +65,8 @@ function unwrapRef(text: string): string {
   return text.replace(/(?:`+|_{0,2}\*{1,2})?(\[(?:file|folder):[^\]]+\])(?:`+|_{0,2}\*{1,2})?/g, '$1')
 }
 
-function preprocessText(text: string): string {
-  const unwrapped = unwrapRef(text)
+/** Exported for the preview pane's markdown renderer — same chip pipeline. */
+export function preprocessText(text: string): string {  const unwrapped = unwrapRef(text)
 
   // Step 1: convert ![](file://path) → <local-image> (images) or [file:path] (files)
   const withFileRefs = unwrapped.replace(MD_IMAGE_FILE_RE, (...args) => {
@@ -99,12 +92,10 @@ function preprocessText(text: string): string {
   const withWebLinks = withMdLinks.replace(MD_HTTP_LINK_RE, (...args) => {
     const label = args[1].trim()
     const url = args[2]
-    const pageId = args[3]
     const domain = getDomain(url)
     const labelAttr = label.replace(/"/g, '&quot;')
     const urlAttr = url.replace(/"/g, '&quot;')
-    const pageIdAttr = pageId ? ` data-page-id="${pageId}"` : ''
-    return `<web-chip data-url="${urlAttr}" data-domain="${domain}" data-label="${labelAttr}"${pageIdAttr}>${labelAttr}</web-chip>`
+    return `<web-chip data-url="${urlAttr}" data-domain="${domain}" data-label="${labelAttr}">${labelAttr}</web-chip>`
   })
 
   // Step 2: existing [file:...] / [folder:...] → <file-chip> HTML

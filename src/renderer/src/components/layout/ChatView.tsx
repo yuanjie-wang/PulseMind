@@ -15,9 +15,12 @@ import { startBottomPin } from '../../utils/bottom-pin'
 import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
+import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
+import { PreviewPane } from '../preview/PreviewPane'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import type { ConversationListItem } from '../../types/conversation'
+import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 
 // --- Props ---
 
@@ -67,6 +70,9 @@ interface ChatViewProps {
   activeExpertId?: string
   /** Clear the active conversation's expert binding (chip ×). */
   onUnbindExpert?: (convId: string) => void
+  /** Effective tool-approval level for the composer's 授权 button. */
+  approvalMode?: SandboxApprovalMode
+  onChangeApprovalMode?: (mode: SandboxApprovalMode) => void
 }
 
 // --- Message grouping lives in chat/message-segments (shared with the tool studio) ---
@@ -107,6 +113,8 @@ function ChatView({
   onOpenConversation,
   activeExpertId,
   onUnbindExpert,
+  approvalMode,
+  onChangeApprovalMode,
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
   const { t } = useTranslation()
@@ -161,6 +169,15 @@ function ChatView({
   const browserPane = useBrowserPaneStore((s) => s.update)
   const paneRootRef = useRef<HTMLDivElement | null>(null)
   const browserPaneBinding = useBrowserPaneBinding(conversationId, paneRootRef)
+  // File preview pane (PLAN-preview-pane): tabs live per conversation, so a
+  // switch must retarget the store before the panel reads its tab strip.
+  const previewOpen = usePreviewPaneStore((s) => s.open)
+  const previewWidth = usePreviewPaneStore((s) => s.width)
+  const previewTabCount = usePreviewPaneStore((s) => s.tabsByConversation[conversationId ?? DRAFT_CONVERSATION_KEY]?.length ?? 0)
+  const previewVisible = previewOpen && previewTabCount > 0
+  useEffect(() => {
+    usePreviewPaneStore.getState().switchConversation(conversationId ?? null)
+  }, [conversationId])
   const pendingScrollRef = useRef(false)
   const scrollRafRef = useRef<number>(0)
   // Cancel handle for the bottom-pinner started after a conversation switch —
@@ -453,7 +470,7 @@ function ChatView({
             short windows can never slide the content over it (it used to be
             absolutely pinned, and the centered logo overlapped it). Drives the
             same store the welcome page panels and handleRequest consume. */}
-        <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 8px' }}>
+        <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 144px' }}>
           <Segmented
             className="task-switch"
             size="large"
@@ -499,6 +516,8 @@ function ChatView({
             onSelectProfile={onSelectProfile}
             contextUsed={contextUsed}
             contextLength={contextLength}
+            approvalMode={approvalMode}
+            onChangeApprovalMode={onChangeApprovalMode}
           />
         </div>
         <style>{`
@@ -523,7 +542,10 @@ function ChatView({
         background: '#fff',
         // Reserve the pane strip so chat content never flows under the
         // WebView; transitions off — the drag handle needs 1:1 tracking.
-        paddingRight: browserPane.visible ? browserPane.width : 0,
+        // Both right-side panes reserve here when open (preview stacks to
+        // the browser pane's left).
+        paddingRight:
+          (browserPane.visible ? browserPane.width : 0) + (previewVisible ? previewWidth : 0),
       }}
     >
       <div
@@ -643,6 +665,14 @@ function ChatView({
         />
       )}
 
+      {previewVisible && (
+        <PreviewPane
+          conversationId={conversationId}
+          chatAreaWidth={browserPaneBinding.chatAreaWidth}
+          rightOffset={browserPane.visible ? browserPane.width : 0}
+        />
+      )}
+
       <InputArea
         key={conversationId ?? 'new'}
         isRequesting={isRequesting}
@@ -650,7 +680,9 @@ function ChatView({
         isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
         isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
         hasMessages={hasMessages}
-        rightInset={browserPane.visible ? browserPane.width : 0}
+        // No rightInset: the root's paddingRight already ends the in-flow
+        // wrapper at the pane's left edge, and the composer is absolute
+        // INSIDE that wrapper — an inset here would deduct the pane twice.
         onSendMessage={(content: string) => {
           isNearBottomRef.current = true
           onSendMessage(content)
@@ -663,6 +695,8 @@ function ChatView({
         contextLength={contextLength}
         boundExpertId={activeExpertId}
         onUnbindExpert={() => conversationId && onUnbindExpert?.(conversationId)}
+        approvalMode={approvalMode}
+        onChangeApprovalMode={onChangeApprovalMode}
       />
     </div>
   )

@@ -11,7 +11,7 @@ import { persist } from 'zustand/middleware'
 import { openTabInList, closeTabInList, type PreviewTab } from './preview-tabs'
 
 /** Key for conversations that have no id yet (new-task draft). */
-const DRAFT_CONVERSATION_KEY = '__draft__'
+export const DRAFT_CONVERSATION_KEY = '__draft__'
 
 /** Per-conversation tab maps kept by recency (insertion order); LRU cap. */
 const MAX_CONVERSATION_MAPS = 10
@@ -66,6 +66,8 @@ export const usePreviewPaneStore = create<PreviewPaneState>()(
         const activePath = get().activeByConversation[key] ?? null
         const result = closeTabInList(tabs, path, activePath)
         set((s) => ({
+          // Last tab gone → collapse the pane with it (WorkBuddy-style).
+          open: result.tabs.length > 0 ? s.open : false,
           tabsByConversation: { ...s.tabsByConversation, [key]: result.tabs },
           ...(result.nextActive !== undefined
             ? { activeByConversation: { ...s.activeByConversation, [key]: result.nextActive } }
