@@ -46,7 +46,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'write',
     description:
-      'Write content to a file on the local filesystem. Overwrites by default — set append:true to append. Content longer than 10KB is auto-split into chunks. Prefer edit for targeted changes to existing files.',
+      'Write content to a file on the local filesystem. Overwrites by default — set append:true to append. Content longer than 10KB is auto-split into chunks. Prefer edit for targeted changes to existing files. ALWAYS create files with this tool instead of shell redirection/heredoc — the user\'s app auto-previews files written this way, and shell-written files bypass workspace isolation.',
     category: 'file',
     triggers: ['write', 'save', 'create', 'output'],
     input_schema: {
@@ -252,7 +252,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         command: {
           type: 'string',
-          description: 'The shell command to execute. Supports pipes, redirects, and chaining.',
+          description: 'The shell command to execute. Supports pipes and chaining. Never write files via redirection/heredoc — use the write tool.',
         },
         cwd: {
           type: 'string',

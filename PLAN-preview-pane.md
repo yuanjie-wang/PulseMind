@@ -70,6 +70,7 @@ PreviewTab { path, kind, title }        // path 即 tab 身份，同文件不重
 ## 实施记录
 
 - 2026-09-14：T1–T4 五次提交（`feat(preview):` 前缀）。测试基线：`tests/preview-*.test.ts` 25 tests 全绿；`tsc web` 维持既有基线 23 errors（无新增）；`agent-protocol-ws.test.ts` 偶发端口 flaky（时过时不过，与本功能无关）。`resolvePreviewPath` 语义与 `tool-executors.resolveWorkspacePath` 对齐（前导 `/` = 绝对路径透传）。
+- 2026-09-15：走查发现模型用 `exec` heredoc 建文件绕过 write（预览不触发，且 `/tmp` 越过工作区）。修复：`tool-instructions.ts` 的 write/exec 指引 + 两者 schema 描述加「建文件必须用 write/edit，禁止 shell 重定向/heredoc」引导（`tools:` 前缀提交）。这是提示词级引导——exec 写文件的**机制性**盲区（审批/审计口径不同、hardIsolation 才约束）仍在，归入二期变更视图设计。
 
 ## 五、非目标（本期不做）
 

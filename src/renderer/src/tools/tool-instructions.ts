@@ -43,6 +43,8 @@ Write or append content to a file on the local filesystem.
 - **append** — If true, append instead of overwrite (default false)
 
 ### Guidelines
+- **Always create files with this tool (or \`edit\`) — NEVER via shell redirection or heredocs** (\`cat <<'EOF' > file\`, \`echo > file\`, \`tee\`). Shell-written files bypass the app's file preview (the user won't see them open automatically) and skip workspace isolation checks
+- Paths outside the session workspace (e.g. \`/tmp\`) are rejected under workspace sandboxing — keep all task files inside the workspace
 - This will overwrite the file by default — use append: true if you want to add content
 - Prefer using \`edit\` for targeted changes to existing files
 - Directories in the path must already exist
@@ -179,6 +181,7 @@ Execute a shell command on the local machine.
 - **sudo** — Run with admin privileges (macOS: password dialog, Windows: UAC)
 
 ### Guidelines
+- **Never create or modify files with shell redirection or heredoc** (\`cat <<'EOF' > file\`, \`echo > file\`, \`tee\`) — use the \`write\`/\`edit\` tools instead: the user's app auto-previews files written through them, and workspace isolation only applies there. Use exec for what comes after the file exists (compilers, interpreters, git, package managers)
 - Prefer safe, read-only commands unless the user explicitly asks for modifications
 - Use \`read\`, \`search\`, and \`list_dir\` for exploring filesystem — they are safer
 - On **Windows**, avoid \`&&\` (not supported). Use \`;\` or separate tool calls instead.
