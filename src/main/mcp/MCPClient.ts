@@ -35,7 +35,7 @@ export interface MCPClientConfig {
   url?: string
   /** Custom HTTP headers for SSE transport (e.g. Authorization) */
   headers?: Record<string, string>
-  /** When true, this server's tools require user approval before execution in mixed mode (auto-executed in YOLO mode). */
+  /** When true, this server's tools wait for user approval unless the session's approval mode is 'auto'. */
   requireApproval?: boolean
 }
 

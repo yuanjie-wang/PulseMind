@@ -1,4 +1,5 @@
 import type { ContentBlock } from './agent'
+import type { SandboxApprovalMode } from '../sandbox/policy'
 
 export interface ConversationIndexEntry {
   id: string
@@ -16,6 +17,9 @@ export interface ConversationIndexEntry {
   workspaceDir?: string
   /** Summoned expert bound to this conversation (@-mention); absent when unbound. */
   expertId?: string
+  /** How this conversation gates tool calls; absent = never chosen ('auto').
+   *  Approval is per conversation — a project policy has no say in it. */
+  approvalMode?: SandboxApprovalMode
 }
 
 export interface Message {

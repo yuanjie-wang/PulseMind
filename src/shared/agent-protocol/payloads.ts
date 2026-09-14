@@ -1,6 +1,7 @@
 /** Payload types for the agent protocol. Transport-agnostic: the WS server
  *  serializes these as JSON-RPC params; the Electron renderer bridge passes
  *  the same shapes over ipcRenderer. */
+import type { SandboxApprovalMode } from '../sandbox/policy'
 
 // ── hello ────────────────────────────────────────────────────────────
 
@@ -45,8 +46,10 @@ export interface AgentSessionCreateOptions {
   systemPromptOverride?: string
   /** Tool allowlist for the session; omitted = every enabled tool. */
   allowedTools?: string[]
-  /** Per-session approval override; omitted = sandbox policy, then the global toggle. */
-  yoloMode?: boolean
+  /** Per-session approval override for a session whose conversation cannot speak
+   *  for itself (unattended runs); omitted = the conversation's own stored level
+   *  (`conversations.approval_mode`), then 'auto'. */
+  approvalMode?: SandboxApprovalMode
 }
 
 export interface SessionListResult {

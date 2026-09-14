@@ -6,6 +6,8 @@ export type {
   ToolResultBatchEntry
 } from '../../../shared/types/conversation'
 
+import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
+
 /**
  * A conversation as the sidebar renders it — the persisted index fields the list actually
  * needs. `updatedAt` is the last message time, shown as a relative duration under the title.
@@ -19,4 +21,6 @@ export type ConversationListItem = {
   projectId?: string
   /** Summoned expert bound via @-mention; absent = unbound. */
   expertId?: string
+  /** Tool-approval level for this conversation; absent = never chosen ('auto'). */
+  approvalMode?: SandboxApprovalMode
 }
