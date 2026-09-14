@@ -208,6 +208,9 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_experiences_created_at ON experiences(created_at);
     CREATE INDEX IF NOT EXISTS idx_experiences_last_used ON experiences(last_used_at);
 
+    -- 专家配置包：只描述身份 + 绑定知识 + 托管参数。旧的 allowed_tools /
+    -- allowed_mcp_servers / allowed_skills / is_built_in / summonable 已废弃
+    -- （能力与全局保持一致）；老库里的这些列原样留着不删，见下方迁移说明。
     CREATE TABLE IF NOT EXISTS subagent_profiles (
       id                  TEXT PRIMARY KEY,
       name                TEXT NOT NULL,
@@ -218,13 +221,9 @@ function createTables(): void {
       output_spec         TEXT NOT NULL DEFAULT '',
       constraints         TEXT NOT NULL DEFAULT '',
       knowledge_file_ids  TEXT NOT NULL DEFAULT '[]',
-      allowed_tools       TEXT NOT NULL DEFAULT '[]',
-      allowed_mcp_servers TEXT NOT NULL DEFAULT '[]',
-      allowed_skills      TEXT NOT NULL DEFAULT '[]',
       profile_id          TEXT,
       max_tokens          INTEGER,
       max_loop_iterations INTEGER,
-      is_built_in         INTEGER NOT NULL DEFAULT 0,
       enabled             INTEGER NOT NULL DEFAULT 1
     );
   `)
@@ -310,11 +309,25 @@ function createTables(): void {
     try { database.exec(`ALTER TABLE subagent_profiles ADD COLUMN ${col}`) } catch (e) {}
   }
   try { database.exec('ALTER TABLE subagent_profiles ADD COLUMN icon TEXT') } catch (e) {}
+  // 引用关系（技能名 / 连接器 id）：专家点名自己常用的技能与连接器，随指令注入，
+  // 但不是权限白名单 —— 能力仍然与全局一致。
+  for (const col of ['skill_names TEXT', 'mcp_server_ids TEXT']) {
+    try { database.exec(`ALTER TABLE subagent_profiles ADD COLUMN ${col}`) } catch (e) {}
+  }
   try { database.exec("UPDATE subagent_profiles SET description = '' WHERE description IS NULL") } catch (e) {}
   try { database.exec("UPDATE subagent_profiles SET knowledge_file_ids = '[]' WHERE knowledge_file_ids IS NULL") } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN expert_id TEXT') } catch (e) {}
   // 授权档位按会话存储；缺失 = 从未选择（按 'auto' 处理）。
   try { database.exec('ALTER TABLE conversations ADD COLUMN approval_mode TEXT') } catch (e) {}
+  // ── 专家去内置化：能力收敛交给全局，专家只描述身份 + 私有知识 ──
+  // 两个内置基础设施子代理（通用/画布）连同「内置锁定工具」概念一起退场：
+  // 画布有自己的硬编码人设与工具白名单，spawn 无档案时走通用子代理人设。
+  // 存量行必须删掉，否则旧库里它们仍会出现在专家列表里。
+  // 旧的 allowed_* / is_built_in / summonable 列保留不动（新代码不读不写）：
+  // 保留空列让回滚到旧版本仍然可用，代价只是表里几列不再被使用。
+  try {
+    database.exec("DELETE FROM subagent_profiles WHERE id IN ('subagent-general','subagent-canvas')")
+  } catch (e) {}
   // ── M5R: retype legacy tool-studio conversations ──
   // They used to derive as 'normal' and leak into the chat list; upsert's
   // ON CONFLICT never updates type, so existing rows need this one-time sweep.
