@@ -77,15 +77,17 @@ async function persistTranscript(convId: string, routine: Routine): Promise<void
 
 export const routineRunner = {
   /** Fire-and-forget execution; resolves immediately with the run record while
-   *  the run continues in the background (scheduler ticks must not block). */
+   *  the run continues in the background (scheduler ticks must not block).
+   *  The conversation id is generated here so it lands in the run row from the
+   *  start — run-history can attach to the live session mid-run. */
   start(routine: Routine, trigger: RoutineRun['trigger'], params?: Record<string, string>): RoutineRun {
-    const run = routineStore.startRun(routine.id, trigger)
-    void this.execute(run, routine, params)
+    const convId = `routine_${Date.now()}_${shortUuid(6)}`
+    const run = routineStore.startRun(routine.id, trigger, convId)
+    void this.execute(run, routine, convId, params)
     return run
   },
 
-  async execute(run: RoutineRun, routine: Routine, params?: Record<string, string>): Promise<void> {
-    const convId = `routine_${Date.now()}_${shortUuid(6)}`
+  async execute(run: RoutineRun, routine: Routine, convId: string, params?: Record<string, string>): Promise<void> {
     let settled = false
     let unsubscribe: (() => void) | null = null
     const finish = (status: RoutineRun['status'], error?: string): void => {
@@ -155,6 +157,11 @@ export const routineRunner = {
         title: `[日常] ${routine.name}`,
         clientId: 'routine',
         projectId: routine.projectId,
+        // A scheduled run has no conversation of its own to have chosen a level,
+        // so pin the unattended default explicitly: calls that leave the
+        // workspace stay gated and the runner rejects them (D13) rather than
+        // silently letting an unwatched run do anything.
+        approvalMode: 'outside-ask',
       })
       await agentSessionManager.ask(convId, renderRoutinePrompt(routine, params))
     } catch (err) {

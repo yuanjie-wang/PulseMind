@@ -10,17 +10,22 @@
 import { routineStore } from '../storage/routine-store'
 import { decideScheduleFire } from '../../shared/schedule/schedule-decision'
 import { routineRunner } from './routine-runner'
+import { routineRunHistory } from './routine-run-history'
 import { auditStore } from '../storage/audit-store'
 import { migrateRoutineConversationTypes } from '../storage/conversation.db'
 import type { Routine } from '../../shared/types/routine'
 
 const TICK_MS = 30_000
+/** Retention is measured in days but this app stays resident for weeks (tray),
+ *  so the prune is re-run at most this often during a session. */
+const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 class RoutineScheduler {
   private timer: NodeJS.Timeout | null = null
   private running = false
   private executingIds = new Set<string>()
   private bootedAt = new Date().toISOString()
+  private lastPruneAt = 0
 
   start(): void {
     if (this.timer) return
@@ -32,6 +37,9 @@ class RoutineScheduler {
     setTimeout(() => {
       try { migrateRoutineConversationTypes() } catch (err) { console.warn('[RoutineScheduler] conversation-type migration failed:', err) }
       try { routineStore.failStaleRuns(this.bootedAt) } catch (err) { console.warn('[RoutineScheduler] stale-run recovery failed:', err) }
+      // Retention runs after stale rows were settled: the prune skips 'running'
+      // rows, so this ordering lets a crashed run (now 'failed') go in the same pass.
+      this.pruneHistory(true)
       this.tick()
     }, 5_000)
   }
@@ -41,9 +49,21 @@ class RoutineScheduler {
     this.timer = null
   }
 
+  /** Enforce the saved 运行历史保留策略 (never the in-flight run). Fire and
+   *  forget: a failed prune must not break the tick. */
+  private pruneHistory(force = false): void {
+    const now = Date.now()
+    if (!force && now - this.lastPruneAt < PRUNE_INTERVAL_MS) return
+    this.lastPruneAt = now
+    void routineRunHistory.prune()
+      .then((removed) => { if (removed > 0) console.log(`[RoutineScheduler] pruned ${removed} expired run records`) })
+      .catch((err) => console.warn('[RoutineScheduler] run-history prune failed:', err))
+  }
+
   tick(): void {
     if (this.running) return
     this.running = true
+    this.pruneHistory()
     // Swallow: a tick must never produce an unhandled rejection (DB not ready,
     // transient IO) — the next tick retries.
     this.tickAsync().catch((err) => console.warn('[RoutineScheduler] tick failed:', err)).finally(() => { this.running = false })

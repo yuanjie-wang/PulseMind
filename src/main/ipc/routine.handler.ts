@@ -4,6 +4,7 @@ import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { routineStore } from '../storage/routine-store'
 import { routineRunner } from '../routine/routine-runner'
+import { routineRunHistory } from '../routine/routine-run-history'
 import { checkCron } from '../../shared/schedule/cron'
 import type { Routine } from '../../shared/types/routine'
 
@@ -28,7 +29,12 @@ export function registerRoutineHandlers(): void {
     return routineStore.update(id, normalized)
   })
 
-  ipcMain.handle(IPC_CHANNELS.ROUTINE_DELETE, (_event, id: string) => routineStore.remove(id))
+  // The card grid's delete dialog promises 「运行历史会一并删除」 — the task's
+  // runs (and their transcripts) go with the definition, running row included.
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_DELETE, (_event, id: string) => {
+    routineStore.remove(id)
+    routineRunHistory.clearRoutine(id, true)
+  })
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_TOGGLE, (_event, id: string, enabled: boolean) => {
     const routine = routineStore.update(id, { enabled })
@@ -42,6 +48,13 @@ export function registerRoutineHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_RUNS, (_event, routineId?: string, limit?: number) => routineStore.listRuns(routineId, limit))
+
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_RUN_DELETE, (_event, runId: string) => routineRunHistory.remove(runId))
+
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_RUNS_CLEAR, (_event, routineId: string) => routineRunHistory.clearRoutine(routineId))
+
+  // days omitted → the saved 保留策略; a number overrides it for this call.
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_RUNS_PRUNE, (_event, days?: number) => routineRunHistory.prune(days))
 }
 
 function assertCron(input: Partial<Routine>): void {

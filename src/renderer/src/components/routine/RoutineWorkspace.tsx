@@ -1,17 +1,53 @@
 // ── Routine run workspace (PLAN-0.4.0 M4.3 revision) ──
-// Three-pane run inspector entered from the card grid's 运行历史 action:
-// task list · run history (latest selected by default) · the selected run's
-// persisted conversation, rendered inline via the shared TranscriptView.
+// Three-pane run inspector entered from the card grid's 运行历史 action or
+// right after 立即运行: task list · run history (latest selected by default) ·
+// the selected run's conversation. The conversation pane is a real hosted
+// session view: a running run streams in live via the session event mirror,
+// and the composer underneath lets the user continue the conversation after
+// the automated prompt — same transcript/composer components as the main chat.
 
-import React, { useCallback, useEffect, useState } from 'react'
-import { Button, Spin, Tag, Tooltip } from 'antd'
-import { ArrowLeftOutlined, EditOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { App as AntdApp, Button, Dropdown, Spin, Tooltip } from 'antd'
+import {
+  ArrowLeftOutlined,
+  CheckCircleFilled,
+  ClearOutlined,
+  CloseCircleFilled,
+  DeleteOutlined,
+  EditOutlined,
+  LoadingOutlined,
+  MinusCircleOutlined,
+  PlayCircleOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { useSettings } from '../../hooks/SettingsContext'
 import { TranscriptView } from '../chat/TranscriptView'
-import { storedMessagesToAgentMessages } from '../../utils/message-utils'
+import { InputArea } from '../chat/InputArea'
+import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../../utils/message-utils'
+import {
+  applySessionEvent,
+  freshSessionState,
+  isActiveStatus,
+  seedSessionState,
+  type SessionState,
+} from '../../utils/session-mirror'
 import { describeRelativeTimeText } from '../../utils/relative-time'
+import type { AgentEventData } from '../../../../shared/agent-protocol'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
-import type { AgentMessage } from '../../types/agent'
+import type { AgentMessage, AgentStatus, ContentBlock } from '../../types/agent'
+import type { MenuProps } from 'antd'
+
+/** How often run rows (statuses, newly fired scheduled runs) are refreshed. */
+const RUNS_POLL_MS = 3000
+
+/** 运行历史保留时长选项；0 = 永久保留（不自动清理）。 */
+const RETENTION_OPTIONS: Array<{ days: number; label: string }> = [
+  { days: 0, label: '永久保留' },
+  { days: 7, label: '保留 7 天' },
+  { days: 30, label: '保留 30 天' },
+  { days: 90, label: '保留 90 天' },
+]
 
 export const RUN_STATUS_TAG: Record<RoutineRun['status'], { color?: string; text: string }> = {
   running: { color: 'processing', text: '运行中' },
@@ -20,78 +56,177 @@ export const RUN_STATUS_TAG: Record<RoutineRun['status'], { color?: string; text
   skipped: { text: '已跳过' },
 }
 
+/** Status as a glyph — a run list scans better as a column of icons than as
+ *  text tags; the wording survives in the tooltip. */
+const RUN_STATUS_ICONS: Record<RoutineRun['status'], React.ReactNode> = {
+  running: <LoadingOutlined spin style={{ color: '#1677ff' }} />,
+  success: <CheckCircleFilled style={{ color: '#52c41a' }} />,
+  failed: <CloseCircleFilled style={{ color: '#ff4d4f' }} />,
+  skipped: <MinusCircleOutlined style={{ color: '#bbb' }} />,
+}
+
+function RunStatusIcon({ status }: { status: RoutineRun['status'] }): React.ReactElement {
+  return (
+    <Tooltip title={RUN_STATUS_TAG[status].text}>
+      <span style={{ fontSize: 15, lineHeight: 1, display: 'inline-flex', cursor: 'default' }}>
+        {RUN_STATUS_ICONS[status]}
+      </span>
+    </Tooltip>
+  )
+}
+
 export interface RoutineWorkspaceProps {
   routines: Routine[]
   /** Task preselected when entering the workspace (the card that was clicked). */
   initialRoutineId: string
+  /** Bumped by the parent whenever a new run starts — refetch and select the
+   *  fresh run (the card-grid 立即运行 can fire while this pane is open). */
+  activeRunNonce?: number
   onBack: () => void
   onEdit: (routine: Routine) => void
   onRunNow: (routine: Routine) => void
-  /** Open the run's conversation full-size in the chat view. */
-  onOpenConversation?: (conversationKey: string) => void
 }
 
-/** A settled read-only transcript: no approvals can arrive, so every gate
- *  callback is a no-op. */
-const NOOP = (): void => {}
-
-export function RoutineWorkspace({ routines, initialRoutineId, onBack, onEdit, onRunNow, onOpenConversation }: RoutineWorkspaceProps): React.ReactElement {
+export function RoutineWorkspace({ routines, initialRoutineId, activeRunNonce, onBack, onEdit, onRunNow }: RoutineWorkspaceProps): React.ReactElement {
   const { t } = useTranslation()
+  const { modal, message } = AntdApp.useApp()
+  const { settings, saveSettings } = useSettings()
   const [routineId, setRoutineId] = useState(initialRoutineId)
   const [runs, setRuns] = useState<RoutineRun[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
-  const [messages, setMessages] = useState<AgentMessage[]>([])
-  const [convLoading, setConvLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   /** When runs were fetched — render stays pure by not calling Date.now(). */
   const [runsFetchedAt, setRunsFetchedAt] = useState(0)
 
   const routine = routines.find((r) => r.id === routineId) ?? null
   const selectedRun = runs.find((r) => r.id === selectedRunId) ?? null
+  const selectedConvId = selectedRun?.conversationId
+  /** The runner-driven phase owns the loop; the composer parks while it runs. */
+  const unattended = selectedRun?.status === 'running'
+  const retentionDays = settings.routineRunRetentionDays ?? 0
 
-  const loadConversation = useCallback(async (run: RoutineRun | null): Promise<void> => {
-    if (!run?.conversationId) {
-      setMessages([])
-      return
-    }
-    setConvLoading(true)
-    try {
-      const conv = await window.electronAPI.getConversation(run.conversationId)
-      setMessages(storedMessagesToAgentMessages(conv?.messages ?? []))
-    } catch {
-      setMessages([])
-    } finally {
-      setConvLoading(false)
-    }
-  }, [])
-
-  /** Load a task's runs and select `preferRunId` when it is still present
-   *  (refresh), else the newest run. */
+  /** Fetch a task's runs, selecting `preferRunId` when still present, else the
+   *  newest (list comes back newest-first). */
   const openRuns = useCallback(async (id: string, preferRunId?: string): Promise<void> => {
     const list = await window.electronAPI.routineRuns(id, 30).catch(() => [] as RoutineRun[])
     setRuns(list)
     setRunsFetchedAt(Date.now())
     const next = (preferRunId ? list.find((r) => r.id === preferRunId) : undefined) ?? list[0] ?? null
     setSelectedRunId(next?.id ?? null)
-    void loadConversation(next)
-  }, [loadConversation])
+  }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- async run-list load, setState lands after await
   useEffect(() => { void openRuns(routineId) }, [routineId, openRuns])
+
+  // Light poll of the runs list: status transitions and scheduled fires show
+  // up without a manual refresh.
+  useEffect(() => {
+    const timer = setInterval(() => { void openRuns(routineId, selectedRunId ?? undefined) }, RUNS_POLL_MS)
+    return () => clearInterval(timer)
+  }, [routineId, selectedRunId, openRuns])
+
+  // A run started from elsewhere (card grid 立即运行 / scheduler while open):
+  // jump to the newest run.
+  const lastNonceRef = useRef(activeRunNonce ?? 0)
+  useEffect(() => {
+    const nonce = activeRunNonce ?? 0
+    if (nonce === lastNonceRef.current) return
+    lastNonceRef.current = nonce
+    void openRuns(routineId)
+  }, [activeRunNonce, routineId, openRuns])
 
   const refresh = (): void => {
     setRefreshing(true)
     void openRuns(routineId, selectedRunId ?? undefined).finally(() => setRefreshing(false))
   }
 
+  /** Refetch keeping the current selection when it survived (falls back to the
+   *  newest run when it was the one just deleted). */
+  const refreshKeeping = (goneRunId?: string): Promise<void> =>
+    openRuns(routineId, goneRunId && goneRunId === selectedRunId ? undefined : selectedRunId ?? undefined)
+
+  // ── Cleanup (手动清理 + 保留策略) ──
+
+  const removeRun = (run: RoutineRun): void => {
+    modal.confirm({
+      title: '删除这条运行记录？',
+      content: '该次运行产生的对话也会一并删除。',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await window.electronAPI.routineRunDelete(run.id)
+        await refreshKeeping(run.id)
+      },
+    })
+  }
+
+  const clearRuns = (): void => {
+    modal.confirm({
+      title: `清空「${routine?.name ?? '当前任务'}」的运行历史？`,
+      content: '已结束的运行记录和它们的对话都会被删除；正在运行的这一次会保留。',
+      okText: '清空',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        const removed = await window.electronAPI.routineRunsClear(routineId)
+        message.success(`已清理 ${removed} 条运行记录`)
+        await openRuns(routineId)
+      },
+    })
+  }
+
+  /** Persist the retention policy — enforced at every app start (see
+   *  routine-scheduler), so the saved value is the whole contract. */
+  const setRetention = async (days: number): Promise<void> => {
+    if (days === retentionDays) return
+    await saveSettings({ ...settings, routineRunRetentionDays: days })
+    message.success(days === 0 ? '已改为永久保留运行记录' : `启动时自动清理 ${days} 天前的运行记录`)
+  }
+
+  const pruneNow = async (): Promise<void> => {
+    const removed = await window.electronAPI.routineRunsPrune().catch(() => 0)
+    message.success(removed > 0 ? `已清理 ${removed} 条过期记录` : '没有需要清理的过期记录')
+    await refreshKeeping()
+  }
+
+  const cleanupMenu: MenuProps = {
+    items: [
+      {
+        key: 'retention',
+        type: 'group',
+        label: '自动清理（全部任务）',
+        children: RETENTION_OPTIONS.map((o) => ({
+          key: `retention:${o.days}`,
+          label: o.days === retentionDays ? `✓ ${o.label}` : o.label,
+        })),
+      },
+      { type: 'divider' },
+      { key: 'prune', label: '立即清理过期记录', icon: <ClearOutlined />, disabled: retentionDays === 0 },
+      { key: 'clear', label: '清空当前任务的记录', icon: <DeleteOutlined />, danger: true },
+    ],
+    onClick: ({ key }) => {
+      if (key.startsWith('retention:')) void setRetention(Number(key.slice('retention:'.length)))
+      else if (key === 'prune') void pruneNow()
+      else if (key === 'clear') clearRuns()
+    },
+  }
+
   const scheduleText = (r: Routine): string =>
     r.enabled ? (r.schedule ? '定时' : '手动') : '已停用'
 
-  const emptyHint = convLoading
-    ? ''
-    : selectedRun?.conversationId ? '该记录没有保存对话内容。' : '该记录没有可回看的对话。'
-
   return (
     <div style={{ height: '100%', display: 'flex', background: '#fff', overflow: 'hidden' }}>
+      <style>{`
+        .pane-row { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s, border-color 0.15s; }
+        .pane-row:hover { background: rgba(0,0,0,0.03); }
+        .pane-row--active { background: rgba(0,0,0,0.06); border-color: #d9d9d9; }
+        .pane-row--active:hover { background: rgba(0,0,0,0.09); }
+        /* Row actions stay out of the way until the row is under the pointer
+           (or keyboard focus is inside it). */
+        .pane-row-action { opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+        .pane-row:hover .pane-row-action, .pane-row:focus-within .pane-row-action { opacity: 1; pointer-events: auto; }
+      `}</style>
       {/* Left — task list */}
       <div style={{ width: 232, borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '12px 12px 8px' }}>
@@ -112,11 +247,9 @@ export function RoutineWorkspace({ routines, initialRoutineId, onBack, onEdit, o
             return (
               <div
                 key={r.id}
+                className={`pane-row${active ? ' pane-row--active' : ''}`}
+                style={{ marginBottom: 2 }}
                 onClick={() => setRoutineId(r.id)}
-                style={{
-                  padding: '8px 10px', borderRadius: 8, cursor: 'pointer', marginBottom: 2,
-                  background: active ? 'rgba(0,0,0,0.05)' : 'transparent',
-                }}
               >
                 <div style={{
                   fontSize: 13, fontWeight: active ? 600 : 400,
@@ -138,6 +271,9 @@ export function RoutineWorkspace({ routines, initialRoutineId, onBack, onEdit, o
           <Tooltip title="刷新运行记录">
             <Button type="text" size="small" icon={refreshing ? <Spin size="small" /> : <ReloadOutlined />} onClick={refresh} />
           </Tooltip>
+          <Dropdown menu={cleanupMenu} trigger={['click']} placement="bottomRight">
+            <Button type="text" size="small" title="清理运行历史与保留策略" icon={<ClearOutlined />} />
+          </Dropdown>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '0 10px 12px' }}>
           {runs.length === 0 && <div style={{ color: '#999', fontSize: 12, padding: '8px 4px' }}>还没有运行记录。</div>}
@@ -146,22 +282,27 @@ export function RoutineWorkspace({ routines, initialRoutineId, onBack, onEdit, o
             return (
               <div
                 key={run.id}
-                onClick={() => {
-                  setSelectedRunId(run.id)
-                  void loadConversation(run)
-                }}
-                style={{
-                  padding: '9px 10px', borderRadius: 8, cursor: 'pointer', marginBottom: 4,
-                  border: active ? '1px solid #d9d9d9' : '1px solid transparent',
-                  background: active ? 'rgba(0,0,0,0.04)' : 'transparent',
-                }}
+                className={`pane-row${active ? ' pane-row--active' : ''}`}
+                style={{ marginBottom: 4 }}
+                onClick={() => setSelectedRunId(run.id)}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Tag color={RUN_STATUS_TAG[run.status].color} style={{ marginInlineEnd: 0 }}>{RUN_STATUS_TAG[run.status].text}</Tag>
-                  <span style={{ fontSize: 11, color: '#888' }}>{run.trigger === 'schedule' ? '定时' : '手动'}</span>
+                  <RunStatusIcon status={run.status} />
+                  <span style={{ fontSize: 13, color: '#000' }}>{run.trigger === 'schedule' ? '定时' : '手动'}</span>
                   <span style={{ fontSize: 11, color: '#bbb', marginInlineStart: 'auto' }}>
                     {describeRelativeTimeText(run.startedAt, runsFetchedAt, t) ?? new Date(run.startedAt).toLocaleString()}
                   </span>
+                  <Tooltip title={run.status === 'running' ? '运行中，结束后可删除' : '删除这条记录'}>
+                    <Button
+                      className="pane-row-action"
+                      type="text"
+                      size="small"
+                      danger
+                      disabled={run.status === 'running'}
+                      icon={<DeleteOutlined style={{ fontSize: 12 }} />}
+                      onClick={(e) => { e.stopPropagation(); removeRun(run) }}
+                    />
+                  </Tooltip>
                 </div>
                 {run.error && (
                   <div style={{
@@ -177,45 +318,207 @@ export function RoutineWorkspace({ routines, initialRoutineId, onBack, onEdit, o
         </div>
       </div>
 
-      {/* Right — the selected run's conversation */}
+      {/* Right — the selected run's conversation (live while running, and the
+          user can continue it once the automated prompt is done) */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', borderBottom: '1px solid #f0f0f0' }}>
           {selectedRun ? (
             <>
-              <Tag color={RUN_STATUS_TAG[selectedRun.status].color}>{RUN_STATUS_TAG[selectedRun.status].text}</Tag>
+              <RunStatusIcon status={selectedRun.status} />
               <span style={{ fontSize: 12, color: '#888' }}>{selectedRun.trigger === 'schedule' ? '定时触发' : '手动触发'}</span>
               <span style={{ fontSize: 12, color: '#bbb' }}>{new Date(selectedRun.startedAt).toLocaleString()}</span>
-              <span style={{ flex: 1 }} />
-              {convLoading && <Spin size="small" />}
-              {selectedRun.conversationId && (
-                <Button
-                  type="link"
-                  size="small"
-                  onClick={() => onOpenConversation?.(selectedRun.conversationId!)}
-                >
-                  在聊天中打开
-                </Button>
-              )}
             </>
           ) : (
             <span style={{ fontSize: 12, color: '#999' }}>选择一次运行记录查看对话</span>
           )}
         </div>
-        <TranscriptView
-          messages={messages}
-          agentStatus={{ status: 'idle' }}
-          streamingBlocks={[]}
-          isRequesting={false}
-          restoring={convLoading}
-          emptyHint={emptyHint}
-          onApproveTool={NOOP}
-          onRejectTool={NOOP}
-          onKillTool={NOOP}
-          onRespondToTool={NOOP}
-          onClearError={NOOP}
-          onRetry={NOOP}
+        <RunTranscript
+          key={selectedConvId ?? 'none'}
+          convId={selectedConvId}
+          routine={routine}
+          unattended={unattended}
         />
       </div>
     </div>
+  )
+}
+
+interface RunTranscriptProps {
+  /** The run's conversation; undefined = nothing inspectable. */
+  convId: string | undefined
+  /** Owning task (session title + persistence label). */
+  routine: Routine | null
+  /** True while the runner owns the loop — composer parked, stop hidden. */
+  unattended: boolean
+}
+
+/** The selected run's conversation: a session-mirror view of the main-hosted
+ *  engine plus a composer to continue it. Keyed by conversation id upstream, so
+ *  switching runs mounts a fresh mirror instead of leaking the previous
+ *  session's transcript (same pattern as the tool studio's keyed workspace). */
+function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): React.ReactElement {
+  const { settings, switchProfile } = useSettings()
+  const stateRef = useRef<SessionState>(freshSessionState())
+  const [messages, setMessages] = useState<AgentMessage[]>([])
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
+  const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
+  const [restoring, setRestoring] = useState(!!convId)
+
+  const isBusy = isActiveStatus(agentStatus)
+  const title = routine ? `[日常] ${routine.name}` : '[日常] 任务'
+
+  const sync = useCallback((state: SessionState): void => {
+    setMessages([...state.messages])
+    setAgentStatus(state.agentStatus)
+    setStreamingBlocks([...state.streamingBlocks])
+  }, [])
+
+  // Fold the selected session's events into the mirror. The main-side bridge
+  // broadcasts every session; this per-mount subscription filters by id
+  // (convId is fixed for this keyed instance's lifetime).
+  useEffect(() => {
+    if (!convId) return
+    const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
+      if (sessionId !== convId) return
+      if (!applySessionEvent(stateRef.current, raw as AgentEventData)) return
+      sync(stateRef.current)
+    })
+    return unsub
+  }, [convId, sync])
+
+  // Attach: a live main-side session seeds the mirror from its snapshot; an
+  // idle one just displays the persisted transcript read-only (the engine is
+  // hydrated lazily on first send).
+  useEffect(() => {
+    if (!convId) return
+    let alive = true
+    void (async () => {
+      const snap = await window.electronAPI.agentSessionSnapshot(convId).catch(() => null)
+      if (!alive) return
+      if (snap && (snap.messages.length > 0 || snap.status.status !== 'idle')) {
+        seedSessionState(stateRef.current, snap)
+        sync(stateRef.current)
+        setRestoring(false)
+        return
+      }
+      try {
+        const stored = await window.electronAPI.hydrateConversation(convId)
+        if (alive && stored?.messages?.length) {
+          stateRef.current.messages = storedMessagesToAgentMessages(stored.messages)
+          sync(stateRef.current)
+        }
+      } catch { /* neither live nor stored — show the empty hint */ }
+      if (alive) setRestoring(false)
+    })()
+    return () => { alive = false }
+  }, [convId, sync])
+
+  // Keep the persisted conversation in sync once an exchange settles — the
+  // user's continuation (and the automated run's tail, idempotently) must
+  // survive restarts and stay inspectable from the run history. 'idle' covers
+  // a continuation the user stopped mid-way.
+  const prevStatusRef = useRef<string>('idle')
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = agentStatus.status
+    if (!isActiveStatus({ status: prev } as AgentStatus)) return
+    if (agentStatus.status !== 'completed' && agentStatus.status !== 'error' && agentStatus.status !== 'idle') return
+    const msgs = stateRef.current.messages
+    if (!convId || msgs.length === 0) return
+    window.electronAPI.saveConversation(agentMessagesToConversation(msgs, convId, title))
+      .catch((err) => console.warn('[RoutineWorkspace] transcript save failed:', err))
+  }, [agentStatus, convId, title])
+
+  /** Ensure the main-hosted session exists (and holds the persisted context),
+   *  then hand the message to the engine. */
+  const send = useCallback(async (text: string): Promise<void> => {
+    if (!convId) return
+    try {
+      await window.electronAPI.agentSessionCreate(convId, {
+        title,
+        clientId: 'routine',
+        projectId: routine?.projectId,
+      })
+      const snap = await window.electronAPI.agentSessionSnapshot(convId).catch(() => null)
+      if (!snap || (snap.messages.length === 0 && snap.status.status === 'idle')) {
+        const stored = await window.electronAPI.hydrateConversation(convId).catch(() => null)
+        if (stored?.messages?.length) {
+          const msgs = storedMessagesToAgentMessages(stored.messages)
+          stateRef.current.messages = msgs
+          sync(stateRef.current)
+          await window.electronAPI.agentSessionHydrate(convId, msgs, stored.historySummary
+            ? { text: stored.historySummary, firstKeptId: stored.historySummaryFrontier ?? '' }
+            : null)
+        }
+      } else if (snap.messages.length > stateRef.current.messages.length) {
+        // The mirror fell behind the live session — catch up before extending.
+        seedSessionState(stateRef.current, snap)
+        sync(stateRef.current)
+      }
+      await window.electronAPI.agentSessionAsk(convId, text)
+    } catch (err) {
+      stateRef.current.agentStatus = { status: 'error', error: err instanceof Error ? err.message : String(err) }
+      setAgentStatus(stateRef.current.agentStatus)
+    }
+  }, [convId, routine, sync, title])
+
+  const engineCall = (method: string, ...args: unknown[]): void => {
+    if (convId) void window.electronAPI.agentSessionEngineCall(convId, method, args)
+  }
+
+  const emptyHint = restoring
+    ? ''
+    : unattended && messages.length === 0
+      ? '任务已启动，等待模型输出…'
+      : convId ? '该记录没有保存对话内容。' : '该记录没有可回看的对话。'
+
+  return (
+    <>
+      <TranscriptView
+        messages={messages}
+        agentStatus={agentStatus}
+        streamingBlocks={streamingBlocks}
+        isRequesting={isBusy}
+        restoring={restoring}
+        emptyHint={emptyHint}
+        onApproveTool={(id) => engineCall('approveTool', id)}
+        onRejectTool={(id) => engineCall('rejectTool', id)}
+        onKillTool={(id) => engineCall('killTool', id)}
+        onRespondToTool={(id, response) => engineCall('respondToTool', id, response)}
+        onClearError={() => engineCall('clearError')}
+        onRetry={() => engineCall('retryLastTurn')}
+      />
+      {convId && (
+        unattended ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 24px 20px', fontSize: 12, color: '#999' }}>
+            <Spin size="small" />
+            任务执行中，结束后可以继续追问
+          </div>
+        ) : (
+          <div style={{ padding: '8px 24px 20px' }}>
+            <InputArea
+              layout="inline"
+              isRequesting={isBusy}
+              isStreaming={isBusy}
+              isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
+              isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
+              hasMessages={messages.length > 0}
+              onSendMessage={(content) => void send(content)}
+              onCancel={() => { if (convId) void window.electronAPI.agentSessionCancel(convId) }}
+              profiles={settings.profiles}
+              activeProfileId={settings.activeProfileId}
+              onSelectProfile={(profileId) => {
+                void switchProfile(profileId).then(() => {
+                  // The engine rebuilds its options main-side; signal the
+                  // session so the next ask uses the newly selected model.
+                  if (convId) void window.electronAPI.agentSessionRefreshOptions(convId)
+                })
+              }}
+              features={{ modelPicker: true }}
+            />
+          </div>
+        )
+      )}
+    </>
   )
 }

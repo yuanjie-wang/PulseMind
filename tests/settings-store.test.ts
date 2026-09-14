@@ -85,6 +85,31 @@ describe('SettingsStore.get', () => {
     const third = await store.get()
     expect(third.theme).toBe('dark')
   })
+
+  // 运行历史保留策略 drives a destructive prune at startup, so only a real
+  // day count may survive normalization — anything else means 永久保留.
+  it('normalizes the run-history retention policy, defaulting to keep-forever', async () => {
+    const withPolicy = await freshStore()
+    writeRaw({ ...RAW_BASE, routineRunRetentionDays: 30 })
+    expect((await withPolicy.get()).routineRunRetentionDays).toBe(30)
+
+    const absent = await freshStore()
+    writeRaw({ ...RAW_BASE })
+    expect((await absent.get()).routineRunRetentionDays).toBe(0)
+
+    const junk = await freshStore()
+    writeRaw({ ...RAW_BASE, routineRunRetentionDays: -5 })
+    expect((await junk.get()).routineRunRetentionDays).toBe(0)
+  })
+
+  // 授权档位 is per conversation now (conversations.approval_mode): settings must
+  // not carry it any more, even for a file written by an older build.
+  it('ignores approvalMode / yoloMode left over in settings.json', async () => {
+    const store = await freshStore()
+    writeRaw({ ...RAW_BASE, approvalMode: 'always-ask', yoloMode: false })
+    const settings = await store.get()
+    expect('approvalMode' in settings).toBe(false)
+  })
 })
 
 describe('SettingsStore.set — placeholder preservation', () => {

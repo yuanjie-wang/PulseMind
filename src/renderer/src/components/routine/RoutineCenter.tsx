@@ -1,17 +1,17 @@
 // ── Routine center (日常工作) ──
 // PLAN-0.4.0 M4.3 / M4.4: card grid, and a three-pane run workspace (task
 // list · run history · run transcript — see RoutineWorkspace) entered from a
-// card's 运行历史 action. Routines are user-triggered / scheduled prompt tasks
-// (D3), distinct from skills. Schedules are configured in friendly terms
-// (每天/每周/每月/每隔) via utils/schedule-builder; raw cron is the "高级"
-// escape hatch.
+// card's 运行历史 action or directly after 立即运行 (which preselects the
+// fresh, still-running run for live viewing). Routines are user-triggered /
+// scheduled prompt tasks (D3), distinct from skills. Schedules are configured
+// in friendly terms (每天/每周/每月/每隔) via utils/schedule-builder; raw cron
+// is the "高级" escape hatch.
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { App as AntdApp, Button, Drawer, Input, InputNumber, Modal, Select, Space, Switch, Tag, Tooltip } from 'antd'
 import { ClockCircleOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, HistoryOutlined, PlusOutlined, ImportOutlined, LoadingOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
-import { useNavigationStore } from '../../stores/navigationStore'
 import { createLlmAdapter } from '../../llm'
 import { RoutineExtractionAgent } from '../../agent/one-shot-agent'
 import { checkCron, nextRun } from '../../../../shared/schedule/cron'
@@ -142,15 +142,15 @@ function draftScheduleFromCron(cron: string): Pick<RoutineDraftState, 'scheduleE
 }
 
 export interface RoutineCenterProps {
-  /** Open a run's produced conversation in the chat view. */
-  onOpenConversation?: (conversationKey: string) => void
+  /** Deep link (e.g. the welcome page's routine card): open the run-history
+   *  workspace for this routine instead of the card grid. */
+  runHistoryOf?: string
 }
 
-function RoutineCenter({ onOpenConversation }: RoutineCenterProps): React.ReactElement {
+function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement {
   const { t } = useTranslation()
   const { modal, message } = AntdApp.useApp()
   const { settings } = useSettings()
-  const navigate = useNavigationStore((s) => s.navigate)
   const [routines, setRoutines] = useState<Routine[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [recentRuns, setRecentRuns] = useState<RoutineRun[]>([])
@@ -158,7 +158,16 @@ function RoutineCenter({ onOpenConversation }: RoutineCenterProps): React.ReactE
   const [runsFetchedAt, setRunsFetchedAt] = useState(0)
   const [draft, setDraft] = useState<RoutineDraftState | null>(null)
   /** Non-null = the run workspace is open for this task (three-pane mode). */
-  const [historyOfId, setHistoryOfId] = useState<string | null>(null)
+  const [historyOfId, setHistoryOfId] = useState<string | null>(runHistoryOf ?? null)
+  // A deep link arriving while already mounted (e.g. remembered view re-entry)
+  // switches the workspace to the linked task.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reacting to a navigation-store deep link, not derived state
+    if (runHistoryOf) setHistoryOfId(runHistoryOf)
+  }, [runHistoryOf])
+  /** Bumped on every 立即运行 so an already-open workspace refetches and
+   *  selects the fresh run (a fresh mount selects the newest on its own). */
+  const [runNonce, setRunNonce] = useState(0)
   const [extracting, setExtracting] = useState(false)
   const [extractOpen, setExtractOpen] = useState(false)
   const [extractTarget, setExtractTarget] = useState<string | null>(null)
@@ -175,6 +184,7 @@ function RoutineCenter({ onOpenConversation }: RoutineCenterProps): React.ReactE
     }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- async data load, setState lands after await
   useEffect(() => { void reload() }, [reload])
 
   // Runs come back newest-first; the first hit per routine is its latest run.
@@ -231,6 +241,9 @@ function RoutineCenter({ onOpenConversation }: RoutineCenterProps): React.ReactE
     for (const p of routine.params ?? []) params[p.key] = p.default ?? ''
     await window.electronAPI.routineRun(routine.id, params)
     message.success(`已开始执行「${routine.name}」，完成后会通知你`)
+    // 跳到三栏运行历史：默认选中刚发起的这次运行，右侧实时展示执行过程。
+    setHistoryOfId(routine.id)
+    setRunNonce((n) => n + 1)
     void reload()
   }
 
@@ -316,21 +329,16 @@ function RoutineCenter({ onOpenConversation }: RoutineCenterProps): React.ReactE
     })
   }
 
-  const openRunConversation = (conversationKey: string): void => {
-    navigate({ kind: 'chat' })
-    onOpenConversation?.(conversationKey)
-  }
-
   return (
     <div style={{ height: '100%', background: '#fff', overflow: 'hidden' }}>
       {historyOfId != null ? (
         <RoutineWorkspace
           routines={routines}
           initialRoutineId={historyOfId}
-          onBack={() => setHistoryOfId(null)}
+          activeRunNonce={runNonce}
+          onBack={() => { setHistoryOfId(null); void reload() }}
           onEdit={openEditor}
           onRunNow={(r) => void runNow(r)}
-          onOpenConversation={openRunConversation}
         />
       ) : (
         <div style={{ height: '100%', overflow: 'auto', padding: 24 }}>

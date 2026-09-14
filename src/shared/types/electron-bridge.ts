@@ -254,6 +254,12 @@ export interface ElectronAPI {
   routineToggle: (id: string, enabled: boolean) => Promise<Routine | null>
   routineRun: (id: string, params?: Record<string, string>) => Promise<RoutineRun>
   routineRuns: (routineId?: string, limit?: number) => Promise<RoutineRun[]>
+  /** 删除一条运行记录（连同它的对话）。返回删除条数。 */
+  routineRunDelete: (runId: string) => Promise<number>
+  /** 清空一个任务的运行记录（正在运行的那条保留）。返回删除条数。 */
+  routineRunsClear: (routineId: string) => Promise<number>
+  /** 按保留策略清理已结束的运行记录；days 省略时用设置里的策略。返回删除条数。 */
+  routineRunsPrune: (days?: number) => Promise<number>
   toolList: () => Promise<UserTool[]>
   toolGet: (id: string) => Promise<UserTool | null>
   toolCreate: (input: { name: string; description?: string; category?: string; capabilities?: string[] }) => Promise<UserTool>

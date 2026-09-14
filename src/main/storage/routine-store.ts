@@ -93,17 +93,21 @@ export const routineStore = {
 
   // ── Run history (SQLite) ──
 
-  startRun(routineId: string, trigger: RoutineRun['trigger']): RoutineRun {
+  /** conversationId is decided by the caller and persisted up front so a
+   *  running run is already attached to its (live) conversation for
+   *  run-history click-through. */
+  startRun(routineId: string, trigger: RoutineRun['trigger'], conversationId: string): RoutineRun {
     const run: RoutineRun = {
       id: prefixedId('run', 12),
       routineId,
+      conversationId,
       status: 'running',
       trigger,
       startedAt: new Date().toISOString(),
     }
     getDb()
-      .prepare("INSERT INTO routine_runs (id, routine_id, conversation_id, status, trigger, started_at, finished_at, error) VALUES (?, ?, NULL, ?, ?, ?, NULL, NULL)")
-      .run(run.id, run.routineId, run.status, run.trigger, run.startedAt)
+      .prepare("INSERT INTO routine_runs (id, routine_id, conversation_id, status, trigger, started_at, finished_at, error) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)")
+      .run(run.id, run.routineId, conversationId, run.status, run.trigger, run.startedAt)
     return run
   },
 
@@ -136,6 +140,41 @@ export const routineStore = {
     const rows = routineId
       ? getDb().prepare('SELECT * FROM routine_runs WHERE routine_id = ? ORDER BY started_at DESC LIMIT ?').all(routineId, limit) as RoutineRunRow[]
       : getDb().prepare('SELECT * FROM routine_runs ORDER BY started_at DESC LIMIT ?').all(limit) as RoutineRunRow[]
+    return rows.map(rowToRun)
+  },
+
+  /** Delete run rows by id and return the deleted ones, so the caller can also
+   *  dispose of the conversations they produced (see routine-run-history). */
+  removeRuns(runIds: string[]): RoutineRun[] {
+    if (runIds.length === 0) return []
+    const db = getDb()
+    const select = db.prepare('SELECT * FROM routine_runs WHERE id = ?')
+    const rows = runIds
+      .map((id) => select.get(id) as RoutineRunRow | undefined)
+      .filter((row): row is RoutineRunRow => row != null)
+    const del = db.prepare('DELETE FROM routine_runs WHERE id = ?')
+    db.transaction(() => { for (const row of rows) del.run(row.id) })()
+    return rows.map(rowToRun)
+  },
+
+  /** Delete a task's runs and return them. A run still in flight keeps its row
+   *  unless `includeRunning` — task deletion drops everything, the workspace's
+   *  清空 leaves the live row so the run stays visible and settle-able. */
+  removeRunsOfRoutine(routineId: string, includeRunning = false): RoutineRun[] {
+    const where = includeRunning ? 'routine_id = ?' : "routine_id = ? AND status <> 'running'"
+    const db = getDb()
+    const rows = db.prepare(`SELECT * FROM routine_runs WHERE ${where}`).all(routineId) as RoutineRunRow[]
+    db.prepare(`DELETE FROM routine_runs WHERE ${where}`).run(routineId)
+    return rows.map(rowToRun)
+  },
+
+  /** Retention prune: delete settled runs started before `cutoffIso`. In-flight
+   *  runs are never pruned — their row still owes the overlap guard a settle. */
+  removeRunsStartedBefore(cutoffIso: string): RoutineRun[] {
+    const stale = "started_at < ? AND status <> 'running'"
+    const db = getDb()
+    const rows = db.prepare(`SELECT * FROM routine_runs WHERE ${stale}`).all(cutoffIso) as RoutineRunRow[]
+    db.prepare(`DELETE FROM routine_runs WHERE ${stale}`).run(cutoffIso)
     return rows.map(rowToRun)
   },
 }

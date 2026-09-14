@@ -209,6 +209,10 @@ export const IPC_CHANNELS = {
   ROUTINE_TOGGLE: 'routine:toggle',
   ROUTINE_RUN: 'routine:run',
   ROUTINE_RUNS: 'routine:runs',
+  /** 手动清理运行历史（运行记录 + 它产生的对话）—— 见 routine-run-history。 */
+  ROUTINE_RUN_DELETE: 'routine:run-delete',
+  ROUTINE_RUNS_CLEAR: 'routine:runs-clear',
+  ROUTINE_RUNS_PRUNE: 'routine:runs-prune',
 
   // ── PLAN-0.4.0 M5: user tools (tool studio; presets per M5R) ──
   TOOL_LIST: 'tool:list',

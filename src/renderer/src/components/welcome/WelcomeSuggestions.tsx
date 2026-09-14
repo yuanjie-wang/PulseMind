@@ -244,7 +244,7 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
     <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', minHeight: 158 }}>
         <ChatCard chat={chat} now={now} activeLoopConvIds={activeLoopConvIds} onOpenConversation={onOpenConversation} />
-        <RoutineCard routines={routines} runs={runs} now={now} onRunNow={runNow} onOpenConversation={onOpenConversation} />
+        <RoutineCard routines={routines} runs={runs} now={now} onRunNow={runNow} />
         <KnowledgeCard files={knowledge} now={now} />
       </div>
 
@@ -313,12 +313,11 @@ function ChatCard({ chat, now, activeLoopConvIds, onOpenConversation }: {
 
 type RoutineRunLike = Pick<RoutineRun, 'routineId' | 'conversationId' | 'status' | 'startedAt' | 'error'>
 
-function RoutineCard({ routines, runs, now, onRunNow, onOpenConversation }: {
+function RoutineCard({ routines, runs, now, onRunNow }: {
   routines: Routine[] | null | undefined
   runs: RoutineRunLike[]
   now: number
   onRunNow: (routine: Routine) => void
-  onOpenConversation: (key: string) => void
 }): React.ReactElement {
   const { t } = useTranslation()
   const navigate = useNavigationStore((s) => s.navigate)
@@ -326,6 +325,9 @@ function RoutineCard({ routines, runs, now, onRunNow, onOpenConversation }: {
   if (routines === undefined) return <SkeletonCard />
 
   const goRoutines = (): void => { navigate({ kind: 'routines' }) }
+  /** Latest run exists → the run-history workspace for its task (the newest
+   *  run is preselected and streams live when still running). */
+  const goRunHistory = (routineId: string): void => { navigate({ kind: 'routines', runHistoryOf: routineId }) }
   const goRoutinesLink = (
     <a onClick={goRoutines} style={{ cursor: 'pointer' }}>{t('welcome.createRoutine')}</a>
   )
@@ -346,7 +348,7 @@ function RoutineCard({ routines, runs, now, onRunNow, onOpenConversation }: {
       <CardShell
         icon={<ClockCircleOutlined />}
         label={t('welcome.cardRoutine')}
-        onClick={() => (latestRun.conversationId ? onOpenConversation(latestRun.conversationId) : goRoutines())}
+        onClick={() => goRunHistory(latestRun.routineId)}
         badge={(
           <>
             <RunStatusBadge status={latestRun.status} />

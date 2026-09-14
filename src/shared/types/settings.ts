@@ -32,6 +32,8 @@ export interface AppSettings {
   memoryEnabled?: boolean
   /** 经验系统总开关：会话后自动沉淀 + 经验索引注入系统提示。默认开。已有经验保留可查看。 */
   experienceEnabled?: boolean
+  /** 运行历史自动清理策略：保留天数（未设 / 0 = 永久保留）。启动时按此清理已结束的运行记录。 */
+  routineRunRetentionDays?: number
   /** Browser runtime (A-M4). */
   browser?: {
     /** Default backend for conversations that never chose one ('managed'). */

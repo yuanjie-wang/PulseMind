@@ -23,6 +23,11 @@ function readWorkspaceDir(parsed: Record<string, unknown>): string {
   return (parsed.workspaceDir as string) || (parsed.outputDir as string) || DEFAULT_WORKSPACE_DIR
 }
 
+/** 运行历史保留天数：正整数才有效，0 / 缺失 / 非法值都回落到“永久保留”。 */
+function readRetentionDays(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
+}
+
 const FALLBACK_SETTINGS: AppSettings = {
   activeProfileId: '',
   profiles: [],
@@ -36,7 +41,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   launchAtLogin: false,
   serviceEnabled: true,
   memoryEnabled: true,
-  experienceEnabled: true
+  experienceEnabled: true,
+  routineRunRetentionDays: 0
 }
 
 /**
@@ -97,6 +103,7 @@ export class SettingsStore {
           servicePort: parsed.servicePort ?? undefined,
           memoryEnabled: parsed.memoryEnabled ?? true,
           experienceEnabled: parsed.experienceEnabled ?? true,
+          routineRunRetentionDays: readRetentionDays(parsed.routineRunRetentionDays),
         }
         cache = { mtimeMs: stats.mtimeMs, settings: result }
         return structuredClone(result)
@@ -136,7 +143,8 @@ export class SettingsStore {
       autoCleanup: false,
       locale: 'zh',
       memoryEnabled: true,
-      experienceEnabled: true
+      experienceEnabled: true,
+      routineRunRetentionDays: 0
     }
   }
 

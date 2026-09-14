@@ -77,7 +77,7 @@ export function ViewHost({ knowledgeManager, memoryManager, skills, onToggleSkil
         />
       )
     case 'routines':
-      return <RoutineCenter onOpenConversation={onSelectConversation} />
+      return <RoutineCenter runHistoryOf={view.runHistoryOf} />
     case 'capability':
     case 'knowledge':
     case 'tools':
