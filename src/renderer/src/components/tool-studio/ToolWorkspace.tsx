@@ -2,7 +2,7 @@
 // Left: live preview iframe (srcDoc + injectToolSdk + connectToolBridge).
 // Right: the build conversation — the SAME hosted agent loop and the same
 // transcript/composer components as the main chat (M5R unification); only the
-// session config differs (builder prompt, narrow toolset, tool dir, yolo).
+// session config differs (builder prompt, narrow toolset, tool dir, unattended).
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
@@ -13,7 +13,7 @@ import { mountToolDocument } from '../../tool-studio/bridge-host'
 import { useStudioSession } from '../../tool-studio/useStudioSession'
 import { studioConversationId } from '../../tool-studio/tool-prompt'
 import { TranscriptView } from '../chat/TranscriptView'
-import { StudioComposer } from './StudioComposer'
+import { InputArea } from '../chat/InputArea'
 import { ToolNameEditor } from './ToolNameEditor'
 import type { UserTool } from '../../../../shared/types/user-tool'
 
@@ -32,14 +32,12 @@ export function ToolWorkspace({ toolId }: ToolWorkspaceProps): React.ReactElemen
 }
 
 function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
-  const { settings } = useSettings()
+  const { settings, switchProfile } = useSettings()
   const navigate = useNavigationStore((s) => s.navigate)
   const [tool, setTool] = useState<UserTool | null>(null)
   const [toolsDir, setToolsDir] = useState<string | null>(null)
   const previewRef = useRef<HTMLIFrameElement>(null)
 
-  const activeProfile = settings.profiles.find((p) => p.id === settings.activeProfileId)
-  const hasApiKey = !!activeProfile?.apiKey
   const toolDir = toolsDir ? `${toolsDir}/${toolId}` : null
 
   const session = useStudioSession(toolId, tool?.name ?? '工具工作室', toolDir)
@@ -71,9 +69,9 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
     navigate({ kind: 'tools', toolId })
   }, [navigate, toolId])
 
-  // Approvals: builder sessions run yolo with a narrow toolset, so these should
-  // never surface — wired to the same engine calls the chat uses so nothing is
-  // silently dead if one ever does.
+  // Approvals: builder sessions run unattended with a narrow toolset, so these
+  // should never surface — wired to the same engine calls the chat uses so
+  // nothing is silently dead if one ever does.
   const convId = studioConversationId(toolId)
   const engineCall = useCallback((method: string, ...args: unknown[]): void => {
     void window.electronAPI.agentSessionEngineCall(convId, method, args)
@@ -129,13 +127,24 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
             onClearError={session.clearError}
             onRetry={session.retryLast}
           />
-          <StudioComposer
-            onSend={session.ask}
-            onCancel={session.cancel}
-            isRequesting={session.isRunning}
-            disabled={!hasApiKey}
-            hasContent={!!html}
-          />
+          <div style={{ padding: '8px 16px 16px' }}>
+            <InputArea
+              layout="inline"
+              isRequesting={session.isRunning}
+              isStreaming={session.isRunning}
+              isAwaitingApproval={session.agentStatus.status === 'awaiting_approval'}
+              isAwaitingInput={session.agentStatus.status === 'awaiting_user_input'}
+              hasMessages={session.messages.length > 0}
+              onSendMessage={session.ask}
+              onCancel={session.cancel}
+              profiles={settings.profiles}
+              activeProfileId={settings.activeProfileId}
+              onSelectProfile={(profileId) => {
+                void switchProfile(profileId).then(session.refreshOptions)
+              }}
+              features={{ modelPicker: true }}
+            />
+          </div>
         </div>
       </div>
     </div>

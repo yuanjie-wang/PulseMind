@@ -1,8 +1,9 @@
 // ── Shared sidebar conversation rows ──
-// One row design for both sidebar history tabs (对话 and 项目): a two-line
-// label (title over the relative time), a reserved gutter for the task-status
-// light, the pin indicator, an active highlight, and the hover-revealed menu
-// (pin / rename / delete) with its rename modal. Tabs slice their slice of
+// One row design for both sidebar history tabs (对话 and 项目): a single-line
+// label with the relative time parked at its right edge, a reserved gutter for
+// the task-status light, the pin indicator, an active highlight, and a swap on
+// hover/active that hides the time and reveals the row menu (pin / rename /
+// delete) with its rename modal. Tabs slice their slice of
 // conversations and hand them here; rows sort pinned-first, then by recency,
 // so the two tabs can never drift apart again.
 
@@ -21,8 +22,10 @@ import type { ConversationListItem } from '../../types/conversation'
 
 /** Gutter reserved for the task-status light, so titles line up whether or not one is lit. */
 const STATUS_GUTTER_WIDTH = 10
-/** Right slot holding the pin / menu swap at a fixed width, so nothing shifts on hover. */
-const ACTION_SLOT_WIDTH = 20
+/** Right slot holding the time / pin / menu swap at a fixed width, so the title
+ *  never reflows when hover trades the time for the row menu. Sized for the
+ *  pin plus the longest common relative time ("N分钟前"). */
+const ACTION_SLOT_WIDTH = 72
 /** Relative times only move at minute granularity, so that is the cheapest honest clock. */
 const CLOCK_TICK_MS = 60_000
 
@@ -62,7 +65,8 @@ interface ConversationRowProps {
   onMenuOpenChange: (open: boolean) => void
 }
 
-/** One conversation row: status gutter, two-line label, pin/menu swap. Pure presentation. */
+/** One conversation row: status gutter, single-line label with the relative
+ *  time at its right, and a hover swap to the row menu. Pure presentation. */
 function ConversationRow({
   label,
   timeText,
@@ -76,7 +80,9 @@ function ConversationRow({
   onHover,
   onMenuOpenChange
 }: ConversationRowProps): React.ReactElement {
-  const revealMenu = hovered || menuOpen
+  // The active row gets the same treatment as hover: time hidden, row menu
+  // revealed — the selected conversation always offers its actions.
+  const revealMenu = hovered || menuOpen || active
   return (
     <div
       onClick={onSelect}
@@ -85,7 +91,7 @@ function ConversationRow({
       title={label}
       style={{
         display: 'flex', alignItems: 'center', gap: 6,
-        padding: '3px 8px', borderRadius: 6, cursor: 'pointer', userSelect: 'none',
+        padding: '5px 8px', marginBottom: 2, borderRadius: 6, cursor: 'pointer', userSelect: 'none',
         transition: 'background 0.2s',
         background: active ? 'rgba(0, 0, 0, 0.08)' : hovered ? 'rgba(0, 0, 0, 0.06)' : 'transparent'
       }}
@@ -101,28 +107,32 @@ function ConversationRow({
           }} />
         )}
       </span>
-      <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#444', fontSize: 12, lineHeight: '17px' }}>
-          {label}
-        </span>
-        {timeText && (
-          <span style={{ color: '#999', fontSize: 11, lineHeight: '15px' }}>{timeText}</span>
-        )}
+      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#444', fontSize: 14, lineHeight: '20px' }}>
+        {label}
       </span>
-      {/* Pinned rows show the pin while idle and trade it for the row menu on hover. */}
-      <span style={{ width: ACTION_SLOT_WIDTH, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-        {pinned && !revealMenu && (
-          <PushpinOutlined style={{ fontSize: 13, color: '#bbb' }} />
-        )}
-        {revealMenu && (
+      {/* Idle: the relative time (plus the pin for pinned rows) at the row's right.
+          Hover or active: the time hides and the row menu takes the slot. The slot
+          keeps a fixed width and height across the swap so the row never reflows
+          or grows. */}
+      <span style={{ width: ACTION_SLOT_WIDTH, height: 20, flexShrink: 0, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4 }}>
+        {revealMenu ? (
           <Dropdown open={menuOpen} onOpenChange={onMenuOpenChange} menu={menu} trigger={['hover']}>
             <span
               onClick={(e) => e.stopPropagation()}
-              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: ACTION_SLOT_WIDTH, height: 20, borderRadius: 4, color: '#999', fontSize: 14, cursor: 'pointer' }}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, borderRadius: 4, color: '#999', fontSize: 14, cursor: 'pointer' }}
             >
               <EllipsisOutlined />
             </span>
           </Dropdown>
+        ) : (
+          <>
+            {pinned && <PushpinOutlined style={{ fontSize: 13, color: '#bbb', flexShrink: 0 }} />}
+            {timeText && (
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#999', fontSize: 11, lineHeight: '15px' }}>
+                {timeText}
+              </span>
+            )}
+          </>
         )}
       </span>
     </div>

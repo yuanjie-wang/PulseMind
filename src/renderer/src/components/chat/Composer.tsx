@@ -4,13 +4,24 @@
  * main chat and the tool studio so both look and behave identically.
  *
  * Callers own their value and submit semantics; `footerLeft` is where the chat
- * hangs its attachment / model pickers, `trailing` is where it puts the context
- * ring. The studio passes neither and gets the bare composer.
+ * hangs its attachment buttons, `trailing` is the right cluster it builds in
+ * front of the send button (context ring, model picker). The studio passes
+ * neither and gets the bare composer. The forwarded ref is the Sender's own, so
+ * a caller can drive the textarea imperatively (focus after an insert).
  */
-import React, { useEffect, useRef, useState } from 'react'
+import React, { forwardRef, useEffect, useRef, useState } from 'react'
 import { Sender } from '@ant-design/x'
 import { Button } from 'antd'
 import { ArrowUpOutlined, LoadingOutlined } from '@ant-design/icons'
+
+/** The Sender's imperative handle. Derived from the component itself because the
+ *  package root exports `SenderProps` but not `SenderRef`. */
+export type ComposerHandle = React.ElementRef<typeof Sender>
+
+/** Visible width cap of the input card (the .ant-sender rule below) — one
+ *  content column everywhere. InputArea's @-mention selector mirrors it so
+ *  the popup is exactly as wide as the input box it belongs to. */
+export const COMPOSER_MAX_WIDTH = 952
 
 export interface ComposerProps {
   value: string
@@ -26,40 +37,40 @@ export interface ComposerProps {
   placeholder?: string
   /** Rendered inside the card above the textarea (attachment chips). */
   header?: React.ReactNode
-  /** Extra footer content, left of the send button (chat: pickers + ring). */
+  /** Extra footer content, left of the send button (chat: attachment buttons). */
   footerLeft?: React.ReactNode
-  /** Right-aligned footer content just before the send button (context ring). */
+  /** Right-aligned footer content just before the send button (chat: context
+   *  ring, then the model picker). */
   trailing?: React.ReactNode
   /** 'floating' pins the composer to the bottom of the view (chat);
    *  'inline' lays it out in place (studio panel). */
   layout?: 'floating' | 'inline'
-  /** Horizontal inset (px) from the right edge while floating — clears the
-   *  in-app browser pane so the composer is never underneath it. */
-  rightInset?: number
   maxRows?: number
   onKeyDown?: (e: React.KeyboardEvent<Element>) => void
   /** Focus the textarea once mounted. */
   autoFocus?: boolean
 }
 
-export function Composer({
-  value,
-  onChange,
-  onSubmit,
-  onCancel,
-  isRequesting,
-  disabled,
-  loading,
-  placeholder,
-  header,
-  footerLeft,
-  trailing,
-  layout = 'floating',
-  rightInset = 0,
-  maxRows = 8,
-  onKeyDown,
-  autoFocus,
-}: ComposerProps): React.ReactElement {
+export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
+  {
+    value,
+    onChange,
+    onSubmit,
+    onCancel,
+    isRequesting,
+    disabled,
+    loading,
+    placeholder,
+    header,
+    footerLeft,
+    trailing,
+    layout = 'floating',
+    maxRows = 8,
+    onKeyDown,
+    autoFocus,
+  }: ComposerProps,
+  ref
+): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null)
   const [isWin, setIsWin] = useState(false)
 
@@ -91,22 +102,23 @@ export function Composer({
       ref={containerRef}
       style={
         layout === 'floating'
-          ? { position: 'absolute', bottom: 0, left: 0, right: rightInset, zIndex: 10, padding: '12px 24px 24px' }
+          ? { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, padding: '12px 24px 24px' }
           : undefined
       }
     >
       <div style={layout === 'floating' ? { maxWidth: 1000, margin: '0 auto' } : undefined}>
         <Sender
+          ref={ref}
           autoSize={{ minRows: 1, maxRows }}
           header={header}
           footer={
             <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
               {footerLeft}
-              {/* The ring and the send button share one auto-margined group, so the
-                  ring lands against the button's left edge. The margin has to sit on
-                  the group: on the button it would open the gap between the two
-                  instead. 24px is the send button's diameter (antd size="small"
-                  circle), which the ring matches. */}
+              {/* The trailing cluster and the send button share one auto-margined
+                  group, so the cluster lands against the button's left edge. The
+                  margin has to sit on the group: on the button it would open the
+                  gap between the two instead. The button is antd's 24px size="small"
+                  circle; the ring is deliberately drawn a touch smaller than that. */}
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {trailing}
                 <Button
@@ -143,14 +155,14 @@ export function Composer({
           border-radius: 20px !important;
           /* One content column everywhere: as wide as the chat message column
              (maxWidth 1000 minus its 24px paddings) and the welcome cards. */
-          max-width: 952px;
+          max-width: ${COMPOSER_MAX_WIDTH}px;
           margin: 0 auto;
           box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%) !important;
         }
       `}</style>
     </div>
   )
-}
+})
 
 /**
  * Input history for a composer: ArrowUp walks back through what was sent,

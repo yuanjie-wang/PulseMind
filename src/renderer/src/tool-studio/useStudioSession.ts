@@ -33,6 +33,9 @@ export interface StudioSession {
   cancel: () => void
   clearError: () => void
   retryLast: () => void
+  /** Signal the main-side engine to rebuild its options (e.g. after the
+   *  active profile was switched) — the next loop uses them. */
+  refreshOptions: () => void
   /** Re-read app.html from disk (header's preview refresh). */
   reloadPreview: () => void
 }
@@ -110,26 +113,33 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
       const live = snapshot && (snapshot.messages.length > 0 || snapshot.status.status !== 'idle')
       if (live) {
         seedSessionState(state, snapshot)
-        if (alive) { sync(state); setRestoring(false) }
-        if (isActiveStatus(state.agentStatus)) readPreview(toolId)
-        return
+        if (!alive) return
+        sync(state)
+        setRestoring(false)
+      } else {
+        // Idle and empty main-side: rebuild context from the stored transcript so
+        // the next instruction iterates on the tool's existing history.
+        try {
+          const stored = await window.electronAPI.hydrateConversation(convId)
+          if (!alive) return
+          if (stored?.messages?.length) {
+            const msgs = storedMessagesToAgentMessages(stored.messages)
+            state.messages = msgs
+            await window.electronAPI.agentSessionHydrate(convId, msgs, stored.historySummary
+              ? { text: stored.historySummary, firstKeptId: stored.historySummaryFrontier ?? '' }
+              : null)
+          }
+        } catch (err) {
+          console.warn('[ToolStudio] history load failed:', err)
+        }
+        if (!alive) return
+        sync(state)
+        setRestoring(false)
       }
-      // Idle and empty main-side: rebuild context from the stored transcript so
-      // the next instruction iterates on the tool's existing history.
-      try {
-        const stored = await window.electronAPI.hydrateConversation(convId)
-        if (!alive || !stored?.messages?.length) { if (alive) setRestoring(false); return }
-        const msgs = storedMessagesToAgentMessages(stored.messages)
-        state.messages = msgs
-        await window.electronAPI.agentSessionHydrate(convId, msgs, stored.historySummary
-          ? { text: stored.historySummary, firstKeptId: stored.historySummaryFrontier ?? '' }
-          : null)
-      } catch (err) {
-        console.warn('[ToolStudio] history load failed:', err)
-      }
-      if (!alive) return
-      sync(state)
-      setRestoring(false)
+      // Read on every restore, never gated on the transcript: app.html belongs to
+      // the tool, not to the build conversation. A preset ships one with no
+      // conversation at all, and a re-opened session that is live but idle has
+      // one too — both used to leave the preview blank.
       readPreview(toolId)
     })()
 
@@ -179,6 +189,10 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
     void window.electronAPI.agentSessionEngineCall(convId, 'retryLastTurn', [])
   }, [convId])
 
+  const refreshOptions = useCallback((): void => {
+    void window.electronAPI.agentSessionRefreshOptions(convId)
+  }, [convId])
+
   const reloadPreview = useCallback((): void => readPreview(toolId), [readPreview, toolId])
 
   return {
@@ -193,6 +207,7 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
     cancel,
     clearError,
     retryLast,
+    refreshOptions,
     reloadPreview,
   }
 }

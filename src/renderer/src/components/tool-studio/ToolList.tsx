@@ -54,23 +54,30 @@ function matchesQuery(tool: UserTool, query: string): boolean {
   return tool.name.toLowerCase().includes(q) || (tool.description ?? '').toLowerCase().includes(q)
 }
 
-/** The hovered row's 复制 / 编辑 / 删除 cluster. */
+/** The hovered row's 复制 / 编辑 / 删除 cluster. The row is itself a click target
+ *  (open the tool), and these buttons live inside it, so every op must swallow
+ *  the click: without this the row's own handler runs right after — 编辑
+ *  navigates to the workspace and is then overwritten by the run state. */
 function RowOps({ tool, onEdit, onDuplicate, onDelete }: {
   tool: UserTool
   onEdit: (tool: UserTool) => void
   onDuplicate: (tool: UserTool) => void
   onDelete: (tool: UserTool) => void
 }): React.ReactElement {
+  const op = (run: (tool: UserTool) => void) => (event: React.MouseEvent) => {
+    event.stopPropagation()
+    run(tool)
+  }
   return (
     <>
       <Tooltip title="复制副本">
-        <Button type="text" size="small" style={OP_BUTTON_STYLE} icon={<CopyOutlined style={{ fontSize: 12 }} />} onClick={() => onDuplicate(tool)} />
+        <Button type="text" size="small" style={OP_BUTTON_STYLE} icon={<CopyOutlined style={{ fontSize: 12 }} />} onClick={op(onDuplicate)} />
       </Tooltip>
       <Tooltip title="编辑">
-        <Button type="text" size="small" style={OP_BUTTON_STYLE} icon={<EditOutlined style={{ fontSize: 12 }} />} onClick={() => onEdit(tool)} />
+        <Button type="text" size="small" style={OP_BUTTON_STYLE} icon={<EditOutlined style={{ fontSize: 12 }} />} onClick={op(onEdit)} />
       </Tooltip>
       <Tooltip title="删除">
-        <Button type="text" size="small" danger style={OP_BUTTON_STYLE} icon={<DeleteOutlined style={{ fontSize: 12 }} />} onClick={() => onDelete(tool)} />
+        <Button type="text" size="small" danger style={OP_BUTTON_STYLE} icon={<DeleteOutlined style={{ fontSize: 12 }} />} onClick={op(onDelete)} />
       </Tooltip>
     </>
   )
