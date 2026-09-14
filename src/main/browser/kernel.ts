@@ -46,27 +46,23 @@ export async function runBrowserCode(input: BrowserRunInput, execute: (cmd: Brow
   const budgetMs = Math.min(Math.max(input.timeoutMs ?? BROWSER_DEFAULT_TIMEOUT_MS, 1_000), 300_000)
 
   let value: unknown
-  let timedOut = false
   try {
     value = await Promise.race([
       Promise.resolve(execution),
       new Promise((_, reject) =>
-        setTimeout(() => {
-          timedOut = true
-          reject(new Error(`执行超时（${Math.round(budgetMs / 1000)}s）——把工作拆成多次调用，或用更短的等待`))
-        }, budgetMs),
+        setTimeout(
+          () => reject(new Error(`执行超时（${Math.round(budgetMs / 1000)}s）——把工作拆成多次调用，或用更短的等待`)),
+          budgetMs,
+        ),
       ),
     ])
   } catch (err) {
-    if (!timedOut) {
-      return { result: 'null', truncated: false, images, console: consoleLines, error: err instanceof Error ? err.message : String(err) }
-    }
     return {
       result: 'null',
       truncated: false,
       images,
       console: consoleLines,
-      error: err instanceof Error ? err.message : String(err),
+      error: withTimerHint(err instanceof Error ? err.message : String(err)),
     }
   }
 
@@ -81,4 +77,20 @@ function fmt(v: unknown): string {
   } catch {
     return String(v)
   }
+}
+
+/** 沙盒刻意不注入定时器（kernel 只暴露 agent/emitImage/console）；模型按
+ *  惯用写法摸 setTimeout 时，报错直接指到唯一合法的等待原语，免得再去猜
+ *  browsers.waitForTimeout 这类不存在的岔路。 */
+const TIMER_GLOBALS = new Set([
+  'setTimeout', 'setInterval', 'setImmediate',
+  'clearTimeout', 'clearInterval', 'clearImmediate', 'queueMicrotask',
+])
+
+function withTimerHint(message: string): string {
+  // vm 跨 realm 传回的 ReferenceError 自带 "ReferenceError: " 前缀，两态都接。
+  const missing = /^(?:[A-Za-z]+Error: )?(\w+) is not defined$/.exec(message)?.[1]
+  return missing && TIMER_GLOBALS.has(missing)
+    ? `${message} —— 沙盒没有定时器，需要等待就用 await tab.waitForTimeout(ms)`
+    : message
 }

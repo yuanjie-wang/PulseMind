@@ -21,7 +21,7 @@ export interface BrowserDocument {
 const WORKFLOW_BODY = `## Workflow protocol (mandatory)
 
 1. Bootstrap every call: \`const { browsers, playwright } = agent\`. Keep ONE backend for the whole task.
-2. Rebind before every logical batch: \`const tabs = await browsers.tabs.list()\` → pick by id/url/title → \`await browsers.tabs.get(id)\`. NEVER index by position; NEVER reuse a remembered id.
+2. Rebind before every logical batch: \`const tabs = await browsers.tabs.list()\` → pick by id/url/title → \`await browsers.tabs.get(id)\`. NEVER index by position; NEVER reuse a remembered id. list() items are plain DATA (\`t.url\`/\`t.title\` are properties); a Tab from get()/open() is a live handle — there \`url\`/\`title\` are async methods (\`await tab.url()\`).
 3. Open with \`browsers.open(url)\` — same-site reuse + in-place navigation. Waits stay under 3s; domcontentloaded, never networkidle, no fixed sleeps.
 4. \`tab.domSnapshot()\` is the DEFAULT observation. Build locators ONLY from snapshot facts. NEVER guess labels/selectors/URLs. If a locator's count() is 0, take a NEW snapshot — don't wait, don't retry the same locator blind.
 5. ONE state-changing action per observation. Verify the EXPECTED EFFECT appeared (via a fresh snapshot), not that the URL stayed the same. Popups: same call, merge \`tabs.list()\` before/after into controlled/user groups.
@@ -35,6 +35,7 @@ const OVERVIEW_BODY = `## How the browser runtime works (user-facing terms only,
 - \`domSnapshot()\` returns an AI/ARIA tree: roles, names, states. It is cheap; take it often.
 - Locators are constructed from snapshot facts via \`agent.playwright\` sugar and executed by the host's single selector engine.
 - The viewport is 1280x800. http/https only.
+- The sandbox has NO timers: \`setTimeout\` is not defined. If a wait is truly unavoidable, use \`await tab.waitForTimeout(ms)\` (capped at 30s) — otherwise re-check with a fresh \`domSnapshot()\` instead of sleeping.
 - Tell the USER "打开浏览器/查看页面" — the words kernel/sandbox/vm/CDP never appear in user-facing text.`
 
 const SAFETY_BODY = `## Safety boundaries

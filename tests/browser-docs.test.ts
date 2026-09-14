@@ -57,4 +57,11 @@ describe('documentation', () => {
     expect(text).toContain('### tab ')
     expect(text).toContain('playwright(selector, op')
   })
+  it('included docs call out the no-timer rule and the list/get data-vs-handle asymmetry', () => {
+    const text = documentationText(managed)
+    expect(text).toContain('setTimeout')
+    expect(text).toContain('await tab.waitForTimeout(ms)')
+    expect(text).toContain('list() items are plain DATA')
+    expect(text).toContain('await tab.url()')
+  })
 })
