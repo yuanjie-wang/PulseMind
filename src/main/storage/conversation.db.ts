@@ -24,6 +24,8 @@ export function updateConversationOrigin(id: string, origin: string): void {
   getDb().prepare('UPDATE conversations SET origin = ? WHERE id = ?').run(origin, id)
 }
 
+
+
 /** Batch-persist tool results (called before nanoCompact / by the agent host). */
 export function persistToolResults(convId: string, results: Array<{ ref_id: string; conversation_id: string; message_id: string; block_index: number; tool_use_id: string; content: string; is_error: number }>): void {
   if (results.length === 0) return
@@ -85,6 +87,21 @@ function sanitizeToolResults(
 }
 
 // ── Conversation CRUD ──
+
+/**
+ * Candidate updated_at derived from the messages being written: the newest
+ * message timestamp, or `fallback` when the batch is empty. conversations.updated_at
+ * means "last interaction time" (drives the sidebar ordering and its relative
+ * label), so it must follow message data — stamping wall-clock "now" on every
+ * write made merely viewing a conversation look recently active.
+ */
+function newestMessageAt(messages: ReadonlyArray<{ createdAt?: string }>, fallback: string): string {
+  let newest = ''
+  for (const m of messages) {
+    if (m.createdAt && m.createdAt > newest) newest = m.createdAt
+  }
+  return newest || fallback
+}
 
 export function listConversations(): ConversationIndexEntry[] {
   const database = getDb()
@@ -150,6 +167,9 @@ export function getConversation(id: string): Conversation | null {
 export function saveConversation(conversation: Conversation): void {
   const database = getDb()
   const now = new Date().toISOString()
+  // Full rewrite is authoritative: updated_at becomes the newest message time
+  // (this also re-heals rows whose updated_at was inflated by older builds).
+  const lastMsgAt = newestMessageAt(conversation.messages || [], now)
 
   const upsertConv = database.prepare(
     `INSERT INTO conversations (id, title, created_at, updated_at, type, rect_id, history_summary, history_summary_frontier)
@@ -168,7 +188,7 @@ export function saveConversation(conversation: Conversation): void {
   )
 
   const save = database.transaction(() => {
-    upsertConv.run(conversation.id, conversation.title || '新对话', conversation.createdAt || now, now, deriveConvType(conversation.id), deriveRectId(conversation.id), conversation.historySummary || null, conversation.historySummaryFrontier || null)
+    upsertConv.run(conversation.id, conversation.title || '新对话', conversation.createdAt || now, lastMsgAt, deriveConvType(conversation.id), deriveRectId(conversation.id), conversation.historySummary || null, conversation.historySummaryFrontier || null)
 
     for (const msg of conversation.messages || []) {
       const sanitized = sanitizeToolResults(msg.contentBlocks, conversation.id, msg.id, (refId, convId, msgId, blockIdx, toolUseId, content, isErr) => {
@@ -204,7 +224,8 @@ export function appendConversationMessages(
   const upsertConv = database.prepare(
     `INSERT INTO conversations (id, title, created_at, updated_at, type, rect_id)
      VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at`
+     ON CONFLICT(id) DO UPDATE SET title = excluded.title,
+       updated_at = MAX(conversations.updated_at, excluded.updated_at)`
   )
   const upsertMsg = database.prepare(
     `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -217,7 +238,7 @@ export function appendConversationMessages(
   )
 
   const save = database.transaction(() => {
-    upsertConv.run(convId, title || '新对话', now, now, deriveConvType(convId), deriveRectId(convId))
+    upsertConv.run(convId, title || '新对话', now, newestMessageAt(messages, now), deriveConvType(convId), deriveRectId(convId))
     for (const msg of messages) {
       const sanitized = sanitizeToolResults(msg.contentBlocks, convId, msg.id, (refId, convId2, msgId, blockIdx, toolUseId, content, isErr) => {
         insertToolResult.run(refId, convId2, msgId, blockIdx, toolUseId, content, isErr)
@@ -294,6 +315,7 @@ export function getConversationExpertId(id: string): string | null {
   return row?.expert_id || null
 }
 
+
 /** The conversation's resolved working directory (M8), or null before the
  *  first session — used to jail browser file uploads (A-M4). */
 export function getConversationWorkspaceDir(id: string): string | null {
@@ -338,14 +360,14 @@ export function updateConversationTitle(id: string, title: string): void {
 
 export function updateConversationSummary(id: string, summary: string): void {
   getDb()
-    .prepare('UPDATE conversations SET summary = ?, updated_at = ? WHERE id = ?')
-    .run(summary, new Date().toISOString(), id)
+    .prepare('UPDATE conversations SET summary = ? WHERE id = ?')
+    .run(summary, id)
 }
 
 export function updateConversationKeywords(id: string, keywords: string): void {
   getDb()
-    .prepare('UPDATE conversations SET keywords = ?, updated_at = ? WHERE id = ?')
-    .run(keywords, new Date().toISOString(), id)
+    .prepare('UPDATE conversations SET keywords = ? WHERE id = ?')
+    .run(keywords, id)
 }
 
 export function getConversationExtractedMsgCount(id: string): number {
@@ -357,8 +379,8 @@ export function getConversationExtractedMsgCount(id: string): number {
 
 export function updateConversationExtractedMsgCount(id: string, count: number): void {
   getDb()
-    .prepare('UPDATE conversations SET extracted_msg_count = ?, updated_at = ? WHERE id = ?')
-    .run(count, new Date().toISOString(), id)
+    .prepare('UPDATE conversations SET extracted_msg_count = ? WHERE id = ?')
+    .run(count, id)
 }
 
 export function getConversationExperienceExtractedCount(id: string): number {
@@ -370,8 +392,8 @@ export function getConversationExperienceExtractedCount(id: string): number {
 
 export function updateConversationExperienceExtractedCount(id: string, count: number): void {
   getDb()
-    .prepare('UPDATE conversations SET experience_extracted_count = ?, updated_at = ? WHERE id = ?')
-    .run(count, new Date().toISOString(), id)
+    .prepare('UPDATE conversations SET experience_extracted_count = ? WHERE id = ?')
+    .run(count, id)
 }
 
 export function updateConversationPinned(id: string, pinned: boolean): void {

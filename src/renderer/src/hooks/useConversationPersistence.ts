@@ -146,6 +146,13 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       await saveRef.current()
       return
     }
+    // Browsing no-op: selecting a conversation reloads its persisted messages
+    // into state, which retriggers this debounced save with zero new IDs. The
+    // idle tail has nothing to capture, and writing it would stamp the DB's
+    // updated_at with "now" — advancing the sidebar's last-interaction time
+    // without any interaction. While streaming the tail re-save still runs:
+    // in-place block updates (exitCode) need the crash-recovery net.
+    if (!plan.hasNew && agentStatus.status !== 'streaming') return
     const fromIdx = plan.fromIdx
 
     const firstText = msgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
@@ -162,7 +169,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     } catch (err) {
       console.error('[Chat] incremental save failed:', err)
     }
-  }, [conversations, enginesRef])
+  }, [conversations, enginesRef, agentStatus.status])
   const saveNewRef = useRef<() => Promise<void>>(null as unknown as () => Promise<void>)
   saveNewRef.current = saveNewMessages
 

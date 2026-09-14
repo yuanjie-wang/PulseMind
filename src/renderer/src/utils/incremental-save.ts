@@ -10,12 +10,18 @@
  *   already-saved messages — in-place block updates on the live tail (e.g.
  *   exitCode written onto tool_use after execution) are invisible to ID-based
  *   skipping, so the tail is re-written (INSERT OR REPLACE) every tick.
+ *
+ * `hasNew` distinguishes "genuinely new messages" from a tail-only re-save so
+ * callers can drop the write entirely when a plan was only triggered by the
+ * message state being reloaded (e.g. the user browsing conversations) — the
+ * idle tail has nothing to capture and writing it would stamp the
+ * conversation's last-interaction time without any interaction.
  */
 
 export const INCREMENTAL_TAIL_RESAVE = 8
 
 export type IncrementalSavePlan =
-  | { mode: 'append'; fromIdx: number }
+  | { mode: 'append'; fromIdx: number; hasNew: boolean }
   | { mode: 'full' }
 
 export function planIncrementalSave(
@@ -23,7 +29,7 @@ export function planIncrementalSave(
   savedIds: ReadonlySet<string> | undefined,
   tailResave: number = INCREMENTAL_TAIL_RESAVE,
 ): IncrementalSavePlan {
-  if (!savedIds) return { mode: 'append', fromIdx: 0 }
+  if (!savedIds) return { mode: 'append', fromIdx: 0, hasNew: true }
   if (msgs.length < savedIds.size) return { mode: 'full' }
 
   let firstNewIdx = -1
@@ -33,5 +39,5 @@ export function planIncrementalSave(
   const fromIdx = firstNewIdx === -1
     ? Math.max(0, msgs.length - tailResave)
     : Math.max(0, firstNewIdx - tailResave)
-  return { mode: 'append', fromIdx }
+  return { mode: 'append', fromIdx, hasNew: firstNewIdx !== -1 }
 }
