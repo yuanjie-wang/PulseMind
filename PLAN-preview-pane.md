@@ -61,11 +61,15 @@ PreviewTab { path, kind, title }        // path 即 tab 身份，同文件不重
 
 ## 四、里程碑
 
-- [ ] **T1 基础设施**：本文档落盘；file-kind / csv / preview-tabs 纯函数 + 三个测试文件全绿；previewPaneStore
-- [ ] **T2 面板骨架**：PreviewPane chrome + 挂载 ChatView + 拖拽/宽度记忆/会话标签隔离；先接 Markdown 渲染（验收：手动 openFile 能看 md）
-- [ ] **T3 渲染器矩阵**：text/code、image（CSP 变更）、html、csv、fallback；加载/错误态（验收：六类文件各自渲染正确，HTML 脚本可运行且无 same-origin）
-- [ ] **T4 入口与联动**：工具卡片预览按钮、FileRefChip 行为切换、usePreviewPaneSync 自动弹出 + 刷新（验收：AI 写 md → 面板自动弹出；再 edit → 内容自动更新）
-- [ ] **T5 收尾**：i18n、`npm run build` 打包冒烟（local-file:// 打包版可用）、AGENTS/CLAUDE 文档、回归
+- [x] **T1 基础设施**：本文档落盘；file-kind / csv / preview-tabs 纯函数 + 三个测试文件全绿；previewPaneStore
+- [x] **T2 面板骨架**：PreviewPane chrome + 挂载 ChatView + 拖拽/宽度记忆/会话标签隔离；先接 Markdown 渲染（验收：手动 openFile 能看 md）
+- [x] **T3 渲染器矩阵**：text/code、image（CSP 变更）、html、csv、fallback；加载/错误态（验收：六类文件各自渲染正确，HTML 脚本可运行且无 same-origin）
+- [x] **T4 入口与联动**：工具卡片预览按钮、FileRefChip 行为切换、usePreviewPaneSync 自动弹出 + 刷新（验收：AI 写 md → 面板自动弹出；再 edit → 内容自动更新）
+- [ ] **T5 收尾**：i18n ✓、`npm run build` ✓（2026-09-14）、AGENTS/CLAUDE 文档 ✓、`npm test` 回归 ✓；**dev 版端到端人工走查（写 md/html/csv 各一、edit 刷新、越权路径拒绝）待用户执行**——需真实 LLM 会话
+
+## 实施记录
+
+- 2026-09-14：T1–T4 五次提交（`feat(preview):` 前缀）。测试基线：`tests/preview-*.test.ts` 25 tests 全绿；`tsc web` 维持既有基线 23 errors（无新增）；`agent-protocol-ws.test.ts` 偶发端口 flaky（时过时不过，与本功能无关）。`resolvePreviewPath` 语义与 `tool-executors.resolveWorkspacePath` 对齐（前导 `/` = 绝对路径透传）。
 
 ## 五、非目标（本期不做）
 
