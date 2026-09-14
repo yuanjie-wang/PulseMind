@@ -7,7 +7,7 @@ import { useNewTaskStore } from '../stores/newTaskStore'
 import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
 import { parseExpertMention } from '../../../shared/expert-context'
-import type { SubAgentProfile } from '../../../shared/types/subagent'
+import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
 import type { AgentMessage } from '../types/agent'
@@ -293,8 +293,8 @@ export function useChatController(options: UseChatControllerOptions) {
       // stripped from the outgoing text. Binding only (no send) is allowed on
       // an existing conversation — that's the switch/unbind-free summon UX; on
       // a brand-new conversation it would materialize a ghost row, so refuse.
-      let experts: SubAgentProfile[] = []
-      try { experts = await window.electronAPI.subagentList() } catch { /* non-critical */ }
+      let experts: ExpertProfile[] = []
+      try { experts = await window.electronAPI.expertList() } catch { /* non-critical */ }
       const mention = parseExpertMention(content, experts)
       if (mention.expert) {
         content = mention.text

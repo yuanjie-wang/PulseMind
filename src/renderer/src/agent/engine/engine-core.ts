@@ -50,6 +50,7 @@ export interface EngineCore {
   // ── Spawn/sub-agent state ──
   activeSubAgents: Map<string, EngineCore>
   spawnSystemPrompt?: string
+  spawnTitle?: string
   onSpawnProgress?: (summary: string) => void
   resolveCompletion?: (result: SubAgentResult) => void
   completionPromise?: Promise<SubAgentResult>

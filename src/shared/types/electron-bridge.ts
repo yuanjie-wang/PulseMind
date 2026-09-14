@@ -12,7 +12,7 @@ import type { ToolPreferences } from './tool-types'
 import type { SkillPreferences, SkillDefinition } from './skill-types'
 import type { MemoryEntry, MemorySearchInput } from './memory'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
-import type { SubAgentProfile } from './subagent'
+import type { ExpertProfile } from './expert'
 import type { GitAction, GitResult } from './git'
 import type { ExperienceRecord, ExperienceDraft } from './experience-types'
 import type { WindowControlsLayout } from '../window-chrome'
@@ -416,9 +416,9 @@ export interface ElectronAPI {
   canvasClearAll: () => Promise<{ success: boolean; deletedConvs: number }>
 
   // SubAgent
-  subagentList: () => Promise<SubAgentProfile[]>
-  subagentCreate: (profile: SubAgentProfile) => Promise<SubAgentProfile[]>
-  subagentUpdate: (profile: SubAgentProfile) => Promise<SubAgentProfile[]>
-  subagentDelete: (id: string) => Promise<SubAgentProfile[]>
-  subagentReset: () => Promise<SubAgentProfile[]>
+  expertList: () => Promise<ExpertProfile[]>
+  expertCreate: (profile: ExpertProfile) => Promise<ExpertProfile[]>
+  expertUpdate: (profile: ExpertProfile) => Promise<ExpertProfile[]>
+  expertDelete: (id: string) => Promise<ExpertProfile[]>
+  expertReset: () => Promise<ExpertProfile[]>
 }

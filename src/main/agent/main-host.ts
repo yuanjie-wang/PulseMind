@@ -24,7 +24,7 @@ import {
   getConversationExperienceExtractedCount,
 } from '../storage/conversation.db'
 import { skillStore } from '../storage/skill-store'
-import { subAgentStore } from '../storage/subagent-store'
+import { expertStore } from '../storage/expert-store'
 import { experienceStore } from '../storage/experience-store'
 import { saveMemory, listMemories, deleteMemory, searchMemories, updateMemory, countMemoriesByType, type MemoryRow } from '../storage/memory.db'
 import { MEMORY_MD_PATH } from '../storage'
@@ -193,7 +193,7 @@ export const mainHost: PulseHost = {
   setSkillPreferences: async (prefs) => { skillStore.set(prefs) },
   readSkillRaw: (name) => Promise.resolve(skillStore.readRawContent(name)),
   installSkill: (name) => Promise.resolve(skillStore.install(name)),
-  subagentList: async () => subAgentStore.getAll(),
+  expertList: async () => expertStore.getAll(),
   listExperiences: async () => experienceStore.list(),
   saveExperienceRecord: async (draft) => experienceStore.save(draft),
   deleteExperienceRecord: async (name) => { experienceStore.delete(name) },

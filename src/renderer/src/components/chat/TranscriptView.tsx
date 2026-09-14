@@ -2,7 +2,8 @@
  * Transcript view: the same message stream the main chat renders
  * (chat/message-segments + chat/SegmentView), minus the chat's windowing and
  * plan-jump machinery — for short, settled or live conversations that always
- * follow the tail (tool studio, routine run records).
+ * follow the tail (tool studio, routine run records, the expert editor's
+ * conversational form filler).
  */
 import React, { useEffect, useMemo, useRef } from 'react'
 import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
@@ -17,7 +18,13 @@ export interface TranscriptViewProps {
   streamingBlocks: ContentBlock[]
   isRequesting: boolean
   restoring: boolean
-  emptyHint: string
+  emptyHint?: string
+  /** Rich empty state — replaces the text hint when the caller needs more than
+   *  one line (e.g. the expert editor's starter chips). */
+  emptyContent?: React.ReactNode
+  /** Assistant action row (copy / like / favorite). Off for transcripts that are
+   *  not a stored conversation — their message ids resolve to nothing. */
+  showActions?: boolean
   onApproveTool: (toolUseId: string) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool: (toolUseId: string) => void
@@ -33,6 +40,8 @@ export function TranscriptView({
   isRequesting,
   restoring,
   emptyHint,
+  emptyContent,
+  showActions = true,
   onApproveTool,
   onRejectTool,
   onKillTool,
@@ -79,11 +88,11 @@ export function TranscriptView({
 
   return (
     <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', padding: '12px 0 8px' }}>
-      {!hasMessages && !restoring && (
+      {!hasMessages && !restoring && (emptyContent ?? (
         <div style={{ padding: '0 14px', color: '#999', fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
           {emptyHint}
         </div>
-      )}
+      ))}
       {segments.map((seg, i) => (
         <SegmentBlock
           key={getSegmentKey(seg)}
@@ -91,6 +100,7 @@ export function TranscriptView({
           nextSeg={segments[i + 1]}
           isLastSegment={i === segments.length - 1}
           isRequesting={isRequesting}
+          showActions={showActions}
           onApproveTool={onApproveTool}
           onRejectTool={onRejectTool}
           onKillTool={onKillTool}

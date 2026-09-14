@@ -8,7 +8,7 @@ import type { ToolInputSchema } from '../../tools/types'
 import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId } from '../../tools/builtin-gate'
 import { sanitizeSchema } from '../agent-utils'
 import type { AgentEngineOptions } from '../AgentEngine'
-import { ensureCache, getCachedSubAgentProfiles, getCachedMcpServers, refreshMcpServers } from '../mcp-cache'
+import { ensureCache, getCachedExpertProfiles, getCachedMcpServers, refreshMcpServers } from '../mcp-cache'
 
 export interface ToolCollectionDeps {
   mcpToolOwner: Map<string, string>
@@ -85,8 +85,8 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   const spawnAgentIdx = enabledTools.findIndex((t) => t.name === 'spawn_agent')
   if (spawnAgentIdx !== -1) {
     try {
-      const profiles = getCachedSubAgentProfiles()
-      const available = profiles.filter((p: any) => p.id !== 'subagent-canvas' && !p.isCanvasAgent && (p.enabled ?? true))
+      const profiles = getCachedExpertProfiles()
+      const available = profiles.filter((p: any) => p.enabled ?? true)
       if (available.length > 0) {
         const listStr = available
           .map((p: any) => {
@@ -97,7 +97,7 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
           .join('\n')
         enabledTools[spawnAgentIdx] = {
           ...enabledTools[spawnAgentIdx],
-          description: `${enabledTools[spawnAgentIdx].description}\n\nAvailable sub-agents:\n${listStr}`,
+          description: `${enabledTools[spawnAgentIdx].description}\n\nAvailable experts:\n${listStr}`,
         }
       }
     } catch {
@@ -106,12 +106,16 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   }
 
   // ── MCP tools (from connected MCP servers) ──────────────────────
-  const doMcpDiscovery = !deps.spawnSystemPrompt || !!deps.allowedMcpServersSet
+  // Skipped only for sessions whose toolset is explicitly pinned (tool studio,
+  // canvas): those carry their own restricted whitelist and never pick MCP
+  // tools. An expert spawn inherits the host toolset, so it discovers servers
+  // exactly like a normal session.
+  const doMcpDiscovery = !deps.spawnSystemPrompt || !deps.allowedToolsSet
   if (doMcpDiscovery) {
     deps.mcpToolOwner.clear()
     const mcpToolList: Array<{ name: string; serverId: string; description: string; inputSchema: any }> = []
     try {
-      // Force-refresh cache so we don't miss newly-connected servers (e.g. chrome-devtools).
+      // Force-refresh cache so we don't miss newly-connected servers.
       // pick_tool reads fresh via IPC, but collectEnabledTools uses the cache — without this
       // refresh, tools from a recently connected server would be missing from mcpToolOwner.
       await refreshMcpServers()

@@ -20,7 +20,7 @@ export interface AppView {
    *  without `toolId` this is the create-from-scratch flow. */
   toolEditing?: boolean
   /** `capability`: which tab is active (used by jump entries, e.g. after `install`). */
-  capabilityTab?: 'mcp' | 'skills' | 'subagent'
+  capabilityTab?: 'mcp' | 'skills' | 'expert'
   /** `settings`: which section to open (jump entries, e.g. search → 记忆). */
   settingsTab?: 'environment' | 'settings' | 'assistant' | 'memory' | 'experiences' | 'favorites'
 }

@@ -47,12 +47,12 @@ const HOST_METHOD_KEYS = [
   // browser (A-M1)
   'browserRunCode',
   'onSkillsChanged',
-  // skills / experience / sub-agents
+  // skills / experience / experts
   'getSkillPreferences',
   'setSkillPreferences',
   'readSkillRaw',
   'installSkill',
-  'subagentList',
+  'expertList',
   'listExperiences',
   'saveExperienceRecord',
   'deleteExperienceRecord',

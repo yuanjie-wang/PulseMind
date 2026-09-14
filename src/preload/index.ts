@@ -20,7 +20,7 @@ import type { ExperienceRecord, ExperienceDraft } from '../shared/types/experien
 import type { MemoryEntry, MemorySearchInput } from '../shared/types/memory'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../shared/types/knowledge'
 import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../shared/types/electron-bridge'
-import type { SubAgentProfile } from '../shared/types/subagent'
+import type { ExpertProfile } from '../shared/types/expert'
 import type { GitAction, GitResult } from '../shared/types/git'
 import type { AgentSessionCreateOptions } from '../shared/agent-protocol'
 
@@ -378,11 +378,11 @@ const electronAPI = {
   knowledgeAbortImport: (): void => ipcRenderer.send(IPC_CHANNELS.KNOWLEDGE_ABORT_IMPORT),
 
   // SubAgent
-  subagentList: (): Promise<SubAgentProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.SUBAGENT_LIST),
-  subagentCreate: (profile: SubAgentProfile): Promise<SubAgentProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.SUBAGENT_CREATE, profile),
-  subagentUpdate: (profile: SubAgentProfile): Promise<SubAgentProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.SUBAGENT_UPDATE, profile),
-  subagentDelete: (id: string): Promise<SubAgentProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.SUBAGENT_DELETE, id),
-  subagentReset: (): Promise<SubAgentProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.SUBAGENT_RESET),
+  expertList: (): Promise<ExpertProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERT_LIST),
+  expertCreate: (profile: ExpertProfile): Promise<ExpertProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERT_CREATE, profile),
+  expertUpdate: (profile: ExpertProfile): Promise<ExpertProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERT_UPDATE, profile),
+  expertDelete: (id: string): Promise<ExpertProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERT_DELETE, id),
+  expertReset: (): Promise<ExpertProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERT_RESET),
 
   // Canvas
   canvasPrepareWorkDir: (rectId: string, existingCode?: string, fresh?: boolean): Promise<string> =>

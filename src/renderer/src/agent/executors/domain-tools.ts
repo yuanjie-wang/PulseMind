@@ -95,10 +95,13 @@ export async function execConversationTool(ex: ToolExecContext, t: ToolUseBlock)
 }
 
 /** Expert knowledge scope (null = unrestricted): when an expert config pack
- *  with bound knowledge files is active, knowledge_search results and
+ *  with bound knowledge files is active — @-summoned via opts.expert or
+ *  delegated via opts.knowledgeScope — knowledge_search results and
  *  knowledge_read paths are confined to those files (+ their wiki outputs). */
 export function getExpertKnowledgeScope(ex: ToolExecContext): { ids: Set<string>; rawPaths: Set<string>; wikiPaths: Set<string> } | null {
-  const files = ex.opts.expert?.knowledgeFiles
+  // @-summoned pack first; delegated packs (spawn_agent) carry the same shape
+  // via opts.knowledgeScope — both runtimes converge knowledge tools equally.
+  const files = ex.opts.expert?.knowledgeFiles ?? ex.opts.knowledgeScope
   if (!files || files.length === 0) return null
   return {
     ids: new Set(files.map((f) => f.id)),

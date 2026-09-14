@@ -11,26 +11,17 @@ import type { PulseHost } from './host/types'
 
 import type { MCPManagedServer } from '../types/electron'
 import type { SkillPreferences } from '../skills/types'
-import type { SubAgentProfile } from '../../../shared/types/subagent'
+import type { ExpertProfile } from '../../../shared/types/expert'
 
 // ── State ────────────────────────────────────────────────────────────
 
 let mcpServers: MCPManagedServer[] = []
-let subAgentProfiles: SubAgentProfile[] = []
+let expertProfiles: ExpertProfile[] = []
 let skillPrefs: SkillPreferences = { enabledSkills: [], skillKeywords: {} }
 let ready = false
 let unsubs: (() => void)[] = []
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
-/** Ensure chrome-devtools always has a meaningful summary in the cache, even when connecting. */
-function ensureChromeSummary(servers: MCPManagedServer[]): MCPManagedServer[] {
-  const chrome = servers.find(s => s.id === 'chrome-devtools')
-  if (chrome && !chrome.summary) {
-    chrome.summary = 'Browser automation: page navigation, screenshot, click, type, JavaScript evaluation, DOM & console & network control'
-  }
-  return servers
-}
 
 /**
  * Defensive wrapper: getHost().mcpListServers can be missing if the
@@ -50,10 +41,10 @@ function safeMcpListServers(): Promise<MCPManagedServer[]> {
 }
 
 function refetchMcp(): void {
-  safeMcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {})
+  safeMcpListServers().then(data => { mcpServers = data }).catch(() => {})
 }
 function refetchSubAgents(): void {
-  getHost().subagentList().then(data => { subAgentProfiles = data }).catch(() => {})
+  getHost().expertList().then(data => { expertProfiles = data }).catch(() => {})
 }
 function refetchSkillPrefs(): void {
   getHost().getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {})
@@ -77,8 +68,8 @@ export function ensureCache(): Promise<void> {
 
   // Initial fetch — return a promise so callers can wait for cache readiness
   initPromise = Promise.all([
-    safeMcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {}),
-    getHost().subagentList().then(data => { subAgentProfiles = data }).catch(() => {}),
+    safeMcpListServers().then(data => { mcpServers = data }).catch(() => {}),
+    getHost().expertList().then(data => { expertProfiles = data }).catch(() => {}),
     getHost().getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {}),
   ]).then(() => {})
   return initPromise
@@ -89,7 +80,7 @@ export function disposeCache(): void {
   unsubs = []
   ready = false
   mcpServers = []
-  subAgentProfiles = []
+  expertProfiles = []
   skillPrefs = { enabledSkills: [], skillKeywords: {} }
 }
 
@@ -101,11 +92,11 @@ export function getCachedMcpServers(): MCPManagedServer[] {
 
 /** Force-refresh the cached MCP server list and return when done. */
 export function refreshMcpServers(): Promise<void> {
-  return safeMcpListServers().then(data => { mcpServers = ensureChromeSummary(data) }).catch(() => {})
+  return safeMcpListServers().then(data => { mcpServers = data }).catch(() => {})
 }
 
-export function getCachedSubAgentProfiles(): SubAgentProfile[] {
-  return subAgentProfiles
+export function getCachedExpertProfiles(): ExpertProfile[] {
+  return expertProfiles
 }
 
 export function getCachedSkillPrefs(): SkillPreferences {

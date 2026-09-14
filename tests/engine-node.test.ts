@@ -32,7 +32,7 @@ function makeMockHost(): PulseHost {
     onMcpServersChanged: record('onMcpServersChanged'),
     onSkillsChanged: record('onSkillsChanged'),
     mcpListServers: record('mcpListServers'),
-    subagentList: record('subagentList'),
+    expertList: record('expertList'),
     getSkillPreferences: record('getSkillPreferences'),
     getSettings: () => Promise.resolve({ locale: 'zh' }),
     // Everything else: generic async no-op recorded for assertions.

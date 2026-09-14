@@ -35,20 +35,26 @@ export class SpawnManager {
       ...this.engine.opts,
       conversationId: subConvId,
       hooks: undefined,
-      allowedTools: config.allowedTools,
-      allowedMcpServers: config.allowedMcpServers,
-      allowedSkills: config.allowedSkills,
+      // Capability is inherited from the parent session: delegating to an
+      // expert changes identity, not the tool/connector/skill set.
+      allowedTools: undefined,
+      allowedMcpServers: undefined,
+      allowedSkills: undefined,
       // The sub-agent runs its own prompt wholesale and must never inherit the
       // parent session's @-summoned expert pack (its prompt override AND its
-      // knowledge/skill scoping) through the spread.
+      // knowledge/skill scoping) through the spread. The DELEGATED pack's
+      // knowledge scope travels explicitly via config instead — the spawned
+      // engine enforces it like a @-summoned expert (see getExpertKnowledgeScope).
       systemPromptOverride: undefined,
       expert: undefined,
+      knowledgeScope: config.knowledgeScope,
     }
 
     const engine = new AgentEngine(subOpts)
 
     // Set spawn state (consumed by continueLoop)
     engine.spawnSystemPrompt = config.systemPrompt
+    engine.spawnTitle = config.title
     engine.onSpawnProgress = config.onProgress
     engine.completionPromise = new Promise<SubAgentResult>((resolve) => {
       engine.resolveCompletion = resolve
@@ -128,7 +134,9 @@ export class SpawnManager {
     const convId = this.engine.opts.conversationId
     if (convId && this.engine.messages.length > 0) {
       const firstText = this.engine.messages[0]?.contentBlocks?.find(b => b.type === 'text')?.text || ''
-      const title = firstText || 'Sub-agent'
+      // The injected kick-off message is a fixed string — prefer the delegated
+      // expert name + task so sub-agent sessions are distinguishable in the list.
+      const title = this.engine.spawnTitle || firstText || 'Sub-agent'
       const conv = agentMessagesToConversation(this.engine.messages, convId, title)
       getHost().saveConversation(conv).catch(err =>
         console.warn('[AgentEngine] Failed to save sub-agent conversation:', err)

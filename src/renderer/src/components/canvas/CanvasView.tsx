@@ -14,7 +14,6 @@ import RegionConfig from './RegionConfig'
 import { snapMove, snapResize } from '../../utils/snap'
 import { drawAnnotation } from '../../utils/canvasDrawUtils'
 import { createCanvasEngine, buildUserPrompt, type CanvasEngineHandle } from './canvasEngine'
-import type { SubAgentProfile } from '../../../../shared/types/subagent'
 import { useSettings } from '../../hooks/SettingsContext'
 
 // ── Constants ──
@@ -841,13 +840,8 @@ return JSON.stringify(results);
         // First generation for this rect: create workDir + engine
         const workDir = await window.electronAPI.canvasPrepareWorkDir(id, ann?.generatedCode, false) as string
 
-        // Check subagent-canvas profile for a referenced LLM profile
-        const subProfiles = await window.electronAPI.subagentList()
-        const canvasSub = subProfiles.find((p: SubAgentProfile) => p.id === 'subagent-canvas')
-        const linkedProfile = canvasSub?.profileId
-          ? (await window.electronAPI.getSettings()).profiles.find(p => p.id === canvasSub.profileId)
-          : undefined
-
+        // Canvas generates with the active LLM profile — it has no expert
+        // profile of its own (its persona and toolset are built in).
         // Fetch data paths and platform info
         const [dataPaths, platformInfo] = await Promise.all([
           window.electronAPI.getDataPaths(),
@@ -855,12 +849,12 @@ return JSON.stringify(results);
         ])
 
         handle = createCanvasEngine({
-          provider: linkedProfile?.provider || activeProfile?.provider,
-          apiKey: linkedProfile?.apiKey || (activeProfile?.apiKey ?? ''),
-          baseURL: linkedProfile?.baseURL || (activeProfile?.baseURL ?? ''),
-          model: linkedProfile?.model || (activeProfile?.model ?? ''),
-          maxTokens: linkedProfile?.maxTokens || (activeProfile?.maxTokens ?? 8192),
-          profileId: canvasSub?.profileId || settings.activeProfileId,
+          provider: activeProfile?.provider,
+          apiKey: activeProfile?.apiKey ?? '',
+          baseURL: activeProfile?.baseURL ?? '',
+          model: activeProfile?.model ?? '',
+          maxTokens: activeProfile?.maxTokens ?? 8192,
+          profileId: settings.activeProfileId,
           workDir,
           rectId: id,
           platformInfo,

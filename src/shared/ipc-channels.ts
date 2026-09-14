@@ -159,11 +159,11 @@ export const IPC_CHANNELS = {
   CANVAS_CLEAR_ALL: 'canvas:clear-all',
 
   // ── SubAgent ──
-  SUBAGENT_LIST: 'subagent:list',
-  SUBAGENT_CREATE: 'subagent:create',
-  SUBAGENT_UPDATE: 'subagent:update',
-  SUBAGENT_DELETE: 'subagent:delete',
-  SUBAGENT_RESET: 'subagent:reset',
+  EXPERT_LIST: 'expert:list',
+  EXPERT_CREATE: 'expert:create',
+  EXPERT_UPDATE: 'expert:update',
+  EXPERT_DELETE: 'expert:delete',
+  EXPERT_RESET: 'expert:reset',
 
   // ── Knowledge Base ──
   KNOWLEDGE_LIST: 'knowledge:list',

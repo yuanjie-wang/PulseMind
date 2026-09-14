@@ -3,12 +3,29 @@
 // ToolExecContext.spawnSubAgent, and result summarization for the parent.
 
 import { getHost } from '../host'
-import { composeExpertInstructions } from '../../../../shared/expert-context'
-import type { ToolUseBlock, TextBlock } from '../../types/agent'
+import {
+  composeExpertInstructions,
+  GENERAL_SUBAGENT_PROMPT,
+  toExpertRefCatalogs,
+  type ExpertRefCatalogs,
+} from '../../../../shared/expert-context'
+import { getCachedMcpServers } from '../mcp-cache'
 import type { ToolExecContext } from './context'
+import type { ExpertProfile } from '../../../../shared/types/expert'
+import type { ToolUseBlock, TextBlock } from '../../types/agent'
 
 /** spawn_agent: assistant text fed back to the parent. */
 const SUBAGENT_TEXT_MAX = 10_000
+
+/** 引用关系目录：技能取本会话的 SkillManager，连接器取同步的 MCP 缓存。
+ *  都读不到时把字段留空 → 指令里按 profile 记的名字原样列出。 */
+function resolveRefCatalogs(ex: ToolExecContext): ExpertRefCatalogs {
+  const skills = ex.opts.skillManager?.getAll().map((s) => s.definition)
+  return toExpertRefCatalogs({
+    skills,
+    connectors: getCachedMcpServers().map((s) => ({ id: s.id, name: s.name, summary: s.summary })),
+  })
+}
 
 // ── Spawn agent tool ───────────────────────────────────────────────────
 
@@ -17,64 +34,60 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
   try {
     const subAgentId = String(t.input?.subAgentId || '').trim()
     const task = String(t.input?.task || '')
-    if (!subAgentId) throw new Error('subAgentId is required — select the most suitable sub-agent from the available list')
     if (!task.trim()) throw new Error('task is required')
 
-    let allowedTools: string[] = ['read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec']
-    let allowedMcpServers: string[] = ['chrome-devtools']
-    let allowedSkills: string[] | undefined
-    let maxTokens: number | undefined
-    let maxLoopIterations: number | undefined
-    let profile: any = null
-    let disabledError: Error | null = null
-    try {
-      const profiles = await getHost().subagentList()
-      profile = profiles.find((p: any) => p.id === subAgentId) || null
-      if (profile) {
-        if (profile.enabled === false) {
-          disabledError = new Error(`子代理 "${profile.name || subAgentId}" 已关闭，请在能力中心 → 专家 中启用后再使用`)
+    // Capability is inherited from the host session — an expert config pack
+    // only supplies identity, never a tool/connector/skill whitelist. Run
+    // parameters (model / token budget / loop cap) come from the session too,
+    // so the delegated engine budgets like the host one.
+    let profile: ExpertProfile | null = null
+    if (subAgentId) {
+      try {
+        const profiles = await getHost().expertList()
+        profile = profiles.find((p) => p.id === subAgentId) || null
+        if (profile && profile.enabled === false) {
+          throw new Error(`专家 "${profile.name || subAgentId}" 已关闭，请在能力中心 → 专家 中启用后再使用`)
         }
-        if (profile.allowedTools?.length) allowedTools = profile.allowedTools
-        if (profile.allowedMcpServers?.length) allowedMcpServers = profile.allowedMcpServers
-        if (profile.allowedSkills?.length) allowedSkills = profile.allowedSkills
-        if (profile.maxTokens) maxTokens = profile.maxTokens
-        if (profile.maxLoopIterations) maxLoopIterations = profile.maxLoopIterations
-      } else {
-        console.warn(`[execSpawnAgent] Sub-agent "${subAgentId}" not found, falling back to defaults`)
+        if (!profile) {
+          console.warn(`[execSpawnAgent] Expert "${subAgentId}" not found, falling back to a general sub-agent`)
+        }
+      } catch (err) {
+        // A disabled expert is a user-visible rejection, not a lookup miss —
+        // rethrow it; any other failure (IPC hiccup) degrades to the default.
+        if (err instanceof Error && err.message.includes('已关闭')) throw err
       }
-    } catch { /* fallback */ }
-    if (disabledError) throw disabledError
+    }
 
     // Expert config pack: compose the four structured sections instead of a
-    // bare basePrompt; bound knowledge files ride along as a Bound Knowledge
-    // index (the sub-session's knowledge tools stay global here — the pack's
-    // file list already tells the model where to look).
+    // bare basePrompt; bound knowledge files ride along BOTH as a Bound
+    // Knowledge index in the prompt AND as an enforced knowledgeScope on the
+    // spawned engine — matching the @-summon runtime's convergence strength.
     const basePrompt = profile?.basePrompt || ''
-    const knowledgeFiles: Array<{ id: string; title: string; filePath: string }> = []
+    const knowledgeFiles: Array<{ id: string; title: string; filePath: string; wikiPages: string[] }> = []
     if (profile?.knowledgeFileIds?.length) {
       const km = ex.opts.knowledgeManager
       if (km) {
         const rows = await Promise.all((profile.knowledgeFileIds as string[]).map(id => km.getFile(id).catch(() => null)))
         for (const f of rows) {
-          if (f) knowledgeFiles.push({ id: f.id, title: f.title || f.filePath, filePath: f.filePath })
+          if (f) knowledgeFiles.push({ id: f.id, title: f.title || f.filePath, filePath: f.filePath, wikiPages: f.wikiOutputs ?? [] })
         }
       }
     }
     const expertBlock = profile
       ? composeExpertInstructions(
-          { name: profile.name || subAgentId, basePrompt, methodology: profile.methodology, outputSpec: profile.outputSpec, constraints: profile.constraints },
-          knowledgeFiles
+          {
+            name: profile.name || subAgentId,
+            basePrompt,
+            methodology: profile.methodology,
+            outputSpec: profile.outputSpec,
+            constraints: profile.constraints,
+            skillNames: profile.skillNames,
+            mcpServerIds: profile.mcpServerIds,
+          },
+          knowledgeFiles,
+          resolveRefCatalogs(ex)
         )
-      : `You are a sub-agent executing a delegated task.
-
-Guidelines:
-- Focus exclusively on the task above. Ignore anything not relevant to it.
-- You CANNOT install skills or modify tool preferences.
-- When you complete the task, provide a concise summary of your findings.
-- Do NOT ask the user for input — work autonomously.`
-
-    const toolList = allowedTools.map(t => `- \`${t}\``).join('\n')
-    const mcpList = allowedMcpServers.map(id => `- ${id}`).join('\n')
+      : GENERAL_SUBAGENT_PROMPT
 
     // Append available skills context
     let skillsCtx = ''
@@ -83,20 +96,19 @@ Guidelines:
       if (skillsAppendix) skillsCtx = '\n\n' + skillsAppendix
     } catch { /* non-critical */ }
 
-    const systemPrompt = `${expertBlock}\n\n## Your Task\n${task}\n\n## Available Tools\n${toolList}\n\n## Available MCP Servers\n${mcpList || '(none)'}${skillsCtx}`
+    const systemPrompt = `${expertBlock}\n\n## Your Task\n${task}${skillsCtx}`
 
-    console.log(`[spawn_agent] subAgentId="${subAgentId}" prompt length=${systemPrompt.length} first 200 chars:`, systemPrompt.slice(0, 200))
+    console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" prompt length=${systemPrompt.length} first 200 chars:`, systemPrompt.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
     ex.notify()
 
     const handle = ex.spawnSubAgent!({
       systemPrompt,
       initialMessages: [],
-      allowedTools,
-      allowedMcpServers,
-      allowedSkills,
-      maxTokens: maxTokens || ex.opts.maxTokens,
-      maxLoopIterations: maxLoopIterations || 20,
+      title: `${profile?.name || '子代理'}: ${task.slice(0, 60)}`,
+      knowledgeScope: knowledgeFiles.length > 0 ? knowledgeFiles : undefined,
+      maxTokens: ex.opts.maxTokens,
+      maxLoopIterations: 20,
       onProgress: (summary) => {
         // Rolling activity log (cap 8 lines) so the user sees the sub-agent moving live.
         const lines = (t.output || '').split('\n')

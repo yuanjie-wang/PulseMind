@@ -46,17 +46,17 @@ PulseMind 是一款桌面端 AI 助手应用，搭载自主 Agent 引擎，支�
 ### Agent 引擎
 自主 Agent 循环：用户消息 → LLM 流式响应 → 工具自动执行（只读工具免批、敏感操作需确认）→ 结果回传 → 继续循环直到完成。支持流式块实时渲染、自动上下文压缩（智能摘要旧工具结果以节省 Token 窗口）、子代理并发调用（标题生成、记忆提取、经验萃取、技能匹配等）。
 
-### 子代理系统
-支持创建自定义子代理角色，为每个子代理独立配置工具集和行为提示词。内置通用助手、画布生成等角色模板，主 Agent 可在任务中通过 spawn_agent 工具动态调用子代理协作处理复杂任务。
+### 专家系统
+支持创建专家角色（人设 / 方法论 / 输出规范 / 边界约束 + 绑定私有知识），在对话里用 @ 召唤切换身份，主 Agent 也可通过 spawn_agent 工具把任务委托给某个专家；专家与全局共用同一套工具、连接器与技能，能力差异只体现在身份与知识上。
 
 ### 多模型支持
 通过适配器模式同时支持 Anthropic 和 OpenAI 两大协议，可接入任意兼容 OpenAI 接口的服务（包括国内大模型厂商）。支持创建多套 LLM 配置，在提供商、模型、密钥之间自由切换。
 
 ### 工具系统
-内置 27 个工具，覆盖文件操作（读/写/编辑/搜索/修补）、命令执行（终端实时输出、跨平台）、浏览器操作、MCP 工具调用、记忆检索、知识库检索、经验读取、工具执行结果搜索、内联交互等场景。支持 YOLO 模式一键切换完全自主运行。
+内置 27 个工具，覆盖文件操作（读/写/编辑/搜索/修补）、命令执行（终端实时输出、跨平台）、浏览器操作、MCP 工具调用、记忆检索、知识库检索、经验读取、工具执行结果搜索、内联交互等场景。输入框的授权按钮提供始终询问 / 按需确认 / 全部允许三档，随时切换自主程度。
 
 ### MCP 协议扩展
-集成 MCP（Model Context Protocol）服务器管理，可注册任意 MCP 服务器扩展 AI 能力。内置 Chrome DevTools MCP，AI 可直接操控浏览器完成导航、点击、输入、截图、内容提取。
+集成 MCP（Model Context Protocol）服务器管理，可注册任意 MCP 服务器扩展 AI 能力。浏览器能力由应用内置（随包 Chromium，或系统 Chrome/Edge），无需额外配置即可完成导航、点击、输入、截图、内容提取。
 
 ### 技能系统
 通过导入 .zip 技能包扩展 AI 能力。每个技能包含 SKILL.md 文件，设有 YAML 头部信息和系统提示模板，可深度塑造 AI 的行为方式。支持触发关键词自动激活。
@@ -128,10 +128,10 @@ Create custom agent roles with independently configured tool sets and behavior p
 Supports both Anthropic and OpenAI protocols via an adapter pattern. Compatible with any OpenAI-compatible API service. Create multiple LLM profiles and switch freely between providers, models, and keys.
 
 ### Tool System
-27 built-in tools covering file operations (read/write/edit/search/patch), command execution (real-time terminal output), browser automation, MCP tool calls, memory retrieval, knowledge base search, experience reading, tool result search, and inline interaction. YOLO mode for one-click fully autonomous operation.
+27 built-in tools covering file operations (read/write/edit/search/patch), command execution (real-time terminal output), browser automation, MCP tool calls, memory retrieval, knowledge base search, experience reading, tool result search, and inline interaction. The composer's approval button switches between always-ask / ask-when-leaving-workspace / allow-all on the fly.
 
 ### MCP Protocol Extension
-Built-in MCP (Model Context Protocol) server management — register any MCP server to extend AI capabilities. Comes with Chrome DevTools MCP for browser navigation, clicking, typing, screenshots, and content extraction.
+MCP (Model Context Protocol) server management — register any MCP server to extend AI capabilities. Browser capability ships with the app (bundled Chromium, or system Chrome/Edge), so navigation, clicking, typing, screenshots and content extraction work with no extra setup.
 
 ### Skill System
 Import .zip skill packs to extend AI capabilities. Each skill includes a SKILL.md file with YAML frontmatter and system prompt template. Supports trigger keywords for automatic activation in relevant contexts.

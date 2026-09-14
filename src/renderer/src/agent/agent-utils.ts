@@ -165,9 +165,13 @@ export const MAX_LOOP_ITERATIONS = 50
 export interface SpawnSubAgentConfig {
   systemPrompt: string
   initialMessages: import('../types/agent').AgentMessage[]
-  allowedTools?: string[]
-  allowedMcpServers?: string[]
-  allowedSkills?: string[]
+  /** Conversation-list title for the sub-agent session (expert name + task). */
+  title?: string
+  /** Knowledge files of the DELEGATED expert pack, enforced by
+   *  getExpertKnowledgeScope inside the spawned engine. The full pack is never
+   *  inherited — its instructions are baked into systemPrompt — so the scope
+   *  travels separately to keep both runtimes' convergence behavior equal. */
+  knowledgeScope?: import('../../../shared/types/expert').ExpertRuntimeContext['knowledgeFiles']
   maxTokens?: number
   maxLoopIterations?: number
   onProgress?: (summary: string) => void

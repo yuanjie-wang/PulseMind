@@ -15,7 +15,7 @@ import { registerFavoriteHandlers } from './favorites.handler'
 import { registerMcpHandlers } from './mcp.handler'
 import { registerCanvasHandlers } from './canvas.handler'
 import { registerKnowledgeHandlers } from './knowledge.handler'
-import { registerSubAgentHandlers } from './subagent.handler'
+import { registerExpertHandlers } from './expert.handler'
 import { registerGitHandlers } from './git.handler'
 import { registerProjectHandlers } from './project.handler'
 import { registerRoutineHandlers } from './routine.handler'
@@ -51,7 +51,7 @@ export function registerIpcHandlers(): void {
   registerMcpHandlers()
   registerCanvasHandlers()
   registerKnowledgeHandlers()
-  registerSubAgentHandlers()
+  registerExpertHandlers()
   registerGitHandlers()
   registerProjectHandlers()
   registerRoutineHandlers()

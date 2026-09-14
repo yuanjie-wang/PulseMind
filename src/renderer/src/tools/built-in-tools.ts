@@ -559,7 +559,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── spawn_agent ────────────────────────────────────────────────────
   {
     name: 'spawn_agent',
-    description: 'Delegate a task to a sub-agent. Runs independently with isolated context.',
+    description: 'Delegate a task to a sub-agent. Runs independently with isolated context and the same tools as this session.',
     category: 'system',
     triggers: ['delegate', 'subtask', 'sub-agent', 'spawn', 'background task'],
     input_schema: {
@@ -568,7 +568,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         subAgentId: {
           type: 'string',
           description:
-            'The ID of the sub-agent to use. Choose the most suitable one from the available sub-agent list (see instructions for the full list with descriptions).',
+            'Optional. ID of the expert (from the available expert list) the sub-agent should work as. Omit to delegate to a general-purpose sub-agent.',
         },
         task: {
           type: 'string',
@@ -576,7 +576,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
             'Detailed description of the task to delegate. Be specific about what you want the sub-agent to accomplish, what context to use, and what format the results should be in.',
         },
       },
-      required: ['subAgentId', 'task'],
+      required: ['task'],
     },
     instructions: toolInstructions.spawn_agent,
     builtIn: true,

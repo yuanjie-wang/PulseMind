@@ -109,14 +109,18 @@ export function SegmentBlock({
   nextSeg,
   isLastSegment,
   highlightedMsgId,
+  showActions = true,
   ...viewProps
 }: Omit<SegmentViewProps, 'showActions'> & {
   /** The following segment, if any — decides whether actions show. */
   nextSeg?: Segment
   highlightedMsgId?: string | null
+  /** Caller-level switch for the action row (see TranscriptViewProps). */
+  showActions?: boolean
 }): React.ReactElement {
   const anchorId = segmentAnchorId(seg)
   const highlighted = !!highlightedMsgId && highlightedMsgId === anchorId
+  const actionsVisible = showActions && seg.type === 'single' && seg.msg.role === 'assistant' && nextSeg?.type !== 'execution'
   return (
     <div
       id={anchorId ? `chat-msg-${anchorId}` : undefined}
@@ -131,7 +135,7 @@ export function SegmentBlock({
       <SegmentView
         seg={seg}
         isLastSegment={isLastSegment}
-        showActions={seg.type === 'single' && seg.msg.role === 'assistant' && nextSeg?.type !== 'execution'}
+        showActions={actionsVisible}
         {...viewProps}
       />
     </div>

@@ -19,19 +19,16 @@ import {
 import { useTranslation } from '../../i18n/useTranslation'
 import MCPSettings from '../settings/MCPSettings'
 import SkillsSettings from '../settings/SkillSettings'
-import SubAgentSettings from '../settings/SubAgentSettings'
+import ExpertSettings from '../settings/ExpertSettings'
 import type { MCPSettingsHandle } from '../settings/MCPSettings'
-import type { SubAgentSettingsHandle } from '../settings/SubAgentSettings'
-import type { ToolState } from '../../tools/types'
+import type { ExpertSettingsHandle } from '../settings/ExpertSettings'
 import type { SkillState } from '../../skills/types'
 
-export type CapabilityTab = 'mcp' | 'skills' | 'subagent'
+export type CapabilityTab = 'mcp' | 'skills' | 'expert'
 
 export interface CapabilityCenterProps {
   /** Pre-select a tab (used by jump-to-capability entries, e.g. after `install`). */
   initialTab?: CapabilityTab
-  tools?: ToolState[]
-  onToggleTool?: (name: string) => void
   skills?: SkillState[]
   onToggleSkill?: (name: string) => void
   onImportSkill?: () => void
@@ -42,7 +39,6 @@ export interface CapabilityCenterProps {
 
 export default function CapabilityCenter({
   initialTab,
-  tools,
   skills,
   onToggleSkill,
   onImportSkill,
@@ -57,12 +53,12 @@ export default function CapabilityCenter({
   // set below reproduces that; unvisited panes stay lazily unmounted.
   const [visited, setVisited] = useState<ReadonlySet<CapabilityTab>>(() => new Set([initialTab ?? 'mcp']))
   const mcpRef = useRef<MCPSettingsHandle>(null)
-  const subAgentRef = useRef<SubAgentSettingsHandle>(null)
+  const expertRef = useRef<ExpertSettingsHandle>(null)
 
   const tabs: Array<{ key: CapabilityTab; icon: React.ReactNode; label: string }> = [
     { key: 'mcp', icon: <ApiOutlined />, label: t('appLayout.mcp') },
     { key: 'skills', icon: <ThunderboltOutlined />, label: t('appLayout.skills') },
-    { key: 'subagent', icon: <ApartmentOutlined />, label: t('expertCenter.tabLabel') }
+    { key: 'expert', icon: <ApartmentOutlined />, label: t('expertCenter.tabLabel') }
   ]
 
   const selectTab = (key: CapabilityTab): void => {
@@ -103,13 +99,13 @@ export default function CapabilityCenter({
         )}
       </>
     ),
-    subagent: (
+    expert: (
       <>
-        <Button size="small" icon={<PlusOutlined />} onClick={() => subAgentRef.current?.openAddModal()}>
+        <Button size="small" icon={<PlusOutlined />} onClick={() => expertRef.current?.openAddModal()}>
           {t('expertCenter.newExpert')}
         </Button>
         <Tooltip title={t('expertCenter.resetConfirmTitle')}>
-          <Button size="small" icon={<UndoOutlined />} onClick={() => subAgentRef.current?.resetToDefaults()}>
+          <Button size="small" icon={<UndoOutlined />} onClick={() => expertRef.current?.resetToDefaults()}>
             {t('expertCenter.resetDefaults')}
           </Button>
         </Tooltip>
@@ -127,7 +123,7 @@ export default function CapabilityCenter({
         importError={importError}
       />
     ),
-    subagent: <SubAgentSettings ref={subAgentRef} tools={tools} skills={skills} />
+    expert: <ExpertSettings ref={expertRef} />
   }
 
   return (

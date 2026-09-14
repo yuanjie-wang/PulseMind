@@ -26,10 +26,11 @@ import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
 import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, deriveConvType } from '../storage/conversation.db'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { projectStore } from '../storage/project-store'
-import { subAgentStore } from '../storage/subagent-store'
+import { expertStore } from '../storage/expert-store'
+import { serverManager } from '../mcp/MCPServerManager'
 import { getKnowledgeFilesByIds } from '../storage/knowledge.db'
-import { composeExpertInstructions } from '../../shared/expert-context'
-import type { ExpertRuntimeContext } from '../../shared/types/subagent'
+import { composeExpertInstructions, toExpertRefCatalogs, type ExpertRefCatalogs } from '../../shared/expert-context'
+import type { ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
 import { normalizeSandboxPolicy, pickApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
@@ -67,15 +68,10 @@ interface SessionEntry {
     approvalOverride?: SandboxApprovalMode
   }
   /** Last expert context resolved by refreshExpertContext. refreshOptions
-   *  replaces the option bag wholesale, so the expert pack + its tool
-   *  bindings must be re-attached there (a settings refresh mid-session must
-   *  not silently strip the @-summoned role). */
-  expertState?: {
-    expert: ExpertRuntimeContext | null
-    allowedTools?: string[]
-    allowedMcpServers?: string[]
-    allowedSkills?: string[]
-  }
+   *  replaces the option bag wholesale, so the expert pack must be re-attached
+   *  there (a settings refresh mid-session must not silently strip the
+   *  @-summoned role). */
+  expertState?: ExpertRuntimeContext | null
 }
 
 /** Global concurrency guard (M2.2): at most N agent loops run at once;
@@ -448,9 +444,8 @@ class AgentSessionManagerImpl {
       const expertId = getConversationExpertId(sessionId)
       if (!expertId && !entry.engine.opts.expert) return // ordinary session, nothing to do
       let next: ExpertRuntimeContext | null = null
-      let profile: import('../../shared/types/subagent').SubAgentProfile | null = null
       if (expertId) {
-        profile = subAgentStore.getById(expertId)
+        const profile = expertStore.getById(expertId)
         if (profile && profile.enabled !== false) {
           const knowledgeFiles = getKnowledgeFilesByIds(profile.knowledgeFileIds || []).map((f) => {
             let wikiPages: string[] = []
@@ -460,26 +455,28 @@ class AgentSessionManagerImpl {
           next = {
             id: profile.id,
             name: profile.name,
-            instructions: composeExpertInstructions(profile, knowledgeFiles),
+            instructions: composeExpertInstructions(profile, knowledgeFiles, this.resolveExpertRefCatalogs()),
             knowledgeFiles,
           }
         } else {
           console.warn(`[SessionManager] expert "${expertId}" missing or disabled — falling back to ordinary session`)
-          profile = null
         }
       }
-      // Always pass the bindings object (all-undefined when unbound) so a
-      // previous expert's tool whitelists get cleared on unbind/switch.
-      const bindings = {
-        allowedTools: profile?.allowedTools,
-        allowedMcpServers: profile?.allowedMcpServers,
-        allowedSkills: profile?.allowedSkills,
-      }
-      entry.engine.applyExpertContext(next, bindings)
-      entry.expertState = { expert: next, ...bindings }
+      entry.engine.applyExpertContext(next)
+      entry.expertState = next
     } catch (err) {
       console.warn('[SessionManager] refreshExpertContext failed:', err)
     }
+  }
+
+  /** 引用关系（常用技能 / 连接器）的目录：缺省不省略字段就退化成原始 id 注入，
+   *  所以这里只在能读到目录时才传，读不到时把字段留空。 */
+  private resolveExpertRefCatalogs(): ExpertRefCatalogs {
+    const managers = this.managers
+    return toExpertRefCatalogs({
+      skills: managers?.skillManager.getAll().map((s) => s.definition),
+      connectors: serverManager.listServers().map((s) => ({ id: s.id, name: s.name, summary: s.summary })),
+    })
   }
 
   hasSession(sessionId: string): boolean {
@@ -487,11 +484,13 @@ class AgentSessionManagerImpl {
   }
 
   /** Kick off an agent loop; progress arrives as session events. Requests
-   *  beyond the global concurrency cap queue FIFO. */
-  async ask(sessionId: string, content: string): Promise<void> {
+   *  beyond the global concurrency cap queue FIFO. `pageContext` (the browser
+   *  extension's current tab) is per-turn state: it rides on the engine opts
+   *  and lands in the prompt's dynamic (non-cached) Current Page section. */
     const entry = await this.ensureEntry(sessionId)
     await this.refreshSandboxContext(sessionId, entry)
     await this.refreshExpertContext(sessionId, entry)
+    entry.engine.opts.pageContext = pageContext
     if (this.runningLoops >= MAX_CONCURRENT_LOOPS) {
       this.emit(sessionId, { type: 'status', status: 'queued', attempt: this.waitingLoops.length + 1 })
       await new Promise<void>((resolve) => this.waitingLoops.push(resolve))
@@ -608,10 +607,8 @@ class AgentSessionManagerImpl {
       // (and the session-review hooks, which the refresh used to drop).
       hooks: entry.pinned.systemPromptOverride ? undefined : this.buildHooks(profile, managers, sessionId),
       systemPromptOverride: entry.pinned.systemPromptOverride,
-      allowedTools: entry.pinned.allowedTools ?? entry.expertState?.allowedTools,
-      allowedMcpServers: entry.expertState?.allowedMcpServers,
-      allowedSkills: entry.expertState?.allowedSkills,
-      expert: entry.expertState?.expert ?? undefined,
+      allowedTools: entry.pinned.allowedTools,
+      expert: entry.expertState ?? undefined,
     })
   }
 

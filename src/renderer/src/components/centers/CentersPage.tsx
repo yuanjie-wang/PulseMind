@@ -11,14 +11,12 @@ import { useNavigationStore } from '../../stores/navigationStore'
 import KnowledgePanel from '../knowledge/KnowledgePanel'
 import type { KnowledgePanelHandle, KnowledgePanelState } from '../knowledge/KnowledgePanel'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
-import type { ToolState } from '../../tools/types'
 import type { SkillState } from '../../skills/types'
 import CapabilityCenter from '../capability/CapabilityCenter'
 import ToolCenter from '../tool-studio/ToolCenter'
 
 export interface CentersPageProps {
   knowledgeManager?: KnowledgeManager
-  tools?: ToolState[]
   skills?: SkillState[]
   onToggleSkill?: (name: string) => void
   onImportSkill?: () => void
@@ -129,7 +127,6 @@ function KnowledgePane({ knowledgeManager }: { knowledgeManager: KnowledgeManage
 
 export function CentersPage({
   knowledgeManager,
-  tools,
   skills,
   onToggleSkill,
   onImportSkill,
@@ -149,7 +146,6 @@ export function CentersPage({
       return (
         <CapabilityCenter
           initialTab={view.capabilityTab}
-          tools={tools}
           skills={skills}
           onToggleSkill={onToggleSkill}
           onImportSkill={onImportSkill}

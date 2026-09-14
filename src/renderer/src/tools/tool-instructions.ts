@@ -322,17 +322,16 @@ Read the full content of a past workflow experience when it is relevant to the c
 
   spawn_agent: `## spawn_agent
 
-Select the **most suitable sub-agent** from the available list and delegate a task to it.
+Delegate a task to a sub-agent. The sub-agent runs with the same tools as this session, in its own isolated context.
 
 ### Parameters
-- **subAgentId** (required) — The ID of the sub-agent to use. Choose the one best suited for the task.
+- **subAgentId** (optional) — ID of an expert from the available expert list, when the task needs that expertise. Omit for a general-purpose sub-agent.
 - **task** (required) — Detailed description of what the sub-agent should do
 
 ### How it works
-1. Review the available sub-agents list above — each has different tools, MCP servers, and expertise
-2. Pick the one best suited for the task at hand
-3. The sub-agent starts with its own base prompt and runs independently
-4. When complete, its results are returned as the tool result
+1. Review the available experts list above — pick one when its expertise fits the task, otherwise omit the ID
+2. The sub-agent starts with that expert's persona and runs independently
+3. When complete, its results are returned as the tool result
 
 ### Guidelines
 - Use for complex, self-contained sub-tasks (research, analysis, code review, refactoring)
@@ -386,17 +385,17 @@ Select and activate hidden tools — MCP (Model Context Protocol) tools from ser
 Built-in categories auto-activate when the conversation mentions their topic (e.g. "commit", "branch", "记得", "知识库"), but you can also activate them explicitly here.
 
 ### Mode 1 — Direct name lookup
-Provide the exact **names** of tools to activate them directly (e.g. list_pages, git_status, memory_search).
+Provide the exact **names** of tools to activate them directly (e.g. browser, git_status, memory_search).
 
 ### Mode 2 — Load a unit
-Provide a **serverName** — a server id (e.g. chrome-devtools) or a built-in category (e.g. git, memory, knowledge) — to load all its tools.
+Provide a **serverName** — an MCP server id, or a built-in category (e.g. git, memory, knowledge, browser) — to load all its tools.
 
 ### Mode 3 — Intent-based matching
 Provide an **intent** describing what you need, and a sub-agent LLM selects the best matching servers and categories.
 
 ### Parameters
 - **names** (optional) — Array of exact tool names to activate directly. When provided, intent is ignored.
-- **serverName** (optional) — Server id or built-in category id (e.g. chrome-devtools, git, memory, knowledge) to load all its tools.
+- **serverName** (optional) — MCP server id or built-in category id (e.g. git, memory, knowledge, browser) to load all its tools.
 - **intent** (optional) — Describe what you want to accomplish. Used for automatic tool matching.
 
 One of "names", "serverName", or "intent" must be provided.
@@ -559,6 +558,8 @@ return await tab.url()
 \`\`\`
 
 ### Rules
+- The sandbox has NO timers — \`setTimeout\` is not defined. If a wait is unavoidable, use \`await tab.waitForTimeout(ms)\`; otherwise re-\`domSnapshot()\` instead of sleeping.
+- \`tabs.list()\` items are plain data (\`t.url\`/\`t.title\` as properties). A Tab from \`get()\`/\`open()\` is a live handle: \`await tab.url()\` / \`await tab.title()\` are async methods.
 - Tell the USER "打开浏览器/查看页面" — never mention kernel, CDP, or vm in user-facing text.
 - http/https only. A call times out at 60s: split work into multiple calls instead of one mega-script.`,
 }
