@@ -31,16 +31,17 @@ const electronAPI = {
   getWindowControls: (): WindowControlsLayout => resolveWindowControlsLayout(process.platform),
 
   // Debug
-  // ── Projects / sandbox / audit (PLAN-0.4.0 M3) ──
+  // ── Projects (welcome page picker; management UI removed) ──
   projectList: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_LIST),
   projectGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_GET, id),
-  projectCreate: (input: { name: string; workspaceDir: string; icon?: string; sandbox?: unknown }) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, input),
-  projectUpdate: (id: string, patch: { name?: string; icon?: string; sandbox?: unknown }) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_UPDATE, id, patch),
+  projectCreate: (input: { name: string; workspaceDir: string; icon?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, input),
+  projectUpdate: (id: string, patch: { name?: string; icon?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_UPDATE, id, patch),
   projectDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
+  projectValidateDir: (workspaceDir: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROJECT_VALIDATE_DIR, workspaceDir),
   setConversationProject: (id: string, projectId: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROJECT, id, projectId),
   setConversationExpert: (id: string, expertId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_EXPERT, id, expertId),
   setConversationApprovalMode: (id: string, mode: unknown) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, id, mode),
-  auditList: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.AUDIT_LIST, limit),
   routineList: () => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_LIST),
   routineGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_GET, id),
   routineCreate: (input: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_CREATE, input),
@@ -79,7 +80,6 @@ const electronAPI = {
   },
   toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) =>
     ipcRenderer.invoke(IPC_CHANNELS.TOOLBRIDGE_INVOKE, toolId, method, params),
-  sandboxDetect: () => ipcRenderer.invoke(IPC_CHANNELS.SANDBOX_DETECT),
 
   dbCheck: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.DB_CHECK),
 

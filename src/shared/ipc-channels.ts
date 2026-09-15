@@ -198,11 +198,10 @@ export const IPC_CHANNELS = {
   PROJECT_CREATE: 'project:create',
   PROJECT_UPDATE: 'project:update',
   PROJECT_DELETE: 'project:delete',
+  PROJECT_VALIDATE_DIR: 'project:validate-dir',
   CONVERSATION_SET_PROJECT: 'conversation:set-project',
   CONVERSATION_SET_EXPERT: 'conversation:set-expert',
   CONVERSATION_SET_APPROVAL_MODE: 'conversation:set-approval-mode',
-  AUDIT_LIST: 'audit:list',
-  SANDBOX_DETECT: 'sandbox:detect',
 
   // ── PLAN-0.4.0 M4: routines ──
   ROUTINE_LIST: 'routine:list',

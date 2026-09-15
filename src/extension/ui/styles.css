@@ -41,7 +41,7 @@
   --pm-tool-pending-bg: #fff7e6; /* needsAction: 待批准 */
   --pm-tool-pending-hover: #ffe7ba;
   --pm-tool-pending-border: #ffd591;
-  --pm-warn: #d46b08; /* 待批准提示字色 / 全部允许的图标与文案（InputArea UNRESTRICTED_COLOR） */
+  --pm-warn: #d46b08; /* 待批准提示字色 / 全部允许的图标与文案（components/chat/InputArea.tsx 的 UNRESTRICTED_COLOR，同一个值） */
   --pm-ok: #4ec9b0; /* 完成勾 */
   --pm-err: #f44747; /* 失败 / 已拒绝 */
 
@@ -1093,6 +1093,19 @@ button {
   font-size: 14px;
 }
 
+/* 授权按钮不参与页脚的行内挤压：那一行是 授权 + 弹性空白 + 模型 + 发送，行宽
+   只有 324px（面板 380 − composer 左右 2×16 − 输入卡左右 2×12）。模型标签上限
+   曾是 160px，长模型名把整行挤爆时 flex 按基准宽分摊收缩，授权按钮被压窄，
+   「按需确认」在固定的 24px 高里折成两行（用户实报）。收缩一律由模型按钮的
+   省略号吸收（见 .pm-model-label），这里直接退出分配并禁止折行，双保险。 */
+.pm-approval {
+  flex: none;
+}
+
+.pm-approval-label {
+  white-space: nowrap;
+}
+
 /* 下拉箭头：InputArea 授权按钮给的是 fontSize:10 / color:#bbb / marginLeft:4 ——
    antd 的 Button 根是 inline-flex + gap:iconGap，所以那 4px 是加在 gap 之上的
    （文案到箭头 12px）；模型按钮不传样式，箭头继承按钮的 12px / #666，间距只有
@@ -1104,8 +1117,13 @@ button {
   color: var(--pm-faint);
 }
 
+/* 120px：页脚静止态最宽组合（授权「按需确认」≈101px + 模型按钮的壳 7+8+10+7
+   ≈32px + 发送 24 + 行 gap 3×4=12 ≈ 169px）在 324px 行宽里给名字留出的量，四字
+   档位名（智谱 GLM-4）完整显示，更长的在这里截成省略号。overflow:hidden 顺带把
+   这个 span 的 flex 最小尺寸归零 —— 就算行真被挤压（本地化更长的授权文案等），
+   先缩短的也是它，而不是旁边的授权按钮（.pm-approval 已 flex:none）。 */
 .pm-model-label {
-  max-width: 160px;
+  max-width: 120px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

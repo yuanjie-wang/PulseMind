@@ -3,8 +3,6 @@
 //   1. capability declaration in the tool's manifest (M6.5)
 //   2. path jail (fs ops are jailed to the tool's own directory — D16)
 //   3. audit (every call recorded — M6.7)
-// The project sandbox policy further tightens network access (policy wins
-// over declaration, 附录 C).
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -14,7 +12,6 @@ import { toolStore } from '../storage/tool-store'
 import { TOOLS_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
 import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
-import { DEFAULT_SANDBOX_POLICY } from '../../shared/sandbox/policy'
 import { homedir, platform } from 'node:os'
 import type { UserTool } from '../../shared/types/user-tool'
 
@@ -122,7 +119,6 @@ function resolveToolPath(toolId: string, target: unknown): string {
     operation: 'write', // strictest read for both read/write ops is equivalent here: deny-root check
     denyRoots: buildBaselineDenyRoots(homedir(), platform()),
     workspaceDir: toolDir,
-    policy: DEFAULT_SANDBOX_POLICY,
   })
   if (!decision.ok) throw bridgeError('PATH_OUTSIDE_TOOL_DIR', decision.reason)
   return decision.resolved

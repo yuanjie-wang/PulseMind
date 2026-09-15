@@ -2,15 +2,14 @@
 // The engine runs in the main process against a SINGLETON host (mainHost), so
 // host calls carry no session identity. The session manager wraps every engine
 // entry point that can execute tools (ask, engineCall) in this AsyncLocalStorage
-// context; the file-ops and terminal services read it to adjudicate.
+// context; the file-ops and terminal services read it to adjudicate (write
+// jail + cwd confinement against the session's workspace).
 
 import { AsyncLocalStorage } from 'node:async_hooks'
-import type { ProjectSandboxPolicy } from '../../shared/sandbox/policy'
 
 export interface SessionSandboxContext {
   sessionId: string
   workspaceDir: string
-  policy: ProjectSandboxPolicy
 }
 
 export const sessionSandbox = new AsyncLocalStorage<SessionSandboxContext>()

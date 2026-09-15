@@ -20,7 +20,7 @@ export interface GuardResult {
 
 /**
  * Adjudicate one file path for the caller's context.
- * - Inside an agent session: full policy (deny roots + workspace jail).
+ * - Inside an agent session: deny roots + workspace write jail.
  * - Outside (renderer utilities): baseline deny roots only.
  * Throws when blocked — write services catch and surface the reason as the
  * tool error; callers that must not throw should use `checkFsTarget`.
@@ -38,7 +38,6 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
     operation,
     denyRoots,
     workspaceDir: ctx?.workspaceDir,
-    policy: ctx?.policy,
     realTarget,
   })
 
@@ -51,7 +50,6 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
       action: `fs.${operation}`,
       target: decision.resolved,
       decision: decision.ok ? 'allowed' : 'denied',
-      policyJson: ctx ? JSON.stringify(ctx.policy) : undefined,
     })
   }
 

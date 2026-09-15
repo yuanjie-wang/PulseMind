@@ -30,7 +30,6 @@ import {
 } from '../../shared/browser/pane'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
-import { DEFAULT_SANDBOX_POLICY } from '../../shared/sandbox/policy'
 import { WORKSPACE_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
 import { settingsStore } from '../storage/settings-store'
@@ -290,7 +289,6 @@ export class BrowserService {
               const decision = guardPath({
                 denyRoots: buildBaselineDenyRoots(homedir(), process.platform),
                 workspaceDir: wsDir,
-                policy: DEFAULT_SANDBOX_POLICY,
                 target: cmd.arg ?? '',
                 operation: 'read',
               })

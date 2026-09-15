@@ -515,6 +515,15 @@ src/extension/
   - 修复前的原实现跑同一套断言是 **11/17**(4 项跟随 + 2 项被 `block:'end'` 吃掉 7px)
 - **验收结果**:探针 **17/17**;M2.7 渲染探针 **29/29**、M2.6 作答探针 **16/16** 无回归;全量 440 绿 / 47 文件;扩展 tsc 0 错;`npm run build:extension` 通过
 
+### M2.9 缺陷修复:操作行(复制/下载/耗时·Token)在同一轮里重复出现 ✅ 2026-09-15
+
+> 现场:用户「【复制按钮、上下文信息】这条工具栏在同一轮对话中多次出现,期望只有在最后输出的时候才添加,过程中不需要」。查规则先于改代码:桌面端**已经有**这条规则 —— `SegmentBlock.actionsVisible`(`actions !== 'none' && single && assistant && nextSeg 不是执行段`),工具前的叙述文本后面跟着执行段,行就被藏掉,只有每轮的最终答案留着。**面板没有这套分段**,`Transcript` 给每条带文字的 assistant 消息都渲染 `ActionRow`,于是一轮「叙述 → 工具 → 工具 → 回答」挂出两三行。只修面板。
+
+- [x] **修复**:`ui/Transcript.tsx` 增 `actionRowIds(messages, busy)`,把桌面端的分段决定翻成平面消息表上的同一条规则 —— assistant 消息的行,只在它是**本轮最终输出**时出现:① 消息自己带非 ask_user 的 tool_use(混合消息的叙述,桌面端会把它拆成 text + 执行段)→ 无行;② 向后扫到本轮内还有下一条 assistant 消息(工具还在后头)→ 无行,扫过 tool_result(归属本轮,桌面端折进执行段)遇到**普通用户消息**即停(新一轮开始,前面的就是最终输出);③ 尾条消息在 `busy`(streaming / 审批挂起 / 问答挂起,`isActiveStatus`)时不放行 —— 轮次没结束,行也不能先闪在中间答案上再消失(桌面端流式文本住在独立的 streaming 段里,本来就没有行)。重放历史时**每轮的最终答案各有一行**,不是整条流水线只留一行 —— 这也是桌面端的既定行为(每轮答案都能单独复制)
+- [x] **探针**:`probe-panel-render.mjs` 49 → **51 项**。fixture 补上每轮本该有的形态:主对话面板在叙述+工具卡消息后追加**纯文本最终答案**(行挪到它身上);新增第 5 个「进行中」面板(streaming、尾条是已落地的纯文本)。断言:主对话恰好 1 行且在末条上、叙述条无行、审批挂起与进行中面板 0 行;`all four → all five state panels mounted`
+- **变异验证**:把 `{text && showRow ? …}` 还原成旧的 `{text ? …}`(每条都画)→ 3 项失败:主对话 `rows=2`(叙述 + 最终各一行,即用户所见)、审批挂起 `held=1`、进行中 `busy=1`;修复后 **51/51**
+- **验收结果**:渲染探针 **51/51**、作答探针 **27/27**、滚动探针 **17/17**;全量 **492** 绿 / 52 文件(注:其中 5 个测试文件来自同期的并行工作,非本条内容);扩展 tsc 0 错;`npm run build:extension` 通过
+
 ### M3 审批与隐私
 
 - [x] **M3.1 审批路由**:`awaiting_approval` → `approval.request`(callId=toolUseId)→ `approval.response` → `engineCall('approveTool'|'rejectTool')`;120s 超时=拒绝;断连立即结算 —— 实现在 `hosted/prompts.ts`,**M2.6 修好绑定生命周期后才真正可达**
@@ -549,6 +558,7 @@ src/extension/
   - `probe-panel-ask-user.mjs` 16 → **25 项**:真鼠标点模型项 → 恰好一条 `panel/set-model` 且 `profileId` 正确、菜单关闭、文案立刻跟上;真鼠标点授权项 → 一条 `panel/set-approval`。后两项就是上面那个 Shadow Root 缺陷的守门人(修复前必失败)
 - **变异验证**:把 `composedPath()` 还原成 `e.target`(缺陷原状)→ 模型项点击**一条消息都不发**、授权项点击后文案不变,两个探针共 6 项断言失败;改回后 25/25 + 40/40
 - **验收结果**:渲染探针 **40/40**、作答探针 **25/25**、M2.8 滚动探针 **17/17** 无回归;全量 **448** 绿 / 47 文件;扩展 tsc 0 错;`npm run build:extension` 通过;改动文件的 eslint 干净(仓库里 `session-manager.ts` / `ws-server.ts` 各一条既存 unused-var 报错,已用 `git show HEAD` 复核为改前既有)
+- **M4.5a 追修(用户实报):长模型名把授权按钮挤到折行**。页脚一行 = 授权 + 弹性空白 + 模型 + 发送,行宽只有 324px(面板 380 − composer 左右 2×16 − 输入卡左右 2×12);模型标签的 160px 上限让长名时整行溢出,flex 按基准宽分摊收缩把授权按钮压窄,「按需确认」在固定 24px 高里折成两行。修复双保险:① `.pm-model-label` 上限 **160 → 120px**(静止态最宽组合 ≈169px,给名字留出的量,超出即省略号;`overflow:hidden` 顺带把该 span 的 flex 最小尺寸归零,挤压先落在它身上);② `.pm-approval` **`flex:none` + 文案 `nowrap`**,退出收缩分配、永不折行。渲染探针 40 → **49 项**:长名生效时授权文案内联盒 rect 数恒为 1、页脚不溢出、模型标签被 120px 上限截断、授权按钮宽度不随模型名长短变化(`long=short=105.7px`)。变异验证:还原 160px + 去掉 `flex:none` → "页脚不溢出"(量到 `overflow=16px`)与"120px 上限"两项断言失败,修复后 49/49
 - **已知未做(不是漏,是没到)**:模型下拉**不标当前项**(桌面端的 `modelItems` 也没有 `selectable`/`selectedKeys`,按钮文案本身就是回显);面板仍不做附件与专家 @;模型切换没有"仅本会话"这一档(与桌面端一致 —— 桌面端也没有)
 
 ### M5 品牌、打包与分发
@@ -574,7 +584,7 @@ src/extension/
 | 面板外观(M1.6) | `scripts/probe-panel-render.mjs`:真 Chromium 里挂**生产** `Transcript`/`Composer` + 同序两个 `<style>` 进 Shadow Root,4 个 fixture 会话,断言计算样式/几何/对比度,并输出截图。面板外观够不着 vitest(无布局引擎、无 Shadow-DOM 层叠),也不该靠人读 CSS 确认 |
 | 面板作答路径(M2.6) | `scripts/probe-panel-ask-user.mjs`:真 `App` + `chrome.runtime` 桩 + **真鼠标点击**,断言 ask_user 选项 / 自定义回答 / 多选确认 / 审批按钮发出的 `panel/answer`、`panel/approval-response` 与 `callId`。这条链路(vitest 起不了 Shadow Root,面板 bridge 用例又假定请求已成形)只有它能覆盖 |
 | 面板跟随末尾(M2.8) | `scripts/probe-panel-scroll.mjs`:真 `App` + 同序两个 `<style>`,经**真 `chrome.runtime.onMessage` 通道**喂 `panel/event`、用**真 `wheel`** 滚动,断言"内容到来贴底 / 收起再打开落在最新一条 / 上滚不被拽回 / 回到底部恢复跟随 / 发出的消息在可视区内 / 不滚宿主页面"(17 项)。"是否到底"取决于**何时写入 scrollTop** —— 是布局事实,读源码得不到,jsdom 也量不出 |
-| 面板模型切换(M4.5) | 协议与广播在 `tests/agent-protocol-ws.test.ts` + `tests/extension-panel-bridge.test.ts`(含"被拒时不广播""读 model 失败不影响盘点");**看得见的部分**在 `scripts/probe-panel-render.mjs`(按钮指标 / 菜单落在 380px 内 / 长名截断 / 无 model 时不画选择器,11 项);**点得动的部分**在 `scripts/probe-panel-ask-user.mjs`(真鼠标点菜单项 → 一条 `panel/set-model`,授权下拉同理,9 项)。最后两项是 Shadow Root 里"外部点击关闭"用 `e.target` 会失效的守门人 —— 见 M4.5 |
+| 面板模型切换(M4.5) | 协议与广播在 `tests/agent-protocol-ws.test.ts` + `tests/extension-panel-bridge.test.ts`(含"被拒时不广播""读 model 失败不影响盘点");**看得见的部分**在 `scripts/probe-panel-render.mjs`(按钮指标 / 菜单落在 380px 内 / 长名截断 / 无 model 时不画选择器 / **长名不把授权按钮挤折行**,14 项);**点得动的部分**在 `scripts/probe-panel-ask-user.mjs`(真鼠标点菜单项 → 一条 `panel/set-model`,授权下拉同理,9 项)。最后两项是 Shadow Root 里"外部点击关闭"用 `e.target` 会失效的守门人 —— 见 M4.5 |
 | 端到端(手工) | 真实 Chrome + 桌面端:开面板 → 对话 → 看页面 → 点/填 → 审批 → 断线重连 → 桌面端继续 |
 
 ---

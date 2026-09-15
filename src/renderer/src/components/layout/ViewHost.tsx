@@ -15,7 +15,6 @@ import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { SkillState } from '../../skills/types'
 import type { ConversationListItem } from '../../types/conversation'
-import ProjectView from '../project/ProjectView'
 import RoutineCenter from '../routine/RoutineCenter'
 import RoutineEditorPage from '../routine/RoutineEditorPage'
 import { SearchView } from '../search/SearchView'
@@ -36,10 +35,9 @@ export interface ViewHostProps {
   importError?: string | null
   conversations?: ConversationListItem[]
   onSelectConversation?: (key: string) => void
-  onCreateProjectConversation?: (projectId: string) => void
 }
 
-export function ViewHost({ knowledgeManager, memoryManager, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation, onCreateProjectConversation }: ViewHostProps): React.ReactElement | null {
+export function ViewHost({ knowledgeManager, memoryManager, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation }: ViewHostProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
   const handleCanvasClearAll = () => {
     window.electronAPI.canvasClearAll().catch((err: unknown) =>
@@ -69,14 +67,6 @@ export function ViewHost({ knowledgeManager, memoryManager, skills, onToggleSkil
       return <StatisticsPage />
     case 'about':
       return <AboutPage />
-    case 'project':
-      return (
-        <ProjectView
-          conversations={conversations ?? []}
-          onSelectConversation={onSelectConversation ?? (() => {})}
-          onCreateConversation={onCreateProjectConversation ?? (() => {})}
-        />
-      )
     case 'routines':
       // routineEditing routes to the dedicated create/edit page (list · form ·
       // assistant); without it the kind renders the card grid / run workspace.

@@ -47,22 +47,18 @@ export class ToolExecutor implements ToolExecContext {
     notify: () => void,
     onProcessStart?: (pid: string) => void,
     /** @internal shared with the executors/* modules via ToolExecContext */
-    onMemorySaved?: () => void,
-    /** @internal shared with the executors/* modules via ToolExecContext */
     spawnSubAgent?: SpawnSubAgentFn,
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
     this.notify = notify
     this.onProcessStart = onProcessStart
-    this.onMemorySaved = onMemorySaved
     this.spawnSubAgent = spawnSubAgent
   }
 
   opts: AgentEngineOptions
   addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void
   notify: () => void
-  onMemorySaved?: () => void
   onProcessStart?: (pid: string) => void
   spawnSubAgent?: SpawnSubAgentFn
 

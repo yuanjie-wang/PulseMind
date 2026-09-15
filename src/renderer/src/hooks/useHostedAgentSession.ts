@@ -23,8 +23,6 @@ import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../u
 export interface HostedSessionCreateOptions {
   /** Owning client tag, e.g. 'routine' / 'routine-assist'. */
   clientId?: string
-  /** Project bound at creation (workspace + sandbox). */
-  projectId?: string
   /** Full system-prompt replacement for derived sessions. */
   systemPromptOverride?: string
 }
@@ -127,7 +125,7 @@ export function useHostedAgentSession({ convId, title, createOptions }: HostedAg
       .catch((err) => console.warn('[useHostedAgentSession] save failed:', err))
   }, [agentStatus, convId, title])
 
-  // createOptions may change per render (projectId / prompt override follow
+  // createOptions may change per render (the prompt override follows
   // the form); a ref keeps `send` referentially stable without stale values.
   const createOptionsRef = useRef(createOptions)
   useEffect(() => { createOptionsRef.current = createOptions })

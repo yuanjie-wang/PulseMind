@@ -11,7 +11,6 @@ import { Button, Dropdown, type MenuProps } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import { SIDEBAR_NAV, type SidebarNavItem } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
-import { useNewTaskStore } from '../../stores/newTaskStore'
 
 interface SidebarNavProps {
   /** False once the session cap is reached with auto-cleanup off. */
@@ -33,14 +32,6 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
   const navigateKind = useNavigationStore((s) => s.navigateKind)
 
   const activate = (item: SidebarNavItem): void => {
-    // New-task entries land on the empty chat view and preselect the welcome
-    // page's 对话/项目 switcher (M8.4) — 项目 no longer opens ProjectView.
-    if (item.newTaskMode) {
-      useNewTaskStore.getState().setMode(item.newTaskMode)
-      navigate({ kind: 'chat' })
-      if (item.isAction && canCreateNew) onCreateNew()
-      return
-    }
     // navigateKind restores the kind's remembered params (e.g. the tool center's
     // selected tool / capability tab) instead of resetting to the bare kind.
     navigateKind(item.view)
@@ -83,10 +74,7 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
         const items: MenuProps['items'] = item.submenu.map((sub) => {
           const SubIcon = sub.icon
           return {
-            // rc-menu marks the hovered item by key, so the key must be unique per
-            // sub-entry even when two share a view (新建对话/新建项目 both land on
-            // chat) — duplicate keys highlight together.
-            key: sub.newTaskMode ?? sub.view,
+            key: sub.view,
             icon: <SubIcon style={{ fontSize: 16 }} />,
             label: t(sub.labelKey),
             disabled: isDisabled(sub),

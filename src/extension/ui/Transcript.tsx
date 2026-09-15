@@ -12,8 +12,13 @@
  *    lists each tool card in message order, which is the same content without
  *    the extra collapse.
  *  - the action row is always the chat's `viewOnly` variant (copy / download /
- *    耗时 / 点赞?) — like & favorite write message metadata, and a panel session
+ *    耗时 / Token) — like & favorite write message metadata, and a panel session
  *    has no conversation row to write to.
+ *
+ * One rule is mirrored, not differed: the row belongs to a turn's FINAL output
+ * only. The chat decides that per segment (SegmentBlock's `actionsVisible`: a
+ * text followed by an execution segment hides its row); the flat list here
+ * decides it per message — `actionRowIds` below.
  *
  * The panel also shows the two things the desktop shows inline because they are
  * *held* on the client: a tool call waiting for approval, and an ask_user
@@ -45,6 +50,54 @@ function hasDisplayable(msg: Message): boolean {
   return (msg.contentBlocks ?? []).some(
     (b) => b.type === 'text' || b.type === 'tool_use' || b.type === 'thinking' || b.type === 'redacted_thinking',
   )
+}
+
+/** The messages allowed to render the action row — the ids of every turn's
+ *  FINAL assistant text, never the mid-turn narration.
+ *
+ *  The chat's rule is SegmentBlock's `actionsVisible`: a text whose next segment
+ *  is an execution segment hides its row, so only each turn's last answer keeps
+ *  one (a replayed history shows a row per turn, not one per transcript). The
+ *  panel has no segments, so the same decision per flat message: an assistant
+ *  message shows its row unless tool work follows it in the same turn — either
+ *  in the message itself (the pre-tool narration of a mixed message, which the
+ *  chat splits into text + execution) or in a later assistant message before
+ *  the next plain user message starts a new turn. The tail message also stays
+ *  bare while the session is running: its turn has not ended, and the row must
+ *  not flicker onto an intermediate answer before the next step lands (the
+ *  chat never shows one there because in-flight text lives in its own
+ *  streaming segment). */
+function actionRowIds(messages: Message[], busy: boolean): Set<string> {
+  const ids = new Set<string>()
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
+    if (msg.role !== 'assistant') continue
+    const blocks = msg.contentBlocks ?? []
+    let workFollows = blocks.some((b) => b.type === 'tool_use' && (b as ToolUseBlock).name !== 'ask_user')
+    if (!workFollows) {
+      for (let j = i + 1; j < messages.length; j++) {
+        const next = messages[j]
+        if (next.role === 'assistant') {
+          workFollows = true
+          break
+        }
+        // A plain user message is the next turn's opening — everything before it
+        // settled. Tool results ride with the current turn (the chat folds them
+        // into its execution segment), so keep scanning past them.
+        if ((next.contentBlocks ?? []).some((b) => b.type !== 'tool_result')) break
+      }
+    }
+    if (!workFollows) ids.add(msg.id)
+  }
+  if (busy) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') {
+        ids.delete(messages[i].id)
+        break
+      }
+    }
+  }
+  return ids
 }
 
 /** Handlers threaded down to each tool block.
@@ -98,9 +151,11 @@ function AssistantBlock({ block, completed, handlers }: {
   }
 }
 
-function Message({ message, handlers }: {
+function Message({ message, handlers, showRow }: {
   message: Message
   handlers: BlockHandlers
+  /** Whether this message may carry the action row — `actionRowIds` decides. */
+  showRow: boolean
 }): React.JSX.Element | null {
   if (!hasDisplayable(message)) return null
   const isUser = message.role === 'user'
@@ -135,8 +190,8 @@ function Message({ message, handlers }: {
       </div>
       {/* The chat's row: 复制 / 下载 / 耗时 / Token (its `viewOnly` variant —
           like & favorite write message metadata a panel session has no row
-          for). */}
-      {text ? <ActionRow text={text} msg={message} /> : null}
+          for). Only a turn's final output gets one (`actionRowIds`). */}
+      {text && showRow ? <ActionRow text={text} msg={message} /> : null}
     </div>
   )
 }
@@ -201,6 +256,7 @@ export function Transcript({ session, busy, onApprovalResponse, onAnswer, onClea
   })
 
   const hasContent = session.messages.length > 0 || session.streamingBlocks.length > 0
+  const rowIds = actionRowIds(session.messages, busy)
 
   return (
     <div className="pm-transcript" ref={scrollRef} onScroll={handleScroll}>
@@ -211,7 +267,7 @@ export function Transcript({ session, busy, onApprovalResponse, onAnswer, onClea
       ) : null}
       <div className="pm-column">
         {session.messages.map((message) => (
-          <Message key={message.id} message={message} handlers={handlers} />
+          <Message key={message.id} message={message} handlers={handlers} showRow={rowIds.has(message.id)} />
         ))}
         <StreamingBlocks blocks={session.streamingBlocks} handlers={handlers} />
         {busy ? <CursorRow /> : null}

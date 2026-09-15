@@ -3,6 +3,7 @@ import { App as AntdApp } from 'antd'
 import { useChatManagers } from './useChatManagers'
 import { useConversationEngine } from './useConversationEngine'
 import { useConversationPersistence } from './useConversationPersistence'
+import { takePendingApprovalMode } from '../stores/pendingApprovalStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
 import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
@@ -322,11 +323,17 @@ export function useChatController(options: UseChatControllerOptions) {
         const now = new Date()
         const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
         convId = `conv_${ts}`
-        // An explicit "new conversation in project X" (ProjectView) leaves a
-        // pending binding — it wins over the welcome switcher (M3.6).
+        // An explicit "new conversation in project X" leaves a pending binding
+        // — it wins over the welcome switcher (M3.6).
         const projectId = persistence.takePendingProjectId() ?? (task.mode === 'project' ? task.projectId! : undefined)
         persistence.addConversation({ key: convId, label: '新对话', updatedAt: now.toISOString(), projectId }, 'prepend')
         if (projectId) void window.electronAPI.setConversationProject?.(convId, projectId)
+        // A 授权 level picked on the welcome composer has no row to live on yet;
+        // it lands on the conversation this message just created, and the write
+        // is issued before startLoop so the session's very first ask already runs
+        // at that level (main reads the column in doCreateSession).
+        const pendingApproval = takePendingApprovalMode()
+        if (pendingApproval) persistence.updateConversationApproval(convId, pendingApproval)
         engine.activateEngine(convId)
         persistence.activateConversation(convId)
       } else {
@@ -356,7 +363,7 @@ export function useChatController(options: UseChatControllerOptions) {
     },
     [apiKey, persistence.activeConversationKey, persistence.addConversation,
      persistence.setActiveConversationKey, persistence.updateConversationTitleInList,
-     persistence.updateConversationExpert,
+     persistence.updateConversationExpert, persistence.updateConversationApproval,
      persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, options, t, message]
   )
 
@@ -374,6 +381,7 @@ export function useChatController(options: UseChatControllerOptions) {
       engine.agentStatus.status !== 'awaiting_extension' &&
       engine.agentStatus.status !== 'awaiting_continue',
     createNewConversation: persistence.createNewConversation,
+    reloadConversations: persistence.reloadConversations,
     /** Resolved working directory for a conversation (M8), for UI display. */
     getWorkspaceDir: engine.getWorkspaceDir,
     deleteConversation: async (key: string) => {

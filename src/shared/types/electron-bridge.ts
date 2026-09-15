@@ -17,7 +17,6 @@ import type { GitAction, GitResult } from './git'
 import type { ExperienceRecord, ExperienceDraft } from './experience-types'
 import type { WindowControlsLayout } from '../window-chrome'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from './project'
-import type { AuditEntry } from './audit'
 import type { SandboxApprovalMode } from '../sandbox/policy'
 import type { Routine, RoutineRun } from './routine'
 import type { UserTool } from './user-tool'
@@ -261,16 +260,16 @@ export interface ElectronAPI {
   getPlatformInfo: () => Promise<PlatformInfo>
   getWindowControls: () => WindowControlsLayout
 
-  // ── Projects / sandbox / audit (PLAN-0.4.0 M3) ──
+  // ── Projects / conversation bindings (PLAN-0.4.0 M3) ──
   projectList: () => Promise<Project[]>
   projectGet: (id: string) => Promise<Project | null>
   projectCreate: (input: ProjectCreateInput) => Promise<Project>
   projectUpdate: (id: string, patch: ProjectUpdateInput) => Promise<Project | null>
   projectDelete: (id: string) => Promise<{ removedConversations: number }>
+  projectValidateDir: (workspaceDir: string) => Promise<{ ok: boolean; error?: string }>
   setConversationProject: (id: string, projectId: string) => Promise<void>
   setConversationExpert: (id: string, expertId: string | null) => Promise<void>
   setConversationApprovalMode: (id: string, mode: SandboxApprovalMode) => Promise<void>
-  auditList: (limit?: number) => Promise<AuditEntry[]>
   routineList: () => Promise<Routine[]>
   routineGet: (id: string) => Promise<Routine | null>
   routineCreate: (input: Partial<Routine>) => Promise<Routine>
@@ -321,7 +320,6 @@ export interface ElectronAPI {
     }) => void,
   ) => () => void
   toolBridgeInvoke: (toolId: string, method: string, params: Record<string, unknown>) => Promise<unknown>
-  sandboxDetect: () => Promise<boolean>
   getDataPaths: () => Promise<DataPaths>
   openFolder: (folderPath: string) => Promise<void>
   openExternal: (url: string) => Promise<void>

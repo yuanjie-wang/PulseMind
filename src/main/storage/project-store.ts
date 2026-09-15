@@ -1,20 +1,26 @@
-// ── Project store (PLAN-0.4.0 M3.2) ──
-// CRUD for the `projects` table plus the synthesized default project (D1):
-// the default project owns every conversation without an explicit project and
+// ── Project store (main process) ──
+// Owns the projects table. The synthesized default project is not a row:
 // its workspace follows the global `workspaceDir` setting, so pre-0.4.0
 // installs keep behaving exactly as before. It is never stored as a row.
 
 import { prefixedId } from '../utils/id'
-import { access, constants, mkdir } from 'node:fs/promises'
+import { access, constants, mkdir, stat } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { getDb } from './database'
 import { settingsStore } from './settings-store'
 import { WORKSPACE_DIR } from './index'
 import { deleteConversation } from './conversation.db'
 import { DEFAULT_PROJECT_ID, type Project, type ProjectCreateInput, type ProjectUpdateInput } from '../../shared/types/project'
-import { normalizeSandboxPolicy } from '../../shared/sandbox/policy'
+import { checkWorkspacePathFormat, windowsReservedNameError } from '../../shared/workspace-path'
 
 /** Display name of the synthesized default project — reserved for user projects. */
 const DEFAULT_PROJECT_NAME = '默认项目'
+
+/** The projects table still carries a `sandbox_json` column from the removed
+ *  sandbox-policy era; fresh schemas get it with a DEFAULT, older dev
+ *  databases have it NOT NULL — either way create() writes a fixed '{}' into
+ *  it so both shapes accept the row. Nothing ever reads it back. */
+const LEGACY_SANDBOX_JSON = '{}'
 
 /** Project names are unique (trimmed, case-insensitive). Checked at create AND
  *  rename so a rename can never collide with an existing project. */
@@ -39,12 +45,45 @@ async function ensureWorkspaceDir(dir: string): Promise<void> {
   }
 }
 
+/** Dry-run twin of ensureWorkspaceDir: same verdict, no filesystem changes —
+ *  the create modal probes every edited path so an unusable one is named at
+ *  input time instead of failing the save. The format gate is the renderer's
+ *  own shared check (isAbsolute() alone would fork the verdict: POSIX path
+ *  modules call `C:\code` relative), plus Windows reserved device names when
+ *  actually running on win32. mkdir recursive succeeds exactly when the
+ *  nearest existing ancestor is a writable directory, so that is what gets
+ *  checked when the path itself does not exist yet. */
+async function validateWorkspaceDir(dir: string): Promise<void> {
+  const formatError = checkWorkspacePathFormat(dir)
+  if (formatError) throw new Error(formatError)
+  if (process.platform === 'win32') {
+    const reserved = windowsReservedNameError(dir)
+    if (reserved) throw new Error(reserved)
+  }
+  let probe = dir
+  for (;;) {
+    let st: Awaited<ReturnType<typeof stat>> | undefined
+    try {
+      st = await stat(probe)
+    } catch {
+      st = undefined // missing segment — walk up to the nearest existing ancestor
+    }
+    if (st) {
+      if (!st.isDirectory()) throw new Error(`${probe} 已存在且不是目录`)
+      await access(probe, constants.W_OK)
+      return
+    }
+    const parent = dirname(probe)
+    if (parent === probe) throw new Error(`无法创建工作区目录 ${dir}：没有任何已存在且可写的上级目录`)
+    probe = parent
+  }
+}
+
 interface ProjectRow {
   id: string
   name: string
   workspace_dir: string
   icon: string | null
-  sandbox_json: string
   created_at: string
   updated_at: string
 }
@@ -55,7 +94,6 @@ function rowToProject(r: ProjectRow): Project {
     name: r.name,
     workspaceDir: r.workspace_dir,
     icon: r.icon || undefined,
-    sandbox: normalizeSandboxPolicy(JSON.parse(r.sandbox_json)),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -68,13 +106,23 @@ async function defaultProject(): Promise<Project> {
     id: DEFAULT_PROJECT_ID,
     name: DEFAULT_PROJECT_NAME,
     workspaceDir: settings.workspaceDir || WORKSPACE_DIR,
-    sandbox: normalizeSandboxPolicy(null),
     createdAt: now,
     updatedAt: now,
   }
 }
 
 export const projectStore = {
+  /** Probe a would-be workspaceDir for the create modal: { ok } or { ok:false,
+   *  error } with a user-readable reason. Read-only — creates nothing. */
+  async validateWorkspaceDir(dir: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await validateWorkspaceDir(dir)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  },
+
   async list(): Promise<Project[]> {
     const rows = getDb().prepare('SELECT * FROM projects ORDER BY created_at ASC').all() as ProjectRow[]
     const projects = rows.map(rowToProject)
@@ -89,6 +137,10 @@ export const projectStore = {
 
   async create(input: ProjectCreateInput): Promise<Project> {
     const name = input.name.trim()
+    // Same format gate the modal probes with: ensureWorkspaceDir would
+    // otherwise literally mkdir a `C:\code`-named folder into the cwd.
+    const formatError = checkWorkspacePathFormat(input.workspaceDir)
+    if (formatError) throw new Error(formatError)
     await assertNameAvailable(name)
     await ensureWorkspaceDir(input.workspaceDir)
     const now = new Date().toISOString()
@@ -97,18 +149,17 @@ export const projectStore = {
       name,
       workspaceDir: input.workspaceDir,
       icon: input.icon,
-      sandbox: normalizeSandboxPolicy(input.sandbox),
       createdAt: now,
       updatedAt: now,
     }
     getDb()
       .prepare('INSERT INTO projects (id, name, workspace_dir, icon, sandbox_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(project.id, project.name, project.workspaceDir, project.icon ?? null, JSON.stringify(project.sandbox), project.createdAt, project.updatedAt)
+      .run(project.id, project.name, project.workspaceDir, project.icon ?? null, LEGACY_SANDBOX_JSON, project.createdAt, project.updatedAt)
     return project
   },
 
-  /** name/icon/sandbox are editable; workspaceDir is not — the type has no such
-   *  field and the UPDATE statement below never touches workspace_dir. */
+  /** name/icon are editable; workspaceDir is not — the type has no such field
+   *  and the UPDATE statement below never touches workspace_dir. */
   async update(id: string, patch: ProjectUpdateInput): Promise<Project | null> {
     const existing = await this.get(id)
     if (!existing || id === DEFAULT_PROJECT_ID) return existing // default project is not editable
@@ -117,31 +168,25 @@ export const projectStore = {
       ...existing,
       name: patch.name?.trim() || existing.name,
       icon: patch.icon !== undefined ? patch.icon : existing.icon,
-      sandbox: patch.sandbox ? normalizeSandboxPolicy(patch.sandbox) : existing.sandbox,
       updatedAt: new Date().toISOString(),
     }
     getDb()
-      .prepare('UPDATE projects SET name = ?, icon = ?, sandbox_json = ?, updated_at = ? WHERE id = ?')
-      .run(next.name, next.icon ?? null, JSON.stringify(next.sandbox), next.updatedAt, id)
+      .prepare('UPDATE projects SET name = ?, icon = ?, updated_at = ? WHERE id = ?')
+      .run(next.name, next.icon ?? null, next.updatedAt, id)
     return next
   },
 
-  /** D17: deleting a project deletes its conversations (and their messages)
-   *  with it. The default project cannot be deleted. */
+  /** Deleting a project deletes its conversations (and their messages) with
+   *  it. The default project cannot be deleted. */
   async remove(id: string): Promise<{ removedConversations: number }> {
     if (id === DEFAULT_PROJECT_ID) throw new Error('默认项目不能删除')
     const db = getDb()
-    const ids = (db.prepare('SELECT id FROM conversations WHERE project_id = ?').all(id) as Array<{ id: string }>).map((r) => r.id)
-    const run = db.transaction((convIds: string[]) => {
-      for (const convId of convIds) deleteConversation(convId)
+    const convs = db.prepare('SELECT id FROM conversations WHERE project_id = ?').all(id) as Array<{ id: string }>
+    const tx = db.transaction(() => {
+      for (const c of convs) deleteConversation(c.id)
       db.prepare('DELETE FROM projects WHERE id = ?').run(id)
     })
-    run(ids)
-    return { removedConversations: ids.length }
-  },
-
-  /** Conversation ids belonging to a project (for the sidebar / project view). */
-  listConversationIds(projectId: string): string[] {
-    return (getDb().prepare('SELECT id FROM conversations WHERE project_id = ?').all(projectId) as Array<{ id: string }>).map((r) => r.id)
+    tx()
+    return { removedConversations: convs.length }
   },
 }

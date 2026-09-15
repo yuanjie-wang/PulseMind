@@ -1,0 +1,112 @@
+// ── The 授权 choice made before the conversation exists ──
+// The welcome composer draws 授权 with no conversation to write it to: the active
+// key is cleared by createNewConversation and the id (`conv_<ts>`) is generated
+// only when the first message materializes the row. `changeApprovalMode` used to
+// be guarded on `typeof activeConversationKey === 'string'`, so on a new chat the
+// click was dropped on the floor and the button never moved — the desktop half of
+// "权限选择无法切换". The choice is now held in a one-shot store and applied to the
+// conversation the first message creates.
+//
+// Two layers, because neither covers the other: the store's hold/consume
+// semantics run for real here, while "it is consumed *before* the session
+// starts" is an ordering invariant of the wiring that no unit test can see
+// (vitest has no jsdom and no @testing-library, so the hooks cannot be mounted).
+
+import { describe, it, expect, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import {
+  usePendingApprovalStore,
+  takePendingApprovalMode,
+} from '../src/renderer/src/stores/pendingApprovalStore'
+
+describe('pendingApprovalStore', () => {
+  beforeEach(() => {
+    usePendingApprovalStore.setState({ mode: null })
+  })
+
+  it('starts empty, so the welcome composer falls back to 按需确认', () => {
+    expect(usePendingApprovalStore.getState().mode).toBeNull()
+  })
+
+  it('holds a choice made with no conversation to write to', () => {
+    usePendingApprovalStore.getState().setMode('auto')
+    expect(usePendingApprovalStore.getState().mode).toBe('auto')
+  })
+
+  it('hands the held choice to the materialization path exactly once', () => {
+    usePendingApprovalStore.getState().setMode('always-ask')
+
+    expect(takePendingApprovalMode()).toBe('always-ask')
+    // Consumed: the next new conversation must not inherit it a second time.
+    expect(takePendingApprovalMode()).toBeNull()
+    expect(usePendingApprovalStore.getState().mode).toBeNull()
+  })
+
+  it('is a no-op take when nothing was chosen', () => {
+    expect(takePendingApprovalMode()).toBeNull()
+  })
+
+  it('keeps the latest choice when the user changes their mind', () => {
+    usePendingApprovalStore.getState().setMode('auto')
+    usePendingApprovalStore.getState().setMode('always-ask')
+    usePendingApprovalStore.getState().setMode('outside-ask')
+    expect(takePendingApprovalMode()).toBe('outside-ask')
+  })
+})
+
+const REPO = process.cwd()
+const APP = join(REPO, 'src', 'renderer', 'src', 'App.tsx')
+const CONTROLLER = join(REPO, 'src', 'renderer', 'src', 'hooks', 'useChatController.ts')
+const PERSISTENCE = join(REPO, 'src', 'renderer', 'src', 'hooks', 'useConversationPersistence.ts')
+
+describe('desktop 授权 wiring (new conversation)', () => {
+  const appSrc = readFileSync(APP, 'utf-8')
+  const controllerSrc = readFileSync(CONTROLLER, 'utf-8')
+  const persistenceSrc = readFileSync(PERSISTENCE, 'utf-8')
+
+  it('resolves the button through the held choice before the shared default', () => {
+    expect(appSrc).toContain('pendingApprovalMode ?? DEFAULT_APPROVAL_MODE')
+  })
+
+  it('holds the click when there is no conversation, and writes when there is', () => {
+    expect(appSrc).toContain('usePendingApprovalStore.getState().setMode(mode)')
+    expect(appSrc).toContain('updateConversationApproval(activeConvKey, mode)')
+    // The key is the *resolved* one, so an empty sdk key (nothing open) takes the
+    // branch that holds the choice instead of writing to an id that is not a
+    // conversation — see tests/conversation-key.test.ts.
+    expect(appSrc).toContain('const activeConvKey = conversationKeyOf(activeConversationKey)')
+    expect(appSrc).toContain('if (activeConvKey) updateConversationApproval')
+  })
+
+  it('applies the held choice to the conversation the first message creates', () => {
+    // Non-vacuity: the materialization block this invariant talks about is there.
+    expect(controllerSrc).toContain('takePendingProjectId()')
+    expect(controllerSrc).toContain('persistence.addConversation(')
+
+    const take = controllerSrc.indexOf('takePendingApprovalMode()')
+    const write = controllerSrc.indexOf('persistence.updateConversationApproval(convId, pendingApproval)')
+    const start = controllerSrc.indexOf('.startLoop(content)')
+
+    expect(take).toBeGreaterThan(-1)
+    expect(write).toBeGreaterThan(take)
+    // Before startLoop: main reads `conversations.approval_mode` inside
+    // doCreateSession, so a write issued after the loop starts would leave the
+    // first turn running at the old level.
+    expect(start).toBeGreaterThan(write)
+  })
+
+  it('resets the held choice when a new conversation is started', () => {
+    // Otherwise 新会话默认按需确认 would depend on what the user picked the last
+    // time they composed one: abandon a new chat after choosing 全部允许 and the
+    // following conversation would silently start unrestricted.
+    const from = persistenceSrc.indexOf('const createNewConversation = useCallback')
+    expect(from).toBeGreaterThan(-1)
+    // Up to the next top-level `const … = ` declaration: the body, not the file.
+    const rest = persistenceSrc.slice(from)
+    const nextDecl = rest.slice(1).search(/\n {2}const [A-Za-z]/)
+    const body = nextDecl === -1 ? rest : rest.slice(0, nextDecl + 1)
+
+    expect(body).toContain('usePendingApprovalStore.getState().clearMode()')
+  })
+})

@@ -150,17 +150,15 @@ export const routineRunner = {
     unsubscribe = agentSessionManager.onEvent(onEvent)
 
     try {
-      // Bind the project BEFORE the first ask: ask() re-resolves the sandbox
-      // context from the conversation's project row (workspace + policy), so
-      // the editor's 执行项目 setting actually governs where the run works.
       await agentSessionManager.createSession(convId, {
         title: `[日常] ${routine.name}`,
         clientId: 'routine',
-        projectId: routine.projectId,
         // A scheduled run has no conversation of its own to have chosen a level,
         // so pin the unattended default explicitly: calls that leave the
         // workspace stay gated and the runner rejects them (D13) rather than
-        // silently letting an unwatched run do anything.
+        // silently letting an unwatched run do anything. Written as a literal
+        // and not DEFAULT_APPROVAL_MODE, which happens to equal it today — a run
+        // nobody is watching must not start widening because a UI default moved.
         approvalMode: 'outside-ask',
       })
       await agentSessionManager.ask(convId, renderRoutinePrompt(routine, params))

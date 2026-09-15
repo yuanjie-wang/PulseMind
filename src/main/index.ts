@@ -7,6 +7,7 @@ import { registerIpcHandlers } from './ipc'
 import { ensureDataDir, getBundlePresetsDir } from './storage'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
 import { backfillConversationWorkspaces } from './storage/conversation-workspace'
+import { cleanupExpiredConversations } from './services/conversation-retention'
 import { skillStore } from './storage/skill-store'
 import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { runLaunchHooks } from './hooks-runner'
@@ -422,10 +423,6 @@ if (gotTheLock) {
     }
   })
 
-  // Windows DPI awareness: high-DPI displays (125%/150%/200%) render crisp
-  app.commandLine.appendSwitch('high-dpi-support', '1')
-  app.commandLine.appendSwitch('enable-windows-high-dpi')
-
   app.whenReady().then(async () => {
   // Custom protocol to serve local files to sandboxed renderer.
   // Reads via fs/promises instead of net.fetch to avoid redirect/encoding
@@ -501,6 +498,9 @@ if (gotTheLock) {
   // (PLAN-0.4.0 M8): old conversations keep the global workspace, new ones
   // mint their own timestamped folder on first use.
   await backfillConversationWorkspaces()
+  // 对话管理 · 最长保留时长: expire conversations older than the policy allows
+  // before any session can resurrect one.
+  try { await cleanupExpiredConversations() } catch (err) { writeLog('WARN', `startup: conversation retention failed: ${err}`) }
   // Run hooks first to collect env vars (before MCP servers start)
   await runLaunchHooks()
   writeLog('INFO', 'startup: launch hooks completed')

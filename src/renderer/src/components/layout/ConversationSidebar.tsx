@@ -1,9 +1,6 @@
 // ── Sidebar conversation list ──
-// The 对话 tab of the sidebar's history area: only the loose (project-less)
-// conversations, rendered flat — no grouping. Conversations bound to a project
-// live in the 项目 tab (ProjectSidebarList), so the two tabs never duplicate
-// each other's content. Rows come from the shared ConversationRows, so both
-// tabs render and behave identically.
+// The sidebar's history area: every conversation, rendered flat — no grouping.
+// Rows come from the shared ConversationRows.
 
 import React from 'react'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -33,9 +30,7 @@ function ConversationSidebar({
 }: ConversationSidebarProps): React.ReactElement {
   const { t } = useTranslation()
 
-  // Loose conversations only — project-bound ones belong to the 项目 tab.
-  const loose = conversations.filter((c) => !c.projectId)
-  if (loose.length === 0) {
+  if (conversations.length === 0) {
     return (
       <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>
         {t('appLayout.noConversations')}
@@ -46,7 +41,7 @@ function ConversationSidebar({
   return (
     <div style={{ padding: '2px 8px 8px' }}>
       <ConversationRows
-        conversations={loose}
+        conversations={conversations}
         activeKey={activeKey}
         activeLoopConvIds={activeLoopConvIds}
         retryingConvIds={retryingConvIds}

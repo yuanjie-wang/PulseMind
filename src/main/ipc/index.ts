@@ -1,4 +1,5 @@
 import { registerConversationHandlers } from './conversation.handler'
+import { registerProjectHandlers } from './project.handler'
 import { registerSettingsHandlers } from './settings.handler'
 import { registerTerminalHandlers } from './terminal.handler'
 import { registerToolHandlers } from './tools.handler'
@@ -17,7 +18,6 @@ import { registerCanvasHandlers } from './canvas.handler'
 import { registerKnowledgeHandlers } from './knowledge.handler'
 import { registerExpertHandlers } from './expert.handler'
 import { registerGitHandlers } from './git.handler'
-import { registerProjectHandlers } from './project.handler'
 import { registerRoutineHandlers } from './routine.handler'
 import { registerToolStudioHandlers } from './tool.handler'
 import { registerBrowserHandlers } from './browser.handler'
@@ -36,6 +36,7 @@ export function registerIpcHandlers(): void {
   }
   handlersRegistered = true
   registerConversationHandlers()
+  registerProjectHandlers()
   registerSettingsHandlers()
   registerTerminalHandlers()
   registerToolHandlers()
@@ -54,7 +55,6 @@ export function registerIpcHandlers(): void {
   registerKnowledgeHandlers()
   registerExpertHandlers()
   registerGitHandlers()
-  registerProjectHandlers()
   registerRoutineHandlers()
   registerToolStudioHandlers()
   registerBrowserHandlers()

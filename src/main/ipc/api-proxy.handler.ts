@@ -4,6 +4,7 @@ import { isIP } from 'node:net'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { applyLlmRequestHook } from '../llm-hook'
+import { dumpLlmRequest } from '../llm/request-dump'
 import { resolveEnvVarsInString, findUnresolvedEnvVar } from '../../shared/env'
 
 /**
@@ -238,6 +239,16 @@ export async function performLlmStream(
       body: finalBody,
       headers: finalHeaders
     }
+    // Full request dump (dev: always, packaged: `debugLlmRequests`). Placed here
+    // on purpose — this is the last point where url/headers/body are the bytes
+    // that go out, after the hook and after profile headers were merged.
+    await dumpLlmRequest({
+      requestId,
+      url: finalUrl,
+      method: resolvedOptions.method || 'POST',
+      headers: finalHeaders,
+      body: resolvedOptions.body || ''
+    })
     const response = await fetchWithRetry(finalUrl, resolvedOptions, controller.signal, maxRetries, retryCb)
 
     console.log(`[API-Proxy] Response status: ${response.status} for ${requestId}`)

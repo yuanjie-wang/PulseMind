@@ -13,6 +13,8 @@ import type { SessionEngineHandle } from './useConversationEngine'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
 import { planIncrementalSave } from '../utils/incremental-save'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
+import { usePendingApprovalStore } from '../stores/pendingApprovalStore'
+import { conversationKeyOf } from '../../../shared/conversation-key'
 
 // ── Hook ──
 
@@ -276,29 +278,35 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     }
   }, [agentStatus, saveCurrentConversation])
 
-  // ── Load conversations from disk on mount ──
+  // ── Load conversations from disk on mount (and re-list on demand) ──
+  // reloadConversations re-reads the DB — used after 对话管理's retention
+  // cleanup removed rows main-side, so the sidebar drops them immediately.
+  const reloadConversations = useCallback(async () => {
+    const convList = await window.electronAPI.listConversations()
+    setConversations(sortConversations(
+      convList.map((c) => ({
+        key: c.id,
+        label: c.title,
+        pinned: c.pinned,
+        updatedAt: c.updatedAt,
+        // Keep the project binding or the welcome page's project cards lose
+        // their latest-conversation line on every reload ('default'
+        // normalizes to absent per the list type).
+        projectId: c.projectId && c.projectId !== 'default' ? c.projectId : undefined,
+        // The @-summoned expert binding (drives the input-area chip).
+        expertId: c.expertId || undefined,
+        // And the conversation's own approval level (composer's 授权 control).
+        approvalMode: c.approvalMode
+      }))
+    ))
+  }, [setConversations])
+
   useEffect(() => {
     async function loadConversations() {
-      const convList = await window.electronAPI.listConversations()
-      const items = sortConversations(
-        convList.map((c) => ({
-          key: c.id,
-          label: c.title,
-          pinned: c.pinned,
-          updatedAt: c.updatedAt,
-          // Keep the project binding or the sidebar loses its grouping on
-          // every reload ('default' normalizes to absent per the list type).
-          projectId: c.projectId && c.projectId !== 'default' ? c.projectId : undefined,
-          // Same for the @-summoned expert binding (drives the input-area chip).
-          expertId: c.expertId || undefined,
-          // And the conversation's own approval level (composer's 授权 control).
-          approvalMode: c.approvalMode
-        }))
-      )
-      setConversations(items)
+      await reloadConversations()
     }
     loadConversations()
-  }, [setConversations])
+  }, [reloadConversations])
 
   // ── Select conversation / switch active engine ──
   const handleSelectConversation = useCallback(async (key: string) => {
@@ -410,6 +418,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
 
   const createNewConversation = useCallback(async (projectId?: string) => {
     pendingProjectIdRef.current = projectId ?? null
+    // A level held for the conversation being composed does not carry into the
+    // next one: 新会话 defaults to the shared level (按需确认) whatever was picked
+    // last time, and the composer asks again. Without this, abandoning a new
+    // chat after picking 全部允许 would silently widen the following one.
+    usePendingApprovalStore.getState().clearMode()
     const MAX_SESSIONS = 100
     if (autoCleanup && conversations.length >= MAX_SESSIONS) {
       const toRemove = conversations.length - MAX_SESSIONS + 1
@@ -537,8 +550,9 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   }, [setConversations])
 
   // ── Summoned expert binding (expert config pack refactor) ──
-  // Mirrors the project binding: list item updated for the chip + IPC persists
-  // the DB column (stub-inserts the row, so it may run before the first save).
+  // Mirrors the @-summoned expert binding: list item updated for the chip +
+  // IPC persists the DB column (stub-inserts the row, so it may run before the
+  // first save).
   const updateConversationExpert = useCallback((convId: string, expertId: string | null) => {
     setConversations(
       conversationsRef.current.map((c: any) =>
@@ -553,17 +567,25 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // and the DB column (stub-inserting the row when needed) is the durable copy
   // the main-side session manager re-reads on every ask.
   const updateConversationApproval = useCallback((convId: string, mode: SandboxApprovalMode) => {
+    // An empty id is the sdk's "nothing is open" sentinel, not a conversation to
+    // write to (see conversationKeyOf) — without this the call reached the
+    // stub-insert and created a row with an empty id.
+    const id = conversationKeyOf(convId)
+    if (!id) {
+      console.warn('[Persistence] approval update ignored: no conversation open')
+      return
+    }
     setConversations(
       conversationsRef.current.map((c) =>
-        String(c.key) === convId ? { ...c, approvalMode: mode } : c
+        String(c.key) === id ? { ...c, approvalMode: mode } : c
       )
     )
     // Refresh after the write lands: the session manager re-reads the column on
     // its own at the next ask, but this also applies a mid-loop change now.
     void (async () => {
       try {
-        await window.electronAPI.setConversationApprovalMode?.(convId, mode)
-        await window.electronAPI.agentSessionRefreshOptions?.(convId)
+        await window.electronAPI.setConversationApprovalMode?.(id, mode)
+        await window.electronAPI.agentSessionRefreshOptions?.(id)
       } catch (err) {
         console.warn('[Persistence] approval update failed:', err)
       }
@@ -584,6 +606,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     addConversation,
     removeConversation,
     setConversations,
+    reloadConversations,
     conversationsRef,
     // Conversation switch loading window (welcome-screen suppression)
     isLoadingConversation,

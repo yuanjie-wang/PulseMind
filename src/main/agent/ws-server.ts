@@ -48,8 +48,9 @@ import {
   updateConversationTitle,
 } from '../storage/conversation.db'
 import { SERVICE_DEFAULT_PORT } from '../service-config'
+import { toSandboxApprovalMode, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
-const SERVICE_VERSION = `0.3.5`
+const SERVICE_VERSION = `0.4.0`
 /** How far past the requested port the EADDRINUSE scan walks. The extension's
  *  discovery scans the identical range (8765..8779). */
 const PORT_SCAN_ATTEMPTS = 15
@@ -60,7 +61,10 @@ const PORT_SCAN_ATTEMPTS = 15
 export interface AgentServiceConversations {
   /** Stored conversation for resume (tool_result content filled in), or null. */
   hydrate(id: string): { title: string; messages: unknown[]; historySummary?: string; historySummaryFrontier?: string } | null
-  listByOrigin(origin: string, limit: number): Array<{ id: string; title: string; updatedAt: string }>
+  /** Rows for `session.list`. Carries the conversation's stored 授权 level so a
+   *  remote client's approval control can show the same value the desktop
+   *  composer shows (absent = never chosen). */
+  listByOrigin(origin: string, limit: number): Array<{ id: string; title: string; updatedAt: string; approvalMode?: SandboxApprovalMode }>
   origin(id: string): string | null
   remove(id: string): void
   rename(id: string, title: string): void
@@ -353,6 +357,24 @@ export async function startAgentService(
             }
             store.rename(sessionId, title)
             send(makeResult(msg.id ?? null, { ok: true }))
+            break
+          }
+          case Methods.sessionSetApprovalMode: {
+            // The remote 授权 button. Same field the desktop composer writes
+            // (`conversations.approval_mode`), so it is not gated on origins any
+            // more than the model switch is — and the reply carries the level
+            // *in force* afterwards, which the panel echoes instead of assuming
+            // its click took (a pinned unattended run keeps its own level).
+            const sessionId = String(params.sessionId ?? '')
+            const mode = toSandboxApprovalMode(params.mode)
+            if (!sessionId || !mode) {
+              send(makeError(msg.id ?? null, ErrorCodes.invalidParams, 'sessionId and a valid mode are required'))
+              break
+            }
+            void sessions
+              .setApprovalMode(sessionId, mode)
+              .then((applied) => send(makeResult(msg.id ?? null, { ok: true, mode: applied })))
+              .catch((err) => send(makeError(msg.id ?? null, ErrorCodes.internal, errorMessage(err))))
             break
           }
           case Methods.agentAsk: {

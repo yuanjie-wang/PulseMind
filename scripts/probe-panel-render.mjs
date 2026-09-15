@@ -63,6 +63,7 @@ import xMarkdownTheme from '@ant-design/x-markdown/themes/light.css'
 import { Transcript } from './src/extension/ui/Transcript'
 import { Composer } from './src/extension/ui/Composer'
 import { Icon } from './src/extension/ui/icons'
+import { DEFAULT_APPROVAL_MODE } from './src/shared/sandbox/policy'
 
 const NOW = '2026-09-15T10:00:00.000Z'
 const text = (t) => ({ type: 'text', text: t })
@@ -119,6 +120,20 @@ const ASSISTANT = {
 
 const USER = { id: 'm1', role: 'user', contentBlocks: [text('总结这个页面')], createdAt: NOW }
 
+/** The turn's FINAL answer — text-only, after the tools are done. The chat gives
+ *  the action row to THIS message only (SegmentBlock hides the narration's row
+ *  because an execution segment follows it), so the panel's fixture must end the
+ *  same way: narration + tool cards carry no row, this one does. */
+const FINAL = {
+  id: 'm3',
+  role: 'assistant',
+  createdAt: NOW,
+  processingMs: 5120,
+  inputTokens: 15120,
+  outputTokens: 1311,
+  contentBlocks: [text('要点就三条：页面主体是文档，目录在左侧，示例代码集中在第三节。')],
+}
+
 const shell = (session, extra) => ({ messages: [], streamingBlocks: [], plan: null, historySummary: null, agentStatus: { status: 'idle' }, ...session, ...extra })
 
 /** The 模型下拉 inventory — the shape session.list carries (id/name/provider/model,
@@ -128,12 +143,17 @@ const shell = (session, extra) => ({ messages: [], streamingBlocks: [], plan: nu
 const MODEL = ${JSON.stringify(MODEL)}
 const FALLBACK_LABEL = ${JSON.stringify(FALLBACK_LABEL)}
 
-/** Four panels side by side: the main transcript, an approval hold, an
- *  ask_user question, and the error/empty states. The last one gets no model —
- *  a panel that has never heard from the service (disconnected) must not draw a
- *  picker it has nothing to put in. */
+/** Five panels side by side: the main transcript, an approval hold, an
+ *  ask_user question, the error/empty states, and an in-flight turn. The error
+ *  one gets no model — a panel that has never heard from the service
+ *  (disconnected) must not draw a picker it has nothing to put in.
+ *
+ *  A panel that names no approvalMode renders what the real one renders with no
+ *  level reported: the shared DEFAULT_APPROVAL_MODE (按需确认), not a harness
+ *  hardcode. Panel 0 names 'auto' explicitly because 全部允许's amber is what
+ *  the tint checks below measure. */
 function Panel({ title, status, session, busy, children, approvalMode, disabled, model = MODEL }) {
-  const [mode, setMode] = useState(approvalMode ?? 'auto')
+  const [mode, setMode] = useState(approvalMode ?? DEFAULT_APPROVAL_MODE)
   const [picked, setModel] = useState(model)
   return (
     <div className="pm-panel" style={{ position: 'static' }}>
@@ -168,7 +188,9 @@ const PANELS = [
   {
     title: '主对话对齐',
     status: '就绪',
-    session: shell({ messages: [USER, ASSISTANT] }),
+    // 全部允许, so the amber assertions below have their subject.
+    approvalMode: 'auto',
+    session: shell({ messages: [USER, ASSISTANT, FINAL] }),
   },
   {
     title: '等待批准',
@@ -195,6 +217,18 @@ const PANELS = [
     disabled: true,
     model: null,
     session: shell({ agentStatus: { status: 'error', error: '服务端返回 429：请求过于频繁，请稍后重试' } }),
+  },
+  {
+    // The action row's busy-tail rule: the landed text is the turn's tail but the
+    // turn is still running — no row yet (the chat's in-flight text lives in its
+    // streaming segment, which never shows one either).
+    title: '进行中',
+    status: '生成中',
+    busy: true,
+    session: shell({
+      agentStatus: { status: 'streaming' },
+      messages: [USER, { id: 'a4', role: 'assistant', createdAt: NOW, contentBlocks: [text('先看一眼页面结构，马上回来。')] }],
+    }),
   },
 ]
 
@@ -344,6 +378,27 @@ check(
   probe.actionRow && probe.actionButtons.join('/') === '复制/下载' && /耗时|s|ms/.test(probe.actionStats) && !probe.actionStats.includes('收藏'),
   `${probe.actionButtons.join('/')} — ${probe.actionStats.replace(/\s+/g, ' ').trim()}`,
 )
+
+// 操作行的可见性（镜像 SegmentBlock 的 actionsVisible，M2.9）：同一轮里只有
+// 最终输出带一行 —— 工具前的叙述（带工具卡的那条）没有，进行中的尾条也没有；
+// 历史重放则是每轮的最终答案各一行，而不是整条流水线每条都挂一个。
+const rowPlacement = await page.evaluate(() => {
+  const rowsOf = (i) => window.__panels()[i].querySelectorAll('.pm-actions').length
+  const assistantRows = [...window.__panels()[0].querySelectorAll('.pm-row-assistant')]
+  return {
+    transcriptRows: rowsOf(0),
+    narrationHasRow: !!assistantRows[0]?.querySelector('.pm-actions'),
+    finalHasRow: !!assistantRows[assistantRows.length - 1]?.querySelector('.pm-actions'),
+    heldRows: rowsOf(1),
+    busyRows: rowsOf(4),
+  }
+})
+check(
+  '同一轮只有最终输出带操作行，过程中的叙述没有',
+  rowPlacement.transcriptRows === 1 && rowPlacement.finalHasRow && !rowPlacement.narrationHasRow,
+  `rows=${rowPlacement.transcriptRows}, narration=${rowPlacement.narrationHasRow}, final=${rowPlacement.finalHasRow}`,
+)
+check('审批挂起与进行中的面板都不出现操作行', rowPlacement.heldRows === 0 && rowPlacement.busyRows === 0, `held=${rowPlacement.heldRows}, busy=${rowPlacement.busyRows}`)
 check('no page errors while rendering', pageErrors.length === 0, pageErrors.join(' | '))
 
 // ── guards for the failures a glance would catch ─────────────────────
@@ -432,6 +487,21 @@ check('下拉里其余档位不变色', otherItem?.color !== 'rgb(212, 107, 8)' 
 await page.evaluate(() => window.__panels()[0].querySelector('.pm-approval').click())
 await page.waitForTimeout(150)
 
+// 没有档位可报时的默认值（未连接 / 新会话）：按需确认，图标与文案一起是普通灰。
+// 面板此前硬写 APPROVAL_LEVELS[2]（全部允许），于是它会一边把工具调用拦下来、
+// 一边在按钮上写着「没人拦」—— 默认值现在来自共享的 DEFAULT_APPROVAL_MODE。
+const unset = await page.evaluate(() => {
+  const btn = window.__panels()[3].querySelector('.pm-approval')
+  return btn
+    ? { label: btn.querySelector('.pm-approval-label').textContent.trim(), color: getComputedStyle(btn.querySelector('.pm-approval-label')).color }
+    : null
+})
+check(
+  '没有档位上报时显示共享默认（按需确认）而非全部允许',
+  unset?.label === '按需确认' && unset?.color === 'rgb(102, 102, 102)',
+  `${unset?.label ?? 'no button'} / ${unset?.color}`,
+)
+
 // ── 模型下拉：与授权按钮同一套小按钮指标，菜单反过来贴右边 ──────────────
 // 桌面端的模型按钮是 Button size="small" type="text" iconPlacement="end" +
 // inline fontSize:12/color:'#666'，antd 的根是 inline-flex + gap:iconGap(8px)；
@@ -511,11 +581,49 @@ const afterSwitch = await page.evaluate(() => ({
   menuGone: !window.__panels()[0].querySelector('.pm-model-menu'),
 }))
 check('选中后按钮文案换成同一个 label，且菜单关闭', afterSwitch.label === FALLBACK_LABEL && afterSwitch.menuGone, `${afterSwitch.label} / menuGone=${afterSwitch.menuGone}`)
+
+// 最挤的静止态：最长模型名生效时，页脚是 授权 + 弹性空白 + 模型 + 发送 抢同一行
+// 324px（面板 380 − composer 2×16 − 输入卡 2×12）。回归过一次：标签上限 160px
+// 时整行溢出，flex 按基准宽分摊收缩把授权按钮压窄，「按需确认」在固定 24px 高里
+// 折成两行。现在的契约：模型标签 120px 封顶自己截断，授权按钮 flex:none + nowrap
+// 永不折行 —— 内联盒的 rect 数就是折行数，这里必须恒为 1。
+const squeezed = await page.evaluate(() => {
+  const root = window.__panels()[0]
+  const approvalLabel = root.querySelector('.pm-approval-label')
+  const modelLabel = root.querySelector('.pm-model-label')
+  const footer = root.querySelector('.pm-input-footer')
+  return {
+    approvalWidth: root.querySelector('.pm-approval').getBoundingClientRect().width,
+    approvalLabelLines: approvalLabel.getClientRects().length,
+    footerOverflow: footer.scrollWidth - footer.clientWidth,
+    modelLabelClipped: modelLabel.scrollWidth > modelLabel.clientWidth,
+    modelLabelMaxWidth: getComputedStyle(modelLabel).maxWidth,
+  }
+})
+check(
+  '长模型名生效时授权文案仍是一行（不折行、页脚不溢出）',
+  squeezed.approvalLabelLines === 1 && squeezed.footerOverflow <= 1,
+  `lines=${squeezed.approvalLabelLines}, overflow=${squeezed.footerOverflow}px`,
+)
+check(
+  '长模型名在按钮里被 CSS 截断（120px 上限 + 省略号），而不是挤压邻位',
+  squeezed.modelLabelClipped && squeezed.modelLabelMaxWidth === '120px',
+  `clipped=${squeezed.modelLabelClipped}, max-width=${squeezed.modelLabelMaxWidth}`,
+)
+
 // Back to the first profile so the screenshots show the resting state.
 await page.evaluate(() => window.__panels()[0].querySelector('.pm-model').click())
 await page.waitForTimeout(100)
 await page.evaluate(() => window.__panels()[0].querySelectorAll('.pm-model-item')[0].click())
 await page.waitForTimeout(150)
+const approvalAtRest = await page.evaluate(
+  () => window.__panels()[0].querySelector('.pm-approval').getBoundingClientRect().width,
+)
+check(
+  '授权按钮宽度不随模型名长短变化（flex:none，挤压不落在它身上）',
+  Math.abs(approvalAtRest - squeezed.approvalWidth) < 0.5,
+  `long=${squeezed.approvalWidth.toFixed(1)}px, short=${approvalAtRest.toFixed(1)}px`,
+)
 
 // ── the held call: the decision arrives below the header, unexpanded ──
 // A held call lays 跳过/运行 in an approval strip *below* its collapsed header —
@@ -524,7 +632,7 @@ await page.waitForTimeout(150)
 // clicks the header: the strip has to be there with the card still shut. Then the
 // header is clicked once, to keep checking the dark card it opens onto.
 const panelCount = await page.evaluate(() => window.__panels().length)
-check('all four state panels mounted', panelCount === 4, `${panelCount} panels`)
+check('all five state panels mounted', panelCount === 5, `${panelCount} panels`)
 
 const held = await page.evaluate(() => {
   const root = window.__panels()[1]

@@ -4,15 +4,11 @@ import type {
   AgentMessage,
   AgentStatus,
   ContentBlock,
-  TextBlock,
   ToolUseBlock,
   ToolResultBlock,
-  ThinkingBlock,
   Plan
 } from '../types/agent'
 import type { ToolManager } from '../tools/ToolManager'
-import type { ToolInputSchema } from '../tools/types'
-import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId } from '../tools/builtin-gate'
 import type { SkillManager } from '../skills/SkillManager'
 import type { HooksConfig } from '../types/hooks'
 import type { MemoryManager } from '../memory/MemoryManager'
@@ -20,24 +16,21 @@ import type { KnowledgeManager } from '../knowledge/KnowledgeManager'
 import type { PlatformInfo } from '../types/electron'
 import type { LlmAdapter } from '../llm/adapter'
 import { SkillKeywordAgent, SkillSelectionAgent, HistorySummaryAgent } from './one-shot-agent'
-import { sanitizeSchema, safeInvoke, safeInvokeObserver, MAX_LOOP_ITERATIONS, generateMsgId, type SubAgentResult, type SpawnSubAgentConfig, type SubAgentHandle } from './agent-utils'
-import { buildCommandFromSkillInput } from './command-builder'
+import { safeInvoke, safeInvokeObserver, MAX_LOOP_ITERATIONS, generateMsgId, type SubAgentResult, type SpawnSubAgentConfig, type SubAgentHandle } from './agent-utils'
 import { buildSystemPrompt } from './system-prompt-builder'
 import type { ExpertRuntimeContext } from '../../../shared/types/expert'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import type { PageContext } from '../../../shared/agent-protocol'
 import { PlanManager } from './plan-manager'
-import { ensureCache, getCachedMcpServers, getCachedExpertProfiles, refreshMcpServers } from './mcp-cache'
+import { ensureCache } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
 import { SpawnManager } from './engine/spawn-manager'
 import { collectEnabledTools } from './engine/tool-collection'
 import { scheduleMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
 import { StreamRunner } from './engine/stream-runner'
-import { ContextCompactor, summarizeToolCall } from './engine/context-compactor'
+import { ContextCompactor } from './engine/context-compactor'
 import type { EngineCore } from './engine/engine-core'
-import { addTruncatedResults, extractInvokeToolCalls, validateToolParams } from './engine/result-ingestion'
-import { agentMessagesToConversation } from '../utils/message-utils'
 import { stripImageData } from './image-utils'
 
 // ── Tool-result guardrail ─────────────────────────────────────────────
@@ -58,7 +51,20 @@ function estimateTokens(text: string): number {
   const cjk = text.match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g)?.length ?? 0
   return cjk + Math.ceil((text.length - cjk) / 4)
 }
-const SUMMARY_INPUT_CAP = 40000
+
+/**
+ * Fingerprint of the cached prefix (system prompt + tool schemas). DeepSeek
+ * renders `system → tools → messages`, so this hash covers everything that sits
+ * in front of the conversation: the same hash on consecutive requests means the
+ * history stayed reusable, a different one means it was re-billed from the top.
+ * Diagnostics only — logged, never sent.
+ */
+function prefixFingerprint(systemPrompt: string, tools: unknown): string {
+  const s = systemPrompt + '\u0000' + JSON.stringify(tools)
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0
+  return h.toString(36)
+}
 
 // ── AgentEngine Options ───────────────────────────────────────────────
 
@@ -84,8 +90,13 @@ export interface AgentEngineOptions {
   hooks?: HooksConfig
   onSkillStateChange?: () => void
   /** How tool calls are gated for this engine (shared ladder; a project's
-   *  sandbox policy is what the session manager resolves onto it). Absent =
-   *  'auto' — derived sessions (tool studio, canvas) run unattended. */
+   *  sandbox policy is what the session manager resolves onto it). Absent means
+   *  the engine-level fallback 'auto': every engine with a user in front of it
+   *  is given an explicit level by the session manager (whose own fallback, for
+   *  a conversation that never chose one, is DEFAULT_APPROVAL_MODE), so this
+   *  case is either a sub-agent inheriting an unset parent or a derived engine
+   *  (tool studio, canvas) that pins its own — nothing here can answer a hold,
+   *  so it must not hold. */
   approvalMode?: SandboxApprovalMode
   locale?: 'zh' | 'en'
   conversationId?: string
@@ -219,16 +230,6 @@ export class AgentEngine implements EngineCore {
   isAutoExecuting = false
   /** @internal */
   currentRequestId: string | null = null
-  private skillAppendix: string | null = null
-  private experienceAppendix: string | null = null
-  private systemPromptCache = new Map<string, { prompt: string; time: number }>()
-  /** Frozen snapshot of buildMemoryContext() — preserved across system prompt
-   *  rebuilds for prefix cache stability. Cleared when memory tools write. */
-  private memoryContextSnapshot: string | null = null
-  /** Frozen snapshot of buildWikiContext() — preserved across system prompt
-   *  rebuilds for prefix cache stability. Invalidated when KnowledgeManager.wikiVersion changes. */
-  private wikiContextSnapshot: string | null = null
-  private wikiContextVersion = -1
   /** Maps MCP tool name → MCP server ID for routing */
   /** @internal */
   mcpToolOwner = new Map<string, string>()
@@ -322,10 +323,6 @@ export class AgentEngine implements EngineCore {
       (id, content, isError, imageData) => this.addToolResult(id, content, isError, imageData),
       () => this.notify(),
       (pid) => { this.executingProcessId = pid },
-      () => {
-        this.memoryContextSnapshot = null
-        if (this.opts.conversationId) this.systemPromptCache.delete(this.opts.conversationId)
-      },
       (config) => this.spawnSubAgent(config),
     )
   }
@@ -371,10 +368,11 @@ export class AgentEngine implements EngineCore {
    *  opts (single source of truth for the prompt builder and for the tool
    *  collection, which reads the allowed* whitelists); the pack's 可用技能 /
    *  可用连接器 narrow the session's skill and connector sets while it is
-   *  bound, and unbinding restores the unrestricted session. Invalidates the
-   *  6h system-prompt cache when the expert changed, so the next loop rebuilds
-   *  the prompt with the new role. Called by session-manager before each ask —
-   *  cheap no-op when nothing moved. */
+   *  bound, and unbinding restores the unrestricted session. There is no prompt
+   *  cache to invalidate: the prompt is rebuilt on every request and the expert
+   *  is part of its invariant core, so the next loop picks up the new role by
+   *  construction. Called by session-manager before each ask — cheap no-op when
+   *  nothing moved. */
   applyExpertContext(next: ExpertRuntimeContext | null): void {
     const expertChanged = JSON.stringify(this.opts.expert ?? null) !== JSON.stringify(next ?? null)
     if (!expertChanged) return
@@ -385,10 +383,7 @@ export class AgentEngine implements EngineCore {
     this.opts.allowedSkills = next?.allowedSkills
     this.opts.allowedMcpServers = next?.allowedMcpServers
     this.allowedMcpServersSet = this.opts.allowedMcpServers ? new Set(this.opts.allowedMcpServers) : undefined
-    if (this.opts.conversationId) {
-      this.systemPromptCache.delete(this.opts.conversationId)
-      console.log(`[AgentEngine] expert context ${next ? `→ ${next.id}` : 'cleared'}, prompt cache invalidated`)
-    }
+    console.log(`[AgentEngine] expert context ${next ? `→ ${next.id}` : 'cleared'}`)
   }
 
   /** Dispose — cleanup all listeners and sub-agents */
@@ -514,28 +509,36 @@ export class AgentEngine implements EngineCore {
   }> => {
     const toolManager = opts.toolManager
 
-    // ── Build system prompt ───────────────────────────────────────
+    // ── Build the prompt: invariant core + per-turn state ─────────
+    // The split is a prefix-cache contract, not a formatting choice. DeepSeek
+    // matches a prompt prefix from token 0 and renders `system → tools →
+    // messages`, so the system prompt sits in front of the tool schemas AND the
+    // whole conversation: one volatile byte there (a timestamp, a memory, git
+    // status) re-bills everything behind it. The core therefore carries only
+    // invariants, and every value that moves per turn rides `stateBlock`, which
+    // is sent as the FINAL message — the one position where a change costs only
+    // itself. Measured on deepseek-flash: marking a tool description drops the
+    // hit from 1280 to 384; marking the system message drops it to 0.
     const spResult = await buildSystemPrompt({
       opts,
       spawnSystemPrompt: this.spawnSystemPrompt,
       spawnSystemPromptAppendix: this.spawnSystemPromptAppendix,
       messages: this.messages,
-      memoryContextSnapshot: this.memoryContextSnapshot,
-      wikiContextSnapshot: this.wikiContextSnapshot,
-      wikiContextVersion: this.wikiContextVersion,
-      systemPromptCache: this.systemPromptCache,
-      conversationId: opts.conversationId,
-      skillAppendix: this.skillAppendix,
-      experienceAppendix: this.experienceAppendix,
       plan: this.planManager.plan,
-      experienceManager: this.opts.experienceManager,
     })
-    this.memoryContextSnapshot = spResult.memoryContextSnapshot
-    this.wikiContextSnapshot = spResult.wikiContextSnapshot
-    this.wikiContextVersion = spResult.wikiContextVersion
-    this.skillAppendix = spResult.skillAppendix
-    this.experienceAppendix = spResult.experienceAppendix
     const systemPrompt = spResult.systemPrompt
+    // The state block is rebuilt per request (never persisted, never rendered) so
+    // memory saved this turn is visible on the next call instead of waiting for a
+    // cache TTL — and, because it is not part of `messages`, the append-only
+    // history keeps its bytes.
+    const stateBlock: AgentMessage | null = spResult.stateBlock
+      ? {
+          id: generateMsgId(),
+          role: 'user',
+          contentBlocks: [{ type: 'text', text: spResult.stateBlock }],
+          createdAt: new Date().toISOString(),
+        }
+      : null
 
     // ── Tools ──────────────────────────────────────────────────────
     const enabledTools = await collectEnabledTools(this, toolManager)
@@ -568,36 +571,13 @@ export class AgentEngine implements EngineCore {
       return { ...msg, contentBlocks: newBlocks }
     }
 
-    const skillAppendix = this.skillAppendix
-    const experienceAppendix = this.experienceAppendix
-    // Both appendices ride the last user message; find its index first
-    const combinedAppendix = [skillAppendix, experienceAppendix].filter(Boolean).join('\n\n') || null
-    const lastUserIdx = combinedAppendix
-      ? (() => { for (let i = this.messages.length - 1; i >= 0; i--) { if (this.messages[i].role === 'user') return i } return -1 })()
-      : -1
-    const apiMessages = combinedAppendix && lastUserIdx >= 0
-      ? this.messages.map((msg, idx) => {
-          if (msg.role === 'user' && idx === lastUserIdx) {
-            const blocks = msg.contentBlocks
-            if (!blocks) return stripToolResultImages(msg)
-            const newBlocks = blocks.map(b => ({ ...b } as ContentBlock))
-            for (let i = newBlocks.length - 1; i >= 0; i--) {
-              if (newBlocks[i].type === 'text') {
-                ;(newBlocks[i] as TextBlock).text += '\n\n' + combinedAppendix
-                break
-              }
-            }
-            return { ...msg, contentBlocks: newBlocks }
-          }
-          return stripToolResultImages(msg)
-        })
-      : this.messages.map(stripToolResultImages)
+    const apiMessages = this.messages.map(stripToolResultImages)
 
     // ── Compaction pipeline (operates on API copy; this.messages untouched) ──
     // Fixed overhead the char heuristic never sees: system prompt + tool schemas.
     // Injected into the fallback estimate so compaction still fires at the right
     // pressure point before the first API token report arrives.
-    const fixedOverhead = estimateTokens(systemPrompt) + estimateTokens(JSON.stringify(enabledTools))
+    const fixedOverhead = estimateTokens(systemPrompt) + estimateTokens(JSON.stringify(enabledTools)) + (spResult.stateBlock ? estimateTokens(spResult.stateBlock) : 0)
     const nanoCompacted = this.compactor.nanoCompact(apiMessages)
     const lightCompacted = this.compactor.lightCompact(nanoCompacted, opts.contextLength || 128000, fixedOverhead)
     const truncatedMessages = this.compactor.hardTruncate(lightCompacted, opts.contextLength || 128000, fixedOverhead)
@@ -609,10 +589,14 @@ export class AgentEngine implements EngineCore {
     // (incl. failures) and let the summary fabricate outcomes.
     const finalMessages = await this.compactor.injectHistorySummary(apiMessages, lightCompacted, truncatedMessages)
 
+    // The state block is appended AFTER compaction: it is per-turn context, not
+    // history — it must never be summarized, truncated or moved off the end.
+    const requestMessages: AgentMessage[] = stateBlock ? [...finalMessages, stateBlock] : finalMessages
+
     const { url: apiUrl, headers, body } = opts.adapter.buildRequest(opts.baseURL, opts.apiKey ?? '', {
       model: opts.model,
       maxTokens: Math.floor(opts.maxTokens * 1.5),
-      messages: finalMessages,
+      messages: requestMessages,
       tools: enabledTools,
       systemPrompt,
       stream: true
@@ -627,7 +611,11 @@ export class AgentEngine implements EngineCore {
       console.log('=== [CanvasEngine] TOOLS ===')
       console.log(enabledTools.map(t => t.name))
     }
-    console.log('[LLM Request] model:', opts.model, 'messages:', apiMessages.length, 'tools:', enabledTools?.length ?? 0, 'sysPromptLen:', systemPrompt?.length ?? 0, 'bodyPreview:', JSON.stringify(body))
+    // Summary only — the full payload is dumped from the main process (see
+    // `main/llm/request-dump.ts`), which has the post-hook bytes and a disk to
+    // write them to. `prefix` is the fingerprint of what precedes the
+    // conversation: two turns with the same one share a cacheable prefix.
+    console.log('[LLM Request] model:', opts.model, 'messages:', requestMessages.length, 'tools:', enabledTools?.length ?? 0, 'sysPromptLen:', systemPrompt?.length ?? 0, 'prefix:', prefixFingerprint(systemPrompt, enabledTools), 'stateLen:', spResult.stateBlock?.length ?? 0, 'bodyLen:', JSON.stringify(body).length)
 
     const controller = new AbortController()
     this.abortController = controller

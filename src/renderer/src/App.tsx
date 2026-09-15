@@ -19,8 +19,10 @@ import { useGreeting } from './hooks/useGreeting'
 import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { useNavigationStore } from './stores/navigationStore'
+import { usePendingApprovalStore } from './stores/pendingApprovalStore'
+import { conversationKeyOf } from '../../shared/conversation-key'
 
-import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
+import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
 function App(): React.ReactElement {
   return (
@@ -182,6 +184,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     messages,
     isRequesting,
     createNewConversation,
+    reloadConversations,
     getWorkspaceDir,
     deleteConversation,
     renameConversation,
@@ -253,19 +256,32 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     ? String(activeConversationKey.toString())
     : null
 
-  const activeConvTitle = typeof activeConversationKey === 'string'
-    ? conversations.find((c) => c.key === activeConversationKey)?.label
+  // The open conversation, resolved once: `activeConversationKey` is `''` while
+  // nothing is open (see conversationKeyOf), and `''` is not a conversation — it
+  // is why a 授权 click used to write to a row with an empty id instead of being
+  // held for the one the first message creates.
+  const activeConvKey = conversationKeyOf(activeConversationKey)
+
+  const activeConvTitle = activeConvKey
+    ? conversations.find((c) => c.key === activeConvKey)?.label
     : undefined
 
   // ── 授权档位 (composer's 授权 button, formerly the sidebar YOLO switch) ──
   // Approval belongs to the conversation, not to its project or to a global
-  // setting: each conversation carries its own level (absent = 全部允许), and the
-  // session manager re-reads it on every ask so a change lands on the next message.
-  const approvalMode: SandboxApprovalMode = typeof activeConversationKey === 'string'
-    ? (conversations.find((c: any) => c.key === activeConversationKey)?.approvalMode ?? 'auto')
-    : 'auto'
+  // setting: each conversation carries its own level (absent = the shared
+  // default, 按需确认 — see DEFAULT_APPROVAL_MODE), and the session manager
+  // re-reads it on every ask so a change lands on the next message. The button
+  // must resolve the fallback exactly as the engine does, or it would label a
+  // fresh conversation 全部允许 while the ladder holds calls.
+  const pendingApprovalMode = usePendingApprovalStore((s) => s.mode)
+  const approvalMode: SandboxApprovalMode = activeConvKey
+    ? (conversations.find((c: any) => c.key === activeConvKey)?.approvalMode ?? DEFAULT_APPROVAL_MODE)
+    : (pendingApprovalMode ?? DEFAULT_APPROVAL_MODE)
   const changeApprovalMode = (mode: SandboxApprovalMode): void => {
-    if (typeof activeConversationKey === 'string') updateConversationApproval(activeConversationKey, mode)
+    // With no conversation yet the click has nothing to write to — hold it for
+    // the one the first message will create (useChatController consumes it).
+    if (activeConvKey) updateConversationApproval(activeConvKey, mode)
+    else usePendingApprovalStore.getState().setMode(mode)
   }
 
   // Set MemoryManager and KnowledgeManager config so background tasks can call the API
@@ -378,7 +394,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             knowledgeManager={knowledgeManager}
             activeLoopConvIds={activeLoopConvIds}
             retryingConvIds={retryingConvIds}
-            onCreateProjectConversation={(projectId) => { createNewConversation(projectId); regenerateGreeting() }}
+            onReloadConversations={() => reloadConversations()}
           >
             <ChatView
               messages={messages}
@@ -400,7 +416,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               onResumeExecution={resumeExecution}
               onStopExecution={stopExecution}
               onSaveConversation={saveCurrentConversation}
-              conversationId={typeof activeConversationKey === 'string' ? activeConversationKey : undefined}
+              conversationId={activeConvKey}
               conversationTitle={activeConvTitle}
               profiles={settings.profiles}
               activeProfileId={settings.activeProfileId}
@@ -408,11 +424,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               greeting={greeting}
               planScrollToMsgId={planScrollToMsgId}
               onPlanScrollHandled={() => setPlanScrollToMsgId(null)}
-              workspaceDir={
-                typeof activeConversationKey === 'string'
-                  ? getWorkspaceDir(activeConversationKey)
-                  : undefined
-              }
+              workspaceDir={activeConvKey ? getWorkspaceDir(activeConvKey) : undefined}
               conversations={conversations.map((c: any) => ({
                 key: c.key,
                 label: c.label,
@@ -424,8 +436,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               activeLoopConvIds={activeLoopConvIds}
               onOpenConversation={setActiveConversationKey}
               activeExpertId={
-                typeof activeConversationKey === 'string'
-                  ? conversations.find((c: any) => c.key === activeConversationKey)?.expertId
+                activeConvKey
+                  ? conversations.find((c: any) => c.key === activeConvKey)?.expertId
                   : undefined
               }
               onUnbindExpert={(convId) => updateConversationExpert(convId, null)}

@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Typography, Spin, Empty, theme } from 'antd'
 import * as echarts from 'echarts'
 import { useTranslation } from '../../i18n/useTranslation'
+import CenteredPage from './CenteredPage'
 import type { TokenStats } from '../../types/conversation'
 
 const { Text, Title } = Typography
@@ -43,57 +44,53 @@ function StatisticsPage(): React.ReactElement {
     })()
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', background: '#fff' }} className="settings-scroll">
-      <div style={{ maxWidth: 760, margin: '0 auto', padding: '8px 24px 24px' }}>
-        {loading ? (
-          <div style={{ textAlign: 'center', paddingTop: 80 }}>
-            <Spin size="large" />
-          </div>
-        ) : !hasData ? (
-          <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 80 }}>
-            <Empty
-              description={<Text type="secondary">{t('statisticsDrawer.noData')}</Text>}
-            />
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 40, paddingBottom: 24 }}>
-            <ChartSection
-              title={t('statisticsDrawer.hourlyTitle')}
-              data={stats!.hourly.map((d) => ({
-                label: d.time.slice(11, 16),
-                input: d.inputTokens,
-                output: d.outputTokens
-              }))}
-              inputLabel={t('statisticsDrawer.inputLabel')}
-              outputLabel={t('statisticsDrawer.outputLabel')}
-              isDark={isDark}
-            />
-            <ChartSection
-              title={t('statisticsDrawer.dailyTitle')}
-              data={stats!.daily.map((d) => ({
-                label: d.date.slice(5),
-                input: d.inputTokens,
-                output: d.outputTokens
-              }))}
-              inputLabel={t('statisticsDrawer.inputLabel')}
-              outputLabel={t('statisticsDrawer.outputLabel')}
-              isDark={isDark}
-            />
-            <ChartSection
-              title={t('statisticsDrawer.monthlyTitle')}
-              data={stats!.monthly.map((d) => ({
-                label: d.month,
-                input: d.inputTokens,
-                output: d.outputTokens
-              }))}
-              inputLabel={t('statisticsDrawer.inputLabel')}
-              outputLabel={t('statisticsDrawer.outputLabel')}
-              isDark={isDark}
-            />
-          </div>
-        )}
-      </div>
-    </div>
+    <CenteredPage>
+      {loading ? (
+        <div style={{ textAlign: 'center', paddingTop: 80 }}>
+          <Spin size="large" />
+        </div>
+      ) : !hasData ? (
+        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 80 }}>
+          <Empty description={<Text type="secondary">{t('statisticsDrawer.noData')}</Text>} />
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 40, paddingBottom: 24 }}>
+          <ChartSection
+            title={t('statisticsDrawer.hourlyTitle')}
+            data={stats!.hourly.map((d) => ({
+              label: d.time.slice(11, 16),
+              input: d.inputTokens,
+              output: d.outputTokens,
+            }))}
+            inputLabel={t('statisticsDrawer.inputLabel')}
+            outputLabel={t('statisticsDrawer.outputLabel')}
+            isDark={isDark}
+          />
+          <ChartSection
+            title={t('statisticsDrawer.dailyTitle')}
+            data={stats!.daily.map((d) => ({
+              label: d.date.slice(5),
+              input: d.inputTokens,
+              output: d.outputTokens,
+            }))}
+            inputLabel={t('statisticsDrawer.inputLabel')}
+            outputLabel={t('statisticsDrawer.outputLabel')}
+            isDark={isDark}
+          />
+          <ChartSection
+            title={t('statisticsDrawer.monthlyTitle')}
+            data={stats!.monthly.map((d) => ({
+              label: d.month,
+              input: d.inputTokens,
+              output: d.outputTokens,
+            }))}
+            inputLabel={t('statisticsDrawer.inputLabel')}
+            outputLabel={t('statisticsDrawer.outputLabel')}
+            isDark={isDark}
+          />
+        </div>
+      )}
+    </CenteredPage>
   )
 }
 
@@ -120,54 +117,57 @@ function ChartSection({ title, data, inputLabel, outputLabel, isDark }: ChartSec
     const inputData = data.map((d) => d.input)
     const outputData = data.map((d) => d.output)
 
-    instanceRef.current.setOption({
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'shadow' },
-        valueFormatter: (v: number) => v.toLocaleString(),
-        backgroundColor: isDark ? '#2c2c2e' : '#fff',
-        borderColor: isDark ? '#3a3a3c' : '#e8e8e8',
-        borderWidth: 1,
-        textStyle: { color: isDark ? '#f5f5f5' : '#1d1d1f', fontSize: 12 },
-      },
-      legend: {
-        data: [outputLabel, inputLabel],
-        selectedMode: false,
-        textStyle: { color: isDark ? '#aeaeb2' : '#6e6e73', fontSize: 12 },
-        top: 4,
-      },
-      grid: { left: 48, right: 16, top: 40, bottom: 24 },
-      xAxis: {
-        type: 'category',
-        data: labels,
-        axisLabel: { fontSize: 11, color: isDark ? '#8e8e93' : '#6e6e73' },
-        axisLine: { lineStyle: { color: isDark ? '#3a3a3c' : '#e8e8e8' } },
-        axisTick: { alignWithLabel: true },
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: { fontSize: 11, color: isDark ? '#8e8e93' : '#6e6e73' },
-        splitLine: { lineStyle: { color: isDark ? '#3a3a3c' : '#f0f0f0' } },
-      },
-      series: [
-        {
-          name: outputLabel,
-          type: 'bar',
-          stack: 'tokens',
-          data: outputData,
-          itemStyle: { color: OUTPUT_COLOR, borderRadius: [0, 0, 0, 0] },
-          barCategoryGap: '20%',
+    instanceRef.current.setOption(
+      {
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'shadow' },
+          valueFormatter: (v: number) => v.toLocaleString(),
+          backgroundColor: isDark ? '#2c2c2e' : '#fff',
+          borderColor: isDark ? '#3a3a3c' : '#e8e8e8',
+          borderWidth: 1,
+          textStyle: { color: isDark ? '#f5f5f5' : '#1d1d1f', fontSize: 12 },
         },
-        {
-          name: inputLabel,
-          type: 'bar',
-          stack: 'tokens',
-          data: inputData,
-          itemStyle: { color: INPUT_COLOR, borderRadius: [2, 2, 0, 0] },
-          barCategoryGap: '20%',
+        legend: {
+          data: [outputLabel, inputLabel],
+          selectedMode: false,
+          textStyle: { color: isDark ? '#aeaeb2' : '#6e6e73', fontSize: 12 },
+          top: 4,
         },
-      ],
-    }, true)
+        grid: { left: 48, right: 16, top: 40, bottom: 24 },
+        xAxis: {
+          type: 'category',
+          data: labels,
+          axisLabel: { fontSize: 11, color: isDark ? '#8e8e93' : '#6e6e73' },
+          axisLine: { lineStyle: { color: isDark ? '#3a3a3c' : '#e8e8e8' } },
+          axisTick: { alignWithLabel: true },
+        },
+        yAxis: {
+          type: 'value',
+          axisLabel: { fontSize: 11, color: isDark ? '#8e8e93' : '#6e6e73' },
+          splitLine: { lineStyle: { color: isDark ? '#3a3a3c' : '#f0f0f0' } },
+        },
+        series: [
+          {
+            name: outputLabel,
+            type: 'bar',
+            stack: 'tokens',
+            data: outputData,
+            itemStyle: { color: OUTPUT_COLOR, borderRadius: [0, 0, 0, 0] },
+            barCategoryGap: '20%',
+          },
+          {
+            name: inputLabel,
+            type: 'bar',
+            stack: 'tokens',
+            data: inputData,
+            itemStyle: { color: INPUT_COLOR, borderRadius: [2, 2, 0, 0] },
+            barCategoryGap: '20%',
+          },
+        ],
+      },
+      true,
+    )
 
     const handleResize = () => instanceRef.current?.resize()
     window.addEventListener('resize', handleResize)

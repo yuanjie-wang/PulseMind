@@ -1,76 +1,58 @@
-// ── Sidebar 对话 tab's manage modal ──
-// Batch management for exactly what the 对话 tab shows (the loose,
-// project-less conversations): select rows — select-all included — and delete
-// the selection in one go. The 项目 tab's manage entry has no modal of its
-// own: it opens the project center (ProjectView), which already carries
-// create / edit / delete.
+// ── Sidebar's manage modal (对话管理) ──
+// One dialog for conversation management, unified from the former chats-tab
+// batch delete + projects-tab project center (both gone): it sets the 清理会话
+// 策略 — 最长保留时长. Unpinned conversations older than the window are deleted
+// main-side (startup + on every settings save), so the save reloads the
+// sidebar's list afterwards. Row-level delete lives in the sidebar rows, not
+// here.
 
 import React, { useState } from 'react'
-import { App as AntdApp, Button, Checkbox, Empty, Modal } from 'antd'
-import { DeleteOutlined, PushpinOutlined } from '@ant-design/icons'
+import { App as AntdApp, Button, Modal, Segmented } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
-import { describeRelativeTimeText } from '../../utils/relative-time'
-import { byPinnedThenRecency } from './ConversationRows'
-import type { ConversationListItem } from '../../types/conversation'
+import { useSettings } from '../../hooks/SettingsContext'
+
+/** Retention presets in days; 0 = keep forever. */
+const RETENTION_OPTIONS = [
+  { label: '永久保留', value: 0 },
+  { label: '7 天', value: 7 },
+  { label: '30 天', value: 30 },
+  { label: '90 天', value: 90 },
+]
 
 interface ConversationManageModalProps {
   open: boolean
-  /** The slice this modal manages — the 对话 tab's loose conversations. */
-  conversations: ConversationListItem[]
   onClose: () => void
-  onDeleteMany: (keys: string[]) => void
+  /** Called after a retention change — main has already cleaned up, so the
+   *  sidebar's list should re-read from the DB. */
+  onRetentionChanged?: () => void
 }
 
 function ConversationManageModal({
   open,
-  conversations,
   onClose,
-  onDeleteMany
+  onRetentionChanged
 }: ConversationManageModalProps): React.ReactElement {
   const { t } = useTranslation()
-  const { modal } = AntdApp.useApp()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  // Rendered times are relative, so snapshot "now" when the modal opens — a
-  // transient dialog doesn't need ConversationRows' minute clock. Both this
-  // and the selection reset run as the open event callback (not an effect, so
-  // reopening never starts with stale keys deleted elsewhere in the meantime).
-  const [now, setNow] = useState(() => Date.now())
-  const afterOpenChange = (opened: boolean): void => {
-    if (!opened) return
-    setSelected(new Set())
-    setNow(Date.now())
-  }
+  const { message } = AntdApp.useApp()
+  const { settings, saveSettings } = useSettings()
+  const [savingRetention, setSavingRetention] = useState(false)
 
-  const sorted = [...conversations].sort(byPinnedThenRecency)
-  const allSelected = conversations.length > 0 && selected.size === conversations.length
+  const retentionDays = settings.conversationRetentionDays ?? 0
 
-  const toggleOne = (key: string): void => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
-
-  const toggleAll = (): void => {
-    setSelected(allSelected ? new Set() : new Set(conversations.map((c) => c.key)))
-  }
-
-  const confirmDelete = (): void => {
-    const keys = [...selected]
-    if (keys.length === 0) return
-    modal.confirm({
-      title: t('manageChatsModal.confirmTitle'),
-      content: t('manageChatsModal.confirmContent', { n: keys.length }),
-      okText: t('conversationSidebar.delete'),
-      okButtonProps: { danger: true },
-      cancelText: t('manageChatsModal.cancel'),
-      onOk: () => {
-        onDeleteMany(keys)
-        onClose()
-      },
-    })
+  const changeRetention = async (days: number): Promise<void> => {
+    if (days === retentionDays || savingRetention) return
+    setSavingRetention(true)
+    try {
+      // settings.handler awaits the expiry cleanup before answering, so by the
+      // time this resolves the sidebar's rows may already be gone.
+      await saveSettings({ ...settings, conversationRetentionDays: days })
+      message.success(days > 0 ? t('manageChatsModal.retentionSaved', { n: days }) : t('manageChatsModal.retentionForeverSaved'))
+      onRetentionChanged?.()
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSavingRetention(false)
+    }
   }
 
   return (
@@ -78,70 +60,23 @@ function ConversationManageModal({
       title={t('manageChatsModal.title')}
       open={open}
       onCancel={onClose}
-      afterOpenChange={afterOpenChange}
       width={440}
-      footer={[
-        <Button key="cancel" onClick={onClose}>{t('manageChatsModal.cancel')}</Button>,
-        <Button
-          key="delete"
-          danger
-          icon={<DeleteOutlined />}
-          disabled={selected.size === 0}
-          onClick={confirmDelete}
-        >
-          {t('manageChatsModal.deleteSelected')}
-        </Button>,
-      ]}
+      footer={[<Button key="done" onClick={onClose}>{t('manageChatsModal.done')}</Button>]}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <Checkbox
-          checked={allSelected}
-          indeterminate={selected.size > 0 && !allSelected}
-          disabled={conversations.length === 0}
-          onChange={toggleAll}
-        >
-          {t('manageChatsModal.selectAll')}
-        </Checkbox>
-        {selected.size > 0 && (
-          <span style={{ fontSize: 12, color: '#999' }}>
-            {t('manageChatsModal.selectedCount', { n: selected.size })}
-          </span>
-        )}
+      <div style={{ marginBottom: 10, fontSize: 13, fontWeight: 600 }}>
+        {t('manageChatsModal.retentionTitle')}
       </div>
-      {conversations.length === 0 ? (
-        <Empty description={<span style={{ fontSize: 12, color: '#999' }}>{t('manageChatsModal.empty')}</span>} />
-      ) : (
-        <div style={{ maxHeight: 380, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {sorted.map((conv) => (
-            <div
-              key={conv.key}
-              onClick={() => toggleOne(conv.key)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '6px 8px', borderRadius: 6, cursor: 'pointer', userSelect: 'none',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0, 0, 0, 0.04)' }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-            >
-              <Checkbox
-                checked={selected.has(conv.key)}
-                onChange={() => toggleOne(conv.key)}
-                onClick={(e) => e.stopPropagation()}
-              />
-              {conv.pinned && <PushpinOutlined style={{ fontSize: 12, color: '#bbb', flexShrink: 0 }} />}
-              <span style={{
-                flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap', fontSize: 13, color: '#333',
-              }}>
-                {conv.label}
-              </span>
-              <span style={{ flexShrink: 0, fontSize: 11, color: '#999' }}>
-                {describeRelativeTimeText(conv.updatedAt, now, t)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      <Segmented
+        block
+        size="small"
+        value={retentionDays}
+        onChange={(v) => { void changeRetention(v as number) }}
+        options={RETENTION_OPTIONS}
+        style={{ marginBottom: 10 }}
+      />
+      <div style={{ fontSize: 12, color: '#999', lineHeight: 1.6 }}>
+        {t('manageChatsModal.retentionHint')}
+      </div>
     </Modal>
   )
 }

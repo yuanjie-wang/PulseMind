@@ -48,14 +48,13 @@ export interface AgentSessionCreateOptions {
   clientId?: string
   projectId?: string
   workspaceDir?: string
-  sandbox?: unknown
   /** Full system-prompt replacement for derived sessions. */
   systemPromptOverride?: string
   /** Tool allowlist for the session; omitted = every enabled tool. */
   allowedTools?: string[]
   /** Per-session approval override for a session whose conversation cannot speak
    *  for itself (unattended runs); omitted = the conversation's own stored level
-   *  (`conversations.approval_mode`), then 'auto'. */
+   *  (`conversations.approval_mode`), then the shared DEFAULT_APPROVAL_MODE. */
   approvalMode?: SandboxApprovalMode
 }
 

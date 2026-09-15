@@ -8,6 +8,7 @@ import { Typography } from 'antd'
 import { XMarkdown } from '@ant-design/x-markdown'
 import '@ant-design/x-markdown/themes/light.css'
 import { useTranslation } from '../../i18n/useTranslation'
+import CenteredPage from '../layout/CenteredPage'
 
 const { Text } = Typography
 
@@ -166,18 +167,16 @@ function AboutPage(): React.ReactElement {
   const content = locale === 'zh' ? productIntroMdZh : productIntroMdEn
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', background: '#fff' }} className="settings-scroll">
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '8px 24px 24px' }}>
-        <div className="x-markdown-light" style={{ fontSize: 14, lineHeight: 1.8 }}>
-          <XMarkdown content={content} />
-        </div>
-        <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0', textAlign: 'center' }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            PulseMind v{__APP_VERSION__}
-          </Text>
-        </div>
+    <CenteredPage>
+      <div className="x-markdown-light" style={{ fontSize: 14, lineHeight: 1.8 }}>
+        <XMarkdown content={content} />
       </div>
-    </div>
+      <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0', textAlign: 'center' }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          PulseMind v{__APP_VERSION__}
+        </Text>
+      </div>
+    </CenteredPage>
   )
 }
 

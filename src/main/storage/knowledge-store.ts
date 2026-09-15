@@ -17,6 +17,7 @@ import {
   type KnowledgeFileRow
 } from './knowledge.db'
 import { getDb } from './database'
+import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
 import {
   KNOWLEDGE_RAW_DIR,
   KNOWLEDGE_WIKI_DIR,
@@ -272,23 +273,20 @@ async function searchContentViaRipgrep(query: string): Promise<ContentMatch[]> {
     }
     args.push(KNOWLEDGE_RAW_DIR)
 
-    execFile('rg', args, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile(ripgrepBinary(), args, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err && !stdout) { resolve([]); return }
 
       // Group excerpts by file path (relative to raw dir)
       const fileMap = new Map<string, string[]>()
       for (const line of stdout.split('\n')) {
         if (!line.trim()) continue
-        const absPath = line.slice(0, line.indexOf(':'))
-        if (!absPath) continue
-        const rest = line.slice(absPath.length + 1)
-        const lineSep = rest.indexOf(':')
-        const content = lineSep > -1 ? rest.slice(lineSep + 1).trim() : rest.trim()
-        const relPath = relative(KNOWLEDGE_RAW_DIR, absPath)
+        const parsed = parseRgLine(line)
+        if (!parsed) continue
+        const relPath = relative(KNOWLEDGE_RAW_DIR, parsed.absPath)
         if (!relPath) continue
 
         const excerpts = fileMap.get(relPath) || []
-        if (excerpts.length < 3) excerpts.push(content.slice(0, 200))
+        if (excerpts.length < 3) excerpts.push(parsed.content.slice(0, 200))
         fileMap.set(relPath, excerpts)
       }
 

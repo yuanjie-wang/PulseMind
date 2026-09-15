@@ -27,9 +27,8 @@ export async function execMemoryTool(ex: ToolExecContext, t: ToolUseBlock): Prom
       else {
         const type = (String(t.input.type || 'fact') as any); const cat = (String(t.input.category || 'general') as any)
         const entry = await mm!.saveMemory({ content, type, category: cat })
-        if (entry) {
-          ex.onMemorySaved?.()
-        }
+        // No prompt-cache bookkeeping here: the session-state block is rebuilt on
+        // every request, so a memory saved now is visible to the very next call.
         t.output = entry ? content.slice(0,200) : 'Already in memory'; ex.addToolResult(t.id, entry ? `Saved to memory: "${content}" (${type}, ${cat})` : `Already in memory (duplicate): "${content}"`, false)
         t.exitCode = 0
       }

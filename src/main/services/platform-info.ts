@@ -18,9 +18,12 @@ export function getBundledRipgrepPath(): string | null {
   const a = arch()
   const key = `${p}-${a}`
   const binaryName = p === 'win32' ? 'rg.exe' : 'rg'
-  // Production: inside app resources
-  const prodPath = join(process.resourcesPath, 'bin', key, binaryName)
-  if (existsSync(prodPath)) return prodPath
+  // Production: inside app resources. resourcesPath is set only under Electron;
+  // plain-Node callers (vitest) skip straight to the dev path.
+  const prodPath = typeof process.resourcesPath === 'string'
+    ? join(process.resourcesPath, 'bin', key, binaryName)
+    : null
+  if (prodPath != null && existsSync(prodPath)) return prodPath
   // Dev mode: look in project resources/bin/
   const devPath = join(__dirname, '../../resources/bin', key, binaryName)
   if (existsSync(devPath)) return devPath

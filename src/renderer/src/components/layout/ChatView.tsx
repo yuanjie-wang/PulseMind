@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback, useMemo, useId, useState } from 
 import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import type { LlmProfile } from '../../types/settings'
 import { Tooltip, Segmented } from 'antd'
+import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { FolderOpenOutlined } from '@ant-design/icons'
 import { SegmentBlock } from '../chat/SegmentView'
 import { buildSegments, getSegmentAnchorId, getSegmentKey, type Segment } from '../chat/message-segments'
@@ -19,7 +20,6 @@ import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previe
 import { PreviewPane } from '../preview/PreviewPane'
 import { usePreviewPaneSync } from '../../hooks/usePreviewPaneSync'
 import { useTranslation } from '../../i18n/useTranslation'
-import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import type { ConversationListItem } from '../../types/conversation'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 

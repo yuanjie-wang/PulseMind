@@ -17,10 +17,11 @@ export type ConversationListItem = {
   label: string
   pinned?: boolean
   updatedAt?: string
-  /** Owning project (PLAN-0.4.0 M3); absent = default project. */
+  /** Owning project (welcome page picker); absent = default project. */
   projectId?: string
   /** Summoned expert bound via @-mention; absent = unbound. */
   expertId?: string
-  /** Tool-approval level for this conversation; absent = never chosen ('auto'). */
+  /** Tool-approval level for this conversation; absent = never chosen, i.e. the
+   *  shared DEFAULT_APPROVAL_MODE (按需确认). */
   approvalMode?: SandboxApprovalMode
 }

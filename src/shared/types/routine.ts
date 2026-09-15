@@ -27,8 +27,6 @@ export interface Routine {
   icon?: string
   schedule?: RoutineSchedule
   enabled: boolean
-  /** Conversations run under this project's workspace + sandbox. */
-  projectId?: string
   /** Bound skills are injected at run time (without touching the skill
    *  manager's global enabled state — M4.8). */
   skills?: string[]

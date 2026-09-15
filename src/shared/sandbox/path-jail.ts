@@ -13,14 +13,12 @@
 // Semantics:
 //   read   — allowed everywhere except DENY_ROOTS (agent may look around, not
 //            into secrets or PulseMind's own data)
-//   write  — additionally jailed to workspaceDir + extraRoots unless the
-//            policy is 'full-access'; 'read-only' denies all writes
+//   write  — additionally jailed to workspaceDir
 //   baseline (no workspaceDir) — deny-roots only; user-initiated renderer
 //            utilities (knowledge import, canvas) run this way and must keep
 //            writing into ~/.pulsemind, so the baseline list excludes it
 
 import { isAbsolute, resolve, sep } from 'node:path'
-import type { ProjectSandboxPolicy } from './policy'
 
 export type PathOperation = 'read' | 'write'
 
@@ -40,7 +38,6 @@ export interface GuardPathInput {
   denyRoots: string[]
   /** Present only for agent sessions. Absent = baseline (deny-roots only). */
   workspaceDir?: string
-  policy?: ProjectSandboxPolicy
   /** Realpath-resolved target when the caller could resolve it (symlinks,
    *  `/tmp` → `/private/tmp`). Checked in addition to the lexical resolution. */
   realTarget?: string | null
@@ -105,7 +102,7 @@ export function guardPath(input: GuardPathInput): PathDecision {
   // The session's own workspace is exempt from deny roots: the default workspace
   // lives under the protected ~/.pulsemind root, so a blanket deny would lock the
   // agent out of its own working directory (PLAN-0.4.0 M8.1). Writes stay jailed
-  // by the policy below. The exemption needs BOTH the lexical target and the
+  // to the workspace below. The exemption needs BOTH the lexical target and the
   // realpath (when known) inside the workspace — a symlink that leads out does
   // not count, keeping deny roots effective for link escapes.
   const lexicalInside = !!input.workspaceDir && isSubpath(input.workspaceDir, resolved)
@@ -118,22 +115,15 @@ export function guardPath(input: GuardPathInput): PathDecision {
     return { ok: false, resolved, reason: `Path is protected: ${resolved}` }
   }
 
-  const policy = input.policy
-  if (!input.workspaceDir || !policy) {
+  if (!input.workspaceDir) {
     // Baseline: user-initiated, no agent jail beyond deny roots.
     return { ok: true, resolved }
   }
 
   if (input.operation === 'read') return { ok: true, resolved }
 
-  if (policy.fs === 'full-access') return { ok: true, resolved }
-
-  if (policy.fs === 'read-only') {
-    return { ok: false, resolved, reason: `Project filesystem is read-only; write to ${resolved} was blocked` }
-  }
-
-  // workspace-write
-  const writableRoots = [input.workspaceDir, ...policy.extraRoots]
+  // Writes are jailed to the workspace.
+  const writableRoots = [input.workspaceDir]
   // When the caller resolved symlinks, the REAL location governs: a link that
   // sits inside the workspace but points outside must not pass.
   const judgeTarget = input.realTarget ?? resolved
@@ -142,7 +132,7 @@ export function guardPath(input: GuardPathInput): PathDecision {
     return {
       ok: false,
       resolved,
-      reason: `Write blocked by project sandbox: ${resolved} is outside the project workspace (${input.workspaceDir})`,
+      reason: `Write blocked by sandbox: ${resolved} is outside the workspace (${input.workspaceDir})`,
     }
   }
   return { ok: true, resolved }

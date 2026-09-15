@@ -7,6 +7,7 @@ import React from 'react'
 import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, StarOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
+import { PAGE_COLUMN_MAX_WIDTH } from '../layout/CenteredPage'
 import type { AppView } from '../../navigation/types'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import AgentSettings from './AgentSettings'
@@ -65,45 +66,58 @@ function SettingsPage({ memoryManager }: SettingsPageProps): React.ReactElement 
   }
 
   return (
-    <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: '#fff' }}>
-      {/* Left menu */}
-      <div style={{
-        width: 160,
-        flexShrink: 0,
-        borderRight: '1px solid #f0f0f0',
-        display: 'flex',
-        flexDirection: 'column',
-        padding: '16px 8px'
-      }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, overflow: 'auto' }}>
-          {MENU.map((item) => (
-            <div
-              key={item.key}
-              onClick={() => selectTab(item.key)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '9px 12px', borderRadius: 6, cursor: 'pointer',
-                fontSize: 13, color: '#333', transition: 'background 0.15s',
-                background: tab === item.key ? '#f0f0f0' : 'transparent'
-              }}
-              onMouseEnter={(e) => {
-                if (tab !== item.key) e.currentTarget.style.background = '#f5f5f5'
-              }}
-              onMouseLeave={(e) => {
-                if (tab !== item.key) e.currentTarget.style.background = 'transparent'
-              }}
-            >
-              <span style={{ fontSize: 15, flexShrink: 0 }}>{item.icon}</span>
-              <span>{t(item.labelKey)}</span>
-            </div>
-          ))}
+    // Same centered treatment as 用量统计 / 关于: the menu + body block is
+    // capped and centered instead of stretching to the window edges, so wide
+    // windows grow margins. The panes keep their independent scrolling, which
+    // is why this page composes around PAGE_COLUMN_MAX_WIDTH rather than
+    // reusing the CenteredPage shell.
+    <div style={{ display: 'flex', justifyContent: 'center', height: '100%', overflow: 'hidden', background: '#fff' }}>
+      <div style={{ width: '100%', maxWidth: 160 + PAGE_COLUMN_MAX_WIDTH, minWidth: 0, display: 'flex' }}>
+        {/* Left menu */}
+        <div
+          style={{
+            width: 160,
+            flexShrink: 0,
+            borderRight: '1px solid #f0f0f0',
+            display: 'flex',
+            flexDirection: 'column',
+            padding: '16px 8px',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, overflow: 'auto' }}>
+            {MENU.map((item) => (
+              <div
+                key={item.key}
+                onClick={() => selectTab(item.key)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '9px 12px',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  color: '#333',
+                  transition: 'background 0.15s',
+                  background: tab === item.key ? '#f0f0f0' : 'transparent',
+                }}
+                onMouseEnter={(e) => {
+                  if (tab !== item.key) e.currentTarget.style.background = '#f5f5f5'
+                }}
+                onMouseLeave={(e) => {
+                  if (tab !== item.key) e.currentTarget.style.background = 'transparent'
+                }}
+              >
+                <span style={{ fontSize: 15, flexShrink: 0 }}>{item.icon}</span>
+                <span>{t(item.labelKey)}</span>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
 
-      {/* Section body — width-capped so forms and card grids stay readable on wide windows */}
-      <div style={{ flex: 1, overflow: 'auto' }} className="settings-scroll">
-        <div style={{ padding: '8px 24px 24px', maxWidth: 860 }}>
-          {renderSection()}
+        {/* Section body — width-capped so forms and card grids stay readable on wide windows */}
+        <div style={{ flex: 1, overflow: 'auto' }} className="settings-scroll">
+          <div style={{ padding: '8px 24px 24px', maxWidth: PAGE_COLUMN_MAX_WIDTH }}>{renderSection()}</div>
         </div>
       </div>
     </div>

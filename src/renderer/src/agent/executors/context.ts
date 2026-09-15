@@ -16,8 +16,6 @@ export interface ToolExecContext {
   addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void
   notify: () => void
   spawnSubAgent?: SpawnSubAgentFn
-  /** Called after a memory_save lands (experience distillation nudge). */
-  onMemorySaved?: () => void
   /** Long-running exec tools report the spawned pid (terminal card wiring). */
   onProcessStart?: (pid: string) => void
   /** Format exec tool result with exit code and stdout/stderr separation. */

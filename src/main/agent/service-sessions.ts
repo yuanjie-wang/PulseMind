@@ -4,6 +4,7 @@
  *  settings, SQLite or LLM profiles — `agentSessionManager` satisfies it
  *  structurally. */
 import type { AgentEventData, PageContext, ModelState } from '../../shared/agent-protocol'
+import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 
 export interface AgentServiceSessions {
   createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string }): Promise<{ sessionId: string; agentId: string }>
@@ -18,4 +19,10 @@ export interface AgentServiceSessions {
   modelState(): Promise<ModelState>
   /** model.setActive: switch the active profile (hot-swaps live sessions). */
   setActiveProfile(profileId: string): Promise<ModelState>
+  /** session.setApprovalMode: write the conversation's 授权 level (the remote
+   *  授权 button) and hot-apply it to the live session. Answers with the level
+   *  actually in force for the session afterwards — a pinned unattended run
+   *  keeps its own, so the caller must reconcile against this answer rather
+   *  than against what it asked for. */
+  setApprovalMode(sessionId: string, mode: SandboxApprovalMode): Promise<SandboxApprovalMode>
 }

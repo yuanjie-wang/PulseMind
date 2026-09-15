@@ -9,6 +9,7 @@ import { hostedToolProxy } from '../src/main/agent/hosted/proxy'
 import { hostedPromptRouter } from '../src/main/agent/hosted/prompts'
 import { PROTOCOL_VERSION, type AgentEventData } from '../src/shared/agent-protocol'
 import type { AgentServiceSessions } from '../src/main/agent/service-sessions'
+import type { SandboxApprovalMode } from '../src/shared/sandbox/policy'
 
 // ── Test harness ─────────────────────────────────────────────────────
 
@@ -94,6 +95,8 @@ interface FakeSessions extends AgentServiceSessions {
    *  assert is what the service forwarded, not a per-session field. */
   model: { profiles: Array<{ id: string; name?: string; provider?: string; model: string }>; activeId: string }
   switched: string[]
+  /** 授权 writes that reached the manager (the remote 授权 button). */
+  approvalModes: Array<{ sessionId: string; mode: SandboxApprovalMode }>
   emit: (sessionId: string, data: AgentEventData) => void
   setAskHandler: (fn: (sessionId: string, content: string, pageContext: any) => Promise<void>) => void
 }
@@ -113,6 +116,7 @@ function makeFakeSessions(): FakeSessions {
       activeId: 'p1',
     },
     switched: [] as string[],
+    approvalModes: [] as Array<{ sessionId: string; mode: SandboxApprovalMode }>,
   }
   const live = new Set<string>()
   return {
@@ -121,6 +125,14 @@ function makeFakeSessions(): FakeSessions {
     get engineCalls() { return state.engineCalls },
     get model() { return state.model },
     get switched() { return state.switched },
+    get approvalModes() { return state.approvalModes },
+    // The real manager writes the conversation column and re-resolves the live
+    // engine; the fake records the write and echoes the level back, which is
+    // what the caller reconciles against.
+    setApprovalMode: async (sessionId: string, mode: SandboxApprovalMode) => {
+      state.approvalModes.push({ sessionId, mode })
+      return mode
+    },
     // The real manager validates against settings.profiles; the fake refuses an
     // unknown id the same way, so the error path is exercised end to end.
     modelState: async () => ({ profiles: state.model.profiles, activeId: state.model.activeId }),
@@ -164,8 +176,9 @@ function makeFakeSessions(): FakeSessions {
 
 /** In-memory conversations store (better-sqlite3 is Electron-ABI and cannot
  *  load under plain Node — the repo's known DB-layer test gap). */
-function makeFakeStore(): AgentServiceConversations & { rows: Map<string, { title: string; origin: string | null; updatedAt: string }> } {
-  const rows = new Map<string, { title: string; origin: string | null; updatedAt: string }>()
+type FakeRow = { title: string; origin: string | null; updatedAt: string; approvalMode?: SandboxApprovalMode }
+function makeFakeStore(): AgentServiceConversations & { rows: Map<string, FakeRow> } {
+  const rows = new Map<string, FakeRow>()
   return {
     rows,
     hydrate: (id) => {
@@ -177,7 +190,11 @@ function makeFakeStore(): AgentServiceConversations & { rows: Map<string, { titl
         .filter(([, r]) => r.origin === origin)
         .sort((a, b) => b[1].updatedAt.localeCompare(a[1].updatedAt))
         .slice(0, limit)
-        .map(([id, r]) => ({ id, title: r.title, updatedAt: r.updatedAt }))
+        // approvalMode rides along (the real listConversationsByOrigin reads
+        // `conversations.approval_mode`): the panel's snapshot prefers it over
+        // its own tab-local carry-over, so losing it here would reopen the
+        // "the panel and the desktop disagree" bug.
+        .map(([id, r]) => ({ id, title: r.title, updatedAt: r.updatedAt, approvalMode: r.approvalMode }))
       return found
     },
     origin: (id) => rows.get(id)?.origin ?? null,
@@ -615,6 +632,84 @@ describe('M4.5 模型切换', () => {
     }
   })
 
+  it('session.setApprovalMode writes through and answers the level in force', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const { client, sessionId } = await openWithSession(handle)
+
+      const res = await client.request('session.setApprovalMode', { sessionId, mode: 'always-ask' })
+      expect(res.result).toMatchObject({ ok: true, mode: 'always-ask' })
+      expect(sessions.approvalModes).toEqual([{ sessionId, mode: 'always-ask' }])
+
+      // Back again: the panel is a toggle, not a one-way widening.
+      const back = await client.request('session.setApprovalMode', { sessionId, mode: 'auto' })
+      expect(back.result).toMatchObject({ ok: true, mode: 'auto' })
+      expect(sessions.approvalModes.at(-1)).toEqual({ sessionId, mode: 'auto' })
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('session.setApprovalMode answers what the service settled on, not what it was asked for', async () => {
+    // A pinned, unattended run keeps its own level however the column is
+    // written. The reply is what the panel echoes, so it must be the service's
+    // answer — otherwise a click on 全部允许 would look applied while the run
+    // still held its calls.
+    const sessions = makeFakeSessions()
+    sessions.setApprovalMode = async () => 'outside-ask'
+    const { handle } = await start('test-token', sessions)
+    try {
+      const { client, sessionId } = await openWithSession(handle)
+      const res = await client.request('session.setApprovalMode', { sessionId, mode: 'auto' })
+      expect(res.result).toMatchObject({ ok: true, mode: 'outside-ask' })
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('session.setApprovalMode refuses a missing sessionId or an unknown level', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      const noSession = await client.request('session.setApprovalMode', { mode: 'auto' })
+      expect(noSession.error?.code).toBe(-32602)
+      const badMode = await client.request('session.setApprovalMode', { sessionId: 'ws_1', mode: 'yolo' })
+      expect(badMode.error?.code).toBe(-32602)
+      // Neither reached the manager, so nothing was written onto a conversation.
+      expect(sessions.approvalModes).toEqual([])
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('session.list carries the stored 授权 level to the client', async () => {
+    const { handle, store } = await start()
+    try {
+      const { client, sessionId } = await openWithSession(handle)
+      store.rows.set(sessionId, {
+        title: '标签页会话',
+        origin: 'pulsemind-extension',
+        updatedAt: new Date().toISOString(),
+        approvalMode: 'always-ask',
+      })
+
+      const list = await client.request('session.list', {})
+      expect(list.result).toMatchObject({ sessions: [{ id: sessionId, approvalMode: 'always-ask' }] })
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
   it('session.list still answers when the model read fails', async () => {
     const sessions = makeFakeSessions()
     sessions.modelState = async () => {
@@ -639,24 +734,23 @@ describe('M4.5 模型切换', () => {
 })
 
 // ── M0.4: pageContext in the system prompt ──────────────────────────────
+// Moved to the per-turn state block: the page is per-turn state (the user
+// navigates), and the system prompt is now the frozen cache prefix — a page URL
+// in it would re-bill the tool schemas and the whole conversation on every
+// navigation.
 
 describe('M0.4 Current Page prompt section', () => {
-  it('appends the dynamic (non-cached) Current Page section', async () => {
+  it('carries the page in the per-turn state block, never in the cached prefix', async () => {
     const { buildSystemPrompt } = await import('../src/renderer/src/agent/system-prompt-builder')
     const result = await buildSystemPrompt({
       opts: { pageContext: { url: 'https://example.com/a', title: '示例页' } } as never,
       messages: [],
-      memoryContextSnapshot: null,
-      wikiContextSnapshot: null,
-      wikiContextVersion: 0,
-      systemPromptCache: new Map(),
-      skillAppendix: null,
-      experienceAppendix: null,
       plan: null,
     })
-    expect(result.systemPrompt).toContain('## Current Page')
-    expect(result.systemPrompt).toContain('https://example.com/a')
-    expect(result.systemPrompt).toContain('示例页')
+    expect(result.stateBlock).toContain('## Current Page')
+    expect(result.stateBlock).toContain('https://example.com/a')
+    expect(result.stateBlock).toContain('示例页')
+    expect(result.systemPrompt).not.toContain('## Current Page')
   })
 
   it('omits the section when no pageContext is set', async () => {
@@ -664,15 +758,9 @@ describe('M0.4 Current Page prompt section', () => {
     const result = await buildSystemPrompt({
       opts: {} as never,
       messages: [],
-      memoryContextSnapshot: null,
-      wikiContextSnapshot: null,
-      wikiContextVersion: 0,
-      systemPromptCache: new Map(),
-      skillAppendix: null,
-      experienceAppendix: null,
       plan: null,
     })
-    expect(result.systemPrompt).not.toContain('## Current Page')
+    expect(result.stateBlock).not.toContain('## Current Page')
   })
 })
 

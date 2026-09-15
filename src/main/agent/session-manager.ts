@@ -23,7 +23,7 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, deriveConvType } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, deriveConvType } from '../storage/conversation.db'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { projectStore } from '../storage/project-store'
 import { expertStore } from '../storage/expert-store'
@@ -33,7 +33,7 @@ import { composeExpertInstructions, toExpertRefCatalogs, type ExpertRefCatalogs 
 import type { ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
 import { agentClientRegistry } from './client-registry'
-import { normalizeSandboxPolicy, pickApprovalMode } from '../../shared/sandbox/policy'
+import { pickApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import type { AppSettings, LlmProfile } from '../../shared/types/settings'
@@ -120,8 +120,9 @@ class AgentSessionManagerImpl {
 
   /** Approval precedence, in one place: an explicit per-session override (derived
    *  sessions run unattended) > the conversation's own stored choice (the
-   *  composer's 授权 button writes it) > 'auto'. Re-read per call, so changing
-   *  the level takes effect on the conversation's next message. */
+   *  composer's 授权 button writes it, as does the panel's) > DEFAULT_APPROVAL_MODE.
+   *  Re-read per call, so changing the level takes effect on the conversation's
+   *  next message. */
   private effectiveApprovalMode(sessionId: string, entry: SessionEntry): SandboxApprovalMode {
     return pickApprovalMode(entry.pinned.approvalOverride, getConversationApprovalMode(sessionId))
   }
@@ -319,6 +320,29 @@ class AgentSessionManagerImpl {
     return this.modelState()
   }
 
+  /** session.setApprovalMode — the remote 授权 button (PLAN-browser-extension
+   *  M4.5). Writes the conversation's stored level, which is the same two steps
+   *  the desktop's own 授权 button performs over IPC
+   *  (`setConversationApprovalMode` + `agentSessionRefreshOptions`), moved here
+   *  so a ws client cannot fork the semantics: the column is the one durable
+   *  copy, and `refreshOptions` re-resolves the live engine from it so a change
+   *  made mid-run lands on the next tool without waiting for the next ask.
+   *
+   *  A session whose approval was pinned at creation (a derived/unattended run)
+   *  keeps its pin — `effectiveApprovalMode` gives the override precedence, so
+   *  writing the column cannot loosen a run that must not be loosened. */
+  async setApprovalMode(sessionId: string, mode: SandboxApprovalMode): Promise<SandboxApprovalMode> {
+    setConversationApprovalMode(sessionId, mode)
+    await this.refreshOptions(sessionId).catch((err) => {
+      console.warn('[AgentSession] approval switch: refresh failed', sessionId, err)
+    })
+    // The answer is the level in force afterwards, not the one that was asked
+    // for: for a pinned session those differ, and the caller must not be told
+    // its click took when the run kept its own level.
+    const entry = this.sessions.get(sessionId)
+    return entry ? this.effectiveApprovalMode(sessionId, entry) : mode
+  }
+
   async createSession(sessionId: string, opts: AgentSessionCreateOptions = {}): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId)!
@@ -371,7 +395,8 @@ class AgentSessionManagerImpl {
     }
     workspaceDir = workspaceDir || settings.workspaceDir || WORKSPACE_DIR
     // Approval precedence: an explicit per-session override (derived sessions
-    // run unattended) > the conversation's own stored choice > 'auto'.
+    // run unattended) > the conversation's own stored choice > the shared
+    // default for a conversation that never chose (按需确认).
     const approvalMode = pickApprovalMode(opts.approvalMode, getConversationApprovalMode(sessionId))
 
     const engineOptions: AgentEngineOptions = {
@@ -415,18 +440,14 @@ class AgentSessionManagerImpl {
         allowedTools: opts.allowedTools,
         // Only an explicit request pins the approval mode; an ordinary session
         // keeps following its conversation's own choice — see
-        // refreshSandboxContext.
+        // refreshConversationApproval.
         approvalOverride: opts.approvalMode,
       },
     })
     // Per-session sandbox context: wrapped around every tool-executing entry
     // point (ask / engineCall) so the file-ops and terminal services can
-    // adjudicate against the right workspace + policy (PLAN-0.4.0 M3.5).
-    this.sandboxContexts.set(sessionId, {
-      sessionId,
-      workspaceDir,
-      policy: normalizeSandboxPolicy(opts.sandbox),
-    })
+    // adjudicate against the right workspace (PLAN-0.4.0 M3.5).
+    this.sandboxContexts.set(sessionId, { sessionId, workspaceDir })
     try { updateConversationOrigin(sessionId, opts.clientId ?? 'local') } catch { /* origin is best-effort */ }
     if (opts.projectId && opts.projectId !== DEFAULT_PROJECT_ID) {
       try { setConversationProject(sessionId, opts.projectId) } catch { /* best-effort */ }
@@ -439,33 +460,18 @@ class AgentSessionManagerImpl {
 
   private sandboxContexts = new Map<string, SessionSandboxContext>()
 
-  /** Re-resolve the session's sandbox context from the conversation's project
-   *  binding (M3.6). The renderer binds a conversation to its project when the
-   *  conversation is created — before the first message — so resolving here is
-   *  authoritative, and ws-client sessions inherit it for free. Also syncs the
-   *  engine's workspaceDir so prompts and relative paths follow the project. */
-  private async refreshSandboxContext(sessionId: string, entry: SessionEntry): Promise<void> {
-    // Approval is per conversation, not per project, so it is re-read even for
-    // the default project: the 授权 button's choice lands on the next message
-    // instead of being frozen at the session's first turn.
+  /** Re-read the conversation's approval level so the 授权 button's choice
+   *  lands on the next message instead of being frozen at the session's first
+   *  turn. A session pinned at creation (derived/unattended) keeps its pin. */
+  private refreshConversationApproval(sessionId: string, entry: SessionEntry): void {
     if (entry.pinned.approvalOverride === undefined) {
       entry.engine.opts.approvalMode = this.effectiveApprovalMode(sessionId, entry)
-    }
-    try {
-      const projectId = getConversationProjectId(sessionId)
-      if (projectId === DEFAULT_PROJECT_ID) return
-      const project = await projectStore.get(projectId)
-      if (!project) return
-      this.sandboxContexts.set(sessionId, { sessionId, workspaceDir: project.workspaceDir, policy: project.sandbox })
-      entry.engine.opts.workspaceDir = project.workspaceDir
-    } catch (err) {
-      console.warn('[SessionManager] refreshSandboxContext failed:', err)
     }
   }
 
   /** Re-resolve the session's @-summoned expert config pack from the
    *  conversation's expert_id binding. Runs at session creation and before
-   *  every ask (next to refreshSandboxContext) so @ switches and unbinds take
+   *  every ask (next to refreshConversationApproval) so @ switches and unbinds take
    *  effect immediately; a deleted/disabled expert falls back to an ordinary
    *  session. engine.applyExpertContext invalidates the system-prompt cache
    *  when the expert changed. Derived prompt sessions (tool studio etc.) keep
@@ -521,7 +527,7 @@ class AgentSessionManagerImpl {
    *  and lands in the prompt's dynamic (non-cached) Current Page section. */
   async ask(sessionId: string, content: string, pageContext?: PageContext): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
-    await this.refreshSandboxContext(sessionId, entry)
+    this.refreshConversationApproval(sessionId, entry)
     await this.refreshExpertContext(sessionId, entry)
     entry.engine.opts.pageContext = pageContext
     // Whether page_* tools are on this session's toolset at all: a browser

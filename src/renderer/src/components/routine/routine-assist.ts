@@ -30,7 +30,6 @@ export interface RoutineFormSnapshot {
   cron: string
   catchUp: 'once' | 'skip'
   enabled: boolean
-  projectId?: string
   params: Array<{ key: string; label: string; required?: boolean; default?: string }>
 }
 
@@ -51,7 +50,6 @@ export function buildFormAnnotation(form: RoutineFormSnapshot): string {
     cron: form.cron,
     catchUp: form.catchUp,
     enabled: form.enabled,
-    projectId: form.projectId ?? '',
     params: form.params,
   }
   return `\n\n[当前表单]\n${JSON.stringify(payload)}`

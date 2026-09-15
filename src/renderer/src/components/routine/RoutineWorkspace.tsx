@@ -347,7 +347,7 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
   const session = useHostedAgentSession({
     convId: convId ?? null,
     title,
-    createOptions: { clientId: 'routine', projectId: routine?.projectId },
+    createOptions: { clientId: 'routine' },
   })
   const isBusy = session.isBusy
 

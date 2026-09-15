@@ -1,5 +1,5 @@
 /**
- * Chat approval reachability probe (real Chromium).
+ * Chat approval probe (real Chromium).
  *
  * The desktop chat collapses twice before a tool card: the execution segment
  * (chat/ExecutionSegment) and the tool block inside it (chat/MessageGroup's
@@ -25,6 +25,14 @@
  *   3. approved → the area is gone, nothing expanded on its own, the header shows the run
  *   4. streaming → no area and no buttons: the stream marks a generating tool 'pending'
  *      too, so keying on 'pending' alone would offer a decision that cannot be made
+ *   5. the composer's own 授权 button → 全部允许's icon and wording carry the amber
+ *      that marks it as the one unrestricted level (and keep it under hover), the
+ *      other levels stay grey, and an unreported level resolves to the shared
+ *      default (按需确认) rather than reading as 全部允许
+ *
+ * Section 5 mounts InputArea only when it runs, so the transcript checks above
+ * cannot see buttons it drew — the two concerns share this file because both are
+ * the approval surface, not because they share a tree.
  *
  * No Electron, no LLM calls, no extension: the harness stubs `window.electronAPI` and
  * renders into a plain page, so this cannot touch a real PulseMind session.
@@ -45,11 +53,13 @@ import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import { TranscriptView } from './src/renderer/src/components/chat/TranscriptView'
+import { InputArea } from './src/renderer/src/components/chat/InputArea'
 
 // The transcript reads electronAPI on render (FileRefChip's birthtime stat) and on
 // click (copy / favorite, which this probe never presses), so every call just
-// resolves to undefined.
-window.electronAPI = new Proxy({}, { get: () => () => Promise.resolve(undefined) })
+// resolves to undefined. expertList is the exception: InputArea maps over what it
+// answers, so an undefined would throw before it renders.
+window.electronAPI = new Proxy({}, { get: (_t, key) => () => Promise.resolve(key === 'expertList' ? [] : undefined) })
 
 const NOW = '2026-09-15T10:00:00.000Z'
 const user = (text) => ({ id: 'u1', role: 'user', contentBlocks: [{ type: 'text', text }], createdAt: NOW })
@@ -106,6 +116,59 @@ function Harness() {
 }
 
 createRoot(document.getElementById('root')).render(<Harness />)
+
+/** Section 5's composers, mounted only when that section asks for them so
+ *  the transcript checks above never see their buttons. One case per level that
+ *  the button can be in: the unrestricted one, a restricted one, the level
+ *  nobody reported (a fresh conversation, or a service that has not answered),
+ *  and one the harness owns the value of so a click must move it. */
+function ComposerCases() {
+  const base = {
+    isRequesting: false, isStreaming: false, isAwaitingApproval: false, isAwaitingInput: false,
+    hasMessages: true, onSendMessage: () => {}, onCancel: () => {}, onChangeApprovalMode: () => {},
+    features: { authorization: true },
+    // 'inline', not the chat's default 'floating': three floating composers all
+    // pin to the bottom of the view and land on top of each other, so only the
+    // last one would be clickable. The footer controls are identical either way.
+    layout: 'inline',
+  }
+  /** The welcome composer's own configuration — inline layout and **no**
+   *  features prop, which is what ChatView's welcome branch renders — with the
+   *  value owned by the parent, so picking from the menu has to move the button.
+   *  That is what a click could not do on a new conversation ("权限选择无法切换"). */
+  function WelcomeComposer() {
+    const [mode, setMode] = useState('outside-ask')
+    return (
+      <div data-case="welcome" style={{ width: 1000 }}>
+        <InputArea
+          layout="inline"
+          isRequesting={false} isStreaming={false} isAwaitingApproval={false} isAwaitingInput={false}
+          hasMessages={false} onSendMessage={() => {}} onCancel={() => {}}
+          approvalMode={mode}
+          onChangeApprovalMode={(next) => { window.__composerChoice = next; setMode(next) }}
+        />
+      </div>
+    )
+  }
+  return (
+    <TranslationProvider>
+      <div style={{ background: '#f0f2f4', padding: 12, fontFamily: 'system-ui' }}>
+        <div data-case="auto" style={{ width: 1000 }}><InputArea {...base} approvalMode="auto" /></div>
+        <div data-case="outside-ask" style={{ width: 1000 }}><InputArea {...base} approvalMode="outside-ask" /></div>
+        <div data-case="unreported" style={{ width: 1000 }}><InputArea {...base} /></div>
+        <WelcomeComposer />
+      </div>
+    </TranslationProvider>
+  )
+}
+
+window.__mountComposer = () => {
+  const host = document.createElement('div')
+  host.id = 'composer-cases'
+  document.body.appendChild(host)
+  createRoot(host).render(<ComposerCases />)
+}
+
 window.__ready = true
 `
 
@@ -254,6 +317,104 @@ const amberBoxes = () =>
   await page.waitForTimeout(300)
   check('a later stream chunk leaves it collapsed and undecided', (await openCards()) === 0 && (await areas().count()) === 0)
   check('the segment header reports the generating call', await page.getByText('指令生成中...').first().isVisible())
+}
+
+// ── 5. The composer's 授权 button: 全部允许 is the amber one ──
+// 这一档工具调用不再经过批准，是唯一「无人拦截」的一档，所以图标与文案一起转警示橙；
+// 其余档位是 #666。探针量的是真渲染出来的 computed color —— antd 的 Button 把
+// color 写在按钮上、图标靠继承，写错了源码看不出来，样式表里也没有这条规则。
+{
+  console.log('== 授权 button tint (composer) ==')
+  await page.evaluate(() => window.__mountComposer())
+  await page.waitForTimeout(300)
+
+  /** One composer case's 授权 button, found by its own title ("<level> · 工具调用
+   *  审批") — the card's first <button> is the send circle, not this one. Reports
+   *  the label text, the button's colour (the label inherits it), the level icon's
+   *  colour and the caret's. */
+  const APPROVAL_BTN = 'button[title$="工具调用审批"]'
+  const approvalButton = (caseName) =>
+    page.evaluate(
+      ([name, selector]) => {
+        const btn = document.querySelector(`#composer-cases [data-case="${name}"] ${selector}`)
+        if (!btn) return null
+        const icons = btn.querySelectorAll('.anticon')
+        return {
+          label: btn.textContent.trim(),
+          color: getComputedStyle(btn).color,
+          levelIcon: icons[0] ? getComputedStyle(icons[0]).color : null,
+          caret: icons[1] ? getComputedStyle(icons[1]).color : null,
+        }
+      },
+      [caseName, APPROVAL_BTN],
+    )
+
+  const AMBER = 'rgb(212, 107, 8)'
+  const GREY = 'rgb(102, 102, 102)'
+
+  const auto = await approvalButton('auto')
+  check('全部允许 的图标与文案同为警示橙（#d46b08）', auto?.label === '全部允许' && auto.color === AMBER && auto.levelIcon === AMBER, `${auto?.label} ${auto?.color}/${auto?.levelIcon}`)
+  // The caret is the affordance, not the level: it stays the muted grey both
+  // footer buttons use, exactly as the panel's does.
+  check('全部允许 的箭头仍是灰色（它标记的是档位，不是箭头）', auto?.caret === 'rgb(187, 187, 187)', String(auto?.caret))
+
+  const ask = await approvalButton('outside-ask')
+  check('其余档位的图标与文案是灰的', ask?.label === '按需确认' && ask.color === GREY && ask.levelIcon === GREY, `${ask?.label} ${ask?.color}/${ask?.levelIcon}`)
+
+  // + the point of tinting by inline color: antd's text-button hover rule would
+  // otherwise brighten the one surface that must keep reading as a warning.
+  const autoBtn = page.locator(`#composer-cases [data-case="auto"] ${APPROVAL_BTN}`)
+  await autoBtn.hover()
+  await page.waitForTimeout(200)
+  const hovered = await approvalButton('auto')
+  check('悬停后 全部允许 仍是警示橙（inline 压过 antd 的 hover 色）', hovered?.color === AMBER && hovered?.levelIcon === AMBER, `${hovered?.color}/${hovered?.levelIcon}`)
+
+  const unreported = await approvalButton('unreported')
+  check('没有档位上报时回落到共享默认（按需确认），读不出「没人拦」', unreported?.label === '按需确认' && unreported.color === GREY, `${unreported?.label} ${unreported?.color}`)
+
+  // The menu tints the level before it is picked, so 全部允许 is recognisable in
+  // the list — the same rule the panel's dropdown follows.
+  await autoBtn.click()
+  await page.waitForTimeout(300)
+  const items = await page.evaluate(() =>
+    [...document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item')].map((li) => {
+      const icon = li.querySelector('.anticon')
+      return {
+        label: li.textContent.trim(),
+        color: getComputedStyle(li).color,
+        icon: icon ? getComputedStyle(icon).color : null,
+      }
+    }),
+  )
+  const autoItem = items.find((i) => i.label.includes('全部允许'))
+  const otherItems = items.filter((i) => !i.label.includes('全部允许'))
+  check('下拉里 全部允许 一项的图标与文案同样标橙', items.length === 3 && autoItem?.color === AMBER && autoItem?.icon === AMBER, items.map((i) => `${i.label} ${i.icon}/${i.color}`).join(', '))
+  // 橙色标记的是这一档，不是整张菜单：另外两项必须彼此同色、且都不是橙。
+  check('下拉里其余档位不变色（标记的是档位，不是菜单主题）', otherItems.length === 2 && otherItems.every((i) => i.color === otherItems[0].color && i.icon === otherItems[0].icon && i.color !== AMBER), items.map((i) => `${i.label} ${i.icon}/${i.color}`).join(', '))
+
+  // ── Picking one has to *move* the button ──
+  // Everything above reads a value handed in; this case starts at 按需确认 and must
+  // end at 全部允许 through a real mouse, in the welcome composer's configuration.
+  // 「权限选择无法切换」 had two causes and this is the component-level half of the
+  // desktop one: the item's click has to reach the parent and the parent's value
+  // has to come back to the label. (The other half — the parent had no
+  // conversation to write to before the first message — is the pending-choice
+  // store, covered by tests/pending-approval.test.ts.)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(200)
+  const welcomeBefore = await approvalButton('welcome')
+  check('新会话的授权按钮起始于共享默认（按需确认）', welcomeBefore?.label === '按需确认' && welcomeBefore.color === GREY, `${welcomeBefore?.label} ${welcomeBefore?.color}`)
+
+  const welcomeBtn = page.locator(`#composer-cases [data-case="welcome"] ${APPROVAL_BTN}`)
+  await welcomeBtn.hover()
+  await welcomeBtn.click()
+  await page.waitForTimeout(300)
+  await page.locator('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item', { hasText: '全部允许' }).last().click()
+  await page.waitForTimeout(300)
+  const welcomeAfter = await approvalButton('welcome')
+  const reported = await page.evaluate(() => window.__composerChoice)
+  check('点选 全部允许 后按钮改文案、转橙，并把 auto 交给上层', welcomeAfter?.label === '全部允许' && welcomeAfter.color === AMBER && reported === 'auto', `${welcomeAfter?.label} ${welcomeAfter?.color} / 上报 ${reported}`)
+  check('切换后箭头仍是灰色', welcomeAfter?.caret === 'rgb(187, 187, 187)', String(welcomeAfter?.caret))
 }
 
 await browser.close()

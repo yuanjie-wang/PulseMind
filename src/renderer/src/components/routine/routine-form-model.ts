@@ -19,7 +19,6 @@ export interface RoutineDraftState {
   sched: ScheduleConfig
   catchUp: 'once' | 'skip'
   enabled: boolean
-  projectId?: string
   sourceConversationId?: string
   params: Array<{ key: string; label: string; required?: boolean; default?: string }>
 }
@@ -54,7 +53,6 @@ export function routineToDraft(routine: Routine): RoutineDraftState {
     ...draftScheduleFromCron(routine.schedule?.cron ?? ''),
     catchUp: routine.schedule?.catchUp ?? 'once',
     enabled: routine.enabled,
-    projectId: routine.projectId,
     sourceConversationId: routine.sourceConversationId,
     params: routine.params ?? [],
   }
@@ -76,7 +74,6 @@ export function draftToRoutineInput(draft: RoutineDraftState): Partial<Routine> 
     description: draft.description,
     prompt: draft.prompt,
     enabled: draft.enabled,
-    projectId: draft.projectId,
     sourceConversationId: draft.sourceConversationId,
     params: draft.params.filter((p) => p.key.trim()),
     schedule: cron ? { cron, catchUp: draft.catchUp } : undefined,

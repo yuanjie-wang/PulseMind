@@ -12,7 +12,7 @@
  * the M4 side panel is where they land. */
 
 import { useEffect, useRef, useState } from 'react'
-import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
+import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { modelLabel, type ModelState } from '../../shared/agent-protocol'
 import { Icon } from './icons'
 
@@ -87,7 +87,14 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
     onSend(value)
   }
 
-  const active = APPROVAL_LEVELS.find((l) => l.mode === approvalMode) ?? APPROVAL_LEVELS[2]
+  // Until the desktop reports a level (no session yet, or the service is
+  // unreachable) the button shows the shared default rather than a hardcoded
+  // 'auto': a brand-new session is held at 按需确认, and the panel must not
+  // claim it is unrestricted while the ladder is gating its calls.
+  const active =
+    APPROVAL_LEVELS.find((l) => l.mode === approvalMode) ??
+    APPROVAL_LEVELS.find((l) => l.mode === DEFAULT_APPROVAL_MODE) ??
+    APPROVAL_LEVELS[0]
   // Same two-step as the desktop's own button: the active profile's label, with
   // the placeholder reserved for the case where there is no profile at all.
   const profiles = model?.profiles ?? []

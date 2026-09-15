@@ -1,7 +1,7 @@
 // ── Welcome page content ──
 // Greeting + task form (the capsule switcher above drives chat/project mode via
 // newTaskStore) + functional quick entries between it and the input:
-// chat mode shows recent loose conversations and daily routines side by side;
+// chat mode shows recent conversations and daily routines side by side;
 // project mode shows the project cards (select target, jump to latest).
 
 import React from 'react'

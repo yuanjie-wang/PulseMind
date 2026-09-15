@@ -17,7 +17,6 @@ import type { ScheduleConfig } from '../../utils/schedule-builder'
 import { SCHED_DEFAULTS } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import type { RoutineAssistantDraft } from './routine-assist'
-import type { Project } from '../../../../shared/types/project'
 
 /** Editor modes for the schedule, ordered by how common they are. */
 const SCHEDULE_MODES = [
@@ -190,14 +189,13 @@ function AssistantDraftBanner({ pending, onApply, onDismiss }: { pending: Routin
 export interface RoutineFormProps {
   draft: RoutineDraftState
   onChange: (draft: RoutineDraftState) => void
-  projects: Project[]
   /** Non-null = the assistant proposed a draft; the review bar shows. */
   pendingAssistantDraft: RoutineAssistantDraft | null
   onApplyAssistantDraft: () => void
   onDismissAssistantDraft: () => void
 }
 
-export function RoutineForm({ draft, onChange, projects, pendingAssistantDraft, onApplyAssistantDraft, onDismissAssistantDraft }: RoutineFormProps): React.ReactElement {
+export function RoutineForm({ draft, onChange, pendingAssistantDraft, onApplyAssistantDraft, onDismissAssistantDraft }: RoutineFormProps): React.ReactElement {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {pendingAssistantDraft && (
@@ -241,18 +239,6 @@ export function RoutineForm({ draft, onChange, projects, pendingAssistantDraft, 
         </Button>
       </div>
       <ScheduleSection draft={draft} onChange={onChange} />
-      <div>
-        <FieldLabel text="执行项目" />
-        <Select
-          allowClear
-          value={draft.projectId}
-          onChange={(projectId) => onChange({ ...draft, projectId })}
-          options={projects.map((p) => ({ value: p.id, label: p.name }))}
-          placeholder="默认项目"
-          style={{ width: 280 }}
-        />
-        <div style={CAPTION}>决定任务运行时的工作区与沙箱</div>
-      </div>
     </div>
   )
 }

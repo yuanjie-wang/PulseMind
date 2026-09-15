@@ -122,6 +122,17 @@ export class StreamRunner {
           this.engine.streamingBlocks = []
           this.engine.notify()
 
+          // Prefix-cache readout: the share of the prompt that reused the previous
+          // request's cache. Watch it across turns — a drop to ~0 means something
+          // ahead of the history changed (see system-prompt-builder's core vs
+          // state-block split and collectEnabledTools' tool ordering).
+          if (usage?.inputTokens) {
+            const hit = usage.promptCacheHitTokens ?? 0
+            console.log(
+              `[LLM Cache] hit ${hit}/${usage.inputTokens} (${((hit / usage.inputTokens) * 100).toFixed(1)}%) out=${usage.outputTokens ?? '?'}`
+            )
+          }
+
           const toolUses = blocks.filter((b): b is ToolUseBlock => b.type === 'tool_use')
 
           if (toolUses.length > 0) this.engine.reportSpawnProgress(`子代理第 ${this.engine.loopCount} 轮完成,${toolUses.length} 个工具待执行`, true)

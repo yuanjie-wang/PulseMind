@@ -1,41 +1,13 @@
-// ── Sandbox policy model (PLAN-0.4.0 M3.3) ──
-// The single adjudication input for everything an agent session touches: file
-// writes, shell commands, network reach. Stored per project as JSON
-// (`projects.sandbox_json`), normalized on read so older/partial rows load
-// with defaults instead of failing.
-//
-// Approval is deliberately NOT part of a project policy: how much an agent may
-// do unattended is a per-conversation choice (`conversations.approval_mode`),
-// carried here because the engine's ladder and that column share one vocabulary.
+// ── Approval vocabulary (PLAN-0.4.0) ──
+// How much an agent may do unattended is a per-conversation choice
+// (`conversations.approval_mode`); the engine's ladder and that column share
+// this one vocabulary. The former project sandbox policy (fs/network/hard
+// isolation) is gone: file writes are always jailed to the conversation's
+// workspace (see shared/sandbox/path-jail.ts).
 
-export type SandboxFsMode = 'read-only' | 'workspace-write' | 'full-access'
-export type SandboxNetworkMode = 'allow' | 'deny'
 export type SandboxApprovalMode = 'auto' | 'outside-ask' | 'always-ask'
 
-export interface ProjectSandboxPolicy {
-  fs: SandboxFsMode
-  network: SandboxNetworkMode
-  /** OS-level command isolation (sandbox-exec / bwrap). Off by default (D2). */
-  hardIsolation: boolean
-  /** Additional writable roots alongside the workspace. */
-  extraRoots: string[]
-}
-
-/** D2: workspace-write, hard isolation opt-in. */
-export const DEFAULT_SANDBOX_POLICY: ProjectSandboxPolicy = {
-  fs: 'workspace-write',
-  network: 'allow',
-  hardIsolation: false,
-  extraRoots: [],
-}
-
-const FS_MODES: SandboxFsMode[] = ['read-only', 'workspace-write', 'full-access']
-const NETWORK_MODES: SandboxNetworkMode[] = ['allow', 'deny']
 const APPROVAL_MODES: SandboxApprovalMode[] = ['auto', 'outside-ask', 'always-ask']
-
-function oneOf<T extends string>(value: unknown, allowed: T[], fallback: T): T {
-  return typeof value === 'string' && (allowed as string[]).includes(value) ? (value as T) : fallback
-}
 
 /** Coerce an unknown value to an approval mode, or undefined when it isn't one.
  *  Callers layer their own fallback on top (session payloads, the DB column). */
@@ -43,14 +15,25 @@ export function toSandboxApprovalMode(raw: unknown): SandboxApprovalMode | undef
   return typeof raw === 'string' && (APPROVAL_MODES as string[]).includes(raw) ? (raw as SandboxApprovalMode) : undefined
 }
 
+/** The level a conversation that never chose one runs at — 按需确认: reads and
+ *  workspace writes run unattended, everything that leaves the workspace (shell,
+ *  page_execute_js, gated MCP tools) waits for a click.
+ *
+ *  Deliberately not 'auto': the unrestricted level is a widening the user asks
+ *  for (the UI tints it orange for exactly that reason), so it must never be
+ *  what a conversation silently starts at. Every resolver falls back here, so
+ *  the desktop's 授权 button, the extension panel's same-named dropdown and the
+ *  engine's own ladder cannot disagree about what a fresh conversation does. */
+export const DEFAULT_APPROVAL_MODE: SandboxApprovalMode = 'outside-ask'
+
 /** The first candidate that is actually set, most specific first — an explicit
- *  session override beats the conversation's stored choice, which beats a bare
- *  'auto'. One place so every resolver agrees on the precedence. */
+ *  session override beats the conversation's stored choice, which beats
+ *  DEFAULT_APPROVAL_MODE. One place so every resolver agrees on the precedence. */
 export function pickApprovalMode(...candidates: Array<SandboxApprovalMode | undefined | null>): SandboxApprovalMode {
   for (const candidate of candidates) {
     if (candidate !== undefined && candidate !== null) return candidate
   }
-  return 'auto'
+  return DEFAULT_APPROVAL_MODE
 }
 
 /** What an approval mode holds back. 'read' covers everything that only looks
@@ -66,20 +49,5 @@ export function requiresApproval(mode: SandboxApprovalMode, tier: SandboxToolTie
     case 'auto': return false
     case 'outside-ask': return tier === 'exec'
     case 'always-ask': return tier !== 'read'
-  }
-}
-
-/** Tolerantly parse a policy from unknown JSON. Invalid fields fall back to
- *  defaults; unknown fields are dropped. */
-export function normalizeSandboxPolicy(raw: unknown): ProjectSandboxPolicy {
-  if (raw == null || typeof raw !== 'object') return { ...DEFAULT_SANDBOX_POLICY, extraRoots: [] }
-  const raw_ = raw as Record<string, unknown>
-  return {
-    fs: oneOf(raw_.fs, FS_MODES, DEFAULT_SANDBOX_POLICY.fs),
-    network: oneOf(raw_.network, NETWORK_MODES, DEFAULT_SANDBOX_POLICY.network),
-    hardIsolation: raw_.hardIsolation === true,
-    extraRoots: Array.isArray(raw_.extraRoots)
-      ? raw_.extraRoots.filter((r): r is string => typeof r === 'string' && r.length > 0)
-      : [],
   }
 }

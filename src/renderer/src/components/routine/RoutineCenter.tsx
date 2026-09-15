@@ -19,7 +19,6 @@ import { describeCron } from '../../utils/schedule-text'
 import { describeRelativeTimeText } from '../../utils/relative-time'
 import { RoutineWorkspace, RUN_STATUS_TAG } from './RoutineWorkspace'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
-import type { Project } from '../../../../shared/types/project'
 
 export interface RoutineCenterProps {
   /** Deep link (e.g. the welcome page's routine card): open the run-history
@@ -32,7 +31,6 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
   const { modal, message } = AntdApp.useApp()
   const navigate = useNavigationStore((s) => s.navigate)
   const [routines, setRoutines] = useState<Routine[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
   const [recentRuns, setRecentRuns] = useState<RoutineRun[]>([])
   /** When recentRuns were fetched — render stays pure by not calling Date.now(). */
   const [runsFetchedAt, setRunsFetchedAt] = useState(0)
@@ -51,7 +49,6 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
   const reload = useCallback(async () => {
     try {
       setRoutines(await window.electronAPI.routineList())
-      setProjects(await window.electronAPI.projectList())
       setRecentRuns(await window.electronAPI.routineRuns(undefined, 200))
       setRunsFetchedAt(Date.now())
     } catch (err) {
@@ -143,9 +140,6 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
             ? `${RUN_STATUS_TAG[lastRun.status].text} · ${describeRelativeTimeText(lastRun.startedAt, runsFetchedAt, t) ?? ''}`
             : null
           const description = routine.description || (routine.prompt ? `提示词：${routine.prompt}` : '')
-          const projectName = routine.projectId && routine.projectId !== 'default'
-            ? projects.find((p) => p.id === routine.projectId)?.name ?? routine.projectId
-            : null
           return (
             <div
               key={routine.id}
@@ -157,7 +151,6 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                   {routine.name}
                 </span>
                 {routine.schedule?.cron && checkCron(routine.schedule.cron).valid && <Tag color="black">定时</Tag>}
-                {projectName && <Tag>{projectName}</Tag>}
               </div>
               <div
                 title={description}

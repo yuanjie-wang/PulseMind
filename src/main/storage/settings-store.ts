@@ -42,7 +42,9 @@ const FALLBACK_SETTINGS: AppSettings = {
   serviceEnabled: true,
   memoryEnabled: true,
   experienceEnabled: true,
-  routineRunRetentionDays: 0
+  routineRunRetentionDays: 0,
+  conversationRetentionDays: 0,
+  debugLlmRequests: false
 }
 
 /**
@@ -104,6 +106,8 @@ export class SettingsStore {
           memoryEnabled: parsed.memoryEnabled ?? true,
           experienceEnabled: parsed.experienceEnabled ?? true,
           routineRunRetentionDays: readRetentionDays(parsed.routineRunRetentionDays),
+          conversationRetentionDays: readRetentionDays(parsed.conversationRetentionDays),
+          debugLlmRequests: parsed.debugLlmRequests === true,
         }
         cache = { mtimeMs: stats.mtimeMs, settings: result }
         return structuredClone(result)
@@ -144,7 +148,8 @@ export class SettingsStore {
       locale: 'zh',
       memoryEnabled: true,
       experienceEnabled: true,
-      routineRunRetentionDays: 0
+      routineRunRetentionDays: 0,
+      debugLlmRequests: false
     }
   }
 

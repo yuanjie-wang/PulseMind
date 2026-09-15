@@ -1,45 +1,20 @@
-// ── Project create/edit modal (PLAN-0.4.0 M3.7, extracted from ProjectView
-// for M8.4 so the welcome page's project panel can reuse it; M8.x revision:
-// the side drawer became a modal and creation only collects name + workspace
-// — the sandbox policy starts at its defaults and is tuned in 项目设置) ──
+// ── Project create modal (PLAN-0.4.0 M3.7, reused by the welcome page's
+// project picker; management UI is gone — the welcome flow is the only place
+// a project is created, collecting name + workspace, nothing else) ──
+// Workspace input is validated twice (2026-09: 手工输入需要校验): the pure
+// format check in shared/workspace-path answers on every keystroke, and a
+// debounced PROJECT_VALIDATE_DIR probe catches existence/permission problems
+// the format cannot see. A blank name is auto-filled from the path's last
+// segment so typing (or picking) the workspace first is enough.
 
-import React, { useState } from 'react'
-import { App as AntdApp, Button, Input, Modal, Select, Space, Switch, Tooltip } from 'antd'
+import React, { useEffect, useRef, useState } from 'react'
+import { App as AntdApp, Button, Input, Modal, Space } from 'antd'
 import { FolderOpenOutlined } from '@ant-design/icons'
-import { DEFAULT_SANDBOX_POLICY, type ProjectSandboxPolicy } from '../../../../shared/sandbox/policy'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from '../../../../shared/types/project'
+import { basenameOfPath, checkWorkspacePathFormat } from '../../../../shared/workspace-path'
 
-export const FS_OPTIONS = [
-  { value: 'workspace-write', label: '工作区可写（推荐）' },
-  { value: 'read-only', label: '只读' },
-  { value: 'full-access', label: '完全访问' },
-]
-export const NETWORK_OPTIONS = [
-  { value: 'allow', label: '允许联网' },
-  { value: 'deny', label: '禁止联网' },
-]
-
-export function SandboxControls({ value, onChange }: {
-  value: ProjectSandboxPolicy
-  onChange: (next: ProjectSandboxPolicy) => void
-}): React.ReactElement {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <Space wrap>
-        <span style={{ fontSize: 12, color: '#888' }}>文件</span>
-        <Select size="small" options={FS_OPTIONS} value={value.fs} onChange={(fs) => onChange({ ...value, fs })} style={{ minWidth: 170 }} />
-        <span style={{ fontSize: 12, color: '#888' }}>网络</span>
-        <Select size="small" options={NETWORK_OPTIONS} value={value.network} onChange={(network) => onChange({ ...value, network })} style={{ minWidth: 120 }} />
-      </Space>
-      <Space wrap>
-        <Tooltip title="开启后命令在 OS 沙箱内运行（macOS sandbox-exec / Linux bwrap）；平台不支持时自动降级为软沙箱（仅审批+审计）">
-          <span style={{ fontSize: 12, color: '#888' }}>硬隔离</span>
-        </Tooltip>
-        <Switch size="small" checked={value.hardIsolation} onChange={(hardIsolation) => onChange({ ...value, hardIsolation })} />
-      </Space>
-    </div>
-  )
-}
+/** ms of typing quiet before the workspace path is probed on the main side. */
+const DIR_PROBE_DELAY_MS = 500
 
 export function ProjectModal({ open, editing, onClose, onSaved }: {
   open: boolean
@@ -51,21 +26,56 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
   const { message } = AntdApp.useApp()
   const [name, setName] = useState('')
   const [workspaceDir, setWorkspaceDir] = useState('')
-  const [sandbox, setSandbox] = useState<ProjectSandboxPolicy>({ ...DEFAULT_SANDBOX_POLICY })
+  const [dirError, setDirError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const probeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // The probe result of an earlier keystroke must not label a newer input —
+  // only the value this ref still points at may write dirError.
+  const latestDirRef = useRef('')
+
+  const clearProbe = (): void => {
+    if (probeTimer.current) {
+      clearTimeout(probeTimer.current)
+      probeTimer.current = null
+    }
+  }
+  useEffect(() => clearProbe, [])
 
   // Form fields repopulate from `editing` when the modal finishes opening —
   // an event callback rather than a state-resetting effect.
   const afterOpenChange = (open: boolean): void => {
-    if (!open) return
-    setName(editing?.name ?? '')
-    setWorkspaceDir(editing?.workspaceDir ?? '')
-    setSandbox(editing?.sandbox ?? { ...DEFAULT_SANDBOX_POLICY })
+    if (open) {
+      setName(editing?.name ?? '')
+      setWorkspaceDir(editing?.workspaceDir ?? '')
+      setDirError(null)
+      latestDirRef.current = editing?.workspaceDir ?? ''
+      clearProbe()
+    }
+  }
+
+  /** One entry point for every workspace write (typed or dialog-picked):
+   *  format verdict immediately, main-side probe once typing goes quiet. */
+  const updateWorkspaceDir = (next: string): void => {
+    setWorkspaceDir(next)
+    const trimmed = next.trim()
+    latestDirRef.current = trimmed
+    const formatError = trimmed ? checkWorkspacePathFormat(trimmed) : null
+    setDirError(formatError)
+    // 先填工作区时，路径最后一段就是现成的项目名 — only into a blank name,
+    // never over something the user already typed.
+    const derived = basenameOfPath(trimmed)
+    if (trimmed && derived && !name.trim()) setName(derived)
+    clearProbe()
+    if (!trimmed || formatError) return
+    probeTimer.current = setTimeout(async () => {
+      const res = await window.electronAPI.projectValidateDir(trimmed)
+      if (latestDirRef.current === trimmed) setDirError(res.ok ? null : res.error ?? '该目录不可用作工作区')
+    }, DIR_PROBE_DELAY_MS)
   }
 
   const pickDir = async (): Promise<void> => {
     const res = await window.electronAPI.showOpenDialog({ properties: ['openDirectory'] })
-    if (!res.canceled && res.filePaths[0]) setWorkspaceDir(res.filePaths[0])
+    if (!res.canceled && res.filePaths[0]) updateWorkspaceDir(res.filePaths[0])
   }
 
   const save = async (): Promise<void> => {
@@ -73,8 +83,8 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
     setSaving(true)
     try {
       if (editing) {
-        // workspaceDir is fixed at creation — renames/sandbox edits only.
-        const patch: ProjectUpdateInput = { name, sandbox }
+        // workspaceDir is fixed at creation — renames only.
+        const patch: ProjectUpdateInput = { name }
         await window.electronAPI.projectUpdate(editing.id, patch)
         onSaved()
       } else {
@@ -89,7 +99,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
           onClose()
           return
         }
-        const input: ProjectCreateInput = { name, workspaceDir, sandbox }
+        const input: ProjectCreateInput = { name, workspaceDir }
         const project = await window.electronAPI.projectCreate(input)
         onSaved(project)
       }
@@ -102,7 +112,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
     }
   }
 
-  const canSubmit = Boolean(name.trim() && (editing || workspaceDir.trim()))
+  const canSubmit = Boolean(name.trim() && (editing || (workspaceDir.trim() && !dirError)))
 
   return (
     <Modal
@@ -122,23 +132,23 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：my-app" autoFocus />
         </div>
         {editing ? (
-          <>
-            <div>
-              <div style={{ marginBottom: 6, fontSize: 13 }}>固定工作区（创建后不可修改）</div>
-              <code style={{ fontSize: 12, color: '#666', wordBreak: 'break-all' }}>{editing.workspaceDir}</code>
-            </div>
-            <div>
-              <div style={{ marginBottom: 6, fontSize: 13 }}>沙箱策略</div>
-              <SandboxControls value={sandbox} onChange={setSandbox} />
-            </div>
-          </>
+          <div>
+            <div style={{ marginBottom: 6, fontSize: 13 }}>工作区（创建后不可修改）</div>
+            <code style={{ fontSize: 12, color: '#666', wordBreak: 'break-all' }}>{editing.workspaceDir}</code>
+          </div>
         ) : (
           <div>
-            <div style={{ marginBottom: 6, fontSize: 13 }}>固定工作区（对话的文件读写都锁定在这里）</div>
+            <div style={{ marginBottom: 6, fontSize: 13 }}>工作区</div>
             <Space.Compact style={{ width: '100%' }}>
-              <Input value={workspaceDir} onChange={(e) => setWorkspaceDir(e.target.value)} placeholder="/path/to/workspace" />
+              <Input
+                value={workspaceDir}
+                onChange={(e) => updateWorkspaceDir(e.target.value)}
+                placeholder="/path/to/workspace"
+                status={dirError ? 'error' : undefined}
+              />
               <Button icon={<FolderOpenOutlined />} onClick={pickDir} />
             </Space.Compact>
+            {dirError && <div style={{ marginTop: 6, fontSize: 12, color: '#ff4d4f' }}>{dirError}</div>}
           </div>
         )}
       </div>

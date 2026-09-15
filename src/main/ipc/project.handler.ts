@@ -1,10 +1,11 @@
 // ── Project IPC handlers (PLAN-0.4.0 M3.2) ──
+// CRUD only — the management UI (project center) is gone; the welcome page's
+// project picker is the remaining consumer (list/create, plus edit from the
+// welcome flow's create modal).
 
 import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { projectStore } from '../storage/project-store'
-import { auditStore } from '../storage/audit-store'
-import { detectSandboxSupport } from '../sandbox/exec-sandbox'
 import type { ProjectCreateInput, ProjectUpdateInput } from '../../shared/types/project'
 
 export function registerProjectHandlers(): void {
@@ -25,9 +26,12 @@ export function registerProjectHandlers(): void {
   // simply ignored here.
   ipcMain.handle(IPC_CHANNELS.PROJECT_UPDATE, (_event, id: string, patch: ProjectUpdateInput) => projectStore.update(id, patch))
 
+  // Input-time probe for the create modal's workspace field. Returns a result
+  // instead of throwing so the renderer needs no per-keystroke try/catch.
+  ipcMain.handle(IPC_CHANNELS.PROJECT_VALIDATE_DIR, (_event, workspaceDir: string) => {
+    if (typeof workspaceDir !== 'string') return { ok: false, error: '工作区路径格式不正确' }
+    return projectStore.validateWorkspaceDir(workspaceDir.trim())
+  })
+
   ipcMain.handle(IPC_CHANNELS.PROJECT_DELETE, async (_event, id: string) => projectStore.remove(id))
-
-  ipcMain.handle(IPC_CHANNELS.AUDIT_LIST, (_event, limit?: number) => auditStore.list(limit))
-
-  ipcMain.handle(IPC_CHANNELS.SANDBOX_DETECT, () => detectSandboxSupport())
 }

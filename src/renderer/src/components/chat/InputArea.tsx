@@ -9,6 +9,7 @@ import { useComposerDraftStore } from '../../stores/composerDraftStore'
 import type { LlmProfile } from '../../types/settings'
 import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
+import { DEFAULT_APPROVAL_MODE } from '../../../../shared/sandbox/policy'
 import { modelLabel } from '../../../../shared/agent-protocol'
 
 /** Approval levels, most restrictive first — the order the dropdown lists them
@@ -20,6 +21,24 @@ const APPROVAL_LEVELS: Array<{ mode: SandboxApprovalMode; icon: React.ReactNode 
   { mode: 'outside-ask', icon: <SafetyOutlined style={{ fontSize: 14 }} /> },
   { mode: 'auto', icon: <ThunderboltOutlined style={{ fontSize: 14 }} /> },
 ]
+
+/** 全部允许 (the 'auto' level) drops the approval ladder entirely: tool calls
+ *  run unannounced, which is the one setting here that cannot be undone after
+ *  the fact. So its icon and its wording are tinted amber — the same value the
+ *  extension panel copies into `--pm-warn` and the same role the 待批准 tint
+ *  plays in the transcript: this is the state to notice, not a neutral choice.
+ *  Exported because the panel's stylesheet names it in a comment (it cannot
+ *  import a TS value) — keep both in step. */
+export const UNRESTRICTED_COLOR = '#d46b08'
+
+/** The 授权 button's colour: only the unrestricted level is tinted; the rest keep
+ *  the muted grey every other text button in the footer uses (which also beats
+ *  antd's hover colour, so hovering does not brighten it). The dropdown tints its
+ *  own 全部允许 item the same way and leaves the other items on antd's menu colour
+ *  — a footer control's grey is not a menu's. */
+function approvalButtonColor(mode: SandboxApprovalMode): string {
+  return mode === 'auto' ? UNRESTRICTED_COLOR : '#666'
+}
 
 export function InputArea({
   isRequesting,
@@ -174,8 +193,11 @@ export function InputArea({
   const activeModelLabel = activeProfile ? modelLabel(activeProfile) : t('chatView.selectModel')
 
   // 授权 button: the conversation's level drives the icon, the label and the
-  // tooltip; the label repeats in the dropdown next to the same icon.
-  const approvalLabel = approvalMode ?? 'auto'
+  // tooltip; the label repeats in the dropdown next to the same icon. An absent
+  // level is the shared default (按需确认), resolved the way the engine resolves
+  // it — never a hardcoded 'auto', or a fresh conversation would read as
+  // unrestricted while its calls are actually held.
+  const approvalLabel = approvalMode ?? DEFAULT_APPROVAL_MODE
   const approvalHint = t('chatView.approval.tooltip', { level: t(`chatView.approval.${approvalLabel}`) })
 
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
@@ -451,6 +473,11 @@ export function InputArea({
                     key: mode,
                     icon,
                     label: t(`chatView.approval.${mode}`),
+                    // Tinted on the item, so icon and label inherit one colour in
+                    // the open list — 全部允许 is recognisable before it is picked,
+                    // not only once it is in force. The other two keep antd's menu
+                    // colour: the tint marks one level, it is not a menu theme.
+                    style: mode === 'auto' ? { color: UNRESTRICTED_COLOR } : undefined,
                   })),
                   selectable: true,
                   selectedKeys: [approvalLabel],
@@ -463,7 +490,7 @@ export function InputArea({
                   icon={APPROVAL_LEVELS.find((l) => l.mode === approvalLabel)?.icon}
                   title={approvalHint}
                   aria-label={approvalHint}
-                  style={{ fontSize: 12, color: '#666' }}
+                  style={{ fontSize: 12, color: approvalButtonColor(approvalLabel) }}
                 >
                   {t(`chatView.approval.${approvalLabel}`)}
                   <DownOutlined style={{ fontSize: 10, color: '#bbb', marginLeft: 4 }} />

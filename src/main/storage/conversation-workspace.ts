@@ -82,7 +82,7 @@ export async function resolveConversationWorkspace(convId: string, explicitProje
     if (project?.workspaceDir) {
       // The project's dir is normally materialized at creation; recreate it if
       // it was deleted on disk. Failing hard (instead of falling through to a
-      // timestamped dir) keeps the jail root and the sandbox policy consistent.
+      // timestamped dir) keeps the jail root consistent.
       try {
         await mkdir(project.workspaceDir, { recursive: true })
       } catch (err) {

@@ -28,6 +28,7 @@ import {
   getFile,
   deleteFile,
 } from '../storage/knowledge-store'
+import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
 
 export interface WikiSearchMatch {
   wikiPath: string
@@ -194,7 +195,7 @@ function guessTitle(absPath: string, wikiPath: string): string {
   return basename(wikiPath, '.md').replace(/[-_]/g, ' ')
 }
 
-/** Search wiki content via ripgrep (grep fallback). */
+/** Search wiki content via ripgrep (grep fallback, Unix only). */
 export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
   if (!query || !existsSync(KNOWLEDGE_WIKI_DIR)) return []
 
@@ -232,23 +233,18 @@ export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
   const parseOutput = (stdout: string): void => {
     for (const line of stdout.split('\n')) {
       if (!line.trim() || results.length >= limit) break
-      const sepIdx = line.indexOf(':')
-      if (sepIdx === -1) continue
-      const absPath = line.slice(0, sepIdx)
-      const rest = line.slice(sepIdx + 1)
-      const lineSep = rest.indexOf(':')
-      const lineNum = lineSep > -1 ? parseInt(rest.slice(0, lineSep), 10) || 0 : 0
-      const content = lineSep > -1 ? rest.slice(lineSep + 1).trim() : rest.trim()
-      const wikiPath = relative(KNOWLEDGE_WIKI_DIR, absPath)
+      const parsed = parseRgLine(line)
+      if (!parsed) continue
+      const wikiPath = relative(KNOWLEDGE_WIKI_DIR, parsed.absPath)
       const dir = wikiPath.split(sep)[0]
       if (!results.some(r => r.wikiPath === wikiPath)) {
-        results.push({ wikiPath, title: guessTitle(absPath, wikiPath), type: dir as WikiPageType, lineNum, content: content.slice(0, 200) })
+        results.push({ wikiPath, title: guessTitle(parsed.absPath, wikiPath), type: dir as WikiPageType, lineNum: parsed.lineNum, content: parsed.content.slice(0, 200) })
       }
     }
   }
 
   const tryRg = (): Promise<void> => new Promise((resolve) => {
-    execFile('rg', buildRgArgs(), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile(ripgrepBinary(), buildRgArgs(), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err && !stdout) { resolve(); return }
       parseOutput(stdout)
       resolve()
@@ -269,6 +265,8 @@ export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
     terms.length = 0; terms.push(query)
     await tryRg()
   }
-  if (results.length === 0) await tryGrep()
+  // grep exists only on Unix; on Windows the bundled rg above is the only
+  // searcher (execFile('grep') would ENOENT and silently yield nothing).
+  if (results.length === 0 && process.platform !== 'win32') await tryGrep()
   return results.slice(0, limit)
 }

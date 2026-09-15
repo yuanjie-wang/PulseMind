@@ -2,9 +2,10 @@
 // The 项目 tab of the sidebar's history area: conversations grouped per created
 // project, the group header showing the project's name (the workspace dir it
 // points to is unrelated to the name and shown as the header's tooltip).
-// Clicking a header collapses/expands that group's conversation list; the
-// project detail itself lives in the project center (sidebar 管理 → 项目),
-// not behind this row. Conversation rows are the shared ConversationRows, so
+// Clicking a header collapses/expands that group's conversation list (the
+// former project center page is gone; creating is the welcome page's picker,
+// deletion lives in the group header's hover actions). Conversation rows are
+// the shared ConversationRows, so
 // they look and behave exactly like the 对话 tab's (relative time, task-status
 // light, pin / rename / delete). Pre-0.4.0 conversations (the synthesized
 // default project) are not listed here — they have no workspace of their own.

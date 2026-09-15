@@ -34,7 +34,7 @@ describe('agent service WebSocket (M2.1)', () => {
 
     const hello = await request(1, 'hello', { clientId: 'vitest', clientVersion: '0', protocolVersion: PROTOCOL_VERSION })
     expect(hello.result.protocolVersion).toBe(PROTOCOL_VERSION)
-    expect(hello.result.serviceVersion).toBe('0.3.5')
+    expect(hello.result.serviceVersion).toBe('0.4.0')
 
     const ping = await request(2, 'ping')
     expect(ping.result.pong).toBe(true)

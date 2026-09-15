@@ -20,6 +20,7 @@ import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
+import { conversationKeyOf } from '../../../../shared/conversation-key'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { SkillState } from '../../skills/types'
@@ -75,8 +76,8 @@ interface AppLayoutProps {
   knowledgeManager?: KnowledgeManager
   activeLoopConvIds?: string[]
   retryingConvIds?: string[]
-  /** Create a conversation bound to a project (from ProjectView). */
-  onCreateProjectConversation?: (projectId: string) => void
+  /** Re-read the conversation list from the DB (after main-side cleanup). */
+  onReloadConversations?: () => void
 }
 
 function AppLayout({
@@ -99,7 +100,7 @@ function AppLayout({
   knowledgeManager,
   activeLoopConvIds,
   retryingConvIds,
-  onCreateProjectConversation,
+  onReloadConversations,
   children
 }: AppLayoutProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
@@ -107,55 +108,50 @@ function AppLayout({
   const navigate = useNavigationStore((s) => s.navigate)
   const navigateKind = useNavigationStore((s) => s.navigateKind)
 
-  // The history area's tab: the conversation list or the project list.
-  const [listTab, setListTab] = useState<'chats' | 'projects'>('chats')
   const { token } = theme.useToken()
   const { t } = useTranslation()
 
+  // The history area's tab: the conversation list or the project list.
+  const [listTab, setListTab] = useState<'chats' | 'projects'>('chats')
+
   // Switcher-row actions (PLAN-0.4.0): 管理 + 新增 sit right of the 对话/项目
-  // pill, and what they open follows the selected task type.
+  // pill, and what they open follows the selected tab. The former project
+  // center is gone, so the 项目 tab carries no 管理 entry — creating happens
+  // through its 新增 (the same ProjectModal the welcome picker uses).
   const [manageOpen, setManageOpen] = useState(false)
   const [projectModalOpen, setProjectModalOpen] = useState(false)
   const reloadProjects = useProjectStore((s) => s.reload)
 
   const canCreateNew = autoCleanup || totalSessions < MAX_SESSIONS
-  const activeConvTitle = typeof activeConversationKey === 'string'
-    ? conversations.find((c) => c.key === activeConversationKey)?.label
+  // The open conversation, resolved once: `''` while nothing is open, which is
+  // not a conversation — see conversationKeyOf.
+  const activeConvKey = conversationKeyOf(activeConversationKey)
+  const activeConvTitle = activeConvKey
+    ? conversations.find((c) => c.key === activeConvKey)?.label
     : undefined
-  // The 对话 tab (and its manage modal) covers the loose — project-less —
-  // conversations only; project-bound ones live under the 项目 tab.
+  // The 对话 tab covers the loose — project-less — conversations; project-bound
+  // ones live under the 项目 tab, so the two tabs never duplicate each other.
   const looseConversations = conversations.filter((c) => !c.projectId)
 
-  // 管理: chats tab → the batch-delete modal for its loose conversations;
-  // projects tab → the project center, which already carries create/edit/delete.
+  // 管理: the unified conversation-management dialog (清理策略 · 最长保留时长).
   const handleTabManage = (): void => {
-    if (listTab === 'projects') {
-      navigate({ kind: 'project' })
-      return
-    }
     setManageOpen(true)
   }
 
-  // 新增: chats tab → a fresh conversation (mirrors SidebarNav's 新建对话
-  // entry: preselect the welcome switcher, land on the chat view, then create);
-  // projects tab → the project create modal.
+  // 新增: chats tab → a fresh conversation (mirrors SidebarNav's 新建任务:
+  // land on the chat view, then create); projects tab → the project create modal.
   const handleTabAdd = (): void => {
     if (listTab === 'projects') {
       setProjectModalOpen(true)
       return
     }
-    useNewTaskStore.getState().setMode('chat')
     navigate({ kind: 'chat' })
     if (canCreateNew) onCreateNew()
   }
 
-  const handleDeleteConversations = (keys: string[]): void => {
-    keys.forEach((key) => onDeleteConversation(key))
-  }
-
   // 项目行's 新建任务: land on the welcome form with the project preselected —
-  // the same deferred flow as the sidebar's 新建任务 entry (M8.4), where nothing
-  // is created until a message is actually sent.
+  // the same deferred flow as the welcome picker (M8.4), where nothing is
+  // created until a message is actually sent.
   const handleProjectNewTask = (projectId: string): void => {
     useNewTaskStore.getState().setMode('project')
     useNewTaskStore.getState().setProjectId(projectId)
@@ -165,22 +161,20 @@ function AppLayout({
 
   // Sidebar highlight key: only while a chat view is open. Both history tabs
   // (对话 and 项目) take it, so the open conversation reads as active in either.
-  const activeChatKey = view.kind === 'chat' && typeof activeConversationKey === 'string'
-    ? activeConversationKey
-    : undefined
+  const activeChatKey = view.kind === 'chat' ? activeConvKey : undefined
 
   // With the sidebar collapsed the header starts at the window's left edge, so the
   // macOS traffic lights land on it and its content has to move out of their way.
   const headerLeft = headerLeftInset(collapsed)
 
-  // The three centers share one page (D4a revision); their switcher lives in the
-  // header, right of the sidebar toggle, and the tab is the view kind itself.
-  // The switcher doubles as the page title, so the centered header title is skipped.
+  // The three centers share one page (D4a revision); their switcher is the centered
+  // content of the title bar (it doubles as the page title, so the centered header
+  // title is skipped for these views), and the tab is the view kind itself.
   // Plain buttons driven by the registry's centers submenu — one data source for the
   // sidebar flyout and this switcher, and no antd-internal styling to fight.
   const isCentersView = view.kind === 'capability' || view.kind === 'knowledge' || view.kind === 'tools'
   const centersSwitcher = isCentersView ? (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       {CENTERS_SUBMENU.map((item) => (
         <Button
           key={item.view}
@@ -248,7 +242,8 @@ function AppLayout({
         {/* Tab switcher is pinned; only the list below it scrolls. */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {/* One row: the 对话/项目 pill on the left, its 管理/新增 actions on
-              the right — both follow the selected task type (see handlers). */}
+              the right — both follow the selected tab. The former project
+              center is gone, so the 项目 tab's only action is 新增 (create). */}
           <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             {/* Inline margins override the stylesheet's `10px 12px 6px` so the
                 actions cluster can hug the row's right edge. */}
@@ -261,15 +256,17 @@ function AppLayout({
               </Button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginRight: 8 }}>
-              <Tooltip title={listTab === 'chats' ? t('appLayout.manageChats') : t('appLayout.manageProjects')}>
-                <Button
-                  type="text"
-                  className="sidebar-list-action"
-                  aria-label={listTab === 'chats' ? t('appLayout.manageChats') : t('appLayout.manageProjects')}
-                  icon={<SettingOutlined style={{ fontSize: 14 }} />}
-                  onClick={handleTabManage}
-                />
-              </Tooltip>
+              {listTab === 'chats' && (
+                <Tooltip title={t('appLayout.manageChats')}>
+                  <Button
+                    type="text"
+                    className="sidebar-list-action"
+                    aria-label={t('appLayout.manageChats')}
+                    icon={<SettingOutlined style={{ fontSize: 14 }} />}
+                    onClick={handleTabManage}
+                  />
+                </Tooltip>
+              )}
               <Tooltip title={listTab === 'chats' ? t('menu.newChat') : t('menu.newProject')}>
                 <Button
                   type="text"
@@ -284,20 +281,20 @@ function AppLayout({
           </div>
           <div className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
             {listTab === 'chats' ? (
-              conversations.length === 0 ? (
+              looseConversations.length === 0 ? (
                 <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>
                   {t('appLayout.noConversations')}
                 </div>
               ) : (
                 <ConversationSidebar
-                conversations={conversations}
-                activeKey={activeChatKey}
-                onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
-                onDelete={onDeleteConversation}
-                onRename={onRenameConversation}
-                onTogglePin={onTogglePinConversation}
-                activeLoopConvIds={activeLoopConvIds}
-                retryingConvIds={retryingConvIds}
+                  conversations={looseConversations}
+                  activeKey={activeChatKey}
+                  onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
+                  onDelete={onDeleteConversation}
+                  onRename={onRenameConversation}
+                  onTogglePin={onTogglePinConversation}
+                  activeLoopConvIds={activeLoopConvIds}
+                  retryingConvIds={retryingConvIds}
                 />
               )
             ) : (
@@ -361,16 +358,16 @@ function AppLayout({
             WebkitAppRegion: 'drag'
           } as React.CSSProperties}
         >
-          {/* Sidebar toggle, then the centers switcher when one of them is open. */}
+          {/* Sidebar toggle at the left edge. */}
           <div style={{ position: 'absolute', left: 24 + headerLeft, display: 'flex', alignItems: 'center', gap: 12, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             {sidebarToggle}
-            {centersSwitcher}
           </div>
 
-          {/* Center content: the chat view shows the conversation title, every other
-              view shows its own name. Skipped for the centers page — its switcher
-              switcher already says which center is open. */}
-          {!isCentersView && (
+          {/* Center content: the centers switcher when one of them is open, else
+              the chat view's conversation title or every other view's own name. */}
+          {isCentersView ? (
+            centersSwitcher
+          ) : (
             <span
               style={{
                 fontSize: 15,
@@ -416,20 +413,18 @@ function AppLayout({
                 importError={importError}
                 conversations={conversations}
                 onSelectConversation={onSelectConversation}
-                onCreateProjectConversation={onCreateProjectConversation}
               />
             )}
           </div>
         </Content>
       </Layout>
 
-      {/* Switcher-row actions' surfaces: the chats tab's manage modal and the
+      {/* Switcher-row actions' surfaces: the chats tab's manage dialog and the
           projects tab's create modal. Both portal out of the sidebar. */}
       <ConversationManageModal
         open={manageOpen}
-        conversations={looseConversations}
         onClose={() => setManageOpen(false)}
-        onDeleteMany={handleDeleteConversations}
+        onRetentionChanged={() => onReloadConversations?.()}
       />
       <ProjectModal
         open={projectModalOpen}

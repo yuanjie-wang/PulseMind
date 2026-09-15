@@ -28,12 +28,17 @@ function resourcePath(...segments: string[]): string {
  * automations and the local agent service.
  */
 export function createTray(deps: TrayDeps): Tray {
-  // pulseMind_tray.png (16px) + pulseMind_tray@2x.png (32px) — nativeImage picks up
-  // both representations automatically. Template image: macOS recolors the badge
-  // from its alpha channel, so the knocked-out pulse glyph stays visible on both
-  // light and dark menu bars.
-  const icon = nativeImage.createFromPath(resourcePath('pulseMind_tray.png'))
-  icon.setTemplateImage(true)
+  // macOS: pulseMind_tray.png (16px + @2x) as a template image — the OS recolors
+  // the knocked-out pulse glyph from its alpha channel, so it stays visible on
+  // both light and dark menu bars. Windows: template images are a no-op there
+  // and the macOS glyph is near-invisible on the dark taskbar, so reuse the
+  // app's own pulseMind-win.ico (createFromPath loads ICO on Windows, and it is
+  // Tray's recommended format there; the file carries 256/48/32/16 sizes).
+  const iconPath = process.platform === 'win32'
+    ? resourcePath('pulseMind-win.ico')
+    : resourcePath('pulseMind_tray.png')
+  const icon = nativeImage.createFromPath(iconPath)
+  if (process.platform === 'darwin') icon.setTemplateImage(true)
   const tray = new Tray(icon)
   tray.setToolTip('PulseMind')
 

@@ -10,7 +10,7 @@
 // accessory of the form rather than a third peer column.
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { App as AntdApp, Button, Modal, Switch, Tooltip } from 'antd'
+import { App as AntdApp, Button, Modal, Tooltip } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, FormOutlined, ImportOutlined, LoadingOutlined, PlusOutlined, RobotOutlined, SaveOutlined, ScheduleOutlined } from '@ant-design/icons'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { useSettings } from '../../hooks/SettingsContext'
@@ -30,7 +30,6 @@ import type { RoutineFormSnapshot } from './routine-assist'
 import { applyAssistantDraft, draftToRoutineInput, EMPTY_DRAFT, routineToDraft, validateDraft, draftScheduleFromCron } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import type { Routine } from '../../../../shared/types/routine'
-import type { Project } from '../../../../shared/types/project'
 
 export interface RoutineEditorPageProps {
   /** Routine loaded into the form; absent = the create-new flow. */
@@ -42,7 +41,6 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
   const navigate = useNavigationStore((s) => s.navigate)
   const { settings, switchProfile } = useSettings()
   const [routines, setRoutines] = useState<Routine[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
   /** Which stored routine the assistant conversation is bound to; null = the
    *  shared create-new draft bucket. Deliberately NOT bumped by a first save
    *  so the just-had conversation keeps its context. */
@@ -62,7 +60,6 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
   const reload = useCallback(async (): Promise<void> => {
     try {
       setRoutines(await window.electronAPI.routineList())
-      setProjects(await window.electronAPI.projectList())
     } catch (err) {
       console.warn('[RoutineEditor] load failed:', err)
     }
@@ -99,7 +96,7 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
     return () => { alive = false }
   }, [routineIdProp, message])
 
-  const assist = useRoutineAssistSession({ routineId: boundId, projectId: draft.projectId, routineName: draft.name })
+  const assist = useRoutineAssistSession({ routineId: boundId, routineName: draft.name })
 
   /** Every user edit goes through here so the unsaved marker stays honest. */
   const editDraft = (next: RoutineDraftState): void => {
@@ -135,12 +132,6 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
   }
 
   const goBack = (): void => confirmDiscard(() => navigate({ kind: 'routines' }))
-
-  const toggleRoutine = (routine: Routine, checked: boolean): void => {
-    void window.electronAPI.routineToggle(routine.id, checked).then(reload)
-    // Keep the open form in sync so a later save does not revert the toggle.
-    if (updateId === routine.id) setDraft((d) => ({ ...d, enabled: checked }))
-  }
 
   const removeRoutine = (routine: Routine): void => {
     modal.confirm({
@@ -193,7 +184,6 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
     cron: draft.scheduleEnabled ? configToCron(draft.sched) : '',
     catchUp: draft.catchUp,
     enabled: draft.enabled,
-    projectId: draft.projectId,
     params: draft.params,
   })
 
@@ -356,7 +346,6 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: '#aaa' }}>
                     {scheduleSummary(routine)}
                   </span>
-                  <Switch size="small" checked={routine.enabled} onChange={(checked) => toggleRoutine(routine, checked)} />
                 </div>
               </div>
             )
@@ -393,7 +382,6 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
             <RoutineForm
               draft={draft}
               onChange={editDraft}
-              projects={projects}
               pendingAssistantDraft={assist.proposedDraft}
               onApplyAssistantDraft={applyProposal}
               onDismissAssistantDraft={assist.clearProposedDraft}

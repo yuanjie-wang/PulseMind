@@ -11,7 +11,7 @@ export interface ConversationIndexEntry {
   summary?: string
   keywords?: string
   pinned?: boolean
-  /** Owning project (PLAN-0.4.0 M3); always present on list results. */
+  /** Owning project (welcome page picker); 'default' = none. */
   projectId?: string
   /** Resolved working directory (PLAN-0.4.0 M8); absent until first session. */
   workspaceDir?: string

@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { agentSessionManager } from '../agent/session-manager'
+import { cleanupExpiredConversations } from '../services/conversation-retention'
 import { setTitleBarTheme } from '../window-chrome'
 import type { AppSettings } from '../../shared/types/settings'
 
@@ -18,5 +19,11 @@ export function registerSettingsHandlers(): void {
     // away — engines and hooks read them through the shared manager instances.
     void agentSessionManager.applyFeatureToggles(settings).catch((err: unknown) =>
       console.warn('[settings] Failed to apply feature toggles:', err))
+    // 对话管理 · 最长保留时长：the policy takes effect on save, not on the next
+    // restart. Awaiting it means the save resolves AFTER the expiries landed,
+    // so the caller's list reload sees the pruned DB. Bounded work (≤500 rows).
+    try { await cleanupExpiredConversations() } catch (err) {
+      console.warn('[settings] conversation retention failed:', err)
+    }
   })
 }

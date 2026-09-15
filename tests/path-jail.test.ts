@@ -1,11 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { guardPath, buildDenyRoots, buildBaselineDenyRoots, resolveTarget } from '../src/shared/sandbox/path-jail'
-import { DEFAULT_SANDBOX_POLICY } from '../src/shared/sandbox/policy'
 
 const HOME = '/Users/dev'
 const WORKSPACE = '/Users/dev/code/my-app'
 const denyRoots = buildDenyRoots(HOME, 'darwin')
-const base = { denyRoots, workspaceDir: WORKSPACE, policy: { ...DEFAULT_SANDBOX_POLICY } }
+const base = { denyRoots, workspaceDir: WORKSPACE }
 
 describe('resolveTarget', () => {
   it('hangs relative paths off the workspace', () => {
@@ -40,7 +39,7 @@ describe('guardPath — writes (workspace-write)', () => {
   it('deny writes outside the workspace', () => {
     const d = guardPath({ ...base, target: '/Users/dev/Desktop/evil.txt', operation: 'write' })
     expect(d.ok).toBe(false)
-    expect(d.ok ? '' : d.reason).toMatch(/outside the project workspace/)
+    expect(d.ok ? '' : d.reason).toMatch(/outside the workspace/)
   })
   it('block traversal that escapes the workspace lexically', () => {
     const d = guardPath({ ...base, target: '../escape.txt', operation: 'write' })
@@ -58,25 +57,8 @@ describe('guardPath — writes (workspace-write)', () => {
     const d = guardPath({ ...base, target: `${WORKSPACE}/link`, operation: 'write', realTarget: '/Users/dev/Desktop/evil.txt' })
     expect(d.ok).toBe(false)
   })
-  it('honor extraRoots', () => {
-    const policy = { ...DEFAULT_SANDBOX_POLICY, extraRoots: ['/Users/dev/shared'] }
-    expect(guardPath({ ...base, policy, target: '/Users/dev/shared/a.txt', operation: 'write' }).ok).toBe(true)
-  })
   it('treat the workspace root itself as writable', () => {
     expect(guardPath({ ...base, target: WORKSPACE, operation: 'write' }).ok).toBe(true)
-  })
-})
-
-describe('guardPath — policy modes', () => {
-  it('read-only denies writes but still allows reads', () => {
-    const policy = { ...DEFAULT_SANDBOX_POLICY, fs: 'read-only' as const }
-    expect(guardPath({ ...base, policy, target: 'src/out.ts', operation: 'write' }).ok).toBe(false)
-    expect(guardPath({ ...base, policy, target: 'src/out.ts', operation: 'read' }).ok).toBe(true)
-  })
-  it('full-access writes anywhere outside deny roots', () => {
-    const policy = { ...DEFAULT_SANDBOX_POLICY, fs: 'full-access' as const }
-    expect(guardPath({ ...base, policy, target: '/Users/dev/Desktop/ok.txt', operation: 'write' }).ok).toBe(true)
-    expect(guardPath({ ...base, policy, target: `${HOME}/.ssh/id_rsa`, operation: 'write' }).ok).toBe(false)
   })
 })
 
@@ -95,7 +77,7 @@ describe('guardPath — workspace under a deny root (M8.1)', () => {
   // The default PulseMind workspace sits inside the protected ~/.pulsemind root;
   // the session's own workspace must stay writable despite the ancestor deny.
   const buried = `${HOME}/.pulsemind/workspace/20260912103000`
-  const buriedBase = { denyRoots, workspaceDir: buried, policy: { ...DEFAULT_SANDBOX_POLICY } }
+  const buriedBase = { denyRoots, workspaceDir: buried }
 
   it('allow writes inside a workspace that lives under ~/.pulsemind', () => {
     expect(guardPath({ ...buriedBase, target: 'notes/a.md', operation: 'write' }).ok).toBe(true)

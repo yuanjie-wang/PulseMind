@@ -3,7 +3,22 @@ import type { ContentBlock, ToolResultBlock } from '../../shared/types/agent'
 import { toSandboxApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { extractSnippet } from '../../shared/search/snippet'
+import { conversationKeyOf } from '../../shared/conversation-key'
 import { getDb } from './database'
+
+/** Guard for the setters below.
+ *
+ * Each of them may run before its conversation row exists and therefore
+ * stub-inserts one. An empty id is not a conversation — it is the client's
+ * "nothing is open" sentinel (the conversation list opens at `''`; see
+ * shared/conversation-key) — and honouring it produced a row with an empty id:
+ * title 新对话, no messages, and visible in the sidebar. The renderer no longer
+ * sends one; this is the last line so a client bug cannot write junk. */
+function isRealConversationId(id: string): boolean {
+  if (conversationKeyOf(id)) return true
+  console.warn('[DB] ignored a write for an empty conversation id')
+  return false
+}
 
 /** Derive conversation type from ID for backward compatibility. */
 export function deriveConvType(id: string): string {
@@ -30,6 +45,7 @@ export function deriveConvType(id: string): string {
  * the desktop chat list and hides them from the panel's own session list
  * (PLAN-browser-extension M1.4). */
 export function updateConversationOrigin(id: string, origin: string): void {
+  if (!isRealConversationId(id)) return
   const now = new Date().toISOString()
   getDb()
     .prepare(
@@ -323,11 +339,12 @@ export function updateMessageMetadata(
   database.prepare(`UPDATE messages SET ${updates.join(', ')} WHERE id = ?`).run(...params)
 }
 
-/** Attach a conversation to a project (PLAN-0.4.0 M3.6).
- *  Called at conversation creation — usually before the row exists — so it
- *  stub-inserts the row. `saveConversation` later upserts without touching
- *  project_id, so the binding survives. */
+/** Attach a conversation to a project (PLAN-0.4.0 M3.6). Called at conversation
+ *  creation — usually before the row exists — so it stub-inserts the row.
+ *  `saveConversation` later upserts without touching project_id, so the
+ *  binding survives. */
 export function setConversationProject(id: string, projectId: string): void {
+  if (!isRealConversationId(id)) return
   const db = getDb()
   const r = db.prepare('UPDATE conversations SET project_id = ? WHERE id = ?').run(projectId, id)
   if (r.changes === 0 && projectId !== 'default') {
@@ -347,6 +364,7 @@ export function getConversationProjectId(id: string): string {
  *  Same stub-insert contract as setConversationProject: may run before the row
  *  exists; later upserts never touch expert_id, so the binding survives. */
 export function setConversationExpert(id: string, expertId: string | null): void {
+  if (!isRealConversationId(id)) return
   const db = getDb()
   const r = db.prepare('UPDATE conversations SET expert_id = ? WHERE id = ?').run(expertId, id)
   if (r.changes === 0 && expertId) {
@@ -366,6 +384,7 @@ export function getConversationExpertId(id: string): string | null {
  *  setConversationExpert: may run before the row exists, and later upserts never
  *  touch approval_mode, so the choice survives. */
 export function setConversationApprovalMode(id: string, mode: SandboxApprovalMode): void {
+  if (!isRealConversationId(id)) return
   const db = getDb()
   const r = db.prepare('UPDATE conversations SET approval_mode = ? WHERE id = ?').run(mode, id)
   if (r.changes === 0) {
@@ -389,9 +408,10 @@ export function getConversationWorkspaceDir(id: string): string | null {
 }
 
 /** Store the conversation's resolved working directory (PLAN-0.4.0 M8).
- *  Like setConversationProject, this can run before the row exists (the row is
+ *  Like the other binding setters, this can run before the row exists (the row is
  *  materialized by the first save), so it stub-inserts when needed. */
 export function setConversationWorkspaceDir(id: string, workspaceDir: string): void {
+  if (!isRealConversationId(id)) return
   const db = getDb()
   const r = db.prepare('UPDATE conversations SET workspace_dir = ? WHERE id = ?').run(workspaceDir, id)
   if (r.changes === 0) {
@@ -403,6 +423,19 @@ export function setConversationWorkspaceDir(id: string, workspaceDir: string): v
 
 export function deleteConversation(id: string): void {
   getDb().prepare('DELETE FROM conversations WHERE id = ?').run(id)
+}
+
+/** Ids of unpinned conversations last updated before the retention window —
+ *  the candidates for 对话管理's 最长保留时长 cleanup. Pinned conversations are
+ *  never expired; callers decide which of these are safe to delete (a live
+ *  session's row is excluded by the caller, which knows what is running). */
+export function listExpiredConversationIds(retentionDays: number, limit = 500): string[] {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return []
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString()
+  const rows = getDb()
+    .prepare("SELECT id FROM conversations WHERE type = 'normal' AND (pinned IS NULL OR pinned = 0) AND updated_at < ? ORDER BY updated_at ASC LIMIT ?")
+    .all(cutoff, limit) as Array<{ id: string }>
+  return rows.map((r) => r.id)
 }
 
 /** One-shot data migration: routine-run conversations persisted before routine

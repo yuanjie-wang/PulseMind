@@ -251,14 +251,18 @@ function createTables(): void {
   try { database.exec('ALTER TABLE knowledge_files ADD COLUMN wiki_outputs TEXT') } catch (e) {}
   try { database.exec("ALTER TABLE experiences ADD COLUMN triggers TEXT NOT NULL DEFAULT '[]'") } catch (e) {}
 
-  // ── PLAN-0.4.0 M3: projects, project-scoped conversations, audit log ──
+  // ── PLAN-0.4.0 M3/M6: projects, routine-run history, audit log ──
+  // Projects are named fixed workspaces picked on the welcome page (the
+  // management UI is gone). `sandbox_json` is a leftover of the removed
+  // sandbox-policy era: fresh schemas get a DEFAULT, project-store.create
+  // always writes '{}', nothing reads it.
   database.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id            TEXT PRIMARY KEY,
       name          TEXT NOT NULL,
       workspace_dir TEXT NOT NULL,
       icon          TEXT,
-      sandbox_json  TEXT NOT NULL,
+      sandbox_json  TEXT NOT NULL DEFAULT '{}',
       created_at    TEXT NOT NULL,
       updated_at    TEXT NOT NULL
     );
@@ -289,9 +293,8 @@ function createTables(): void {
     );
 
   `)
-  // MUST run before the idx_conversations_project index below: existing
-  // databases get the column here. (Ordering bug shipped in 0.4.0 M3:
-  // index-before-column crashed initializeDatabase on real databases.)
+  // Conversations keep their project binding (welcome page picker); existing
+  // databases get the column here.
   try { database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT') } catch (e) {}
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id, updated_at DESC);
@@ -301,8 +304,8 @@ function createTables(): void {
   // Backfill for existing rows happens in conversation-workspace.ts at startup
   // (it needs settings.workspaceDir, which is not readable synchronously here).
   try { database.exec('ALTER TABLE conversations ADD COLUMN workspace_dir TEXT') } catch { /* column may already exist */ }
-  // Every pre-0.4.0 conversation — and any row that slips through without a
-  // project — belongs to the synthesized default project.
+  // Every conversation not explicitly bound to a project belongs to the
+  // synthesized default project.
   try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch (e) {}
   // ── 专家配置包 (expert config packs): extended subagent_profiles + per-conversation binding ──
   for (const col of ['description TEXT', 'methodology TEXT', 'output_spec TEXT', 'constraints TEXT', 'knowledge_file_ids TEXT']) {

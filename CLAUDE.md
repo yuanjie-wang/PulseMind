@@ -213,7 +213,7 @@ App.tsx                         # Root: SettingsProvider > TranslationProvider >
 │   ├── AgentEngine.ts          # (~940 lines) State machine: SSE dispatch, tool execution, three-layer compaction
 │   ├── engine/                 # Strategy modules extracted from the engine (stream-runner, execution-flow, context-compactor, …)
 │   ├── tool-executors.ts       # Tool execution implementations (execSpawnAgent, execCommand, etc.)
-│   ├── system-prompt-builder.ts # System prompt assembly with caching (6h TTL for main, no cache for sub-agents)
+│   ├── system-prompt-builder.ts # Prompt assembly: invariant core (system) + per-turn state block (final message)
 │   ├── command-builder.ts      # Shell command builder (find/search/exec/ask_user)
 │   ├── agent-utils.ts          # Shell escaping (shEscape, psEscape)
 │   ├── context-gc.ts           # Context pressure detection and garbage collection
@@ -303,7 +303,7 @@ Sub-agents are spawned via the `spawn_agent` tool (defined in `built-in-tools.ts
 
 Key behaviors:
 - Sub-agents skip background memory extraction (no background LLM calls within sub-agents)
-- Sub-agents bypass the 6-hour system prompt cache
+- Sub-agents bypass the core/state split: they carry their own `spawnSystemPrompt` and get no state block
 - Sub-agents can recursively spawn sub-agents
 - `spawnSystemPrompt` flag controls sub-agent-specific branch behavior in the loop
 
@@ -374,9 +374,29 @@ Gating is the `requiresApproval(mode, tier)` ladder (`shared/sandbox/policy.ts`)
 `auto` runs everything, `outside-ask` holds shell/ungrouped/gated-MCP calls,
 `always-ask` also holds writes. Sub-agent runs hold nothing.
 The mode comes from the conversation itself — `conversations.approval_mode`, written
-by the composer's 授权 button, with an explicit per-session override for derived
+by the composer's 授权 button (and by the extension panel's same-named dropdown over
+`session.setApprovalMode`), with an explicit per-session override for derived
 sessions (`pickApprovalMode(override, conversation)` in session-manager); the
 session manager re-reads it on every ask, so a change lands on the next message.
+A conversation that never chose a level runs at `DEFAULT_APPROVAL_MODE` = **按需确认**
+(`outside-ask`), not `auto`: reads and workspace writes run unattended and anything
+leaving the workspace waits, while the unrestricted level stays a widening the user
+asks for (which is why the UI tints it amber). Every resolver — the button's label,
+the panel's dropdown, the ladder — reads that one constant, so none of them can
+label a fresh conversation as unrestricted while its calls are held.
+A conversation that does not exist yet has nowhere to record the choice: the
+welcome composer draws 授权 with no active key (the id is generated when the first
+message materializes the row), so a click there is held in
+`stores/pendingApprovalStore` and applied by `useChatController` to the
+conversation it creates — before `startLoop`, so the first turn already runs at
+that level. Note that "no conversation open" reaches the UI as the **empty
+string** (`useXConversations` opens its store at `''`, not `undefined`), so the
+key is always resolved through `shared/conversation-key.ts` `conversationKeyOf()`
+— testing it with `typeof` sent the write to a conversation with id `''`
+(`conversation.db` even stub-inserted a row for it, which its
+`isRealConversationId` guard now refuses). The panel has the same "chosen before
+the session exists" case, held per tab in `chrome.storage.session` and replayed
+by `ensureSession`.
 Scheduled routine runs pin `outside-ask` (unattended D13: the runner auto-rejects).
 - **askUserTools**: always require user response
 

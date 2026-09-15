@@ -1,13 +1,19 @@
 // ── Welcome quick entry: project cards (project mode) ──
 // A fixed heading over the cards; clicking a card targets that project for the
 // conversation started by the next message (still nothing is created until it
-// is sent, M8.4); the chip in the meta row jumps straight to the project's
-// latest conversation. Visual language mirrors the chat-mode cards: soft
-// filled surfaces, one 952px column.
+// is sent, M8.4); the play button in the meta row is the only way in — it
+// opens the project's latest conversation. Visual language mirrors the
+// chat-mode cards: soft filled surfaces, one 952px column.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { Tooltip } from 'antd'
-import { ArrowRightOutlined, CheckOutlined, FolderOutlined, PlusOutlined } from '@ant-design/icons'
+import { Button, Tooltip } from 'antd'
+import {
+  ArrowRightOutlined,
+  CheckOutlined,
+  FolderOutlined,
+  PlayCircleOutlined,
+  PlusOutlined,
+} from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useProjectStore } from '../../stores/projectStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
@@ -63,13 +69,15 @@ function WorkspacePath({ path }: { path: string }): React.ReactElement {
 }
 
 /** The card's second line, read as a chat line: "1天前：你好" — the time the
- *  project was last touched, then whatever was last said in it. The time is
- *  pinned so only the quote ellipsizes, and the line itself is the click
- *  target (no pill: it is a log line, not a button). */
+ *  project was last touched, then whatever was last said in it. Pure display:
+ *  the line itself is a log line, not a button — the trailing play button is
+ *  the only click target that opens the conversation. The line still reports
+ *  hover so the card suppresses its workspace-path tooltip while the pointer
+ *  is aiming at the button. */
 function MetaLine({
   time,
   text,
-  hint,
+  playHint,
   onOpen,
   onHover,
 }: {
@@ -77,32 +85,44 @@ function MetaLine({
   time: string | null
   /** Last user message, falling back to the conversation title. */
   text: string | undefined
-  hint: string
+  /** Tooltip on the play button. */
+  playHint: string
   onOpen: () => void
   onHover: (hovered: boolean) => void
 }): React.ReactElement | null {
   if (!text) return null
   return (
-    <Tooltip title={hint}>
-      <span
-        onClick={(e) => {
-          e.stopPropagation()
-          onOpen()
-        }}
-        style={{ display: 'inline-flex', alignItems: 'baseline', minWidth: 0, fontSize: 12, color: '#888', cursor: 'pointer' }}
-        onMouseEnter={(e) => {
-          onHover(true)
-          e.currentTarget.style.color = '#333'
-        }}
-        onMouseLeave={(e) => {
-          onHover(false)
-          e.currentTarget.style.color = '#888'
-        }}
-      >
-        {time && <span style={{ flexShrink: 0, color: '#bbb' }}>{time}：</span>}
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{text}</span>
-      </span>
-    </Tooltip>
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0, fontSize: 12, color: '#888' }}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+    >
+      {time && <span style={{ flexShrink: 0, color: '#bbb' }}>{time}：</span>}
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{text}</span>
+      <Tooltip title={playHint}>
+        <Button
+          type="text"
+          size="small"
+          aria-label={playHint}
+          icon={<PlayCircleOutlined />}
+          style={{
+            width: 20,
+            height: 20,
+            minWidth: 20,
+            padding: 0,
+            marginLeft: 2,
+            flexShrink: 0,
+            fontSize: 13,
+            color: '#999',
+          }}
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpen()
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+        />
+      </Tooltip>
+    </span>
   )
 }
 
@@ -272,10 +292,11 @@ export function ProjectCards({
 
 /**
  * One project card: the project name over its latest conversation, read as a
- * chat line — "1天前：你好". Clicking the card targets the project; a gradient
- * wash of the project's name-hashed color marks the selection without shifting
- * layout. The workspace path is not on the face — long, rarely read, and it
- * cost a whole row — it rides the hover tooltip instead.
+ * chat line — "1天前：你好". Clicking the card targets the project; only the
+ * meta line's play button opens that conversation. A gradient wash of the
+ * project's name-hashed color marks the selection without shifting layout.
+ * The workspace path is not on the face — long, rarely read, and it cost a
+ * whole row — it rides the hover tooltip instead.
  */
 function ProjectCard({
   project,
@@ -396,7 +417,13 @@ function ProjectCard({
         {/* Absent for a project nothing was said in yet — the gap between the
             two lines must not survive it as a stray 4px. */}
         {latest && (
-          <MetaLine time={timeText} text={metaText} onOpen={() => onOpenConversation(latest.key)} onHover={setOnMeta} hint={t('welcome.openLatest')} />
+          <MetaLine
+            time={timeText}
+            text={metaText}
+            onOpen={() => onOpenConversation(latest.key)}
+            onHover={setOnMeta}
+            playHint={t('welcome.continueConversation')}
+          />
         )}
       </div>
     </Tooltip>

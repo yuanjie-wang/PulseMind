@@ -32,8 +32,6 @@ export interface RoutineAssistOptions {
   /** Routine whose form is being edited; null = the shared create-new draft
    *  conversation (assistConversationId's 'draft' bucket). */
   routineId: string | null
-  /** Current 执行项目 — bound to the session at creation. */
-  projectId?: string
   /** Form name, for the persisted conversation title. */
   routineName: string
 }
@@ -45,13 +43,13 @@ function assistantText(msg: AgentMessage): string {
     .join('\n')
 }
 
-export function useRoutineAssistSession({ routineId, projectId, routineName }: RoutineAssistOptions): RoutineAssistSession {
+export function useRoutineAssistSession({ routineId, routineName }: RoutineAssistOptions): RoutineAssistSession {
   const convId = assistConversationId(routineId)
   const title = `[日常助手] ${routineName.trim() || '新建任务'}`
   const session = useHostedAgentSession({
     convId,
     title,
-    createOptions: { clientId: 'routine-assist', projectId, systemPromptOverride: buildAssistSystemPrompt() },
+    createOptions: { clientId: 'routine-assist', systemPromptOverride: buildAssistSystemPrompt() },
   })
 
   // The proposal is derived, not accumulated: parse the latest assistant

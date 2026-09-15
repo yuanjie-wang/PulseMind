@@ -75,7 +75,6 @@ function normalizeInput(input: Partial<Routine>): Omit<Routine, 'id' | 'createdA
     icon: input.icon,
     schedule: input.schedule,
     enabled: input.enabled ?? true,
-    projectId: input.projectId,
     skills: input.skills,
     sourceConversationId: input.sourceConversationId,
   }
