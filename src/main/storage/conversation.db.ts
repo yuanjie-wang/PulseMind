@@ -33,6 +33,10 @@ export function deriveConvType(id: string): string {
   // title/message search, memory pipeline) — they are reached through the
   // routine center's run history instead.
   if (id.startsWith('routine_')) return 'routine'
+  // The routine / expert editors' form-assistant threads (form-assist family)
+  // share the same hiding contract: reached only through their editor column,
+  // never a chat row in any 'normal'-filtered surface.
+  if (id.startsWith('expert_assist_')) return 'expert'
   return 'normal'
 }
 

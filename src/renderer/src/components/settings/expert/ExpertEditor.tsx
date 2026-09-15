@@ -1,13 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { Button, Form, Modal } from 'antd'
-import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, UserOutlined, SaveOutlined, RobotOutlined, FormOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, UserOutlined, SaveOutlined, FormOutlined } from '@ant-design/icons'
 import type { ExpertProfile } from '../../../../../shared/types/expert'
-import type { ExpertFormDraft } from '../../../agent/one-shot-agent'
-import { pickDraftFields } from '../../../agent/one-shot-agent'
+import type { ExpertFormDraft } from './expert-assist'
+import { EXPERT_ASSIST_SPEC, pickDraftFields } from './expert-assist'
+import { AssistantDraftBanner } from '../../form-assist/AssistantDraftBanner'
+import { FormAssistColumn } from '../../form-assist/FormAssistColumn'
+import { buildFormAssistSystemPrompt, formAssistConversationId } from '../../form-assist/form-assist'
+import { useFormAssistSession } from '../../form-assist/useFormAssistSession'
+import { useSettings } from '../../../hooks/SettingsContext'
 import { useTranslation } from '../../../i18n/useTranslation'
-import { EDITOR_CHAT_CARD, EDITOR_COLUMN_HEADER as COLUMN_HEADER, EDITOR_LIST_WIDTH, EDITOR_SURFACE } from '../../layout/editor-layout'
+import { EDITOR_COLUMN_HEADER as COLUMN_HEADER, EDITOR_LIST_WIDTH, EDITOR_SURFACE } from '../../layout/editor-layout'
 import ExpertFormFields, { type ExpertRefOption } from './ExpertFormFields'
-import ExpertChatPanel from './ExpertChatPanel'
 
 /** Empty form seed for a brand-new expert. */
 const BLANK_DRAFT: ExpertFormDraft = {
@@ -53,10 +57,23 @@ export default function ExpertEditor({
   locale,
 }: ExpertEditorProps): React.ReactElement {
   const { t } = useTranslation()
+  const { settings, switchProfile } = useSettings()
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
+  /** Which expert the assistant conversation is bound to. Deliberately NOT
+   *  bumped by a first save (the just-had context keeps its conversation —
+   *  same ruling as the routine editor's boundId); the parent's key={session}
+   *  remount on a user switch re-initializes it. */
+  const [boundId, setBoundId] = useState<string | null>(editingId)
   const editing = editingId ? profiles.find((p) => p.id === editingId) || null : null
+
+  const assist = useFormAssistSession({
+    convId: formAssistConversationId(EXPERT_ASSIST_SPEC.conversationPrefix, boundId),
+    title: `[${t('expertCenter.chatTitle')}] ${editing?.name ?? ''}`.trim(),
+    spec: EXPERT_ASSIST_SPEC,
+    systemPrompt: buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC, locale),
+  })
 
   // Load the selected expert into the form on every switch. The dirty flag needs
   // no reset here: the parent remounts this editor per editing session.
@@ -79,8 +96,6 @@ export default function ExpertEditor({
     }
   }, [editing, editingId, form])
 
-  const getDraft = useCallback((): ExpertFormDraft => pickDraftFields(form.getFieldsValue()), [form])
-
   /** Merge an assistant patch into the form — only the keys it proposed. */
   const applyDraft = useCallback(
     (draft: ExpertFormDraft) => {
@@ -89,6 +104,25 @@ export default function ExpertEditor({
     },
     [form],
   )
+
+  /** Every ask carries the live form (annotation) so hand edits reach the
+   *  model too — same contract as the routine editor's assistant. */
+  const askAssistant = useCallback(
+    (text: string) => assist.send(text, pickDraftFields(form.getFieldsValue())),
+    [assist, form],
+  )
+
+  const proposedPatch = assist.proposedPatch
+  const draftBanner = proposedPatch ? (
+    <AssistantDraftBanner
+      text={`${t('expertCenter.chatDraftReady')}${proposedPatch.name ? `：「${proposedPatch.name}」` : ''}`}
+      onApply={() => {
+        applyDraft(proposedPatch)
+        assist.clearProposedPatch()
+      }}
+      onDismiss={assist.clearProposedPatch}
+    />
+  ) : null
 
   /** Both leaving the editor and switching experts drop the form — ask first when it is dirty. */
   const confirmDiscard = (action: () => void): void => {
@@ -108,7 +142,10 @@ export default function ExpertEditor({
 
   const handleSelect = (id: string | null): void => {
     if (id === editingId) return
-    confirmDiscard(() => onSelect(id))
+    confirmDiscard(() => {
+      setBoundId(id)
+      onSelect(id)
+    })
   }
 
   const handleSave = async (): Promise<void> => {
@@ -153,6 +190,11 @@ export default function ExpertEditor({
       okButtonProps: { danger: true },
       onOk: async () => {
         const updated = await window.electronAPI.expertDelete(profile.id)
+        // The assistant thread dies with its expert — same cleanup the chat
+        // list does for conversations.
+        void window.electronAPI
+          .deleteConversation(formAssistConversationId(EXPERT_ASSIST_SPEC.conversationPrefix, profile.id))
+          .catch(() => {})
         if (profile.id === editingId) setDirty(false)
         onDeleted(updated, profile.id)
       },
@@ -226,6 +268,7 @@ export default function ExpertEditor({
           </div>
           {/* paddingRight keeps the (auto-hiding) gutter clear of the form edge. */}
           <div className="auto-hide-scroll" style={{ flex: 1, overflowY: 'auto', paddingRight: 8 }}>
+            {draftBanner && <div style={{ marginBottom: 14 }}>{draftBanner}</div>}
             <ExpertFormFields
               form={form}
               isNew={!editing}
@@ -236,19 +279,23 @@ export default function ExpertEditor({
           </div>
         </div>
 
-        {/* ── Right: conversational form filler, as a white card ── */}
-        {/* Wider than a form column: the transcript is the chat's own message
-            list, whose bubbles are capped at 70% of the row. Shrinks before the
-            form column's min-width does when the window is narrow. */}
-        <div style={EDITOR_CHAT_CARD}>
-          <div style={COLUMN_HEADER}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <RobotOutlined />
-              {t('expertCenter.chatTitle')}
-            </span>
-          </div>
-          <ExpertChatPanel getDraft={getDraft} onApplyDraft={applyDraft} locale={locale} />
-        </div>
+        {/* ── Right: conversational form filler — the shared form-assist
+            column (hosted session; the thread persists per expert and
+            survives restarts). Wider than a form column: the transcript is
+            the chat's own message list, whose bubbles are capped at 70% of
+            the row. Shrinks before the form column's min-width does when the
+            window is narrow. */}
+        <FormAssistColumn
+          session={assist}
+          title={t('expertCenter.chatTitle')}
+          placeholder={t('expertCenter.chatPlaceholder')}
+          emptyIntro={t('expertCenter.chatIntro')}
+          emptyExamples={[t('expertCenter.chatExample1'), t('expertCenter.chatExample2')]}
+          profiles={settings.profiles}
+          activeProfileId={settings.activeProfileId}
+          onSelectProfile={(profileId) => void switchProfile(profileId)}
+          onSendMessage={askAssistant}
+        />
       </div>
     </div>
   )

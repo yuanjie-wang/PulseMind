@@ -591,11 +591,13 @@ const en: TranslationDict = {
     chatTitle: 'Expert Creation Assistant',
     chatIntro: 'Describe the expert you want and I will fill in the form.',
     chatPlaceholder: 'Describe what this expert does… (Enter to send, Shift+Enter for a new line)',
-    chatNoProfile: 'Configure an LLM profile with an API key in Settings first',
-    chatFailed: 'The assistant failed to respond — retry or check your model settings',
-    chatApplied: 'Form updated',
     chatExample1: 'A writing expert for technical audiences, restrained and free of fluff',
     chatExample2: 'A code review expert that grades findings by severity',
+    chatDraftReady: 'Draft proposed from the conversation',
+  },
+  formAssist: {
+    apply: 'Apply',
+    dismiss: 'Dismiss',
   },
 }
 

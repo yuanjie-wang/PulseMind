@@ -1,6 +1,6 @@
 import React from 'react'
 import { Form, Input, Select, type FormInstance } from 'antd'
-import { generateExpertId } from '../../../agent/one-shot-agent'
+import { generateExpertId } from './expert-assist'
 import { useTranslation } from '../../../i18n/useTranslation'
 
 /** A catalog entry the capability selects pick from. */

@@ -11,23 +11,21 @@
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { App as AntdApp, Button, Modal, Tooltip } from 'antd'
-import { ArrowLeftOutlined, DeleteOutlined, FormOutlined, ImportOutlined, LoadingOutlined, PlusOutlined, RobotOutlined, SaveOutlined, ScheduleOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, DeleteOutlined, FormOutlined, ImportOutlined, LoadingOutlined, PlusOutlined, SaveOutlined, ScheduleOutlined } from '@ant-design/icons'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { useSettings } from '../../hooks/SettingsContext'
 import { createLlmAdapter } from '../../llm'
 import { RoutineExtractionAgent } from '../../agent/one-shot-agent'
-import { TranscriptView } from '../chat/TranscriptView'
-import { InputArea } from '../chat/InputArea'
-import { PromptChip } from '../chat/PromptChip'
-import { EDITOR_CHAT_CARD, EDITOR_COLUMN_HEADER, EDITOR_LIST_WIDTH, EDITOR_SURFACE } from '../layout/editor-layout'
+import { FormAssistColumn } from '../form-assist/FormAssistColumn'
+import { buildFormAssistSystemPrompt, formAssistConversationId } from '../form-assist/form-assist'
+import { useFormAssistSession } from '../form-assist/useFormAssistSession'
+import { EDITOR_COLUMN_HEADER, EDITOR_LIST_WIDTH, EDITOR_SURFACE } from '../layout/editor-layout'
 import { configToCron } from '../../utils/schedule-builder'
 import { describeCron } from '../../utils/schedule-text'
 import { RoutineForm } from './RoutineForm'
 import { PANE_ROW_STYLES } from './pane-styles'
-import { useRoutineAssistSession } from './useRoutineAssistSession'
-import { buildFormAnnotation } from './routine-assist'
-import type { RoutineFormSnapshot } from './routine-assist'
-import { applyAssistantDraft, draftToRoutineInput, EMPTY_DRAFT, routineToDraft, validateDraft, draftScheduleFromCron } from './routine-form-model'
+import { ROUTINE_ASSIST_SPEC } from './routine-assist'
+import { applyAssistantPatch, draftToRoutineInput, EMPTY_DRAFT, routineToDraft, validateDraft, draftScheduleFromCron } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import type { Routine } from '../../../../shared/types/routine'
 
@@ -96,7 +94,12 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
     return () => { alive = false }
   }, [routineIdProp, message])
 
-  const assist = useRoutineAssistSession({ routineId: boundId, routineName: draft.name })
+  const assist = useFormAssistSession({
+    convId: formAssistConversationId(ROUTINE_ASSIST_SPEC.conversationPrefix, boundId),
+    title: `[日常助手] ${draft.name.trim() || '新建任务'}`,
+    spec: ROUTINE_ASSIST_SPEC,
+    systemPrompt: buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC),
+  })
 
   /** Every user edit goes through here so the unsaved marker stays honest. */
   const editDraft = (next: RoutineDraftState): void => {
@@ -142,6 +145,10 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
       cancelText: '取消',
       onOk: async () => {
         await window.electronAPI.routineDelete(routine.id)
+        // The assistant thread dies with its routine (expert editor does the same).
+        void window.electronAPI
+          .deleteConversation(formAssistConversationId(ROUTINE_ASSIST_SPEC.conversationPrefix, routine.id))
+          .catch(() => {})
         if (updateId === routine.id) startNew()
         void reload()
       },
@@ -176,7 +183,7 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
   }
 
   /** Live-form context appended to every assistant ask. */
-  const formSnapshot = (): RoutineFormSnapshot => ({
+  const formSnapshot = (): Record<string, unknown> => ({
     name: draft.name,
     description: draft.description,
     prompt: draft.prompt,
@@ -187,12 +194,12 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
     params: draft.params,
   })
 
-  const askAssistant = (text: string): void => assist.send(text, buildFormAnnotation(formSnapshot()))
+  const askAssistant = (text: string): void => assist.send(text, formSnapshot())
 
   const applyProposal = (): void => {
-    if (!assist.proposedDraft) return
-    editDraft(applyAssistantDraft(assist.proposedDraft, draft))
-    assist.clearProposedDraft()
+    if (!assist.proposedPatch) return
+    editDraft(applyAssistantPatch(assist.proposedPatch, draft))
+    assist.clearProposedPatch()
     message.success('已应用助手草稿')
   }
 
@@ -263,25 +270,13 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
       ? routine.schedule ? `下次运行：${describeCron(routine.schedule.cron)}` : '手动执行'
       : '已停用'
 
-  // Starter prompts for the assistant's empty state — the app's shared
-  // starter-prompt pill (chat/PromptChip), same as the expert editor, except a
-  // click here sends the prompt.
+  // Starter prompts for the assistant's empty state — the column renders them
+  // as the app's shared starter-prompt pill (chat/PromptChip); a click sends.
   const assistExamples = [
     '每天早上九点检查 GitHub 通知，汇总成一份摘要',
     '每周五下午整理本周的工作记录，生成周报',
   ]
-  const assistEmptyContent = (
-    <div style={{ padding: '0 14px' }}>
-      <div style={{ color: '#999', fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>
-        描述你想自动化的工作，助手会帮你填写左侧表单；生成的草稿点「应用」才会写入。
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {assistExamples.map((example) => (
-          <PromptChip key={example} label={example} onClick={() => askAssistant(example)} />
-        ))}
-      </div>
-    </div>
-  )
+  const assistIntro = '描述你想自动化的工作，助手会帮你填写左侧表单；生成的草稿点「应用」才会写入。'
 
   const canSave = draft.name.trim() !== '' && draft.prompt.trim() !== ''
 
@@ -382,57 +377,26 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
             <RoutineForm
               draft={draft}
               onChange={editDraft}
-              pendingAssistantDraft={assist.proposedDraft}
+              pendingAssistantDraft={assist.proposedPatch}
               onApplyAssistantDraft={applyProposal}
-              onDismissAssistantDraft={assist.clearProposedDraft}
+              onDismissAssistantDraft={assist.clearProposedPatch}
             />
           </div>
         </div>
 
-        {/* ── Right: conversational form filler, as a white card ── */}
-        <div style={EDITOR_CHAT_CARD}>
-          <div style={EDITOR_COLUMN_HEADER}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <RobotOutlined />
-              任务助手
-            </span>
-          </div>
-          <TranscriptView
-            messages={assist.messages}
-            agentStatus={assist.agentStatus}
-            streamingBlocks={assist.streamingBlocks}
-            isRequesting={assist.isBusy}
-            restoring={assist.restoring}
-            emptyContent={assist.restoring ? null : assistEmptyContent}
-            contentInset={0}
-            onApproveTool={(id) => assist.engineCall('approveTool', id)}
-            onRejectTool={(id) => assist.engineCall('rejectTool', id)}
-            onKillTool={(id) => assist.engineCall('killTool', id)}
-            onRespondToTool={(id, response) => assist.engineCall('respondToTool', id, response)}
-            onClearError={() => assist.engineCall('clearError')}
-            onRetry={() => assist.engineCall('retryLastTurn')}
-          />
-          <InputArea
-            layout="inline"
-            isRequesting={assist.isBusy}
-            isStreaming={assist.isBusy}
-            isAwaitingApproval={assist.agentStatus.status === 'awaiting_approval'}
-            isAwaitingInput={assist.agentStatus.status === 'awaiting_user_input'}
-            hasMessages={assist.messages.length > 0}
-            autoFocus={false}
-            placeholder="描述你想自动化的工作…"
-            onSendMessage={askAssistant}
-            onCancel={assist.cancel}
-            profiles={settings.profiles}
-            activeProfileId={settings.activeProfileId}
-            onSelectProfile={(profileId) => {
-              // The engine rebuilds its options main-side; signal the session so
-              // the next ask uses the newly selected model (same as run history).
-              void switchProfile(profileId).then(() => assist.refreshOptions())
-            }}
-            features={{ modelPicker: true }}
-          />
-        </div>
+        {/* ── Right: conversational form filler — the shared form-assist
+            column (editor-layout white card + chat transcript + composer) ── */}
+        <FormAssistColumn
+          session={assist}
+          title="任务助手"
+          placeholder="描述你想自动化的工作…"
+          emptyIntro={assistIntro}
+          emptyExamples={assistExamples}
+          profiles={settings.profiles}
+          activeProfileId={settings.activeProfileId}
+          onSelectProfile={(profileId) => void switchProfile(profileId)}
+          onSendMessage={askAssistant}
+        />
       </div>
 
       {/* Extract-from-conversation picker */}

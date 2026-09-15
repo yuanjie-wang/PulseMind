@@ -7,7 +7,7 @@
 import { checkCron } from '../../../../shared/schedule/cron'
 import { configToCron, parseCronToConfig } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
-import type { RoutineAssistantDraft } from './routine-assist'
+import type { RoutineAssistantPatch } from './routine-assist'
 import type { Routine } from '../../../../shared/types/routine'
 
 export interface RoutineDraftState {
@@ -84,7 +84,7 @@ export function draftToRoutineInput(draft: RoutineDraftState): Partial<Routine> 
  *  proposal actually carries are overwritten (an empty proposal never blanks
  *  the form); the cron switches the schedule editor through the same
  *  friendly-fields path as a stored routine. */
-export function applyAssistantDraft(proposed: RoutineAssistantDraft, current: RoutineDraftState): RoutineDraftState {
+export function applyAssistantPatch(proposed: RoutineAssistantPatch, current: RoutineDraftState): RoutineDraftState {
   const next: RoutineDraftState = {
     ...current,
     name: proposed.name?.trim() || current.name,

@@ -583,11 +583,13 @@ const zh = {
     chatTitle: '专家创建助手',
     chatIntro: '描述你想要的专家，我会把表单填好。',
     chatPlaceholder: '描述这个专家是做什么的…（Enter 发送，Shift+Enter 换行）',
-    chatNoProfile: '请先在设置中配置一个带 API Key 的模型配置',
-    chatFailed: '对话失败，请重试或检查模型配置',
-    chatApplied: '已更新表单',
     chatExample1: '面向技术的写作专家，风格克制、反对空话',
     chatExample2: '代码审查专家，按严重度分级给建议',
+    chatDraftReady: '对话生成了专家草稿',
+  },
+  formAssist: {
+    apply: '应用',
+    dismiss: '忽略',
   },
 }
 

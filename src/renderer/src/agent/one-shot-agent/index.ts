@@ -29,12 +29,3 @@ export type { CompilerInput, CompilerOutput, WikiAction, RawFileInfo } from './K
 export type { LlmConfig, ExecuteOptions } from './LlmConfig'
 export { RoutineExtractionAgent } from './RoutineExtractionAgent'
 export type { RoutineExtractionInput, RoutineDraft } from './RoutineExtractionAgent'
-export { ExpertFormAgent } from './ExpertFormAgent'
-export type { ExpertFormInput, ExpertFormOutput } from './ExpertFormAgent'
-export {
-  EXPERT_CHAT_FIELDS,
-  generateExpertId,
-  pickDraftFields,
-  isDraftEmpty,
-} from './expert-form'
-export type { ExpertChatMessage, ExpertFormDraft } from './expert-form'

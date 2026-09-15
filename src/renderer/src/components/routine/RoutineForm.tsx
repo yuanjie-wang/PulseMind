@@ -10,13 +10,14 @@
 
 import React from 'react'
 import { Button, Input, InputNumber, Select, Space, Switch } from 'antd'
-import { CheckOutlined, DeleteOutlined, PlusOutlined, RobotOutlined } from '@ant-design/icons'
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { checkCron, nextRun } from '../../../../shared/schedule/cron'
 import { configToCron, WEEKDAY_LABELS } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
+import { AssistantDraftBanner } from '../form-assist/AssistantDraftBanner'
 import { SCHED_DEFAULTS } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
-import type { RoutineAssistantDraft } from './routine-assist'
+import type { RoutineAssistantPatch } from './routine-assist'
 
 /** Editor modes for the schedule, ordered by how common they are. */
 const SCHEDULE_MODES = [
@@ -171,26 +172,23 @@ function ScheduleSection({ draft, onChange }: { draft: RoutineDraftState; onChan
   )
 }
 
-/** Review bar for a draft parsed out of the assistant conversation — nothing
- *  writes into the form until the user applies it here. */
-function AssistantDraftBanner({ pending, onApply, onDismiss }: { pending: RoutineAssistantDraft; onApply: () => void; onDismiss: () => void }): React.ReactElement {
+/** Review bar for a patch parsed out of the assistant conversation — the
+ *  shared banner; nothing writes into the form until the user applies it. */
+function RoutineDraftBanner({ pending, onApply, onDismiss }: { pending: RoutineAssistantPatch; onApply: () => void; onDismiss: () => void }): React.ReactElement {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 8, background: '#fff', border: '1px solid #d9d9d9', fontSize: 12 }}>
-      <RobotOutlined style={{ color: '#666', flexShrink: 0 }} />
-      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#666' }}>
-        对话生成了任务草稿{pending.name ? `：「${pending.name}」` : ''}
-      </span>
-      <Button size="small" type="primary" icon={<CheckOutlined />} onClick={onApply}>应用</Button>
-      <Button size="small" onClick={onDismiss}>忽略</Button>
-    </div>
+    <AssistantDraftBanner
+      text={`对话生成了任务草稿${pending.name ? `：「${pending.name}」` : ''}`}
+      onApply={onApply}
+      onDismiss={onDismiss}
+    />
   )
 }
 
 export interface RoutineFormProps {
   draft: RoutineDraftState
   onChange: (draft: RoutineDraftState) => void
-  /** Non-null = the assistant proposed a draft; the review bar shows. */
-  pendingAssistantDraft: RoutineAssistantDraft | null
+  /** Non-null = the assistant proposed a patch; the review bar shows. */
+  pendingAssistantDraft: RoutineAssistantPatch | null
   onApplyAssistantDraft: () => void
   onDismissAssistantDraft: () => void
 }
@@ -199,7 +197,7 @@ export function RoutineForm({ draft, onChange, pendingAssistantDraft, onApplyAss
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {pendingAssistantDraft && (
-        <AssistantDraftBanner pending={pendingAssistantDraft} onApply={onApplyAssistantDraft} onDismiss={onDismissAssistantDraft} />
+        <RoutineDraftBanner pending={pendingAssistantDraft} onApply={onApplyAssistantDraft} onDismiss={onDismissAssistantDraft} />
       )}
       <div>
         <FieldLabel text="任务名称" />
