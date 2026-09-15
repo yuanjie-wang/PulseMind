@@ -52,6 +52,23 @@
       ::-webkit-scrollbar-thumb:hover {
         background: rgba(128, 128, 128, 0.6);
       }
+
+      /* Auto-hiding scrollbar. The global rule above turns every scrollbar into
+         a classic one, so macOS stops using its own auto-hiding overlay bar and
+         the track is always painted. This utility hides the thumb while the
+         pointer is elsewhere and reveals it on hover — or when focus is inside
+         the area, so keyboard scrolling still has the affordance. The 6px
+         gutter stays reserved either way, so nothing shifts when it appears. */
+      .auto-hide-scroll::-webkit-scrollbar-thumb {
+        background: transparent;
+      }
+      .auto-hide-scroll:hover::-webkit-scrollbar-thumb,
+      .auto-hide-scroll:focus-within::-webkit-scrollbar-thumb {
+        background: rgba(128, 128, 128, 0.4);
+      }
+      .auto-hide-scroll:hover::-webkit-scrollbar-thumb:hover {
+        background: rgba(128, 128, 128, 0.6);
+      }
     </style>
   </head>
   <body>

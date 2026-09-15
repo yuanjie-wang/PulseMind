@@ -18,6 +18,18 @@ export const Methods = {
   sessionList: 'session.list',
   sessionDelete: 'session.delete',
   sessionRename: 'session.rename',
+  /** client → service: set a session's tool-approval level (授权) — the remote
+   *  equivalent of the desktop composer's 授权 button. Writes
+   *  `conversations.approval_mode`, so it takes effect on the next message. */
+  sessionSetApprovalMode: 'session.setApprovalMode',
+  /** client → service: the selectable LLM profiles and which one is active.
+   *  **Global, not per session** — the desktop's 模型下拉 writes the same
+   *  setting, so the two surfaces are one control in two places. */
+  modelList: 'model.list',
+  /** client → service: switch the active profile. Same field the desktop picker
+   *  writes (`settings.activeProfileId`); the service hot-swaps live sessions
+   *  with it, so the choice lands on every session's next message. */
+  modelSetActive: 'model.setActive',
   agentAsk: 'agent.ask',
   agentCancel: 'agent.cancel',
   agentHistory: 'agent.history',
@@ -55,6 +67,16 @@ export const Methods = {
 } as const
 
 export type MethodName = (typeof Methods)[keyof typeof Methods]
+
+/** WebSocket close codes (4400–4499 is the application-defined range).
+ *  Clients act on these: `unauthorized` means re-pair, `replaced` means another
+ *  connection claimed the same client id, `forbiddenOrigin` means the caller is
+ *  a web page rather than an extension. */
+export const CloseCodes = {
+  unauthorized: 4401,
+  forbiddenOrigin: 4403,
+  replaced: 4409,
+} as const
 
 export const Notifications = {
   /** service → clients: streaming agent progress (see AgentEventData) */

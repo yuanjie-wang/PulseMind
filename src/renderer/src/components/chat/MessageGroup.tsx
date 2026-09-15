@@ -26,6 +26,8 @@ import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock, Conten
 import type { SubAgentHandle } from '../../agent/agent-utils'
 import type { Conversation, Message } from '../../../../shared/types/conversation'
 import CommandCard from '../terminal/CommandCard'
+import { ApprovalArea } from './ApprovalArea'
+import { toolBlockSummary } from './tool-summary'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage } from './LocalImage'
 import { ThinkingBlockView } from './ThinkingBlockView'
@@ -89,27 +91,6 @@ function formatTokenCount(n: number): string {
 
 // ── Collapsible tool_use block ────────────────────────────────────────
 
-function toolBlockSummary(block: ToolUseBlock): string {
-  const input = block.input
-  if (!input) return block.name
-  switch (block.name) {
-    case 'exec': return (input.command as string || '').slice(0, 80)
-    case 'read': return input.file_path as string || ''
-    case 'write': return `${input.file_path || ''} (${((input.content as string) || '').length > 0 ? `${((input.content as string).length / 1024).toFixed(1)} KB` : '0 KB'})`
-    case 'edit': return input.file_path as string || ''
-    case 'search': return input.query as string || ''
-    case 'list_dir': return input.dir_path as string || ''
-    case 'ask_user': return (input.prompt as string || '').slice(0, 80)
-    default: {
-      const entries = Object.entries(input).filter(([k]) => k !== 'description')
-      if (entries.length === 0) return block.name
-      const [k, v] = entries[0]
-      const val = typeof v === 'string' ? (v.length > 40 ? v.slice(0, 37) + '...' : v) : JSON.stringify(v).slice(0, 40)
-      return `${k}=${val}`
-    }
-  }
-}
-
 /**
  * Content signature for a sub-agent message list. Captures per-message id/role and per-block
  * state so the live preview can refresh on tool_use status transitions (pending → running →
@@ -144,7 +125,8 @@ function CollapsibleToolBlock({
   onKillTool,
   onRespondToTool,
   completedFromResult = false,
-  contextLength
+  contextLength,
+  awaitingApproval = true
 }: {
   block: ToolUseBlock
   onApproveTool?: (toolUseId: string) => void
@@ -153,12 +135,19 @@ function CollapsibleToolBlock({
   onRespondToTool?: (toolUseId: string, response: string) => void
   completedFromResult?: boolean
   contextLength?: number
+  /** The engine is parked on its held calls (`agentStatus: 'awaiting_approval'`).
+   *  Defaults to true so a caller that predates this prop keeps the old rule —
+   *  a pending call carrying approve handlers is one the user must answer. */
+  awaitingApproval?: boolean
 }): React.ReactElement {
-  const [collapsed, setCollapsed] = useState(block.name !== 'ask_user')
   const { t } = useTranslation()
   const { token } = theme.useToken()
   const summary = toolBlockSummary(block)
-  const needsAction = block.status === 'pending' && !!onApproveTool
+  // A call the ladder is holding: `pending` *and* the engine parked on it. The
+  // parked half matters — a tool still being generated is 'pending' too, and it
+  // has nothing to approve yet.
+  const needsAction = block.status === 'pending' && !!onApproveTool && awaitingApproval
+  const [collapsed, setCollapsed] = useState(block.name !== 'ask_user')
 
   // File preview button (PLAN-preview-pane): completed write/edit calls with
   // a file path open the file in the chat's right preview pane.
@@ -244,6 +233,7 @@ function CollapsibleToolBlock({
     <div style={{ margin: '4px 0' }}>
       {/* Collapsible header bar */}
       <div
+        data-tool-head={block.id}
         onClick={() => setCollapsed(!collapsed)}
         style={{
           display: 'flex',
@@ -321,10 +311,21 @@ function CollapsibleToolBlock({
         </span>
       </div>
 
+      {/* The decision, below the collapsed header: 运行/跳过 for a held call without
+          opening the card (which is where they otherwise live, one layer down).
+          While the card is open it carries them itself, so the two never stack. */}
+      {collapsed && needsAction && onRejectTool && (
+        <ApprovalArea
+          blocks={[block]}
+          onApproveTool={onApproveTool}
+          onRejectTool={onRejectTool}
+        />
+      )}
+
       {/* Full CommandCard when expanded. In read-only previews (sub-agent dialog)
           the handlers are absent, so render the plain card with no action buttons. */}
       {!collapsed && (
-        block.status === 'pending' && onApproveTool && onRejectTool ? (
+        needsAction && onRejectTool ? (
           <CommandCard
             block={block}
             onApprove={() => onApproveTool(block.id)}
@@ -465,19 +466,26 @@ function CollapsibleToolBlock({
 
 // --- Component ---
 
+/** Which buttons the assistant action row offers. 'viewOnly' is for transcripts
+ *  whose messages are not stored: liking and favoriting write message metadata
+ *  and a favorite row keyed by conversation, so those two have nothing to write
+ *  to. Copy, download and the token/time stats work on the message itself. */
+export type MessageActions = 'full' | 'viewOnly' | 'none'
+
 export const MessageGroup = React.memo(function MessageGroup({
   msg,
-  showActions,
+  actions = 'full',
   onApproveTool,
   onRejectTool,
   onRespondToTool,
   onKillTool,
   conversationId,
   conversationTitle,
-  contextLength
+  contextLength,
+  awaitingApproval = true
 }: {
   msg: AgentMessage
-  showActions?: boolean
+  actions?: MessageActions
   onApproveTool: (toolUseId: string) => void
   onRejectTool: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
@@ -485,6 +493,8 @@ export const MessageGroup = React.memo(function MessageGroup({
   conversationId?: string
   conversationTitle?: string
   contextLength?: number
+  /** The engine is parked awaiting approval (see CollapsibleToolBlock). */
+  awaitingApproval?: boolean
 }): React.ReactElement | null {
   const [liked, setLiked] = useState(msg.liked ?? false)
   const [favorited, setFavorited] = useState(msg.favorited ?? false)
@@ -636,6 +646,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                   onKillTool={onKillTool}
                   onRespondToTool={onRespondToTool}
                   contextLength={contextLength}
+                  awaitingApproval={awaitingApproval}
                 />
               )
             }
@@ -657,7 +668,7 @@ export const MessageGroup = React.memo(function MessageGroup({
       </div>
 
       {/* Action buttons — only on the last assistant message of each loop, hidden for ask_user-only messages */}
-      {!isUser && showActions && !msg.contentBlocks.every(b => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user') && (
+      {!isUser && actions !== 'none' && !msg.contentBlocks.every(b => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user') && (
         <div
           style={{
             display: 'flex',
@@ -685,48 +696,52 @@ export const MessageGroup = React.memo(function MessageGroup({
           >
             <DownloadOutlined />
           </button>
-          <button
-            style={{ ...btnBase, color: liked ? '#aaa' : '#bbb' }}
-            onClick={() => {
-              const next = !liked
-              setLiked(next)
-              window.electronAPI.updateMessageMetadata(msg.id, { liked: next })
-            }}
-            title={t('chatView.like')}
-            onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-          >
-            {liked ? <LikeFilled /> : <LikeOutlined />}
-          </button>
-          <button
-            style={{ ...btnBase, color: favorited ? '#aaa' : '#bbb' }}
-            onClick={() => {
-              const next = !favorited
-              setFavorited(next)
-              window.electronAPI.updateMessageMetadata(msg.id, { favorited: next })
-              if (next && conversationId && msg.id) {
-                const text = msg.contentBlocks
-                  .filter((b) => b.type === 'text')
-                  .map((b) => (b as any).text)
-                  .join('\n')
-                window.electronAPI.addFavorite({
-                  id: `fav_${conversationId}_${msg.id}`,
-                  messageId: msg.id,
-                  conversationId,
-                  conversationTitle: conversationTitle || '',
-                  role: msg.role,
-                  content: text || (msg as any).content || ''
-                })
-              } else if (!next) {
-                window.electronAPI.removeFavorite(msg.id)
-              }
-            }}
-            title={t('chatView.favorite')}
-            onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-          >
-            {favorited ? <StarFilled /> : <StarOutlined />}
-          </button>
+          {actions === 'full' && (
+            <>
+              <button
+                style={{ ...btnBase, color: liked ? '#aaa' : '#bbb' }}
+                onClick={() => {
+                  const next = !liked
+                  setLiked(next)
+                  window.electronAPI.updateMessageMetadata(msg.id, { liked: next })
+                }}
+                title={t('chatView.like')}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+              >
+                {liked ? <LikeFilled /> : <LikeOutlined />}
+              </button>
+              <button
+                style={{ ...btnBase, color: favorited ? '#aaa' : '#bbb' }}
+                onClick={() => {
+                  const next = !favorited
+                  setFavorited(next)
+                  window.electronAPI.updateMessageMetadata(msg.id, { favorited: next })
+                  if (next && conversationId && msg.id) {
+                    const text = msg.contentBlocks
+                      .filter((b) => b.type === 'text')
+                      .map((b) => (b as any).text)
+                      .join('\n')
+                    window.electronAPI.addFavorite({
+                      id: `fav_${conversationId}_${msg.id}`,
+                      messageId: msg.id,
+                      conversationId,
+                      conversationTitle: conversationTitle || '',
+                      role: msg.role,
+                      content: text || (msg as any).content || ''
+                    })
+                  } else if (!next) {
+                    window.electronAPI.removeFavorite(msg.id)
+                  }
+                }}
+                title={t('chatView.favorite')}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+              >
+                {favorited ? <StarFilled /> : <StarOutlined />}
+              </button>
+            </>
+          )}
 
           {(msg.processingMs != null || msg.inputTokens != null || msg.outputTokens != null || msg.promptCacheHitTokens != null) && (
             <span

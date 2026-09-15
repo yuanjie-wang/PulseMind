@@ -446,6 +446,7 @@ function ChatView({
         isLastSegment={index === allSegments.length - 1}
         highlightedMsgId={highlightedMsgId}
         isRequesting={isRequesting}
+        awaitingApproval={agentStatus.status === 'awaiting_approval'}
         onApproveTool={onApproveTool}
         onRejectTool={onRejectTool}
         onKillTool={onKillTool ?? onRejectTool}
@@ -455,7 +456,7 @@ function ChatView({
         contextLength={contextLength}
       />
     ),
-    [highlightedMsgId, allSegments, isRequesting, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, contextLength],
+    [highlightedMsgId, allSegments, isRequesting, agentStatus.status, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, contextLength],
   )
 
   // ── Render ──

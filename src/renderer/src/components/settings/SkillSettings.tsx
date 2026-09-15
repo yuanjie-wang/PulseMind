@@ -19,7 +19,8 @@ function SkillSettings({
   importError
 }: SkillSettingsProps): React.ReactElement {
   return (
-    <div style={{ height: '100%', overflow: 'auto' }}>
+    // No overflow of its own — the capability center's pane scrolls (see its comment).
+    <div style={{ height: '100%' }}>
       {importError && (
         <Alert
           message={importError}

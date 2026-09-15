@@ -776,6 +776,140 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     availability: 'gated',
   },
 
+  // ── page_* (browser extension, PLAN-browser-extension M2.2) ─────────
+  // These act on the tab the user is LOOKING AT — real login state, real
+  // session — through the extension's content script. Deliberately a separate
+  // family from `browser` (decision D2): that one drives its own Playwright
+  // browser with no user session, and the two answer different questions.
+  // Availability is gated by "extension online", not by keyword (see
+  // tool-collection.ts), so they carry no `triggers` and no `availability`.
+  {
+    name: 'page_get_content',
+    description:
+      'Read the current page as compact text with [index] markers on interactive elements. Call this FIRST, and again whenever the page may have changed — indices are rebuilt on every call.',
+    category: 'page',
+    input_schema: {
+      type: 'object',
+      properties: {
+        viewportExpansion: {
+          type: 'integer',
+          description:
+            'Extra pixels around the viewport to include (default 0). Set -1 to analyze the whole page instead of just the visible part.',
+        },
+      },
+      required: [],
+    },
+    instructions: toolInstructions.page_get_content,
+    builtIn: true,
+  },
+  {
+    name: 'page_scroll',
+    description:
+      'Scroll the page or a scrollable container. Content far down a long page does not appear in page_get_content until you scroll to it.',
+    category: 'page',
+    input_schema: {
+      type: 'object',
+      properties: {
+        down: { type: 'boolean', description: 'Scroll down (default true). Set false to scroll up.' },
+        pages: { type: 'number', description: 'How many viewport heights to scroll (default 1).' },
+        pixels: { type: 'number', description: 'Exact pixel distance; overrides `pages` when set.' },
+        index: {
+          type: 'integer',
+          description: 'Scroll this container instead of the window. Index from the latest page_get_content.',
+        },
+      },
+      required: [],
+    },
+    instructions: toolInstructions.page_scroll,
+    builtIn: true,
+  },
+  {
+    name: 'page_wait',
+    description: 'Wait for asynchronous rendering to finish before reading the page again.',
+    category: 'page',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seconds: { type: 'integer', description: 'Seconds to wait, 1–10 (default 2).' },
+      },
+      required: ['seconds'],
+    },
+    instructions: toolInstructions.page_wait,
+    builtIn: true,
+  },
+  {
+    name: 'page_click',
+    description: 'Click an element on the current page, by its index from the latest page_get_content.',
+    category: 'page',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Element index from the latest page_get_content.' },
+      },
+      required: ['index'],
+    },
+    instructions: toolInstructions.page_click,
+    builtIn: true,
+  },
+  {
+    name: 'page_input',
+    description: 'Type text into an input or textarea on the current page. Replaces the existing value.',
+    category: 'page',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Element index from the latest page_get_content.' },
+        text: { type: 'string', description: 'The text to enter. Replaces whatever is in the field.' },
+      },
+      required: ['index', 'text'],
+    },
+    instructions: toolInstructions.page_input,
+    builtIn: true,
+  },
+  {
+    name: 'page_select',
+    description: 'Choose an option in a dropdown on the current page.',
+    category: 'page',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Element index of the <select> from the latest page_get_content.' },
+        option: { type: 'string', description: 'Option to select, matched against its value, text or label.' },
+      },
+      required: ['index', 'option'],
+    },
+    instructions: toolInstructions.page_select,
+    builtIn: true,
+  },
+  {
+    name: 'page_back',
+    description: 'Go back to the previous page in this tab.',
+    category: 'page',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    instructions: toolInstructions.page_back,
+    builtIn: true,
+  },
+  {
+    name: 'page_execute_js',
+    description:
+      'Run JavaScript in the current page and get the result back — the escape hatch for what the other page tools cannot express.',
+    category: 'page',
+    input_schema: {
+      type: 'object',
+      properties: {
+        script: {
+          type: 'string',
+          description:
+            'Function body or arrow function, e.g. "return document.title" or "() => document.querySelectorAll(\'a\').length". May await. `args` holds the values passed in `args`.',
+        },
+        args: { type: 'object', description: 'Values exposed to the script as `args`.' },
+      },
+      required: ['script'],
+    },
+    instructions: toolInstructions.page_execute_js,
+    builtIn: true,
+  },
+
   // ── browser (Browser Use A-M1) ─────────────────────────────────────
   // One tool for the whole browser capability: `code` runs against the
   // host-side facade (agent.browsers). The full calling convention lives in

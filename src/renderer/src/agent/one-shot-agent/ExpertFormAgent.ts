@@ -5,14 +5,12 @@ import {
   parseExpertChatReply,
   type ExpertChatMessage,
   type ExpertFormDraft,
-  type KnowledgeOption,
 } from './expert-form'
 
 /** Conversation state fed back to the model on every turn. */
 export interface ExpertFormInput {
   /** Live form values, so a hand-edited field is visible to the model. */
   draft: ExpertFormDraft
-  knowledgeFiles: KnowledgeOption[]
   /** Prior turns, oldest first (assistant replies keep their JSON payloads). */
   history: ExpertChatMessage[]
   /** The user's new message. */
@@ -43,13 +41,13 @@ export class ExpertFormAgent extends OneShotAgent<ExpertFormInput, ExpertFormOut
       ...input.history.map((m) => ({ role: m.role, content: m.content })),
       {
         role: 'user',
-        content: buildExpertChatTurnText(input.draft, input.knowledgeFiles, input.message, input.locale ?? 'zh'),
+        content: buildExpertChatTurnText(input.draft, input.message, input.locale ?? 'zh'),
       },
     ]
   }
 
-  protected parseResponse(raw: string, input: ExpertFormInput): ExpertFormOutput {
-    return parseExpertChatReply(raw, input.knowledgeFiles)
+  protected parseResponse(raw: string): ExpertFormOutput {
+    return parseExpertChatReply(raw)
   }
 
   /** Empty output = the panel shows its failure hint; nothing is applied. */

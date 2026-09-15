@@ -8,7 +8,8 @@
 import React, { useEffect, useMemo, useRef } from 'react'
 import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import { buildSegments, getSegmentKey, type Segment } from './message-segments'
-import { SegmentBlock } from './SegmentView'
+import { SegmentBlock, MESSAGE_COLUMN_INSET } from './SegmentView'
+import type { MessageActions } from './MessageGroup'
 import { StreamingCursor } from './StreamingCursor'
 import { ErrorDisplay } from './ErrorDisplay'
 
@@ -22,9 +23,15 @@ export interface TranscriptViewProps {
   /** Rich empty state — replaces the text hint when the caller needs more than
    *  one line (e.g. the expert editor's starter chips). */
   emptyContent?: React.ReactNode
-  /** Assistant action row (copy / like / favorite). Off for transcripts that are
-   *  not a stored conversation — their message ids resolve to nothing. */
-  showActions?: boolean
+  /** Assistant action row (copy / download / like / favorite + token stats).
+   *  Pass 'viewOnly' for transcripts that are not a stored conversation: the row
+   *  stays, minus the two buttons that write message metadata, because their
+   *  message ids resolve to nothing. */
+  actions?: MessageActions
+  /** Horizontal padding of the message column — 24 in the full-width chat (it
+   *  pairs with the composer's cap); a narrow host passes 0 so the bubbles and
+   *  the composer are the same width. */
+  contentInset?: number
   onApproveTool: (toolUseId: string) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool: (toolUseId: string) => void
@@ -41,7 +48,8 @@ export function TranscriptView({
   restoring,
   emptyHint,
   emptyContent,
-  showActions = true,
+  actions = 'full',
+  contentInset = MESSAGE_COLUMN_INSET,
   onApproveTool,
   onRejectTool,
   onKillTool,
@@ -100,7 +108,9 @@ export function TranscriptView({
           nextSeg={segments[i + 1]}
           isLastSegment={i === segments.length - 1}
           isRequesting={isRequesting}
-          showActions={showActions}
+          awaitingApproval={agentStatus.status === 'awaiting_approval'}
+          actions={actions}
+          contentInset={contentInset}
           onApproveTool={onApproveTool}
           onRejectTool={onRejectTool}
           onKillTool={onKillTool}

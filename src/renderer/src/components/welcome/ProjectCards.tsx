@@ -12,6 +12,7 @@ import { useTranslation } from '../../i18n/useTranslation'
 import { useProjectStore } from '../../stores/projectStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
 import { ProjectModal } from '../project/ProjectModal'
+import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import { stringToHue, hsvToCss } from '../../utils/hash-color'
 import { DEFAULT_PROJECT_ID } from '../../../../shared/types/project'
 import type { Project } from '../../../../shared/types/project'
@@ -36,6 +37,75 @@ function selectedWash(hue: number, { from, to }: { from: number; to: number }): 
  *  its band on (its 12px side gutters stay clear for the scrollbar). */
 const CARDS_COLUMN_WIDTH = 952
 
+/** Card box: the face carries two lines (name + meta) and the grid row is sized
+ *  by the tallest card, so any slack here is spent by every card in the row.
+ *  Measured under the app's metrics the two lines want ~71px, which is what the
+ *  floor rounds to — and it is a *border-box* floor, the ambient box model here
+ *  being content-box, where 72 would silently mean a 98px card. The 20px side
+ *  padding stays put: it is shared with the band's cards above, and the two
+ *  grids read as one column. */
+const CARD_PADDING = '14px 20px 12px'
+/** Space between the two lines — the only space between them, since the floor
+ *  above leaves no slack for the flex column to distribute. */
+const CARD_GAP = 4
+const CARD_MIN_HEIGHT = 72
+
+/** The card's hidden second line — folder icon + full workspace path — shown on
+ *  hover. antd portals it, so the reveal neither reflows the grid nor covers
+ *  the meta row's own click target (an in-card overlay would do both). */
+function WorkspacePath({ path }: { path: string }): React.ReactElement {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: 6 }}>
+      <FolderOutlined style={{ fontSize: 12, lineHeight: '18px', opacity: 0.7 }} />
+      <code style={{ fontSize: 12, lineHeight: '18px', wordBreak: 'break-all' }}>{path}</code>
+    </span>
+  )
+}
+
+/** The card's second line, read as a chat line: "1天前：你好" — the time the
+ *  project was last touched, then whatever was last said in it. The time is
+ *  pinned so only the quote ellipsizes, and the line itself is the click
+ *  target (no pill: it is a log line, not a button). */
+function MetaLine({
+  time,
+  text,
+  hint,
+  onOpen,
+  onHover,
+}: {
+  /** Relative stamp, or null when the conversation carries no timestamp. */
+  time: string | null
+  /** Last user message, falling back to the conversation title. */
+  text: string | undefined
+  hint: string
+  onOpen: () => void
+  onHover: (hovered: boolean) => void
+}): React.ReactElement | null {
+  if (!text) return null
+  return (
+    <Tooltip title={hint}>
+      <span
+        onClick={(e) => {
+          e.stopPropagation()
+          onOpen()
+        }}
+        style={{ display: 'inline-flex', alignItems: 'baseline', minWidth: 0, fontSize: 12, color: '#888', cursor: 'pointer' }}
+        onMouseEnter={(e) => {
+          onHover(true)
+          e.currentTarget.style.color = '#333'
+        }}
+        onMouseLeave={(e) => {
+          onHover(false)
+          e.currentTarget.style.color = '#888'
+        }}
+      >
+        {time && <span style={{ flexShrink: 0, color: '#bbb' }}>{time}：</span>}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{text}</span>
+      </span>
+    </Tooltip>
+  )
+}
+
 export function ProjectCards({
   conversations,
   onOpenConversation,
@@ -49,6 +119,14 @@ export function ProjectCards({
   const projectId = useNewTaskStore((s) => s.projectId)
   const setProjectId = useNewTaskStore((s) => s.setProjectId)
   const [modalOpen, setModalOpen] = useState(false)
+  // The cards' meta line is a relative time, so the grid holds the clock all
+  // such lines are rendered against — same tick as the sidebar and the band.
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS)
+    return () => clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     void reload()
@@ -129,6 +207,7 @@ export function ProjectCards({
                 key={project.id}
                 project={project}
                 conversations={conversations}
+                now={now}
                 selected={projectId === project.id}
                 onSelect={() => setProjectId(project.id)}
                 onOpenConversation={onOpenConversation}
@@ -149,11 +228,12 @@ export function ProjectCards({
                 style={{
                   border: '1px dashed #c8c8cc',
                   borderRadius: 16,
-                  padding: '18px 20px 16px',
+                  padding: CARD_PADDING,
+                  boxSizing: 'border-box',
                   cursor: 'pointer',
                   userSelect: 'none',
                   textAlign: 'left',
-                  minHeight: 96,
+                  minHeight: CARD_MIN_HEIGHT,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -191,14 +271,16 @@ export function ProjectCards({
 }
 
 /**
- * One project card: name over workspace path over a meta row (conversation
- * count + a jump to the latest conversation). Clicking the card targets the
- * project; a gradient wash of the project's name-hashed color marks the
- * selection without shifting layout.
+ * One project card: the project name over its latest conversation, read as a
+ * chat line — "1天前：你好". Clicking the card targets the project; a gradient
+ * wash of the project's name-hashed color marks the selection without shifting
+ * layout. The workspace path is not on the face — long, rarely read, and it
+ * cost a whole row — it rides the hover tooltip instead.
  */
 function ProjectCard({
   project,
   conversations,
+  now,
   selected,
   onSelect,
   onOpenConversation,
@@ -206,6 +288,8 @@ function ProjectCard({
 }: {
   project: Project
   conversations: ConversationListItem[]
+  /** Clock the meta line's relative time is rendered against. */
+  now: number
   selected: boolean
   onSelect: () => void
   onOpenConversation: (key: string) => void
@@ -215,114 +299,106 @@ function ProjectCard({
   const { t } = useTranslation()
   const inProject = conversations.filter((c) => c.projectId === project.id)
   const latest = inProject.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+  const latestKey = latest?.key
+
+  // The meta line quotes the conversation's last user message, which the list
+  // item does not carry — one lookup per card, falling back to the title while
+  // it is in flight (and for conversations nothing was ever said in).
+  const [quote, setQuote] = useState<string | null>(null)
+  useEffect(() => {
+    if (!latestKey) return
+    let cancelled = false
+    window.electronAPI
+      .getConversationLastUserMessage(latestKey)
+      .then((text) => {
+        if (!cancelled) setQuote(text)
+      })
+      .catch(() => {
+        /* the titles still say something useful */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [latestKey])
+
+  // Two tooltips live on this card — the workspace path (whole card) and the
+  // latest-conversation hint (the meta line). The pointer is only ever really
+  // on one of them, so the meta line suppresses the path; otherwise the card's
+  // own tooltip pops up behind the one you are aiming at.
+  const [onMeta, setOnMeta] = useState(false)
 
   // Identity color: hue hashed from the project name — stable per project,
   // spread across the wheel so neighbors rarely collide.
   const hue = stringToHue(project.name)
   const accent = hsvToCss(hue, ACCENT_S, ACCENT_V)
 
+  const timeText = describeRelativeTimeText(latest?.updatedAt, now, t)
+  const metaText = quote ?? latest?.label
+
   return (
-    <div
-      ref={cardRef}
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return
-        e.preventDefault()
-        onSelect()
-      }}
-      style={{
-        background: selected ? selectedWash(hue, WASH) : CARD_BG,
-        borderRadius: 16,
-        padding: '18px 20px 16px',
-        cursor: 'pointer',
-        userSelect: 'none',
-        textAlign: 'left',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 8,
-        minHeight: 118,
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.background = selected ? selectedWash(hue, WASH_HOVER) : CARD_BG_HOVER
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = selected ? selectedWash(hue, WASH) : CARD_BG
-      }}
+    <Tooltip
+      title={onMeta ? null : <WorkspacePath path={project.workspaceDir} />}
+      placement="bottom"
+      mouseEnterDelay={0.25}
+      styles={{ root: { maxWidth: 420 } }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {project.icon && <span style={{ fontSize: 16, lineHeight: '22px' }}>{project.icon}</span>}
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontSize: 16,
-            fontWeight: 600,
-            color: '#333',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {project.name}
-        </span>
-        {selected && <CheckOutlined style={{ fontSize: 14, color: accent, flexShrink: 0 }} />}
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-        <FolderOutlined style={{ fontSize: 12, color: '#bbb', flexShrink: 0 }} />
-        {/* Head-truncated: direction:rtl keeps the path's TAIL visible and puts
-            the ellipsis at the start; textAlign:left re-anchors short paths to
-            the icon. Title carries the full path — the only tooltip on a card. */}
-        <code
-          title={project.workspaceDir}
-          style={{
-            fontSize: 12,
-            color: '#999',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            direction: 'rtl',
-            textAlign: 'left',
-          }}
-        >
-          {project.workspaceDir}
-        </code>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 'auto', fontSize: 12, color: '#aaa' }}>
+      <div
+        ref={cardRef}
+        role="button"
+        tabIndex={0}
+        onClick={onSelect}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return
+          e.preventDefault()
+          onSelect()
+        }}
+        style={{
+          background: selected ? selectedWash(hue, WASH) : CARD_BG,
+          borderRadius: 16,
+          padding: CARD_PADDING,
+          boxSizing: 'border-box',
+          cursor: 'pointer',
+          userSelect: 'none',
+          textAlign: 'left',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: CARD_GAP,
+          minHeight: CARD_MIN_HEIGHT,
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = selected ? selectedWash(hue, WASH_HOVER) : CARD_BG_HOVER
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = selected ? selectedWash(hue, WASH) : CARD_BG
+        }}
+      >
+        {/* lineHeight pins the row so a card with an icon is the same height as
+            one without — otherwise the emoji's taller line box pushes that
+            card's meta line (and everything under it) 4px down. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, lineHeight: '22px' }}>
+          {project.icon && <span style={{ fontSize: 16, lineHeight: '22px' }}>{project.icon}</span>}
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 16,
+              fontWeight: 600,
+              color: '#333',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {project.name}
+          </span>
+          {selected && <CheckOutlined style={{ fontSize: 14, color: accent, flexShrink: 0 }} />}
+        </div>
+        {/* Absent for a project nothing was said in yet — the gap between the
+            two lines must not survive it as a stray 4px. */}
         {latest && (
-          <Tooltip title={t('welcome.openLatest')}>
-            <span
-              onClick={(e) => {
-                e.stopPropagation()
-                onOpenConversation(latest.key)
-              }}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-                minWidth: 0,
-                fontSize: 12,
-                color: '#888',
-                cursor: 'pointer',
-                padding: '2px 8px',
-                borderRadius: 999,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(0, 0, 0, 0.07)'
-                e.currentTarget.style.color = '#333'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent'
-                e.currentTarget.style.color = '#888'
-              }}
-            >
-              <ArrowRightOutlined style={{ fontSize: 10, flexShrink: 0 }} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{latest.label}</span>
-            </span>
-          </Tooltip>
+          <MetaLine time={timeText} text={metaText} onOpen={() => onOpenConversation(latest.key)} onHover={setOnMeta} hint={t('welcome.openLatest')} />
         )}
       </div>
-    </div>
+    </Tooltip>
   )
 }

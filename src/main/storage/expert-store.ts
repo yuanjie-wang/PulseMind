@@ -86,7 +86,6 @@ function rowToProfile(row: any): ExpertProfile {
     methodology: row.methodology || undefined,
     outputSpec: row.output_spec || undefined,
     constraints: row.constraints || undefined,
-    knowledgeFileIds: parseJsonColumn<string[]>(row.knowledge_file_ids, []),
     skillNames: parseJsonColumn<string[]>(row.skill_names, []),
     mcpServerIds: parseJsonColumn<string[]>(row.mcp_server_ids, []),
     enabled: row.enabled === 1,
@@ -102,7 +101,6 @@ function profileToRow(p: ExpertProfile): Record<string, any> {
     methodology: p.methodology || '',
     output_spec: p.outputSpec || '',
     constraints: p.constraints || '',
-    knowledge_file_ids: JSON.stringify(p.knowledgeFileIds || []),
     skill_names: JSON.stringify(p.skillNames || []),
     mcp_server_ids: JSON.stringify(p.mcpServerIds || []),
     enabled: p.enabled !== false ? 1 : 0,
@@ -112,17 +110,16 @@ function profileToRow(p: ExpertProfile): Record<string, any> {
 /** 真正的 upsert：save() 先 DELETE 全表（冲突分支永不触发），reset() 依赖
  *  ON CONFLICT 按 id 覆盖预置项。旧实现是裸 INSERT，对任何已有数据的库都会
  *  主键冲突回滚——「重置默认」静默失败，新预置专家也刷不出来。
- *  icon / profile_id / max_tokens / max_loop_iterations 四列已停用（图标与运行参数
- *  都随全局走），列保留在表里但不再读写。 */
+ *  icon / profile_id / max_tokens / max_loop_iterations / knowledge_file_ids
+ *  五列已停用（图标、运行参数与知识绑定都不再随专家走），列保留在表里但不再读写。 */
 const INSERT_SQL = `INSERT INTO subagent_profiles
-  (id, name, base_prompt, description, methodology, output_spec, constraints, knowledge_file_ids,
+  (id, name, base_prompt, description, methodology, output_spec, constraints,
    skill_names, mcp_server_ids, enabled)
-  VALUES (@id, @name, @base_prompt, @description, @methodology, @output_spec, @constraints, @knowledge_file_ids,
+  VALUES (@id, @name, @base_prompt, @description, @methodology, @output_spec, @constraints,
    @skill_names, @mcp_server_ids, @enabled)
   ON CONFLICT(id) DO UPDATE SET
    name = @name, base_prompt = @base_prompt, description = @description,
    methodology = @methodology, output_spec = @output_spec, constraints = @constraints,
-   knowledge_file_ids = @knowledge_file_ids,
    skill_names = @skill_names, mcp_server_ids = @mcp_server_ids,
    enabled = @enabled`
 

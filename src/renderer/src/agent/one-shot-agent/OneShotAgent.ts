@@ -21,6 +21,7 @@ export abstract class OneShotAgent<TInput, TOutput> {
           this.buildSystemPrompt(input),
           this.buildUserMessages(input),
           options.maxTokens ?? 4096,
+          options.onUsage,
         )
         if (!raw) {
           if (attempt === 0) {

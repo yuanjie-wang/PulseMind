@@ -26,6 +26,12 @@ export interface AppView {
   /** `routines` detail: open the run-history workspace for this routine
    *  (deep links, e.g. the welcome page's routine card). */
   runHistoryOf?: string
+  /** `routines` editor page: true = open the three-column create/edit page
+   *  (list · form · assistant) instead of the card grid. */
+  routineEditing?: boolean
+  /** `routines` editor page: which routine is loaded into the form.
+   *  Absent (with `routineEditing`) = the create-new flow. */
+  routineId?: string
 }
 
 export const CHAT_VIEW: AppView = { kind: 'chat' }

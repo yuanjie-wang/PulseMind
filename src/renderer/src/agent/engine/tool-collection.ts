@@ -28,6 +28,14 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
 
   let enabledTools = toolManager.getEnabledTools().map((t) => t.definition)
 
+  // ── Hosted page tools: only while a browser client is bound (M2.4) ──
+  // The tool list is what makes the model reach for these; hiding them when
+  // nothing can execute them is the whole gate (Anywhere's rule: "the model
+  // must not see browser tools while the extension is offline").
+  if (!deps.opts.hostedAvailable) {
+    enabledTools = enabledTools.filter((t) => t.category !== 'page')
+  }
+
   // ── Gated built-in tools: keyword auto-trigger + session activation ──
   // Category-level: any trigger hit activates the whole gated category (git/memory/knowledge),
   // so "commit my changes" surfaces status/diff/log/commit/restore together.
@@ -66,10 +74,10 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   if (skillManager) {
     const pickSkillIdx = enabledTools.findIndex((t) => t.name === 'pick_skill')
     if (pickSkillIdx !== -1) {
-      // Expert/spawn skill whitelist: empty/absent = no restriction (mirrors
-      // allowedTools/allowedMcpServers semantics).
+      // Expert/spawn skill whitelist: `undefined` = no restriction, an EMPTY
+      // ARRAY = no skill is allowed (mirrors allowedTools/allowedMcpServers).
       const allowedSkills = deps.opts.allowedSkills
-      const allowedSkillSet = allowedSkills?.length ? new Set(allowedSkills) : null
+      const allowedSkillSet = allowedSkills ? new Set(allowedSkills) : null
       const eSkills = skillManager.getEnabledSkills().filter((s) => !allowedSkillSet || allowedSkillSet.has(s.definition.name))
       if (eSkills.length > 0) {
         const skillNames = eSkills.map((s) => s.definition.name).join(', ')

@@ -1,0 +1,1246 @@
+/* Panel styles. Loaded into the Shadow Root only (see content/index.tsx), so
+ * there is no page CSS to fight and nothing to leak the other way. Every rule is
+ * namespaced under .pm- for the same reason.
+ *
+ * ── 为什么是手抄 ──────────────────────────────────────────────────────────
+ * 裁定（2026-09-15）: 保留 Shadow Root，视觉手工对齐主对话。
+ * 主对话的外观没有可 import 的样式表 —— 它是 antd ConfigProvider 主题 token +
+ * `components/chat/*` 里的内联样式 + `@ant-design/x-markdown/themes/light.css`
+ * 三者叠加的结果。所以这里的每个字色 / 间距 / 圆角 / 字号都从渲染进程的对应
+ * 位置抄下来，并在行内注明出处；改主对话外观时，这份文件需要跟着改。
+ *
+ * 刻意不做的事：
+ *  - 不 import antd / @ant-design/icons：cssinjs 会把样式注入**页面**的
+ *    document.head（面板在隔离世界，注入的是宿主页面），图标路径改为内联 SVG
+ *    （ui/icons.tsx）。
+ *  - 不跟随应用明暗主题：主对话的消息列本身就用 `.x-markdown-light`（浅色）
+ *    与写死的浅色字色，App.tsx 只把 theme 交给 antd 组件；面板照抄浅色才是
+ *    与主对话一致的那一个。 */
+
+:host {
+  /* ── 主对话视觉事实（本文件的唯一事实来源）─────────────────────────── */
+
+  /* 字体：App.tsx ConfigProvider token.fontFamily */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+
+  --pm-fs: 14px; /* MessageGroup userBubbleStyle/assistantBubbleStyle fontSize */
+  --pm-lh: 1.6; /* 同上 lineHeight */
+  --pm-text: #333; /* SegmentView StreamingText color */
+  --pm-muted: #999; /* 工具卡 summary / 空态提示 */
+  --pm-muted-2: #888; /* ThinkingBlockView 标题行 */
+  --pm-muted-3: #aaa; /* ThinkingBlockView 折叠预览 */
+  --pm-faint: #bbb; /* 操作行图标 / 展开箭头 */
+  --pm-divider: #ddd; /* 操作行分隔竖线 */
+
+  --pm-user-bg: #f0f2f4; /* userBubbleStyle.background */
+  --pm-user-fg: #000; /* userBubbleStyle.color */
+
+  --pm-tool-bg: #f5f5f5; /* CollapsibleToolBlock header background */
+  --pm-tool-bg-hover: #ebebeb;
+  --pm-tool-pending-bg: #fff7e6; /* needsAction: 待批准 */
+  --pm-tool-pending-hover: #ffe7ba;
+  --pm-tool-pending-border: #ffd591;
+  --pm-warn: #d46b08; /* 待批准提示字色 / 全部允许的图标与文案（InputArea UNRESTRICTED_COLOR） */
+  --pm-ok: #4ec9b0; /* 完成勾 */
+  --pm-err: #f44747; /* 失败 / 已拒绝 */
+
+  --pm-error-bg: #fff2f0; /* ErrorDisplay */
+  --pm-error-border: #ffccc7;
+  --pm-error-text: #cf1322;
+
+  --pm-primary: #1677ff; /* antd colorPrimary（发送按钮 / 链接 / 主题色） */
+  --pm-primary-hover: #4096ff;
+
+  --pm-think-rule: #d0d0d0; /* ThinkingBlockView borderLeft */
+  --pm-think-bg: #f6f6f6; /* 展开后的 pre 背景 */
+  --pm-think-fg: #555;
+
+  --pm-card-bg: #1e1e1e; /* CommandCard cardStyle.background */
+  --pm-card-panel: #252526; /* 输入/输出代码块底色 */
+  --pm-card-border: #333;
+  --pm-card-fg: #e0e0e0; /* 卡片标题行 */
+  --pm-card-cmd: #89d185; /* 命令字色 */
+  --pm-card-prompt: #6a9955; /* `$ ` 提示符 */
+  --pm-card-out: #d4d4d4; /* 输出字色 */
+  --pm-card-label: #8a8a8a; /* 输入/输出 段落标签 */
+
+  --pm-mono: 'SF Mono', 'Menlo', 'Consolas', monospace; /* cardStyle.fontFamily */
+
+  --pm-radius-bubble: 12px; /* 气泡圆角 */
+  --pm-radius-card: 6px; /* 工具卡头部 / 按钮圆角 */
+  --pm-radius-code: 4px; /* 代码/输出块圆角 */
+  --pm-inset: 16px; /* 消息列内缩：主对话是 1000 列里的 24px，面板等比例收窄 */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* index.html 的全局滚动条：6px，thumb rgba(128,128,128,.4)，圆角 3 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.4);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.6);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* ── 启动球（面板自有，主对话无对应物）──────────────────────────────── */
+
+.pm-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: var(--pm-primary);
+  color: #fff;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%); /* 与输入卡同一枚投影 */
+  transition: transform 0.15s ease;
+}
+
+.pm-fab:hover {
+  transform: scale(1.06);
+  background: var(--pm-primary-hover);
+}
+
+/* ── 面板外壳（自有 chrome，配色取主对话的浅色面）────────────────────── */
+
+.pm-panel {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 380px;
+  height: min(600px, calc(100vh - 40px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 16px;
+  background: #fff;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: var(--pm-fs);
+  line-height: var(--pm-lh);
+  box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%);
+}
+
+.pm-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f0f0f0; /* antd colorBorderSecondary */
+}
+
+.pm-brand {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.pm-spacer {
+  flex: 1;
+}
+
+.pm-status {
+  color: var(--pm-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pm-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.pm-chip-ok {
+  background: #e7f6ec;
+  color: #1a7f37;
+}
+
+.pm-chip-bad {
+  background: var(--pm-error-bg);
+  color: var(--pm-error-text);
+}
+
+/* 图标按钮：antd 的默认按钮是 24/32 的两档，这里取 24 档，hover 底色用 antd
+   的 colorFillTertiary rgba(0,0,0,.04)。 */
+.pm-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: none;
+  border-radius: var(--pm-radius-card);
+  background: transparent;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pm-icon-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.85);
+}
+
+.pm-icon-btn-active {
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.85);
+}
+
+/* ── 横幅 / 会话列表（自有 chrome）────────────────────────────────────── */
+
+.pm-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa; /* antd colorFillQuaternary */
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}
+
+.pm-banner-error {
+  background: var(--pm-error-bg);
+  color: var(--pm-error-text);
+}
+
+.pm-link {
+  border: none;
+  background: none;
+  color: var(--pm-primary);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.pm-sessions {
+  max-height: 40%;
+  overflow-y: auto;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
+.pm-sessions-empty {
+  padding: 10px;
+  color: var(--pm-muted);
+  font-size: 12px;
+}
+
+.pm-session {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 10px;
+}
+
+.pm-session-active {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.pm-session-title {
+  flex: 1;
+  overflow: hidden;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pm-session-input {
+  flex: 1;
+  padding: 2px 4px;
+  border: 1px solid var(--pm-primary);
+  border-radius: var(--pm-radius-code);
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+/* ── transcript ───────────────────────────────────────────────────────── */
+
+/* 滚动容器的内边距对齐 TranscriptView：padding '12px 0 8px' */
+.pm-transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 0 8px;
+}
+
+/* 消息列内缩，对齐 SegmentBlock 的 `padding: 0 24px`（1000 列） */
+.pm-column {
+  padding: 0 var(--pm-inset);
+}
+
+.pm-empty {
+  padding: 0 var(--pm-inset);
+  color: var(--pm-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+/* 用户行：alignItems 不设、justifyContent flex-end、marginBottom 16 */
+.pm-row-user {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+/* 助手行：列向、左对齐、无下边距（action 行自带 marginBottom 16） */
+.pm-row-assistant {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* 用户气泡：background #f0f2f4 / color #000 / radius 12 / padding '8px 14px'
+   / maxWidth 70% / 14px / line-height 1.6 / pre-wrap / break-word */
+.pm-bubble {
+  background: var(--pm-user-bg);
+  color: var(--pm-user-fg);
+  border-radius: var(--pm-radius-bubble);
+  padding: 8px 14px;
+  max-width: 70%;
+  font-size: var(--pm-fs);
+  line-height: var(--pm-lh);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 助手气泡：radius 12 / padding '4px 0' / width 100% */
+.pm-bubble-assistant {
+  border-radius: var(--pm-radius-bubble);
+  padding: 4px 0;
+  width: 100%;
+  font-size: var(--pm-fs);
+  line-height: var(--pm-lh);
+}
+
+/* 助手文本块的内缩：MessageGroup 给每个 text 块 paddingLeft 12 */
+.pm-text-block {
+  padding-left: 12px;
+  color: var(--pm-text);
+}
+
+/* 流式文本段：SegmentView StreamingText —— marginBottom 12 + paddingLeft 12 */
+.pm-streaming {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+
+.pm-streaming-inner {
+  padding-left: 12px;
+  width: 100%;
+  font-size: var(--pm-fs);
+  line-height: var(--pm-lh);
+}
+
+/* 流式光标：StreamingCursor —— 6x14 #000，1s step-end 闪烁，paddingLeft 12 */
+.pm-cursor-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+  padding-left: 12px;
+}
+
+.pm-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  background: #000;
+  vertical-align: text-bottom;
+  will-change: opacity;
+  animation: pm-blink 1s step-end infinite;
+}
+
+@keyframes pm-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes pm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── markdown ─────────────────────────────────────────────────────────── */
+
+/* 正文样式来自 @ant-design/x-markdown/themes/light.css（与主对话同一份文件，
+   由 content/index.tsx 注入同一个 Shadow Root），这里只补它没有覆盖的两点：
+   h5/h6 的字号（它只写到 h4），以及代码块/表格的横向滚动。
+   选择器写成 .pm-md.x-markdown-light 提升一级优先级：主题自己给了
+   `table { overflow: hidden }`（桌面对话列 1000px 宽，裁掉正好），面板只有
+   380px，宽表格必须能横滚——不提升优先级就取决于两个 <style> 的先后顺序。 */
+
+.pm-md.x-markdown-light h5 {
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.pm-md.x-markdown-light h6 {
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.pm-md.x-markdown-light pre {
+  overflow-x: auto;
+}
+
+.pm-md.x-markdown-light table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* 补 reset 层：x-markdown 把「块的上下边距」分成两层——自带样式表
+   （dist/x-markdown.css）挂在组件根类 `.x-markdown` 上，负责 `:last-child`
+   清零；主题（themes/light.css）挂在 `.x-markdown-light` 上，只负责取值。
+   桌面端的根同时带这两个类，所以两层都在；面板的根只有主题那一个类，reset
+   从来就没到过 —— 于是每个块的 `margin-bottom`（p 16px / li 14px / 表格 24px）
+   全都留在气泡里，用户气泡里看就是「文字下方多出 16px」。
+   这里按同一份清单补齐 last-child（取值仍由主题的 --margin-* 决定，两边只差
+   「有没有被清零」）；first-child 的 margin-top 不补，因为主题给的上行本来就
+   都是 0。 */
+.pm-md.x-markdown-light p:last-child,
+.pm-md.x-markdown-light ul:last-child,
+.pm-md.x-markdown-light ol:last-child,
+.pm-md.x-markdown-light li:last-child,
+.pm-md.x-markdown-light pre:last-child,
+.pm-md.x-markdown-light table:last-child {
+  margin-bottom: 0;
+}
+
+/* ── 操作行（MessageGroup 回复下方按钮行）────────────────────────────── */
+
+.pm-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 6px;
+  margin-bottom: 16px;
+  padding-left: 0;
+}
+
+/* btnBase: 透明底 / 无边框 / 14px / padding '4px 8px' / radius 6 / color #bbb */
+.pm-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: var(--pm-radius-card);
+  line-height: 1;
+  color: var(--pm-faint);
+  transition: color 0.2s, background 0.15s;
+}
+
+.pm-action-btn:hover {
+  background: #f0f0f0;
+}
+
+/* 耗时 / Token：gap 12 / marginLeft 6 / 12px / color #bbb / lineHeight 1 */
+.pm-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: 6px;
+  color: var(--pm-faint);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.pm-stats-divider {
+  color: var(--pm-divider);
+}
+
+.pm-stats-item {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pm-stats-item svg {
+  font-size: 10px;
+  margin-right: 2px;
+}
+
+/* ── 思考块（ThinkingBlockView）───────────────────────────────────────── */
+
+/* margin '6px 0' / borderLeft '2px solid #d0d0d0' / paddingLeft 10 */
+.pm-thinking {
+  margin: 6px 0;
+  border-left: 2px solid var(--pm-think-rule);
+  padding-left: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 标题行：color #888 / 13px / lineHeight 1.6 */
+.pm-thinking-head {
+  color: var(--pm-muted-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pm-thinking-caret {
+  margin-right: 6px;
+  font-size: 11px;
+}
+
+.pm-thinking-title {
+  font-weight: 500;
+}
+
+/* 折叠时的单行预览：marginLeft 8 / color #aaa / 12px */
+.pm-thinking-preview {
+  margin-left: 8px;
+  color: var(--pm-muted-3);
+  font-size: 12px;
+}
+
+/* 展开后的 pre：padding 8 / #f6f6f6 / radius 4 / 12px / lineHeight 1.5 */
+.pm-thinking-body {
+  margin: 6px 0 0 0;
+  padding: 8px;
+  background: var(--pm-think-bg);
+  border-radius: var(--pm-radius-code);
+  font-family: var(--pm-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--pm-think-fg);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
+  cursor: text;
+  user-select: text;
+}
+
+/* ── 工具卡（CollapsibleToolBlock 头部）───────────────────────────────── */
+
+.pm-tool {
+  margin: 4px 0;
+}
+
+/* 头部：gap 6 / padding '5px 10px' / background #f5f5f5 / radius 6 /
+   13px / color #555 / border 1px solid transparent */
+.pm-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--pm-tool-bg);
+  border: 1px solid transparent;
+  border-radius: var(--pm-radius-card);
+  cursor: pointer;
+  font-size: 13px;
+  color: #555;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.pm-tool-head:hover {
+  background: var(--pm-tool-bg-hover);
+}
+
+/* 待批准：background #fff7e6 / border 1px solid #ffd591 / hover #ffe7ba */
+.pm-tool-head-pending {
+  background: var(--pm-tool-pending-bg);
+  border-color: var(--pm-tool-pending-border);
+}
+
+.pm-tool-head-pending:hover {
+  background: var(--pm-tool-pending-hover);
+}
+
+/* 状态图标位：fontSize 14 / width 18 / 居中（图标自带颜色） */
+.pm-tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pm-tool-icon-ok {
+  color: var(--pm-ok);
+}
+
+.pm-tool-icon-err {
+  color: var(--pm-err);
+}
+
+.pm-tool-icon-idle {
+  color: var(--pm-muted);
+}
+
+/* 工具名：fontWeight 600 / #333 / 12px */
+.pm-tool-name {
+  font-weight: 600;
+  color: var(--pm-text);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+/* 摘要：#999 / 12px / 单行省略 / flex 1 */
+.pm-tool-summary {
+  color: var(--pm-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  font-size: 12px;
+}
+
+/* 待批准提示：#d46b08 / 11px / 500 */
+.pm-tool-hint {
+  color: var(--pm-warn);
+  font-size: 11px;
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+/* 展开箭头：#bbb / 11px */
+.pm-tool-caret {
+  color: var(--pm-faint);
+  font-size: 11px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* ── 审批条（折叠块下方的 跳过/运行）────────────────────────────────── */
+
+/* 桌面端 ApprovalArea（components/chat/ApprovalArea.tsx）：折叠块不替用户展开，
+   而是在头部下方直接给出 跳过/运行，免得"展开到最里层才能审批"。
+   命名刻意避开上面 Composer 的「授权」族（.pm-approval / -item / -label）：
+   那一族是授权档位下拉，这一族是审批答复按钮，两回事。
+   background #fff7e6 / border 1px #ffd591 / radius 6 / padding '8px 10px' /
+   margin '4px 0' —— 前三个与待批准头部同色（--pm-tool-pending-*）。 */
+.pm-approve-area {
+  margin: 4px 0;
+  padding: 8px 10px;
+  background: var(--pm-tool-pending-bg);
+  border: 1px solid var(--pm-tool-pending-border);
+  border-radius: var(--pm-radius-card);
+}
+
+/* 行：flex / alignItems center / gap 8；按钮靠右（桌面端那是 name + summary +
+   marginLeft:auto 的 Space）。 */
+.pm-approve-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 浅色条上的按钮 = antd Button size="small"：height 24 / padding 0 7 / radius 6 /
+   fontSize 12；default 白底 #d9d9d9 边框，primary 用主题蓝。
+   gap 8px 是 antd Button 根自己的 iconGap（桌面端 ApprovalArea 用的是带 icon 的
+   antd Button，图标到文案量得 8px），所以图标上不带 inline margin —— 与
+   .pm-cmd-btn 那族不同：那边抄的是 CommandCard 里的 inline marginRight: 4。
+   也不同于 .pm-cmd-btn 的深色卡覆盖（浅底上会看不见）。 */
+.pm-approve-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #d9d9d9;
+  border-radius: var(--pm-radius-card);
+  background: #fff;
+  color: rgba(0, 0, 0, 0.88);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.pm-approve-btn:hover {
+  border-color: var(--pm-primary);
+  color: var(--pm-primary);
+}
+
+.pm-approve-btn-primary {
+  border-color: var(--pm-primary);
+  background: var(--pm-primary);
+  color: #fff;
+}
+
+.pm-approve-btn-primary:hover {
+  border-color: var(--pm-primary-hover);
+  background: var(--pm-primary-hover);
+  color: #fff;
+}
+
+/* ── 工具卡展开体（CommandCard）─────────────────────────────────────── */
+
+/* background #1e1e1e / radius 8 / padding 12 / margin '8px 0 4px' /
+   mono 13px / lineHeight 1.5 */
+.pm-cmd {
+  background: var(--pm-card-bg);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 8px 0 4px;
+  font-family: var(--pm-mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 标题行：gap 8 / marginBottom 8 / color #e0e0e0 */
+.pm-cmd-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--pm-card-fg);
+}
+
+.pm-cmd-head-icon {
+  display: inline-flex;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.pm-cmd-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* 段落标签：「输入」/「输出」 */
+.pm-cmd-label {
+  color: var(--pm-card-label);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5;
+  margin-bottom: 4px;
+  user-select: none;
+}
+
+/* 命令块：background #252526 / border 1px solid #333 / radius 4 /
+   padding '8px 10px' / color #89d185 / marginBottom 8 */
+.pm-cmd-line {
+  color: var(--pm-card-cmd);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-bottom: 8px;
+  background: var(--pm-card-panel);
+  border: 1px solid var(--pm-card-border);
+  border-radius: var(--pm-radius-code);
+  padding: 8px 10px;
+}
+
+.pm-cmd-prompt {
+  color: var(--pm-card-prompt);
+  user-select: none;
+}
+
+/* 输出块：同底色 / color #d4d4d4 / 12px / maxHeight 300 */
+.pm-cmd-out {
+  color: var(--pm-card-out);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--pm-card-panel);
+  border: 1px solid var(--pm-card-border);
+  padding: 8px;
+  border-radius: var(--pm-radius-code);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+/* 参数 JSON（非 exec 工具在流式阶段展示）：同底色 / 12px / maxHeight 200 */
+.pm-cmd-params {
+  color: var(--pm-card-out);
+  font-size: 12px;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  background: var(--pm-card-panel);
+  border: 1px solid var(--pm-card-border);
+  border-radius: var(--pm-radius-code);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* 结语行：已完成 ✔ #4ec9b0 / 失败 ✘ #f44747 */
+.pm-cmd-note {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.pm-cmd-note-ok {
+  color: var(--pm-ok);
+}
+
+.pm-cmd-note-err {
+  color: var(--pm-err);
+}
+
+/* 审批按钮行（CommandCard 的 antd Space + small 按钮）：
+   跳过 = 幽灵按钮（#e0e0e0 字 / #555 边 / 透明底），运行 = primary #1677ff */
+.pm-cmd-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pm-cmd-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #555;
+  border-radius: var(--pm-radius-code);
+  background: transparent;
+  color: var(--pm-card-fg);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.pm-cmd-btn:hover {
+  border-color: #888;
+}
+
+.pm-cmd-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pm-cmd-btn-primary {
+  border-color: var(--pm-primary);
+  background: var(--pm-primary);
+  color: #fff;
+}
+
+.pm-cmd-btn-primary:hover {
+  border-color: var(--pm-primary-hover);
+  background: var(--pm-primary-hover);
+}
+
+/* ── ask_user（CommandCard 的 AskUserChoices）────────────────────────── */
+
+/* ask_user 在桌面端用浅色卡（cardStyle + background #f5f5f5），不是终端黑卡 */
+.pm-ask {
+  margin: 8px 0 4px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f5f5f5;
+  color: #000;
+  font-size: var(--pm-fs);
+  line-height: var(--pm-lh);
+}
+
+.pm-ask-prompt {
+  margin-bottom: 10px;
+}
+
+.pm-ask-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+/* 选项：antd size="small" 的 default 按钮（白底 / #d9d9d9 边）；
+   多选选中态取 Tag.CheckableTag 的 #1677ff 实心（与桌面一致） */
+.pm-chip-choice {
+  padding: 4px 16px;
+  border: 1px solid #d9d9d9;
+  border-radius: var(--pm-radius-code);
+  background: #fff;
+  color: #000;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.pm-chip-choice:hover {
+  border-color: var(--pm-primary);
+  color: var(--pm-primary);
+}
+
+.pm-chip-choice-on,
+.pm-chip-choice-on:hover {
+  border-color: var(--pm-primary);
+  background: var(--pm-primary);
+  color: #fff;
+}
+
+/* 自定义回答：antd Input size="small" + 发送按钮 */
+.pm-ask-custom {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pm-ask-input {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #d9d9d9;
+  border-radius: var(--pm-radius-code);
+  background: #fff;
+  color: rgba(0, 0, 0, 0.85);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.pm-ask-input:focus {
+  border-color: var(--pm-primary);
+  box-shadow: 0 0 0 2px rgba(5, 145, 255, 0.1); /* antd controlOutline */
+}
+
+.pm-ask-custom .pm-cmd-btn {
+  border-color: #d9d9d9;
+  background: #fff;
+  color: rgba(0, 0, 0, 0.85);
+}
+
+.pm-ask-note {
+  display: flex;
+  align-items: center;
+  color: var(--pm-muted);
+  font-size: 13px;
+}
+
+.pm-ask-note-err {
+  color: var(--pm-err);
+  font-size: 12px;
+}
+
+/* ── 错误卡（ErrorDisplay）────────────────────────────────────────────── */
+
+/* margin '16px 0' / padding 12 / #fff2f0 / border 1px solid #ffccc7 /
+   radius 6 / #cf1322 / 13px */
+.pm-error {
+  margin: 16px 0;
+  padding: 12px;
+  background: var(--pm-error-bg);
+  border: 1px solid var(--pm-error-border);
+  border-radius: var(--pm-radius-card);
+  color: var(--pm-error-text);
+  font-size: 13px;
+}
+
+.pm-error-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.pm-error-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pm-error-btn {
+  padding: 4px 12px;
+  border: none;
+  border-radius: var(--pm-radius-code);
+  background: var(--pm-error-text);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ── 输入卡（chat/Composer 的 frosted glass + antd Sender）────────────── */
+
+.pm-composer {
+  flex: none;
+  padding: 12px var(--pm-inset) 16px;
+}
+
+/* .ant-sender 覆盖值：radius 20 / background rgba(255,255,255,.85) /
+   backdrop-filter blur(12px) / border 1px solid rgba(0,0,0,.08) /
+   box-shadow 0 5px 20px 2px rgb(80 100 200 / 20%) */
+.pm-input-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%);
+}
+
+/* antd Sender 的 textarea：fontSize 14 / 无边框 / 透明底 / 自适应高度 */
+.pm-input {
+  width: 100%;
+  max-height: 160px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.85);
+  font-family: inherit;
+  font-size: var(--pm-fs);
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+}
+
+.pm-input::placeholder {
+  color: rgba(0, 0, 0, 0.25); /* antd colorTextPlaceholder */
+}
+
+/* 底部行：左侧授权按钮，右侧发送按钮（antd 的 footer 就长这样） */
+.pm-input-footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.pm-input-spacer {
+  margin-left: auto;
+}
+
+/* 授权 / 模型两个按钮：antd size="small" 的 text 按钮（controlHeightSM=24、
+   paddingInlineSM=7、borderRadiusSM=4、fontSize=12），文案色取 InputArea 给
+   Button 的 inline color:'#666' —— 它压过 antd 的 text-color-hover，所以 hover
+   只换底色不换字色。hover 底色 colorFillTertiary=rgba(0,0,0,0.04)，
+   按下态 colorFill=rgba(0,0,0,0.15)（Button variant.js 的 text 变体）。 */
+.pm-approval,
+.pm-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px; /* antd iconGap = token.marginXS */
+  height: 24px;
+  padding: 0 7px;
+  border: none;
+  border-radius: var(--pm-radius-code);
+  background: transparent;
+  color: #666;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.pm-approval:hover,
+.pm-model:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.pm-approval-active,
+.pm-model-active {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.pm-approval:active,
+.pm-model:active {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.pm-approval-icon {
+  display: inline-flex;
+  font-size: 14px;
+}
+
+/* 下拉箭头：InputArea 授权按钮给的是 fontSize:10 / color:#bbb / marginLeft:4 ——
+   antd 的 Button 根是 inline-flex + gap:iconGap，所以那 4px 是加在 gap 之上的
+   （文案到箭头 12px）；模型按钮不传样式，箭头继承按钮的 12px / #666，间距只有
+   gap 的 8px。两者分开写。 */
+.pm-approval-caret {
+  display: inline-flex;
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--pm-faint);
+}
+
+.pm-model-label {
+  max-width: 160px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pm-model-caret {
+  display: inline-flex;
+}
+
+/* 全部允许 的图标与文案：#d46b08（InputArea 的 UNRESTRICTED_COLOR），与桌面端
+   同一套。只写在容器上，图标与文案各自由后代选择器染色 —— 这样既压得过
+   .pm-approval-item-icon 自带的灰，也不受 .pm-approval:hover 影响（那条改的是
+   容器自身的 color，容器自身不需要变）。 */
+.pm-approval-auto .pm-approval-icon,
+.pm-approval-auto .pm-approval-label,
+.pm-approval-auto .pm-approval-item-icon,
+.pm-approval-auto .pm-approval-item-label {
+  color: var(--pm-warn);
+}
+
+/* 授权下拉：定位在按钮上方（面板贴底，向下会被裁掉） */
+.pm-approval-menu {
+  position: absolute;
+  bottom: 34px;
+  left: 0;
+  min-width: 168px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 3px 6px -4px rgba(0, 0, 0, 0.12),
+    0 9px 28px 8px rgba(0, 0, 0, 0.05); /* antd boxShadowSecondary */
+  z-index: 10;
+}
+
+/* 模型下拉：与授权下拉同一套容器指标，但贴右边 —— 它在 trailing 槽的最右侧，
+   菜单向右展开会顶出 380px 的面板，所以 right:0 让它往左长（授权在左槽，故 left:0）。 */
+.pm-model-menu {
+  position: absolute;
+  bottom: 34px;
+  right: 0;
+  min-width: 168px;
+  max-width: 296px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 3px 6px -4px rgba(0, 0, 0, 0.12),
+    0 9px 28px 8px rgba(0, 0, 0, 0.05); /* antd boxShadowSecondary */
+  z-index: 10;
+}
+
+/* 菜单项：antd Dropdown 菜单项的内边距（paddingBlock = (32 - 14×1.5715) / 2 = 5px，
+   横向按 380px 面板收窄到 8px，两个菜单一致 —— 同一个页脚里两套内边距会更扎眼）。 */
+.pm-approval-item,
+.pm-model-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--pm-radius-code);
+  background: transparent;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pm-approval-item {
+  gap: 8px;
+}
+
+.pm-model-item {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pm-approval-item:hover,
+.pm-model-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.pm-approval-item-active {
+  background: #e6f4ff; /* antd controlItemBgActive */
+  font-weight: 600;
+}
+
+.pm-approval-item-icon {
+  display: inline-flex;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+/* 发送按钮：antd Button size="small" type="primary" shape="circle"（24px） */
+.pm-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--pm-primary);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.pm-send:hover:not(:disabled) {
+  background: var(--pm-primary-hover);
+}
+
+.pm-send:disabled {
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.25);
+  cursor: default;
+}
+
+/* 运行中：antd 的 primary 按钮 + LoadingOutlined 转圈，仍是主题蓝 */
+.pm-send-busy {
+  background: var(--pm-primary);
+  color: #fff;
+}
+
+.pm-approval-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+/* 模型按钮的外壳：与授权按钮同一套定位（下拉相对它绝对定位）。 */
+.pm-model-anchor {
+  position: relative;
+  display: inline-flex;
+}

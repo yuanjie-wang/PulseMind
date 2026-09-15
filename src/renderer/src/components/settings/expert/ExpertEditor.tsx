@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { Button, Form, Modal } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, UserOutlined, SaveOutlined, RobotOutlined, FormOutlined } from '@ant-design/icons'
 import type { ExpertProfile } from '../../../../../shared/types/expert'
-import type { ExpertFormDraft, KnowledgeOption } from '../../../agent/one-shot-agent'
+import type { ExpertFormDraft } from '../../../agent/one-shot-agent'
 import { pickDraftFields } from '../../../agent/one-shot-agent'
 import { useTranslation } from '../../../i18n/useTranslation'
+import { EDITOR_CHAT_CARD, EDITOR_COLUMN_HEADER as COLUMN_HEADER, EDITOR_LIST_WIDTH, EDITOR_SURFACE } from '../../layout/editor-layout'
 import ExpertFormFields, { type ExpertRefOption } from './ExpertFormFields'
 import ExpertChatPanel from './ExpertChatPanel'
 
@@ -16,20 +17,6 @@ const BLANK_DRAFT: ExpertFormDraft = {
   methodology: '',
   outputSpec: '',
   constraints: '',
-  knowledgeFileIds: [],
-  skillNames: [],
-  mcpServerIds: [],
-}
-
-const COLUMN_HEADER: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: '#999',
-  padding: '0 0 8px 2px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 6,
 }
 
 export interface ExpertEditorProps {
@@ -40,11 +27,11 @@ export interface ExpertEditorProps {
   /** Leave the editor and go back to the card grid. */
   onExit: () => void
   onSaved: (profiles: ExpertProfile[], id: string) => void
-  onDeleted: (profiles: ExpertProfile[]) => void
-  knowledgeFiles: KnowledgeOption[]
-  /** 常用技能候选（名称即标识）。 */
+  /** A profile was deleted: the fresh list, plus which id went away. */
+  onDeleted: (profiles: ExpertProfile[], deletedId: string) => void
+  /** 可用技能候选（名称即标识）。 */
   skillOptions: ExpertRefOption[]
-  /** 常用连接器候选（MCP 服务 id）。 */
+  /** 可用连接器候选（MCP 服务 id）。 */
   connectorOptions: ExpertRefOption[]
   locale: string
 }
@@ -61,7 +48,6 @@ export default function ExpertEditor({
   onExit,
   onSaved,
   onDeleted,
-  knowledgeFiles,
   skillOptions,
   connectorOptions,
   locale,
@@ -84,7 +70,6 @@ export default function ExpertEditor({
         methodology: editing.methodology,
         outputSpec: editing.outputSpec,
         constraints: editing.constraints,
-        knowledgeFileIds: editing.knowledgeFileIds || [],
         skillNames: editing.skillNames || [],
         mcpServerIds: editing.mcpServerIds || [],
       })
@@ -141,7 +126,6 @@ export default function ExpertEditor({
         methodology: values.methodology || undefined,
         outputSpec: values.outputSpec || undefined,
         constraints: values.constraints || undefined,
-        knowledgeFileIds: values.knowledgeFileIds || [],
         skillNames: values.skillNames || [],
         mcpServerIds: values.mcpServerIds || [],
         enabled: editing?.enabled ?? true,
@@ -159,24 +143,27 @@ export default function ExpertEditor({
     }
   }
 
-  const handleDelete = (): void => {
-    if (!editing) return
+  /** Deleting is destructive and irreversible — always ask first. */
+  const deleteExpert = (profile: ExpertProfile): void => {
     Modal.confirm({
       title: t('expertCenter.deleteConfirmTitle'),
-      content: t('expertCenter.deleteConfirmContent', { name: editing.name }),
+      content: t('expertCenter.deleteConfirmContent', { name: profile.name }),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
       onOk: async () => {
-        const updated = await window.electronAPI.expertDelete(editing.id)
-        setDirty(false)
-        onDeleted(updated)
+        const updated = await window.electronAPI.expertDelete(profile.id)
+        if (profile.id === editingId) setDirty(false)
+        onDeleted(updated, profile.id)
       },
     })
   }
 
   return (
-    <div style={{ display: 'flex', height: '100%', minHeight: 0 }}>
+    <div style={{ display: 'flex', height: '100%', minHeight: 0, gap: 12 }}>
       {/* ── Left: expert list (also the switcher) ── */}
-      <div style={{ width: 216, flexShrink: 0, display: 'flex', flexDirection: 'column', minHeight: 0, paddingRight: 12, borderRight: '1px solid #f0f0f0' }}>
-        <div style={COLUMN_HEADER}>
+      <div style={{ width: EDITOR_LIST_WIDTH, flexShrink: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <div style={{ ...COLUMN_HEADER, paddingTop: 12 }}>
           {/* Leaving the editor belongs with the list — it is the list column's
               own "back" affordance, not a form action. */}
           <Button
@@ -190,7 +177,7 @@ export default function ExpertEditor({
           </Button>
           <Button size="small" type="text" icon={<PlusOutlined />} title={t('expertCenter.newExpert')} onClick={() => handleSelect(null)} />
         </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div className="auto-hide-scroll" style={{ flex: 1, overflowY: 'auto' }}>
           {/* No 新建专家 row here: the header's + is the single "add" affordance,
               and a row with a name-like label reads as an expert. */}
           {profiles.map((p) => (
@@ -200,59 +187,68 @@ export default function ExpertEditor({
               label={p.name}
               muted={p.enabled === false}
               onClick={() => handleSelect(p.id)}
+              onDelete={() => deleteExpert(p)}
+              deleteTitle={t('expertCenter.deleteRow', { name: p.name })}
             />
           ))}
         </div>
       </div>
 
-      {/* ── Middle: the form ── */}
-      <div style={{ flex: 1, minWidth: 320, display: 'flex', flexDirection: 'column', minHeight: 0, padding: '0 16px' }}>
-        <div style={COLUMN_HEADER}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <FormOutlined />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {editing ? t('expertCenter.editTitle') : t('expertCenter.createTitle')}
+      {/* ── Form + chat on one gray surface ── */}
+      {/* The chat is an accessory of the form, not a third peer column: the two
+          share one rounded gray surface, and the chat sits inside it as a white
+          rounded card. */}
+      <div style={EDITOR_SURFACE}>
+        {/* ── Middle: the form ── */}
+        <div style={{ flex: 1, minWidth: 320, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <div style={COLUMN_HEADER}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+              <FormOutlined />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {editing ? t('expertCenter.editTitle') : t('expertCenter.createTitle')}
+              </span>
+              {dirty && <span style={{ color: '#faad14', fontWeight: 400, flexShrink: 0 }}>· {t('expertCenter.unsaved')}</span>}
             </span>
-            {dirty && <span style={{ color: '#faad14', fontWeight: 400, flexShrink: 0 }}>· {t('expertCenter.unsaved')}</span>}
-          </span>
-          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-            {editing && <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={handleDelete} />}
-            <Button
-              size="small"
-              type="primary"
-              icon={<SaveOutlined />}
-              loading={saving}
-              onClick={() => void handleSave()}
-              style={{ background: '#000', borderColor: '#000' }}
-            >
-              {t('common.save')}
-            </Button>
-          </span>
+            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+              {/* Deleting lives on the list row only — the form column is for
+                  editing, and a trash next to 保存 invites misclicks. */}
+              <Button
+                size="small"
+                type="primary"
+                icon={<SaveOutlined />}
+                loading={saving}
+                onClick={() => void handleSave()}
+                style={{ background: '#000', borderColor: '#000' }}
+              >
+                {t('common.save')}
+              </Button>
+            </span>
+          </div>
+          {/* paddingRight keeps the (auto-hiding) gutter clear of the form edge. */}
+          <div className="auto-hide-scroll" style={{ flex: 1, overflowY: 'auto', paddingRight: 8 }}>
+            <ExpertFormFields
+              form={form}
+              isNew={!editing}
+              skillOptions={skillOptions}
+              connectorOptions={connectorOptions}
+              onValuesChange={() => setDirty(true)}
+            />
+          </div>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          <ExpertFormFields
-            form={form}
-            isNew={!editing}
-            knowledgeFiles={knowledgeFiles}
-            skillOptions={skillOptions}
-            connectorOptions={connectorOptions}
-            onValuesChange={() => setDirty(true)}
-          />
-        </div>
-      </div>
 
-      {/* ── Right: conversational form filler ── */}
-      {/* Wider than a form column: the transcript is the chat's own message
-          list, whose bubbles are capped at 70% of the row. Shrinks before the
-          form column's min-width does when the window is narrow. */}
-      <div style={{ flex: '0 1 460px', minWidth: 300, display: 'flex', flexDirection: 'column', minHeight: 0, borderLeft: '1px solid #f0f0f0', paddingLeft: 16 }}>
-        <div style={COLUMN_HEADER}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <RobotOutlined />
-            {t('expertCenter.chatTitle')}
-          </span>
+        {/* ── Right: conversational form filler, as a white card ── */}
+        {/* Wider than a form column: the transcript is the chat's own message
+            list, whose bubbles are capped at 70% of the row. Shrinks before the
+            form column's min-width does when the window is narrow. */}
+        <div style={EDITOR_CHAT_CARD}>
+          <div style={COLUMN_HEADER}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <RobotOutlined />
+              {t('expertCenter.chatTitle')}
+            </span>
+          </div>
+          <ExpertChatPanel getDraft={getDraft} onApplyDraft={applyDraft} locale={locale} />
         </div>
-        <ExpertChatPanel getDraft={getDraft} onApplyDraft={applyDraft} knowledgeFiles={knowledgeFiles} locale={locale} />
       </div>
     </div>
   )
@@ -266,18 +262,25 @@ function uniqueExpertId(base: string, profiles: ExpertProfile[]): string {
   return `${base}-${n}`
 }
 
-/** One row of the left column. */
+/** One row of the left column. The delete affordance only shows on hover or
+ *  while the row is selected — a permanent trash icon on every row would read
+ *  as noise, and its click must not also select the row. */
 function ListRow({
   active,
   label,
   muted,
   onClick,
+  onDelete,
+  deleteTitle,
 }: {
   active: boolean
   label: string
   muted?: boolean
   onClick: () => void
+  onDelete?: () => void
+  deleteTitle?: string
 }): React.ReactElement {
+  const { t } = useTranslation()
   const [hover, setHover] = useState(false)
   return (
     <div
@@ -301,7 +304,21 @@ function ListRow({
       <span style={{ width: 16, textAlign: 'center', flexShrink: 0, color: muted ? '#ccc' : '#888' }}>
         <UserOutlined />
       </span>
-      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+      {onDelete && (
+        <Button
+          size="small"
+          type="text"
+          danger
+          icon={<DeleteOutlined />}
+          title={deleteTitle ?? t('common.delete')}
+          style={{ opacity: hover || active ? 1 : 0, pointerEvents: hover || active ? 'auto' : 'none', flexShrink: 0 }}
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+        />
+      )}
     </div>
   )
 }

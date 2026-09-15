@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { composeExpertInstructions, parseExpertMention } from '../src/shared/expert-context'
-import { getExpertKnowledgeScope } from '../src/renderer/src/agent/executors/domain-tools'
-import type { ToolExecContext } from '../src/renderer/src/agent/executors/context'
 import type { ExpertProfile } from '../src/shared/types/expert'
 
 // ── Test doubles ──
@@ -12,11 +10,6 @@ const expert = (patch: Partial<ExpertProfile> = {}): ExpertProfile => ({
   basePrompt: '资深写作顾问',
   ...patch,
 })
-
-const knowledge = [
-  { id: 'k1', title: '风格指南', filePath: 'raw/style-guide.md' },
-  { id: 'k2', title: '样文集', filePath: 'raw/samples.md' },
-]
 
 // ── composeExpertInstructions ──
 
@@ -54,23 +47,11 @@ describe('composeExpertInstructions', () => {
     expect(out).not.toContain('## Output Specification')
     expect(out).not.toContain('## Constraints')
   })
-
-  it('appends the bound knowledge index when files are present', () => {
-    const out = composeExpertInstructions({ name: 'E', basePrompt: 'p' }, knowledge)
-    expect(out).toContain('## Bound Knowledge')
-    expect(out).toContain('- 风格指南 (raw/style-guide.md)')
-    expect(out).toContain('- 样文集 (raw/samples.md)')
-    expect(out).toContain('knowledge_search')
-  })
-
-  it('omits the knowledge section without files', () => {
-    expect(composeExpertInstructions({ name: 'E', basePrompt: 'p' })).not.toContain('## Bound Knowledge')
-  })
 })
 
-// ── 引用关系（常用技能 / 连接器）：注入指令的倾向提示，不是权限白名单 ──
+// ── 可用能力（技能 / 连接器）：白名单，会话侧同步收敛工具集合 ──
 
-describe('composeExpertInstructions references', () => {
+describe('composeExpertInstructions allowed capability', () => {
   const catalogs = {
     skills: [
       { id: 'code-review', name: 'code-review', summary: '按严重度分级审查代码' },
@@ -79,24 +60,23 @@ describe('composeExpertInstructions references', () => {
     connectors: [{ id: 'mcp-github', name: 'GitHub', summary: '仓库与 PR' }],
   }
 
-  it('lists preferred skills and connectors with their catalog description', () => {
+  it('lists the allowed skills and connectors with their catalog description', () => {
     const out = composeExpertInstructions(
       { name: 'E', basePrompt: 'p', skillNames: ['code-review'], mcpServerIds: ['mcp-github'] },
-      [],
       catalogs
     )
-    expect(out).toContain('## Preferred Skills')
+    expect(out).toContain('## Allowed Skills')
     expect(out).toContain('- code-review — 按严重度分级审查代码')
-    expect(out).toContain('## Preferred Connectors')
+    expect(out).toContain('## Allowed Connectors')
     expect(out).toContain('- GitHub — 仓库与 PR')
-    // 措辞必须点明「只是倾向」，否则会被读成权限白名单。
-    expect(out).toContain('preference, not a restriction')
+    // 措辞必须点明「只有这些」——写成倾向提示会与运行时收敛矛盾。
+    expect(out).toContain('the ONLY skills available')
+    expect(out).toContain('the ONLY connectors')
   })
 
   it('omits a referenced skill that is no longer in the catalog', () => {
     const out = composeExpertInstructions(
       { name: 'E', basePrompt: 'p', skillNames: ['code-review', 'uninstalled'] },
-      [],
       catalogs
     )
     expect(out).toContain('code-review')
@@ -108,10 +88,20 @@ describe('composeExpertInstructions references', () => {
     expect(out).toContain('- code-review')
   })
 
-  it('renders no reference section for an expert that references nothing', () => {
-    const out = composeExpertInstructions({ name: 'E', basePrompt: 'p' }, [], catalogs)
-    expect(out).not.toContain('## Preferred Skills')
-    expect(out).not.toContain('## Preferred Connectors')
+  it('states outright that nothing is available for empty whitelists', () => {
+    // 空白名单 = 一个都不许用（不是「不限制」），必须说清楚，否则模型会
+    // 以为只是没列出来而去调用 pick_skill / pick_tool。
+    const out = composeExpertInstructions({ name: 'E', basePrompt: 'p', skillNames: [], mcpServerIds: [] }, catalogs)
+    expect(out).toContain('## Allowed Skills')
+    expect(out).toContain('No skills are available')
+    expect(out).toContain('## Allowed Connectors')
+    expect(out).toContain('No connectors (MCP servers) are available')
+  })
+
+  it('renders no capability section for an expert whose whitelists are absent', () => {
+    const out = composeExpertInstructions({ name: 'E', basePrompt: 'p' }, catalogs)
+    expect(out).not.toContain('## Allowed Skills')
+    expect(out).not.toContain('## Allowed Connectors')
   })
 })
 
@@ -154,40 +144,5 @@ describe('parseExpertMention', () => {
     const r = parseExpertMention('邮箱是 a@b.com', experts)
     expect(r.expert).toBeNull()
     expect(r.text).toBe('邮箱是 a@b.com')
-  })
-})
-
-// ── getExpertKnowledgeScope（委托运行时的知识收敛与召唤运行时对齐）──
-
-describe('getExpertKnowledgeScope', () => {
-  const files = [
-    { id: 'k1', title: '风格指南', filePath: 'raw/style-guide.md', wikiPages: ['wiki/style.md'] },
-  ]
-  const ctx = (opts: Record<string, unknown>): ToolExecContext => ({ opts } as unknown as ToolExecContext)
-
-  it('confines to the @-summoned expert pack when one is bound', () => {
-    const scope = getExpertKnowledgeScope(ctx({ expert: { knowledgeFiles: files } }))
-    expect(scope?.ids).toEqual(new Set(['k1']))
-    expect(scope?.rawPaths).toEqual(new Set(['raw/style-guide.md']))
-    expect(scope?.wikiPaths).toEqual(new Set(['wiki/style.md']))
-  })
-
-  it('falls back to the delegated knowledgeScope so spawn_agent enforces the same convergence', () => {
-    const scope = getExpertKnowledgeScope(ctx({ knowledgeScope: files }))
-    expect(scope?.ids).toEqual(new Set(['k1']))
-    expect(scope?.wikiPaths).toEqual(new Set(['wiki/style.md']))
-  })
-
-  it('prefers the summoned pack when both are present', () => {
-    const scope = getExpertKnowledgeScope(ctx({
-      expert: { knowledgeFiles: files },
-      knowledgeScope: [{ id: 'other', title: 'x', filePath: 'raw/other.md', wikiPages: [] }],
-    }))
-    expect(scope?.ids).toEqual(new Set(['k1']))
-  })
-
-  it('returns null without any bound files', () => {
-    expect(getExpertKnowledgeScope(ctx({}))).toBeNull()
-    expect(getExpertKnowledgeScope(ctx({ knowledgeScope: [] }))).toBeNull()
   })
 })

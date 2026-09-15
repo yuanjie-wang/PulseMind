@@ -13,6 +13,7 @@ import type {
   ApiStreamRetryEvent,
   PlatformInfo,
   DataPaths,
+  ServiceStatus,
 } from '../shared/types/electron-bridge'
 import type { ToolPreferences } from '../shared/types/tool-types'
 import type { SkillPreferences, SkillDefinition } from '../shared/types/skill-types'
@@ -412,7 +413,7 @@ const electronAPI = {
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ENGINE_CALL, sessionId, method, args ?? []),
   agentSessionRefreshOptions: (sessionId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_REFRESH_OPTIONS, sessionId),
-  serviceGetStatus: (): Promise<{ enabled: boolean; port: number; running: boolean; token: string }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_GET_STATUS),
+  serviceGetStatus: (): Promise<ServiceStatus> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_GET_STATUS),
   serviceSetEnabled: (enabled: boolean): Promise<{ running: boolean; port: number | null }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_SET_ENABLED, enabled),
   serviceSetPort: (port: number): Promise<{ running: boolean; port: number | null }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_SET_PORT, port),
   serviceResetToken: (): Promise<{ token: string }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_RESET_TOKEN),

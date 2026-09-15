@@ -167,11 +167,13 @@ export interface SpawnSubAgentConfig {
   initialMessages: import('../types/agent').AgentMessage[]
   /** Conversation-list title for the sub-agent session (expert name + task). */
   title?: string
-  /** Knowledge files of the DELEGATED expert pack, enforced by
-   *  getExpertKnowledgeScope inside the spawned engine. The full pack is never
-   *  inherited — its instructions are baked into systemPrompt — so the scope
-   *  travels separately to keep both runtimes' convergence behavior equal. */
-  knowledgeScope?: import('../../../shared/types/expert').ExpertRuntimeContext['knowledgeFiles']
+  /** 可用技能 / 可用连接器白名单 of the DELEGATED expert pack. The full pack is
+   *  never inherited — its instructions are baked into systemPrompt — so the
+   *  whitelists travel separately and the spawned engine enforces them exactly
+   *  like a @-summoned expert does. Empty array = none allowed; undefined (no
+   *  expert pack, i.e. a general sub-agent) = no restriction. */
+  allowedSkills?: string[]
+  allowedMcpServers?: string[]
   maxTokens?: number
   maxLoopIterations?: number
   onProgress?: (summary: string) => void

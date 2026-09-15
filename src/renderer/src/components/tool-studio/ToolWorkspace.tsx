@@ -5,7 +5,7 @@
 // session config differs (builder prompt, narrow toolset, tool dir, unattended).
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Tooltip } from 'antd'
+import { Button, theme, Tooltip } from 'antd'
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -15,6 +15,7 @@ import { studioConversationId } from '../../tool-studio/tool-prompt'
 import { TranscriptView } from '../chat/TranscriptView'
 import { InputArea } from '../chat/InputArea'
 import { ToolNameEditor } from './ToolNameEditor'
+import { PresetBadge, ToolAvatar } from './toolVisual'
 import type { UserTool } from '../../../../shared/types/user-tool'
 
 export interface ToolWorkspaceProps {
@@ -33,6 +34,7 @@ export function ToolWorkspace({ toolId }: ToolWorkspaceProps): React.ReactElemen
 
 function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
   const { settings, switchProfile } = useSettings()
+  const { token } = theme.useToken()
   const navigate = useNavigationStore((s) => s.navigate)
   const [tool, setTool] = useState<UserTool | null>(null)
   const [toolsDir, setToolsDir] = useState<string | null>(null)
@@ -78,13 +80,18 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
   }, [convId])
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fff' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderBottom: '1px solid #f0f0f0' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: token.colorBgContainer }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
         <Button type="text" icon={<ArrowLeftOutlined />} onClick={goBack} />
         {tool
-          ? <ToolNameEditor tool={tool} onRenamed={setTool} />
+          ? (
+            <>
+              <ToolAvatar tool={tool} size={22} />
+              <ToolNameEditor tool={tool} onRenamed={setTool} nameSuffix={tool.preset ? <PresetBadge /> : undefined} />
+            </>
+          )
           : <span style={{ fontWeight: 600 }}>工具工作室</span>}
-        <span style={{ fontSize: 12, color: '#999' }}>与 Agent 对话，边看预览边改</span>
+        <span style={{ fontSize: 12, color: token.colorTextTertiary }}>与 Agent 对话，边看预览边改</span>
         <span style={{ marginInlineStart: 'auto' }} />
         {html && (
           <Tooltip title="刷新预览">
@@ -95,7 +102,7 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Left: live preview */}
-        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', background: '#fafafa' }}>
+        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', background: token.colorFillQuaternary }}>
           {html ? (
             <iframe
               key={session.htmlVersion}

@@ -17,9 +17,10 @@ import {
   PlayCircleOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { PromptChip } from '../chat/PromptChip'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { useComposerDraftStore } from '../../stores/composerDraftStore'
-import { describeRelativeTimeText } from '../../utils/relative-time'
+import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import { describeCron } from '../../utils/schedule-text'
 import {
   isRunOverdue,
@@ -31,8 +32,6 @@ import {
 import type { Routine, RoutineRun, RoutineRunStatus } from '../../../../shared/types/routine'
 import type { KnowledgeFile } from '../../../../shared/types/knowledge'
 
-/** Relative times only move at minute granularity, so that is the cheapest honest clock. */
-const CLOCK_TICK_MS = 60_000
 /** Recent runs to inspect — only the newest matters, the rest is slack for filtering. */
 const RUN_FETCH_LIMIT = 5
 
@@ -252,19 +251,7 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'center' }}>
         <span style={{ fontSize: 12, color: '#999' }}>{t('welcome.tryThese')}</span>
         {starters.map((starter) => (
-          <span
-            key={starter}
-            onClick={() => setDraft(starter)}
-            style={{
-              padding: '6px 16px', borderRadius: 999, border: '1px solid #e5e5e7',
-              fontSize: 13, color: '#555', cursor: 'pointer', userSelect: 'none',
-              transition: 'border-color 0.15s, color 0.15s',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#000'; e.currentTarget.style.color = '#000' }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#e5e5e7'; e.currentTarget.style.color = '#555' }}
-          >
-            {starter}
-          </span>
+          <PromptChip key={starter} label={starter} onClick={() => setDraft(starter)} />
         ))}
       </div>
     </div>

@@ -33,6 +33,9 @@ Three-layer Electron app (sandbox + contextIsolation), with shared types bridgin
 | **Main** | `src/main/index.ts` | `main` in `package.json` | Node.js: BrowserWindow, IPC handlers (16 handlers in `src/main/ipc/`), SQLite (`database.ts`), file ops, MCP server manager, knowledge import |
 | **Preload** | `src/preload/index.ts` | `contextBridge` | Typed `window.electronAPI` bridge, IPC channel types in `types/electron.d.ts` |
 | **Renderer** | `src/renderer/src/` | Vite root `src/renderer/` | React 18, sandboxed browser context |
+| **Extension** | `src/extension/` | `manifest.json` → `out/extension/` (`npm run build:extension`) | MV3 companion: the service worker is a JSON-RPC client of the main process' loopback service, the content script is an in-page panel (Shadow Root) plus the `page_*` tools |
+
+The extension is not a fourth Electron layer: it connects over `ws://127.0.0.1:8765` with a token and the main process drives its agent sessions (`main/agent/ws-server.ts`, `main/agent/session-manager.ts`). Its tools act on the user's own tab, so the desktop side forwards them back over reverse RPC — `ToolExecutor.execPageTool` → `hostedToolCall` → `background/tool-router.ts` → content script. Routing rules for the `page_*` family are in AGENTS.md.
 
 ### Build Pipeline
 
@@ -431,6 +434,8 @@ ESLint applies `no-require-imports: off` for main/preload (CommonJS). Renderer g
 | `preload/index.ts` | ~330 | Full window.electronAPI typing bridge |
 | `main/ipc/api-proxy.handler.ts` | ~130 | SSE streaming proxy with abort |
 | `main/mcp/MCPServerManager.ts` | ~170 | MCP server lifecycle |
+| `extension/content/page-tree.ts` | ~630 | Page DOM walk: numbering, occlusion, viewport scoping, shadow-DOM piercing, node cap |
+| `extension/content/page-tools.ts` | ~230 | `page_*` executors (click sequence, native-setter input, select, wait, JS eval) |
 
 ## Key Dependencies
 

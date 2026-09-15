@@ -17,6 +17,7 @@ import type { SkillState } from '../../skills/types'
 import type { ConversationListItem } from '../../types/conversation'
 import ProjectView from '../project/ProjectView'
 import RoutineCenter from '../routine/RoutineCenter'
+import RoutineEditorPage from '../routine/RoutineEditorPage'
 import { SearchView } from '../search/SearchView'
 import SettingsPage from '../settings/SettingsPage'
 import AboutPage from '../settings/AboutPage'
@@ -77,6 +78,9 @@ export function ViewHost({ knowledgeManager, memoryManager, skills, onToggleSkil
         />
       )
     case 'routines':
+      // routineEditing routes to the dedicated create/edit page (list · form ·
+      // assistant); without it the kind renders the card grid / run workspace.
+      if (view.routineEditing) return <RoutineEditorPage routineId={view.routineId} />
       return <RoutineCenter runHistoryOf={view.runHistoryOf} />
     case 'capability':
     case 'knowledge':

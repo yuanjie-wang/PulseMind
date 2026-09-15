@@ -17,7 +17,7 @@ import {
   PushpinOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
-import { describeRelativeTimeText } from '../../utils/relative-time'
+import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import type { ConversationListItem } from '../../types/conversation'
 
 /** Gutter reserved for the task-status light, so titles line up whether or not one is lit. */
@@ -26,8 +26,6 @@ const STATUS_GUTTER_WIDTH = 10
  *  never reflows when hover trades the time for the row menu. Sized for the
  *  pin plus the longest common relative time ("N分钟前"). */
 const ACTION_SLOT_WIDTH = 72
-/** Relative times only move at minute granularity, so that is the cheapest honest clock. */
-const CLOCK_TICK_MS = 60_000
 
 interface ConversationRowsProps {
   conversations: ConversationListItem[]

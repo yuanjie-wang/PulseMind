@@ -1,0 +1,226 @@
+/** Transcript: the panel's message stream, mirrored from the desktop chat.
+ *
+ * The desktop renders `TranscriptView` → `SegmentBlock` → `MessageGroup`
+ * (components/chat/*). The panel cannot import those (they depend on antd, the
+ * renderer stores and `window.electronAPI`); what it can do is reproduce their
+ * markup and classes, which is what this file and `MessageBlocks.tsx` do — the
+ * values live in ui/styles.css, one annotated entry per renderer rule.
+ *
+ * Two deliberate differences from the desktop:
+ *  - no execution-segment grouping: the chat folds a tool_use→tool_result cycle
+ *    of an execution into one collapsible band (ExecutionSegment); the panel
+ *    lists each tool card in message order, which is the same content without
+ *    the extra collapse.
+ *  - the action row is always the chat's `viewOnly` variant (copy / download /
+ *    耗时 / 点赞?) — like & favorite write message metadata, and a panel session
+ *    has no conversation row to write to.
+ *
+ * The panel also shows the two things the desktop shows inline because they are
+ * *held* on the client: a tool call waiting for approval, and an ask_user
+ * question. Both are answered from here over the extension's reverse RPC. */
+
+import { useCallback, useLayoutEffect, useRef } from 'react'
+import type { ContentBlock, ToolResultBlock, ToolUseBlock } from '../../shared/types/agent'
+import type { SessionState } from '../../shared/agent-session/mirror'
+import { ActionRow, CursorRow, ErrorCard, MarkdownBlock, ThinkingBlock, ToolBlock } from './MessageBlocks'
+
+type Message = SessionState['messages'][number]
+
+/** How close to the bottom still counts as "following the tail" (px). The panel
+ *  scrollport is ~450px tall, so this is the chat's 100px rule scaled down. */
+const NEAR_BOTTOM_PX = 80
+
+/** Tool calls whose tool_result is already in the transcript. Hydrated history
+ *  has tool_use statuses stripped on save, so a matching result is the only
+ *  proof a call finished (the desktop's rule, same reason). */
+function completedToolIds(message: Message): Set<string> {
+  const ids = new Set<string>()
+  for (const block of message.contentBlocks ?? []) {
+    if (block.type === 'tool_result') ids.add((block as ToolResultBlock).tool_use_id)
+  }
+  return ids
+}
+
+function hasDisplayable(msg: Message): boolean {
+  return (msg.contentBlocks ?? []).some(
+    (b) => b.type === 'text' || b.type === 'tool_use' || b.type === 'thinking' || b.type === 'redacted_thinking',
+  )
+}
+
+/** Handlers threaded down to each tool block.
+ *
+ *  `awaitingApproval` is the session's own status, not a per-block flag: a tool
+ *  call the engine is holding for approval and one still being generated both
+ *  carry `status === 'pending'` on the block, and the session status is the only
+ *  thing that tells them apart. */
+interface BlockHandlers {
+  awaitingApproval: boolean
+  onApprovalResponse: (toolUseId: string, approved: boolean) => void
+  onAnswer: (toolUseId: string, response: string) => void
+}
+
+function AssistantBlock({ block, completed, handlers }: {
+  block: ContentBlock
+  completed: Set<string>
+  handlers: BlockHandlers
+}): React.JSX.Element | null {
+  switch (block.type) {
+    case 'text':
+      return <MarkdownBlock text={block.text} />
+    case 'thinking':
+      return <ThinkingBlock block={block} />
+    case 'redacted_thinking':
+      // The chat's inline lock line (MessageGroup's redacted branch).
+      return (
+        <div className="pm-thinking">
+          <div className="pm-thinking-head">
+            <span className="pm-thinking-caret">🔒</span>
+            <span className="pm-thinking-title">Thinking redacted</span>
+          </div>
+        </div>
+      )
+    case 'tool_use': {
+      const tool = block as ToolUseBlock
+      return (
+        <ToolBlock
+          block={tool}
+          completedFromResult={completed.has(tool.id)}
+          // 'pending' + the session holding for approval = the user's turn.
+          awaiting={handlers.awaitingApproval && tool.status === 'pending'}
+          onApprovalResponse={handlers.onApprovalResponse}
+          onAnswer={handlers.onAnswer}
+        />
+      )
+    }
+    default:
+      // tool_result lives inside its own card (the chat's rendering too).
+      return null
+  }
+}
+
+function Message({ message, handlers }: {
+  message: Message
+  handlers: BlockHandlers
+}): React.JSX.Element | null {
+  if (!hasDisplayable(message)) return null
+  const isUser = message.role === 'user'
+
+  if (isUser) {
+    const text = (message.contentBlocks ?? [])
+      .filter((b) => b.type === 'text')
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('\n')
+    if (!text) return null
+    return (
+      <div className="pm-row-user">
+        <div className="pm-bubble">
+          <MarkdownBlock text={text} className="" />
+        </div>
+      </div>
+    )
+  }
+
+  const completed = completedToolIds(message)
+  const text = (message.contentBlocks ?? [])
+    .filter((b) => b.type === 'text')
+    .map((b) => (b.type === 'text' ? b.text : ''))
+    .join('\n')
+
+  return (
+    <div className="pm-row-assistant">
+      <div className="pm-bubble-assistant">
+        {(message.contentBlocks ?? []).map((block, i) => (
+          <AssistantBlock key={i} block={block} completed={completed} handlers={handlers} />
+        ))}
+      </div>
+      {/* The chat's row: 复制 / 下载 / 耗时 / Token (its `viewOnly` variant —
+          like & favorite write message metadata a panel session has no row
+          for). */}
+      {text ? <ActionRow text={text} msg={message} /> : null}
+    </div>
+  )
+}
+
+function StreamingBlocks({ blocks, handlers }: { blocks: ContentBlock[]; handlers: BlockHandlers }): React.JSX.Element | null {
+  const visible = blocks.filter((b) => b.type === 'text' || b.type === 'thinking' || b.type === 'tool_use')
+  if (visible.length === 0) return null
+  return (
+    <div className="pm-row-assistant">
+      <div className="pm-bubble-assistant">
+        {visible.map((block, i) => (
+          <AssistantBlock key={`stream-${i}`} block={block} completed={new Set()} handlers={handlers} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function Transcript({ session, busy, onApprovalResponse, onAnswer, onClearError }: {
+  session: SessionState
+  busy: boolean
+  onApprovalResponse: (toolUseId: string, approved: boolean) => void
+  onAnswer: (toolUseId: string, response: string) => void
+  onClearError: () => void
+}): React.JSX.Element {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  /** Whether the next commit should keep the view at the tail (see handleScroll). */
+  const followRef = useRef(true)
+  const status = session.agentStatus
+  const handlers: BlockHandlers = {
+    awaitingApproval: status.status === 'awaiting_approval',
+    onApprovalResponse,
+    onAnswer,
+  }
+
+  // Whether the view is close enough to the tail to keep following it. Written
+  // by scroll events only, never by a measurement taken after the content
+  // changed: growth moves the tail away on its own, and one update can easily
+  // add more than the threshold (a whole answer appended at once, a chunk of
+  // streamed markdown) — measuring there reads as "the user scrolled up" and
+  // then un-follows for the rest of the turn. The desktop chat tracks it the
+  // same way (ChatView's `isNearBottomRef`, written by handleScroll and by
+  // nothing else).
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
+  }, [])
+
+  // Follow the tail while the user is already at the bottom, so scrolling back
+  // through an earlier run is not yanked forward (TranscriptView's rule). Snaps
+  // after every commit — streaming deltas, appended messages and the busy cursor
+  // all change the height — and before the paint, so new content cannot flash at
+  // the old offset first. A plain `scrollTop` write, not `scrollIntoView`:
+  // `block: 'end'` stops at the scrollport's edge and leaves the tail this
+  // transcript's own bottom padding short of it (measured 7px), and the write
+  // this way stays scoped to this element.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el || !followRef.current) return
+    el.scrollTop = el.scrollHeight
+  })
+
+  const hasContent = session.messages.length > 0 || session.streamingBlocks.length > 0
+
+  return (
+    <div className="pm-transcript" ref={scrollRef} onScroll={handleScroll}>
+      {!hasContent && !busy ? (
+        <div className="pm-empty">
+          在当前页面里直接对话。{'\n'}试试「总结这个页面」「把这个表单填了」。
+        </div>
+      ) : null}
+      <div className="pm-column">
+        {session.messages.map((message) => (
+          <Message key={message.id} message={message} handlers={handlers} />
+        ))}
+        <StreamingBlocks blocks={session.streamingBlocks} handlers={handlers} />
+        {busy ? <CursorRow /> : null}
+      </div>
+      {status.status === 'error' && (
+        <div className="pm-column">
+          <ErrorCard message={'error' in status ? status.error : '未知错误'} onDismiss={onClearError} />
+        </div>
+      )}
+    </div>
+  )
+}

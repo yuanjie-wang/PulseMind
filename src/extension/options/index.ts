@@ -16,6 +16,7 @@ interface StatePayload {
   state: string
   serviceUrl: string | null
   port: number | null
+  reason?: string
 }
 
 async function loadForm(): Promise<void> {
@@ -29,12 +30,15 @@ function renderStatus(s: StatePayload): void {
   if (s.connected) {
     statusEl.className = 'ok'
     statusEl.textContent = `已连接：${s.serviceUrl ?? ''}`
-  } else {
-    statusEl.className = 'bad'
-    statusEl.textContent = s.serviceUrl
-      ? `未连接（${s.serviceUrl}，状态 ${s.state}）——请确认桌面端 PulseMind 正在运行`
-      : '未发现桌面端服务——请确认 PulseMind 正在运行（端口 8765–8779）'
+    return
   }
+  statusEl.className = 'bad'
+  if (!s.serviceUrl) {
+    statusEl.textContent = `未发现桌面端服务——请确认 PulseMind 正在运行（端口 8765–8779）。${s.reason ?? ''}`
+    return
+  }
+  const detail = s.reason ? `；原因：${s.reason}` : ''
+  statusEl.textContent = `未连接（${s.serviceUrl}，状态 ${s.state}）${detail}——请确认桌面端 PulseMind 正在运行`
 }
 
 async function sendMessage(type: string): Promise<StatePayload | null> {

@@ -363,8 +363,9 @@ export class ToolExecutor implements ToolExecContext {
     try {
       const sm = this.opts.skillManager; const skillName = String(t.input?.name || '').trim()
       // Expert/spawn skill whitelist: skills outside the pack are off-limits
-      // (experiences stay readable — they're progressive-disclosure records).
-      const allowedSkillSet = this.opts.allowedSkills?.length ? new Set(this.opts.allowedSkills) : null
+      // (`undefined` = no restriction; an empty set blocks every skill).
+      // Experiences stay readable — they're progressive-disclosure records.
+      const allowedSkillSet = this.opts.allowedSkills ? new Set(this.opts.allowedSkills) : null
       if (skillName && allowedSkillSet && !allowedSkillSet.has(skillName)) {
         const msg = `Skill "${skillName}" is not in this session's allowed skills (${[...allowedSkillSet].join(', ')}). Work with what's available.`
         this.addToolResult(t.id, msg, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return
@@ -424,6 +425,32 @@ export class ToolExecutor implements ToolExecContext {
       this.addToolResult(t.id, `"${cleanName}" selected but not available.`, true); t.exitCode = 1
     } catch (err) { this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'pick_skill failed'}`, true); t.exitCode = -1 }
     t.status = 'completed'; this.notify()
+  }
+
+  /** Page tools (PLAN-browser-extension M2.3): forward to the browser extension
+   *  bound to this session and wait for its answer. The host rejects when no
+   *  client is bound, which lands here as an `is_error` result — the loop keeps
+   *  going and the model can choose another path (§3.4.3). */
+  async execPageTool(t: ToolUseBlock): Promise<void> {
+    t.status = 'running'; this.notify()
+    try {
+      const sessionId = this.opts.conversationId || ''
+      const result = await getHost().hostedToolCall(t.name, { ...(t.input || {}) }, { sessionId })
+      t.exitCode = 0
+      t.status = 'completed'
+      this.addToolResult(t.id, typeof result === 'string' ? result : JSON.stringify(result, null, 2), false)
+    } catch (err) {
+      t.exitCode = -1
+      t.status = 'completed'
+      this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : '页面工具执行失败'}`, true)
+    }
+    this.notify()
+  }
+
+  /** Page reads run in parallel — they only look, and their per-tool timeouts
+   *  are independent. Writes go through execPageTool one at a time. */
+  async execPageReadTools(tools: ToolUseBlock[]): Promise<void> {
+    await Promise.all(tools.map((t) => this.execPageTool(t)))
   }
 
   /** Browser Use (A-M1): run a JS snippet against the host browser runtime.

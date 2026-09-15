@@ -5,13 +5,7 @@
 
 import type { ExpertProfile } from './types/expert'
 
-export interface ExpertKnowledgeFile {
-  id: string
-  title: string
-  filePath: string
-}
-
-/** A resolved reference: 技能名（id 与 name 同值）或连接器（id 为 MCP 服务 id）。 */
+/** A resolved capability entry: 技能名（id 与 name 同值）或连接器（id 为 MCP 服务 id）。 */
 export interface ExpertReference {
   id: string
   name: string
@@ -19,7 +13,7 @@ export interface ExpertReference {
   summary?: string
 }
 
-/** 引用关系的解析目录。**缺省整个字段** 表示这侧拿不到目录，此时按 profile 里
+/** 可用能力的解析目录。**缺省整个字段** 表示这侧拿不到目录，此时按 profile 里
  *  写的名字原样注入；给了数组就只注入目录里存在的条目（已卸载的技能不再出现在
  *  指令里）。目录读取是各 runtime 的事，这里只做纯解析。 */
 export interface ExpertRefCatalogs {
@@ -29,15 +23,14 @@ export interface ExpertRefCatalogs {
 
 /** Compose the expert's full instruction block: identity header + the four
  *  structured sections (persona / methodology / output spec / constraints),
- *  skipping empty ones, plus the Bound Knowledge index when files are bound and
- *  the Preferred Skills / Connectors the profile points at. 引用关系只是指令里
- *  的倾向提示，不是权限白名单 —— 会话的可用能力始终来自全局设置。 */
+ *  skipping empty ones, plus the capabilities this expert is allowed to use.
+ *  可用技能 / 连接器是白名单 —— 会话侧会同步把工具集合收敛到这几项
+ *  （见 AgentEngine.applyExpertContext），指令只是把同一件事说清楚。 */
 export function composeExpertInstructions(
   profile: Pick<
     ExpertProfile,
     'name' | 'basePrompt' | 'methodology' | 'outputSpec' | 'constraints' | 'skillNames' | 'mcpServerIds'
   >,
-  knowledgeFiles: ExpertKnowledgeFile[] = [],
   catalogs: ExpertRefCatalogs = {}
 ): string {
   const lines: string[] = [
@@ -63,10 +56,17 @@ export function composeExpertInstructions(
   if (skills.length > 0) {
     lines.push(
       '',
-      '## Preferred Skills',
-      'Reach for the following skills first when they fit the task. This is a preference, not a restriction — every other installed skill stays available.',
+      '## Allowed Skills',
+      'These are the ONLY skills available to you in this session — everything else is unavailable, so do not plan around it or claim to have used it. If a task needs something outside this list, say so instead of improvising.',
       '',
       ...listRefs(skills)
+    )
+  } else if (profile.skillNames) {
+    // 白名单存在但是空的：明确说「没有」，否则模型会以为只是没列出来。
+    lines.push(
+      '',
+      '## Allowed Skills',
+      'No skills are available to you in this session — the user allowed none. Do not call pick_skill, and do not claim to have applied any skill.'
     )
   }
 
@@ -74,20 +74,16 @@ export function composeExpertInstructions(
   if (connectors.length > 0) {
     lines.push(
       '',
-      '## Preferred Connectors',
-      'Reach for the following connectors (MCP servers) first when they fit the task. Same caveat — a preference, not a restriction, and every connected server stays available.',
+      '## Allowed Connectors',
+      'These are the ONLY connectors (MCP servers) available to you in this session — every other server is unavailable. Same rule as the skills above: work within this list, and say so when a task needs something outside it.',
       '',
       ...listRefs(connectors)
     )
-  }
-
-  if (knowledgeFiles.length > 0) {
+  } else if (profile.mcpServerIds) {
     lines.push(
       '',
-      '## Bound Knowledge',
-      'This expert has a private knowledge base bound to it. It is NOT shown here — look things up with `knowledge_search` (in this session it searches exactly these documents) and read the full content with `knowledge_read`.',
-      '',
-      ...knowledgeFiles.map((f) => `- ${f.title} (${f.filePath})`)
+      '## Allowed Connectors',
+      'No connectors (MCP servers) are available to you in this session — the user allowed none. Do not call pick_tool, and say so when a task needs an outside service.'
     )
   }
 

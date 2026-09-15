@@ -4,6 +4,11 @@ const DAY_MS = 24 * HOUR_MS
 /** Past this many days a duration reads worse than the date itself. */
 const DAYS_BEFORE_ABSOLUTE_DATE = 7
 
+/** Interval for the `now` these stamps render against. Relative times only move
+ *  at minute granularity, so that is the cheapest honest clock — every ticking
+ *  caller (sidebar rows, welcome band, welcome project cards) shares it. */
+export const CLOCK_TICK_MS = 60_000
+
 export type RelativeTimeUnit = 'justNow' | 'minute' | 'hour' | 'day' | 'date'
 
 export interface RelativeTime {

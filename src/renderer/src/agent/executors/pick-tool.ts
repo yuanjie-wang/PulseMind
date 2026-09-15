@@ -18,9 +18,13 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
     // applies to them uniformly, mirroring per-server granularity.
     const fetchCandidateTools = async () => {
       const servers = await getHost().mcpListServers()
+      // 可用连接器白名单（专家 / 子代理）：白名单外的服务器连候选都不进，
+      // 否则 pick_tool 会成为绕过限制的入口。undefined = 不限制，空数组 = 一个都不许用。
+      const allowedServers = ex.opts.allowedMcpServers ? new Set(ex.opts.allowedMcpServers) : null
       const all: Array<{ name: string; serverId: string; description: string; inputSchema: any }> = []
       for (const server of servers) {
         if (server.status !== 'connected') continue
+        if (allowedServers && !allowedServers.has(server.id)) continue
         for (const tool of server.tools) {
           all.push({ name: tool.name, serverId: server.id, description: tool.description, inputSchema: tool.inputSchema })
         }

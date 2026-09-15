@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyMessagesAppend } from '../src/renderer/src/utils/session-messages'
+import { applyMessagesAppend } from '../src/shared/agent-session/messages'
 
 describe('applyMessagesAppend', () => {
   it('appends new items at the end', () => {

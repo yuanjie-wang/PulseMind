@@ -207,17 +207,18 @@ export async function startAgentService(
     const notify = (method: string, params: unknown): void => {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ jsonrpc: '2.0', method, params }))
     }
-    const makeTransport = (): ClientTransport => {
-      const transport: ClientTransport = {
-        id: randomUUID(),
-        clientId: conn.clientId,
-        sendToolCall: (p) => notify(Methods.toolCall, p),
-        sendApprovalRequest: (p) => notify(Methods.approvalRequest, p),
-        sendAskUserRequest: (p) => notify(Methods.askUserRequest, p),
-      }
-      conn.transports.add(transport)
-      return transport
+    // One transport per *connection*, not per ask: `clientId` is still
+    // 'unknown' until `hello` arrives, so it is read through a getter.
+    const transport: ClientTransport = {
+      id: randomUUID(),
+      get clientId() {
+        return conn.clientId
+      },
+      sendToolCall: (p) => notify(Methods.toolCall, p),
+      sendApprovalRequest: (p) => notify(Methods.approvalRequest, p),
+      sendAskUserRequest: (p) => notify(Methods.askUserRequest, p),
     }
+    conn.transports.add(transport)
 
     socket.on('pong', () => { conn.alive = true })
 
@@ -290,7 +291,36 @@ export async function startAgentService(
             const rawLimit = typeof params.limit === 'number' ? params.limit : 50
             const limit = Math.min(Math.max(Math.floor(rawLimit), 1), 200)
             const rows = store.listByOrigin(conn.clientId, limit)
-            send(makeResult(msg.id ?? null, { sessions: rows }))
+            // The model state rides along: every panel snapshot calls this
+            // anyway, so the picker's inventory costs no extra round trip. A
+            // failure to read settings must not cost the caller the list it
+            // actually asked for.
+            void sessions
+              .modelState()
+              .catch(() => undefined)
+              .then((model) => send(makeResult(msg.id ?? null, { sessions: rows, model })))
+            break
+          }
+          case Methods.modelList: {
+            void sessions
+              .modelState()
+              .then((model) => send(makeResult(msg.id ?? null, model)))
+              .catch((err) => send(makeError(msg.id ?? null, ErrorCodes.internal, errorMessage(err))))
+            break
+          }
+          case Methods.modelSetActive: {
+            // 模型切换 is global (the desktop's own picker writes the same
+            // setting), so unlike rename/delete this one is not scoped to the
+            // caller's origins — any paired client may switch it.
+            const profileId = String(params.profileId ?? '')
+            if (!profileId) {
+              send(makeError(msg.id ?? null, ErrorCodes.invalidParams, 'profileId is required'))
+              break
+            }
+            void sessions
+              .setActiveProfile(profileId)
+              .then((model) => send(makeResult(msg.id ?? null, { ok: true, model })))
+              .catch((err) => send(makeError(msg.id ?? null, ErrorCodes.invalidParams, errorMessage(err))))
             break
           }
           case Methods.sessionDelete: {
@@ -334,9 +364,11 @@ export async function startAgentService(
               break
             }
             conn.sessions.add(sessionId)
-            // The transport lives for exactly this ask: reverse traffic (tool
-            // calls, approvals) goes to the connection that asked.
-            const transport = makeTransport()
+            // Bound to the connection, not to this ask: the engine parks on the
+            // client (awaiting_approval / awaiting_user_input) and this RPC
+            // resolves long before the prompt is answered — an ask-scoped
+            // unbind would cut the transport seconds too early (see
+            // client-registry.ts).
             agentClientRegistry.bind(sessionId, transport)
             sessions.ask(sessionId, content, pageContext)
               .then(() => send(makeResult(msg.id ?? null, { accepted: true, status: 'completed' })))
@@ -344,10 +376,6 @@ export async function startAgentService(
                 const message = errorMessage(err)
                 const code = message.startsWith('session not found') ? ErrorCodes.sessionNotFound : ErrorCodes.internal
                 send(makeError(msg.id ?? null, code, message))
-              })
-              .finally(() => {
-                agentClientRegistry.unbind(sessionId, transport)
-                conn.transports.delete(transport)
               })
             break
           }
@@ -394,6 +422,7 @@ export async function startAgentService(
       // Settle everything this connection owed: in-flight tool calls reject,
       // pending confirmations are rejected/answered per timeout semantics.
       for (const transport of conn.transports) {
+        agentClientRegistry.unbindTransport(transport)
         hostedToolProxy.dropTransport(transport)
         hostedPromptRouter.dropTransport(transport)
       }

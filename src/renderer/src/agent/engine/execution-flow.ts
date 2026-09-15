@@ -11,15 +11,16 @@ import type { ToolUseBlock, ContentBlock } from '../../types/agent'
 import { buildCommandFromSkillInput } from '../command-builder'
 import { safeInvoke, safeInvokeObserver } from '../agent-utils'
 import { TOOL_PARAM_LIMITS } from './engine-constants'
+import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, tierOfTool } from './tool-tiers'
+import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import type { EngineCore } from './engine-core'
 
 /** Built-in tools that only look — the 'read' tier, never gated.
  *  `built-in-tools.ts` holds the definitions; the approval ladder needs the
- *  membership test at three sites (dispatch, gate, approve). */
-const READ_TIER_TOOLS = new Set(['read', 'list_dir', 'find', 'search', 'git_status', 'git_diff', 'git_log'])
-const WRITE_TIER_TOOLS = new Set(['write', 'edit', 'git_commit', 'git_restore'])
+ *  membership test at three sites (dispatch, gate, approve). The sets
+ *  themselves live in tool-tiers.ts, next to `tierOfTool`. */
 
 export class ExecutionFlow {
   constructor(private engine: EngineCore) {}
@@ -78,6 +79,13 @@ export class ExecutionFlow {
     }
     if (targetBlock.name === 'spawn_agent') {
       await this.engine.toolExecutor.execSpawnAgent(targetBlock)
+      return
+    }
+    // A page tool reaches the executor from here too (the ladder held it in
+    // dispatchToolExecution). Without this branch it would fall through to the
+    // shell default below and be run as a command.
+    if (isPageTool(targetBlock.name)) {
+      await this.engine.toolExecutor.execPageTool(targetBlock)
       return
     }
 
@@ -201,6 +209,13 @@ export class ExecutionFlow {
   private async dispatchToolExecution(tools: ToolUseBlock[]): Promise<void> {
     const readOnlyTools = tools.filter(t => READ_TIER_TOOLS.has(t.name))
     const writeEditTools = tools.filter(t => WRITE_TIER_TOOLS.has(t.name))
+    // Page tools are their own family (PLAN-browser-extension §3.4.2.1): they
+    // must NOT join READ_TIER_TOOLS (that would send them to execReadOnlyTools'
+    // file reader) or WRITE_TIER_TOOLS (that would treat a page click as a file
+    // write). Reads may run in parallel; writes go one at a time so the page is
+    // never acted on twice from a single batch.
+    const pageReadTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) === 'read')
+    const pageWriteTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) !== 'read')
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = tools.filter(t => isSystemTool(t.name))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
@@ -214,11 +229,20 @@ export class ExecutionFlow {
     // at any level above 'auto', auto-executed otherwise.
     const gatedMcpTools = tools.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
-    const otherTools = tools.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user')
+    const grouped = new Set([...readOnlyTools, ...writeEditTools, ...pageReadTools, ...pageWriteTools])
+    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user')
     const held = this.heldTiers()
     try {
       if (readOnlyTools.length > 0) await this.engine.toolExecutor.execReadOnlyTools(readOnlyTools)
+      if (pageReadTools.length > 0) await this.engine.toolExecutor.execPageReadTools(pageReadTools)
       if (!held.has('write') && writeEditTools.length > 0) for (const t of writeEditTools) await this.engine.toolExecutor.execWorkspaceTool(t)
+      // A page write clears the ladder only when its own tier allows it
+      // (page_execute_js is 'exec' and stays held at 'outside-ask').
+      for (const t of pageWriteTools) {
+        if (!requiresApproval(this.engine.opts.approvalMode ?? 'auto', tierOfTool(t.name))) {
+          await this.engine.toolExecutor.execPageTool(t)
+        }
+      }
       if (mcpTools.length > 0) for (const t of mcpTools) await this.engine.toolExecutor.execMCPTool(t)
       if (!held.has('exec') && gatedMcpTools.length > 0) for (const t of gatedMcpTools) await this.engine.toolExecutor.execMCPTool(t)
       for (const t of systemTools) {
@@ -291,6 +315,11 @@ export class ExecutionFlow {
     const readOnlyTools = toolUses.filter(t => READ_TIER_TOOLS.has(t.name))
     const writeEditTools = toolUses.filter(t => WRITE_TIER_TOOLS.has(t.name))
     const askUserTools = toolUses.filter(t => t.name === 'ask_user')
+    // Page tools: reads never wait, writes wait per their own tier
+    // (`page_execute_js` = 'exec', the rest = 'write').
+    const pageTools = toolUses.filter(t => isPageTool(t.name))
+    const pageReadTools = pageTools.filter(t => tierOfTool(t.name) === 'read')
+    const pageWriteTools = pageTools.filter(t => tierOfTool(t.name) !== 'read')
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = toolUses.filter(t => isSystemTool(t.name))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
@@ -303,20 +332,23 @@ export class ExecutionFlow {
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpAutoTools = toolUses.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
-    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user')
+    const pageHeldTools = pageWriteTools.filter(t => requiresApproval(this.engine.opts.approvalMode ?? 'auto', tierOfTool(t.name)))
+    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user')
 
     // The approval ladder decides what waits: shell / ungrouped / gated MCP
-    // calls at 'outside-ask' and above, file writes as well at 'always-ask'.
+    // calls at 'outside-ask' and above, file writes as well at 'always-ask',
+    // and page writes by their own tier (reads are dispatched, never held).
     const held = this.heldTiers()
     const heldTools = [
       ...(held.has('write') ? writeEditTools : []),
       ...(held.has('exec') ? [...otherTools, ...mcpApprovalTools] : []),
+      ...pageHeldTools,
     ]
 
     this.engine.toolUseBlocks = toolUses
     this.engine.pendingToolIds = new Set(toolUses.map(t => t.id))
     this.engine.isAutoExecuting = true
-    for (const t of [...readOnlyTools, ...writeEditTools, ...systemTools, ...memoryTools, ...knowledgeTools, ...experienceTools, ...mcpAutoTools]) t.status = 'running'
+    for (const t of [...readOnlyTools, ...writeEditTools, ...systemTools, ...memoryTools, ...knowledgeTools, ...experienceTools, ...mcpAutoTools, ...pageReadTools, ...pageWriteTools]) t.status = 'running'
     for (const t of askUserTools) t.status = 'running'
     // What the ladder holds stays pending until the user approves it.
     for (const t of heldTools) t.status = 'pending'

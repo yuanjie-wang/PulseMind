@@ -1,10 +1,16 @@
 /**
  * Client registry (PLAN-browser-extension M0.1): sessionId → the connection
- * currently driving that session's agent loop. A binding lives for exactly one
- * `agent.ask` round-trip: the WS server binds it when the ask lands and unbinds
- * when the loop settles, so reverse traffic (tool.call / approval.request /
- * ask_user.request) always reaches the client that is actually waiting — never
- * a stale or unrelated connection (multi-tab / multi-profile safe).
+ * driving that session's agent loop, so reverse traffic (tool.call /
+ * approval.request / ask_user.request) reaches the client that is actually
+ * waiting — never a stale or unrelated connection (multi-tab safe).
+ *
+ * The binding lives as long as the *connection*, not as long as one `agent.ask`
+ * RPC. The engine parks on the client (awaiting_approval / awaiting_user_input)
+ * and the loop promise settles right there, so `ask` resolves seconds before a
+ * prompt is emitted: an ask-scoped binding would be released at exactly the
+ * moment the card has to be delivered, and every answer would be dropped
+ * silently. Released when the connection drops (`unbindTransport`) or when a
+ * newer client asks for the same session (`bind` overwrites).
  */
 import type { AskUserRequestParams, ApprovalRequestParams, ToolCallParams } from '../../shared/agent-protocol'
 
@@ -33,10 +39,13 @@ class ClientRegistry {
     this.bySession.set(sessionId, transport)
   }
 
-  /** Remove the binding only if it is still this transport's — a newer ask from
-   *  another connection must not be unbound by the older one settling late. */
-  unbind(sessionId: string, transport: ClientTransport): void {
-    if (this.bySession.get(sessionId) === transport) this.bySession.delete(sessionId)
+  /** Connection gone: release every session it was driving. Matching by
+   *  transport identity leaves a newer connection's binding intact even when
+   *  this one is torn down late (same-clientId replacement). */
+  unbindTransport(transport: ClientTransport): void {
+    for (const [sessionId, bound] of this.bySession) {
+      if (bound === transport) this.bySession.delete(sessionId)
+    }
   }
 
   get(sessionId: string): ClientTransport | undefined {

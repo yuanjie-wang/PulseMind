@@ -1,21 +1,23 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Button, Card, Typography, Spin, Switch, Modal, message } from 'antd'
+import { Button, Typography, Spin, Modal, message } from 'antd'
 import {
   UserOutlined,
-  EditOutlined,
-  DeleteOutlined,
   LoadingOutlined,
   PlusOutlined,
-  BookOutlined,
   ThunderboltOutlined,
   ApiOutlined,
 } from '@ant-design/icons'
 import type { ExpertProfile } from '../../../../shared/types/expert'
-import type { KnowledgeOption } from '../../agent/one-shot-agent'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
 import ExpertEditor from './expert/ExpertEditor'
 import type { ExpertRefOption } from './expert/ExpertFormFields'
+import CapabilityCard, {
+  CAPABILITY_GRID,
+  CapabilityDeleteButton,
+  CapabilityEmpty,
+  CapabilitySwitch
+} from '../common/CapabilityCard'
 
 const { Text, Paragraph } = Typography
 
@@ -31,12 +33,76 @@ export interface ExpertSettingsProps {
   children?: never
 }
 
+interface ExpertCardProps {
+  profile: ExpertProfile
+  /** Connector id → name, for the capability row's tooltip. */
+  connectorOptions: ExpertRefOption[]
+  onToggle: () => void
+  onEdit: () => void
+  onDelete: () => void
+}
+
+/** Expert card. Same shell as the connector and skill cards — which is also why
+ *  the inline 编辑 button is gone: the card itself is the edit affordance, exactly
+ *  as the connector card opens its editor and the skill card opens its browser. */
+function ExpertCard({ profile, connectorOptions, onToggle, onEdit, onDelete }: ExpertCardProps): React.ReactElement {
+  const { t } = useTranslation()
+
+  return (
+    <CapabilityCard
+      icon={<UserOutlined style={{ fontSize: 14 }} />}
+      name={profile.name}
+      onClick={onEdit}
+      actions={
+        <>
+          <CapabilitySwitch checked={profile.enabled ?? true} onToggle={onToggle} />
+          <CapabilityDeleteButton onClick={onDelete} />
+        </>
+      }
+    >
+      <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 4 }}>{profile.id}</Text>
+
+      {/* Curated one-liner; fall back to the persona snippet. */}
+      {(profile.description || profile.basePrompt) && (
+        <Paragraph
+          style={{ fontSize: 12, marginBottom: 8, color: '#888' }}
+          ellipsis={{ rows: 3, expandable: false }}
+        >
+          {profile.description || profile.basePrompt}
+        </Paragraph>
+      )}
+
+      {/* 可用能力白名单（不是提示）——只显示数量，明细在编辑表单里。 */}
+      {!!profile.skillNames?.length && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4 }}>
+          <ThunderboltOutlined style={{ color: '#999', marginTop: 3, fontSize: 12 }} />
+          <span style={{ fontSize: 11, color: '#888' }} title={profile.skillNames.join('、')}>
+            {t('expertCenter.skillNames')} × {profile.skillNames.length}
+          </span>
+        </div>
+      )}
+      {!!profile.mcpServerIds?.length && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4 }}>
+          <ApiOutlined style={{ color: '#999', marginTop: 3, fontSize: 12 }} />
+          <span
+            style={{ fontSize: 11, color: '#888' }}
+            title={profile.mcpServerIds.map((id) => connectorOptions.find((c) => c.value === id)?.label || id).join('、')}
+          >
+            {t('expertCenter.mcpServerIds')} × {profile.mcpServerIds.length}
+          </span>
+        </div>
+      )}
+    </CapabilityCard>
+  )
+}
+
 /**
  * 专家 tab of the capability center. Two modes share the pane:
  *  - browse: the expert card grid (enable / edit / delete)
  *  - edit: the three-column editor (expert list · form · conversational filler)
- * Experts describe identity + bound knowledge only — capability follows the
- * global setting, so no tool/connector/skill selectors live here anymore.
+ * An expert is identity + 可用能力：the toolset, the model and the token budget
+ * follow the global setting, while skills and connectors are a whitelist — only
+ * what is ticked may be used, and ticking nothing allows none.
  */
 const ExpertSettings = React.forwardRef<ExpertSettingsHandle, ExpertSettingsProps>(function ExpertSettings(
   _props,
@@ -45,7 +111,6 @@ const ExpertSettings = React.forwardRef<ExpertSettingsHandle, ExpertSettingsProp
   const { t } = useTranslation()
   const { settings } = useSettings()
   const [profiles, setProfiles] = useState<ExpertProfile[]>([])
-  const [knowledgeFiles, setKnowledgeFiles] = useState<KnowledgeOption[]>([])
   const [skillOptions, setSkillOptions] = useState<ExpertRefOption[]>([])
   const [connectorOptions, setConnectorOptions] = useState<ExpertRefOption[]>([])
   const [loading, setLoading] = useState(false)
@@ -62,15 +127,7 @@ const ExpertSettings = React.forwardRef<ExpertSettingsHandle, ExpertSettingsProp
       const list = await window.electronAPI.expertList()
       setProfiles(list)
 
-      // Bound-knowledge selector options (non-critical when empty).
-      try {
-        const files = await window.electronAPI.knowledgeListFiles()
-        setKnowledgeFiles(files.map((f) => ({ id: f.id, title: f.title || f.filePath })))
-      } catch {
-        // knowledge list is non-critical
-      }
-
-      // 引用关系候选：技能按 name 引用，连接器按 MCP 服务 id 引用。
+      // 可用能力候选：技能按 name 引用，连接器按 MCP 服务 id 引用。
       try {
         const skills = await window.electronAPI.listImportedSkills()
         setSkillOptions(skills.map((s) => ({ value: s.name, label: s.name })))
@@ -158,12 +215,15 @@ const ExpertSettings = React.forwardRef<ExpertSettingsHandle, ExpertSettingsProp
           setProfiles(updated)
           setEditingId(id)
         }}
-        onDeleted={(updated) => {
+        onDeleted={(updated, deletedId) => {
           setProfiles(updated)
-          setEditingId(null)
-          setMode('browse')
+          // Only the expert being edited forces a return to the grid; deleting
+          // one from the list column keeps the current editing session.
+          if (editingId === deletedId) {
+            setEditingId(null)
+            setMode('browse')
+          }
         }}
-        knowledgeFiles={knowledgeFiles}
         skillOptions={skillOptions}
         connectorOptions={connectorOptions}
         locale={settings.locale || 'zh'}
@@ -181,102 +241,36 @@ const ExpertSettings = React.forwardRef<ExpertSettingsHandle, ExpertSettingsProp
 
   if (profiles.length === 0) {
     return (
-      <div style={{ padding: 32, textAlign: 'center', color: '#999' }}>
-        <UserOutlined style={{ fontSize: 32, display: 'block', marginBottom: 8 }} />
-        <Text type="secondary">{t('expertCenter.empty')}</Text>
-        <div style={{ fontSize: 12, color: '#bbb', marginTop: 6 }}>{t('expertCenter.emptyHint')}</div>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          style={{ marginTop: 16, background: '#000', borderColor: '#000' }}
-          onClick={() => enterEdit(null)}
-        >
-          {t('expertCenter.newExpert')}
-        </Button>
-      </div>
+      <CapabilityEmpty
+        title={t('expertCenter.empty')}
+        hint={t('expertCenter.emptyHint')}
+        action={
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            style={{ marginTop: 16, background: '#000', borderColor: '#000' }}
+            onClick={() => enterEdit(null)}
+          >
+            {t('expertCenter.newExpert')}
+          </Button>
+        }
+      />
     )
   }
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+    // No overflow of its own — the capability center's pane scrolls (see its comment).
+    <div style={{ height: '100%' }}>
+      <div style={CAPABILITY_GRID}>
         {profiles.map((profile) => (
-          <Card
+          <ExpertCard
             key={profile.id}
-            size="small"
-            style={{ borderRadius: 10, background: '#fafafa' }}
-            title={
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                <UserOutlined style={{ color: '#666', fontSize: 14, flexShrink: 0 }} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{profile.name}</span>
-              </span>
-            }
-            extra={
-              <span style={{ display: 'inline-flex', gap: 2, alignItems: 'center' }}>
-                <Switch
-                  size="small"
-                  checked={profile.enabled ?? true}
-                  onClick={() => handleToggleEnabled(profile)}
-                />
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<EditOutlined />}
-                  title={t('expertCenter.editTitle')}
-                  onClick={() => enterEdit(profile.id)}
-                />
-                <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => handleDelete(profile)} />
-              </span>
-            }
-          >
-            <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 4 }}>{profile.id}</Text>
-
-            {/* Curated one-liner; fall back to the persona snippet. */}
-            {(profile.description || profile.basePrompt) && (
-              <Paragraph
-                style={{ fontSize: 12, marginBottom: 8, color: '#888' }}
-                ellipsis={{ rows: 3, expandable: false }}
-              >
-                {profile.description || profile.basePrompt}
-              </Paragraph>
-            )}
-
-            {/* Bound knowledge (count + tooltip with the titles) */}
-            {!!profile.knowledgeFileIds?.length && (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                <BookOutlined style={{ color: '#999', marginTop: 3, fontSize: 12 }} />
-                <span
-                  style={{ fontSize: 11, color: '#888' }}
-                  title={profile.knowledgeFileIds
-                    .map((id) => knowledgeFiles.find((f) => f.id === id)?.title || id)
-                    .join('、')}
-                >
-                  {t('knowledgePanel.title')} × {profile.knowledgeFileIds.length}
-                </span>
-              </div>
-            )}
-
-            {/* 引用关系（指令提示，不是权限）——只显示数量，明细在编辑表单里。 */}
-            {!!profile.skillNames?.length && (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4 }}>
-                <ThunderboltOutlined style={{ color: '#999', marginTop: 3, fontSize: 12 }} />
-                <span style={{ fontSize: 11, color: '#888' }} title={profile.skillNames.join('、')}>
-                  {t('expertCenter.skillNames')} × {profile.skillNames.length}
-                </span>
-              </div>
-            )}
-            {!!profile.mcpServerIds?.length && (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4 }}>
-                <ApiOutlined style={{ color: '#999', marginTop: 3, fontSize: 12 }} />
-                <span
-                  style={{ fontSize: 11, color: '#888' }}
-                  title={profile.mcpServerIds.map((id) => connectorOptions.find((c) => c.value === id)?.label || id).join('、')}
-                >
-                  {t('expertCenter.mcpServerIds')} × {profile.mcpServerIds.length}
-                </span>
-              </div>
-            )}
-          </Card>
+            profile={profile}
+            connectorOptions={connectorOptions}
+            onToggle={() => handleToggleEnabled(profile)}
+            onEdit={() => enterEdit(profile.id)}
+            onDelete={() => handleDelete(profile)}
+          />
         ))}
       </div>
     </div>

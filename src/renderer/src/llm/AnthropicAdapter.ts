@@ -3,7 +3,7 @@ import type { AgentMessage, ToolUseBlock, ContentBlock } from '../types/agent'
 import type { ToolDefinition } from '../tools/types'
 import type { LlmAdapter } from './adapter'
 import type { LlmRequestParams } from './types'
-import type { StreamEventHandlers, StreamParser } from './stream-types'
+import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 import { createStreamParser } from './stream-utils'
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -315,7 +315,8 @@ export const anthropicAdapter: LlmAdapter = {
     model: string,
     systemPrompt: string,
     userMessages: { role: string; content: string }[],
-    maxTokens: number = 1000
+    maxTokens: number = 1000,
+    onUsage?: (usage: LlmUsage) => void
   ): Promise<string | null> {
     const url = `${baseURL.replace(/\/+$/, '')}/v1/messages`
     const headers = {
@@ -341,6 +342,13 @@ export const anthropicAdapter: LlmAdapter = {
       if (!responseText) return null
 
       const parsed = JSON.parse(responseText)
+      if (onUsage) {
+        onUsage({
+          inputTokens: parsed?.usage?.input_tokens,
+          outputTokens: parsed?.usage?.output_tokens,
+          promptCacheHitTokens: parsed?.usage?.cache_read_input_tokens
+        })
+      }
       const textBlock = parsed?.content?.find((b: { type: string }) => b.type === 'text')
       return textBlock?.text || null
     } catch (err) {

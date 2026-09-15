@@ -1,0 +1,184 @@
+/**
+ * Shared client for a main-hosted agent session rendered outside the main
+ * chat (run-history transcripts, the routine editor's assistant column).
+ *
+ * The session lives in the main process (agentSessionManager); this hook
+ * folds its event stream with shared/agent-session/mirror, lazily creates the
+ * session on the first send, and keeps the persisted conversation in sync
+ * once an exchange settles. View concerns — composer, empty hints, run
+ * badges — stay with the caller. Extracted from RunTranscript (PLAN-0.4.0
+ * M4.4) when the routine editor's assistant column needed the same
+ * attach/restore/persist protocol a second time; the tool studio's
+ * useStudioSession keeps its eager variant because of its preview concerns.
+ */
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { AgentMessage, AgentStatus, ContentBlock } from '../types/agent'
+import type { AgentEventData } from '../../../shared/agent-protocol'
+import type { SessionState } from '../../../shared/agent-session/mirror'
+import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../../../shared/agent-session/mirror'
+import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
+
+/** agentSessionCreate options this hook hands through (title is owned by the
+ *  `title` option; the rest of AgentSessionCreateOptions stays out of scope). */
+export interface HostedSessionCreateOptions {
+  /** Owning client tag, e.g. 'routine' / 'routine-assist'. */
+  clientId?: string
+  /** Project bound at creation (workspace + sandbox). */
+  projectId?: string
+  /** Full system-prompt replacement for derived sessions. */
+  systemPromptOverride?: string
+}
+
+export interface HostedAgentSessionOptions {
+  /** Conversation id; null = nothing selected, the hook stays dormant.
+   *  Callers key the view by convId, so it is fixed per mount. */
+  convId: string | null
+  /** Session + persisted conversation title. */
+  title: string
+  /** Handed to agentSessionCreate on the first send. */
+  createOptions?: HostedSessionCreateOptions
+}
+
+export interface HostedAgentSession {
+  messages: AgentMessage[]
+  agentStatus: AgentStatus
+  streamingBlocks: ContentBlock[]
+  isBusy: boolean
+  /** True until the first restore (live snapshot or stored history) landed. */
+  restoring: boolean
+  /** Send a user message; `annotation` is appended verbatim (callers pass
+   *  context like the routine assistant's live-form block). */
+  send: (text: string, annotation?: string) => void
+  cancel: () => void
+  /** Raw engine call (approveTool / rejectTool / killTool / respondToTool /
+   *  clearError / retryLastTurn). */
+  engineCall: (method: string, ...args: unknown[]) => void
+  /** Signal the main-side engine to rebuild its options (e.g. after the
+   *  active profile was switched) — the next ask uses them. */
+  refreshOptions: () => void
+}
+
+export function useHostedAgentSession({ convId, title, createOptions }: HostedAgentSessionOptions): HostedAgentSession {
+  const stateRef = useRef<SessionState>(freshSessionState())
+  const [messages, setMessages] = useState<AgentMessage[]>([])
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
+  const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
+  // Nothing to restore without a conversation (fixed per keyed mount).
+  const [restoring, setRestoring] = useState(convId != null)
+
+  const sync = useCallback((state: SessionState): void => {
+    setMessages([...state.messages])
+    setAgentStatus(state.agentStatus)
+    setStreamingBlocks([...state.streamingBlocks])
+  }, [])
+
+  // Fold the session's events into the mirror. The main-side bridge broadcasts
+  // every session; this per-mount subscription filters by id (convId is fixed
+  // for this keyed instance's lifetime).
+  useEffect(() => {
+    if (!convId) return
+    let alive = true
+    const state = freshSessionState()
+    stateRef.current = state
+
+    const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
+      if (sessionId !== convId) return
+      if (!applySessionEvent(state, raw as AgentEventData)) return
+      if (alive) sync(state)
+    })
+
+    // Attach: a live main-side session seeds the mirror from its snapshot; an
+    // idle one just displays the persisted transcript read-only (the engine is
+    // hydrated lazily on first send).
+    void (async () => {
+      const snap = await window.electronAPI.agentSessionSnapshot(convId).catch(() => null)
+      if (!alive) return
+      if (snap && (snap.messages.length > 0 || snap.status.status !== 'idle')) {
+        seedSessionState(state, snap)
+      } else {
+        try {
+          const stored = await window.electronAPI.hydrateConversation(convId)
+          if (alive && stored?.messages?.length) state.messages = storedMessagesToAgentMessages(stored.messages)
+        } catch { /* neither live nor stored — show the empty hint */ }
+      }
+      if (!alive) return
+      sync(state)
+      setRestoring(false)
+    })()
+
+    return () => {
+      alive = false
+      unsub()
+    }
+  }, [convId, sync])
+
+  // Keep the persisted conversation in sync once an exchange settles — the
+  // user's continuation (and the automated run's tail, idempotently) must
+  // survive restarts. 'idle' covers a continuation the user stopped mid-way.
+  const prevStatusRef = useRef<string>('idle')
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = agentStatus.status
+    if (!isActiveStatus({ status: prev } as AgentStatus)) return
+    if (agentStatus.status !== 'completed' && agentStatus.status !== 'error' && agentStatus.status !== 'idle') return
+    const msgs = stateRef.current.messages
+    if (!convId || msgs.length === 0) return
+    window.electronAPI.saveConversation(agentMessagesToConversation(msgs, convId, title))
+      .catch((err) => console.warn('[useHostedAgentSession] save failed:', err))
+  }, [agentStatus, convId, title])
+
+  // createOptions may change per render (projectId / prompt override follow
+  // the form); a ref keeps `send` referentially stable without stale values.
+  const createOptionsRef = useRef(createOptions)
+  useEffect(() => { createOptionsRef.current = createOptions })
+
+  /** Ensure the main-hosted session exists, then hand the message to the
+   *  engine — restoring stored context first when the mirror is behind. */
+  const send = useCallback((text: string, annotation?: string): void => {
+    const content = text.trim()
+    if (!content || !convId) return
+    void (async () => {
+      try {
+        await window.electronAPI.agentSessionCreate(convId, { title, ...createOptionsRef.current })
+        const snap = await window.electronAPI.agentSessionSnapshot(convId).catch(() => null)
+        if (!snap || (snap.messages.length === 0 && snap.status.status === 'idle')) {
+          const stored = await window.electronAPI.hydrateConversation(convId).catch(() => null)
+          if (stored?.messages?.length) {
+            const msgs = storedMessagesToAgentMessages(stored.messages)
+            stateRef.current.messages = msgs
+            sync(stateRef.current)
+            await window.electronAPI.agentSessionHydrate(convId, msgs, stored.historySummary
+              ? { text: stored.historySummary, firstKeptId: stored.historySummaryFrontier ?? '' }
+              : null)
+          }
+        } else if (snap.messages.length > stateRef.current.messages.length) {
+          // The mirror fell behind the live session — catch up before extending.
+          seedSessionState(stateRef.current, snap)
+          sync(stateRef.current)
+        }
+        await window.electronAPI.agentSessionAsk(convId, annotation ? content + annotation : content)
+      } catch (err) {
+        // A failed send (no session, provider error) must be visible, not just
+        // a console line — surface it through the same status the loop reports.
+        stateRef.current.agentStatus = { status: 'error', error: err instanceof Error ? err.message : String(err) }
+        setAgentStatus(stateRef.current.agentStatus)
+      }
+    })()
+  }, [convId, title, sync])
+
+  const engineCall = useCallback((method: string, ...args: unknown[]): void => {
+    if (convId) void window.electronAPI.agentSessionEngineCall(convId, method, args)
+  }, [convId])
+
+  return {
+    messages,
+    agentStatus,
+    streamingBlocks,
+    isBusy: isActiveStatus(agentStatus),
+    restoring,
+    send,
+    cancel: useCallback(() => { if (convId) void window.electronAPI.agentSessionCancel(convId) }, [convId]),
+    engineCall,
+    refreshOptions: useCallback(() => { if (convId) void window.electronAPI.agentSessionRefreshOptions(convId) }, [convId]),
+  }
+}

@@ -343,16 +343,22 @@ src/extension/
 │   ├── tool-router.ts            # tool.call → tab → content → tool.result
 │   └── cdp.ts                    # execute_js 的 CSP 回退
 ├── content/
-│   ├── index.ts                  # 浮层宿主:FAB + Shadow DOM 挂载 + 展开状态
+│   ├── index.tsx                 # 浮层宿主:FAB + Shadow DOM 挂载 + 展开状态
+│   │                             #  + 以 text 内联注入 ui/styles.css 与 x-markdown light 主题
 │   ├── page-tree.ts              # 移植 dom-tree.ts
 │   ├── page-tools.ts             # 移植 dom-tools.ts(改名 page_*)
+│   ├── page-js.ts                # 求值 + 结果序列化
 │   └── bridge.ts                 # port 通道:EVENT/TOOL_CALL/…
 ├── ui/
-│   ├── App.tsx                   # 会话面板
-│   ├── useSession.ts             # 事件归约 → 消息镜像(§3.1.4)
-│   ├── Transcript.tsx / Composer.tsx
-│   ├── cards/{ApprovalCard,AskUserCard,IterationCard}.tsx
-│   └── styles.css                # 注入 Shadow Root 内,不经页面
+│   ├── App.tsx                   # 面板外壳:FAB / header / 横幅 / 会话列表
+│   ├── usePanel.ts               # 事件归约 → 消息镜像(§3.1.4)+ 授权档位
+│   ├── Transcript.tsx            # 消息流 ← components/chat/TranscriptView
+│   ├── MessageBlocks.tsx         # 各块渲染 ← MessageGroup/SegmentView/CommandCard/ErrorDisplay
+│   ├── Composer.tsx              # 输入卡 + 授权下拉 ← Composer/InputArea
+│   ├── icons.tsx                 # 内联 antd 图标 d 数据(content script 不 import antd)
+│   ├── format.ts                 # toolBlockSummary / 耗时 / Token 的逐字副本
+│   ├── markdown.ts               # 转义优先的渲染器 + GFM 表格/嵌套列表
+│   └── styles.css                # 注入 Shadow Root 内,不经页面;每条规则注明 renderer 出处
 └── options/{index.html,index.ts}
 ```
 
@@ -413,31 +419,107 @@ src/extension/
 - [x] **M0.3 端口发现与配对**:确定性扫描 8765–8779(注意 `ws` 会把 httpServer 的 error 转发到 wss,两端都要挂监听);`GET /token`(Origin 限定 + Host 回环);连接层拒绝网页 Origin(4403)
 - [x] **M0.4 会话补全**:`session.create` 支持恢复既有 sessionId(`store.hydrate`)、`session.list/delete/rename`(按 clientId 隔离,跨客户端 forbidden)、`agent.ask` 透传 pageContext(→ 引擎 opts → 提示词动态 Current Page 段);status 事件携带 `tools`(StatusToolInfo);桌面会话列表 SQL 排除 hosted origin(裁定 3)
 - [x] **M0.5 插件骨架**:`src/extension/`(manifest + background{config,discovery,ws-client,index} + options)+ `scripts/build-extension.js` + `tsconfig.extension.json`(root references 已挂);`npm run build:extension` 出包 `out/extension/`,可加载已解压;SW 自动发现+配对,options 显示连接状态
-- **验收结果**(tests/agent-protocol-ws.test.ts,14 用例):网页 Origin 拒 4403 / 扩展 Origin 与裸客户端放行;GET /token 三态(扩展 200、网页 403、异 Host 403);端口被占在 +1..+14 内确定性回退;resume=true 且 hydrate;ask 透传 pageContext 并经 tool.result 完成;200ms 超时回注错误且 transport 解绑;孤儿 tool.result 无害;approval/ask_user/iteration_limit 往返;session.list/rename/delete 按 origin 隔离;提示词含/不含 Current Page;全量 346 测试绿;三套 tsc 我方文件零错误(DB 依赖用例走注入 store,better-sqlite3 Electron-ABI 无法在 vitest 加载为既有已知缺口)
+- **验收结果**(tests/agent-protocol-ws.test.ts,14 用例):网页 Origin 拒 4403 / 扩展 Origin 与裸客户端放行;GET /token 三态(扩展 200、网页 403、异 Host 403);端口被占在 +1..+14 内确定性回退;resume=true 且 hydrate;ask 透传 pageContext 并经 tool.result 完成;200ms 超时回注错误且 transport 解绑;孤儿 tool.result 无害;approval/ask_user/iteration_limit 往返;session.list/rename/delete 按 origin 隔离;提示词含/不含 Current Page;全量测试绿;三套 tsc 我方文件零错误(DB 依赖用例走注入 store,better-sqlite3 Electron-ABI 无法在 vitest 加载为既有已知缺口)
 
-### M1 页面内浮层 + 流式对话打通
+### M0.6 连接缺陷修复:插件"始终连不上" ✅ 2026-09-15
 
-- [ ] **M1.1 消息镜像与渲染**:`ui/useSession.ts` 按 §3.1.4 归约 `messages_append`/`streaming_blocks`/`tool_status`;Markdown 渲染
-- [ ] **M1.2 浮层宿主(裁定 1/5)**:FAB + Shadow Root 挂载(React 在隔离世界,无需二次注入)+ 导航后重挂与展开状态持久化;自注入节点加入 DOM 管线 skip 名单
-- [ ] **M1.3 输入与生命周期**:发送/停止(`agent.cancel`)/重连提示/`queued` 队列位次;`tabId↔sessionId` + `chrome.storage.session` 持久化
-- [ ] **M1.4 会话恢复与历史**:SW 唤醒与桌面重启后 `session.create{sessionId}` + `agent.history` 回填;**面板内会话列表**(`session.list`/`delete`/`rename`)——桌面端看不到这些会话(裁定 3),面板是唯一入口,故不在 M4
-- [ ] **M1.5 桌面配套**:服务设置页「浏览器插件」卡(连接状态/端口/token/在线客户端);会话列表排除扩展会话
-- **验收**:任意网页打开浮层连续对话,页面刷新与桌面端重启后上下文不丢;浮层在主流站点不被页面 CSS 破坏;桌面会话列表**不出现**扩展会话,而浮层内可切换历史会话
+> 现场:options 一直显示「未连接(ws://127.0.0.1:8765,状态 closed)」。先用 Node 探针复现插件握手路径(扩展 Origin + 正确 token)证明**服务端完全正常**(liveness/`GET /token`/`hello` 三态均 OK),缺陷 100% 在插件侧。
 
-### M2 页面工具(看 / 点 / 填)—— 价值拐点
+- [x] **根因(致命)**:`WsClient.request()` 的门禁写成 `!socket || !this.helloDone`,而 `helloDone` 要等 hello **响应回来**才置位——hello 本身也要走 `request()` 发送,于是 hello 永远被自己的门禁以 `not connected` 拒绝 → teardown → 重连 → 再拒绝,死循环。修复:门禁放行 `hello` 自身(`!helloDone && method !== 'hello'`)。
+- [x] **同类隐患**:alarm 每 30s 直接 `state.client.connect()`,会"复活"已被 `close()` 的旧客户端对象;`ensureClient()` 无并发保护,SW 冷启动 + `onInstalled` + alarm + options 重连可能并发造出多个同 clientId 客户端 → 服务端反复踢旧连接(4409)形成踢连战争。修复:alarm 统一走 `ensureClient()`;`ensureClient` 加 in-flight 串行化 + `forceRediscover` 合并为一次补跑;`close()` 清掉重连定时器(定时器不再复活手工关闭的客户端)。
+- [x] **可诊断性**:`WsClient` 记录 `lastError`/`lastCloseCode`(服务端 4401/4403/4409 提为 `CloseCodes` 常量,两端共用一个源);`connect()` 的 ready promise 在失败时也落定(原来永不 settle);options 状态行显示失败原因,SW 打印连接迁移;收到 4401 自动清 token 并重新配对(一次性,防抖)。
+- **回归测试**(tests/extension-ws-client.test.ts,5 用例,mock WebSocket):握手成功、握手前业务请求被拒且握手后放行、hello 被拒时 ready promise 落定并记录原因、4401 关闭码记录、手工 close 抑制重连并结算在途请求。**已验证这 5 个用例在旧代码下全部失败、在修复后全绿**——即该缺陷此前无法被发现。
 
-- [ ] **M2.1 DOM 管线移植**:`page-tree.ts` + fixture 测试(移植 Anywhere `test/dom-tree.test.ts`)
-- [ ] **M2.2 `page_*` 工具定义 + tier/路由改造**:`built-in-tools.ts` / `tool-instructions.ts` / `builtin-gate.ts` / `DEFAULT_ENABLED_TOOLS`;抽出 `tierOfTool`,补齐 `dispatchToolExecution` / 超限旁路 / **`approveTool` 兜底** 三处路由点(§3.4.2.1–§3.4.2.2)
-- [ ] **M2.3 执行链路**:`hostedToolCall` 五处落点 + `ToolExecutor.execPageTool` + content script `page-tools.ts` + `tool-router.ts`
-- [ ] **M2.4 在线门控**:扩展离线 → `page_*` 从工具表消失
-- [ ] **M2.5 扩展会话白名单**:`allowedTools = page_* + ask_user`(会话创建时注入),确认模型看不到 `browser`/`exec`/`write`
-- **验收**:面板里说"总结这个页面"能拿到内容;说"把这个表单填了"能点到/填对;下拉/滚动/等待可用;扩展掉线时模型不再尝试页面工具并给出可解释的失败
+
+### M1 页面内浮层 + 流式对话打通 ✅ 2026-09-15
+
+- [x] **M1.1 消息镜像与渲染**:事件归约**复用桌面同一份 reducer**——把 `session-mirror`/`session-messages` 从 `src/renderer/src/utils/` 下沉到 `src/shared/agent-session/`(3 处渲染层调用点 + 1 处测试改引用),插件 `ui/usePanel.ts` 直接吃 `applySessionEvent`,不写第二套协议解释;`ui/markdown.ts` 是无依赖渲染器(先转义再生成标签、href 过 scheme 白名单)
+- [x] **M1.2 浮层宿主(裁定 1/5)**:`content/index.tsx` 建宿主元素 + Shadow Root(样式以 `text` loader 内联注入,页面 CSS 进不来/我们不污染页面);React 直接跑在隔离世界,无需二次注入;CSP 不涉及面板自身。宿主标 `data-pulsemind-panel`,供 M2 DOM 管线 skip;上次展开状态存 `chrome.storage.session`,页面导航/刷新后按快照恢复
+- [x] **M1.3 输入与生命周期**:`bridge.ts` 定义面板 ↔ worker 的消息契约(`panel/ask|cancel|attach|set-open|…`);发送/停止(停止走 `agent.cancel`)、未连接横幅 + 打开设置、Enter/Shift+Enter、流式光标;`tabId↔sessionId` 双向映射 + 面板开关均落 `chrome.storage.session`(SW 被杀不丢)
+- [x] **M1.4 会话恢复与历史**:`background/panel-bridge.ts` 承接会话生命周期——`attach` 时先 `session.create{sessionId}`(服务端 hydrate)再 `agent.history` 回填,id 已被删除时跟随服务端返回的新 id 重新绑定;面板内会话列表 `session.list`/`delete`/`rename` + 新会话
+- [x] **M1.5 桌面配套**:`SERVICE_GET_STATUS` 增加 `clients`(`ws-server` handle 新增 `clients()`)/`wsUrl`/`extensionDir`;`EnvironmentSettings` 增加「浏览器插件」卡(在线客户端 / 复制连接地址 / 加载指引 + 打开扩展目录);会话列表排除扩展会话沿用 M0.4
+- **验收结果**:`tests/extension-markdown.test.ts`(7)+ `tests/extension-panel-bridge.test.ts`(10,fake chrome + fake client)+ `tests/extension-ws-client.test.ts`(5)全绿;全量 390 测试 44 文件绿;三套 tsc 我方文件零错(extension 0);`npm run build` + `npm run build:extension` 均通过(content.js 294KB,React 走 production build)
+- **联调验证(真机跑插件代码)**:用 esbuild 把 `discovery + ws-client + panel-bridge` 打到 Node,配 fake chrome 连**正在运行的桌面端**:新建会话 → 全新 bridge(SW 重启模拟)`attach` 恢复**同一个** sessionId → 事件只推给绑定 tab → 删除后解绑。未跑真实模型(避免动用户的额度),`agent.ask` 的流式行为留待手动验收
+- **过程中发现并修掉的两个真实缺陷**(都不在插件侧):
+  1. `panel-bridge.snapshot` 原来只调 `agent.history` 不先 `session.create`:桌面重启 / SW 冷启后服务端没有该会话,`history` 会从**新造的空引擎**返回空历史 → 面板丢上下文。改为先 resume 再取历史
+  2. `updateConversationOrigin` 原来是纯 `UPDATE`:会话创建发生在首条消息落库**之前**,此时行还不存在,UPDATE 空转 → 之后由持久化 INSERT 出来的行没有 origin,导致扩展会话**既出现在桌面列表、又不在面板列表**。改为 upsert(顺带补静态断言测试)
+
+### M1.6 面板视觉对齐主对话 + 授权/问答回流 ✅ 2026-09-15
+
+**背景**:用户验收 M1 时说「我发现你又搞了一套 UI,我要和主对话保持一致的 UI」。M1.1 只做到了**消息模型与协议**一致,视觉是另一套(自造气泡、文字图标、系统字体)。裁定:保留 Shadow Root + 手工对齐(**不**引入 antd / `components/chat/*`,**不**改成 iframe),能力面 = 只读消息流 + 输入框 + 授权按钮。
+
+- [x] **对齐方式(为什么是"手工抄值")**:桌面聊天**没有可复用的样式表** —— 它的外观是 antd `ConfigProvider` 的 `algorithm`/`fontFamily` 两个 token + `components/chat/*` 里成百上千条内联样式。因此对齐 = 把每条视觉事实逐字抄进 `ui/styles.css`,**一条规则一个自定义属性、注释里写上它在 renderer 里的出处**(如 `--pm-user-bg: #f0f2f4` ← MessageGroup 用户气泡、`--pm-inset: 16px`、6px 滚动条 ← `renderer/index.html`)。`ui/MessageBlocks.tsx` 逐组件对应 `MessageGroup` / `SegmentView` / `CommandCard` / `ErrorDisplay` / `StreamingCursor`。
+- [x] **Markdown 不复制、直接注入同一份主题**:`content/index.tsx` 把 `@ant-design/x-markdown/themes/light.css` 以 **`text` loader 内联**注进同一个 Shadow Root —— 与桌面吃的是同一个文件,主题包升级时自动同步。**顺序是承重的**:主题先、`ui/styles.css` 后,这样面板的修正能赢平局;唯一必须赢的一条是 `table { overflow: hidden }`(主题给的是对的,桌面对话列 1000px 宽;面板只有 380px,宽表格必须横滚)。
+- [x] **明暗主题策略**:面板**只做浅色**,与主对话一致 —— 桌面的消息列本身就硬编码 `.x-markdown-light` + `#f0f2f4` 气泡,不跟随 `settings.theme`,所以镜像浅色才是忠实的,也不需要新增主题协议。
+- [x] **红线:content script 不 import antd / `@ant-design/icons`** —— cssinjs 会把样式注进**页面的** `document.head`。`ui/icons.tsx` 因此内联逐字抄的 antd 图标 `d` 数据(24 个),`Icon` 组件按 `currentColor` 渲染 + `pm-spin` 动画。
+- [x] **授权 / 问答回流(消除"死按钮")**:面板的授权按钮不是面板私有概念 —— 新协议 `session.setApprovalMode` 写的就是桌面端那颗按钮写的 `conversations.approval_mode`(`session-manager.refreshSandboxContext` 每条消息重读该列,所以**引擎侧零改动**);`panel/approval-response` / `panel/answer` 是**单向通知** `approval.response` / `ask_user.response`,靠 `callId === toolUseId` 与服务端既有的 park-and-timeout 对上(`hosted/prompts.ts`,审批 120s / ask_user 300s)。会话还不存在时先选档也成立:选择按 tab 存 `chrome.storage.session`,`ensureSession` 建好会话后回放(`applyTabApprovalMode`)。
+- [x] **只读消息流**:操作行固定走桌面的 `viewOnly` 语义(复制 / 下载 + 耗时 / 上行 / 下行 / 缓存命中),不做点赞收藏 —— 那两者要回写消息元数据,面板会话没有可写的行。
+- **验收结果**(新增 7 用例,全量 **439 绿 / 47 文件**):`tests/extension-markdown.test.ts` 9(原标题层级断言 `<h3>` 随渲染器改真实层级而更新,新增嵌套列表 / 表格对齐 / `<hr>`)、`tests/extension-panel-bridge.test.ts` 14(补 `FakeClient.notify`,新增 `panel/set-approval` 会话前后两条路径 + 回放 + 桌面值优先 + 两条单向通知 + 断线拒绝)。扩展 tsc **0 错**;node/web tsc 与 HEAD 基线逐条一致;`npm run build` + `npm run build:extension` 通过
+- **真机验收(`scripts/probe-panel-render.mjs`,当时 23/23,现 29/29——后续补了 M2.7 的两项边距断言)**:面板的**外观**同样够不着 vitest(无布局引擎、无 Shadow-DOM 层叠),也不能靠读源码确认。脚本把**生产组件**(不是副本)+ 同序的两个 `<style>` 挂进 Shadow Root,渲染 4 个 fixture(主对话 / 等待批准 / ask_user / 出错+空态),用计算样式断言:主题在 Shadow Root 内生效(h1 24px/600)、应用字体族到位、气泡 `#f0f2f4`/圆角 12/右对齐、输入卡圆角 20 + `rgba(80,100,200,.2)` 阴影、工具头 `#f5f5f5` 与待批准 `#fff7e6`+`#ffd591`、宽表格**真的能横滚**(不是只有 `overflow-x:auto`)、代码块横滚、面板自身 0 横滚条、字块不越界、全 SVG 无 `<img>`、操作行是 viewOnly 形态、深色 CommandCard `#1e1e1e` + 跳过/运行按钮、ask_user 四选项 chip + 自定义输入、错误卡与空态、断线时输入框禁用,以及"没有一段文字与背景同色"(真机发现:深色卡片的 `color` 是继承的,必须逐叶子节点量)。截图落在 `$(os.tmpdir())/pm-panel-shots/` 供人眼与主对话并排看
+- **与桌面端的有意差异**(两条,都记在 `ui/Transcript.tsx` 头部):① 不做执行段分组 —— 桌面把一次执行的 tool_use→tool_result 折成一个可折叠段(`ExecutionSegment`),面板按消息顺序平铺工具卡,内容相同、少一层折叠;② 工具卡默认折叠规则与桌面一致(`useState(block.name !== 'ask_user')`),因此**授权按钮也在展开后才露出** —— 这是照抄桌面行为,不是漏渲染
+
+### M2 页面工具(看 / 点 / 填)—— 价值拐点 ✅ 2026-09-15
+
+- [x] **M2.1 DOM 管线移植**:`content/page-tree.ts`(扁平树 + `[n]`/`*[n]` 编号 + `selectorMap: Map<number, Element>`,无 xpath;属性白名单 + 去重 + 20 字符截断;`MAX_NODES = 4000` 并**显式报截断**)+ `content/page-js.ts`(函数体三形态归一、结果序列化、CDP 表达式构造);`viewportExpansion` 的确切语义见下方「真机发现 3」
+- [x] **M2.2 `page_*` 工具定义 + tier/路由改造**:`shared/agent-protocol/page-tools.ts` 作单一事实源(8 个工具名 + 只读集 + 会话白名单),被工具定义 / tier 判定 / `DEFAULT_ENABLED_TOOLS` / 会话白名单 / 插件分发共 **5 处**引用;新增 `engine/tool-tiers.ts`(`pageToolTier` / `tierOfTool`);三处路由点全部补齐——`dispatchToolExecution` 按 tier 分流(页面只读进并行读阶段、页面写逐个串行且过 `requiresApproval`)、`approveTool` **新增 `isPageTool` 分支**(否则会掉进 shell 兜底被当命令执行)、`handleToolUseResponse` 的 held 集合纳入 `pageHeldTools`。**页面工具刻意不进 `READ_TIER_TOOLS`/`WRITE_TIER_TOOLS`**——那两个集合选的是*执行器*不是*审批档*
+- [x] **M2.3 执行链路**:桌面侧 `ToolExecutor.execPageTool` / `execPageReadTools` 走 `hostedToolCall`;插件侧 `content/page-tools.ts`(8 个执行器 + 点击全指针/鼠标序列 + 原生 setter 写值)+ `background/tool-router.ts`(三种失败态各自结算,不靠超时)+ `background/cdp.ts`(**CSP `unsafe-eval` 回退**:content script 求值被拒 → `chrome.debugger` + `Runtime.evaluate` 在主世界重试;判定按 tab 缓存、导航即失效)
+- [x] **M2.4 在线门控**:`agentClientRegistry.isHostedCapable(sessionId)` 由 `session-manager` 在 `ask`/`refreshOptions` 写入 `engine.opts.hostedAvailable`,`tool-collection` 据此过滤 `category === 'page'` → 扩展离线时模型连工具定义都看不到
+- [x] **M2.5 扩展会话白名单**:`session.create` 对 hosted 客户端注入 `allowedTools = page_* + ask_user`(恢复路径同样注入),模型在扩展会话里看不到 `browser`/`exec`/`write`
+- **验收结果**(新增 43 用例,全量 **433 绿 / 47 文件**):`tests/extension-page-tree.test.ts`(24)、`tests/extension-tool-router.test.ts`(9)、`tests/extension-page-tools-routing.test.ts`(10);扩展 tsc **0 错**,web 23 / node 28 与 HEAD 基线逐条一致;`npm run build` + `npm run build:extension` 通过。桌面侧路由用例做过**变异验证**:删掉 `approveTool` 的页面分支、删掉在线门控各产生预期失败,恢复后全绿
+- **真机验收(真实 Chromium,`scripts/probe-page-pipeline.mjs`,23/23)**:jsdom 既无布局引擎也没实现 `elementFromPoint`,因此可见性 / 遮挡 / 视口 / 滚动这些几何判定**在单测里全部被短路**——脚本把同一份源码打进真浏览器跑 fixture,覆盖:面板自身 DOM 不被读、被 fixed 浮层遮挡的按钮不编号、可点按钮编号、`display:none`/`aria-hidden` 子树跳过、**shadow DOM 穿透且可编号**、滚动容器带 `data-scrollable`、视口内外编号差异、`page_click` 真触发点击、`page_input` 原生 setter + `input`/`change`、`page_select` 按可见文本匹配、失效索引大声失败、内层容器滚动、滚动后索引仍可复用、窗口滚动、`page_execute_js` 参数绑定、超限页面被截断且带告警。脚本**刻意不加载插件**(同 clientId 的第二个客户端会把用户当前连接踢掉),只直接驱动 content script 这一半
+- **过程中发现并修掉的三个真实缺陷**(前两个是移植自 Anywhere 的,第三个是移植后暴露的设计缺口):
+  1. **零高容器整棵剪枝 → 整页读成空**:`isVisible` 把「矩形无尺寸」当不可见并**连子树一起丢**;而 `<html>`/`<body>` 在所有子元素都绝对定位时会坍缩成高度 0(画布型 / 仪表盘型页面常见)→ `page_get_content` 只返回空的 `<root></root>`。改为把「级联隐藏」(own DOM / `aria-hidden` / `hidden` / `display:none` / `visibility:hidden`)与「自身无盒」拆成两个判定:前者剪枝,后者只决定**能否被编号**,无盒容器照样下钻。Anywhere 原版同样有此问题
+  2. **shadow DOM 里的控件永远拿不到编号**:`document.elementFromPoint` 返回到 shadow **宿主**就停,而宿主是被测元素的*祖先*,`el.contains(top)` 不成立 → 所有 web component 内部控件都编不上号(连文本都会因 `isTop=false` 被吞掉)。`hitTest` 改为逐层下钻 `shadowRoot.elementFromPoint`(带深度上限),并在每一层都检查面板自身 DOM
+  3. **视口裁剪的契约不清**:真机实测 5600px 页面,限视口读 3020 字符 vs 全页读 2750 字符——**限视口反而更贵**(编号从 40 降到 5,但正文照样全量返回,只是视口外的交互元素退化成普通元素行多印了标签)。裁定:**视口只约束编号(可操作集),正文始终全量返回**,这样"总结这个页面"一次读就能成型;提示语改为「视口外的元素不带编号——需要操作它们时先 `page_scroll` 再 `page_get_content` 取新索引」,把契约写进输出而不是留在实现里
+- **另外修掉一个移植来的潜伏缺陷**:Anywhere 的 `page_execute_js` 用 `new AsyncFunction(body)` 造函数(**没有参数名**),`args` 只能靠 `arguments[0]` 拿到——文档里写的 `args.x` 写法实际是坏的。改为显式命名参数(CDP 路径同样改),并补了参数绑定的单测与真机检查
+- **偏离/取舍记录**:① `chrome.debugger` 声明为**普通权限**而非按需申请——`chrome.permissions.request` 需要用户手势,而工具调用发生在 service worker 里给不出手势,「按需授权」在 MV3 下不可实现;`shouldUseDebugger()` 仍保证权限缺失时不静默失败,安装期的权限提示成本由裁定 5 一并接受。② own-DOM 识别用 `data-pulsemind-panel` 属性而非 id 前缀。③ `MAX_NODES` 约束的是**走过的节点总数**(不是交互元素数)并回报 `truncated`。④ 新增的 4 个几何用例用**桩 `offsetWidth` + 桩矩形**把 jsdom 的几何路径打开,这样两个真机缺陷在单测里也有回归(变异验证:分别还原两处修复 → 3 个 / 1 个用例失败)
+
+### M2.6 缺陷修复:反向 RPC 绑定生命周期 ——「ask_user 点击无响应」 ✅ 2026-09-15
+
+> 现场:面板里模型问完话,点选项没有任何反应 —— 卡片不动、循环不动、也没有报错。先做二分:用真浏览器把**生产 `App`** 挂在 `chrome.runtime` 桩上点 chip,`panel/answer{callId:'toolu_ask_1',response:'北京'}` 正确发出(数组式与逗号字符串式 `choices` 都验过),**内容脚本这一半是干净的** —— 断点在下游。于是顺着 `panel-bridge → ws-server → hostedPromptRouter → engine` 逐段读代码。
+
+- [x] **根因(致命)**:**客户端绑定的生命周期错了**。`client-registry` 的注释写的是「绑定活过一次 `agent.ask` 往返」,`ws-server` 也确实在 ask 的 `.finally()` 里 `unbind`。但 `agentSessionManager.ask` 是**启动循环就返回**(`void startLoop(...)`,不 await 整轮);而引擎在 `awaiting_approval` / `awaiting_user_input` 时会把循环**停在那里并让 loop promise 落定**。于是绑定在"循环起跑后几毫秒"就被释放,而 `approval.request` / `ask_user.request` 要等模型回话(数秒后)才发出 → `routeAskUser` 查 `agentClientRegistry.get(sessionId)` 拿到 `undefined` 直接 return → `hostedPromptRouter.asks` 始终为空 → `handleAskUserResponse` 静默 no-op。用户看到一个"死按钮",日志里一行不响。
+- [x] **同一条根因的连带损坏**:`hostedToolProxy.call` 同样从注册表取 transport,取不到就 `reject('当前会话没有连接的浏览器客户端,无法执行页面工具')` —— 也就是说 **M2 的页面工具在真实运行中从来没成功过**(证据见下),M3.1 / M3.2 的审批路由同理。
+- [x] **修复(把生命周期挂到连接上)**:`ws-server` 改为**每条连接一个 transport**(`hello` 之前就建,所以 `clientId` 用 getter 透传,不能值拷贝 —— 否则永远是 `'unknown'`,hosted 判定恒假);`agent.ask` 只 `bind` 不再 `unbind`;连接断开时在 `drop()` 里统一释放 —— 新增 `agentClientRegistry.unbindTransport(transport)` 按 **transport 身份**反查,这样同 clientId 顶替旧连接时,晚到的拆除不会误删新连接的绑定。
+- [x] **为什么此前没有暴露**:`tests/agent-protocol-ws.test.ts` 的 fake `ask` 会 `await askHandler(...)`,即"停在循环里" —— 现实里不存在这种时序,它恰好把缺陷遮住了。改为**延后触发 handler**(`setTimeout 0`)以复刻真实时序:`ask` RPC 先落定,反向流量后到。
+- [x] **变异验证**:把 ask-scoped 的 `unbind` 放回去 → 该文件 **5 个用例失败**(页面工具转发、审批请求、ask_user 请求、超时结算、断连释放),恢复后 16/16 全绿。即这个缺陷现在**可被发现**。
+- [x] **可诊断性**:`handleAskUserResponse` / `handleApprovalResponse` 在 callId 无对应 pending 时不再静默,打印 `[HostedPrompts] … for unknown callId`;面板 `usePanel` 的两条作答路径补上 `ok:false` 上报(与 `setApprovalMode` 一致),断线时不再表现成"点了没反应"。
+- **验收结果**:全量 **440 绿 / 47 文件**(该文件 16,新增「断连释放绑定」1 例);扩展 tsc 0 错,node 28 与基线逐条一致(我方文件 0);`npm run build` + `npm run build:extension` 通过
+- **真机验收(新增 `scripts/probe-panel-ask-user.mjs`,16/16)**:把真 `App` 挂在 `chrome.runtime` 桩上,**用真鼠标点击**(隐藏 / 被遮挡 / `pointer-events:none` 的 chip 会在这里失败,而不是让用户困惑),覆盖:数组与逗号字符串两种 `choices`、点 chip 只发一条且 `callId === toolUseId`、自定义输入回车、多选需点确认且合并多项、`待批准` 的页工具展开后 批准 / 跳过 各发一条 `panel/approval-response`。**不加载插件、不调模型**,不碰用户额度与连接
+- **审计侧证据**:`~/.pulsemind/db/pulsemind.db` 的 `audit_log` 当天仍在写入(最后一条 05:35Z),但全表 `hosted-tool` / `hosted-approval` 作用域**一条都没有**。`hostedToolProxy` 只在拿到 transport 之后才写审计,`routeApprovals` 则在发请求**之前**就写 `requested` —— 所以"零记录"能确定的是:**反向 RPC 从未把一次请求送达客户端**(页面工具因此从未成功过一次,审批提示从未发出过一次);至于页面工具是否被调用过,这个表答不了(取不到 transport 的 `call` 直接 reject、不写审计)。修复后这两类记录应开始出现,可以作为线上核对点
+
+**顺带发现、本次未修的缺口(是否排期由你定)**:
+1. **扩展会话的正文从未落库**。持久化在**客户端**侧(`useConversationPersistence` / `useHostedAgentSession` 在交换落定后 `saveConversation`),而 `AgentServiceConversations` 只有读(`hydrate`/`listByOrigin`/`origin`)没有任何写入口,插件端也没有"保存"这一步 → 扩展会话的 `messages` 表恒为空(DB 里两个扩展会话各 0 条消息),`conversations` 行只有标题与 origin。后果是 M0.4 那句"桌面重启后 `session.create` 恢复对话"对扩展会话实际**恢复出空历史**。修法需要先定:由服务端在消息变更时落库(新增写入口 + 去抖),还是给协议补一个客户端保存调用
+
+### M2.7 缺陷修复:气泡正文下方多出的 16px —— x-markdown 的两层样式只注入了主题 ✅ 2026-09-15
+
+> 现场:用户发完消息后「气泡中的文字下方有个多余的 16px 的 margin」。用户给的就是数值,所以先按数值反查而不是靠眼看。
+
+- [x] **根因**:x-markdown 把 Markdown 的样式分成**两层**,一层取值、一层归零。取值层是主题(`themes/light.css`,挂在 `.x-markdown-light`,由 `content/index.tsx` 注入),它给 `p { margin: 0 0 16px }`、`li { margin: 0 0 14px }`、表格 `24px`;**归零层是包自带的 `dist/x-markdown.css`,挂在组件根类 `.x-markdown`**,里面有 `p:last-child / ul:last-child / ol:last-child / li:last-child / pre:last-child / table:last-child { margin-bottom: 0 }`。桌面端的根是 `clsx('x-markdown', className)` —— **两个类都在**,所以归零层一直生效;面板的根是自渲染的 `pm-md x-markdown-light`,没有 `.x-markdown`,也从未 import 那份文件 → 归零层整层缺席,每个块的下边距都留在气泡里,用户气泡里看就是正文下方多 16px(气泡 padding-bottom 只有 8px,变成 24px)
+- [x] **修复**:在 `ui/styles.css` 主题修正区按同一份清单补齐 last-child 归零(取值仍由主题的 `--margin-*` 决定,两边只差"有没有被清零")。**不**把 `dist/x-markdown.css` 整份注进来:它是按 `.x-markdown` 选择器写的,面板的根没有这个类,注了也不生效;而那层还带着 `pre { white-space: pre-wrap }`、`table { width: max-content }` 与调试面板样式,整层引入会顺手改掉代码块换行/表格宽度这些 M1.6 已经验收过的行为。first-child 的 margin-top 不补——主题给的上行本来就是 0
+- [x] **回归**:`scripts/probe-panel-render.mjs` 增加两项断言——正文最后一块 `margin-bottom === 0px`、气泡底边到正文的距离 `=== 8px`(只剩气泡自己的 padding)。**变异验证**:删掉这条 CSS,两项分别报 `16px` / `24px below the text` 并失败,即用户的描述被客观复现(29/29 → 27/29)
+- **验收结果**:探针 **29/29**;全量 440 绿 / 47 文件;扩展 tsc 0 错;`npm run build:extension` 通过
+
+### M2.8 缺陷修复:输入内容后消息不再自动滚动 ✅ 2026-09-15
+
+> 现场:用户「输入内容时消息要能自动滚动」。面板里跟随末尾的代码本来就在,所以先把"它在什么条件下失效"量出来,而不是直接改。
+
+- [x] **根因**:"是不是到底了"这个判断**在内容长高之后现量**,而不是记在状态里。`Transcript` 的跟随副作用原来的写法是 `const nearBottom = scrollHeight - scrollTop - clientHeight < 80; if (!nearBottom) return; endRef.scrollIntoView(...)` —— 副作用在 DOM 提交后运行,`scrollHeight` 已经是**长高之后**的值,而 `scrollTop` 还停在原位:内容一长高,量出来的距离就自己越过了阈值,于是这一次不跟随;下一次再长,距离更大,**从此整个回合都不再跟随**。真机量到的正是这个形态:一次整条回复追加后落在末尾下方 691px,后续流式块分别 1020px / 1521px,距离只增不减。桌面端没这个毛病,是因为它的 `isNearBottomRef` **只由 `handleScroll`(真实 scroll 事件)写**,内容长高不会去动它(`ChatView.tsx`,`startBottomPin` 另用于切换会话后的落底)
+- [x] **修复**:`ui/Transcript.tsx` 拆成两半,与桌面端同构 —— ① `onScroll` 处理器写 `followRef`(用户真的滚动才改变"跟不跟"),② 每次提交后 `useLayoutEffect` 贴底(`el.scrollTop = el.scrollHeight`),并且**在绘制前**完成,新内容不会先在旧位置闪一帧。阈值 `NEAR_BOTTOM_PX = 80` 提为具名常量(面板滚动区约 450px 高,是主对话 100px 规则的等比缩小)
+- [x] **顺带修掉同一行的第二个毛病**:`scrollIntoView({ block: 'end' })` 停在**滚动端口边缘**,而 `.pm-transcript` 自带 `padding-bottom: 8px` —— 即使判对了要跟随,末尾也留在可视区下方 7px。改成直接写 `scrollTop` 后距离恒为 0;顺带把这次写入限制在元素自身,不去动任何祖先滚动容器。被删掉的 `endRef` 只是这个调用的落点
+- [x] **回归**:新增 `scripts/probe-panel-scroll.mjs`(17 项断言)。它比 M2.7 的渲染探针更靠上游:挂的是**真 `App`**、两个样式表按 `content/index.tsx` 的同序注入,并且通过**真 `chrome.runtime.onMessage` 通道**喂 `panel/event`(`listen()` 注册的监听器被桩接住),滚动则用**真 `wheel`**。覆盖:一次整条回复追加 / 两个流式块(每块都远大于面板高度)、用户上滚后新内容**不被拽回**(且"到末尾的距离"不会在读者眼底下缩水)、回到底部后**恢复跟随**、收起再打开落在最新一条、发出消息后气泡真的在可视区内,以及面板自身的写入不滚**宿主页面**(测试页刻意 3000px 高)
+- **同一根因的第二个症状(探针顺带量出)**:原实现下**收起再打开会停在最旧的一条**(挂载时 `scrollTop = 0`、内容又比面板高 → 距离远超阈值 → 不跟随),探针里表现为"离末尾 1521px";修复后落在最新一条。这个场景此前没人报,但它和"输入内容不跟随"是同一处判断的两种表现
+- **变异验证**(两半各自承重,互不遮挡):
+  - **变异 A**(把判断还原成"内容长高后现量"):4 项跟随类断言失败(691px / 1020px / 1521px,以及收起再打开 1521px),`13/17`
+  - **变异 B**(去掉 `followRef` 判断,永远贴底):3 项"读者不被拽回"断言失败(400 → 0px,新内容气泡跑到可视区上方 -34px),`14/17`
+  - 修复前的原实现跑同一套断言是 **11/17**(4 项跟随 + 2 项被 `block:'end'` 吃掉 7px)
+- **验收结果**:探针 **17/17**;M2.7 渲染探针 **29/29**、M2.6 作答探针 **16/16** 无回归;全量 440 绿 / 47 文件;扩展 tsc 0 错;`npm run build:extension` 通过
 
 ### M3 审批与隐私
 
-- [ ] **M3.1 审批路由**:`awaiting_approval` → `approval.request`(callId=toolUseId)→ `approval.response` → `engineCall('approveTool'|'rejectTool')`;120s 超时=拒绝;断连立即结算
-- [ ] **M3.2 问答与续跑**:`ask_user.request/response`、`iteration_limit.response`(`extendLoop`/`stopExecution`)
-- [ ] **M3.3 面板授权开关**:逐次确认 / 本会话信任本页(`auto`)/ 完全只读
+- [x] **M3.1 审批路由**:`awaiting_approval` → `approval.request`(callId=toolUseId)→ `approval.response` → `engineCall('approveTool'|'rejectTool')`;120s 超时=拒绝;断连立即结算 —— 实现在 `hosted/prompts.ts`,**M2.6 修好绑定生命周期后才真正可达**
+- [x] **M3.2 问答与续跑**:`ask_user.request/response`、`iteration_limit.response`(`extendLoop`/`stopExecution`)—— 同上
+- [ ] **M3.3 面板授权开关**:逐次确认 / 本会话信任本页(`auto`)/ 完全只读 —— 开关本体在 M1.6 已交付(`APPROVAL_LEVELS` = `SandboxApprovalMode` 的三档:`auto` / `outside-ask` / `always-ask`,写会话列、下一条消息生效);计划里写的「完全只读」不在这个枚举里,扩展会话本来就只有 `page_* + ask_user` 白名单,若确实要一档"只读模式"需要先定它跟白名单的关系
 - [ ] **M3.4 隐私红线**:扩展会话默认关闭记忆提取;页面内容不入 `MEMORY.md`;敏感过滤钩子;审计写入
 - **验收**:写操作在 `always-ask` 下必须经面板批准;拒绝后模型能改道;审计日志可查
 
@@ -448,6 +530,26 @@ src/extension/
 - [ ] **M4.3 丰富事件降级**:`plan_update` 计划卡、`spawn_progress`、`usage` 角标、错误重试
 - [ ] **M4.4 可选增强**:`page_screenshot` / `page_navigate` / 下载与上传路径处理
 - **验收**:两处入口会话一致;切标签不串会话;计划/用量/子代理进度可读
+
+### M4.5 面板模型切换(需求)✅ 2026-09-15
+
+> 需求:用户「需要有模型切换功能」。查过桌面端的模型概念之后再定语义 —— 桌面端的模型**不是会话级**的:`settings.activeProfileId` 是全局的一项,`profiles[]` 每项自带 (provider, baseURL, model, maxTokens, contextLength, apiKey, headers);而授权恰好相反,是 `conversations.approval_mode` 的会话列。所以"面板的模型开关"必须是**和桌面端同一处设置**,不能新造一列。
+
+- [x] **语义裁定:全局,写桌面端同一个字段**。面板的模型下拉写 `settings.activeProfileId`(桌面 `InputArea` 的模型下拉写的就是它),不新增 `conversations.model_profile_id`。理由:① M1.6 的规矩是"面板的授权不是面板本地概念",模型同理;② 新造一列等于凭空发明一个桌面端没有的"每会话模型",两处下拉的文案必然开始打架;③ 零 schema 迁移。**代价显式承担**:桌面端只在自己改了设置时才刷新(`useConversationEngine` 的 `optionsChanged`),所以**切换必须由服务端自己热更新** —— `setActiveProfile` 写完设置后遍历 `this.sessions` 逐个 `refreshOptions`,换掉 `model/adapter/pins`,下一条消息生效
+- [x] **协议**:`methods.ts` 增 `model.list` / `model.setActive`;`payloads.ts` 增 `ModelOption`(id/name?/provider?/model,**不带 apiKey/headers/baseURL**)与 `ModelState { profiles, activeId }`;`session.list` 的结果**顺带带上 `model`**(`panel-bridge` 每次 `snapshot()` 本来就要调它,面板挂载零额外往返)。`modelLabel(option) = name || provider:model` 做成**共享函数**,两个客户端共用一处文案逻辑
+- [x] **服务端**:`session-manager.modelState()`(窄投影,凭据不上 wire)与 `setActiveProfile(profileId)`(校验 → 写 `settings.activeProfileId` → 热更新所有活跃会话 → 返回写后状态);`ws-server` 三个分支:`session.list` 异步带上 model(**读 model 失败要吞掉**,盘点不该因为旁路信息而失败)、`model.list`、`model.setActive`(空/未知 id → `invalidParams`)
+- [x] **插件**:`bridge.ts` 增 `panel/set-model` 请求与 `panel/model` 通知;`panel-bridge` 转发 `model.setActive` 后**广播** `panel/model` 给所有打开的面板 —— 全局开关不能让没点的那个标签继续显示旧模型;`snapshot()` 两个返回分支都带 `model`;`usePanel` 增 `model` 与 `setModel`(乐观回显 + 失败回退 + 报错,与 `setApprovalMode` 同构,再用服务端返回的权威状态覆盖)
+- [x] **界面(手工对齐,仍是 Shadow Root)**:`Composer` 的 trailing 槽按桌面端顺序放**模型在发送按钮左边**;按钮就是 antd `size="small" type="text"` 的小按钮 + 下拉箭头,文案取当前 profile。两个下拉(授权 / 模型)共用一处 `useDropdown()`(开合 + 外部点击关闭),不再各写一份;`icons.tsx` 补 `DownOutlined`,并让需要它的图标带上自己的 `viewBox="64 64 896 896"`(outlined 一族的画布与 filled 不同)
+- [x] **桌面端同步改用共享 `modelLabel`**:`InputArea` 的 `modelItems` 与按钮文案都调它 —— 原来是 `label: p.name || provider:model`、按钮却是 `p.name`(name 为空时显示占位"选择模型"),两处不一致且会与面板再次漂移。**唯一行为差异**:profile 的 name 为空时按钮显示 `provider:model` 而不是占位文案(一个 profile 都没有时仍用占位)
+- [x] **顺带修掉一个一直存在的缺陷:面板的两个下拉在真实 Shadow Root 里点不动**。`mousedown` 里用 `e.target` 判断"点在不在自己家里",而面板渲染在 Shadow Root 内、监听器挂在 `document`(边界之外):跨边界时 `e.target` 被**重定向为宿主元素**,点自己的菜单项也被判成外部点击 → 菜单在 mousedown 阶段就关掉,`click` 永远落不到选项上。真机量到:授权下拉点「按需确认」后按钮文案纹丝不动(仍是 `全部允许`),模型下拉点了什么都不发;而 `e.target` 是宿主 `<div data-pulsemind-panel>`、`composedPath()[0]` 才是 `BUTTON.pm-model-item`。改用 `e.composedPath()`(穿透影子边界)后两个下拉都正常。**这条此前被探针漏掉**:渲染探针只点"展开按钮"再读菜单项,从没点过菜单项本身,所以一直是绿的
+- [x] **顺带对齐早就偏离的按钮指标**(都可引用源码,一起改):授权按钮文案色 `rgba(0,0,0,0.45)` → `#666`(`InputArea` 给 Button 的 inline color,它同时压过 antd 的 `text-color-hover`,所以 hover 只换底色);图标与文案间距 4px → **8px**(antd Button 根是 `inline-flex; gap: iconGap`,`iconGap = token.marginXS = 8`);补上桌面端授权按钮本来就有的箭头(`fontSize:10 / color:#bbb / marginLeft:4`,叠加在 gap 之上 = 12px)。hover 底色仍 `colorFillTertiary`(`rgba(0,0,0,0.04)`),另补按下态 `colorFill`(`0.15`),均取自 `button/style/variant.js` 的 text 变体
+- [x] **回归**:
+  - vitest:`agent-protocol-ws.test.ts` 新增 M4.5 组 5 例(盘点带 model 且**不含** apiKey/baseURL、`model.list`、`model.setActive` 成功、空/未知 id 被拒且未落到 manager、model 读失败时 `session.list` 仍作答);`extension-panel-bridge.test.ts` 新增 3 例(转发 + 广播只发一条且 payload 是写后状态、被拒时 `ok:false` **不广播**、断连拒绝)。两个 fake 都按真实契约实现 `modelState`/`setActiveProfile`(共享一份"设置存储",写入后下次读得到新值)
+  - `probe-panel-render.mjs` 29 → **40 项**:两个按钮同一套小按钮指标(24/7/4/12/#666)、gap 同为 8px、两个箭头各自的字号与颜色、按钮回显当前档位、菜单项文案(含无 name 时退回 `provider:model`)、**菜单整个落在 380px 面板内且朝上展开**、超长模型名在菜单项里截断而非撑破面板、选中后按钮与菜单项用同一个 label、**服务端没报模型时不画选择器**而页脚其余部件照旧
+  - `probe-panel-ask-user.mjs` 16 → **25 项**:真鼠标点模型项 → 恰好一条 `panel/set-model` 且 `profileId` 正确、菜单关闭、文案立刻跟上;真鼠标点授权项 → 一条 `panel/set-approval`。后两项就是上面那个 Shadow Root 缺陷的守门人(修复前必失败)
+- **变异验证**:把 `composedPath()` 还原成 `e.target`(缺陷原状)→ 模型项点击**一条消息都不发**、授权项点击后文案不变,两个探针共 6 项断言失败;改回后 25/25 + 40/40
+- **验收结果**:渲染探针 **40/40**、作答探针 **25/25**、M2.8 滚动探针 **17/17** 无回归;全量 **448** 绿 / 47 文件;扩展 tsc 0 错;`npm run build:extension` 通过;改动文件的 eslint 干净(仓库里 `session-manager.ts` / `ws-server.ts` 各一条既存 unused-var 报错,已用 `git show HEAD` 复核为改前既有)
+- **已知未做(不是漏,是没到)**:模型下拉**不标当前项**(桌面端的 `modelItems` 也没有 `selectable`/`selectedKeys`,按钮文案本身就是回显);面板仍不做附件与专家 @;模型切换没有"仅本会话"这一档(与桌面端一致 —— 桌面端也没有)
 
 ### M5 品牌、打包与分发
 
@@ -465,9 +567,14 @@ src/extension/
 | 层 | 手段 |
 |---|---|
 | 协议分发 | `tests/agent-protocol-ws.test.ts`:起真服务 + Node `ws` mock 客户端 → hello/版本不符/错 token/网页 Origin 拒绝/会话增删/ask/event/cancel |
-| 反向 RPC | `tests/hosted-tools.test.ts`:tool.call 往返、超时回注、孤儿结果丢弃、客户端离线门控、审批超时=拒绝、断连结算 |
-| DOM 管线 | `tests/extension/dom-tree.test.ts`(移植 Anywhere fixture:常见组件库 / SPA / shadow DOM / 大页面截断 / 索引稳定性),jsdom 环境 |
+| 反向 RPC | 全在 `tests/agent-protocol-ws.test.ts`(起真服务 + Node `ws` mock 客户端):tool.call 往返与超时回注、孤儿结果丢弃、审批 / ask_user 往返、断连释放绑定。**fake 的 `ask` 必须像真的一样"启动即返回"**(反向流量在 RPC 落定之后才到),否则绑定生命周期这类缺陷会被遮住(见 M2.6 的变异验证) |
+| DOM 管线 | `tests/extension-page-tree.test.ts`(移植 Anywhere fixture + 扩展:面板 DOM 排除 / 节点上限 / 点击序列 / 索引失效),jsdom 环境;**几何另跑真机脚本** `scripts/probe-page-pipeline.mjs`(见 M2 验收) |
+| 页面工具插件侧 | `tests/extension-tool-router.test.ts`(按 tab 转发、未绑定会话拒绝、CSP 回退、导航重置判定)+ `tests/extension-page-tools-routing.test.ts`(tier 归类、路由点存在性、在线门控) |
 | 事件归约 | 插件 `useSession` 纯函数化后单测:乱序/截断/重复事件的镜像正确性 |
+| 面板外观(M1.6) | `scripts/probe-panel-render.mjs`:真 Chromium 里挂**生产** `Transcript`/`Composer` + 同序两个 `<style>` 进 Shadow Root,4 个 fixture 会话,断言计算样式/几何/对比度,并输出截图。面板外观够不着 vitest(无布局引擎、无 Shadow-DOM 层叠),也不该靠人读 CSS 确认 |
+| 面板作答路径(M2.6) | `scripts/probe-panel-ask-user.mjs`:真 `App` + `chrome.runtime` 桩 + **真鼠标点击**,断言 ask_user 选项 / 自定义回答 / 多选确认 / 审批按钮发出的 `panel/answer`、`panel/approval-response` 与 `callId`。这条链路(vitest 起不了 Shadow Root,面板 bridge 用例又假定请求已成形)只有它能覆盖 |
+| 面板跟随末尾(M2.8) | `scripts/probe-panel-scroll.mjs`:真 `App` + 同序两个 `<style>`,经**真 `chrome.runtime.onMessage` 通道**喂 `panel/event`、用**真 `wheel`** 滚动,断言"内容到来贴底 / 收起再打开落在最新一条 / 上滚不被拽回 / 回到底部恢复跟随 / 发出的消息在可视区内 / 不滚宿主页面"(17 项)。"是否到底"取决于**何时写入 scrollTop** —— 是布局事实,读源码得不到,jsdom 也量不出 |
+| 面板模型切换(M4.5) | 协议与广播在 `tests/agent-protocol-ws.test.ts` + `tests/extension-panel-bridge.test.ts`(含"被拒时不广播""读 model 失败不影响盘点");**看得见的部分**在 `scripts/probe-panel-render.mjs`(按钮指标 / 菜单落在 380px 内 / 长名截断 / 无 model 时不画选择器,11 项);**点得动的部分**在 `scripts/probe-panel-ask-user.mjs`(真鼠标点菜单项 → 一条 `panel/set-model`,授权下拉同理,9 项)。最后两项是 Shadow Root 里"外部点击关闭"用 `e.target` 会失效的守门人 —— 见 M4.5 |
 | 端到端(手工) | 真实 Chrome + 桌面端:开面板 → 对话 → 看页面 → 点/填 → 审批 → 断线重连 → 桌面端继续 |
 
 ---
@@ -477,7 +584,7 @@ src/extension/
 | 风险 | 影响 | 对策 |
 |---|---|---|
 | MV3 SW 30s 休眠 | 连接断、事件丢 | 服务端为权威状态,唤醒即 `hello`+恢复;alarms 保活;必要时 offscreen 持连 |
-| 站点 CSP 阻断页面上下文求值 | `page_execute_js` 失效(面板本身不受影响,见 §3.6) | `chrome.debugger` 回退(按需授权);回退不可用时明确报错,不静默失败 |
+| 站点 CSP 阻断页面上下文求值 | `page_execute_js` 失效(面板本身不受影响,见 §3.6) | `chrome.debugger` 回退;**实测结论:只能声明为普通权限**(`permissions.request` 需用户手势,SW 内的工具调用给不出 → 「按需授权」在 MV3 下不可实现);权限缺失时明确报错,不静默失败 |
 | 页面 CSS 污染浮层 / 浮层污染页面 | UI 被页面样式破坏,或站点被我们改坏 | **M1 就会遇到**:Shadow Root 全隔离(双向);自注入节点进 DOM 管线 skip 名单,避免被 agent 索引到 |
 | 常驻 `<all_urls>` 的审核与信任成本 | 安装提示较吓人、商店审核更严 | 裁定 5 已接受;隐私说明写清三条边界并在实现上兑现;保留"按需注入 + 站点白名单"的切换缝 |
 | 端口发现失败 | 连不上 | 确定性扫描 + 手动覆盖 + 桌面端显示端口/一键复制 |
@@ -500,7 +607,7 @@ src/extension/
 2. 截图与视觉理解(v1 纯文本 DOM;`page_screenshot` 留作 M4 可选)。
 3. 跨 iframe / 多 frame 工具执行(v1 仅顶层 frame)。
 4. Firefox / Safari(v1 Chrome + Edge;manifest 与协议不留死结)。
-5. 在插件里复用桌面端 React 聊天组件:运行环境(扩展页 vs Electron 渲染进程)与依赖(stores/IPC)完全不同;**保持一致的是消息模型与协议,不是组件**(AGENTS.md「界面复用」红线针对的是桌面端内部新造对话 UI,此处不适用)。
+5. 在插件里复用桌面端 React 聊天组件:运行环境(扩展页 vs Electron 渲染进程)与依赖(stores/IPC)完全不同,**组件不可复用**。(注:2026-09-15 用户裁定后,此条**只**排除组件复用 —— 「保持一致」已升级为硬要求,由 M1.6 手工对齐 + 真机脚本验收;AGENTS.md「界面复用」已同步修正,不再把插件当新造 UI 的例外。)
 6. 站点级实例路由 / 每站点独立实例(PLAN-0.3.5 M5 的范畴;本 Plan 只保留 `pageContext.url` 作为输入)。
 7. 在插件里配置 LLM/API Key(凭据只在桌面 `settings.json`)。
 
@@ -522,7 +629,9 @@ src/extension/
 
 ---
 
-## 9. 已裁定(2026-09-14)
+## 9. 已裁定
+
+### 2026-09-14
 
 | # | 议题 | 结论 | 落到文档 |
 |---|---|---|---|
@@ -534,8 +643,24 @@ src/extension/
 | 6 | 代码起点 | **移植 Anywhere 资产**(DOM 管线/WS 客户端/state/tool-router/cdp),UI 与工具层重写 | §1.3、D9 |
 | 7 | 桌面端未运行 | **M5 可选项**:注册 `pulsemind://` 一键唤起 | §3.2.3、M5.4 |
 
+### 2026-09-15(M1 验收后,用户反馈)
+
+| # | 议题 | 结论 | 落到文档 |
+|---|---|---|---|
+| 8 | 面板与主对话的一致性 | **保留 Shadow Root,视觉手工对齐** —— 不 import antd/`components/chat/*`,不改 iframe;视觉事实逐条抄进 `ui/styles.css` 并注明出处,Markdown 直接注入同一份 `.x-markdown-light` 主题,真机脚本验收 | M1.6、AGENTS.md「界面复用」、§5 |
+| 9 | 面板能力面 | **只读消息流 + 输入框 + 授权按钮**;操作行走 `viewOnly` 语义(不做点赞/收藏) | M1.6 |
+| 10 | 面板授权按钮的落点 | 写桌面同一列 `conversations.approval_mode`(新协议 `session.setApprovalMode`);审批/问答答案走既有 `approval.response`/`ask_user.response` 单向通知,**引擎侧零改动** | M1.6、§3.4 |
+
+### 2026-09-15(M2 验收后,用户反馈「ask_user 点击无响应」)
+
+| # | 议题 | 结论 | 落到文档 |
+|---|---|---|---|
+| 11 | 反向 RPC 的客户端绑定活多久 | **跟连接走,不跟单次 `agent.ask` 走** —— 引擎会 park 在 `awaiting_approval` / `awaiting_user_input` 并让 loop promise 落定,ask 先返回、提示后到,所以 ask-scoped 的 `unbind` 必然把提示路径整条掐死。每条连接一个 transport,断连时按 transport 身份统一释放 | M2.6、`client-registry` 头注释、AGENTS.md |
+| 12 | 未匹配 callId 的作答 | **不静默**:服务端打印告警,面板把 `ok:false` 显示成错误 —— "点了没反应"必须能区分成"没连上 / 已超时 / 服务端没收下" | M2.6、AGENTS.md |
+
 遗留待定(不阻塞 M0,实施到对应里程碑前再定):
 
 1. 浮层默认位置与尺寸;FAB 是否允许用户拖动并记住位置(涉及 DOM 管线 skip 与 storage 结构)。
 2. 浮层展开状态是否跨会话记忆(`chrome.storage.session` vs `local`)。
-3. 面板内的授权开关形态:三档(逐次确认 / 本会话信任本页 / 完全只读)是否为最终交互。
+3. ~~面板内的授权开关形态~~ —— 已定(裁定 10):复用桌面端同三档 + 同落点。
+4. **扩展会话正文的持久化(M2.6 发现,未修)**:目前只有客户端会写库(桌面 renderer),服务端 `AgentServiceConversations` 是只读的,插件端又没有保存步骤 → 扩展会话的 `messages` 恒空,M0.4 的"重启后恢复对话"对扩展会话恢复出空历史。需要先定由服务端落库还是补协议方法,再排期。

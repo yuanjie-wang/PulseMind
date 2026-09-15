@@ -21,18 +21,9 @@ export const EXPERT_CHAT_FIELDS = [
 export type ExpertChatField = (typeof EXPERT_CHAT_FIELDS)[number]
 
 /** The subset of ExpertProfile the assistant can propose values for.
- *  引用关系（技能名 / 连接器 id）不在可对话填充的字段里：它们要求精确命中目录
- *  里的名字，交给表单里的多选更可靠；这里声明只是为了让表单的初值类型完整。 */
-export type ExpertFormDraft = Partial<Pick<ExpertProfile, ExpertChatField>> & {
-  knowledgeFileIds?: string[]
-  skillNames?: string[]
-  mcpServerIds?: string[]
-}
-
-export interface KnowledgeOption {
-  id: string
-  title: string
-}
+ *  可用能力（技能名 / 连接器 id）不在可对话填充的字段里：它们要求精确命中目录
+ *  里的名字，交给表单里的多选更可靠。 */
+export type ExpertFormDraft = Partial<Pick<ExpertProfile, ExpertChatField>>
 
 export interface ExpertChatMessage {
   role: 'user' | 'assistant'
@@ -77,28 +68,24 @@ export function buildExpertChatSystemPrompt(locale: string): string {
 
 An expert profile has these fields:
 ${fieldLines}
-- knowledgeFiles: array of knowledge-base file titles to bind (only titles from the selectable list below)
 
 Rules:
 1. Understand the intent first. When key information is missing, ask at most two short questions instead of inventing content.
 2. Answer in one to three sentences: what you filled in, or what you still need.
 3. End every reply with a \`\`\`json code block containing ONLY the fields you are adding or changing this turn — not the whole form, and never a field you are leaving alone.
-4. Use the exact English key names above. knowledgeFiles must be an array of titles copied from the selectable list.
-5. Never fabricate knowledge files, and never add keys that are not in the list.`
+4. Use the exact English key names above, and never add keys that are not in the list. Availability (skills / connectors) and the knowledge base are configured in the form, not by you.`
   }
 
-  return `你是 PulseMind 的「专家配置助手」。你通过对话帮用户把想法变成一份结构化的专家配置，并同步更新右侧/旁边的表单。
+  return `你是 PulseMind 的「专家配置助手」。你通过对话帮用户把想法变成一份结构化的专家配置，并同步更新旁边的表单。
 
 专家配置包含以下字段：
 ${fieldLines}
-- knowledgeFiles：要绑定的知识库文件名数组（只能从下面给出的可选标题里选）
 
 规则：
 1. 先理解意图；关键信息不足时最多问两个简短问题，不要凭空编造。
 2. 每次回复用一到三句话说明你填了什么，或还需要用户补充什么。
 3. 回复末尾给出一个 \`\`\`json 代码块，里面**只包含本次要新增或修改的字段**（不要给完整表单，也不要重复未改动的字段）。
-4. 字段名必须用上面的英文键名；knowledgeFiles 用可选列表里的文件标题数组。
-5. 不要编造知识库文件，也不要新增列表以外的键。`
+4. 字段名必须用上面的英文键名，也不要新增列表以外的键。可用能力（技能 / 连接器）与知识库由用户在表单里配置，不归你填。`
 }
 
 /** Current form values, limited to the fields the assistant can see. */
@@ -108,38 +95,19 @@ export function pickDraftFields(profile: Partial<ExpertProfile> | null): ExpertF
     const value = profile?.[key]
     if (typeof value === 'string' && value) draft[key] = value
   }
-  const result = draft as ExpertFormDraft
-  if (profile?.knowledgeFileIds?.length) result.knowledgeFileIds = [...profile.knowledgeFileIds]
-  return result
+  return draft as ExpertFormDraft
 }
 
 /** One user turn: the live form snapshot (so manual edits are visible to the
- *  model too), the selectable knowledge files, and the user's message. */
-export function buildExpertChatTurnText(
-  current: ExpertFormDraft,
-  knowledgeFiles: KnowledgeOption[],
-  message: string,
-  locale: string
-): string {
+ *  model too) and the user's message. */
+export function buildExpertChatTurnText(current: ExpertFormDraft, message: string, locale: string): string {
   const zh = locale !== 'en'
-  const form = { ...current }
-  delete form.knowledgeFileIds
-  const boundTitles = current.knowledgeFileIds
-    ?.map((id) => knowledgeFiles.find((f) => f.id === id)?.title || id) || []
-
-  const parts = [
+  return [
     zh ? '【当前表单】' : '[Current form]',
-    JSON.stringify(form, null, 2),
-    zh ? '【已绑定知识】' : '[Bound knowledge]',
-    boundTitles.length > 0 ? boundTitles.join('、') : zh ? '（无）' : '(none)',
-    zh ? '【可选知识库文件】' : '[Selectable knowledge files]',
-    knowledgeFiles.length > 0
-      ? knowledgeFiles.map((f) => f.title).join('、')
-      : zh ? '（知识库为空）' : '(knowledge base is empty)',
+    JSON.stringify(current, null, 2),
     '',
     zh ? `【用户】${message}` : `[User] ${message}`,
-  ]
-  return parts.join('\n')
+  ].join('\n')
 }
 
 /** Extract the last fenced block (```json … ```) or, failing that, the last
@@ -180,23 +148,8 @@ function isParsableObject(candidate: string): boolean {
   }
 }
 
-/** Map proposed knowledge titles back to ids. Unknown titles are dropped —
- *  the assistant is told to only use offered titles, but a hallucinated one
- *  must never reach the form. */
-function resolveKnowledgeIds(titles: unknown, files: KnowledgeOption[]): string[] {
-  if (!Array.isArray(titles)) return []
-  const byTitle = new Map(files.map((f) => [f.title.trim().toLowerCase(), f.id]))
-  const ids: string[] = []
-  for (const raw of titles) {
-    if (typeof raw !== 'string') continue
-    const id = byTitle.get(raw.trim().toLowerCase())
-    if (id && !ids.includes(id)) ids.push(id)
-  }
-  return ids
-}
-
 /** Turn an assistant reply into a form patch + the prose to display. */
-export function parseExpertChatReply(reply: string, knowledgeFiles: KnowledgeOption[] = []): ExpertChatParseResult {
+export function parseExpertChatReply(reply: string): ExpertChatParseResult {
   const block = extractJsonBlock(reply)
   if (!block) return { text: reply.trim(), draft: {} }
 
@@ -214,9 +167,6 @@ export function parseExpertChatReply(reply: string, knowledgeFiles: KnowledgeOpt
   for (const key of EXPERT_CHAT_FIELDS) {
     const value = parsed[key]
     if (typeof value === 'string' && value.trim()) draft[key] = value.trim()
-  }
-  if ('knowledgeFiles' in parsed) {
-    draft.knowledgeFileIds = resolveKnowledgeIds(parsed.knowledgeFiles, knowledgeFiles)
   }
 
   // The JSON block is machine payload, not chat: strip it from the bubble text.

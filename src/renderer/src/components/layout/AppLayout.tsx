@@ -282,7 +282,7 @@ function AppLayout({
               </Tooltip>
             </div>
           </div>
-          <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+          <div className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
             {listTab === 'chats' ? (
               conversations.length === 0 ? (
                 <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>

@@ -32,12 +32,13 @@ import { getKnowledgeFilesByIds } from '../storage/knowledge.db'
 import { composeExpertInstructions, toExpertRefCatalogs, type ExpertRefCatalogs } from '../../shared/expert-context'
 import type { ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
+import { agentClientRegistry } from './client-registry'
 import { normalizeSandboxPolicy, pickApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
-import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo } from '../../shared/agent-protocol'
+import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, ModelState } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 
 interface Managers {
@@ -287,6 +288,37 @@ class AgentSessionManagerImpl {
     return profile
   }
 
+  /** The selectable models for the remote 模型下拉. Deliberately narrowed to
+   *  what a client needs to render the list: the profile's credentials and
+   *  endpoint never go on the wire. */
+  async modelState(): Promise<ModelState> {
+    const settings = await settingsStore.get()
+    const active = settings.profiles.find((p) => p.id === settings.activeProfileId) ?? settings.profiles[0]
+    return {
+      profiles: settings.profiles.map((p) => ({ id: p.id, name: p.name, provider: p.provider, model: p.model })),
+      activeId: active?.id ?? '',
+    }
+  }
+
+  /** Switch the active model. Global, like the desktop's own picker (`settings.activeProfileId`),
+   *  so after writing it the live sessions are hot-swapped here: the desktop
+   *  renderer only refreshes when *it* changed the setting, and without this
+   *  sweep a panel-side switch would not reach a session's next message. */
+  async setActiveProfile(profileId: string): Promise<ModelState> {
+    const settings = await settingsStore.get()
+    const profile = settings.profiles.find((p) => p.id === profileId)
+    if (!profile) throw new Error(`unknown profile: ${profileId}`)
+    if (settings.activeProfileId !== profile.id) {
+      await settingsStore.set({ ...settings, activeProfileId: profile.id })
+    }
+    for (const sessionId of this.sessions.keys()) {
+      await this.refreshOptions(sessionId).catch((err) => {
+        console.warn('[AgentSession] model switch: refresh failed', sessionId, err)
+      })
+    }
+    return this.modelState()
+  }
+
   async createSession(sessionId: string, opts: AgentSessionCreateOptions = {}): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId)!
@@ -492,6 +524,10 @@ class AgentSessionManagerImpl {
     await this.refreshSandboxContext(sessionId, entry)
     await this.refreshExpertContext(sessionId, entry)
     entry.engine.opts.pageContext = pageContext
+    // Whether page_* tools are on this session's toolset at all: a browser
+    // client is connected for it (tool-collection.ts reads this flag). Checked
+    // per ask because the binding can come and go with the connection.
+    entry.engine.opts.hostedAvailable = agentClientRegistry.isHostedCapable(sessionId)
     if (this.runningLoops >= MAX_CONCURRENT_LOOPS) {
       this.emit(sessionId, { type: 'status', status: 'queued', attempt: this.waitingLoops.length + 1 })
       await new Promise<void>((resolve) => this.waitingLoops.push(resolve))
@@ -610,6 +646,9 @@ class AgentSessionManagerImpl {
       systemPromptOverride: entry.pinned.systemPromptOverride,
       allowedTools: entry.pinned.allowedTools,
       expert: entry.expertState ?? undefined,
+      // Re-bound here too: a client can disconnect and reconnect between two
+      // refreshes, and updateOptions replaces the bag wholesale.
+      hostedAvailable: agentClientRegistry.isHostedCapable(sessionId),
     })
   }
 

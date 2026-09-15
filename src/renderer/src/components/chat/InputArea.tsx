@@ -9,6 +9,7 @@ import { useComposerDraftStore } from '../../stores/composerDraftStore'
 import type { LlmProfile } from '../../types/settings'
 import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
+import { modelLabel } from '../../../../shared/agent-protocol'
 
 /** Approval levels, most restrictive first — the order the dropdown lists them
  *  in. The icons are chosen for distinct silhouettes, not for a family: antd's
@@ -166,7 +167,11 @@ export function InputArea({
   const isInputDisabled = isAwaitingApproval || isAwaitingInput
 
   const activeProfile = profiles?.find((p) => p.id === activeProfileId)
-  const activeModelLabel = activeProfile ? activeProfile.name : t('chatView.selectModel')
+  // Through the shared helper (the extension panel's 模型下拉 uses it too): one
+  // function decides how a profile is labelled, so the two surfaces cannot
+  // drift. The placeholder is for "no profile at all", not for "a profile with
+  // an empty name" — the helper falls back to provider:model for that.
+  const activeModelLabel = activeProfile ? modelLabel(activeProfile) : t('chatView.selectModel')
 
   // 授权 button: the conversation's level drives the icon, the label and the
   // tooltip; the label repeats in the dropdown next to the same icon.
@@ -208,7 +213,7 @@ export function InputArea({
   const modelItems =
     profiles?.map((p) => ({
       key: p.id,
-      label: p.name || `${p.provider ?? ''}:${p.model}`,
+      label: modelLabel(p),
       onClick: () => onSelectProfile?.(p.id),
     })) ?? []
 

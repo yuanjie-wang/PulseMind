@@ -92,17 +92,18 @@ export interface AgentEngineOptions {
 
   // Spawn sub-agent options
   allowedTools?: string[]
+  /** Connector whitelist (MCP server ids). `undefined` = no restriction, an
+   *  EMPTY ARRAY = no connector may be used. An expert pack's 可用连接器 lands
+   *  here via applyExpertContext. */
   allowedMcpServers?: string[]
-  /** Session-level skill whitelist (expert config pack / spawn). Empty/absent = no restriction. */
+  /** Skill whitelist (SkillDefinition.name). `undefined` = no restriction, an
+   *  EMPTY ARRAY = no skill may be used. An expert pack's 可用技能 lands here
+   *  via applyExpertContext. */
   allowedSkills?: string[]
-  /** @-summoned expert config pack: composed instructions + bound knowledge.
+  /** @-summoned expert config pack: composed instructions + allowed capability.
    *  Replaces the basic persona section in the system prompt (see
-   *  system-prompt-builder) and scopes knowledge_search/knowledge_read. */
+   *  system-prompt-builder) and narrows tools/skills/connectors. */
   expert?: ExpertRuntimeContext
-  /** Delegated experts (spawn path): knowledge scope without the pack — the
-   *  instructions ride in the spawn system prompt, this enforces the
-   *  knowledge tools. Same shape as expert.knowledgeFiles. */
-  knowledgeScope?: ExpertRuntimeContext['knowledgeFiles']
   systemPromptAppendix?: string
   /** Replace the built system prompt wholesale (derived sessions such as the
    *  tool studio, whose prompt is a builder contract rather than the assistant
@@ -113,6 +114,11 @@ export interface AgentEngineOptions {
    *  manager before each ask). Rendered in the prompt's dynamic Current Page
    *  section — never enters the cached prefix. */
   pageContext?: PageContext
+  /** True while a browser-extension client is driving this session. The page
+   *  tools exist only then (PLAN-browser-extension §3.4.4): with no client
+   *  bound there is nothing to execute them, so they must not appear in the
+   *  tool list at all rather than fail one call at a time. */
+  hostedAvailable?: boolean
 }
 
 // ── AgentEngine Callbacks ───────────────────────────────────────────
@@ -362,16 +368,23 @@ export class AgentEngine implements EngineCore {
   }
 
   /** Swap the @-summoned expert config pack at runtime. Expert state lives on
-   *  opts (single source of truth for the prompt builder); capability is
-   *  inherited from the session, so this swaps identity only and invalidates
-   *  the 6h system-prompt cache when the expert changed, so the next loop
-   *  rebuilds the prompt with the new role. Called by session-manager before
-   *  each ask — cheap no-op when nothing moved. */
+   *  opts (single source of truth for the prompt builder and for the tool
+   *  collection, which reads the allowed* whitelists); the pack's 可用技能 /
+   *  可用连接器 narrow the session's skill and connector sets while it is
+   *  bound, and unbinding restores the unrestricted session. Invalidates the
+   *  6h system-prompt cache when the expert changed, so the next loop rebuilds
+   *  the prompt with the new role. Called by session-manager before each ask —
+   *  cheap no-op when nothing moved. */
   applyExpertContext(next: ExpertRuntimeContext | null): void {
     const expertChanged = JSON.stringify(this.opts.expert ?? null) !== JSON.stringify(next ?? null)
     if (!expertChanged) return
 
     this.opts.expert = next ?? undefined
+    // 白名单原样透传：数组（含空数组）= 只允许这些，undefined = 不限制。
+    // 空数组绝不能塌成 undefined——那会把「一个都不许用」退化成「全都可用」。
+    this.opts.allowedSkills = next?.allowedSkills
+    this.opts.allowedMcpServers = next?.allowedMcpServers
+    this.allowedMcpServersSet = this.opts.allowedMcpServers ? new Set(this.opts.allowedMcpServers) : undefined
     if (this.opts.conversationId) {
       this.systemPromptCache.delete(this.opts.conversationId)
       console.log(`[AgentEngine] expert context ${next ? `→ ${next.id}` : 'cleared'}, prompt cache invalidated`)

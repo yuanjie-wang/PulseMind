@@ -43,6 +43,27 @@ export interface DataPaths {
   toolsDir?: string
 }
 
+// --- Local agent service (PLAN-0.3.5 M2.4 / PLAN-browser-extension M1.5) ---
+
+/** One connected protocol client. The browser extension shows up as
+ *  `pulsemind-extension`. */
+export interface ServiceClientInfo {
+  clientId: string
+  sessions: number
+}
+
+export interface ServiceStatus {
+  enabled: boolean
+  port: number
+  running: boolean
+  token: string
+  clients: ServiceClientInfo[]
+  /** Ready-to-paste endpoint for a client's manual configuration. */
+  wsUrl: string
+  /** Built extension bundle to load unpacked, when it exists on disk. */
+  extensionDir: string | null
+}
+
 // --- Terminal Event Types ---
 
 export interface TerminalOutputEvent {
@@ -420,7 +441,7 @@ export interface ElectronAPI {
   agentSessionSnapshot: (sessionId: string) => Promise<{ messages: unknown[]; status: { status: string }; streamingBlocks: unknown[]; plan: unknown } | null>
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]) => Promise<unknown>
   agentSessionRefreshOptions: (sessionId: string) => Promise<void>
-  serviceGetStatus: () => Promise<{ enabled: boolean; port: number; running: boolean; token: string }>
+  serviceGetStatus: () => Promise<ServiceStatus>
   serviceSetEnabled: (enabled: boolean) => Promise<{ running: boolean; port: number | null }>
   serviceSetPort: (port: number) => Promise<{ running: boolean; port: number | null }>
   serviceResetToken: () => Promise<{ token: string }>

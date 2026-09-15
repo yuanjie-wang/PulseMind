@@ -16,9 +16,11 @@ export interface ToolNameEditorProps {
   onRenamed: (tool: UserTool) => void
   /** Styles for the name text — headers differ in size/weight. */
   nameStyle?: React.CSSProperties
+  /** Extra content glued to the name, before the pencil (e.g. PresetBadge). */
+  nameSuffix?: React.ReactNode
 }
 
-export function ToolNameEditor({ tool, onRenamed, nameStyle }: ToolNameEditorProps): React.ReactElement {
+export function ToolNameEditor({ tool, onRenamed, nameStyle, nameSuffix }: ToolNameEditorProps): React.ReactElement {
   const { message } = AntdApp.useApp()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -79,7 +81,10 @@ export function ToolNameEditor({ tool, onRenamed, nameStyle }: ToolNameEditorPro
 
   return (
     <>
-      <span style={{ fontWeight: 600, ...nameStyle }}>{tool.name}</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 600, ...nameStyle }}>
+        {tool.name}
+        {nameSuffix}
+      </span>
       <Tooltip title="重命名">
         <Button type="text" size="small" style={{ background: 'transparent' }} icon={<EditOutlined style={{ fontSize: 12 }} />} onClick={start} />
       </Tooltip>

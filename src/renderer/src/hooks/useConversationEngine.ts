@@ -11,12 +11,12 @@ import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
-import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../utils/session-mirror'
+import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../../../shared/agent-session/mirror'
 
 // ── Client-side session state ────────────────────────────────────────
 // Engines are hosted in the main process (M1.4 session manager); this hook is
 // a protocol client that mirrors their observable state (see
-// utils/session-mirror) and forwards commands over the agent-session IPC
+// shared/agent-session/mirror) and forwards commands over the agent-session IPC
 // channels.
 
 /**

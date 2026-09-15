@@ -1,6 +1,5 @@
 // ── Memory / conversation / knowledge / experience tools (moved out of
-// ToolExecutor 0.4.1) ── dispatched by execOtherTool; expert knowledge scope
-// confines knowledge_search/knowledge_read to the bound expert files.
+// ToolExecutor 0.4.1) ── dispatched by execOtherTool.
 
 import { getHost } from '../host'
 import { buildCommandFromSkillInput } from '../command-builder'
@@ -94,22 +93,6 @@ export async function execConversationTool(ex: ToolExecContext, t: ToolUseBlock)
   return false
 }
 
-/** Expert knowledge scope (null = unrestricted): when an expert config pack
- *  with bound knowledge files is active — @-summoned via opts.expert or
- *  delegated via opts.knowledgeScope — knowledge_search results and
- *  knowledge_read paths are confined to those files (+ their wiki outputs). */
-export function getExpertKnowledgeScope(ex: ToolExecContext): { ids: Set<string>; rawPaths: Set<string>; wikiPaths: Set<string> } | null {
-  // @-summoned pack first; delegated packs (spawn_agent) carry the same shape
-  // via opts.knowledgeScope — both runtimes converge knowledge tools equally.
-  const files = ex.opts.expert?.knowledgeFiles ?? ex.opts.knowledgeScope
-  if (!files || files.length === 0) return null
-  return {
-    ids: new Set(files.map((f) => f.id)),
-    rawPaths: new Set(files.map((f) => f.filePath)),
-    wikiPaths: new Set(files.flatMap((f) => f.wikiPages || [])),
-  }
-}
-
 export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
     if (t.name === 'knowledge_search') {
       const km = ex.opts.knowledgeManager
@@ -121,7 +104,6 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
         const sourceType = String(t.input.sourceType || '')
         const status = String(t.input.status || '')
         const doContentSearch = (mode === 'content' || mode === 'both') && !!query
-        const scope = getExpertKnowledgeScope(ex)
 
         const contentMatchIds = new Set<string>()
         const contentExcerpts = new Map<string, string[]>()
@@ -146,7 +128,6 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
         if (mode === 'wiki') {
           // Wiki mode: ripgrep search across compiled wiki pages (fastest path)
           let matches = query ? await km.searchWiki(query) : []
-          if (scope) matches = matches.filter(m => scope.wikiPaths.has(m.wikiPath))
           if (matches.length === 0) {
             t.output = 'No matching wiki pages found.'; ex.addToolResult(t.id, 'No matching wiki pages found.', false)
           } else {
@@ -199,13 +180,8 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
           }
         }
 
-        // Expert scope: confine the merged result list to the bound files
-        if (scope) filtered = filtered.filter(f => scope.ids.has(f.id))
-
         if (filtered.length === 0) {
-          t.output = 'No matching knowledge files found.'; ex.addToolResult(t.id, scope
-            ? 'No matching knowledge files found in this expert\'s bound knowledge base.'
-            : 'No matching knowledge files found.', false)
+          t.output = 'No matching knowledge files found.'; ex.addToolResult(t.id, 'No matching knowledge files found.', false)
         } else {
           const lines = filtered.map(f => {
             let readSuggestion: string
@@ -233,16 +209,8 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
       const km = ex.opts.knowledgeManager
       const filePath = String(t.input.path || '')
       const readType = String(t.input.type || 'wiki')
-      const readScope = getExpertKnowledgeScope(ex)
-      const outOfScope = readScope && (
-        readType === 'raw' ? !readScope.rawPaths.has(filePath) : !readScope.wikiPaths.has(filePath)
-      )
       if (!filePath) {
         t.output = 'Error: path is required.'; ex.addToolResult(t.id, 'Error: path is required.', true); t.exitCode = 1
-      } else if (outOfScope) {
-        const bound = [...(readScope!.rawPaths), ...(readScope!.wikiPaths)]
-        const msg = `Out of scope: this session's expert only has these knowledge documents bound:\n${bound.map(p => `- ${p}`).join('\n')}\nUse one of those paths.`
-        t.output = msg; ex.addToolResult(t.id, msg, true); t.exitCode = 1
       } else if (!km) {
         t.output = 'Knowledge base not available.'; ex.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
       } else {

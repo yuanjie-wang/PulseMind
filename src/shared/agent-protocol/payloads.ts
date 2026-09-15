@@ -65,7 +65,63 @@ export interface SessionListResult {
     agentId: string
     title?: string
     updatedAt?: string
+    /** The conversation's stored 授权 level, so a remote client's approval
+     *  control shows the same value the desktop composer shows. */
+    approvalMode?: SandboxApprovalMode
   }>
+  /** The selectable models + the active one. Rides on this call because every
+   *  panel snapshot already makes it: a client gets its picker without a second
+   *  round trip, and it cannot show a session list from one moment next to a
+   *  model list from another. */
+  model?: ModelState
+}
+
+/** session.setApprovalMode — the remote 授权 button. Writes the conversation's
+ *  stored level, so the engine picks it up on the session's next message. */
+export interface SessionSetApprovalModeParams {
+  sessionId: string
+  mode: SandboxApprovalMode
+}
+
+// ── model.* — the remote 模型下拉 ─────────────────────────────────────
+
+/** A selectable model, as a remote client may see it. Deliberately narrower
+ *  than the stored profile: `apiKey` / `headers` stay in the main process, and
+ *  so does `baseURL` (a gateway URL can carry a token in its query string).
+ *  A client only draws a label, so a label is all it is given. */
+export interface ModelOption {
+  id: string
+  name?: string
+  provider?: string
+  model: string
+}
+
+/** The selectable models + the active one. Global rather than per session:
+ *  `settings.activeProfileId` is what the desktop's model picker switches. */
+export interface ModelState {
+  profiles: ModelOption[]
+  activeId: string
+}
+
+/** How a profile is labelled — its name, else `provider:model`. Shared because
+ *  two clients render this list (the desktop's picker and the extension panel's)
+ *  and a fork would make the same profile read differently in each. */
+export function modelLabel(option: ModelOption): string {
+  return option.name || `${option.provider ?? ''}:${option.model}`
+}
+
+/** model.list — the state a client renders its picker from. */
+export type ModelListResult = ModelState
+
+export interface ModelSetActiveParams {
+  profileId: string
+}
+
+/** model.setActive result: the state *after* the write, so a caller reconciles
+ *  against the service instead of trusting its own optimistic guess. */
+export interface ModelSetActiveResult {
+  ok: boolean
+  model: ModelState
 }
 
 // ── agent.ask / cancel / history ─────────────────────────────────────

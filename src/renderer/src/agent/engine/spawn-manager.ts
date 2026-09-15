@@ -35,19 +35,20 @@ export class SpawnManager {
       ...this.engine.opts,
       conversationId: subConvId,
       hooks: undefined,
-      // Capability is inherited from the parent session: delegating to an
-      // expert changes identity, not the tool/connector/skill set.
-      allowedTools: undefined,
-      allowedMcpServers: undefined,
-      allowedSkills: undefined,
       // The sub-agent runs its own prompt wholesale and must never inherit the
       // parent session's @-summoned expert pack (its prompt override AND its
-      // knowledge/skill scoping) through the spread. The DELEGATED pack's
-      // knowledge scope travels explicitly via config instead — the spawned
-      // engine enforces it like a @-summoned expert (see getExpertKnowledgeScope).
+      // capability whitelists) through the spread. The DELEGATED pack's own
+      // 可用技能 / 可用连接器 travel explicitly via config instead — the spawned
+      // engine enforces them exactly like a @-summoned expert.
+      // 可用技能 / 可用连接器 travel explicitly via config instead — the spawned
+      // engine enforces them exactly like a @-summoned expert. Passed through
+      // as-is: an empty array means "none allowed", undefined means "no
+      // restriction" (a general sub-agent with no expert pack).
+      allowedTools: undefined,
+      allowedMcpServers: config.allowedMcpServers,
+      allowedSkills: config.allowedSkills,
       systemPromptOverride: undefined,
       expert: undefined,
-      knowledgeScope: config.knowledgeScope,
     }
 
     const engine = new AgentEngine(subOpts)

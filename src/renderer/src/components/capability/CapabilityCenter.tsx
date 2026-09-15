@@ -20,6 +20,7 @@ import { useTranslation } from '../../i18n/useTranslation'
 import MCPSettings from '../settings/MCPSettings'
 import SkillsSettings from '../settings/SkillSettings'
 import ExpertSettings from '../settings/ExpertSettings'
+import { CAPABILITY_PANE_PADDING } from '../common/CapabilityCard'
 import type { MCPSettingsHandle } from '../settings/MCPSettings'
 import type { ExpertSettingsHandle } from '../settings/ExpertSettings'
 import type { SkillState } from '../../skills/types'
@@ -168,8 +169,14 @@ export default function CapabilityCenter({
               style={{
                 display: tab === key ? 'block' : 'none',
                 height: '100%',
-                padding: '0 24px 24px',
-                boxSizing: 'border-box'
+                // This pane — not the panel inside it — is the scroll container: an
+                // `overflow: auto` box clips at its own padding box, so an inset
+                // applied one level up would leave the outer cards on the clipping
+                // edge with their hover shadow sheared off. The bottom half of the
+                // inset rides on the grid instead (see CAPABILITY_GRID).
+                overflow: 'auto',
+                boxSizing: 'border-box',
+                padding: CAPABILITY_PANE_PADDING
               }}
             >
               {panes[key]}

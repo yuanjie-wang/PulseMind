@@ -1,29 +1,47 @@
 <!DOCTYPE html>
 <html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Markdown 便签</title><style>
-:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; }
+:root {
+  --bg:#f6f7f9; --bg-soft:#eef0f3; --card:#fff; --fg:#1f2329; --muted:#8a9099; --border:#e6e8eb;
+  --accent:#d46b08; --accent-soft:rgba(212,107,8,.1); --on-accent:#fff;
+  --shadow:0 1px 2px rgba(16,24,40,.04), 0 12px 32px rgba(16,24,40,.07);
+}
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; }
+  :root {
+    --bg:#141414; --bg-soft:#26282c; --card:#1f1f1f; --fg:#e8eaed; --muted:#8f959e; --border:#33353a;
+    --accent:#efa16b; --accent-soft:rgba(239,161,107,.16); --on-accent:#fff;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.35);
+  }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-.wrap { display: flex; height: 100vh; }
+.wrap { display: flex; height: 100vh; background: var(--card); }
 .pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .pane + .pane { border-left: 1px solid var(--border); }
-.bar { padding: 8px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
-.bar button { border: none; border-radius: 6px; padding: 5px 12px; cursor: pointer; background: var(--accent); color: var(--bg); font-size: 12px; }
-textarea { flex: 1; border: none; outline: none; resize: none; padding: 16px; background: var(--card); color: var(--fg); font-family: ui-monospace, Menlo, monospace; font-size: 14px; line-height: 1.7; }
-.preview { flex: 1; overflow: auto; padding: 16px; line-height: 1.7; }
-.preview h1,.preview h2,.preview h3 { margin: .6em 0 .3em; }
-.preview code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
-.preview pre { background: var(--bg); padding: 10px; border-radius: 8px; overflow: auto; }
+.bar { padding: 9px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; font-size: 12.5px; font-weight: 600; color: var(--fg); background: var(--card); }
+.bar .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.bar button { margin-left: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px; cursor: pointer; background: var(--card); color: var(--fg); font: inherit; font-size: 12px; font-weight: 500; transition: border-color .15s, color .15s; }
+.bar button:hover { border-color: var(--accent); color: var(--accent); }
+.bar #saved { margin-left: auto; font-weight: 400; color: var(--muted); }
+textarea { flex: 1; border: none; outline: none; resize: none; padding: 18px; background: var(--card); color: var(--fg); font-family: ui-monospace, Menlo, monospace; font-size: 13.5px; line-height: 1.75; caret-color: var(--accent); }
+textarea::placeholder { color: var(--muted); }
+.preview { flex: 1; overflow: auto; padding: 18px 22px; line-height: 1.75; font-size: 14px; }
+.preview h1,.preview h2,.preview h3 { margin: .8em 0 .35em; line-height: 1.35; }
+.preview h1 { font-size: 1.5em; } .preview h2 { font-size: 1.25em; } .preview h3 { font-size: 1.1em; }
+.preview code { background: var(--bg-soft); padding: 1px 6px; border-radius: 5px; font-family: ui-monospace, Menlo, monospace; font-size: .9em; color: var(--accent); }
+.preview pre { background: var(--bg); border: 1px solid var(--border); padding: 12px 14px; border-radius: 10px; overflow: auto; margin: .5em 0; }
+.preview pre code { background: none; border: none; padding: 0; color: inherit; }
+.preview blockquote { border-left: 3px solid var(--accent); background: var(--accent-soft); margin: .5em 0; padding: 6px 14px; border-radius: 0 8px 8px 0; color: var(--muted); }
+.preview a { color: var(--accent); }
+.preview ul { padding-left: 1.4em; margin: .3em 0; }
 @media (max-width: 720px) { .wrap { flex-direction: column; } .pane + .pane { border-left: none; border-top: 1px solid var(--border); } }
 </style></head><body>
 <div class="wrap">
-  <div class="pane"><div class="bar">Markdown<button onclick="exportMd()">导出 .md</button><span id="saved" style="margin-left:auto"></span></div>
+  <div class="pane"><div class="bar"><span class="dot"></span>Markdown<button onclick="exportMd()">导出 .md</button><span id="saved"></span></div>
   <textarea id="src" placeholder="# 便签&#10;随手写，右边实时预览。"></textarea></div>
-  <div class="pane"><div class="bar">预览</div><div class="preview" id="out"></div></div>
+  <div class="pane"><div class="bar"><span class="dot"></span>预览</div><div class="preview" id="out"></div></div>
 </div>
 <script>
 // 极简 md 渲染（标题/粗体/斜体/行内码/代码块/引用/列表/链接）

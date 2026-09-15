@@ -7,7 +7,7 @@ import { Drawer, Input, Button, Typography, Space, message, Select, Switch, Inpu
 import { SaveOutlined, DesktopOutlined, ClockCircleOutlined, FolderOutlined, FolderOpenOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
-import type { PlatformInfo, DataPaths } from '../../types/electron'
+import type { PlatformInfo, DataPaths, ServiceStatus } from '../../types/electron'
 
 const { Text } = Typography
 
@@ -31,7 +31,7 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   const [localWorkspaceDir, setLocalWorkspaceDir] = useState(settings.workspaceDir || '')
   const [currentTime, setCurrentTime] = useState(formatCurrentTime())
   const [messageApi, contextHolder] = message.useMessage()
-  const [service, setService] = useState<{ enabled: boolean; port: number; running: boolean; token: string } | null>(null)
+  const [service, setService] = useState<ServiceStatus | null>(null)
   const [serviceBusy, setServiceBusy] = useState(false)
   // Browser runtime (A-M4) — saved immediately on change; synced from settings here.
   const [localBrowserBackend, setLocalBrowserBackend] = useState<'managed' | 'app-view'>(settings.browser?.backend ?? 'app-view')
@@ -285,6 +285,79 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
               </div>
             </div>
           )}
+        </div>
+
+        {/* ── Browser extension (PLAN-browser-extension M1.5) ── */}
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+          <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+            浏览器插件
+          </Text>
+          <div style={{ marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              插件连接本机服务后,可在任意网页右下角唤起面板对话。它的会话不会出现在桌面的会话列表里。
+            </Text>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              已连接的客户端
+            </Text>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+              {service?.clients?.length ? (
+                <Text>
+                  {service.clients.map((c) => `${c.clientId}${c.sessions > 0 ? `（${c.sessions} 个会话）` : ''}`).join('、')}
+                </Text>
+              ) : (
+                <Text type="secondary">未检测到已连接的插件</Text>
+              )}
+              <Button size="small" onClick={refreshService}>
+                刷新
+              </Button>
+            </div>
+          </div>
+          {service?.running && (
+            <div style={{ marginBottom: 12 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                连接地址(插件设置页可手动填写)
+              </Text>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                <Input value={service.wsUrl} readOnly size="small" />
+                <Button
+                  size="small"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(service.wsUrl)
+                    messageApi.success('连接地址已复制')
+                  }}
+                >
+                  复制
+                </Button>
+              </div>
+            </div>
+          )}
+          <div>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              加载方式
+            </Text>
+            <div style={{ marginTop: 4 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                先执行 <Text code>npm run build:extension</Text>,再到 <Text code>chrome://extensions</Text> 开启开发者模式,
+                选择「加载已解压的扩展程序」。
+              </Text>
+              {service?.extensionDir ? (
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                  <Input value={service.extensionDir} readOnly size="small" />
+                  <Button size="small" onClick={() => window.electronAPI.openFolder(service.extensionDir!)}>
+                    打开目录
+                  </Button>
+                </div>
+              ) : (
+                <div style={{ marginTop: 6 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    还没有构建产物(out/extension 不存在)。
+                  </Text>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* ── Browser runtime (A-M4) ── */}

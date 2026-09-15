@@ -1,34 +1,50 @@
 <!DOCTYPE html>
 <html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Post 工具</title><style>
-:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; }
+:root {
+  --bg:#f6f7f9; --bg-soft:#eef0f3; --card:#fff; --fg:#1f2329; --muted:#8a9099; --border:#e6e8eb;
+  --accent:#08979c; --accent-soft:rgba(8,151,156,.1); --on-accent:#fff;
+  --danger:#d4380d; --danger-soft:rgba(212,56,13,.09);
+  --shadow:0 1px 2px rgba(16,24,40,.04), 0 12px 32px rgba(16,24,40,.07);
+}
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; }
+  :root {
+    --bg:#141414; --bg-soft:#26282c; --card:#1f1f1f; --fg:#e8eaed; --muted:#8f959e; --border:#33353a;
+    --accent:#2bbcbf; --accent-soft:rgba(43,188,191,.16); --on-accent:#fff;
+    --danger:#ff7875; --danger-soft:rgba(255,120,117,.14);
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.35);
+  }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.wrap { max-width: 720px; margin: 20px auto; display: flex; flex-direction: column; gap: 12px; padding: 0 16px; }
+.wrap { max-width: 760px; margin: 20px auto; background: var(--card); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .row { display: flex; gap: 8px; }
-select, input, textarea { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
-input[type=text] { flex: 1; font-family: monospace; }
-textarea { width: 100%; min-height: 140px; font-family: monospace; font-size: 13px; resize: vertical; }
-button { border: none; border-radius: 8px; padding: 10px 22px; background: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
-label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
-.resp { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; font-family: monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; min-height: 80px; }
-.status { font-size: 12px; color: var(--muted); }
-.err { color: #cf1322; }
-@media (prefers-color-scheme: dark) { .err { color: #ff7875; } }
+select, input, textarea { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 13.5px; transition: border-color .15s, box-shadow .15s; }
+select:focus, input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+select { cursor: pointer; font-weight: 600; color: var(--accent); }
+input[type=text] { flex: 1; font-family: ui-monospace, Menlo, monospace; }
+textarea { width: 100%; min-height: 130px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.6; resize: vertical; }
+textarea::placeholder, input::placeholder { color: var(--muted); }
+button { border: none; border-radius: 10px; padding: 10px 24px; background: var(--accent); color: var(--on-accent); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: filter .15s, transform .06s, opacity .15s; }
+button:hover { filter: brightness(1.07); }
+button:active { transform: scale(.97); }
+button:disabled { opacity: .6; cursor: default; transform: none; filter: none; }
+label { font-size: 12px; font-weight: 600; color: var(--muted); display: block; margin-bottom: 5px; letter-spacing: .3px; }
+.resp { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 14px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; min-height: 80px; }
+.resp.err { color: var(--danger); background: var(--danger-soft); border-color: transparent; }
+.status { font-size: 12px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
 </style></head><body>
 <div class="wrap">
   <div class="row">
     <select id="method"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option></select>
     <input type="text" id="url" placeholder="https://api.example.com/v1/users">
-    <button onclick="send()">发送</button>
+    <button id="send" onclick="send()">发送</button>
   </div>
-  <div><label>请求头（JSON，可选）</label><textarea id="headers" style="min-height:60px" placeholder='{"Authorization": "Bearer xxx"}'></textarea></div>
+  <div><label>请求头（JSON，可选）</label><textarea id="headers" style="min-height:56px" placeholder='{"Authorization": "Bearer xxx"}'></textarea></div>
   <div><label>请求体（JSON，POST/PUT 时）</label><textarea id="body" placeholder='{"name": "test"}'></textarea></div>
-  <div><label>响应</label><div class="resp" id="resp">点击「发送」查看响应</div><div class="status" id="status"></div></div>
+  <div><label>响应</label><div class="resp" id="resp">点击「发送」查看响应（⌘/Ctrl + Enter）</div><div class="status" id="status"></div></div>
 </div>
 <script>
 async function send() {
@@ -37,6 +53,7 @@ async function send() {
   const method = document.getElementById('method').value;
   const respEl = document.getElementById('resp');
   const statusEl = document.getElementById('status');
+  const sendBtn = document.getElementById('send');
   let headers = {};
   try { const h = document.getElementById('headers').value.trim(); if (h) headers = JSON.parse(h); } catch (e) {
     respEl.textContent = '请求头不是合法 JSON'; respEl.className = 'resp err'; return;
@@ -47,6 +64,7 @@ async function send() {
     if (body) { opts.body = body; headers['Content-Type'] = headers['Content-Type'] || 'application/json'; }
   }
   respEl.textContent = '请求中…'; respEl.className = 'resp'; statusEl.textContent = '';
+  sendBtn.disabled = true;
   const started = Date.now();
   try {
     // 优先走应用网络桥（M6，绕过 CORS）；不可用时退回直接 fetch。
@@ -63,6 +81,8 @@ async function send() {
     respEl.textContent = '请求失败：' + e.message + '\n（跨域限制：正式版经由应用网络桥发送；在导出的 HTML 中请直接用浏览器打开同源接口）';
     respEl.className = 'resp err';
     statusEl.textContent = '';
+  } finally {
+    sendBtn.disabled = false;
   }
 }
 document.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') send(); });

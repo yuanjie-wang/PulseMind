@@ -18,6 +18,10 @@ export const TOOL_PARAM_LIMITS: Record<string, Record<string, number>> = {
   write: { content: 500_000 },
   edit: { diff: 200_000, new_str: 200_000 },
   spawn_agent: { task: 200_000 },
+  // The page tools go over the wire to another process and into a live page;
+  // a runaway string here is an in-page eval, not just a big prompt.
+  page_execute_js: { script: 50_000 },
+  page_input: { text: 100_000 },
 }
 export const MAX_TOOL_INPUT_JSON_BYTES = 1_000_000 // 1 MB safety net for any tool
 

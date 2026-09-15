@@ -72,8 +72,13 @@ export class SkillManager extends FeatureManager<SkillDefinition> {
 
   // --- Prompt Construction ---
 
-  getSystemPromptAppendix(skillsDir?: string): string {
-    const enabled = this.getEnabled()
+  /** `allowedNames` is the expert / sub-agent whitelist (SkillDefinition.name).
+   *  `undefined` = no restriction; an EMPTY ARRAY = nothing is advertised (that
+   *  expert allows no skill). Either way the catalog never dangles a skill the
+   *  session cannot actually use. */
+  getSystemPromptAppendix(skillsDir?: string, allowedNames?: string[]): string {
+    const whitelist = allowedNames ? new Set(allowedNames) : null
+    const enabled = this.getEnabled().filter((s) => !whitelist || whitelist.has(s.definition.name))
     if (enabled.length === 0) return ''
 
     const lines: string[] = ['# Available Skills', '<available_skills>']

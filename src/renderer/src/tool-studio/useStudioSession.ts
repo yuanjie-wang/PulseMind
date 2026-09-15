@@ -6,13 +6,13 @@
  * allowlist, working directory and approval mode are pinned to tool building,
  * then mirrors that session's event stream locally. Everything the renderer
  * used to own — the engine, the per-turn app.html read, the transcript — is
- * now the same protocol the chat uses (see utils/session-mirror).
+ * now the same protocol the chat uses (see shared/agent-session/mirror).
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentStatus, ContentBlock } from '../types/agent'
 import type { AgentEventData } from '../../../shared/agent-protocol'
-import type { SessionState } from '../utils/session-mirror'
-import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../utils/session-mirror'
+import type { SessionState } from '../../../shared/agent-session/mirror'
+import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../../../shared/agent-session/mirror'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
 import { TOOL_STUDIO_ALLOWED_TOOLS, TOOL_SYSTEM_PROMPT, studioConversationId } from './tool-prompt'
 

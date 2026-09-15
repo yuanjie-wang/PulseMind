@@ -3,26 +3,24 @@
 // tool — presets and user tools rank the same, no category split (revised
 // 2026-09-13).
 //
-// Hover model, second pass: the row ops are NOT a permanently mounted subtree
-// with a visibility toggle. Rows are memoized and carry no buttons at all; only
-// the hovered row renders its ops, inside a slot whose width is always reserved
-// so mounting them causes no reflow (name width and row height are constant).
-// Hover is owned by the LIST (single hoveredId), so "two rows showing buttons at
-// once" is impossible by construction, and a hover move mounts one small subtree
-// instead of re-rendering N rows of antd Buttons/Tooltips — the cost that made
-// the previous version flash both rows' buttons mid-transition.
+// Row anatomy (preset-UI pass): each row is a constant-height two-line card —
+// tool avatar, name with the quiet「预置」badge on presets, one-line description
+// underneath. Presets carry a curated icon + tint (toolVisual), user tools a
+// first-character avatar, so the two kinds read apart at a glance while staying
+// one flat list.
+//
+// Ops model, final: the rows carry NO buttons at all. 复制 / 删除 live in the
+// runner header's top-right corner (next to 在工作区编辑 and 重新加载), which is
+// where the tool they act on is on screen — a row-mounted cluster had to either
+// reserve width (names truncated) or float a pill over the text (looked bolted
+// on). The list keeps only a plain hover highlight as the click affordance, so
+// row width is entirely the text's and every name fits.
 
 import React, { useCallback, useMemo, useState } from 'react'
-import { Button, Input, Tooltip } from 'antd'
-import {
-  PlusOutlined,
-  CopyOutlined,
-  DeleteOutlined,
-  EditOutlined,
-  SearchOutlined,
-  UndoOutlined,
-} from '@ant-design/icons'
+import { Button, Input, theme } from 'antd'
+import { PlusOutlined, SearchOutlined, UndoOutlined } from '@ant-design/icons'
 import type { UserTool } from '../../../../shared/types/user-tool'
+import { PresetBadge, ToolAvatar } from './toolVisual'
 
 export interface ToolListProps {
   tools: UserTool[]
@@ -31,21 +29,22 @@ export interface ToolListProps {
   hasDeletedPresets: boolean
   onOpen: (id: string) => void
   onCreate: () => void
-  onEdit: (tool: UserTool) => void
-  onDuplicate: (tool: UserTool) => void
-  onDelete: (tool: UserTool) => void
   onRestorePresets: () => void
 }
 
-/** Fixed row height so hover never changes the element's size. */
-const ROW_HEIGHT = 30
-/** Width permanently reserved for the row ops. antd's small icon-only button is
- *  24px wide, so 3 × 24 + a little slack. */
-const OPS_WIDTH = 76
-const ROW_HOVER_BG = 'rgba(0,0,0,0.04)'
-const ROW_SELECTED_BG = 'rgba(0,0,0,0.08)'
-/** Row ops render as bare icons — antd's text-button hover tint is switched off. */
-const OP_BUTTON_STYLE: React.CSSProperties = { background: 'transparent' }
+/** Fixed row height so hover never changes the element's size. Two text lines
+ *  (name + description) fit with room to spare. */
+const ROW_HEIGHT = 48
+
+/** Theme-derived neutrals, hoisted so memoized rows take one stable object. */
+interface RowPalette {
+  hoverBg: string
+  selectedBg: string
+  desc: string
+  empty: string
+  divider: string
+  placeholderIcon: string
+}
 
 /** Simple filter for the search box: name or description contains the query. */
 function matchesQuery(tool: UserTool, query: string): boolean {
@@ -54,49 +53,18 @@ function matchesQuery(tool: UserTool, query: string): boolean {
   return tool.name.toLowerCase().includes(q) || (tool.description ?? '').toLowerCase().includes(q)
 }
 
-/** The hovered row's 复制 / 编辑 / 删除 cluster. The row is itself a click target
- *  (open the tool), and these buttons live inside it, so every op must swallow
- *  the click: without this the row's own handler runs right after — 编辑
- *  navigates to the workspace and is then overwritten by the run state. */
-function RowOps({ tool, onEdit, onDuplicate, onDelete }: {
-  tool: UserTool
-  onEdit: (tool: UserTool) => void
-  onDuplicate: (tool: UserTool) => void
-  onDelete: (tool: UserTool) => void
-}): React.ReactElement {
-  const op = (run: (tool: UserTool) => void) => (event: React.MouseEvent) => {
-    event.stopPropagation()
-    run(tool)
-  }
-  return (
-    <>
-      <Tooltip title="复制副本">
-        <Button type="text" size="small" style={OP_BUTTON_STYLE} icon={<CopyOutlined style={{ fontSize: 12 }} />} onClick={op(onDuplicate)} />
-      </Tooltip>
-      <Tooltip title="编辑">
-        <Button type="text" size="small" style={OP_BUTTON_STYLE} icon={<EditOutlined style={{ fontSize: 12 }} />} onClick={op(onEdit)} />
-      </Tooltip>
-      <Tooltip title="删除">
-        <Button type="text" size="small" danger style={OP_BUTTON_STYLE} icon={<DeleteOutlined style={{ fontSize: 12 }} />} onClick={op(onDelete)} />
-      </Tooltip>
-    </>
-  )
-}
-
 interface ToolRowProps {
   tool: UserTool
   selected: boolean
   hovered: boolean
+  palette: RowPalette
   onOpen: (id: string) => void
-  onEdit: (tool: UserTool) => void
-  onDuplicate: (tool: UserTool) => void
-  onDelete: (tool: UserTool) => void
   /** Reports this row's id on enter and null on leave (list-owned hover). */
   onHoverChange: (id: string | null) => void
 }
 
 const ToolRow = React.memo(function ToolRow({
-  tool, selected, hovered, onOpen, onEdit, onDuplicate, onDelete, onHoverChange,
+  tool, selected, hovered, palette, onOpen, onHoverChange,
 }: ToolRowProps): React.ReactElement {
   return (
     <div
@@ -105,30 +73,53 @@ const ToolRow = React.memo(function ToolRow({
       onClick={() => onOpen(tool.id)}
       style={{
         height: ROW_HEIGHT,
-        display: 'flex', alignItems: 'center', gap: 6,
+        display: 'flex', alignItems: 'center', gap: 8,
         padding: '0 10px', borderRadius: 8, cursor: 'pointer',
-        background: selected ? ROW_SELECTED_BG : hovered ? ROW_HOVER_BG : 'transparent',
-        fontWeight: selected ? 600 : 400,
+        background: selected ? palette.selectedBg : hovered ? palette.hoverBg : 'transparent',
       }}
     >
-      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>
-        {tool.name}
-      </span>
-      {/* The slot is always here, so mounting the ops shifts nothing. The ops
-          are inside the row, so moving onto them keeps the row hovered. */}
-      <span style={{ width: OPS_WIDTH, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-        {hovered && <RowOps tool={tool} onEdit={onEdit} onDuplicate={onDuplicate} onDelete={onDelete} />}
-      </span>
+      <ToolAvatar tool={tool} size={28} />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+          <span
+            style={{
+              minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              fontSize: 13, lineHeight: '18px', fontWeight: selected ? 600 : 500,
+            }}
+          >
+            {tool.name}
+          </span>
+          {tool.preset && <PresetBadge />}
+        </div>
+        <span
+          title={tool.description || undefined}
+          style={{
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            fontSize: 11, lineHeight: '15px', color: palette.desc,
+          }}
+        >
+          {tool.description}
+        </span>
+      </div>
     </div>
   )
 })
 
 export function ToolList({
-  tools, selectedId, hasDeletedPresets, onOpen, onCreate, onEdit, onDuplicate, onDelete, onRestorePresets,
+  tools, selectedId, hasDeletedPresets, onOpen, onCreate, onRestorePresets,
 }: ToolListProps): React.ReactElement {
+  const { token } = theme.useToken()
   const [query, setQuery] = useState('')
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const shown = useMemo(() => tools.filter((tool) => matchesQuery(tool, query)), [tools, query])
+  const palette = useMemo<RowPalette>(() => ({
+    hoverBg: token.colorFillQuaternary,
+    selectedBg: token.colorFillTertiary,
+    desc: token.colorTextTertiary,
+    empty: token.colorTextTertiary,
+    divider: token.colorBorderSecondary,
+    placeholderIcon: token.colorTextQuaternary,
+  }), [token])
 
   const handleHoverChange = useCallback((id: string | null) => setHoveredId(id), [])
 
@@ -140,14 +131,14 @@ export function ToolList({
   }
 
   return (
-    <div style={{ width: 240, flexShrink: 0, borderRight: '1px solid #f0f0f0', padding: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ width: 260, flexShrink: 0, borderRight: `1px solid ${palette.divider}`, padding: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <Input
         size="small"
         allowClear
         value={query}
         onChange={(e) => handleQueryChange(e.target.value)}
         placeholder="搜索工具"
-        prefix={<SearchOutlined style={{ color: '#bbb', fontSize: 12 }} />}
+        prefix={<SearchOutlined style={{ color: palette.placeholderIcon, fontSize: 12 }} />}
         style={{ borderRadius: 8, marginBottom: 8 }}
       />
       <Button
@@ -165,20 +156,18 @@ export function ToolList({
             tool={tool}
             selected={tool.id === selectedId}
             hovered={tool.id === hoveredId}
+            palette={palette}
             onOpen={onOpen}
-            onEdit={onEdit}
-            onDuplicate={onDuplicate}
-            onDelete={onDelete}
             onHoverChange={handleHoverChange}
           />
         ))}
         {tools.length === 0 && (
-          <div style={{ padding: '16px 10px', color: '#999', fontSize: 12, lineHeight: 1.7 }}>
+          <div style={{ padding: '16px 10px', color: palette.empty, fontSize: 12, lineHeight: 1.7 }}>
             还没有工具。点上方「新建工具」描述需求即可生成；预置工具开箱即用，也可就地改造。
           </div>
         )}
         {tools.length > 0 && shown.length === 0 && (
-          <div style={{ padding: '16px 10px', color: '#999', fontSize: 12 }}>没有匹配的工具</div>
+          <div style={{ padding: '16px 10px', color: palette.empty, fontSize: 12 }}>没有匹配的工具</div>
         )}
       </div>
       {hasDeletedPresets && (

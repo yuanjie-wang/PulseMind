@@ -1,5 +1,5 @@
 /**
- * Browser-extension build (PLAN-browser-extension M0.5).
+ * Browser-extension build (PLAN-browser-extension M0.5 + M1 panel).
  *
  * Independent of the Electron builds: the extension is plain browser TS
  * bundled with esbuild into `out/extension/`, ready to load unpacked via
@@ -10,8 +10,8 @@ const { cpSync, mkdirSync, rmSync } = require('node:fs')
 
 const OUT = 'out/extension'
 
-/** Shared esbuild options for all extension entries (MV3 service workers and
- *  extension pages want classic scripts → iife). */
+/** Shared esbuild options for all extension entries (MV3 service workers,
+ *  extension pages and content scripts all want classic scripts → iife). */
 function browserTarget() {
   return {
     bundle: true,
@@ -20,6 +20,12 @@ function browserTarget() {
     target: ['chrome114'],
     format: 'iife',
     tsconfig: 'tsconfig.extension.json',
+    // The panel injects its stylesheet into a Shadow Root, so the CSS is needed
+    // as a string at runtime rather than as a separate file.
+    loader: { '.css': 'text' },
+    // React's dev build is ~4x the production one and a content script is
+    // parsed on every page load; our own code stays unminified for debugging.
+    define: { 'process.env.NODE_ENV': '"production"' },
     logLevel: 'warning',
   }
 }
@@ -35,6 +41,14 @@ async function main() {
     ...browserTarget(),
   })
   console.log('✓ Extension background → out/extension/background.js')
+
+  // Content script: the in-page panel host (FAB + Shadow Root)
+  await build({
+    entryPoints: ['src/extension/content/index.tsx'],
+    outfile: `${OUT}/content.js`,
+    ...browserTarget(),
+  })
+  console.log('✓ Extension content    → out/extension/content.js')
 
   // Options page
   await build({

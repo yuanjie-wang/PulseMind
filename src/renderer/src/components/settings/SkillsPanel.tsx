@@ -1,24 +1,22 @@
 import React, { useState } from 'react'
-import {
-  Button,
-  Card,
-  Switch,
-  Tag,
-  Typography,
-  Alert
-} from 'antd'
+import { Tag, Typography, Alert } from 'antd'
 import {
   BugOutlined,
   CodeOutlined,
-  DeleteOutlined,
   ReadOutlined,
   ThunderboltOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { SkillState } from '../../skills/types'
+import CapabilityCard, {
+  CAPABILITY_GRID,
+  CapabilityDeleteButton,
+  CapabilityEmpty,
+  CapabilitySwitch
+} from '../common/CapabilityCard'
 import SkillBrowser from './SkillBrowser'
 
-const { Text, Paragraph } = Typography
+const { Paragraph } = Typography
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   engineering: <CodeOutlined />,
@@ -63,9 +61,9 @@ function SkillsPanel({
 
   return (
     <div style={{ background: 'transparent' }}>
-      {visibleSkills.length === 0 && <Text type="secondary">{t('skills.noSkills')}</Text>}
+      {visibleSkills.length === 0 && <CapabilityEmpty title={t('skills.noSkills')} />}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12, padding: '4px 0 0' }}>
+      <div style={CAPABILITY_GRID}>
         {visibleSkills.map((skill) => (
           <SkillCard
             key={skill.definition.name}
@@ -106,46 +104,24 @@ function SkillCard({ skill, onToggle, onDeleteSkill, onOpen }: SkillCardProps): 
   const { definition, enabled } = skill
 
   return (
-    <Card
-      size="small"
-      hoverable
-      style={{ borderRadius: 10 }}
-      onClick={() => onOpen(definition.name)}
-      title={
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-          <span style={{ flexShrink: 0, display: 'inline-flex' }}>{CATEGORY_ICONS[definition.category] || <ThunderboltOutlined />}</span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {definition.name}
-          </span>
-          {definition.builtIn && (
-            <Tag color='default' style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', marginInlineEnd: 0 }}>
-              {t('common.builtIn')}
-            </Tag>
-          )}
-        </span>
+    <CapabilityCard
+      icon={CATEGORY_ICONS[definition.category] ?? <ThunderboltOutlined />}
+      name={definition.name}
+      badge={
+        definition.builtIn ? (
+          <Tag color="default" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', marginInlineEnd: 0 }}>
+            {t('common.builtIn')}
+          </Tag>
+        ) : undefined
       }
-      extra={
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} onClick={(e) => e.stopPropagation()}>
+      onClick={() => onOpen(definition.name)}
+      actions={
+        <>
+          <CapabilitySwitch checked={enabled} onToggle={() => onToggle(definition.name)} />
           {!definition.builtIn && onDeleteSkill && (
-            <Button
-              type="text"
-              size="small"
-              icon={<DeleteOutlined style={{ color: '#bbb' }} />}
-              onClick={(e) => {
-                e.stopPropagation()
-                onDeleteSkill(definition.name)
-              }}
-            />
+            <CapabilityDeleteButton onClick={() => onDeleteSkill(definition.name)} />
           )}
-          <Switch
-            size='small'
-            checked={enabled}
-            onClick={(checked, e) => {
-              e.stopPropagation()
-              onToggle(definition.name)
-            }}
-          />
-        </span>
+        </>
       }
     >
       {/* Description — clicking the card opens the file browser instead */}
@@ -160,7 +136,7 @@ function SkillCard({ skill, onToggle, onDeleteSkill, onOpen }: SkillCardProps): 
       >
         {definition.description}
       </Paragraph>
-    </Card>
+    </CapabilityCard>
   )
 }
 

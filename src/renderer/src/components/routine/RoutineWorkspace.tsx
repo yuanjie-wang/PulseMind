@@ -22,20 +22,12 @@ import {
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
+import { useHostedAgentSession } from '../../hooks/useHostedAgentSession'
 import { TranscriptView } from '../chat/TranscriptView'
 import { InputArea } from '../chat/InputArea'
-import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../../utils/message-utils'
-import {
-  applySessionEvent,
-  freshSessionState,
-  isActiveStatus,
-  seedSessionState,
-  type SessionState,
-} from '../../utils/session-mirror'
 import { describeRelativeTimeText } from '../../utils/relative-time'
-import type { AgentEventData } from '../../../../shared/agent-protocol'
+import { PANE_ROW_STYLES } from './pane-styles'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
-import type { AgentMessage, AgentStatus, ContentBlock } from '../../types/agent'
 import type { MenuProps } from 'antd'
 
 /** How often run rows (statuses, newly fired scheduled runs) are refreshed. */
@@ -217,16 +209,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, activeRunNonce, o
 
   return (
     <div style={{ height: '100%', display: 'flex', background: '#fff', overflow: 'hidden' }}>
-      <style>{`
-        .pane-row { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s, border-color 0.15s; }
-        .pane-row:hover { background: rgba(0,0,0,0.03); }
-        .pane-row--active { background: rgba(0,0,0,0.06); border-color: #d9d9d9; }
-        .pane-row--active:hover { background: rgba(0,0,0,0.09); }
-        /* Row actions stay out of the way until the row is under the pointer
-           (or keyboard focus is inside it). */
-        .pane-row-action { opacity: 0; pointer-events: none; transition: opacity 0.15s; }
-        .pane-row:hover .pane-row-action, .pane-row:focus-within .pane-row-action { opacity: 1; pointer-events: auto; }
-      `}</style>
+      <style>{PANE_ROW_STYLES}</style>
       {/* Left — task list */}
       <div style={{ width: 232, borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '12px 12px 8px' }}>
@@ -355,138 +338,40 @@ interface RunTranscriptProps {
 /** The selected run's conversation: a session-mirror view of the main-hosted
  *  engine plus a composer to continue it. Keyed by conversation id upstream, so
  *  switching runs mounts a fresh mirror instead of leaking the previous
- *  session's transcript (same pattern as the tool studio's keyed workspace). */
+ *  session's transcript. The attach/restore/persist protocol lives in the
+ *  shared useHostedAgentSession; this component only adds the run-specific
+ *  view (unattended parking, empty hints). */
 function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): React.ReactElement {
   const { settings, switchProfile } = useSettings()
-  const stateRef = useRef<SessionState>(freshSessionState())
-  const [messages, setMessages] = useState<AgentMessage[]>([])
-  const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
-  const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
-  const [restoring, setRestoring] = useState(!!convId)
-
-  const isBusy = isActiveStatus(agentStatus)
   const title = routine ? `[日常] ${routine.name}` : '[日常] 任务'
+  const session = useHostedAgentSession({
+    convId: convId ?? null,
+    title,
+    createOptions: { clientId: 'routine', projectId: routine?.projectId },
+  })
+  const isBusy = session.isBusy
 
-  const sync = useCallback((state: SessionState): void => {
-    setMessages([...state.messages])
-    setAgentStatus(state.agentStatus)
-    setStreamingBlocks([...state.streamingBlocks])
-  }, [])
-
-  // Fold the selected session's events into the mirror. The main-side bridge
-  // broadcasts every session; this per-mount subscription filters by id
-  // (convId is fixed for this keyed instance's lifetime).
-  useEffect(() => {
-    if (!convId) return
-    const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
-      if (sessionId !== convId) return
-      if (!applySessionEvent(stateRef.current, raw as AgentEventData)) return
-      sync(stateRef.current)
-    })
-    return unsub
-  }, [convId, sync])
-
-  // Attach: a live main-side session seeds the mirror from its snapshot; an
-  // idle one just displays the persisted transcript read-only (the engine is
-  // hydrated lazily on first send).
-  useEffect(() => {
-    if (!convId) return
-    let alive = true
-    void (async () => {
-      const snap = await window.electronAPI.agentSessionSnapshot(convId).catch(() => null)
-      if (!alive) return
-      if (snap && (snap.messages.length > 0 || snap.status.status !== 'idle')) {
-        seedSessionState(stateRef.current, snap)
-        sync(stateRef.current)
-        setRestoring(false)
-        return
-      }
-      try {
-        const stored = await window.electronAPI.hydrateConversation(convId)
-        if (alive && stored?.messages?.length) {
-          stateRef.current.messages = storedMessagesToAgentMessages(stored.messages)
-          sync(stateRef.current)
-        }
-      } catch { /* neither live nor stored — show the empty hint */ }
-      if (alive) setRestoring(false)
-    })()
-    return () => { alive = false }
-  }, [convId, sync])
-
-  // Keep the persisted conversation in sync once an exchange settles — the
-  // user's continuation (and the automated run's tail, idempotently) must
-  // survive restarts and stay inspectable from the run history. 'idle' covers
-  // a continuation the user stopped mid-way.
-  const prevStatusRef = useRef<string>('idle')
-  useEffect(() => {
-    const prev = prevStatusRef.current
-    prevStatusRef.current = agentStatus.status
-    if (!isActiveStatus({ status: prev } as AgentStatus)) return
-    if (agentStatus.status !== 'completed' && agentStatus.status !== 'error' && agentStatus.status !== 'idle') return
-    const msgs = stateRef.current.messages
-    if (!convId || msgs.length === 0) return
-    window.electronAPI.saveConversation(agentMessagesToConversation(msgs, convId, title))
-      .catch((err) => console.warn('[RoutineWorkspace] transcript save failed:', err))
-  }, [agentStatus, convId, title])
-
-  /** Ensure the main-hosted session exists (and holds the persisted context),
-   *  then hand the message to the engine. */
-  const send = useCallback(async (text: string): Promise<void> => {
-    if (!convId) return
-    try {
-      await window.electronAPI.agentSessionCreate(convId, {
-        title,
-        clientId: 'routine',
-        projectId: routine?.projectId,
-      })
-      const snap = await window.electronAPI.agentSessionSnapshot(convId).catch(() => null)
-      if (!snap || (snap.messages.length === 0 && snap.status.status === 'idle')) {
-        const stored = await window.electronAPI.hydrateConversation(convId).catch(() => null)
-        if (stored?.messages?.length) {
-          const msgs = storedMessagesToAgentMessages(stored.messages)
-          stateRef.current.messages = msgs
-          sync(stateRef.current)
-          await window.electronAPI.agentSessionHydrate(convId, msgs, stored.historySummary
-            ? { text: stored.historySummary, firstKeptId: stored.historySummaryFrontier ?? '' }
-            : null)
-        }
-      } else if (snap.messages.length > stateRef.current.messages.length) {
-        // The mirror fell behind the live session — catch up before extending.
-        seedSessionState(stateRef.current, snap)
-        sync(stateRef.current)
-      }
-      await window.electronAPI.agentSessionAsk(convId, text)
-    } catch (err) {
-      stateRef.current.agentStatus = { status: 'error', error: err instanceof Error ? err.message : String(err) }
-      setAgentStatus(stateRef.current.agentStatus)
-    }
-  }, [convId, routine, sync, title])
-
-  const engineCall = (method: string, ...args: unknown[]): void => {
-    if (convId) void window.electronAPI.agentSessionEngineCall(convId, method, args)
-  }
-
-  const emptyHint = restoring
+  const emptyHint = session.restoring
     ? ''
-    : unattended && messages.length === 0
+    : unattended && session.messages.length === 0
       ? '任务已启动，等待模型输出…'
       : convId ? '该记录没有保存对话内容。' : '该记录没有可回看的对话。'
 
   return (
     <>
       <TranscriptView
-        messages={messages}
-        agentStatus={agentStatus}
-        streamingBlocks={streamingBlocks}
+        messages={session.messages}
+        agentStatus={session.agentStatus}
+        streamingBlocks={session.streamingBlocks}
         isRequesting={isBusy}
-        restoring={restoring}
+        restoring={session.restoring}
         emptyHint={emptyHint}
-        onApproveTool={(id) => engineCall('approveTool', id)}
-        onRejectTool={(id) => engineCall('rejectTool', id)}
-        onKillTool={(id) => engineCall('killTool', id)}
-        onRespondToTool={(id, response) => engineCall('respondToTool', id, response)}
-        onClearError={() => engineCall('clearError')}
-        onRetry={() => engineCall('retryLastTurn')}
+        onApproveTool={(id) => session.engineCall('approveTool', id)}
+        onRejectTool={(id) => session.engineCall('rejectTool', id)}
+        onKillTool={(id) => session.engineCall('killTool', id)}
+        onRespondToTool={(id, response) => session.engineCall('respondToTool', id, response)}
+        onClearError={() => session.engineCall('clearError')}
+        onRetry={() => session.engineCall('retryLastTurn')}
       />
       {convId && (
         unattended ? (
@@ -500,19 +385,17 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
               layout="inline"
               isRequesting={isBusy}
               isStreaming={isBusy}
-              isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
-              isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
-              hasMessages={messages.length > 0}
-              onSendMessage={(content) => void send(content)}
-              onCancel={() => { if (convId) void window.electronAPI.agentSessionCancel(convId) }}
+              isAwaitingApproval={session.agentStatus.status === 'awaiting_approval'}
+              isAwaitingInput={session.agentStatus.status === 'awaiting_user_input'}
+              hasMessages={session.messages.length > 0}
+              onSendMessage={(content) => session.send(content)}
+              onCancel={session.cancel}
               profiles={settings.profiles}
               activeProfileId={settings.activeProfileId}
               onSelectProfile={(profileId) => {
-                void switchProfile(profileId).then(() => {
-                  // The engine rebuilds its options main-side; signal the
-                  // session so the next ask uses the newly selected model.
-                  if (convId) void window.electronAPI.agentSessionRefreshOptions(convId)
-                })
+                // The engine rebuilds its options main-side; signal the
+                // session so the next ask uses the newly selected model.
+                void switchProfile(profileId).then(() => session.refreshOptions())
               }}
               features={{ modelPicker: true }}
             />

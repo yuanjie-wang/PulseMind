@@ -1,14 +1,17 @@
 /**
  * Client-side mirror of a main-hosted session (PLAN-0.3.5 M1.4).
  *
- * Engines live in the main process; every renderer that shows one keeps a local
+ * Engines live in the main process; every client that shows one keeps a local
  * copy of its observable state and folds the session event stream into it. The
- * reducer here is that fold — shared by the chat client (useConversationEngine)
- * and the tool studio client so both interpret the wire protocol identically.
+ * reducer here is that fold — shared by the chat client (useConversationEngine),
+ * the tool studio client and the browser extension panel so all three interpret
+ * the wire protocol identically (PLAN-browser-extension §3.1.4).
+ *
+ * DOM-free by construction: the extension runs this inside a content script.
  */
-import type { AgentMessage, AgentStatus, ContentBlock, Plan } from '../types/agent'
-import type { AgentEventData } from '../../../shared/agent-protocol'
-import { applyMessagesAppend } from './session-messages'
+import type { AgentMessage, AgentStatus, ContentBlock, Plan } from '../../renderer/src/types/agent'
+import type { AgentEventData } from '../agent-protocol'
+import { applyMessagesAppend } from './messages'
 
 export interface SessionState {
   messages: AgentMessage[]

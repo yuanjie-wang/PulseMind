@@ -1,7 +1,7 @@
 import type { AgentMessage } from '../types/agent'
 import type { ToolDefinition } from '../tools/types'
 import type { LlmRequestParams, LLMProvider } from './types'
-import type { StreamEventHandlers, StreamParser } from './stream-types'
+import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 
 /**
  * Abstract LLM provider adapter.
@@ -44,6 +44,9 @@ export interface LlmAdapter {
    * Non-streaming API call for background tasks (title generation, memory extraction).
    * Internally uses streaming (stream: true) to support APIs that only accept streaming,
    * collects all SSE chunks, and returns the extracted text content.
+   *
+   * `onUsage` reports the provider's token accounting for the call when the
+   * response carries it; callers that show token counts pass it, the rest omit it.
    */
   callNonStreaming(
     apiKey: string,
@@ -51,7 +54,8 @@ export interface LlmAdapter {
     model: string,
     systemPrompt: string,
     messages: { role: string; content: string }[],
-    maxTokens?: number
+    maxTokens?: number,
+    onUsage?: (usage: LlmUsage) => void
   ): Promise<string | null>
 
   /** Extract plain text from a non-streaming provider response. */

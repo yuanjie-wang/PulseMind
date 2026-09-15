@@ -17,7 +17,7 @@ import type { ToolUseBlock, TextBlock } from '../../types/agent'
 /** spawn_agent: assistant text fed back to the parent. */
 const SUBAGENT_TEXT_MAX = 10_000
 
-/** 引用关系目录：技能取本会话的 SkillManager，连接器取同步的 MCP 缓存。
+/** 可用能力目录：技能取本会话的 SkillManager，连接器取同步的 MCP 缓存。
  *  都读不到时把字段留空 → 指令里按 profile 记的名字原样列出。 */
 function resolveRefCatalogs(ex: ToolExecContext): ExpertRefCatalogs {
   const skills = ex.opts.skillManager?.getAll().map((s) => s.definition)
@@ -36,10 +36,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     const task = String(t.input?.task || '')
     if (!task.trim()) throw new Error('task is required')
 
-    // Capability is inherited from the host session — an expert config pack
-    // only supplies identity, never a tool/connector/skill whitelist. Run
-    // parameters (model / token budget / loop cap) come from the session too,
-    // so the delegated engine budgets like the host one.
+    // Capability comes from the delegated pack: 可用技能 / 可用连接器 narrow the
+    // sub-agent's toolset, everything else (tools, run parameters) is inherited
+    // from the host session. Run parameters (model / token budget / loop cap)
+    // come from the host too, so the delegated engine budgets like it.
     let profile: ExpertProfile | null = null
     if (subAgentId) {
       try {
@@ -58,21 +58,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       }
     }
 
-    // Expert config pack: compose the four structured sections instead of a
-    // bare basePrompt; bound knowledge files ride along BOTH as a Bound
-    // Knowledge index in the prompt AND as an enforced knowledgeScope on the
-    // spawned engine — matching the @-summon runtime's convergence strength.
+    // Expert config pack: compose the structured sections instead of a bare
+    // basePrompt. Its capability whitelists travel to the spawned engine as
+    // allowedSkills / allowedMcpServers so both runtimes restrict identically.
     const basePrompt = profile?.basePrompt || ''
-    const knowledgeFiles: Array<{ id: string; title: string; filePath: string; wikiPages: string[] }> = []
-    if (profile?.knowledgeFileIds?.length) {
-      const km = ex.opts.knowledgeManager
-      if (km) {
-        const rows = await Promise.all((profile.knowledgeFileIds as string[]).map(id => km.getFile(id).catch(() => null)))
-        for (const f of rows) {
-          if (f) knowledgeFiles.push({ id: f.id, title: f.title || f.filePath, filePath: f.filePath, wikiPages: f.wikiOutputs ?? [] })
-        }
-      }
-    }
     const expertBlock = profile
       ? composeExpertInstructions(
           {
@@ -84,15 +73,14 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
             skillNames: profile.skillNames,
             mcpServerIds: profile.mcpServerIds,
           },
-          knowledgeFiles,
           resolveRefCatalogs(ex)
         )
       : GENERAL_SUBAGENT_PROMPT
 
-    // Append available skills context
+    // Append available skills context (narrowed to the expert's whitelist).
     let skillsCtx = ''
     try {
-      const skillsAppendix = ex.opts.skillManager?.getSystemPromptAppendix()
+      const skillsAppendix = ex.opts.skillManager?.getSystemPromptAppendix(undefined, profile?.skillNames)
       if (skillsAppendix) skillsCtx = '\n\n' + skillsAppendix
     } catch { /* non-critical */ }
 
@@ -102,11 +90,14 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
     ex.notify()
 
+    // 可用能力白名单：有专家包就原样给出（空数组 = 一个都不许用）；
+    // 没有专家包（通用子代理）才留 undefined，表示不限制。
     const handle = ex.spawnSubAgent!({
       systemPrompt,
       initialMessages: [],
       title: `${profile?.name || '子代理'}: ${task.slice(0, 60)}`,
-      knowledgeScope: knowledgeFiles.length > 0 ? knowledgeFiles : undefined,
+      allowedSkills: profile ? profile.skillNames ?? [] : undefined,
+      allowedMcpServers: profile ? profile.mcpServerIds ?? [] : undefined,
       maxTokens: ex.opts.maxTokens,
       maxLoopIterations: 20,
       onProgress: (summary) => {

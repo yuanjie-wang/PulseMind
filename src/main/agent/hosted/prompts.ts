@@ -74,14 +74,23 @@ class HostedPromptRouter {
 
   handleApprovalResponse(params: ApprovalResponseParams): void {
     const entry = this.approvals.get(params.callId)
-    if (!entry) return
+    if (!entry) {
+      // No prompt under this callId: it timed out, or the session was never
+      // routed to a hosted client. Silence here hides a whole class of "the
+      // button does nothing" bugs — say so instead.
+      console.warn(`[HostedPrompts] approval.response for unknown callId: ${params.callId}`)
+      return
+    }
     this.clear('approvals', params.callId)
     this.engineCall(entry.sessionId, params.approved ? 'approveTool' : 'rejectTool', [entry.toolUseId])
   }
 
   handleAskUserResponse(params: AskUserResponseParams): void {
     const entry = this.asks.get(params.callId)
-    if (!entry) return
+    if (!entry) {
+      console.warn(`[HostedPrompts] ask_user.response for unknown callId: ${params.callId}`)
+      return
+    }
     this.clear('asks', params.callId)
     this.engineCall(entry.sessionId, 'respondToTool', [entry.toolUseId, String(params.response ?? '')])
   }

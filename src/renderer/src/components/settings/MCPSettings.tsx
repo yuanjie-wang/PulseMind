@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Button, Card, Switch, Tag, Tooltip, Modal, Input, Form, Radio, Segmented } from 'antd'
+import { Button, Tag, Tooltip, Modal, Input, Form, Radio, Segmented } from 'antd'
 import {
   ApiOutlined,
   ReloadOutlined,
@@ -13,8 +13,14 @@ import type { MCPManagedServer, MCPClientConfig } from '../../types/electron'
 import { useAppSettings } from '../../hooks/useAppSettings'
 import { createLlmAdapter } from '../../llm'
 import { generateMcpSummaries } from '../../agent/mcp-summary-service'
+import CapabilityCard, {
+  CAPABILITY_GRID,
+  CapabilityDeleteButton,
+  CapabilityEmpty,
+  CapabilitySwitch
+} from '../common/CapabilityCard'
 
-/** A dot, not a filled Tag: on a ~320px card a colored status pill competes with
+/** A dot, not a filled Tag: on a ~260px card a colored status pill competes with
  *  the server name for the eye, which is exactly the crowding we're removing. */
 const STATUS: Record<MCPManagedServer['status'], { color: string; label: string; pulse?: boolean }> = {
   connected: { color: '#52c41a', label: '已连接' },
@@ -51,19 +57,10 @@ const CARD_CSS = `
   @keyframes mcp-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 `
 
-const ICON_TILE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  flexShrink: 0,
-  background: 'rgba(0, 0, 0, 0.05)',
-  color: '#555',
-}
-
 function ServerStatusLine({ status }: { status: MCPManagedServer['status'] }): React.ReactElement {
   const cfg = STATUS[status] ?? STATUS.stopped
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0, color: '#888' }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
       <span
         style={{
           width: 6,
@@ -89,9 +86,9 @@ interface McpServerCardProps {
   onDelete: () => void
 }
 
-/** Connector card. Card's own title/extra/actions bands are deliberately unused —
- *  three chrome rows on a narrow card was the bulk of the old card's clutter.
- *  Header, a one-line endpoint and the collapsed tool list all live in the body.
+/** Connector card. What used to make this tab look unlike 技能/专家 was that the
+ *  header was hand-rolled inside a headless Card body; the header is now the shared
+ *  CapabilityCard head, and the status + transport line moved down into the body.
  *  The whole card is the edit affordance. */
 function McpServerCard({
   server,
@@ -116,80 +113,64 @@ function McpServerCard({
   if (server.tools.length > 0) meta.push(`${server.tools.length} 个工具`)
   if (server.serverInfo?.version) meta.push(`v${server.serverInfo.version}`)
 
-  // Keyboard parity for the click-to-edit card; inner buttons must keep their
-  // own key handling, so only the card's own target counts.
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (e.target !== e.currentTarget) return
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      onOpenEditor()
-    }
-  }
-
   return (
-    <Card
-      hoverable
+    <CapabilityCard
+      icon={<ApiOutlined style={{ fontSize: 14 }} />}
+      name={server.name}
       onClick={onOpenEditor}
-      onKeyDown={handleKeyDown}
-      tabIndex={0}
-      style={{ borderRadius: 10, height: '100%', cursor: 'pointer' }}
-      styles={{
-        body: { padding: 14, height: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-        <div style={{ ...ICON_TILE, width: 30, height: 30, borderRadius: 9 }}>
-          <ApiOutlined style={{ fontSize: 15 }} />
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <span style={{ fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {server.name}
-            </span>
-          </div>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              columnGap: 6,
-              rowGap: 2,
-              marginTop: 4,
-              fontSize: 11,
-              color: '#999',
-              minWidth: 0
-            }}
-          >
-            <ServerStatusLine status={server.status} />
-            <span style={{ color: '#e0e0e0' }}>·</span>
-            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meta.join(' · ')}</span>
-          </div>
-        </div>
-        {/* Always-visible actions. Clicks are kept off the card so an action
-            never doubles as "open the editor". Same switch-first row as the
-            skill and expert cards. */}
-        <div
-          style={{ display: 'flex', alignItems: 'center', flexShrink: 0, marginTop: -2, marginRight: -6 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Tooltip title={active ? '停止' : '启动'}>
-            <Switch
-              size="small"
-              checked={active}
-              loading={busy}
-              disabled={server.status === 'connecting'}
-              onClick={() => (active ? onStop() : onStart())}
-            />
-          </Tooltip>
+      actions={
+        <>
+          <CapabilitySwitch
+            checked={active}
+            loading={busy}
+            disabled={server.status === 'connecting'}
+            onToggle={() => (active ? onStop() : onStart())}
+            onLabel="启动"
+            offLabel="停止"
+          />
           {connected && (
             <Tooltip title="重启">
               <Button type="text" size="small" icon={<ReloadOutlined />} disabled={busy} onClick={onRestart} />
             </Tooltip>
           )}
-          <Tooltip title="删除">
-            <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={onDelete} />
-          </Tooltip>
-        </div>
+          <CapabilityDeleteButton onClick={onDelete} />
+        </>
+      }
+      footer={
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            height: 20,
+            padding: '0 4px',
+            marginLeft: -4,
+            fontSize: 12,
+            color: server.tools.length > 0 ? '#666' : '#c8c8c8'
+          }}
+        >
+          <ToolOutlined style={{ fontSize: 12 }} />
+          {`工具 · ${server.tools.length}`}
+        </span>
+      }
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          columnGap: 6,
+          rowGap: 2,
+          fontSize: 12,
+          color: '#888',
+          minWidth: 0
+        }}
+      >
+        <ServerStatusLine status={server.status} />
+        <span style={{ color: '#e0e0e0' }}>·</span>
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {meta.join(' · ')}
+        </span>
       </div>
 
       {/* One ellipsized line instead of N wrapped code chips. */}
@@ -250,30 +231,7 @@ function McpServerCard({
           </div>
         </Tooltip>
       )}
-
-      {/* Every card gets the tool row so a not-yet-connected connector matches its
-          neighbours in height; it is a plain count, not a disclosure — expanding the
-          tool list grew the card and broke that. The spacer pins it to the bottom so
-          a stretched grid row keeps the rows aligned. */}
-      <div style={{ flex: 1, minHeight: 10 }} />
-      <div style={{ paddingTop: 8, borderTop: '1px solid #f2f2f2' }}>
-        <span
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 5,
-            height: 20,
-            padding: '0 4px',
-            marginLeft: -4,
-            fontSize: 12,
-            color: server.tools.length > 0 ? '#666' : '#c8c8c8'
-          }}
-        >
-          <ToolOutlined style={{ fontSize: 12 }} />
-          {`工具 · ${server.tools.length}`}
-        </span>
-      </div>
-    </Card>
+    </CapabilityCard>
   )
 }
 
@@ -433,23 +391,9 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
     <>
       <style>{CARD_CSS}</style>
       {servers.length === 0 ? (
-        <div style={{ padding: '56px 24px', textAlign: 'center' }}>
-          <div style={{ ...ICON_TILE, width: 44, height: 44, borderRadius: 13, margin: '0 auto 12px', background: 'rgba(0, 0, 0, 0.04)' }}>
-            <ApiOutlined style={{ fontSize: 20, color: '#bbb' }} />
-          </div>
-          <div style={{ fontSize: 13, color: '#666' }}>还没有连接器</div>
-          <div style={{ fontSize: 12, color: '#bbb', marginTop: 4 }}>
-            点右上角「添加连接器」新建，或用「重新加载」读取配置文件
-          </div>
-        </div>
+        <CapabilityEmpty title="还没有连接器" hint="点右上角「添加连接器」新建，或用「重新加载」读取配置文件" />
       ) : (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-            gap: 14
-          }}
-        >
+        <div style={CAPABILITY_GRID}>
           {servers.map((server) => (
             <McpServerCard
               key={server.id}
@@ -561,7 +505,9 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
     </>
   )
 
-  return <div style={{ height: '100%', overflow: 'auto' }}>{content}</div>
+  // No overflow of its own: the capability center's pane is the scroll container, so
+  // an over-tall grid scrolls there instead of being clipped here (see its comment).
+  return <div style={{ height: '100%' }}>{content}</div>
 })
 
 export default MCPSettings

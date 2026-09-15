@@ -2,7 +2,7 @@ import type { AgentMessage, TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBl
 import type { ToolDefinition } from '../tools/types'
 import type { LlmAdapter } from './adapter'
 import type { LlmRequestParams } from './types'
-import type { StreamEventHandlers, StreamParser } from './stream-types'
+import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 import { createStreamParser, fetchStreamChunks } from './stream-utils'
 
 // ── Stop Reason Normalization ─────────────────────────────────────────
@@ -17,6 +17,16 @@ const FINISH_REASON_MAP: Record<string, string> = {
 function normalizeFinishReason(reason: string | null): string | null {
   if (!reason) return null
   return FINISH_REASON_MAP[reason] || reason
+}
+
+/** OpenAI-shaped usage → the normalized shape. Compatible endpoints (DeepSeek)
+ *  report the cache hit count under their own key. */
+function openAiUsage(usage: Record<string, unknown>): LlmUsage {
+  return {
+    inputTokens: usage.prompt_tokens as number | undefined,
+    outputTokens: usage.completion_tokens as number | undefined,
+    promptCacheHitTokens: usage.prompt_cache_hit_tokens as number | undefined
+  }
 }
 
 // ── OpenAI SSE Parser ─────────────────────────────────────────────────
@@ -484,7 +494,8 @@ export const openaiAdapter: LlmAdapter = {
     model: string,
     systemPrompt: string,
     userMessages: { role: string; content: string }[],
-    maxTokens: number = 1000
+    maxTokens: number = 1000,
+    onUsage?: (usage: LlmUsage) => void
   ): Promise<string | null> {
     const requestId = `ns_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     const url = `${baseURL.replace(/\/+$/, '')}/chat/completions`
@@ -512,6 +523,9 @@ export const openaiAdapter: LlmAdapter = {
       // OneShotAgent parsers — they expect clean responses (title, JSON, keywords).
       let buffer = ''
       let contentText = ''
+      // `stream_options.include_usage` makes the endpoint send one final chunk
+      // carrying the totals; it has no choices, so it is read on its own.
+      let usage: LlmUsage | undefined
       for (const chunk of rawChunks) {
         buffer += chunk
         const lines = buffer.split('\n')
@@ -522,6 +536,7 @@ export const openaiAdapter: LlmAdapter = {
           if (data === '[DONE]') continue
           try {
             const parsed = JSON.parse(data)
+            if (parsed.usage) usage = openAiUsage(parsed.usage)
             const delta = parsed.choices?.[0]?.delta
             if (delta?.content) contentText += delta.content
           } catch { /* skip malformed JSON */ }
@@ -535,12 +550,16 @@ export const openaiAdapter: LlmAdapter = {
           if (data && data !== '[DONE]') {
             try {
               const parsed = JSON.parse(data)
+              if (parsed.usage) usage = openAiUsage(parsed.usage)
               const delta = parsed.choices?.[0]?.delta
               if (delta?.content) contentText += delta.content
             } catch { /* skip malformed JSON */ }
           }
         }
       }
+
+      if (usage && onUsage) onUsage(usage)
+
 
       if (!contentText) {
         console.warn(`[OpenAIAdapter] callNonStreaming: contentText empty, rawChunks.length=${rawChunks.length}`)

@@ -4,7 +4,7 @@
 // params so it survives detours to other centers (navigateKind memory).
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { App as AntdApp, Button, Input, Modal } from 'antd'
+import { App as AntdApp, Button, Input, Modal, theme } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { studioConversationId } from '../../tool-studio/tool-prompt'
@@ -14,6 +14,7 @@ import { ToolRunner } from './ToolRunner'
 
 export function ToolListPage({ selectedId }: { selectedId: string | null }): React.ReactElement {
   const { modal, message } = AntdApp.useApp()
+  const { token } = theme.useToken()
   const navigate = useNavigationStore((s) => s.navigate)
   const [tools, setTools] = useState<UserTool[]>([])
   const [deletedPresets, setDeletedPresets] = useState<string[]>([])
@@ -118,25 +119,29 @@ export function ToolListPage({ selectedId }: { selectedId: string | null }): Rea
   const selected = tools.find((t) => t.id === selectedId) ?? null
 
   return (
-    <div style={{ height: '100%', display: 'flex', overflow: 'hidden', background: '#fff' }}>
+    <div style={{ height: '100%', display: 'flex', overflow: 'hidden', background: token.colorBgContainer }}>
       <ToolList
         tools={tools}
         selectedId={selectedId}
         hasDeletedPresets={deletedPresets.length > 0}
         onOpen={openTool}
         onCreate={openCreateModal}
-        onEdit={editTool}
-        onDuplicate={(tool) => void duplicateTool(tool)}
-        onDelete={removeTool}
         onRestorePresets={() => void restorePresets()}
       />
       <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
         {selected ? (
-          <ToolRunner key={selected.id} tool={selected} onEdit={editTool} onRenamed={handleRenamed} />
+          <ToolRunner
+            key={selected.id}
+            tool={selected}
+            onEdit={editTool}
+            onDuplicate={(tool) => void duplicateTool(tool)}
+            onDelete={removeTool}
+            onRenamed={handleRenamed}
+          />
         ) : (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-            <div style={{ fontSize: 16, fontWeight: 600 }}>创造你的第一个工具</div>
-            <div style={{ fontSize: 13, color: '#999', maxWidth: 380, textAlign: 'center', lineHeight: 1.8 }}>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>创造你的个人专属工具</div>
+            <div style={{ fontSize: 13, color: token.colorTextTertiary, maxWidth: 380, textAlign: 'center', lineHeight: 1.8 }}>
               先给工具起个名字，再用一句话描述需求，工作室对话会生成一个可直接使用的小工具。
               预置工具开箱即用，也可以就地编辑或复制一份改造。
             </div>

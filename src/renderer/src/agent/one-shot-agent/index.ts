@@ -37,4 +37,4 @@ export {
   pickDraftFields,
   isDraftEmpty,
 } from './expert-form'
-export type { ExpertChatMessage, ExpertFormDraft, KnowledgeOption } from './expert-form'
+export type { ExpertChatMessage, ExpertFormDraft } from './expert-form'

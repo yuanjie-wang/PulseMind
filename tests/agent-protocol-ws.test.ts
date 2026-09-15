@@ -6,6 +6,7 @@ import WebSocket from 'ws'
 import { startAgentService, type AgentServiceHandle, type AgentServiceConversations } from '../src/main/agent/ws-server'
 import { agentClientRegistry } from '../src/main/agent/client-registry'
 import { hostedToolProxy } from '../src/main/agent/hosted/proxy'
+import { hostedPromptRouter } from '../src/main/agent/hosted/prompts'
 import { PROTOCOL_VERSION, type AgentEventData } from '../src/shared/agent-protocol'
 import type { AgentServiceSessions } from '../src/main/agent/service-sessions'
 
@@ -89,6 +90,10 @@ interface FakeSessions extends AgentServiceSessions {
   created: Array<{ sessionId: string; opts: any }>
   asks: Array<{ sessionId: string; content: string; pageContext: any }>
   engineCalls: Array<{ sessionId: string; method: string; args: unknown[] }>
+  /** Mutable model state + the switch log. 模型切换 is global, so what the tests
+   *  assert is what the service forwarded, not a per-session field. */
+  model: { profiles: Array<{ id: string; name?: string; provider?: string; model: string }>; activeId: string }
+  switched: string[]
   emit: (sessionId: string, data: AgentEventData) => void
   setAskHandler: (fn: (sessionId: string, content: string, pageContext: any) => Promise<void>) => void
 }
@@ -100,12 +105,31 @@ function makeFakeSessions(): FakeSessions {
     asks: [] as Array<{ sessionId: string; content: string; pageContext: any }>,
     engineCalls: [] as Array<{ sessionId: string; method: string; args: unknown[] }>,
     askHandler: null as null | ((sessionId: string, content: string, pageContext: any) => Promise<void>),
+    model: {
+      profiles: [
+        { id: 'p1', name: 'GPT-4o', provider: 'openai', model: 'gpt-4o' },
+        { id: 'p2', name: 'Claude', provider: 'anthropic', model: 'claude-sonnet-4-5' },
+      ],
+      activeId: 'p1',
+    },
+    switched: [] as string[],
   }
   const live = new Set<string>()
   return {
     get created() { return state.created },
     get asks() { return state.asks },
     get engineCalls() { return state.engineCalls },
+    get model() { return state.model },
+    get switched() { return state.switched },
+    // The real manager validates against settings.profiles; the fake refuses an
+    // unknown id the same way, so the error path is exercised end to end.
+    modelState: async () => ({ profiles: state.model.profiles, activeId: state.model.activeId }),
+    setActiveProfile: async (profileId: string) => {
+      if (!state.model.profiles.some((p) => p.id === profileId)) throw new Error(`unknown profile: ${profileId}`)
+      state.model.activeId = profileId
+      state.switched.push(profileId)
+      return { profiles: state.model.profiles, activeId: state.model.activeId }
+    },
     emit: (sessionId, data) => { for (const s of sinks) s(sessionId, data) },
     setAskHandler: (fn) => { state.askHandler = fn },
     createSession: async (sessionId, opts) => {
@@ -115,7 +139,13 @@ function makeFakeSessions(): FakeSessions {
     },
     ask: async (sessionId, content, pageContext) => {
       state.asks.push({ sessionId, content, pageContext })
-      if (state.askHandler) await state.askHandler(sessionId, content, pageContext)
+      // The real manager starts the loop and returns: it does NOT await the
+      // turn. Reverse traffic (tool.call / approval.request / ask_user.request)
+      // therefore lands after the ask RPC has already settled — which is
+      // exactly the window an ask-scoped client binding fails in. Deferring
+      // here keeps that window visible to these tests.
+      const handler = state.askHandler
+      if (handler) setTimeout(() => void handler(sessionId, content, pageContext), 0)
     },
     cancel: () => {},
     history: async () => ({ messages: [], agentId: 'default' }),
@@ -159,6 +189,17 @@ function makeFakeStore(): AgentServiceConversations & { rows: Map<string, { titl
 async function start(token = 'test-token', sessions = makeFakeSessions(), store = makeFakeStore()): Promise<{ handle: AgentServiceHandle; sessions: FakeSessions; store: ReturnType<typeof makeFakeStore> }> {
   const handle = await startAgentService({ port: 0, token, sessions, store })
   return { handle, sessions: sessions as FakeSessions, store: store as ReturnType<typeof makeFakeStore> }
+}
+
+/** Poll until `predicate` holds — for state that settles across event ticks
+ *  (socket close, a deferred reverse call) rather than one awaited promise. */
+async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  throw new Error('waitUntil: condition not met in time')
 }
 
 /** Open, hello, create a session — the common preamble. */
@@ -307,8 +348,13 @@ describe('M0.4 session surface', () => {
       expect(ask?.content).toBe('总结这个页面')
       expect(ask?.pageContext).toMatchObject({ url: 'https://example.com/b', title: '页面 B' })
 
-      const events = client.notifications.filter((n) => n.method === 'agent.event' && n.params.sessionId === sessionId)
-      expect(events.some((e) => e.params.data.type === 'token' && e.params.data.text.includes('[1]<input'))).toBe(true)
+      // The reverse traffic lands after the ask RPC settled (see the fake's
+      // deferred handler), so the loop's continuation is awaited by arrival.
+      await waitUntil(() =>
+        client.notifications.some(
+          (n) => n.method === 'agent.event' && n.params.sessionId === sessionId && n.params.data.type === 'token' && n.params.data.text.includes('[1]<input'),
+        ),
+      )
 
       client.close()
     } finally {
@@ -316,24 +362,25 @@ describe('M0.4 session surface', () => {
     }
   })
 
-  it('tool.call timeout settles the ask with an error (loop never stalls)', async () => {
+  it('tool.call timeout settles the reverse call (the loop never stalls)', async () => {
     const { handle, sessions } = await start()
     try {
       const { client, sessionId } = await openWithSession(handle)
 
-      // A 200ms budget that is never answered → the proxy must settle the ask
-      // with an error instead of parking the loop.
+      // A 200ms budget that is never answered → the proxy must settle the call
+      // with an error instead of parking the loop (the engine turns it into an
+      // is_error tool result).
+      const failures: string[] = []
       sessions.setAskHandler(async (sid) => {
-        const transport = agentClientRegistry.get(sid)
-        await hostedToolProxy.call(transport, sid, 'page_click', { index: 3 }, 200)
+        await hostedToolProxy
+          .call(agentClientRegistry.get(sid), sid, 'page_click', { index: 3 }, 200)
+          .catch((err: Error) => failures.push(err.message))
       })
 
       const res = await client.request('agent.ask', { sessionId, content: '点它' }, 8_000)
-      expect(res.error?.code).toBe(-32603) // internal — the timeout error propagated
-      expect(res.error?.message).toContain('超时')
-
-      // The transport is unbound again once the ask settles.
-      expect(agentClientRegistry.get(sessionId)).toBeUndefined()
+      expect(res.result).toMatchObject({ accepted: true })
+      await waitUntil(() => failures.length > 0)
+      expect(failures[0]).toContain('超时')
 
       client.close()
     } finally {
@@ -359,26 +406,28 @@ describe('M0.4 session surface', () => {
     try {
       const { client, sessionId } = await openWithSession(handle)
 
-      // The approval status fires mid-loop, i.e. while the transport is bound.
-      sessions.setAskHandler(async (sid) => {
+      // The fold the engine performs when it parks on a held tool call.
+      sessions.setAskHandler((sid) => {
         sessions.emit(sid, {
           type: 'status',
           status: 'awaiting_approval',
           tools: [{ toolUseId: 'tu_1', name: 'page_click', detail: '{"index":3}' }],
         })
-        // Hold the loop open until the approval lands (like a real engine would).
-        await new Promise((r) => setTimeout(r, 300))
       })
 
-      void client.request('agent.ask', { sessionId, content: '点它' }, 8_000)
+      // The ask settles long before the prompt exists — the binding has to
+      // outlive it for the card to reach anyone (the deferred fake ask emits
+      // the status only after this RPC is done).
+      const askRes = await client.request('agent.ask', { sessionId, content: '点它' }, 8_000)
+      expect(askRes.result).toMatchObject({ accepted: true })
+      expect(agentClientRegistry.get(sessionId)).toBeDefined()
 
       const req = await client.waitFor('approval.request')
       expect(req.params).toMatchObject({ sessionId, callId: 'tu_1', kind: 'browser_write' })
       expect(req.params.summary).toContain('page_click')
 
       client.notify('approval.response', { callId: 'tu_1', approved: true })
-      await new Promise((r) => setTimeout(r, 100))
-      expect(sessions.engineCalls.some((c) => c.method === 'approveTool' && c.args[0] === 'tu_1')).toBe(true)
+      await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'approveTool' && c.args[0] === 'tu_1'))
 
       client.close()
     } finally {
@@ -391,28 +440,54 @@ describe('M0.4 session surface', () => {
     try {
       const { client, sessionId } = await openWithSession(handle)
 
-      sessions.setAskHandler(async (sid) => {
+      sessions.setAskHandler((sid) => {
         sessions.emit(sid, {
           type: 'status',
           status: 'awaiting_user_input',
           tools: [{ toolUseId: 'tu_q', name: 'ask_user', detail: '{"prompt":"选一个"}', args: { prompt: '选一个', choices: ['甲', '乙'] } }],
         })
-        await new Promise((r) => setTimeout(r, 200))
       })
 
-      void client.request('agent.ask', { sessionId, content: '问吧' }, 8_000)
+      const askRes = await client.request('agent.ask', { sessionId, content: '问吧' }, 8_000)
+      expect(askRes.result).toMatchObject({ accepted: true })
 
       const req = await client.waitFor('ask_user.request')
       expect(req.params).toMatchObject({ sessionId, callId: 'tu_q', question: '选一个' })
 
       client.notify('ask_user.response', { callId: 'tu_q', response: '甲' })
       client.notify('iteration_limit.response', { sessionId, approved: true })
-      await new Promise((r) => setTimeout(r, 100))
-
-      expect(sessions.engineCalls.some((c) => c.method === 'respondToTool' && c.args[0] === 'tu_q' && c.args[1] === '甲')).toBe(true)
-      expect(sessions.engineCalls.some((c) => c.method === 'extendLoop')).toBe(true)
+      await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'respondToTool' && c.args[0] === 'tu_q' && c.args[1] === '甲'))
+      await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'extendLoop'))
 
       client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('releases the session binding when the connection drops', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const { client, sessionId } = await openWithSession(handle)
+
+      sessions.setAskHandler((sid) => {
+        sessions.emit(sid, {
+          type: 'status',
+          status: 'awaiting_user_input',
+          tools: [{ toolUseId: 'tu_q', name: 'ask_user', detail: '{"prompt":"选一个"}', args: { prompt: '选一个', choices: ['甲'] } }],
+        })
+      })
+      await client.request('agent.ask', { sessionId, content: '问吧' }, 8_000)
+      await client.waitFor('ask_user.request')
+      const pending = hostedPromptRouter.pendingCounts()
+
+      // A dead connection can no longer serve this session: the binding goes,
+      // and the parked question is settled so the loop is not left waiting.
+      client.close()
+      await waitUntil(() => agentClientRegistry.get(sessionId) === undefined)
+      expect(agentClientRegistry.isHostedCapable(sessionId)).toBe(false)
+      expect(hostedPromptRouter.pendingCounts().asks).toBeLessThan(pending.asks)
+      expect(sessions.engineCalls.some((c) => c.method === 'respondToTool' && c.args[0] === 'tu_q')).toBe(true)
     } finally {
       await handle.close()
     }
@@ -450,6 +525,113 @@ describe('M0.4 session surface', () => {
 
       ext.close()
       foreign.close()
+    } finally {
+      await handle.close()
+    }
+  })
+})
+
+// ── M4.5: 模型切换 (global, mirrors the desktop's own picker) ────────────
+
+describe('M4.5 模型切换', () => {
+  it('session.list carries the model state (one round trip for the panel)', async () => {
+    const { handle } = await start()
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      const list = await client.request('session.list', {})
+      expect(list.result).toMatchObject({ model: { activeId: 'p1' } })
+      expect((list.result as { model: { profiles: unknown[] } }).model.profiles).toHaveLength(2)
+      // Never on the wire: the profile's credentials and endpoint.
+      expect(JSON.stringify(list.result)).not.toContain('apiKey')
+      expect(JSON.stringify(list.result)).not.toContain('baseURL')
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('model.list answers the picker inventory', async () => {
+    const { handle } = await start()
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      const res = await client.request('model.list', {})
+      expect(res.result).toMatchObject({
+        activeId: 'p1',
+        profiles: [
+          { id: 'p1', name: 'GPT-4o', provider: 'openai', model: 'gpt-4o' },
+          { id: 'p2', name: 'Claude', provider: 'anthropic', model: 'claude-sonnet-4-5' },
+        ],
+      })
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('model.setActive writes the active profile and answers the new state', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      const res = await client.request('model.setActive', { profileId: 'p2' })
+      expect(res.result).toMatchObject({ ok: true, model: { activeId: 'p2' } })
+      expect(sessions.switched).toEqual(['p2'])
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('model.setActive rejects an empty or unknown profileId', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      const empty = await client.request('model.setActive', {})
+      expect(empty.error?.code).toBe(-32602)
+      const unknown = await client.request('model.setActive', { profileId: 'nope' })
+      expect(unknown.error?.code).toBe(-32602)
+      expect(unknown.error?.message).toContain('unknown profile')
+      // Neither reached the manager, so the active profile never moved.
+      expect(sessions.switched).toEqual([])
+      expect((sessions.model as { activeId: string }).activeId).toBe('p1')
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('session.list still answers when the model read fails', async () => {
+    const sessions = makeFakeSessions()
+    sessions.modelState = async () => {
+      throw new Error('settings unavailable')
+    }
+    const { handle } = await start('test-token', sessions)
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      // The inventory is a side dish: its failure must not cost the caller the
+      // session list it actually asked for.
+      const list = await client.request('session.list', {})
+      expect(list.result).toMatchObject({ sessions: [] })
+
+      client.close()
     } finally {
       await handle.close()
     }
@@ -501,5 +683,18 @@ describe('M0.4 desktop list excludes hosted sessions', () => {
   it('listConversations filters hosted origins in SQL', () => {
     const src = readFileSync(join(process.cwd(), 'src', 'main', 'storage', 'conversation.db.ts'), 'utf-8')
     expect(src).toMatch(/c\.origin IS NULL OR c\.origin NOT IN/)
+  })
+
+  // The stamp must create the row: a session exists before its first message is
+  // persisted, so an UPDATE-only stamp silently does nothing — the row later
+  // created by persistence carries no origin, which both leaks the session into
+  // the desktop chat list and hides it from the panel's own session list
+  // (found while wiring M1.4 against the live service).
+  it('updateConversationOrigin upserts so a pre-persist session is stamped', () => {
+    const src = readFileSync(join(process.cwd(), 'src', 'main', 'storage', 'conversation.db.ts'), 'utf-8')
+    const body = src.slice(src.indexOf('export function updateConversationOrigin'))
+    const fn = body.slice(0, body.indexOf('\n}'))
+    expect(fn).toMatch(/INSERT INTO conversations/)
+    expect(fn).toMatch(/ON CONFLICT\(id\) DO UPDATE SET origin = excluded\.origin/)
   })
 })

@@ -1,4 +1,5 @@
 import type { ToolPreferences } from '../../shared/types/tool-types'
+import { PAGE_TOOL_NAMES } from '../../shared/agent-protocol/page-tools'
 import { getDb } from './database'
 
 const DEFAULT_ENABLED_TOOLS = [
@@ -30,6 +31,11 @@ const DEFAULT_ENABLED_TOOLS = [
   'knowledge_search',
   'knowledge_read',
   'experience_read',
+  // The browser-extension page tools default to enabled: `get()` enables any
+  // default tool the DB has no row for, so an upgrading user sees them without
+  // touching settings. They only ever reach the model for a session the
+  // extension is driving (see `hostedAvailable` in tool-collection.ts).
+  ...PAGE_TOOL_NAMES,
 ]
 
 interface PrefRow {

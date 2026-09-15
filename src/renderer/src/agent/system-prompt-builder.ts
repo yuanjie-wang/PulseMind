@@ -131,14 +131,11 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     // ── Wiki knowledge context: presence hint only (no index injection) ──
     // Full wiki index is intentionally NOT injected to keep the prompt lean.
     // The model is told the knowledge base exists so it knows to look it up
-    // via knowledge_search / knowledge_read when relevant.
-    // An expert with bound files already carries its own Bound Knowledge
-    // section (scoped search) — skip the generic hint to avoid double-listing.
-    if (!opts.expert || opts.expert.knowledgeFiles.length === 0) {
-      parts.push(`## Knowledge Base
+    // via knowledge_search / knowledge_read when relevant. Experts search the
+    // same global knowledge base — knowledge binding is not a per-expert feature.
+    parts.push(`## Knowledge Base
 
 You have a local knowledge base (compiled wiki) of project documents and past compiled knowledge. It is NOT shown here — look things up on demand with the knowledge_search and knowledge_read tools when relevant.`)
-    }
 
     // ── Experience index: name-only second channel (progressive disclosure) ──
     // Full experience contents are never injected. The model sees a compact

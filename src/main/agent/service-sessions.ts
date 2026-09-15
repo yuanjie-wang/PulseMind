@@ -3,7 +3,7 @@
  *  interface so protocol tests can inject a fake without touching real
  *  settings, SQLite or LLM profiles — `agentSessionManager` satisfies it
  *  structurally. */
-import type { AgentEventData, PageContext } from '../../shared/agent-protocol'
+import type { AgentEventData, PageContext, ModelState } from '../../shared/agent-protocol'
 
 export interface AgentServiceSessions {
   createSession(sessionId: string, opts: { agentId?: string; title?: string; clientId?: string }): Promise<{ sessionId: string; agentId: string }>
@@ -14,4 +14,8 @@ export interface AgentServiceSessions {
   hydrate(sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null): Promise<void>
   engineCall(sessionId: string, method: string, args?: unknown[]): Promise<unknown>
   onEvent(sink: (sessionId: string, data: AgentEventData) => void): () => void
+  /** model.list: the selectable LLM profiles + the active one (global). */
+  modelState(): Promise<ModelState>
+  /** model.setActive: switch the active profile (hot-swaps live sessions). */
+  setActiveProfile(profileId: string): Promise<ModelState>
 }

@@ -2,6 +2,8 @@ import React, { useState, useMemo } from 'react'
 import { RightOutlined } from '@ant-design/icons'
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import { MessageGroup } from './MessageGroup'
+import { ApprovalArea } from './ApprovalArea'
+import { useTranslation } from '../../i18n/useTranslation'
 
 // Injected once into <head> to avoid creating a new <style> element on every render
 const KEYFRAMES = `@keyframes pulsemind-spin { 100% { transform: rotate(360deg); } } @keyframes pulsemind-fade-in { 0% { opacity: 0; transform: translateY(2px); } 100% { opacity: 1; transform: translateY(0); } }`
@@ -27,6 +29,8 @@ interface ExecutionSegmentProps {
   conversationId?: string
   conversationTitle?: string
   contextLength?: number
+  /** The engine is parked on its held calls (`agentStatus: 'awaiting_approval'`). */
+  awaitingApproval?: boolean
 }
 
 // --- Extract displayable items from segment messages in LLM order ---
@@ -60,14 +64,16 @@ function contentBlocksToTexts(blocks: ContentBlock[]): string[] {
 // --- Component ---
 
 export const ExecutionSegment = React.memo(function ExecutionSegment(props: ExecutionSegmentProps): React.ReactElement {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
 
   // Single traversal for all derived state — replaces 4 separate useMemo calls
-  const { texts, initial, done, toolCount, receivingText, liveOutput } = useMemo(() => {
+  const { texts, initial, done, toolCount, receivingText, liveOutput, heldCalls } = useMemo(() => {
     let hasTools = false
     let anyNonPending = false // any tool has a status beyond 'pending' (running, completed, rejected)
     let anyRunning = false
     let hasToolResults = false // presence of tool_result indicates completion (used when status stripped on save)
+    const heldCalls: ToolUseBlock[] = [] // calls this segment holds for the user's approval
     const texts: string[] = []
     let toolCount = 0
     const toolNames = new Set<string>()
@@ -92,6 +98,9 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
               liveOutput = line.length > 80 ? line.slice(0, 77) + '...' : line
             }
           }
+          // `pending` + the parked engine: a call the ladder is holding. The parked
+          // half is what keeps a still-generating tool from counting as one.
+          if (block.status === 'pending' && props.awaitingApproval) heldCalls.push(block)
           if (block.status === undefined) continue
           if (block.status !== 'pending') anyNonPending = true
         }
@@ -107,26 +116,31 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
       anyRunning,
       anyNonPending,
       liveOutput,
+      heldCalls,
       receivingText: props.isReceiving && toolNames.size > 0
         ? Array.from(toolNames).join(', ') + ' 指令生成中...'
         : ''
     }
-  }, [props.messages, props.isReceiving])
+  }, [props.messages, props.isReceiving, props.awaitingApproval])
+
+  const anyHeld = heldCalls.length > 0
 
   // - Receiving (streaming blocks not yet committed): show "write 指令生成中..."
   // - Initial state (all tools still pending): show "开始执行"
   // - Done state (tools all done AND segment no longer last / engine idle): show "已完成（工具调用X次）"
+  // - Held for approval: show 待批准 (the engine cannot move until it is answered)
   // - Executing: show the last extracted text
   const isPending = props.isLastSegment && props.isRequesting
   const showDone = done && !isPending
   const showInitialActive = initial && props.isRequesting
   const showSpinner = !showDone && props.isRequesting
-  const displayText = props.isReceiving ? receivingText : (showDone ? `已完成（工具调用${toolCount}次）` : showInitialActive ? '开始执行' : (liveOutput || (texts.length > 0 ? texts[texts.length - 1] : 'Processing...')))
+  const displayText = props.isReceiving ? receivingText : anyHeld ? t('commandCard.awaitingApproval') : (showDone ? `已完成（工具调用${toolCount}次）` : showInitialActive ? '开始执行' : (liveOutput || (texts.length > 0 ? texts[texts.length - 1] : 'Processing...')))
 
   return (
     <div style={{ margin: '8px 0', borderRadius: 8, overflow: 'hidden' }}>
       {/* Collapsed header */}
       <div
+        data-segment-head=""
         onClick={() => setExpanded(!expanded)}
         style={{
           display: 'flex',
@@ -162,7 +176,8 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
               minWidth: 0,
               flexShrink: 1,
               fontSize: 13,
-              color: '#999',
+              color: anyHeld ? '#d46b08' : '#999',
+              fontWeight: anyHeld ? 500 : undefined,
               lineHeight: '22px',
               animation: 'pulsemind-fade-in 0.25s ease-out'
             }}
@@ -182,6 +197,21 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
         </div>
       </div>
 
+      {/* The decision, below the collapsed header. This segment is the outermost
+          thing hiding a held call, so the buttons have to appear here or answering
+          means expanding twice (this, then the tool block). Expanding moves them
+          down to the tool blocks — never both at once. */}
+      {!expanded && anyHeld && (
+        <div style={{ padding: '0 10px 4px' }}>
+          <ApprovalArea
+            blocks={heldCalls}
+            onApproveTool={props.onApproveTool}
+            onRejectTool={props.onRejectTool}
+            identity
+          />
+        </div>
+      )}
+
       {/* Expanded body */}
       {expanded && (
         <div style={{ padding: '8px 12px 4px', border: '1px solid #e8e8e8', borderRadius: 8 }}>
@@ -189,7 +219,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
             <MessageGroup
               key={msg.id}
               msg={msg}
-              showActions={false}
+              actions="none"
               onApproveTool={props.onApproveTool}
               onRejectTool={props.onRejectTool}
               onKillTool={props.onKillTool}
@@ -197,6 +227,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
               conversationId={props.conversationId}
               conversationTitle={props.conversationTitle}
               contextLength={props.contextLength}
+              awaitingApproval={props.awaitingApproval}
             />
           ))}
         </div>

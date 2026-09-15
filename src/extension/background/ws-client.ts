@@ -7,6 +7,7 @@
  * backoff reconnect (suppressed on manual close), server→client notifications
  * (tool.call / approval.request / ask_user.request) dispatched to handlers. */
 
+import type { AgentEventParams } from '../../shared/agent-protocol'
 import type { JsonRpcRequest, JsonRpcResponse } from '../../shared/agent-protocol/jsonrpc'
 
 
@@ -22,7 +23,8 @@ export interface WsClientConfig {
 }
 
 export interface WsClientHandlers {
-  onEvent?: (params: { sessionId: string; data: unknown }) => void
+  /** `agent.event` notifications for sessions this connection is bound to. */
+  onEvent?: (params: AgentEventParams) => void
   onNotification?: (method: string, params: Record<string, unknown>) => void
   onStateChange?: (state: 'connecting' | 'open' | 'closed') => void
 }
@@ -42,7 +44,11 @@ export class WsClient {
   private manualClose = false
   private helloDone = false
   private readyPromise: Promise<void> | null = null
-  private readyResolve: (() => void) | null = null
+  private readySettle: ((err?: Error) => void) | null = null
+  /** Diagnostics surfaced to the options page (close code/reason, hello errors). */
+  lastError = ''
+  /** Application close code from the last close event (see CloseCodes). */
+  lastCloseCode: number | null = null
 
   connected = false
 
@@ -59,18 +65,22 @@ export class WsClient {
     return this.socket ? 'connecting' : 'closed'
   }
 
-  /** Connect and complete the hello handshake. Repeated calls while a
-   *  connection attempt is in flight share the same ready promise. */
+  /** Connect and complete the hello handshake. Always settles (resolved on a
+   *  good handshake, rejected on teardown) so awaiters never hang. */
   connect(): Promise<void> {
     if (this.readyPromise) return this.readyPromise
     this.manualClose = false
-    this.readyPromise = new Promise<void>((resolve) => { this.readyResolve = resolve })
+    this.readyPromise = new Promise<void>((resolve, reject) => {
+      this.readySettle = (err) => (err ? reject(err) : resolve())
+    })
     this.setState('connecting')
     const url = `${this.cfg.wsUrl.replace(/\/+$/, '')}/?token=${encodeURIComponent(this.cfg.token)}`
     const socket = new this.WebSocketCtor(url)
     this.socket = socket
 
     socket.onopen = () => {
+      // The handshake goes through request() before helloDone flips — the
+      // request gate below must let `hello` through or this deadlocks.
       this.request('hello', {
         clientId: this.cfg.clientId,
         clientVersion: this.cfg.clientVersion,
@@ -80,17 +90,24 @@ export class WsClient {
           this.helloDone = true
           this.connected = true
           this.backoffMs = this.cfg.reconnectBaseMs ?? 1_000
+          this.lastError = ''
           this.setState('open')
-          this.readyResolve?.()
+          this.readySettle?.()
         })
-        .catch(() => {
-          // Version mismatch / rejected hello: tear down and back off.
-          this.teardown(new Error('hello rejected'))
+        .catch((err: Error) => {
+          this.lastError = `hello 失败: ${err.message}`
+          this.teardown(err)
         })
     }
     socket.onmessage = (event) => this.handleMessage(String(event.data))
-    socket.onclose = () => this.teardown(new Error('连接已断开'))
-    socket.onerror = () => { /* close event follows */ }
+    socket.onclose = (event) => {
+      this.lastCloseCode = event.code || null
+      this.lastError = `连接关闭 (${event.code}${event.reason ? ` ${event.reason}` : ''})`
+      this.teardown(new Error(this.lastError))
+    }
+    socket.onerror = () => {
+      this.lastError = this.lastError || 'WebSocket 连接失败（服务不可达或被拒绝）'
+    }
 
     return this.readyPromise
   }
@@ -98,17 +115,23 @@ export class WsClient {
   /** Force a fresh connection (config changed, user asked to reconnect). */
   reopen(): Promise<void> {
     this.manualClose = false
+    this.clearReconnect()
     this.teardown(new Error('reopening'))
     return this.connect()
   }
 
   close(): void {
     this.manualClose = true
+    this.clearReconnect()
     this.teardown(new Error('closed by client'))
   }
 
   request(method: string, params?: unknown, timeoutMs = this.cfg.requestTimeoutMs ?? 30_000): Promise<unknown> {
-    if (!this.socket || this.socket.readyState !== this.WebSocketCtor.OPEN || !this.helloDone) {
+    if (!this.socket || this.socket.readyState !== this.WebSocketCtor.OPEN) {
+      return Promise.reject(new Error('not connected'))
+    }
+    // Only the handshake itself may run before helloDone flips.
+    if (!this.helloDone && method !== 'hello') {
       return Promise.reject(new Error('not connected'))
     }
     const id = this.nextId++
@@ -149,7 +172,7 @@ export class WsClient {
     }
     if ('method' in msg && typeof msg.method === 'string') {
       const params = (msg.params ?? {}) as Record<string, unknown>
-      if (msg.method === 'agent.event') this.handlers.onEvent?.(params as { sessionId: string; data: unknown })
+      if (msg.method === 'agent.event') this.handlers.onEvent?.(params as unknown as AgentEventParams)
       else this.handlers.onNotification?.(msg.method, params)
     }
   }
@@ -159,7 +182,8 @@ export class WsClient {
     this.connected = false
     this.helloDone = false
     this.readyPromise = null
-    this.readyResolve = null
+    this.readySettle?.(reason)
+    this.readySettle = null
     for (const [, entry] of this.pending) {
       clearTimeout(entry.timer)
       entry.reject(reason)
@@ -180,8 +204,15 @@ export class WsClient {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.backoffMs = Math.min(this.backoffMs * 2, this.cfg.reconnectMaxMs ?? 30_000)
-      void this.connect()
+      void this.connect().catch(() => { /* state change already broadcast */ })
     }, this.backoffMs)
+  }
+
+  private clearReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
   }
 
   private setState(state: 'connecting' | 'open' | 'closed'): void {

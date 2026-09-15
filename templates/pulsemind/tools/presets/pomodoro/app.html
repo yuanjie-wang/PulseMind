@@ -1,29 +1,43 @@
 <!DOCTYPE html>
 <html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>番茄钟</title><style>
-:root { --bg:#f5f5f5; --card:#fff; --fg:#222; --muted:#888; --accent:#111; --border:#e5e5e5; }
-@media (prefers-color-scheme: dark) {
-  :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#999; --accent:#fff; --border:#333; }
+:root {
+  --bg:#f6f7f9; --card:#fff; --fg:#1f2329; --muted:#8a9099; --border:#e6e8eb;
+  /* 专注阶段的主题色:红。休息阶段由 body.break 覆盖为绿。 */
+  --accent:#e5484d; --accent-soft:rgba(229,72,77,.1); --on-accent:#fff;
 }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#141414; --card:#1f1f1f; --fg:#e8eaed; --muted:#8f959e; --border:#33353a;
+    --accent:#ff6369; --accent-soft:rgba(255,99,105,.16); --on-accent:#fff;
+  }
+}
+body.break { --accent:#30a46c; --accent-soft:rgba(48,164,108,.12); }
+@media (prefers-color-scheme: dark) { body.break { --accent:#3dd68c; --accent-soft:rgba(61,214,140,.16); } }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; -webkit-font-smoothing: antialiased; transition: background .4s; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 20px; }
-.mode { font-size: 14px; color: var(--muted); letter-spacing: 2px; }
+.mode { font-size: 12px; font-weight: 600; color: var(--accent); background: var(--accent-soft); padding: 5px 14px; border-radius: 999px; letter-spacing: 2px; }
 .dial { position: relative; width: 240px; height: 240px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
 .dial.running { animation: pulse 2s infinite; }
-@keyframes pulse { 50% { box-shadow: 0 0 0 12px rgba(0,0,0,.04); } }
+@keyframes pulse { 50% { box-shadow: 0 0 0 12px var(--accent-soft); } }
 /* 圆环是倒计时本身(240 的视图里 r=115、描边 6,刚好内缩 2px 不裁切):SVG 铺满
    表盘,数字作为兄弟节点叠在中间,两者互不挤压,所以 5 位数字也不会压到环上。 */
 .dial svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
 .track { fill: none; stroke: var(--border); stroke-width: 6; }
-.progress { fill: none; stroke: var(--accent); stroke-width: 6; stroke-linecap: round; }
-.clock { font-size: 54px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -1px; white-space: nowrap; }
-.btns button { border: none; border-radius: 10px; padding: 12px 26px; font-size: 15px; margin: 0 6px; background: var(--accent); color: var(--bg); cursor: pointer; }
-.btns button.ghost { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+.progress { fill: none; stroke: var(--accent); stroke-width: 6; stroke-linecap: round; transition: stroke .4s; }
+.clock { font-size: 54px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -1px; white-space: nowrap; transition: color .4s; }
+.btns { display: flex; gap: 10px; }
+.btns button { border: 1px solid transparent; border-radius: 999px; padding: 12px 28px; font: inherit; font-size: 15px; font-weight: 600; margin: 0; background: var(--accent); color: var(--on-accent); cursor: pointer; transition: filter .15s, transform .06s, border-color .15s, color .15s; }
+.btns button:hover { filter: brightness(1.06); }
+.btns button:active { transform: scale(.96); }
+.btns button.ghost { background: var(--card); color: var(--fg); border-color: var(--border); }
+.btns button.ghost:hover { border-color: var(--accent); color: var(--accent); filter: none; }
 .count { color: var(--muted); font-size: 13px; }
 </style></head><body>
-<div class="wrap">
+<div class="wrap" id="wrap">
   <div class="mode" id="mode">专注 · 25:00</div>
   <div class="dial" id="dial">
     <svg viewBox="0 0 240 240" aria-hidden="true">
@@ -83,6 +97,7 @@ function saveDone() {
 function render() {
   el('clock').textContent = fmt(Math.max(0, left));
   el('mode').textContent = (working ? '专注' : '休息') + ' · ' + fmt(total);
+  el('wrap').classList.toggle('break', !working);   // 专注红 / 休息绿的主题切换
   el('dial').classList.toggle('running', timer !== null);
   el('start').textContent = timer ? '暂停' : '开始';
   el('count').textContent = '今日完成 ' + done + ' 个番茄';

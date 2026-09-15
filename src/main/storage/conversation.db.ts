@@ -21,9 +21,23 @@ export function deriveConvType(id: string): string {
   return 'normal'
 }
 
-/** Tag a conversation's client origin (local UI vs ws extension session). */
+/** Tag a conversation's client origin (local UI vs ws extension session).
+ *
+ * Upserts rather than updates: a session is created *before* its first message
+ * is persisted, so at stamping time the row often does not exist yet and a bare
+ * UPDATE would silently do nothing — the row later created by message
+ * persistence would carry no origin, which both leaks extension sessions into
+ * the desktop chat list and hides them from the panel's own session list
+ * (PLAN-browser-extension M1.4). */
 export function updateConversationOrigin(id: string, origin: string): void {
-  getDb().prepare('UPDATE conversations SET origin = ? WHERE id = ?').run(origin, id)
+  const now = new Date().toISOString()
+  getDb()
+    .prepare(
+      `INSERT INTO conversations (id, title, created_at, updated_at, type, rect_id, origin)
+       VALUES (?, '', ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET origin = excluded.origin`
+    )
+    .run(id, now, now, deriveConvType(id), deriveRectId(id), origin)
 }
 
 /** Read a conversation's client origin (null when never stamped). */
@@ -33,12 +47,21 @@ export function getConversationOrigin(id: string): string | null {
 }
 
 /** Recent conversations for one client origin — the browser extension's
- *  session list (PLAN-browser-extension M0.4, `session.list`). */
-export function listConversationsByOrigin(origin: string, limit = 50): Array<{ id: string; title: string; updatedAt: string }> {
+ *  session list (PLAN-browser-extension M0.4, `session.list`). Carries the
+ *  stored 授权 level so a remote client's approval control can show it. */
+export function listConversationsByOrigin(
+  origin: string,
+  limit = 50,
+): Array<{ id: string; title: string; updatedAt: string; approvalMode?: SandboxApprovalMode }> {
   const rows = getDb()
-    .prepare('SELECT id, title, updated_at FROM conversations WHERE origin = ? ORDER BY updated_at DESC LIMIT ?')
-    .all(origin, limit) as Array<{ id: string; title: string; updated_at: string }>
-  return rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updated_at }))
+    .prepare('SELECT id, title, updated_at, approval_mode FROM conversations WHERE origin = ? ORDER BY updated_at DESC LIMIT ?')
+    .all(origin, limit) as Array<{ id: string; title: string; updated_at: string; approval_mode: string | null }>
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    updatedAt: r.updated_at,
+    approvalMode: toSandboxApprovalMode(r.approval_mode),
+  }))
 }
 
 /** Batch-persist tool results (called before nanoCompact / by the agent host). */
