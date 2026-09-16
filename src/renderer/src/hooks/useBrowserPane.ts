@@ -13,6 +13,7 @@
 import { useCallback, useEffect, type RefObject } from 'react'
 import { useNavigationStore } from '../stores/navigationStore'
 import { useBrowserPaneStore } from '../stores/browserPaneStore'
+import { useWorkbenchStore } from '../stores/workbenchStore'
 import { clampPaneWidth, type BrowserPaneAction } from '../../../shared/browser/pane'
 
 export function useBrowserPaneBinding(
@@ -24,6 +25,11 @@ export function useBrowserPaneBinding(
 ) {
   const viewKind = useNavigationStore((s) => s.view.kind)
   const chatAreaWidth = useBrowserPaneStore((s) => s.chatAreaWidth)
+  // PLAN-workbench W3: the native WebView only shows while the workbench's
+  // browser tab is frontmost; other tabs fold it, tabs stay alive.
+  const workbenchOpen = useWorkbenchStore((s) => s.open)
+  const workbenchTab = useWorkbenchStore((s) => s.activeTab)
+  const browserActive = workbenchOpen && workbenchTab === 'browser'
 
   // Measure the chat column — main clamps the pane against it (min 320,
   // max 60%). Observer callback reports through the external store, so no
@@ -40,15 +46,17 @@ export function useBrowserPaneBinding(
   }, [rootRef])
 
   // What-is-on-screen push: fold on non-chat views, re-bind on conversation
-  // switch. Runs again whenever any input changes (view switch back to chat
-  // included) — this is the fold/restore path, not an unmount cleanup.
+  // switch, and report whether the browser tab is frontmost (W3). Runs again
+  // whenever any input changes (view switch back to chat included) — this is
+  // the fold/restore path, not an unmount cleanup.
   useEffect(() => {
     void window.electronAPI.browserPaneSetState({
       viewKind,
       conversationId: viewKind === 'chat' ? (conversationId ?? null) : null,
       chatAreaWidth,
+      browserActive: viewKind === 'chat' ? browserActive : false,
     })
-  }, [viewKind, conversationId, chatAreaWidth])
+  }, [viewKind, conversationId, chatAreaWidth, browserActive])
 
   const pushWidth = useCallback((width: number, areaWidth: number) => {
     void window.electronAPI.browserPaneSetWidth(clampPaneWidth(width, areaWidth))

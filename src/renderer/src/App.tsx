@@ -5,7 +5,7 @@ import zhCN from 'antd/locale/zh_CN'
 import enUS from 'antd/locale/en_US'
 import AppLayout from './components/layout/AppLayout'
 import ChatView from './components/layout/ChatView'
-import { PlanPanel } from './components/layout/PlanPanel'
+import { useWorkbenchStore } from './stores/workbenchStore'
 import { InstallNotifier } from './components/chat/InstallNotifier'
 import ErrorBoundary from './components/ErrorBoundary'
 import { useChatController } from './hooks/useChatController'
@@ -18,7 +18,6 @@ import { generateMcpSummaries } from './agent/mcp-summary-service'
 import { useGreeting } from './hooks/useGreeting'
 import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
-import { useNavigationStore } from './stores/navigationStore'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
 import { conversationKeyOf } from '../../shared/conversation-key'
 
@@ -348,9 +347,15 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
 
   // Plan panel scroll-to-message
   const [planScrollToMsgId, setPlanScrollToMsgId] = useState<string | null>(null)
-  // Top-level view lives in the navigation store (PLAN-0.4.0 M1.2); the chat
-  // check only decides whether the plan panel floats above the chat.
-  const activeView = useNavigationStore((s) => s.view.kind)
+  // PLAN-workbench W5: a freshly created plan opens the workbench on its tab
+  // (the write→auto-open-preview precedent). Completing a plan does not close
+  // it — the user reads the finished graph.
+  const hadPlanRef = useRef(false)
+  useEffect(() => {
+    const has = !!plan && !plan.completed
+    if (has && !hadPlanRef.current) useWorkbenchStore.getState().openTab('plan')
+    hadPlanRef.current = has
+  }, [plan])
 
   return (
     <ErrorBoundary>
@@ -424,6 +429,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               greeting={greeting}
               planScrollToMsgId={planScrollToMsgId}
               onPlanScrollHandled={() => setPlanScrollToMsgId(null)}
+              plan={plan}
+              onPlanJump={setPlanScrollToMsgId}
               workspaceDir={activeConvKey ? getWorkspaceDir(activeConvKey) : undefined}
               conversations={conversations.map((c: any) => ({
                 key: c.key,
@@ -445,7 +452,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               onChangeApprovalMode={changeApprovalMode}
             />
           </AppLayout>
-          {activeView === 'chat' && <PlanPanel plan={plan} onJumpToStep={setPlanScrollToMsgId} />}
           <InstallNotifier messages={messages} />
           </AntdApp>
         </ConfigProvider>

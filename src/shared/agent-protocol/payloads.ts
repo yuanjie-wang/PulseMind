@@ -198,7 +198,8 @@ export type AgentEventData =
 export interface PlanSnapshot {
   objective: string
   mode: string
-  steps: Array<{ text: string; state: 'pending' | 'done' | 'fail' }>
+  /** v2 DAG projection (PLAN-plan-dag): flat node list; clients derive waves. */
+  nodes: Array<{ id: string; text: string; status: 'pending' | 'completed' | 'failed' | 'skipped' }>
 }
 
 // ── hosted tools (service → client reverse RPC) ─────────────────────

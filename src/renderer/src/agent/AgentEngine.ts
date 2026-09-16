@@ -22,6 +22,7 @@ import type { ExpertRuntimeContext } from '../../../shared/types/expert'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import type { PageContext } from '../../../shared/agent-protocol'
 import { PlanManager } from './plan-manager'
+import { migrateLinearPlan } from '../../../shared/plan/graph'
 import { ensureCache } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
 import { SpawnManager } from './engine/spawn-manager'
@@ -324,6 +325,7 @@ export class AgentEngine implements EngineCore {
       () => this.notify(),
       (pid) => { this.executingProcessId = pid },
       (config) => this.spawnSubAgent(config),
+      () => this.planManager.plan,
     )
   }
 
@@ -337,13 +339,15 @@ export class AgentEngine implements EngineCore {
     }
   }
 
-  /** Load a persisted plan from DB for an existing conversation. */
+  /** Load a persisted plan from DB for an existing conversation. Plans written
+   *  before the DAG refactor carry no `version` — migrate them on the way in. */
   async loadPlan(conversationId: string): Promise<void> {
     try {
       const json = await getHost().getConversationPlan(conversationId)
       if (json) {
-        this.planManager.plan = JSON.parse(json) as Plan
-        this.callbacks.onPlanChanged?.(this.plan)
+        const parsed = JSON.parse(json) as Plan | null
+        this.planManager.plan = parsed?.version === 2 ? parsed : migrateLinearPlan(parsed)
+        if (this.planManager.plan) this.callbacks.onPlanChanged?.(this.planManager.plan)
       }
     } catch (err) {
       console.warn('[AgentEngine] Failed to load plan:', err)
@@ -822,7 +826,7 @@ export class AgentEngine implements EngineCore {
       content: text,
       is_error: isError,
       tool_result_id: crypto.randomUUID(),
-      ...(imageData ? { imageData } as any : {})
+      ...(imageData ? { imageData } as { imageData: string } : {})
     }
 
     if (isToolResultCollector) {

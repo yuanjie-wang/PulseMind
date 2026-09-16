@@ -12,9 +12,17 @@ export interface ToolInputSchema {
       type: string
       description: string
       enum?: string[]
+      /** Nested array element / object schemas — the wire schema is JSON Schema,
+       *  so tool definitions may carry anything it allows (items, oneOf, …). */
+      items?: Record<string, unknown>
+      default?: unknown
+      oneOf?: Array<Record<string, unknown>>
+      [key: string]: unknown
     }
   >
-  required: string[]
+  required?: string[]
+  /** Root-level JSON Schema combinators (e.g. pick_skill's oneOf variants). */
+  oneOf?: Array<Record<string, unknown>>
 }
 
 export interface ToolDefinition {

@@ -69,7 +69,7 @@ const electronAPI = {
   hostedToolCall: (tool: string, args: Record<string, unknown>, opts: { sessionId: string; timeoutMs?: number }) =>
     ipcRenderer.invoke(IPC_CHANNELS.HOSTED_TOOL_CALL, tool, args, opts),
   // Browser pane (A-M5): chrome state / width / user tab actions + live updates.
-  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number }) =>
+  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number; browserActive?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_STATE, state),
   browserPaneSetWidth: (width: number) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_WIDTH, width),
   browserPaneAction: (action: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_ACTION, action),

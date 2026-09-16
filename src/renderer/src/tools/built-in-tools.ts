@@ -559,7 +559,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── spawn_agent ────────────────────────────────────────────────────
   {
     name: 'spawn_agent',
-    description: 'Delegate a task to a sub-agent. Runs independently with isolated context and the same tools as this session.',
+    description: 'Delegate a task to a sub-agent. Runs independently with isolated context and the same tools as this session. When a plan is active, ALWAYS pass planNode so the delegation links to the plan node it implements.',
     category: 'system',
     triggers: ['delegate', 'subtask', 'sub-agent', 'spawn', 'background task'],
     input_schema: {
@@ -575,6 +575,11 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           description:
             'Detailed description of the task to delegate. Be specific about what you want the sub-agent to accomplish, what context to use, and what format the results should be in.',
         },
+        planNode: {
+          type: 'string',
+          description:
+            'The plan node this task implements: its 1-based number ("2") or id ("n2"). Pass it whenever the task executes a node of the active plan — the spawn result will name the node and remind you to settle it with advance_plan.',
+        },
       },
       required: ['task'],
     },
@@ -586,7 +591,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'create_plan',
     description:
-      'Create a step-by-step execution plan for complex multi-step tasks. You MUST call advance_plan after completing each individual step — the plan does not auto-advance.',
+      'Create an execution DAG for complex multi-step tasks: independent nodes run in PARALLEL (each delegated to its assignee expert via spawn_agent), nodes with depends_on wait for their prerequisites. You MUST call advance_plan with node=<number> after each node settles — the plan does not auto-advance.',
     category: 'system',
     triggers: ['plan', 'strategy', '步骤', '计划'],
     input_schema: {
@@ -598,8 +603,26 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         },
         steps: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Ordered list of steps to accomplish the objective. Each step should be a clear, actionable description.',
+          items: {
+            type: 'object',
+            properties: {
+              description: {
+                type: 'string',
+                description: 'Clear, actionable description of this node.',
+              },
+              depends_on: {
+                type: 'array',
+                items: { type: 'integer' },
+                description: '1-based indexes of nodes that must finish before this one can start (e.g. [1, 3]). Omit for a node with no prerequisites — such nodes start immediately, in parallel.',
+              },
+              assignee: {
+                type: 'string',
+                description: 'Expert id (from the capability center) to delegate this node to via spawn_agent. Omit for a general sub-agent.',
+              },
+            },
+            required: ['description'],
+          },
+          description: 'The plan nodes. Array order is preserved for numbering (node 1..N referenced by depends_on and advance_plan).',
         },
       },
       required: ['objective', 'steps'],
@@ -612,7 +635,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'advance_plan',
     description:
-      'MANDATORY: call after EVERY completed step to mark it done and move to the next. The plan never advances without this call — without it the plan remains stuck on the current step.',
+      'MANDATORY after each node settles: report it with action + node. The plan never advances on its own. When several nodes run in parallel, report each one as it settles.',
     category: 'system',
     triggers: ['next step', 'step complete', 'done', '进度', '下一步'],
     input_schema: {
@@ -620,13 +643,17 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         action: {
           type: 'string',
-          enum: ['complete', 'fail', 'finish'],
+          enum: ['complete', 'fail', 'skip', 'finish'],
           description:
-            '"complete" — marks current step done and advances to next. "fail" — marks current step as failed (stay on same step). "finish" — marks entire plan complete.',
+            '"complete" — the node is done (completing a failed node = retry). "fail" — the node failed; its dependents block until retried or skipped. "skip" — abandon the node. "finish" — force-complete everything and close the plan.',
+        },
+        node: {
+          type: 'string',
+          description: 'Which node: its 1-based number ("2") or id ("n2"). Required unless exactly one node is ready.',
         },
         notes: {
           type: 'string',
-          description: 'Optional notes about what happened in this step. Will be injected into the plan context for the LLM.',
+          description: 'Optional one-line outcome. Stored on the node and shown in the plan panel.',
         },
       },
       required: ['action'],

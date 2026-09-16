@@ -13,6 +13,7 @@ import { execGitTool } from './engine/git-tools'
 import type { ToolUseBlock } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import type { SpawnSubAgentConfig, SubAgentHandle } from './agent-utils'
+import type { Plan } from '../../../shared/types/plan'
 import { writeFileChunked } from './agent-utils'
 import { buildCommandFromSkillInput } from './command-builder'
 import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
@@ -48,12 +49,15 @@ export class ToolExecutor implements ToolExecContext {
     onProcessStart?: (pid: string) => void,
     /** @internal shared with the executors/* modules via ToolExecContext */
     spawnSubAgent?: SpawnSubAgentFn,
+    /** @internal live plan accessor for the spawn_agent planNode linkage */
+    getPlan?: () => Plan | null,
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
     this.notify = notify
     this.onProcessStart = onProcessStart
     this.spawnSubAgent = spawnSubAgent
+    this.getPlan = getPlan
   }
 
   opts: AgentEngineOptions
@@ -61,6 +65,7 @@ export class ToolExecutor implements ToolExecContext {
   notify: () => void
   onProcessStart?: (pid: string) => void
   spawnSubAgent?: SpawnSubAgentFn
+  getPlan?: () => Plan | null
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
@@ -338,7 +343,7 @@ export class ToolExecutor implements ToolExecContext {
         const configStr = await getHost().readFile(configPath)
         if (!configStr) throw new Error(`MCP config file not found at ${configPath}. Write the MCP server configuration first.`)
         const records = JSON.parse(configStr)
-        const record = Array.isArray(records) ? records.find((r: any) => r.config?.name === name || r.name === name) : null
+        const record = Array.isArray(records) ? records.find((r: { config?: { name?: string }; name?: string }) => r.config?.name === name || r.name === name) : null
         if (!record) throw new Error(`MCP server "${name}" not found in ${configPath}.`)
         const rawConfig = record.config || record
         const result = await getHost().mcpRegisterServer(rawConfig)

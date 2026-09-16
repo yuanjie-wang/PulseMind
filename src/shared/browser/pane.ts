@@ -6,8 +6,11 @@
 // the chat area, draggable, clamped to [320, 60% of chat area], remembered
 // globally in settings.
 
-/** Chrome rows above the WebView: 32px tab strip + 36px address bar. */
-export const PANE_CHROME_HEIGHT = 68
+/** Chrome rows above the WebView, measured from the pane's top: the
+ *  workbench's tool-tab strip (32px, PLAN-workbench W4) + the browser pane's
+ *  own tab strip (32px) + address bar (36px). Shared by the renderer chrome
+ *  and the main-process dock — both must agree on every pixel. */
+export const PANE_CHROME_HEIGHT = 100
 export const PANE_MIN_WIDTH = 320
 /** Drag ceiling: the chat area always keeps at least 40% of its width. */
 export const PANE_MAX_CHAT_RATIO = 0.6
@@ -22,6 +25,10 @@ export interface BrowserPaneState {
   viewKind: string
   conversationId: string | null
   chatAreaWidth: number
+  /** PLAN-workbench W3: false while the workbench shows a non-browser tab —
+   *  the native WebView folds (tabs stay alive), the chrome stays put.
+   *  Absent/true = the browser tab is frontmost. */
+  browserActive?: boolean
 }
 
 /** One row in the pane's tab strip. */

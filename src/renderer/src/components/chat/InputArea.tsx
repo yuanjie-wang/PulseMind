@@ -46,6 +46,7 @@ export function InputArea({
   isAwaitingApproval,
   isAwaitingInput,
   hasMessages,
+  topSlot,
   onSendMessage,
   onCancel,
   profiles,
@@ -67,6 +68,9 @@ export function InputArea({
   isAwaitingApproval: boolean
   isAwaitingInput: boolean
   hasMessages: boolean
+  /** Optional strip rendered just above the composer (plan status, etc.).
+   *  Absent = nothing rendered — non-chat reuse stays untouched. */
+  topSlot?: React.ReactNode
   onSendMessage: (content: string) => void
   onCancel: () => void
   profiles?: LlmProfile[]
@@ -276,6 +280,13 @@ export function InputArea({
 
   return (
     <div style={{ position: 'relative' }}>
+      {/* topSlot floats above the composer the same way the @-mention selector
+          does — callers keep full control of its content and styling. */}
+      {topSlot && (
+        <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 60 }}>
+          {topSlot}
+        </div>
+      )}
       {/* @-mention selector: floats above the composer at full composer width
           while the input ends in an @token. Sending the raw text works too
           (controller parses it). */}

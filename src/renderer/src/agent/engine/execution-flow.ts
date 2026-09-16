@@ -231,8 +231,26 @@ export class ExecutionFlow {
     const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const grouped = new Set([...readOnlyTools, ...writeEditTools, ...pageReadTools, ...pageWriteTools])
     const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user')
+    const spawnTools = systemTools.filter(t => t.name === 'spawn_agent')
     const held = this.heldTiers()
     try {
+      // spawn_agent hosts an independent engine per call, so a batch of them
+      // runs CONCURRENTLY — that is multi-expert parallel delegation. They are
+      // the long pole of any batch, so they start here and the serial groups
+      // below run while the experts work; the batch still ends when the
+      // slowest expert does. Interleaved completion is safe: addToolResult is
+      // synchronous and already exercised concurrently by execReadOnlyTools.
+      // Each executor swallows its own errors — this catch only keeps one
+      // totally unexpected rejection from tearing down the other experts.
+      const spawnBatch = spawnTools.length > 0
+        ? Promise.all(spawnTools.map(t =>
+            this.engine.toolExecutor.execSpawnAgent(t).catch((err: unknown) => {
+              console.error('[AgentEngine] spawn_agent dispatch error:', err)
+              t.status = 'completed'; t.exitCode = -1
+              this.engine.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'spawn_agent failed'}`, true)
+            })
+          ))
+        : null
       if (readOnlyTools.length > 0) await this.engine.toolExecutor.execReadOnlyTools(readOnlyTools)
       if (pageReadTools.length > 0) await this.engine.toolExecutor.execPageReadTools(pageReadTools)
       if (!held.has('write') && writeEditTools.length > 0) for (const t of writeEditTools) await this.engine.toolExecutor.execWorkspaceTool(t)
@@ -246,6 +264,7 @@ export class ExecutionFlow {
       if (mcpTools.length > 0) for (const t of mcpTools) await this.engine.toolExecutor.execMCPTool(t)
       if (!held.has('exec') && gatedMcpTools.length > 0) for (const t of gatedMcpTools) await this.engine.toolExecutor.execMCPTool(t)
       for (const t of systemTools) {
+        if (t.name === 'spawn_agent') continue // started above, awaited after the serial groups
         if (t.name === 'pick_skill') await this.engine.toolExecutor.execPickSkill(t)
         else if (t.name === 'pick_tool') await this.engine.toolExecutor.execPickTool(t, (names) => {
           // Classify by built-in definition set (not mcpToolOwner): an MCP tool from a
@@ -265,6 +284,7 @@ export class ExecutionFlow {
       if (knowledgeTools.length > 0) for (const t of knowledgeTools) await this.engine.toolExecutor.execOtherTool(t)
       if (experienceTools.length > 0) for (const t of experienceTools) await this.engine.toolExecutor.execOtherTool(t)
       if (!held.has('exec') && otherTools.length > 0) { for (const t of otherTools) await this.engine.toolExecutor.execOtherTool(t) }
+      if (spawnBatch) await spawnBatch
     } catch (err) {
       this.engine.isAutoExecuting = false
       const msg = err instanceof Error ? err.message : 'Tool execution failed'
@@ -279,7 +299,7 @@ export class ExecutionFlow {
   async handleToolUseResponse(toolUses: ToolUseBlock[]): Promise<void> {
     const opts = this.engine.opts
 
-    const hasTruncated = toolUses.some(t => (t as any)._jsonTruncated === true)
+    const hasTruncated = toolUses.some(t => (t as { _jsonTruncated?: boolean })._jsonTruncated === true)
     if (hasTruncated) {
       addTruncatedResults(this.engine.messages, toolUses)
       this.engine.notify()

@@ -41,15 +41,16 @@ const experienceStub = (matched: { name: string; description: string }[]) =>
     matchByTriggers: async () => matched,
   }) as unknown as NonNullable<AgentEngineOptions['experienceManager']>
 
-/** Minimal Plan shape — only the fields buildPlanSection reads. */
+/** Minimal Plan shape — only the fields the v2 plan section reads (PLAN-plan-dag). */
 const plan = (mode: string, stepDone: boolean) =>
   ({
     objective: 'ship the cache work',
     mode,
     completed: false,
-    steps: [
-      { description: 'measure', status: 'completed' },
-      { description: 'refactor', status: stepDone ? 'completed' : 'pending' },
+    version: 2,
+    nodes: [
+      { id: 'n1', description: 'measure', status: 'completed', dependsOn: [] },
+      { id: 'n2', description: 'refactor', status: stepDone ? 'completed' : 'pending', dependsOn: ['n1'] },
     ],
   }) as never
 

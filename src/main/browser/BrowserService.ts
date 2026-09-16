@@ -390,13 +390,15 @@ export class BrowserService {
     return [...this.tabs.values()].filter((t) => t.scopeId === scope && t.backendId === 'app-view').map((entry) => ({ entry, view: backend.viewOf(entry.id) }))
   }
 
-  /** Apply the pane snapshot to the native dock. Folding (no tabs, or not on
-   *  the chat view) keeps tabs alive — bounds go zero, nothing is destroyed. */
+  /** Apply the pane snapshot to the native dock. Folding (no tabs, not on
+   *  the chat view, or the workbench showing a non-browser tab — W3) keeps
+   *  tabs alive — bounds go zero, nothing is destroyed. */
   private syncPane(): void {
     const { viewKind, conversationId } = this.paneState
+    const browserActive = this.paneState.browserActive !== false
     const scopeTabs = viewKind === 'chat' ? this.paneScopeTabs(conversationId) : []
     appViewDock.setWidth(this.resolvePaneWidth())
-    if (scopeTabs.length === 0) {
+    if (scopeTabs.length === 0 || !browserActive) {
       appViewDock.show(null)
       appViewDock.setVisible(false)
       this.pushPaneUpdates()

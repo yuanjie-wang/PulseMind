@@ -207,7 +207,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
         setMessages([...st.messages])
         setAgentStatus(st.agentStatus)
         setStreamingBlocks([...st.streamingBlocks])
-        setPlan(st.plan ? { ...st.plan, steps: st.plan.steps.map((s) => ({ ...s })) } : null)
+        setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
       }
     })
     return unsub
@@ -227,7 +227,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       setMessages([...st.messages])
       setAgentStatus(st.agentStatus)
       setStreamingBlocks([...st.streamingBlocks])
-      setPlan(st.plan ? { ...st.plan, steps: st.plan.steps.map((s) => ({ ...s })) } : null)
+      setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
     }
   }, [])
 

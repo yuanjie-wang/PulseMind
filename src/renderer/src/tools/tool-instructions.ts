@@ -330,11 +330,13 @@ Delegate a task to a sub-agent. The sub-agent runs with the same tools as this s
 ### Parameters
 - **subAgentId** (optional) — ID of an expert from the available expert list, when the task needs that expertise. Omit for a general-purpose sub-agent.
 - **task** (required) — Detailed description of what the sub-agent should do
+- **planNode** (required when executing a plan node) — the node's 1-based number (\`"2"\`) or id (\`"n2"\`) from the active plan
 
 ### How it works
 1. Review the available experts list above — pick one when its expertise fits the task, otherwise omit the ID
 2. The sub-agent starts with that expert's persona and runs independently
 3. When complete, its results are returned as the tool result
+4. **With a plan active**: pass \`planNode\` for every node you dispatch (multiple READY nodes = multiple spawn_agent calls in the same response, each with its own planNode). The result names the node — settle it immediately with \`advance_plan action="complete" node=<number>\`
 
 ### Guidelines
 - Use for complex, self-contained sub-tasks (research, analysis, code review, refactoring)
@@ -344,42 +346,41 @@ Delegate a task to a sub-agent. The sub-agent runs with the same tools as this s
 
   create_plan: `## create_plan
 
-Create a structured plan before starting complex multi-step work.
+Create an execution DAG before starting complex multi-step work. Nodes with no dependency between them run IN PARALLEL; a node starts only after everything it depends on has settled.
 
 ### Parameters
 - **objective** (required) — What this plan aims to achieve
-- **steps** (required) — Ordered list of step descriptions
-- **mode** — Always \`"delegated"\`. Each step runs in an isolated sub-agent via \`spawn_agent\`. The \`mode\` parameter is ignored — all plans use delegated execution.
+- **steps** (required) — The plan nodes. Each item: \`{ description, depends_on?, assignee? }\`
+  - **depends_on** — 1-based indexes of prerequisite nodes (e.g. \`[1, 3]\`). Omit for nodes that can start immediately.
+  - **assignee** — expert id (capability center) this node is delegated to. Omit for a general sub-agent.
 
 ### When to use
-- The task requires 3+ coordinated tool calls
-- Different approaches need to be explored
-- Work involves multiple files or systems
+- The task requires 3+ coordinated tool calls, or has parts that can proceed independently
+- Work involves multiple files, systems, or experts
 
 ### How it works
-1. **Before creating a plan**, first investigate the overall situation — understand the codebase structure, relevant files, and context using tools like \`read\`, \`search\`, \`list_dir\`, and \`webfetch\`
-2. Call \`create_plan\` with a clear objective and ordered steps based on your investigation
-3. The plan is injected into every subsequent LLM request as context
-4. Use \`advance_plan\` to mark progress: complete a step, handle failure, or finish
-5. The current step is always highlighted — focus on completing it before moving on
+1. **Before creating the plan**, investigate first (\`read\`, \`search\`, \`list_dir\`, \`webfetch\`) so dependencies reflect reality
+2. Call \`create_plan\` with the objective and the node graph — put independent nodes on separate branches, that is what runs in parallel
+3. The plan (with its READY set) is injected into every subsequent request as context. Array order assigns each node its fixed number (n1..nN) — depends_on, spawn_agent planNode and advance_plan node all use these numbers
+4. Dispatch: spawn one \`spawn_agent\` per READY node (subAgentId = its assignee, planNode = its number) — put them ALL in the same response so they run concurrently
+5. As each sub-agent returns, call \`advance_plan\` with node=<number> to settle that node; newly READY nodes go out in the next parallel batch
 
-### Delegated execution (always on)
-Each step MUST be executed by calling \`spawn_agent\` with the step description as the task. Pass the previous steps' results as context to the next sub-agent. Your role becomes: plan, dispatch, verify results, and advance the plan.
-
-**Do not attempt to complete multiple steps in a single response** — one step per cycle, use \`advance_plan\` then proceed to the next.`,
+### Rules
+- One node per sub-agent; never execute a delegated node yourself
+- Never call advance_plan without node=<number> when several nodes are ready
+- A failed node blocks only its own downstream — retry it (complete), or \`skip\` it and re-plan`,
 
   advance_plan: `## advance_plan
 
-Update plan progress. Call this after completing, failing, or finishing the current step.
+Settle a plan node after it finishes, fails, or is abandoned — the plan NEVER advances by itself.
 
 ### Parameters
-- **action** (required) — \`complete\` (step done, advance), \`fail\` (step failed, stay), \`finish\` (entire plan done)
-- **notes** — Optional notes about what happened
+- **action** (required) — \`complete\` (node done; completing a failed node = retry), \`fail\` (node failed, downstream blocks), \`skip\` (abandon the node), \`finish\` (force-complete everything, close the plan)
+- **node** (required unless exactly one node is ready) — the node's 1-based number (\`"2"\`) or id (\`"n2"\`)
+- **notes** — optional one-line outcome; stored on the node and shown in the plan panel
 
-### Actions
-- \`complete\` — Marks current step as completed and moves to the next step. Call this when the step's goal is achieved.
-- \`fail\` — Marks current step as failed. The plan stays on this step so you can retry or adjust your approach. Explain what went wrong in \`notes\`.
-- \`finish\` — Marks the entire plan as complete. Call this when all steps are done or the objective has been met.`,
+### Parallel etiquette
+When you dispatched several nodes in parallel, settle each one as its result comes back — separate advance_plan calls, each with its own node. Every snapshot tells you which nodes are READY next: dispatch them in the same response as parallel spawn_agent calls.`,
 
   pick_tool: `## pick_tool
 

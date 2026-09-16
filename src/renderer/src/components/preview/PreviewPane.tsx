@@ -1,14 +1,11 @@
-// ── Preview pane chrome (PLAN-preview-pane §设计3) ──
-// The right-hand file preview panel of the chat view: tab strip, toolbar
-// (refresh / open-in-system / save-as / collapse), and the per-kind content
-// dispatcher. Pure DOM overlay — unlike the browser pane there is no native
-// WebContentsView behind it, so layout math stays renderer-local. Geometry
-// mirrors BrowserPaneChrome: absolute right edge, 6px left drag handle,
-// width clamped against the chat area via the shared clampPaneWidth.
+// ── Preview pane body (PLAN-preview-pane §设计3; PLAN-workbench W1) ──
+// The workbench's FILE tab content: file tab strip, toolbar (refresh /
+// open-in-system / save-as), and the per-kind content dispatcher. Positioning
+// and the drag handle belong to WorkbenchPane — this component always fills
+// its parent. Pure DOM — no native WebContentsView behind it.
 
-import React, { useRef } from 'react'
-import { RotateCw, ExternalLink, Download, X } from 'lucide-react'
-import { clampPaneWidth, PANE_DRAG_HANDLE_WIDTH, PANE_MIN_WIDTH, PANE_MAX_CHAT_RATIO } from '../../../../shared/browser/pane'
+import React from 'react'
+import { RotateCw, ExternalLink, Download, X, FileText } from 'lucide-react'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { PreviewContent } from './PreviewContent'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -27,47 +24,28 @@ const ICON_BUTTON: React.CSSProperties = {
 
 interface Props {
   conversationId: string | undefined
-  /** Measured chat-column width — the clamp input. */
-  chatAreaWidth: number
-  /** Width of the browser pane when it is docked (this panel stacks to its
-   *  left); 0 when the right edge is free. */
-  rightOffset: number
 }
 
-export function PreviewPane({ conversationId, chatAreaWidth, rightOffset }: Props): React.ReactElement | null {
+export function PreviewPane({ conversationId }: Props): React.ReactElement {
   const { t } = useTranslation()
-  const open = usePreviewPaneStore((s) => s.open)
-  const width = usePreviewPaneStore((s) => s.width)
   const key = conversationId ?? DRAFT_CONVERSATION_KEY
   const convArg = conversationId ?? null
   const tabs = usePreviewPaneStore((s) => s.tabsByConversation[key])
   const activePath = usePreviewPaneStore((s) => s.activeByConversation[key] ?? null)
   const reloadTicks = usePreviewPaneStore((s) => s.reloadTicks)
-  const drag = useRef<{ startX: number; startWidth: number; lastSent: number } | null>(null)
-  const maxW = Math.max(PANE_MIN_WIDTH, Math.floor(chatAreaWidth * PANE_MAX_CHAT_RATIO))
 
-  if (!open || !tabs || tabs.length === 0) return null
+  if (!tabs || tabs.length === 0) {
+    return (
+      <div style={{ padding: 24, fontSize: 12, color: '#999', textAlign: 'center' }}>
+        <FileText size={20} style={{ display: 'block', margin: '0 auto 8px', color: '#d9d9d9' }} />
+        暂无打开的文件
+        <div style={{ marginTop: 4, fontSize: 11, color: '#bbb' }}>AI 写入的文件会在这里实时预览</div>
+      </div>
+    )
+  }
 
   const active = tabs.find((tab) => tab.path === activePath) ?? tabs[tabs.length - 1]
   const store = usePreviewPaneStore.getState()
-
-  const onDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
-    drag.current = { startX: e.clientX, startWidth: width, lastSent: 0 }
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-  const onDragMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const d = drag.current
-    if (!d) return
-    const next = clampPaneWidth(d.startWidth + (d.startX - e.clientX), chatAreaWidth)
-    const now = Date.now()
-    if (now - d.lastSent > 40) {
-      d.lastSent = now
-      store.setWidth(next)
-    }
-  }
-  const onDragEnd = () => {
-    drag.current = null
-  }
 
   const saveAs = async () => {
     try {
@@ -80,38 +58,8 @@ export function PreviewPane({ conversationId, chatAreaWidth, rightOffset }: Prop
   }
 
   return (
-    <div
-      style={{
-        position: 'absolute',
-        top: 0,
-        right: rightOffset,
-        bottom: 0,
-        width,
-        background: '#fff',
-        borderLeft: '1px solid #e5e6eb',
-        display: 'flex',
-        flexDirection: 'column',
-        zIndex: 30,
-      }}
-    >
-      {/* Drag handle (left edge) */}
-      <div
-        onPointerDown={onDragStart}
-        onPointerMove={onDragMove}
-        onPointerUp={onDragEnd}
-        style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: PANE_DRAG_HANDLE_WIDTH,
-          cursor: 'col-resize',
-          zIndex: 2,
-          background: 'transparent',
-        }}
-      />
-
-      {/* Tab strip (32px) */}
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff' }}>
+      {/* File tab strip (32px) */}
       <div
         style={{
           height: 32,
@@ -160,7 +108,7 @@ export function PreviewPane({ conversationId, chatAreaWidth, rightOffset }: Prop
         </div>
       </div>
 
-      {/* Toolbar row (36px): refresh / path / open-in-system / save-as / collapse */}
+      {/* Toolbar row (36px): refresh / path / open-in-system / save-as */}
       <div
         style={{
           height: 36,
@@ -197,9 +145,6 @@ export function PreviewPane({ conversationId, chatAreaWidth, rightOffset }: Prop
         </div>
         <div style={{ ...ICON_BUTTON }} onClick={() => void saveAs()} title={t('previewPane.saveAs')}>
           <Download size={12} />
-        </div>
-        <div style={{ ...ICON_BUTTON }} onClick={() => store.setOpen(false)} title={t('previewPane.closePanel')}>
-          <X size={13} />
         </div>
       </div>
 

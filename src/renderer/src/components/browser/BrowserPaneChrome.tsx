@@ -1,16 +1,14 @@
-// ── Browser pane chrome (A-M5) ──
-// The in-app browser's user-facing controls: tab strip, address bar with
-// back/forward/reload, open-external, and the left-edge drag handle. Pure
-// DOM overlay — the actual page is the native WebContentsView positioned by
-// the main-process dock BELOW this chrome (heights must stay in sync via
-// PANE_CHROME_HEIGHT).
+// ── Browser pane chrome (A-M5; PLAN-workbench W1) ──
+// The in-app browser's user-facing controls: tab strip and address bar with
+// back/forward/reload + open-external. The actual page is the native
+// WebContentsView positioned by the main-process dock BELOW this chrome —
+// heights must stay in sync via PANE_CHROME_HEIGHT (which includes the
+// workbench's own tool-tab strip). Positioning and the width drag handle
+// belong to WorkbenchPane; this component fills its parent.
 
-import React, { useRef, useState } from 'react'
+import React, { useState } from 'react'
 import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Plus, X } from 'lucide-react'
 import {
-  PANE_DRAG_HANDLE_WIDTH,
-  PANE_MIN_WIDTH,
-  PANE_MAX_CHAT_RATIO,
   normalizeAddressBarInput,
   type BrowserPaneAction,
   type BrowserPaneUpdate,
@@ -18,8 +16,6 @@ import {
 
 interface Props {
   pane: BrowserPaneUpdate
-  chatAreaWidth: number
-  onWidth: (width: number, chatAreaWidth: number) => void
   onAction: (action: BrowserPaneAction) => void
 }
 
@@ -35,34 +31,12 @@ const ICON_BUTTON: React.CSSProperties = {
   cursor: 'pointer',
 }
 
-export function BrowserPaneChrome({ pane, chatAreaWidth, onWidth, onAction }: Props) {
+export function BrowserPaneChrome({ pane, onAction }: Props) {
   const active = pane.tabs.find((t) => t.active) ?? null
   // Address-bar draft, scoped to the tab it was typed in — switching tabs
   // naturally shows the new tab's URL without a reset effect.
   const [draft, setDraft] = useState<{ tabId: string; text: string | null }>({ tabId: '', text: null })
-  const drag = useRef<{ startX: number; startWidth: number; lastSent: number } | null>(null)
-  const maxW = Math.max(PANE_MIN_WIDTH, Math.floor(chatAreaWidth * PANE_MAX_CHAT_RATIO))
   const shownUrl = draft.tabId === active?.id ? (draft.text ?? active?.url ?? '') : (active?.url ?? '')
-
-  const onDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
-    drag.current = { startX: e.clientX, startWidth: pane.width, lastSent: 0 }
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-  const onDragMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const d = drag.current
-    if (!d) return
-    const next = Math.min(maxW, Math.max(PANE_MIN_WIDTH, d.startWidth + (d.startX - e.clientX)))
-    const now = Date.now()
-    if (now - d.lastSent > 40) {
-      d.lastSent = now
-      onWidth(next, chatAreaWidth)
-    }
-  }
-  const onDragEnd = () => {
-    if (!drag.current) return
-    drag.current = null
-    onWidth(pane.width, chatAreaWidth)
-  }
 
   const navigateDraft = () => {
     if (active && draft.tabId === active.id && draft.text && draft.text.trim()) {
@@ -74,35 +48,12 @@ export function BrowserPaneChrome({ pane, chatAreaWidth, onWidth, onAction }: Pr
   return (
     <div
       style={{
-        position: 'absolute',
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: pane.width,
+        height: '100%',
         background: '#f7f8fa',
-        borderLeft: '1px solid #e5e6eb',
         display: 'flex',
         flexDirection: 'column',
-        zIndex: 30,
       }}
     >
-      {/* Drag handle (left edge) */}
-      <div
-        onPointerDown={onDragStart}
-        onPointerMove={onDragMove}
-        onPointerUp={onDragEnd}
-        style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: PANE_DRAG_HANDLE_WIDTH,
-          cursor: 'col-resize',
-          zIndex: 2,
-          background: 'transparent',
-        }}
-      />
-
       {/* Tab strip (32px) */}
       <div
         style={{

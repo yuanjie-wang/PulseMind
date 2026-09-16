@@ -9,6 +9,8 @@ import {
   toExpertRefCatalogs,
   type ExpertRefCatalogs,
 } from '../../../../shared/expert-context'
+import { nodeNumberOf, resolveNodeRef } from '../../../../shared/plan/graph'
+import type { PlanNode } from '../../../../shared/types/plan'
 import { getCachedMcpServers } from '../mcp-cache'
 import type { ToolExecContext } from './context'
 import type { ExpertProfile } from '../../../../shared/types/expert'
@@ -58,6 +60,20 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       }
     }
 
+    // Plan linkage (PLAN-plan-dag): the delegated task names the plan node it
+    // implements, so create_plan numbering, spawn dispatch and advance_plan
+    // settlement all speak the same ids. Validated against the LIVE plan — a
+    // stale/unknown number is a model error, not a silent no-op.
+    const planNodeRaw = t.input?.planNode
+    let planNode: PlanNode | null = null
+    if (planNodeRaw !== undefined && planNodeRaw !== null && planNodeRaw !== '') {
+      const plan = ex.getPlan?.()
+      if (!plan) throw new Error('planNode was given but no plan is active — call create_plan first, or drop planNode.')
+      planNode = resolveNodeRef(plan, planNodeRaw as string | number)
+      if (!planNode) throw new Error(`Unknown planNode "${String(planNodeRaw)}" — valid: n1..n${plan.nodes.length}.`)
+      if (planNode.status !== 'pending') throw new Error(`Plan node ${planNode.id} is already ${planNode.status} — pick a node from the READY set.`)
+    }
+
     // Expert config pack: compose the structured sections instead of a bare
     // basePrompt. Its capability whitelists travel to the spawned engine as
     // allowedSkills / allowedMcpServers so both runtimes restrict identically.
@@ -84,7 +100,12 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       if (skillsAppendix) skillsCtx = '\n\n' + skillsAppendix
     } catch { /* non-critical */ }
 
-    const systemPrompt = `${expertBlock}\n\n## Your Task\n${task}${skillsCtx}`
+    // The sub-agent gets its node's scope spelled out so it does not drift
+    // into the rest of the plan.
+    const taskText = planNode
+      ? `${task}\n\n(You are executing plan node ${planNode.id} of a larger plan — scope your work to this node only.)`
+      : task
+    const systemPrompt = `${expertBlock}\n\n## Your Task\n${taskText}${skillsCtx}`
 
     console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" prompt length=${systemPrompt.length} first 200 chars:`, systemPrompt.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
@@ -112,7 +133,9 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
 
     // Set _subConvId immediately so parent conversation saves link to sub-agent conversation
     // even if the app restarts before the sub-agent completes.
-    ;(t as any)._subConvId = handle.subConvId
+    ;(t as { _subConvId?: string })._subConvId = handle.subConvId
+    // Plan linkage marker (UI/telemetry hook): which plan node this spawn implements.
+    if (planNode) (t as { _planNodeId?: string })._planNodeId = planNode.id
     // Keep handle reference for live preview while the sub-agent is running.
     // Non-enumerable so JSON.stringify skips it — avoids serializing the entire engine state.
     Object.defineProperty(t, '_subAgentHandle', { value: handle, writable: true, enumerable: false, configurable: true })
@@ -127,9 +150,14 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     const errorDetail = result.status !== 'completed'
       ? `\n\n### Sub-agent Status: ${result.status}\n` + (subText ? `**Partial Output:**\n${subText}` : '') + (subTools ? `\n**Tool Calls Attempted:** ${subTools}` : '')
       : ''
-    const summary = result.status === 'completed'
+    let summary = result.status === 'completed'
       ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
       : `## Sub-Agent Result (${result.status})\n\nThe sub-agent did not complete successfully.${errorDetail}`
+    // Close the create_plan → spawn_agent → advance_plan loop in the model's
+    // face: the result names the node and the exact settle call to make.
+    if (planNode) {
+      summary += `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — settle it now with advance_plan action="complete" node=${nodeNumberOf(planNode)} (or "fail" / "skip" if it did not succeed).`
+    }
 
     t.exitCode = result.status === 'completed' ? 0 : 1
     t.status = 'completed'

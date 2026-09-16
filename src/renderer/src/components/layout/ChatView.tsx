@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useMemo, useId, useState } from 'react'
-import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
+import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock, Plan } from '../../types/agent'
 import type { LlmProfile } from '../../types/settings'
 import { Tooltip, Segmented } from 'antd'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
@@ -15,9 +15,9 @@ import { WelcomeContent } from '../chat/WelcomeContent'
 import { startBottomPin } from '../../utils/bottom-pin'
 import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
-import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
-import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
-import { PreviewPane } from '../preview/PreviewPane'
+import { useWorkbenchStore } from '../../stores/workbenchStore'
+import { WorkbenchPane } from '../workbench/WorkbenchPane'
+import { usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { usePreviewPaneSync } from '../../hooks/usePreviewPaneSync'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ConversationListItem } from '../../types/conversation'
@@ -57,6 +57,10 @@ interface ChatViewProps {
    *  request — without this the scroll effect keeps re-running on every
    *  message/window change and yanks the viewport back to the step. */
   onPlanScrollHandled?: () => void
+  /** The active conversation's plan (workbench 计划 tab + slim status strip). */
+  plan?: Plan | null
+  /** Plan DAG node click → jump to the node's conversation round. */
+  onPlanJump?: (msgId: string) => void
   contextLength?: number
   /** Resolved working directory of the active conversation (M8.5); shown above
    *  the message list once the main-side session creation reports back. */
@@ -116,6 +120,8 @@ function ChatView({
   onUnbindExpert,
   approvalMode,
   onChangeApprovalMode,
+  plan,
+  onPlanJump,
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
   const { t } = useTranslation()
@@ -170,22 +176,55 @@ function ChatView({
   const browserPane = useBrowserPaneStore((s) => s.update)
   const paneRootRef = useRef<HTMLDivElement | null>(null)
   const browserPaneBinding = useBrowserPaneBinding(conversationId, paneRootRef)
-  // File preview pane (PLAN-preview-pane): tabs live per conversation, so a
-  // switch must retarget the store before the panel reads its tab strip.
-  const previewOpen = usePreviewPaneStore((s) => s.open)
-  const previewWidth = usePreviewPaneStore((s) => s.width)
-  const previewTabCount = usePreviewPaneStore((s) => s.tabsByConversation[conversationId ?? DRAFT_CONVERSATION_KEY]?.length ?? 0)
-  const previewVisible = previewOpen && previewTabCount > 0
+  // Right-side workbench (PLAN-workbench): one docked pane hosting the file
+  // preview, the browser and the plan DAG behind tool tabs.
+  const workbenchOpen = useWorkbenchStore((s) => s.open)
+  const workbenchWidth = useWorkbenchStore((s) => s.width)
+  const workbenchTab = useWorkbenchStore((s) => s.activeTab)
   useEffect(() => {
     usePreviewPaneStore.getState().switchConversation(conversationId ?? null)
   }, [conversationId])
-  // The pane resolves tool-relative paths against this conversation's
+  // The file tab resolves tool-relative paths against this conversation's
   // workspace; keep the store in sync for the entry-point helpers.
   useEffect(() => {
     usePreviewPaneStore.getState().setWorkspaceDir(workspaceDir ?? null)
   }, [workspaceDir])
+  // A fresh browser session (tab count 0 → N) is the main process telling us
+  // the browser tool went to work — bring the workbench up on its tab.
+  const prevBrowserTabCountRef = useRef(0)
+  useEffect(() => {
+    const count = browserPane.tabs.length
+    if (prevBrowserTabCountRef.current === 0 && count > 0) useWorkbenchStore.getState().openTab('browser')
+    prevBrowserTabCountRef.current = count
+  }, [browserPane.tabs.length])
+  // While the browser tab is frontmost the dock must track the workbench
+  // width (native WebView alignment); other tabs fold the dock via the
+  // browserActive flag inside useBrowserPaneBinding.
+  useEffect(() => {
+    if (workbenchOpen && workbenchTab === 'browser') {
+      browserPaneBinding.pushWidth(workbenchWidth, browserPaneBinding.chatAreaWidth)
+    }
+  }, [workbenchOpen, workbenchTab, workbenchWidth, browserPaneBinding])
   // write → auto-open, write/edit → refresh open tabs (D3/D7)
   usePreviewPaneSync(conversationId, workspaceDir)
+  // Slim status strip above the composer (W8): the workbench's 计划 tab owns
+  // the full DAG — this only reminds that a plan is running while folded.
+  const planSettled = plan ? plan.nodes.filter((n) => n.status !== 'pending').length : 0
+  const planTotal = plan?.nodes.length ?? 0
+  const planStrip = plan && !plan.completed && planTotal > 0 && !workbenchOpen ? (
+    <div
+      onClick={() => useWorkbenchStore.getState().openTab('plan')}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6, height: 26, padding: '0 12px',
+        borderRadius: 13, background: '#fff', border: '1px solid #e5e6eb',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: 11, color: '#555', cursor: 'pointer',
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: '#1677ff', flexShrink: 0 }} />
+      <span>计划进行中 · {planSettled}/{planTotal}</span>
+      <span style={{ color: '#1677ff' }}>查看</span>
+    </div>
+  ) : null
   const pendingScrollRef = useRef(false)
   const scrollRafRef = useRef<number>(0)
   // Cancel handle for the bottom-pinner started after a conversation switch —
@@ -549,12 +588,11 @@ function ChatView({
         position: 'relative',
         height: '100%',
         background: '#fff',
-        // Reserve the pane strip so chat content never flows under the
-        // WebView; transitions off — the drag handle needs 1:1 tracking.
-        // Both right-side panes reserve here when open (preview stacks to
-        // the browser pane's left).
-        paddingRight:
-          (browserPane.visible ? browserPane.width : 0) + (previewVisible ? previewWidth : 0),
+        // Reserve the workbench strip so chat content never flows under the
+        // docked pane (PLAN-workbench W1: one width, one reserve — the old
+        // browser+preview additive stack is gone). Transitions off — the
+        // drag handle needs 1:1 tracking.
+        paddingRight: workbenchOpen ? workbenchWidth : 0,
       }}
     >
       <div
@@ -665,22 +703,15 @@ function ChatView({
         </div>
       </div>
 
-      {browserPane.visible && (
-        <BrowserPaneChrome
-          pane={browserPane}
-          chatAreaWidth={browserPaneBinding.chatAreaWidth}
-          onWidth={browserPaneBinding.pushWidth}
-          onAction={browserPaneBinding.action}
-        />
-      )}
-
-      {previewVisible && (
-        <PreviewPane
-          conversationId={conversationId}
-          chatAreaWidth={browserPaneBinding.chatAreaWidth}
-          rightOffset={browserPane.visible ? browserPane.width : 0}
-        />
-      )}
+      <WorkbenchPane
+        conversationId={conversationId}
+        chatAreaWidth={browserPaneBinding.chatAreaWidth}
+        plan={plan ?? null}
+        onPlanJump={onPlanJump}
+        browserPane={browserPane}
+        onBrowserAction={browserPaneBinding.action}
+        onBrowserWidth={(w) => browserPaneBinding.pushWidth(w, browserPaneBinding.chatAreaWidth)}
+      />
 
       <InputArea
         key={conversationId ?? 'new'}
@@ -689,6 +720,7 @@ function ChatView({
         isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
         isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
         hasMessages={hasMessages}
+        topSlot={planStrip}
         // No rightInset: the root's paddingRight already ends the in-flow
         // wrapper at the pane's left edge, and the composer is absolute
         // INSIDE that wrapper — an inset here would deduct the pane twice.

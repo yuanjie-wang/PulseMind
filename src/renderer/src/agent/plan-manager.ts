@@ -1,4 +1,23 @@
-import type { ToolUseBlock, AgentMessage, Plan } from '../types/agent'
+/**
+ * Plan tool executors (PLAN-plan-dag): create_plan / advance_plan. All graph
+ * rules (validation, ready/blocked derivation, snapshot text) live in
+ * shared/plan/graph.ts — this class only adapts tool input to it and anchors
+ * jump targets. The plan's ONLY writers are these two executors, i.e. the main
+ * agent's explicit tool calls (single-writer; sub-agents never touch it).
+ */
+import type { ToolUseBlock, AgentMessage } from '../types/agent'
+import type { Plan } from '../../../shared/types/plan'
+import {
+  completeAllNodes,
+  createPlanDag,
+  formatPlanSnapshot,
+  markNode,
+  readyNodes,
+  resolveNodeRef,
+  type RawPlanNode,
+} from '../../../shared/plan/graph'
+
+const SETTLE_STATUS = { complete: 'completed', fail: 'failed', skip: 'skipped' } as const
 
 export class PlanManager {
   plan: Plan | null = null
@@ -14,78 +33,38 @@ export class PlanManager {
     this.onPlanChange?.(this.plan)
   }
 
-  /** Build a full-plan snapshot for the tool_result the LLM sees next turn. */
-  private formatPlanSnapshot(action: string, notes: string): string {
-    const plan = this.plan
-    if (!plan) return ''
-
-    const total = plan.steps.length
-    const parts: string[] = []
-
-    // Intro line — what just happened
-    if (plan.completed) {
-      parts.push(action === 'finish' ? 'Plan finished early.' : `All ${total} steps completed.`)
-    } else if (action === 'fail') {
-      parts.push(`Step ${plan.currentStepIndex + 1} failed. Adjust your approach and call advance_plan action="complete" to continue.`)
-    } else {
-      parts.push(`Step ${plan.currentStepIndex}/${total} completed.`)
-    }
-
-    parts.push(`Objective: "${plan.objective}"`)
-    parts.push('')
-
-    // Flat checklist — all steps with status markers
-    for (let i = 0; i < plan.steps.length; i++) {
-      const s = plan.steps[i]
-      const marker = s.status === 'completed' ? '[done]' : s.status === 'failed' ? '[fail]' : '[ ]'
-      parts.push(`${marker} ${i + 1}. ${s.description}`)
-    }
-
-    if (notes) parts.push('', notes)
-
-    return parts.join('\n')
+  /** The assistant message carrying this tool call — the panel's jump anchor. */
+  private anchorOf(toolUseId: string): string | undefined {
+    return this.getMessages().find(m => m.role === 'assistant' && m.contentBlocks.some(b => b.type === 'tool_use' && b.id === toolUseId))?.id
   }
 
-  /** Snapshot for a freshly created plan (all steps pending). */
-  private formatCreateSnapshot(notes: string): string {
-    const plan = this.plan
-    if (!plan) return ''
-
-    const parts: string[] = []
-    parts.push(`Plan created with ${plan.steps.length} step(s). Mode: ${plan.mode}.`)
-    parts.push('')
-    parts.push(`Objective: "${plan.objective}"`)
-    parts.push('')
-
-    for (let i = 0; i < plan.steps.length; i++) {
-      parts.push(`[ ] ${i + 1}. ${plan.steps[i].description}`)
-    }
-
-    if (notes) parts.push('', notes)
-
-    return parts.join('\n')
+  /** Tool steps arrive as plain strings (weak model / legacy form → a chain)
+   *  or as {description, depends_on, assignee} objects (the DAG form). A
+   *  string chains to its predecessor: the v1 ordered list IS the dependency
+   *  order, so legacy callers keep serial semantics. */
+  private static normalizeSteps(input: unknown): RawPlanNode[] {
+    const arr = Array.isArray(input) ? input : []
+    return arr.map((s, i) => {
+      if (typeof s === 'string') return { description: s, ...(i > 0 ? { dependsOn: [i] } : {}) }
+      const o = (s ?? {}) as { description?: unknown; depends_on?: unknown; assignee?: unknown }
+      const dependsOn = Array.isArray(o.depends_on)
+        ? o.depends_on.map(d => Number(d)).filter(d => Number.isFinite(d))
+        : undefined
+      return {
+        description: String(o.description ?? ''),
+        ...(dependsOn && dependsOn.length > 0 ? { dependsOn } : {}),
+        ...(o.assignee ? { assignee: String(o.assignee) } : {}),
+      }
+    })
   }
 
   async execCreatePlan(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {
       const objective = String(t.input?.objective || '')
-      const steps = (t.input?.steps as string[]) || []
-      if (!objective.trim()) throw new Error('objective is required')
-      if (!steps.length) throw new Error('steps are required')
-      if (steps.length > 20) throw new Error('maximum 20 steps allowed')
-
-      const mode = 'delegated'
-      this.plan = {
-        objective,
-        steps: steps.map((s: string) => ({ description: s, status: 'pending' as const })),
-        currentStepIndex: 0,
-        completed: false,
-        mode
-      }
+      this.plan = createPlanDag(objective, PlanManager.normalizeSteps(t.input?.steps))
       this.notifyPlanChange()
-
-      this.addToolResult(t.id, this.formatCreateSnapshot('All steps run in delegated mode (spawn_agent).'), false)
+      this.addToolResult(t.id, formatPlanSnapshot(this.plan, { action: 'create' }), false)
       t.exitCode = 0
     } catch (err) {
       this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'create_plan failed'}`, true)
@@ -102,42 +81,29 @@ export class PlanManager {
 
       const action = String(t.input?.action || '')
       const notes = String(t.input?.notes || '')
+      const rawRef = t.input?.node
+      const ref = rawRef !== undefined && rawRef !== null && rawRef !== '' ? rawRef : undefined
 
-      if (action === 'complete') {
-        const idx = plan.currentStepIndex
-        plan.steps[idx].status = 'completed'
-        const advanceMsg = this.getMessages().find(m => m.role === 'assistant' && m.contentBlocks.some(b => b.type === 'tool_use' && b.id === t.id))
-        if (advanceMsg) plan.steps[idx].msgId = advanceMsg.id
-        const nextIdx = idx + 1
-        if (nextIdx >= plan.steps.length) {
-          plan.completed = true
-        } else {
-          plan.currentStepIndex = nextIdx
-        }
-        this.addToolResult(t.id, this.formatPlanSnapshot('complete', notes), false)
+      if (action === 'finish') {
+        completeAllNodes(plan)
+        // Anchor the finish jump on the last node (it was never individually settled).
+        plan.nodes[plan.nodes.length - 1].msgId = this.anchorOf(t.id) ?? plan.nodes[plan.nodes.length - 1].msgId
+        this.addToolResult(t.id, formatPlanSnapshot(plan, { action: 'finish', notes }), false)
         t.exitCode = 0
-      } else if (action === 'fail') {
-        const idx = plan.currentStepIndex
-        plan.steps[idx].status = 'failed'
-        const failMsg = this.getMessages().find(m => m.role === 'assistant' && m.contentBlocks.some(b => b.type === 'tool_use' && b.id === t.id))
-        if (failMsg) plan.steps[idx].msgId = failMsg.id
-        this.addToolResult(t.id, this.formatPlanSnapshot('fail', notes), true)
-        t.exitCode = 1
-      } else if (action === 'finish') {
-        for (const step of plan.steps) {
-          if (step.status !== 'completed' && step.status !== 'failed') {
-            step.status = 'completed'
-          }
+      } else if (action === 'complete' || action === 'fail' || action === 'skip') {
+        const node = ref !== undefined
+          ? resolveNodeRef(plan, ref as string | number)
+          : PlanManager.soleReadyNode(plan)
+        if (!node) {
+          throw new Error(ref !== undefined
+            ? `Unknown node "${String(ref)}". Use a step number (1..${plan.nodes.length}) or id (n1..n${plan.nodes.length}).`
+            : 'No unique ready node — pass node=<number> explicitly.')
         }
-        const finishMsg = this.getMessages().find(m => m.role === 'assistant' && m.contentBlocks.some(b => b.type === 'tool_use' && b.id === t.id))
-        // Assign msgId to the last step so clicking it in the PlanPanel jumps
-        // to the finish message (the last step was never individually completed).
-        if (finishMsg) plan.steps[plan.steps.length - 1].msgId = finishMsg.id
-        plan.completed = true
-        this.addToolResult(t.id, this.formatPlanSnapshot('finish', notes), false)
-        t.exitCode = 0
+        markNode(plan, node.id, SETTLE_STATUS[action], { msgId: this.anchorOf(t.id), summary: notes || undefined })
+        this.addToolResult(t.id, formatPlanSnapshot(plan, { action, node: node.id, notes }), action === 'fail')
+        t.exitCode = action === 'fail' ? 1 : 0
       } else {
-        throw new Error(`Unknown action: "${action}". Use "complete", "fail", or "finish".`)
+        throw new Error(`Unknown action: "${action}". Use "complete", "fail", "skip", or "finish".`)
       }
     } catch (err) {
       this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'advance_plan failed'}`, true)
@@ -145,5 +111,15 @@ export class PlanManager {
     }
     this.notifyPlanChange()
     t.status = 'completed'; this.notify()
+  }
+
+  /** node omitted (D5): allowed only when exactly one node is ready, so a
+   *  single-chain plan never needs the parameter. Ambiguity is an error that
+   *  lists the ready set. */
+  private static soleReadyNode(plan: Plan): ReturnType<typeof readyNodes>[number] | null {
+    const ready = readyNodes(plan)
+    if (ready.length === 1) return ready[0]
+    if (ready.length === 0) throw new Error('Nothing is ready — every open node waits on dependencies. Pass node=<number>.')
+    throw new Error(`Multiple nodes are ready (n${ready.map(n => n.id.slice(1)).join(', n')}) — pass node=<number> to say which one settled.`)
   }
 }

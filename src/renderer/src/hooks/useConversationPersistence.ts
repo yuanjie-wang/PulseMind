@@ -339,7 +339,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
         setMessages([...engine.messages])
         setAgentStatus(engine.agentStatus)
         setStreamingBlocks([...engine.streamingBlocks])
-        setPlan(engine.plan ? { ...engine.plan, steps: engine.plan.steps.map(s => ({ ...s })) } : null)
+        setPlan(engine.plan ? { ...engine.plan, nodes: engine.plan.nodes.map(n => ({ ...n })) } : null)
         // Track loaded message IDs so switching away doesn't trigger a redundant save.
         savedMsgIdsRef.current.set(key, new Set(engine.messages.map(m => m.id)))
       } else {

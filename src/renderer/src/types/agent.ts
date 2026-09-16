@@ -33,22 +33,10 @@ export interface AgentMessage {
   compressedIds?: string[]
 }
 
-// --- Plan ---
+// --- Plan (v2 DAG — the model lives in shared so the main process and the
+// extension reducer see the same shape; PLAN-plan-dag D10) ---
 
-export interface PlanStep {
-  description: string
-  status: 'pending' | 'in_progress' | 'completed' | 'failed'
-  /** Message ID to jump to for this step's conversation round. */
-  msgId?: string
-}
-
-export interface Plan {
-  objective: string
-  steps: PlanStep[]
-  currentStepIndex: number
-  completed: boolean
-  mode?: 'direct' | 'delegated'
-}
+export type { Plan, PlanNode, PlanNodeStatus } from '../../../shared/types/plan'
 
 // --- Helper: convert content blocks to Anthropic API format ---
 

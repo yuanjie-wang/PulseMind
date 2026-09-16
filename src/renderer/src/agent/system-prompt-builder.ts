@@ -3,6 +3,7 @@ import type { AgentMessage, TextBlock, Plan } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import { getCachedSkillPrefs } from './mcp-cache'
 import type { GitStatusInfo } from '../../../shared/types/git'
+import { formatPlanForPrompt } from '../../../shared/plan/graph'
 
 export interface BuildSystemPromptParams {
   opts: AgentEngineOptions
@@ -165,7 +166,7 @@ async function buildStateBlock(params: {
   const workspace = buildWorkspaceSection(opts.workspaceDir)
   if (workspace) sections.push(workspace)
 
-  const planSection = buildPlanSection(plan)
+  const planSection = formatPlanForPrompt(plan)
   if (planSection) sections.push(planSection)
 
   const pageSection = buildPageSection(opts.pageContext)
@@ -199,29 +200,6 @@ function buildClockSection(): string {
   const date = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`
   const time = `${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')}`
   return `## Current Date\n- Date: ${date} ${time} ${Intl.DateTimeFormat().resolvedOptions().timeZone}`
-}
-
-function buildPlanSection(plan: Plan | null): string | null {
-  if (!plan || plan.completed) return null
-  const lines: string[] = ['## Current Plan', '', `Objective: "${plan.objective}"`, `Mode: ${plan.mode}`, '']
-  if (plan.mode === 'delegated') {
-    lines.push('Rules for delegated mode:')
-    lines.push('- You MUST use the `spawn_agent` tool for EACH step — do not execute steps directly')
-    lines.push('- Do not attempt to complete multiple steps in a single response')
-    lines.push('')
-  }
-  lines.push('### Workflow')
-  lines.push('1. Execute the current [ ] step using the appropriate tools')
-  lines.push('2. Call `advance_plan` with action="complete" to mark it done — the plan does NOT auto-advance')
-  lines.push('3. Repeat for each subsequent step until all steps are done')
-  lines.push('4. Call `advance_plan` with action="finish" when the objective is fully met')
-  lines.push('### Progress')
-  for (let i = 0; i < plan.steps.length; i++) {
-    const s = plan.steps[i]
-    const marker = s.status === 'completed' ? '[done]' : s.status === 'failed' ? '[fail]' : '[ ]'
-    lines.push(`${marker} Step ${i + 1}: ${s.description}`)
-  }
-  return lines.join('\n')
 }
 
 function buildPageSection(pageContext?: AgentEngineOptions['pageContext']): string | null {

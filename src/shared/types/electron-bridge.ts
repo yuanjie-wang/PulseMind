@@ -307,8 +307,9 @@ export interface ElectronAPI {
     args: Record<string, unknown>,
     opts: { sessionId: string; timeoutMs?: number },
   ) => Promise<unknown>
-  /** Browser pane (A-M5). */
-  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number }) => Promise<void>
+  /** Browser pane (A-M5). `browserActive`: PLAN-workbench W3 — false folds the
+   *  native WebView while the workbench shows a non-browser tab. */
+  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number; browserActive?: boolean }) => Promise<void>
   browserPaneSetWidth: (width: number) => Promise<void>
   browserPaneAction: (action: Record<string, unknown>) => Promise<void>
   onBrowserPaneUpdate: (
