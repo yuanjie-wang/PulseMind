@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  PANE_BORDER_WIDTH,
   PANE_CHROME_HEIGHT,
   PANE_MIN_WIDTH,
   clampPaneWidth,
@@ -24,12 +25,20 @@ describe('pane width clamp', () => {
 })
 
 describe('webview 16:9 box', () => {
-  it('fills the pane width, derives height, centers below the chrome', () => {
+  it('fills the pane width minus the border inset, derives height, centers below the chrome', () => {
     const box = webviewBox(520, 48, 852)
-    expect(box.width).toBe(520)
-    expect(box.height).toBe(293) // 520 * 9/16
+    // The pane's 1px left border (the chat/pane divider) is renderer DOM and a
+    // native WebView paints over it — the box must start past the border.
+    expect(box.x).toBe(PANE_BORDER_WIDTH)
+    expect(box.width).toBe(519) // 520 - 1px border inset
+    expect(box.height).toBe(292) // 519 * 9/16
     const available = 852 - PANE_CHROME_HEIGHT
-    expect(box.y).toBe(48 + PANE_CHROME_HEIGHT + Math.floor((available - 293) / 2))
+    expect(box.y).toBe(48 + PANE_CHROME_HEIGHT + Math.floor((available - 292) / 2))
+  })
+  it('never lets the border inset widen a zero-width pane', () => {
+    const box = webviewBox(0, 48, 852)
+    expect(box.width).toBe(0)
+    expect(box.height).toBe(0)
   })
   it('hugs the chrome instead of overflowing on a short window', () => {
     const box = webviewBox(520, 48, 200)

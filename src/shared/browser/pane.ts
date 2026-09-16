@@ -18,6 +18,11 @@ export const PANE_MAX_CHAT_RATIO = 0.6
 export const PANE_DEFAULT_CHAT_RATIO = 0.4
 /** Left-edge drag handle thickness (renderer DOM). */
 export const PANE_DRAG_HANDLE_WIDTH = 6
+/** The chat/pane divider is the workbench pane's own 1px CSS border —
+ *  renderer DOM — and a native WebContentsView paints over DOM, so the
+ *  WebView is inset past it (one px narrower) or a loaded page hides the
+ *  divider. */
+export const PANE_BORDER_WIDTH = 1
 
 // ── Pane state contract (A-M5) ──
 // Renderer → main: what is on screen (drives fold/restore and width clamping).
@@ -52,7 +57,11 @@ export type BrowserPaneAction =
   | { op: 'newTab' }
   | { op: 'selectTab'; tabId: string }
   | { op: 'closeTab'; tabId: string }
-  | { op: 'navigate'; tabId: string; url: string }
+  /** Address-bar navigation. `tabId` is absent when the pane has no tab open
+   *  yet — the address then means "open a tab and go there", which the service
+   *  fulfils. The chrome cannot mint the id itself: main owns tab ids and only
+   *  reports them on the next pane update. */
+  | { op: 'navigate'; tabId?: string; url: string }
   | { op: 'back'; tabId: string }
   | { op: 'forward'; tabId: string }
   | { op: 'reload'; tabId: string }
@@ -102,13 +111,15 @@ export function normalizeAddressBarInput(raw: string): string {
   return `https://${input}`
 }
 
-/** WebView box for a pane: full pane width, strict 16:9, vertically centered
- *  in the space below the chrome. When the window is too short for the box,
- *  it hugs the chrome (top-aligned) instead of overflowing. */
+/** WebView box for a pane: strict 16:9, vertically centered in the space
+ *  below the chrome, inset past the pane's 1px left border so the divider
+ *  stays visible. `x` is relative to the pane's left edge — the dock adds
+ *  the pane origin. When the window is too short for the box, it hugs the
+ *  chrome (top-aligned) instead of overflowing. */
 export function webviewBox(paneWidth: number, paneTop: number, paneHeight: number): PaneBox {
-  const width = Math.max(0, Math.round(paneWidth))
+  const width = Math.max(0, Math.round(paneWidth) - PANE_BORDER_WIDTH)
   const height = Math.round((width * 9) / 16)
   const available = Math.max(0, paneHeight - PANE_CHROME_HEIGHT)
   const top = paneTop + PANE_CHROME_HEIGHT + Math.max(0, Math.floor((available - height) / 2))
-  return { x: 0, y: Math.max(paneTop + PANE_CHROME_HEIGHT, top), width, height: Math.min(height, available) }
+  return { x: PANE_BORDER_WIDTH, y: Math.max(paneTop + PANE_CHROME_HEIGHT, top), width, height: Math.min(height, available) }
 }

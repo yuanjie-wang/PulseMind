@@ -36,13 +36,32 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   // Address-bar draft, scoped to the tab it was typed in — switching tabs
   // naturally shows the new tab's URL without a reset effect.
   const [draft, setDraft] = useState<{ tabId: string; text: string | null }>({ tabId: '', text: null })
-  const shownUrl = draft.tabId === active?.id ? (draft.text ?? active?.url ?? '') : (active?.url ?? '')
+  // A pane with no tab yet is a real state (the workbench's 浏览器 tab can be
+  // opened before anything created one), and it is the SAME bucket as "the
+  // active tab is gone": the field must still take keystrokes — it is the only
+  // way to say where to go — so an absent tab reads as an empty id rather than
+  // gating every handler.
+  const activeId = active?.id ?? ''
+  // A just-opened tab sits on about:blank, and showing it in the field is a
+  // trap: typing appends ("about:blank" + "mail.163.com"), the scheme passes
+  // the whitelist untouched, and the navigation dies silently. A fresh tab is
+  // an empty field, exactly like a real browser's new-tab page.
+  const shownTabUrl = active && active.url !== '' && active.url !== 'about:blank' ? active.url : ''
+  const shownUrl = draft.tabId === activeId ? (draft.text ?? shownTabUrl) : shownTabUrl
 
   const navigateDraft = () => {
-    if (active && draft.tabId === active.id && draft.text && draft.text.trim()) {
-      onAction({ op: 'navigate', tabId: active.id, url: normalizeAddressBarInput(draft.text) })
+    const typed = draft.tabId === activeId ? draft.text?.trim() : undefined
+    if (!typed) {
+      setDraft({ tabId: activeId, text: null })
+      return
     }
-    setDraft({ tabId: active?.id ?? '', text: null })
+    const url = normalizeAddressBarInput(typed)
+    // With a tab open the address means "go there"; with none it means "open
+    // one and go there" — main mints the tab (it owns the ids), so the action
+    // carries no tabId and the chrome keeps showing what was typed until the
+    // new tab reports its own URL.
+    onAction(active ? { op: 'navigate', tabId: active.id, url } : { op: 'navigate', url })
+    setDraft({ tabId: activeId, text: active ? null : typed })
   }
 
   return (
@@ -64,7 +83,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
           gap: 4,
           padding: '0 6px 0 12px',
           borderBottom: '1px solid #ececf0',
-          background: '#f0f1f4',
+          background: '#fff',
           overflow: 'hidden',
         }}
       >
@@ -82,8 +101,9 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                 padding: '3px 8px',
                 borderRadius: 6,
                 fontSize: 11,
+                fontWeight: tab.active ? 600 : 400,
                 cursor: 'pointer',
-                background: tab.active ? '#fff' : 'transparent',
+                background: tab.active ? '#f0f1f4' : 'transparent',
                 boxShadow: tab.active ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
                 color: tab.active ? '#333' : '#888',
                 flexShrink: 0,
@@ -131,10 +151,11 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
         <input
           value={shownUrl}
           placeholder="输入网址，回车打开"
-          onChange={(e) => active && setDraft({ tabId: active.id, text: e.target.value })}
+          onChange={(e) => setDraft({ tabId: activeId, text: e.target.value })}
+          onFocus={(e) => e.currentTarget.select()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') navigateDraft()
-            if (e.key === 'Escape') setDraft({ tabId: active?.id ?? '', text: null })
+            if (e.key === 'Escape') setDraft({ tabId: activeId, text: null })
           }}
           style={{
             flex: 1,

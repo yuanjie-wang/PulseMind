@@ -123,7 +123,7 @@ export class BrowserService {
       this.paneWidth = clamped
       try {
         const s = await settingsStore.get()
-        await settingsStore.set({ ...s, browser: { ...s.browser, paneWidth: clamped } })
+        await settingsStore.update(s => ({ ...s, browser: { ...s.browser, paneWidth: clamped } }))
       } catch {
         /* width stays session-only */
       }
@@ -137,16 +137,9 @@ export class BrowserService {
     const scope = this.paneState.conversationId
     if (!scope) return
     switch (action.op) {
-      case 'newTab': {
-        const backend = this.backendFor('app-view') as AppViewBackend
-        await backend.start()
-        const id = prefixedId('tab')
-        const created = await backend.newTab({ tabId: id, origin: 'user', scopeId: scope })
-        this.tabs.set(id, { id, backendId: 'app-view', scopeId: scope, origin: 'user', createdAt: new Date().toISOString(), tab: created })
-        this.paneActiveTab.set(scope, id)
-        auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNewTab', target: 'about:blank', decision: 'allowed' })
+      case 'newTab':
+        await this.createUserPaneTab(scope)
         break
-      }
       case 'closeTab': {
         const entry = this.resolveTab(action.tabId, scope)
         await this.closeTab(entry.id)
@@ -157,8 +150,13 @@ export class BrowserService {
         if (this.tabs.get(action.tabId)?.scopeId === scope) this.paneActiveTab.set(scope, action.tabId)
         break
       case 'navigate': {
-        const entry = this.resolveTab(action.tabId, scope)
         const url = assertAllowedUrl(normalizeAddressBarInput(action.url))
+        // No tabId = the pane had no tab when Enter was pressed, and the
+        // address bar's promise ("输入网址，回车打开") is to open one and go
+        // there. A tab that appeared in the meantime — a second Enter before
+        // the pane update landed, or one the agent opened — is reused rather
+        // than duplicated, so the resolution is the same one the dock uses.
+        const entry = action.tabId ? this.resolveTab(action.tabId, scope) : (this.activePaneEntry(scope) ?? (await this.createUserPaneTab(scope)))
         auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNavigate', target: url, decision: 'allowed' })
         await entry.tab.page.goto(url, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
         break
@@ -383,11 +381,49 @@ export class BrowserService {
     return clampPaneWidth(this.paneWidth ?? defaultPaneWidth(this.paneState.chatAreaWidth), this.paneState.chatAreaWidth)
   }
 
-  private paneScopeTabs(scope: string | null): Array<{ entry: ServiceTab; view: WebContentsView | null }> {
+  /** The scope's app-view tabs, as the pane sees them. */
+  private paneScopeEntries(scope: string | null): ServiceTab[] {
     if (!scope) return []
+    return [...this.tabs.values()].filter((t) => t.scopeId === scope && t.backendId === 'app-view')
+  }
+
+  /** The native view behind a tab, or null while the backend is not built yet
+   *  (a scope can be listed before its first tab exists). */
+  private viewOfTab(tabId: string): WebContentsView | null {
     const backend = this.backends.get('app-view') as AppViewBackend | undefined
-    if (!backend) return []
-    return [...this.tabs.values()].filter((t) => t.scopeId === scope && t.backendId === 'app-view').map((entry) => ({ entry, view: backend.viewOf(entry.id) }))
+    return backend?.viewOf(tabId) ?? null
+  }
+
+  /** The tab the pane shows for this scope, or null when it has none: the
+   *  user's pick, falling back to the newest tab. One rule for every reader —
+   *  the native dock (syncPane), the pushed pane state, and an address typed
+   *  with no tab id, where a tab that appeared in the meantime must be reused
+   *  rather than duplicated. */
+  private activePaneEntry(scope: string): ServiceTab | null {
+    const entries = this.paneScopeEntries(scope)
+    if (entries.length === 0) return null
+    let activeId = this.paneActiveTab.get(scope)
+    if (!activeId || !entries.some((t) => t.id === activeId)) {
+      activeId = entries[entries.length - 1].id
+      this.paneActiveTab.set(scope, activeId)
+    }
+    return entries.find((t) => t.id === activeId) ?? null
+  }
+
+  /** The pane's own tab (origin 'user': its downloads go to ~/Downloads, not
+   *  the conversation workspace). Made active, because every caller is the
+   *  user asking for somewhere to look — the "+" button and an address typed
+   *  into a pane that has no tab yet. */
+  private async createUserPaneTab(scope: string): Promise<ServiceTab> {
+    const backend = this.backendFor('app-view') as AppViewBackend
+    await backend.start()
+    const id = prefixedId('tab')
+    const created = await backend.newTab({ tabId: id, origin: 'user', scopeId: scope })
+    const entry: ServiceTab = { id, backendId: 'app-view', scopeId: scope, origin: 'user', createdAt: new Date().toISOString(), tab: created }
+    this.tabs.set(id, entry)
+    this.paneActiveTab.set(scope, id)
+    auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNewTab', target: 'about:blank', decision: 'allowed' })
+    return entry
   }
 
   /** Apply the pane snapshot to the native dock. Folding (no tabs, not on
@@ -396,23 +432,11 @@ export class BrowserService {
   private syncPane(): void {
     const { viewKind, conversationId } = this.paneState
     const browserActive = this.paneState.browserActive !== false
-    const scopeTabs = viewKind === 'chat' ? this.paneScopeTabs(conversationId) : []
+    const scope = viewKind === 'chat' ? conversationId : null
     appViewDock.setWidth(this.resolvePaneWidth())
-    if (scopeTabs.length === 0 || !browserActive) {
-      appViewDock.show(null)
-      appViewDock.setVisible(false)
-      this.pushPaneUpdates()
-      return
-    }
-    const scope = conversationId as string
-    let activeId = this.paneActiveTab.get(scope)
-    if (!activeId || !scopeTabs.some((t) => t.entry.id === activeId)) {
-      activeId = scopeTabs[scopeTabs.length - 1].entry.id
-      this.paneActiveTab.set(scope, activeId)
-    }
-    const active = scopeTabs.find((t) => t.entry.id === activeId)!
-    appViewDock.show(active.view)
-    appViewDock.setVisible(true)
+    const active = browserActive && scope ? this.activePaneEntry(scope) : null
+    appViewDock.show(active ? this.viewOfTab(active.id) : null)
+    appViewDock.setVisible(Boolean(active))
     this.pushPaneUpdates()
   }
 
@@ -421,17 +445,16 @@ export class BrowserService {
     if (!target || target.isDestroyed()) return
     const { viewKind, conversationId } = this.paneState
     const scope = viewKind === 'chat' ? conversationId : null
-    const scopeTabs = this.paneScopeTabs(scope)
-    let activeId = scope ? (this.paneActiveTab.get(scope) ?? null) : null
-    if (activeId && !scopeTabs.some((t) => t.entry.id === activeId)) activeId = scopeTabs[scopeTabs.length - 1]?.entry.id ?? null
-    const tabs: PaneTabInfo[] = scopeTabs.map((t) => ({
-      id: t.entry.id,
-      url: t.view?.webContents.getURL() ?? '',
-      title: t.view?.webContents.getTitle() ?? '',
-      active: t.entry.id === activeId,
+    const entries = this.paneScopeEntries(scope)
+    const activeId = scope ? (this.activePaneEntry(scope)?.id ?? null) : null
+    const tabs: PaneTabInfo[] = entries.map((entry) => ({
+      id: entry.id,
+      url: this.viewOfTab(entry.id)?.webContents.getURL() ?? '',
+      title: this.viewOfTab(entry.id)?.webContents.getTitle() ?? '',
+      active: entry.id === activeId,
     }))
     const update: BrowserPaneUpdate = {
-      visible: viewKind === 'chat' && scopeTabs.length > 0,
+      visible: viewKind === 'chat' && entries.length > 0,
       width: this.resolvePaneWidth(),
       conversationId: scope,
       tabs,

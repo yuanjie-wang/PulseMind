@@ -14,6 +14,7 @@ import { useCallback, useEffect, type RefObject } from 'react'
 import { useNavigationStore } from '../stores/navigationStore'
 import { useBrowserPaneStore } from '../stores/browserPaneStore'
 import { useWorkbenchStore } from '../stores/workbenchStore'
+import { DRAFT_CONVERSATION_KEY } from '../stores/previewPaneStore'
 import { clampPaneWidth, type BrowserPaneAction } from '../../../shared/browser/pane'
 
 export function useBrowserPaneBinding(
@@ -26,8 +27,11 @@ export function useBrowserPaneBinding(
   const viewKind = useNavigationStore((s) => s.view.kind)
   const chatAreaWidth = useBrowserPaneStore((s) => s.chatAreaWidth)
   // PLAN-workbench W3: the native WebView only shows while the workbench's
-  // browser tab is frontmost; other tabs fold it, tabs stay alive.
-  const workbenchOpen = useWorkbenchStore((s) => s.open)
+  // browser tab is frontmost; other tabs fold it, tabs stay alive. Pane state
+  // is per conversation, so the flag read is this conversation's own.
+  const workbenchOpen = useWorkbenchStore(
+    (s) => s.openByConversation[conversationId ?? DRAFT_CONVERSATION_KEY] ?? false,
+  )
   const workbenchTab = useWorkbenchStore((s) => s.activeTab)
   const browserActive = workbenchOpen && workbenchTab === 'browser'
 

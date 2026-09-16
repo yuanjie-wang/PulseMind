@@ -72,7 +72,9 @@ class AppViewDock {
     }
     const [w, h] = win.getContentSize()
     const box = webviewBox(this.width, TITLE_BAR_HEIGHT, Math.max(0, h - TITLE_BAR_HEIGHT))
-    box.x = Math.max(0, w - this.width)
+    // webviewBox's x is pane-relative (inset past the DOM-drawn divider); the
+    // pane spans the rightmost `width` px of the content area.
+    box.x = Math.max(0, w - this.width) + box.x
     this.attached.setBounds(box)
     // Pages lay out at the design width and scale down to fit the 16:9 box —
     // the whole page stays visible (等比缩放) instead of cropping a 1:1 render.
