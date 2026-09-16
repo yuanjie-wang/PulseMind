@@ -226,18 +226,27 @@ export function layoutPlanGraph(plan: Plan, direction: GraphDirection = 'horizon
     const i = nextOverIndex(dst.id)
     const count = overCount.get(dst.id) ?? 1
     const lane = BUS_Y + globalLane++ * BUS_LANE_STEP
+    // Drop-channel stagger: spread a target's fan-in across the gap that is
+    // actually available, and never past it. The old fixed 6px step ran out of
+    // channel at i ≥ 6 in horizontal flow (GAP_X 44) and i ≥ 2 in vertical
+    // (GAP_Y 24), drawing the entry rail through the previous row/column's
+    // card — the deepest offset lands CHANNEL + (count−1)·step = gap − 4, i.e.
+    // 4px clear of the neighbouring card. A single over edge (count 1) keeps
+    // the exact pre-fix geometry (offset 0 regardless of step).
+    const gap = direction === 'horizontal' ? GAP_X : GAP_Y
+    const step = (gap - CHANNEL - 4) / Math.max(count - 1, 1)
     return {
       from: src.id,
       to: dst.id,
       path: direction === 'horizontal'
         ? busEdgeH(src, dst, {
             busY: lane,
-            inX: dst.x - CHANNEL - i * 6,
+            inX: dst.x - CHANNEL - i * step,
             entryY: clamp(dst.y + dst.h / 2 + (i - (count - 1) / 2) * 12, dst.y + 8, dst.y + dst.h - 8),
           })
         : busEdgeV(src, dst, {
             busX: lane,
-            inY: dst.y - CHANNEL - i * 6,
+            inY: dst.y - CHANNEL - i * step,
             entryX: clamp(dst.x + dst.w / 2 + (i - (count - 1) / 2) * 14, dst.x + 8, dst.x + dst.w - 8),
           }),
       fromStatus,

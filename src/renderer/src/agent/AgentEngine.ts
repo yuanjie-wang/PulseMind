@@ -31,6 +31,7 @@ import { scheduleMemoryExtraction, persistUnsavedToolResults } from './engine/me
 import { ExecutionFlow } from './engine/execution-flow'
 import { StreamRunner } from './engine/stream-runner'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
+import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
 import { ContextCompactor } from './engine/context-compactor'
 import type { EngineCore } from './engine/engine-core'
 import { stripImageData } from './image-utils'
@@ -414,10 +415,9 @@ export class AgentEngine implements EngineCore {
       getHost().apiAbortStream(this.currentRequestId)
       this.currentRequestId = null
     }
-    for (const subEngine of this.activeSubAgents.values()) {
-      subEngine.cancelLoop()
-    }
-    this.activeSubAgents.clear()
+    this.executionFlow.settleSubAgentTree(this)
+    releaseQueuedSubAgents(subAgentBudgetKey(this.opts))
+    this.resolveCompletionIfSpawned('aborted')
     this.planManager.plan = null
   }
 

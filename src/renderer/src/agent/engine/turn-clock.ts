@@ -13,7 +13,8 @@
  * running segment on top, and **two independent reasons to be stopped**:
  *
  *  - `sync(waitingOnUser)` — the status surface: the engine parks with
- *    `awaiting_approval` / `awaiting_user_input` / `awaiting_extension`;
+ *    `awaiting_approval` / `awaiting_user_input` / `awaiting_extension` /
+ *    `awaiting_continue`;
  *  - `pause()` / `resume()` — an explicit hold, for a pause that has no status
  *    of its own (the 暂停 button leaves the engine reporting `executing`).
  *
@@ -30,11 +31,15 @@
 /** Statuses where the ball is in the user's court. The turn clock stops for
  *  these and only these: every one of them is the engine saying "I cannot
  *  proceed until a human answers". `retrying` is NOT one of them — an automatic
- *  retry is the engine still working, and `executing` is the tools running. */
+ *  retry is the engine still working, and `executing` is the tools running.
+ *  `awaiting_continue` is the 暂停 button's own status (cancelLoop) — the user
+ *  holding the turn, exactly the category the ruling excludes, and it must be
+ *  here or the park that follows the button silently keeps counting. */
 const WAITING_ON_USER: ReadonlySet<string> = new Set([
   'awaiting_approval',
   'awaiting_user_input',
   'awaiting_extension',
+  'awaiting_continue',
 ])
 
 export function isWaitingOnUserStatus(status: string): boolean {

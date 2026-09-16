@@ -106,7 +106,9 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
       return true
     }
     case 'plan_update': {
-      state.plan = (data.plan as Plan | null) ?? null
+      // PlanSnapshot is the engine's own Plan (a type alias, not a projection),
+      // so the wire bytes are the shape the event names — no cast, no drift.
+      state.plan = data.plan ?? null
       return true
     }
     case 'tool_status': {

@@ -223,8 +223,11 @@ export class ExecutionFlow {
    * 递归是必需的而不是保险：专家的 spawn 不受工具白名单限制，专家可以再派专家，
    * 而孙辈的派发挂在**子引擎**的 execSpawnAgent 上——只结算直接子代，孙辈的槽位
    * 照样泄漏。
+   *
+   * `@internal` — dispose() 走同一条路：dispose 没有「恢复」，只 cancelLoop 的话
+   * 被删除会话的专家树同样槽位不归还、定时器不停（见上）。
    */
-  private settleSubAgentTree(engine: EngineCore): void {
+  settleSubAgentTree(engine: EngineCore): void {
     for (const subEngine of [...engine.activeSubAgents.values()]) {
       subEngine.cancelLoop()
       this.settleSubAgentTree(subEngine)

@@ -26,12 +26,15 @@ export interface SubAgentSessionViewProps {
 }
 
 /** Cheap content signature for the poll loop: growing text, new messages and
- *  tool-card status transitions all change it. */
+ *  tool-card status transitions all change it. No cap: new messages append at
+ *  the TAIL, so a head-truncated signature (the old slice(0, 4000)) froze once
+ *  the head alone passed the cap — every later turn and status transition fell
+ *  past the cut and the follow-the-run view stopped updating mid-session. The
+ *  strings are small (a tool-heavy 100-message run stays in the low KBs). */
 function signature(msgs: AgentMessage[]): string {
   return msgs
     .map(m => `${m.id}:${(m.contentBlocks ?? []).map(b => b.type + (b.type === 'text' ? String((b as { text?: string }).text?.length ?? '') : ((b as { status?: string }).status ?? ''))).join(',')} `)
     .join('|')
-    .slice(0, 4000)
 }
 
 /** Drop storage-only rows: a message is worth showing when it carries a

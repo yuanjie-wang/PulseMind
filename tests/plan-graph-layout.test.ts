@@ -228,4 +228,43 @@ describe('layoutPlanGraph', () => {
       expect(Number(rail[1])).toBeLessThan(minCardX)
     }
   })
+
+  it('a wide fan-in staggers its drop rails inside the gap, never through the previous row', () => {
+    // n6 depends on four wave-0 nodes across two waves: four over edges drop
+    // into n6's channel. Vertical flow is the tight case (GAP_Y 24) — the old
+    // fixed 6px step put its third rail 6px INTO the row above's card, and the
+    // seventh into the previous column in horizontal flow.
+    const plan = createPlanDag('fan-in', [
+      { description: 'a' },
+      { description: 'b' },
+      { description: 'c' },
+      { description: 'd' },
+      { description: 'e', dependsOn: [1] },
+      { description: 'z', dependsOn: [1, 2, 3, 4, 5] },
+    ])
+
+    // Vertical: path is `M x2 y2 L x2 outY L busX outY L busX inY …` — token 11 is the rail Y.
+    const v = layoutPlanGraph(plan, 'vertical')
+    const dst = v.nodes.find(n => n.id === 'n6')!
+    const into = v.edges.filter(e => e.kind === 'over' && e.to === 'n6')
+    expect(into).toHaveLength(4)
+    const rails = into.map(e => Number(e.path.split(' ')[11]))
+    for (const rail of rails) {
+      expect(rail).toBeGreaterThanOrEqual(dst.y - GAP_Y + 4)
+      expect(rail).toBeLessThanOrEqual(dst.y - CHANNEL)
+    }
+    expect(new Set(rails).size).toBe(4)
+
+    // Horizontal: `M x2 y2 L outX y2 L outX busY L inX busY …` — token 10 is the rail X.
+    const h = layoutPlanGraph(plan, 'horizontal')
+    const hDst = h.nodes.find(n => n.id === 'n6')!
+    const hInto = h.edges.filter(e => e.kind === 'over' && e.to === 'n6')
+    expect(hInto).toHaveLength(4)
+    const hRails = hInto.map(e => Number(e.path.split(' ')[10]))
+    for (const rail of hRails) {
+      expect(rail).toBeGreaterThanOrEqual(hDst.x - GAP_X + 4)
+      expect(rail).toBeLessThanOrEqual(hDst.x - CHANNEL)
+    }
+    expect(new Set(hRails).size).toBe(4)
+  })
 })

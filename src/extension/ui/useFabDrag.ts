@@ -157,10 +157,18 @@ export function useFabDrag(): FabDrag {
       const dy = e.clientY - drag.startY
       if (!drag.moved && Math.abs(dy) < DRAG_THRESHOLD) return
       drag.moved = true
-      // Sticky at the ends: the clamped value becomes the drag's new origin, so
-      // dragging past an edge does not bank up travel (the ball comes back the
-      // moment the pointer does) and what gets persisted is always in range.
-      applyChosen(clampFabTop(drag.startTop + dy, window.innerHeight))
+      const raw = drag.startTop + dy
+      const clamped = clampFabTop(raw, window.innerHeight)
+      applyChosen(clamped)
+      // Sticky at the ends: when the clamp bites, rebase the drag's origin on
+      // the pinned position — the comment (and the ruling) promises the ball
+      // comes back the moment the pointer reverses, which only follows if the
+      // overshoot is not banked into `startTop + dy`. Without the rebase the
+      // ball stayed pinned while the pointer retraced the whole overshoot.
+      if (clamped !== raw) {
+        drag.startTop = clamped
+        drag.startY = e.clientY
+      }
     },
     [applyChosen],
   )

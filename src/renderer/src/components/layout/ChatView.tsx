@@ -208,21 +208,36 @@ function ChatView({
     usePreviewPaneStore.getState().setWorkspaceDir(workspaceDir ?? null)
   }, [workspaceDir])
   // A fresh browser session (tab count 0 → N) is the main process telling us
-  // the browser tool went to work — bring the workbench up on its tab.
-  const prevBrowserTabCountRef = useRef(0)
+  // the browser tool went to work — bring the workbench up on its tab. The
+  // ref is keyed to the conversation and only same-conversation pushes may
+  // seed it: the pushed update is scoped to the pane's conversation, so an
+  // unkeyed 0→N also fires when the user switches to a conversation that
+  // already has tabs, or re-fires when a non-chat view's (tabs: []) push
+  // decays the count and the user comes back.
+  const prevBrowserTabsRef = useRef<{ convKey: string; count: number } | null>(null)
   useEffect(() => {
+    if (browserPane.conversationId !== (conversationId ?? null)) return
     const count = browserPane.tabs.length
-    if (prevBrowserTabCountRef.current === 0 && count > 0) useWorkbenchStore.getState().openTab(wbKey, 'browser')
-    prevBrowserTabCountRef.current = count
-  }, [browserPane.tabs.length, wbKey])
+    const prev = prevBrowserTabsRef.current
+    if (prev && prev.convKey === wbKey && prev.count === 0 && count > 0) {
+      useWorkbenchStore.getState().openTab(wbKey, 'browser')
+    }
+    prevBrowserTabsRef.current = { convKey: wbKey, count }
+  }, [browserPane.tabs.length, browserPane.conversationId, wbKey, conversationId])
   // While the browser tab is frontmost the dock must track the workbench
   // width (native WebView alignment); other tabs fold the dock via the
-  // browserActive flag inside useBrowserPaneBinding.
+  // browserActive flag inside useBrowserPaneBinding. The deps are the
+  // primitives actually consumed — the binding object itself is a fresh
+  // literal every render, and keying on it re-ran this effect (one
+  // browserPaneSetWidth IPC) after every render, whose pane update re-rendered
+  // ChatView, closing a render↔main IPC loop for as long as the browser tab
+  // stayed frontmost.
+  const { pushWidth, chatAreaWidth } = browserPaneBinding
   useEffect(() => {
     if (workbenchOpen && workbenchTab === 'browser') {
-      browserPaneBinding.pushWidth(workbenchWidth, browserPaneBinding.chatAreaWidth)
+      pushWidth(workbenchWidth, chatAreaWidth)
     }
-  }, [workbenchOpen, workbenchTab, workbenchWidth, browserPaneBinding])
+  }, [workbenchOpen, workbenchTab, workbenchWidth, pushWidth, chatAreaWidth])
   // write → auto-open, write/edit → refresh open tabs (D3/D7)
   usePreviewPaneSync(conversationId, workspaceDir)
   // Slim status strip above the composer (W8): the workbench's 计划 tab owns

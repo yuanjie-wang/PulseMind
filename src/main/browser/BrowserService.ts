@@ -413,8 +413,24 @@ export class BrowserService {
   /** The pane's own tab (origin 'user': its downloads go to ~/Downloads, not
    *  the conversation workspace). Made active, because every caller is the
    *  user asking for somewhere to look — the "+" button and an address typed
-   *  into a pane that has no tab yet. */
-  private async createUserPaneTab(scope: string): Promise<ServiceTab> {
+   *  into a pane that has no tab yet. Creation is serialized per scope: the
+   *  tab is registered only after `backend.start()` + `newTab()` return (a
+   *  Playwright page costs 100ms+), and a second Enter (or a second "+") in
+   *  that window must await the same tab, not race a duplicate past the
+   *  registry write — the reuse rule above can only see registered tabs. */
+  private paneTabCreation = new Map<string, Promise<ServiceTab>>()
+
+  private createUserPaneTab(scope: string): Promise<ServiceTab> {
+    const inFlight = this.paneTabCreation.get(scope)
+    if (inFlight) return inFlight
+    const created = this.doCreateUserPaneTab(scope).finally(() => {
+      this.paneTabCreation.delete(scope)
+    })
+    this.paneTabCreation.set(scope, created)
+    return created
+  }
+
+  private async doCreateUserPaneTab(scope: string): Promise<ServiceTab> {
     const backend = this.backendFor('app-view') as AppViewBackend
     await backend.start()
     const id = prefixedId('tab')
@@ -440,6 +456,9 @@ export class BrowserService {
     this.pushPaneUpdates()
   }
 
+  /** The last pane update actually sent — content-equality gate below. */
+  private lastPanePush: BrowserPaneUpdate | null = null
+
   private pushPaneUpdates(): void {
     const target = this.paneSender ?? appViewDock.getWindow()?.webContents
     if (!target || target.isDestroyed()) return
@@ -459,6 +478,13 @@ export class BrowserService {
       conversationId: scope,
       tabs,
     }
+    // Second line of defense against a render↔main loop: callers push on
+    // every width write and tab activity without checking for change, and a
+    // new update object re-renders the whole ChatView. Nothing changed → say
+    // nothing (a title/url polling delta is the renderer's own refresh path,
+    // not this push's job).
+    if (paneUpdateEquals(update, this.lastPanePush)) return
+    this.lastPanePush = update
     target.send(IPC_CHANNELS.BROWSER_PANE_UPDATE, update)
   }
 
@@ -513,3 +539,16 @@ export class BrowserService {
 }
 
 export const browserService = new BrowserService()
+
+/** Field equality over the small pane-update payload — no dependency, no
+ *  serialization. Title/url can lag a page's own mutation until the backend
+ *  reports activity; that freshness rides onTabActivity, not this gate. */
+function paneUpdateEquals(a: BrowserPaneUpdate, b: BrowserPaneUpdate | null): boolean {
+  if (!b) return false
+  if (a.visible !== b.visible || a.width !== b.width || a.conversationId !== b.conversationId) return false
+  if (a.tabs.length !== b.tabs.length) return false
+  return a.tabs.every((t, i) => {
+    const o = b.tabs[i]
+    return t.id === o.id && t.url === o.url && t.title === o.title && t.active === o.active
+  })
+}

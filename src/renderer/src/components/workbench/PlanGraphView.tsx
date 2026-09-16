@@ -155,7 +155,13 @@ interface Props {
 }
 
 export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode }: Props): React.ReactElement {
-  const containerRef = useRef<HTMLDivElement | null>(null)
+  // The viewport div renders only past the empty-state return, so the observed
+  // element arrives (and leaves) with the plan itself. Holding it in state —
+  // via the callback ref — is what re-runs the observer effect on that
+  // transition: a one-shot mount effect read `containerRef.current` before the
+  // div existed and never re-ran, pinning scale to 1 and direction to
+  // horizontal for that whole mount order.
+  const [viewportEl, setViewportEl] = useState<HTMLDivElement | null>(null)
   const [availWidth, setAvailWidth] = useState(0)
   const [availHeight, setAvailHeight] = useState(0)
   // Expert ID → name. The cache fetch lands after the first paint, so this has
@@ -165,15 +171,14 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
   // The graph must fit the pane, not fight it: scale to the measured box
   // (floor 0.55 — below that, scroll instead of shrinking into mush).
   useEffect(() => {
-    const el = containerRef.current
-    if (!el || typeof ResizeObserver === 'undefined') return
+    if (!viewportEl || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
-      if (el.clientWidth > 0) setAvailWidth(el.clientWidth)
-      if (el.clientHeight > 0) setAvailHeight(el.clientHeight)
+      if (viewportEl.clientWidth > 0) setAvailWidth(viewportEl.clientWidth)
+      if (viewportEl.clientHeight > 0) setAvailHeight(viewportEl.clientHeight)
     })
-    ro.observe(el)
+    ro.observe(viewportEl)
     return () => ro.disconnect()
-  }, [])
+  }, [viewportEl])
 
   // The objective defaults to two lines; anything longer gets a 展开 toggle.
   // scrollHeight reports the full text even while line-clamp hides it, so the
@@ -342,7 +347,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
 
       {/* Graph — scales down to the pane width; scrolls when even the 0.55
           floor cannot fit (very wide graphs). */}
-      <div ref={containerRef} data-graph-viewport style={{ flex: 1, minHeight: 0, overflow: 'auto', background: '#fafafa' }}>
+      <div ref={setViewportEl} data-graph-viewport style={{ flex: 1, minHeight: 0, overflow: 'auto', background: '#fafafa' }}>
         <svg
           width={layout.width * scale}
           height={layout.height * scale}

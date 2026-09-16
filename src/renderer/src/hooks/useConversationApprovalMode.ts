@@ -15,7 +15,7 @@
 // A session whose approval was PINNED at creation (an unattended run, before
 // its runner releases the pin) keeps the pin main-side regardless of this
 // column — session-manager.effectiveApprovalMode gives the override precedence.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { conversationKeyOf } from '../../../shared/conversation-key'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 
@@ -26,6 +26,13 @@ export interface ConversationApprovalMode {
   /** Pick a level: the optimistic local move happens synchronously, the
    *  durable column write and the live-engine refresh follow in order. */
   setApprovalMode: (mode: SandboxApprovalMode) => void
+  /** Mirror a column value learned OUTSIDE setApprovalMode into the state —
+   *  the tool studio's first-create seed writes 按需确认→全部允许 behind this
+   *  hook's back; without the mirror the button kept reading the pre-seed row
+   *  for the whole first mount (labeled 按需确认 while the engine ran 全部允许).
+   *  Marks the state dirty, so an initial read still in flight cannot roll it
+   *  back — the same guard setApprovalMode relies on. */
+  mirrorApprovalMode: (mode: SandboxApprovalMode) => void
 }
 
 export function useConversationApprovalMode(convId: string | null | undefined): ConversationApprovalMode {
@@ -36,15 +43,22 @@ export function useConversationApprovalMode(convId: string | null | undefined): 
   // open", not an id.
   const [state, setState] = useState<{ convId: string | null | undefined; mode: SandboxApprovalMode | undefined }>({ convId, mode: undefined })
   const approvalMode = state.convId === convId ? state.mode : undefined
+  // Set synchronously by every local write (user pick, seed mirror); cleared
+  // when the watched conversation changes. The initial read's .then refuses to
+  // publish over a dirty state — `alive` alone only covered unmount, so a read
+  // in flight when the user clicked used to land afterwards and revert the
+  // button to the just-fetched (pre-click) column.
+  const dirtyRef = useRef(false)
 
   useEffect(() => {
+    dirtyRef.current = false
     const id = conversationKeyOf(convId)
     if (!id) return
     let alive = true
     window.electronAPI
       .getConversation(id)
       .then((conv) => {
-        if (alive) setState({ convId, mode: conv?.approvalMode })
+        if (alive && !dirtyRef.current) setState({ convId, mode: conv?.approvalMode })
       })
       .catch(() => { /* unreadable row — the default stands */ })
     return () => {
@@ -52,11 +66,16 @@ export function useConversationApprovalMode(convId: string | null | undefined): 
     }
   }, [convId])
 
+  const publish = useCallback((mode: SandboxApprovalMode): void => {
+    dirtyRef.current = true
+    setState({ convId, mode })
+  }, [convId])
+
   const setApprovalMode = useCallback(
     (mode: SandboxApprovalMode): void => {
       const id = conversationKeyOf(convId)
       if (!id) return
-      setState({ convId, mode })
+      publish(mode)
       void (async () => {
         try {
           await window.electronAPI.setConversationApprovalMode(id, mode)
@@ -66,8 +85,16 @@ export function useConversationApprovalMode(convId: string | null | undefined): 
         }
       })()
     },
-    [convId],
+    [convId, publish],
   )
 
-  return { approvalMode, setApprovalMode }
+  const mirrorApprovalMode = useCallback(
+    (mode: SandboxApprovalMode): void => {
+      if (!conversationKeyOf(convId)) return
+      publish(mode)
+    },
+    [convId, publish],
+  )
+
+  return { approvalMode, setApprovalMode, mirrorApprovalMode }
 }

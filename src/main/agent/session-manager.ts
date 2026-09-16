@@ -641,7 +641,7 @@ export class AgentSessionManagerImpl {
       messages: entry.engine.messages,
       status: { status: entry.engine.agentStatus.status },
       streamingBlocks: entry.engine.streamingBlocks as unknown[],
-      plan: (entry.engine.plan as unknown as PlanSnapshot | null) ?? null,
+      plan: entry.engine.plan ?? null,
     }
   }
 
@@ -741,7 +741,7 @@ export class AgentSessionManagerImpl {
           : {}),
       }),
       onStreamingBlocksChanged: (blocks: ContentBlock[]) => this.emit(sessionId, { type: 'streaming_blocks', blocks: blocks as unknown[] }),
-      onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan: plan as unknown as PlanSnapshot | null }),
+      onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan }),
     }
   }
 }

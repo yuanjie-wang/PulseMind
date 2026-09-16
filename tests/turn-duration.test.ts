@@ -115,7 +115,7 @@ describe('turn duration: user send → last output character', () => {
     expect(final.processingMs).toBe(50_000)
   })
 
-  it('does not count a manual pause (which has no status of its own)', () => {
+  it('does not count the time spent paused (暂停按钮 → cancelLoop → awaiting_continue)', () => {
     const engine = makeEngine()
     const final = assistant('a2', 10_000)
     engine.messages = [user(), assistant('a1', 15_000), final]
@@ -125,10 +125,15 @@ describe('turn duration: user send → last output character', () => {
     try {
       engine.turnClock.start()
       clock = 15_000
-      engine.pauseExecution()
+      // The real pause path: the composer's 取消 → cancelLoop, which parks the
+      // engine on awaiting_continue. (An earlier revision drove pauseExecution
+      // here — a method with no production caller — so the test was green while
+      // the actual button kept the clock running.)
+      engine.cancelLoop()
       clock = 315_000 // five minutes of not running
       expect(engine.turnClock.elapsed()).toBe(15_000)
-      engine.resumeExecution()
+      engine.agentStatus = { status: 'executing' }
+      engine.notify() // resumed — counting again
       clock = 325_000
       engine.handleEndTurnResponse('end_turn')
     } finally {

@@ -355,8 +355,29 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // PLAN-workbench W12: clicking a DAG module drills into the sub-agent session
   // that implements it (or jumps the transcript to the round that settled it).
   // The resolution — plan-node link → spawn block link → msgId — lives in
-  // agent/plan-node-target.ts, where it is unit-tested.
-  const [subAgentView, setSubAgentView] = useState<{ subConvId: string; title: string; live: boolean } | null>(null)
+  // agent/plan-node-target.ts, where it is unit-tested. The drill-in is an
+  // overlay over the chat pane (ChatView stays mounted, AppLayout-style), so a
+  // conversation switch underneath it can never leave the header pointing at
+  // one conversation while the pane shows another.
+  const [subAgentView, setSubAgentView] = useState<{ nodeId: string; subConvId: string; title: string } | null>(null)
+  // Any conversation change — picking another thread, 新建任务, or the first
+  // message materializing the row — exits the drill-in: the view follows a node
+  // of the conversation whose DAG was clicked, and nothing else may show it.
+  // Reset during render (the documented adjust-state-on-prop-change pattern):
+  // an effect would fire after a paint of the mismatched pairing, and one
+  // comparison drives both values so they can never disagree.
+  const [subAgentViewConvKey, setSubAgentViewConvKey] = useState(activeConvKey)
+  if (subAgentViewConvKey !== activeConvKey) {
+    setSubAgentViewConvKey(activeConvKey)
+    setSubAgentView(null)
+  }
+  // `live` is derived from the plan the parent already holds, never stored: it
+  // was a click-time snapshot before, so a node that settled while the view was
+  // open kept the 运行中 badge, kept `actions` at viewOnly and polled until the
+  // 30-minute hard stop said nothing.
+  const subAgentLive = subAgentView
+    ? plan?.nodes.find((n) => n.id === subAgentView.nodeId)?.status === 'pending'
+    : false
   /** Nodes that resolve to somewhere — drives the graph's cursor and tooltip, so
    *  a node the model never dispatched does not advertise a click it drops. */
   const openableNodeIds = useMemo(() => {
@@ -371,9 +392,9 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     if (!target) return
     if (target.kind === 'session') {
       setSubAgentView({
+        nodeId,
         subConvId: target.subConvId,
         title: node ? `n${nodeId.slice(1)} · ${node.description}` : '子代理会话',
-        live: target.live,
       })
       return
     }
@@ -381,14 +402,19 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   }, [messages, plan])
   // PLAN-workbench W5: a freshly created plan opens the workbench on its tab
   // (the write→auto-open-preview precedent). Completing a plan does not close
-  // it — the user reads the finished graph.
-  const hadPlanRef = useRef(false)
+  // it — the user reads the finished graph. The ref is keyed to the
+  // conversation: a single global boolean could not tell "a plan was just
+  // created here" from "the user navigated away and came back", and replaying
+  // the return trip forced the 计划 tab open with nothing new in it.
+  const hadPlanRef = useRef<{ convKey: string; has: boolean } | null>(null)
   useEffect(() => {
+    const key = activeConvKey ?? DRAFT_CONVERSATION_KEY
     const has = !!plan && !plan.completed
-    if (has && !hadPlanRef.current) {
-      useWorkbenchStore.getState().openTab(activeConvKey ?? DRAFT_CONVERSATION_KEY, 'plan')
+    const prev = hadPlanRef.current
+    if (has && prev !== null && prev.convKey === key && !prev.has) {
+      useWorkbenchStore.getState().openTab(key, 'plan')
     }
-    hadPlanRef.current = has
+    hadPlanRef.current = { convKey: key, has }
   }, [plan, activeConvKey])
 
   return (
@@ -437,16 +463,14 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             retryingConvIds={retryingConvIds}
             onReloadConversations={() => reloadConversations()}
           >
-            {subAgentView
-              ? (
-                <SubAgentSessionView
-                  subConvId={subAgentView.subConvId}
-                  title={subAgentView.title}
-                  live={subAgentView.live}
-                  onBack={() => setSubAgentView(null)}
-                />
-              )
-              : (
+            {/* The drill-in is a display layer over the chat pane, not a
+                replacement for it (AppLayout's own view swap is the precedent):
+                a ternary here unmounted ChatView, so the header could switch
+                conversations while the pane kept showing the previous one's
+                sub-agent transcript — and the welcome page, drafts, scroll
+                position and docked panes all froze with it. */}
+            <div style={{ position: 'relative', height: '100%' }}>
+              <div style={{ height: '100%', display: subAgentView ? 'none' : undefined }}>
                 <ChatView
               messages={messages}
               isRequesting={isRequesting}
@@ -498,8 +522,19 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               onUnbindExpert={(convId) => updateConversationExpert(convId, null)}
               approvalMode={approvalMode}
               onChangeApprovalMode={changeApprovalMode}
-            />
-                )}
+                />
+              </div>
+              {subAgentView && (
+                <div style={{ position: 'absolute', inset: 0 }}>
+                  <SubAgentSessionView
+                    subConvId={subAgentView.subConvId}
+                    title={subAgentView.title}
+                    live={subAgentLive}
+                    onBack={() => setSubAgentView(null)}
+                  />
+                </div>
+              )}
+            </div>
           </AppLayout>
           <InstallNotifier messages={messages} />
           </AntdApp>

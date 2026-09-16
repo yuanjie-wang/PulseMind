@@ -2,6 +2,7 @@
  *  serializes these as JSON-RPC params; the Electron renderer bridge passes
  *  the same shapes over ipcRenderer. */
 import type { SandboxApprovalMode } from '../sandbox/policy'
+import type { Plan } from '../types/plan'
 
 // ── hello ────────────────────────────────────────────────────────────
 
@@ -204,12 +205,13 @@ export type AgentEventData =
   | { type: 'done'; stopReason: string }
   | { type: 'error'; message: string }
 
-export interface PlanSnapshot {
-  objective: string
-  mode: string
-  /** v2 DAG projection (PLAN-plan-dag): flat node list; clients derive waves. */
-  nodes: Array<{ id: string; text: string; status: 'pending' | 'completed' | 'failed' | 'skipped' }>
-}
+/** The wire's plan payload is the engine's own `Plan` (shared/types/plan), not
+ *  a projection: it used to declare `nodes: [{ id, text, status }]` while the
+ *  producer shipped `description` (+ dependsOn/assignee/msgId/…) behind a
+ *  double cast, so any client implementing against the protocol read `text` as
+ *  `undefined`. Declaring the alias makes the cast unnecessary on both sides —
+ *  the declaration and the bytes can no longer drift. */
+export type PlanSnapshot = Plan
 
 // ── hosted tools (service → client reverse RPC) ─────────────────────
 

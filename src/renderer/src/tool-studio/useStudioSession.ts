@@ -55,6 +55,7 @@ export interface StudioSession {
 export function useStudioSession(toolId: string, toolName: string, toolDir: string | null): StudioSession {
   const convId = studioConversationId(toolId)
   const approval = useConversationApprovalMode(convId)
+  const { mirrorApprovalMode } = approval
   const stateRef = useRef<SessionState>(freshSessionState())
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
@@ -108,13 +109,21 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
     // cannot leak a studio thread into the sidebar) — keeps the studio's
     // historical default while letting the button govern from the first pick
     // onward. BEFORE create, so the engine's first options resolve from the
-    // seeded column rather than falling to the shared default.
+    // seeded column rather than falling to the shared default. The resolved
+    // column is then MIRRORED into the shared hook's state: the hook's own
+    // one-shot read races this chain (its effect registers first) and lands
+    // deterministically pre-seed, which read 按需确认 on the button for the
+    // whole first mount while the session actually ran 全部允许.
     const seeded = window.electronAPI.getConversation(convId)
       .then((stored) => {
         if (stored?.approvalMode === undefined) {
           return window.electronAPI.setConversationApprovalMode(convId, 'auto')
+            .then(() => 'auto' as const)
         }
-        return undefined
+        return stored.approvalMode
+      })
+      .then((mode) => {
+        if (mode && alive) mirrorApprovalMode(mode)
       })
       .catch(() => undefined)
 
@@ -175,7 +184,7 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
       alive = false
       unsub()
     }
-  }, [convId, toolDir, toolId, sync, readPreview])
+  }, [convId, toolDir, toolId, sync, readPreview, mirrorApprovalMode])
 
   // ── Run completion: persist, then pull the freshly written app.html ──
   const prevStatusRef = useRef(agentStatus.status)

@@ -382,6 +382,39 @@ describe('parallel expert cap at dispatch (three per session)', () => {
   })
 })
 
+/** M1（review_20260917）：dispose() 是「专家运行中删除会话」的真实路径——对话管理
+ *  批量删除 / 扩展端 sessionDelete 都走它。旧实现走 cancelLoop（暂停语义，completion
+ *  故意不结算）后直接 activeSubAgents.clear()：派发方的 `await waitForCompletion()`
+ *  永挂、finally 永不执行——槽位（模块级状态）永久占死，5s 存档定时器永跳。dispose
+ *  没有「恢复」，必须走 stopExecution 同款结算。 */
+describe('dispose settles a mid-flight expert tree (no resume path)', () => {
+  it('resolves the dispatch, frees the parallel slot, and clears the tree', async () => {
+    const engine = makeEngine('conv_dispose')
+    // 真实派发：execSpawnAgent 取槽并 await，专家创建走真 spawnSubAgent（注册进
+    // activeSubAgents 的真子引擎）——只有这条组合能让 dispose 的结算把槽位还回来。
+    const realSpawn = engine.spawnSubAgent.bind(engine)
+    engine.toolExecutor.spawnSubAgent = (config: SpawnSubAgentConfig): SubAgentHandle => realSpawn(config)
+
+    const tu = makeSpawnTool('tu_dispose', 'task dispose')
+    const dispatch = engine.handleToolUseResponse([tu])
+    await new Promise(r => setTimeout(r, 5)) // 槽位已取、专家已在跑
+    expect(activeSubAgentCount('conv_dispose')).toBe(1)
+    expect(engine.activeSubAgents.size).toBe(1)
+
+    engine.dispose()
+    await Promise.race([
+      dispatch,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('dispose 未结算派发：waitForCompletion 永挂')), 1_000)),
+    ])
+    // 槽位已归还：本会话还能再跑满三个专家，而不是带着泄漏只剩两个。
+    expect(activeSubAgentCount('conv_dispose')).toBe(0)
+    expect(engine.activeSubAgents.size).toBe(0)
+    // 派发方按 aborted 收到结果并落卡。
+    expect(tu.exitCode).toBe(1)
+    expect(tu.status).toBe('completed')
+  })
+})
+
 /** T8（PLAN-parallel-experts P3，L12 裁定：专家越过自己的循环上限就报错收摊）。
  *  旧的 +50 静默续期是主代理「自主扩展」的语义；在无人值守的专家身上，它等于一个
  *  卡住的专家永远不结束——父代理 `await spawnBatch` 挂死、FIFO 槽位队列被顶死。 */
