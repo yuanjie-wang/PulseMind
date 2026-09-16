@@ -173,11 +173,11 @@ agentClientRegistry.isHostedCapable(sessionId): boolean   // 在线门控 G5 读
 | `messages_append` / `messages` | **权威来源**:消息列表镜像(截断时收到全量,直接替换) |
 | `streaming_blocks` | 进行中的流式气泡(打字机);与 messages 收敛后由后者接管 |
 | `tool_status` | 工具卡就地更新(状态/exitCode/输出尾部) |
+| `message_stats` | 消息统计就地更新(任务时长 / token)——与 `tool_status` 同一条规则:就地改动必须自带通道,否则长度 diff 传不出去(2026-09-16 用户反馈「时长明显小于实际」) |
 | `token` | 可选:无 `streaming_blocks` 时的降级打字机 |
 | `status` | 状态行(thinking/executing/queued/error);`awaiting_*` 触发审批/问答卡 |
 | `plan_update` | v1 折叠为一行「计划 n/m」;M4 做完整计划卡 |
 | `spawn_progress` | 一行子代理进度 |
-| `usage` | 会话角标(input/output tokens) |
 | `done` / `error` | 收尾/错误横幅 |
 
 插件不需要理解引擎内部结构:**只吃 `AgentMessage[]` 镜像 + 流式快照**,与桌面渲染层消费同一份协议,天然对齐。
@@ -210,10 +210,10 @@ agentClientRegistry.isHostedCapable(sessionId): boolean   // 在线门控 G5 读
 | 命名 | `sessionId` 由服务端生成(现状 `ws_<ts>_<uuid>`),插件不自己造 |
 | 归属 | `clientId = pulsemind-extension`;`conversations.origin = 'pulsemind-extension'`(经 `updateConversationOrigin`) |
 | 落库 | 复用 mainHost 的 `appendConversationMessages`(引擎自动落),与桌面会话**同一张表** —— 目的是复用既有的持久化与恢复链路,而非让桌面端看到它 |
-| 桌面可见性 | **桌面端会话列表排除 `origin='pulsemind-extension'`**(裁定 3)。推论:面板必须是历史入口 → `session.list` / `session.delete` / `session.rename` 提前到 M1,不能留到 M4 |
+| 桌面可见性 | **桌面端会话列表排除 `origin='pulsemind-extension'`**(裁定 3)。推论:面板必须是历史入口 → `session.list` / `session.delete` / `session.rename` 提前到 M1,不能留到 M4(**面板这一侧已于 2026-09-16 按用户要求撤掉,见裁定 21;协议与服务端保留**) |
 | 恢复 | 桌面端重启/插件 SW 被杀:插件 `session.create{sessionId}`(服务端从库 hydrate)→ `agent.history` → 渲染 |
 | 并发 | 服务端已有全局 2 路并发 + FIFO(`session-manager.ts:78`),插件只需展示 `status:'queued'` 队列位次 |
-| 清理 | 标签页关闭 → `session.delete`?**不删**(会话是资产,关闭标签只解绑);面板提供显式删除 |
+| 清理 | 标签页关闭 → `session.delete`?**不删**(会话是资产,关闭标签只解绑);面板提供显式删除(**2026-09-16 起面板不再有删除入口,见裁定 21**) |
 
 ### 3.4 工具:page_* 系列(宿主转发型)
 
@@ -350,7 +350,7 @@ src/extension/
 │   ├── page-js.ts                # 求值 + 结果序列化
 │   └── bridge.ts                 # port 通道:EVENT/TOOL_CALL/…
 ├── ui/
-│   ├── App.tsx                   # 面板外壳:FAB / header / 横幅 / 会话列表
+│   ├── App.tsx                   # 面板外壳:FAB / header / 横幅
 │   ├── usePanel.ts               # 事件归约 → 消息镜像(§3.1.4)+ 授权档位
 │   ├── Transcript.tsx            # 消息流 ← components/chat/TranscriptView
 │   ├── MessageBlocks.tsx         # 各块渲染 ← MessageGroup/SegmentView/CommandCard/ErrorDisplay
@@ -436,7 +436,7 @@ src/extension/
 - [x] **M1.1 消息镜像与渲染**:事件归约**复用桌面同一份 reducer**——把 `session-mirror`/`session-messages` 从 `src/renderer/src/utils/` 下沉到 `src/shared/agent-session/`(3 处渲染层调用点 + 1 处测试改引用),插件 `ui/usePanel.ts` 直接吃 `applySessionEvent`,不写第二套协议解释;`ui/markdown.ts` 是无依赖渲染器(先转义再生成标签、href 过 scheme 白名单)
 - [x] **M1.2 浮层宿主(裁定 1/5)**:`content/index.tsx` 建宿主元素 + Shadow Root(样式以 `text` loader 内联注入,页面 CSS 进不来/我们不污染页面);React 直接跑在隔离世界,无需二次注入;CSP 不涉及面板自身。宿主标 `data-pulsemind-panel`,供 M2 DOM 管线 skip;上次展开状态存 `chrome.storage.session`,页面导航/刷新后按快照恢复
 - [x] **M1.3 输入与生命周期**:`bridge.ts` 定义面板 ↔ worker 的消息契约(`panel/ask|cancel|attach|set-open|…`);发送/停止(停止走 `agent.cancel`)、未连接横幅 + 打开设置、Enter/Shift+Enter、流式光标;`tabId↔sessionId` 双向映射 + 面板开关均落 `chrome.storage.session`(SW 被杀不丢)
-- [x] **M1.4 会话恢复与历史**:`background/panel-bridge.ts` 承接会话生命周期——`attach` 时先 `session.create{sessionId}`(服务端 hydrate)再 `agent.history` 回填,id 已被删除时跟随服务端返回的新 id 重新绑定;面板内会话列表 `session.list`/`delete`/`rename` + 新会话
+- [x] **M1.4 会话恢复与历史**:`background/panel-bridge.ts` 承接会话生命周期——`attach` 时先 `session.create{sessionId}`(服务端 hydrate)再 `agent.history` 回填,id 已被删除时跟随服务端返回的新 id 重新绑定;面板内会话列表 `session.list`/`delete`/`rename` + 新会话(**列表 UI 已于 2026-09-16 移除,裁定 21;worker 侧链路保留**) 
 - [x] **M1.5 桌面配套**:`SERVICE_GET_STATUS` 增加 `clients`(`ws-server` handle 新增 `clients()`)/`wsUrl`/`extensionDir`;`EnvironmentSettings` 增加「浏览器插件」卡(在线客户端 / 复制连接地址 / 加载指引 + 打开扩展目录);会话列表排除扩展会话沿用 M0.4
 - **验收结果**:`tests/extension-markdown.test.ts`(7)+ `tests/extension-panel-bridge.test.ts`(10,fake chrome + fake client)+ `tests/extension-ws-client.test.ts`(5)全绿;全量 390 测试 44 文件绿;三套 tsc 我方文件零错(extension 0);`npm run build` + `npm run build:extension` 均通过(content.js 294KB,React 走 production build)
 - **联调验证(真机跑插件代码)**:用 esbuild 把 `discovery + ws-client + panel-bridge` 打到 Node,配 fake chrome 连**正在运行的桌面端**:新建会话 → 全新 bridge(SW 重启模拟)`attach` 恢复**同一个** sessionId → 事件只推给绑定 tab → 删除后解绑。未跑真实模型(避免动用户的额度),`agent.ask` 的流式行为留待手动验收
@@ -561,6 +561,18 @@ src/extension/
 - **M4.5a 追修(用户实报):长模型名把授权按钮挤到折行**。页脚一行 = 授权 + 弹性空白 + 模型 + 发送,行宽只有 324px(面板 380 − composer 左右 2×16 − 输入卡左右 2×12);模型标签的 160px 上限让长名时整行溢出,flex 按基准宽分摊收缩把授权按钮压窄,「按需确认」在固定 24px 高里折成两行。修复双保险:① `.pm-model-label` 上限 **160 → 120px**(静止态最宽组合 ≈169px,给名字留出的量,超出即省略号;`overflow:hidden` 顺带把该 span 的 flex 最小尺寸归零,挤压先落在它身上);② `.pm-approval` **`flex:none` + 文案 `nowrap`**,退出收缩分配、永不折行。渲染探针 40 → **49 项**:长名生效时授权文案内联盒 rect 数恒为 1、页脚不溢出、模型标签被 120px 上限截断、授权按钮宽度不随模型名长短变化(`long=short=105.7px`)。变异验证:还原 160px + 去掉 `flex:none` → "页脚不溢出"(量到 `overflow=16px`)与"120px 上限"两项断言失败,修复后 49/49
 - **已知未做(不是漏,是没到)**:模型下拉**不标当前项**(桌面端的 `modelItems` 也没有 `selectable`/`selectedKeys`,按钮文案本身就是回显);面板仍不做附件与专家 @;模型切换没有"仅本会话"这一档(与桌面端一致 —— 桌面端也没有)
 
+### M4.6 面板自有 chrome:悬浮球 / 上下拖动 / 放大 ✅ 2026-09-16
+
+> 需求(用户,2026-09-16,三条接连提出):「把桌面上的 pulsemind_extension.png 作为植入到页面中的悬浮球按钮,并配圆形浅灰色背景,毛玻璃效果」→「悬浮球可上下拖动」→「增加一个放大按钮,将整个对话区放大到窗口高度的 90%、宽度的 40%」(高度当日又追改两次:先 100%,再「上下要留出固定边距」= `100vh − 2 × --pm-panel-inset`,见裁定 22)。三件事都是**面板自己的 chrome**(头部那几颗按钮与启动球),主对话里没有对应物,所以它们按裁定 14/15 的规矩自成一套,不与 `components/chat/*` 强行对齐。
+
+- [x] **M4.6.1 启动球**:`ui/App.tsx` 收起态渲染 `.pm-fab`(44px 正圆)+ `ui/logo.tsx` 标记;浅灰半透明取自 `--pm-user-bg` 的灰(48%,用户同日「再透明一点」由 62% 下调),`backdrop-filter: blur(12px)` 与投影沿用面板输入卡那一套玻璃,白色高光描边 + 顶部内高光给出厚度(裁定 14)。**标记必须是内联 SVG 几何**:浮层元素住在**宿主页面**的文档里,`chrome-extension://` 要 `web_accessible_resources`、`data:` 也是被取回的子资源,两者都吃页面的 `img-src`(裁定 15);路径由 `scripts/trace-brand-mark.mjs` 从 `resources/pulseMind.png` 描摹生成、自校验 IoU 0.9929,不手改
+- [x] **M4.6.2 上下拖动**:`ui/useFabDrag.ts` 独占整个手势 —— 纵轴单值(右边缘恒 20px)、夹紧区间 `[20, innerHeight − 44 − 20]`、`setPointerCapture`、3px 阈值吞掉拖完那次 click、位置存 `chrome.storage.local`(裁定 16–19)。四条里三条是被探针抓过一次的教训:`layoutTop()` 读 `getComputedStyle().top` 而不是 rect(球被按时**总是** hover,`scale(1.06)` 的 rect 会多出约 1.3px,过渡期读到的还是动画);`topRef`(用户的选择,落库)与 `top`(当前视口下的渲染值)分开,resize 只写后者,否则缩一次窗口就把用户的落点永久改成那个临时值;吞 click 的标志位在**下一次 `pointerdown`** 清,免得"被吞的那次 click 没送达"(中途卸载)让按钮永久失灵。`tests/fab-drag.test.ts` 直接读 `styles.css`,校验 `FAB_SIZE`/`FAB_MARGIN` 与 `--pm-fab-*` 没有漂移,并断言 `.pm-fab` 的 `transition` 里**没有** `top`
+- [x] **M4.6.3 放大**:头部三颗按钮定为 新会话 / 放大(还原)/ 收起;`.pm-panel-wide` 只覆盖 `width: max(380px, 40vw)` 与 `height: calc(100vh − 2 × --pm-panel-inset)`(裁定 22–26),四个锚点都不动。三处各自有理由:`max()` 是因为半屏宽不到 950px 时 40vw 反而比常态窄;高度减掉两道 inset 是因为写满视口会把上边沿顶出 20px、头部被裁(负向对照实测 `rect.y = -20`、`header -19..22`);不补间是因为 transcript 的跟随底部只在提交时对齐,补间结束时尾部会短暂离底
+- [x] **探针(`probe-panel-render.mjs`,97 项)**:启动球一段量圆盘几何 / 半透明浅灰 / 白描边 / 投影与内高光 / 标记是 SVG 且比例不被拉伸 / 居中留白,并用**像素**证明毛玻璃 —— 把球压在一片 4px 黑白条纹上,量圆内外的**平均水平梯度**:圆内 3.51 vs 圆外 30.5(衰减 8.7x,要求 > 5x),同时断言圆外确实是高频内容(否则"什么都没画"也能过);墨量 16.8% 对照源图 16.3%,用来抓空 SVG / 透明填充 / 描摹崩掉。拖动一段全程**真鼠标**:跟手 Δtop 300.00、只走纵轴、两端夹紧(20 / vh−64)、指针移开球体仍在拖(指针捕获)、按住时光标 grabbing、重挂载回到记住的位置、视口缩到 400 再放大回去位置复原且**存储未变**、原地点击与手抖 1px 都仍算点击、一次拖动恰好写一次存储而点击不写。放大一段:常态 380×600 右下 20 → 点击后 672×940(1680×980 视口的 40%,高 = 视口高 − 上下两道边距)、**四道边距都是同一个 20**(上/下/右,且与常态逐条相等 —— 放大只改尺寸不改边距)、上边沿与下边沿都留在视口内、头部三颗按钮完整可见、按钮换成「还原」且换成 compress 字形(两半路径都在 DOM 里)、输入框跟着长高且贴底、**长会话放大后仍在底部**(注入 24 条消息,先断言它确实需要滚动,否则这条是空转)、视口 800 时宽仍是 380、点还原回到 380×600
+- **变异验证**:删掉 `setPointerCapture` → 「指针捕获生效」等 4 项失败;把吞 click 还原成不吞 → 「拖完不会误触展开」失败;`DRAG_THRESHOLD = 0` → 「手抖 1px 仍算点击」失败;删掉 `.pm-panel-wide` 的两条声明 → 「宽 = 窗口的 40%、高 = 窗口高 − 上下两道边距」失败(量到 380×600);把 `max(380px, 40vw)` 换成裸 `40vw` → 窄窗口那条失败(量到 320);把放大态的高度换成写满视口的 `100vh` → 五条失败,量到上边沿 `-20`、上下边距 `-20 / 20` 不再相等、头部 `-19..22` 有 19px 被裁
+- **验收结果**:渲染探针 **97/97**、作答探针 **27/27**、滚动探针 **17/17** 无回归;全量 **597** 绿 / 64 文件;扩展 tsc 0 错、`npx eslint src/extension/` 干净;`npm run build:extension` 通过
+- **已知未做**:放大态不持久化、不做补间(裁定 24/25);面板仍固定右下角、不跟随启动球(裁定 20);放大后的正文行宽跟着面板走(40vw 在 2560px 屏上是 1024px),没有给对话列另设上限 —— 用户要的就是"整个对话区"变大
+
 ### M5 品牌、打包与分发
 
 - [ ] **M5.1 品牌**:图标、名称、`EXTENSION_CLIENT_ID` 常量、i18n(zh/en)
@@ -668,9 +680,42 @@ src/extension/
 | 11 | 反向 RPC 的客户端绑定活多久 | **跟连接走,不跟单次 `agent.ask` 走** —— 引擎会 park 在 `awaiting_approval` / `awaiting_user_input` 并让 loop promise 落定,ask 先返回、提示后到,所以 ask-scoped 的 `unbind` 必然把提示路径整条掐死。每条连接一个 transport,断连时按 transport 身份统一释放 | M2.6、`client-registry` 头注释、AGENTS.md |
 | 12 | 未匹配 callId 的作答 | **不静默**:服务端打印告警,面板把 `ok:false` 显示成错误 —— "点了没反应"必须能区分成"没连上 / 已超时 / 服务端没收下" | M2.6、AGENTS.md |
 
+### 2026-09-16(UI:插件图标 + 悬浮球)
+
+| # | 议题 | 结论 | 落到文档 |
+|---|---|---|---|
+| 13 | 插件图标 | **用仓库内 `resources/pulseMind.png` 生成** 16/32/48/128(trim 掉 macOS 画布那圈透明留白、再补 4% 内缩),产物入库,`build:extension` 只做拷贝 —— §3.6 里"`copyFile` manifest.json + icons"这一半由此兑现 | §3.6、`scripts/generate-extension-icons.mjs`、`tests/extension-icons.test.ts`、AGENTS.md |
+| 14 | 悬浮球外观 | **浅灰半透明圆盘 + 毛玻璃**:浅灰取主对话 `--pm-user-bg`(48% 透明,用户同日「再透明一点」由 62% 下调;hover 78%→64%),`blur(12px)` 与投影沿用面板自己的输入卡那套玻璃;白色高光描边 + 顶部内高光给出厚度 | M1.2、`ui/styles.css`、`ui/App.tsx`、AGENTS.md |
+| 15 | 悬浮球上的标记怎么带 | **内联 SVG 路径,不用 `<img>`** —— 浮层元素在**宿主页面**的文档里,`chrome-extension://` 要 `web_accessible_resources`、`data:` 也是被取回的子资源,两者都受页面 `img-src` 管;实测 `img-src 'self'` 下 `data:` 图的 `naturalWidth` 是 0,同一段标记写成 SVG 几何则正常渲染。路径由 `scripts/trace-brand-mark.mjs` 从 `resources/pulseMind.png` 描摹生成(自校验 IoU 0.9929),不手改 | M1.2、`ui/logo.tsx`、AGENTS.md |
+
+### 2026-09-16(用户追加:悬浮球可上下拖动)
+
+| # | 议题 | 结论 | 落到文档 |
+|---|---|---|---|
+| 16 | FAB 可拖动的范围 | **只走纵轴**:右边缘恒为 `--pm-fab-margin`(20px),横轴永不写;位置因此是一个数,夹紧区间 `[20, innerHeight - 44 - 20]` | M4.6、`ui/useFabDrag.ts` |
+| 17 | 位置存在哪 | **`chrome.storage.local`,不是 `session`** —— content script 不是受信上下文,读不到 `chrome.storage.session`(面板的每 tab 状态是让 worker 读的,所以能存那儿);而这是**用户偏好**、不是本页状态,所以全局一份 | M4.6、`ui/useFabDrag.ts`、AGENTS.md |
+| 18 | 拖完那次 click | **吞掉恰好一次**,阈值 3px;标志位在**下一次 pointerdown** 清,而不是只在 click 里清 —— 否则"被吞的那次 click 没送达"(中途卸载)会让按钮永久失灵 | M4.6、`ui/useFabDrag.ts` |
+| 19 | 视口变小后重新夹紧 | **只夹显示值,不改用户的选择**:`topRef` 存选择、`top` 存当前视口下的渲染值,resize 只写后者 —— 否则缩一次窗口就把用户的落点永久改成那个临时值(首版就是这么写的,被探针抓到) | M4.6、AGENTS.md |
+| 20 | 展开后的面板是否跟随 | **不跟随**,面板仍旧 `bottom: 20px`。面板是大得多的面,位置与浏览器面板的几何绑定;要跟随是另一个决定,不是拖动的后续 | M4.6、AGENTS.md |
+| 21 | 面板右上角的「历史会话」按钮 | **去掉**(用户要求 2026-09-16)。面板头部只剩 新会话 / 收起,连带的**面板内会话列表也一并移除**——那个按钮是它唯一的门,留着就是不可达代码(同批清掉只服务它的 CSS 与三个图标路径)。**协议与服务端一律不动**:`session.list`/`delete`/`rename`、`panel/sessions` 通知、`usePanel` 的同名方法全部保留,所以要把入口加回来是纯 UI 改动 | M1.4、`ui/App.tsx`、`ui/styles.css` |
+
+裁定 21 的后果(明确记下来,免得后来者以为是漏做):§3.3「面板必须是历史入口」(裁定 3 的推论)与「面板提供显式删除」两句**就此失效** —— 扩展会话在桌面端被 origin 过滤掉,现在没有任何 UI 能列出/恢复/重命名/删除它们。实际代价比看上去小:托管会话的正文目前根本没有落库(见遗留待定 4),所以列表里每一条恢复出来都是空的,真正失去的是"删掉攒下来的空壳"这个动作 —— 它们仍在库里累积,只受 `conversationRetentionDays` 管辖(默认 0 = 不清理)。
+
+### 2026-09-16(用户追加:放大按钮)
+
+| # | 议题 | 结论 | 落到文档 |
+|---|---|---|---|
+| 22 | 放大后的尺寸 | **窗口高度铺满,但上下各留一道与常态相同的固定边距**(用户 2026-09-16 三步:90% → 100% → 「上下要留出固定边距」),所以高度是 `calc(100vh − 2 × --pm-panel-inset)`、宽度的 40%,写成一个只覆盖 `width`/`height` 的类 `.pm-panel-wide` —— **四个锚点一个都不动**(右/下仍是那 20px,上边距是同一个数)。「真的 100vh」不可取:面板是 fixed + `bottom: 20px`,高度写满视口时上边沿跑到视口外 20px、头部那排按钮被裁掉一截(负向对照实测 `rect.y = -20`、`header -19..22`,19px 没了) | M4.6、`ui/styles.css`、`ui/App.tsx` |
+| 23 | 窄窗口下 40vw 会小于常态宽 | **`max(380px, 40vw)`**:半屏宽不到 950px 时 40vw < 380,照抄 40vw 会让"放大"把面板变**窄** —— 一个叫放大的按钮不许在任何一种窗口尺寸下反而缩小 | M4.6、`ui/styles.css` |
+| 24 | 尺寸切换是否补间 | **不做补间**。面板里只有这一个会改自身尺寸的东西,而补间期间每帧都在重排,transcript 的"跟随底部"**只在提交时对齐**,动画跑完会停在离底差一点的位置,直到下一条流式分片才回正 —— 宁可不顺滑,也不要一个会短暂离底的尾部 | M4.6、`ui/styles.css` |
+| 25 | 放大态是否持久化 | **不持久化**,只活在这一次挂载里(worker 存的是每 tab 的开合,不是尺寸)。与遗留待定 2 是同一个问题的两半,一起留着 | M4.6、`ui/App.tsx` |
+| 26 | 那个「20px」写在哪 | **新增 `--pm-panel-inset`,一处定义四处引用**:常态的 `right`/`bottom`、常态高度的 `100vh − 2×inset`、放大态的同一条高度表达式。此前 20px 在 `right`/`bottom`/`calc(100vh - 40px)` 里各写了一遍,放大态又另按 100vh 写死 —— 那正是"改了一处、另一处没跟上"的形状(这次追改就是被它绊了一下)。与 `--pm-fab-margin` 同值但**不共用**:那是启动球自己的边距 | M4.6、`ui/styles.css` |
+
+新增脚本:`scripts/trace-brand-mark.mjs`(描摹标记 → `ui/logo.tsx`)、`scripts/generate-extension-icons.mjs`(出 4 个尺寸的 PNG),两者都是离线生成、产物入库,不参与 `npm run build:extension`。
+
 遗留待定(不阻塞 M0,实施到对应里程碑前再定):
 
-1. 浮层默认位置与尺寸;FAB 是否允许用户拖动并记住位置(涉及 DOM 管线 skip 与 storage 结构)。
-2. 浮层展开状态是否跨会话记忆(`chrome.storage.session` vs `local`)。
+1. ~~浮层默认位置与尺寸;FAB 是否允许用户拖动并记住位置~~ —— 已定(裁定 16–20):右下角 20px 边距起步,可上下拖动并记住位置;拖动顺带让用户能把球从他要点的页面控件上挪开。
+2. 浮层展开状态是否跨会话记忆(`chrome.storage.session` vs `local`);**放大态跟着是同一问题的另一半**(裁定 25:目前两边都不持久化,尺寸只活在这一次挂载里)。
 3. ~~面板内的授权开关形态~~ —— 已定(裁定 10):复用桌面端同三档 + 同落点。
 4. **扩展会话正文的持久化(M2.6 发现,未修)**:目前只有客户端会写库(桌面 renderer),服务端 `AgentServiceConversations` 是只读的,插件端又没有保存步骤 → 扩展会话的 `messages` 恒空,M0.4 的"重启后恢复对话"对扩展会话恢复出空历史。需要先定由服务端落库还是补协议方法,再排期。

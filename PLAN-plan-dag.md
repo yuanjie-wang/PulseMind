@@ -4,6 +4,7 @@
 > **动机**：`currentStepIndex` 游标语义下步骤天然串行——步骤 N+1 必须等 N——与引擎已有的并行 spawn 能力脱节；且 `advance_plan` 无节点标识，多个专家并行时游标语义直接崩溃（两个专家各自完成各自的步骤，"当前步"不存在）。
 > **范围裁定**：本期做**协议 + 状态机 + 提示词 + 分层 UI** 的完整重构；不做节点级自动状态回写（spawn_agent 不绑定 planNodeId）、不做拖拽编辑、不画真图（零新依赖）。
 > **决策确认（2026-09-16 用户逐项裁定）**：D6 = 模型自主派发；D4 = 失败不级联、模型决定重试/跳过；D9 = 拓扑分层列表；并行专家数**不设限**（撞 provider 限流再加闸，已有重试兜底）。
+> **修订（2026-09-16 晚，用户裁定：同一会话并行专家数上限 3 人）**：D9 的「并行专家数不设限」作废——并行资源审计发现专家共用工作区、终端事件总线与 SQLite，且 `allowedTools: undefined` 让扇出可递归，于是加闸：同一会话（含嵌套）最多 3 个专家同时在跑，多出的按 FIFO 排队。就绪集的派发方式不变（模型照旧一次回复多个 spawn_agent，只是第 4 个起要等空位）。落地与其余各项见 **`_task/20260916/PLAN-parallel-experts.md`**。
 > **执行方式**：逐任务执行，每任务完成后跑 `npm test` + `npx tsc -p tsconfig.web.json --noEmit` + `npx tsc -p tsconfig.node.json --noEmit` 对基线只升不降，并在本文档勾选。全程遵守 AGENTS.md。
 
 ---
@@ -32,10 +33,11 @@
 | D4 | 失败传播 | **不自动级联**。节点 fail 后下游保持 pending（UI 灰显 + 快照标注 blocked），由主代理决定重试（需要先造新节点？不——直接允许对 failed 节点再次 complete 即重试）或 `skip`。skip = 该节点标 skipped，下游依赖重算：依赖 failed/skipped 的 pending 节点为 blocked，依赖全终态且无 failed 的才 ready |
 | D5 | advance_plan 的节点参数 | `node` **必填**（1-based 序号，兼容 `3`/`"3"`/`"n3"` 三种写法）；省略时若就绪集恰有一个节点则自动指它（弱模型兜底），多个就绪时报错并列出就绪集 |
 | D6 | 编排驱动方 | **模型驱动，引擎不自动 fan-out**。引擎只提供状态机 + 快照文案（就绪集/阻塞集），主代理模型自己决定就绪节点怎么 spawn（一次回复多个 spawn_agent，M1 已并行）。模型保留合并/拆分/选专家的判断权 |
-| D7 | spawn_agent 与节点的绑定 | **本期不做结构化绑定**（不加 planNodeId 参数）。plan 状态变更的唯一写者是主代理的 advance_plan 调用（**单写者原则**），杜绝子代理并发写计划的整类竞态。二期若做自动状态，给 SpawnSubAgentConfig 加可选 sourceNodeId 即可 |
+| D7 | spawn_agent 与节点的绑定 | **本期不做自动状态回写**（plan 状态变更的唯一写者是主代理的 advance_plan 调用——**单写者原则**，杜绝子代理并发写计划的整类竞态）。`spawn_agent` 现已接受可选 `planNode=`（PLAN-workbench W12 的钻孔下钻需要），但**只用于记录链路，不写节点状态**：它落在节点的 `subConvId` 上（见 D11），节点变 completed 仍只由 advance_plan 决定 |
 | D8 | create_plan schema 兼容 | `steps` 元素从 string 升级为 `{ description, depends_on?, assignee? }`；**executor 兼容旧 string[]**（内部包装成单链 DAG）兜底弱模型。工具 schema 直接换，create_plan 只在新建计划时调用，无存量调用方兼容负担 |
 | D9 | UI 形态 | **拓扑分层列表**（按最长依赖路径分层：第 1 波 / 第 2 波…层内并排），不画真图、零新依赖。380px 侧栏宽度下分层列表可读性最好；真图视图二期另立项 |
 | D10 | 类型归属 | `Plan`/`PlanNode` 移到 `src/shared/types/plan.ts`，plan-graph 纯函数放 `src/shared/plan/graph.ts`——shared 代码不得反向 import renderer，且 extension panel 的 reducer（`shared/agent-session`）未来可复用；renderer/types/agent.ts re-export 保持兼容 |
+| D11 | 节点→子会话链路的载体（PLAN-workbench W12 追加） | **计划节点是持久载体，工具块只是活的副本**。`PlanNode.subConvId` 由引擎主进程侧创建子会话后经 `PlanManager.linkNodeSession` 写入（单写者不变），随 `plan_json` 持久化，重启/压缩后仍在；spawn 块的 `subConvId`/`planNodeId` 只走 `tool_status` 增量（快照 `messages_append` 在 spawn 执行**之前**发出，块上后写的字段永远进不了快照），供工具卡的预览按钮用。两边任一命中即可下钻，节点优先 |
 
 ## 三、设计
 
@@ -49,6 +51,7 @@ export interface PlanNode {
   dependsOn: string[]           // 前置节点 id（内部表示；协议层是 1-based 下标）
   assignee?: string             // 专家 id（spawn_agent 的 subAgentId）；undefined = 通用子代理
   msgId?: string                // 完成时的跳转锚点（沿用现语义）
+  subConvId?: string            // spawn_agent(planNode=) 交给这个节点执行的子会话（D11：唯一持久载体，点击节点下钻用）
   summary?: string              // advance_plan notes 落这里，快照与 UI 悬浮可见
 }
 

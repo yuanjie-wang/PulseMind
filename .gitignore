@@ -25,5 +25,10 @@ readme30.pdf
 .workbuddy/
 resources/chromium/
 
+# Local working dirs — _task / _product / _review and any future underscore
+# prefix at the repo root. Anchored (leading "/") on purpose: a nested
+# `_something/` inside src/ is not covered and would still be tracked.
+/_*/
+
 # Local agent workspace state
 .zcode/
