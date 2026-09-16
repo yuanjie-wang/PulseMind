@@ -158,6 +158,16 @@ export function completeAllNodes(plan: Plan): void {
   plan.completed = true
 }
 
+/** Record which sub-conversation implements a node (PLAN-workbench W12).
+ *  Status-neutral by design: a dispatch does not settle anything — only
+ *  advance_plan does that — so this writes the link and nothing else. */
+export function linkNodeSession(plan: Plan, ref: string | number, subConvId: string): PlanNode {
+  const node = resolveNodeRef(plan, ref)
+  if (!node) throw new Error(`Unknown node "${ref}". Use a step number (1..${plan.nodes.length}) or id (n1..n${plan.nodes.length}).`)
+  node.subConvId = subConvId
+  return node
+}
+
 // ── Migration (v1 linear → v2 DAG) ───────────────────────────────────────
 
 interface LegacyPlan {

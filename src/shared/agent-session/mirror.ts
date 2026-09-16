@@ -9,7 +9,7 @@
  *
  * DOM-free by construction: the extension runs this inside a content script.
  */
-import type { AgentMessage, AgentStatus, ContentBlock, Plan } from '../../renderer/src/types/agent'
+import type { AgentMessage, AgentStatus, ContentBlock, Plan, ToolUseBlock } from '../../renderer/src/types/agent'
 import type { AgentEventData } from '../agent-protocol'
 import { applyMessagesAppend } from './messages'
 
@@ -37,6 +37,42 @@ export function isActiveStatus(status: AgentStatus): boolean {
     || status.status === 'retrying'
 }
 
+/** One entry of the engine's diffed tool_use mutation stream (see the
+ *  `tool_status` case in applySessionEvent). */
+type ToolStatusUpdate = Extract<AgentEventData, { type: 'tool_status' }>['updates'][number]
+
+/** A block carrying one patch, as a NEW object — the fold never edits a mirrored
+ *  block in place (see the tool_status case for why). */
+function patchToolUse(block: ToolUseBlock, u: ToolStatusUpdate): ToolUseBlock {
+  return {
+    ...block,
+    ...(u.status !== undefined ? { status: u.status as ToolUseBlock['status'] } : {}),
+    ...(u.exitCode !== undefined ? { exitCode: u.exitCode } : {}),
+    ...(u.output !== undefined ? { output: u.output } : {}),
+    // The spawn link arrives after the block did (spawn_agent writes it while
+    // executing), which is exactly what this diff exists for.
+    ...(u.subConvId !== undefined ? { subConvId: u.subConvId } : {}),
+    ...(u.planNodeId !== undefined ? { planNodeId: u.planNodeId } : {}),
+  }
+}
+
+/** One entry of the engine's diffed message-level stat stream (see the
+ *  `message_stats` case in applySessionEvent). */
+type MessageStatsUpdate = Extract<AgentEventData, { type: 'message_stats' }>['updates'][number]
+
+/** A message carrying one stats patch, as a NEW object — the identity discipline
+ *  `patchToolUse` documents below applies here too: the views that render a
+ *  message are memoized on it, so an edit in place reads as "nothing happened". */
+function patchMessageStats(msg: AgentMessage, u: MessageStatsUpdate): AgentMessage {
+  return {
+    ...msg,
+    ...(u.processingMs !== undefined ? { processingMs: u.processingMs } : {}),
+    ...(u.inputTokens !== undefined ? { inputTokens: u.inputTokens } : {}),
+    ...(u.outputTokens !== undefined ? { outputTokens: u.outputTokens } : {}),
+    ...(u.promptCacheHitTokens !== undefined ? { promptCacheHitTokens: u.promptCacheHitTokens } : {}),
+  }
+}
+
 /** Fold one session event into the mirror. Returns false when the event is one
  *  the mirror does not consume (the richer transport events), so the caller can
  *  skip its own follow-up work. */
@@ -48,6 +84,17 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
     }
     case 'messages': {
       state.messages = data.messages as AgentMessage[]
+      return true
+    }
+    case 'message_stats': {
+      // The turn's wall clock is stamped on the final message after it was
+      // already appended (shared/agent-session/message-stats.ts) — without this
+      // fold the mirror keeps whatever the message carried at append time.
+      const byId = new Map(data.updates.map((u) => [u.messageId, u]))
+      state.messages = state.messages.map((msg) => {
+        const u = byId.get(msg.id)
+        return u ? patchMessageStats(msg, u) : msg
+      })
       return true
     }
     case 'streaming_blocks': {
@@ -63,20 +110,35 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
       return true
     }
     case 'tool_status': {
-      // In-place tool_use mutations arrive diffed — patch the mirrored
-      // messages by (messageId, toolUseId).
-      const byId = new Map(state.messages.map((m) => [m.id, m]))
+      // The engine mutates tool_use blocks in place and the wire carries only the
+      // diff — patch the mirrored messages by (messageId, toolUseId). The patch
+      // REPLACES the touched message and block objects instead of writing into
+      // them, because identity is the contract every view that renders a tool
+      // block is memoized on: MessageGroup, ExecutionSegment and CommandCard are
+      // React.memo, and matchSegment() decides a segment changed by comparing
+      // tool_use statuses. A block edited in place keeps its identity, so all of
+      // them concluded nothing had happened — which is how an answered question
+      // kept its chips and its input box on screen, still clickable, after the
+      // answer landed.
+      const byMessage = new Map<string, ToolStatusUpdate[]>()
       for (const u of data.updates) {
-        const msg = byId.get(u.messageId)
-        if (!msg) continue
-        for (const block of msg.contentBlocks ?? []) {
-          if (block.type !== 'tool_use' || (block as { id?: string }).id !== u.toolUseId) continue
-          const tu = block as { status?: string; exitCode?: number; output?: string }
-          if (u.status !== undefined) tu.status = u.status
-          if (u.exitCode !== undefined) tu.exitCode = u.exitCode
-          if (u.output !== undefined) tu.output = u.output
-        }
+        const list = byMessage.get(u.messageId)
+        if (list) list.push(u)
+        else byMessage.set(u.messageId, [u])
       }
+      state.messages = state.messages.map((msg) => {
+        const updates = byMessage.get(msg.id)
+        if (!updates) return msg
+        let touched = false
+        const blocks = msg.contentBlocks.map((block) => {
+          if (block.type !== 'tool_use') return block
+          const u = updates.find((x) => x.toolUseId === block.id)
+          if (!u) return block
+          touched = true
+          return patchToolUse(block, u)
+        })
+        return touched ? { ...msg, contentBlocks: blocks } : msg
+      })
       return true
     }
     case 'error': {

@@ -51,6 +51,8 @@ export class ToolExecutor implements ToolExecContext {
     spawnSubAgent?: SpawnSubAgentFn,
     /** @internal live plan accessor for the spawn_agent planNode linkage */
     getPlan?: () => Plan | null,
+    /** @internal records the sub-conversation a plan node's spawn runs in */
+    linkPlanNode?: (ref: string | number, subConvId: string) => void,
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
@@ -58,6 +60,7 @@ export class ToolExecutor implements ToolExecContext {
     this.onProcessStart = onProcessStart
     this.spawnSubAgent = spawnSubAgent
     this.getPlan = getPlan
+    this.linkPlanNode = linkPlanNode
   }
 
   opts: AgentEngineOptions
@@ -66,6 +69,7 @@ export class ToolExecutor implements ToolExecContext {
   onProcessStart?: (pid: string) => void
   spawnSubAgent?: SpawnSubAgentFn
   getPlan?: () => Plan | null
+  linkPlanNode?: (ref: string | number, subConvId: string) => void
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
@@ -330,9 +334,11 @@ export class ToolExecutor implements ToolExecContext {
               }
             )
             if (keywords.length > 0) {
-              const prefs = await getHost().getSkillPreferences()
-              const sk = prefs.skillKeywords || {}
-              if (!sk[def.name]) { sk[def.name] = keywords; await getHost().setSkillPreferences({ ...prefs, skillKeywords: sk }) }
+              // Patch-shaped atomic update (PLAN-parallel-experts T10): the old
+              // get→patch→whole-set raced two experts installing in one round —
+              // each shipped a full replacement and the later clobbered the
+              // earlier's keyword backfill.
+              await getHost().updateSkillPreferences({ setKeywordIfAbsent: { [def.name]: keywords } })
             }
           }
         } catch (err) { console.warn(`[install] Failed to extract keywords for "${def.name}":`, err) }

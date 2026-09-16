@@ -3,6 +3,7 @@
 
 import { getHost } from '../host'
 import { buildCommandFromSkillInput } from '../command-builder'
+import { beginTerminalSpan } from '../terminal-span'
 import type { ToolUseBlock } from '../../types/agent'
 import type { KnowledgeFile } from '../../../../shared/types/knowledge'
 import { UI_PREVIEW_MAX, type ToolExecContext } from './context'
@@ -267,25 +268,31 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
         let stdoutBuf = ''
         let stderrBuf = ''
         let settled = false
-        const unsubList: (() => void)[] = []
+        // The terminal bus broadcasts by channel — concurrent engines' process
+        // events land here too (PLAN-parallel-experts T7): the span filters by
+        // processId and parks the window before executeCommand returns a pid.
+        const span = beginTerminalSpan(getHost(), {
+          onOutput: d => {
+            if (d.type === 'stderr') stderrBuf += d.data
+            else stdoutBuf += d.data
+            t.output = stdoutBuf + stderrBuf
+            ex.notify()
+          },
+          onExit: d => finish(d.code, d.code !== 0),
+          onError: d => { stderrBuf += `\n[Error: ${d.message}]`; finish(-1, true) },
+        })
+        span.start()
         const finish = (exitCode: number | null, isError: boolean) => {
           if (settled) return; settled = true
+          span.stop()
           t.exitCode = exitCode
           const formatted = ex.formatExecResult(exitCode, stdoutBuf, stderrBuf)
           t.output = formatted
           ex.addToolResult(t.id, formatted, isError)
-          unsubList.forEach(fn => fn()); resolve()
+          resolve()
         }
-        const uo = getHost().onTerminalOutput(d => {
-          if (d.type === 'stderr') stderrBuf += d.data
-          else stdoutBuf += d.data
-          t.output = stdoutBuf + stderrBuf
-          ex.notify()
-        }); unsubList.push(uo)
-        const ue = getHost().onTerminalExit(d => finish(d.code, d.code !== 0)); unsubList.push(ue)
-        const uerr = getHost().onTerminalError(d => { stderrBuf += `\n[Error: ${d.message}]`; finish(-1, true) }); unsubList.push(uerr)
         getHost().executeCommand(command, cwd || undefined, t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined)
-          .then(pid => { ex.onProcessStart?.(pid) })
+          .then(pid => { ex.onProcessStart?.(pid); span.claim(pid) })
           .catch(err => { stderrBuf += `\n[Error: ${err instanceof Error ? err.message : 'Failed'}]`; finish(-1, true) })
       })
     return true

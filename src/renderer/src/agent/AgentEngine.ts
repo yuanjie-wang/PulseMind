@@ -26,10 +26,11 @@ import { migrateLinearPlan } from '../../../shared/plan/graph'
 import { ensureCache } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
 import { SpawnManager } from './engine/spawn-manager'
-import { collectEnabledTools } from './engine/tool-collection'
+import { collectEnabledTools, buildToolProtocols } from './engine/tool-collection'
 import { scheduleMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
 import { StreamRunner } from './engine/stream-runner'
+import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { ContextCompactor } from './engine/context-compactor'
 import type { EngineCore } from './engine/engine-core'
 import { stripImageData } from './image-utils'
@@ -101,6 +102,12 @@ export interface AgentEngineOptions {
   approvalMode?: SandboxApprovalMode
   locale?: 'zh' | 'en'
   conversationId?: string
+  /** The session this engine's expert budget belongs to. A sub-agent is its own
+   *  conversation (`conversationId: sub_…`) but must spend the SAME three slots
+   *  as its parent, so spawn-manager copies the root id here — nested spawns
+   *  count against it too (see engine/subagent-limiter.ts). Absent on a normal
+   *  engine, where the conversation id is the session. */
+  sessionRootId?: string
 
   // Spawn sub-agent options
   allowedTools?: string[]
@@ -167,6 +174,11 @@ export class AgentEngine implements EngineCore {
       clearTimeout(this.notifyTimer)
       this.notifyTimer = null
     }
+    // Every status change funnels through here, so the turn clock follows the
+    // same signal the user sees: parked on a decision → stop counting, working
+    // again → count. One choke point instead of a pause()/resume() pair at each
+    // of the sites that set a waiting status.
+    this.turnClock.sync(isWaitingOnUserStatus(this.agentStatus.status))
     this.callbacks.onMessagesChanged?.(this.messages)
     this.callbacks.onStatusChanged?.(this.agentStatus)
     this.callbacks.onStreamingBlocksChanged?.(this.streamingBlocks)
@@ -220,8 +232,10 @@ export class AgentEngine implements EngineCore {
   isCancelled = false
   /** @internal */
   requestStartTime = 0
-  /** @internal */
-  sessionStartTime = 0
+  /** @internal — the turn's duration accumulator: user send → last output
+   *  character, excluding time parked on the user (held approval / ask_user /
+   *  loop-limit prompt / manual pause). See engine/turn-clock.ts. */
+  turnClock = new TurnClock()
   /** Consecutive idle-timeout retries for the current stream. Reset on success. */
   /** @internal */
   streamIdleRetries = 0
@@ -326,6 +340,7 @@ export class AgentEngine implements EngineCore {
       (pid) => { this.executingProcessId = pid },
       (config) => this.spawnSubAgent(config),
       () => this.planManager.plan,
+      (ref, subConvId) => this.planManager.linkNodeSession(ref, subConvId),
     )
   }
 
@@ -408,21 +423,24 @@ export class AgentEngine implements EngineCore {
 
   // ── Core methods ──────────────────────────────────────────────────
 
-  startLoop = async (userMessage: string): Promise<void> => {
-    if (!userMessage.trim()) return
+  /** Shared turn preamble (startLoop / startDelegatedLoop): gate on the key,
+   *  run the beforeSession hook (it may rewrite or cancel the text), cancel any
+   *  in-flight request, append the user message and start the clock. Returns
+   *  the text to run — the hook may have rewritten it — or null when the turn
+   *  was cancelled before anything was appended. */
+  private prepareTurn = async (userMessage: string): Promise<string | null> => {
+    if (!userMessage.trim()) return null
     const opts = this.opts
     if (!opts.apiKey) {
       console.warn('[AgentEngine] startLoop blocked: no API key')
       this.agentStatus = { status: 'error', error: 'API key not configured' }
       this.notify()
-      return
+      return null
     }
 
     const beforeSessionCtx = await safeInvoke(opts.hooks?.beforeSession, { userMessage, messages: this.messages }, 'beforeSession')
     userMessage = beforeSessionCtx.userMessage
-    if (!userMessage.trim()) return
-
-    console.log(`[AgentEngine] startLoop: model=${opts.model}`)
+    if (!userMessage.trim()) return null
 
     this.loopCount = 0
     this.maxLoopCount = MAX_LOOP_ITERATIONS
@@ -446,10 +464,52 @@ export class AgentEngine implements EngineCore {
     this.agentStatus = { status: 'streaming' }
     this.notify()
 
-    this.sessionStartTime = performance.now()
+    this.turnClock.start()
     opts.adapter.reconcileMessages?.(this.messages)
+    return userMessage
+  }
 
+  startLoop = async (userMessage: string): Promise<void> => {
+    const text = await this.prepareTurn(userMessage)
+    if (text === null) return
+    console.log(`[AgentEngine] startLoop: model=${this.opts.model}`)
     await this.continueLoop()
+  }
+
+  /**
+   * @-summon delegation (召唤专家 → spawn_agent): the mentioned expert runs the
+   * task as a sub-agent instead of the conversation re-binding its identity.
+   * The user's message is followed by a deterministic spawn_agent tool_use
+   * block — byte-for-byte the shape a model-emitted delegation carries — and
+   * dispatched through handleToolUseResponse, so every piece of the spawn
+   * machinery applies unchanged: the parallel-slot limiter, live progress
+   * lines, the sub-conversation link on the card, and stop/pause handling.
+   * When the expert settles, the normal loop continues and the parent (which
+   * stays the general assistant) summarizes the result for the user.
+   */
+  startDelegatedLoop = async (userMessage: string, subAgentId: string): Promise<void> => {
+    // Guard BEFORE prepareTurn: a delegation without an expert id is a caller
+    // bug, and aborting after it would strand an appended user message.
+    if (!subAgentId.trim()) return
+    const text = await this.prepareTurn(userMessage)
+    if (text === null) return
+    console.log(`[AgentEngine] startDelegatedLoop: model=${this.opts.model} → spawn_agent ${subAgentId}`)
+    const spawnCall: ToolUseBlock = {
+      id: `toolu_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      type: 'tool_use',
+      name: 'spawn_agent',
+      input: { subAgentId, task: text },
+      status: 'pending'
+    }
+    this.messages = [...this.messages, {
+      id: generateMsgId(),
+      role: 'assistant',
+      contentBlocks: [spawnCall],
+      createdAt: new Date().toISOString()
+    }]
+    this.agentStatus = { status: 'executing', toolUseId: spawnCall.id }
+    this.notify()
+    await this.handleToolUseResponse([spawnCall])
   }
 
   // stopReason dispatch delegation (ExecutionFlow, split 8)
@@ -460,6 +520,13 @@ export class AgentEngine implements EngineCore {
   /** @internal - driven by SpawnManager for spawned engines */
   continueLoop = async (): Promise<void> => {
     const opts = this.opts
+    // A cancelled engine must not be revived by a LATE tool result (a slow MCP
+    // call or shell exit landing after stopExecution/pauseExecution):
+    // addToolResult calls back into here when its pending set empties, and
+    // without this guard one straggler re-issues an LLM request after the user
+    // pressed stop. Explicit resumes (resumeExecution / retryLastTurn) reset
+    // isCancelled first, so they pass.
+    if (this.isCancelled) return
     if (!opts.apiKey) {
       this.agentStatus = { status: 'error', error: 'API key not configured' }
       this.notify()
@@ -476,10 +543,15 @@ export class AgentEngine implements EngineCore {
     this.loopCount += 1
     if (this.loopCount > this.maxLoopCount) {
       if (this.spawnSystemPrompt) {
-        this.maxLoopCount += MAX_LOOP_ITERATIONS
-        this.loopCount = 0
+        // A spawned expert that reaches its own loop limit errors out and
+        // SETTLES its completion (PLAN-parallel-experts T8, L12). The silent
+        // `+50` renewal was the main agent's self-extend semantics; on an
+        // unattended expert it means a stuck one burns tokens forever, the
+        // parent's `await spawnBatch` never returns, and — with the FIFO slot
+        // queue — one never-ending expert wedges the whole session's queue.
+        this.agentStatus = { status: 'error', error: `Sub-agent reached its loop limit (${this.maxLoopCount} rounds) without completing the task.` }
         this.notify()
-        setTimeout(() => this.continueLoop(), 0)
+        this.resolveCompletionIfSpawned('error')
         return
       }
       this.agentStatus = { status: 'awaiting_extension', currentCount: this.loopCount - 1, limit: this.maxLoopCount }
@@ -513,6 +585,12 @@ export class AgentEngine implements EngineCore {
   }> => {
     const toolManager = opts.toolManager
 
+    // ── Tools (before the prompt: the protocols section is built from the SAME
+    // final toolset that ships as schemas, so the prompt never describes a tool
+    // the request does not carry) ──────────────────────────────────────────
+    const enabledTools = await collectEnabledTools(this, toolManager)
+    const toolProtocols = buildToolProtocols(enabledTools)
+
     // ── Build the prompt: invariant core + per-turn state ─────────
     // The split is a prefix-cache contract, not a formatting choice. DeepSeek
     // matches a prompt prefix from token 0 and renders `system → tools →
@@ -529,6 +607,7 @@ export class AgentEngine implements EngineCore {
       spawnSystemPromptAppendix: this.spawnSystemPromptAppendix,
       messages: this.messages,
       plan: this.planManager.plan,
+      toolProtocols,
     })
     const systemPrompt = spResult.systemPrompt
     // The state block is rebuilt per request (never persisted, never rendered) so
@@ -543,9 +622,6 @@ export class AgentEngine implements EngineCore {
           createdAt: new Date().toISOString(),
         }
       : null
-
-    // ── Tools ──────────────────────────────────────────────────────
-    const enabledTools = await collectEnabledTools(this, toolManager)
 
     // ── Persist tool_results for tool_result_search ──────────────
     if (this.opts.conversationId) {
@@ -685,6 +761,10 @@ export class AgentEngine implements EngineCore {
   stopExecution = (): void => this.executionFlow.stopExecution()
 
   // Sub-agent delegation (SpawnManager, split 3/5)
+  // NOTE: the parallel-expert slot is held by the DISPATCHER (executors/spawn-tool.ts
+  // takes one and holds it across `waitForCompletion`), not here — calling this
+  // directly would spawn an expert outside the session's three-slot budget.
+  // `spawn-tool` is currently the only production caller.
   spawnSubAgent = (config: SpawnSubAgentConfig): SubAgentHandle => this.spawnManager.spawnSubAgent(config)
   startSpawnLoop = (config: SpawnSubAgentConfig): void => this.spawnManager.startSpawnLoop(config)
   resolveCompletionIfSpawned = (status: SubAgentResult['status']): void => this.spawnManager.resolveCompletionIfSpawned(status)
@@ -710,7 +790,9 @@ export class AgentEngine implements EngineCore {
     this.toolUseBlocks = []
     this.agentStatus = { status: 'streaming' }
     this.notify()
-    this.sessionStartTime = performance.now()
+    // The retried turn gets its own clock: the failed attempt's time is not part
+    // of the answer the user ends up reading.
+    this.turnClock.start()
     opts.adapter.reconcileMessages?.(this.messages)
     await this.continueLoop()
   }

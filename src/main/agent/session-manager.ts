@@ -33,6 +33,7 @@ import { composeExpertInstructions, toExpertRefCatalogs, type ExpertRefCatalogs 
 import type { ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
 import { agentClientRegistry } from './client-registry'
+import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
 import { pickApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
@@ -92,7 +93,9 @@ function sessionPlatformInfo(): PlatformInfo {
   }
 }
 
-class AgentSessionManagerImpl {
+/** Exported for the transport tests (`tests/turn-duration.test.ts`); the app
+ *  only ever uses the singleton below. */
+export class AgentSessionManagerImpl {
   private sessions = new Map<string, SessionEntry>()
   /** In-flight creations — ask/cancel/history/engineCall await these so a
    *  command that races the create (renderer fires both back-to-back) lands
@@ -107,6 +110,9 @@ class AgentSessionManagerImpl {
   private waitingLoops: Array<() => void> = []
   /** Per-session registry of tool_use runtime state (status|exitCode|outputLen) for in-place diffing. */
   private toolStatusRegistry = new Map<string, Map<string, string>>()
+  /** Per-session registry of message-level stat signatures (the turn's wall
+   *  clock / token counts) for the same in-place diffing. */
+  private messageStatsRegistry = new Map<string, Map<string, string>>()
 
   /** Subscribe to session events (the IPC bridge forwards these to renderers). */
   onEvent(sink: SessionEventSink): () => void {
@@ -137,14 +143,23 @@ class AgentSessionManagerImpl {
       // its view down. Nothing to append means nothing to send.
       if (items.length > 0) {
         this.emit(sessionId, { type: 'messages_append', fromIndex: lastLen, items: items as unknown[] })
+        // The append just delivered these messages' current stats, so record
+        // them as sent: the diff below exists for what changes AFTER a message
+        // is on the wire, and re-shipping the same numbers on every append
+        // would re-render every client for nothing.
+        const stats = this.messageStatsRegistry.get(sessionId) ?? new Map<string, string>()
+        for (const item of items) stats.set((item as AgentMessage).id, messageStatsSignature(item as AgentMessage))
+        this.messageStatsRegistry.set(sessionId, stats)
       }
     } else {
       // Truncation (regeneration/compaction) — ship the full list.
       this.emit(sessionId, { type: 'messages', messages: messages as unknown[] })
       this.toolStatusRegistry.delete(sessionId)
+      this.messageStatsRegistry.delete(sessionId)
     }
     this.lastSentLen.set(sessionId, messages.length)
     this.emitToolStatusDiff(sessionId, messages)
+    this.emitMessageStatsDiff(sessionId, messages)
   }
 
   /**
@@ -152,18 +167,24 @@ class AgentSessionManagerImpl {
    * terminal output) without changing the messages array length. Diff each
    * block's runtime signature and ship only the changed entries so the
    * renderer's mirror reflects approvals/progress/completion.
+   *
+   * The spawn link (subConvId/planNodeId) rides the same diff and for the same
+   * reason: spawn_agent writes it while executing, i.e. long after the assistant
+   * message it belongs to was appended, so a snapshot-only transport would never
+   * deliver it — the DAG node click and the card's sub-agent preview both had
+   * nothing to open with.
    */
   private emitToolStatusDiff(sessionId: string, messages: AgentMessage[]): void {
     const registry = this.toolStatusRegistry.get(sessionId) ?? new Map<string, string>()
-    const updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string }> = []
+    const updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string }> = []
     for (const msg of messages) {
       for (const block of msg.contentBlocks ?? []) {
         if (block.type !== 'tool_use') continue
-        const tu = block as { id?: string; status?: string; exitCode?: number; output?: string }
+        const tu = block as { id?: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string }
         const key = `${msg.id}:${tu.id ?? ''}`
         const output = typeof tu.output === 'string' ? tu.output : undefined
         const cappedOutput = output && output.length > 200_000 ? output.slice(0, 200_000) : output
-        const signature = `${tu.status ?? ''}|${tu.exitCode ?? ''}|${cappedOutput ? cappedOutput.length : 0}|${cappedOutput ? cappedOutput.slice(-80) : ''}`
+        const signature = `${tu.status ?? ''}|${tu.exitCode ?? ''}|${cappedOutput ? cappedOutput.length : 0}|${cappedOutput ? cappedOutput.slice(-80) : ''}|${tu.subConvId ?? ''}|${tu.planNodeId ?? ''}`
         if (registry.get(key) === signature) continue
         registry.set(key, signature)
         updates.push({
@@ -172,12 +193,31 @@ class AgentSessionManagerImpl {
           status: tu.status,
           exitCode: tu.exitCode,
           output: cappedOutput,
+          subConvId: tu.subConvId,
+          planNodeId: tu.planNodeId,
         })
       }
     }
     if (registry.size > 4000) registry.clear() // runaway guard for very long sessions
     this.toolStatusRegistry.set(sessionId, registry)
     if (updates.length > 0) this.emit(sessionId, { type: 'tool_status', updates })
+  }
+
+  /**
+   * MESSAGE-level stats mutate in place for the same reason tool blocks do, and
+   * one of them defines what the user reads as the task's duration: the engine
+   * stamps the turn's wall clock (user send → last output character, thinking
+   * and tool rounds included) onto the last assistant message when the turn
+   * ends — which is after that message was appended, so the length diff above
+   * has already run and would never carry it. Without this the chat showed the
+   * final answer's own LLM round (user feedback 2026-09-16).
+   */
+  private emitMessageStatsDiff(sessionId: string, messages: AgentMessage[]): void {
+    const registry = this.messageStatsRegistry.get(sessionId) ?? new Map<string, string>()
+    const updates = diffMessageStats(registry, messages)
+    if (registry.size > 4000) registry.clear() // runaway guard, as above
+    this.messageStatsRegistry.set(sessionId, registry)
+    if (updates.length > 0) this.emit(sessionId, { type: 'message_stats', updates })
   }
 
   /** Port of App.tsx afterSession hook: auto-capture memories + experience. */
@@ -310,7 +350,7 @@ class AgentSessionManagerImpl {
     const profile = settings.profiles.find((p) => p.id === profileId)
     if (!profile) throw new Error(`unknown profile: ${profileId}`)
     if (settings.activeProfileId !== profile.id) {
-      await settingsStore.set({ ...settings, activeProfileId: profile.id })
+      await settingsStore.update(s => ({ ...s, activeProfileId: profile.id }))
     }
     for (const sessionId of this.sessions.keys()) {
       await this.refreshOptions(sessionId).catch((err) => {
@@ -341,6 +381,19 @@ class AgentSessionManagerImpl {
     // its click took when the run kept its own level.
     const entry = this.sessions.get(sessionId)
     return entry ? this.effectiveApprovalMode(sessionId, entry) : mode
+  }
+
+  /** Drop a creation-time approval pin once its unattended window is over —
+   *  the routine runner calls this when a run settles, so post-run
+   *  continuations in the run transcript follow the conversation's own stored
+   *  choice (the 授权 button's column) instead of the run's frozen unattended
+   *  default. The pin exists to keep a run nobody is watching from widening;
+   *  a finished run has no such window left to protect. */
+  releaseApprovalPin(sessionId: string): void {
+    const entry = this.sessions.get(sessionId)
+    if (!entry || entry.pinned.approvalOverride === undefined) return
+    entry.pinned.approvalOverride = undefined
+    entry.engine.opts.approvalMode = this.effectiveApprovalMode(sessionId, entry)
   }
 
   async createSession(sessionId: string, opts: AgentSessionCreateOptions = {}): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> {
@@ -469,13 +522,15 @@ class AgentSessionManagerImpl {
     }
   }
 
-  /** Re-resolve the session's @-summoned expert config pack from the
-   *  conversation's expert_id binding. Runs at session creation and before
-   *  every ask (next to refreshConversationApproval) so @ switches and unbinds take
-   *  effect immediately; a deleted/disabled expert falls back to an ordinary
-   *  session. engine.applyExpertContext invalidates the system-prompt cache
-   *  when the expert changed. Derived prompt sessions (tool studio etc.) keep
-   *  their pinned override — an expert never applies to them. */
+  /** Re-resolve the session's conversation-bound expert config pack (the
+   *  legacy @-summon binding — new summons delegate via spawn_agent instead,
+   *  but rows bound before that still run as the expert). Runs at session
+   *  creation and before every ask (next to refreshConversationApproval) so
+   *  unbinds take effect immediately; a deleted/disabled expert falls back to
+   *  an ordinary session. engine.applyExpertContext invalidates the
+   *  system-prompt cache when the expert changed. Derived prompt sessions
+   *  (tool studio etc.) keep their pinned override — an expert never applies
+   *  to them. */
   private async refreshExpertContext(sessionId: string, entry: SessionEntry): Promise<void> {
     if (entry.pinned.systemPromptOverride) return
     try {
@@ -524,8 +579,10 @@ class AgentSessionManagerImpl {
   /** Kick off an agent loop; progress arrives as session events. Requests
    *  beyond the global concurrency cap queue FIFO. `pageContext` (the browser
    *  extension's current tab) is per-turn state: it rides on the engine opts
-   *  and lands in the prompt's dynamic (non-cached) Current Page section. */
-  async ask(sessionId: string, content: string, pageContext?: PageContext): Promise<void> {
+   *  and lands in the prompt's dynamic (non-cached) Current Page section.
+   *  `delegateExpertId` (@-summon) turns the ask into a spawn_agent delegation:
+   *  the expert runs the message as a sub-agent and the parent summarizes. */
+  async ask(sessionId: string, content: string, pageContext?: PageContext, delegateExpertId?: string): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
     this.refreshConversationApproval(sessionId, entry)
     await this.refreshExpertContext(sessionId, entry)
@@ -540,8 +597,10 @@ class AgentSessionManagerImpl {
     }
     this.runningLoops += 1
     const sandboxCtx = this.sandboxContexts.get(sessionId)
-    const startLoop = () => entry.engine.startLoop(content)
-    void (sandboxCtx ? sessionSandbox.run(sandboxCtx, startLoop) : startLoop())
+    const startTurn = () => delegateExpertId
+      ? entry.engine.startDelegatedLoop(content, delegateExpertId)
+      : entry.engine.startLoop(content)
+    void (sandboxCtx ? sessionSandbox.run(sandboxCtx, startTurn) : startTurn())
       .catch((err) => {
         this.emit(sessionId, { type: 'error', message: err instanceof Error ? err.message : String(err) })
       })

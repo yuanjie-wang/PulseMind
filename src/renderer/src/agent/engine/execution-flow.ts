@@ -16,6 +16,8 @@ import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import type { EngineCore } from './engine-core'
+import { releaseQueuedSubAgents, subAgentBudgetKey } from './subagent-limiter'
+import { beginTerminalSpan } from '../terminal-span'
 
 /** Built-in tools that only look — the 'read' tier, never gated.
  *  `built-in-tools.ts` holds the definitions; the approval ladder needs the
@@ -105,25 +107,33 @@ export class ExecutionFlow {
 
     this.cleanup()
     let outputBuffer = ''
-
-    const uo = getHost().onTerminalOutput(d => { outputBuffer += d.data; targetBlock!.output = outputBuffer; this.engine.notifyCoalesced() })
-    const ue = getHost().onTerminalExit(d => {
-      targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.cleanup(); this.engine.notify()
-      this.engine.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)
-    })
     let terminalErrorReceived = false
-    const uerr = getHost().onTerminalError(d => {
-      if (terminalErrorReceived) return; terminalErrorReceived = true
-      targetBlock!.exitCode = -1; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; targetBlock!.output = d.message; this.cleanup(); this.engine.notify()
-      this.engine.addToolResult(toolUseId, `Error: ${d.message}`, true)
+
+    // Terminal events broadcast by channel, so another engine's concurrent
+    // process delivers here too (PLAN-parallel-experts T7): the span filters
+    // by processId and parks the pre-pid window instead of consuming it.
+    const span = beginTerminalSpan(getHost(), {
+      onOutput: d => { outputBuffer += d.data; targetBlock!.output = outputBuffer; this.engine.notifyCoalesced() },
+      onExit: d => {
+        targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.cleanup(); this.engine.notify()
+        this.engine.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)
+      },
+      onError: d => {
+        if (terminalErrorReceived) return; terminalErrorReceived = true
+        targetBlock!.exitCode = -1; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; targetBlock!.output = d.message; this.cleanup(); this.engine.notify()
+        this.engine.addToolResult(toolUseId, `Error: ${d.message}`, true)
+      },
     })
-    this.engine.terminalCleanups = [uo, ue, uerr].filter(Boolean) as (() => void)[]
+    span.start()
+    this.engine.terminalCleanups = [() => span.stop()]
 
     try {
       const timeoutMs = targetBlock.input.timeout != null ? Number(targetBlock.input.timeout) * 1000 : undefined
       const processId = await getHost().executeCommand(resolvedCommand, resolvedCwd || undefined, timeoutMs)
       this.engine.executingProcessId = processId
+      span.claim(processId)
     } catch (err) {
+      span.stop()
       targetBlock.status = 'completed'; targetBlock.exitCode = -1; targetBlock.output = `Error: ${err instanceof Error ? err.message : 'Failed'}`
       this.cleanup(); this.engine.notify()
       this.engine.addToolResult(toolUseId, targetBlock.output, true)
@@ -156,6 +166,10 @@ export class ExecutionFlow {
 
   /** Pause execution (cancel current work but DON'T resolve spawn completion) */
   pauseExecution = (): void => {
+    // A manual pause is the same category as a held approval: the turn is still
+    // in flight, the user is the one not answering. It has no status of its own
+    // (the engine keeps reporting `executing`), so it pauses the clock here.
+    this.engine.turnClock.pause()
     this.engine.isCancelled = true
     this.engine.abortController?.abort()
     if (this.engine.currentRequestId) { getHost().apiAbortStream(this.engine.currentRequestId); this.engine.currentRequestId = null }
@@ -171,6 +185,7 @@ export class ExecutionFlow {
     for (const subEngine of this.engine.activeSubAgents.values()) {
       subEngine.resumeExecution()
     }
+    this.engine.turnClock.resume()
     this.engine.isCancelled = false
     this.engine.loopCount = 0
     this.engine.pendingToolIds = new Set()
@@ -186,15 +201,36 @@ export class ExecutionFlow {
     if (this.engine.currentRequestId) { getHost().apiAbortStream(this.engine.currentRequestId); this.engine.currentRequestId = null }
     this.cleanup()
     if (this.engine.executingProcessId) { getHost().killCommand(this.engine.executingProcessId); this.engine.executingProcessId = null }
-    for (const subEngine of this.engine.activeSubAgents.values()) {
-      subEngine.cancelLoop()
-    }
-    this.engine.activeSubAgents.clear()
+    this.settleSubAgentTree(this.engine)
+    // 排队等槽位的专家不能在用户按停止之后再起一个（暂停不排空——恢复时还要用）。
+    releaseQueuedSubAgents(subAgentBudgetKey(this.engine.opts))
     this.engine.agentStatus = { status: 'idle' }
     this.engine.streamingBlocks = []
     this.engine.pendingToolIds = new Set()
     this.engine.resolveCompletionIfSpawned('aborted')
     this.engine.notify()
+  }
+
+  /**
+   * 停止（不是暂停）时把整棵专家树的 completion 结算掉。
+   *
+   * `cancelLoop` 故意不结算 completion——那是「暂停」，用户还可以恢复，而恢复要靠
+   * 同一个 promise 把结果交回给派发方的 `waitForCompletion`。所以终止路径必须自己
+   * 结算，否则每个被中止的专家都会留下三样东西：永远不清理的 5s 存档定时器、永远
+   * 不放回的并行槽位（本会话的三个槽位就此永久占死，之后所有专家只能排队）、以及
+   * 最后一次 tick 之后没有落库的尾部消息。
+   *
+   * 递归是必需的而不是保险：专家的 spawn 不受工具白名单限制，专家可以再派专家，
+   * 而孙辈的派发挂在**子引擎**的 execSpawnAgent 上——只结算直接子代，孙辈的槽位
+   * 照样泄漏。
+   */
+  private settleSubAgentTree(engine: EngineCore): void {
+    for (const subEngine of [...engine.activeSubAgents.values()]) {
+      subEngine.cancelLoop()
+      this.settleSubAgentTree(subEngine)
+      subEngine.resolveCompletionIfSpawned('aborted')
+    }
+    engine.activeSubAgents.clear()
   }
 
 
@@ -421,12 +457,15 @@ export class ExecutionFlow {
 
   /** @internal */
   handleEndTurnResponse(stopReason: string | null): void {
-    // Update last assistant message with total session time (user input → loop end)
-    if (this.engine.sessionStartTime > 0) {
-      const totalMs = Math.round(performance.now() - this.engine.sessionStartTime)
+    // The turn's duration — user send → this last output character, with every
+    // thinking round and tool call in between counted and any stretch parked on
+    // the user (held approval / ask_user / loop-limit prompt / manual pause)
+    // excluded. The clock is the accumulator that knows the difference; the
+    // per-round times stay on the intermediate messages.
+    if (this.engine.turnClock.isActive()) {
+      const totalMs = Math.round(this.engine.turnClock.stop())
       const lastMsg = this.engine.messages[this.engine.messages.length - 1]
       if (lastMsg?.role === 'assistant') lastMsg.processingMs = totalMs
-      this.engine.sessionStartTime = 0
     }
     this.engine.agentStatus = { status: 'completed' }
     this.engine.notify()

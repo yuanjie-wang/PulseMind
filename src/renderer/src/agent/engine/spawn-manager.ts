@@ -34,7 +34,18 @@ export class SpawnManager {
     const subOpts: AgentEngineOptions = {
       ...this.engine.opts,
       conversationId: subConvId,
+      // The expert budget belongs to the SESSION, not to the expert's own
+      // sub-conversation: without this the child looks like a brand-new session
+      // and gets three fresh slots (and a nested spawn starts another three)
+      // instead of sharing the parent's three.
+      sessionRootId: this.engine.opts.sessionRootId || this.engine.opts.conversationId,
       hooks: undefined,
+      // 专家拿不到页面工具（PLAN-parallel-experts T9，第二轮裁定 ④：不给）：
+      // 专家继承父会话的 hostedAvailable=true，但注册表只绑定被 ws 客户端 ask
+      // 过的会话，专家的会话没人绑定——每次 page_* 调用都必然报「当前会话没有
+      // 连接的浏览器客户端」，是纯噪声加一次白跑的 LLM 轮。关掉入口比留着
+      // 必然失败的出口好。「专家驱动页面」要注册表支持子会话绑定，另立项。
+      hostedAvailable: false,
       // The sub-agent runs its own prompt wholesale and must never inherit the
       // parent session's @-summoned expert pack (its prompt override AND its
       // capability whitelists) through the spread. The DELEGATED pack's own
@@ -123,6 +134,10 @@ export class SpawnManager {
         createdAt: new Date().toISOString()
       }]
     }
+    // A sub-agent turn is a task in its own right: its duration is stamped on
+    // its final answer and read in the node's 子代理会话, so the clock starts
+    // with the kick-off message exactly as it does for a user's send.
+    this.engine.turnClock.start()
     this.engine.continueLoop()
   }
 
@@ -146,7 +161,10 @@ export class SpawnManager {
 
     this.engine.resolveCompletion({ messages: this.engine.messages, status, outputTokens, subConversationId: convId ?? undefined })
     this.engine.resolveCompletion = undefined
-    this.engine.completionPromise = undefined
+    // completionPromise deliberately stays: a settled promise is inert, and an
+    // expert that settles while spawnSubAgent is still on its synchronous path
+    // (loop limit crossed on round 1) must leave `waitForCompletion()` and the
+    // `.then(cleanup)` below a real promise — nulling here crashed both (T8).
   }
 
 }

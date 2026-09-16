@@ -20,6 +20,9 @@ export interface ToolExecContext {
   /** Live plan accessor — spawn_agent validates its planNode against it so the
    *  create_plan → spawn_agent → advance_plan chain shares one numbering. */
   getPlan?: () => Plan | null
+  /** Record the sub-conversation a dispatched node runs in (PLAN-workbench W12).
+   *  Routed through PlanManager so the plan keeps its single writer. */
+  linkPlanNode?: (ref: string | number, subConvId: string) => void
   /** Long-running exec tools report the spawned pid (terminal card wiring). */
   onProcessStart?: (pid: string) => void
   /** Format exec tool result with exit code and stdout/stderr separation. */

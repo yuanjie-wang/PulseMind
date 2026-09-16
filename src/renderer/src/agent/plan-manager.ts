@@ -11,6 +11,7 @@ import {
   completeAllNodes,
   createPlanDag,
   formatPlanSnapshot,
+  linkNodeSession,
   markNode,
   readyNodes,
   resolveNodeRef,
@@ -31,6 +32,23 @@ export class PlanManager {
 
   private notifyPlanChange(): void {
     this.onPlanChange?.(this.plan)
+  }
+
+  /** Record the sub-conversation a spawn runs a node in (PLAN-workbench W12).
+   *  The plan is the ONLY place this link persists — the spawn tool block's own
+   *  copy lives on the live status diff and dies with the message — so the
+   *  executor reports it here and the DAG's node click reads it back. */
+  linkNodeSession(ref: string | number, subConvId: string): void {
+    if (!this.plan) return
+    try {
+      const before = resolveNodeRef(this.plan, ref)?.subConvId
+      if (before === subConvId) return
+      linkNodeSession(this.plan, ref, subConvId)
+      this.notifyPlanChange()
+    } catch (err) {
+      // A stale/unknown ref must never fail the dispatch itself.
+      console.warn('[PlanManager] linkNodeSession failed:', err)
+    }
   }
 
   /** The assistant message carrying this tool call — the panel's jump anchor. */

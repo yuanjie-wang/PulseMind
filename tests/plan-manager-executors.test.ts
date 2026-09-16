@@ -173,3 +173,31 @@ describe('advance_plan executor', () => {
     expect(empty.results[0].content).toContain('No active plan')
   })
 })
+
+/** The node→sub-conversation link (PLAN-workbench W12): spawn_agent reports the
+ *  session it just created, and the plan is where that link lives — it is the
+ *  only carrier persisted (plan_json), i.e. the one the DAG's node click can
+ *  still resolve after a restart. */
+describe('linkNodeSession', () => {
+  it('records the session on the node and persists once', async () => {
+    const { mgr, notifications } = makeManager()
+    await mgr.execCreatePlan(tool({ objective: 'ship', steps: ['a', 'b'] }))
+    expect(notifications).toHaveLength(1)
+
+    mgr.linkNodeSession('n2', 'sub_abc')
+    expect(mgr.plan?.nodes[1].subConvId).toBe('sub_abc')
+    expect(notifications).toHaveLength(2) // written through onPlanChange
+
+    mgr.linkNodeSession('n2', 'sub_abc') // unchanged → no extra write
+    expect(notifications).toHaveLength(2)
+  })
+
+  it('is status-neutral and tolerates a missing plan or a stale ref', async () => {
+    const { mgr } = makeManager()
+    mgr.linkNodeSession('n1', 'sub_none') // no plan yet
+    await mgr.execCreatePlan(tool({ objective: 'ship', steps: ['a'] }))
+    mgr.linkNodeSession('n9', 'sub_bad') // unknown node
+    mgr.linkNodeSession('n1', 'sub_ok')
+    expect(mgr.plan?.nodes[0]).toMatchObject({ subConvId: 'sub_ok', status: 'pending' })
+  })
+})

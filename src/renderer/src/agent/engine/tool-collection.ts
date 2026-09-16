@@ -230,3 +230,25 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
 
   return enabledTools
 }
+
+/**
+ * The enabled built-ins' usage protocols as one system-prompt section.
+ *
+ * Every built-in definition carries an `instructions` markdown manual (see
+ * tool-instructions.ts, each starting with its own `## <tool>` heading); the
+ * field was never wired into any request, so the model ran on the two-line
+ * descriptions alone — measured consequence: mimo-v2.5 re-dispatched a
+ * completed spawn_agent five times in a row because nothing told it that a
+ * returned result is the deliverable. Built from the FINAL enabled toolset
+ * (after the gate and the whitelists), so the prompt never describes a tool
+ * the request does not carry. MCP tools carry `instructions: ''` and drop out.
+ * Static per toolset, so the provider's cached prefix only moves when the
+ * tool schemas move anyway.
+ */
+export function buildToolProtocols(enabledTools: Array<{ instructions?: string }>): string {
+  const sections = enabledTools
+    .map((t) => (t.instructions || '').trim())
+    .filter(Boolean)
+  if (sections.length === 0) return ''
+  return `# Tool Protocols\n\nHow to use the tools available in this request. These protocols hold for every turn.\n\n${sections.join('\n\n')}`
+}

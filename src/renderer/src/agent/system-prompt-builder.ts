@@ -11,6 +11,12 @@ export interface BuildSystemPromptParams {
   spawnSystemPromptAppendix?: string
   messages: AgentMessage[]
   plan: Plan | null
+  /** The enabled built-ins' usage protocols (buildToolProtocols over the SAME
+   *  final toolset the request ships as schemas). Static per toolset, so it
+   *  keeps the system prompt's cache contract: it only changes when the tool
+   *  schemas change, which invalidates the prefix anyway. Ignored on the
+   *  spawned-sub-agent path — a spawn prompt owns its whole system message. */
+  toolProtocols?: string
 }
 
 export interface BuildSystemPromptResult {
@@ -36,7 +42,7 @@ export interface BuildSystemPromptResult {
 }
 
 export async function buildSystemPrompt(params: BuildSystemPromptParams): Promise<BuildSystemPromptResult> {
-  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan } = params
+  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, toolProtocols } = params
 
   if (spawnSystemPrompt) {
     const systemPrompt = spawnSystemPromptAppendix
@@ -45,7 +51,7 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     return { systemPrompt, stateBlock: null }
   }
 
-  const systemPrompt = await buildCorePrompt(opts)
+  const systemPrompt = await buildCorePrompt(opts, toolProtocols)
   const stateBlock = await buildStateBlock({
     opts,
     messages,
@@ -60,13 +66,14 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
  * the settings file — a value that can change mid-session belongs in
  * buildStateBlock instead (or the cached prefix dies with it).
  */
-async function buildCorePrompt(opts: AgentEngineOptions): Promise<string> {
+async function buildCorePrompt(opts: AgentEngineOptions, toolProtocols?: string): Promise<string> {
   const parts: string[] = []
   const { myName, soul, yourName, locale, platformInfo } = opts
 
   // ── Identity ────────────────────────────────────────────────────
-  // An expert config pack (@-summoned role switch) REPLACES the basic persona:
-  // identity precedence is the whole point of the summon. myName survives (it is
+  // An expert config pack (a conversation-bound role switch; @-summon now
+  // delegates via spawn_agent instead of binding) REPLACES the basic persona:
+  // identity precedence is the whole point of the pack. myName survives (it is
   // context about the user, not the assistant); soul/yourName do not.
   if (opts.expert) {
     parts.push(opts.expert.instructions)
@@ -102,6 +109,11 @@ You have a local knowledge base (compiled wiki) of project documents and past co
   // ── Managed-tool appendix (renderer-provided; empty for the built-in manager) ──
   const toolAppendix = opts.toolManager?.getSystemPromptAppendix()
   if (toolAppendix) parts.push(toolAppendix)
+
+  // ── Tool usage protocols (per-tool markdown from the enabled toolset) ──
+  // Sits with the other tool-convention blocks and is static per toolset, so
+  // the cached prefix only moves when the tool schemas move anyway.
+  if (toolProtocols) parts.push(toolProtocols)
 
   parts.push(SESSION_STATE_NOTICE)
   parts.push(TOOL_CALL_FORMAT)

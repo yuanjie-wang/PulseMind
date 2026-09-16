@@ -342,7 +342,8 @@ Delegate a task to a sub-agent. The sub-agent runs with the same tools as this s
 - Use for complex, self-contained sub-tasks (research, analysis, code review, refactoring)
 - Be very specific about what context the sub-agent needs
 - Specify the expected output format in the task description
-- The sub-agent CANNOT install skills or modify tool preferences`,
+- The sub-agent CANNOT install skills or modify tool preferences
+- **One delegation per task.** When a result arrives with status \`completed\`, the text under **### Summary** IS the deliverable: report it to the user in your own words and move on. NEVER re-dispatch the same or a near-identical task — a second run cannot improve a result you already hold. If the result misses the mark, say so and ask the user, don't delegate again silently`,
 
   create_plan: `## create_plan
 

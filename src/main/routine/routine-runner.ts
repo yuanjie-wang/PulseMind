@@ -96,6 +96,11 @@ export const routineRunner = {
       clearTimeout(timeout)
       unsubscribe?.()
       routineStore.finishRun(run.id, { status, conversationId: convId, error })
+      // The unattended window ends with the run: drop the create-time approval
+      // pin so post-run continuations in the run transcript follow the
+      // conversation's own stored level (the 授权 button's column). The pin
+      // held while nobody was watching; it must not outlive that.
+      agentSessionManager.releaseApprovalPin(convId)
       // Persist before announcing: a click-through must find the conversation.
       void persistTranscript(convId, routine).then(() => {
         notify(

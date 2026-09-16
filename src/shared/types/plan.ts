@@ -25,6 +25,13 @@ export interface PlanNode {
   msgId?: string
   /** One-line outcome note from advance_plan; shown in snapshots and the panel. */
   summary?: string
+  /** Sub-conversation hosting the spawn that implements this node
+   *  (PLAN-workbench W12). Written when spawn_agent claims the node, so the
+   *  graph's node click can open that session. The plan is deliberately the
+   *  carrier: it is the one part of the link that is persisted and survives a
+   *  restart, whereas the tool block's own copy rides the live status diff and
+   *  can disappear with the assistant message when history is compacted. */
+  subConvId?: string
 }
 
 export interface Plan {

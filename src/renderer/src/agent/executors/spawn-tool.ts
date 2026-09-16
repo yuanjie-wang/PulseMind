@@ -12,6 +12,13 @@ import {
 import { nodeNumberOf, resolveNodeRef } from '../../../../shared/plan/graph'
 import type { PlanNode } from '../../../../shared/types/plan'
 import { getCachedMcpServers } from '../mcp-cache'
+import {
+  MAX_PARALLEL_SUBAGENTS,
+  acquireSubAgentSlot,
+  activeSubAgentCount,
+  queuedSubAgentCount,
+  subAgentBudgetKey,
+} from '../engine/subagent-limiter'
 import type { ToolExecContext } from './context'
 import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { ToolUseBlock, TextBlock } from '../../types/agent'
@@ -111,58 +118,107 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
     ex.notify()
 
-    // 可用能力白名单：有专家包就原样给出（空数组 = 一个都不许用）；
-    // 没有专家包（通用子代理）才留 undefined，表示不限制。
-    const handle = ex.spawnSubAgent!({
-      systemPrompt,
-      initialMessages: [],
-      title: `${profile?.name || '子代理'}: ${task.slice(0, 60)}`,
-      allowedSkills: profile ? profile.skillNames ?? [] : undefined,
-      allowedMcpServers: profile ? profile.mcpServerIds ?? [] : undefined,
-      maxTokens: ex.opts.maxTokens,
-      maxLoopIterations: 20,
-      onProgress: (summary) => {
-        // Rolling activity log (cap 8 lines) so the user sees the sub-agent moving live.
-        const lines = (t.output || '').split('\n')
-        lines.push(summary)
-        while (lines.length > 8) lines.shift()
-        t.output = lines.join('\n')
-        ex.notify()
-      },
-    })
-
-    // Set _subConvId immediately so parent conversation saves link to sub-agent conversation
-    // even if the app restarts before the sub-agent completes.
-    ;(t as { _subConvId?: string })._subConvId = handle.subConvId
-    // Plan linkage marker (UI/telemetry hook): which plan node this spawn implements.
-    if (planNode) (t as { _planNodeId?: string })._planNodeId = planNode.id
-    // Keep handle reference for live preview while the sub-agent is running.
-    // Non-enumerable so JSON.stringify skips it — avoids serializing the entire engine state.
-    Object.defineProperty(t, '_subAgentHandle', { value: handle, writable: true, enumerable: false, configurable: true })
-    ex.notify()
-
-    const result = await handle.waitForCompletion()
-    const subAssistantTexts = result.messages
-      .filter(m => m.role === 'assistant')
-      .flatMap(m => m.contentBlocks)
-    const subText = subAssistantTexts.filter(b => b.type === 'text').map(b => (b as TextBlock).text).join('\n\n').slice(0, SUBAGENT_TEXT_MAX)
-    const subTools = subAssistantTexts.filter(b => b.type === 'tool_use').map(b => `[tool_use: ${(b as ToolUseBlock).name}]`).join(', ')
-    const errorDetail = result.status !== 'completed'
-      ? `\n\n### Sub-agent Status: ${result.status}\n` + (subText ? `**Partial Output:**\n${subText}` : '') + (subTools ? `\n**Tool Calls Attempted:** ${subTools}` : '')
-      : ''
-    let summary = result.status === 'completed'
-      ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
-      : `## Sub-Agent Result (${result.status})\n\nThe sub-agent did not complete successfully.${errorDetail}`
-    // Close the create_plan → spawn_agent → advance_plan loop in the model's
-    // face: the result names the node and the exact settle call to make.
-    if (planNode) {
-      summary += `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — settle it now with advance_plan action="complete" node=${nodeNumberOf(planNode)} (or "fail" / "skip" if it did not succeed).`
+    // 并行专家上限（PLAN-parallel-experts P2，用户裁定 2026-09-16：同一会话最多 3 个；
+    // 计划文档在 _task/20260916/PLAN-parallel-experts.md）。
+    // The slot is taken AFTER validation (a bad planNode must fail fast, not
+    // after queueing behind three long experts) and held for the whole
+    // dispatch — i.e. across `waitForCompletion` below. See the header of
+    // engine/subagent-limiter.ts for why that is the shape that survives
+    // pause/resume and stop.
+    const budgetKey = subAgentBudgetKey(ex.opts)
+    const busy = activeSubAgentCount(budgetKey)
+    const queued = queuedSubAgentCount(budgetKey)
+    if (busy >= MAX_PARALLEL_SUBAGENTS || queued > 0) {
+      t.output = `排队中：本会话已有 ${busy} 个专家在运行（上限 ${MAX_PARALLEL_SUBAGENTS} 个），前面还有 ${queued} 个等待空位…`
+      ex.notify()
+    }
+    const release = await acquireSubAgentSlot(budgetKey)
+    if (!release) {
+      // The session was stopped while this expert waited in line. Starting it
+      // now would run work the user just cancelled.
+      t.exitCode = -1
+      t.status = 'completed'
+      ex.addToolResult(t.id, '子代理未启动：本次执行已被停止。', true)
+      ex.notify()
+      return
     }
 
-    t.exitCode = result.status === 'completed' ? 0 : 1
-    t.status = 'completed'
-    ex.addToolResult(t.id, summary, result.status === 'error')
-    t.output = `子代理已完成. ${subText}`
+    try {
+      // 可用能力白名单：有专家包就原样给出（空数组 = 一个都不许用）；
+      // 没有专家包（通用子代理）才留 undefined，表示不限制。
+      const handle = ex.spawnSubAgent!({
+        systemPrompt,
+        initialMessages: [],
+        title: `${profile?.name || '子代理'}: ${task.slice(0, 60)}`,
+        allowedSkills: profile ? profile.skillNames ?? [] : undefined,
+        allowedMcpServers: profile ? profile.mcpServerIds ?? [] : undefined,
+        maxTokens: ex.opts.maxTokens,
+        // An independent task's actual length (PLAN-parallel-experts T8/L12).
+        // The expert ERRORS at this limit instead of silently renewing — a
+        // never-ending expert burns tokens forever, the parent's batch never
+        // returns, and the FIFO slot queue wedges behind it.
+        maxLoopIterations: 40,
+        onProgress: (summary) => {
+          // Rolling activity log (cap 8 lines) so the user sees the sub-agent moving live.
+          const lines = (t.output || '').split('\n')
+          lines.push(summary)
+          while (lines.length > 8) lines.shift()
+          t.output = lines.join('\n')
+          ex.notify()
+        },
+      })
+
+      // Set the sub-conversation link immediately so it survives an app restart
+      // mid-run. It is written on the TOOL BLOCK (for the card's preview button,
+      // which reads it off the block) and on the PLAN NODE (for the DAG's node
+      // click, which needs a link that outlives message history). The block copy
+      // reaches a client only through the tool_status diff — spawn-tool runs in
+      // the main process, and the message snapshot was shipped before this point.
+      t.subConvId = handle.subConvId
+      if (planNode) {
+        // Plan linkage marker (UI/telemetry hook): which plan node this spawn implements.
+        t.planNodeId = planNode.id
+        ex.linkPlanNode?.(planNode.id, handle.subConvId)
+      }
+      // Keep handle reference for live preview while the sub-agent is running.
+      // Non-enumerable so JSON.stringify skips it — avoids serializing the entire engine state.
+      Object.defineProperty(t, '_subAgentHandle', { value: handle, writable: true, enumerable: false, configurable: true })
+      ex.notify()
+
+      const result = await handle.waitForCompletion()
+      const subAssistantTexts = result.messages
+        .filter(m => m.role === 'assistant')
+        .flatMap(m => m.contentBlocks)
+      const subText = subAssistantTexts.filter(b => b.type === 'text').map(b => (b as TextBlock).text).join('\n\n').slice(0, SUBAGENT_TEXT_MAX)
+      const subTools = subAssistantTexts.filter(b => b.type === 'tool_use').map(b => `[tool_use: ${(b as ToolUseBlock).name}]`).join(', ')
+      const errorDetail = result.status !== 'completed'
+        ? `\n\n### Sub-agent Status: ${result.status}\n` + (subText ? `**Partial Output:**\n${subText}` : '') + (subTools ? `\n**Tool Calls Attempted:** ${subTools}` : '')
+        : ''
+      let summary = result.status === 'completed'
+        ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
+        : `## Sub-Agent Result (${result.status})\n\nThe sub-agent did not complete successfully.${errorDetail}`
+      // Close the create_plan → spawn_agent → advance_plan loop in the model's
+      // face: the result names the node and the exact settle call to make.
+      if (planNode) {
+        summary += `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — settle it now with advance_plan action="complete" node=${nodeNumberOf(planNode)} (or "fail" / "skip" if it did not succeed).`
+      }
+      // Close-out instruction, deliberately the LAST bytes of the envelope:
+      // the envelope reads like an intermediate artifact, and a weak model
+      // answers it by delegating again — measured loop (2026-09-16, mimo):
+      // five identical re-dispatches of an already-completed translation. The
+      // model decides its next move off the end of this result, so the end
+      // says what to do: report, don't re-run.
+      summary += result.status === 'completed'
+        ? '\n\n**This result is the deliverable.** Report it to the user in your own words and move on — do NOT re-dispatch the same or a near-identical task.'
+        : '\n\n**Report this outcome to the user.** Do NOT silently re-dispatch the same task; retry only with a meaningfully different task description, or ask the user.'
+
+      t.exitCode = result.status === 'completed' ? 0 : 1
+      t.status = 'completed'
+      ex.addToolResult(t.id, summary, result.status === 'error')
+      t.output = `子代理已完成. ${subText}`
+    } finally {
+      release()
+    }
   } catch (err) {
     t.exitCode = -1
     t.status = 'completed'

@@ -16,6 +16,7 @@ import type { ToolExecutor } from '../tool-executors'
 import type { PlanManager } from '../plan-manager'
 import type { ContextCompactor } from './context-compactor'
 import type { IncrementalJsonTracker } from '../json-stream'
+import type { TurnClock } from './turn-clock'
 import type { PulseHost } from '../host/types'
 
 export interface EngineCore {
@@ -37,7 +38,9 @@ export interface EngineCore {
   isCancelled: boolean
   isAutoExecuting: boolean
   requestStartTime: number
-  sessionStartTime: number
+  /** The turn's duration accumulator (send → last output character, excluding
+   *  time parked on the user) — see engine/turn-clock.ts. */
+  turnClock: TurnClock
   streamIdleRetries: number
   pendingToolIds: Set<string>
   executingProcessId: string | null

@@ -1,0 +1,127 @@
+// ── Parallel expert cap (PLAN-parallel-experts P2; the plan document lives at
+//    _task/20260916/PLAN-parallel-experts.md) ──
+// A batch of spawn_agent blocks used to start every expert at once: the
+// dispatcher runs them in one Promise.all and nothing anywhere counted them,
+// so N blocks meant N engines, N live LLM streams and N concurrent tool
+// loops — and because a sub-agent inherits `allowedTools: undefined`, an
+// expert could spawn experts of its own, making the fan-out recursive with no
+// depth or width bound at all. Provider rate limits and the main process both
+// pay for that.
+//
+// The cap is per SESSION and the budget is shared with nested spawns (the
+// session key is threaded through `sessionRootId`, see spawn-manager), so
+// "本会话最多 3 个专家同时在跑" holds for the whole tree rather than per level.
+//
+// Where the slot lives (this is the part that has to be right): a dispatch
+// acquires immediately before `spawnSubAgent` and releases when the expert's
+// completion settles, which means the slot is held across
+// `await handle.waitForCompletion()`. Two consequences that were the whole
+// reason for choosing this shape:
+//
+//   * 暂停再恢复不会绕过上限 — a paused expert's dispatch is still parked on
+//     that same await, so its slot was never handed back.
+//   * 停止会话时排队者不会在停止之后再起一个专家 — `releaseQueuedSubAgents`
+//     resolves the waiters with `null`, and the caller bails out instead of
+//     starting work the user just cancelled.
+//
+// The count is module state on purpose: engines of one session are separate
+// `AgentEngine` instances (they share nothing else), so a per-engine counter
+// could not see the siblings it is supposed to be limiting.
+
+/** 同一会话内并行工作的专家上限（用户裁定 2026-09-16）。 */
+export const MAX_PARALLEL_SUBAGENTS = 3
+
+/** Release a held slot. Idempotent — safe to call from a `finally`. */
+export type ReleaseSubAgentSlot = () => void
+
+interface SessionBudget {
+  /** Slots currently held by a dispatch. */
+  running: number
+  /** Dispatches parked until a slot frees, FIFO. */
+  waiting: Array<(release: ReleaseSubAgentSlot | null) => void>
+}
+
+const budgets = new Map<string, SessionBudget>()
+
+function budgetOf(key: string): SessionBudget {
+  let budget = budgets.get(key)
+  if (!budget) {
+    budget = { running: 0, waiting: [] }
+    budgets.set(key, budget)
+  }
+  return budget
+}
+
+/** Budget key for one engine: the session it belongs to, not the expert's own
+ *  sub-conversation. A sub-agent inherits the root id (spawn-manager writes
+ *  `sessionRootId`), which is what makes nested spawns count against the same
+ *  three slots instead of starting a fresh three per level. */
+export function subAgentBudgetKey(opts: { sessionRootId?: string; conversationId?: string }): string {
+  return opts.sessionRootId || opts.conversationId || 'default'
+}
+
+/**
+ * Take a slot, waiting in line when the session is at its cap.
+ * Resolves with a release function, or `null` when the session was stopped
+ * while this dispatch was queued (the caller must not start the expert).
+ */
+export function acquireSubAgentSlot(key: string): Promise<ReleaseSubAgentSlot | null> {
+  const budget = budgetOf(key)
+  if (budget.running < MAX_PARALLEL_SUBAGENTS) {
+    budget.running += 1
+    return Promise.resolve(makeRelease(key, budget))
+  }
+  return new Promise((resolve) => {
+    budget.waiting.push(resolve)
+  })
+}
+
+function makeRelease(key: string, budget: SessionBudget): ReleaseSubAgentSlot {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    const next = budget.waiting.shift()
+    if (next) {
+      // Hand the slot over rather than releasing and re-acquiring: `running`
+      // stays put, so the next expert starts the moment one finishes and FIFO
+      // order is decided by the queue, not by who wakes up first.
+      next(makeRelease(key, budget))
+      return
+    }
+    budget.running -= 1
+    if (budget.running <= 0) {
+      budget.running = 0
+      budgets.delete(key)
+    }
+  }
+}
+
+/** Experts currently holding a slot in this session. */
+export function activeSubAgentCount(key: string): number {
+  return budgets.get(key)?.running ?? 0
+}
+
+/** Dispatches waiting for a slot in this session. */
+export function queuedSubAgentCount(key: string): number {
+  return budgets.get(key)?.waiting.length ?? 0
+}
+
+/**
+ * Stop path: resolve every queued dispatch with `null` so none of them starts
+ * an expert after the user stopped the turn. Held slots are left alone — they
+ * are released by the dispatches themselves as their experts settle (the
+ * stop path settles sub-agents as 'aborted', which is what lets them).
+ */
+export function releaseQueuedSubAgents(key: string): void {
+  const budget = budgets.get(key)
+  if (!budget) return
+  const waiting = budget.waiting.splice(0)
+  for (const resolve of waiting) resolve(null)
+  if (budget.running <= 0) budgets.delete(key)
+}
+
+/** Test seam: drop all accounting (module state outlives a single test). */
+export function resetSubAgentLimiter(): void {
+  budgets.clear()
+}

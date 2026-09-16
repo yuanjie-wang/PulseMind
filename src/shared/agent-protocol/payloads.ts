@@ -181,8 +181,18 @@ export type AgentEventData =
   | { type: 'messages'; messages: unknown[] }
   /** Incremental transport: items appended at fromIndex (full 'messages' event on truncation). */
   | { type: 'messages_append'; fromIndex: number; items: unknown[] }
-  /** In-place tool_use block mutations (status/exitCode/output) — diffed, only changed entries. */
-  | { type: 'tool_status'; updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string }> }
+  /** In-place tool_use block mutations (status/exitCode/output, and the spawn
+   *  link — subConvId/planNodeId — which is written at dispatch time and has no
+   *  other carrier) — diffed, only changed entries. */
+  | { type: 'tool_status'; updates: Array<{ messageId: string; toolUseId: string; status?: string; exitCode?: number; output?: string; subConvId?: string; planNodeId?: string }> }
+  /** In-place MESSAGE-level stat mutations, diffed for the same reason and with
+   *  the same shape discipline as `tool_status`: the turn's wall clock is
+   *  stamped onto the last assistant message when the turn ends, i.e. after
+   *  that message was already appended, so a length-diffed transport would never
+   *  deliver it — and the chat showed the answer's own LLM round instead of the
+   *  task's duration (user feedback 2026-09-16). This supersedes the vestigial
+   *  `usage` member, which had no emitter and could not address a message. */
+  | { type: 'message_stats'; updates: Array<{ messageId: string; processingMs?: number; inputTokens?: number; outputTokens?: number; promptCacheHitTokens?: number }> }
   | { type: 'streaming_blocks'; blocks: unknown[] }
   | { type: 'token'; blockType: 'text' | 'thinking'; text: string }
   | { type: 'block_start'; blockType: 'text' | 'thinking' | 'tool_use'; toolName?: string }
@@ -191,7 +201,6 @@ export type AgentEventData =
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean; exitCode?: number }
   | { type: 'plan_update'; plan: PlanSnapshot | null }
   | { type: 'spawn_progress'; message: string }
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number; promptCacheHitTokens?: number; processingMs?: number }
   | { type: 'done'; stopReason: string }
   | { type: 'error'; message: string }
 

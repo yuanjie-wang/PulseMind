@@ -11,6 +11,13 @@ export interface ToolUseBlock {
   status?: 'pending' | 'approved' | 'running' | 'completed' | 'rejected'
   output?: string
   exitCode?: number | null
+  /** spawn_agent only: the sub-conversation this call hosts. Written by the
+   *  engine that owns the handle (the main process), so a client learns it from
+   *  the tool_status diff — the messages snapshot ships when the assistant
+   *  message is created, i.e. before the spawn has a sub-conversation. */
+  subConvId?: string
+  /** spawn_agent only: the plan node this call implements (spawn_agent planNode=). */
+  planNodeId?: string
 }
 
 export interface ToolResultBlock {
