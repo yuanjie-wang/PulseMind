@@ -287,25 +287,21 @@ export function useChatController(options: UseChatControllerOptions) {
       }
 
       let convId = persistence.activeConversationKey ? String(persistence.activeConversationKey) : ''
-      const isNewConversation = !convId
 
       // ── @-summon: resolve an expert mention before anything else ──
-      // The mention must resolve against an enabled, non-builtin expert and is
-      // stripped from the outgoing text. Binding only (no send) is allowed on
-      // an existing conversation — that's the switch/unbind-free summon UX; on
-      // a brand-new conversation it would materialize a ghost row, so refuse.
+      // Summoning IS delegation now (spawn_agent): the mentioned expert runs
+      // the task as a sub-agent inside this conversation and the parent
+      // summarizes the result — the conversation itself never switches
+      // identity anymore. The mention must resolve against an enabled expert
+      // and is stripped from the outgoing text; with nothing to delegate
+      // (an empty task) there is no summon.
       let experts: ExpertProfile[] = []
       try { experts = await window.electronAPI.expertList() } catch { /* non-critical */ }
       const mention = parseExpertMention(content, experts)
       if (mention.expert) {
         content = mention.text
         if (!content.trim()) {
-          if (isNewConversation) {
-            message.warning(t('chatView.expert.needTaskWithSummon'))
-            return
-          }
-          persistence.updateConversationExpert(convId, mention.expert.id)
-          message.success(t('chatView.expert.switched', { name: mention.expert.name }))
+          message.warning(t('chatView.expert.needTaskWithSummon'))
           return
         }
       }
@@ -341,12 +337,6 @@ export function useChatController(options: UseChatControllerOptions) {
         persistence.bumpConversation(convId)
       }
 
-      // Bind the summoned expert AFTER the row materialization so the
-      // stub-insert contract holds, and BEFORE session creation — the main-side
-      // doCreateSession → refreshExpertContext reads the DB binding, so the
-      // very first loop already runs as the expert.
-      if (mention.expert) persistence.updateConversationExpert(convId, mention.expert.id)
-
       if (import.meta.env.DEV) console.log(`[ChatController] handleRequest: model=${options.model} baseURL=${options.baseURL}`)
       pendingTitleGenRef.current = convId
 
@@ -359,11 +349,17 @@ export function useChatController(options: UseChatControllerOptions) {
         )
       }
 
-      engine.getOrCreateEngine(convId).startLoop(content)
+      // The @-summoned expert rides the same conversation materialization and
+      // title generation as a normal send — only the turn's entry point
+      // differs: main dispatches a deterministic spawn_agent tool call and
+      // the expert's result comes back into this conversation.
+      const engineHandle = engine.getOrCreateEngine(convId)
+      if (mention.expert) engineHandle.startDelegatedLoop(content, mention.expert.id)
+      else engineHandle.startLoop(content)
     },
     [apiKey, persistence.activeConversationKey, persistence.addConversation,
      persistence.setActiveConversationKey, persistence.updateConversationTitleInList,
-     persistence.updateConversationExpert, persistence.updateConversationApproval,
+     persistence.updateConversationApproval,
      persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, options, t, message]
   )
 

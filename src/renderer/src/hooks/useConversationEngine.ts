@@ -35,6 +35,9 @@ export interface SessionEngineHandle {
   seedHistorySummary(text?: string, firstKeptId?: string): void
   loadPlan(convId: string): void
   startLoop(userMessage: string): Promise<void>
+  /** @-summon (召唤专家): the same ask, but main routes the turn into a
+   *  spawn_agent delegation to the named expert instead of a normal loop. */
+  startDelegatedLoop(userMessage: string, expertId: string): Promise<void>
   approveTool(toolUseId: string): void
   rejectTool(toolUseId: string): void
   killTool(toolUseId: string): void
@@ -106,7 +109,18 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     return st
   }, [])
 
-  const makeHandle = useCallback((convId: string, st: SessionState): SessionEngineHandle => ({
+  const makeHandle = useCallback((convId: string, st: SessionState): SessionEngineHandle => {
+    // One ask path, two entry points: a normal loop and the @-summon's
+    // spawn_agent delegation (main picks the engine method off the expert id).
+    const ask = (content: string, delegateExpertId?: string) =>
+      window.electronAPI.agentSessionAsk(convId, content, delegateExpertId).catch((err: unknown) => {
+        // A failed ask (session creation blew up, profile missing, …) must be
+        // visible in the conversation, not swallowed as an unhandled rejection
+        // — that silence is how a dead first message used to look like nothing.
+        st.agentStatus = { status: 'error', error: err instanceof Error ? err.message : String(err) }
+        if (activeEngineIdRef.current === convId) setAgentStatus(st.agentStatus)
+      })
+    return {
     get messages() { return st.messages },
     get agentStatus() { return st.agentStatus },
     get streamingBlocks() { return st.streamingBlocks },
@@ -132,13 +146,10 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       // The main-side hydrate loads the persisted plan alongside history.
     },
     startLoop(userMessage: string) {
-      return window.electronAPI.agentSessionAsk(convId, userMessage).catch((err: unknown) => {
-        // A failed ask (session creation blew up, profile missing, …) must be
-        // visible in the conversation, not swallowed as an unhandled rejection
-        // — that silence is how a dead first message used to look like nothing.
-        st.agentStatus = { status: 'error', error: err instanceof Error ? err.message : String(err) }
-        if (activeEngineIdRef.current === convId) setAgentStatus(st.agentStatus)
-      })
+      return ask(userMessage)
+    },
+    startDelegatedLoop(userMessage: string, expertId: string) {
+      return ask(userMessage, expertId)
     },
     approveTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId]) },
     rejectTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'rejectTool', [toolUseId]) },
@@ -155,7 +166,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       // Options are rebuilt main-side; the client only signals WHEN they change.
       void window.electronAPI.agentSessionRefreshOptions(convId)
     },
-  }), [])
+    }
+  }, [])
 
   const getOrCreateEngine = useCallback((convId: string): SessionEngineHandle => {
     let handle = enginesRef.current.get(convId)
@@ -173,8 +185,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       const data = raw as AgentEventData
       const st = statesRef.current.get(sessionId)
       if (!st) return
-      // Transport-only events (token/tool_start/usage/…) are not mirrored; the
-      // follow-up below must not run for them.
+      // Transport-only events (token/tool_start/spawn_progress/…) are not
+      // mirrored; the follow-up below must not run for them.
       if (!applySessionEvent(st, data)) return
 
       if (data.type === 'status') {

@@ -25,8 +25,8 @@ export function registerAgentSessionHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CREATE, (_event, sessionId: string, opts: AgentSessionCreateOptions = {}) =>
     agentSessionManager.createSession(sessionId, opts))
 
-  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_ASK, async (_event, sessionId: string, content: string) => {
-    await agentSessionManager.ask(sessionId, content)
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_ASK, async (_event, sessionId: string, content: string, delegateExpertId?: string) => {
+    await agentSessionManager.ask(sessionId, content, undefined, delegateExpertId)
   })
 
   ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CANCEL, (_event, sessionId: string) => {
