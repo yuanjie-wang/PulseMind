@@ -57,6 +57,9 @@ export function InputArea({
   layout,
   placeholder,
   autoFocus,
+  focusToken,
+  sendBlocked,
+  sendAccentHue,
   boundExpertId,
   onUnbindExpert,
   approvalMode,
@@ -87,7 +90,21 @@ export function InputArea({
   /** Focus the composer on mount. Defaults to the chat rule (only while the
    *  conversation is empty); pass false when the view has a form to work in. */
   autoFocus?: boolean
-  /** Expert bound to the active conversation (@-summon); shows the chip. */
+  /** Dims the send button (and drops Enter) while the view's form still owes a
+   *  choice — the welcome page's project mode with no project picked. The input
+   *  stays usable: the user writes first, picks the project, then sends. */
+  sendBlocked?: boolean
+  /** Identity hue of the project the view belongs to: the send button then takes
+   *  that project's color (see Composer). Absent for a plain conversation. */
+  sendAccentHue?: number
+  /** Re-runs the autoFocus rule whenever the value changes. The underlying
+   *  Sender only honors autoFocus on mount, so a surface that re-enters the
+   *  auto-focus state without remounting — the welcome composer still up while
+   *  the chat view is reshown, or a fresh project preselected into the
+   *  new-task state — signals through this token instead. */
+  focusToken?: string | number
+  /** Expert bound to the active conversation (legacy @-summon binding; new
+   *  summons delegate via spawn_agent and never bind); shows the chip. */
   boundExpertId?: string
   /** Clear the bound expert (chip ×). */
   onUnbindExpert?: () => void
@@ -118,6 +135,14 @@ export function InputArea({
   const [inputValue, setInputValue] = useState('')
   /** The composer's textarea, so the @ button can put the caret back in it. */
   const composerRef = useRef<ComposerHandle>(null)
+
+  // The autoFocus rule, made re-runnable: on mount (Sender's own autoFocus
+  // covers that, this is idempotent) and again on every focusToken change.
+  // No-op while the rule is off (hasMessages / explicit autoFocus={false}).
+  const shouldAutoFocus = autoFocus ?? !hasMessages
+  useEffect(() => {
+    if (shouldAutoFocus) composerRef.current?.focus()
+  }, [focusToken, shouldAutoFocus])
 
   // ── Expert config pack state ──
   // Enabled experts power both the @-selector and the bound-expert chip.
@@ -280,64 +305,6 @@ export function InputArea({
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* topSlot floats above the composer the same way the @-mention selector
-          does — callers keep full control of its content and styling. */}
-      {topSlot && (
-        <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 60 }}>
-          {topSlot}
-        </div>
-      )}
-      {/* @-mention selector: floats above the composer at full composer width
-          while the input ends in an @token. Sending the raw text works too
-          (controller parses it). */}
-      {mentionActive && mentionMatches.length > 0 && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 'calc(100% + 8px)',
-            left: 0,
-            right: 0,
-            // Mirror the visible .ant-sender box (COMPOSER_MAX_WIDTH, centered):
-            // the Composer wrapper is wider, so left/right alone would let the
-            // selector outgrow the input box it belongs to.
-            maxWidth: COMPOSER_MAX_WIDTH,
-            margin: '0 auto',
-            zIndex: 100,
-            maxHeight: 264,
-            overflow: 'auto',
-            background: '#fff',
-            border: '1px solid rgba(0,0,0,0.08)',
-            borderRadius: 10,
-            boxShadow: '0 6px 24px rgba(0,0,0,0.12)',
-            padding: 4,
-          }}
-        >
-          <div style={{ fontSize: 11, color: '#999', padding: '4px 8px 2px' }}>{t('chatView.expert.summonTitle')}</div>
-          {mentionMatches.map((expert, i) => (
-            <div
-              key={expert.id}
-              onClick={() => selectMention(expert)}
-              onMouseEnter={() => setMentionNavIdx(i)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '6px 8px',
-                borderRadius: 6,
-                cursor: 'pointer',
-                background: i === mentionNavIdx ? 'rgba(0,0,0,0.05)' : 'transparent',
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.name}</div>
-                {expert.description && (
-                  <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.description}</div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
       <Composer
         ref={composerRef}
         value={inputValue}
@@ -346,6 +313,8 @@ export function InputArea({
         onCancel={onCancel}
         isRequesting={isRequesting}
         disabled={isInputDisabled}
+        sendBlocked={sendBlocked}
+        sendAccentHue={sendAccentHue}
         loading={isRequesting && !isInputDisabled}
         layout={layout}
         autoFocus={autoFocus ?? !hasMessages}
@@ -358,6 +327,67 @@ export function InputArea({
               : isStreaming
                 ? t('chatView.sender.streaming')
                 : t('chatView.sender.default'))
+        }
+        aboveCard={
+          // The @-mention selector and the caller's topSlot (plan strip) float
+          // just above the input card. The slot must anchor to the card's own
+          // box, not to this wrapper: in the floating layout the composer is
+          // absolute and out of flow, which collapses the wrapper to zero
+          // height — an anchor there landed on the pane bottom and painted
+          // both overlays on top of the input card. Composer.aboveCard owns
+          // the correct anchor (see its doc); here both children stack in
+          // document order, popup closest to the card.
+          (topSlot || (mentionActive && mentionMatches.length > 0)) && (
+            <>
+              {topSlot && (
+                <div style={{ display: 'flex', justifyContent: 'center' }}>{topSlot}</div>
+              )}
+              {mentionActive && mentionMatches.length > 0 && (
+                <div
+                  data-mention-popup
+                  style={{
+                    // Mirror the visible .ant-sender box (COMPOSER_MAX_WIDTH,
+                    // centered): the column is wider, so plain width would let
+                    // the selector outgrow the input box it belongs to.
+                    maxWidth: COMPOSER_MAX_WIDTH,
+                    margin: '0 auto',
+                    maxHeight: 264,
+                    overflow: 'auto',
+                    background: '#fff',
+                    border: '1px solid rgba(0,0,0,0.08)',
+                    borderRadius: 10,
+                    boxShadow: '0 6px 24px rgba(0,0,0,0.12)',
+                    padding: 4,
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: '#999', padding: '4px 8px 2px' }}>{t('chatView.expert.summonTitle')}</div>
+                  {mentionMatches.map((expert, i) => (
+                    <div
+                      key={expert.id}
+                      onClick={() => selectMention(expert)}
+                      onMouseEnter={() => setMentionNavIdx(i)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '6px 8px',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        background: i === mentionNavIdx ? 'rgba(0,0,0,0.05)' : 'transparent',
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.name}</div>
+                        {expert.description && (
+                          <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.description}</div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )
         }
         header={
           boundExpert || hasAttachments ? (

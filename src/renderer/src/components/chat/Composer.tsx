@@ -13,6 +13,7 @@ import React, { forwardRef, useEffect, useRef, useState } from 'react'
 import { Sender } from '@ant-design/x'
 import { Button } from 'antd'
 import { ArrowUpOutlined, LoadingOutlined } from '@ant-design/icons'
+import { hsvToCss } from '../../../../shared/hash-color'
 
 /** The Sender's imperative handle. Derived from the component itself because the
  *  package root exports `SenderProps` but not `SenderRef`. */
@@ -22,6 +23,36 @@ export type ComposerHandle = React.ElementRef<typeof Sender>
  *  content column everywhere. InputArea's @-mention selector mirrors it so
  *  the popup is exactly as wide as the input box it belongs to. */
 export const COMPOSER_MAX_WIDTH = 952
+
+/** How dim the send button goes while it cannot be pressed.
+ *  antd's own disabled styling is not available to it: AppLayout's stylesheet
+ *  repaints every primary button black with `!important`, which outranks the
+ *  disabled tokens, so a disabled circle still paints the enabled one byte for
+ *  byte (measured: `rgb(0,0,0)` at opacity 1 in both states). Opacity is the
+ *  property that ruleset leaves alone — hence the dimming rides it. */
+const SEND_DISABLED_OPACITY = 0.35
+
+/** Filled send button in a project's identity color (the hue its welcome card
+ *  already wears). A filled circle carries the white arrow, so the fill is that
+ *  hue at full saturation and a deliberately low value — which is what keeps
+ *  the ink legible for *every* hue rather than only for the blues. Hovering
+ *  deepens it (v .58 → .48) rather than lightening it the way the app's own
+ *  black button does (#000 → #333): a lifted saturated fill washes out and, on
+ *  yellow and green, drops the ink below 3:1 — while going deeper keeps the
+ *  floor in *both* states, which is the invariant the probe sweeps. */
+const ACCENT_SATURATION = 0.9
+const ACCENT_VALUE = 0.58
+const ACCENT_VALUE_HOVER = 0.48
+
+/** The send button's fill pair for an identity hue. Exported because the
+ *  contrast floor above is a contract of this palette, not a detail of one
+ *  render: `scripts/probe-sidebar-newtask.mjs` sweeps all 360 hues against it. */
+export function sendAccent(hue: number): { fill: string; hover: string } {
+  return {
+    fill: hsvToCss(hue, ACCENT_SATURATION, ACCENT_VALUE),
+    hover: hsvToCss(hue, ACCENT_SATURATION, ACCENT_VALUE_HOVER),
+  }
+}
 
 export interface ComposerProps {
   value: string
@@ -33,6 +64,13 @@ export interface ComposerProps {
   isRequesting: boolean
   /** Blocks input entirely (e.g. a pending approval dialog owns the turn). */
   disabled?: boolean
+  /** Dims the send button and drops Enter, leaving the textarea usable — for a
+   *  task form that still owes a choice (the welcome page's project pick). */
+  sendBlocked?: boolean
+  /** Identity hue of the project this composer belongs to, or undefined for a
+   *  plain conversation / project mode with nothing picked yet: the send button
+   *  then takes that project's color, the same one its welcome card wears. */
+  sendAccentHue?: number
   loading?: boolean
   placeholder?: string
   /** Rendered inside the card above the textarea (attachment chips). */
@@ -42,6 +80,14 @@ export interface ComposerProps {
   /** Right-aligned footer content just before the send button (chat: context
    *  ring, then the model picker). */
   trailing?: React.ReactNode
+  /** Content floated just above the input card — the @-mention selector, the
+   *  plan strip. Anchored to the inner column, the one box whose height tracks
+   *  the card in BOTH layouts: InputArea's own wrapper cannot do this, because
+   *  the floating composer is `position: absolute` and out of flow, which
+   *  collapses the wrapper to zero height — a `bottom: calc(100% + …)` anchor
+   *  there degenerates to the pane bottom and paints the popup on top of the
+   *  card (measured, scripts/probe-mention-position.mjs). */
+  aboveCard?: React.ReactNode
   /** 'floating' pins the composer to the bottom of the view (chat);
    *  'inline' lays it out in place (studio panel). */
   layout?: 'floating' | 'inline'
@@ -59,11 +105,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onCancel,
     isRequesting,
     disabled,
+    sendBlocked,
+    sendAccentHue,
     loading,
     placeholder,
     header,
     footerLeft,
     trailing,
+    aboveCard,
     layout = 'floating',
     maxRows = 8,
     onKeyDown,
@@ -88,11 +137,25 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     containerRef.current?.querySelector('textarea')?.focus()
   }, [autoFocus])
 
+  // Two reasons not to send — an empty box and a form that still owes a choice
+  // (the welcome page's project pick) — and one disabled look for both: a button
+  // that cannot be pressed may not read as one that can.
+  const sendDisabled = !isRequesting && (!value.trim() || sendBlocked)
+
+  // A project task wears its project's color, and only while one is picked: the
+  // hue is undefined for a plain conversation, so the button stays the app's
+  // black — and in project mode it stays black until a card is chosen, which is
+  // what makes the color arriving read as "this task now belongs to Alpha".
+  const accent = sendAccentHue === undefined ? null : sendAccent(sendAccentHue)
+
   const send = (): void => {
     if (isRequesting) {
       onCancel()
       return
     }
+    // Greyed button, and Enter has to agree with it: a form that still needs a
+    // project chosen must not send through the keyboard either.
+    if (sendBlocked) return
     if (!value.trim()) return
     onSubmit(value)
   }
@@ -106,7 +169,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           : undefined
       }
     >
-      <div style={layout === 'floating' ? { maxWidth: 1000, margin: '0 auto' } : undefined}>
+      <div style={{ position: 'relative', ...(layout === 'floating' ? { maxWidth: 1000, margin: '0 auto' } : null) }}>
+        {/* The above-card slot anchors here — this column hugs the Sender card
+            exactly (the root adds 36px of floating padding around it), so
+            `bottom: calc(100% + 8px)` lands 8px above the card in both
+            layouts, and the card's growth (attachment chips, autosize rows)
+            carries the slot up with it. */}
+        {aboveCard && (
+          <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, right: 0, zIndex: 100 }}>
+            {aboveCard}
+          </div>
+        )}
         <Sender
           ref={ref}
           autoSize={{ minRows: 1, maxRows }}
@@ -125,8 +198,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   size="small"
                   type="primary"
                   shape="circle"
+                  className={accent ? 'pm-accent-send' : undefined}
                   icon={isRequesting ? <LoadingOutlined /> : <ArrowUpOutlined />}
-                  disabled={!isRequesting && !value.trim()}
+                  disabled={sendDisabled}
+                  style={
+                    {
+                      opacity: sendDisabled ? SEND_DISABLED_OPACITY : 1,
+                      // The fill itself cannot ride this style object: AppLayout
+                      // paints every primary button black with !important, and an
+                      // inline declaration loses to that. It travels as a custom
+                      // property instead, consumed by the rules below.
+                      ...(accent
+                        ? { '--pm-send-accent': accent.fill, '--pm-send-accent-hover': accent.hover }
+                        : null),
+                    } as React.CSSProperties
+                  }
                   onClick={send}
                 />
               </div>
@@ -158,6 +244,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           max-width: ${COMPOSER_MAX_WIDTH}px;
           margin: 0 auto;
           box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%) !important;
+        }
+        /* The send button in its project's color. These selectors are *more
+           specific* than AppLayout's .ant-btn-primary rules — that is what lets
+           the hue win over the app-wide black, since !important outranks the
+           inline background we would otherwise use. The disabled case is left
+           alone on purpose: it keeps the hue and rides the opacity above, so a
+           project task with an empty box reads as its own color, dimmed. */
+        .ant-btn-primary.pm-accent-send {
+          background: var(--pm-send-accent) !important;
+          border-color: var(--pm-send-accent) !important;
+        }
+        .ant-btn-primary.pm-accent-send:not(:disabled):hover {
+          background: var(--pm-send-accent-hover) !important;
+          border-color: var(--pm-send-accent-hover) !important;
         }
       `}</style>
     </div>

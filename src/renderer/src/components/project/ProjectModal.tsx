@@ -125,6 +125,10 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
       cancelText="取消"
       okText={editing ? '保存' : '创建'}
       okButtonProps={{ loading: saving, disabled: !canSubmit }}
+      // Both create paths land in the new-task state and hand focus to the
+      // welcome composer; antd's default would yank it back to the trigger
+      // after the close animation.
+      focusTriggerAfterClose={false}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14, paddingTop: 4 }}>
         <div>
