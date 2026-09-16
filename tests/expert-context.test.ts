@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { composeExpertInstructions, parseExpertMention } from '../src/shared/expert-context'
+import { composeExpertInstructions, expertLabel, parseExpertMention } from '../src/shared/expert-context'
 import type { ExpertProfile } from '../src/shared/types/expert'
 
 // ── Test doubles ──
@@ -144,5 +144,33 @@ describe('parseExpertMention', () => {
     const r = parseExpertMention('邮箱是 a@b.com', experts)
     expect(r.expert).toBeNull()
     expect(r.text).toBe('邮箱是 a@b.com')
+  })
+})
+
+// ── expertLabel ──
+// The plan stores the expert ID; every surface that shows a 负责人 resolves it
+// here. The fallback matters as much as the hit: experts get deleted, and plans
+// outlive them.
+
+describe('expertLabel', () => {
+  const list = [expert(), expert({ id: 'expert-code', name: '代码审查专家' })]
+
+  it('resolves an id to the display name', () => {
+    expect(expertLabel(list, 'expert-writing')).toBe('写作专家')
+  })
+
+  it('falls back to the id when the expert is gone', () => {
+    expect(expertLabel(list, 'expert-deleted')).toBe('expert-deleted')
+  })
+
+  it('falls back to the id when the name is blank, and tolerates no list at all', () => {
+    expect(expertLabel([expert({ id: 'e1', name: '   ' })], 'e1')).toBe('e1')
+    expect(expertLabel(undefined, 'e2')).toBe('e2')
+    expect(expertLabel([], 'e3')).toBe('e3')
+  })
+
+  it('picks the matching profile, not the first one', () => {
+    const list = [expert({ id: 'a', name: '甲' }), expert({ id: 'b', name: '乙' })]
+    expect(expertLabel(list, 'b')).toBe('乙')
   })
 })

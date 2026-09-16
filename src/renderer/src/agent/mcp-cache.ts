@@ -40,14 +40,32 @@ function safeMcpListServers(): Promise<MCPManagedServer[]> {
   return fn.call(host)
 }
 
+// ── Change notification ──────────────────────────────────────────────
+// A cache a renderer reads synchronously needs a signal, because the fetch
+// always lands AFTER the first paint: a component resolving 执行者 names from
+// getCachedExpertProfiles() paints once with nothing and would otherwise show
+// the raw id forever. Components subscribe via useSyncExternalStore.
+const listeners = new Set<() => void>()
+
+export function subscribeCache(fn: () => void): () => void {
+  listeners.add(fn)
+  return () => {
+    listeners.delete(fn)
+  }
+}
+
+function emitCacheChange(): void {
+  for (const fn of listeners) fn()
+}
+
 function refetchMcp(): void {
-  safeMcpListServers().then(data => { mcpServers = data }).catch(() => {})
+  safeMcpListServers().then(data => { mcpServers = data; emitCacheChange() }).catch(() => {})
 }
 function refetchSubAgents(): void {
-  getHost().expertList().then(data => { expertProfiles = data }).catch(() => {})
+  getHost().expertList().then(data => { expertProfiles = data; emitCacheChange() }).catch(() => {})
 }
 function refetchSkillPrefs(): void {
-  getHost().getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {})
+  getHost().getSkillPreferences().then(data => { skillPrefs = data; emitCacheChange() }).catch(() => {})
 }
 
 // ── Init ─────────────────────────────────────────────────────────────
@@ -71,7 +89,7 @@ export function ensureCache(): Promise<void> {
     safeMcpListServers().then(data => { mcpServers = data }).catch(() => {}),
     getHost().expertList().then(data => { expertProfiles = data }).catch(() => {}),
     getHost().getSkillPreferences().then(data => { skillPrefs = data }).catch(() => {}),
-  ]).then(() => {})
+  ]).then(() => { emitCacheChange() })
   return initPromise
 }
 
@@ -82,6 +100,7 @@ export function disposeCache(): void {
   mcpServers = []
   expertProfiles = []
   skillPrefs = { enabledSkills: [], skillKeywords: {} }
+  emitCacheChange()
 }
 
 // ── Synchronous readers ──────────────────────────────────────────────
@@ -92,7 +111,7 @@ export function getCachedMcpServers(): MCPManagedServer[] {
 
 /** Force-refresh the cached MCP server list and return when done. */
 export function refreshMcpServers(): Promise<void> {
-  return safeMcpListServers().then(data => { mcpServers = data }).catch(() => {})
+  return safeMcpListServers().then(data => { mcpServers = data; emitCacheChange() }).catch(() => {})
 }
 
 export function getCachedExpertProfiles(): ExpertProfile[] {

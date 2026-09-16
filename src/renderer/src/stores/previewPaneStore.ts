@@ -54,7 +54,7 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
       tabsByConversation: touch(s.tabsByConversation, key, tabs),
       activeByConversation: { ...s.activeByConversation, [key]: path },
     }))
-    useWorkbenchStore.getState().openTab('files')
+    useWorkbenchStore.getState().openTab(key, 'files')
   },
 
   closeTab: (conversationId, path) => {
@@ -72,7 +72,7 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
     // looking at the files tab (closing a background conversation's tab must
     // not yank the pane away from plan/browser).
     if (result.tabs.length === 0 && useWorkbenchStore.getState().activeTab === 'files') {
-      useWorkbenchStore.getState().setOpen(false)
+      useWorkbenchStore.getState().setOpen(key, false)
     }
   },
 

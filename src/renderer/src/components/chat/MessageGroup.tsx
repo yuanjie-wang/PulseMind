@@ -23,7 +23,6 @@ import {
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock, ContentBlock } from '../../types/agent'
-import type { SubAgentHandle } from '../../agent/agent-utils'
 import type { Conversation, Message } from '../../../../shared/types/conversation'
 import CommandCard from '../terminal/CommandCard'
 import { ApprovalArea } from './ApprovalArea'
@@ -91,33 +90,6 @@ function formatTokenCount(n: number): string {
 
 // ── Collapsible tool_use block ────────────────────────────────────────
 
-/**
- * Content signature for a sub-agent message list. Captures per-message id/role and per-block
- * state so the live preview can refresh on tool_use status transitions (pending → running →
- * completed) and text/tool_result growth, not just when the message count changes.
- */
-function msgSignature(msgs: AgentMessage[]): string {
-  return msgs.map((m) => {
-    const blocks = (m.contentBlocks ?? []).map((b) => {
-      switch (b.type) {
-        case 'tool_use': {
-          const tb = b as ToolUseBlock
-          return `tu:${tb.id}:${tb.name}:${tb.status ?? ''}`
-        }
-        case 'tool_result': {
-          const tr = b as ToolResultBlock
-          return `tr:${tr.tool_use_id}:${(tr.content ?? '').length}:${tr.is_error ? 'e' : ''}`
-        }
-        case 'text':
-          return `tx:${(b.text ?? '').length}`
-        default:
-          return b.type
-      }
-    }).join('|')
-    return `${m.id}:${m.role}:${blocks}`
-  }).join(';')
-}
-
 function CollapsibleToolBlock({
   block,
   onApproveTool,
@@ -156,14 +128,17 @@ function CollapsibleToolBlock({
   const previewableFile = (block.name === 'write' || block.name === 'edit') && inputFilePath && toolSucceeded ? inputFilePath : null
 
   // ── Sub-agent preview ──
-  const subConvId = (block as any)._subConvId
-  const subAgentHandle = (block as any)._subAgentHandle as SubAgentHandle | undefined
+  // The link is a wire field now (ToolUseBlock.subConvId): spawn_agent runs in
+  // the main-hosted engine, so neither the handle nor the block's private fields
+  // exist on this side. The preview is therefore always the persisted
+  // sub-conversation, which the main process re-saves every few seconds while
+  // the sub-agent works — polling reads those snapshots.
+  const subConvId = block.subConvId
   const isSpawnAgent = block.name === 'spawn_agent' && !!subConvId
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewConv, setPreviewConv] = useState<Conversation | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval>>()
-  const pollSigRef = useRef('')
 
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
@@ -173,45 +148,6 @@ function CollapsibleToolBlock({
     e.stopPropagation()
     if (!subConvId) return
 
-    // Try live handle first: poll messages in real-time while engine is active
-    if (subAgentHandle && subAgentHandle.agentStatus.status !== 'idle') {
-      setPreviewLoading(false)
-      setPreviewOpen(true)
-      // Seed with current messages
-      const toMessages = (msgs: AgentMessage[]): Message[] =>
-        msgs.map(m => ({ id: m.id, role: m.role, content: '', contentBlocks: m.contentBlocks, createdAt: m.createdAt || new Date().toISOString() }))
-      setPreviewConv({
-        id: subConvId,
-        title: '子代理对话',
-        messages: toMessages(subAgentHandle.messages),
-        createdAt: '',
-        updatedAt: ''
-      })
-      pollSigRef.current = msgSignature(subAgentHandle.messages)
-      // Poll every 1.5s for live updates; refresh on content-signature change so
-      // tool_use status transitions and growing text/output show up live
-      pollRef.current = setInterval(() => {
-        const msgs = subAgentHandle.messages
-        const sig = msgSignature(msgs)
-        if (sig !== pollSigRef.current) {
-          pollSigRef.current = sig
-          setPreviewConv({
-            id: subConvId,
-            title: '子代理对话',
-            messages: toMessages(msgs),
-            createdAt: '',
-            updatedAt: ''
-          })
-        }
-        // Stop polling when engine goes idle
-        if (subAgentHandle.agentStatus.status === 'idle') {
-          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = undefined }
-        }
-      }, 1500)
-      return
-    }
-
-    // Fallback: load from DB (completed or restarted session)
     setPreviewLoading(true)
     try {
       const conv = await window.electronAPI.hydrateConversation(subConvId)
@@ -219,15 +155,27 @@ function CollapsibleToolBlock({
       setPreviewOpen(true)
     } catch (err) { console.error('Failed to load sub-agent conversation:', err) }
     setPreviewLoading(false)
+
+    // Keep following while the spawn's own card is still running: the card's
+    // status is the only "is it over?" signal this side has.
+    if (pollRef.current) clearInterval(pollRef.current)
+    if (block.status === 'running' || block.status === 'pending') {
+      pollRef.current = setInterval(async () => {
+        try {
+          const conv = await window.electronAPI.hydrateConversation(subConvId)
+          if (conv) setPreviewConv(conv)
+        } catch { /* transient read failure — next tick retries */ }
+      }, 3000)
+    }
   }
 
-  // Live previews carry real cumulative token counts on the AgentMessage list;
-  // DB-hydrated messages fall back to char estimation inside estimateContextUsed.
-  const isLivePreview = subAgentHandle != null && subAgentHandle.agentStatus.status !== 'idle'
-  const previewMsgs = isLivePreview && subAgentHandle
-    ? subAgentHandle.messages
-    : ((previewConv?.messages ?? []) as AgentMessage[])
+  // DB-hydrated messages carry no cumulative token counts — estimateContextUsed
+  // falls back to char estimation for them.
+  const previewMsgs = (previewConv?.messages ?? []) as AgentMessage[]
   const subContextUsed = previewMsgs.length > 0 ? estimateContextUsed(previewMsgs) : 0
+  // The spawn card's own status is this side's only "still producing" signal —
+  // it is what the preview's cursor and its poll loop both key on.
+  const previewRunning = block.status === 'running' || block.status === 'pending'
 
   return (
     <div style={{ margin: '4px 0' }}>
@@ -438,7 +386,7 @@ function CollapsibleToolBlock({
                         )
                       })}
                       {/* Blinking cursor on the last assistant message when streaming */}
-                      {isLivePreview && idx === filteredMessages.length - 1 && (
+                      {previewRunning && idx === filteredMessages.length - 1 && (
                         <span style={{
                           display: 'inline-block',
                           width: 2,

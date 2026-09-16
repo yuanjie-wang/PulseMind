@@ -1,38 +1,61 @@
 // ── Workbench store (PLAN-workbench W7) ──
-// Single right-side pane host state: which tool tab is frontmost (files /
-// browser / plan), open/closed, and the one shared width. Auto-open entries
-// all funnel through openTab: create_plan → 'plan', a fresh browser tab →
-// 'browser', a file preview → 'files'. Width is persisted; the pane always
-// starts closed (a restart has no live plan or browser session to show).
+// Single right-side pane host state: which tool tab is frontmost (工作区 /
+// 文件预览 / 浏览器 / 工作计划), one shared width, and per-conversation
+// open/closed — each conversation remembers its own pane, and one with no
+// entry (a fresh conversation included) starts closed. Auto-open entries all
+// funnel through openTab: create_plan → 'plan', a fresh browser tab →
+// 'browser', a file preview → 'files', each tagged with the conversation it
+// belongs to. Width is persisted; open state is deliberately not (a restart
+// has no live plan or browser session to show).
+//
+// Conversation keys come from callers (previewPaneStore's DRAFT key covers
+// new tasks with no row yet) — this store stays key-format-agnostic so it
+// does not import previewPaneStore back.
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type WorkbenchTab = 'files' | 'browser' | 'plan'
+export type WorkbenchTab = 'files' | 'workspace' | 'browser' | 'plan'
 
 export const WORKBENCH_DEFAULT_WIDTH = 420
 
+/** How many conversations' open flags to remember before MRU-pruning. */
+const MAX_OPEN_MAPS = 20
+
 interface WorkbenchState {
-  open: boolean
+  /** Pane open per conversation key; absent = closed. */
+  openByConversation: Record<string, boolean>
   width: number
   activeTab: WorkbenchTab
-  setOpen: (open: boolean) => void
+  setOpen: (convKey: string, open: boolean) => void
   setWidth: (width: number) => void
   setActiveTab: (tab: WorkbenchTab) => void
-  /** Bring a tab to the front, opening the workbench if closed. */
-  openTab: (tab: WorkbenchTab) => void
+  /** Bring a tab to the front, opening this conversation's workbench if closed. */
+  openTab: (convKey: string, tab: WorkbenchTab) => void
+}
+
+/** Re-insert `convKey` as most-recently-used, then prune beyond the cap —
+ *  same shape as previewPaneStore's touch(); a pruned conversation just
+ *  re-enters as closed. */
+function touchOpen(map: Record<string, boolean>, convKey: string, open: boolean): Record<string, boolean> {
+  const rest = { ...map }
+  delete rest[convKey]
+  const entries = Object.entries(rest)
+  entries.push([convKey, open])
+  return Object.fromEntries(entries.slice(Math.max(0, entries.length - MAX_OPEN_MAPS)))
 }
 
 export const useWorkbenchStore = create<WorkbenchState>()(
   persist(
     (set) => ({
-      open: false,
+      openByConversation: {},
       width: WORKBENCH_DEFAULT_WIDTH,
       activeTab: 'files',
-      setOpen: (open) => set({ open }),
+      setOpen: (convKey, open) => set((s) => ({ openByConversation: touchOpen(s.openByConversation, convKey, open) })),
       setWidth: (width) => set({ width }),
       setActiveTab: (activeTab) => set({ activeTab }),
-      openTab: (tab) => set({ open: true, activeTab: tab }),
+      openTab: (convKey, tab) =>
+        set((s) => ({ openByConversation: touchOpen(s.openByConversation, convKey, true), activeTab: tab })),
     }),
     {
       name: 'pulsemind-workbench',

@@ -13,6 +13,14 @@ export interface ExpertReference {
   summary?: string
 }
 
+/** 专家 id → 给人看的名字。计划节点存的是 **id**（稳定引用，改名不该动历史数据），
+ *  凡是要显示「负责人」的地方都在这里解析，免得同一个专家在图上、在 spawn 报错里、
+ *  在工具清单里三个名字（`modelLabel()` 就是这么被抽出来统一 profile 命名的）。
+ *  查不到时回落成 id —— 专家被删掉、或这份计划来自另一个安装，仍得说出点东西。 */
+export function expertLabel(profiles: readonly ExpertProfile[] | undefined, id: string): string {
+  return profiles?.find((p) => p.id === id)?.name?.trim() || id
+}
+
 /** 可用能力的解析目录。**缺省整个字段** 表示这侧拿不到目录，此时按 profile 里
  *  写的名字原样注入；给了数组就只注入目录里存在的条目（已卸载的技能不再出现在
  *  指令里）。目录读取是各 runtime 的事，这里只做纯解析。 */
