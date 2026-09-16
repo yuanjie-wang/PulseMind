@@ -6,7 +6,8 @@
 // chat/InputArea, never a second conversation UI. Page-specific bits (title,
 // placeholder, empty-state copy, starter chips) arrive as props; chips and
 // composer both route through onSendMessage so the page can attach the live
-// form snapshot.
+// form snapshot. The 授权 button is the chat's own too — its level lives on
+// the session (useFormAssistSession), not on the page.
 
 import React from 'react'
 import { RobotOutlined } from '@ant-design/icons'
@@ -100,7 +101,9 @@ export function FormAssistColumn<P extends object>({
           onSelectProfile?.(profileId)
           session.refreshOptions()
         }}
-        features={{ modelPicker: true }}
+        features={{ modelPicker: true, authorization: true }}
+        approvalMode={session.approvalMode}
+        onChangeApprovalMode={session.setApprovalMode}
       />
     </div>
   )

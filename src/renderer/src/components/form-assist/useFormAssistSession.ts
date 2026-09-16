@@ -14,6 +14,7 @@ import type { AgentMessage, AgentStatus, ContentBlock } from '../../types/agent'
 import { useHostedAgentSession } from '../../hooks/useHostedAgentSession'
 import { buildFormAnnotation, parseFormPatch, stripProposalFences } from './form-assist'
 import type { FormAssistSpec } from './form-assist'
+import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 
 export interface FormAssistSession<P extends object> {
   messages: AgentMessage[]
@@ -30,6 +31,15 @@ export interface FormAssistSession<P extends object> {
   cancel: () => void
   engineCall: (method: string, ...args: unknown[]) => void
   refreshOptions: () => void
+  /** The conversation's tool-approval level; `undefined` = never chosen (row
+   *  absent or the column null) — the composer renders the shared default
+   *  按需确认, exactly as a fresh main conversation reads. */
+  approvalMode: SandboxApprovalMode | undefined
+  /** Pick a level: optimistic locally, then the main chat's own two-step —
+   *  write `conversations.approval_mode` (stub-inserting the row when the
+   *  assistant thread has never sent anything yet), then refresh the live
+   *  engine so a mid-run change lands without waiting for the next ask. */
+  setApprovalMode: (mode: SandboxApprovalMode) => void
 }
 
 export interface FormAssistSessionOptions<P extends object> {
@@ -102,6 +112,11 @@ export function useFormAssistSession<P extends object>({ convId, title, spec, sy
     [session],
   )
 
+  // ── 授权 (per-conversation tool-approval level) ──
+  // Delegated to the shared hosted-session state (useHostedAgentSession →
+  // useConversationApprovalMode): the same read/write the routine run
+  // transcript and the tool studio use, so the surfaces cannot drift.
+
   return {
     messages,
     agentStatus: session.agentStatus,
@@ -114,5 +129,7 @@ export function useFormAssistSession<P extends object>({ convId, title, spec, sy
     cancel: session.cancel,
     engineCall: session.engineCall,
     refreshOptions: session.refreshOptions,
+    approvalMode: session.approvalMode,
+    setApprovalMode: session.setApprovalMode,
   }
 }

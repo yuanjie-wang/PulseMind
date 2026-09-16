@@ -149,7 +149,9 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
               onSelectProfile={(profileId) => {
                 void switchProfile(profileId).then(session.refreshOptions)
               }}
-              features={{ modelPicker: true }}
+              features={{ modelPicker: true, authorization: true }}
+              approvalMode={session.approvalMode}
+              onChangeApprovalMode={session.setApprovalMode}
             />
           </div>
         </div>

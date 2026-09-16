@@ -10,10 +10,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentStatus, ContentBlock } from '../types/agent'
+import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import type { AgentEventData } from '../../../shared/agent-protocol'
 import type { SessionState } from '../../../shared/agent-session/mirror'
 import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../../../shared/agent-session/mirror'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
+import { useConversationApprovalMode } from '../hooks/useConversationApprovalMode'
 import { TOOL_STUDIO_ALLOWED_TOOLS, TOOL_SYSTEM_PROMPT, studioConversationId } from './tool-prompt'
 
 export interface StudioSession {
@@ -36,6 +38,11 @@ export interface StudioSession {
   /** Signal the main-side engine to rebuild its options (e.g. after the
    *  active profile was switched) — the next loop uses them. */
   refreshOptions: () => void
+  /** The conversation's tool-approval level and its setter — the shared
+   *  per-conversation state behind the composer's 授权 button. The studio
+   *  seeds 全部允许 on first create (see below), so the button reads it. */
+  approvalMode: SandboxApprovalMode | undefined
+  setApprovalMode: (mode: SandboxApprovalMode) => void
   /** Re-read app.html from disk (header's preview refresh). */
   reloadPreview: () => void
 }
@@ -47,6 +54,7 @@ export interface StudioSession {
  */
 export function useStudioSession(toolId: string, toolName: string, toolDir: string | null): StudioSession {
   const convId = studioConversationId(toolId)
+  const approval = useConversationApprovalMode(convId)
   const stateRef = useRef<SessionState>(freshSessionState())
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
@@ -91,14 +99,34 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
     const state = freshSessionState()
     stateRef.current = state
 
-    const created = window.electronAPI.agentSessionCreate(convId, {
-      workspaceDir: toolDir,
-      systemPromptOverride: TOOL_SYSTEM_PROMPT,
-      allowedTools: TOOL_STUDIO_ALLOWED_TOOLS,
-      approvalMode: 'auto',
-    }).then(() => undefined).catch((err) => {
-      console.warn('[ToolStudio] session create failed:', err)
-    })
+    // Seed the column before the session exists: the studio's approval used to
+    // be PINNED to 全部允许 at create, but a creation-time pin outranks the
+    // column forever (session-manager's effectiveApprovalMode), which would
+    // make the 授权 button's click a no-op. Writing the default into the
+    // column instead — only while it is unset (no row yet, or the column
+    // null; the write's stub-insert derives the row's type from the id, so it
+    // cannot leak a studio thread into the sidebar) — keeps the studio's
+    // historical default while letting the button govern from the first pick
+    // onward. BEFORE create, so the engine's first options resolve from the
+    // seeded column rather than falling to the shared default.
+    const seeded = window.electronAPI.getConversation(convId)
+      .then((stored) => {
+        if (stored?.approvalMode === undefined) {
+          return window.electronAPI.setConversationApprovalMode(convId, 'auto')
+        }
+        return undefined
+      })
+      .catch(() => undefined)
+
+    const created = seeded
+      .then(() => window.electronAPI.agentSessionCreate(convId, {
+        workspaceDir: toolDir,
+        systemPromptOverride: TOOL_SYSTEM_PROMPT,
+        allowedTools: TOOL_STUDIO_ALLOWED_TOOLS,
+      }))
+      .then(() => undefined).catch((err) => {
+        console.warn('[ToolStudio] session create failed:', err)
+      })
 
     const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
       if (sessionId !== convId) return
@@ -208,6 +236,8 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
     clearError,
     retryLast,
     refreshOptions,
+    approvalMode: approval.approvalMode,
+    setApprovalMode: approval.setApprovalMode,
     reloadPreview,
   }
 }

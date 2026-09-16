@@ -13,10 +13,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentStatus, ContentBlock } from '../types/agent'
+import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import type { AgentEventData } from '../../../shared/agent-protocol'
 import type { SessionState } from '../../../shared/agent-session/mirror'
 import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../../../shared/agent-session/mirror'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
+import { useConversationApprovalMode } from './useConversationApprovalMode'
 
 /** agentSessionCreate options this hook hands through (title is owned by the
  *  `title` option; the rest of AgentSessionCreateOptions stays out of scope). */
@@ -54,9 +56,15 @@ export interface HostedAgentSession {
   /** Signal the main-side engine to rebuild its options (e.g. after the
    *  active profile was switched) — the next ask uses them. */
   refreshOptions: () => void
+  /** The conversation's tool-approval level and its setter — the shared
+   *  per-conversation state behind the composer's 授权 button (see
+   *  useConversationApprovalMode). */
+  approvalMode: SandboxApprovalMode | undefined
+  setApprovalMode: (mode: SandboxApprovalMode) => void
 }
 
 export function useHostedAgentSession({ convId, title, createOptions }: HostedAgentSessionOptions): HostedAgentSession {
+  const approval = useConversationApprovalMode(convId)
   const stateRef = useRef<SessionState>(freshSessionState())
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
@@ -178,5 +186,7 @@ export function useHostedAgentSession({ convId, title, createOptions }: HostedAg
     cancel: useCallback(() => { if (convId) void window.electronAPI.agentSessionCancel(convId) }, [convId]),
     engineCall,
     refreshOptions: useCallback(() => { if (convId) void window.electronAPI.agentSessionRefreshOptions(convId) }, [convId]),
+    approvalMode: approval.approvalMode,
+    setApprovalMode: approval.setApprovalMode,
   }
 }

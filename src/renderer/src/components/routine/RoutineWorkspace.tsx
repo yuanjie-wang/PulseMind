@@ -397,7 +397,9 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
                 // session so the next ask uses the newly selected model.
                 void switchProfile(profileId).then(() => session.refreshOptions())
               }}
-              features={{ modelPicker: true }}
+              features={{ modelPicker: true, authorization: true }}
+              approvalMode={session.approvalMode}
+              onChangeApprovalMode={session.setApprovalMode}
             />
           </div>
         )
