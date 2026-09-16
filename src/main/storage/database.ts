@@ -262,6 +262,7 @@ function createTables(): void {
       name          TEXT NOT NULL,
       workspace_dir TEXT NOT NULL,
       icon          TEXT,
+      color_hue     INTEGER,
       sandbox_json  TEXT NOT NULL DEFAULT '{}',
       created_at    TEXT NOT NULL,
       updated_at    TEXT NOT NULL
@@ -296,6 +297,10 @@ function createTables(): void {
   // Conversations keep their project binding (welcome page picker); existing
   // databases get the column here.
   try { database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT') } catch (e) {}
+  // The project's identity hue moved from "hashed at render" to a stored field
+  // (2026-09-16); rows created before it keep NULL until the startup backfill
+  // fills them from their name — which is exactly what the renderer derived.
+  try { database.exec('ALTER TABLE projects ADD COLUMN color_hue INTEGER') } catch { /* column may already exist */ }
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);

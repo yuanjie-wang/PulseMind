@@ -12,6 +12,7 @@ import { WORKSPACE_DIR } from './index'
 import { deleteConversation } from './conversation.db'
 import { DEFAULT_PROJECT_ID, type Project, type ProjectCreateInput, type ProjectUpdateInput } from '../../shared/types/project'
 import { checkWorkspacePathFormat, windowsReservedNameError } from '../../shared/workspace-path'
+import { stringToHue } from '../../shared/hash-color'
 
 /** Display name of the synthesized default project — reserved for user projects. */
 const DEFAULT_PROJECT_NAME = '默认项目'
@@ -21,6 +22,14 @@ const DEFAULT_PROJECT_NAME = '默认项目'
  *  databases have it NOT NULL — either way create() writes a fixed '{}' into
  *  it so both shapes accept the row. Nothing ever reads it back. */
 const LEGACY_SANDBOX_JSON = '{}'
+
+/** The identity hue a project is born with. Hashing the name is what the
+ *  renderer used to do on every paint, so assigning it here keeps every color
+ *  a user already sees exactly as it was — the difference is that it is now
+ *  written down once, at creation, and read back thereafter. */
+export function hueForProjectName(name: string): number {
+  return stringToHue(name)
+}
 
 /** Project names are unique (trimmed, case-insensitive). Checked at create AND
  *  rename so a rename can never collide with an existing project. */
@@ -84,6 +93,7 @@ interface ProjectRow {
   name: string
   workspace_dir: string
   icon: string | null
+  color_hue: number | null
   created_at: string
   updated_at: string
 }
@@ -94,6 +104,9 @@ function rowToProject(r: ProjectRow): Project {
     name: r.name,
     workspaceDir: r.workspace_dir,
     icon: r.icon || undefined,
+    // null (a row the backfill has not reached yet) stays undefined, which
+    // projectHue reads as "no stored color — hash the name for now".
+    colorHue: r.color_hue ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -124,7 +137,10 @@ export const projectStore = {
   },
 
   async list(): Promise<Project[]> {
-    const rows = getDb().prepare('SELECT * FROM projects ORDER BY created_at ASC').all() as ProjectRow[]
+    // Newest first: a freshly created project tops the sidebar's 项目 list, and
+    // the welcome picker reads the same snapshot. The synthesized default
+    // project is still prepended ahead of every row.
+    const rows = getDb().prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as ProjectRow[]
     const projects = rows.map(rowToProject)
     return [await defaultProject(), ...projects]
   },
@@ -149,17 +165,20 @@ export const projectStore = {
       name,
       workspaceDir: input.workspaceDir,
       icon: input.icon,
+      colorHue: hueForProjectName(name),
       createdAt: now,
       updatedAt: now,
     }
     getDb()
-      .prepare('INSERT INTO projects (id, name, workspace_dir, icon, sandbox_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(project.id, project.name, project.workspaceDir, project.icon ?? null, LEGACY_SANDBOX_JSON, project.createdAt, project.updatedAt)
+      .prepare('INSERT INTO projects (id, name, workspace_dir, icon, color_hue, sandbox_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(project.id, project.name, project.workspaceDir, project.icon ?? null, project.colorHue, LEGACY_SANDBOX_JSON, project.createdAt, project.updatedAt)
     return project
   },
 
   /** name/icon are editable; workspaceDir is not — the type has no such field
-   *  and the UPDATE statement below never touches workspace_dir. */
+   *  and the UPDATE statement below never touches workspace_dir. color_hue is
+   *  out of reach for the same reason, in the other direction: the color is
+   *  the project's identity across surfaces, so renaming must not re-roll it. */
   async update(id: string, patch: ProjectUpdateInput): Promise<Project | null> {
     const existing = await this.get(id)
     if (!existing || id === DEFAULT_PROJECT_ID) return existing // default project is not editable
@@ -189,4 +208,32 @@ export const projectStore = {
     tx()
     return { removedConversations: convs.length }
   },
+}
+
+let colorBackfillDone = false
+
+/** Give every project created before `color_hue` existed the color it was
+ *  already being painted with: the same name hash the renderer derived per
+ *  render, now written down once. Idempotent — it only ever touches rows whose
+ *  column is NULL, so it cannot overwrite a color, and a second call is a
+ *  no-op. Called from the startup sequence (main/index.ts), which is also what
+ *  makes the renderer's fallback a formality rather than the mechanism. */
+export async function backfillProjectColors(): Promise<void> {
+  if (colorBackfillDone) return
+  try {
+    const db = getDb()
+    const rows = db.prepare('SELECT id, name FROM projects WHERE color_hue IS NULL').all() as Array<{ id: string; name: string }>
+    if (rows.length) {
+      const update = db.prepare('UPDATE projects SET color_hue = ? WHERE id = ?')
+      const tx = db.transaction(() => {
+        for (const row of rows) update.run(hueForProjectName(row.name), row.id)
+      })
+      tx()
+      console.log(`[Projects] Assigned identity colors to ${rows.length} project(s)`)
+    }
+    colorBackfillDone = true
+  } catch (err) {
+    // Next call retries: the flag is only set on success.
+    console.warn('[Projects] identity-color backfill failed:', err)
+  }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { stringToHue, hsvToCss } from '../src/renderer/src/utils/hash-color'
+import { stringToHue, hsvToCss } from '../src/shared/hash-color'
 
 describe('stringToHue', () => {
   it('is deterministic for the same input', () => {

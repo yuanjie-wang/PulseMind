@@ -4,7 +4,7 @@ import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage, IMAGE_EXTS, getExt } from './LocalImage'
-import { stringToHue } from '../../utils/hash-color'
+import { stringToHue } from '../../../../shared/hash-color'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 
 // Match [file:/path/to/file] or [folder:/path/to/folder], optionally with |timestamp

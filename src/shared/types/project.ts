@@ -2,7 +2,9 @@
 // A project is a container of conversations bound to one fixed workspace
 // directory. Invariants:
 //   - workspaceDir is chosen explicitly at creation and never changes;
-//   - names are unique (trim + case-insensitive; 「默认项目」 is reserved).
+//   - names are unique (trim + case-insensitive; 「默认项目」 is reserved);
+//   - colorHue is assigned once at creation and never recomputed, so renaming
+//     a project does not move its color.
 // The former per-project sandbox policy (fs / network / hard isolation) is
 // gone: writes are always jailed to the conversation's resolved workspace,
 // and tool approval is a per-conversation choice (`conversations.approval_mode`).
@@ -14,6 +16,14 @@ export interface Project {
    *  relative paths against this, and writes are jailed to it. */
   workspaceDir: string
   icon?: string
+  /** Identity hue (0–360) of the project's color, stored on the row rather than
+   *  derived per render: the welcome card's wash and the composer's send button
+   *  both read it (`projectStore.projectHue`), and because it is frozen at
+   *  creation a rename no longer re-rolls which color the project wears.
+   *  Undefined only where there is no row to read it from — the synthesized
+   *  default project, and rows read before the startup backfill filled it in;
+   *  `projectHue` falls back to hashing the name so those still get a color. */
+  colorHue?: number
   createdAt: string
   updatedAt: string
 }
