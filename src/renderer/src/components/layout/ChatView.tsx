@@ -1,9 +1,10 @@
 import React, { useRef, useEffect, useCallback, useMemo, useId, useState } from 'react'
 import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock, Plan } from '../../types/agent'
 import type { LlmProfile } from '../../types/settings'
-import { Tooltip, Segmented } from 'antd'
+import { Segmented } from 'antd'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
-import { FolderOpenOutlined } from '@ant-design/icons'
+import { useProjectHue } from '../../stores/projectStore'
+import { useNavigationStore } from '../../stores/navigationStore'
 import { SegmentBlock } from '../chat/SegmentView'
 import { buildSegments, getSegmentAnchorId, getSegmentKey, type Segment } from '../chat/message-segments'
 import { StreamingCursor } from '../chat/StreamingCursor'
@@ -17,7 +18,7 @@ import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
 import { WorkbenchPane } from '../workbench/WorkbenchPane'
-import { usePreviewPaneStore } from '../../stores/previewPaneStore'
+import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { usePreviewPaneSync } from '../../hooks/usePreviewPaneSync'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ConversationListItem } from '../../types/conversation'
@@ -61,6 +62,11 @@ interface ChatViewProps {
   plan?: Plan | null
   /** Plan DAG node click → jump to the node's conversation round. */
   onPlanJump?: (msgId: string) => void
+  /** Plan DAG node click → open the node's linked sub-agent session view.
+   *  When provided it takes precedence over onPlanJump. */
+  onOpenPlanNode?: (nodeId: string) => void
+  /** Which plan nodes open something (cursor + tooltip affordance). */
+  canOpenNode?: (nodeId: string) => boolean
   contextLength?: number
   /** Resolved working directory of the active conversation (M8.5); shown above
    *  the message list once the main-side session creation reports back. */
@@ -71,7 +77,8 @@ interface ChatViewProps {
   activeLoopConvIds?: string[]
   /** Switch to a conversation picked from the welcome page's quick entries. */
   onOpenConversation: (key: string) => void
-  /** The active conversation's summoned expert id (@-mention); absent = unbound. */
+  /** The active conversation's bound expert id (legacy @-summon binding);
+   *  absent = unbound. */
   activeExpertId?: string
   /** Clear the active conversation's expert binding (chip ×). */
   onUnbindExpert?: (convId: string) => void
@@ -122,11 +129,20 @@ function ChatView({
   onChangeApprovalMode,
   plan,
   onPlanJump,
+  onOpenPlanNode,
+  canOpenNode,
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
   const { t } = useTranslation()
   const taskMode = useNewTaskStore((s) => s.mode)
   const setTaskMode = useNewTaskStore((s) => s.setMode)
+  const newTaskProjectId = useNewTaskStore((s) => s.projectId)
+  const viewKind = useNavigationStore((s) => s.view.kind)
+  // The welcome composer re-focuses whenever the new-task state (re)enters:
+  // the chat view becoming visible again, or the 对话/项目 form changing.
+  // Mount-time autoFocus alone misses a welcome surface that never unmounts
+  // (the chat view stays mounted while other top-level views show).
+  const welcomeFocusToken = `${viewKind}:${taskMode}:${newTaskProjectId ?? ''}`
   // Context usage for the input area's ring: real input tokens from the API when
   // available, otherwise estimated from the message contents.
   const contextUsed = useMemo(() => estimateContextUsed(messages), [messages])
@@ -177,8 +193,10 @@ function ChatView({
   const paneRootRef = useRef<HTMLDivElement | null>(null)
   const browserPaneBinding = useBrowserPaneBinding(conversationId, paneRootRef)
   // Right-side workbench (PLAN-workbench): one docked pane hosting the file
-  // preview, the browser and the plan DAG behind tool tabs.
-  const workbenchOpen = useWorkbenchStore((s) => s.open)
+  // preview, the browser and the plan DAG behind tool tabs. Open state is per
+  // conversation — this one's flag, with the draft key for a not-yet-created row.
+  const wbKey = conversationId ?? DRAFT_CONVERSATION_KEY
+  const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
   const workbenchWidth = useWorkbenchStore((s) => s.width)
   const workbenchTab = useWorkbenchStore((s) => s.activeTab)
   useEffect(() => {
@@ -194,9 +212,9 @@ function ChatView({
   const prevBrowserTabCountRef = useRef(0)
   useEffect(() => {
     const count = browserPane.tabs.length
-    if (prevBrowserTabCountRef.current === 0 && count > 0) useWorkbenchStore.getState().openTab('browser')
+    if (prevBrowserTabCountRef.current === 0 && count > 0) useWorkbenchStore.getState().openTab(wbKey, 'browser')
     prevBrowserTabCountRef.current = count
-  }, [browserPane.tabs.length])
+  }, [browserPane.tabs.length, wbKey])
   // While the browser tab is frontmost the dock must track the workbench
   // width (native WebView alignment); other tabs fold the dock via the
   // browserActive flag inside useBrowserPaneBinding.
@@ -213,7 +231,7 @@ function ChatView({
   const planTotal = plan?.nodes.length ?? 0
   const planStrip = plan && !plan.completed && planTotal > 0 && !workbenchOpen ? (
     <div
-      onClick={() => useWorkbenchStore.getState().openTab('plan')}
+      onClick={() => useWorkbenchStore.getState().openTab(wbKey, 'plan')}
       style={{
         display: 'flex', alignItems: 'center', gap: 6, height: 26, padding: '0 12px',
         borderRadius: 13, background: '#fff', border: '1px solid #e5e6eb',
@@ -326,6 +344,33 @@ function ChatView({
   }, [isRetrying ? agentStatus.attempt : -1])
 
   const hasMessages = messages.length > 0
+
+  // The two halves of this view are mutually exclusive, and they take the
+  // composer's project from different places: on the welcome form it is the pick
+  // (project mode only), past it the conversation's own project. Naming the test
+  // keeps the project source in step with whichever one actually renders.
+  const isWelcomeForm = !hasMessages && !isStreaming && !isLoadingConversation
+  // Which project the composer belongs to. On the welcome form it is the pick,
+  // and only in project mode — a plain conversation, or project mode before a
+  // card is chosen, keeps the app's black button (which is how the color
+  // arriving reads as "this task now belongs to Alpha"). Past the first message
+  // it is the conversation's own project, so the color stays with the task
+  // instead of dropping back to black. `conversations` carries that binding
+  // optimistically from materialization (useChatController writes the row before
+  // the loop starts), so it is there on the chat view's first frame; a
+  // conversation in the default project has no `projectId` at all and stays
+  // black, as it should — nobody chose that project.
+  const activeConversationProjectId = conversationId
+    ? conversations.find((c) => c.key === conversationId)?.projectId
+    : undefined
+  const composerProjectId = isWelcomeForm
+    ? taskMode === 'project'
+      ? (newTaskProjectId ?? undefined)
+      : undefined
+    : activeConversationProjectId
+  // The identity color the send button wears, from the project store — the same
+  // hue the project card's wash and check icon use.
+  const composerProjectHue = useProjectHue(composerProjectId)
 
   // Accumulate streaming tool_use blocks across renders so OpenAI's per-delta
   // tool_call chunks don't appear as scattered execution segments.
@@ -504,7 +549,7 @@ function ChatView({
   // switch is still loading its messages from the DB, skip the welcome screen —
   // falling through to the (empty) message view keeps the layout stable so the
   // loaded content replaces it without a visible flash.
-  if (!hasMessages && !isStreaming && !isLoadingConversation) {
+  if (isWelcomeForm) {
     return (
       <div
         style={{
@@ -549,6 +594,12 @@ function ChatView({
           <InputArea
             key={conversationId ?? 'new'}
             layout="inline"
+            focusToken={welcomeFocusToken}
+            // A project task owes a project: with none picked the send button
+            // greys out (the input keeps working) until a card is chosen — the
+            // welcome page asks, rather than the send failing with a warning.
+            sendBlocked={taskMode === 'project' && !newTaskProjectId}
+            sendAccentHue={composerProjectHue}
             isRequesting={isRequesting}
             isStreaming={isStreaming}
             isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
@@ -605,35 +656,6 @@ function ChatView({
         style={{ height: '100%', overflow: 'auto', overflowAnchor: 'none' }}
       >
         <div style={{ height: 24 }} />
-
-        {/* Resolved working directory (M8.5) — appears once the main-side
-            session creation reports back; click opens the folder. */}
-        {workspaceDir && (
-          <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px', marginBottom: 8 }}>
-            <span
-              style={{
-                fontSize: 11,
-                color: '#999',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                background: 'rgba(0,0,0,0.03)',
-                borderRadius: 12,
-                padding: '2px 10px',
-                maxWidth: '100%',
-              }}
-            >
-              {t('chatView.workspaceDir')}
-              <code style={{ fontSize: 11, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{workspaceDir}</code>
-              <Tooltip title={t('chatView.openWorkspaceDir')}>
-                <FolderOpenOutlined
-                  style={{ cursor: 'pointer', color: '#999', flexShrink: 0 }}
-                  onClick={() => void window.electronAPI.openFolder(workspaceDir)}
-                />
-              </Tooltip>
-            </span>
-          </div>
-        )}
 
         {renderedSegments.map((seg, i) => (
           <React.Fragment key={getSegmentKey(seg)}>{renderSegment(seg, windowTop + i)}</React.Fragment>
@@ -708,6 +730,8 @@ function ChatView({
         chatAreaWidth={browserPaneBinding.chatAreaWidth}
         plan={plan ?? null}
         onPlanJump={onPlanJump}
+        onOpenPlanNode={onOpenPlanNode}
+        canOpenNode={canOpenNode}
         browserPane={browserPane}
         onBrowserAction={browserPaneBinding.action}
         onBrowserWidth={(w) => browserPaneBinding.pushWidth(w, browserPaneBinding.chatAreaWidth)}
@@ -735,6 +759,9 @@ function ChatView({
         contextUsed={contextUsed}
         contextLength={contextLength}
         boundExpertId={activeExpertId}
+        // The conversation's project keeps coloring the send button after the
+        // first message — the color belongs to the task, not to the welcome form.
+        sendAccentHue={composerProjectHue}
         onUnbindExpert={() => conversationId && onUnbindExpert?.(conversationId)}
         approvalMode={approvalMode}
         onChangeApprovalMode={onChangeApprovalMode}

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { XProvider } from '@ant-design/x'
 import { ConfigProvider, theme as antdTheme, App as AntdApp } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
@@ -6,6 +6,9 @@ import enUS from 'antd/locale/en_US'
 import AppLayout from './components/layout/AppLayout'
 import ChatView from './components/layout/ChatView'
 import { useWorkbenchStore } from './stores/workbenchStore'
+import { SubAgentSessionView } from './components/subagent/SubAgentSessionView'
+import { resolvePlanNodeTarget } from './agent/plan-node-target'
+import { DRAFT_CONVERSATION_KEY } from './stores/previewPaneStore'
 import { InstallNotifier } from './components/chat/InstallNotifier'
 import ErrorBoundary from './components/ErrorBoundary'
 import { useChatController } from './hooks/useChatController'
@@ -203,6 +206,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     extendLoop,
     skills,
     toggleSkill,
+    tools,
+    toggleTool,
     importSkill,
     deleteImportedSkill,
     importError,
@@ -347,15 +352,44 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
 
   // Plan panel scroll-to-message
   const [planScrollToMsgId, setPlanScrollToMsgId] = useState<string | null>(null)
+  // PLAN-workbench W12: clicking a DAG module drills into the sub-agent session
+  // that implements it (or jumps the transcript to the round that settled it).
+  // The resolution — plan-node link → spawn block link → msgId — lives in
+  // agent/plan-node-target.ts, where it is unit-tested.
+  const [subAgentView, setSubAgentView] = useState<{ subConvId: string; title: string; live: boolean } | null>(null)
+  /** Nodes that resolve to somewhere — drives the graph's cursor and tooltip, so
+   *  a node the model never dispatched does not advertise a click it drops. */
+  const openableNodeIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const n of plan?.nodes ?? []) if (resolvePlanNodeTarget(n, messages)) ids.add(n.id)
+    return ids
+  }, [plan, messages])
+  const canOpenNode = useCallback((nodeId: string) => openableNodeIds.has(nodeId), [openableNodeIds])
+  const onOpenPlanNode = useCallback((nodeId: string) => {
+    const node = plan?.nodes.find(n => n.id === nodeId)
+    const target = resolvePlanNodeTarget(node, messages)
+    if (!target) return
+    if (target.kind === 'session') {
+      setSubAgentView({
+        subConvId: target.subConvId,
+        title: node ? `n${nodeId.slice(1)} · ${node.description}` : '子代理会话',
+        live: target.live,
+      })
+      return
+    }
+    setPlanScrollToMsgId(target.msgId)
+  }, [messages, plan])
   // PLAN-workbench W5: a freshly created plan opens the workbench on its tab
   // (the write→auto-open-preview precedent). Completing a plan does not close
   // it — the user reads the finished graph.
   const hadPlanRef = useRef(false)
   useEffect(() => {
     const has = !!plan && !plan.completed
-    if (has && !hadPlanRef.current) useWorkbenchStore.getState().openTab('plan')
+    if (has && !hadPlanRef.current) {
+      useWorkbenchStore.getState().openTab(activeConvKey ?? DRAFT_CONVERSATION_KEY, 'plan')
+    }
     hadPlanRef.current = has
-  }, [plan])
+  }, [plan, activeConvKey])
 
   return (
     <ErrorBoundary>
@@ -391,6 +425,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             onTogglePinConversation={togglePin}
             skills={skills}
             onToggleSkill={toggleSkill}
+            tools={tools}
+            onToggleTool={toggleTool}
             onImportSkill={importSkill}
             onDeleteSkill={deleteImportedSkill}
             onRefreshSkills={refreshSkillsFromDisk}
@@ -401,7 +437,17 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             retryingConvIds={retryingConvIds}
             onReloadConversations={() => reloadConversations()}
           >
-            <ChatView
+            {subAgentView
+              ? (
+                <SubAgentSessionView
+                  subConvId={subAgentView.subConvId}
+                  title={subAgentView.title}
+                  live={subAgentView.live}
+                  onBack={() => setSubAgentView(null)}
+                />
+              )
+              : (
+                <ChatView
               messages={messages}
               isRequesting={isRequesting}
               isLoadingConversation={isLoadingConversation}
@@ -409,6 +455,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               streamingBlocks={streamingBlocks}
               hasApiKey={hasApiKey}
               contextLength={contextLength}
+              onOpenPlanNode={onOpenPlanNode}
+              canOpenNode={canOpenNode}
               onSendMessage={handleRequest}
               onCancel={abort}
               onApproveTool={approveTool}
@@ -451,6 +499,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               approvalMode={approvalMode}
               onChangeApprovalMode={changeApprovalMode}
             />
+                )}
           </AppLayout>
           <InstallNotifier messages={messages} />
           </AntdApp>

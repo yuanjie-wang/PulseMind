@@ -20,14 +20,41 @@ import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
+import { useWorkbenchStore } from '../../stores/workbenchStore'
+import { DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { conversationKeyOf } from '../../../../shared/conversation-key'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { SkillState } from '../../skills/types'
+import type { ToolState } from '../../tools/types'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 
 const { Header, Sider, Content } = Layout
 const MAX_SESSIONS = 100
+
+// Right-pane toggle glyph (the "panel right" shape every editor uses for its
+// dockable side panel): an outlined window split by a divider, the right
+// section filling solid while the pane is open. Hand-drawn rather than antd's
+// border/pic families, which read as static shapes, not as a panel toggle.
+function PanelRightIcon({ size = 16, filled = false }: { size?: number; filled?: boolean }): React.ReactElement {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="15" y1="4" x2="15" y2="20" />
+      {filled && <rect x="16.5" y="6" width="3" height="12" rx="1" fill="currentColor" stroke="none" />}
+    </svg>
+  )
+}
 
 // The OS draws the window controls over the app's own top bar — macOS traffic lights
 // at its left, Windows/Linux caption buttons at its right — because the window is
@@ -68,6 +95,8 @@ interface AppLayoutProps {
   onTogglePinConversation: (key: string, pinned: boolean) => void
   skills?: SkillState[]
   onToggleSkill?: (name: string) => void
+  tools?: ToolState[]
+  onToggleTool?: (name: string) => void
   onImportSkill?: () => void
   onRefreshSkills?: () => void
   onDeleteSkill?: (name: string) => void
@@ -92,6 +121,8 @@ function AppLayout({
   onTogglePinConversation,
   skills,
   onToggleSkill,
+  tools,
+  onToggleTool,
   onImportSkill,
   onRefreshSkills,
   onDeleteSkill,
@@ -115,9 +146,11 @@ function AppLayout({
   const [listTab, setListTab] = useState<'chats' | 'projects'>('chats')
 
   // Switcher-row actions (PLAN-0.4.0): 管理 + 新增 sit right of the 对话/项目
-  // pill, and what they open follows the selected tab. The former project
-  // center is gone, so the 项目 tab carries no 管理 entry — creating happens
-  // through its 新增 (the same ProjectModal the welcome picker uses).
+  // pill. 管理 (the unified cleanup-policy dialog) opens from both tabs — the
+  // retention policy covers every conversation, project-bound ones included;
+  // 新增 follows the selected tab. The former project center is gone, so the
+  // 项目 tab's own action is 新增 (the same ProjectModal the welcome picker
+  // uses).
   const [manageOpen, setManageOpen] = useState(false)
   const [projectModalOpen, setProjectModalOpen] = useState(false)
   const reloadProjects = useProjectStore((s) => s.reload)
@@ -129,6 +162,10 @@ function AppLayout({
   const activeConvTitle = activeConvKey
     ? conversations.find((c) => c.key === activeConvKey)?.label
     : undefined
+  // The right-side workbench pane's open state for THIS conversation — the
+  // title bar's toggle mirrors it; the draft key covers a not-yet-created row.
+  const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY
+  const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
   // The 对话 tab covers the loose — project-less — conversations; project-bound
   // ones live under the 项目 tab, so the two tabs never duplicate each other.
   const looseConversations = conversations.filter((c) => !c.projectId)
@@ -138,20 +175,37 @@ function AppLayout({
     setManageOpen(true)
   }
 
-  // 新增: chats tab → a fresh conversation (mirrors SidebarNav's 新建任务:
-  // land on the chat view, then create); projects tab → the project create modal.
+  // 新建任务 follows the list switcher: with the 项目 tab selected it opens the
+  // welcome form on a project task, with 对话 on a plain conversation — the same
+  // 对话/项目 state the welcome page's capsule shows, so the sidebar button and
+  // that capsule cannot disagree. Nothing is created here; the first message
+  // does that (M8.4). The project pick is cleared on the way in: a fresh task is
+  // never bound to whatever project an earlier task selected, and until a card
+  // is picked the welcome composer's send button stays grey — only the
+  // project row's own 新建任务 (handleProjectNewTask) preselects, because there
+  // the user has named the project by clicking it.
+  const handleNewTask = (): void => {
+    useNewTaskStore.getState().setMode(listTab === 'projects' ? 'project' : 'chat')
+    useNewTaskStore.getState().setProjectId(null)
+    onCreateNew()
+  }
+
+  // 新增: chats tab → the same fresh form as SidebarNav's 新建任务 (its tooltip
+  // says 新建对话, so it must not land in a project form carrying an earlier
+  // pick); projects tab → the project create modal.
   const handleTabAdd = (): void => {
     if (listTab === 'projects') {
       setProjectModalOpen(true)
       return
     }
     navigate({ kind: 'chat' })
-    if (canCreateNew) onCreateNew()
+    if (canCreateNew) handleNewTask()
   }
 
-  // 项目行's 新建任务: land on the welcome form with the project preselected —
-  // the same deferred flow as the welcome picker (M8.4), where nothing is
-  // created until a message is actually sent.
+  // 项目行's 新建任务 and the sidebar create modal's success path: land on the
+  // welcome form with the project preselected — the same deferred flow as the
+  // welcome picker (M8.4), where nothing is created until a message is
+  // actually sent.
   const handleProjectNewTask = (projectId: string): void => {
     useNewTaskStore.getState().setMode('project')
     useNewTaskStore.getState().setProjectId(projectId)
@@ -234,16 +288,19 @@ function AppLayout({
           justifyContent: 'space-between',
           WebkitAppRegion: 'drag'
         } as React.CSSProperties}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#000', cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigateKind('about')}>
-            {t('appLayout.title')}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigateKind('about')}>
+            <span style={{ fontSize: 16, fontWeight: 700, color: '#000' }}>{t('appLayout.title')}</span>
+            {/* Version rides the Vite `define` global (package.json's version). */}
+            <span style={{ fontSize: 12, fontWeight: 500, color: '#999', lineHeight: 1 }}>v{__APP_VERSION__}</span>
           </div>
         </div>
-        <SidebarNav canCreateNew={canCreateNew} onCreateNew={onCreateNew} />
+        <SidebarNav canCreateNew={canCreateNew} onCreateNew={handleNewTask} />
         {/* Tab switcher is pinned; only the list below it scrolls. */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {/* One row: the 对话/项目 pill on the left, its 管理/新增 actions on
-              the right — both follow the selected tab. The former project
-              center is gone, so the 项目 tab's only action is 新增 (create). */}
+              the right. 管理 opens from both tabs (one retention policy covers
+              对话 and 项目 alike); 新增 follows the selected tab — the former
+              project center is gone, so the 项目 tab creates via 新增. */}
           <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             {/* Inline margins override the stylesheet's `10px 12px 6px` so the
                 actions cluster can hug the row's right edge. */}
@@ -256,17 +313,15 @@ function AppLayout({
               </Button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginRight: 8 }}>
-              {listTab === 'chats' && (
-                <Tooltip title={t('appLayout.manageChats')}>
-                  <Button
-                    type="text"
-                    className="sidebar-list-action"
-                    aria-label={t('appLayout.manageChats')}
-                    icon={<SettingOutlined style={{ fontSize: 14 }} />}
-                    onClick={handleTabManage}
-                  />
-                </Tooltip>
-              )}
+              <Tooltip title={t('appLayout.manageChats')}>
+                <Button
+                  type="text"
+                  className="sidebar-list-action"
+                  aria-label={t('appLayout.manageChats')}
+                  icon={<SettingOutlined style={{ fontSize: 14 }} />}
+                  onClick={handleTabManage}
+                />
+              </Tooltip>
               <Tooltip title={listTab === 'chats' ? t('menu.newChat') : t('menu.newProject')}>
                 <Button
                   type="text"
@@ -364,23 +419,45 @@ function AppLayout({
           </div>
 
           {/* Center content: the centers switcher when one of them is open, else
-              the chat view's conversation title or every other view's own name. */}
+              the chat view's conversation title or every other view's own name —
+              with, in the chat view, the side-window toggle right of the title.
+              One flex group so the button hugs the title and both stay centered;
+              the group itself carries the width clamp (the old per-span 55% would
+              here clamp against the group, not the bar, and ellipsise early). */}
           {isCentersView ? (
             centersSwitcher
           ) : (
-            <span
-              style={{
-                fontSize: 15,
-                fontWeight: 600,
-                color: '#333',
-                maxWidth: '55%',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              {view.kind === 'chat' ? (activeConvTitle || '') : t(VIEW_TITLE_KEY[view.kind])}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '60%', minWidth: 0 }}>
+              <span
+                style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  color: '#333',
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {view.kind === 'chat' ? (activeConvTitle || '') : t(VIEW_TITLE_KEY[view.kind])}
+              </span>
+              {/* The workbench pane only renders for an open conversation in the
+                  chat view — hide the toggle when there is nothing to show. */}
+              {view.kind === 'chat' && activeConvKey && (
+                <Tooltip
+                  title={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
+                >
+                  <Button
+                    type="text"
+                    className={`header-pane-btn${workbenchOpen ? ' on' : ''}`}
+                    aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
+                    icon={<PanelRightIcon size={16} filled={workbenchOpen} />}
+                    onClick={() => useWorkbenchStore.getState().setOpen(wbKey, !workbenchOpen)}
+                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                  />
+                </Tooltip>
+              )}
+            </div>
           )}
         </Header>
         <Content
@@ -407,6 +484,8 @@ function AppLayout({
                 memoryManager={memoryManager}
                 skills={skills}
                 onToggleSkill={onToggleSkill}
+                tools={tools}
+                onToggleTool={onToggleTool}
                 onImportSkill={onImportSkill}
                 onRefreshSkills={onRefreshSkills}
                 onDeleteSkill={onDeleteSkill}
@@ -430,7 +509,13 @@ function AppLayout({
         open={projectModalOpen}
         editing={null}
         onClose={() => setProjectModalOpen(false)}
-        onSaved={() => { void reloadProjects() }}
+        onSaved={(project) => {
+          void reloadProjects()
+          // Created (or directory-adopted, which reports the existing project):
+          // jump straight into that project's new-task state — welcome page,
+          // 项目 half of the capsule lit, the new project preselected.
+          if (project) handleProjectNewTask(project.id)
+        }}
       />
 
       {/* Force antd's sider-children wrapper to be a flex column so our flex:1 on the conversation list works */}
@@ -561,6 +646,32 @@ function AppLayout({
         }
         .sidebar-list-action:disabled {
           color: #ccc !important;
+        }
+
+        /* Title bar's side-window toggle: a borderless icon right of the title.
+           No background in any state (base, hover, open) — the open state reads
+           from the darker icon colour alone. */
+        .header-pane-btn {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          color: #999 !important;
+          width: 28px !important;
+          height: 28px !important;
+          padding: 0 !important;
+          border-radius: 6px !important;
+        }
+        .header-pane-btn .ant-btn-icon {
+          margin-inline-end: 0 !important;
+        }
+        .header-pane-btn:hover {
+          background: transparent !important;
+          color: #000 !important;
+        }
+        .header-pane-btn.on,
+        .header-pane-btn.on:hover {
+          background: transparent !important;
+          color: #000 !important;
         }
 
         .settings-scroll::-webkit-scrollbar {

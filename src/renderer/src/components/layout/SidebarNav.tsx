@@ -28,7 +28,6 @@ const SUBMENU_ALIGN = { points: ['tl', 'tr'], offset: [4, 0] }
 function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.ReactElement {
   const { t } = useTranslation()
   const view = useNavigationStore((s) => s.view)
-  const navigate = useNavigationStore((s) => s.navigate)
   const navigateKind = useNavigationStore((s) => s.navigateKind)
 
   const activate = (item: SidebarNavItem): void => {

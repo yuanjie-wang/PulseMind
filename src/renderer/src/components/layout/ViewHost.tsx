@@ -14,6 +14,7 @@ import CentersPage from '../centers/CentersPage'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { SkillState } from '../../skills/types'
+import type { ToolState } from '../../tools/types'
 import type { ConversationListItem } from '../../types/conversation'
 import RoutineCenter from '../routine/RoutineCenter'
 import RoutineEditorPage from '../routine/RoutineEditorPage'
@@ -27,6 +28,8 @@ const LazyCanvasView = lazy(() => import('../canvas/CanvasView'))
 export interface ViewHostProps {
   knowledgeManager?: KnowledgeManager
   memoryManager?: MemoryManager
+  tools?: ToolState[]
+  onToggleTool?: (name: string) => void
   skills?: SkillState[]
   onToggleSkill?: (name: string) => void
   onImportSkill?: () => void
@@ -37,7 +40,7 @@ export interface ViewHostProps {
   onSelectConversation?: (key: string) => void
 }
 
-export function ViewHost({ knowledgeManager, memoryManager, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation }: ViewHostProps): React.ReactElement | null {
+export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation }: ViewHostProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
   const handleCanvasClearAll = () => {
     window.electronAPI.canvasClearAll().catch((err: unknown) =>
@@ -62,7 +65,7 @@ export function ViewHost({ knowledgeManager, memoryManager, skills, onToggleSkil
     case 'search':
       return <SearchView onOpenConversation={onSelectConversation} />
     case 'settings':
-      return <SettingsPage memoryManager={memoryManager} />
+      return <SettingsPage memoryManager={memoryManager} tools={tools} onToggleTool={onToggleTool} />
     case 'usage':
       return <StatisticsPage />
     case 'about':

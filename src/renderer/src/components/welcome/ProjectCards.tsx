@@ -1,9 +1,11 @@
 // ── Welcome quick entry: project cards (project mode) ──
 // A fixed heading over the cards; clicking a card targets that project for the
 // conversation started by the next message (still nothing is created until it
-// is sent, M8.4); the play button in the meta row is the only way in — it
-// opens the project's latest conversation. Visual language mirrors the
-// chat-mode cards: soft filled surfaces, one 952px column.
+// is sent, M8.4); the trailing play button in the meta row is the only action
+// of its own — it opens the project's latest conversation, or, for a project
+// with none to quote, starts the first one (the row then reads 立即开始).
+// Visual language mirrors the chat-mode cards: soft filled surfaces, one 952px
+// column.
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
@@ -15,11 +17,11 @@ import {
   PlusOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
-import { useProjectStore } from '../../stores/projectStore'
+import { useProjectStore, projectHue } from '../../stores/projectStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
 import { ProjectModal } from '../project/ProjectModal'
 import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
-import { stringToHue, hsvToCss } from '../../utils/hash-color'
+import { hsvToCss } from '../../../../shared/hash-color'
 import { DEFAULT_PROJECT_ID } from '../../../../shared/types/project'
 import type { Project } from '../../../../shared/types/project'
 import type { ConversationListItem } from '../../types/conversation'
@@ -27,10 +29,18 @@ import type { ConversationListItem } from '../../types/conversation'
 /** Soft surface shared with the chat-mode cards. */
 const CARD_BG = '#f7f7f8'
 const CARD_BG_HOVER = '#efeff1'
-/** Selection wears the project's identity color (hue hashed from its name)
- *  as a diagonal wash, chip-style: near-white at one corner deepening into
- *  the hue at the other — livelier than a flat fill. Hover shifts both stops
- *  up; the check icon takes the hue at full strength. */
+/** The meta row's action ink — the play button — and the ink of 立即开始, the
+ *  prompt that stands in the row's text slot: label and button must read as one
+ *  control, so they are one constant rather than two literals that happen to
+ *  agree. A quote is darker (QUOTE_INK): it is the user's own words, not a
+ *  prompt, and the button is the action on it. */
+const ACTION_INK = '#999'
+const ACTION_INK_HOVER = '#666'
+const QUOTE_INK = '#888'
+/** Selection wears the project's identity color (the stored `colorHue`, see
+ *  `projectHue`) as a diagonal wash, chip-style: near-white at one corner
+ *  deepening into the hue at the other — livelier than a flat fill. Hover
+ *  shifts both stops up; the check icon takes the hue at full strength. */
 const WASH = { from: 0.03, to: 0.2 }
 const WASH_HOVER = { from: 0.08, to: 0.28 }
 const ACCENT_S = 0.85
@@ -69,31 +79,48 @@ function WorkspacePath({ path }: { path: string }): React.ReactElement {
 }
 
 /** The card's second line, read as a chat line: "1天前：你好" — the time the
- *  project was last touched, then whatever was last said in it. Pure display:
- *  the line itself is a log line, not a button — the trailing play button is
- *  the only click target that opens the conversation. The line still reports
- *  hover so the card suppresses its workspace-path tooltip while the pointer
- *  is aiming at the button. */
+ *  project was last touched, then whatever was last said in it. A project with
+ *  nothing to quote keeps the same line, text and play button alike, with
+ *  立即开始 in the text slot instead: the row is one shape across both states,
+ *  and the only thing that changes is what the button means — start this
+ *  project's first task rather than reopen a conversation. Pure display either
+ *  way: the line itself is a log line, not a button — the trailing play button
+ *  is the only click target in it. The line still reports hover so the card
+ *  suppresses its workspace-path tooltip while the pointer is aiming at the
+ *  button. */
 function MetaLine({
   time,
   text,
+  prompt,
   playHint,
-  onOpen,
+  onAction,
   onHover,
 }: {
-  /** Relative stamp, or null when the conversation carries no timestamp. */
+  /** Relative stamp, or null when there is no conversation to stamp (or the
+   *  conversation carries no timestamp). */
   time: string | null
-  /** Last user message, falling back to the conversation title. */
-  text: string | undefined
-  /** Tooltip on the play button. */
+  /** Last user message, falling back to the conversation title — or 立即开始,
+   *  the prompt that stands in for both. */
+  text: string
+  /** Read `text` as a prompt rather than a quote: nothing was actually said, so
+   *  the line is dimmer than a quote — it takes the action ink below, which is
+   *  what makes the label and its play button read as one control — and it is
+   *  inviting the first message. */
+  prompt?: boolean
+  /** Tooltip and accessible name of the play button. */
   playHint: string
-  onOpen: () => void
+  onAction: () => void
   onHover: (hovered: boolean) => void
-}): React.ReactElement | null {
-  if (!text) return null
+}): React.ReactElement {
   return (
     <span
-      style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0, fontSize: 12, color: '#888' }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        minWidth: 0,
+        fontSize: 12,
+        color: prompt ? ACTION_INK : QUOTE_INK,
+      }}
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
     >
@@ -113,11 +140,19 @@ function MetaLine({
             marginLeft: 2,
             flexShrink: 0,
             fontSize: 13,
-            color: '#999',
+            color: ACTION_INK,
+          }}
+          // Inline ink beats antd's hover rule, so the darker ink has to be
+          // written here too — otherwise the icon never reacts to the pointer.
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = ACTION_INK_HOVER
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = ACTION_INK
           }}
           onClick={(e) => {
             e.stopPropagation()
-            onOpen()
+            onAction()
           }}
           onKeyDown={(e) => e.stopPropagation()}
         />
@@ -293,8 +328,10 @@ export function ProjectCards({
 /**
  * One project card: the project name over its latest conversation, read as a
  * chat line — "1天前：你好". Clicking the card targets the project; only the
- * meta line's play button opens that conversation. A gradient wash of the
- * project's name-hashed color marks the selection without shifting layout.
+ * meta line's play button acts on its own — it opens that conversation, and for
+ * a project with none to quote (its row reads 立即开始) it targets the project,
+ * exactly as the card's click does. A gradient wash of the project's identity
+ * color marks the selection without shifting layout.
  * The workspace path is not on the face — long, rarely read, and it cost a
  * whole row — it rides the hover tooltip instead.
  */
@@ -348,9 +385,10 @@ function ProjectCard({
   // own tooltip pops up behind the one you are aiming at.
   const [onMeta, setOnMeta] = useState(false)
 
-  // Identity color: hue hashed from the project name — stable per project,
-  // spread across the wheel so neighbors rarely collide.
-  const hue = stringToHue(project.name)
+  // Identity color: the project's own hue (its stored colorHue, via the project
+  // store, so the composer's send button wears the same one) — spread across
+  // the wheel so neighbors rarely collide.
+  const hue = projectHue(project)
   const accent = hsvToCss(hue, ACCENT_S, ACCENT_V)
 
   const timeText = describeRelativeTimeText(latest?.updatedAt, now, t)
@@ -414,15 +452,30 @@ function ProjectCard({
           </span>
           {selected && <CheckOutlined style={{ fontSize: 14, color: accent, flexShrink: 0 }} />}
         </div>
-        {/* Absent for a project nothing was said in yet — the gap between the
-            two lines must not survive it as a stray 4px. */}
-        {latest && (
+        {/* Second line: the project's last conversation when there is one to
+            quote, 立即开始 in the text slot otherwise — a project nothing was
+            ever said in must not read as a card with a row missing. Without a
+            quote there is no time to stamp either, and the play button means
+            "start this project's first task" rather than "reopen". */}
+        {latest && metaText ? (
           <MetaLine
             time={timeText}
             text={metaText}
-            onOpen={() => onOpenConversation(latest.key)}
-            onHover={setOnMeta}
             playHint={t('welcome.continueConversation')}
+            onAction={() => onOpenConversation(latest.key)}
+            onHover={setOnMeta}
+          />
+        ) : (
+          <MetaLine
+            time={null}
+            text={t('welcome.startNow')}
+            prompt
+            playHint={t('welcome.startNowHint')}
+            // The same action as the card's own click: target this project, so
+            // the next message starts its first conversation (nothing is
+            // created until that message — the deferred-creation contract).
+            onAction={onSelect}
+            onHover={setOnMeta}
           />
         )}
       </div>

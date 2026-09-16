@@ -55,6 +55,11 @@ function StatisticsPage(): React.ReactElement {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 40, paddingBottom: 24 }}>
+          {/* 累计口径说明（PLAN-parallel-experts L14）：token_usage 不随会话删除，
+              否则「删了会话数字没变」会一直被当 bug 报回来。 */}
+          <Text type="secondary" style={{ fontSize: 12, marginTop: -24 }}>
+            {t('statisticsDrawer.cumulativeNote')}
+          </Text>
           <ChartSection
             title={t('statisticsDrawer.hourlyTitle')}
             data={stats!.hourly.map((d) => ({

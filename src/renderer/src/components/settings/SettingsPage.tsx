@@ -4,7 +4,7 @@
 // onClose) — `inline` renders the bare body, which is what a page wants.
 
 import React from 'react'
-import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, StarOutlined, UserOutlined } from '@ant-design/icons'
+import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, StarOutlined, ToolOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { PAGE_COLUMN_MAX_WIDTH } from '../layout/CenteredPage'
@@ -16,6 +16,8 @@ import ExperiencePanel from './ExperiencePanel'
 import FavoritesSettings from './FavoritesSettings'
 import LlmSettings from './LlmSettings'
 import MemorySettings from './MemorySettings'
+import ToolSettings from './ToolSettings'
+import type { ToolState } from '../../tools/types'
 
 type SettingsTab = NonNullable<AppView['settingsTab']>
 
@@ -23,6 +25,7 @@ const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] =
   { key: 'environment', icon: <DesktopOutlined />, labelKey: 'appLayout.environment' },
   { key: 'settings', icon: <SettingOutlined />, labelKey: 'appLayout.settings' },
   { key: 'assistant', icon: <UserOutlined />, labelKey: 'appLayout.assistant' },
+  { key: 'tools', icon: <ToolOutlined />, labelKey: 'appLayout.tools' },
   { key: 'memory', icon: <BookOutlined />, labelKey: 'appLayout.memory' },
   { key: 'experiences', icon: <ExperimentOutlined />, labelKey: 'appLayout.experiences' },
   { key: 'favorites', icon: <StarOutlined />, labelKey: 'appLayout.favorites' },
@@ -30,9 +33,11 @@ const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] =
 
 interface SettingsPageProps {
   memoryManager?: MemoryManager
+  tools?: ToolState[]
+  onToggleTool?: (name: string) => void
 }
 
-function SettingsPage({ memoryManager }: SettingsPageProps): React.ReactElement {
+function SettingsPage({ memoryManager, tools, onToggleTool }: SettingsPageProps): React.ReactElement {
   const { t } = useTranslation()
   const view = useNavigationStore((s) => s.view)
   const navigate = useNavigationStore((s) => s.navigate)
@@ -56,6 +61,8 @@ function SettingsPage({ memoryManager }: SettingsPageProps): React.ReactElement 
         return <ExperiencePanel />
       case 'assistant':
         return <AgentSettings inline open onClose={() => {}} />
+      case 'tools':
+        return <ToolSettings inline open onClose={() => {}} tools={tools ?? []} onToggleTool={onToggleTool ?? (() => {})} />
       case 'settings':
         return <LlmSettings inline open onClose={() => {}} />
       case 'environment':
