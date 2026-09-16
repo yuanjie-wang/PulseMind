@@ -130,21 +130,32 @@ export class ExperienceStore {
     return { record, evicted }
   }
 
-  /** Evict experiences beyond MAX_EXPERIENCES using LRU ordering. */
+  /** Evict experiences beyond MAX_EXPERIENCES using LRU ordering.
+   *  The count read and the row deletes run inside ONE synchronous
+   *  transaction (PLAN-parallel-experts T11): two concurrent saves used to
+   *  compute deletions from a stale total and over-evict. File removal
+   *  happens after — outside the transaction, best-effort. */
   private async enforceLimit(): Promise<ExperienceRecord | undefined> {
-    const total = (getDb().prepare('SELECT COUNT(*) as c FROM experiences').get() as { c: number }).c
-    if (total <= MAX_EXPERIENCES) return undefined
-    const rows = getDb()
-      .prepare(
-        `SELECT * FROM experiences
-         ORDER BY (last_used_at IS NULL) DESC, COALESCE(last_used_at, '0') ASC, use_count ASC
-         LIMIT ?`
-      )
-      .all(total - MAX_EXPERIENCES) as any[]
+    const db = getDb()
+    const evict = db.transaction((): any[] => {
+      const total = (db.prepare('SELECT COUNT(*) as c FROM experiences').get() as { c: number }).c
+      if (total <= MAX_EXPERIENCES) return []
+      const rows = db
+        .prepare(
+          `SELECT * FROM experiences
+           ORDER BY (last_used_at IS NULL) DESC, COALESCE(last_used_at, '0') ASC, use_count ASC
+           LIMIT ?`
+        )
+        .all(total - MAX_EXPERIENCES) as any[]
+      const del = db.prepare('DELETE FROM experiences WHERE name = ?')
+      for (const row of rows) del.run(row.name)
+      return rows
+    })
+    const rows = evict()
     let evicted: ExperienceRecord | undefined
     for (const row of rows) {
       evicted = rowToRecord(row)
-      await this.delete(row.name)
+      await rm(join(EXPERIENCES_DIR, row.name), { recursive: true, force: true }).catch(() => {})
     }
     return evicted
   }

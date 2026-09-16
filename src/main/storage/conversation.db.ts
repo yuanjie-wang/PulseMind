@@ -203,8 +203,8 @@ export function listConversations(): ConversationIndexEntry[] {
 export function getConversation(id: string): Conversation | null {
   const database = getDb()
   const conv = database
-    .prepare('SELECT id, title, summary, keywords, history_summary, history_summary_frontier, created_at, updated_at FROM conversations WHERE id = ?')
-    .get(id) as { id: string; title: string; summary: string | null; keywords: string | null; history_summary: string | null; history_summary_frontier: string | null; created_at: string; updated_at: string } | undefined
+    .prepare('SELECT id, title, summary, keywords, history_summary, history_summary_frontier, approval_mode, created_at, updated_at FROM conversations WHERE id = ?')
+    .get(id) as { id: string; title: string; summary: string | null; keywords: string | null; history_summary: string | null; history_summary_frontier: string | null; approval_mode: string | null; created_at: string; updated_at: string } | undefined
   if (!conv) return null
 
   const messages = database
@@ -217,6 +217,7 @@ export function getConversation(id: string): Conversation | null {
     id: conv.id, title: conv.title, summary: conv.summary || undefined,
     historySummary: conv.history_summary || undefined,
     historySummaryFrontier: conv.history_summary_frontier || undefined,
+    approvalMode: toSandboxApprovalMode(conv.approval_mode),
     messages: messages.map((m) => ({
       id: m.id, role: m.role as 'user' | 'assistant',
       content: m.content,
@@ -234,21 +235,23 @@ export function getConversation(id: string): Conversation | null {
 export function saveConversation(conversation: Conversation): void {
   const database = getDb()
   const now = new Date().toISOString()
-  // Full rewrite is authoritative: updated_at becomes the newest message time
-  // (this also re-heals rows whose updated_at was inflated by older builds).
+  // updated_at is the newest message time — but monotonic (PLAN T11): a full
+  // save carrying older message data must never drag it below what a
+  // concurrent append already stamped (sidebar ordering would jump).
   const lastMsgAt = newestMessageAt(conversation.messages || [], now)
 
   const upsertConv = database.prepare(
     `INSERT INTO conversations (id, title, created_at, updated_at, type, rect_id, history_summary, history_summary_frontier)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at,
+     ON CONFLICT(id) DO UPDATE SET title = excluded.title,
+       updated_at = MAX(conversations.updated_at, excluded.updated_at),
        history_summary = excluded.history_summary, history_summary_frontier = excluded.history_summary_frontier`
   )
   const upsertMsg = database.prepare(
     `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
   const insertTokenUsage = database.prepare(
-    'INSERT OR IGNORE INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)'
+    'INSERT OR REPLACE INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)'
   )
   const insertToolResult = database.prepare(
     'INSERT OR REPLACE INTO tool_results (ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -298,7 +301,7 @@ export function appendConversationMessages(
     `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
   const insertTokenUsage = database.prepare(
-    'INSERT OR IGNORE INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)'
+    'INSERT OR REPLACE INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)'
   )
   const insertToolResult = database.prepare(
     'INSERT OR REPLACE INTO tool_results (ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -353,8 +356,8 @@ export function setConversationProject(id: string, projectId: string): void {
   const r = db.prepare('UPDATE conversations SET project_id = ? WHERE id = ?').run(projectId, id)
   if (r.changes === 0 && projectId !== 'default') {
     const now = new Date().toISOString()
-    db.prepare("INSERT INTO conversations (id, title, type, project_id, created_at, updated_at) VALUES (?, '新对话', 'normal', ?, ?, ?)")
-      .run(id, projectId, now, now)
+    db.prepare("INSERT INTO conversations (id, title, type, project_id, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?, ?)")
+      .run(id, projectId, deriveConvType(id), now, now)
   }
 }
 
@@ -373,8 +376,8 @@ export function setConversationExpert(id: string, expertId: string | null): void
   const r = db.prepare('UPDATE conversations SET expert_id = ? WHERE id = ?').run(expertId, id)
   if (r.changes === 0 && expertId) {
     const now = new Date().toISOString()
-    db.prepare("INSERT INTO conversations (id, title, type, expert_id, created_at, updated_at) VALUES (?, '新对话', 'normal', ?, ?, ?)")
-      .run(id, expertId, now, now)
+    db.prepare("INSERT INTO conversations (id, title, type, expert_id, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?, ?)")
+      .run(id, deriveConvType(id), expertId, now, now)
   }
 }
 
@@ -393,8 +396,8 @@ export function setConversationApprovalMode(id: string, mode: SandboxApprovalMod
   const r = db.prepare('UPDATE conversations SET approval_mode = ? WHERE id = ?').run(mode, id)
   if (r.changes === 0) {
     const now = new Date().toISOString()
-    db.prepare("INSERT INTO conversations (id, title, type, approval_mode, created_at, updated_at) VALUES (?, '新对话', 'normal', ?, ?, ?)")
-      .run(id, mode, now, now)
+    db.prepare("INSERT INTO conversations (id, title, type, approval_mode, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?, ?)")
+      .run(id, deriveConvType(id), mode, now, now)
   }
 }
 
@@ -420,8 +423,8 @@ export function setConversationWorkspaceDir(id: string, workspaceDir: string): v
   const r = db.prepare('UPDATE conversations SET workspace_dir = ? WHERE id = ?').run(workspaceDir, id)
   if (r.changes === 0) {
     const now = new Date().toISOString()
-    db.prepare("INSERT INTO conversations (id, title, type, workspace_dir, created_at, updated_at) VALUES (?, '新对话', 'normal', ?, ?, ?)")
-      .run(id, workspaceDir, now, now)
+    db.prepare("INSERT INTO conversations (id, title, type, workspace_dir, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?, ?)")
+      .run(id, deriveConvType(id), workspaceDir, now, now)
   }
 }
 

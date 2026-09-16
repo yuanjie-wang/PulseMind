@@ -48,6 +48,10 @@ export interface Conversation {
   historySummary?: string
   /** id of the first kept message at the time the summary was generated. */
   historySummaryFrontier?: string
+  /** How this conversation gates tool calls; absent = never chosen (the
+   *  shared default 按需确认). Read-only here — writes go through
+   *  setConversationApprovalMode, and upserts never touch the column. */
+  approvalMode?: SandboxApprovalMode
 }
 
 export interface ToolResultBatchEntry {

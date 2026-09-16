@@ -37,8 +37,7 @@ export function registerServiceHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.SERVICE_SET_ENABLED, async (_event, enabled: boolean) => {
-    const settings = await settingsStore.get()
-    await settingsStore.set({ ...settings, serviceEnabled: enabled })
+    await settingsStore.update(s => ({ ...s, serviceEnabled: enabled }))
     if (enabled) {
       await restartService()
     } else {
@@ -49,8 +48,7 @@ export function registerServiceHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.SERVICE_SET_PORT, async (_event, port: number) => {
-    const settings = await settingsStore.get()
-    await settingsStore.set({ ...settings, servicePort: port })
+    await settingsStore.update(s => ({ ...s, servicePort: port }))
     await restartService()
     return { running: !!serviceRuntime.handle, port: serviceRuntime.handle?.port ?? null }
   })

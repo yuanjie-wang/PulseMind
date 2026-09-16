@@ -1,7 +1,7 @@
 import { ipcMain, dialog } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { skillStore } from '../storage/skill-store'
-import type { SkillDefinition } from '../../shared/types/skill-types'
+import type { SkillDefinition, SkillPreferencesPatch } from '../../shared/types/skill-types'
 
 export function registerSkillHandlers(): void {
   // Preferences
@@ -11,6 +11,13 @@ export function registerSkillHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.SKILLS_SET_PREFERENCES, (event, prefs) => {
     skillStore.set(prefs)
+    event.sender.send(IPC_CHANNELS.SKILLS_CHANGED)
+  })
+
+  // Patch-shaped atomic update (PLAN-parallel-experts T10): merge instead of
+  // whole-block replacement, so concurrent writers cannot clobber each other.
+  ipcMain.handle(IPC_CHANNELS.SKILLS_UPDATE_PREFERENCES, (event, patch: SkillPreferencesPatch) => {
+    skillStore.update(patch)
     event.sender.send(IPC_CHANNELS.SKILLS_CHANGED)
   })
 

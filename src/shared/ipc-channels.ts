@@ -93,6 +93,7 @@ export const IPC_CHANNELS = {
   // ── Skills ──
   SKILLS_GET_PREFERENCES: 'skills:get-preferences',
   SKILLS_SET_PREFERENCES: 'skills:set-preferences',
+  SKILLS_UPDATE_PREFERENCES: 'skills:update-preferences',
   SKILLS_LIST_IMPORTED: 'skills:list-imported',
   SKILLS_DELETE_IMPORTED: 'skills:delete-imported',
   SKILLS_READ_RAW: 'skills:read-raw',
@@ -129,6 +130,7 @@ export const IPC_CHANNELS = {
 
   // ── Utilities ──
   UTIL_READ_FILE: 'util:read-file',
+  UTIL_LIST_DIR: 'util:list-dir',
   UTIL_EDIT_FILE: 'util:edit-file',
   UTIL_PATCH_FILE: 'util:patch-file',
   UTIL_WRITE_FILE: 'util:write-file',

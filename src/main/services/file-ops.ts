@@ -3,13 +3,14 @@
  * file-ops.handler.ts closures, extracted so both the IPC handlers and the
  * main-process agent host call the same functions.
  */
-import { readFile, writeFile, appendFile, stat, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, appendFile, stat, mkdir, readdir } from 'node:fs/promises'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { patchContent } from '../utils/patch-utils'
 import { DATA_DIR } from '../storage'
 import { getOrConvert } from '../storage/read-cache'
 import { guardFsTarget, checkFsTarget } from '../sandbox/guard'
+import { withPathLock } from '../sandbox/write-lock'
 
 export interface EditFileInput {
   filePath: string
@@ -119,6 +120,20 @@ async function resolveWritablePath(input: string): Promise<string> {
   return resolvePath(input)
 }
 
+/** mtime+size fingerprint of one file, for the staleness check below. */
+async function statSignature(resolved: string): Promise<string> {
+  try {
+    const s = await stat(resolved)
+    return `${s.mtimeMs}:${s.size}`
+  } catch {
+    return 'missing'
+  }
+}
+
+/** Returned when the file changed between the read and the write of one
+ *  edit/patch — deliberately actionable: the model re-reads and retries. */
+const STALE_FILE_ERROR = 'file changed on disk since it was read — re-read and retry'
+
 export async function svcCopyFile(input: { sourceUrl?: string; destination: string }): Promise<{ success: boolean; error?: string }> {
   try {
     const { copyFile: cf } = await import('node:fs/promises')
@@ -164,27 +179,37 @@ export async function svcEditFile(input: EditFileInput): Promise<EditFileResult>
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, replacements: 0, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
-    const content = await readFile(safePath, 'utf-8')
-    // Line-ending tolerance: model-generated old_str is always LF, but files
-    // on Windows may be CRLF. Normalize for matching, then restore the file's
-    // original line ending on write so the whole file stays consistent.
-    const isCRLF = content.includes('\r\n')
-    const normalizedContent = isCRLF ? content.replace(/\r\n/g, '\n') : content
-    const oldStr = input.oldStr.replace(/\r\n/g, '\n')
-    const newStr = input.newStr.replace(/\r\n/g, '\n')
-    const count = normalizedContent.split(oldStr).length - 1
+    // Read-modify-write under the per-path lock (PLAN-parallel-experts T6):
+    // two experts editing one file serialize instead of silently losing one
+    // side's replacement. Staleness re-check covers writers outside this
+    // process (user's editor) touching the file mid-operation.
+    return await withPathLock(safePath, async (): Promise<EditFileResult> => {
+      const before = await statSignature(safePath)
+      const content = await readFile(safePath, 'utf-8')
+      // Line-ending tolerance: model-generated old_str is always LF, but files
+      // on Windows may be CRLF. Normalize for matching, then restore the file's
+      // original line ending on write so the whole file stays consistent.
+      const isCRLF = content.includes('\r\n')
+      const normalizedContent = isCRLF ? content.replace(/\r\n/g, '\n') : content
+      const oldStr = input.oldStr.replace(/\r\n/g, '\n')
+      const newStr = input.newStr.replace(/\r\n/g, '\n')
+      const count = normalizedContent.split(oldStr).length - 1
 
-    if (count === 0) {
-      return { success: false, replacements: 0, error: `old_str not found in ${input.filePath}` }
-    }
+      if (count === 0) {
+        return { success: false, replacements: 0, error: `old_str not found in ${input.filePath}` }
+      }
 
-    const replaced = input.multi
-      ? normalizedContent.replaceAll(oldStr, newStr)
-      : normalizedContent.replace(oldStr, newStr)
-    const newContent = isCRLF ? replaced.replace(/\n/g, '\r\n') : replaced
+      const replaced = input.multi
+        ? normalizedContent.replaceAll(oldStr, newStr)
+        : normalizedContent.replace(oldStr, newStr)
+      const newContent = isCRLF ? replaced.replace(/\n/g, '\r\n') : replaced
 
-    await writeFile(safePath, newContent, 'utf-8')
-    return { success: true, replacements: count }
+      if (await statSignature(safePath) !== before) {
+        return { success: false, replacements: 0, error: STALE_FILE_ERROR }
+      }
+      await writeFile(safePath, newContent, 'utf-8')
+      return { success: true, replacements: count }
+    })
   } catch (err) {
     return {
       success: false,
@@ -199,13 +224,19 @@ export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResu
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, replacements: 0, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
-    const content = await readFile(safePath, 'utf-8')
-    const result = patchContent(content, input.diff)
-    if (!result.success) {
-      return { success: false, replacements: 0, error: result.error }
-    }
-    await writeFile(safePath, result.content!, 'utf-8')
-    return { success: true, replacements: result.replacements }
+    return await withPathLock(safePath, async (): Promise<PatchFileResult> => {
+      const before = await statSignature(safePath)
+      const content = await readFile(safePath, 'utf-8')
+      const result = patchContent(content, input.diff)
+      if (!result.success) {
+        return { success: false, replacements: 0, error: result.error }
+      }
+      if (await statSignature(safePath) !== before) {
+        return { success: false, replacements: 0, error: STALE_FILE_ERROR }
+      }
+      await writeFile(safePath, result.content!, 'utf-8')
+      return { success: true, replacements: result.replacements }
+    })
   } catch (err) {
     return {
       success: false,
@@ -221,12 +252,16 @@ export async function svcWriteFile(input: WriteFileInput): Promise<WriteFileResu
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
-    if (append) {
-      await appendFile(safePath, content, 'utf-8')
-    } else {
-      await writeFile(safePath, content, 'utf-8')
-    }
-    return { success: true }
+    // The lock orders concurrent appends/overwrites to one file; a full
+    // overwrite has no read side, so no staleness check applies.
+    return await withPathLock(safePath, async (): Promise<WriteFileResult> => {
+      if (append) {
+        await appendFile(safePath, content, 'utf-8')
+      } else {
+        await writeFile(safePath, content, 'utf-8')
+      }
+      return { success: true }
+    })
   } catch (err) {
     return {
       success: false,
@@ -249,6 +284,34 @@ export async function svcFileStat(filePath: string): Promise<{ size: number; bir
     if (!guard.ok) return null
     const s = await stat(filePath)
     return { size: s.size, birthtime: s.birthtime.toISOString(), mtime: s.mtime.toISOString() }
+  } catch {
+    return null
+  }
+}
+
+export interface DirEntry {
+  name: string
+  path: string
+  isDir: boolean
+}
+
+/** One directory level for the workbench's 工作区 file tree: read-only, so the
+ *  path jail's free-read policy applies and only existence/permission can fail
+ *  (all reported as null and surfaced as an empty state by the tree). */
+export async function svcListDir(dirPath: string): Promise<{ entries: DirEntry[] } | null> {
+  try {
+    const guard = await checkFsTarget(dirPath, 'read')
+    if (!guard.ok) return null
+    const safePath = resolvePath(dirPath)
+    const dirents = await readdir(safePath, { withFileTypes: true })
+    const entries: DirEntry[] = dirents.map((d) => ({
+      name: d.name,
+      path: path.join(safePath, d.name),
+      isDir: d.isDirectory(),
+    }))
+    // Directories first, then files, each alphabetical — the tree's reading order.
+    entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
+    return { entries }
   } catch {
     return null
   }

@@ -177,8 +177,11 @@ export class MCPClient {
 
     this._connected = false
 
+    // In-flight calls must reject, not dangle (PLAN-parallel-experts T11):
+    // clearing `pending` without rejecting left callers awaiting forever.
     for (const [, req] of this.pending) {
       clearTimeout(req.timeoutHandle)
+      req.reject(new Error('MCP client stopped'))
     }
     this.pending.clear()
 

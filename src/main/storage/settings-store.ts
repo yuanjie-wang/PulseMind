@@ -1,4 +1,4 @@
-import { readFile, writeFile, stat } from 'node:fs/promises'
+import { readFile, writeFile, rename, unlink, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SETTINGS_PATH, DATA_DIR, ensureDataDir } from './index'
 import { resolveEnvVarsDeep, resolveEnvVarsInString } from '../../shared/env'
@@ -153,7 +153,42 @@ export class SettingsStore {
     }
   }
 
+  // ── Serialized whole-file writes (PLAN-parallel-experts T10) ──
+  // settings.json has several independent main-process writers (pane width,
+  // login item, activeProfileId, the user's own save). Every `set` is a
+  // read-modify-write of the WHOLE file, so two concurrent writers used to
+  // interleave (both read the old file, both wrote) and the later full-content
+  // write silently rolled the earlier one back. Chaining every set behind the
+  // previous one makes those read-modify-write sections mutually exclusive;
+  // the tmp+rename publish keeps concurrent READERS from seeing a half file.
+  private writeChain: Promise<void> = Promise.resolve()
+
   async set(settings: AppSettings): Promise<void> {
+    const job = this.writeChain.then(() => this.doSet(settings))
+    // A failed write must not poison every future write — the caller still
+    // sees this job's rejection.
+    this.writeChain = job.catch(() => {})
+    return job
+  }
+
+  /**
+   * Merge-shaped atomic update for the small main-process writers (pane
+   * width, activeProfileId, login item, service flag): the FRESH read happens
+   * inside the write chain and the mutator carries only its own field, so two
+   * concurrent writers merge instead of each shipping a stale whole-file
+   * snapshot that rolls the other back (the audit's "pane width silently
+   * reverted the user's save"). Whole-content writers — the settings editor's
+   * save — keep using `set`, whose payload is the user's inspected snapshot.
+   */
+  async update(mutate: (current: AppSettings) => AppSettings): Promise<void> {
+    const job = this.writeChain.then(async () => {
+      await this.doSet(mutate(await this.get()))
+    })
+    this.writeChain = job.catch(() => {})
+    return job
+  }
+
+  private async doSet(settings: AppSettings): Promise<void> {
     // Strip legacy outputDir key, write as workspaceDir only
     const { outputDir: _legacy, ...clean } = settings as unknown as Record<string, unknown>
 
@@ -169,7 +204,21 @@ export class SettingsStore {
       // No previous file (first write) — write as-is
     }
 
-    await writeFile(SETTINGS_PATH, JSON.stringify(toWrite, null, 2), 'utf-8')
+    const tmp = `${SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`
+    try {
+      await writeFile(tmp, JSON.stringify(toWrite, null, 2), 'utf-8')
+      try {
+        await rename(tmp, SETTINGS_PATH)
+      } catch {
+        // Windows rename-over-existing can fail (AV/indexer locks) — fall back
+        // to a direct write; the serialization above is the real fix.
+        await writeFile(SETTINGS_PATH, JSON.stringify(toWrite, null, 2), 'utf-8')
+        await unlink(tmp).catch(() => {})
+      }
+    } catch (err) {
+      await unlink(tmp).catch(() => {})
+      throw err
+    }
     // Drop the cache; the next get() re-reads from the new file (its mtime differs).
     cache = null
   }

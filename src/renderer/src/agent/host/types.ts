@@ -52,6 +52,7 @@ const HOST_METHOD_KEYS = [
   // skills / experience / experts
   'getSkillPreferences',
   'setSkillPreferences',
+  'updateSkillPreferences',
   'readSkillRaw',
   'installSkill',
   'expertList',

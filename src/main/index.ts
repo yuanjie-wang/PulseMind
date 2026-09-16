@@ -7,6 +7,7 @@ import { registerIpcHandlers } from './ipc'
 import { ensureDataDir, getBundlePresetsDir } from './storage'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
 import { backfillConversationWorkspaces } from './storage/conversation-workspace'
+import { backfillProjectColors } from './storage/project-store'
 import { cleanupExpiredConversations } from './services/conversation-retention'
 import { skillStore } from './storage/skill-store'
 import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
@@ -498,6 +499,10 @@ if (gotTheLock) {
   // (PLAN-0.4.0 M8): old conversations keep the global workspace, new ones
   // mint their own timestamped folder on first use.
   await backfillConversationWorkspaces()
+  // Projects created before their identity color was a stored field (2026-09-16)
+  // get it here, from the same name hash the renderer used to derive — so every
+  // existing color survives the switch to reading it back.
+  await backfillProjectColors()
   // 对话管理 · 最长保留时长: expire conversations older than the policy allows
   // before any session can resurrect one.
   try { await cleanupExpiredConversations() } catch (err) { writeLog('WARN', `startup: conversation retention failed: ${err}`) }
@@ -553,8 +558,7 @@ if (gotTheLock) {
       getServiceStatus: async () => serviceRuntime.handle ? `服务运行中 :${serviceRuntime.handle.port}` : '服务未运行',
       getLaunchAtLogin: async () => !!(await settingsStore.get()).launchAtLogin,
       onToggleLaunchAtLogin: async (enabled) => {
-        const s = await settingsStore.get()
-        await settingsStore.set({ ...s, launchAtLogin: enabled })
+        await settingsStore.update(s => ({ ...s, launchAtLogin: enabled }))
         applyLaunchAtLogin(enabled)
       },
       onShowWindow: () => {

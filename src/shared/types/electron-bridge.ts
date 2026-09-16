@@ -9,7 +9,7 @@
 import type { Conversation, ConversationIndexEntry, Message, TokenStats, ToolResultBatchEntry } from './conversation'
 import type { AppSettings } from './settings'
 import type { ToolPreferences } from './tool-types'
-import type { SkillPreferences, SkillDefinition } from './skill-types'
+import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from './skill-types'
 import type { MemoryEntry, MemorySearchInput } from './memory'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
 import type { ExpertProfile } from './expert'
@@ -200,6 +200,7 @@ export interface ElectronAPI {
   // Skills
   getSkillPreferences: () => Promise<SkillPreferences>
   setSkillPreferences: (prefs: SkillPreferences) => Promise<void>
+  updateSkillPreferences: (patch: SkillPreferencesPatch) => Promise<void>
 
   // Skills - Import
   importSkill: () => Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null>
@@ -343,6 +344,7 @@ export interface ElectronAPI {
   }) => Promise<{ filePaths: string[]; canceled: boolean }>
 
   readFile: (filePath: string) => Promise<string | null>
+  listDir: (dirPath: string) => Promise<{ entries: Array<{ name: string; path: string; isDir: boolean }> } | null>
   editFile: (input: { filePath: string; oldStr: string; newStr: string; multi: boolean }) => Promise<{ success: boolean; replacements: number; error?: string }>
   patchFile: (input: { filePath: string; diff: string }) => Promise<{ success: boolean; replacements: number; error?: string }>
   writeFile: (input: { filePath: string; content: string; append?: boolean }) => Promise<{ success: boolean; error?: string }>
@@ -433,7 +435,7 @@ export interface ElectronAPI {
   canvasOpenInBrowser: (rectId: string) => Promise<{ success: boolean; error?: string }>
   // ── Agent sessions (engines hosted in main, PLAN-0.3.5 M1.4) ──
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions) => Promise<{ sessionId: string; agentId: string; workspaceDir?: string }>
-  agentSessionAsk: (sessionId: string, content: string) => Promise<void>
+  agentSessionAsk: (sessionId: string, content: string, delegateExpertId?: string) => Promise<void>
   agentSessionCancel: (sessionId: string) => Promise<void>
   agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null) => Promise<void>

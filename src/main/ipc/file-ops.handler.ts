@@ -14,6 +14,7 @@ import {
   svcSaveBase64Image,
   svcCopyFileToTmp,
   svcCopyFile,
+  svcListDir,
 } from '../services/file-ops'
 import type {
   EditFileInput,
@@ -22,6 +23,7 @@ import type {
   PatchFileResult,
   WriteFileInput,
   WriteFileResult,
+  DirEntry,
 } from '../services/file-ops'
 
 export type { EditFileInput, EditFileResult, PatchFileInput, PatchFileResult, WriteFileInput, WriteFileResult }
@@ -41,6 +43,9 @@ export function registerFileOpsHandlers(): void {
 
   // ── Read file ────────────────────────────────────────────────────
   ipcMain.handle(IPC_CHANNELS.UTIL_READ_FILE, (_event, filePath: string) => svcReadFile(filePath))
+
+  // ── List one directory level (workbench 工作区 file tree) ────────
+  ipcMain.handle(IPC_CHANNELS.UTIL_LIST_DIR, (_event, dirPath: string): Promise<{ entries: DirEntry[] } | null> => svcListDir(dirPath))
 
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_FILE, (_event, input: EditFileInput): Promise<EditFileResult> => svcEditFile(input))
 

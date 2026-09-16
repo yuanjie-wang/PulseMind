@@ -31,13 +31,10 @@ async function backfillSkillKeywords(
     )
 
     if (keywords.length > 0) {
-      const prefs = await window.electronAPI.getSkillPreferences()
-      const skillKeywords = prefs.skillKeywords || {}
-      if (!skillKeywords[skillName]) {
-        skillKeywords[skillName] = keywords
-        await window.electronAPI.setSkillPreferences({ ...prefs, skillKeywords })
-        console.log(`[backfill] Extracted keywords for "${skillName}":`, keywords)
-      }
+      // Patch-shaped atomic update (PLAN-parallel-experts T10) — no whole-block
+      // read-modify-write across two IPC calls.
+      await window.electronAPI.updateSkillPreferences({ setKeywordIfAbsent: { [skillName]: keywords } })
+      console.log(`[backfill] Extracted keywords for "${skillName}":`, keywords)
     }
   } catch (err) {
     console.warn(`[backfill] Failed to extract keywords for "${skillName}":`, err)
@@ -166,9 +163,9 @@ export function useChatManagers(options: UseChatManagersOptions) {
     if (!prefsLoadedRef.current || !skillsReadyRef.current) return
     const persist = async (): Promise<void> => {
       const enabledPrefs = skillManagerRef.current.getPreferences()
-      const existing = await window.electronAPI.getSkillPreferences()
-      const prefs = { ...enabledPrefs, skillKeywords: existing.skillKeywords }
-      await window.electronAPI.setSkillPreferences(prefs)
+      // Patch-shaped (PLAN-parallel-experts T10): only the enabled list is
+      // ours to replace — keywords and processed ids stay as stored.
+      await window.electronAPI.updateSkillPreferences({ replaceEnabledSkills: enabledPrefs.enabledSkills })
     }
     persist().catch((e) => {
       console.error('[persist] Failed to save skill prefs:', e)
@@ -233,12 +230,9 @@ export function useChatManagers(options: UseChatManagersOptions) {
     if (!ok) return
 
     try {
-      const prefs = await window.electronAPI.getSkillPreferences()
-      prefs.enabledSkills = prefs.enabledSkills.filter((s) => s !== name)
-      if (prefs.skillKeywords?.[name]) {
-        delete prefs.skillKeywords[name]
-      }
-      await window.electronAPI.setSkillPreferences(prefs)
+      // Patch-shaped (PLAN-parallel-experts T10): drop the skill's enabled
+      // entry and keywords in one atomic main-process update.
+      await window.electronAPI.updateSkillPreferences({ removeSkill: name })
     } catch (e) {
       console.warn('[deleteImportedSkill] Failed to update preferences:', e)
     }

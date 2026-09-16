@@ -16,7 +16,7 @@ import type {
   ServiceStatus,
 } from '../shared/types/electron-bridge'
 import type { ToolPreferences } from '../shared/types/tool-types'
-import type { SkillPreferences, SkillDefinition } from '../shared/types/skill-types'
+import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '../shared/types/skill-types'
 import type { ExperienceRecord, ExperienceDraft } from '../shared/types/experience-types'
 import type { MemoryEntry, MemorySearchInput } from '../shared/types/memory'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../shared/types/knowledge'
@@ -150,6 +150,7 @@ const electronAPI = {
   // Skills
   getSkillPreferences: (): Promise<SkillPreferences> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_GET_PREFERENCES),
   setSkillPreferences: (prefs: SkillPreferences): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_SET_PREFERENCES, prefs),
+  updateSkillPreferences: (patch: SkillPreferencesPatch): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_UPDATE_PREFERENCES, patch),
 
   // Skills - Import
   importSkill: (): Promise<{ imported: SkillDefinition[]; errors: string[]; warnings: string[] } | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_IMPORT),
@@ -283,6 +284,8 @@ const electronAPI = {
 
   // ── File operations ──
   readFile: (filePath: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_READ_FILE, filePath),
+  listDir: (dirPath: string): Promise<{ entries: Array<{ name: string; path: string; isDir: boolean }> } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_LIST_DIR, dirPath),
   editFile: (input: {
     filePath: string
     oldStr: string
@@ -402,7 +405,8 @@ const electronAPI = {
   // ── Agent sessions (engines hosted in main) ──
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CREATE, sessionId, opts),
-  agentSessionAsk: (sessionId: string, content: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content),
+  agentSessionAsk: (sessionId: string, content: string, delegateExpertId?: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, delegateExpertId),
   agentSessionCancel: (sessionId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CANCEL, sessionId),
   agentSessionHistory: (sessionId: string): Promise<{ messages: unknown[]; agentId: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),

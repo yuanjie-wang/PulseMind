@@ -155,3 +155,52 @@ describe('SettingsStore.set — placeholder preservation', () => {
     expect(readRaw().profiles[0].apiKey).toBe('sk-brand-new')
   })
 })
+
+// fs/promises 的 writeFile 包一层可编程 mock（默认全转发），用于验证写链
+// 的容错。node:fs（本文件其余测试用的同步 API）不受影响。
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...actual, writeFile: vi.fn(actual.writeFile) }
+})
+
+describe('SettingsStore — concurrent writers (PLAN-parallel-experts T10)', () => {
+  it('two concurrent update() calls merge — neither field is lost', async () => {
+    const store = await freshStore()
+    await Promise.all([
+      store.update(s => ({ ...s, theme: 'dark' })),
+      store.update(s => ({ ...s, myName: 'other-writer' })),
+    ])
+    const raw = readRaw()
+    expect(raw.theme).toBe('dark')
+    expect(raw.myName).toBe('other-writer')
+    expect(raw.activeProfileId).toBe('p1') // untouched fields survive too
+  })
+
+  it('a whole-file user save racing a small patch merges instead of rolling back', async () => {
+    const store = await freshStore()
+    const userSnapshot = await store.get()
+    // 面板宽度更新与用户整块保存同时入队：链序 = 入队序，且 update 的「读」
+    // 发生在自己链位内——宽度落在保存之后的文件上，用户的字段不被回滚。
+    await Promise.all([
+      store.set({ ...userSnapshot, theme: 'dark' } as AppSettings),
+      store.update(s => ({ ...s, browser: { ...s.browser, paneWidth: 777 } })),
+    ])
+    const raw = readRaw()
+    expect(raw.theme).toBe('dark')
+    expect((raw as unknown as { browser?: { paneWidth?: number } }).browser?.paneWidth).toBe(777)
+  })
+
+  it('a failing write does not poison the chain — later writes still land', async () => {
+    const store = await freshStore()
+    const fsPromises = await import('node:fs/promises')
+    const writeFileMock = vi.mocked(fsPromises.writeFile)
+    writeFileMock.mockImplementationOnce(async () => { throw new Error('disk on fire') })
+    try {
+      await expect(store.set({ ...RAW_BASE, theme: 'dark' } as AppSettings)).rejects.toThrow('disk on fire')
+      await store.set({ ...RAW_BASE, myName: 'after-failure' } as AppSettings)
+    } finally {
+      writeFileMock.mockImplementation(undefined)
+    }
+    expect(readRaw().myName).toBe('after-failure')
+  })
+})

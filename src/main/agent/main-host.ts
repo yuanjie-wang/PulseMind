@@ -193,6 +193,7 @@ export const mainHost: PulseHost = {
   // ── Skills / experience / sub-agents ──
   getSkillPreferences: () => Promise.resolve(skillStore.get()),
   setSkillPreferences: async (prefs) => { skillStore.set(prefs) },
+  updateSkillPreferences: async (patch) => { skillStore.update(patch) },
   readSkillRaw: (name) => Promise.resolve(skillStore.readRawContent(name)),
   installSkill: (name) => Promise.resolve(skillStore.install(name)),
   expertList: async () => expertStore.getAll(),

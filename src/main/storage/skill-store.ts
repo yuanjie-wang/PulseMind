@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir, rm, readdir, cp } from 'node:fs/promises'
 import { join, basename, dirname, relative } from 'node:path'
-import type { SkillPreferences, SkillDefinition } from '../../shared/types/skill-types'
+import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '../../shared/types/skill-types'
 import { SKILLS_DIR } from './index'
 import { getDb } from './database'
 
@@ -47,6 +47,35 @@ export class SkillStore {
       JSON.stringify(prefs.skillKeywords || {}),
       JSON.stringify(prefs.processedConversations || [])
     )
+  }
+
+  /**
+   * Patch-shaped atomic update (PLAN-parallel-experts T10). See
+   * SkillPreferencesPatch in shared/types/skill-types.ts for why this exists:
+   * every branch is applied between one synchronous get() and one set() — no
+   * await — so concurrent writers merge instead of clobbering.
+   */
+  update(patch: SkillPreferencesPatch): void {
+    const prefs = this.get()
+    if (patch.setKeywordIfAbsent) {
+      const kw = { ...(prefs.skillKeywords || {}) }
+      for (const [name, keywords] of Object.entries(patch.setKeywordIfAbsent)) {
+        if (!kw[name]) kw[name] = keywords
+      }
+      prefs.skillKeywords = kw
+    }
+    if (patch.replaceEnabledSkills) {
+      prefs.enabledSkills = patch.replaceEnabledSkills
+    }
+    if (patch.removeSkill) {
+      prefs.enabledSkills = (prefs.enabledSkills || []).filter((s) => s !== patch.removeSkill)
+      if (prefs.skillKeywords?.[patch.removeSkill]) {
+        const kw = { ...prefs.skillKeywords }
+        delete kw[patch.removeSkill]
+        prefs.skillKeywords = kw
+      }
+    }
+    this.set(prefs)
   }
 
   /**
