@@ -20,6 +20,7 @@
  */
 import { build } from 'esbuild'
 import { chromium } from 'playwright-core'
+import sharp from 'sharp'
 import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -63,6 +64,7 @@ import xMarkdownTheme from '@ant-design/x-markdown/themes/light.css'
 import { Transcript } from './src/extension/ui/Transcript'
 import { Composer } from './src/extension/ui/Composer'
 import { Icon } from './src/extension/ui/icons'
+import { App } from './src/extension/ui/App'
 import { DEFAULT_APPROVAL_MODE } from './src/shared/sandbox/policy'
 
 const NOW = '2026-09-15T10:00:00.000Z'
@@ -163,7 +165,6 @@ function Panel({ title, status, session, busy, children, approvalMode, disabled,
         <span className="pm-status">{status}</span>
         <span className="pm-spacer" />
         <button className="pm-icon-btn" title="新会话"><Icon name="plus" /></button>
-        <button className="pm-icon-btn" title="历史会话"><Icon name="menu" /></button>
         <button className="pm-icon-btn" title="收起"><Icon name="close" /></button>
       </header>
       <Transcript session={session} busy={!!busy} onApprovalResponse={noop} onAnswer={noop} onClearError={noop} />
@@ -258,6 +259,70 @@ for (const fixture of PANELS) {
 
 window.__panels = () => [...document.querySelectorAll('[data-pulsemind-panel]')].map((h) => h.shadowRoot)
 window.__ready = true
+
+/** The launcher: the real App with the panel closed, so the collapsed state the
+ *  user actually meets is what gets measured. Mounted on demand — its frost test
+ *  lays a striped backdrop over the whole viewport, which would be in the way of
+ *  the fixture screenshots above. */
+/** The expanded panel, mounted the same way — the real App with \`__openPanel\`
+ *  set. It takes the launcher down first: both hosts are fixed at the same
+ *  bottom-right corner with the same z-index, and the drag section upstream
+ *  always leaves a launcher mounted, so two of them would fight over the same
+ *  pixels (and over the clicks aimed at the header). */
+window.__mountPanel = () => {
+  document.getElementById('launcher')?.remove()
+  document.getElementById('wide-panel')?.remove()
+  const host = document.createElement('div')
+  host.setAttribute('data-pulsemind-panel', '')
+  host.id = 'wide-panel'
+  host.style.cssText = 'all: initial; position: fixed; z-index: 2147483647;'
+  const shadow = host.attachShadow({ mode: 'open' })
+  const themeEl = document.createElement('style')
+  themeEl.textContent = xMarkdownTheme
+  shadow.appendChild(themeEl)
+  const styleEl = document.createElement('style')
+  styleEl.textContent = panelStyles
+  shadow.appendChild(styleEl)
+  const rootEl = document.createElement('div')
+  rootEl.className = 'pm-root'
+  shadow.appendChild(rootEl)
+  document.body.appendChild(host)
+  createRoot(rootEl).render(<App />)
+  return true
+}
+
+window.__mountLauncher = () => {
+  // A remount has to be a *fresh* tree (the drag check re-mounts to prove the
+  // position came back from storage, not from React state), so the previous
+  // host goes first.
+  document.getElementById('launcher')?.remove()
+  const host = document.createElement('div')
+  host.setAttribute('data-pulsemind-panel', '')
+  host.id = 'launcher'
+  host.style.cssText = 'all: initial; position: fixed; z-index: 2147483647;'
+  const shadow = host.attachShadow({ mode: 'open' })
+  const themeEl = document.createElement('style')
+  themeEl.textContent = xMarkdownTheme
+  shadow.appendChild(themeEl)
+  const styleEl = document.createElement('style')
+  styleEl.textContent = panelStyles
+  shadow.appendChild(styleEl)
+  const rootEl = document.createElement('div')
+  rootEl.className = 'pm-root'
+  shadow.appendChild(rootEl)
+  // High-frequency detail behind the launcher. backdrop-filter can only be
+  // *seen* against something with detail in it, and this is the layer the
+  // pixel check below measures the blur against: 4px black/white stripes, at
+  // z-index -1 so they are painted before the button and land in its backdrop.
+  const stripes = document.createElement('div')
+  stripes.id = 'launcher-backdrop'
+  stripes.style.cssText =
+    'position:fixed; inset:0; z-index:-1; background:repeating-linear-gradient(90deg,#000 0 4px,#fff 4px 8px);'
+  shadow.appendChild(stripes)
+  document.body.appendChild(host)
+  createRoot(rootEl).render(<App />)
+  return true
+}
 `
 
 await build({
@@ -278,6 +343,60 @@ const page = await browser.newPage({ viewport: { width: 1680, height: 980 }, dev
 const pageErrors = []
 page.on('pageerror', (err) => pageErrors.push(err.message))
 await page.setContent('<!doctype html><html><body style="margin:0"></body></html>')
+// The launcher below is the real `App`, which talks to its worker over
+// chrome.runtime — absent on a plain page. Only `panel/attach` needs an answer,
+// and it answers with the panel closed, i.e. as the launcher.
+await page.addScriptTag({
+  content: `
+window.__sent = []
+window.__listeners = []
+if (typeof chrome === 'undefined' || !chrome) { window.chrome = {} }
+chrome.runtime = {
+  sendMessage: async (msg) => {
+    window.__sent.push(msg)
+    if (msg.type === 'panel/attach') {
+      var one = [{ id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '总结这个页面' }], createdAt: '2026-09-15T10:00:00.000Z' }]
+      var many = []
+      for (var i = 0; i < 24; i++) {
+        many.push({
+          id: 'm' + i,
+          role: i % 2 === 0 ? 'user' : 'assistant',
+          contentBlocks: [{ type: 'text', text: '第 ' + (i + 1) + ' 轮：把这一段的结论写清楚，并且说明它是从页面的哪一部分得出的。' }],
+          createdAt: '2026-09-15T10:00:0' + (i % 10) + '.000Z',
+        })
+      }
+      return { ok: true, snapshot: {
+        sessionId: 'ws_1',
+        connection: { state: 'open', connected: true },
+        panelOpen: window.__openPanel === true,
+        messages: window.__longTranscript === true ? many : one,
+        streamingBlocks: [],
+        status: 'idle',
+        sessions: [],
+        approvalMode: 'auto',
+      } }
+    }
+    return { ok: true }
+  },
+  onMessage: { addListener: (fn) => window.__listeners.push(fn) },
+  openOptionsPage: () => {},
+}
+// The launcher's dragged position lives in chrome.storage.local (a content
+// script cannot read storage.session — see background/state.ts), so the stub
+// backs it with a plain object the drag checks can seed and read back.
+window.__stored = {}
+window.__storedWrites = []
+chrome.storage = {
+  local: {
+    get: async (key) => (key in window.__stored ? { [key]: window.__stored[key] } : {}),
+    set: async (entries) => {
+      Object.assign(window.__stored, entries)
+      window.__storedWrites.push(entries)
+    },
+  },
+}
+`,
+})
 await page.addScriptTag({ path: OUT })
 await page.waitForFunction(() => window.__ready === true)
 await page.waitForTimeout(500)
@@ -757,6 +876,550 @@ check(
 
 await page.screenshot({ path: join(SHOTS, 'panels.png'), fullPage: true })
 await page.locator('[data-pulsemind-panel]').first().screenshot({ path: join(SHOTS, 'panel-main.png') })
+
+// ── 启动球（收起态）：浅灰毛玻璃圆盘 + 品牌标记 ─────────────────────────
+// 用户裁定 2026-09-16：「把 pulsemind_extension.png 作为植入到页面中的悬浮球
+// 按钮，并配圆形浅灰色背景，毛玻璃效果」。这几件事都只有真浏览器能证：
+// 圆、透明度、backdrop-filter 是否**真的**虚化了身后的页面（声明了不等于生效，
+// 任何祖先建立 backdrop root 就会让它退化成一层灰），以及标记在圆里画对了没有。
+// 像素部分是关键：4px 黑白条纹铺在身后，圆内应当被抹平、圆外应当仍是条纹。
+console.log('== 启动球（浅灰毛玻璃）==')
+await page.evaluate(() => window.__mountLauncher())
+await page.waitForTimeout(400)
+
+const fab = await page.evaluate(() => {
+  const shadow = document.querySelector('#launcher').shadowRoot
+  const el = shadow.querySelector('.pm-fab')
+  if (!el) return { missing: true }
+  const box = el.getBoundingClientRect()
+  const style = getComputedStyle(el)
+  const svg = el.querySelector('svg')
+  const svgBox = svg?.getBoundingClientRect()
+  const logo = svg ? getComputedStyle(svg) : null
+  return {
+    box: { x: box.x, y: box.y, width: box.width, height: box.height },
+    radius: style.borderTopLeftRadius,
+    background: style.backgroundColor,
+    border: style.borderTopColor,
+    backdrop: style.backdropFilter || style.webkitBackdropFilter || '',
+    transform: style.transform,
+    hasImg: !!el.querySelector('img'),
+    svg: svgBox ? { x: svgBox.x, y: svgBox.y, width: svgBox.width, height: svgBox.height } : null,
+    viewBox: svg?.getAttribute('viewBox') ?? null,
+    fill: svg?.getAttribute('fill') ?? null,
+    ink: style.color,
+    shadow: style.boxShadow,
+    font: logo?.fontSize ?? null,
+    // The mark's own box, handed to the pixel pass so ink is excluded from the
+    // backdrop measurement.
+    logoBox: svgBox ? { x: svgBox.x, y: svgBox.y, width: svgBox.width, height: svgBox.height } : null,
+  }
+})
+
+const rgb = (s) => (s.match(/[\d.]+/g) ?? []).map(Number)
+check('面板收起时渲染启动球', !fab.missing && !!fab.svg, fab.missing ? 'no .pm-fab' : 'ok')
+check(
+  '启动球是正圆（44px，border-radius 50%）',
+  fab.box && Math.abs(fab.box.width - 44) < 0.5 && Math.abs(fab.box.height - 44) < 0.5 && fab.radius === '50%',
+  fab.box ? `${fab.box.width}x${fab.box.height} r=${fab.radius}` : 'no box',
+)
+const [br, bg, bb, ba] = rgb(fab.background ?? '')
+const spread = Math.max(br, bg, bb) - Math.min(br, bg, bb)
+const lum = 0.2126 * br + 0.7152 * bg + 0.0722 * bb
+check(
+  '底色是半透明的浅灰（R≈G≈B，亮，alpha 明显小于 1）',
+  ba > 0.4 && ba < 0.95 && spread <= 6 && lum > 200 && lum < 250,
+  `${fab.background} -> luminance ${lum.toFixed(0)}, spread ${spread}`,
+)
+check(
+  '毛玻璃：backdrop-filter 带 12px blur',
+  /blur\(12px\)/.test(fab.backdrop),
+  fab.backdrop || 'none declared',
+)
+const [er, eg, eb, ea] = rgb(fab.border ?? '')
+check('玻璃边缘是半透明白描边', ea > 0 && ea < 1 && er > 240 && eg > 240 && eb > 240, fab.border)
+check(
+  '玻璃厚度：外投影 + 顶部内高光',
+  /rgba?\(80, 100, 200/.test(fab.shadow ?? '') && /inset/.test(fab.shadow ?? ''),
+  fab.shadow?.slice(0, 64),
+)
+check(
+  '标记是内联 SVG（不是 <img>，页面 CSP 管不到它）',
+  !!fab.svg && !fab.hasImg && fab.viewBox === '0 0 622 446' && fab.fill === 'currentColor',
+  `img=${fab.hasImg}, viewBox=${fab.viewBox}, fill=${fab.fill}`,
+)
+check(
+  '标记宽 32px，高度按标记自身比例（不被拉伸）',
+  fab.svg && Math.abs(fab.svg.width - 32) < 0.5 && Math.abs(fab.svg.height - (32 * 446) / 622) < 0.5,
+  fab.svg ? `${fab.svg.width.toFixed(1)}x${fab.svg.height.toFixed(1)} (expect 32x${((32 * 446) / 622).toFixed(1)})` : 'no svg',
+)
+const margins = fab.svg
+  ? [
+      fab.svg.x - fab.box.x,
+      fab.svg.y - fab.box.y,
+      fab.box.x + fab.box.width - (fab.svg.x + fab.svg.width),
+      fab.box.y + fab.box.height - (fab.svg.y + fab.svg.height),
+    ]
+  : null
+check(
+  '标记居中且四周留白（不贴边、不越界）',
+  margins !== null && margins.every((m) => m >= 4 && m <= 12) && Math.abs(margins[0] - margins[2]) < 0.5 && Math.abs(margins[1] - margins[3]) < 0.5,
+  margins ? margins.map((m) => m.toFixed(1)).join('/') : 'no svg',
+)
+const [ir, ig, ib] = rgb(fab.ink ?? '')
+check(
+  '标记用深色墨水画在浅灰上（可读）',
+  ir < 90 && ig < 90 && ib < 90,
+  `${fab.ink} on ${fab.background}`,
+)
+
+// ── 像素：毛玻璃到底有没有起作用 ───────────────────────────────────────
+// 身后是 4px 黑白竖条纹 —— 极端但有意义的高频内容。圆内应当被抹平，圆外应当
+// 依旧清晰。量的是**局部对比度**（相邻像素的平均绝对差）而不是亮度跨度：跨度对
+// 平滑的渐变同样敏感（外投影在圆内的余韵就有 50 多），而用户看得见的失败只有一种
+// ——"隔着球还能看见条纹"。两个方向一起断言，否则"条纹没铺上"会让这条检查空转。
+const PAD = 24
+const clip = {
+  x: fab.box.x - PAD,
+  y: fab.box.y - PAD,
+  width: fab.box.width + 2 * PAD,
+  height: fab.box.height + 2 * PAD,
+}
+const shot = await page.screenshot({ clip })
+const { data, info } = await sharp(shot).raw().toBuffer({ resolveWithObject: true })
+const scale = info.width / clip.width
+const at = (ix, iy) => {
+  const i = (iy * info.width + ix) * info.channels
+  return 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+}
+const toImage = (cx, cy) => [(cx - clip.x) * scale, (cy - clip.y) * scale]
+const cx = fab.box.x + fab.box.width / 2
+const cy = fab.box.y + fab.box.height / 2
+const logo = fab.logoBox
+const [icx, icy] = toImage(cx, cy)
+
+/** Mean |horizontal gradient| over one sampled region: high for crisp stripes,
+ *  near zero once they are blurred away, and blind to a smooth gradient. */
+function roughness(predicate) {
+  let sum = 0
+  let count = 0
+  let min = 255
+  let max = 0
+  const reach = 40 * scale
+  for (let iy = Math.max(1, Math.floor(icy - reach)); iy < Math.min(info.height - 1, icy + reach); iy++) {
+    for (let ix = Math.max(1, Math.floor(icx - reach)); ix < Math.min(info.width - 1, icx + reach); ix++) {
+      const dx = (ix - icx) / scale
+      const dy = (iy - icy) / scale
+      if (!predicate(dx, dy)) continue
+      sum += Math.abs(at(ix + 1, iy) - at(ix - 1, iy)) / 2
+      count++
+      const v = at(ix, iy)
+      if (v < min) min = v
+      if (v > max) max = v
+    }
+  }
+  return { mean: count ? sum / count : 0, count, range: max - min }
+}
+// Inside the disc, clear of the 1px border (r<19) and clear of the mark: the
+// mark's own box is excluded, and only the caps above/below it are sampled —
+// the mark's edges are exactly the high-frequency content that must not count
+// as backdrop detail.
+const interior = roughness((dx, dy) => {
+  const inLogo = logo && Math.abs(dx) < logo.width / 2 + 2 && Math.abs(dy) < logo.height / 2 + 2
+  return Math.hypot(dx, dy) < 19 && !inLogo
+})
+const exterior = roughness((dx, dy) => {
+  const r = Math.hypot(dx, dy)
+  return r >= 26 && r <= 38
+})
+const attenuation = exterior.mean / (interior.mean || 1)
+check(
+  '对照：圆外的条纹依旧清晰（身后确实有高频内容）',
+  exterior.count > 1000 && exterior.mean > 15,
+  `圆外局部对比度 ${exterior.mean.toFixed(1)}（${exterior.count}px）`,
+)
+// Measured: interior 2.5 against exterior 30.5. With the element's own 62%
+// overlay and no blur at all the interior would still be 38% of the exterior
+// (~11.6), so the ratio is what separates "frosted" from "transparent" — and
+// the leftover 2.5 is the box-blur approximation's sidelobe residue on an
+// extreme 4px fixture (real pages are far smoother; range here 0..57).
+check(
+  '毛玻璃真的把身后的高频内容压掉了（圆内被抹平）',
+  interior.mean < 6 && attenuation > 5,
+  `圆内局部对比度 ${interior.mean.toFixed(2)}，衰减 ${attenuation.toFixed(1)}x（无毛玻璃时约 11.6 = 1.0x）`,
+)
+
+// The mark itself, measured as ink coverage inside its own box. A broken trace,
+// a transparent fill or a zero-size <svg> all land outside this window, while
+// the source drawing covers 16.3% of its box (scripts/trace-brand-mark.mjs).
+const inkPass = (() => {
+  if (!logo) return null
+  let dark = 0
+  let total = 0
+  let darkest = 255
+  for (let iy = Math.round((logo.y - clip.y) * scale); iy < Math.round((logo.y + logo.height - clip.y) * scale); iy++) {
+    for (let ix = Math.round((logo.x - clip.x) * scale); ix < Math.round((logo.x + logo.width - clip.x) * scale); ix++) {
+      if (ix < 0 || iy < 0 || ix >= info.width || iy >= info.height) continue
+      const v = at(ix, iy)
+      total++
+      if (v < 130) dark++
+      if (v < darkest) darkest = v
+    }
+  }
+  return { coverage: dark / total, darkest, total }
+})()
+check(
+  '标记在圆内画出了正确的墨量（不是空 SVG，也没糊成一片）',
+  !!inkPass && inkPass.coverage > 0.08 && inkPass.coverage < 0.3 && inkPass.darkest < 90,
+  inkPass ? `墨量 ${(inkPass.coverage * 100).toFixed(1)}%（源图 16.3%），最深 ${inkPass.darkest.toFixed(0)}` : 'no logo box',
+)
+await page.screenshot({ path: join(SHOTS, 'launcher-frost.png'), clip })
+// The disc on its own, for eyeballing the mark at the size it ships at. Note the
+// selector: the host is a zero-size fixed element (its children are fixed too),
+// so screening the *host* is not a thing — the button is what has a box.
+await page.locator('#launcher .pm-fab').screenshot({ path: join(SHOTS, 'launcher.png') })
+
+// Hover, with a real mouse: the glass lifts (lighter fill, slight scale).
+await page.mouse.move(cx, cy)
+await page.waitForTimeout(300)
+const hovered = await page.evaluate(() => {
+  const style = getComputedStyle(document.querySelector('#launcher').shadowRoot.querySelector('.pm-fab'))
+  return { background: style.backgroundColor, transform: style.transform }
+})
+const hoverLum = (() => {
+  const [r, g, b] = rgb(hovered.background)
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+})()
+check(
+  'hover 时玻璃变亮、轻微放大',
+  hoverLum > lum && hovered.background !== fab.background && /matrix\(1\.06/.test(hovered.transform),
+  `${fab.background} -> ${hovered.background}, transform ${hovered.transform}`,
+)
+await page.screenshot({ path: join(SHOTS, 'launcher-hover.png'), clip })
+
+// ── 启动球可上下拖动（用户裁定 2026-09-16）────────────────────────────────
+// 拖动的每一条正确性都是**时序**问题，源码读起来一样对：按下时指针捕获生效了
+// 没有（指针离开球体后还能不能收到 move）、松手后浏览器补发的那次 click 有没有
+// 被吞掉（否则一拖就弹面板）、夹紧区间对不对、存下的值在重新挂载（≈ 页面刷新）
+// 后能不能回到原位。jsdom 既没有指针也没有布局，只能真浏览器 + 真鼠标。
+console.log('== 启动球可上下拖动 ==')
+
+const VH = await page.evaluate(() => window.innerHeight)
+const BOTTOM_TOP = VH - 44 - 20
+
+/** The ball's geometry + the two state facts the drag owns. The position is read
+ *  from the computed style, not the rect: hovering scales the ball 1.06 and a
+ *  rect reports a box 1.3px off the layout one (and reports it *mid-transition*,
+ *  which is a reading of the animation rather than of the drag) — exactly the
+ *  error these checks are trying to catch in the implementation. */
+const readFab = () =>
+  page.evaluate(() => {
+    const el = document.querySelector('#launcher')?.shadowRoot?.querySelector('.pm-fab')
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    const style = getComputedStyle(el)
+    return {
+      rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
+      top: Number.parseFloat(style.top),
+      left: Number.parseFloat(style.left),
+      right: Number.parseFloat(style.right),
+      cursor: style.cursor,
+      touchAction: style.touchAction,
+      stored: { ...window.__stored },
+    }
+  })
+const writes = () => page.evaluate(() => window.__storedWrites.length)
+const panelOpen = () =>
+  page.evaluate(() => !!document.querySelector('#launcher')?.shadowRoot?.querySelector('.pm-panel'))
+
+/** Press the ball, travel `dy` in steps, release. Steps matter: a single jump
+ *  would be one pointermove, and a drag that only worked for one event would
+ *  pass. */
+async function dragFab(dy, steps = 10) {
+  const box = await readFab()
+  const x = box.rect.x + box.rect.w / 2
+  const y = box.rect.y + box.rect.h / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  for (let i = 1; i <= steps; i++) await page.mouse.move(x, y + (dy * i) / steps)
+  await page.mouse.up()
+  await page.waitForTimeout(80)
+  return { x, y }
+}
+
+const rest = await readFab()
+check(
+  '默认停在右下角（右 20 / 下 20）',
+  Math.abs(rest.right - 20) < 0.5 && Math.abs(rest.top - BOTTOM_TOP) < 0.5,
+  `right ${rest.right}, top ${rest.top}, 期望 ${BOTTOM_TOP}`,
+)
+check(
+  '球上是可抓取光标 + touch-action: none（触摸拖动不会滚页面）',
+  rest.cursor === 'grab' && rest.touchAction === 'none',
+  `cursor ${rest.cursor}, touch-action ${rest.touchAction}`,
+)
+
+// 跟手：指针上移 300，球的上边沿必须同步上移 300 —— 不是补间动画，也不是
+// "滚"上去的；横轴一动不动。面板是否误展开先判，因为一旦展开球就没了（.pm-fab
+// 不存在），后面几条几何检查会直接崩；先判能让负控跑出一行像样的 FAIL。
+const beforeDrag = await readFab()
+const writesBeforeDrag = await writes()
+await dragFab(-300)
+check('拖完不会误触展开（浏览器补发的那次 click 被吞掉了）', !(await panelOpen()), 'panel expanded after drag')
+const afterDrag = await readFab()
+check(
+  '拖动跟手：指针上移 300px，球的上边沿同步上移 300px',
+  Math.abs(beforeDrag.top - afterDrag.top - 300) < 1,
+  `Δtop ${(beforeDrag.top - afterDrag.top).toFixed(2)}`,
+)
+check(
+  '只走纵轴：右边缘恒为 20px，横坐标不动',
+  Math.abs(afterDrag.right - 20) < 0.5 && Math.abs(afterDrag.left - beforeDrag.left) < 0.5,
+  `left ${beforeDrag.left} -> ${afterDrag.left}, right ${afterDrag.right}`,
+)
+check(
+  '松手时把位置写进 chrome.storage.local（一次拖动一次写入）',
+  (await writes()) === writesBeforeDrag + 1 && afterDrag.stored.fabTop === Math.round(afterDrag.top),
+  `${JSON.stringify(afterDrag.stored)}, 写入 ${writesBeforeDrag} -> ${await writes()}`,
+)
+
+// 夹紧：拖过头停在视口内，两端各留 20px。
+await dragFab(-2000)
+const clampedTop = await readFab()
+check('上端夹紧：拖过头停在 20px，不会跑出视口', Math.abs(clampedTop.top - 20) < 0.5, `top ${clampedTop.top}`)
+await dragFab(4000)
+const clampedBottom = await readFab()
+check(
+  '下端夹紧：拖过头停在 视口高 - 球高 - 20',
+  Math.abs(clampedBottom.top - BOTTOM_TOP) < 0.5,
+  `top ${clampedBottom.top}, 期望 ${BOTTOM_TOP}`,
+)
+
+// 指针捕获 + "抓着"光标：指针横向离开球体后拖动必须继续（否则指针一飘出去
+// 球就卡住），而且此时仍是 :active。
+{
+  const box = await readFab()
+  const x = box.rect.x + box.rect.w / 2
+  const y = box.rect.y + box.rect.h / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x + 300, y - 60, { steps: 6 })
+  const held = await readFab()
+  check(
+    '指针捕获生效：指针横向离开球体后仍在拖动（Δtop 仍是 60）',
+    Math.abs(box.top - held.top - 60) < 1 && Math.abs(held.left - box.left) < 0.5,
+    `Δtop ${(box.top - held.top).toFixed(2)}, left ${box.left} -> ${held.left}`,
+  )
+  check('按住时是抓着光标（指针已不在球上，:active 仍跟着球）', held.cursor === 'grabbing', `cursor ${held.cursor}`)
+  await page.mouse.up()
+  await page.waitForTimeout(80)
+}
+
+// 重新挂载（≈ 页面刷新 / 换页）后回到记住的位置，而不是右下角。
+await page.mouse.move(300, 300)
+await page.evaluate(() => {
+  window.__stored.fabTop = 123
+})
+await page.evaluate(() => window.__mountLauncher())
+await page.waitForTimeout(400)
+const restored = await readFab()
+check('重新挂载后回到记住的位置（123），不是右下角默认值', Math.abs(restored.top - 123) < 0.5, `top ${restored.top}`)
+
+// 视口变小要重新夹回可见范围，但**不写回存储** —— 否则一次窗口缩小就会把用户的
+// 选择永久改成那个临时值，放大回去也回不来。
+await dragFab(4000)
+const atBottom = await readFab()
+await page.setViewportSize({ width: 1680, height: 400 })
+await page.waitForTimeout(200)
+const narrowed = await readFab()
+check(
+  '视口变小时球被夹回可见范围（视口 400 -> top 336）',
+  Math.abs(narrowed.top - (400 - 64)) < 0.5,
+  `top ${narrowed.top}, 期望 ${400 - 64}`,
+)
+await page.setViewportSize({ width: 1680, height: VH })
+await page.waitForTimeout(200)
+const regrown = await readFab()
+check(
+  '夹紧不写回存储：视口放大回去后回到用户原来的位置',
+  Math.abs(regrown.top - atBottom.top) < 0.5 && regrown.stored.fabTop === Math.round(atBottom.top),
+  `top ${regrown.top}（期望 ${atBottom.top}）, 存储 ${JSON.stringify(regrown.stored)}`,
+)
+
+// 最后才动"点开面板"，因为那会换掉整棵树。阈值不能把正常的点击吃掉：原地点击、
+// 以及手抖 1~2px，都必须照常展开。
+const clickWrites = await writes()
+{
+  const box = await readFab()
+  const x = box.rect.x + box.rect.w / 2
+  const y = box.rect.y + box.rect.h / 2
+  await page.mouse.click(x, y)
+  await page.waitForTimeout(250)
+  check('原地点击仍然展开面板（拖动没有吃掉点击）', await panelOpen(), 'panel did not open')
+  check('点击不写存储（只有拖动才写）', (await writes()) === clickWrites, `写入 ${clickWrites} -> ${await writes()}`)
+  await page.locator('#launcher button[title="收起"]').click()
+  await page.waitForTimeout(250)
+}
+{
+  const box = await readFab()
+  const x = box.rect.x + box.rect.w / 2
+  const y = box.rect.y + box.rect.h / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y - 1)
+  await page.mouse.up()
+  await page.waitForTimeout(250)
+  check('手抖 1px 仍算点击（阈值 3px 之上才当拖动）', await panelOpen(), 'panel did not open')
+  await page.locator('#launcher button[title="收起"]').click()
+  await page.waitForTimeout(250)
+}
+
+// ── 放大：对话区铺到窗口高度的 100% / 宽度的 40%（用户 2026-09-16）──────────
+// 这是面板唯一会改自身尺寸的地方，而尺寸一变就有三件只有真浏览器能证的事：
+// 四道边距是否都还在（右 20、上 20、下 20，与常态同一个数）、放大后有没有被顶出
+// 视口（高度写成 100vh 会让上边沿落在 -20、头部被裁 19px），以及**长会话的"跟随
+// 底部"是否还在** —— 视口变大后
+// maxScrollTop 会变，跟随逻辑只在提交时对齐，所以这条要么当场成立，要么就一直差着，
+// 直到下一条流式分片才回正。
+console.log('== 放大（高度 100% / 宽度 40%，上下留固定边距）==')
+await page.evaluate(() => {
+  window.__openPanel = true
+  window.__longTranscript = true
+  const fixtureRow = document.getElementById('page')
+  if (fixtureRow) fixtureRow.style.display = 'none' // 夹具面板与放大后的面板会在同一片像素上
+})
+await page.evaluate(() => window.__mountPanel())
+await page.waitForTimeout(400)
+
+const VW = await page.evaluate(() => window.innerWidth)
+const readPanel = () =>
+  page.evaluate(() => {
+    const panel = document.querySelector('#wide-panel')?.shadowRoot?.querySelector('.pm-panel')
+    if (!panel) return null
+    const rect = panel.getBoundingClientRect()
+    const style = getComputedStyle(panel)
+    const transcript = panel.querySelector('.pm-transcript')
+    const composer = panel.querySelector('.pm-composer')
+    const composerBox = composer?.getBoundingClientRect()
+    return {
+      rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
+      width: style.width,
+      height: style.height,
+      right: Number.parseFloat(style.right),
+      bottom: Number.parseFloat(style.bottom),
+      title: panel.querySelector('.pm-header .pm-icon-btn[title="放大"], .pm-header .pm-icon-btn[title="还原"]')?.getAttribute('title'),
+      glyph: panel.querySelector('.pm-header .pm-icon-btn[title="放大"] path, .pm-header .pm-icon-btn[title="还原"] path')?.getAttribute('d')?.length ?? 0,
+      headers: [...panel.querySelectorAll('.pm-header .pm-icon-btn')].map((b) => b.getAttribute('title')),
+      headerTop: panel.querySelector('.pm-header')?.getBoundingClientRect().top ?? null,
+      headerBottom: panel.querySelector('.pm-header')?.getBoundingClientRect().bottom ?? null,
+      composerBottom: composerBox ? composerBox.bottom - rect.bottom : null,
+      composerInside: composerBox ? composerBox.right <= rect.right + 0.5 && composerBox.left >= rect.left - 0.5 : false,
+      scroll: transcript ? { top: transcript.scrollTop, height: transcript.scrollHeight, client: transcript.clientHeight } : null,
+    }
+  })
+
+// 高度是「尽可能高」还是「刚好铺满」由一条界定：上下各留同一道固定边距。
+const gaps = (p) => (p ? { top: p.rect.y, bottom: VH - (p.rect.y + p.rect.h), right: VW - (p.rect.x + p.rect.w) } : null)
+const normal = await readPanel()
+const normalGaps = gaps(normal)
+check(
+  '常态尺寸 380 × min(600, 100vh-40)，锚在右下 20px',
+  Math.abs(normal.rect.w - 380) < 0.5 && Math.abs(normal.rect.h - 600) < 0.5 && Math.abs(normal.right - 20) < 0.5 && Math.abs(normal.bottom - 20) < 0.5,
+  `${normal.rect.w}x${normal.rect.h}, right ${normal.right} / bottom ${normal.bottom}`,
+)
+check(
+  '头部三颗按钮：新会话 / 放大 / 收起（放大在收起之前）',
+  JSON.stringify(normal.headers) === JSON.stringify(['新会话', '放大', '收起']),
+  normal.headers.join(' | '),
+)
+check(
+  '放大态还没打开时按钮写的是「放大」',
+  normal.title === '放大',
+  `title=${normal.title}`,
+)
+
+await page.locator('#wide-panel button[title="放大"]').click()
+await page.waitForTimeout(150)
+const wide = await readPanel()
+const wideGaps = gaps(wide)
+check(
+  '点放大后：宽 = 窗口的 40%、高 = 窗口高 − 上下两道边距',
+  Math.abs(Number.parseFloat(wide.width) - VW * 0.4) < 1 && Math.abs(Number.parseFloat(wide.height) - (VH - 40)) < 1,
+  `${wide.width} x ${wide.height}（期望 ${(VW * 0.4).toFixed(0)} x ${VH - 40}）`,
+)
+check(
+  '上下留出固定边距：上 20 / 下 20，与右边缘那道 20px 同一数值',
+  Math.abs(wideGaps.top - 20) < 0.5 && Math.abs(wideGaps.bottom - 20) < 0.5 && Math.abs(wideGaps.right - 20) < 0.5,
+  `上 ${wideGaps.top.toFixed(0)} / 下 ${wideGaps.bottom.toFixed(0)} / 右 ${wideGaps.right.toFixed(0)}`,
+)
+check(
+  '上下边距与常态面板完全一致（放大只改尺寸，不改边距）',
+  Math.abs(wideGaps.top - normalGaps.bottom) < 0.5 && Math.abs(wideGaps.bottom - normalGaps.bottom) < 0.5 && Math.abs(wideGaps.right - normalGaps.right) < 0.5,
+  `常态 下 ${normalGaps.bottom.toFixed(0)} / 右 ${normalGaps.right.toFixed(0)} vs 放大 上 ${wideGaps.top.toFixed(0)} / 下 ${wideGaps.bottom.toFixed(0)} / 右 ${wideGaps.right.toFixed(0)}`,
+)
+check(
+  '放大后上边沿与下边沿都留在视口内（100vh 会顶出去 20px、把头部裁掉）',
+  wideGaps.top >= 0 && wideGaps.bottom >= 0 && wide.rect.x >= 0 && wide.rect.x + wide.rect.w <= VW + 0.5,
+  `x ${wide.rect.x.toFixed(0)} y ${wide.rect.y.toFixed(0)}, ${wide.rect.w}x${wide.rect.h} in ${VW}x${VH}`,
+)
+check(
+  '头部三颗按钮完整落在视口内（上边距真的留出来了）',
+  !!wide.headerTop && wide.headerTop >= 0 && !!wide.headerBottom && wide.headerBottom <= VH,
+  wide.headerTop === null ? 'no header' : `header ${wide.headerTop.toFixed(0)}..${wide.headerBottom.toFixed(0)} in ${VH}`,
+)
+check(
+  '按钮换成「还原」且换了字形（一对 expand/compress，两边都是真路径）',
+  wide.title === '还原' && normal.glyph > 100 && wide.glyph > 100 && wide.glyph !== normal.glyph,
+  `title=${wide.title}, path ${normal.glyph} -> ${wide.glyph} chars`,
+)
+check(
+  '两颗字形在**常态**下就已画出（不是靠宽度撑开的空 svg）',
+  normal.glyph > 100,
+  `常态 path ${normal.glyph} chars`,
+)
+check(
+  '输入框跟着面板长高，仍在面板内（没被挤出底部）',
+  wide.composerInside && wide.composerBottom !== null && wide.composerBottom <= 0,
+  `composer 贴底 ${wide.composerBottom?.toFixed(1)}px, inside=${wide.composerInside}`,
+)
+check(
+  '对照：夹具会话确实长到需要滚动（否则下面那条跟随检查是空转）',
+  !!wide.scroll && wide.scroll.height > wide.scroll.client + 50,
+  wide.scroll ? `scrollHeight ${wide.scroll.height} > clientHeight ${wide.scroll.client}` : 'no transcript',
+)
+check(
+  '放大后长会话仍在底部（跟随底部没有因为视口变大而掉队）',
+  !!wide.scroll && wide.scroll.top + wide.scroll.client >= wide.scroll.height - 2,
+  wide.scroll ? `离底 ${(wide.scroll.height - wide.scroll.top - wide.scroll.client).toFixed(1)}px` : 'no transcript',
+)
+await page.screenshot({ path: join(SHOTS, 'panel-wide.png'), clip: { x: wide.rect.x, y: wide.rect.y, width: wide.rect.w, height: wide.rect.h } })
+
+// 窄窗口：40vw 会小于常态的 380px，照抄 40vw 就成了"放大反而变窄"。
+await page.setViewportSize({ width: 800, height: VH })
+await page.waitForTimeout(150)
+const narrow = await readPanel()
+const narrowGaps = gaps(narrow)
+check(
+  '窗口窄到 40vw < 380 时宽度不缩水（max(380px, 40vw)）',
+  Math.abs(narrow.rect.w - 380) < 0.5,
+  `视口 800 -> 宽 ${narrow.rect.w}（40vw 只有 320）`,
+)
+check(
+  '窗口变窄后上下边距照旧是 20（高度跟着视口走，边距不跟着变）',
+  Math.abs(narrowGaps.top - 20) < 0.5 && Math.abs(narrowGaps.bottom - 20) < 0.5,
+  `上 ${narrowGaps.top.toFixed(0)} / 下 ${narrowGaps.bottom.toFixed(0)}`,
+)
+await page.setViewportSize({ width: VW, height: VH })
+await page.waitForTimeout(150)
+
+await page.locator('#wide-panel button[title="还原"]').click()
+await page.waitForTimeout(150)
+const backToNormal = await readPanel()
+check(
+  '点还原后回到常态尺寸与「放大」字样',
+  Math.abs(backToNormal.rect.w - 380) < 0.5 && Math.abs(backToNormal.rect.h - 600) < 0.5 && backToNormal.title === '放大',
+  `${backToNormal.rect.w}x${backToNormal.rect.h}, title=${backToNormal.title}`,
+)
 
 await browser.close()
 

@@ -28,6 +28,7 @@
     "src/shared/agent-protocol/**/*.ts",
     "src/shared/agent-session/**/*.ts",
     "src/shared/types/agent.ts",
+    "src/shared/types/plan.ts",
     "src/renderer/src/types/agent.ts",
     "src/shared/sandbox/policy.ts"
   ]

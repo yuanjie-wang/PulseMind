@@ -67,6 +67,37 @@
 
   --pm-mono: 'SF Mono', 'Menlo', 'Consolas', monospace; /* cardStyle.fontFamily */
 
+  /* 启动球（面板自有，主对话无对应物）—— 浅灰半透明圆盘 + 毛玻璃。
+   * 玻璃配方（blur 半径、投影）与面板自己的输入卡 .pm-input-card 同一套：
+   * 面板里只该有一种玻璃。差异在色调 —— 用户裁定要浅灰而不是输入卡的 85% 白，
+   * 且描边取白色高光（输入卡是 1px 深色细线，因为它是白底上的白卡；启动球压
+   * 在任意页面内容上，白色高光边才读得出玻璃的厚度）。 */
+  /* 用户 2026-09-16 要求"再透明一点":48%(原 62%),hover 同比降到 64% 以保留
+   * 那一下"提亮"的分量。再往下调要留意白底页面 —— 填充是 240 的浅灰,压在纯白
+   * 上本来就只有几级的差,真正撑住轮廓的是投影与白色高光边。 */
+  --pm-fab-bg: rgb(240 242 244 / 48%); /* = --pm-user-bg 的灰；48% 让页面透出来 */
+  --pm-fab-bg-hover: rgb(255 255 255 / 64%);
+  --pm-fab-edge: rgb(255 255 255 / 55%); /* 玻璃边缘那道高光描边 */
+  --pm-fab-ink: #2f2f2f; /* 标记色，比 --pm-text 深一档：笔画细，压在灰上要立得住 */
+  --pm-fab-blur: 12px; /* = .pm-input-card 的 backdrop-filter blur */
+
+  /* 面板距窗口的固定留白（用户 2026-09-16「上下要留出固定边距」）。
+   * 一处定义、四处引用：常态的右/下边距、常态高度的 `100vh − 2×inset`、放大态的同
+   * 一条高度表达式。此前 20px 在 right / bottom / calc(100vh - 40px) 里各写了一遍，
+   * 放大态又按 100vh 写死 —— 那正是"改了一处、另一处没跟上"的形状：上下边距由
+   * 这个数唯一决定，改它就同时改两边。与 --pm-fab-margin 同值但**不共用**：那是
+   * 启动球自己的边距，两个面各自独立。 */
+  --pm-panel-inset: 20px;
+
+  /* 启动球的位置（可上下拖动，用户裁定 2026-09-16「悬浮球可上下拖动」）。
+   * 默认停在右下角 —— 与面板的 20px 同一道边距；拖动只改这两个变量，由
+   * ui/useFabDrag.ts 写进内联样式（横轴恒不动）。两者的取值必须与那个模块
+   * 的 FAB_SIZE / FAB_MARGIN 一致：夹紧区间是按它们算的。 */
+  --pm-fab-top: auto;
+  --pm-fab-bottom: 20px;
+  --pm-fab-size: 44px;
+  --pm-fab-margin: 20px;
+
   --pm-radius-bubble: 12px; /* 气泡圆角 */
   --pm-radius-card: 6px; /* 工具卡头部 / 按钮圆角 */
   --pm-radius-code: 4px; /* 代码/输出块圆角 */
@@ -102,37 +133,64 @@ button {
 }
 
 /* ── 启动球（面板自有，主对话无对应物）──────────────────────────────── */
+/* 浅灰毛玻璃圆盘（用户裁定 2026-09-16：「配圆形浅灰色背景，毛玻璃效果」）。
+ * 三件事叠出"玻璃"：半透明的浅灰底、backdrop-filter 把身后的页面虚化、
+ * 描边加顶部内高光给出玻璃的厚度。标记（ui/logo.tsx）随 color 上色。
+ * 注意 backdrop-filter 的可见性取决于**没有祖先建立 backdrop root**
+ * （filter / opacity<1 / transform 都会）—— content/index.tsx 里宿主只设了
+ * `all: initial` 与定位，正是为此；改动宿主样式时要留意这一条。 */
 
 .pm-fab {
   position: fixed;
-  right: 20px;
-  bottom: 20px;
-  width: 44px;
-  height: 44px;
-  border: none;
+  right: var(--pm-fab-margin);
+  top: var(--pm-fab-top);
+  bottom: var(--pm-fab-bottom);
+  width: var(--pm-fab-size);
+  height: var(--pm-fab-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--pm-fab-edge);
   border-radius: 50%;
-  background: var(--pm-primary);
-  color: #fff;
-  font-size: 19px;
+  background: var(--pm-fab-bg);
+  color: var(--pm-fab-ink);
   line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%); /* 与输入卡同一枚投影 */
-  transition: transform 0.15s ease;
+  cursor: grab;
+  /* 拖动时不要选中页面文本，也别让触摸拖动滚页面（上/下由 useFabDrag 接管）。
+   * 注意 transition 里没有 top —— 位置必须逐帧跟手，补间会拖出延迟。 */
+  user-select: none;
+  touch-action: none;
+  box-shadow:
+    0 5px 20px 2px rgb(80 100 200 / 20%),
+    /* 与输入卡同一枚投影 */
+    inset 0 1px 0 rgb(255 255 255 / 70%);
+  backdrop-filter: blur(var(--pm-fab-blur));
+  -webkit-backdrop-filter: blur(var(--pm-fab-blur));
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
 }
 
 .pm-fab:hover {
   transform: scale(1.06);
-  background: var(--pm-primary-hover);
+  background: var(--pm-fab-bg-hover);
+}
+
+/* 按住时是"抓着"（含未拖动的普通点击，与手型语义一致）。指针捕获让 :active
+ * 在整个拖动过程中都留在球上，即使指针已经离开它的范围。 */
+.pm-fab:active {
+  cursor: grabbing;
 }
 
 /* ── 面板外壳（自有 chrome，配色取主对话的浅色面）────────────────────── */
 
 .pm-panel {
   position: fixed;
-  right: 20px;
-  bottom: 20px;
+  right: var(--pm-panel-inset);
+  bottom: var(--pm-panel-inset);
   width: 380px;
-  height: min(600px, calc(100vh - 40px));
+  height: min(600px, calc(100vh - var(--pm-panel-inset) * 2));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -143,6 +201,20 @@ button {
   font-size: var(--pm-fs);
   line-height: var(--pm-lh);
   box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%);
+}
+
+/* 放大态（面板头部的「放大」按钮，用户 2026-09-16：窗口高度的 100%、宽度的 40%。
+ * 同日追改「上下要留出固定边距」—— 所以高度是 `100vh − 2 × --pm-panel-inset`，
+ * 上边沿与下边沿各留同一道 20px，**锚点一个都不动**。这比"真的 100vh"更对：
+ * 面板是 fixed + `bottom: 20px`，高度写成 100vh 时上边沿会跑到视口外 20px、头部那排
+ * 按钮被裁掉一截（负向对照实测 rect.y = -20、header -19..22，19px 没了）。
+ * `max(380px, 40vw)` 是刻意的：窄窗口上半屏宽会小于 380，照 40vw 写会让"放大"
+ * 把面板变**窄**。尺寸切换不做补间 —— 面板里只有这一个会改自身尺寸的东西，而补间
+ * 期间每帧都在重排，transcript 的"跟随底部"只在提交时对齐，动画跑完会停在离底差
+ * 一点的位置，直到下一条流式分片才回正。 */
+.pm-panel.pm-panel-wide {
+  width: max(380px, 40vw);
+  height: calc(100vh - var(--pm-panel-inset) * 2);
 }
 
 .pm-header {
@@ -209,12 +281,7 @@ button {
   color: rgba(0, 0, 0, 0.85);
 }
 
-.pm-icon-btn-active {
-  background: rgba(0, 0, 0, 0.04);
-  color: rgba(0, 0, 0, 0.85);
-}
-
-/* ── 横幅 / 会话列表（自有 chrome）────────────────────────────────────── */
+/* ── 横幅（自有 chrome）────────────────────────────────────── */
 
 .pm-banner {
   display: flex;
@@ -240,54 +307,6 @@ button {
   font-size: 12px;
   text-decoration: underline;
   cursor: pointer;
-}
-
-.pm-sessions {
-  max-height: 40%;
-  overflow-y: auto;
-  border-bottom: 1px solid #f0f0f0;
-  background: #fafafa;
-}
-
-.pm-sessions-empty {
-  padding: 10px;
-  color: var(--pm-muted);
-  font-size: 12px;
-}
-
-.pm-session {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 6px 4px 10px;
-}
-
-.pm-session-active {
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.pm-session-title {
-  flex: 1;
-  overflow: hidden;
-  border: none;
-  background: none;
-  color: inherit;
-  font-size: 13px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.pm-session-input {
-  flex: 1;
-  padding: 2px 4px;
-  border: 1px solid var(--pm-primary);
-  border-radius: var(--pm-radius-code);
-  background: #fff;
-  color: inherit;
-  font: inherit;
-  outline: none;
 }
 
 /* ── transcript ───────────────────────────────────────────────────────── */

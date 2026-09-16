@@ -6,14 +6,16 @@
  * reload or navigation restores the panel.
  *
  * The transcript and composer inside are the desktop chat's markup and values
- * (ui/Transcript.tsx, ui/Composer.tsx); the header, banners and session list are
- * the panel's own chrome, styled with the same light palette. */
+ * (ui/Transcript.tsx, ui/Composer.tsx); the header and banners are the panel's
+ * own chrome, styled with the same light palette. */
 
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { openOptions } from '../content/bridge'
 import { Composer } from './Composer'
 import { Icon } from './icons'
+import { Logo } from './logo'
 import { Transcript } from './Transcript'
+import { useFabDrag } from './useFabDrag'
 import { usePanel } from './usePanel'
 
 const STATUS_LABELS: Record<string, string> = {
@@ -34,78 +36,38 @@ function ConnectionChip({ state }: { state: ReturnType<typeof usePanel>['connect
   return <span className={`pm-chip ${state.connected ? 'pm-chip-ok' : 'pm-chip-bad'}`}>{label}</span>
 }
 
-/** Inline title editor — no window.prompt, which would block the page. */
-function SessionRow({ title, sessionId, active, onResume, onDelete, onRename }: {
-  title: string
-  sessionId: string
-  active: boolean
-  onResume: () => void
-  onDelete: () => void
-  onRename: (title: string) => void
-}): React.JSX.Element {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(title)
-  const inputRef = useRef<HTMLInputElement | null>(null)
-
-  useEffect(() => {
-    if (editing) inputRef.current?.select()
-  }, [editing])
-
-  const commit = (): void => {
-    setEditing(false)
-    const next = draft.trim()
-    if (next && next !== title) onRename(next)
-    else setDraft(title)
-  }
-
-  return (
-    <div className={`pm-session ${active ? 'pm-session-active' : ''}`}>
-      {editing ? (
-        <input
-          ref={inputRef}
-          className="pm-session-input"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commit()
-            if (e.key === 'Escape') {
-              setDraft(title)
-              setEditing(false)
-            }
-          }}
-        />
-      ) : (
-        <button className="pm-session-title" title={sessionId} onClick={onResume}>
-          {title || '未命名会话'}
-        </button>
-      )}
-      <button className="pm-icon-btn" title="重命名" onClick={() => setEditing(true)}>
-        <Icon name="edit" />
-      </button>
-      <button className="pm-icon-btn" title="删除" onClick={onDelete}>
-        <Icon name="delete" />
-      </button>
-    </div>
-  )
-}
-
 export function App(): React.JSX.Element {
   const panel = usePanel()
-  const [historyOpen, setHistoryOpen] = useState(false)
+  const fab = useFabDrag()
+  /** 放大态：面板铺到窗口高度的 90% / 宽度的 40%（见 styles.css 的 .pm-panel-wide）。
+   *  只活在本次挂载里 —— 收起/展开是 worker 按 tab 记的（背景/state.ts），尺寸不是。 */
+  const [wide, setWide] = useState(false)
   const { connection, session } = panel
   const statusLabel = STATUS_LABELS[session.agentStatus.status] ?? session.agentStatus.status
 
   if (!panel.open) {
     return (
-      <button className="pm-fab" title="PulseMind" onClick={() => panel.setOpen(true)}>
-        <Icon name="plus" style={{ fontSize: 18 }} />
+      <button
+        className="pm-fab"
+        title="PulseMind"
+        style={fab.style}
+        onPointerDown={fab.onPointerDown}
+        onPointerMove={fab.onPointerMove}
+        onPointerUp={fab.onPointerUp}
+        onPointerCancel={fab.onPointerCancel}
+        // The browser delivers a click after a drag too; only a gesture that
+        // did not move opens the panel.
+        onClick={() => {
+          if (!fab.consumeDragClick()) panel.setOpen(true)
+        }}
+      >
+        <Logo width={32} />
       </button>
     )
   }
 
   return (
-    <div className="pm-panel">
+    <div className={`pm-panel ${wide ? 'pm-panel-wide' : ''}`}>
       <header className="pm-header">
         <span className="pm-brand">PulseMind</span>
         <ConnectionChip state={connection} />
@@ -114,12 +76,8 @@ export function App(): React.JSX.Element {
         <button className="pm-icon-btn" title="新会话" onClick={() => void panel.newSession()}>
           <Icon name="plus" />
         </button>
-        <button
-          className={`pm-icon-btn ${historyOpen ? 'pm-icon-btn-active' : ''}`}
-          title="历史会话"
-          onClick={() => setHistoryOpen((v) => !v)}
-        >
-          <Icon name="menu" />
+        <button className="pm-icon-btn" title={wide ? '还原' : '放大'} onClick={() => setWide((v) => !v)}>
+          <Icon name={wide ? 'compress' : 'expand'} />
         </button>
         <button className="pm-icon-btn" title="收起" onClick={() => panel.setOpen(false)}>
           <Icon name="close" />
@@ -141,29 +99,6 @@ export function App(): React.JSX.Element {
           <button className="pm-link" onClick={() => panel.setError(null)}>
             知道了
           </button>
-        </div>
-      ) : null}
-
-      {historyOpen ? (
-        <div className="pm-sessions">
-          {panel.sessions.length === 0 ? (
-            <div className="pm-sessions-empty">还没有历史会话</div>
-          ) : (
-            panel.sessions.map((s) => (
-              <SessionRow
-                key={s.sessionId}
-                sessionId={s.sessionId}
-                title={s.title ?? ''}
-                active={s.sessionId === panel.sessionId}
-                onResume={() => {
-                  void panel.resumeSession(s.sessionId)
-                  setHistoryOpen(false)
-                }}
-                onDelete={() => void panel.deleteSession(s.sessionId)}
-                onRename={(title) => void panel.renameSession(s.sessionId, title)}
-              />
-            ))
-          )}
         </div>
       ) : null}
 

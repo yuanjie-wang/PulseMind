@@ -62,6 +62,11 @@ async function main() {
   // Static assets
   cpSync('src/extension/manifest.json', `${OUT}/manifest.json`)
   console.log('✓ Extension manifest   → out/extension/manifest.json')
+  // The manifest's `icons` entries, committed as generated assets (see
+  // scripts/generate-extension-icons.mjs) — a missing copy here is a silent
+  // blank icon in chrome://extensions, so it is not optional.
+  cpSync('src/extension/icons', `${OUT}/icons`, { recursive: true })
+  console.log('✓ Extension icons      → out/extension/icons/')
   console.log('\nLoad unpacked: chrome://extensions → 开发者模式 → 加载已解压 → out/extension')
 }
 
