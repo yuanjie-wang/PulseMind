@@ -9,6 +9,7 @@ import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId } from '../../tools
 import { sanitizeSchema } from '../agent-utils'
 import type { AgentEngineOptions } from '../AgentEngine'
 import { ensureCache, getCachedExpertProfiles, getCachedMcpServers, refreshMcpServers } from '../mcp-cache'
+import { registerToolDescriptions } from '../../components/chat/tool-descriptions'
 
 export interface ToolCollectionDeps {
   mcpToolOwner: Map<string, string>
@@ -228,6 +229,10 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
     console.log(`[AgentEngine] Sub-agent tool whitelist: kept ${enabledTools.length}/${originalCount} tools`)
   }
 
+  // Feed the display layer's name→description registry (PLAN-tool-ux T1):
+  // the fallback label for MCP / user tools comes from the schema description,
+  // and this is the one point that sees the FINAL toolset every request.
+  registerToolDescriptions(enabledTools)
   return enabledTools
 }
 

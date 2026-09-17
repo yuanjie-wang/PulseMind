@@ -18,7 +18,8 @@
 import { useState } from 'react'
 import type { ThinkingBlock as ThinkingBlockType, ToolUseBlock } from '../../shared/types/agent'
 import { Icon } from './icons'
-import { formatDuration, formatTokenCount, thinkingPreview, toolBlockSummary } from './format'
+import { formatDuration, formatTokenCount, thinkingPreview, toolBlockSummary, toolDisplayName, toolObjectSummary } from './format'
+import { resultSummary } from '../../shared/tool-display/result-summary'
 import { renderMarkdown } from './markdown'
 
 /** assistant/api text → the same `.x-markdown-light` wrapper the chat uses.
@@ -93,7 +94,11 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
 }): React.JSX.Element {
   const input = block.input
   const hasParams = !!input && Object.keys(input).length > 0 && !String(input.command ?? '')
-  const title = streaming ? '正在生成命令...' : block.status === 'running' ? '运行中' : '执行命令'
+  const title = streaming ? '正在生成命令...' : block.status === 'running' ? '运行中' : toolDisplayName(block.name)
+  // 对象行（T3/D3）与结果摘要（D3-B）、diff/write 预览（D3-C）—— 桌面 CommandCard 的手工镜像。
+  const objectLine = hasParams ? toolObjectSummary(block) : ''
+  const summaryLine = resultSummary(block.name, block.output)?.line ?? null
+  const [showFullOutput, setShowFullOutput] = useState(false)
   return (
     <div className="pm-cmd">
       <div className="pm-cmd-head">
@@ -115,7 +120,30 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
         {commandLine(block)}
       </div>
 
-      {hasParams && <pre className="pm-cmd-params">{JSON.stringify(input, null, 2)}</pre>}
+      {hasParams && (
+        <pre className="pm-cmd-params">
+          {streaming ? JSON.stringify(input, null, 2) : (objectLine || JSON.stringify(input, null, 2))}
+        </pre>
+      )}
+
+      {!streaming && block.name === 'edit' && typeof input?.old_str === 'string' && typeof input?.new_str === 'string' && (
+        <div className="pm-cmd-params">
+          {String(input.old_str).split('\n').slice(0, 8).map((l, i) => (
+            <div key={`o${i}`} style={{ color: '#f44747', background: 'rgba(244,71,71,0.08)' }}>{`- ${l}`}</div>
+          ))}
+          {String(input.new_str).split('\n').slice(0, 8).map((l, i) => (
+            <div key={`n${i}`} style={{ color: '#4ec9b0', background: 'rgba(78,201,176,0.08)' }}>{`+ ${l}`}</div>
+          ))}
+        </div>
+      )}
+      {!streaming && block.name === 'write' && typeof input?.content === 'string' && input.content && (
+        <div className="pm-cmd-params">
+          <div style={{ color: '#4ec9b0' }}>{`+${String(input.content).split('\n').length} 行`}</div>
+          {String(input.content).split('\n').slice(0, 8).map((l, i) => (
+            <div key={i} style={{ color: '#4ec9b0' }}>{`+ ${l}`}</div>
+          ))}
+        </div>
+      )}
 
       {block.status === 'running' && !block.output && (
         <div className="pm-cmd-label" style={{ color: '#8a8a8a' }}>正在执行，等待输出...</div>
@@ -123,15 +151,27 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
 
       {block.output && (
         <>
-          <div className="pm-cmd-label" style={{ marginTop: 8 }}>【输出】</div>
-          <div className="pm-cmd-out">{block.output}</div>
+          <div className="pm-cmd-label" style={{ marginTop: 8 }}>
+            【输出】{summaryLine ? ` · ${summaryLine}` : ''}
+          </div>
+          {summaryLine && block.status === 'completed' && !showFullOutput ? (
+            <button
+              className="pm-cmd-btn"
+              style={{ alignSelf: 'flex-start', fontSize: 11, color: '#8a8a8a', background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 4px' }}
+              onClick={() => setShowFullOutput(true)}
+            >
+              查看完整输出
+            </button>
+          ) : (
+            <div className="pm-cmd-out">{block.output}</div>
+          )}
         </>
       )}
 
       {block.exitCode !== undefined && block.exitCode !== null && (
         <div className={`pm-cmd-note ${block.exitCode === 0 ? 'pm-cmd-note-ok' : 'pm-cmd-note-err'}`}>
           <Icon name={block.exitCode === 0 ? 'check' : 'close'} style={{ marginRight: 4 }} />
-          Exit code: {block.exitCode}
+          {block.exitCode === 0 ? '成功' : `失败 · exit ${block.exitCode}`}
         </div>
       )}
 
@@ -283,7 +323,7 @@ export function ToolBlock({ block, completedFromResult, awaiting, onApprovalResp
         <span className="pm-tool-icon">
           <ToolStatusIcon block={block} completedFromResult={completedFromResult} />
         </span>
-        <span className="pm-tool-name">{block.name}</span>
+        <span className="pm-tool-name">{toolDisplayName(block.name)}</span>
         {summary && <span className="pm-tool-summary">{summary}</span>}
         {awaiting && <span className="pm-tool-hint">待批准</span>}
         {streaming && <span className="pm-tool-hint" style={{ color: '#999' }}>指令生成中...</span>}

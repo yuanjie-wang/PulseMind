@@ -3,6 +3,8 @@ import { Button, Typography, Space, Spin, Tag, Input } from 'antd'
 import { PlayCircleOutlined, CloseCircleOutlined, StopOutlined, LoadingOutlined, CheckCircleOutlined, SendOutlined, CloseOutlined, CheckOutlined, CommentOutlined, SettingOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ToolUseBlock } from '../../types/agent'
+import { toolDisplayName, toolObjectSummary } from '../chat/tool-summary'
+import { resultSummary } from '../../../../shared/tool-display/result-summary'
 
 // Keyframe animation for skeleton pulse effect (injected once)
 const pulseKeyframe = `@keyframes pulsemind-skeleton-pulse {
@@ -224,6 +226,60 @@ function AskUserChoices({
   )
 }
 
+// ── Edit diff / write preview (PLAN-tool-ux T3, D3-C) ────────────────
+// edit's old_str/new_str draws directly as red/green lines (no diff algorithm
+// needed — the inputs ARE the two sides); write shows a +N-line preview.
+// Colors reuse the card's existing palette (#f44747 / #4ec9b0) — no new skin.
+
+const MAX_DIFF_LINES = 8
+
+function EditDiff({ oldStr, newStr }: { oldStr: string; newStr: string }): React.ReactElement {
+  const oldLines = oldStr.split('\n')
+  const newLines = newStr.split('\n')
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={sectionLabelStyle}>Diff</div>
+      <div style={{ background: '#252526', border: '1px solid #333', borderRadius: 4, padding: '6px 8px', fontSize: 12 }}>
+        {oldLines.slice(0, MAX_DIFF_LINES).map((l, i) => (
+          <div key={`o${i}`} style={{ color: '#f44747', background: 'rgba(244,71,71,0.08)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {`- ${l}`}
+          </div>
+        ))}
+        {oldLines.length > MAX_DIFF_LINES && (
+          <div style={{ color: '#8a8a8a', fontSize: 11 }}>… {oldLines.length - MAX_DIFF_LINES} more</div>
+        )}
+        {newLines.slice(0, MAX_DIFF_LINES).map((l, i) => (
+          <div key={`n${i}`} style={{ color: '#4ec9b0', background: 'rgba(78,201,176,0.08)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {`+ ${l}`}
+          </div>
+        ))}
+        {newLines.length > MAX_DIFF_LINES && (
+          <div style={{ color: '#8a8a8a', fontSize: 11 }}>… {newLines.length - MAX_DIFF_LINES} more</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function WritePreview({ content }: { content: string }): React.ReactElement {
+  const lines = content.split('\n')
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ ...sectionLabelStyle, color: '#4ec9b0' }}>{`+${lines.length} 行`}</div>
+      <div style={{ background: '#252526', border: '1px solid #333', borderRadius: 4, padding: '6px 8px', fontSize: 12 }}>
+        {lines.slice(0, MAX_DIFF_LINES).map((l, i) => (
+          <div key={i} style={{ color: '#4ec9b0', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {`+ ${l}`}
+          </div>
+        ))}
+        {lines.length > MAX_DIFF_LINES && (
+          <div style={{ color: '#8a8a8a', fontSize: 11 }}>… {lines.length - MAX_DIFF_LINES} more</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Command summary helper ────────────────────────────────────────────
 
 function buildCommandSummary(t: (key: string, params?: any) => string, toolName: string, input: Record<string, unknown> | undefined): string {
@@ -286,6 +342,13 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
   const isAskUser = block.name === 'ask_user'
   const isAskUserRunning = isAskUser && (block.status === 'running' || block.status === 'pending' && onApprove)
 
+  // 对象行（T3）: the parsed object half of the input, one mono line.
+  const objectLine = toolObjectSummary(block)
+
+  // 结果摘要（T3/D3-B）+ 折叠状态。流式/运行中永远展开（跟随滚动就是进度）。
+  const summaryLine = resultSummary(block.name, block.output)?.line ?? null
+  const [showFullOutput, setShowFullOutput] = useState(false)
+
   // ── Auto-scroll output container when output changes (streaming) ──
   const outputRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -317,7 +380,7 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
               ? t('commandCard.running')
               : isAskUser
                 ? t('commandCard.question')
-                : t('commandCard.executeCommand')}
+                : toolDisplayName(block.name, t)}
         </Text>
       </div>
 
@@ -354,7 +417,10 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
         </>
       )}
 
-      {/* Tool input parameters (for non-exec tools, hidden for ask_user) */}
+      {/* Object line for non-exec tools (PLAN-tool-ux T3, D3 content layer): the
+          parsed object — path / query / host — instead of the raw JSON dump.
+          While streaming it still shows (animated), because the dump's growth IS
+          the live progress; once settled, one mono line. */}
       {!isAskUser && hasPartialInput && (
         <pre style={{
           color: '#d4d4d4',
@@ -366,11 +432,13 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
           borderRadius: 4,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-all',
-          maxHeight: 200,
-          overflowY: 'auto',
+          maxHeight: isStreaming ? 200 : undefined,
+          overflowY: isStreaming ? 'auto' as const : 'visible' as const,
           animation: isStreaming ? 'pulsemind-skeleton-pulse 1.5s ease-in-out infinite' : undefined
         }}>
-          {JSON.stringify(block.input, null, 2)}
+          {isStreaming
+            ? JSON.stringify(block.input, null, 2)
+            : (objectLine || JSON.stringify(block.input, null, 2))}
         </pre>
       )}
 
@@ -403,6 +471,16 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
         </Text>
       )}
 
+      {/* Edit diff / write preview (T3/D3-C) — inputs are the two sides */}
+      {!isAskUser && !isStreaming && !isTruncatedWrite && block.name === 'edit' &&
+        typeof block.input?.old_str === 'string' && typeof block.input?.new_str === 'string' && (
+          <EditDiff oldStr={String(block.input.old_str)} newStr={String(block.input.new_str)} />
+        )}
+      {!isAskUser && !isStreaming && !isTruncatedWrite && block.name === 'write' &&
+        typeof block.input?.content === 'string' && (block.input.content as string).length > 0 && (
+          <WritePreview content={String(block.input.content)} />
+        )}
+
       {/* Description */}
       {description && !isTruncatedWrite && (
         <Text style={{ color: '#a0a0a0', fontSize: 12, display: 'block', marginBottom: 8 }}>
@@ -415,17 +493,35 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
         <AskUserChoices block={block} onToolResponse={onToolResponse} />
       )}
 
-      {/* Output (hidden for ask_user — shown inline in AskUserChoices) */}
+      {/* Output (hidden for ask_user — shown inline in AskUserChoices). A
+          confident family count (T3/D3-B) collapses the raw text behind
+          查看完整输出; no parse → the raw output as before. While the tool is
+          still streaming, the full output stays visible — the auto-scroll
+          follow IS the live progress. */}
       {!isAskUser && block.output && (
         <>
-          <div style={{ ...sectionLabelStyle, marginTop: 8 }}>{t('commandCard.output')}</div>
-          <div style={outputStyle} ref={outputRef}>
-            {block.output}
+          <div style={{ ...sectionLabelStyle, marginTop: 8 }}>
+            {t('commandCard.output')}{summaryLine ? ` · ${summaryLine}` : ''}
           </div>
+          {summaryLine && block.status === 'completed' && !showFullOutput ? (
+            <Button
+              type="text"
+              size="small"
+              onClick={() => setShowFullOutput(true)}
+              style={{ color: '#8a8a8a', fontSize: 11, padding: '0 4px', marginBottom: 4 }}
+            >
+              {t('commandCard.viewFullOutput')}
+            </Button>
+          ) : (
+            <div style={outputStyle} ref={outputRef}>
+              {block.output}
+            </div>
+          )}
         </>
       )}
 
-      {/* Exit code (hidden for ask_user) */}
+      {/* Result badge (hidden for ask_user). Success shows no number (T3/D3-A);
+          the exit code value is only exposed on failure, where it means something. */}
       {!isAskUser && block.exitCode !== undefined && block.exitCode !== null && (
         <div style={{ marginTop: 4 }}>
           <Text
@@ -434,7 +530,9 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
               fontSize: 12
             }}
           >
-            {block.exitCode === 0 ? <><CheckOutlined style={{color:'#4ec9b0'}} />{' '}</> : <><CloseOutlined style={{color:'#f44747'}} />{' '}</>}Exit code: {block.exitCode}
+            {block.exitCode === 0
+              ? <><CheckOutlined style={{ color: '#4ec9b0' }} /> {t('commandCard.success')}</>
+              : <><CloseOutlined style={{ color: '#f44747' }} /> {t('commandCard.failed')} · exit {block.exitCode}</>}
           </Text>
         </div>
       )}

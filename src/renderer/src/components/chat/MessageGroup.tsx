@@ -26,7 +26,7 @@ import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock, Conten
 import type { Conversation, Message } from '../../../../shared/types/conversation'
 import CommandCard from '../terminal/CommandCard'
 import { ApprovalArea } from './ApprovalArea'
-import { toolBlockSummary } from './tool-summary'
+import { toolBlockSummary, toolDisplayName } from './tool-summary'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage } from './LocalImage'
 import { ThinkingBlockView } from './ThinkingBlockView'
@@ -114,7 +114,7 @@ function CollapsibleToolBlock({
 }): React.ReactElement {
   const { t } = useTranslation()
   const { token } = theme.useToken()
-  const summary = toolBlockSummary(block)
+  const summary = toolBlockSummary(block, t)
   // A call the ladder is holding: `pending` *and* the engine parked on it. The
   // parked half matters — a tool still being generated is 'pending' too, and it
   // has nothing to approve yet.
@@ -204,8 +204,8 @@ function CollapsibleToolBlock({
         <span style={{ fontSize: 14, flexShrink: 0, width: 18, textAlign: 'center' }}>
           {block.status === undefined && completedFromResult ? <CheckOutlined style={{color:'#4ec9b0'}} /> : block.status === undefined ? <ArrowDownOutlined style={{color:'#999'}} /> : block.status === 'running' ? <HourglassOutlined /> : block.status === 'completed' ? (block.exitCode === 0 ? <CheckOutlined style={{color:'#4ec9b0'}} /> : <CloseOutlined style={{color:'#f44747'}} />) : block.status === 'rejected' ? <CloseOutlined style={{color:'#f44747'}} /> : <SettingOutlined />}
         </span>
-        {/* Tool name */}
-        <span style={{ fontWeight: 600, color: '#333', flexShrink: 0, fontSize: 12 }}>{block.name}</span>
+        {/* Tool name — the human verb (PLAN-tool-ux T1); the object stays in the summary */}
+        <span style={{ fontWeight: 600, color: '#333', flexShrink: 0, fontSize: 12 }}>{toolDisplayName(block.name, t)}</span>
         {/* Summary */}
         {summary && (
           <span style={{

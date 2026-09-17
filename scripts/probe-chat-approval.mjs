@@ -78,6 +78,25 @@ const MESSAGES = [user('清一下构建目录'), assistant('a1', [{ type: 'text'
 /** A turn still generating its first tool call: 'pending', nothing held yet. */
 const GENERATING = [{ type: 'tool_use', id: 't9', name: 'exec', status: 'pending', input: {} }]
 
+/** Settled batch for the T4 activity narrative: 2 reads, 1 edit, 2 execs —
+ *  every call completed, nothing held. */
+const SETTLED_CALLS = [
+  { type: 'tool_use', id: 's1', name: 'read', status: 'completed', exitCode: 0, input: { file_path: 'src/a.ts' }, output: 'x' },
+  { type: 'tool_use', id: 's2', name: 'read', status: 'completed', exitCode: 0, input: { file_path: 'src/b.ts' }, output: 'y' },
+  { type: 'tool_use', id: 's3', name: 'edit', status: 'completed', exitCode: 0, input: { file_path: 'src/a.ts', old_str: 'a', new_str: 'b' }, output: 'z' },
+  { type: 'tool_use', id: 's4', name: 'exec', status: 'completed', exitCode: 0, input: { command: 'npm test' }, output: 'ok' },
+  { type: 'tool_use', id: 's5', name: 'exec', status: 'completed', exitCode: 0, input: { command: 'npm run build' }, output: 'built' },
+]
+const SETTLED_MESSAGES = [user('继续'), assistant('a2', [{ type: 'text', text: '跑一遍检查：' }, ...SETTLED_CALLS])]
+
+/** Settled work AND one call the ladder still holds: the narrative must not
+ *  fight the approval decision for the header. */
+const SETTLED_HELD_MESSAGES = [user('继续2'), assistant('a3', [
+  { type: 'text', text: '最后一步需要确认：' },
+  ...SETTLED_CALLS,
+  { type: 'tool_use', id: 's6', name: 'exec', status: 'pending', input: { command: 'rm -rf ./dist', description: '清理产物' } },
+])]
+
 function Harness() {
   const [scenario, setScenario] = useState('held')
   const [blocks, setBlocks] = useState(GENERATING)
@@ -92,15 +111,18 @@ function Harness() {
   window.__streamMore = () => setBlocks((b) => [...b, { type: 'tool_use', id: 't10', name: 'write', status: 'pending', input: {} }])
 
   const streaming = scenario === 'streaming'
+  const settled = scenario === 'settled'
+  const settledHeld = scenario === 'settledHeld'
+  const scenarioMessages = settled ? SETTLED_MESSAGES : settledHeld ? SETTLED_HELD_MESSAGES : MESSAGES
   return (
     <ConfigProvider theme={{ token: { colorPrimary: '#1677ff' } }}>
       <TranslationProvider>
         <div style={{ width: 1000, padding: '12px 0', background: '#fff', fontFamily: 'system-ui' }}>
           <TranscriptView
-            messages={streaming ? [MESSAGES[0]] : MESSAGES}
-            agentStatus={scenario === 'held' ? { status: 'awaiting_approval' } : { status: 'streaming' }}
+            messages={streaming ? [MESSAGES[0]] : scenarioMessages}
+            agentStatus={scenario === 'held' || settledHeld ? { status: 'awaiting_approval' } : { status: 'streaming' }}
             streamingBlocks={streaming ? blocks : []}
-            isRequesting={true}
+            isRequesting={!settled}
             restoring={false}
             onApproveTool={(id) => { window.__approved = id }}
             onRejectTool={(id) => { window.__rejected = id }}
@@ -415,6 +437,41 @@ const amberBoxes = () =>
   const reported = await page.evaluate(() => window.__composerChoice)
   check('点选 全部允许 后按钮改文案、转橙，并把 auto 交给上层', welcomeAfter?.label === '全部允许' && welcomeAfter.color === AMBER && reported === 'auto', `${welcomeAfter?.label} ${welcomeAfter?.color} / 上报 ${reported}`)
   check('切换后箭头仍是灰色', welcomeAfter?.caret === 'rgb(187, 187, 187)', String(welcomeAfter?.caret))
+}
+
+/* ── T4: the activity narrative (PLAN-tool-ux) — a settled batch narrates;
+      settled work + a held call keeps 待批准 in charge, area below the head ── */
+console.log('== settled batch: activity narrative ==')
+await page.evaluate(() => window.__scenario('settled'))
+await page.locator('[data-segment-head]').waitFor()
+{
+  const head = page.locator('[data-segment-head]')
+  const text = await head.textContent()
+  check(
+    'the done header narrates the activity by family',
+    !!text && text.includes('已完成 · 已读取 2 个文件 · 修改 1 个文件 · 运行 2 条命令'),
+    text?.slice(0, 80),
+  )
+  const areas = await page.locator('[data-approval-area]').count()
+  check('no approval surface on a fully settled batch', areas === 0, `${areas} area(s)`)
+}
+
+console.log('== settled work + one held call: narrative yields to the decision ==')
+await page.evaluate(() => window.__scenario('settledHeld'))
+await page.locator('[data-approval-area]').waitFor()
+{
+  const head = page.locator('[data-segment-head]')
+  const headText = await head.textContent()
+  check('the held call still owns the header (待批准, not the narrative)', !!headText && headText.includes('待批准') && !headText.includes('已完成 ·'), headText?.slice(0, 60))
+  const headBox = await head.boundingBox()
+  const areaBox = await page.locator('[data-approval-area]').boundingBox()
+  check(
+    'the approval area still sits below the header — no conflict',
+    !!headBox && !!areaBox && areaBox.y >= headBox.y + headBox.height - 1,
+    `area top ${areaBox ? Math.round(areaBox.y) : '?'} vs header bottom ${headBox ? Math.round(headBox.y + headBox.height) : '?'}`,
+  )
+  const buttons = await page.locator('[data-approval-area] button').count()
+  check('…and the decision is there with zero clicks', buttons >= 2, `${buttons} button(s)`)
 }
 
 await browser.close()

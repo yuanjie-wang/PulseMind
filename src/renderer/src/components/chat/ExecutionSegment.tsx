@@ -68,7 +68,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
   const [expanded, setExpanded] = useState(false)
 
   // Single traversal for all derived state — replaces 4 separate useMemo calls
-  const { texts, initial, done, toolCount, receivingText, liveOutput, heldCalls } = useMemo(() => {
+  const { texts, initial, done, toolCount, activityText, receivingText, liveOutput, heldCalls } = useMemo(() => {
     let hasTools = false
     let anyNonPending = false // any tool has a status beyond 'pending' (running, completed, rejected)
     let anyRunning = false
@@ -77,6 +77,11 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
     const texts: string[] = []
     let toolCount = 0
     const toolNames = new Set<string>()
+    // Activity narrative (PLAN-tool-ux T4): completed calls by family —
+    // files read / files modified / commands run.
+    let reads = 0
+    let writes = 0
+    let execs = 0
     // Last output line from any currently-running tool (e.g. sub-agent progress),
     // surfaced in the collapsed header so the user sees it move without expanding.
     let liveOutput: string | null = null
@@ -103,16 +108,29 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
           if (block.status === 'pending' && props.awaitingApproval) heldCalls.push(block)
           if (block.status === undefined) continue
           if (block.status !== 'pending') anyNonPending = true
+          // Only SETTLED calls count toward the narrative — a running exec is
+          // not yet "跑了一条命令".
+          if (block.status === 'completed' || block.status === 'rejected') {
+            if (block.name === 'read') reads++
+            else if (block.name === 'write' || block.name === 'edit') writes++
+            else if (block.name === 'exec') execs++
+          }
         }
         if (block.type === 'tool_result') hasToolResults = true
       }
     }
+
+    const activityParts: string[] = []
+    if (reads > 0) activityParts.push(`已读取 ${reads} 个文件`)
+    if (writes > 0) activityParts.push(`修改 ${writes} 个文件`)
+    if (execs > 0) activityParts.push(`运行 ${execs} 条命令`)
 
     return {
       texts,
       initial: !anyNonPending && !hasToolResults,
       done: hasTools && !anyRunning && (anyNonPending || hasToolResults),
       toolCount,
+      activityText: activityParts.join(' · '),
       anyRunning,
       anyNonPending,
       liveOutput,
@@ -134,7 +152,11 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
   const showDone = done && !isPending
   const showInitialActive = initial && props.isRequesting
   const showSpinner = !showDone && props.isRequesting
-  const displayText = props.isReceiving ? receivingText : anyHeld ? t('commandCard.awaitingApproval') : (showDone ? `已完成（工具调用${toolCount}次）` : showInitialActive ? '开始执行' : (liveOutput || (texts.length > 0 ? texts[texts.length - 1] : 'Processing...')))
+  // Done state carries the activity narrative when any family counts up
+  // (PLAN-tool-ux T4); families that don't map (MCP, git, page tools) keep
+  // the plain call-count form.
+  const doneText = activityText || `工具调用${toolCount}次`
+  const displayText = props.isReceiving ? receivingText : anyHeld ? t('commandCard.awaitingApproval') : (showDone ? `已完成 · ${doneText}` : showInitialActive ? '开始执行' : (liveOutput || (texts.length > 0 ? texts[texts.length - 1] : 'Processing...')))
 
   return (
     <div style={{ margin: '8px 0', borderRadius: 8, overflow: 'hidden' }}>

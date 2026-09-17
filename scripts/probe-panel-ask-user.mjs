@@ -189,7 +189,9 @@ const sent = (page, type) => page.evaluate((t) => window.__sent.filter((m) => m.
   console.log('== held page tool (approval) ==')
   const { page, root } = await open(fixture({ choices: ['北京'], status: 'awaiting_approval' }))
 
-  const held = root.locator('.pm-tool').filter({ hasText: 'page_click' })
+  // The card is found by its HUMAN label now (PLAN-tool-ux T2): the panel's
+  // header shows 点击元素, not the raw page_click.
+  const held = root.locator('.pm-tool').filter({ hasText: '点击元素' })
   check('the held call is marked 待批准', (await held.locator('.pm-tool-hint').textContent()) === '待批准')
   // The decision sits below the collapsed header (the chat's ApprovalArea rule too,
   // where those buttons otherwise hide behind two collapsed layers). Nothing here

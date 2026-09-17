@@ -30,6 +30,7 @@
     "src/shared/types/agent.ts",
     "src/shared/types/plan.ts",
     "src/renderer/src/types/agent.ts",
-    "src/shared/sandbox/policy.ts"
+    "src/shared/sandbox/policy.ts",
+    "src/shared/tool-display/result-summary.ts"
   ]
 }
