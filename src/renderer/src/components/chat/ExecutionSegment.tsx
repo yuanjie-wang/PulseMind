@@ -79,6 +79,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
     let reads = 0
     let writes = 0
     let execs = 0
+    let rejections = 0
     // Last output line from any currently-running tool (e.g. sub-agent progress),
     // surfaced in the collapsed header so the user sees it move without expanding.
     let liveOutput: string | null = null
@@ -106,8 +107,12 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
           if (block.status === undefined) continue
           if (block.status !== 'pending') anyNonPending = true
           // Only SETTLED calls count toward the narrative — a running exec is
-          // not yet "跑了一条命令".
-          if (block.status === 'completed' || block.status === 'rejected') {
+          // not yet "跑了一条命令". M5 (review 2026-09-18): a REJECTED call
+          // touched nothing — counting it as "修改 1 个文件" lied about what
+          // the agent did to the user's files, so rejections are narrated in
+          // their own part instead.
+          if (block.status === 'rejected') rejections++
+          else if (block.status === 'completed') {
             if (block.name === 'read') reads++
             else if (block.name === 'write' || block.name === 'edit') writes++
             else if (block.name === 'exec') execs++
@@ -121,6 +126,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
     if (reads > 0) activityParts.push(`已读取 ${reads} 个文件`)
     if (writes > 0) activityParts.push(`修改 ${writes} 个文件`)
     if (execs > 0) activityParts.push(`运行 ${execs} 条命令`)
+    if (rejections > 0) activityParts.push(`拒绝 ${rejections} 次`)
 
     return {
       texts,

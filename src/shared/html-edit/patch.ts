@@ -80,7 +80,7 @@ export function mergeStyleDecls(existing: string | null, decls: Record<string, s
  *  bottom-up); new attrs append before the closing bracket. */
 function rebuildStartTag(html: string, location: ElementLocation, set: Record<string, string | null>): string {
   const base = location.startTag.start
-  let tag = html.slice(location.startTag.start, location.startTag.end)
+  const tag = html.slice(location.startTag.start, location.startTag.end)
   const closing = /\/?>$/.exec(tag)
   const bracket = closing ? closing[0] : '>'
   let body = tag.slice(0, tag.length - bracket.length)
@@ -220,6 +220,13 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/g, '&')
 }
 
+/** Entity decode + tag strip for DISPLAY surfaces only (the panel text
+ *  input's initial value) — never produces output that gets written; a
+ *  commit re-escapes through escapeHtmlText. */
+export function decodedInnerText(html: string): string {
+  return decodeEntities(stripTags(html))
+}
+
 /** Crude tag stripper for the text-contains check — verification only; it
  *  never produces output that gets written. */
 function stripTags(html: string): string {
@@ -253,6 +260,12 @@ export function validateAiElementMarkup(raw: string, expectedTag: string): AiVal
   }
   if (/<!doctype/i.test(trimmed) || /<html[\s>]/i.test(trimmed) || /<body[\s>]/i.test(trimmed) || /<\/body/i.test(trimmed)) {
     return { ok: false, reason: 'AI 返回了整篇文档，而这里只接受单个元素' }
+  }
+  // 与直接编辑路径（commitInner）同一道防线（review 2026-09-18 M8）：
+  // elementHtml 原样进入 LLM 输入，恶意页面文本可注入指令——模型返回
+  // <h1><script>…</script></h1> 曾校验全绿并写盘，在预览副本里执行。
+  if (/<script[\s>]/i.test(trimmed) || /<style[\s>]/i.test(trimmed)) {
+    return { ok: false, reason: 'AI 返回的内容包含 script/style 节点，这里不允许写入' }
   }
   const frag = parseFragment(trimmed)
   const children = (frag.childNodes ?? []).filter(

@@ -49,15 +49,32 @@ const noop = (): void => {}
 const noopResponse = (): void => {}
 
 /** Follow-the-run poll interval. The main process snapshots a sub-conversation
- *  every 5s, so this only decides how quickly those snapshots are picked up. */
-const POLL_MS = 2000
+ *  every 5s, so polling faster only re-read the same bytes (review 2026-09-18
+ *  M12: at 2s the full hydrate ran 2-3× per actual new snapshot for the whole
+ *  live window). */
+const POLL_MS = 5000
 /** Hard stop so a plan the model never settles cannot poll forever. */
 const MAX_POLL_MS = 30 * 60_000
+/** First frame renders the TAIL of the transcript only (review 2026-09-18
+ *  M12): a several-hundred-message sub-agent run used to mount every text
+ *  block as an XMarkdown instance in one synchronous render, and re-rendered
+ *  the whole thing on every poll that changed anything. 加载更早 grows the
+ *  window; the poll signature still covers ALL messages, so nothing at the
+ *  head is lost — it is only not rendered until asked for. */
+const INITIAL_VISIBLE = 60
 
 export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgentSessionViewProps): React.ReactElement {
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // The render window rides the conversation it was opened for: switching to
+  // another sub-conversation resets it. Adjusting state during render is the
+  // React-blessed reset pattern here (no effect, no ref access).
+  const [windowState, setWindowState] = useState({ convId: subConvId, limit: INITIAL_VISIBLE })
+  if (windowState.convId !== subConvId) {
+    setWindowState({ convId: subConvId, limit: INITIAL_VISIBLE })
+  }
+  const visibleLimit = windowState.limit
   const sigRef = useRef('')
 
   useEffect(() => {
@@ -147,9 +164,29 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
         </span>
       </div>
 
+      {/* Older turns load on demand — the window keeps first-frame and
+          per-poll render cost bounded (M12). */}
+      {messages.length > visibleLimit && (
+        <div
+          onClick={() => setWindowState((s) => ({ ...s, limit: s.limit * 2 }))}
+          style={{
+            flexShrink: 0,
+            textAlign: 'center',
+            padding: '6px 0',
+            fontSize: 12,
+            color: '#1677ff',
+            cursor: 'pointer',
+            borderBottom: '1px solid #f0f0f0',
+            background: '#fafafa',
+          }}
+        >
+          加载更早的消息（还有 {messages.length - visibleLimit} 条）
+        </div>
+      )}
+
       {/* The same transcript the main chat renders — minus the composer. */}
       <TranscriptView
-        messages={messages}
+        messages={messages.slice(-visibleLimit)}
         agentStatus={{ status: 'idle' }}
         streamingBlocks={[] as ContentBlock[]}
         isRequesting={false}

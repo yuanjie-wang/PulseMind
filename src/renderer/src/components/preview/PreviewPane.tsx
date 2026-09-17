@@ -57,9 +57,19 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
     const entry = store.drafts[path]
     if (!entry) return
     try {
-      const res = await window.electronAPI.writeFile({ filePath: path, content: serializeDraft(entry) })
+      // expectContent = the draft's baseline: if the disk moved under the
+      // draft (terminal / other process / a window the D8 bump missed), the
+      // main side refuses the overwrite instead of silently clobbering the
+      // external edit (review 2026-09-18 M6). The bumpReload below then
+      // re-reads and the normal conflict decision asks the user.
+      const res = await window.electronAPI.writeFile({
+        filePath: path,
+        content: serializeDraft(entry),
+        expectContent: entry.baseline,
+      })
       if (res && res.success === false) {
         void message.error(res.error || 'Save failed')
+        store.bumpReload(path)
         return
       }
       store.setDraft(path, { ...entry, baseline: entry.content })
@@ -78,7 +88,6 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
     }
     window.addEventListener('pulsemind-preview-save', onSaveRequest)
     return () => window.removeEventListener('pulsemind-preview-save', onSaveRequest)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   if (!tabs || tabs.length === 0) {
@@ -97,9 +106,12 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
   const editableKind = activeKind === 'markdown' || activeKind === 'text' || activeKind === 'csv' || activeKind === 'html'
   const mode = previewModes[active.path] ?? 'view'
   const editOn = mode === 'source'
-  const elementOn = mode === 'element' && activeKind === 'html'
+  const oversizedActive = !!oversized[active.path]
+  // 元素模式与源码模式共用同一个大小闸（review 2026-09-18 M10）：超限 HTML
+  // 不再进入元素模式——每步编辑都会解析并全量回写整份文件。
+  const elementOn = mode === 'element' && activeKind === 'html' && !oversizedActive
   const dirty = !!drafts[active.path] && isDirty(drafts[active.path])
-  const editDisabled = !editableKind || !!oversized[active.path]
+  const editDisabled = !editableKind || oversizedActive
 
   const toggleSource = () => {
     if (editDisabled) return
@@ -108,7 +120,11 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
 
   const toggleElement = () => {
     if (activeKind !== 'html') return
-    store.setPreviewMode(active.path, elementOn ? 'view' : 'element')
+    if (oversizedActive) {
+      void message.info(t('previewPane.tooLarge'))
+      return
+    }
+    store.setPreviewMode(active.path, elementOn || mode === 'element' ? 'view' : 'element')
   }
 
   const requestCloseTab = (path: string) => {
@@ -217,11 +233,12 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
           <div
             style={{
               ...ICON_BUTTON,
+              opacity: oversizedActive && !elementOn ? 0.35 : 1,
               background: elementOn ? '#fff7e6' : 'transparent',
               color: elementOn ? '#d46b08' : '#666',
             }}
             onClick={toggleElement}
-            title={t('htmlEdit.modeToggle')}
+            title={oversizedActive && !elementOn ? t('previewPane.tooLarge') : t('htmlEdit.modeToggle')}
           >
             <MousePointerClick size={13} />
           </div>

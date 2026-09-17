@@ -44,10 +44,13 @@ import { PICKER_SCRIPT } from './src/main/preview/picker-source.generated'
 window.__buildFrameDoc = (url) => {
   const m = /^local-file:\\/\\/([^?#]*)?(\\?[^#]*)?/.exec(url)
   const raw = m && m[1] ? decodeURIComponent(m[1]) : '/'
-  const preview = !!(m && m[2] && m[2].includes('pmPreview=1'))
+  const query = (m && m[2]) || ''
+  const preview = query.includes('pmPreview=1')
+  const nonceMatch = /[?&]pmNonce=([^&#]+)/.exec(query)
+  const nonce = nonceMatch ? decodeURIComponent(nonceMatch[1]) : undefined
   const text = window.__files[raw]
   if (text === undefined) return '<body><p style="color:red">404 ' + raw + '</p></body>'
-  return preview ? buildPreviewCopy(text, PICKER_SCRIPT) : text
+  return preview ? buildPreviewCopy(text, PICKER_SCRIPT, nonce) : text
 }
 
 // React sets iframe src as an attribute — rewrite local-file:// to a srcdoc
@@ -183,8 +186,14 @@ await page.addScriptTag({
       const text = window.__files[p]
       return Promise.resolve(text === undefined ? null : text)
     }
-    : key === 'writeFile' ? ({ filePath, content }) => {
-      // The stub IS the disk: writes update the fixture map so reloads see them.
+    : key === 'writeFile' ? ({ filePath, content, expectContent }) => {
+      // The stub IS the disk: writes update the fixture map so reloads see
+      // them — and it enforces the same expectContent freshness contract the
+      // real main side does (M6), refusing on a mismatch.
+      if (expectContent !== undefined && window.__files[filePath] !== undefined && window.__files[filePath] !== expectContent) {
+        window.__writeCalls.push({ filePath, content, refused: true })
+        return Promise.resolve({ success: false, error: 'file changed on disk since it was read — re-read and retry（文件已被外部修改，请刷新后重试）' })
+      }
       if (!window.__deny[filePath]) window.__files[filePath] = content
       window.__writeCalls.push({ filePath, content })
       const reason = window.__deny[filePath]
@@ -336,6 +345,26 @@ const scrollAfter = await frameCtx2.evaluate(() => window.scrollY)
 sel = await page.evaluate(() => window.__editStore.getState().sessions['/w/page.html']?.selection)
 check('after a reload the scroll position is restored', scrollAfter === 180, JSON.stringify(scrollAfter))
 check('…and the selection survives across the reload', sel && sel.pmPath === 'html>body:nth-child(2)>div:nth-child(1)>h1:nth-child(1)', JSON.stringify(sel?.pmPath))
+
+/* ── 9b. The page's own scripts cannot forge pm:* messages (M9). ── */
+// The frame is opaque-origin but its page scripts share the picker's realm:
+// they post with the SAME event.source the real picker has. What they do not
+// have is the nonce (the picker scrubbed its script tag at boot) — a forged
+// select must not move the store and a forged commit-text must not write.
+const writesBeforeForge = await page.evaluate(() => window.__writeCalls.length)
+const forged = await frameCtx2.evaluate(async () => {
+  window.parent.postMessage({ type: 'pm:select', pmPath: 'html>body:nth-child(2)>p:nth-child(2)', tag: 'p', rect: { x: 0, y: 0, w: 1, h: 1 }, text: 'forged', ancestors: [], computed: {}, nonce: 'forged' }, '*')
+  window.parent.postMessage({ type: 'pm:commit-text', pmPath: 'html>body:nth-child(2)>div:nth-child(1)>h1:nth-child(1)', html: '<h1>owned</h1>', nonce: 'forged' }, '*')
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  return {
+    scriptTagLeft: document.getElementById('pm-picker-script') !== null,
+    pickerHostAlive: document.getElementById('pm-picker-host') !== null,
+  }
+})
+sel = await page.evaluate(() => window.__editStore.getState().sessions['/w/page.html']?.selection)
+const writesAfterForge = await page.evaluate(() => window.__writeCalls.length)
+check('a forged pm:select/pm:commit-text (right source, wrong nonce) lands nowhere', sel && sel.pmPath === 'html>body:nth-child(2)>div:nth-child(1)>h1:nth-child(1)' && writesAfterForge === writesBeforeForge, JSON.stringify({ sel: sel?.pmPath, writes: writesAfterForge }))
+check('the picker script tag is scrubbed from the frame (nonce unreadable), overlay intact', !forged.scriptTagLeft && forged.pickerHostAlive, JSON.stringify(forged))
 
 /* ── 10. The source editor entry is still on the toolbar (D2). ── */
 await sourceToggle().click()

@@ -85,6 +85,19 @@ export class BrowserService {
   private paneActiveTab = new Map<string, string>()
   private paneSender: WebContents | null = null
 
+  /** Track which renderer owns the pane (review 2026-09-18 M1): a renderer
+   *  reload (refresh, crash restore, window reopen) creates a NEW WebContents
+   *  whose store starts EMPTY — the paneUpdateEquals gate in pushPaneUpdates
+   *  would swallow the identical re-push and the new renderer would learn
+   *  nothing until a tab actually changed. A sender change invalidates the
+   *  last push once, so the first syncPane reaches the fresh store. */
+  private setPaneSender(sender: WebContents): void {
+    if (this.paneSender !== sender) {
+      this.paneSender = sender
+      this.lastPanePush = null
+    }
+  }
+
   constructor() {
     // Both backends instantiate lazily on first use.
     this.backends.set('managed', new ManagedBackend())
@@ -114,14 +127,14 @@ export class BrowserService {
   /** ── Pane (A-M5): chrome state, width, user tab actions ── */
 
   handlePaneState(state: BrowserPaneState, sender: WebContents): void {
-    this.paneSender = sender
+    this.setPaneSender(sender)
     this.paneState = state
     appViewDock.setChromeOverlay(state.chromeOverlayHeight ?? 0)
     this.syncPane()
   }
 
   async handlePaneWidth(width: number, sender: WebContents): Promise<void> {
-    this.paneSender = sender
+    this.setPaneSender(sender)
     const clamped = clampPaneWidth(width, this.paneState.chatAreaWidth)
     if (clamped !== this.paneWidth) {
       this.paneWidth = clamped
@@ -137,7 +150,7 @@ export class BrowserService {
   }
 
   async handlePaneAction(action: BrowserPaneAction, sender: WebContents): Promise<void> {
-    this.paneSender = sender
+    this.setPaneSender(sender)
     const scope = this.paneState.conversationId
     if (!scope) return
     switch (action.op) {

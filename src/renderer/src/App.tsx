@@ -227,6 +227,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     activeLoopConvIds,
     retryingConvIds,
     togglePin,
+    reloadConversations,
     updateConversationExpert,
     updateConversationApproval,
     plan,
@@ -480,6 +481,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             onRenameConversation={renameConversation}
             onSelectConversation={setActiveConversationKey}
             onTogglePinConversation={togglePin}
+            onReloadConversations={reloadConversations}
             skills={skills}
             onToggleSkill={toggleSkill}
             tools={tools}

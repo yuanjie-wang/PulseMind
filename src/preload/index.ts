@@ -301,7 +301,7 @@ const electronAPI = {
   }): Promise<{ success: boolean; replacements: number; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_FILE, input),
   patchFile: (input: { filePath: string; diff: string }): Promise<{ success: boolean; replacements: number; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_PATCH_FILE, input),
-  writeFile: (input: { filePath: string; content: string; append?: boolean }): Promise<{ success: boolean; error?: string }> =>
+  writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_WRITE_FILE, input),
   editDocx: (input: { filePath: string; ops: unknown }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_DOCX, input),

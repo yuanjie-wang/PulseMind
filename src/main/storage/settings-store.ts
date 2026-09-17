@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { SETTINGS_PATH, DATA_DIR, ensureDataDir } from './index'
 import { resolveEnvVarsDeep, resolveEnvVarsInString } from '../../shared/env'
 import type { AppSettings, LlmProfile } from '../../shared/types/settings'
+import type { ProjectSortMode } from '../../shared/types/project'
 
 const DEFAULT_WORKSPACE_DIR = join(DATA_DIR, 'workspace')
 
@@ -26,6 +27,47 @@ function readWorkspaceDir(parsed: Record<string, unknown>): string {
 /** 运行历史保留天数：正整数才有效，0 / 缺失 / 非法值都回落到“永久保留”。 */
 function readRetentionDays(raw: unknown): number {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
+}
+
+const PROJECT_SORT_MODES: readonly ProjectSortMode[] = ['created', 'name', 'activity', 'manual']
+
+function readProjectSortMode(raw: unknown): ProjectSortMode | undefined {
+  return PROJECT_SORT_MODES.includes(raw as ProjectSortMode) ? (raw as ProjectSortMode) : undefined
+}
+
+/**
+ * The optional group keys (git / knowledge / browser) were added after `get()`
+ * became a field-by-field rebuild and were missing from it: a value written to
+ * settings.json was unreadable after restart AND erased from the file by the
+ * next whole-object save (review 2026-09-18 H1/H2). Each reader below keeps
+ * unknown sub-keys it finds, so a future field inside these groups does not
+ * repeat the disease.
+ */
+function readGroup<T extends object>(raw: unknown, normalize: (group: Record<string, unknown>) => T): T | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  return normalize(raw as Record<string, unknown>)
+}
+
+function readGitSettings(group: Record<string, unknown>): { contextInjection: boolean } {
+  return { ...group, contextInjection: group.contextInjection !== false } as { contextInjection: boolean }
+}
+
+function readKnowledgeSettings(group: Record<string, unknown>): { autoCompile: boolean } {
+  return { ...group, autoCompile: group.autoCompile === true } as { autoCompile: boolean }
+}
+
+function readNumberOrDrop(group: Record<string, unknown>, key: string): void {
+  const value = group[key]
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) delete group[key]
+}
+
+function readBrowserSettings(group: Record<string, unknown>): AppSettings['browser'] {
+  const out: Record<string, unknown> = { ...group }
+  if (out.backend !== 'managed' && out.backend !== 'app-view') delete out.backend
+  if (typeof out.headless !== 'boolean') delete out.headless
+  readNumberOrDrop(out, 'timeoutMs')
+  readNumberOrDrop(out, 'paneWidth')
+  return out as AppSettings['browser']
 }
 
 const FALLBACK_SETTINGS: AppSettings = {
@@ -108,6 +150,10 @@ export class SettingsStore {
           routineRunRetentionDays: readRetentionDays(parsed.routineRunRetentionDays),
           conversationRetentionDays: readRetentionDays(parsed.conversationRetentionDays),
           debugLlmRequests: parsed.debugLlmRequests === true,
+          projectSortMode: readProjectSortMode(parsed.projectSortMode),
+          git: readGroup(parsed.git, readGitSettings),
+          knowledge: readGroup(parsed.knowledge, readKnowledgeSettings),
+          browser: readGroup(parsed.browser, readBrowserSettings),
         }
         cache = { mtimeMs: stats.mtimeMs, settings: result }
         return structuredClone(result)

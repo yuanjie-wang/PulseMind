@@ -15,16 +15,25 @@ const SRC =
   '<html>\n<body>\n<div class="hero">\n<h1 style="color: red" id="t">Hello</h1>\n<p>para</p>\n</div>\n</body>\n</html>'
 const H1 = 'html>body:nth-child(2)>div:nth-child(1)>h1:nth-child(1)'
 
-const written: { path: string; content: string }[] = []
+const written: { path: string; content: string; expectContent?: string }[] = []
+/** Simulated disk content — the stub enforces the same expectContent contract
+ *  the main side does (file-ops.ts: refuse when it differs). */
+let disk = SRC
 
 beforeEach(() => {
   written.length = 0
+  disk = SRC
   ;(globalThis as { window?: unknown }).window = {
     electronAPI: {
-      writeFile: async (args: { filePath: string; content: string }) => {
-        written.push({ path: args.filePath, content: args.content })
+      writeFile: async (args: { filePath: string; content: string; expectContent?: string }) => {
+        if (args.expectContent !== undefined && args.expectContent !== disk) {
+          return { success: false, error: 'file changed on disk since it was read — re-read and retry（文件已被外部修改，请刷新后重试）' }
+        }
+        disk = args.content
+        written.push(args)
         return { success: true }
       },
+      readFile: async () => disk,
     },
   }
   useHtmlEditStore.getState().forgetFile(FILE)
@@ -130,6 +139,37 @@ describe('structural edits', () => {
     expect(session.fileText).toBe(external)
     expect(session.originalText).toBe(external)
     expect(session.undo).toHaveLength(0)
+  })
+
+  // M7 (review 2026-09-18): a stale selection on the NEW text resolves to
+  // whatever element now occupies the old pmPath — the next edit would patch
+  // the wrong target, so the external change must drop it.
+  it('handleExternalChange also clears the selection', async () => {
+    expect(useHtmlEditStore.getState().sessions[FILE].selection).not.toBeNull()
+    useHtmlEditStore.getState().handleExternalChange(FILE, SRC.replace('Hello', 'Hi'))
+    expect(useHtmlEditStore.getState().sessions[FILE].selection).toBeNull()
+  })
+
+  // M6 (review 2026-09-18): every element-mode write carries the session's
+  // believed disk text; a mismatch refuses the write INSTEAD of clobbering
+  // the external edit, adopts the fresh text, and reports through the
+  // failure channel.
+  it('a write refused for staleness adopts the fresh text and leaves the disk untouched', async () => {
+    disk = SRC.replace('Hello', 'Hello (externally edited)')
+    const ok = await useHtmlEditStore.getState().applyStyle(FILE, { color: 'blue' })
+    expect(ok).toBe(false)
+    expect(written).toHaveLength(0) // nothing clobbered
+    const session = useHtmlEditStore.getState().sessions[FILE]
+    expect(session.fileText).toBe(disk) // fresh text adopted
+    expect(session.undo).toHaveLength(0)
+    expect(session.selection).toBeNull()
+    expect(consumeFailure()).toContain('外部修改')
+  })
+
+  it('the happy-path write still carries expectContent', async () => {
+    await useHtmlEditStore.getState().applyStyle(FILE, { color: 'blue' })
+    expect(written).toHaveLength(1)
+    expect(written[0].expectContent).toBe(SRC)
   })
 
   it('the undo stack caps at MAX_UNDO_STEPS', async () => {

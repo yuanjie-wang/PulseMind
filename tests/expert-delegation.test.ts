@@ -151,6 +151,9 @@ describe('expert delegation: multi-expert @-summon opens plan mode', () => {
         experts: [{ id: 'expert-writer', name: '写作专家' }, { id: 'expert-reviewer', name: '代码审查专家' }],
         nudged: false,
         engaged: false,
+        // M3 (review 2026-09-18): a fresh engine has no plan, so the turn
+        // starts with planAtStart = null — only a NEWER plan may engage.
+        planAtStart: null,
       })
       expect(continueLoop).toHaveBeenCalledTimes(1)
       // The clock runs for a plan-mode turn like any other.

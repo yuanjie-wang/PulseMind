@@ -218,7 +218,10 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   const { state, reload } = usePreviewFile(path, kind, reloadTick)
   const mode = usePreviewPaneStore((s) => s.previewModes[path] ?? 'view')
   const editMode = mode === 'source'
-  const elementMode = mode === 'element' && kind === 'html'
+  // 与 PreviewPane 的开关同一个闸（review 2026-09-18 M10）：模式残留 + 文件
+  // 超限时回落到只读视图，而不是带着几 MB 文本进元素模式。
+  const oversized = usePreviewPaneStore((s) => !!s.oversized[path])
+  const elementMode = mode === 'element' && kind === 'html' && !oversized
   const draft = usePreviewPaneStore((s) => s.drafts[path])
   const externalChange = usePreviewPaneStore((s) => !!s.externalChanges[path])
 

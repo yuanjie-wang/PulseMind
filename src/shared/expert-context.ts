@@ -4,6 +4,7 @@
 // (tool-executors). No I/O here — composition in, markdown out.
 
 import type { ExpertProfile } from './types/expert'
+import type { Plan } from './types/plan'
 
 /** A resolved capability entry: 技能名（id 与 name 同值）或连接器（id 为 MCP 服务 id）。 */
 export interface ExpertReference {
@@ -196,6 +197,12 @@ export interface SummonState {
   experts: SummonedExpert[]
   nudged: boolean
   engaged: boolean
+  /** M3 (review 2026-09-18): the plan that already existed when this turn
+   *  opened (planManager.plan survives across turns). `engaged` may only be
+   *  set for a plan that is not this one — an advance_plan / spawn against
+   *  the PREVIOUS turn's plan would otherwise retire the nudge while the
+   *  summoned experts never got a node. Null = no plan at turn start. */
+  planAtStart?: Plan | null
 }
 
 /** Normalize a wire roster: ids are trimmed and de-duplicated, a nameless entry

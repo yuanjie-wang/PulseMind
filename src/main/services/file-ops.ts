@@ -40,6 +40,10 @@ export interface WriteFileInput {
   filePath: string
   content: string
   append?: boolean
+  /** 写前新鲜度校验（review 2026-09-18 M6）：调用方最后一次读到的全文。
+   *  提供且文件已存在时，磁盘内容与之不等 → 拒绝写入（外部修改被保住），
+   *  错误以 STALE_FILE_ERROR 开头。文件不存在时视为通过（首次创建）。 */
+  expectContent?: string
 }
 
 export interface WriteFileResult {
@@ -273,13 +277,28 @@ export async function svcWriteFile(input: WriteFileInput): Promise<WriteFileResu
   if (officeReject) return { success: false, error: officeReject } as never
   try {
 
-    const { content, append } = input
+    const { content, append, expectContent } = input
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
-    // The lock orders concurrent appends/overwrites to one file; a full
-    // overwrite has no read side, so no staleness check applies.
+    // The lock orders concurrent appends/overwrites to one file. A full
+    // overwrite carries no old_str, so staleness is opt-in: expectContent is
+    // the caller's last-read text, verified INSIDE the lock (read-compare-
+    // write is atomic against every writer that also goes through this lock)
+    // — the preview's draft save and the element-edit patches chain from a
+    // text snapshot that can be minutes old (review 2026-09-18 M6).
     return await withPathLock(safePath, async (): Promise<WriteFileResult> => {
+      if (!append && expectContent !== undefined) {
+        let disk: string | null = null
+        try {
+          disk = await readFile(safePath, 'utf-8')
+        } catch {
+          disk = null // file gone → first creation, nothing to clobber
+        }
+        if (disk !== null && disk !== expectContent) {
+          return { success: false, error: `${STALE_FILE_ERROR}（文件已被外部修改，请刷新后重试）` }
+        }
+      }
       if (append) {
         await appendFile(safePath, content, 'utf-8')
       } else {

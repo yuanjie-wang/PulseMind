@@ -13,6 +13,7 @@ import {
 } from '../src/shared/html-edit/resolve'
 import {
   applyInnerHtml,
+  decodedInnerText,
   escapeHtmlText,
   mergeStyleDecls,
   parseStyleDecls,
@@ -297,5 +298,16 @@ describe('spanIsValid', () => {
     expect(spanIsValid(SRC, { start: -1, end: 2 })).toBe(false)
     expect(spanIsValid(SRC, { start: 0, end: SRC.length + 1 })).toBe(false)
     expect(spanIsValid(SRC, { start: 5, end: 2 })).toBe(false)
+  })
+})
+
+// H3 (review 2026-09-18): the panel text input's initial value is the FULL
+// decoded inner text — committing it re-escapes through escapeHtmlText, so
+// the round trip must be lossless.
+describe('decodedInnerText', () => {
+  it('decodes entities and keeps the whole text (no truncation)', () => {
+    expect(decodedInnerText('a &amp; b &lt;tag&gt;')).toBe('a & b <tag>')
+    expect(decodedInnerText('x'.repeat(500))).toHaveLength(500)
+    expect(decodedInnerText('plain')).toBe('plain')
   })
 })

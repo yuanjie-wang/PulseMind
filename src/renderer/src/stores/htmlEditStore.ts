@@ -43,10 +43,8 @@ export interface ElementSelection {
 export interface UndoEntry {
   /** File text before the edit (what undo writes back). */
   before: string
-  after: string
   /** Selection to restore after the undo reload. */
   selectPath: string | null
-  scrollY: number
 }
 
 export interface HtmlEditSession {
@@ -173,7 +171,11 @@ export const useHtmlEditStore = create<HtmlEditState>()((set, get) => ({
       return {
         sessions: {
           ...s.sessions,
-          [path]: { ...session, fileText: diskText, originalText: diskText, undo: [] },
+          // selection 清空（review 2026-09-18 M7）：旧 pmPath 在新文本上通常
+          // 仍可解析，但命中的是现在占该位置的不同元素——保留它会让下一次
+          // applyStyle/applyText 打错目标。与 undo/删除等结构编辑一致，
+          // 靠重新点击恢复。
+          [path]: { ...session, fileText: diskText, originalText: diskText, undo: [], selection: null },
         },
       }
     }),
@@ -264,8 +266,8 @@ export const useHtmlEditStore = create<HtmlEditState>()((set, get) => ({
     const session = get().sessions[path]
     if (!session || session.undo.length === 0) return false
     const entry = session.undo[session.undo.length - 1]
-    const res = await window.electronAPI.writeFile({ filePath: path, content: entry.before })
-    if (res && res.success === false) return fail(res.error || '写入失败')
+    const res = await window.electronAPI.writeFile({ filePath: path, content: entry.before, expectContent: session.fileText })
+    if (res && res.success === false) return failStale(path, res.error || '写入失败')
     set((s) => {
       const cur = s.sessions[path]
       if (!cur) return s
@@ -288,8 +290,8 @@ export const useHtmlEditStore = create<HtmlEditState>()((set, get) => ({
   restoreOriginal: async (path) => {
     const session = get().sessions[path]
     if (!session) return false
-    const res = await window.electronAPI.writeFile({ filePath: path, content: session.originalText })
-    if (res && res.success === false) return fail(res.error || '写入失败')
+    const res = await window.electronAPI.writeFile({ filePath: path, content: session.originalText, expectContent: session.fileText })
+    if (res && res.success === false) return failStale(path, res.error || '写入失败')
     set((s) => {
       const cur = s.sessions[path]
       if (!cur) return s
@@ -324,6 +326,23 @@ function fail(error: string): false {
   return false
 }
 
+/** Main marks a refused expectContent write with this prefix (file-ops.ts) —
+ *  it means the disk moved under the session between the last read and this
+ *  write (review 2026-09-18 M6). */
+export const STALE_WRITE_PREFIX = 'file changed on disk'
+
+/** A write refused for staleness must not leave the session believing it
+ *  still knows the disk: adopt the fresh text (external-change semantics —
+ *  undo stack gone, selection dropped) and report it. The caller reloads the
+ *  frame; PreviewContent's re-read then matches the adopted text and no
+ *  second toast fires. */
+async function failStale(path: string, error: string): Promise<false> {
+  if (!error.startsWith(STALE_WRITE_PREFIX)) return fail(error)
+  const fresh = await window.electronAPI.readFile(path).catch(() => null)
+  if (fresh !== null) useHtmlEditStore.getState().handleExternalChange(path, fresh)
+  return fail('文件已被外部修改，本次修改没有写入；已重新读取磁盘内容')
+}
+
 /** Direct edit write path: undo push + fileText adopt; the live DOM is
  *  updated by the caller's frame message. */
 async function writeDirect(path: string, session: HtmlEditSession, patched: string): Promise<boolean> {
@@ -336,12 +355,16 @@ async function writeStructural(path: string, session: HtmlEditSession, patched: 
 }
 
 async function writeAndRecord(path: string, session: HtmlEditSession, patched: string, selectPath: string | null): Promise<boolean> {
-  const res = await window.electronAPI.writeFile({ filePath: path, content: patched })
-  if (res && res.success === false) return fail(res.error || '写入失败')
+  // expectContent closes the write window (review 2026-09-18 M6): every patch
+  // chains from session.fileText; if the disk no longer matches it (terminal,
+  // another process, another session), the main side refuses instead of
+  // clobbering, and the fresh text is adopted below.
+  const res = await window.electronAPI.writeFile({ filePath: path, content: patched, expectContent: session.fileText })
+  if (res && res.success === false) return failStale(path, res.error || '写入失败')
   useHtmlEditStore.setState((s) => {
     const cur = s.sessions[path]
     if (!cur) return s
-    const undo = [...cur.undo, { before: session.fileText, after: patched, selectPath, scrollY: cur.scrollY }]
+    const undo = [...cur.undo, { before: session.fileText, selectPath }]
     return {
       sessions: {
         ...s.sessions,

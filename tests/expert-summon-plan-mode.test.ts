@@ -361,6 +361,63 @@ describe('plan mode: a summons that ends with no plan is re-issued exactly once'
       dispatch.mockRestore()
     }
   })
+
+  // M3 (review 2026-09-18): planManager.plan survives across turns. With a
+  // PREVIOUS turn's plan still installed, an advance_plan erroring against it
+  // (notifyPlanChange fires even from the catch) or any mutation that leaves
+  // the plan as the one the turn started with must NOT retire the nudge —
+  // only a plan CREATED this turn may.
+  it('a leftover plan from the previous turn does not retire the nudge', async () => {
+    const engine = makeEngine()
+    try {
+      // A plan left over from the PREVIOUS turn (summon is null here, so the
+      // coverage check has nobody to ask for).
+      await engine.planManager.execCreatePlan({
+        type: 'tool_use', id: 'tu_plan_old', name: 'create_plan', status: 'pending',
+        input: {
+          objective: '上一个回合的方案',
+          steps: [{ description: '旧节点' }],
+        },
+      } as ToolUseBlock)
+      const leftover = engine.planManager.plan
+      expect(leftover).not.toBeNull()
+
+      const dispatch = vi.spyOn(engine, 'handleToolUseResponse').mockResolvedValue(undefined)
+      const continueLoop = vi.spyOn(engine, 'continueLoop').mockResolvedValue(undefined)
+      await engine.startPlanningLoop('把方案做出来', [WRITER, REVIEWER])
+      // The turn opened WITH that plan installed.
+      expect(engine.summon?.planAtStart).toBe(leftover)
+
+      // A mutation that leaves the plan as the one the turn started with —
+      // exactly what a failed advance_plan against the old plan produces.
+      ;(engine.planManager as unknown as { notifyPlanChange(): void }).notifyPlanChange()
+      expect(engine.summon?.engaged).toBe(false)
+
+      continueLoop.mockClear()
+      engine.handleEndTurnResponse(null)
+      await tick()
+      // The nudge is still alive: the experts never got a node this turn.
+      expect(continueLoop).toHaveBeenCalledTimes(1)
+
+      // ...and a plan created over it (a NEW object) is the real signal.
+      await engine.planManager.execCreatePlan({
+        type: 'tool_use', id: 'tu_plan_new', name: 'create_plan', status: 'pending',
+        input: {
+          objective: '把方案做出来',
+          steps: [
+            { description: '写初稿', assignee: WRITER.id },
+            { description: '审查初稿', depends_on: [1], assignee: REVIEWER.id },
+          ],
+        },
+      } as ToolUseBlock)
+      expect(engine.summon?.engaged).toBe(true)
+      dispatch.mockRestore()
+      continueLoop.mockRestore()
+    } catch {
+      // restorable spies are torn down above on the happy path only; vitest
+      // reports the assertion failure either way.
+    }
+  })
 })
 
 // ── Part 2: the state-block brief ──────────────────────────────────────────

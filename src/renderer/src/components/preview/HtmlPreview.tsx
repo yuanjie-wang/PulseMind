@@ -12,7 +12,7 @@
 // when `event.source === iframe.contentWindow`; the frame is opaque-origin,
 // so this is the only channel it has.
 
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useMemo, useRef } from 'react'
 import {
   isFrameToParentMessage,
   type ParentToFrameMessage,
@@ -24,6 +24,16 @@ import {
   consumeFailure,
   type ElementSelection,
 } from '../../stores/htmlEditStore'
+import { usePreviewPaneStore } from '../../stores/previewPaneStore'
+
+/** A per-mount secret the served picker echoes on every pm:* message (M9):
+ *  the frame's page scripts share the picker's realm and event.source, so
+ *  the nonce — not source-matching — is what tells their messages apart. */
+function generateNonce(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
 
 interface Props {
   path: string
@@ -35,8 +45,12 @@ interface Props {
 
 export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Props): React.ReactElement {
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  // Stable per (path, elementMode) so a reload tick (key={reloadTick} remount
+  // of the iframe) re-serves the SAME nonce; a different file gets a fresh one.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- generateNonce reads neither dep ON PURPOSE: the deps are the reset contract, not data
+  const nonce = useMemo(() => generateNonce(), [path, elementMode])
   const src = elementMode
-    ? `local-file://${path.replace(/\\/g, '/')}?pmPreview=1`
+    ? `local-file://${path.replace(/\\/g, '/')}?pmPreview=1&pmNonce=${nonce}`
     : `local-file://${path.replace(/\\/g, '/')}`
 
   // Keep the session alive with the disk text PreviewContent read.
@@ -59,6 +73,10 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
       if (event.source !== iframeRef.current?.contentWindow) return
       const data: unknown = event.data
       if (!isFrameToParentMessage(data)) return
+      // Nonce check (M9): a page script posting from inside the frame passes
+      // the source test but not this one; the real picker stamps the value
+      // the served copy carries.
+      if (data.nonce !== nonce) return
       const store = useHtmlEditStore.getState()
       const session = store.sessions[path]
       switch (data.type) {
@@ -93,7 +111,13 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
           break
         case 'pm:commit-text':
           void store.commitInPlaceText(path, data.pmPath, data.html).then((ok) => {
-            if (!ok) toastFailure()
+            if (!ok) {
+              toastFailure()
+              // A refusal may be a staleness write (disk moved under the
+              // session) — the reload re-reads and lets D8 take over; on any
+              // other refusal it is a harmless no-op.
+              usePreviewPaneStore.getState().bumpReload(path)
+            }
           })
           break
         case 'pm:scroll':
@@ -110,7 +134,7 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
       window.removeEventListener('message', onMessage)
       unregisterFrameSender(path)
     }
-  }, [elementMode, path])
+  }, [elementMode, path, nonce])
 
   return (
     <iframe

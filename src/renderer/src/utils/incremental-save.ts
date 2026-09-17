@@ -179,3 +179,32 @@ export async function teardownConversation<S extends PersistableSnapshot>(
   await queue.forget(convId)
   await deleteRow(convId)
 }
+
+// ── Sweep gate (review 2026-09-18 M2) ──
+// The 10s crash-recovery sweep used to pay snapshotConversation's full
+// assembly plus the queue's whole-session JSON clone for EVERY cached engine
+// on EVERY tick, before the dirty check could answer 'none'. The engine
+// replaces its messages array on every mutation (immutable updates are the
+// mirror's identity contract), so an unchanged array reference plus an
+// unchanged summary pair proves the deep plan could only return 'none'.
+
+export interface SweepKey {
+  array: unknown
+  summary: unknown
+  frontier: unknown
+}
+
+export function sweepKeyOf(engine: {
+  messages: unknown
+  getHistorySummary(): { text?: string; firstKeptId?: string } | null | undefined
+}): SweepKey {
+  const hs = engine.getHistorySummary()
+  return { array: engine.messages, summary: hs?.text ?? null, frontier: hs?.firstKeptId ?? null }
+}
+
+export function sweepKeysMatch(prev: SweepKey | undefined, key: SweepKey): boolean {
+  return prev !== undefined &&
+    prev.array === key.array &&
+    prev.summary === key.summary &&
+    prev.frontier === key.frontier
+}

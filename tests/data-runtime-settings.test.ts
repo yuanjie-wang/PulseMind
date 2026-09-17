@@ -163,4 +163,29 @@ describe('retention writers stay in sync', () => {
     const constants = [retentionOptionsSrc].filter((s) => s.includes('保留 7 天'))
     expect(constants.length).toBe(1)
   })
+
+  // M4 (review 2026-09-18): SETTINGS_SET prunes expired conversations
+  // main-side, and DataRuntimeSettings.save() was the only retention writer
+  // that never refreshed the list — pruned sessions lingered as clickable
+  // ghosts that a later open resurrected. The reload prop must therefore be
+  // wired App → AppLayout → ViewHost → SettingsPage → DataRuntimeSettings and
+  // fired in the save's SUCCESS branch.
+  it('a retention save triggers the conversation-list reload (M4)', () => {
+    const app = read('src', 'renderer', 'src', 'App.tsx')
+    const appLayout = read('src', 'renderer', 'src', 'components', 'layout', 'AppLayout.tsx')
+    const viewHost = read('src', 'renderer', 'src', 'components', 'layout', 'ViewHost.tsx')
+    // Non-vacuous per hop: deleting the prop from any one interface/JSX hop fails its scan.
+    expect(COMPONENT).toContain('onReloadConversations?: () => void')
+    expect(COMPONENT).toContain('onReloadConversations?.()')
+    // ...and it fires only after the save succeeded (inside try, before catch).
+    const saveBlock = /await saveSettings\(\{ \.\.\.settings, \.\.\.patch \}\)\n[\s\S]*?\} catch/.exec(COMPONENT)
+    expect(saveBlock).not.toBeNull()
+    expect(saveBlock![0]).toContain('onReloadConversations?.()')
+    expect(SETTINGS_PAGE).toContain('onReloadConversations={onReloadConversations}')
+    expect(viewHost).toContain('onReloadConversations={onReloadConversations}')
+    expect(appLayout).toContain('onReloadConversations?: () => void')
+    expect(appLayout).toContain('onReloadConversations={onReloadConversations}')
+    expect(app).toContain('reloadConversations,')
+    expect(app).toContain('onReloadConversations={reloadConversations}')
+  })
 })

@@ -110,6 +110,57 @@ describe('SettingsStore.get', () => {
     const settings = await store.get()
     expect('approvalMode' in settings).toBe(false)
   })
+
+  // H1/H2 (review 2026-09-18): the optional group keys are rebuilt by get()'s
+  // field-by-field branch — a fresh module registry is a process restart, so
+  // every key below must come back, not revert to its default.
+  it('reads back projectSortMode / git / knowledge / browser written to the file', async () => {
+    writeRaw({
+      ...RAW_BASE,
+      projectSortMode: 'manual',
+      git: { contextInjection: false },
+      knowledge: { autoCompile: true },
+      browser: { backend: 'managed', headless: false, timeoutMs: 120000, paneWidth: 720 },
+    })
+    const store = await freshStore()
+    const s = await store.get()
+    expect(s.projectSortMode).toBe('manual')
+    expect(s.git).toEqual({ contextInjection: false })
+    expect(s.knowledge).toEqual({ autoCompile: true })
+    expect(s.browser).toEqual({ backend: 'managed', headless: false, timeoutMs: 120000, paneWidth: 720 })
+  })
+
+  it('whitelists projectSortMode and normalizes the group keys instead of trusting the file', async () => {
+    writeRaw({
+      ...RAW_BASE,
+      projectSortMode: 'bogus',
+      git: { contextInjection: 'no', futureSubKey: 1 },
+      browser: { paneWidth: -5, backend: 'hijacked' },
+    })
+    const store = await freshStore()
+    const s = await store.get()
+    expect(s.projectSortMode).toBeUndefined()
+    expect(s.git).toEqual({ contextInjection: true, futureSubKey: 1 }) // unknown sub-keys kept
+    expect(s.browser).toEqual({}) // junk fields dropped, no crash
+  })
+
+  it('a whole-object save of a get() copy keeps the group keys in the file', async () => {
+    writeRaw({
+      ...RAW_BASE,
+      projectSortMode: 'manual',
+      git: { contextInjection: false },
+      knowledge: { autoCompile: true },
+    })
+    const store = await freshStore()
+    const rendererCopy = await store.get()
+    // 改主题这类无关保存曾把 projectSortMode / git 从文件里抹掉（H1/H2）。
+    await store.set({ ...rendererCopy, theme: 'dark' } as AppSettings)
+    const raw = readRaw()
+    expect(raw.projectSortMode).toBe('manual')
+    expect(raw.git).toEqual({ contextInjection: false })
+    expect(raw.knowledge).toEqual({ autoCompile: true })
+    expect(raw.theme).toBe('dark')
+  })
 })
 
 describe('SettingsStore.set — placeholder preservation', () => {

@@ -14,23 +14,31 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
 import { chromium, type Browser, type Page } from 'playwright-core'
-import { SNAPSHOT_REFS_SOURCE, MAX_REF_ELEMENTS, combineDomSnapshot, takeDomSnapshot } from '../src/main/browser/snapshot-refs'
+import { refPassSource, MAX_REF_ELEMENTS, combineDomSnapshot, takeDomSnapshot, nextSnapshotGeneration } from '../src/main/browser/snapshot-refs'
 import { serializeResult } from '../src/shared/browser-client/serialize'
 import { runPlaywrightOp } from '../src/main/browser/PlaywrightCommands'
 import { createBrowserFacade } from '../src/shared/browser-client/facade'
 import { playwrightSugar } from '../src/shared/browser-client/playwright-sugar'
-import { PM_REF_ATTR, PM_REF_RECOVERY_HINT, isPmRefSelector, pmRefSelector } from '../src/shared/browser-client/pm-refs'
+import { PM_REF_ATTR, PM_REF_RECOVERY_HINT, isPmRefSelector, pmRefNumberOf, pmRefSelector } from '../src/shared/browser-client/pm-refs'
 
 function mount(html: string): void {
   document.body.innerHTML = html
 }
 
-/** The walk ships as serialized source and runs in the page realm against
- *  globalThis.document — run it exactly that way. (page.evaluate gives the
- *  source expression semantics; the Function constructor needs the explicit
- *  `return`, or the IIFE's value is discarded like any statement.) */
-function collectRefs(): string[] {
-  return new Function(`return ${SNAPSHOT_REFS_SOURCE}`)() as string[]
+/** The pass ships as serialized source and runs in the page realm against
+ *  globalThis.document — run it exactly that way (refPassSource builds the
+ *  self-invoking expression; the Function constructor needs the explicit
+ *  `return`, or the IIFE's value is discarded like any statement). */
+function runPass(input: { mode: 'collect' | 'verify'; gen: number; n?: string }): unknown {
+  return new Function(`return ${refPassSource(input)}`)() as unknown
+}
+function collectRefs(gen = 1): string[] {
+  return runPass({ mode: 'collect', gen }) as string[]
+}
+/** The stamped value shape: s<gen>:<sig>:<n>. */
+function expectCarries(el: Element | null, gen: number, n: number): void {
+  const value = el?.getAttribute(PM_REF_ATTR) ?? ''
+  expect(new RegExp(`^s${gen}:[0-9a-z]{7}:${n}$`).test(value), `got "${value}"`).toBe(true)
 }
 
 describe('snapshot refs walk', () => {
@@ -59,8 +67,8 @@ describe('snapshot refs walk', () => {
     expect(lines[3]).toBe('[4] link "更多" (a)')
     expect(lines[4]).toContain('[5] combobox')
     // every listed element carries its tag for resolution
-    expect(document.querySelector('#kw')!.getAttribute(PM_REF_ATTR)).toBe('1')
-    expect(document.querySelector('#login')!.getAttribute(PM_REF_ATTR)).toBe('3')
+    expectCarries(document.querySelector('#kw'), 1, 1)
+    expectCarries(document.querySelector('#login'), 1, 3)
     // the plain div is neither numbered nor tagged
     expect(document.querySelector('#plain')!.getAttribute(PM_REF_ATTR)).toBeNull()
   })
@@ -76,7 +84,7 @@ describe('snapshot refs walk', () => {
     expect(lines[0]).toContain('label')
     expect(lines[0]).toContain('用户名')
     expect(document.querySelector('#csrf')!.getAttribute(PM_REF_ATTR)).toBeNull()
-    expect(document.querySelector('#clicky')!.getAttribute(PM_REF_ATTR)).toBe('3')
+    expectCarries(document.querySelector('#clicky'), 1, 3)
   })
 
   it('strips page-forged data-pm-ref attributes before numbering (untrusted page)', () => {
@@ -96,7 +104,49 @@ describe('snapshot refs walk', () => {
     const lines = collectRefs()
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain('影子按钮')
-    expect(host.shadowRoot!.querySelector('button')!.getAttribute(PM_REF_ATTR)).toBe('1')
+    expectCarries(host.shadowRoot!.querySelector('button'), 1, 1)
+  })
+
+  // M11 (review 2026-09-18): the fast-fail used to be `count() === 0` only —
+  // a framework that REUSES the DOM node keeps the attribute, so the next
+  // action landed on whatever content now occupies the ref, silently. The
+  // content signature inside the value is what turns that into a hard fail.
+  it('verify flags a REUSED node: attribute intact, content swapped', () => {
+    mount('<div><button id="a">加入购物车 (2)</button><button id="b">结算</button></div>')
+    collectRefs(1)
+    // React key reuse: the SAME node now shows different content.
+    const a = document.querySelector('#a')!
+    a.textContent = '加入购物车 (3)'
+    const verdict = runPass({ mode: 'verify', gen: 1, n: '1' }) as { status: string; detail: string }
+    expect(verdict.status).toBe('changed')
+    // ...while the untouched second ref still verifies
+    expect((runPass({ mode: 'verify', gen: 1, n: '2' }) as { status: string }).status).toBe('ok')
+  })
+
+  it('verify flags a ref whose value is from an older generation (strip-miss survivor)', () => {
+    mount('<button id="a">按钮</button>')
+    collectRefs(1)
+    // A tag the strip pass could not reach (here: simulated by hand-writing
+    // an old-generation value, e.g. a node that moved behind a closed shadow root).
+    document.querySelector('#a')!.setAttribute(PM_REF_ATTR, 's1:abc0000:1')
+    collectRefs(2) // re-stamps to gen 2; hand-write the survivor back
+    document.querySelector('#a')!.setAttribute(PM_REF_ATTR, 's1:abc0000:1')
+    const verdict = runPass({ mode: 'verify', gen: 2, n: '1' }) as { status: string; detail: string }
+    expect(verdict.status).toBe('stale')
+  })
+
+  it('verify: missing for a number nothing carries; ok needs the current generation', () => {
+    mount('<button id="a">按钮</button>')
+    collectRefs(3)
+    expect(((runPass({ mode: 'verify', gen: 3, n: '9' })) as { status: string }).status).toBe('missing')
+    // gen 0 (never snapshotted) can never verify — the error path says re-snapshot
+    expect(((runPass({ mode: 'verify', gen: 0, n: '1' })) as { status: string }).status).toBe('stale')
+    expectCarries(document.querySelector('#a'), 3, 1)
+    expect(((runPass({ mode: 'verify', gen: 3, n: '1' })) as { status: string }).status).toBe('ok')
+  })
+
+  it('refPassSource refuses a non-digit n (the source embeds its input)', () => {
+    expect(() => refPassSource({ mode: 'verify', gen: 1, n: '1); alert(1' })).toThrow(/digits/)
   })
 
   it(`caps numbering at ${MAX_REF_ELEMENTS} and says so instead of silently truncating`, () => {
@@ -104,7 +154,7 @@ describe('snapshot refs walk', () => {
     const lines = collectRefs()
     expect(lines).toHaveLength(MAX_REF_ELEMENTS + 1)
     expect(lines[MAX_REF_ELEMENTS]).toContain('仅编号前')
-    expect(document.querySelector(`[${PM_REF_ATTR}="201"]`)).toBeNull()
+    expect(document.querySelector(`[${PM_REF_ATTR}$=" :201"],[${PM_REF_ATTR}$=":201"]`)).toBeNull()
   })
 })
 
@@ -141,14 +191,19 @@ describe('combineDomSnapshot', () => {
 
 describe('pm-refs helpers', () => {
   it('builds and recognizes ref selectors, and nothing else', () => {
-    expect(pmRefSelector(3)).toBe('[data-pm-ref="3"]')
-    expect(isPmRefSelector('[data-pm-ref="3"]')).toBe(true)
-    expect(isPmRefSelector('[data-pm-ref="3"] >> nth=0')).toBe(false)
+    expect(pmRefSelector(3)).toBe('[data-pm-ref$=":3"]')
+    expect(isPmRefSelector('[data-pm-ref$=":3"]')).toBe(true)
+    expect(pmRefNumberOf('[data-pm-ref$=":3"]')).toBe('3')
+    expect(pmRefNumberOf('[data-pm-ref$=":13"]')).toBe('13')
+    expect(isPmRefSelector('[data-pm-ref$=":3"] >> nth=0')).toBe(false)
     expect(isPmRefSelector('internal:role=button[name="x"]')).toBe(false)
+    // the old exact-value form is NOT a ref selector any more (values carry
+    // generation + signature now)
+    expect(isPmRefSelector('[data-pm-ref="3"]')).toBe(false)
   })
 
   it('walk source carries the attribute literal — a rename in one place fails here', () => {
-    expect(SNAPSHOT_REFS_SOURCE.includes(PM_REF_ATTR)).toBe(true)
+    expect(refPassSource({ mode: 'collect', gen: 1 }).includes(PM_REF_ATTR)).toBe(true)
   })
 })
 
@@ -180,6 +235,22 @@ describe('runPlaywrightOp ref fast-fail + timeout decoration', () => {
     const { page, calls } = fakePage({ [pmRefSelector(1)]: 1 }, {})
     expect(await runPlaywrightOp(page, { selector: pmRefSelector(1), op: 'click' })).toBe('clicked')
     expect(calls).toEqual([pmRefSelector(1)])
+  })
+
+  it('fails a ref the page verify marks as reused/stale, with the re-snapshot instruction', async () => {
+    // The fake's evaluate IS the verify: report a reused node.
+    const reused = fakePage({ [pmRefSelector(1)]: 1 }, {})
+    reused.page.evaluate = async () => ({ status: 'changed', detail: '该编号现指向内容不同的元素' })
+    await expect(runPlaywrightOp(reused.page, { selector: pmRefSelector(1), op: 'click' })).rejects.toThrow(
+      /编号 \[1\] 已失效.*重新 domSnapshot/,
+    )
+    expect(reused.calls).toHaveLength(0)
+
+    const stale = fakePage({ [pmRefSelector(2)]: 1 }, {})
+    stale.page.evaluate = async () => ({ status: 'stale', detail: '来自第 1 代快照，当前第 2 代' })
+    await expect(runPlaywrightOp(stale.page, { selector: pmRefSelector(2), op: 'click' })).rejects.toThrow(
+      /编号 \[2\] 来自旧的快照.*重新 domSnapshot/,
+    )
   })
 
   it('appends the recovery hint to locator timeouts', async () => {
@@ -217,8 +288,8 @@ describe('facade ref addressing', () => {
   })
 
   it('exposes ref() in the sugar as a composable locator', () => {
-    expect(playwrightSugar.ref(5).selector).toBe('[data-pm-ref="5"]')
-    expect(playwrightSugar.ref(5).first().selector).toBe('[data-pm-ref="5"] >> nth=0')
+    expect(playwrightSugar.ref(5).selector).toBe('[data-pm-ref$=":5"]')
+    expect(playwrightSugar.ref(5).first().selector).toBe('[data-pm-ref$=":5"] >> nth=0')
   })
 })
 
@@ -277,7 +348,7 @@ describe.skipIf(BROWSER_BINARIES.length === 0)('snapshot refs vs a real engine',
       <button id="go" onclick="document.getElementById('out').textContent = 'clicked'">执行</button>
       <div id="out"></div>
     `)
-    const lines = (await page.evaluate(SNAPSHOT_REFS_SOURCE)) as string[]
+    const lines = (await page.evaluate(refPassSource({ mode: 'collect', gen: nextSnapshotGeneration(page) }))) as string[]
     const goRef = lines.find((l) => l.includes('button#go'))!.match(/\[(\d+)\]/)![1]
     await page.click(pmRefSelector(goRef))
     expect(await page.textContent('#out')).toBe('clicked')

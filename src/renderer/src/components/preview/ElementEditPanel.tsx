@@ -15,6 +15,7 @@ import { useHtmlEditStore, consumeFailure, sendToFrame } from '../../stores/html
 import { usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { runHtmlAiEdit } from '../../agent/one-shot-agent/HtmlElementEditAgent'
 import { resolveElement } from '../../../../shared/html-edit/resolve'
+import { decodedInnerText } from '../../../../shared/html-edit/patch'
 import { useSettings } from '../../hooks/SettingsContext'
 import { createLlmAdapter } from '../../llm'
 
@@ -213,6 +214,12 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
   const resolved = resolveElement(session.fileText, selection.pmPath)
   const attributes = resolved.ok ? resolved.location.attributes : {}
   const hasElementChildren = resolved.ok ? resolved.location.hasScriptLikeChildren || /<[a-z]/i.test(innerOf(session.fileText, resolved.location)) : false
+  // 文本框初值 = 磁盘上该元素的完整解码文本（review 2026-09-18 H3）：
+  // selection.text 被 picker 截到 400、曾被面板再截到 120——拿它当初值，
+  // 一次提交就把第 121 字符起的内容从文件里抹掉。解析失败时才回落。
+  const innerText = resolved.ok && resolved.location.inner
+    ? decodedInnerText(session.fileText.slice(resolved.location.inner.start, resolved.location.inner.end))
+    : selection.text || ''
 
   const toastFail = () => {
     const reason = consumeFailure()
@@ -220,7 +227,12 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
   }
 
   const afterDirectEdit = (ok: boolean) => {
-    if (!ok) toastFail()
+    if (!ok) {
+      toastFail()
+      // 失败也可能是写前新鲜度拒绝（磁盘被外部改写）：重读让 D8 的
+      // external-change 流程接管；普通失败时这次重读是无害的 no-op。
+      previewStore.bumpReload(path)
+    }
   }
 
   const runAi = async () => {
@@ -247,7 +259,10 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
 
   const undo = async () => {
     if (await store.undo(path)) previewStore.bumpReload(path)
-    else toastFail()
+    else {
+      toastFail()
+      previewStore.bumpReload(path)
+    }
   }
 
   const restoreOriginal = () => {
@@ -257,7 +272,10 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
       okButtonProps: { danger: true },
       onOk: async () => {
         if (await store.restoreOriginal(path)) previewStore.bumpReload(path)
-        else toastFail()
+        else {
+          toastFail()
+          previewStore.bumpReload(path)
+        }
       },
     })
   }
@@ -270,7 +288,10 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
       okButtonProps: { danger: true },
       onOk: async () => {
         if (await store.deleteElement(path)) previewStore.bumpReload(path)
-        else toastFail()
+        else {
+          toastFail()
+          previewStore.bumpReload(path)
+        }
       },
     })
   }
@@ -355,7 +376,7 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
           <>
             <TextField
               label={t('htmlEdit.text')}
-              initial={(selection.text || '').slice(0, 120)}
+              initial={innerText}
               width={150}
               onCommit={(value) => void store.applyText(path, value).then(afterDirectEdit)}
             />

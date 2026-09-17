@@ -95,6 +95,9 @@ interface AppLayoutProps {
   onRenameConversation: (key: string, newLabel: string) => void
   onSelectConversation: (key: string) => void
   onTogglePinConversation: (key: string, pinned: boolean) => void
+  /** M4 (review 2026-09-18): SETTINGS_SET prunes expired conversations main-side;
+   *  the 数据与运行 tab calls this afterwards so the sidebar drops them. */
+  onReloadConversations?: () => void
   skills?: SkillState[]
   onToggleSkill?: (name: string) => void
   tools?: ToolState[]
@@ -119,6 +122,7 @@ function AppLayout({
   onRenameConversation,
   onSelectConversation,
   onTogglePinConversation,
+  onReloadConversations,
   skills,
   onToggleSkill,
   tools,
@@ -519,6 +523,7 @@ function AppLayout({
                 importError={importError}
                 conversations={conversations}
                 onSelectConversation={onSelectConversation}
+                onReloadConversations={onReloadConversations}
               />
             )}
           </div>

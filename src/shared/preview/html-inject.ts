@@ -39,10 +39,29 @@ export function injectPickerScript(html: string, pickerScript: string): string {
   return `${html}${tag}`
 }
 
+/** The nonce placeholder inside the generated PICKER_SCRIPT (the picker
+ *  source carries it as a string literal). buildPreviewCopy replaces it with
+ *  the parent's per-mount nonce before serving; an unserved literal can only
+ *  produce messages the parent rejects. */
+export const PICKER_NONCE_TOKEN = '__PM_NONCE__'
+
+/** Stamp the per-mount nonce into the picker source. The bundler emits the
+ *  placeholder as a QUOTED literal (either quote style), so the replacement
+ *  consumes the quotes too — replacing the bare token would leave
+ *  `""nonce""` behind, a syntax error in every served page. */
+export function withPickerNonce(pickerScript: string, nonce: string | undefined): string {
+  const value = JSON.stringify(nonce ?? '')
+  return pickerScript
+    .split(`"${PICKER_NONCE_TOKEN}"`)
+    .join(value)
+    .split(`'${PICKER_NONCE_TOKEN}'`)
+    .join(value)
+}
+
 /** The full preview copy for a file's text: CSP stripped, picker injected.
  *  Injection happens ONLY on the served copy — the disk file is never
  *  touched (D3). Both edits land after the last real body element, so the
  *  picker's element indices still match the untouched disk source (D4). */
-export function buildPreviewCopy(html: string, pickerScript: string): string {
-  return injectPickerScript(stripCspMeta(html), pickerScript)
+export function buildPreviewCopy(html: string, pickerScript: string, nonce?: string): string {
+  return injectPickerScript(stripCspMeta(html), withPickerNonce(pickerScript, nonce))
 }

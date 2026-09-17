@@ -13,10 +13,16 @@ interface DataRuntimeSettingsProps {
   open: boolean
   onClose: () => void
   inline?: boolean
+  /** M4 (review 2026-09-18): SETTINGS_SET awaits cleanupExpiredConversations,
+   *  so a tightened retention window deletes rows main-side while this tab is
+   *  the only visible surface — the caller reloads the conversation list
+   *  here, or pruned sessions linger as clickable ghosts that a later open
+   *  resurrects (saveConversation is an UPSERT). */
+  onReloadConversations?: () => void
 }
 
 /** These are live settings, not a form draft: the other retention surfaces share them. */
-function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps): React.ReactElement {
+function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: DataRuntimeSettingsProps): React.ReactElement {
   const { settings, loading, saving, saveSettings } = useSettings()
   const { t } = useTranslation()
   const [messageApi, messageHolder] = message.useMessage()
@@ -52,6 +58,9 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
         if (!confirmed) return
       }
       await saveSettings({ ...settings, ...patch })
+      // The main-side handler already awaited the prune — refresh now, in the
+      // success branch only (a failed save deleted nothing).
+      onReloadConversations?.()
     } catch (err) {
       messageApi.error(err instanceof Error ? err.message : String(err))
     } finally {

@@ -11,7 +11,7 @@ import useXConversations from '@ant-design/x-sdk/es/x-conversations'
 import type { AgentMessage, AgentStatus } from '../types/agent'
 import type { SessionEngineHandle } from './useConversationEngine'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
-import { ConversationSaveQueue, teardownConversation } from '../utils/incremental-save'
+import { ConversationSaveQueue, teardownConversation, sweepKeyOf, sweepKeysMatch, type SweepKey } from '../utils/incremental-save'
 import type { Conversation } from '../../../shared/types/conversation'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { usePendingApprovalStore } from '../stores/pendingApprovalStore'
@@ -100,8 +100,10 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
 
   // One lane for ALL asynchronous message writes, with a fresh captured payload
   // at dispatch and acknowledgement only after success. No status/ID-only gate.
-  const saveConversationById = useCallback(async (convId: string, full = false) => {
-    if (!convId) return
+  // Returns success so the sweep's clean-key bookkeeping only marks verified
+  // saves (a failed write must retry on the next tick, review 2026-09-18 M2).
+  const saveConversationById = useCallback(async (convId: string, full = false): Promise<boolean> => {
+    if (!convId) return false
     try {
       await saveQueueRef.current.save(convId, () => snapshotConversation(convId), async (snapshot, plan) => {
         if (plan.mode === 'full') {
@@ -112,10 +114,12 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
           )
         }
       }, full)
+      return true
     } catch (err) {
       // Leave the failed snapshot dirty. The next debounce/periodic flush retries
       // fresh data rather than replaying an old payload over newer content.
       console.error('[Chat] conversation save failed:', err)
+      return false
     }
   }, [snapshotConversation])
 
@@ -159,9 +163,22 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // Active renders are not a notification source for background conversations.
   // A cheap no-op content comparison gives every cached engine crash recovery,
   // including an old tool_result updated after the user switches away.
+  // M2 (review 2026-09-18): skip the whole-session capture when the engine's
+  // messages array reference and summary pair are unchanged since the last
+  // VERIFIED save — see the sweep gate in incremental-save.ts. The PRE-save
+  // key is recorded only after a verified save: a mutation that lands while
+  // the write runs rebuilds the array, the recorded reference goes stale, and
+  // the next tick re-checks; a failed save records nothing and retries.
+  const sweepCleanKeysRef = useRef(new Map<string, SweepKey>())
   useEffect(() => {
     const timer = setInterval(() => {
-      for (const id of enginesRef.current.keys()) void saveConversationById(id)
+      for (const [id, engine] of enginesRef.current.entries()) {
+        const key = sweepKeyOf(engine)
+        if (sweepKeysMatch(sweepCleanKeysRef.current.get(id), key)) continue
+        void saveConversationById(id).then((ok) => {
+          if (ok) sweepCleanKeysRef.current.set(id, key)
+        })
+      }
     }, 10000)
     return () => clearInterval(timer)
   }, [enginesRef, saveConversationById])
@@ -187,8 +204,10 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   }, [agentStatus, saveCurrentConversation])
 
   // ── Load conversations from disk on mount (and re-list on demand) ──
-  // reloadConversations re-reads the DB — used after 对话管理's retention
-  // cleanup removed rows main-side, so the sidebar drops them immediately.
+  // reloadConversations re-reads the DB — used after the 数据与运行 tab's
+  // retention save (SETTINGS_SET awaits cleanupExpiredConversations main-side;
+  // the callback rides onReloadConversations → DataRuntimeSettings, review
+  // 2026-09-18 M4), so the sidebar drops pruned rows immediately.
   const reloadConversations = useCallback(async () => {
     const convList = await window.electronAPI.listConversations()
     setConversations(sortConversations(

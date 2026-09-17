@@ -36,6 +36,24 @@ describe('validateAiElementMarkup', () => {
     if (!result.ok) expect(result.reason).toContain('h2')
   })
 
+  // M8 (review 2026-09-18): the direct-edit path refuses script/style; the
+  // AI path must not be the weaker sibling — elementHtml rides the LLM
+  // input verbatim, so a prompt-injected model reply must not land script
+  // in a file the sandboxed preview then executes.
+  it('rejects script/style nodes anywhere in the replacement', () => {
+    for (const [bad, tag] of [
+      ['<h1><script>alert(1)</script></h1>', 'h1'],
+      ['<h1 style="x"><SCRIPT src="a.js"></SCRIPT></h1>', 'h1'],
+      ['<div><style>body{}</style></div>', 'div'],
+      ['<div data-x="<script>">t</div>', 'div'],
+    ] as const) {
+      const result = validateAiElementMarkup(bad, tag)
+      expect(result.ok).toBe(false)
+    }
+    // properly escaped TEXT mentioning tags is fine
+    expect(validateAiElementMarkup('<h1>use &lt;script&gt; wisely</h1>', 'h1').ok).toBe(true)
+  })
+
   it('rejects oversized output', () => {
     const big = `<h1>${'x'.repeat(MAX_AI_ELEMENT_BYTES + 1)}</h1>`
     expect(validateAiElementMarkup(big, 'h1').ok).toBe(false)

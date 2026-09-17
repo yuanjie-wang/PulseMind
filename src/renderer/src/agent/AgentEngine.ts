@@ -351,7 +351,16 @@ export class AgentEngine implements EngineCore {
     // notifyPlanChange (updates persist and notify unconditionally), and
     // letting that retire the nudge would leave a multi-expert summons with no
     // plan at all — the very turn the nudge exists to correct.
-    this.planManager.onMutated = () => { if (this.summon && this.planManager.plan) this.summon.engaged = true }
+    // M3 (review 2026-09-18): `engaged` means "a plan was created FOR THIS
+    // summons" — not "some plan exists". planManager.plan survives across
+    // turns, so an advance_plan erroring against the PREVIOUS turn's plan
+    // (notifyPlanChange fires even from the catch) or a spawn mapped onto it
+    // used to retire the nudge while the summoned experts never got a node.
+    // Only a plan that is not the one this turn started with may engage.
+    this.planManager.onMutated = () => {
+      if (!this.summon || !this.planManager.plan) return
+      if (this.planManager.plan !== (this.summon.planAtStart ?? null)) this.summon.engaged = true
+    }
 
     this.toolExecutor = new ToolExecutor(
       opts,
@@ -570,7 +579,7 @@ export class AgentEngine implements EngineCore {
     if (roster.length === 1) return this.startDelegatedLoop(userMessage, roster[0].id)
     const text = await this.prepareTurn(userMessage)
     if (text === null) return
-    this.summon = { experts: roster, nudged: false, engaged: false }
+    this.summon = { experts: roster, nudged: false, engaged: false, planAtStart: this.planManager.plan }
     console.log(`[AgentEngine] startPlanningLoop: model=${this.opts.model} → plan mode for ${roster.map((e) => e.id).join(', ')}`)
     await this.continueLoop()
   }

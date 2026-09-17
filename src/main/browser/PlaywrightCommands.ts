@@ -4,7 +4,8 @@
 // escape hatches all land here; no CDP/DOM glue gets written anywhere else.
 
 import type { Page } from 'playwright-core'
-import { isPmRefSelector, PM_REF_RECOVERY_HINT } from '../../shared/browser-client/pm-refs'
+import { isPmRefSelector, pmRefNumberOf, PM_REF_RECOVERY_HINT } from '../../shared/browser-client/pm-refs'
+import { refPassSource, currentSnapshotGeneration } from './snapshot-refs'
 import { CHANGE_TRACKED_OPS, describeOperationResult, withChangeWatch } from './change-watch'
 
 /** Ops a model may invoke. Anything not listed is rejected — the whitelist is
@@ -60,13 +61,38 @@ export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput): Pro
   const timeout = Math.min(Math.max(input.timeoutMs ?? 8_000, 500), 30_000)
   const locator = page.locator(selector)
 
-  // A snapshot ref is binary — the tag is there or the page has moved on.
-  // Fast-fail stale refs instead of burning the locator timeout, and name the
-  // fix (the model decides its next move off the last bytes of the error).
+  // A snapshot ref must prove itself before the gesture fires (M11, review
+  // 2026-09-18): one page-realm round trip re-checks the value the walk wrote —
+  //   missing: no element carries N any more (the tag was stripped/removed);
+  //   stale:   N survives only from an OLDER snapshot generation;
+  //   changed: the node was REUSED — attribute intact, content swapped (React
+  //            key reuse, virtual lists), the failure "looks like a success"
+  //            the count() check could never see.
+  // Any doubt fails BEFORE the op and names the fix. A page that cannot run
+  // the verify (torn-down context, host fakes) falls back to the plain count
+  // check — the fast-fail degrades, the op never skips it.
   if (isPmRefSelector(selector)) {
-    const refId = selector.match(/="([^"]+)"/)?.[1] ?? selector
-    if ((await locator.count()) === 0) {
-      throw new Error(`编号 [${refId}] 不存在或已失效——页面在快照后已变化。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
+    const refId = pmRefNumberOf(selector) ?? selector
+    let verdict: { status: string; detail: string } | null = null
+    try {
+      verdict = (await page.evaluate(refPassSource({ mode: 'verify', gen: currentSnapshotGeneration(page), n: refId }))) as { status: string; detail: string }
+    } catch {
+      verdict = null
+    }
+    const reason =
+      verdict === null
+        ? (await locator.count()) === 0
+          ? '不存在或已失效——页面在快照后已变化'
+          : null
+        : verdict.status === 'missing'
+          ? '不存在或已失效——页面在快照后已变化'
+          : verdict.status === 'stale'
+            ? `来自旧的快照（${verdict.detail}）——页面在快照后已变化`
+            : verdict.status === 'changed'
+              ? `已失效：${verdict.detail}`
+              : null
+    if (reason) {
+      throw new Error(`编号 [${refId}] ${reason}。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
     }
   }
 

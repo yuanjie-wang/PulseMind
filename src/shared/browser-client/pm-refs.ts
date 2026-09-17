@@ -8,18 +8,30 @@
 // the host's stale-ref fast path (main/browser/PlaywrightCommands.ts).
 
 /** The tag the snapshot walk leaves on interactive elements. Namespaced so a
- *  page's own attributes can't collide. */
+ *  page's own attributes can't collide. The VALUE is `s<gen>:<sig>:<n>` (see
+ *  snapshot-refs.ts — generation, content signature, number), so the selector
+ *  that addresses N is a SUFFIX match on `:<n>`: the number is the value's
+ *  last `:`-segment, and only the walk's own pass writes that shape. */
 export const PM_REF_ATTR = 'data-pm-ref'
 
 /** The selector that resolves ref N against the host's locator engine. */
 export function pmRefSelector(n: number | string): string {
-  return `[${PM_REF_ATTR}="${n}"]`
+  return `[${PM_REF_ATTR}$=":${n}"]`
 }
 
 /** Whether a selector is a snapshot ref (the host fast-fails these when the
  *  tag is gone, instead of burning the full locator timeout). */
 export function isPmRefSelector(selector: string): boolean {
-  return selector.startsWith(`[${PM_REF_ATTR}="`) && selector.endsWith('"]')
+  return selector.startsWith(`[${PM_REF_ATTR}$=":`) && selector.endsWith('"]')
+}
+
+/** The number N a ref selector addresses (the value's last `:`-segment). */
+export function pmRefNumberOf(selector: string): string | null {
+  if (!isPmRefSelector(selector)) return null
+  // The prefix consumed up to and including the `:`; what remains is N plus
+  // the closing `"]`.
+  const inner = selector.slice(`[${PM_REF_ATTR}$=":`.length, -2)
+  return /^\d+$/.test(inner) ? inner : null
 }
 
 /** Recovery line appended to locator failures: the model decides its next move

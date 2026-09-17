@@ -38,9 +38,12 @@ export interface ViewHostProps {
   importError?: string | null
   conversations?: ConversationListItem[]
   onSelectConversation?: (key: string) => void
+  /** M4 (review 2026-09-18): forwarded to the 数据与运行 settings tab so a
+   *  tightened retention window refreshes the sidebar's conversation list. */
+  onReloadConversations?: () => void
 }
 
-export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation }: ViewHostProps): React.ReactElement | null {
+export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation, onReloadConversations }: ViewHostProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
   const handleCanvasClearAll = () => {
     window.electronAPI.canvasClearAll().catch((err: unknown) =>
@@ -65,7 +68,7 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
     case 'search':
       return <SearchView onOpenConversation={onSelectConversation} />
     case 'settings':
-      return <SettingsPage memoryManager={memoryManager} />
+      return <SettingsPage memoryManager={memoryManager} onReloadConversations={onReloadConversations} />
     case 'usage':
       return <StatisticsPage />
     case 'about':

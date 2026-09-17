@@ -19,7 +19,7 @@ import {
   PM_PICKER_HOST_ID,
   type PmPathSegment,
 } from '../shared/html-edit/pm-path'
-import type { ComputedSnapshot, ElementAncestor, ElementRect, FrameToParentMessage, ParentToFrameMessage } from '../shared/html-edit/messages'
+import type { ComputedSnapshot, ElementAncestor, ElementRect, FrameToParentPayload, ParentToFrameMessage } from '../shared/html-edit/messages'
 
 // The computed-style properties reported with a selection; the typed controls
 // in ElementEditPanel initialize their inputs from these.
@@ -30,6 +30,27 @@ const COMPUTED_KEYS = [
 ] as const
 
 const MAX_TEXT_LEN = 400
+
+// The parent's per-mount nonce (review 2026-09-18 M9): buildPreviewCopy
+// replaces the token with the real value before serving, and the parent
+// drops every pm:* message whose nonce differs. The page's own scripts share
+// this realm — which is exactly why the script element carrying the value is
+// scrubbed below, synchronously, before any page observer can run: mutation
+// observers are delivered at the next microtask checkpoint, after this IIFE
+// has already finished.
+const PM_NONCE = '__PM_NONCE__'
+
+// Scrub FIRST — nothing else in this file may run before the nonce's carrier
+// is out of the DOM.
+try {
+  const self = document.currentScript
+  if (self) {
+    self.textContent = ''
+    self.remove()
+  }
+} catch {
+  /* nothing to scrub (already removed / detached execution) */
+}
 
 function isPickerNode(el: Element): boolean {
   return el.id === PM_PICKER_SCRIPT_ID || el.id === PM_PICKER_HOST_ID
@@ -113,9 +134,9 @@ function computedSnapshot(el: Element): ComputedSnapshot {
   return snapshot
 }
 
-function post(message: FrameToParentMessage): void {
+function post(message: FrameToParentPayload): void {
   try {
-    window.parent.postMessage(message, '*')
+    window.parent.postMessage({ ...message, nonce: PM_NONCE }, '*')
   } catch {
     /* the parent may be gone (navigation) — nothing to do */
   }
