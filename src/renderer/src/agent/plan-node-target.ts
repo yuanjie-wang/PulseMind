@@ -50,11 +50,13 @@ export function resolvePlanNodeTarget(
   messages: AgentMessage[],
 ): PlanNodeTarget | null {
   if (!node) return null
-  const subConvId = node.subConvId ?? spawnSessionForNode(messages, node.id)
+  const subConvId = node.subConvId ?? (node.execution ? undefined : spawnSessionForNode(messages, node.id))
   if (subConvId) {
-    // A pending node is unfinished by definition: settling it is advance_plan's
-    // job and nothing else moves it, so its session is the one to follow.
-    return { kind: 'session', subConvId, live: node.status === 'pending' }
+    // Known terminal execution stops polling even before acceptance. Legacy
+    // plans retain their pending fallback; never borrow a previous retry's link.
+    const live = node.status === 'pending' && (!node.execution
+      || node.execution.status === 'queued' || node.execution.status === 'running')
+    return { kind: 'session', subConvId, live }
   }
   if (node.msgId) return { kind: 'message', msgId: node.msgId }
   return null

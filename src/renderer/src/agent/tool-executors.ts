@@ -53,6 +53,8 @@ export class ToolExecutor implements ToolExecContext {
     getPlan?: () => Plan | null,
     /** @internal records the sub-conversation a plan node's spawn runs in */
     linkPlanNode?: (ref: string | number, subConvId: string) => void,
+    beginPlanNodeExecution?: ToolExecContext['beginPlanNodeExecution'],
+    updatePlanNodeExecution?: ToolExecContext['updatePlanNodeExecution'],
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
@@ -61,6 +63,8 @@ export class ToolExecutor implements ToolExecContext {
     this.spawnSubAgent = spawnSubAgent
     this.getPlan = getPlan
     this.linkPlanNode = linkPlanNode
+    this.beginPlanNodeExecution = beginPlanNodeExecution
+    this.updatePlanNodeExecution = updatePlanNodeExecution
   }
 
   opts: AgentEngineOptions
@@ -70,6 +74,8 @@ export class ToolExecutor implements ToolExecContext {
   spawnSubAgent?: SpawnSubAgentFn
   getPlan?: () => Plan | null
   linkPlanNode?: (ref: string | number, subConvId: string) => void
+  beginPlanNodeExecution?: ToolExecContext['beginPlanNodeExecution']
+  updatePlanNodeExecution?: ToolExecContext['updatePlanNodeExecution']
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts

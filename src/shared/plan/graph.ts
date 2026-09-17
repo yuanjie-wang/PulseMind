@@ -4,7 +4,7 @@
  * snapshot and the PlanPanel all read through these functions, so derivation
  * rules (ready / blocked / layers) exist in exactly one place.
  */
-import type { Plan, PlanNode, PlanNodeStatus } from '../types/plan'
+import type { Plan, PlanNode, PlanNodeStatus, PlanNodeExecutionStatus } from '../types/plan'
 
 export const MAX_PLAN_NODES = 20
 
@@ -166,6 +166,47 @@ export function linkNodeSession(plan: Plan, ref: string | number, subConvId: str
   if (!node) throw new Error(`Unknown node "${ref}". Use a step number (1..${plan.nodes.length}) or id (n1..n${plan.nodes.length}).`)
   node.subConvId = subConvId
   return node
+}
+
+/** The parent executor dispatches a node: mark the attempt queued (the plan
+ *  carries one live attempt at a time; it never forks per spawn). Later links
+ *  and outcomes land only through updateNodeExecution's compare-and-set.
+ * Drop its previous session link immediately: queued retries must not open
+ * the old child's session. Acceptance and dependencies remain untouched. */
+export function beginNodeExecution(plan: Plan, ref: string | number, attemptId: string): boolean {
+  const node = resolveNodeRef(plan, ref)
+  if (!node || node.status !== 'pending' || !attemptId) return false
+  node.execution = { attemptId, status: 'queued' }
+  delete node.subConvId
+  return true
+}
+
+/** Compare-and-set: late completions (or links) from an older attempt cannot
+ *  overwrite a retry. A terminal execution cannot be revived by a late event. */
+export function updateNodeExecution(
+  plan: Plan, ref: string | number, attemptId: string, status: PlanNodeExecutionStatus, subConvId?: string,
+): boolean {
+  const node = resolveNodeRef(plan, ref)
+  const execution = node?.execution
+  if (!node || !execution || execution.attemptId !== attemptId) return false
+  if (execution.status !== 'queued' && execution.status !== 'running') return false
+  if (execution.status === 'running' && status === 'queued') return false
+  if (execution.status === status && (!subConvId || node.subConvId === subConvId)) return false
+  node.execution = { attemptId, status }
+  if (subConvId) node.subConvId = subConvId
+  return true
+}
+
+export function planNodeExecutionLabel(node: PlanNode): string {
+  if (node.status !== 'pending') return { completed: '已完成', failed: '失败', skipped: '跳过' }[node.status]
+  switch (node.execution?.status) {
+    case 'queued': return '排队中'
+    case 'running': return '执行中'
+    case 'delivered': return '已交付，待验收'
+    case 'failed': return '执行失败'
+    case 'stopped': return '已停止'
+    default: return '未开始'
+  }
 }
 
 // ── Migration (v1 linear → v2 DAG) ───────────────────────────────────────

@@ -7,7 +7,7 @@
 import type { ToolUseBlock } from '../../types/agent'
 import type { AgentEngineOptions } from '../AgentEngine'
 import type { SpawnSubAgentFn } from '../tool-executors'
-import type { Plan } from '../../../../shared/types/plan'
+import type { Plan, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 
 /** Tool-block output preview cap shared by executors and the engine. */
 export const UI_PREVIEW_MAX = 3000
@@ -23,6 +23,9 @@ export interface ToolExecContext {
   /** Record the sub-conversation a dispatched node runs in (PLAN-workbench W12).
    *  Routed through PlanManager so the plan keeps its single writer. */
   linkPlanNode?: (ref: string | number, subConvId: string) => void
+  /** Parent-owned, attempt-scoped lifecycle; never settles acceptance. */
+  beginPlanNodeExecution?: (ref: string | number, attemptId: string) => void
+  updatePlanNodeExecution?: (ref: string | number, attemptId: string, status: PlanNodeExecutionStatus, subConvId?: string) => void
   /** Long-running exec tools report the spawned pid (terminal card wiring). */
   onProcessStart?: (pid: string) => void
   /** Format exec tool result with exit code and stdout/stderr separation. */

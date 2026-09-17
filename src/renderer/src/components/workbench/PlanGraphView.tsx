@@ -1,16 +1,18 @@
-// ── Plan DAG view (PLAN-workbench W6) ──
+// ── Plan DAG view (PLAN-workbench W6; PLAN-plan-graph-canvas M2/M3) ──
 // SVG rendering of the plan graph: waves as columns (time → right), nodes as
 // status-colored cards, dependencies from the pure layout in
 // shared/plan/layout.ts (adjacent = bezier across the gap; skip-level = the
 // top bus, so no line ever crosses a node). Zero graph dependencies — the
-// whole point. The graph scales down to fit the pane width (floor 0.55,
-// scroll below that).
+// whole point. The graph NEVER scales below 100% (D1): a too-narrow pane
+// pans instead — native scroll plus drag-to-scroll (D2), so text stays at
+// its native size and the compositor never resamples it.
 
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AimOutlined } from '@ant-design/icons'
 import type { Plan, PlanNodeStatus } from '../../types/agent'
 import { layoutPlanGraph, type LayoutNode } from '../../../../shared/plan/layout'
-import { blockedNodes, readyNodes } from '../../../../shared/plan/graph'
+import { blockedNodes, planNodeExecutionLabel } from '../../../../shared/plan/graph'
+import { DRAG_THRESHOLD_PX, planTopologySignature, viewScale } from '../../../../shared/plan/view'
 import { expertLabel } from '../../../../shared/expert-context'
 import { getCachedExpertProfiles, subscribeCache } from '../../agent/mcp-cache'
 
@@ -53,15 +55,6 @@ const EDGE: Record<PlanNodeStatus, { stroke: string; dash?: string; width: numbe
   failed: { stroke: '#d9d9d9', dash: '5 3', width: 1.3 },
   skipped: { stroke: '#e0e0e0', dash: '5 3', width: 1.3 },
   pending: { stroke: '#d9d9d9', width: 1.2 },
-}
-
-/** The one place a status is spelled out — the card itself only wears the
- *  glyph, so the word has to be somewhere reachable. */
-const STATUS_WORD: Record<PlanNodeStatus, string> = {
-  completed: '已完成',
-  failed: '失败',
-  skipped: '跳过',
-  pending: '未就绪',
 }
 
 type IconKind = 'spinner' | 'check' | 'cross' | 'minus' | 'circle' | 'ban'
@@ -168,6 +161,47 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
   // to be a subscription: without it the cards would keep showing raw ids.
   const experts = useSyncExternalStore(subscribeCache, getCachedExpertProfiles)
 
+  // ── Canvas pan state (PLAN-plan-graph-canvas D2/D3/D4) ──
+  // Drag-to-scroll writes scrollLeft/scrollTop straight through a ref — zero
+  // re-renders, native scrolling keeps text crisp. The pan offset is NOT
+  // persisted and NOT in the store (same deliberate call as the workbench's
+  // open state); the view resets on a TOPOLOGY change (D4), never on object
+  // identity, because every status flip mints a new plan object mid-run.
+  const viewportRef = useRef<HTMLDivElement | null>(null)
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; scrollLeft: number; scrollTop: number; moved: boolean } | null>(null)
+  // Swallow flag for the click that follows a real drag. Cleared on the NEXT
+  // pointerdown, not only in the click handler — a drag whose click never
+  // arrives (tree remount mid-gesture) must not leave a permanently dead
+  // button (the launcher's consumeDragClick lesson).
+  const swallowClickRef = useRef(false)
+  const [panning, setPanning] = useState(false)
+  // D4: reset only when the topology signature changes.
+  const lastSignatureRef = useRef<string | null>(null)
+
+  // ONE stable ref callback for both consumers (the imperative pan handle and
+  // the ResizeObserver's element state). An inline arrow here re-identifies
+  // every render → React detaches and reattaches it every commit → infinite
+  // re-render (the probe caught it: half the page never settled).
+  const viewportRefCb = React.useCallback((el: HTMLDivElement | null) => {
+    viewportRef.current = el
+    setViewportEl(el)
+  }, [])
+
+  const resetView = () => {
+    const el = viewportRef.current
+    if (!el) return
+    el.scrollLeft = 0
+    el.scrollTop = 0
+  }
+
+  useEffect(() => {
+    const signature = plan ? planTopologySignature(plan) : null
+    if (signature !== lastSignatureRef.current) {
+      lastSignatureRef.current = signature
+      resetView()
+    }
+  }, [plan])
+
   // The graph must fit the pane, not fight it: scale to the measured box
   // (floor 0.55 — below that, scroll instead of shrinking into mush).
   useEffect(() => {
@@ -214,12 +248,15 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
     )
   }
 
-  const readyIds = new Set(plan && readyNodes(plan).map(n => n.id))
   const blockedIds = new Set(plan && blockedNodes(plan).map(n => n.id))
   const settled = plan ? plan.nodes.filter(n => n.status !== 'pending').length : 0
   const pct = plan && plan.nodes.length > 0 ? Math.round((settled / plan.nodes.length) * 100) : 0
 
-  const scale = layout && availWidth > 0 ? Math.max(0.55, Math.min(1, fitRatio(layout))) : 1
+  const scale = layout ? viewScale(fitRatio(layout)) : 1
+  // The reset button answers "I panned and I'm lost" — a graph that fits the
+  // viewport cannot be lost, so the button only exists when it overflows (D5).
+  const overflows =
+    !!layout && availWidth > 0 && (layout.width * scale > availWidth + 1 || layout.height * scale > availHeight + 1)
 
   const nodeElement = (n: LayoutNode) => {
     // ── 开始 / 结束 anchor pills (PLAN-workbench: 起点/终点) ──
@@ -236,11 +273,16 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
         </g>
       )
     }
-    const isReady = n.status === 'pending' && readyIds.has(n.id)
+    const node = plan.nodes.find(node => node.id === n.id)!
+    const isReady = n.status === 'pending' && node.execution?.status === 'running'
     const isBlocked = n.status === 'pending' && blockedIds.has(n.id)
-    const card = isReady ? READY_CARD : isBlocked ? BLOCKED_CARD : CARD[n.status]
+    const card = n.status !== 'pending' ? CARD[n.status]
+      : isReady ? READY_CARD
+      : node.execution?.status === 'failed' ? CARD.failed
+      : node.execution?.status === 'stopped' ? CARD.skipped
+      : !node.execution && isBlocked ? BLOCKED_CARD : CARD.pending
     const lines = wrapDescription(n.description)
-    const statusWord = isReady ? '就绪' : isBlocked ? '阻塞' : STATUS_WORD[n.status]
+    const statusWord = planNodeExecutionLabel(node)
     // The plan stores the expert ID, a person reads the name (expertLabel).
     const who = n.assignee ? expertLabel(experts, n.assignee) : '通用子代理'
     const tooltip = [statusWord, n.summary, `负责人 ${who}`].filter(Boolean).join(' · ')
@@ -256,6 +298,8 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
     const title = [tooltip, hint].filter(Boolean).join('\n')
     return (
       <g key={n.id} data-node={n.id} onClick={() => {
+        // A drag that crossed the threshold swallows exactly one click (D3).
+        if (swallowClickRef.current) return
         if (onOpenPlanNode) { onOpenPlanNode(n.id); return }
         if (n.msgId) onJumpToStep(n.msgId)
       }} style={{ cursor: openable ? 'pointer' : 'default' }}>
@@ -267,10 +311,12 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
           strokeDasharray={card.dash}
           strokeWidth={isReady ? 1.6 : 1.2}
         />
-        {/* Row 1: 编号 left, status glyph right — the glyph replaces the word,
-            so the word moves into the tooltip. */}
+        {/* Row 1: 编号 left, execution/acceptance status and glyph right. */}
         <text x={n.x + 10} y={n.y + ROW_NUM} fontSize={10} fontWeight={600} fill={card.num}>
           {`n${n.num}`}
+        </text>
+        <text x={n.x + n.w - 28} y={n.y + ROW_NUM} fontSize={9} fill={card.num} textAnchor="end">
+          {statusWord}
         </text>
         <StatusIcon
           kind={card.icon} x={n.x + n.w - 10 - ICON_SIZE} y={n.y + ROW_NUM - 7.5}
@@ -345,51 +391,130 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
         </div>
       </div>
 
-      {/* Graph — scales down to the pane width; scrolls when even the 0.55
-          floor cannot fit (very wide graphs). */}
-      <div ref={setViewportEl} data-graph-viewport style={{ flex: 1, minHeight: 0, overflow: 'auto', background: '#fafafa' }}>
-        <svg
-          width={layout.width * scale}
-          height={layout.height * scale}
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
-          // 水平居中（用户反馈 2026-09-16）：图比面板窄时不能贴左、右边空一片。
-          // 用 auto 外边距而不是 flex：面板是滚动容器，图比面板宽时 auto 会收成 0，
-          // 左边距不会被推到可视区外（开始锚点必须看得见）。
-          style={{ display: 'block', margin: '0 auto' }}
-        >
-          {/* The spinner on the in-flight node — the graph's only motion (the
-              card border deliberately stays still). Honors reduced-motion. */}
-          <style>{`
-            @keyframes pm-spin { to { transform: rotate(360deg); } }
-            .pm-spin {
-              animation: pm-spin 0.9s linear infinite;
-              transform-box: fill-box;
-              transform-origin: center;
+      {/* Graph — an infinite-canvas-style viewport (PLAN-plan-graph-canvas):
+          the graph renders at 100%+ and PANS; drag anywhere scrolls (D2),
+          a >3px drag swallows the click that would follow it (D3). */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', background: '#fafafa' }}>
+        <div
+          ref={viewportRefCb}
+          data-graph-viewport
+          onPointerDown={(e) => {
+            // A fresh press clears a stale swallow first (D3: a drag whose
+            // click never arrived must not leave a dead button).
+            swallowClickRef.current = false
+            if (e.button !== 0) return
+            const el = viewportRef.current
+            if (!el) return
+            dragRef.current = {
+              pointerId: e.pointerId,
+              startX: e.clientX, startY: e.clientY,
+              scrollLeft: el.scrollLeft, scrollTop: el.scrollTop,
+              moved: false,
             }
-            @media (prefers-reduced-motion: reduce) { .pm-spin { animation: none; } }
-          `}</style>
-          <defs>
-            {(['pending', 'completed', 'failed', 'skipped'] as PlanNodeStatus[]).map((s) => (
-              <marker key={s} id={`pm-arrow-${s}`} viewBox="0 0 8 8" refX={7} refY={4} markerWidth={6} markerHeight={6} orient="auto-start-reverse">
-                <path d="M 0 0 L 8 4 L 0 8 z" fill={EDGE[s].stroke} />
-              </marker>
+          }}
+          onPointerMove={(e) => {
+            const drag = dragRef.current
+            const el = viewportRef.current
+            if (!drag || !el || e.pointerId !== drag.pointerId) return
+            const dx = e.clientX - drag.startX
+            const dy = e.clientY - drag.startY
+            if (!drag.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+              drag.moved = true
+              swallowClickRef.current = true
+              setPanning(true)
+              // Capture so a drag that leaves the element keeps panning.
+              el.setPointerCapture(e.pointerId)
+            }
+            if (drag.moved) {
+              el.scrollLeft = drag.scrollLeft - dx
+              el.scrollTop = drag.scrollTop - dy
+            }
+          }}
+          onPointerUp={() => {
+            if (dragRef.current?.moved) setPanning(false)
+            dragRef.current = null
+          }}
+          onPointerCancel={() => {
+            if (dragRef.current?.moved) setPanning(false)
+            dragRef.current = null
+          }}
+          style={{
+            height: '100%',
+            overflow: 'auto',
+            cursor: panning ? 'grabbing' : 'grab',
+            // The graph is a diagram: drag-selecting card text is nobody's workflow.
+            userSelect: 'none',
+          }}
+        >
+          <svg
+            width={layout.width * scale}
+            height={layout.height * scale}
+            viewBox={`0 0 ${layout.width} ${layout.height}`}
+            // 水平居中（用户反馈 2026-09-16）：图比面板窄时不能贴左、右边空一片。
+            // 用 auto 外边距而不是 flex：面板是滚动容器，图比面板宽时 auto 会收成 0，
+            // 左边距不会被推到可视区外（开始锚点必须看得见）。
+            style={{ display: 'block', margin: '0 auto' }}
+          >
+            {/* The spinner on the in-flight node — the graph's only motion (the
+                card border deliberately stays still). Honors reduced-motion. */}
+            <style>{`
+              @keyframes pm-spin { to { transform: rotate(360deg); } }
+              .pm-spin {
+                animation: pm-spin 0.9s linear infinite;
+                transform-box: fill-box;
+                transform-origin: center;
+              }
+              @media (prefers-reduced-motion: reduce) { .pm-spin { animation: none; } }
+            `}</style>
+            <defs>
+              {(['pending', 'completed', 'failed', 'skipped'] as PlanNodeStatus[]).map((s) => (
+                <marker key={s} id={`pm-arrow-${s}`} viewBox="0 0 8 8" refX={7} refY={4} markerWidth={6} markerHeight={6} orient="auto-start-reverse">
+                  <path d="M 0 0 L 8 4 L 0 8 z" fill={EDGE[s].stroke} />
+                </marker>
+              ))}
+            </defs>
+            {layout.edges.map((e) => (
+              <path
+                key={`${e.from}->${e.to}`}
+                d={e.path}
+                fill="none"
+                stroke={EDGE[e.fromStatus].stroke}
+                strokeWidth={EDGE[e.fromStatus].width}
+                strokeDasharray={EDGE[e.fromStatus].dash}
+                strokeLinejoin="round"
+                opacity={e.kind === 'over' ? 0.85 : 1}
+                markerEnd={`url(#pm-arrow-${e.fromStatus})`}
+              />
             ))}
-          </defs>
-          {layout.edges.map((e) => (
-            <path
-              key={`${e.from}->${e.to}`}
-              d={e.path}
-              fill="none"
-              stroke={EDGE[e.fromStatus].stroke}
-              strokeWidth={EDGE[e.fromStatus].width}
-              strokeDasharray={EDGE[e.fromStatus].dash}
-              strokeLinejoin="round"
-              opacity={e.kind === 'over' ? 0.85 : 1}
-              markerEnd={`url(#pm-arrow-${e.fromStatus})`}
-            />
-          ))}
-          {layout.nodes.map(nodeElement)}
-        </svg>
+            {layout.nodes.map(nodeElement)}
+          </svg>
+        </div>
+        {overflows && (
+          <button
+            type="button"
+            data-graph-reset
+            title="复位视图"
+            onClick={() => {
+              swallowClickRef.current = false
+              resetView()
+            }}
+            style={{
+              position: 'absolute',
+              right: 12,
+              bottom: 12,
+              border: '1px solid #d9d9d9',
+              borderRadius: 6,
+              background: '#ffffff',
+              color: '#595959',
+              fontSize: 11,
+              padding: '3px 10px',
+              cursor: 'pointer',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+            }}
+          >
+            复位
+          </button>
+        )}
       </div>
     </div>
   )

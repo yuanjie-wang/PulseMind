@@ -342,6 +342,8 @@ export class AgentEngine implements EngineCore {
       (config) => this.spawnSubAgent(config),
       () => this.planManager.plan,
       (ref, subConvId) => this.planManager.linkNodeSession(ref, subConvId),
+      (ref, attemptId) => this.planManager.beginNodeExecution(ref, attemptId),
+      (ref, attemptId, status, subConvId) => this.planManager.updateNodeExecution(ref, attemptId, status, subConvId),
     )
   }
 

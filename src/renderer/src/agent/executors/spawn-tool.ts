@@ -10,7 +10,7 @@ import {
   type ExpertRefCatalogs,
 } from '../../../../shared/expert-context'
 import { nodeNumberOf, resolveNodeRef } from '../../../../shared/plan/graph'
-import type { PlanNode } from '../../../../shared/types/plan'
+import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 import { getCachedMcpServers } from '../mcp-cache'
 import {
   MAX_PARALLEL_SUBAGENTS,
@@ -40,6 +40,16 @@ function resolveRefCatalogs(ex: ToolExecContext): ExpertRefCatalogs {
 
 export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Promise<void> {
   t.status = 'running'; ex.notify()
+  let planNode: PlanNode | null = null
+  let dispatchPlan: Plan | null = null
+  // Tool ids can be replayed on retry; each executor invocation gets a new id.
+  const attemptId = `${t.id}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+  let attemptStarted = false
+  const execution = (status: PlanNodeExecutionStatus, subConvId?: string): void => {
+    if (attemptStarted && planNode && ex.getPlan?.() === dispatchPlan) {
+      ex.updatePlanNodeExecution?.(planNode.id, attemptId, status, subConvId)
+    }
+  }
   try {
     const subAgentId = String(t.input?.subAgentId || '').trim()
     const task = String(t.input?.task || '')
@@ -72,13 +82,15 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // settlement all speak the same ids. Validated against the LIVE plan — a
     // stale/unknown number is a model error, not a silent no-op.
     const planNodeRaw = t.input?.planNode
-    let planNode: PlanNode | null = null
     if (planNodeRaw !== undefined && planNodeRaw !== null && planNodeRaw !== '') {
       const plan = ex.getPlan?.()
       if (!plan) throw new Error('planNode was given but no plan is active — call create_plan first, or drop planNode.')
       planNode = resolveNodeRef(plan, planNodeRaw as string | number)
       if (!planNode) throw new Error(`Unknown planNode "${String(planNodeRaw)}" — valid: n1..n${plan.nodes.length}.`)
       if (planNode.status !== 'pending') throw new Error(`Plan node ${planNode.id} is already ${planNode.status} — pick a node from the READY set.`)
+      dispatchPlan = plan
+      ex.beginPlanNodeExecution?.(planNode.id, attemptId)
+      attemptStarted = true
     }
 
     // Expert config pack: compose the structured sections instead of a bare
@@ -136,6 +148,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     if (!release) {
       // The session was stopped while this expert waited in line. Starting it
       // now would run work the user just cancelled.
+      execution('stopped')
       t.exitCode = -1
       t.status = 'completed'
       ex.addToolResult(t.id, '子代理未启动：本次执行已被停止。', true)
@@ -178,7 +191,8 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       if (planNode) {
         // Plan linkage marker (UI/telemetry hook): which plan node this spawn implements.
         t.planNodeId = planNode.id
-        ex.linkPlanNode?.(planNode.id, handle.subConvId)
+        if (ex.updatePlanNodeExecution) execution('running', handle.subConvId)
+        else if (ex.getPlan?.() === dispatchPlan) ex.linkPlanNode?.(planNode.id, handle.subConvId)
       }
       // Keep handle reference for live preview while the sub-agent is running.
       // Non-enumerable so JSON.stringify skips it — avoids serializing the entire engine state.
@@ -186,6 +200,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       ex.notify()
 
       const result = await handle.waitForCompletion()
+      execution(result.status === 'completed' ? 'delivered' : result.status === 'aborted' ? 'stopped' : 'failed')
       const subAssistantTexts = result.messages
         .filter(m => m.role === 'assistant')
         .flatMap(m => m.contentBlocks)
@@ -220,6 +235,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       release()
     }
   } catch (err) {
+    execution('failed')
     t.exitCode = -1
     t.status = 'completed'
     ex.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'spawn_agent failed'}`, true)

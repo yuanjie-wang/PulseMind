@@ -6,8 +6,10 @@
  * agent's explicit tool calls (single-writer; sub-agents never touch it).
  */
 import type { ToolUseBlock, AgentMessage } from '../types/agent'
-import type { Plan } from '../../../shared/types/plan'
+import type { Plan, PlanNodeExecutionStatus } from '../../../shared/types/plan'
 import {
+  beginNodeExecution,
+  updateNodeExecution,
   completeAllNodes,
   createPlanDag,
   formatPlanSnapshot,
@@ -49,6 +51,16 @@ export class PlanManager {
       // A stale/unknown ref must never fail the dispatch itself.
       console.warn('[PlanManager] linkNodeSession failed:', err)
     }
+  }
+
+  /** Parent-only execution channel. Beginning is explicit so a late queued
+   *  update cannot reclaim a node from a newer dispatch. */
+  beginNodeExecution(ref: string | number, attemptId: string): void {
+    if (this.plan && beginNodeExecution(this.plan, ref, attemptId)) this.notifyPlanChange()
+  }
+
+  updateNodeExecution(ref: string | number, attemptId: string, status: PlanNodeExecutionStatus, subConvId?: string): void {
+    if (this.plan && updateNodeExecution(this.plan, ref, attemptId, status, subConvId)) this.notifyPlanChange()
   }
 
   /** The assistant message carrying this tool call — the panel's jump anchor. */

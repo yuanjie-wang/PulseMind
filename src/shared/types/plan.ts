@@ -5,18 +5,27 @@
  *
  * Stored statuses are the only truth: 'ready' and 'blocked' are DERIVED
  * (shared/plan/graph.ts) and never persisted, so storage and derivation cannot
- * disagree. There is deliberately no 'running' status: which spawns are in
- * flight is the main agent's private view, and the ready set itself reads as
- * "the work in progress".
+ * disagree. Acceptance (status) is separate from execution: the parent spawn
+ * executor records an attempt's lifecycle, but only advance_plan settles it.
  */
 
 export type PlanNodeStatus = 'pending' | 'completed' | 'failed' | 'skipped'
+
+export type PlanNodeExecutionStatus = 'queued' | 'running' | 'delivered' | 'failed' | 'stopped'
+
+export interface PlanNodeExecution {
+  /** Parent-issued dispatch identity; never reuse it for a retry. */
+  attemptId: string
+  status: PlanNodeExecutionStatus
+}
 
 export interface PlanNode {
   /** Stable protocol id `n1`..`n20`, assigned by input order in create_plan. */
   id: string
   description: string
   status: PlanNodeStatus
+  /** Optional for persisted legacy plans; delivery is NOT acceptance. */
+  execution?: PlanNodeExecution
   /** Prerequisite node ids — internal form; the tool protocol carries 1-based indexes. */
   dependsOn: string[]
   /** Expert id this node is delegated to (spawn_agent's subAgentId); undefined = a general sub-agent. */
