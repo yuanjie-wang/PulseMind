@@ -131,4 +131,29 @@ describe('desktop 授权 wiring (new conversation)', () => {
 
     expect(body).toContain('usePendingApprovalStore.getState().clearMode()')
   })
+
+  it('the title-in-list edit reads the live store too (short first messages)', () => {
+    // The same landmine, third trigger: generateTitle's short-message path
+    // ("hi" < 6 chars) calls updateConversationTitleInList in the SAME
+    // synchronous block as addConversation. Deriving existence from
+    // conversationsRef missed the just-added item and took the bare re-add
+    // ({key, label, updatedAt} only), REPLACING it — the conversation lost its
+    // projectId and fell out of its 项目 group into 对话, while the DB binding
+    // written one statement earlier stayed correct ("从工作区可以看出是属于
+    // 项目类型了，但是侧边栏中，会话还是归属到了【对话】中").
+    const from = persistenceSrc.indexOf('const updateConversationTitleInList = ')
+    expect(from).toBeGreaterThan(-1)
+    const end = persistenceSrc.indexOf('── Create new conversation', from)
+    const body = persistenceSrc.slice(from, end)
+    // Existence is consulted on the store's live list, which addConversation
+    // updated synchronously one statement earlier.
+    expect(body).toContain('getConversation(convId)')
+    // The found-branch merges into that item; it may not rebuild the list from
+    // the ref snapshot.
+    expect(body).toContain('setConversation(convId, { label: title')
+    // The genuinely-unknown branch stays, but the whole function must be free
+    // of the stale derivation (non-vacuity: fails against the old ref map).
+    expect(body).toContain('conversationsRef.current')
+    expect(body).toContain('sortConversations(')
+  })
 })

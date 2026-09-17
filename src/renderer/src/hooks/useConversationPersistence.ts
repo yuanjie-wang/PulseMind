@@ -47,7 +47,8 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     addConversation,
     removeConversation,
     setConversation,
-    setConversations
+    setConversations,
+    getConversation
   } = useXConversations()
 
   // This ref is a POST-COMMIT snapshot: it only syncs in an effect, after React
@@ -396,19 +397,22 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       enginesRef, activeEngineIdRef, setMessages, setAgentStatus, setStreamingBlocks, setPlan])
 
   // ── Helper: update title in list ──
+  // Existence is read from the store's LIVE list (getConversation), never from
+  // conversationsRef: generateTitle's short-message path calls this in the same
+  // synchronous block as addConversation — "hi" (< 6 chars) — where both the
+  // ref and the render closure are pre-add snapshots, so the old ref lookup
+  // missed the just-added item and the bare re-add below REPLACED it, dropping
+  // its projectId: the conversation fell out of its 项目 group into 对话 while
+  // the DB binding (written by the same block) stayed correct.
   const updateConversationTitleInList = (convId: string, title: string) => {
-    const existing = conversationsRef.current
-    if (existing.some((c: { key: string }) => c.key === convId)) {
-      setConversations(
-        existing.map((c: { key: string; label: string; updatedAt?: string }) =>
-          c.key === convId ? { ...c, label: title, updatedAt: new Date().toISOString() } : c
-        )
-      )
-    } else {
-      setConversations(
-        sortConversations([{ key: convId, label: title, updatedAt: new Date().toISOString() }, ...existing])
-      )
+    const stamp = new Date().toISOString()
+    if (getConversation(convId)) {
+      setConversation(convId, { label: title, updatedAt: stamp })
+      return
     }
+    setConversations(
+      sortConversations([{ key: convId, label: title, updatedAt: stamp }, ...conversationsRef.current])
+    )
   }
 
   // ── Create new conversation ──
