@@ -7,6 +7,7 @@ import { registerIpcHandlers } from './ipc'
 import { ensureDataDir, getBundlePresetsDir } from './storage'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
 import { backfillConversationWorkspaces } from './storage/conversation-workspace'
+import { repairSwappedProjectBindings } from './storage/conversation.db'
 import { backfillProjectColors } from './storage/project-store'
 import { cleanupExpiredConversations } from './services/conversation-retention'
 import { skillStore } from './storage/skill-store'
@@ -503,6 +504,10 @@ if (gotTheLock) {
   // get it here, from the same name hash the renderer used to derive — so every
   // existing color survives the switch to reading it back.
   await backfillProjectColors()
+  // Project-mode conversations whose stub-insert swapped type/project_id
+  // (fixed 2026-09-17) were invisible to every type='normal' surface — put the
+  // columns back before anything lists or cleans them up.
+  repairSwappedProjectBindings()
   // 对话管理 · 最长保留时长: expire conversations older than the policy allows
   // before any session can resurrect one.
   try { await cleanupExpiredConversations() } catch (err) { writeLog('WARN', `startup: conversation retention failed: ${err}`) }

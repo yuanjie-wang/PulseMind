@@ -130,17 +130,34 @@ describe('main-side support', () => {
   })
 
   it('every stub-insert derives the conversation type from the id', () => {
-    // setConversationApprovalMode stub-inserts rows for threads nothing was
-    // ever sent to (routine_assist_*, toolstudio_*, …). A hardcoded 'normal'
-    // type would leak them into the sidebar until the first transcript save
-    // corrected it.
-    for (const setter of ['setConversationProject', 'setConversationExpert', 'setConversationApprovalMode', 'setConversationWorkspaceDir']) {
+    // The binding setters stub-insert rows for threads nothing was ever sent
+    // to (routine_assist_*, toolstudio_*, …). A hardcoded 'normal' type would
+    // leak them into the sidebar until the first transcript save corrected it.
+    // The INSERT lives once in the shared stubInsertConversation helper —
+    // named bindings, after its positional predecessor bound the project id
+    // into `type` (2026-09-17) — and derives the type there; a setter may
+    // only name its own binding column.
+    const helperFrom = CONV_DB.indexOf('function stubInsertConversation(id: string')
+    expect(helperFrom).toBeGreaterThan(-1)
+    const helper = CONV_DB.slice(helperFrom, CONV_DB.indexOf('export function ', helperFrom))
+    expect(helper).toContain('INSERT INTO conversations')
+    expect(helper).toContain('type: deriveConvType(id)')
+    expect(helper).not.toContain("'normal'")
+    const bindingColumns: Record<string, string> = {
+      setConversationProject: 'project_id',
+      setConversationExpert: 'expert_id',
+      setConversationApprovalMode: 'approval_mode',
+      setConversationWorkspaceDir: 'workspace_dir'
+    }
+    for (const [setter, column] of Object.entries(bindingColumns)) {
       const from = CONV_DB.indexOf(`export function ${setter}(id: string`)
       expect(from, setter).toBeGreaterThan(-1)
-      const nextDecl = CONV_DB.slice(from + 1).search(/\nexport function /)
+      // Stop at the next declaration or doc comment: a trailing neighbour's
+      // comment may quote `'normal'` (the repair's does) without any setter
+      // writing it.
+      const nextDecl = CONV_DB.slice(from + 1).search(/\n(export function |\/\*\*)/)
       const body = nextDecl === -1 ? CONV_DB.slice(from) : CONV_DB.slice(from, from + 1 + nextDecl)
-      expect(body, setter).toContain('INSERT INTO conversations')
-      expect(body, setter).toContain('deriveConvType(id)')
+      expect(body, setter).toContain(`stubInsertConversation(id, { ${column}:`)
       expect(body, setter).not.toContain("'normal'")
     }
   })

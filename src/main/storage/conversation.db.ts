@@ -346,18 +346,32 @@ export function updateMessageMetadata(
   database.prepare(`UPDATE messages SET ${updates.join(', ')} WHERE id = ?`).run(...params)
 }
 
+/** Stub-insert the minimal conversation row one binding write needs. The row
+ *  itself is materialized by the first save, but a binding (project / expert /
+ *  approval / workspace) can be chosen before that — usually before the row
+ *  exists — so the write stubs a row in to carry it. The binding columns are
+ *  bound by NAME: this family was once written with positional `?` params and
+ *  setConversationProject bound the project id into `type` (and 'normal' into
+ *  project_id), which made every project-mode first message invisible to the
+ *  type='normal' list (repaired 2026-09-17, see repairSwappedProjectBindings). */
+function stubInsertConversation(id: string, binding: Record<string, string>): void {
+  const now = new Date().toISOString()
+  const cols = { title: '新对话', type: deriveConvType(id), created_at: now, updated_at: now, ...binding }
+  const names = Object.keys(cols)
+  getDb()
+    .prepare(`INSERT INTO conversations (id, ${names.join(', ')}) VALUES (@id, ${names.map((n) => '@' + n).join(', ')})`)
+    .run({ id, ...cols })
+}
+
 /** Attach a conversation to a project (PLAN-0.4.0 M3.6). Called at conversation
  *  creation — usually before the row exists — so it stub-inserts the row.
  *  `saveConversation` later upserts without touching project_id, so the
  *  binding survives. */
 export function setConversationProject(id: string, projectId: string): void {
   if (!isRealConversationId(id)) return
-  const db = getDb()
-  const r = db.prepare('UPDATE conversations SET project_id = ? WHERE id = ?').run(projectId, id)
+  const r = getDb().prepare('UPDATE conversations SET project_id = ? WHERE id = ?').run(projectId, id)
   if (r.changes === 0 && projectId !== 'default') {
-    const now = new Date().toISOString()
-    db.prepare("INSERT INTO conversations (id, title, type, project_id, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?, ?)")
-      .run(id, projectId, deriveConvType(id), now, now)
+    stubInsertConversation(id, { project_id: projectId })
   }
 }
 
@@ -372,12 +386,9 @@ export function getConversationProjectId(id: string): string {
  *  exists; later upserts never touch expert_id, so the binding survives. */
 export function setConversationExpert(id: string, expertId: string | null): void {
   if (!isRealConversationId(id)) return
-  const db = getDb()
-  const r = db.prepare('UPDATE conversations SET expert_id = ? WHERE id = ?').run(expertId, id)
+  const r = getDb().prepare('UPDATE conversations SET expert_id = ? WHERE id = ?').run(expertId, id)
   if (r.changes === 0 && expertId) {
-    const now = new Date().toISOString()
-    db.prepare("INSERT INTO conversations (id, title, type, expert_id, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?, ?)")
-      .run(id, deriveConvType(id), expertId, now, now)
+    stubInsertConversation(id, { expert_id: expertId })
   }
 }
 
@@ -392,12 +403,9 @@ export function getConversationExpertId(id: string): string | null {
  *  touch approval_mode, so the choice survives. */
 export function setConversationApprovalMode(id: string, mode: SandboxApprovalMode): void {
   if (!isRealConversationId(id)) return
-  const db = getDb()
-  const r = db.prepare('UPDATE conversations SET approval_mode = ? WHERE id = ?').run(mode, id)
+  const r = getDb().prepare('UPDATE conversations SET approval_mode = ? WHERE id = ?').run(mode, id)
   if (r.changes === 0) {
-    const now = new Date().toISOString()
-    db.prepare("INSERT INTO conversations (id, title, type, approval_mode, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?, ?)")
-      .run(id, deriveConvType(id), mode, now, now)
+    stubInsertConversation(id, { approval_mode: mode })
   }
 }
 
@@ -419,13 +427,24 @@ export function getConversationWorkspaceDir(id: string): string | null {
  *  materialized by the first save), so it stub-inserts when needed. */
 export function setConversationWorkspaceDir(id: string, workspaceDir: string): void {
   if (!isRealConversationId(id)) return
-  const db = getDb()
-  const r = db.prepare('UPDATE conversations SET workspace_dir = ? WHERE id = ?').run(workspaceDir, id)
+  const r = getDb().prepare('UPDATE conversations SET workspace_dir = ? WHERE id = ?').run(workspaceDir, id)
   if (r.changes === 0) {
-    const now = new Date().toISOString()
-    db.prepare("INSERT INTO conversations (id, title, type, workspace_dir, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?, ?)")
-      .run(id, deriveConvType(id), workspaceDir, now, now)
+    stubInsertConversation(id, { workspace_dir: workspaceDir })
   }
+}
+
+/** One-time repair (2026-09-17): the positional stub-insert in
+ *  setConversationProject bound the project id into `type` and 'normal' into
+ *  `project_id`, so every project-mode conversation whose row it stubbed fell
+ *  out of every type='normal' surface (sidebar lists, search, the memory
+ *  pipeline) and bound to no project. The swap is unambiguous — 'normal' is a
+ *  conversation type, never a project id ('default' / proj_*) — so put the
+ *  columns back. Idempotent: the predicate only matches poisoned rows. */
+export function repairSwappedProjectBindings(): void {
+  const r = getDb()
+    .prepare("UPDATE conversations SET project_id = type, type = 'normal' WHERE project_id = 'normal' AND type <> 'normal'")
+    .run()
+  if (r.changes > 0) console.log(`[DB] repaired ${r.changes} conversation row(s) with a swapped project binding`)
 }
 
 export function deleteConversation(id: string): void {
