@@ -27,7 +27,10 @@ export interface SegmentViewProps {
   actions: MessageActions
   conversationId?: string
   conversationTitle?: string
-  contextLength?: number
+  /** Open a spawn_agent card's sub-conversation in the host's session view
+   *  (`components/subagent/SubAgentSessionView`). Optional: a host that passes
+   *  nothing renders the spawn card without its 查看子代理会话 icon. */
+  onOpenSubAgent?: (subConvId: string, title: string) => void
   isRequesting?: boolean
   /** The engine is parked awaiting approval (`agentStatus: 'awaiting_approval'`).
    *  A held call opens its way out of both collapsed layers — the execution
@@ -66,7 +69,7 @@ export function SegmentView({
   actions,
   conversationId,
   conversationTitle,
-  contextLength,
+  onOpenSubAgent,
   isRequesting,
   awaitingApproval,
   onApproveTool,
@@ -89,7 +92,7 @@ export function SegmentView({
         onRespondToTool={onRespondToTool}
         conversationId={conversationId}
         conversationTitle={conversationTitle}
-        contextLength={contextLength}
+        onOpenSubAgent={onOpenSubAgent}
         awaitingApproval={awaitingApproval}
       />
     )
@@ -105,7 +108,7 @@ export function SegmentView({
       onKillTool={onKillTool ?? onRejectTool}
       conversationId={conversationId}
       conversationTitle={conversationTitle}
-      contextLength={contextLength}
+      onOpenSubAgent={onOpenSubAgent}
       awaitingApproval={awaitingApproval}
     />
   )

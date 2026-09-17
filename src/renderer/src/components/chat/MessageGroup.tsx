@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef } from 'react'
+import { App as AntdApp, message as antdMessage } from 'antd'
 import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
-import { App as AntdApp, message as antdMessage, Modal, theme } from 'antd'
 import {
   CopyOutlined,
   CheckOutlined,
@@ -22,34 +22,20 @@ import {
   EyeOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
-import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock, ContentBlock } from '../../types/agent'
-import type { Conversation, Message } from '../../../../shared/types/conversation'
+import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
 import CommandCard from '../terminal/CommandCard'
 import { ApprovalArea } from './ApprovalArea'
-import { toolBlockSummary, toolDisplayName } from './tool-summary'
+import { toolBlockSummary, toolDisplayName, subAgentSessionTitle } from './tool-summary'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage } from './LocalImage'
 import { ThinkingBlockView } from './ThinkingBlockView'
 import { FileRefChip } from './FileRefChip'
-import { ContextRing, estimateContextUsed } from './ContextRing'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { enqueueCompileForFile } from '../knowledge/KnowledgePanel'
 import { createKnowledgeSaveAction } from './knowledge-save'
 
 // Fallback toast host for renders outside an antd <App> (probes, previews).
 const antdMessageStatic = antdMessage
-
-// Blinking cursor keyframe for live sub-agent preview
-const cursorKeyframe = `@keyframes pulsemind-blink-cursor {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}`
-if (typeof document !== 'undefined' && !(window as any).__pulsemind_cursor_injected) {
-  const el = document.createElement('style')
-  el.textContent = cursorKeyframe
-  document.head.appendChild(el)
-  ;(window as any).__pulsemind_cursor_injected = true
-}
 
 // --- Bubble styles ---
 
@@ -101,8 +87,8 @@ function CollapsibleToolBlock({
   onRejectTool,
   onKillTool,
   onRespondToTool,
+  onOpenSubAgent,
   completedFromResult = false,
-  contextLength,
   receiving = false,
   awaitingApproval = true
 }: {
@@ -111,11 +97,10 @@ function CollapsibleToolBlock({
   onRejectTool?: (toolUseId: string) => void
   onKillTool?: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
+  /** Open a spawn card's sub-conversation in the host's session view. Absent
+   *  means the host has no drill-in (a nested transcript), so no icon shows. */
+  onOpenSubAgent?: (subConvId: string, title: string) => void
   completedFromResult?: boolean
-  contextLength?: number
-  /** True only for the synthetic `streaming-exec` message, whose blocks are
-   *  still being generated. Any other undefined status is HISTORY whose runtime
-   *  fields the save path strips — that is 执行状态未知, not 指令生成中. */
   receiving?: boolean
   /** The engine is parked on its held calls (`agentStatus: 'awaiting_approval'`).
    *  Defaults to true so a caller that predates this prop keeps the old rule —
@@ -123,7 +108,6 @@ function CollapsibleToolBlock({
   awaitingApproval?: boolean
 }): React.ReactElement {
   const { t } = useTranslation()
-  const { token } = theme.useToken()
   const summary = toolBlockSummary(block, t)
   // A call the ladder is holding: `pending` *and* the engine parked on it. The
   // parked half matters — a tool still being generated is 'pending' too, and it
@@ -137,55 +121,18 @@ function CollapsibleToolBlock({
   const toolSucceeded = (block.status === 'completed' || (block.status === undefined && completedFromResult)) && block.exitCode === undefined
   const previewableFile = (block.name === 'write' || block.name === 'edit') && inputFilePath && toolSucceeded ? inputFilePath : null
 
-  // ── Sub-agent preview ──
-  // The link is a wire field now (ToolUseBlock.subConvId): spawn_agent runs in
-  // the main-hosted engine, so neither the handle nor the block's private fields
-  // exist on this side. The preview is therefore always the persisted
-  // sub-conversation, which the main process re-saves every few seconds while
-  // the sub-agent works — polling reads those snapshots.
+  // ── Sub-agent session link ──
+  // The link is a wire field (ToolUseBlock.subConvId): spawn_agent runs in the
+  // main-hosted engine, so the card holds an ID and nothing else. The session
+  // itself is rendered by components/subagent/SubAgentSessionView — the same
+  // chat/TranscriptView the main conversation uses — so the card only hands the
+  // ID up; it deliberately reads no transcript of its own. That is what the
+  // hand-rolled preview Modal here used to do (a second, worse message
+  // renderer), and it never could go deeper than one level: a sub-conversation
+  // is read back from the DB without the wire fields, so a nested spawn card
+  // has no subConvId to offer.
   const subConvId = block.subConvId
-  const isSpawnAgent = block.name === 'spawn_agent' && !!subConvId
-  const [previewOpen, setPreviewOpen] = useState(false)
-  const [previewConv, setPreviewConv] = useState<Conversation | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const pollRef = useRef<ReturnType<typeof setInterval>>()
-
-  useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [])
-
-  const handlePreview = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!subConvId) return
-
-    setPreviewLoading(true)
-    try {
-      const conv = await window.electronAPI.hydrateConversation(subConvId)
-      if (conv) setPreviewConv(conv)
-      setPreviewOpen(true)
-    } catch (err) { console.error('Failed to load sub-agent conversation:', err) }
-    setPreviewLoading(false)
-
-    // Keep following while the spawn's own card is still running: the card's
-    // status is the only "is it over?" signal this side has.
-    if (pollRef.current) clearInterval(pollRef.current)
-    if (block.status === 'running' || block.status === 'pending') {
-      pollRef.current = setInterval(async () => {
-        try {
-          const conv = await window.electronAPI.hydrateConversation(subConvId)
-          if (conv) setPreviewConv(conv)
-        } catch { /* transient read failure — next tick retries */ }
-      }, 3000)
-    }
-  }
-
-  // DB-hydrated messages carry no cumulative token counts — estimateContextUsed
-  // falls back to char estimation for them.
-  const previewMsgs = (previewConv?.messages ?? []) as AgentMessage[]
-  const subContextUsed = previewMsgs.length > 0 ? estimateContextUsed(previewMsgs) : 0
-  // The spawn card's own status is this side's only "still producing" signal —
-  // it is what the preview's cursor and its poll loop both key on.
-  const previewRunning = block.status === 'running' || block.status === 'pending'
+  const canOpenSession = block.name === 'spawn_agent' && !!subConvId && !!onOpenSubAgent
 
   return (
     <div style={{ margin: '4px 0' }}>
@@ -253,14 +200,18 @@ function CollapsibleToolBlock({
             <EyeOutlined style={{ color: '#888', fontSize: 14 }} title="预览文件" />
           </span>
         )}
-        {/* Sub-agent preview button */}
-        {isSpawnAgent && (
-          <span onClick={handlePreview} style={{ flexShrink: 0, lineHeight: 1, cursor: 'pointer' }}>
-            {previewLoading ? (
-              <span style={{ color: '#888', fontSize: 12 }}>加载中...</span>
-            ) : (
-              <EyeOutlined style={{ color: '#888', fontSize: 14 }} title="查看子代理对话" />
-            )}
+        {/* Sub-agent session link — hands the ID to the host, which opens the
+            one session view. Never a second transcript renderer here. */}
+        {canOpenSession && (
+          <span
+            data-open-subagent={subConvId}
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenSubAgent!(subConvId!, subAgentSessionTitle(block))
+            }}
+            style={{ flexShrink: 0, lineHeight: 1, cursor: 'pointer' }}
+          >
+            <EyeOutlined style={{ color: '#888', fontSize: 14 }} title="查看子代理会话" />
           </span>
         )}
         {/* Expand/collapse icon */}
@@ -280,8 +231,9 @@ function CollapsibleToolBlock({
         />
       )}
 
-      {/* Full CommandCard when expanded. In read-only previews (sub-agent dialog)
-          the handlers are absent, so render the plain card with no action buttons. */}
+      {/* Full CommandCard when expanded. A read-only host (the sub-agent session
+          view, the expert editor's preview) passes no approve/kill handlers, so
+          the card renders without its action buttons. */}
       {!collapsed && (
         needsAction && onRejectTool ? (
           <CommandCard
@@ -301,123 +253,6 @@ function CollapsibleToolBlock({
         )
       )}
 
-      {/* Sub-agent preview modal */}
-      {isSpawnAgent && (
-        <Modal
-          title={
-            <div style={{ display: 'flex', alignItems: 'center' }}>
-              <span>子代理对话</span>
-              <span style={{ flex: 1 }} />
-              {contextLength != null && contextLength > 0 && subContextUsed > 0 && (
-                <span style={{ marginRight: 6, display: 'flex', alignItems: 'center' }}>
-                  <ContextRing used={subContextUsed} total={contextLength} />
-                </span>
-              )}
-              <button
-                type="button"
-                aria-label="Close"
-                className="pm-subagent-close"
-                onClick={() => { setPreviewOpen(false); if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = undefined } }}
-                style={{
-                  background: 'transparent',
-                  border: 0,
-                  cursor: 'pointer',
-                  padding: 4,
-                  lineHeight: 1,
-                  display: 'flex',
-                  alignItems: 'center',
-                  color: token.colorIcon,
-                  borderRadius: 4
-                }}
-              >
-                <CloseOutlined style={{ fontSize: 14 }} />
-              </button>
-            </div>
-          }
-          open={previewOpen}
-          onCancel={() => { setPreviewOpen(false); if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = undefined } }}
-          closable={false}
-          width="80%"
-          style={{ top: 20 }}
-          footer={null}
-          styles={{
-            container: { paddingTop: 12, paddingBottom: 20, paddingLeft: 24, paddingRight: 24 },
-            body: { maxHeight: '75vh', overflow: 'auto', padding: 16 }
-          }}
-        >
-          <style>{`.pm-subagent-close:hover { color: ${token.colorIconHover} }`}</style>
-          {(() => {
-            const filteredMessages = (previewConv?.messages ?? []).filter((msg: Message) =>
-              msg.contentBlocks?.some((b: ContentBlock) => b.type === 'text' || b.type === 'tool_use') || msg.content
-            )
-            // Tool_use blocks loaded from DB have status stripped on save; a matching
-            // tool_result proves the tool finished, so the card can show a green check.
-            const completedToolIds = new Set<string>()
-            for (const m of previewConv?.messages ?? []) {
-              for (const b of m.contentBlocks ?? []) {
-                if (b.type === 'tool_result') completedToolIds.add((b as ToolResultBlock).tool_use_id)
-              }
-            }
-            return filteredMessages.map((msg: Message, idx: number) => (
-              <div key={msg.id} style={{
-                display: 'flex', marginBottom: 12,
-                justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start'
-              }}>
-                {msg.role === 'user' ? (
-                  <div style={{
-                    ...userBubbleStyle,
-                    maxWidth: '80%'
-                  }}>
-                    {msg.contentBlocks?.filter((b: ContentBlock) => b.type === 'text').map((b: ContentBlock, i: number) => (
-                      <FileRefChip key={i} text={(b as any).text} />
-                    ))}
-                    {(!msg.contentBlocks || !msg.contentBlocks.some((b: ContentBlock) => b.type === 'text')) && msg.content && (
-                      <FileRefChip text={msg.content} />
-                    )}
-                  </div>
-                ) : (
-                    <div style={{ width: '100%' }}>
-                      {msg.contentBlocks?.filter((b: ContentBlock) => b.type === 'text').map((b: ContentBlock, i: number) => (
-                        <div key={i} className="x-markdown-light" style={{ paddingLeft: 12 }}>
-                          <XMarkdown content={(b as any).text} components={{ code: CodeBlock, img: LocalImage }} config={{ extensions: Latex() }} />
-                        </div>
-                      ))}
-                      {(!msg.contentBlocks || !msg.contentBlocks.some((b: ContentBlock) => b.type === 'text')) && msg.content && (
-                        <div className="x-markdown-light" style={{ paddingLeft: 12 }}>
-                          <XMarkdown content={msg.content} components={{ code: CodeBlock, img: LocalImage }} config={{ extensions: Latex() }} />
-                        </div>
-                      )}
-                      {msg.contentBlocks?.filter((b: ContentBlock) => b.type === 'tool_use').map((b: ContentBlock, i: number) => {
-                        const tb = b as ToolUseBlock
-                        return (
-                          <div key={`tu-${i}`} style={{ paddingLeft: 4, marginTop: 4 }}>
-                            <CollapsibleToolBlock block={tb} completedFromResult={completedToolIds.has(tb.id)} contextLength={contextLength} />
-                          </div>
-                        )
-                      })}
-                      {/* Blinking cursor on the last assistant message when streaming */}
-                      {previewRunning && idx === filteredMessages.length - 1 && (
-                        <span style={{
-                          display: 'inline-block',
-                          width: 2,
-                          height: 16,
-                          background: '#333',
-                          marginLeft: 2,
-                          verticalAlign: 'text-bottom',
-                          animation: 'pulsemind-blink-cursor 1s step-end infinite'
-                        }} />
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            )
-          })()}
-          {(!previewConv || previewConv.messages.length === 0) && !previewLoading && (
-            <div style={{ textAlign: 'center', color: '#999', padding: 40 }}>暂无对话内容</div>
-          )}
-        </Modal>
-      )}
     </div>
   )
 }
@@ -440,7 +275,7 @@ export const MessageGroup = React.memo(function MessageGroup({
   onKillTool,
   conversationId,
   conversationTitle,
-  contextLength,
+  onOpenSubAgent,
   awaitingApproval = true
 }: {
   msg: AgentMessage
@@ -451,7 +286,10 @@ export const MessageGroup = React.memo(function MessageGroup({
   onKillTool: (toolUseId: string) => void
   conversationId?: string
   conversationTitle?: string
-  contextLength?: number
+  /** Open a spawn_agent card's sub-conversation in the host's session view
+   *  (`components/subagent/SubAgentSessionView`). Optional: a host with no
+   *  drill-in renders the card without the icon, exactly as before. */
+  onOpenSubAgent?: (subConvId: string, title: string) => void
   /** The engine is parked awaiting approval (see CollapsibleToolBlock). */
   awaitingApproval?: boolean
 }): React.ReactElement | null {
@@ -626,12 +464,12 @@ export const MessageGroup = React.memo(function MessageGroup({
                 <CollapsibleToolBlock
                   key={i}
                   block={tb}
+                  receiving={msg.id === 'streaming-exec'}
                   onApproveTool={onApproveTool}
                   onRejectTool={onRejectTool}
                   onKillTool={onKillTool}
                   onRespondToTool={onRespondToTool}
-                  contextLength={contextLength}
-                  receiving={msg.id === 'streaming-exec'}
+                  onOpenSubAgent={onOpenSubAgent}
                   awaitingApproval={awaitingApproval}
                 />
               )

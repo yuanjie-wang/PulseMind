@@ -36,6 +36,16 @@ function App(): React.ReactElement {
   )
 }
 
+/** What a sub-agent drill-in points at. Two entries into the one session view:
+ *  a plan DAG node (PLAN-workbench W12) and a spawn_agent card's 查看子代理会话
+ *  icon (a spawn with no plan node — a plain loop, or a single @expert summon —
+ *  has no node to click, so the card is the only way in). Only the plan route
+ *  knows a node id, and only the card route is a tool call; each is what its own
+ *  liveness check reads. */
+type SubAgentViewTarget =
+  | { kind: 'plan'; nodeId: string; subConvId: string; title: string }
+  | { kind: 'spawn'; subConvId: string; title: string }
+
 function AppContent(): React.ReactElement {
   const { settings, hasApiKey, activeProfile, saveSettings, reloadSettings } = useSettings()
   const { locale, setLocale } = useTranslation()
@@ -355,11 +365,12 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // PLAN-workbench W12: clicking a DAG module drills into the sub-agent session
   // that implements it (or jumps the transcript to the round that settled it).
   // The resolution — plan-node link → spawn block link → msgId — lives in
-  // agent/plan-node-target.ts, where it is unit-tested. The drill-in is an
+  // agent/plan-node-target.ts, where it is unit-tested. The spawn card's eye
+  // icon opens the same view (see SubAgentViewTarget). The drill-in is an
   // overlay over the chat pane (ChatView stays mounted, AppLayout-style), so a
   // conversation switch underneath it can never leave the header pointing at
   // one conversation while the pane shows another.
-  const [subAgentView, setSubAgentView] = useState<{ nodeId: string; subConvId: string; title: string } | null>(null)
+  const [subAgentView, setSubAgentView] = useState<SubAgentViewTarget | null>(null)
   // Any conversation change — picking another thread, 新建任务, or the first
   // message materializing the row — exits the drill-in: the view follows a node
   // of the conversation whose DAG was clicked, and nothing else may show it.
@@ -371,13 +382,27 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     setSubAgentViewConvKey(activeConvKey)
     setSubAgentView(null)
   }
-  // `live` is derived from the plan the parent already holds, never stored: it
-  // was a click-time snapshot before, so a node that settled while the view was
-  // open kept the 运行中 badge, kept `actions` at viewOnly and polled until the
-  // 30-minute hard stop said nothing.
-  const subAgentLive = subAgentView
-    ? plan?.nodes.find((n) => n.id === subAgentView.nodeId)?.status === 'pending'
-    : false
+  // `live` is derived from what the parent already holds, never stored: it was a
+  // click-time snapshot before, so a run that settled while the view was open
+  // kept the 运行中 badge, kept `actions` at viewOnly and polled until the
+  // 30-minute hard stop said nothing. The plan route reads the node's status;
+  // the card route reads the spawn block's own — its subConvId is minted per
+  // spawn, so exactly one card carries it, and a conversation restored from the
+  // DB has no running card at all (the view then shows it settled, as it should).
+  const subAgentLive = useMemo(() => {
+    if (!subAgentView) return false
+    if (subAgentView.kind === 'plan') {
+      return plan?.nodes.find((n) => n.id === subAgentView.nodeId)?.status === 'pending'
+    }
+    return messages.some((m) =>
+      m.contentBlocks.some(
+        (b) =>
+          b.type === 'tool_use' &&
+          b.subConvId === subAgentView.subConvId &&
+          (b.status === 'running' || b.status === 'pending')
+      )
+    )
+  }, [subAgentView, plan, messages])
   /** Nodes that resolve to somewhere — drives the graph's cursor and tooltip, so
    *  a node the model never dispatched does not advertise a click it drops. */
   const openableNodeIds = useMemo(() => {
@@ -392,6 +417,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     if (!target) return
     if (target.kind === 'session') {
       setSubAgentView({
+        kind: 'plan',
         nodeId,
         subConvId: target.subConvId,
         title: node ? `n${nodeId.slice(1)} · ${node.description}` : '子代理会话',
@@ -400,6 +426,11 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     }
     setPlanScrollToMsgId(target.msgId)
   }, [messages, plan])
+  /** The spawn card's own entry into the same view. The card composes the title
+   *  from the tool input it holds; liveness is read back off the card, above. */
+  const onOpenSubAgent = useCallback((subConvId: string, title: string) => {
+    setSubAgentView({ kind: 'spawn', subConvId, title })
+  }, [])
   // PLAN-workbench W5: a freshly created plan opens the workbench on its tab
   // (the write→auto-open-preview precedent). Completing a plan does not close
   // it — the user reads the finished graph. The ref is keyed to the
@@ -480,6 +511,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               hasApiKey={hasApiKey}
               contextLength={contextLength}
               onOpenPlanNode={onOpenPlanNode}
+              onOpenSubAgent={onOpenSubAgent}
               canOpenNode={canOpenNode}
               onSendMessage={handleRequest}
               onCancel={abort}

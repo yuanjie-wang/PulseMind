@@ -67,6 +67,11 @@ interface ChatViewProps {
   onOpenPlanNode?: (nodeId: string) => void
   /** Which plan nodes open something (cursor + tooltip affordance). */
   canOpenNode?: (nodeId: string) => boolean
+  /** spawn_agent card's 查看子代理会话 icon → open that sub-agent's session in
+   *  the same view the DAG drill-in uses (`SubAgentSessionView`). The chat is
+   *  the other entry point: a spawn with no plan node (a plain loop, or a single
+   *  @expert summon) has no node to click, so the card is the only way in. */
+  onOpenSubAgent?: (subConvId: string, title: string) => void
   contextLength?: number
   /** Resolved working directory of the active conversation (M8.5); shown above
    *  the message list once the main-side session creation reports back. */
@@ -130,6 +135,7 @@ function ChatView({
   plan,
   onPlanJump,
   onOpenPlanNode,
+  onOpenSubAgent,
   canOpenNode,
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
@@ -552,10 +558,10 @@ function ChatView({
         onRespondToTool={onRespondToTool}
         conversationId={conversationId}
         conversationTitle={conversationTitle}
-        contextLength={contextLength}
+        onOpenSubAgent={onOpenSubAgent}
       />
     ),
-    [highlightedMsgId, allSegments, isRequesting, agentStatus.status, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, contextLength],
+    [highlightedMsgId, allSegments, isRequesting, agentStatus.status, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, onOpenSubAgent],
   )
 
   // ── Render ──

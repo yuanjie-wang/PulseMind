@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest'
-import { toolBlockSummary, toolDisplayName } from '../src/renderer/src/components/chat/tool-summary'
+import { toolBlockSummary, toolDisplayName, subAgentSessionTitle } from '../src/renderer/src/components/chat/tool-summary'
 import { registerToolDescriptions, resetToolDescriptions, lookupToolDescription } from '../src/renderer/src/components/chat/tool-descriptions'
 import type { ToolUseBlock } from '../src/renderer/src/types/agent'
 
@@ -89,5 +89,41 @@ describe('toolBlockSummary object half stays verbatim', () => {
     expect(toolBlockSummary(block('read', {}), zh)).toBe('读取文件')
     const noInput = { type: 'tool_use', id: 't', name: 'read', status: 'completed' } as unknown as ToolUseBlock
     expect(toolBlockSummary(noInput, zh)).toBe('读取文件')
+  })
+})
+
+/** The sub-agent session view's header title, composed from the spawn card's own
+ *  input. It is deliberately NOT `toolBlockSummary` of the same block: that
+ *  string is the collapsed header the user just clicked, and a spawn falls to the
+ *  unknown-family fallback there (`subAgentId=…`). */
+describe('subAgentSessionTitle', () => {
+  it('names the expert and the task', () => {
+    expect(subAgentSessionTitle(block('spawn_agent', { subAgentId: 'exp_writer', task: '写一段周末文案' })))
+      .toBe('exp_writer · 写一段周末文案')
+  })
+
+  it('drops the half that is missing instead of leaving a separator', () => {
+    expect(subAgentSessionTitle(block('spawn_agent', { task: '写一段周末文案' }))).toBe('写一段周末文案')
+    expect(subAgentSessionTitle(block('spawn_agent', { subAgentId: 'exp_writer' }))).toBe('exp_writer')
+  })
+
+  it('falls back when the card carries neither', () => {
+    expect(subAgentSessionTitle(block('spawn_agent', {}))).toBe('子代理会话')
+    expect(subAgentSessionTitle(block('spawn_agent', {}), 'exported session')).toBe('exported session')
+    // Blank strings count as missing, not as a value.
+    expect(subAgentSessionTitle(block('spawn_agent', { subAgentId: '   ', task: '' }))).toBe('子代理会话')
+  })
+
+  it('shows the task first line only, capped', () => {
+    expect(subAgentSessionTitle(block('spawn_agent', { task: '第一行\n\n第二段：细节' }))).toBe('第一行')
+    expect(subAgentSessionTitle(block('spawn_agent', { task: 'x'.repeat(200) }))).toBe('x'.repeat(60))
+  })
+
+  it('is a different string from the card header it was clicked from', () => {
+    // The two live next to each other for one click: the card keeps 召唤专家 ·
+    // subAgentId=…, the header over the transcript names the task.
+    const b = block('spawn_agent', { subAgentId: 'exp_writer', task: '写一段周末文案' })
+    expect(toolBlockSummary(b, zh)).toBe('召唤专家 · subAgentId=exp_writer')
+    expect(subAgentSessionTitle(b)).toBe('exp_writer · 写一段周末文案')
   })
 })

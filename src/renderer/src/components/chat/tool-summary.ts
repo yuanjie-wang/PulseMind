@@ -84,6 +84,18 @@ export function toolObjectSummary(block: ToolUseBlock): string {
   }
 }
 
+/** Header title for the sub-agent session view a spawn card opens. Not
+ *  `toolBlockSummary` — that string is the collapsed header the user just
+ *  clicked, and a spawn falls to the unknown-family fallback (`subAgentId=…`),
+ *  which is not what a header over a whole transcript should say. Here it is the
+ *  expert when one was named, plus the task's first line. */
+export function subAgentSessionTitle(block: ToolUseBlock, fallback = '子代理会话'): string {
+  const expert = typeof block.input?.subAgentId === 'string' ? block.input.subAgentId.trim() : ''
+  const task = firstLine(block.input?.task, 60)
+  if (expert && task) return `${expert} · ${task}`
+  return expert || task || fallback
+}
+
 export function toolBlockSummary(block: ToolUseBlock, t?: ToolTranslator): string {
   const label = toolDisplayName(block.name, t)
   const object = toolObjectSummary(block)

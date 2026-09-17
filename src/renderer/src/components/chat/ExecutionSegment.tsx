@@ -29,7 +29,9 @@ interface ExecutionSegmentProps {
   onRespondToTool?: (toolUseId: string, response: string) => void
   conversationId?: string
   conversationTitle?: string
-  contextLength?: number
+  /** Open a spawn card's sub-conversation in the host's session view (see
+   *  MessageGroup). Threaded through unchanged; absent means no drill-in. */
+  onOpenSubAgent?: (subConvId: string, title: string) => void
   /** The engine is parked on its held calls (`agentStatus: 'awaiting_approval'`). */
   awaitingApproval?: boolean
 }
@@ -243,7 +245,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
               onRespondToTool={props.onRespondToTool}
               conversationId={props.conversationId}
               conversationTitle={props.conversationTitle}
-              contextLength={props.contextLength}
+              onOpenSubAgent={props.onOpenSubAgent}
               awaitingApproval={props.awaitingApproval}
             />
           ))}
