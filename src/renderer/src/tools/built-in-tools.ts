@@ -509,6 +509,74 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     availability: 'gated',
   },
 
+  // ── docx_edit / xlsx_edit (PLAN-office-editing) ────────────────────
+  {
+    name: 'docx_edit',
+    description: 'Edit a .docx Word document through structured operations. Byte-faithful: untouched parts of the file are preserved exactly. Always run `{"op":"outline"}` first to see the paragraph list, then send edits.',
+    category: 'file',
+    triggers: ['edit docx', 'edit word', '修改 word', '编辑文档'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Path to the .docx file (absolute or workspace-relative).' },
+        ops: {
+          type: 'array',
+          description: 'Operations applied in order. Run `{"op":"outline"}` first. replace_text/find use the VISIBLE text (crosses style runs automatically); deleted-revision text is never matched.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['outline', 'replace_text', 'insert_paragraph', 'delete_paragraph', 'set_paragraph_style', 'format_text'] },
+              find: { type: 'string' }, replace: { type: 'string' },
+              expected_count: { type: 'number' }, paragraph: { type: 'number' },
+              position: { type: 'string', enum: ['before', 'after'] },
+              text: { type: 'string' }, style: { type: 'string' },
+              bold: { type: 'boolean' }, italic: { type: 'boolean' }, underline: { type: 'boolean' },
+              color: { type: 'string' }, font_size: { type: 'number' },
+            },
+          },
+        },
+      },
+      required: ['file_path', 'ops'],
+    },
+    instructions: toolInstructions.docx_edit,
+    builtIn: true,
+    availability: 'gated',
+  },
+  {
+    name: 'xlsx_edit',
+    description: 'Edit a .xlsx workbook: set cell values/formulas/number formats, find-replace over values (formulas untouched unless explicitly included), inspect the used range. Refuses workbooks with charts/pivot tables/VBA.',
+    category: 'file',
+    triggers: ['edit xlsx', 'edit excel', '修改 excel', '编辑表格'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Path to the .xlsx file (absolute or workspace-relative).' },
+        ops: {
+          type: 'array',
+          description: 'Operations applied in order. Run `{"op":"inspect"}` first.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['inspect', 'set_cell', 'find_replace'] },
+              sheet: { type: 'string' },
+              cell: { type: 'string', description: 'e.g. "B3"' },
+              value: { type: ['string', 'number', 'boolean', 'null'] },
+              formula: { type: 'string' },
+              number_format: { type: 'string' },
+              find: { type: 'string' }, replace: { type: 'string' },
+              include_formulas: { type: 'boolean' },
+              expected_count: { type: 'number' },
+            },
+          },
+        },
+      },
+      required: ['file_path', 'ops'],
+    },
+    instructions: toolInstructions.xlsx_edit,
+    builtIn: true,
+    availability: 'gated',
+  },
+
   // ── knowledge_read ─────────────────────────────────────────────────
   {
     name: 'knowledge_read',

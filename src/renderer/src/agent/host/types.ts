@@ -96,6 +96,8 @@ const HOST_METHOD_KEYS = [
   'knowledgeGetSchema',
   'knowledgeGetWikiDir',
   'knowledgeReextract',
+  'editDocx',
+  'editXlsx',
   'knowledgeWriteExperience',
   // memory store + conversation summary counters (MemoryManager)
   'countMemories',

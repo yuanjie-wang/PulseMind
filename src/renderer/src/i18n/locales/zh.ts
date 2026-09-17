@@ -227,6 +227,8 @@ const zh = {
     git_log: '查看提交历史',
     git_commit: '创建提交',
     git_restore: '还原改动',
+    docx_edit: '编辑 Word 文档',
+    xlsx_edit: '编辑 Excel 表格',
     page_get_content: '阅读页面',
     page_scroll: '滚动页面',
     page_wait: '等待加载',

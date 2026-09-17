@@ -28,6 +28,8 @@ import { expertStore } from '../storage/expert-store'
 import { experienceStore } from '../storage/experience-store'
 import { saveMemory, listMemories, deleteMemory, searchMemories, updateMemory, countMemoriesByType, type MemoryRow } from '../storage/memory.db'
 import { MEMORY_MD_PATH } from '../storage'
+import * as svcDocx from '../services/docx-ops'
+import * as svcXlsx from '../services/xlsx-ops'
 import { invokeGitAction } from '../git/git.service'
 import { serverManager } from '../mcp/MCPServerManager'
 import { persistCustomServers, validateMcpConfig } from '../ipc/mcp.handler'
@@ -250,7 +252,9 @@ export const mainHost: PulseHost = {
   knowledgeSearchWiki: (query) => kq.svcSearchWiki(query) as Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>>,
   knowledgeGetSchema: async () => kq.svcGetSchema(),
   knowledgeGetWikiDir: async () => kq.svcGetWikiDir(),
-  knowledgeReextract: async (id: string) => kq.svcReextract(id) as { success: boolean; error?: string },
+  knowledgeReextract: async (id: string) => await kq.svcReextract(id) as unknown as { success: boolean; error?: string },
+  editDocx: async (input: { filePath: string; ops: any[] }) => svcDocx.svcEditDocx(input as { filePath: string; ops: never[] }),
+  editXlsx: async (input: { filePath: string; ops: any[] }) => svcXlsx.svcEditXlsx(input as { filePath: string; ops: never[] }),
   knowledgeWriteExperience: (data) => Promise.resolve(kq.svcWriteExperience(data)),
 
   // ── Memory store + conversation counters ──

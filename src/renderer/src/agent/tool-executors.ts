@@ -262,6 +262,29 @@ export class ToolExecutor implements ToolExecContext {
         t.output = result.success ? `Written ${content.length} bytes to ${fp}${append ? ' (appended)' : ''}` : `Error: ${result.error || 'Write failed'}`
         this.addToolResult(t.id, result.success ? `Written ${content.length} bytes to ${fp}${append ? ' (appended)' : ''}` : `Error: ${result.error || 'Write failed'}`, !result.success)
         t.exitCode = result.success ? 0 : 1
+      } else if (t.name === 'docx_edit' || t.name === 'xlsx_edit') {
+        let fp = String(t.input.file_path || '')
+        if (!fp) throw new Error('file_path is required')
+        fp = this.resolveWorkspacePath(fp)
+        const ops = Array.isArray(t.input.ops) ? t.input.ops : []
+        if (ops.length === 0) throw new Error('ops is required (至少一个操作；先 outline 了解文档)')
+        t.output = `Editing ${fp} (${ops.length} op)...`; this.notify()
+        const result = t.name === 'docx_edit'
+          ? await getHost().editDocx({ filePath: fp, ops: ops as never })
+          : await getHost().editXlsx({ filePath: fp, ops: ops as never })
+        if (result.success) {
+          const failedOp = (result.results ?? []).find((r: { ok: boolean }) => !r.ok)
+          const detail = (result.results ?? []).filter((r: { ok: boolean }) => r.ok).map((r: { detail: string }) => r.detail).join('; ')
+          const summary = `Edited ${fp}: ${detail || 'done'}${result.backup ? ` (备份: ${result.backup})` : ''}`
+          t.output = summary
+          this.addToolResult(t.id, summary + (failedOp ? '' : ''), false)
+          t.exitCode = 0
+        } else {
+          const msg = `Error: ${result.error || 'Edit failed'}`
+          t.output = msg
+          this.addToolResult(t.id, msg, true)
+          t.exitCode = 1
+        }
       } else if (t.name === 'edit') {
         let fp = String(t.input.file_path || '')
         if (!fp) throw new Error('file_path is required')

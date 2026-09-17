@@ -135,6 +135,46 @@ function baseName(path: string): string {
   return path.split(/[\\/]/).pop() || path
 }
 
+/** PLAN-office-editing T16: office documents render as read-only markdown via
+ *  the same conversion the `read` tool uses (read-cache makes the mtime the
+ *  only invalidation needed). A failed conversion falls back to the card. */
+function OfficePreview({ path, kind }: { path: string; kind: FileKind }): React.ReactElement {
+  const { t } = useTranslation()
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [markdown, setMarkdown] = useState('')
+  useEffect(() => {
+    let alive = true
+    setState('loading')
+    window.electronAPI.convertFileToMarkdown(path)
+      .then((result) => {
+        if (!alive) return
+        if (result && result.content) {
+          setMarkdown(result.content)
+          setState('ready')
+        } else {
+          setState('error')
+        }
+      })
+      .catch(() => { if (alive) setState('error') })
+    return () => { alive = false }
+  }, [path])
+
+  if (state === 'loading') return <div style={{ padding: 24, textAlign: 'center', color: '#bbb', fontSize: 12 }}>…</div>
+  if (state === 'error') return <FallbackCard path={path} kind={kind} />
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 16px' }}>
+        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12.5, lineHeight: 1.7, color: '#333', fontFamily: 'inherit' }}>{markdown}</pre>
+      </div>
+      <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'flex-end', padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+        <Button size="small" icon={<ExternalLink size={12} />} onClick={() => void window.electronAPI.openFolder(path).catch(() => {})}>
+          {t('previewPane.openInOs')}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function FallbackCard({ path, kind }: { path: string; kind: FileKind }): React.ReactElement {
   const { t } = useTranslation()
   const [info, setInfo] = useState<{ size: number | null; mtime: string | null }>({ size: null, mtime: null })
@@ -224,6 +264,7 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   }, [state, path, kind, elementMode, t])
 
   if (kind === 'image') return <ImagePreview path={path} />
+  if (kind === 'office') return <OfficePreview path={path} kind={kind} />
   if (!isPreviewable(kind)) return <FallbackCard path={path} kind={kind} />
 
   if (state.status === 'loading') {

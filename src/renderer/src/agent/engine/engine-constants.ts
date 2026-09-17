@@ -18,6 +18,9 @@ export const TOOL_PARAM_LIMITS: Record<string, Record<string, number>> = {
   write: { content: 500_000 },
   edit: { diff: 200_000, new_str: 200_000 },
   spawn_agent: { task: 200_000 },
+  // PLAN-office-editing: the ops array rides the tool call into the engine.
+  docx_edit: { ops: 120_000 },
+  xlsx_edit: { ops: 120_000 },
   // The page tools go over the wire to another process and into a live page;
   // a runaway string here is an in-page eval, not just a big prompt.
   page_execute_js: { script: 50_000 },

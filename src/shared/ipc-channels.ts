@@ -130,6 +130,8 @@ export const IPC_CHANNELS = {
   UTIL_EDIT_FILE: 'util:edit-file',
   UTIL_PATCH_FILE: 'util:patch-file',
   UTIL_WRITE_FILE: 'util:write-file',
+  UTIL_EDIT_DOCX: 'util:edit-docx',
+  UTIL_EDIT_XLSX: 'util:edit-xlsx',
   UTIL_SAVE_BASE64_IMAGE: 'util:save-base64-image',
   UTIL_COPY_FILE_TO_TMP: 'util:copy-file-to-tmp',
   UTIL_COPY_FILE: 'util:copy-file',

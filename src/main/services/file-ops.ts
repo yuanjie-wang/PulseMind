@@ -116,7 +116,7 @@ function resolvePath(input: string): string {
 }
 
 /** For write operations: resolve to an absolute, normalized path. */
-async function resolveWritablePath(input: string): Promise<string> {
+export async function resolveWritablePath(input: string): Promise<string> {
   return resolvePath(input)
 }
 
@@ -174,8 +174,27 @@ export async function svcReadFile(filePath: string): Promise<string | null> {
   }
 }
 
+
+/** L11 (PLAN-office-editing): text write tools must not pour text into an
+ *  office binary — that corrupts it. The dedicated docx_edit / xlsx_edit
+ *  tools are the only writers for these formats. */
+const OFFICE_BINARY_EXTS = ['.docx', '.xlsx', '.pptx', '.doc', '.xls', '.ppt']
+
+function officeBinaryReject(filePath: string): string | null {
+  const lower = filePath.toLowerCase()
+  const ext = OFFICE_BINARY_EXTS.find((e) => lower.endsWith(e))
+  if (!ext) return null
+  const tool = ext === '.docx' || ext === '.doc' ? 'docx_edit' : ext === '.xlsx' || ext === '.xls' ? 'xlsx_edit' : null
+  return tool
+    ? `「${ext}」是 Office 二进制格式，write/edit 会损坏它——请改用 ${tool} 工具编辑`
+    : `「${ext}」是 Office 二进制格式，write/edit 会损坏它（pptx 编辑暂未支持）`
+}
+
 export async function svcEditFile(input: EditFileInput): Promise<EditFileResult> {
+  const officeReject = officeBinaryReject(input.filePath)
+  if (officeReject) return { success: false, error: officeReject } as never as never
   try {
+
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, replacements: 0, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
@@ -220,7 +239,10 @@ export async function svcEditFile(input: EditFileInput): Promise<EditFileResult>
 }
 
 export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResult> {
+  const officeReject = officeBinaryReject(input.filePath)
+  if (officeReject) return { success: false, error: officeReject } as never
   try {
+
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, replacements: 0, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
@@ -247,7 +269,10 @@ export async function svcPatchFile(input: PatchFileInput): Promise<PatchFileResu
 }
 
 export async function svcWriteFile(input: WriteFileInput): Promise<WriteFileResult> {
+  const officeReject = officeBinaryReject(input.filePath)
+  if (officeReject) return { success: false, error: officeReject } as never
   try {
+
     const { content, append } = input
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, error: guard.reason }

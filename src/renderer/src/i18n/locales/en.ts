@@ -230,6 +230,8 @@ const en: TranslationDict = {
     git_log: 'View history',
     git_commit: 'Create commit',
     git_restore: 'Restore changes',
+    docx_edit: 'Edit Word document',
+    xlsx_edit: 'Edit Excel workbook',
     page_get_content: 'Read page',
     page_scroll: 'Scroll page',
     page_wait: 'Wait for load',

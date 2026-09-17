@@ -17,6 +17,8 @@ import {
   svcListDir,
   svcDeletePath,
 } from '../services/file-ops'
+import { svcEditDocx } from '../services/docx-ops'
+import { svcEditXlsx } from '../services/xlsx-ops'
 import type {
   EditFileInput,
   EditFileResult,
@@ -62,4 +64,6 @@ export function registerFileOpsHandlers(): void {
 
   // ── Write file (direct IPC, bypasses shell heredoc) ──────────────
   ipcMain.handle(IPC_CHANNELS.UTIL_WRITE_FILE, (_event, input: WriteFileInput): Promise<WriteFileResult> => svcWriteFile(input))
+  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_DOCX, withRawResponse(async (input: { filePath: string; ops: unknown[] }) => svcEditDocx(input as { filePath: string; ops: never[] })))
+  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_XLSX, withRawResponse(async (input: { filePath: string; ops: unknown[] }) => svcEditXlsx(input as { filePath: string; ops: never[] })))
 }

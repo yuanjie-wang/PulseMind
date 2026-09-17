@@ -295,6 +295,45 @@ Search across the local knowledge base. Returns a list of knowledge files with t
 3. Combine with \`knowledge_read\` to view the full content of a matched file or wiki page
 4. Wiki pages often contain markdown links to related pages — follow them for deeper exploration`,
 
+  docx_edit: `## docx_edit
+
+Byte-faithful Word (.docx) editing through structured operations.
+
+### Workflow
+1. FIRST call with {"op":"outline"} to get paragraph indexes + styles + text summaries.
+2. THEN send the edit batch. Ops apply in order; indexes refer to the CURRENT state.
+3. Prefer ONE call with a batch of ops over many small calls.
+
+### Ops
+- outline - list paragraphs (no edit).
+- replace_text - find/replace in the visible text; crosses style runs automatically. Default expects EXACTLY 1 hit; give expected_count or paragraph to widen/narrow. No hit = whole batch refused, nothing written.
+- insert_paragraph - paragraph + position (before/after) + text; optional style.
+- delete_paragraph - refuses paragraphs carrying a section break.
+- set_paragraph_style - paragraph + style name (e.g. "Heading1").
+- format_text - find + optional bold/italic/underline/color/font_size (points). Only the matched range is formatted; runs split automatically.
+
+### Never
+- .doc / encrypted files: ask the user to save as .docx.
+- Tables: replace_text works inside cell text, but structural table edits (add/remove rows) are not supported - refuse and explain.
+- Headers/footers, TOC/fields, images are out of scope - refuse and explain.`,
+
+  xlsx_edit: `## xlsx_edit
+
+Structured Excel (.xlsx) editing. The workbook is checked first: charts, pivot tables, VBA or legacy .xls are REFUSED (the engine cannot preserve them).
+
+### Workflow
+1. FIRST call with {"op":"inspect"} for sheet names and used ranges.
+2. Send the edit batch; ops apply in order. Every write is read back and verified.
+
+### Ops
+- inspect - list sheets (+ used range).
+- set_cell - cell ("B3") + value OR formula, optional number_format (e.g. "0.00%", "yyyy-mm-dd").
+- find_replace - replaces in VALUES only; pass include_formulas: true to also rewrite formulas. expected_count defaults to actual.
+
+### Never
+- Structural changes (insert/delete rows/columns): formulas would not re-aim; refuse and explain.
+- Chart data editing, pivot refresh - refuse.`,
+
   knowledge_read: `## knowledge_read
 
 Read the content of a knowledge base file or compiled wiki page.
