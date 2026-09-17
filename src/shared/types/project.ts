@@ -24,6 +24,10 @@ export interface Project {
    *  default project, and rows read before the startup backfill filled it in;
    *  `projectHue` falls back to hashing the name so those still get a color. */
   colorHue?: number
+  /** Manual position from the sidebar's drag-to-reorder (0-based). Undefined
+   *  until the first drag — a project created after the last drag has none and
+   *  sorts by created_at among the other unordered rows. */
+  sortOrder?: number
   createdAt: string
   updatedAt: string
 }
@@ -32,6 +36,19 @@ export interface Project {
  *  in the projects table — its workspace follows the global `workspaceDir`
  *  setting so existing setups keep behaving exactly as before. */
 export const DEFAULT_PROJECT_ID = 'default'
+
+/** How the sidebar's 项目 list orders its groups. Persisted globally as
+ *  `settings.projectSortMode` — the order is a preference about the user, not
+ *  about one view, so it survives restarts like the theme does.
+ *  - 'created': newest project first (the historical order).
+ *  - 'name': by project name, zh-aware (`localeCompare` — pinyin for Chinese
+ *    names, alphabetical for Latin ones).
+ *  - 'activity': by the group's newest conversation, an idle project sinking
+ *    to the bottom of that ordering.
+ *  - 'manual': the drag-to-reorder order (`projects.sort_order`). Dropping a
+ *    drag switches to this mode, so the arrangement the user just made is the
+ *    one that sticks. */
+export type ProjectSortMode = 'created' | 'name' | 'activity' | 'manual'
 
 export interface ProjectCreateInput {
   name: string

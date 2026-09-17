@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Layout, Button, theme, Tooltip } from 'antd'
+import { Layout, Button, theme, Tooltip, Dropdown } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
   SettingOutlined,
@@ -7,7 +7,8 @@ import {
   MenuUnfoldOutlined,
   InfoCircleOutlined,
   BarChartOutlined,
-  PlusOutlined
+  PlusOutlined,
+  SortAscendingOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
 import ProjectSidebarList from './ProjectSidebarList'
@@ -22,6 +23,8 @@ import { useProjectStore } from '../../stores/projectStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
 import { DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { conversationKeyOf } from '../../../../shared/conversation-key'
+import type { ProjectSortMode } from '../../../../shared/types/project'
+import { useSettings } from '../../hooks/SettingsContext'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { SkillState } from '../../skills/types'
@@ -148,6 +151,17 @@ function AppLayout({
   // 数据与运行 section.
   const [projectModalOpen, setProjectModalOpen] = useState(false)
   const reloadProjects = useProjectStore((s) => s.reload)
+
+  // The 项目 list's group order. A global preference (settings.projectSortMode),
+  // written through the shared save path like the theme is — the guard keeps a
+  // click that races the initial settings load from persisting DEFAULT_SETTINGS
+  // over the real file.
+  const { settings, loading: settingsLoading, saveSettings } = useSettings()
+  const projectSortMode: ProjectSortMode = settings.projectSortMode ?? 'created'
+  const changeProjectSort = (mode: ProjectSortMode): void => {
+    if (mode === projectSortMode || settingsLoading) return
+    void saveSettings({ ...settings, projectSortMode: mode })
+  }
 
   const canCreateNew = autoCleanup || totalSessions < MAX_SESSIONS
   // The open conversation, resolved once: `''` while nothing is open, which is
@@ -302,6 +316,31 @@ function AppLayout({
               </Button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginRight: 8 }}>
+              {listTab === 'projects' && (
+                <Dropdown
+                  trigger={['click']}
+                  menu={{
+                    selectable: true,
+                    selectedKeys: [projectSortMode],
+                    items: [
+                      { key: 'created', label: t('appLayout.projectSortCreated') },
+                      { key: 'name', label: t('appLayout.projectSortName') },
+                      { key: 'activity', label: t('appLayout.projectSortActivity') },
+                      { key: 'manual', label: t('appLayout.projectSortManual') }
+                    ],
+                    onClick: ({ key }) => changeProjectSort(key as ProjectSortMode)
+                  }}
+                >
+                  <Tooltip title={t('appLayout.projectSort')}>
+                    <Button
+                      type="text"
+                      className="sidebar-list-action"
+                      aria-label={t('appLayout.projectSort')}
+                      icon={<SortAscendingOutlined style={{ fontSize: 14 }} />}
+                    />
+                  </Tooltip>
+                </Dropdown>
+              )}
               <Tooltip title={listTab === 'chats' ? t('menu.newChat') : t('menu.newProject')}>
                 <Button
                   type="text"
@@ -338,6 +377,8 @@ function AppLayout({
                 activeKey={activeChatKey}
                 activeLoopConvIds={activeLoopConvIds}
                 retryingConvIds={retryingConvIds}
+                sortMode={projectSortMode}
+                onManualOrder={() => changeProjectSort('manual')}
                 onCreateTask={handleProjectNewTask}
                 onOpenConversation={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
                 onDelete={onDeleteConversation}

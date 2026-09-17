@@ -34,4 +34,9 @@ export function registerProjectHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.PROJECT_DELETE, async (_event, id: string) => projectStore.remove(id))
+
+  // The sidebar's drag-to-reorder: the full display order of user projects.
+  // Validation lives in projectStore.reorder (array-of-strings gate), same as
+  // PROJECT_CREATE validates its input at the handler boundary.
+  ipcMain.handle(IPC_CHANNELS.PROJECT_REORDER, (_event, orderedIds: string[]) => projectStore.reorder(orderedIds))
 }

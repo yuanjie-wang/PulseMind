@@ -40,6 +40,7 @@ const electronAPI = {
   projectDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
   projectValidateDir: (workspaceDir: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.PROJECT_VALIDATE_DIR, workspaceDir),
+  projectReorder: (orderedIds: string[]) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_REORDER, orderedIds),
   setConversationProject: (id: string, projectId: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROJECT, id, projectId),
   setConversationExpert: (id: string, expertId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_EXPERT, id, expertId),
   setConversationApprovalMode: (id: string, mode: unknown) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, id, mode),

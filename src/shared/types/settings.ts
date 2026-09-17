@@ -1,5 +1,7 @@
 export type LLMProvider = 'anthropic' | 'openai'
 
+import type { ProjectSortMode } from './project'
+
 export interface LlmProfile {
   id: string
   name: string
@@ -37,6 +39,8 @@ export interface AppSettings {
   /** 会话自动清理策略（对话管理 · 最长保留时长）：保留天数（未设 / 0 = 永久保留）。
    *  启动时及每次保存设置时按此清理过期的未置顶会话（置顶会话永不过期）。 */
   conversationRetentionDays?: number
+  /** 侧边栏项目列表的排序方式（未设 = 'created'，即创建时间倒序）。 */
+  projectSortMode?: ProjectSortMode
   /**
    * 调试用：把每次 LLM 请求的完整报文原样写到 ~/.pulsemind/logs/llm-requests/。
    * 开发版默认开启；打包版需显式设为 true（读取按文件 mtime 缓存，改完下一次请求即生效）。

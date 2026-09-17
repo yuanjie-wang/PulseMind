@@ -250,6 +250,7 @@ function createTables(): void {
       icon          TEXT,
       color_hue     INTEGER,
       sandbox_json  TEXT NOT NULL DEFAULT '{}',
+      sort_order    INTEGER,
       created_at    TEXT NOT NULL,
       updated_at    TEXT NOT NULL
     );
@@ -294,6 +295,10 @@ function createTables(): void {
   // (2026-09-16); rows created before it keep NULL until the startup backfill
   // fills them from their name — which is exactly what the renderer derived.
   try { database.exec('ALTER TABLE projects ADD COLUMN color_hue INTEGER') } catch { /* column may already exist */ }
+  // Manual order from the sidebar's drag-to-reorder (2026-09-17). NULL = never
+  // dragged: those rows keep their created_at order in the 'manual' sort mode,
+  // so a project created after the last drag still appears newest-first.
+  try { database.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER') } catch { /* column may already exist */ }
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);

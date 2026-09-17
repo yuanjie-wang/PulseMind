@@ -94,6 +94,7 @@ interface ProjectRow {
   workspace_dir: string
   icon: string | null
   color_hue: number | null
+  sort_order: number | null
   created_at: string
   updated_at: string
 }
@@ -107,6 +108,7 @@ function rowToProject(r: ProjectRow): Project {
     // null (a row the backfill has not reached yet) stays undefined, which
     // projectHue reads as "no stored color — hash the name for now".
     colorHue: r.color_hue ?? undefined,
+    sortOrder: r.sort_order ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
@@ -207,6 +209,30 @@ export const projectStore = {
     })
     tx()
     return { removedConversations: convs.length }
+  },
+
+  /** Persist the sidebar's drag-to-reorder: `orderedIds` is the FULL list of
+   *  user projects in display order — every listed row gets sort_order = its
+   *  index, and rows NOT listed (a project created mid-flight, or the
+   *  synthesized default which has no row) fall back to NULL so the 'manual'
+   *  sort mode keeps ordering them by created_at. The UPDATE binds named
+   *  `@`-parameters: better-sqlite3's bind map stores names prefix-stripped,
+   *  and the positional-bind swap that poisoned conversation project bindings
+   *  (see AGENTS.md) is exactly the shape this must not reintroduce. */
+  async reorder(orderedIds: string[]): Promise<void> {
+    if (!Array.isArray(orderedIds) || orderedIds.some((id) => typeof id !== 'string')) {
+      throw new Error('项目排序参数必须是字符串数组')
+    }
+    const db = getDb()
+    const update = db.prepare('UPDATE projects SET sort_order = @order WHERE id = @id')
+    const clear = db.prepare('UPDATE projects SET sort_order = NULL WHERE id NOT IN (SELECT value FROM json_each(@ids))')
+    const tx = db.transaction(() => {
+      orderedIds.forEach((id, order) => update.run({ id, order }))
+      // json_each over the same array: rows outside the drag's list lose their
+      // stale position instead of keeping one that no longer means anything.
+      clear.run({ ids: JSON.stringify(orderedIds) })
+    })
+    tx()
   },
 }
 

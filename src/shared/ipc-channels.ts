@@ -198,6 +198,7 @@ export const IPC_CHANNELS = {
   PROJECT_UPDATE: 'project:update',
   PROJECT_DELETE: 'project:delete',
   PROJECT_VALIDATE_DIR: 'project:validate-dir',
+  PROJECT_REORDER: 'project:reorder',
   CONVERSATION_SET_PROJECT: 'conversation:set-project',
   CONVERSATION_SET_EXPERT: 'conversation:set-expert',
   CONVERSATION_SET_APPROVAL_MODE: 'conversation:set-approval-mode',

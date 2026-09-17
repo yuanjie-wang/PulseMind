@@ -269,6 +269,8 @@ export interface ElectronAPI {
   projectUpdate: (id: string, patch: ProjectUpdateInput) => Promise<Project | null>
   projectDelete: (id: string) => Promise<{ removedConversations: number }>
   projectValidateDir: (workspaceDir: string) => Promise<{ ok: boolean; error?: string }>
+  /** Persist the sidebar's drag order: the full id list, display order. */
+  projectReorder: (orderedIds: string[]) => Promise<void>
   setConversationProject: (id: string, projectId: string) => Promise<void>
   setConversationExpert: (id: string, expertId: string | null) => Promise<void>
   setConversationApprovalMode: (id: string, mode: SandboxApprovalMode) => Promise<void>
