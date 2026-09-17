@@ -26,6 +26,15 @@ export interface ToolExecContext {
   /** Parent-owned, attempt-scoped lifecycle; never settles acceptance. */
   beginPlanNodeExecution?: (ref: string | number, attemptId: string) => void
   updatePlanNodeExecution?: (ref: string | number, attemptId: string, status: PlanNodeExecutionStatus, subConvId?: string) => void
+  /** 单专家 @召唤的结论原文交付：the executor hands the finished expert's text to
+   *  the engine, which delivers it as the turn's own assistant message instead
+   *  of letting another LLM round re-summarize it (which loses information).
+   *  Returns true when the engine ACCEPTED it — which happens only for the
+   *  delegation the engine dispatched itself (`startDelegatedLoop`), so a
+   *  model-emitted spawn_agent never closes a turn this way. A true return also
+   *  means the conclusion travels as the assistant message, so the executor
+   *  must keep its tool result short rather than repeat the text. */
+  deliverExpertConclusion?: (toolUseId: string, text: string) => boolean
   /** Long-running exec tools report the spawned pid (terminal card wiring). */
   onProcessStart?: (pid: string) => void
   /** Format exec tool result with exit code and stdout/stderr separation. */

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { composeExpertInstructions, expertLabel, parseExpertMention } from '../src/shared/expert-context'
+import {
+  composeExpertInstructions,
+  expertLabel,
+  formatSummonForPrompt,
+  normalizeSummonedExperts,
+  parseExpertMention,
+  parseExpertMentions,
+} from '../src/shared/expert-context'
 import type { ExpertProfile } from '../src/shared/types/expert'
 
 // ── Test doubles ──
@@ -144,6 +151,103 @@ describe('parseExpertMention', () => {
     const r = parseExpertMention('邮箱是 a@b.com', experts)
     expect(r.expert).toBeNull()
     expect(r.text).toBe('邮箱是 a@b.com')
+  })
+})
+
+// ── parseExpertMentions（多专家 @召唤 → 计划模式） ──
+
+describe('parseExpertMentions', () => {
+  const experts = [
+    expert({ id: 'expert-writing', name: '写作专家' }),
+    expert({ id: 'expert-code', name: '代码审查专家' }),
+    expert({ id: 'expert-data', name: '数据分析专家' }),
+    expert({ id: 'expert-off', name: '离职专家', enabled: false }),
+  ]
+
+  it('collects every mentioned expert in match order and strips all tokens', () => {
+    const r = parseExpertMentions('@写作专家 @数据分析专家 一起把这个方案做出来', experts)
+    expect(r.experts.map((e) => e.id)).toEqual(['expert-writing', 'expert-data'])
+    expect(r.text).toBe('一起把这个方案做出来')
+  })
+
+  it('counts a name mentioned twice once', () => {
+    const r = parseExpertMentions('@写作专家 先写，写完后 @写作专家 再改', experts)
+    expect(r.experts.map((e) => e.id)).toEqual(['expert-writing'])
+    expect(r.text).toBe('先写，写完后 再改')
+  })
+
+  it('resolves an overlapping pair to the specific expert, not both', () => {
+    // The generic "翻译" is a prefix of the summoned "翻译专家": longest-first
+    // matching is what keeps ONE roster entry instead of a stray one.
+    const overlapping = [expert({ id: 'a', name: '翻译' }), expert({ id: 'b', name: '翻译专家' })]
+    const r = parseExpertMentions('@翻译专家 你好', overlapping)
+    expect(r.experts.map((e) => e.id)).toEqual(['b'])
+  })
+
+  it('never resolves a disabled expert and returns the raw text when nothing matches', () => {
+    const disabled = parseExpertMentions('@离职专家 帮我看看', experts)
+    expect(disabled.experts).toEqual([])
+    expect(disabled.text).toBe('@离职专家 帮我看看')
+
+    const none = parseExpertMentions('邮箱是 a@b.com', experts)
+    expect(none.experts).toEqual([])
+    expect(none.text).toBe('邮箱是 a@b.com')
+  })
+
+  it('is the same answer the single-expert wrapper gives', () => {
+    // The wrapper exists so the two paths cannot disagree about what a mention
+    // is; a roster of one must look exactly like the old single-mention result.
+    const singular = parseExpertMention('@写作专家 帮我写一篇周报', experts)
+    const plural = parseExpertMentions('@写作专家 帮我写一篇周报', experts)
+    expect(singular.expert?.id).toBe(plural.experts[0]?.id)
+    expect(singular.text).toBe(plural.text)
+  })
+})
+
+// ── SummonedExpert 名单与回合简报（state block，多专家计划模式） ──
+
+describe('normalizeSummonedExperts', () => {
+  it('drops blanks, dedupes by id and keeps the first name seen', () => {
+    const roster = normalizeSummonedExperts([
+      { id: ' a ', name: ' 甲 ' },
+      { id: 'a', name: '重复' },
+      { id: '', name: '无 id' },
+      { id: 'b', name: '' },
+    ] as never)
+    expect(roster).toEqual([{ id: 'a', name: '甲' }, { id: 'b', name: 'b' }])
+  })
+
+  it('tolerates nothing at all', () => {
+    expect(normalizeSummonedExperts(undefined)).toEqual([])
+  })
+})
+
+describe('formatSummonForPrompt', () => {
+  const summon = {
+    experts: [{ id: 'expert-writing', name: '写作专家' }, { id: 'expert-code', name: '代码审查专家' }],
+    nudged: false,
+    engaged: false,
+  }
+
+  it('names every summoned expert with the id the plan assigns', () => {
+    const out = formatSummonForPrompt(summon)!
+    expect(out).toContain('**写作专家** (id: `expert-writing`)')
+    expect(out).toContain('**代码审查专家** (id: `expert-code`)')
+    // The protocol the turn is graded on, step by step.
+    expect(out).toContain('`create_plan` first')
+    expect(out).toContain('planNode')
+    expect(out).toContain('advance_plan')
+  })
+
+  it('adds the corrective paragraph only after a nudged turn', () => {
+    expect(formatSummonForPrompt(summon)).not.toContain('ended the previous turn')
+    const nudged = formatSummonForPrompt({ ...summon, nudged: true })!
+    expect(nudged).toContain('ended the previous turn')
+  })
+
+  it('renders nothing without a summons', () => {
+    expect(formatSummonForPrompt(null)).toBeNull()
+    expect(formatSummonForPrompt({ experts: [], nudged: false, engaged: false })).toBeNull()
   })
 })
 

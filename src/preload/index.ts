@@ -22,6 +22,7 @@ import type { MemoryEntry, MemorySearchInput } from '../shared/types/memory'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../shared/types/knowledge'
 import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../shared/types/electron-bridge'
 import type { ExpertProfile } from '../shared/types/expert'
+import type { SummonedExpert } from '../shared/expert-context'
 import type { GitAction, GitResult } from '../shared/types/git'
 import type { AgentSessionCreateOptions } from '../shared/agent-protocol'
 
@@ -388,8 +389,8 @@ const electronAPI = {
   // ── Agent sessions (engines hosted in main) ──
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CREATE, sessionId, opts),
-  agentSessionAsk: (sessionId: string, content: string, delegateExpertId?: string): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, delegateExpertId),
+  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[]): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon),
   agentSessionCancel: (sessionId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CANCEL, sessionId),
   agentSessionHistory: (sessionId: string): Promise<{ messages: unknown[]; agentId: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),

@@ -12,6 +12,7 @@ import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../../../shared/agent-session/mirror'
+import type { SummonedExpert } from '../../../shared/expert-context'
 
 // ── Client-side session state ────────────────────────────────────────
 // Engines are hosted in the main process (M1.4 session manager); this hook is
@@ -35,9 +36,11 @@ export interface SessionEngineHandle {
   seedHistorySummary(text?: string, firstKeptId?: string): void
   loadPlan(convId: string): void
   startLoop(userMessage: string): Promise<void>
-  /** @-summon (召唤专家): the same ask, but main routes the turn into a
-   *  spawn_agent delegation to the named expert instead of a normal loop. */
-  startDelegatedLoop(userMessage: string, expertId: string): Promise<void>
+  /** @-summon (召唤专家): the same ask carrying the turn's expert roster. One
+   *  name delegates to that expert (whose conclusion comes back verbatim as the
+   *  turn's own answer), several enter plan mode. Main decides which — the
+   *  renderer only reports who was mentioned. */
+  startSummonedLoop(userMessage: string, experts: SummonedExpert[]): Promise<void>
   approveTool(toolUseId: string): void
   rejectTool(toolUseId: string): void
   killTool(toolUseId: string): void
@@ -110,10 +113,10 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   }, [])
 
   const makeHandle = useCallback((convId: string, st: SessionState): SessionEngineHandle => {
-    // One ask path, two entry points: a normal loop and the @-summon's
-    // spawn_agent delegation (main picks the engine method off the expert id).
-    const ask = (content: string, delegateExpertId?: string) =>
-      window.electronAPI.agentSessionAsk(convId, content, delegateExpertId).catch((err: unknown) => {
+    // One ask path, two entry points: a normal loop and the @-summon roster
+    // (main picks the engine method off its length).
+    const ask = (content: string, summon?: SummonedExpert[]) =>
+      window.electronAPI.agentSessionAsk(convId, content, summon).catch((err: unknown) => {
         // A failed ask (session creation blew up, profile missing, …) must be
         // visible in the conversation, not swallowed as an unhandled rejection
         // — that silence is how a dead first message used to look like nothing.
@@ -148,8 +151,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     startLoop(userMessage: string) {
       return ask(userMessage)
     },
-    startDelegatedLoop(userMessage: string, expertId: string) {
-      return ask(userMessage, expertId)
+    startSummonedLoop(userMessage: string, experts: SummonedExpert[]) {
+      return ask(userMessage, experts)
     },
     approveTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId]) },
     rejectTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'rejectTool', [toolUseId]) },

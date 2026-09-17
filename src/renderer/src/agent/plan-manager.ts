@@ -7,6 +7,7 @@
  */
 import type { ToolUseBlock, AgentMessage } from '../types/agent'
 import type { Plan, PlanNodeExecutionStatus } from '../../../shared/types/plan'
+import type { SummonedExpert } from '../../../shared/expert-context'
 import {
   beginNodeExecution,
   updateNodeExecution,
@@ -30,9 +31,18 @@ export class PlanManager {
     private notify: () => void,
     private getMessages: () => AgentMessage[],
     private onPlanChange?: (plan: Plan | null) => void,
+    /** 当前回合被 @召唤的专家（多专家召唤 → 计划模式）。A getter, not a snapshot:
+     *  the summons belongs to the turn, and create_plan is where it is enforced. */
+    private getSummonedExperts?: () => SummonedExpert[],
   ) { }
 
+  /** Fired on every real plan mutation (a create, a settle, a node link) — the
+   *  engine reads it as "the plan tooling has been used in this turn", which is
+   *  what retires the multi-expert summons nudge. */
+  onMutated?: () => void
+
   private notifyPlanChange(): void {
+    this.onMutated?.()
     this.onPlanChange?.(this.plan)
   }
 
@@ -88,11 +98,36 @@ export class PlanManager {
     })
   }
 
+  /** 多专家 @召唤的覆盖检查：每位被召唤的专家都必须成为某个节点的 assignee。
+   *  A plain chat turn has no summons and skips this entirely. Enforced HERE
+   *  rather than in prose because the failure is otherwise silent: the model
+   *  returns a plan, the user believes their experts were assigned, and one of
+   *  them simply never appears. The error goes back as a tool_result the model
+   *  can act on inside the same loop — which is also why it names who is
+   *  missing AND who is already covered. */
+  private assertSummonCoverage(plan: Plan): void {
+    const summoned = this.getSummonedExperts?.() ?? []
+    if (summoned.length === 0) return
+    const assigned = new Set(plan.nodes.map(n => n.assignee).filter((a): a is string => !!a))
+    const missing = summoned.filter(e => !assigned.has(e.id))
+    if (missing.length === 0) return
+    const covered = summoned.filter(e => assigned.has(e.id)).map(e => e.name)
+    throw new Error(
+      `The user summoned ${summoned.length} expert(s) by @-mention and EACH of them must own at least one node — missing: ${missing.map(e => `${e.name} (id: ${e.id})`).join(', ')}.` +
+      (covered.length > 0 ? ` Already assigned: ${covered.join(', ')}.` : '') +
+      ' Rewrite the steps so every summoned expert appears as an `assignee` (the node description is their assignment), then call create_plan again.'
+    )
+  }
+
   async execCreatePlan(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {
       const objective = String(t.input?.objective || '')
-      this.plan = createPlanDag(objective, PlanManager.normalizeSteps(t.input?.steps))
+      const next = createPlanDag(objective, PlanManager.normalizeSteps(t.input?.steps))
+      // Coverage first, assignment second: a rejected plan must leave the live
+      // one (and the summons it may already satisfy) untouched.
+      this.assertSummonCoverage(next)
+      this.plan = next
       this.notifyPlanChange()
       this.addToolResult(t.id, formatPlanSnapshot(this.plan, { action: 'create' }), false)
       t.exitCode = 0

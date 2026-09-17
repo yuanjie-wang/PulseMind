@@ -460,6 +460,13 @@ export class ExecutionFlow {
 
   /** @internal */
   handleEndTurnResponse(stopReason: string | null): void {
+    // 多专家 @召唤（计划模式）：a turn that ends with no plan is re-issued ONCE —
+    // the summoned experts have not been asked to work yet, so the user's request
+    // is still unanswered. Returning here keeps the turn OPEN: no `completed`
+    // status, the clock keeps running, and afterSession is not fired for a turn
+    // that will continue. The bound lives in the engine (`nudged`), so a model
+    // that ignores both the brief and this correction closes normally next time.
+    if (this.engine.nudgeSummonIfUnplanned()) return
     // The turn's duration — user send → this last output character, with every
     // thinking round and tool call in between counted and any stretch parked on
     // the user (held approval / ask_user / loop-limit prompt / manual pause)

@@ -13,6 +13,7 @@ import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '.
 import type { MemoryEntry, MemorySearchInput } from './memory'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
 import type { ExpertProfile } from './expert'
+import type { SummonedExpert } from '../expert-context'
 import type { GitAction, GitResult } from './git'
 import type { ExperienceRecord, ExperienceDraft } from './experience-types'
 import type { WindowControlsLayout } from '../window-chrome'
@@ -415,7 +416,10 @@ export interface ElectronAPI {
   canvasOpenInBrowser: (rectId: string) => Promise<{ success: boolean; error?: string }>
   // ── Agent sessions (engines hosted in main, PLAN-0.3.5 M1.4) ──
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions) => Promise<{ sessionId: string; agentId: string; workspaceDir?: string }>
-  agentSessionAsk: (sessionId: string, content: string, delegateExpertId?: string) => Promise<void>
+  /** `summon` is the turn's @-mention roster: one name delegates (the expert's
+   *  conclusion is delivered verbatim), several enter plan mode. Absent or empty
+   *  is a normal turn. */
+  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[]) => Promise<void>
   agentSessionCancel: (sessionId: string) => Promise<void>
   agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null) => Promise<void>

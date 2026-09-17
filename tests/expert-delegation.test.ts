@@ -125,17 +125,103 @@ describe('expert delegation: @-summon routes through spawn_agent', () => {
 })
 
 /**
+ * 多专家 @召唤 → 计划模式（用户裁定 2026-09-17：「当@多个专家，能不能进入plan模式，
+ * 为多个专家分配任务」）。The engine owns the routing: one name IS the delegation
+ * path above, so the two entry points cannot disagree about a one-name roster.
+ * A multi-name roster opens an ordinary loop with `summon` set — the plan is the
+ * model's own work, guided by the state block's brief and enforced in
+ * create_plan (see tests/expert-summon-plan-mode.test.ts).
+ */
+describe('expert delegation: multi-expert @-summon opens plan mode', () => {
+  it('opens a normal loop with the roster recorded and no pre-baked spawn call', async () => {
+    const engine = makeEngine()
+    const continueLoop = vi.spyOn(engine as unknown as { continueLoop: () => Promise<void> }, 'continueLoop')
+      .mockResolvedValue(undefined)
+    try {
+      await engine.startPlanningLoop('把这个方案做出来', [
+        { id: 'expert-writer', name: '写作专家' },
+        { id: 'expert-reviewer', name: '代码审查专家' },
+      ])
+
+      // The user's own message, once — the plan itself is the model's next move.
+      expect(engine.messages).toHaveLength(1)
+      expect(engine.messages[0].contentBlocks).toHaveLength(1)
+      expect(engine.messages[0].contentBlocks[0]).toMatchObject({ type: 'text', text: '把这个方案做出来' })
+      expect(engine.summon).toEqual({
+        experts: [{ id: 'expert-writer', name: '写作专家' }, { id: 'expert-reviewer', name: '代码审查专家' }],
+        nudged: false,
+        engaged: false,
+      })
+      expect(continueLoop).toHaveBeenCalledTimes(1)
+      // The clock runs for a plan-mode turn like any other.
+      expect(engine.turnClock.isActive()).toBe(true)
+    } finally {
+      continueLoop.mockRestore()
+    }
+  })
+
+  it('collapses a one-name roster onto the delegation path and an empty one onto nothing', async () => {
+    const engine = makeEngine()
+    const dispatch = vi.spyOn(engine, 'handleToolUseResponse').mockResolvedValue(undefined)
+    const continueLoop = vi.spyOn(engine as unknown as { continueLoop: () => Promise<void> }, 'continueLoop')
+      .mockResolvedValue(undefined)
+    try {
+      await engine.startPlanningLoop('写一篇周报', [{ id: 'expert-writer', name: '写作专家' }])
+      const call = engine.messages[1].contentBlocks[0] as ToolUseBlock
+      expect(call.name).toBe('spawn_agent')
+      expect(call.input).toEqual({ subAgentId: 'expert-writer', task: '写一篇周报' })
+      // One expert never enters plan mode: `summon` exists only for a roster
+      // that has to be split across nodes.
+      expect(engine.summon).toBeNull()
+      expect(continueLoop).not.toHaveBeenCalled()
+
+      await engine.startPlanningLoop('没有专家', [])
+      await engine.startPlanningLoop('   ', [{ id: 'expert-writer', name: '写作专家' }])
+      expect(engine.messages).toHaveLength(2)
+      expect(continueLoop).not.toHaveBeenCalled()
+    } finally {
+      dispatch.mockRestore()
+      continueLoop.mockRestore()
+    }
+  })
+
+  it('clears the summons when the NEXT turn opens (per-turn state, not a mode)', async () => {
+    const engine = makeEngine()
+    const continueLoop = vi.spyOn(engine as unknown as { continueLoop: () => Promise<void> }, 'continueLoop')
+      .mockResolvedValue(undefined)
+    try {
+      await engine.startPlanningLoop('第一轮', [
+        { id: 'a', name: '甲' },
+        { id: 'b', name: '乙' },
+      ])
+      expect(engine.summon).not.toBeNull()
+
+      // A plain follow-up message must not inherit the previous turn's roster —
+      // which covers the NEXT loop too: an ordinary send goes through startLoop,
+      // i.e. through prepareTurn, which is where the reset lives.
+      await engine.startLoop('再改一下')
+      expect(engine.summon).toBeNull()
+      expect(engine.messages).toHaveLength(2)
+    } finally {
+      continueLoop.mockRestore()
+    }
+  })
+})
+
+/**
  * The renderer half cannot be mounted (vitest is node-env: no React, no
  * electronAPI), so the wiring is pinned as source, the same way
  * tests/pending-approval.test.ts pins the materialization ordering.
  */
 describe('expert delegation: renderer wiring (source-scanned)', () => {
   const controllerSrc = readFileSync('src/renderer/src/hooks/useChatController.ts', 'utf8')
+  const bridgeSrc = readFileSync('src/shared/types/electron-bridge.ts', 'utf8')
+  const sessionMgrSrc = readFileSync('src/main/agent/session-manager.ts', 'utf8')
 
-  it('routes a resolved mention to startDelegatedLoop and everything else to startLoop', () => {
+  it('routes a resolved roster through startSummonedLoop and everything else to startLoop', () => {
     // Non-vacuity: the branch this invariant talks about exists.
-    expect(controllerSrc).toContain('parseExpertMention(content, experts)')
-    expect(controllerSrc).toContain('if (mention.expert) engineHandle.startDelegatedLoop(content, mention.expert.id)')
+    expect(controllerSrc).toContain('parseExpertMentions(content, experts)')
+    expect(controllerSrc).toContain('if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned)')
     expect(controllerSrc).toContain('else engineHandle.startLoop(content)')
   })
 
@@ -146,5 +232,36 @@ describe('expert delegation: renderer wiring (source-scanned)', () => {
     expect(controllerSrc).not.toContain('updateConversationExpert(convId, mention.expert.id)')
     // An empty mention must refuse instead of silently switching.
     expect(controllerSrc).toContain('chatView.expert.needTaskWithSummon')
+  })
+
+  it('carries the roster over the wire as a list and routes it in ONE place', () => {
+    // The old scalar param would silently drop a second expert — the whole
+    // point of the plural path — so the field itself is pinned.
+    expect(bridgeSrc).toContain('agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[])')
+    expect(bridgeSrc).not.toContain('delegateExpertId')
+    // Main's only routing rule (the engine collapses 1 → delegation itself).
+    expect(sessionMgrSrc).toContain('const roster = normalizeSummonedExperts(summon)')
+    expect(sessionMgrSrc).toContain('? entry.engine.startPlanningLoop(content, roster)')
+    expect(sessionMgrSrc).toContain(': entry.engine.startLoop(content)')
+    expect(sessionMgrSrc).not.toContain('delegateExpertId')
+  })
+
+  it('forwards the roster at every hop between renderer and engine', () => {
+    // Three pass-throughs, each of which can drop the third argument without a
+    // symptom: the renderer would send it, main would receive a normal turn, and
+    // the expert would simply be mentioned into the void — the class of failure
+    // this file exists for.
+    const handlerSrc = readFileSync('src/main/ipc/agent-session.handler.ts', 'utf8')
+    const preloadSrc = readFileSync('src/preload/index.ts', 'utf8')
+    const clientSrc = readFileSync('src/renderer/src/hooks/useConversationEngine.ts', 'utf8')
+    // Preload: the invoke must carry it (a 2-arg invoke textually drops it).
+    expect(preloadSrc).toContain('ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon)')
+    // Handler: main's ask signature is (sessionId, content, pageContext, summon),
+    // so the summon must ride the FOURTH slot — a 3-arg forward binds it to
+    // pageContext and every summon becomes an ordinary turn.
+    expect(handlerSrc).toContain('agentSessionManager.ask(sessionId, content, undefined, summon)')
+    // The client handle: the roster reaches the IPC call, not just its signature.
+    expect(clientSrc).toContain('agentSessionAsk(convId, content, summon)')
+    expect(clientSrc).toContain('return ask(userMessage, experts)')
   })
 })

@@ -206,31 +206,53 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         .flatMap(m => m.contentBlocks)
       const subText = subAssistantTexts.filter(b => b.type === 'text').map(b => (b as TextBlock).text).join('\n\n').slice(0, SUBAGENT_TEXT_MAX)
       const subTools = subAssistantTexts.filter(b => b.type === 'tool_use').map(b => `[tool_use: ${(b as ToolUseBlock).name}]`).join(', ')
-      const errorDetail = result.status !== 'completed'
-        ? `\n\n### Sub-agent Status: ${result.status}\n` + (subText ? `**Partial Output:**\n${subText}` : '') + (subTools ? `\n**Tool Calls Attempted:** ${subTools}` : '')
-        : ''
-      let summary = result.status === 'completed'
-        ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
-        : `## Sub-Agent Result (${result.status})\n\nThe sub-agent did not complete successfully.${errorDetail}`
-      // Close the create_plan → spawn_agent → advance_plan loop in the model's
-      // face: the result names the node and the exact settle call to make.
-      if (planNode) {
-        summary += `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — settle it now with advance_plan action="complete" node=${nodeNumberOf(planNode)} (or "fail" / "skip" if it did not succeed).`
-      }
-      // Close-out instruction, deliberately the LAST bytes of the envelope:
-      // the envelope reads like an intermediate artifact, and a weak model
-      // answers it by delegating again — measured loop (2026-09-16, mimo):
-      // five identical re-dispatches of an already-completed translation. The
-      // model decides its next move off the end of this result, so the end
-      // says what to do: report, don't re-run.
-      summary += result.status === 'completed'
-        ? '\n\n**This result is the deliverable.** Report it to the user in your own words and move on — do NOT re-dispatch the same or a near-identical task.'
-        : '\n\n**Report this outcome to the user.** Do NOT silently re-dispatch the same task; retry only with a meaningfully different task description, or ask the user.'
+      const expertName = profile?.name || subAgentId || '(general sub-agent)'
 
-      t.exitCode = result.status === 'completed' ? 0 : 1
-      t.status = 'completed'
-      ex.addToolResult(t.id, summary, result.status === 'error')
-      t.output = `子代理已完成. ${subText}`
+      // 单专家 @召唤的结论原文进对话（用户裁定 2026-09-17：「能不能在主对话中直接
+      // 输出专家的结论」——主 Agent 转述一遍会丢信息）。The engine accepts the
+      // conclusion ONLY for the delegation it dispatched itself, so a
+      // model-emitted spawn_agent can never close a turn verbatim; on
+      // acceptance it travels as the turn's own assistant message, which is
+      // why the tool result stays short here — the full text in both places
+      // would be a duplicate 10k chars in every later request.
+      const verbatim = result.status === 'completed' && !!subText.trim()
+        && ex.deliverExpertConclusion?.(t.id, subText) === true
+      if (verbatim) {
+        t.exitCode = 0
+        t.status = 'completed'
+        ex.addToolResult(
+          t.id,
+          `## Sub-Agent Result (completed)\n\nDelegated to **${expertName}**. The expert's conclusion is delivered to the user verbatim as the message that follows — do NOT restate or summarize it.`,
+          false
+        )
+        t.output = `子代理已完成. ${subText}`
+      } else {
+        const errorDetail = result.status !== 'completed'
+          ? `\n\n### Sub-agent Status: ${result.status}\n` + (subText ? `**Partial Output:**\n${subText}` : '') + (subTools ? `\n**Tool Calls Attempted:** ${subTools}` : '')
+          : ''
+        let summary = result.status === 'completed'
+          ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
+          : `## Sub-Agent Result (${result.status})\n\nThe sub-agent did not complete successfully.${errorDetail}`
+        // Close the create_plan → spawn_agent → advance_plan loop in the model's
+        // face: the result names the node and the exact settle call to make.
+        if (planNode) {
+          summary += `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — settle it now with advance_plan action="complete" node=${nodeNumberOf(planNode)} (or "fail" / "skip" if it did not succeed).`
+        }
+        // Close-out instruction, deliberately the LAST bytes of the envelope:
+        // the envelope reads like an intermediate artifact, and a weak model
+        // answers it by delegating again — measured loop (2026-09-16, mimo):
+        // five identical re-dispatches of an already-completed translation. The
+        // model decides its next move off the end of this result, so the end
+        // says what to do: report, don't re-run.
+        summary += result.status === 'completed'
+          ? '\n\n**This result is the deliverable.** Report it to the user in your own words and move on — do NOT re-dispatch the same or a near-identical task.'
+          : '\n\n**Report this outcome to the user.** Do NOT silently re-dispatch the same task; retry only with a meaningfully different task description, or ask the user.'
+
+        t.exitCode = result.status === 'completed' ? 0 : 1
+        t.status = 'completed'
+        ex.addToolResult(t.id, summary, result.status === 'error')
+        t.output = `子代理已完成. ${subText}`
+      }
     } finally {
       release()
     }

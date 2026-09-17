@@ -8,6 +8,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { agentSessionManager } from '../agent/session-manager'
 import type { AgentEventData, AgentSessionCreateOptions } from '../../shared/agent-protocol'
+import type { SummonedExpert } from '../../shared/expert-context'
 
 export function registerAgentSessionHandlers(): void {
   agentSessionManager.onEvent((sessionId, data: AgentEventData) => {
@@ -25,8 +26,8 @@ export function registerAgentSessionHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CREATE, (_event, sessionId: string, opts: AgentSessionCreateOptions = {}) =>
     agentSessionManager.createSession(sessionId, opts))
 
-  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_ASK, async (_event, sessionId: string, content: string, delegateExpertId?: string) => {
-    await agentSessionManager.ask(sessionId, content, undefined, delegateExpertId)
+  ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_ASK, async (_event, sessionId: string, content: string, summon?: SummonedExpert[]) => {
+    await agentSessionManager.ask(sessionId, content, undefined, summon)
   })
 
   ipcMain.handle(IPC_CHANNELS.AGENT_SESSION_CANCEL, (_event, sessionId: string) => {

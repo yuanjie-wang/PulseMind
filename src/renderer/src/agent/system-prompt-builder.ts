@@ -4,6 +4,7 @@ import type { AgentEngineOptions } from './AgentEngine'
 import { getCachedSkillPrefs } from './mcp-cache'
 import type { GitStatusInfo } from '../../../shared/types/git'
 import { formatPlanForPrompt } from '../../../shared/plan/graph'
+import { formatSummonForPrompt, type SummonState } from '../../../shared/expert-context'
 
 export interface BuildSystemPromptParams {
   opts: AgentEngineOptions
@@ -11,6 +12,10 @@ export interface BuildSystemPromptParams {
   spawnSystemPromptAppendix?: string
   messages: AgentMessage[]
   plan: Plan | null
+  /** 多专家 @召唤（计划模式）：the turn's expert roster. Per-turn state, so it
+   *  belongs to the tail — never to the invariant core. Null on every other
+   *  turn, including a single-expert summon (that one is a plain delegation). */
+  summon?: SummonState | null
   /** The enabled built-ins' usage protocols (buildToolProtocols over the SAME
    *  final toolset the request ships as schemas). Static per toolset, so it
    *  keeps the system prompt's cache contract: it only changes when the tool
@@ -42,7 +47,7 @@ export interface BuildSystemPromptResult {
 }
 
 export async function buildSystemPrompt(params: BuildSystemPromptParams): Promise<BuildSystemPromptResult> {
-  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, toolProtocols } = params
+  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols } = params
 
   if (spawnSystemPrompt) {
     const systemPrompt = spawnSystemPromptAppendix
@@ -56,6 +61,7 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     opts,
     messages,
     plan,
+    summon,
   })
   return { systemPrompt, stateBlock }
 }
@@ -153,8 +159,9 @@ async function buildStateBlock(params: {
   opts: AgentEngineOptions
   messages: AgentMessage[]
   plan: Plan | null
+  summon?: SummonState | null
 }): Promise<string> {
-  const { opts, plan } = params
+  const { opts, plan, summon } = params
   const sections: string[] = []
 
   if (opts.memoryManager) {
@@ -180,6 +187,12 @@ async function buildStateBlock(params: {
 
   const planSection = formatPlanForPrompt(plan)
   if (planSection) sections.push(planSection)
+
+  // 多专家 @召唤的作战说明 — right after the plan (which it tells the model to
+  // create) and before the page/hints, so the roster reads together with the
+  // graph it is about. Turn-scoped, so it vanishes with the turn.
+  const summonSection = formatSummonForPrompt(summon ?? null)
+  if (summonSection) sections.push(summonSection)
 
   const pageSection = buildPageSection(opts.pageContext)
   if (pageSection) sections.push(pageSection)

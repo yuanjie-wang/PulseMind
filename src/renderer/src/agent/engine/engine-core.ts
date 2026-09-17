@@ -79,4 +79,8 @@ export interface EngineCore {
   continueLoop: () => Promise<void>
   cancelLoop: () => void
   resumeExecution: () => void
+  /** 多专家 @召唤：the turn ended without a plan — one corrective re-issue is
+   *  owed. True means the caller must NOT close the turn (the engine is about
+   *  to re-run it). See AgentEngine.nudgeSummonIfUnplanned. */
+  nudgeSummonIfUnplanned: () => boolean
 }

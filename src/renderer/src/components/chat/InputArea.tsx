@@ -416,6 +416,17 @@ export function InputArea({
                   }}
                 >
                   <div style={{ fontSize: 11, color: '#999', padding: '4px 8px 2px' }}>{t('chatView.expert.summonTitle')}</div>
+                  {/* What a summon will DO, because the two shapes differ: one
+                      expert answers in their own words, several become a plan.
+                      Without it a second name reads as a second answer rather
+                      than a different mode. ABOVE the list on purpose: this box
+                      is the scroll container (maxHeight + overflow), so a
+                      footnote below eight rows is only reachable by scrolling —
+                      the legend has to be there the moment `@` opens it. */}
+                  <div style={{ padding: '2px 8px 4px', fontSize: 11, color: '#999', lineHeight: 1.6 }}>
+                    <div>{t('chatView.expert.summonHintOne')}</div>
+                    <div>{t('chatView.expert.summonHintMany')}</div>
+                  </div>
                   {mentionMatches.map((expert, i) => (
                     <div
                       key={expert.id}

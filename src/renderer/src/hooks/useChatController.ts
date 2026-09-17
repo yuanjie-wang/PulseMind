@@ -7,7 +7,7 @@ import { takePendingApprovalMode } from '../stores/pendingApprovalStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
 import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
-import { parseExpertMention } from '../../../shared/expert-context'
+import { parseExpertMentions, type SummonedExpert } from '../../../shared/expert-context'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
@@ -288,18 +288,21 @@ export function useChatController(options: UseChatControllerOptions) {
 
       let convId = persistence.activeConversationKey ? String(persistence.activeConversationKey) : ''
 
-      // ── @-summon: resolve an expert mention before anything else ──
-      // Summoning IS delegation now (spawn_agent): the mentioned expert runs
-      // the task as a sub-agent inside this conversation and the parent
-      // summarizes the result — the conversation itself never switches
-      // identity anymore. The mention must resolve against an enabled expert
-      // and is stripped from the outgoing text; with nothing to delegate
-      // (an empty task) there is no summon.
+      // ── @-summon: resolve expert mentions before anything else ──
+      // Summoning IS delegation (spawn_agent): the mentioned experts run their
+      // parts as sub-agents inside this conversation — the conversation itself
+      // never switches identity anymore. One name is the single-expert path
+      // (the expert's conclusion is delivered verbatim); several are handed to
+      // the engine's plan mode, which plans the work and assigns it. The
+      // mentions must resolve against enabled experts and are stripped from the
+      // outgoing text; with nothing left to delegate (an empty task) there is
+      // no summon at all.
       let experts: ExpertProfile[] = []
       try { experts = await window.electronAPI.expertList() } catch { /* non-critical */ }
-      const mention = parseExpertMention(content, experts)
-      if (mention.expert) {
-        content = mention.text
+      const mentions = parseExpertMentions(content, experts)
+      const mentioned: SummonedExpert[] = mentions.experts.map((e) => ({ id: e.id, name: e.name }))
+      if (mentioned.length > 0) {
+        content = mentions.text
         if (!content.trim()) {
           message.warning(t('chatView.expert.needTaskWithSummon'))
           return
@@ -349,12 +352,12 @@ export function useChatController(options: UseChatControllerOptions) {
         )
       }
 
-      // The @-summoned expert rides the same conversation materialization and
+      // The @-summoned experts ride the same conversation materialization and
       // title generation as a normal send — only the turn's entry point
-      // differs: main dispatches a deterministic spawn_agent tool call and
-      // the expert's result comes back into this conversation.
+      // differs: main dispatches the deterministic spawn_agent call (one
+      // expert) or plans the work first (several), inside this conversation.
       const engineHandle = engine.getOrCreateEngine(convId)
-      if (mention.expert) engineHandle.startDelegatedLoop(content, mention.expert.id)
+      if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned)
       else engineHandle.startLoop(content)
     },
     [apiKey, persistence.activeConversationKey, persistence.addConversation,

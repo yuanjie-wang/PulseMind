@@ -29,7 +29,8 @@ import { projectStore } from '../storage/project-store'
 import { expertStore } from '../storage/expert-store'
 import { serverManager } from '../mcp/MCPServerManager'
 import { getKnowledgeFilesByIds } from '../storage/knowledge.db'
-import { composeExpertInstructions, toExpertRefCatalogs, type ExpertRefCatalogs } from '../../shared/expert-context'
+import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalogs, type ExpertRefCatalogs } from '../../shared/expert-context'
+import type { SummonedExpert } from '../../shared/expert-context'
 import type { ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
 import { agentClientRegistry } from './client-registry'
@@ -612,9 +613,10 @@ export class AgentSessionManagerImpl {
    *  beyond the global concurrency cap queue FIFO. `pageContext` (the browser
    *  extension's current tab) is per-turn state: it rides on the engine opts
    *  and lands in the prompt's dynamic (non-cached) Current Page section.
-   *  `delegateExpertId` (@-summon) turns the ask into a spawn_agent delegation:
-   *  the expert runs the message as a sub-agent and the parent summarizes. */
-  async ask(sessionId: string, content: string, pageContext?: PageContext, delegateExpertId?: string): Promise<void> {
+   *  `summon` (@-mention) is this turn's expert roster, and the ONE routing
+   *  rule lives in the engine: one name is a spawn_agent delegation delivered
+   *  verbatim, several enter plan mode. Absent/empty is a normal turn. */
+  async ask(sessionId: string, content: string, pageContext?: PageContext, summon?: SummonedExpert[]): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
     this.refreshConversationApproval(sessionId, entry)
     await this.refreshExpertContext(sessionId, entry)
@@ -629,8 +631,9 @@ export class AgentSessionManagerImpl {
     }
     this.runningLoops += 1
     const sandboxCtx = this.sandboxContexts.get(sessionId)
-    const startTurn = () => delegateExpertId
-      ? entry.engine.startDelegatedLoop(content, delegateExpertId)
+    const roster = normalizeSummonedExperts(summon)
+    const startTurn = () => roster.length > 0
+      ? entry.engine.startPlanningLoop(content, roster)
       : entry.engine.startLoop(content)
     void (sandboxCtx ? sessionSandbox.run(sandboxCtx, startTurn) : startTurn())
       .catch((err) => {

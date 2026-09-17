@@ -53,6 +53,9 @@ export class ToolExecutor implements ToolExecContext {
     getPlan?: () => Plan | null,
     /** @internal records the sub-conversation a plan node's spawn runs in */
     linkPlanNode?: (ref: string | number, subConvId: string) => void,
+    /** @internal 单专家 @召唤：asks the engine to deliver this expert's conclusion
+     *  as the turn's own assistant message (see ToolExecContext) */
+    deliverExpertConclusion?: (toolUseId: string, text: string) => boolean,
     beginPlanNodeExecution?: ToolExecContext['beginPlanNodeExecution'],
     updatePlanNodeExecution?: ToolExecContext['updatePlanNodeExecution'],
   ) {
@@ -63,6 +66,7 @@ export class ToolExecutor implements ToolExecContext {
     this.spawnSubAgent = spawnSubAgent
     this.getPlan = getPlan
     this.linkPlanNode = linkPlanNode
+    this.deliverExpertConclusion = deliverExpertConclusion
     this.beginPlanNodeExecution = beginPlanNodeExecution
     this.updatePlanNodeExecution = updatePlanNodeExecution
   }
@@ -74,6 +78,7 @@ export class ToolExecutor implements ToolExecContext {
   spawnSubAgent?: SpawnSubAgentFn
   getPlan?: () => Plan | null
   linkPlanNode?: (ref: string | number, subConvId: string) => void
+  deliverExpertConclusion?: (toolUseId: string, text: string) => boolean
   beginPlanNodeExecution?: ToolExecContext['beginPlanNodeExecution']
   updatePlanNodeExecution?: ToolExecContext['updatePlanNodeExecution']
 

@@ -19,6 +19,7 @@ import { SkillKeywordAgent, SkillSelectionAgent, HistorySummaryAgent } from './o
 import { safeInvoke, safeInvokeObserver, MAX_LOOP_ITERATIONS, generateMsgId, type SubAgentResult, type SpawnSubAgentConfig, type SubAgentHandle } from './agent-utils'
 import { buildSystemPrompt } from './system-prompt-builder'
 import type { ExpertRuntimeContext } from '../../../shared/types/expert'
+import { normalizeSummonedExperts, type SummonState, type SummonedExpert } from '../../../shared/expert-context'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import type { PageContext } from '../../../shared/agent-protocol'
 import { PlanManager } from './plan-manager'
@@ -280,6 +281,18 @@ export class AgentEngine implements EngineCore {
   /** Active spawned sub-agents, keyed by sub-agent id */
   /** @internal */
   activeSubAgents = new Map<string, AgentEngine>()
+  /** @internal Tool-use id of the spawn_agent call the last startDelegatedLoop
+   *  minted. It is the ONLY call whose expert result may be delivered verbatim
+   *  (the @-summon's whole point); a model-emitted spawn_agent never matches, so
+   *  its result keeps going through the envelope → summarize path. Cleared at
+   *  the start of every turn. */
+  private delegatedToolUseId: string | null = null
+  /** @internal The summoned expert's conclusion, waiting for continueLoop to
+   *  append it as this turn's own assistant message. */
+  private pendingVerbatimReply: string | null = null
+  /** @internal Multi-expert @-summon state (plan mode). Null outside such a
+   *  turn — see startPlanningLoop / buildSummonNudge. */
+  summon: SummonState | null = null
   // Public access to plan (delegated to PlanManager)
   get plan(): Plan | null { return this.planManager.plan }
   // Managers for extracted concerns
@@ -329,7 +342,16 @@ export class AgentEngine implements EngineCore {
         this.savePlan(plan)
         this.callbacks.onPlanChanged?.(plan)
       },
+      // 多专家 @召唤的覆盖检查：create_plan 必须把每位被召唤的专家都派到节点上。
+      // A getter (not a snapshot) because the summons belongs to the CURRENT turn.
+      () => this.summon?.experts ?? [],
     )
+    // "The plan tooling has been used" is only true once a plan EXISTS: an
+    // advance_plan that errors with "No active plan" still reaches
+    // notifyPlanChange (updates persist and notify unconditionally), and
+    // letting that retire the nudge would leave a multi-expert summons with no
+    // plan at all — the very turn the nudge exists to correct.
+    this.planManager.onMutated = () => { if (this.summon && this.planManager.plan) this.summon.engaged = true }
 
     this.toolExecutor = new ToolExecutor(
       opts,
@@ -342,6 +364,7 @@ export class AgentEngine implements EngineCore {
       (config) => this.spawnSubAgent(config),
       () => this.planManager.plan,
       (ref, subConvId) => this.planManager.linkNodeSession(ref, subConvId),
+      (toolUseId, text) => this.deliverExpertConclusion(toolUseId, text),
       (ref, attemptId) => this.planManager.beginNodeExecution(ref, attemptId),
       (ref, attemptId, status, subConvId) => this.planManager.updateNodeExecution(ref, attemptId, status, subConvId),
     )
@@ -448,6 +471,11 @@ export class AgentEngine implements EngineCore {
     this.maxLoopCount = MAX_LOOP_ITERATIONS
     this.isCancelled = false
     this.pendingToolIds = new Set()
+    // Per-turn @-summon state belongs to the turn that opened it: a new send
+    // starts with no delegated call to close verbatim and no summons to honor.
+    this.delegatedToolUseId = null
+    this.pendingVerbatimReply = null
+    this.summon = null
     // Cancel any in-flight request so two don't write to this.messages concurrently
     this.abortController?.abort()
     if (this.currentRequestId) {
@@ -486,8 +514,12 @@ export class AgentEngine implements EngineCore {
    * dispatched through handleToolUseResponse, so every piece of the spawn
    * machinery applies unchanged: the parallel-slot limiter, live progress
    * lines, the sub-conversation link on the card, and stop/pause handling.
-   * When the expert settles, the normal loop continues and the parent (which
-   * stays the general assistant) summarizes the result for the user.
+   * The expert's conclusion is NOT re-summarized: `delegatedToolUseId` names
+   * this call, so execSpawnAgent's delivery reaches continueLoop's verbatim
+   * close and the expert's own text becomes the assistant message
+   * (用户裁定 2026-09-17:「能不能在主对话中直接输出专家的结论」). On failure the
+   * normal envelope → parent path still applies, because a failure report is
+   * what the user needs there, not raw partial output.
    */
   startDelegatedLoop = async (userMessage: string, subAgentId: string): Promise<void> => {
     // Guard BEFORE prepareTurn: a delegation without an expert id is a caller
@@ -503,6 +535,7 @@ export class AgentEngine implements EngineCore {
       input: { subAgentId, task: text },
       status: 'pending'
     }
+    this.delegatedToolUseId = spawnCall.id
     this.messages = [...this.messages, {
       id: generateMsgId(),
       role: 'assistant',
@@ -512,6 +545,69 @@ export class AgentEngine implements EngineCore {
     this.agentStatus = { status: 'executing', toolUseId: spawnCall.id }
     this.notify()
     await this.handleToolUseResponse([spawnCall])
+  }
+
+  /**
+   * 多专家 @召唤 → 计划模式（用户裁定 2026-09-17:「当@多个专家，能不能进入plan模式，
+   * 为多个专家分配任务」）。The turn opens like any other (the mentions are already
+   * stripped, the user's own assignment words survive), and the summons rides
+   * the per-turn state block as a brief that makes the plan the turn's shape:
+   * create_plan with every summoned expert assigned, dispatch the READY set in
+   * one parallel batch, settle with advance_plan, synthesize at the end.
+   * Two mechanisms make it binding rather than advisory: create_plan refuses a
+   * plan that leaves a summoned expert unassigned, and a turn that ends without
+   * a plan is re-issued once (execution-flow's nudge). The engine still plans
+   * with the model's own rounds — it never writes the DAG itself — because the
+   * split into nodes is exactly the judgement the experts' tasks depend on.
+   */
+  startPlanningLoop = async (userMessage: string, experts: readonly SummonedExpert[]): Promise<void> => {
+    const roster = normalizeSummonedExperts(experts)
+    // Guard BEFORE prepareTurn, like startDelegatedLoop: a summons with no
+    // expert is a caller bug, and bailing after it would strand the message.
+    if (roster.length === 0) return
+    // One expert is the delegation path — routed here rather than left to the
+    // caller so the two entry points cannot disagree about a one-name roster.
+    if (roster.length === 1) return this.startDelegatedLoop(userMessage, roster[0].id)
+    const text = await this.prepareTurn(userMessage)
+    if (text === null) return
+    this.summon = { experts: roster, nudged: false, engaged: false }
+    console.log(`[AgentEngine] startPlanningLoop: model=${this.opts.model} → plan mode for ${roster.map((e) => e.id).join(', ')}`)
+    await this.continueLoop()
+  }
+
+  /**
+   * @internal 单专家 @召唤的结论原文交付 — called by execSpawnAgent with the
+   * finished expert's text. Accepted only when the id is the delegation THIS
+   * engine dispatched: a model-emitted spawn_agent (or any other turn) gets a
+   * `false` back and keeps the ordinary result envelope. Accepted text is
+   * appended by continueLoop as the turn's own assistant message, so no second
+   * LLM round touches it — that round is precisely the information loss the
+   * user reported.
+   */
+  private deliverExpertConclusion = (toolUseId: string, text: string): boolean => {
+    if (!this.delegatedToolUseId || toolUseId !== this.delegatedToolUseId) return false
+    if (!text.trim()) return false
+    this.pendingVerbatimReply = text
+    return true
+  }
+
+  /**
+   * @internal One corrective re-issue for a multi-expert @召唤 whose turn ended
+   * without a plan (the model answered in its own words instead of planning).
+   * Returns true when the caller must NOT close the turn: an engine-held turn
+   * that is about to be re-issued. Bounded to a single nudge — `nudged` is set
+   * here, so the second turn end closes normally even if the model ignores
+   * both the brief and the correction. Fired from ExecutionFlow's turn end, so
+   * the turn's own bookkeeping (clock, status) stays with the one place that
+   * owns it.
+   */
+  nudgeSummonIfUnplanned = (): boolean => {
+    const summon = this.summon
+    if (!summon || summon.nudged || summon.engaged || this.isCancelled) return false
+    summon.nudged = true
+    console.log(`[AgentEngine] summons unanswered — re-issuing the turn once (${summon.experts.map((e) => e.id).join(', ')})`)
+    setTimeout(() => { void this.continueLoop() }, 0)
+    return true
   }
 
   // stopReason dispatch delegation (ExecutionFlow, split 8)
@@ -532,6 +628,25 @@ export class AgentEngine implements EngineCore {
     if (!opts.apiKey) {
       this.agentStatus = { status: 'error', error: 'API key not configured' }
       this.notify()
+      return
+    }
+
+    // 单专家 @召唤的收尾：专家自己的结论就是这一轮的答复。Appending it as the
+    // assistant message and ending the turn IS the summon — one more LLM round
+    // could only re-summarize it, which is the information loss the user
+    // reported. It runs before the loop-count check on purpose: no request is
+    // issued, so nothing is consumed from the loop budget.
+    if (this.pendingVerbatimReply !== null) {
+      const text = this.pendingVerbatimReply
+      this.pendingVerbatimReply = null
+      this.messages = [...this.messages, {
+        id: generateMsgId(),
+        role: 'assistant',
+        contentBlocks: [{ type: 'text', text }],
+        createdAt: new Date().toISOString()
+      }]
+      this.notify()
+      this.handleEndTurnResponse(null)
       return
     }
 
@@ -609,6 +724,7 @@ export class AgentEngine implements EngineCore {
       spawnSystemPromptAppendix: this.spawnSystemPromptAppendix,
       messages: this.messages,
       plan: this.planManager.plan,
+      summon: this.summon,
       toolProtocols,
     })
     const systemPrompt = spResult.systemPrompt

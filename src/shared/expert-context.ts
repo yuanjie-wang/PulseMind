@@ -118,25 +118,124 @@ function resolveReferences(ids: string[] | undefined, catalog: ExpertReference[]
   return ids.map((id) => byId.get(id)).filter((c): c is ExpertReference => !!c)
 }
 
-/** Resolve an @-mention to an enabled expert and strip the token from the text.
- *  Candidates are matched longest-name-first (so "翻译专家" wins over a
- *  hypothetical "翻译") by literal `@<name>` occurrence — robust for CJK names
- *  where whitespace tokenization would glue trailing punctuation onto the token. */
+/** Resolve the @-mentions in a message to enabled experts and strip the tokens.
+ *  A mention is a literal `@<name>` — robust for CJK names, where whitespace
+ *  tokenization would glue trailing punctuation onto the token — and at each
+ *  `@` the LONGEST matching name wins, so "翻译专家" is not read as a
+ *  hypothetical "翻译" plus the characters "专家". Every occurrence is consumed,
+ *  so several experts can be summoned at once; the roster comes back in the
+ *  order the user mentioned them (their own list, which the plan brief then
+ *  reads back) with duplicates dropped. The text that survives is what the user
+ *  wrote *about* the task — the assignment words are not part of the token. */
+export function parseExpertMentions(
+  text: string,
+  experts: ExpertProfile[]
+): { experts: ExpertProfile[]; text: string } {
+  const candidates = experts
+    .filter((e) => (e.enabled ?? true) && e.name)
+    .sort((a, b) => b.name.length - a.name.length)
+  const found: ExpertProfile[] = []
+  const spans: Array<{ start: number; end: number }> = []
+  let i = 0
+  while (i < text.length) {
+    if (text[i] === '@') {
+      const hit = candidates.find((e) => text.startsWith(`@${e.name}`, i))
+      if (hit) {
+        if (!found.includes(hit)) found.push(hit)
+        const end = i + 1 + hit.name.length
+        spans.push({ start: i, end })
+        i = end
+        continue
+      }
+    }
+    i += 1
+  }
+  if (found.length === 0) return { experts: [], text }
+  // Cut the tokens out of the ORIGINAL text (so positions stay meaningful), then
+  // collapse the gap each cut left behind: removing a token from "先让 @甲 看看"
+  // must read "先让 看看", not "先让  看看".
+  let rest = ''
+  let cursor = 0
+  for (const span of spans) {
+    rest += text.slice(cursor, span.start)
+    cursor = span.end
+  }
+  rest += text.slice(cursor)
+  return { experts: found, text: rest.replace(/[ \t]{2,}/g, ' ').trim() }
+}
+
+/** Single-expert view of `parseExpertMentions` — the @-summon's original
+ *  contract (one mention = delegate to that one expert). Kept as a wrapper so
+ *  the two paths can never disagree about what a mention is. */
 export function parseExpertMention(
   text: string,
   experts: ExpertProfile[]
 ): { expert: ExpertProfile | null; text: string } {
-  const candidates = experts
-    .filter((e) => (e.enabled ?? true) && e.name)
-    .sort((a, b) => b.name.length - a.name.length)
-  for (const expert of candidates) {
-    const token = `@${expert.name}`
-    const idx = text.indexOf(token)
-    if (idx === -1) continue
-    const cleaned = `${text.slice(0, idx).trimEnd()} ${text.slice(idx + token.length).trimStart()}`.trim()
-    return { expert, text: cleaned }
+  const { experts: found, text: cleaned } = parseExpertMentions(text, experts)
+  return { expert: found[0] ?? null, text: found.length > 0 ? cleaned : text }
+}
+
+// ── @-summon (召唤) ─────────────────────────────────────────────────────
+
+/** An expert the user summoned by @-mention, as it travels from the mention
+ *  parser to the engine and across the IPC boundary. The name is carried
+ *  alongside the id because the brief the model reads is written in names
+ *  (an id alone reads as a machine handle) and the receiving side may not have
+ *  the expert list handy. */
+export interface SummonedExpert {
+  id: string
+  name: string
+}
+
+/** Per-turn state of a multi-expert @-summon. Null outside such a turn.
+ *  `nudged` — the one corrective re-issue has already happened, so a second
+ *  turn end must not loop again; `engaged` — the plan manager has been written
+ *  to since the summons (a plan was created, or a node settled), which is what
+ *  says the summons was honored and no correction is owed. */
+export interface SummonState {
+  experts: SummonedExpert[]
+  nudged: boolean
+  engaged: boolean
+}
+
+/** Normalize a wire roster: ids are trimmed and de-duplicated, a nameless entry
+ *  falls back to its id. Pure and total — a malformed roster yields fewer
+ *  experts, never a throw (it arrives over IPC). */
+export function normalizeSummonedExperts(input: readonly SummonedExpert[] | undefined): SummonedExpert[] {
+  const out: SummonedExpert[] = []
+  for (const e of input ?? []) {
+    const id = String(e?.id ?? '').trim()
+    if (!id || out.some((o) => o.id === id)) continue
+    out.push({ id, name: String(e?.name ?? '').trim() || id })
   }
-  return { expert: null, text }
+  return out
+}
+
+/** The `## Summoned Experts` state-block section for a multi-expert @-summon.
+ *  Null when no summons is in flight. It rides the per-turn state block (never
+ *  the invariant core) for the same reason every other volatile line does: the
+ *  core is a cache prefix. */
+export function formatSummonForPrompt(summon: SummonState | null): string | null {
+  if (!summon || summon.experts.length === 0) return null
+  const list = summon.experts.map((e) => `**${e.name}** (id: \`${e.id}\`)`).join(', ')
+  const lines = [
+    '## Summoned Experts (plan mode)',
+    '',
+    `The user summoned ${summon.experts.length} experts by @-mention for THIS turn: ${list}.`,
+    'Their work is the deliverable: plan it, hand each one their part, and never do their work yourself.',
+    '',
+    '1. Call `create_plan` first. EVERY summoned expert above must be the `assignee` of at least one node — a node that names an un-summoned expert (or none) does not discharge that expert\'s summons. Write each node description as the assignment for the expert named as its assignee.',
+    '2. Dispatch every READY node with `spawn_agent` (subAgentId = its assignee, planNode = its number) — put them ALL in the same response so the experts run in parallel.',
+    '3. Settle each node with `advance_plan action="complete" node=<number>` as its result comes back.',
+    '4. Your own output is the synthesis the user reads once every node has settled — not a substitute for their work.'
+  ]
+  if (summon.nudged) {
+    lines.push(
+      '',
+      '**You ended the previous turn without creating the plan**, so none of the summoned experts has been asked to work yet. Do that now: `create_plan` with all of them assigned, and the READY nodes dispatched in the same response.'
+    )
+  }
+  return lines.join('\n')
 }
 
 // ── Sub-agent hosting defaults ──
