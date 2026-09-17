@@ -182,6 +182,8 @@ export type AgentEventData =
   | { type: 'messages'; messages: unknown[] }
   /** Incremental transport: items appended at fromIndex (full 'messages' event on truncation). */
   | { type: 'messages_append'; fromIndex: number; items: unknown[] }
+  /** Replace existing messages by ID when their content changes without an append. */
+  | { type: 'messages_update'; items: unknown[] }
   /** In-place tool_use block mutations (status/exitCode/output, and the spawn
    *  link — subConvId/planNodeId — which is written at dispatch time and has no
    *  other carrier) — diffed, only changed entries. */

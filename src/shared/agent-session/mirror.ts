@@ -86,6 +86,14 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
       state.messages = data.messages as AgentMessage[]
       return true
     }
+    case 'messages_update': {
+      const byId = new Map((data.items as AgentMessage[]).map(message => [message.id, message]))
+      state.messages = state.messages.map(message => {
+        const update = byId.get(message.id)
+        return update ? { ...message, ...update, contentBlocks: update.contentBlocks.map(block => ({ ...block })) } : message
+      })
+      return true
+    }
     case 'message_stats': {
       // The turn's wall clock is stamped on the final message after it was
       // already appended (shared/agent-session/message-stats.ts) — without this

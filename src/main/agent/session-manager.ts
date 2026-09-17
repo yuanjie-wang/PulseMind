@@ -34,6 +34,7 @@ import type { ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
 import { agentClientRegistry } from './client-registry'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
+import { messageContentSignature } from '../../shared/agent-session/message-content'
 import { pickApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
@@ -82,6 +83,11 @@ const MAX_CONCURRENT_LOOPS = 2
 
 type SessionEventSink = (sessionId: string, data: AgentEventData) => void
 
+/** Statuses at which emitMessages re-diffs tool runtime state from scratch
+ *  (see the reconciliation comment in emitMessages). Deliberately excludes
+ *  awaiting_* — the turn is parked mid-decision there, not finished. */
+const TERMINAL_SWEEP_STATUSES = new Set(['completed', 'error', 'idle'])
+
 function sessionPlatformInfo(): PlatformInfo {
   const p = platform()
   return {
@@ -113,6 +119,7 @@ export class AgentSessionManagerImpl {
   /** Per-session registry of message-level stat signatures (the turn's wall
    *  clock / token counts) for the same in-place diffing. */
   private messageStatsRegistry = new Map<string, Map<string, string>>()
+  private messageContentRegistry = new Map<string, Map<string, string>>()
 
   /** Subscribe to session events (the IPC bridge forwards these to renderers). */
   onEvent(sink: SessionEventSink): () => void {
@@ -135,7 +142,11 @@ export class AgentSessionManagerImpl {
 
   private emitMessages(sessionId: string, messages: AgentMessage[]): void {
     const lastLen = this.lastSentLen.get(sessionId) ?? 0
-    if (messages.length >= lastLen) {
+    const previous = this.messageContentRegistry.get(sessionId) ?? new Map<string, string>()
+    const content = new Map(messages.map(message => [message.id, messageContentSignature(message)]))
+    // Equal-length history replacement is not an append either.
+    const replaced = messages.slice(0, lastLen).some(message => previous.size > 0 && !previous.has(message.id))
+    if (messages.length >= lastLen && !replaced) {
       const items = messages.slice(lastLen)
       // A zero-item append is a no-op for an up-to-date client, but a client
       // whose mirror is ahead of `lastLen` (it hydrated optimistically before
@@ -157,7 +168,28 @@ export class AgentSessionManagerImpl {
       this.toolStatusRegistry.delete(sessionId)
       this.messageStatsRegistry.delete(sessionId)
     }
+    if (messages.length >= lastLen && !replaced) {
+      const updates = messages.slice(0, lastLen).filter(message => previous.get(message.id) !== content.get(message.id))
+      if (updates.length > 0) this.emit(sessionId, { type: 'messages_update', items: updates })
+    }
+    this.messageContentRegistry.set(sessionId, content)
     this.lastSentLen.set(sessionId, messages.length)
+    // Reconciliation point for the diff channels below. Every diff assumes the
+    // client saw everything ever shipped — which stops holding the moment a
+    // mirror is rebuilt behind the manager's back: a conversation re-open
+    // hydrates from DB (runtime fields absent), a renderer reload remounts the
+    // hook with empty state, and any single dropped event is never re-sent
+    // because the registry says it was. The client cannot ask for a re-diff,
+    // so the manager re-diffs from scratch at the one moment the user is
+    // guaranteed to be looking at the result: the turn's terminal notify
+    // (completed / error, or idle after 停止). Clearing the registries makes
+    // THIS emit re-ship every tool block's current runtime state, so a patch
+    // lost mid-turn heals here instead of sticking as 执行状态未知 forever.
+    const entry = this.sessions.get(sessionId)
+    if (entry && TERMINAL_SWEEP_STATUSES.has(entry.engine.agentStatus.status)) {
+      this.toolStatusRegistry.delete(sessionId)
+      this.messageStatsRegistry.delete(sessionId)
+    }
     this.emitToolStatusDiff(sessionId, messages)
     this.emitMessageStatsDiff(sessionId, messages)
   }
@@ -628,6 +660,7 @@ export class AgentSessionManagerImpl {
     }
     entry.engine.loadPlan(sessionId)
     this.lastSentLen.set(sessionId, messages.length)
+    this.messageContentRegistry.set(sessionId, new Map(messages.map(message => [message.id, messageContentSignature(message)])))
   }
 
   /** UI snapshot for (re)activating a session. */
@@ -668,7 +701,15 @@ export class AgentSessionManagerImpl {
       case 'retryLastTurn': return engine.retryLastTurn()
       case 'getHistorySummary': return engine.getHistorySummary()
       case 'reset': entry.engine.reset(); return undefined
-      case 'dispose': entry.engine.dispose(); this.sessions.delete(sessionId); this.lastSentLen.delete(sessionId); this.sandboxContexts.delete(sessionId); return undefined
+      case 'dispose':
+        entry.engine.dispose()
+        this.sessions.delete(sessionId)
+        this.lastSentLen.delete(sessionId)
+        this.messageContentRegistry.delete(sessionId)
+        this.toolStatusRegistry.delete(sessionId)
+        this.messageStatsRegistry.delete(sessionId)
+        this.sandboxContexts.delete(sessionId)
+        return undefined
       default: throw new Error(`engine method not allowed: ${method}`)
     }
   }

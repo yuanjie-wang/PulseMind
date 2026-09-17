@@ -1,7 +1,7 @@
 // ── Conversation persistence & lifecycle ──
 // Owns the conversation LIST (useXConversations state: keys, labels, pinning)
 // and the save pipeline that flushes engine messages to SQLite — debounced,
-// incremental (only unsaved message ids), and serialized through one in-flight
+// incremental (new or content-dirty messages), and serialized through one in-flight
 // promise so overlapping renders can't double-save. Also handles conversation
 // switching (flush-then-swap), deletion with engine teardown, and auto-cleanup.
 // Engine construction itself lives in useConversationEngine; this hook drives it.
@@ -11,7 +11,8 @@ import useXConversations from '@ant-design/x-sdk/es/x-conversations'
 import type { AgentMessage, AgentStatus } from '../types/agent'
 import type { SessionEngineHandle } from './useConversationEngine'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
-import { planIncrementalSave } from '../utils/incremental-save'
+import { ConversationSaveQueue, teardownConversation } from '../utils/incremental-save'
+import type { Conversation } from '../../../shared/types/conversation'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { usePendingApprovalStore } from '../stores/pendingApprovalStore'
 import { conversationKeyOf } from '../../../shared/conversation-key'
@@ -73,170 +74,81 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // ── Save state ──
   const convIdRef = useRef<string>('')
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>()
-  const isSavingRef = useRef(false)
-  const saveRef = useRef<() => Promise<void>>(null as unknown as () => Promise<void>)
-  /** Tracks persisted message IDs per conversation to enable incremental saves. */
-  const savedMsgIdsRef = useRef<Map<string, Set<string>>>(new Map())
+  const saveQueueRef = useRef(new ConversationSaveQueue<Conversation>())
+  // Do not persist the placeholder engine while its DB hydration is in flight.
+  const loadingIdsRef = useRef(new Set<string>())
 
-  // True while a conversation's messages are being loaded from the DB after a
-  // switch. ChatView suppresses the welcome screen during this window so the
-  // user doesn't see it flash between the old and new conversation's messages.
+  // ChatView suppresses the welcome screen while loading a conversation.
   const [isLoadingConversation, setIsLoadingConversation] = useState(false)
 
-  const saveCurrentConversation = useCallback(async () => {
-    const convId = convIdRef.current
-    if (!convId || isSavingRef.current) return
-    // Source messages from the engine keyed by convId — never the shared
-    // `messages` state, whose stale closure previously wrote one conversation's
-    // messages under another conversation's ID.
+  const snapshotConversation = useCallback((convId: string): Conversation | undefined => {
+    if (loadingIdsRef.current.has(convId)) return
     const engine = enginesRef.current.get(convId)
-    const msgs = engine?.messages
-    if (!msgs || msgs.length === 0) return
-
-    isSavingRef.current = true
-
-    const firstText = msgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
-    const existingConv = conversations.find(
-      (c: { key: string; label: string }) => String(c.key) === convId
-    )
-    const existingTitle = existingConv?.label && existingConv.label !== '新对话'
-      ? existingConv.label
-      : null
-    const title = existingTitle || firstText || '新对话'
-
+    if (!engine) return
+    const msgs = engine.messages
+    const firstText = msgs[0]?.contentBlocks?.find(b => b.type === 'text')?.text || ''
+    const existing = conversationsRef.current.find(c => String(c.key) === convId)
+    const title = existing?.label && existing.label !== '新对话' ? existing.label : firstText || '新对话'
     const conversation = agentMessagesToConversation(msgs, convId, title)
-    const hs = engine?.getHistorySummary()
+    const hs = engine.getHistorySummary()
     if (hs) {
       conversation.historySummary = hs.text
       conversation.historySummaryFrontier = hs.firstKeptId
     }
+    return conversation
+  }, [enginesRef])
 
-    try {
-      // Always do a full save to capture content changes in existing messages
-      // (e.g. exitCode set on tool_use after tool execution completes).
-      // The incremental save optimization (skipping already-saved message IDs)
-      // would miss these in-place updates, causing exitCode to be absent after
-      // app restart — which makes completed tools appear as "failed" in the UI.
-      await window.electronAPI.saveConversation(conversation)
-      savedMsgIdsRef.current.set(convId, new Set(conversation.messages.map(m => m.id)))
-      convIdRef.current = convId
-    } catch (err) {
-      console.error('[Chat] saveCurrentConversation failed, retrying once:', err)
-      try {
-        await window.electronAPI.saveConversation(conversation)
-        savedMsgIdsRef.current.set(convId, new Set(conversation.messages.map(m => m.id)))
-        convIdRef.current = convId
-      } catch (err2) {
-        console.error('[Chat] saveCurrentConversation failed after retry, data may be lost:', err2)
-      }
-    } finally {
-      isSavingRef.current = false
-    }
-  }, [conversations, enginesRef])
-  saveRef.current = saveCurrentConversation
-
-  /** Incremental save: appends only messages that appeared since the last save,
-   *  plus a small re-saved tail for in-place block updates. Used for the periodic
-   *  save while streaming and the debounced save between loop rounds — a full
-   *  saveConversation rewrite over a long task's history (JSON.stringify of every
-   *  contentBlocks + re-insert of every tool_result) stalls the main process's
-   *  synchronous SQLite on the shared event loop. The full save remains the
-   *  end-of-stream and beforeunload path. */
-  const saveNewMessages = useCallback(async () => {
-    const convId = convIdRef.current
+  // One lane for ALL asynchronous message writes, with a fresh captured payload
+  // at dispatch and acknowledgement only after success. No status/ID-only gate.
+  const saveConversationById = useCallback(async (convId: string, full = false) => {
     if (!convId) return
-    const engine = enginesRef.current.get(convId)
-    const msgs = engine?.messages
-    if (!msgs || msgs.length === 0) return
-
-    const savedIds = savedMsgIdsRef.current.get(convId)
-    const plan = planIncrementalSave(msgs, savedIds)
-    if (plan.mode === 'full') {
-      // History shrank in memory (compaction/regeneration) — refresh everything.
-      await saveRef.current()
-      return
-    }
-    // Browsing no-op: selecting a conversation reloads its persisted messages
-    // into state, which retriggers this debounced save with zero new IDs. The
-    // idle tail has nothing to capture, and writing it would stamp the DB's
-    // updated_at with "now" — advancing the sidebar's last-interaction time
-    // without any interaction. While streaming the tail re-save still runs:
-    // in-place block updates (exitCode) need the crash-recovery net.
-    if (!plan.hasNew && agentStatus.status !== 'streaming') return
-    const fromIdx = plan.fromIdx
-
-    const firstText = msgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
-    const existingConv = conversations.find((c) => String(c.key) === convId)
-    const existingTitle = existingConv?.label && existingConv.label !== '新对话'
-      ? existingConv.label
-      : null
-    const title = existingTitle || firstText || '新对话'
-
-    const toSave = agentMessagesToConversation(msgs.slice(fromIdx), convId, title)
     try {
-      await window.electronAPI.appendConversationMessages(convId, title, toSave.messages)
-      savedMsgIdsRef.current.set(convId, new Set(msgs.map(m => m.id)))
+      await saveQueueRef.current.save(convId, () => snapshotConversation(convId), async (snapshot, plan) => {
+        if (plan.mode === 'full') {
+          await window.electronAPI.saveConversation(snapshot)
+        } else {
+          await window.electronAPI.appendConversationMessages(
+            convId, snapshot.title, plan.indices.map(i => snapshot.messages[i])
+          )
+        }
+      }, full)
     } catch (err) {
-      console.error('[Chat] incremental save failed:', err)
+      // Leave the failed snapshot dirty. The next debounce/periodic flush retries
+      // fresh data rather than replaying an old payload over newer content.
+      console.error('[Chat] conversation save failed:', err)
     }
-  }, [conversations, enginesRef, agentStatus.status])
+  }, [snapshotConversation])
+
+  const saveCurrentConversation = useCallback(
+    () => saveConversationById(convIdRef.current, true), [saveConversationById]
+  )
   const saveNewRef = useRef<() => Promise<void>>(null as unknown as () => Promise<void>)
-  saveNewRef.current = saveNewMessages
+  saveNewRef.current = () => saveConversationById(convIdRef.current)
+
+  const saveConversationByIdSync = useCallback((convId: string) => {
+    if (!convId) return
+    const snapshot = snapshotConversation(convId)
+    if (!snapshot) return
+    try {
+      saveQueueRef.current.saveSync(convId, snapshot, value => window.electronAPI.saveConversationSync(value))
+    } catch (err) {
+      console.error('[Chat] synchronous conversation save failed:', err)
+    }
+  }, [snapshotConversation])
 
   const saveConversationSync = useCallback(() => {
-    const convId = convIdRef.current
-    if (!convId) return
-    const engine = enginesRef.current.get(convId)
-    const msgs = engine?.messages
-    if (!msgs || msgs.length === 0) return
-    const firstText = msgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
-    const existingConv = conversations.find(
-      (c: { key: string; label: string }) => String(c.key) === convId
-    )
-    const existingTitle = existingConv?.label && existingConv.label !== '新对话'
-      ? existingConv.label : null
-    const title = existingTitle || firstText || '新对话'
-    const conversation = agentMessagesToConversation(msgs, convId, title)
-    const hs = engine?.getHistorySummary()
-    if (hs) {
-      conversation.historySummary = hs.text
-      conversation.historySummaryFrontier = hs.firstKeptId
-    }
+    saveConversationByIdSync(convIdRef.current)
+  }, [saveConversationByIdSync])
 
-    // Always full save to capture content changes in existing messages
-    window.electronAPI.saveConversationSync(conversation)
-    savedMsgIdsRef.current.set(convId, new Set(conversation.messages.map(m => m.id)))
-  }, [conversations, enginesRef])
-
-  /** Synchronously save ALL in-memory conversations, not just the active one.
-   *  Required in beforeunload — if the user last clicked a blank conversation,
-   *  sync-save-of-active would skip it (0 messages) and lose the previous one. */
+  /** Flush inactive cached engines too, including late tool results. */
   const saveAllConversationsSync = useCallback(() => {
-    saveConversationSync()
-    for (const [convId, engine] of enginesRef.current) {
-      if (convId === convIdRef.current) continue
-      if (engine.messages.length === 0) continue
-      const firstText = engine.messages[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
-      const existingConv = conversationsRef.current.find(
-        (c: { key: string; label: string }) => String(c.key) === convId
-      )
-      const existingTitle = existingConv?.label && existingConv.label !== '新对话'
-        ? existingConv.label : null
-      const title = existingTitle || firstText || '新对话'
-      const conversation = agentMessagesToConversation(engine.messages, convId, title)
-      const hs = engine.getHistorySummary()
-      if (hs) {
-        conversation.historySummary = hs.text
-        conversation.historySummaryFrontier = hs.firstKeptId
-      }
-      window.electronAPI.saveConversationSync(conversation)
-    }
-  }, [saveConversationSync, enginesRef])
+    for (const convId of enginesRef.current.keys()) saveConversationByIdSync(convId)
+  }, [saveConversationByIdSync, enginesRef])
 
   // ── Debounced auto-save when messages change ──
   // Intentionally omits activeConversationKey and saveCurrentConversation
   // from deps — saving is driven by data changes, not UI navigation.
-  // saveRef bridges the latest callback without causing effect re-run.
+  // saveNewRef bridges the latest callback without causing effect re-run.
   useEffect(() => {
     if (!activeConversationKey || agentStatus.status === 'streaming') return
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -244,26 +156,15 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
   }, [messages, agentStatus.status])
 
-  // ── Periodic save during streaming ──
-  const periodicSaveRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Active renders are not a notification source for background conversations.
+  // A cheap no-op content comparison gives every cached engine crash recovery,
+  // including an old tool_result updated after the user switches away.
   useEffect(() => {
-    if (agentStatus.status === 'streaming') {
-      if (!periodicSaveRef.current) {
-        periodicSaveRef.current = setInterval(() => { saveNewRef.current() }, 10000)
-      }
-    } else {
-      if (periodicSaveRef.current) {
-        clearInterval(periodicSaveRef.current)
-        periodicSaveRef.current = null
-      }
-    }
-    return () => {
-      if (periodicSaveRef.current) {
-        clearInterval(periodicSaveRef.current)
-        periodicSaveRef.current = null
-      }
-    }
-  }, [agentStatus.status])
+    const timer = setInterval(() => {
+      for (const id of enginesRef.current.keys()) void saveConversationById(id)
+    }, 10000)
+    return () => clearInterval(timer)
+  }, [enginesRef, saveConversationById])
 
   // ── Save immediately when streaming ends ──
   const prevAgentStatusRef = useRef(agentStatus.status)
@@ -325,17 +226,10 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     // which would save stale messages under the wrong conversation ID.
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
 
-    // Only save if there are unsaved changes (new messages or in-place edits).
-    // Uses savedMsgIdsRef to compare current message IDs against last-saved set.
-    // This avoids unnecessary saves when the user is just browsing conversations.
+    // Capture the ID before switching; the queue reads only that engine and
+    // compares content, including same-ID edits and changes outside the tail.
     const prevConvId = convIdRef.current
-    if (prevConvId && messages.length > 0) {
-      const savedIds = savedMsgIdsRef.current.get(prevConvId)
-      const hasChanges = !savedIds || messages.some(m => !savedIds.has(m.id))
-      if (hasChanges) {
-        saveCurrentConversation().catch(err => console.error("[Chat] Background save failed:", err))
-      }
-    }
+    if (prevConvId) void saveConversationById(prevConvId, true)
     activeEngineIdRef.current = key
 
     if (key) {
@@ -347,16 +241,18 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
         setAgentStatus(engine.agentStatus)
         setStreamingBlocks([...engine.streamingBlocks])
         setPlan(engine.plan ? { ...engine.plan, nodes: engine.plan.nodes.map(n => ({ ...n })) } : null)
-        // Track loaded message IDs so switching away doesn't trigger a redundant save.
-        savedMsgIdsRef.current.set(key, new Set(engine.messages.map(m => m.id)))
+        // Cached is not synonymous with saved: never reseed its baseline here.
       } else {
         setMessages([])
         setPlan(null)
         setIsLoadingConversation(true)
+        loadingIdsRef.current.add(key)
         getOrCreateEngine(key).reset()
 
         window.electronAPI.getConversation(key).then(async conv => {
           if (!conv || conv.messages.length === 0) {
+            // A failed read yields no snapshot to seed, and the engine stays
+            // empty; loadingId release happens in .finally below.
             // Genuinely empty conversation — welcome should show once loading clears.
             if (activeEngineIdRef.current === key) setIsLoadingConversation(false)
             return
@@ -369,6 +265,8 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
           let fullConv = conv
           try { fullConv = await window.electronAPI.hydrateConversation(key) || conv } catch {}
 
+          // Hydration awaited IPC: re-check the engine before replacing live data.
+          if (enginesRef.current.get(key) !== engine || (engine && engine.messages.length > 0)) return
           const agentMsgs = storedMessagesToAgentMessages(fullConv.messages)
           if (engine) {
             engine.loadConversation(agentMsgs)
@@ -380,20 +278,24 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
             setAgentStatus({ status: 'idle' })
             setIsLoadingConversation(false)
           }
-          // Mark all loaded messages as already saved
-          savedMsgIdsRef.current.set(key, new Set(conv.messages.map(m => m.id)))
+          // Seed exactly the normalized hydrated data loaded into the engine,
+          // not the reference-only DB preview and not a later live snapshot.
+          const baseline = agentMessagesToConversation(agentMsgs, key, fullConv.title)
+          baseline.historySummary = fullConv.historySummary
+          baseline.historySummaryFrontier = fullConv.historySummaryFrontier
+          saveQueueRef.current.seed(key, baseline)
         }).catch(err => {
           console.error('[Chat] Failed to load conversation:', err)
           // Never leave the view stuck blank if the load fails while the user
           // is still on this conversation.
           if (activeEngineIdRef.current === key) setIsLoadingConversation(false)
-        })
+        }).finally(() => { loadingIdsRef.current.delete(key) })
       }
     }
 
     setActiveConversationKey(key)
     convIdRef.current = key
-  }, [saveCurrentConversation, setActiveConversationKey, getOrCreateEngine,
+  }, [saveConversationById, setActiveConversationKey, getOrCreateEngine,
       enginesRef, activeEngineIdRef, setMessages, setAgentStatus, setStreamingBlocks, setPlan])
 
   // ── Helper: update title in list ──
@@ -433,13 +335,20 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     // last time, and the composer asks again. Without this, abandoning a new
     // chat after picking 全部允许 would silently widen the following one.
     usePendingApprovalStore.getState().clearMode()
+    // Auto-cleanup evicts beyond MAX_SESSIONS. The eviction must go through the
+    // same teardown as an explicit delete: the cached engine left in enginesRef
+    // was re-read by the 10s sweep and the beforeunload flush, and both write
+    // channels are UPSERTs — the deleted row came back on the next tick.
+    const evictedIds = new Set<string>()
     const MAX_SESSIONS = 100
     if (autoCleanup && conversations.length >= MAX_SESSIONS) {
       const toRemove = conversations.length - MAX_SESSIONS + 1
       const oldest = conversations.slice(-toRemove) as Array<{ key: string }>
       for (const c of oldest) {
+        evictedIds.add(String(c.key))
         removeConversation(c.key)
-        window.electronAPI.deleteConversation(c.key).catch(() => {})
+        await teardownConversation(String(c.key), enginesRef.current, saveQueueRef.current,
+          id => window.electronAPI.deleteConversation(id).catch(() => {}))
       }
     }
 
@@ -458,49 +367,31 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setActiveConversationKey(undefined)
 
     // Then save previous conversation in the background (fire-and-forget).
-    // Uses captured convId since convIdRef.current was already cleared, and
-    // sources messages from the engine (never the shared state) so the save
-    // cannot be mis-filed under a different conversation ID.
-    const oldEngine = enginesRef.current.get(oldConvId)
-    const oldMsgs = oldEngine?.messages
-    if (oldConvId && oldMsgs && oldMsgs.length > 0) {
-      // Only save if there are unsaved changes
-      const savedIds = savedMsgIdsRef.current.get(oldConvId)
-      const hasChanges = !savedIds || oldMsgs.some(m => !savedIds.has(m.id))
-      if (hasChanges) {
-        const firstText = oldMsgs[0]?.contentBlocks?.find((b) => b.type === 'text')?.text || ''
-        const existingConv = conversations.find(
-          (c: { key: string; label: string }) => String(c.key) === oldConvId
-        )
-        const existingTitle = existingConv?.label && existingConv.label !== '新对话'
-          ? existingConv.label : null
-        const title = existingTitle || firstText || '新对话'
-        const conversation = agentMessagesToConversation(oldMsgs, oldConvId, title)
-
-        window.electronAPI.saveConversation(conversation).catch(err =>
-          console.error('[Chat] Background save failed during new conversation:', err)
-        )
-        savedMsgIdsRef.current.set(oldConvId, new Set(oldMsgs.map(m => m.id)))
-      }
-    }
-  }, [conversations, autoCleanup, enginesRef,
+    // Uses captured convId since convIdRef.current was already cleared; the
+    // queue reads only that engine, so the save cannot be mis-filed under a
+    // different conversation ID. A conversation the cleanup above just deleted
+    // must NOT be flushed here — this was the last resurrection path: the full
+    // save re-upserted the row the sweep's append had already brought back.
+    if (oldConvId && !evictedIds.has(oldConvId)) void saveConversationById(oldConvId, true)
+  }, [conversations, autoCleanup, enginesRef, saveConversationById,
       setMessages, setAgentStatus, setStreamingBlocks, setPlan,
       activeEngineIdRef, setActiveConversationKey, removeConversation])
 
   // ── Delete conversation ──
+  // The teardown order (engine out of the map → queue.forget → delete row) is
+  // shared with the auto-cleanup eviction via teardownConversation: a cached
+  // engine left behind was re-saved by the periodic sweep and the beforeunload
+  // flush, and both save channels are upserts, so the deleted row came back.
   const deleteConversation = useCallback(async (key: string) => {
     removeConversation(key)
     if (key === convIdRef.current) {
-      enginesRef.current.get(key)?.reset()
       setMessages([])
       setAgentStatus({ status: 'idle' })
       setStreamingBlocks([])
       setPlan(null)
     }
-    enginesRef.current.get(key)?.dispose()
-    enginesRef.current.delete(key)
-    savedMsgIdsRef.current.delete(key)
-    await window.electronAPI.deleteConversation(key)
+    await teardownConversation(key, enginesRef.current, saveQueueRef.current,
+      id => window.electronAPI.deleteConversation(id))
   }, [removeConversation, enginesRef, setMessages, setAgentStatus, setStreamingBlocks, setPlan])
 
   // ── Rename conversation ──
@@ -518,13 +409,13 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   const clearAllConversations = useCallback(async () => {
     const keys = conversations.map((c: { key: string }) => c.key)
     for (const k of keys) {
-      await window.electronAPI.deleteConversation(k)
+      await teardownConversation(k, enginesRef.current, saveQueueRef.current,
+        id => window.electronAPI.deleteConversation(id))
     }
     for (const [, engine] of enginesRef.current) {
       engine.dispose()
     }
     enginesRef.current.clear()
-    savedMsgIdsRef.current.clear()
     setConversations([])
     setMessages([])
     setAgentStatus({ status: 'idle' })

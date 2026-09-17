@@ -103,6 +103,7 @@ function CollapsibleToolBlock({
   onRespondToTool,
   completedFromResult = false,
   contextLength,
+  receiving = false,
   awaitingApproval = true
 }: {
   block: ToolUseBlock
@@ -112,6 +113,10 @@ function CollapsibleToolBlock({
   onRespondToTool?: (toolUseId: string, response: string) => void
   completedFromResult?: boolean
   contextLength?: number
+  /** True only for the synthetic `streaming-exec` message, whose blocks are
+   *  still being generated. Any other undefined status is HISTORY whose runtime
+   *  fields the save path strips — that is 执行状态未知, not 指令生成中. */
+  receiving?: boolean
   /** The engine is parked on its held calls (`agentStatus: 'awaiting_approval'`).
    *  Defaults to true so a caller that predates this prop keeps the old rule —
    *  a pending call carrying approve handlers is one the user must answer. */
@@ -233,7 +238,7 @@ function CollapsibleToolBlock({
         {/* Receiving hint for streaming tool blocks */}
         {block.status === undefined && !completedFromResult && (
           <span style={{ color: '#999', fontSize: 11, flexShrink: 0, fontWeight: 500 }}>
-            指令生成中...
+            {receiving ? '指令生成中...' : '执行状态未知'}
           </span>
         )}
         {/* File preview button */}
@@ -626,6 +631,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                   onKillTool={onKillTool}
                   onRespondToTool={onRespondToTool}
                   contextLength={contextLength}
+                  receiving={msg.id === 'streaming-exec'}
                   awaitingApproval={awaitingApproval}
                 />
               )
