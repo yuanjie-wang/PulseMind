@@ -96,6 +96,28 @@ describe('desktop 授权 wiring (new conversation)', () => {
     expect(start).toBeGreaterThan(write)
   })
 
+  it('updates the list through the store, not the post-commit ref snapshot', () => {
+    // The materialization path calls updateConversationApproval in the same
+    // synchronous block as addConversation. conversationsRef only syncs in a
+    // useEffect (after commit), so an optimistic update derived from it ran on
+    // the pre-add list: it found nothing AND wrote the old list back over the
+    // just-added item. The conversation lost its approvalMode (and projectId),
+    // the later bare re-add from title generation restored it without either,
+    // and the composer flipped back to 按需确认 the moment the first message
+    // was sent — while the DB and the engine were at 全部允许 all along.
+    // The sdk's per-item setConversation reads the store's live list, which
+    // addConversation updated synchronously one statement earlier.
+    expect(persistenceSrc).toContain('setConversation(id, { approvalMode: mode })')
+    // Non-vacuity: the stale derivation must be gone from this function, not
+    // merely accompanied by the new one.
+    const from = persistenceSrc.indexOf('const updateConversationApproval = useCallback')
+    expect(from).toBeGreaterThan(-1)
+    const end = persistenceSrc.indexOf('const activateConversation', from)
+    const body = persistenceSrc.slice(from, end)
+    expect(body).not.toContain('conversationsRef.current')
+    expect(body).toContain('useCallback')
+  })
+
   it('resets the held choice when a new conversation is started', () => {
     // Otherwise 新会话默认按需确认 would depend on what the user picked the last
     // time they composed one: abandon a new chat after choosing 全部允许 and the

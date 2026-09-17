@@ -46,9 +46,15 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setActiveConversationKey,
     addConversation,
     removeConversation,
+    setConversation,
     setConversations
   } = useXConversations()
 
+  // This ref is a POST-COMMIT snapshot: it only syncs in an effect, after React
+  // has rendered. The sdk store, by contrast, is updated synchronously by its
+  // own methods (addConversation/setConversation). Any list edit derived from
+  // the ref in the same synchronous block as one of those methods reads the
+  // pre-edit list — see updateConversationApproval for what that costs.
   const conversationsRef = useRef(conversations)
   useEffect(() => { conversationsRef.current = conversations }, [conversations])
 
@@ -575,11 +581,14 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       console.warn('[Persistence] approval update ignored: no conversation open')
       return
     }
-    setConversations(
-      conversationsRef.current.map((c) =>
-        String(c.key) === id ? { ...c, approvalMode: mode } : c
-      )
-    )
+    // Optimistic update through the sdk's per-item setter, never a map over
+    // conversationsRef: the ref only syncs after commit, and the first message's
+    // materialization (useChatController) calls this in the same synchronous
+    // block as addConversation — the stale map found nothing AND wrote the
+    // pre-add list back over the item it was meant to update. The conversation
+    // lost its approvalMode (and projectId), and the composer fell back to
+    // 按需确认 the moment the message was sent ("选了全部允许，发送后变成按需确认").
+    setConversation(id, { approvalMode: mode })
     // Refresh after the write lands: the session manager re-reads the column on
     // its own at the next ask, but this also applies a mid-loop change now.
     void (async () => {
@@ -590,7 +599,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
         console.warn('[Persistence] approval update failed:', err)
       }
     })()
-  }, [setConversations])
+  }, [setConversation])
 
   // ── Activate a conversation (state + ref kept in sync) ──
   const activateConversation = useCallback((key: string) => {
