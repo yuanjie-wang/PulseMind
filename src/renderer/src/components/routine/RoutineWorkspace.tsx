@@ -22,6 +22,7 @@ import {
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
+import { retentionOptions } from '../settings/retention-options'
 import { useHostedAgentSession } from '../../hooks/useHostedAgentSession'
 import { TranscriptView } from '../chat/TranscriptView'
 import { InputArea } from '../chat/InputArea'
@@ -33,13 +34,7 @@ import type { MenuProps } from 'antd'
 /** How often run rows (statuses, newly fired scheduled runs) are refreshed. */
 const RUNS_POLL_MS = 3000
 
-/** 运行历史保留时长选项；0 = 永久保留（不自动清理）。 */
-const RETENTION_OPTIONS: Array<{ days: number; label: string }> = [
-  { days: 0, label: '永久保留' },
-  { days: 7, label: '保留 7 天' },
-  { days: 30, label: '保留 30 天' },
-  { days: 90, label: '保留 90 天' },
-]
+// Retention choices are shared with conversation management and Data & Runtime.
 
 export const RUN_STATUS_TAG: Record<RoutineRun['status'], { color?: string; text: string }> = {
   running: { color: 'processing', text: '运行中' },
@@ -172,8 +167,12 @@ export function RoutineWorkspace({ routines, initialRoutineId, activeRunNonce, o
    *  routine-scheduler), so the saved value is the whole contract. */
   const setRetention = async (days: number): Promise<void> => {
     if (days === retentionDays) return
-    await saveSettings({ ...settings, routineRunRetentionDays: days })
-    message.success(days === 0 ? '已改为永久保留运行记录' : `启动时自动清理 ${days} 天前的运行记录`)
+    try {
+      await saveSettings({ ...settings, routineRunRetentionDays: days })
+      message.success(days === 0 ? '已改为永久保留运行记录' : `启动时自动清理 ${days} 天前的运行记录`)
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const pruneNow = async (): Promise<void> => {
@@ -188,7 +187,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, activeRunNonce, o
         key: 'retention',
         type: 'group',
         label: '自动清理（全部任务）',
-        children: RETENTION_OPTIONS.map((o) => ({
+        children: retentionOptions(t).map((o) => ({
           key: `retention:${o.days}`,
           label: o.days === retentionDays ? `✓ ${o.label}` : o.label,
         })),

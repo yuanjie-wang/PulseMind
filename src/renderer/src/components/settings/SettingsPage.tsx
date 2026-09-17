@@ -4,7 +4,7 @@
 // onClose) — `inline` renders the bare body, which is what a page wants.
 
 import React from 'react'
-import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, StarOutlined, UserOutlined } from '@ant-design/icons'
+import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, StarOutlined, DatabaseOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { PAGE_COLUMN_MAX_WIDTH } from '../layout/CenteredPage'
@@ -13,6 +13,7 @@ import type { MemoryManager } from '../../memory/MemoryManager'
 import AgentSettings from './AgentSettings'
 import EnvironmentSettings from './EnvironmentSettings'
 import ExperiencePanel from './ExperiencePanel'
+import DataRuntimeSettings from './DataRuntimeSettings'
 import FavoritesSettings from './FavoritesSettings'
 import LlmSettings from './LlmSettings'
 import MemorySettings from './MemorySettings'
@@ -26,6 +27,7 @@ const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] =
   { key: 'memory', icon: <BookOutlined />, labelKey: 'appLayout.memory' },
   { key: 'experiences', icon: <ExperimentOutlined />, labelKey: 'appLayout.experiences' },
   { key: 'favorites', icon: <StarOutlined />, labelKey: 'appLayout.favorites' },
+  { key: 'data', icon: <DatabaseOutlined />, labelKey: 'appLayout.dataRuntime' },
 ]
 
 interface SettingsPageProps {
@@ -50,6 +52,8 @@ function SettingsPage({ memoryManager }: SettingsPageProps): React.ReactElement 
     switch (tab) {
       case 'favorites':
         return <FavoritesSettings inline open onClose={() => {}} />
+      case 'data':
+        return <DataRuntimeSettings inline open onClose={() => {}} />
       case 'memory':
         return memoryManager ? <MemorySettings inline open onClose={() => {}} memoryManager={memoryManager} /> : null
       case 'experiences':
@@ -88,6 +92,7 @@ function SettingsPage({ memoryManager }: SettingsPageProps): React.ReactElement 
             {MENU.map((item) => (
               <div
                 key={item.key}
+                data-settings-menu={item.key}
                 onClick={() => selectTab(item.key)}
                 style={{
                   display: 'flex',

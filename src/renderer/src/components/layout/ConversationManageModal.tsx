@@ -10,14 +10,7 @@ import React, { useState } from 'react'
 import { App as AntdApp, Button, Modal, Segmented } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
-
-/** Retention presets in days; 0 = keep forever. */
-const RETENTION_OPTIONS = [
-  { label: '永久保留', value: 0 },
-  { label: '7 天', value: 7 },
-  { label: '30 天', value: 30 },
-  { label: '90 天', value: 90 },
-]
+import { retentionOptions } from '../settings/retention-options'
 
 interface ConversationManageModalProps {
   open: boolean
@@ -71,7 +64,7 @@ function ConversationManageModal({
         size="small"
         value={retentionDays}
         onChange={(v) => { void changeRetention(v as number) }}
-        options={RETENTION_OPTIONS}
+        options={retentionOptions(t).map(({ days, label }) => ({ value: days, label }))}
         style={{ marginBottom: 10 }}
       />
       <div style={{ fontSize: 12, color: '#999', lineHeight: 1.6 }}>
