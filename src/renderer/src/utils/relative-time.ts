@@ -42,6 +42,45 @@ export function describeRelativeTime(timestamp: string | number | Date | null | 
   return { unit: 'date', value: 0, ...calendar }
 }
 
+/** Calendar bucket for a timestamp, relative to `now`. The routines sidebar
+ *  groups recent runs into 今天 / 昨天 / 本周 / 更早 — a pure function so the
+ *  render path never calls Date.now() directly (the component passes its
+ *  fetchedAt clock, same contract as describeRelativeTimeText). */
+export type DateBucket = 'today' | 'yesterday' | 'thisWeek' | 'earlier'
+
+export function bucketRunByDate(timestamp: string | number | Date | null | undefined, now: number = Date.now()): DateBucket {
+  const rel = describeRelativeTime(timestamp, now)
+  if (!rel) return 'earlier'
+  const nowDate = new Date(now)
+  const nowYear = nowDate.getFullYear()
+  const nowMonth = nowDate.getMonth() + 1
+  const nowDay = nowDate.getDate()
+  // Same calendar day.
+  if (rel.year === nowYear && rel.month === nowMonth && rel.day === nowDay) return 'today'
+  // Compute calendar-day ordinal for both dates (ordinal date within the year).
+  const ordinal = (y: number, m: number, d: number): number => {
+    // Days before the start of month `m` in a non-leap year, plus leap day if applicable.
+    const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    let ord = cum[m - 1] + d
+    if (m > 2 && ((y % 4 === 0 && y % 100 !== 0) || y % 400 === 0)) ord += 1
+    return ord
+  }
+  // Day count across years — cheap full-day delta.
+  const dayOrdinal = (y: number, m: number, d: number): number =>
+    y * 365 + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) + ordinal(y, m, d)
+  const delta = dayOrdinal(nowYear, nowMonth, nowDay) - dayOrdinal(rel.year, rel.month, rel.day)
+  if (delta === 1) return 'yesterday'
+  // Same ISO week (Monday-based) and within the current week.
+  // getDay: 0=Sun..6=Sat. ISO week starts Monday → shift so Monday=0.
+  const isoWeekday = (d: Date): number => (d.getDay() + 6) % 7
+  const nowMonday = nowDate
+  const runDate = new Date(rel.year, rel.month - 1, rel.day)
+  const nowWeekStart = dayOrdinal(nowYear, nowMonth, nowDay) - isoWeekday(nowMonday)
+  const runOrd = dayOrdinal(rel.year, rel.month, rel.day)
+  if (runOrd >= nowWeekStart && runOrd <= nowWeekStart + 6) return 'thisWeek'
+  return 'earlier'
+}
+
 /** Minimal structural type of the i18n translator, so this util stays decoupled
  *  from the React context. */
 type Translate = (path: string, values?: Record<string, string | number>) => string

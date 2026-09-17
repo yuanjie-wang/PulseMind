@@ -44,15 +44,17 @@ export const RUN_STATUS_TAG: Record<RoutineRun['status'], { color?: string; text
 }
 
 /** Status as a glyph — a run list scans better as a column of icons than as
- *  text tags; the wording survives in the tooltip. */
-const RUN_STATUS_ICONS: Record<RoutineRun['status'], React.ReactNode> = {
+ *  text tags; the wording survives in the tooltip. Exported so the routines
+ *  landing page's "recent runs" sidebar can reuse the same column of glyphs
+ *  without duplicating the colour/shape vocabulary. */
+export const RUN_STATUS_ICONS: Record<RoutineRun['status'], React.ReactNode> = {
   running: <LoadingOutlined spin style={{ color: '#1677ff' }} />,
   success: <CheckCircleFilled style={{ color: '#52c41a' }} />,
   failed: <CloseCircleFilled style={{ color: '#ff4d4f' }} />,
   skipped: <MinusCircleOutlined style={{ color: '#bbb' }} />,
 }
 
-function RunStatusIcon({ status }: { status: RoutineRun['status'] }): React.ReactElement {
+export function RunStatusIcon({ status }: { status: RoutineRun['status'] }): React.ReactElement {
   return (
     <Tooltip title={RUN_STATUS_TAG[status].text}>
       <span style={{ fontSize: 15, lineHeight: 1, display: 'inline-flex', cursor: 'default' }}>
@@ -66,6 +68,10 @@ export interface RoutineWorkspaceProps {
   routines: Routine[]
   /** Task preselected when entering the workspace (the card that was clicked). */
   initialRoutineId: string
+  /** A specific run to preselect on first mount — passed when the user clicks a
+   *  run row in the landing sidebar. If absent (or no longer present), the
+   *  newest run is selected, matching the "open a card" path. */
+  initialRunId?: string
   /** Bumped by the parent whenever a new run starts — refetch and select the
    *  fresh run (the card-grid 立即运行 can fire while this pane is open). */
   activeRunNonce?: number
@@ -74,7 +80,7 @@ export interface RoutineWorkspaceProps {
   onRunNow: (routine: Routine) => void
 }
 
-export function RoutineWorkspace({ routines, initialRoutineId, activeRunNonce, onBack, onEdit, onRunNow }: RoutineWorkspaceProps): React.ReactElement {
+export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, activeRunNonce, onBack, onEdit, onRunNow }: RoutineWorkspaceProps): React.ReactElement {
   const { t } = useTranslation()
   const { modal, message } = AntdApp.useApp()
   const { settings, saveSettings } = useSettings()
@@ -102,8 +108,17 @@ export function RoutineWorkspace({ routines, initialRoutineId, activeRunNonce, o
     setSelectedRunId(next?.id ?? null)
   }, [])
 
+  // First mount honours an `initialRunId` (a run-row click from the landing
+  // sidebar) — selecting that run if it is still present, else the newest.
+  // Subsequent routine switches from the left pane fall back to the newest, so
+  // a stale initialRunId from the entry card never leaks onto another task.
+  const didInitRef = useRef(false)
   // eslint-disable-next-line react-hooks/set-state-in-effect -- async run-list load, setState lands after await
-  useEffect(() => { void openRuns(routineId) }, [routineId, openRuns])
+  useEffect(() => {
+    const prefer = !didInitRef.current ? initialRunId : undefined
+    didInitRef.current = true
+    void openRuns(routineId, prefer)
+  }, [routineId, openRuns, initialRunId])
 
   // Light poll of the runs list: status transitions and scheduled fires show
   // up without a manual refresh.
