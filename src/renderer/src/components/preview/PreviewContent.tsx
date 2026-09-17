@@ -8,7 +8,7 @@
 // lives in the store).
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { Button } from 'antd'
+import { Button, message } from 'antd'
 import { RefreshCw, ExternalLink, AlertTriangle } from 'lucide-react'
 import { detectFileKind, isPreviewable, type FileKind } from '../../../../shared/preview/file-kind'
 import { MarkdownPreview } from './MarkdownPreview'
@@ -16,9 +16,11 @@ import { TextPreview } from './TextPreview'
 import { CsvPreview } from './CsvPreview'
 import { HtmlPreview } from './HtmlPreview'
 import { FileEditor } from './FileEditor'
+import { ElementEditPanel } from './ElementEditPanel'
 import { LocalImage } from '../chat/LocalImage'
 import { useTranslation } from '../../i18n/useTranslation'
 import { usePreviewPaneStore } from '../../stores/previewPaneStore'
+import { useHtmlEditStore } from '../../stores/htmlEditStore'
 import {
   makeDraftFromDisk,
   conflictDecision,
@@ -174,7 +176,9 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   const { t } = useTranslation()
   const kind = detectFileKind(path)
   const { state, reload } = usePreviewFile(path, kind, reloadTick)
-  const editMode = usePreviewPaneStore((s) => !!s.editModes[path])
+  const mode = usePreviewPaneStore((s) => s.previewModes[path] ?? 'view')
+  const editMode = mode === 'source'
+  const elementMode = mode === 'element' && kind === 'html'
   const draft = usePreviewPaneStore((s) => s.drafts[path])
   const externalChange = usePreviewPaneStore((s) => !!s.externalChanges[path])
 
@@ -190,21 +194,34 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
     const bytes = new TextEncoder().encode(state.text).length
     st.setOversized(path, isEditableKind(kind) && bytes > MAX_EDITABLE_BYTES)
     const existing = st.drafts[path]
-    if (!existing) return
-    const decision = conflictDecision(isDirty(existing), state.text, existing.baseline)
-    if (decision === 'conflict') {
-      st.markExternalChange(path)
-      return
+    if (existing) {
+      const decision = conflictDecision(isDirty(existing), state.text, existing.baseline)
+      if (decision === 'conflict') {
+        st.markExternalChange(path)
+        return
+      }
+      st.clearExternalChange(path)
+      if (decision === 'silent-refresh') {
+        // Clean draft: adopt the new disk text as the new baseline.
+        st.setDraft(path, makeDraftFromDisk(state.text))
+      }
     }
-    st.clearExternalChange(path)
-    if (decision === 'silent-refresh') {
-      // Clean draft: adopt the new disk text as the new baseline.
-      st.setDraft(path, makeDraftFromDisk(state.text))
+    // Element-edit session: an agent write landed while we were not looking.
+    // D8 of the element-edit plan: reload + CLEAR the undo stack + tell the
+    // user. The re-read equals the session text when the tick came from our
+    // own undo/AI write (they adopt first, bump after), so no spurious reload.
+    if (elementMode) {
+      const session = useHtmlEditStore.getState().sessions[path]
+      if (session && session.fileText !== state.text) {
+        useHtmlEditStore.getState().handleExternalChange(path, state.text)
+        st.bumpReload(path)
+        void message.info(t('htmlEdit.externalChange'))
+      }
     }
     // state.text IS a dependency: the whole point is to re-decide on every
     // fresh read (a reload tick re-reads the same path, so `path`/`status`
     // alone never change).
-  }, [state, path, kind])
+  }, [state, path, kind, elementMode, t])
 
   if (kind === 'image') return <ImagePreview path={path} />
   if (!isPreviewable(kind)) return <FallbackCard path={path} kind={kind} />
@@ -214,6 +231,20 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   }
   if (state.status === 'missing' || state.status === 'error') {
     return <ErrorCard missing={state.status === 'missing'} onRetry={reload} />
+  }
+
+  // ── Element mode (PLAN-html-element-edit M3): the picker-filled iframe +
+  // the bottom strip. The textarea size gate does not apply here — nothing
+  // renders megabytes of text. ──
+  if (elementMode) {
+    return (
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <HtmlPreview path={path} reloadTick={reloadTick} text={state.text} elementMode />
+        </div>
+        <ElementEditPanel path={path} />
+      </div>
+    )
   }
 
   // ── Edit mode (D1/D3): markdown / text / csv / html all edit their SOURCE

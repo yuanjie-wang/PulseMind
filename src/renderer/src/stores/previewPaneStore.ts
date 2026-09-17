@@ -12,6 +12,12 @@ import { openTabInList, closeTabInList, type PreviewTab } from './preview-tabs'
 import { resolvePreviewPath } from '../../../shared/preview/file-kind'
 import { useWorkbenchStore } from './workbenchStore'
 import type { DraftEntry } from './preview-edit'
+import { useHtmlEditStore } from './htmlEditStore'
+
+/** Pane display mode per path (PLAN-html-element-edit M3): html carries all
+ *  three — preview / element editing / the advanced source editor (D2 of the
+ *  element-edit plan); every other kind only ever uses view/source. */
+export type PreviewMode = 'view' | 'element' | 'source'
 import { touchRecord } from '../utils/lru-record'
 
 /** Key for conversations that have no id yet (new-task draft). */
@@ -34,7 +40,7 @@ interface PreviewPaneState {
   /** path → draft. Kept in the STORE because PreviewContent remounts on every
    *  tab switch (key={active.path}) — component state would drop half an edit. */
   drafts: Record<string, DraftEntry>
-  editModes: Record<string, boolean>
+  previewModes: Record<string, PreviewMode>
   /** path → true while an external (agent) change is waiting on the user's
    *  conflict decision; the banner must survive remounts too. */
   externalChanges: Record<string, true>
@@ -43,7 +49,7 @@ interface PreviewPaneState {
   oversized: Record<string, true>
   setDraft: (path: string, entry: DraftEntry) => void
   clearDraft: (path: string) => void
-  setEditMode: (path: string, on: boolean) => void
+  setPreviewMode: (path: string, mode: PreviewMode) => void
   markExternalChange: (path: string) => void
   clearExternalChange: (path: string) => void
   setOversized: (path: string, on: boolean) => void
@@ -65,7 +71,7 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
   activeByConversation: {},
   reloadTicks: {},
   drafts: {},
-  editModes: {},
+  previewModes: {},
   externalChanges: {},
   oversized: {},
 
@@ -77,12 +83,12 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
       delete drafts[path]
       return { drafts }
     }),
-  setEditMode: (path, on) =>
+  setPreviewMode: (path, mode) =>
     set((s) => {
-      const editModes = { ...s.editModes }
-      if (on) editModes[path] = true
-      else delete editModes[path]
-      return { editModes }
+      const previewModes = { ...s.previewModes }
+      if (mode !== 'view') previewModes[path] = mode
+      else delete previewModes[path]
+      return { previewModes }
     }),
   markExternalChange: (path) => set((s) => ({ externalChanges: { ...s.externalChanges, [path]: true } })),
   setOversized: (path, on) =>
@@ -117,14 +123,16 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
     const tabs = get().tabsByConversation[key] ?? []
     const activePath = get().activeByConversation[key] ?? null
     const result = closeTabInList(tabs, path, activePath)
+    // Closing a tab drops its edit session with it (PLAN-preview-edit D4)
+    // and the element-edit session with it (PLAN-html-element-edit M3).
+    useHtmlEditStore.getState().forgetFile(path)
     set((s) => ({
       tabsByConversation: { ...s.tabsByConversation, [key]: result.tabs },
       ...(result.nextActive !== undefined
         ? { activeByConversation: { ...s.activeByConversation, [key]: result.nextActive } }
         : {}),
-      // Closing a tab drops its edit session with it (PLAN-preview-edit D4).
       drafts: omitKey(s.drafts, path),
-      editModes: omitKey(s.editModes, path),
+      previewModes: omitKey(s.previewModes, path),
       externalChanges: omitKey(s.externalChanges, path),
       oversized: omitKey(s.oversized, path),
     }))
@@ -159,18 +167,20 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
   bumpReload: (path) =>
     set((s) => ({ reloadTicks: { ...s.reloadTicks, [path]: (s.reloadTicks[path] ?? 0) + 1 } })),
 
-  forgetConversation: (conversationId) =>
+  forgetConversation: (conversationId) => {
+    const paths = (get().tabsByConversation[conversationId] ?? []).map((t) => t.path)
+    for (const path of paths) useHtmlEditStore.getState().forgetFile(path)
     set((s) => {
-      const paths = (s.tabsByConversation[conversationId] ?? []).map((t) => t.path)
       return {
         tabsByConversation: Object.fromEntries(Object.entries(s.tabsByConversation).filter(([k]) => k !== conversationId)),
         activeByConversation: Object.fromEntries(Object.entries(s.activeByConversation).filter(([k]) => k !== conversationId)),
         drafts: omitKeys(s.drafts, paths),
-        editModes: omitKeys(s.editModes, paths),
+        previewModes: omitKeys(s.previewModes, paths),
         externalChanges: omitKeys(s.externalChanges, paths),
         oversized: omitKeys(s.oversized, paths),
       }
-    }),
+    })
+  },
 }))
 
 /** Copy of `map` without `key` (no-op identity when the key is absent). */

@@ -11,8 +11,9 @@
 
 import React, { useEffect } from 'react'
 import { Modal, message } from 'antd'
-import { RotateCw, ExternalLink, Download, X, FileText, Eye, PenLine, Save } from 'lucide-react'
+import { RotateCw, ExternalLink, Download, X, FileText, Eye, PenLine, Save, MousePointerClick } from 'lucide-react'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
+import { useHtmlEditStore } from '../../stores/htmlEditStore'
 import { isDirty, serializeDraft } from '../../stores/preview-edit'
 import { detectFileKind } from '../../../../shared/preview/file-kind'
 import { PreviewContent } from './PreviewContent'
@@ -42,12 +43,15 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
   const activePath = usePreviewPaneStore((s) => s.activeByConversation[key] ?? null)
   const reloadTicks = usePreviewPaneStore((s) => s.reloadTicks)
   const drafts = usePreviewPaneStore((s) => s.drafts)
-  const editModes = usePreviewPaneStore((s) => s.editModes)
+  const previewModes = usePreviewPaneStore((s) => s.previewModes)
   const oversized = usePreviewPaneStore((s) => s.oversized)
 
   // ── The one save path (D5): draft → serialize (EOL/BOM restored) →
   // writeFile → adopt as new baseline → bumpReload. The html iframe's
-  // key={reloadTick} remounts it, so no special-casing there. ──
+  // key={reloadTick} remounts it, so no special-casing there. A source-mode
+  // save also drops any element-edit session — the session's file text no
+  // longer matches the disk, and it would re-initialize from the new text
+  // on the next entry. ──
   const saveDraft = async (path: string) => {
     const store = usePreviewPaneStore.getState()
     const entry = store.drafts[path]
@@ -60,6 +64,7 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
       }
       store.setDraft(path, { ...entry, baseline: entry.content })
       store.clearExternalChange(path)
+      useHtmlEditStore.getState().forgetFile(path)
       store.bumpReload(path)
     } catch (err) {
       void message.error(err instanceof Error ? err.message : 'Save failed')
@@ -90,13 +95,20 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
   const store = usePreviewPaneStore.getState()
   const activeKind = detectFileKind(active.path)
   const editableKind = activeKind === 'markdown' || activeKind === 'text' || activeKind === 'csv' || activeKind === 'html'
-  const editOn = !!editModes[active.path]
+  const mode = previewModes[active.path] ?? 'view'
+  const editOn = mode === 'source'
+  const elementOn = mode === 'element' && activeKind === 'html'
   const dirty = !!drafts[active.path] && isDirty(drafts[active.path])
   const editDisabled = !editableKind || !!oversized[active.path]
 
-  const toggleEdit = () => {
+  const toggleSource = () => {
     if (editDisabled) return
-    store.setEditMode(active.path, !editOn)
+    store.setPreviewMode(active.path, editOn ? 'view' : 'source')
+  }
+
+  const toggleElement = () => {
+    if (activeKind !== 'html') return
+    store.setPreviewMode(active.path, elementOn ? 'view' : 'element')
   }
 
   const requestCloseTab = (path: string) => {
@@ -199,6 +211,21 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
           background: '#fff',
         }}
       >
+        {/* Element-edit toggle (html only): the PRIMARY entry per the
+            element-edit plan; source stays as the advanced escape hatch. */}
+        {activeKind === 'html' && (
+          <div
+            style={{
+              ...ICON_BUTTON,
+              background: elementOn ? '#fff7e6' : 'transparent',
+              color: elementOn ? '#d46b08' : '#666',
+            }}
+            onClick={toggleElement}
+            title={t('htmlEdit.modeToggle')}
+          >
+            <MousePointerClick size={13} />
+          </div>
+        )}
         <div
           style={{
             ...ICON_BUTTON,
@@ -206,7 +233,7 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
             background: editOn ? '#e6f4ff' : 'transparent',
             color: editOn ? '#1677ff' : '#666',
           }}
-          onClick={toggleEdit}
+          onClick={toggleSource}
           title={editDisabled ? t('previewPane.editNotAvailable') : editOn ? t('previewPane.view') : t('previewPane.edit')}
         >
           {editOn ? <Eye size={13} /> : <PenLine size={12} />}
@@ -246,7 +273,7 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, minHeight: 0, overflow: editOn ? 'hidden' : 'auto' }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: editOn || elementOn ? 'hidden' : 'auto' }}>
         <PreviewContent key={active.path} path={active.path} reloadTick={reloadTicks[active.path] ?? 0} />
       </div>
     </div>

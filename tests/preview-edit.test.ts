@@ -90,7 +90,7 @@ describe('store draft lifecycle (D4)', () => {
       activeByConversation: {},
       reloadTicks: {},
       drafts: {},
-      editModes: {},
+      previewModes: {},
       externalChanges: {},
     })
   })
@@ -99,21 +99,21 @@ describe('store draft lifecycle (D4)', () => {
     const s = usePreviewPaneStore.getState()
     s.setDraft(path, draft())
     expect(usePreviewPaneStore.getState().drafts[path]?.baseline).toBe('# hello\n')
-    usePreviewPaneStore.getState().setEditMode(path, true)
-    expect(usePreviewPaneStore.getState().editModes[path]).toBe(true)
+    usePreviewPaneStore.getState().setPreviewMode(path, 'source')
+    expect(usePreviewPaneStore.getState().previewModes[path]).toBe('source')
   })
 
   it('closeTab drops the tab’s draft, edit mode and external-change mark', () => {
     const s = usePreviewPaneStore.getState()
     s.openFile(conv, path)
     usePreviewPaneStore.getState().setDraft(path, draft())
-    usePreviewPaneStore.getState().setEditMode(path, true)
+    usePreviewPaneStore.getState().setPreviewMode(path, 'source')
     usePreviewPaneStore.getState().markExternalChange(path)
 
     usePreviewPaneStore.getState().closeTab(conv, path)
     const after = usePreviewPaneStore.getState()
     expect(after.drafts[path]).toBeUndefined()
-    expect(after.editModes[path]).toBeUndefined()
+    expect(after.previewModes[path]).toBeUndefined()
     expect(after.externalChanges[path]).toBeUndefined()
   })
 
@@ -122,11 +122,11 @@ describe('store draft lifecycle (D4)', () => {
     s.openFile(conv, '/tmp/w/a.md')
     s.openFile(conv, '/tmp/w/b.md')
     usePreviewPaneStore.getState().setDraft('/tmp/w/a.md', draft())
-    usePreviewPaneStore.getState().setEditMode('/tmp/w/b.md', true)
+    usePreviewPaneStore.getState().setPreviewMode('/tmp/w/b.md', 'source')
 
     usePreviewPaneStore.getState().forgetConversation(conv)
     const after = usePreviewPaneStore.getState()
     expect(Object.keys(after.drafts)).toEqual([])
-    expect(Object.keys(after.editModes)).toEqual([])
+    expect(Object.keys(after.previewModes)).toEqual([])
   })
 })

@@ -6,6 +6,7 @@
 // every patch must then pass verifyPatch (D6: re-parse and confirm — a patch
 // that cannot be proven lands nowhere).
 
+import { parseFragment, type DefaultTreeAdapterTypes } from 'parse5'
 import type { ElementLocation, Span } from './resolve'
 import { resolveElement } from './resolve'
 import { parsePmPath } from './pm-path'
@@ -228,4 +229,46 @@ function stripTags(html: string): string {
 /** Byte-span sanity: a Span must lie inside `html` and be well-ordered. */
 export function spanIsValid(html: string, span: Span): boolean {
   return span.start >= 0 && span.end <= html.length && span.start <= span.end
+}
+
+// ── AI output validation (D9, §5) ──
+
+/** A replacement element above this size is refused — an "AI edit" that
+ *  returns tens of kilobytes is a document rewrite wearing an element's
+ *  clothes. */
+export const MAX_AI_ELEMENT_BYTES = 32 * 1024
+
+export type AiValidateResult =
+  | { ok: true; html: string }
+  | { ok: false; reason: string }
+
+/** Prove the model returned exactly one element of the expected tag — not a
+ *  fenced document, not two elements, not text. Returns the EXACT markup
+ *  bytes to splice (sliced from the model output, never re-serialized). */
+export function validateAiElementMarkup(raw: string, expectedTag: string): AiValidateResult {
+  const trimmed = raw.trim()
+  if (!trimmed) return { ok: false, reason: 'AI 返回了空内容' }
+  if (trimmed.length > MAX_AI_ELEMENT_BYTES) {
+    return { ok: false, reason: `AI 返回的内容过大（${trimmed.length} 字节，上限 ${MAX_AI_ELEMENT_BYTES}）` }
+  }
+  if (/<!doctype/i.test(trimmed) || /<html[\s>]/i.test(trimmed) || /<body[\s>]/i.test(trimmed) || /<\/body/i.test(trimmed)) {
+    return { ok: false, reason: 'AI 返回了整篇文档，而这里只接受单个元素' }
+  }
+  const frag = parseFragment(trimmed)
+  const children = (frag.childNodes ?? []).filter(
+    (node): node is DefaultTreeAdapterTypes.Element => typeof (node as { tagName?: unknown }).tagName === 'string',
+  )
+  if (children.length === 0) {
+    return { ok: false, reason: 'AI 返回的不是元素标记' }
+  }
+  if (children.length > 1) {
+    return { ok: false, reason: `AI 返回了 ${children.length} 个元素，这里只接受一个` }
+  }
+  const el = children[0]
+  if (el.tagName.toLowerCase() !== expectedTag.toLowerCase()) {
+    return { ok: false, reason: `AI 把标签改成了 ${el.tagName}（选中元素是 ${expectedTag}）` }
+  }
+  const start = el.sourceCodeLocation?.startOffset ?? 0
+  const end = el.sourceCodeLocation?.endOffset ?? trimmed.length
+  return { ok: true, html: trimmed.slice(start, end) }
 }
