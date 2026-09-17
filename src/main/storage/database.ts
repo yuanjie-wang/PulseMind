@@ -293,6 +293,13 @@ function createTables(): void {
       meta_json   TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS browser_history (
+      url           TEXT PRIMARY KEY,
+      title         TEXT,
+      visit_count   INTEGER NOT NULL DEFAULT 1,
+      last_visit_at INTEGER NOT NULL
+    );
+
   `)
   // Conversations keep their project binding (welcome page picker); existing
   // databases get the column here.

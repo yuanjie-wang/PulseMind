@@ -310,9 +310,12 @@ export interface ElectronAPI {
   ) => Promise<unknown>
   /** Browser pane (A-M5). `browserActive`: PLAN-workbench W3 — false folds the
    *  native WebView while the workbench shows a non-browser tab. */
-  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number; browserActive?: boolean }) => Promise<void>
+  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number; browserActive?: boolean; chromeOverlayHeight?: number }) => Promise<void>
   browserPaneSetWidth: (width: number) => Promise<void>
   browserPaneAction: (action: Record<string, unknown>) => Promise<void>
+  /** Address-bar history (PLAN-browser-pane-ux T3): manual navigation only. */
+  browserHistoryQuery: (text: string) => Promise<Array<{ url: string; title: string | null; visitCount: number; lastVisitAt: number }>>
+  browserHistoryClear: () => Promise<void>
   onBrowserPaneUpdate: (
     cb: (update: {
       visible: boolean

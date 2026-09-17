@@ -32,6 +32,7 @@ import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
 import { WORKSPACE_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
+import { browserHistoryStore } from '../storage/browser-history-store'
 import { settingsStore } from '../storage/settings-store'
 import { getConversationWorkspaceDir } from '../storage/conversation.db'
 import type { BackendAdapter } from './backends/BackendAdapter'
@@ -113,6 +114,7 @@ export class BrowserService {
   handlePaneState(state: BrowserPaneState, sender: WebContents): void {
     this.paneSender = sender
     this.paneState = state
+    appViewDock.setChromeOverlay(state.chromeOverlayHeight ?? 0)
     this.syncPane()
   }
 
@@ -129,7 +131,7 @@ export class BrowserService {
       }
     }
     appViewDock.setWidth(this.resolvePaneWidth())
-    this.pushPaneUpdates()
+    this.pushPaneUpdates(true)
   }
 
   async handlePaneAction(action: BrowserPaneAction, sender: WebContents): Promise<void> {
@@ -158,7 +160,18 @@ export class BrowserService {
         // than duplicated, so the resolution is the same one the dock uses.
         const entry = action.tabId ? this.resolveTab(action.tabId, scope) : (this.activePaneEntry(scope) ?? (await this.createUserPaneTab(scope)))
         auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNavigate', target: url, decision: 'allowed' })
+        const beforeUrl = entry.tab.page.url()
         await entry.tab.page.goto(url, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
+        // History records MANUAL navigation only (裁定 L1 — the agent's
+        // executeCommand('navigate') never reaches here; back/forward/reload
+        // are not new destinations). The FINAL url is what's remembered
+        // (redirects land under where the user actually went); a goto that
+        // never committed — page.url unchanged — is not a visit.
+        const finalUrl = entry.tab.page.url()
+        if (finalUrl && finalUrl !== beforeUrl) {
+          const title = await entry.tab.page.title().catch(() => '')
+          browserHistoryStore.recordVisit(finalUrl, title || undefined)
+        }
         break
       }
       case 'back':
@@ -453,13 +466,36 @@ export class BrowserService {
     const active = browserActive && scope ? this.activePaneEntry(scope) : null
     appViewDock.show(active ? this.viewOfTab(active.id) : null)
     appViewDock.setVisible(Boolean(active))
-    this.pushPaneUpdates()
+    this.pushPaneUpdates(true)
   }
 
   /** The last pane update actually sent — content-equality gate below. */
   private lastPanePush: BrowserPaneUpdate | null = null
 
-  private pushPaneUpdates(): void {
+  /** Trailing ~64ms coalescing for activity-driven pushes (PLAN
+   *  PLAN-browser-pane-ux T1.3): a loading page emits an event storm and each
+   *  event used to ship a full tabs snapshot, re-rendering the chrome once per
+   *  event on top of the round-trip lag. User-action paths pass `immediate` —
+   *  a click must not wait for the trailing edge. */
+  private panePushTimer: ReturnType<typeof setTimeout> | null = null
+
+  private pushPaneUpdates(immediate = false): void {
+    if (immediate) {
+      if (this.panePushTimer) {
+        clearTimeout(this.panePushTimer)
+        this.panePushTimer = null
+      }
+      this.doPushPaneUpdates()
+      return
+    }
+    if (this.panePushTimer) return
+    this.panePushTimer = setTimeout(() => {
+      this.panePushTimer = null
+      this.doPushPaneUpdates()
+    }, 64)
+  }
+
+  private doPushPaneUpdates(): void {
     const target = this.paneSender ?? appViewDock.getWindow()?.webContents
     if (!target || target.isDestroyed()) return
     const { viewKind, conversationId } = this.paneState

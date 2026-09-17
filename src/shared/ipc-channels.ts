@@ -239,6 +239,10 @@ export const IPC_CHANNELS = {
   BROWSER_PANE_WIDTH: 'browser:pane-width',
   BROWSER_PANE_ACTION: 'browser:pane-action',
   BROWSER_PANE_UPDATE: 'browser:pane-update',
+  // Address-bar history (PLAN-browser-pane-ux T3.3): manual navigation only,
+  // globally shared, clearable from the suggestion dropdown's footer.
+  BROWSER_HISTORY_QUERY: 'browser:history-query',
+  BROWSER_HISTORY_CLEAR: 'browser:history-clear',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

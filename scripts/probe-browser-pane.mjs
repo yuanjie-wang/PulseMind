@@ -105,6 +105,7 @@ window.__mount = ({ tabs, activeTab = 'browser' } = {}) => {
 window.__actions = []
 window.__CONV_KEY = '${CONV_KEY}'
 window.__setTab = (tab) => { useWorkbenchStore.getState().setActiveTab(tab); return true }
+window.__paneStore = useBrowserPaneStore
 window.__ready = true
 `
 
@@ -132,10 +133,17 @@ await page.goto('http://pm-probe.local/')
 // Before the bundle: AppLayout reads electronAPI at module scope, and the pane
 // store subscribes at import time (so the subscription must exist up front).
 await page.addScriptTag({
-  content: `window.electronAPI = new Proxy({}, { get: (_t, key) =>
+  content: `window.__historyFixture = [];
+    window.__historyQueries = [];
+    window.__historyCleared = 0;
+    window.__paneStates = [];
+    window.electronAPI = new Proxy({}, { get: (_t, key) =>
     key === 'getWindowControls' ? () => ({ side: 'left', inset: 70 })
       : key === 'getPlatformInfo' ? () => Promise.resolve({ platform: 'darwin' })
       : key === 'browserPaneAction' ? (action) => { window.__actions.push(action); return Promise.resolve() }
+      : key === 'browserHistoryQuery' ? (text) => { window.__historyQueries.push(text); return Promise.resolve(window.__historyFixture) }
+      : key === 'browserHistoryClear' ? () => { window.__historyCleared += 1; window.__historyFixture = []; return Promise.resolve() }
+      : key === 'browserPaneSetState' ? (state) => { window.__paneStates.push(state); return Promise.resolve() }
       : key === 'getSettings' ? () => Promise.resolve({
           activeProfileId: '', profiles: [], theme: 'light', myName: '', soul: '', yourName: '',
           workspaceDir: '', autoCleanup: true, locale: 'zh',
@@ -173,7 +181,9 @@ check('the address bar shows the active tab URL', (await address().inputValue())
 // Geometry: the rows above the native WebView must total PANE_CHROME_HEIGHT.
 const geom = await page.evaluate(() => {
   const input = document.querySelector('input[placeholder="输入网址，回车打开"]')
-  const row = input.parentElement
+  // The 36px ROW (it carries the row's border-bottom) — the input now sits in
+  // an inner flex wrapper that stretches, so parentElement is no longer the row.
+  const row = input.closest('div[style*="border-bottom"]')
   // The pane root is the first ancestor that also carries the workbench's own
   // tool-tab strip — that, not a fixed hop count, is what makes the measured
   // offset the same thing the main-process dock measures against.
@@ -215,6 +225,37 @@ check(
   navActions.length === 1 && navActions[0].op === 'navigate' && navActions[0].tabId === 'tab_probe_2' && navActions[0].url === 'https://example.com',
   JSON.stringify(navActions),
 )
+
+/* ── 1b. Optimistic highlight (T1.1): the click paints in the same frame —
+        no IPC event, no snapshot, just the click. The probe's stubbed bridge
+        never delivers a snapshot after an action, so any movement here is the
+        optimistic id working. Switch timing is recorded informationally. ── */
+await page.evaluate((tabs) => window.__mount({ tabs }), TABS)
+await address().waitFor()
+const optimistic = await page.evaluate(() => new Promise((resolve) => {
+  const tab = document.querySelector('div[title="Example"]')
+  if (!tab) { resolve(null); return }
+  const before = getComputedStyle(tab).fontWeight
+  const t0 = performance.now()
+  tab.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  // Same frame, before any paint or event await — React's scheduled render
+  // from the zustand write completes in a microtask, i.e. before this runs.
+  requestAnimationFrame(() => {
+    resolve({ before, after: getComputedStyle(tab).fontWeight, ms: performance.now() - t0 })
+  })
+}))
+check(
+  'clicking the inactive tab moves the highlight within the same frame (optimistic)',
+  !!optimistic && optimistic.before === '400' && optimistic.after === '600',
+  optimistic ? `fontWeight ${optimistic.before}→${optimistic.after} in ${optimistic.ms.toFixed(1)}ms (informational)` : 'tab not found',
+)
+await page.evaluate((tabs) => {
+  // Main's authoritative snapshot arrives: the optimistic id must clear and
+  // the highlight return to the snapshot's active tab (main is the truth).
+  window.__paneStore.getState().setUpdate({ visible: true, width: 420, conversationId: window.__CONV_KEY, tabs })
+}, TABS)
+const snapshotWeight = await page.evaluate(() => getComputedStyle(document.querySelector('div[title="百度一下"]')).fontWeight)
+check('main\'s snapshot clears the optimistic id (main is the source of truth)', snapshotWeight === '600', `百度一下 fontWeight=${snapshotWeight}`)
 
 /* ── 2. A pane with NO tab: the row must still be usable — typing takes, and
         Enter opens a tab instead of being swallowed. ───────────────────── */
@@ -276,6 +317,136 @@ check('the address bar is not rendered on a non-browser workbench tab', (await a
 await page.evaluate(() => window.__setTab('browser'))
 await address().waitFor()
 check('switching back to the browser tab brings the address bar back', (await address().count()) === 1)
+
+/* ── 5. Tab-strip overflow (T2): shrink-to-floor, wheel-to-scroll, active
+        tab auto-revealed — with the 32/36 geometry contract intact. ────── */
+const MANY_TABS = Array.from({ length: 8 }, (_, i) => ({
+  id: `tab_many_${i + 1}`,
+  url: `https://site${i + 1}.example/`,
+  title: `第${i + 1}个标签页标题较长`,
+  active: i === 0,
+}))
+await page.evaluate((tabs) => window.__mount({ tabs }), MANY_TABS)
+await address().waitFor()
+
+const strip = () => page.evaluate(() => {
+  const el = document.querySelector('.pm-pane-tabstrip')
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  // The 32px contract lives on the strip ROW (the scroller's parent); the
+  // scroller itself is content-height inside it.
+  const row = el.parentElement.getBoundingClientRect()
+  return {
+    scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+    scrollLeft: el.scrollLeft, top: r.top, height: r.height,
+    rowHeight: row.height,
+  }
+})
+
+let st = await strip()
+check('8 tabs overflow the strip (it scrolls instead of clipping)', st && st.scrollWidth > st.clientWidth, `scrollWidth=${st?.scrollWidth} clientWidth=${st?.clientWidth}`)
+check('…and the strip row is still exactly 32px tall (PANE_CHROME_HEIGHT contract)', st && Math.round(st.rowHeight) === 32, `rowHeight=${st?.rowHeight}`)
+
+await page.locator('.pm-pane-tabstrip').hover()
+await page.mouse.wheel(0, 240)
+await page.waitForTimeout(80)
+st = await strip()
+check('a vertical wheel gesture scrolls the strip horizontally', st && st.scrollLeft > 0, `scrollLeft=${st?.scrollLeft}`)
+
+// Make the LAST tab active the way main does — via a snapshot. The auto-reveal
+// effect must scroll it fully into view; scrollIntoView would have chained to
+// the outer scroll containers, so this also pins the manual-scrollLeft rule.
+await page.evaluate((tabs) => {
+  const revealed = tabs.map((t, i) => ({ ...t, active: i === tabs.length - 1 }))
+  window.__paneStore.getState().setUpdate({ visible: true, width: 420, conversationId: window.__CONV_KEY, tabs: revealed })
+}, MANY_TABS)
+await page.waitForTimeout(120)
+st = await strip()
+const reveal = await page.evaluate(() => {
+  const stripEl = document.querySelector('.pm-pane-tabstrip')
+  const tab = [...stripEl.querySelectorAll('[data-tab-id]')].pop()
+  const sr = stripEl.getBoundingClientRect()
+  const tr = tab.getBoundingClientRect()
+  return {
+    fullyVisible: tr.left >= sr.left - 0.5 && tr.right <= sr.right + 0.5,
+    atRightEdge: Math.abs(tr.right - sr.right) < 2,
+    hitIsTab: (() => {
+      const el = document.elementFromPoint(tr.left + tr.width / 2, tr.top + tr.height / 2)
+      return el === tab || tab.contains(el)
+    })(),
+  }
+})
+check('activating the last tab auto-reveals it fully inside the strip', reveal.fullyVisible && reveal.atRightEdge, JSON.stringify(reveal))
+check('…and a real hit-test at its centre finds the tab (nothing clipped)', reveal.hitIsTab)
+
+/* ── 6. Address-bar history dropdown (T3.5/T3.6): fixture rows from the
+        (stubbed) query channel drive the panel; ↑↓+Enter walk it, Esc is
+        two-stage, the footer clears with a confirm step, and the open
+        dropdown reports its height so main can shift the webview. ──────── */
+const DROPDOWN_ROW = '.pm-pane-tabstrip, div'
+const suggestionItems = () => page.locator('div[style*="z-index: 40"] > div > div')
+await page.evaluate(() => {
+  window.__historyFixture = [
+    { url: 'https://mail.163.com/', title: '网易邮箱', visitCount: 3, lastVisitAt: 30 },
+    { url: 'https://github.com/', title: 'GitHub', visitCount: 1, lastVisitAt: 10 },
+  ]
+  window.__actions = []
+  window.__historyCleared = 0
+  window.__paneStates = []
+})
+await page.evaluate((tabs) => window.__mount({ tabs }), TABS)
+await address().waitFor()
+
+await address().click()
+await page.keyboard.type('m')
+await page.locator('div[style*="z-index: 40"]').waitFor()
+const rowCount = await suggestionItems().count()
+check('typing opens the dropdown with matching history rows', rowCount === 2, `${rowCount} rows`)
+
+const firstBg = await suggestionItems().nth(0).evaluate((el) => getComputedStyle(el).backgroundColor)
+await page.keyboard.press('ArrowDown')
+const secondBg = await suggestionItems().nth(0).evaluate((el) => getComputedStyle(el).backgroundColor)
+check('ArrowDown moves the selection (row highlight moves)', firstBg !== secondBg, `${firstBg} → ${secondBg}`)
+
+await page.keyboard.press('ArrowDown') // wrap to the second row
+await page.keyboard.press('Enter')
+await page.waitForTimeout(100)
+const walked = await page.evaluate(() => window.__actions)
+check(
+  'Enter opens the walked-to suggestion (its url already carries the scheme)',
+  walked.length === 1 && walked[0].op === 'navigate' && walked[0].url === 'https://github.com/' && walked[0].tabId === 'tab_probe_2',
+  JSON.stringify(walked),
+)
+check('…and the dropdown closed', (await page.locator('div[style*="z-index: 40"]').count()) === 0)
+
+// Esc: first press closes the dropdown, second clears the field.
+await address().click()
+await page.keyboard.press('Meta+A')
+await page.keyboard.type('ma')
+await page.locator('div[style*="z-index: 40"]').waitFor()
+await page.keyboard.press('Escape')
+check('first Esc closes the dropdown but keeps the typed text', (await page.locator('div[style*="z-index: 40"]').count()) === 0 && (await address().inputValue()) === 'ma', `value=${await address().inputValue()}`)
+await page.keyboard.press('Escape')
+// 清空的是 draft：有激活页签时字段回到该页签自己的地址（无页签才是空串）。
+const clearedTo = await address().inputValue()
+check('second Esc clears the draft (field reverts to the active tab\'s url)', clearedTo === 'https://www.baidu.com/', `value=${JSON.stringify(clearedTo)}`)
+
+// Clear footer: one click arms the confirm, the second fires it.
+await address().click()
+await page.keyboard.press('Meta+A')
+await page.keyboard.type('mail')
+await page.locator('div[style*="z-index: 40"]').waitFor()
+const footer = page.locator('div[style*="z-index: 40"] > div:last-child')
+await footer.click()
+check('the clear footer first asks for confirmation', (await footer.textContent())?.includes('确认清除'), await footer.textContent())
+await footer.click()
+await page.waitForTimeout(80)
+const clearedCount = await page.evaluate(() => window.__historyCleared)
+check('the confirmed click clears the history through the channel', clearedCount === 1, `clears=${clearedCount}`)
+check('…and the dropdown closes afterwards', (await page.locator('div[style*="z-index: 40"]').count()) === 0)
+
+const overlayPush = await page.evaluate(() => window.__paneStates.some((s) => s.chromeOverlayHeight > 0))
+check('an open dropdown reports its height so main shifts the webview', overlayPush)
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

@@ -36,6 +36,7 @@ const PHASE = process.env.PM_PHASE
 const SCOPE_A = 'conv_pane_a'
 const SCOPE_B = 'conv_pane_b'
 const SCOPE_C = 'conv_pane_c'
+const SCOPE_D = 'conv_pane_d'
 
 const results = []
 function check(name, pass, detail) {
@@ -45,9 +46,10 @@ function check(name, pass, detail) {
 }
 
 /** Replacement for the app-view backend: records what the service asks of it. */
-function fakeAppView() {
+function fakeAppView(dockCalls) {
   const created = []
   const navigations = []
+  const views = new Map()
   return {
     created,
     navigations,
@@ -56,12 +58,14 @@ function fakeAppView() {
     async stop() {},
     async newTab({ tabId, origin, scopeId, url }) {
       created.push({ tabId, origin, scopeId, url: url ?? null })
+      let current = url ?? 'about:blank' // a real page.url() follows navigations
       return {
         page: {
-          url: () => url ?? 'about:blank',
+          url: () => current,
           title: async () => '',
           goto: async (target) => {
             navigations.push({ tabId, url: target })
+            current = target
             return null
           },
           goBack: async () => {},
@@ -71,7 +75,17 @@ function fakeAppView() {
         close: async () => {},
       }
     },
-    viewOf: () => null,
+    // One stable fake view per tab, so the dock's mounting decisions are
+    // observable: addChildView must fire once per view, never per switch.
+    viewOf: (tabId) => {
+      if (!views.has(tabId)) {
+        views.set(tabId, {
+          setBounds: (b) => dockCalls.bounds.push({ tabId, w: b.width }),
+          webContents: { setZoomFactor: () => {}, getURL: () => '', getTitle: () => '' },
+        })
+      }
+      return views.get(tabId)
+    },
     async claimTab() {},
   }
 }
@@ -95,12 +109,41 @@ async function phaseRun() {
   const { auditStore } = await import('../src/main/storage/audit-store')
   const { BrowserService } = await import('../src/main/browser/BrowserService')
 
+  const { browserHistoryStore } = await import('../src/main/storage/browser-history-store')
+  const historyUrls = () => browserHistoryStore.query('', 0) && null // placeholder, replaced below
+  const historyRows = () => {
+    // query('') returns nothing by design; read the table through per-row queries.
+    const all = []
+    for (const n of backend.navigations.map((x) => x.url)) {
+      for (const r of browserHistoryStore.query(new URL(n).host, 50)) {
+        if (!all.some((x) => x.url === r.url)) all.push(r)
+      }
+    }
+    return all
+  }
+  void historyUrls
+
   const service = new BrowserService()
   await new Promise((r) => setTimeout(r, 50)) // loadDefaults settles
-  const backend = fakeAppView()
+  // The REAL dock, fed a fake window so its mounting decisions are countable
+  // (PLAN-browser-pane-ux T1.4): addChildView/removeChildView must not grow
+  // with tab switches — a persistent mount + bounds writes is the whole fix.
+  const dockCalls = { add: 0, remove: 0, bounds: [] }
+  const { appViewDock } = await import('../src/main/browser/app-view-dock')
+  appViewDock.attach({
+    contentView: {
+      addChildView: () => { dockCalls.add += 1 },
+      removeChildView: () => { dockCalls.remove += 1 },
+    },
+    getContentSize: () => [1400, 900],
+    on: () => {},
+    webContents: { isDestroyed: () => false, send: (_c, u) => updatesSink.push(u) },
+  })
+  const backend = fakeAppView(dockCalls)
   service.backends.set('app-view', backend)
 
-  const updates = []
+  const updatesSink = []
+  const updates = updatesSink
   const sender = fakeSender(updates)
   const paneState = (conversationId) => ({
     viewKind: 'chat',
@@ -171,13 +214,46 @@ async function phaseRun() {
   check('another conversation\'s tab cannot be navigated from this one', typeof crossScope === 'string' && crossScope.includes('不属于'), JSON.stringify(crossScope))
   check('…and nothing was navigated by that attempt', !backend.navigations.some((n) => n.url.includes('evil.example')), JSON.stringify(backend.navigations))
 
-  /* ── 5. The audit trail says what the user did ───────────────────────── */
+  /* ── 5. Switching tabs mounts once and then only re-bounds (T1.4) ────── */
+  service.handlePaneState(paneState(SCOPE_D), sender)
+  await service.handlePaneAction({ op: 'newTab' }, sender)
+  await service.handlePaneAction({ op: 'newTab' }, sender)
+  const dTabs = tabsOf(SCOPE_D)
+  check('the switch section has two tabs to flip between', dTabs.length === 2, JSON.stringify(dTabs))
+  const addAfterCreate = dockCalls.add
+  const removeAfterCreate = dockCalls.remove
+  for (let i = 0; i < 4; i++) {
+    await service.handlePaneAction({ op: 'selectTab', tabId: dTabs[i % 2].tabId }, sender)
+  }
+  check(
+    'four tab switches do not re-mount anything (persistent dock, T1.2)',
+    dockCalls.add === addAfterCreate && dockCalls.remove === removeAfterCreate,
+    `add ${removeAfterCreate === dockCalls.remove ? dockCalls.add : '?'}→${dockCalls.add}, remove ${removeAfterCreate}→${dockCalls.remove}`,
+  )
+  check(
+    '…the switches travelled through bounds writes instead (both tabs got one)',
+    dockCalls.bounds.filter((b) => dTabs.some((t) => t.tabId === b.tabId)).length >= 6,
+    JSON.stringify(dockCalls.bounds.slice(-6)),
+  )
+  // Layout writes the active view's box FIRST and then zeroes everyone else,
+  // so the last-per-view write is the state each view ends in.
+  const lastWidthByTab = new Map()
+  for (const b of dockCalls.bounds) lastWidthByTab.set(b.tabId, b.w)
+  const activeId = lastUpdate().tabs.find((t) => t.active)?.id
+  check(
+    '…the active tab ends non-zero and every other mounted view at zero',
+    (lastWidthByTab.get(activeId) ?? 0) > 0 &&
+      [...lastWidthByTab.entries()].every(([id, w]) => id === activeId || w === 0),
+    JSON.stringify([...lastWidthByTab]),
+  )
+
+  /* ── 6. The audit trail says what the user did ───────────────────────── */
   const audit = auditStore.list(100).filter((e) => e.scope === 'browser')
   const newTabRows = audit.filter((e) => e.action === 'browser.paneNewTab')
   const navRows = audit.filter((e) => e.action === 'browser.paneNavigate')
   check(
-    'exactly the two tabs the user opened are audited (the reused address opened none)',
-    newTabRows.length === 2 && newTabRows.map((e) => e.actor).sort().join() === `${SCOPE_A},${SCOPE_B}`,
+    'exactly the user-opened tabs are audited (the reused address opened none)',
+    newTabRows.length === 4 && new Set(newTabRows.map((e) => e.actor)).size === 3,
     newTabRows.map((e) => `${e.actor}:${e.target}`).join(' '),
   )
   check(
@@ -190,6 +266,56 @@ async function phaseRun() {
     !navRows.some((e) => String(e.target).includes('bad')) && !navRows.some((e) => String(e.target).includes('evil')),
     navRows.map((e) => e.target).join(' '),
   )
+  /* ── 7. Address-bar history (T3.6): manual navigation only, LRU, clearable ── */
+  const manualUrls = ['https://example.com/', 'https://mail.163.com/', 'https://example.org/']
+  const histSoFar = manualUrls.map((u) => browserHistoryStore.query(new URL(u).host, 10).find((r) => r.url === u))
+  check(
+    'every completed manual navigation landed in history, final url',
+    histSoFar.every((r) => r && manualUrls.includes(r.url)),
+    JSON.stringify(histSoFar),
+  )
+  check('…with a title snapshot (empty here, null tolerated)', histSoFar.every((r) => r && (r.title === null || typeof r.title === 'string')), JSON.stringify(histSoFar.map((r) => r?.title)))
+
+  const countBefore = histSoFar.filter(Boolean).length
+  service.handlePaneState(paneState(SCOPE_B), sender) // section 5 left SCOPE_D active
+  await service.handlePaneAction({ op: 'navigate', tabId: bTabs[0].tabId, url: 'https://mail.163.com/' }, sender)
+  const mailRow = browserHistoryStore.query('mail.163.com', 10).find((r) => r.url === 'https://mail.163.com/')
+  check('re-visiting bumps the visit count instead of inserting a second row', mailRow?.visitCount === 2, JSON.stringify(mailRow))
+  check('…and the table still holds exactly one row per url', browserHistoryStore.query('163.com', 50).length === 1, '')
+
+  // The AGENT's navigate (executeCommand) must never write history (裁定 L1).
+  const agentNavBefore = histSoFar.length + 1
+  await service.executeCommand({ method: 'navigate', url: 'https://agent-visited.example/' }, SCOPE_B)
+  const agentRows = browserHistoryStore.query('agent-visited', 10)
+  check('an agent-driven navigate writes NO history row (manual navigation only, L1)', agentRows.length === 0, JSON.stringify(agentRows))
+  void agentNavBefore
+
+  // Ranking: url-substring rows for 'mail' come back newest-first.
+  const ranked = browserHistoryStore.query('mail', 10)
+  check('query matches url substrings and orders newest-first', ranked.length >= 1 && ranked[0].url === 'https://mail.163.com/', JSON.stringify(ranked))
+
+  // LRU cap: push the table past MAX and the oldest rows fall out.
+  const { MAX_BROWSER_HISTORY } = await import('../src/main/storage/browser-history-store')
+  const base = Date.now()
+  for (let i = 0; i < MAX_BROWSER_HISTORY + 1; i++) {
+    browserHistoryStore.recordVisit(`https://flood.example/${i}`, undefined, base + i)
+  }
+  const kept = browserHistoryStore.query('flood.example', MAX_BROWSER_HISTORY + 10)
+  const oldestFlood = browserHistoryStore.query('flood.example/0', 10)
+  const newestFlood = browserHistoryStore.query(`flood.example/${MAX_BROWSER_HISTORY}`, 10)
+  const manualSurvivors = manualUrls.filter((u) => browserHistoryStore.query(new URL(u).host, 10).some((r) => r.url === u))
+  check(
+    `a ${MAX_BROWSER_HISTORY + 1}st visit evicts exactly the oldest rows (table capped at ${MAX_BROWSER_HISTORY})`,
+    kept.length === MAX_BROWSER_HISTORY && oldestFlood.length === 0 && newestFlood.length === 1 && manualSurvivors.length === 0,
+    `flood kept=${kept.length}, oldest gone=${oldestFlood.length === 0}, manual rows evicted too=${manualSurvivors.length === 0}`,
+  )
+
+  // Clear: the dropdown footer's confirmation path ends here.
+  const auditBeforeClear = auditStore.list(50).filter((e) => e.action === 'browser.historyClear').length
+  browserHistoryStore.clear()
+  check('clear() empties the table', browserHistoryStore.query('example', 10).length === 0 && browserHistoryStore.query('flood', 10).length === 0, '')
+  const clearedAudits = auditStore.list(50).filter((e) => e.action === 'browser.historyClear')
+  check('…and the clear is audited', clearedAudits.length === auditBeforeClear + 1, `${auditBeforeClear}→${clearedAudits.length}`)
 }
 
 // ── runner ─────────────────────────────────────────────────────────────────

@@ -34,6 +34,11 @@ export interface BrowserPaneState {
    *  the native WebView folds (tabs stay alive), the chrome stays put.
    *  Absent/true = the browser tab is frontmost. */
   browserActive?: boolean
+  /** PLAN-browser-pane-ux T3.5: pixel height of chrome UI that overhangs the
+   *  webview area (the address bar's suggestion dropdown). A WebContentsView
+   *  paints ABOVE all DOM, so an open dropdown is invisible unless the dock
+   *  shifts the webview down by exactly this much. 0/absent = closed. */
+  chromeOverlayHeight?: number
 }
 
 /** One row in the pane's tab strip. */
@@ -116,10 +121,74 @@ export function normalizeAddressBarInput(raw: string): string {
  *  stays visible. `x` is relative to the pane's left edge — the dock adds
  *  the pane origin. When the window is too short for the box, it hugs the
  *  chrome (top-aligned) instead of overflowing. */
-export function webviewBox(paneWidth: number, paneTop: number, paneHeight: number): PaneBox {
+export function webviewBox(paneWidth: number, paneTop: number, paneHeight: number, chromeHeight: number = PANE_CHROME_HEIGHT): PaneBox {
   const width = Math.max(0, Math.round(paneWidth) - PANE_BORDER_WIDTH)
   const height = Math.round((width * 9) / 16)
-  const available = Math.max(0, paneHeight - PANE_CHROME_HEIGHT)
-  const top = paneTop + PANE_CHROME_HEIGHT + Math.max(0, Math.floor((available - height) / 2))
-  return { x: PANE_BORDER_WIDTH, y: Math.max(paneTop + PANE_CHROME_HEIGHT, top), width, height: Math.min(height, available) }
+  const available = Math.max(0, paneHeight - chromeHeight)
+  const top = paneTop + chromeHeight + Math.max(0, Math.floor((available - height) / 2))
+  return { x: PANE_BORDER_WIDTH, y: Math.max(paneTop + chromeHeight, top), width, height: Math.min(height, available) }
+}
+
+/** One address-bar history suggestion (PLAN-browser-pane-ux T3.4). */
+export interface HistorySuggestionRow {
+  url: string
+  title?: string | null
+  visitCount?: number
+  lastVisitAt?: number
+}
+
+export interface RankedSuggestion {
+  url: string
+  title: string
+  /** host-prefix beats url-substring beats title-substring; peers by
+   *  recency then visit count (裁定 L4's ordering, testable here). */
+  rank: 0 | 1 | 2
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host.toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function stripScheme(url: string): string {
+  return url.replace(/^https?:\/\//i, '')
+}
+
+/**
+ * Rank address-bar history rows against the typed text (pure — no IO, unit
+ * covered in vitest): a host that STARTS WITH the text wins over a url that
+ * merely contains it, which wins over a title match; peers order by
+ * last_visit_at desc then visit_count desc. Rows that match nothing drop.
+ */
+export function rankHistorySuggestions(text: string, rows: HistorySuggestionRow[], limit = 8): RankedSuggestion[] {
+  const needle = text.trim().toLowerCase()
+  if (!needle) return []
+  const ranked: Array<RankedSuggestion & { lastVisitAt: number; visitCount: number }> = []
+  for (const row of rows) {
+    const url = row.url || ''
+    const title = (row.title || '').toLowerCase()
+    const host = hostOf(url)
+    let rank: 0 | 1 | 2 | null = null
+    if (host.startsWith(needle)) rank = 0
+    else if (stripScheme(url).toLowerCase().includes(needle)) rank = 1
+    else if (title.includes(needle)) rank = 2
+    if (rank === null) continue
+    ranked.push({
+      url,
+      title: row.title || url,
+      rank,
+      lastVisitAt: row.lastVisitAt ?? 0,
+      visitCount: row.visitCount ?? 0,
+    })
+  }
+  ranked.sort((a, b) =>
+    a.rank - b.rank ||
+    b.lastVisitAt - a.lastVisitAt ||
+    b.visitCount - a.visitCount ||
+    a.url.localeCompare(b.url),
+  )
+  return ranked.slice(0, Math.max(0, limit)).map(({ url, title, rank }) => ({ url, title, rank }))
 }

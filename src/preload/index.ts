@@ -69,10 +69,13 @@ const electronAPI = {
   hostedToolCall: (tool: string, args: Record<string, unknown>, opts: { sessionId: string; timeoutMs?: number }) =>
     ipcRenderer.invoke(IPC_CHANNELS.HOSTED_TOOL_CALL, tool, args, opts),
   // Browser pane (A-M5): chrome state / width / user tab actions + live updates.
-  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number; browserActive?: boolean }) =>
+  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number; browserActive?: boolean; chromeOverlayHeight?: number }) =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_STATE, state),
   browserPaneSetWidth: (width: number) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_WIDTH, width),
   browserPaneAction: (action: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_PANE_ACTION, action),
+  browserHistoryQuery: (text: string): Promise<Array<{ url: string; title: string | null; visitCount: number; lastVisitAt: number }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY_QUERY, text),
+  browserHistoryClear: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY_CLEAR),
   onBrowserPaneUpdate: (cb: (update: unknown) => void) => {
     const listener = (_event: unknown, update: unknown) => cb(update)
     ipcRenderer.on(IPC_CHANNELS.BROWSER_PANE_UPDATE, listener as never)

@@ -6,10 +6,13 @@
 import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { browserService, type BrowserRunPayload } from '../browser/BrowserService'
+import { browserHistoryStore } from '../storage/browser-history-store'
 
 export function registerBrowserHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.BROWSER_RUN_CODE, (_event, payload: BrowserRunPayload) => browserService.handleRunCode(payload))
   ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_STATE, (event, state) => browserService.handlePaneState(state, event.sender))
   ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_WIDTH, (event, width: number) => browserService.handlePaneWidth(width, event.sender))
   ipcMain.handle(IPC_CHANNELS.BROWSER_PANE_ACTION, (event, action) => browserService.handlePaneAction(action, event.sender))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_HISTORY_QUERY, (_event, text: string) => browserHistoryStore.query(text))
+  ipcMain.handle(IPC_CHANNELS.BROWSER_HISTORY_CLEAR, () => browserHistoryStore.clear())
 }

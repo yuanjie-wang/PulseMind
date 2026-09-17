@@ -34,6 +34,9 @@ export function useBrowserPaneBinding(
   )
   const workbenchTab = useWorkbenchStore((s) => s.activeTab)
   const browserActive = workbenchOpen && workbenchTab === 'browser'
+  // The address bar's suggestion dropdown overhangs the webview area — the
+  // dock must shift the WebContentsView down while it is open (T3.5).
+  const chromeOverlayHeight = useBrowserPaneStore((s) => s.chromeOverlayHeight)
 
   // Measure the chat column — main clamps the pane against it (min 320,
   // max 60%). Observer callback reports through the external store, so no
@@ -59,8 +62,9 @@ export function useBrowserPaneBinding(
       conversationId: viewKind === 'chat' ? (conversationId ?? null) : null,
       chatAreaWidth,
       browserActive: viewKind === 'chat' ? browserActive : false,
+      chromeOverlayHeight,
     })
-  }, [viewKind, conversationId, chatAreaWidth, browserActive])
+  }, [viewKind, conversationId, chatAreaWidth, browserActive, chromeOverlayHeight])
 
   const pushWidth = useCallback((width: number, areaWidth: number) => {
     void window.electronAPI.browserPaneSetWidth(clampPaneWidth(width, areaWidth))
