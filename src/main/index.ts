@@ -1,8 +1,8 @@
 import { app, BrowserWindow, shell, nativeImage, protocol, powerMonitor, screen } from 'electron'
 import { homedir } from 'node:os'
-import { join, extname } from 'node:path'
+import { join } from 'node:path'
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { serveLocalFile } from './preview/serve-preview'
 import { registerIpcHandlers } from './ipc'
 import { ensureDataDir, getBundlePresetsDir } from './storage'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
@@ -426,67 +426,16 @@ if (gotTheLock) {
   })
 
   app.whenReady().then(async () => {
-  // Custom protocol to serve local files to sandboxed renderer.
-  // Reads via fs/promises instead of net.fetch to avoid redirect/encoding
-  // issues on Windows and to properly handle binary files (images). Async on
-  // purpose: conversation images (tool screenshots etc.) all route through
-  // here, and a sync read of a large file — or the first read after wake,
-  // while the disk is still spinning up — would block the whole main-process
-  // event loop and freeze every IPC handler with it.
-  protocol.handle('local-file', async (request) => {
-    // Use URL API to extract pathname reliably (avoids regex issues with custom schemes)
-    let filePath: string
-    try {
-      const parsed = new URL(request.url)
-      filePath = decodeURIComponent(parsed.pathname)
-      // Windows: URL parser treats "C:" as hostname for non-standard schemes
-      // (local-file://C:/Users/... → hostname="c" pathname="/Users/...").
-      // Detect and prepend the drive letter when it's a single letter host.
-      if (process.platform === 'win32' && parsed.hostname && /^[A-Za-z]$/.test(parsed.hostname)) {
-        filePath = `${parsed.hostname}:${filePath}`
-      }
-    } catch {
-      // Fallback for URLs the URL constructor can't parse
-      filePath = decodeURIComponent(request.url.replace(/^local-file:/, '').replace(/^\/\//, '/'))
-    }
-    // Windows: strip leading slash from absolute paths (/C:/ → C:/)
-    if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(filePath)) {
-      filePath = filePath.slice(1)
-    }
-    // Resolve /.pulsemind/ to ~/.pulsemind/ (LLM strips home dir prefix)
-    if (filePath.startsWith('/.pulsemind/')) {
-      filePath = join(homedir(), '.pulsemind', filePath.slice('/.pulsemind/'.length))
-    }
-    console.log('[local-file] URL:', request.url, '→ path:', filePath)
-    const ext = extname(filePath).toLowerCase()
-    const MIME: Record<string, string> = {
-      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-      '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
-      '.bmp': 'image/bmp', '.ico': 'image/x-icon',
-      '.md': 'text/markdown; charset=utf-8',
-      '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
-      '.css': 'text/css; charset=utf-8',
-      '.js': 'application/javascript; charset=utf-8',
-      '.json': 'application/json; charset=utf-8',
-      '.txt': 'text/plain; charset=utf-8',
-      '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
-      '.pdf': 'application/pdf',
-    }
-    try {
-      const content = await readFile(filePath)
-      const mime = MIME[ext] || 'application/octet-stream'
-      return new Response(content, {
-        status: 200,
-        headers: { 'Content-Type': mime }
-      })
-    } catch (err) {
-      console.error('[local-file] Read failed:', filePath, err)
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return new Response('Not Found', { status: 404 })
-      if (code === 'EACCES') return new Response('Forbidden', { status: 403 })
-      return new Response('Internal Error', { status: 500 })
-    }
-  })
+  // Custom protocol to serve local files to sandboxed renderer. Reads via
+  // fs/promises instead of net.fetch to avoid redirect/encoding issues on
+  // Windows and to properly handle binary files (images). Async on purpose:
+  // conversation images (tool screenshots etc.) all route through here, and
+  // a sync read of a large file — or the first read after wake, while the
+  // disk is still spinning up — would block the whole main-process event
+  // loop and freeze every IPC handler with it. The handler body (and the
+  // ?pmPreview=1 HTML preview-copy branch with the injected element picker)
+  // lives in preview/serve-preview.ts (PLAN-html-element-edit M1).
+  protocol.handle('local-file', (request) => serveLocalFile(request))
 
   writeLog('INFO', `startup: platform=${process.platform} execPath=${process.execPath}`)
   ensureDataDir()

@@ -22,6 +22,7 @@
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
+    "src/preview-picker/**/*.ts",
     "src/renderer/src/agent/**/*.ts",
     "src/renderer/src/components/chat/tool-descriptions.ts",
     "src/renderer/src/tools/**/*.ts",
