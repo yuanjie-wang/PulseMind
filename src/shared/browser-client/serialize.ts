@@ -35,12 +35,22 @@ export interface SerializeOutcome {
   truncated: boolean
 }
 
-/** Serialize a return value to a JSON string, capping at maxBytes. */
+/** Serialize a return value for the kernel's `Result:` channel, capping at maxBytes.
+ *
+ *  Shape follows the extension's `page_js.serializeResult` — the same idea on the
+ *  other side of the boundary: strings verbatim, `undefined` named, everything
+ *  else pretty JSON. A string return is the common case and it IS text: wrapping
+ *  `domSnapshot()` in `JSON.stringify` turned every newline into a literal `\n`
+ *  and every quote into `\"`, so a 5.6KB snapshot arrived as one unreadable line —
+ *  the model had to unescape it and the chat's output box showed 13 of its 90
+ *  lines (the user's 「返回的snapshot还是没有标序号」). Objects keep `jsonSafe`
+ *  first, so handles/functions/circulars still cannot cross. */
 export function serializeResult(value: unknown, maxBytes = BROWSER_MAX_RETURN_BYTES): SerializeOutcome {
   const safe = jsonSafe(value)
-  const text = JSON.stringify(safe) ?? 'null'
+  const text = safe === undefined ? 'undefined' : typeof safe === 'string' ? safe : JSON.stringify(safe, null, 2) ?? 'null'
   if (text.length <= maxBytes) return { text, truncated: false }
-  // Hard cap: keep the head, drop the tail, mark the cut.
+  // Hard cap: keep the head, drop the tail, mark the cut. The head is what every
+  // caller's own contract needs kept — a snapshot leads with its numbered index.
   const cut = `${text.slice(0, maxBytes)}…[返回值超限被截断——把大输出写到文件,或用 screenshot/emitImage 传图]`
   return { text: cut, truncated: true }
 }

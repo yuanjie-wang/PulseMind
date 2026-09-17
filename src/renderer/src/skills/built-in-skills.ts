@@ -137,7 +137,7 @@ const tab = await browsers.tabs.get(tabs[0].id)   // pick by id/url/title — ne
 \`const tab = await browsers.open(url)\` is the preferred entry: it reuses a same-site tab (exact URL > same origin > same host) and navigates in place. Waits: domcontentloaded only; no networkidle; no fixed sleeps; keep waits under 3s (\`tab.waitForTimeout(ms)\` is bounded at 30s).
 
 ### 3. Observe: snapshot first
-\`const snap = await tab.domSnapshot()\` returns the AI/ARIA tree PLUS a numbered list of interactive elements — \`[3] button "登录" (button#login)\`. It is your DEFAULT and PRIMARY observation. Address elements BY NUMBER from the latest snapshot:
+\`const snap = await tab.domSnapshot()\` LEADS with the numbered list of interactive elements — \`[3] button "登录" (button#login)\` — then the AI/ARIA tree. It is your DEFAULT and PRIMARY observation. Address elements BY NUMBER from the latest snapshot:
 \`\`js
 await tab.playwright(3, 'click')            // the [3] element
 await tab.playwright(2, 'fill', 'text')     // fill the [2] textbox

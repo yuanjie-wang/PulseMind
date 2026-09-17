@@ -198,8 +198,13 @@ describe('inside the real vm kernel', () => {
       execute,
     )
     expect(out.error).toBeUndefined()
-    expect(out.result).toContain('"opened":"new"')
-    expect(out.result).toContain('已新建')
+    // Pretty JSON, not a one-line escape: the model reads this as text, so the
+    // shape is part of the contract (the same reason a snapshot string goes
+    // through verbatim).
+    expect(out.result.split('\n').length).toBeGreaterThan(5)
+    const tab = JSON.parse(out.result) as Record<string, unknown>
+    expect(tab.opened).toBe('new')
+    expect(tab.note).toContain('已新建')
     expect(out.console.join('\n')).toContain('已新建')
   })
 

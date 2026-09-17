@@ -74,6 +74,24 @@ describe('serialize', () => {
     expect(text.length).toBeLessThan(1200)
     expect(text).toContain('截断')
   })
+  it('keeps a string return verbatim and pretty-prints everything else', () => {
+    // The kernel's Result channel is what the model reads and the chat renders:
+    // JSON-escaping a snapshot turned it into one line of literal `\n` (the
+    // 「返回的snapshot还是没有标序号」 report), so strings pass through and only
+    // non-strings get JSON. Same convention as the extension's page_js.
+    expect(serializeResult('── 交互元素编号 [N] ──\n[1] link "新闻" (a)').text).toBe('── 交互元素编号 [N] ──\n[1] link "新闻" (a)')
+    expect(serializeResult({ url: 'https://a.com', title: '百度' }).text).toBe('{\n  "url": "https://a.com",\n  "title": "百度"\n}')
+    expect(serializeResult(undefined).text).toBe('undefined')
+    expect(serializeResult(null).text).toBe('null')
+    expect(serializeResult(42).text).toBe('42')
+  })
+  it('keeps the head when a snapshot-shaped string exceeds the cap — the index is there', () => {
+    const snapshot = `── 交互元素编号 [N] ──\n[1] link "新闻" (a)\n${'- filler\n'.repeat(4000)}`
+    const { text, truncated } = serializeResult(snapshot, 512)
+    expect(truncated).toBe(true)
+    expect(text.startsWith('── 交互元素编号 [N] ──')).toBe(true)
+    expect(text).toContain('[1] link "新闻" (a)')
+  })
 })
 
 describe('protocol url policy', () => {

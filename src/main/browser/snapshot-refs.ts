@@ -128,15 +128,24 @@ function pulsemindCollectRefs(): string[] {
 /** The exact bytes shipped into the page. */
 export const SNAPSHOT_REFS_SOURCE = `(${pulsemindCollectRefs.toString()})()`
 
-/** One observation: the ARIA YAML for understanding, the numbered refs for
- *  addressing. Numbered list after the YAML, so the YAML prefix stays stable
- *  for whatever the model anchors on first. */
+/** One observation: the numbered refs for addressing, then the ARIA YAML for
+ *  understanding — the index FIRST, and both halves of that order are load-bearing.
+ *
+ *  (1) Every cap on this path keeps the HEAD: `serializeResult` slices
+ *      `text.slice(0, maxBytes)` and the engine's tool-result guardrail is
+ *      head+tail, so a numbered list riding the tail is one the model may never
+ *      receive on a big page. (2) The chat's output box is a 300px scroller that
+ *      opens at the top (its auto-scroll effect rides `block.output`, which does
+ *      not change when a collapsed card expands), so the same list is one the
+ *      *user* never reads either: measured 2026-09-17, the report was
+ *      「返回的snapshot还是没有标序号」 while the bytes were in the result all
+ *      along — read off the user's own `tool_results` rows, where every recent
+ *      snapshot carried them 4600 characters in. (3) It is also the actionable
+ *      half: what the model does next is address an element, not read prose. */
 export function combineDomSnapshot(yaml: string, refLines: string[]): string {
-  const refs =
-    refLines.length > 0
-      ? `\n\n── 交互元素编号 [N] ──\n寻址：tab.playwright(N, op, arg) 或 agent.playwright.ref(N)。页面变化后编号失效：重新 domSnapshot()，不要重试旧编号。\n${refLines.join('\n')}`
-      : ''
-  return `${yaml}${refs}`
+  if (refLines.length === 0) return yaml
+  const refs = `── 交互元素编号 [N] ──\n寻址：tab.playwright(N, op, arg) 或 agent.playwright.ref(N)。页面变化后编号失效：重新 domSnapshot()，不要重试旧编号。\n${refLines.join('\n')}`
+  return `${refs}\n\n── 页面结构（ARIA）──\n${yaml}`
 }
 
 /** The service-side snapshot: both passes over one page, joined. */

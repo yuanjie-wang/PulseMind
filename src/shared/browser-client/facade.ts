@@ -38,8 +38,8 @@ export interface TabApi {
   forward: () => Promise<void>
   reload: () => Promise<void>
   close: () => Promise<void>
-  /** AI/ARIA tree + numbered interactive elements ([N] refs) — the default
-   *  and primary observation (协议 §5.4); refs address what it just saw. */
+  /** Numbered interactive elements ([N] refs) first, then the AI/ARIA tree —
+   *  the default and primary observation (协议 §5.4); refs address what it saw. */
   domSnapshot: () => Promise<string>
   /** Always emits through emitImage in the same call (协议 §5.6). */
   screenshot: (options?: { fullPage?: boolean; selector?: string | LocatorSugar }) => Promise<{ emitted: true; mime: string }>

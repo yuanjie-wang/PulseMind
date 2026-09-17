@@ -472,7 +472,10 @@ export class ToolExecutor implements ToolExecContext {
       const r = await getHost().browserRunCode(code, { timeoutMs, conversationId: this.opts.conversationId })
       const parts: string[] = []
       if (r.error) parts.push(`Error: ${r.error}`)
-      parts.push(`Result: ${r.result}`)
+      // A multi-line payload (a snapshot: numbered index, then the ARIA tree) gets
+      // its own line — `Result: ── 交互元素编号 [N] ──` reads as a heading glued to
+      // a label. Single values (`clicked`, `42`) keep the one-line form.
+      parts.push(r.result.includes('\n') ? `Result:\n${r.result}` : `Result: ${r.result}`)
       if (r.console.length > 0) parts.push(`Console:\n${r.console.slice(0, 20).join('\n')}`)
       if (r.images.length > 0) parts.push(`[${r.images.length} 张截图已附加]`)
       t.exitCode = r.error ? 1 : 0

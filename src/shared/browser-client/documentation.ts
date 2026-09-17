@@ -23,7 +23,7 @@ const WORKFLOW_BODY = `## Workflow protocol (mandatory)
 1. Bootstrap every call: \`const { browsers, playwright } = agent\`. Keep ONE backend for the whole task.
 2. Rebind before every logical batch: \`const tabs = await browsers.tabs.list()\` → pick by id/url/title → \`await browsers.tabs.get(id)\`. NEVER index by position; NEVER reuse a remembered id. list() items are plain DATA (\`t.url\`/\`t.title\` are properties); a Tab from get()/open() is a live handle — there \`url\`/\`title\` are async methods (\`await tab.url()\`).
 3. Open with \`browsers.open(url)\` — same-site reuse + in-place navigation. Its handle carries two extra fields, \`opened\` (\`'new'\` | \`'reused'\`) and \`note\`, which SAY which one happened; read the note. Calling open() again NEVER creates a second tab — it re-navigates that same tab, so a repeat is not a retry. Waits stay under 3s; domcontentloaded, never networkidle, no fixed sleeps.
-4. \`tab.domSnapshot()\` is the DEFAULT observation: the ARIA tree, then a numbered list of interactive elements — \`[3] button "登录" (button#login)\`.
+4. \`tab.domSnapshot()\` is the DEFAULT observation: the numbered list of interactive elements LEADS (\`[3] button "登录" (button#login)\`), the ARIA tree follows under \`── 页面结构（ARIA）──\`. The index is first because it is the actionable half and the half every output cap keeps.
    Two different things are named \`playwright\`, and they are NOT interchangeable:
    • \`tab.playwright(ref | selector | locator, op, arg?)\` is the EXECUTOR — ONE operation per call: \`tab.playwright(3, 'click')\`, \`tab.playwright(2, 'fill', 'text')\`. A bare number addresses snapshot ref [N].
    • \`agent.playwright.getByRole('button', { name })\` (also getByText/getByLabel/getByPlaceholder/getByTestId/ref(n)/selector(raw), then \`.first()/.last()/.nth(i)\`) only BUILDS a locator and acts on nothing. Hand its result to the executor: \`tab.playwright(agent.playwright.getByRole('button', { name: '登录' }), 'click')\`. There is no \`tab.playwright.getByRole\`.
@@ -36,7 +36,7 @@ const WORKFLOW_BODY = `## Workflow protocol (mandatory)
 const OVERVIEW_BODY = `## How the browser runtime works (user-facing terms only, please)
 
 - Tabs live in the HOST (the app), not in your code. Your JS runs in a fresh, stateless sandbox per call — all continuity is on tabs, which is why the rebind protocol (workflow §2) exists.
-- \`domSnapshot()\` returns an AI/ARIA tree plus numbered interactive elements. It is cheap; take it often. The numbers are the deterministic way to act on what you just saw — no name-guessing.
+- \`domSnapshot()\` returns numbered interactive elements first, then the AI/ARIA tree. It is cheap; take it often. The numbers are the deterministic way to act on what you just saw — no name-guessing.
 - Locators are constructed from snapshot facts via the \`agent.playwright\` sugar — a FACTORY — and executed by the host's single selector engine through \`tab.playwright(locator, op)\`. Addressing by snapshot number skips the construction step entirely.
 - An unknown member never gives you a bare TypeError: the error message lists what that object actually has. Read the menu; do not guess a second spelling.
 - Every state-changing op reports what the page did, not only that the gesture landed. A silent "no change" verdict is a signal — see the troubleshooting doc.

@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { existsSync } from 'node:fs'
 import { chromium, type Browser, type Page } from 'playwright-core'
 import { SNAPSHOT_REFS_SOURCE, MAX_REF_ELEMENTS, combineDomSnapshot, takeDomSnapshot } from '../src/main/browser/snapshot-refs'
+import { serializeResult } from '../src/shared/browser-client/serialize'
 import { runPlaywrightOp } from '../src/main/browser/PlaywrightCommands'
 import { createBrowserFacade } from '../src/shared/browser-client/facade'
 import { playwrightSugar } from '../src/shared/browser-client/playwright-sugar'
@@ -108,12 +109,29 @@ describe('snapshot refs walk', () => {
 })
 
 describe('combineDomSnapshot', () => {
-  it('appends the numbered section with the addressing instructions after the YAML', () => {
+  it('leads with the numbered section and its addressing instructions, YAML after', () => {
     const out = combineDomSnapshot('- button "登录"', ['[1] button "登录" (button#l)'])
-    expect(out).toContain('- button "登录"')
+    expect(out.startsWith('── 交互元素编号 [N] ──')).toBe(true)
     expect(out).toContain('tab.playwright(N, op, arg)')
     expect(out).toContain('重新 domSnapshot()')
     expect(out).toContain('[1] button "登录" (button#l)')
+    // The order is the contract, not a detail: refs must come BEFORE the tree.
+    expect(out.indexOf('[1] button "登录"')).toBeLessThan(out.indexOf('- button "登录"'))
+    expect(out).toContain('── 页面结构（ARIA）──')
+  })
+
+  it('keeps the index inside the head that every cap on this path preserves', () => {
+    // The report this pins (2026-09-17): every byte was there, but the list rode a
+    // 5.6KB YAML's tail — past the chat card's 300px window, and past the head every
+    // truncation keeps. A snapshot's numbered index has to survive both.
+    const yaml = Array.from({ length: 400 }, (_, i) => `  - paragraph: 段落 ${i}`).join('\n')
+    const out = combineDomSnapshot(yaml, ['[1] link "新闻" (a)', '[2] textbox "搜索" (input#kw)'])
+    expect(out.indexOf('[1] link')).toBeLessThan(200) // i.e. within the first visible lines
+    expect(out.slice(0, 200)).toContain('[2] textbox')
+    const capped = serializeResult(out, 1024)
+    expect(capped.truncated).toBe(true)
+    expect(capped.text).toContain('[1] link "新闻" (a)')
+    expect(capped.text).not.toContain('段落 399') // the tail is what got cut
   })
 
   it('returns the YAML untouched when nothing is interactive', () => {
@@ -244,6 +262,14 @@ describe.skipIf(BROWSER_BINARIES.length === 0)('snapshot refs vs a real engine',
     expect(snap).toContain('[2] button "可见按钮" (button#shown)')
     expect(snap).not.toContain('隐藏按钮')
     expect(snap).toContain('tab.playwright(N, op, arg)')
+    // Real-engine order check: the index the model addresses from is the FIRST
+    // thing in the string, ahead of the ARIA tree it explains.
+    expect(snap.indexOf('[1] textbox')).toBeLessThan(snap.indexOf('- textbox'))
+    // …and it survives the kernel's own serialization, unescaped: this is the
+    // exact text the user's tool card and the model both receive.
+    const wire = serializeResult(snap).text
+    expect(wire.split('\n')[0]).toBe('── 交互元素编号 [N] ──')
+    expect(wire).not.toContain('\\n')
   }, 30_000)
 
   it('addresses a ref through the real selector engine and verifies the effect', async () => {

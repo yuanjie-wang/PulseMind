@@ -75,7 +75,7 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
         close: { signature: 'close(): Promise<void>', summary: 'Close the tab; after this the id is dead' },
         domSnapshot: {
           signature: 'domSnapshot(): Promise<string>',
-          summary: 'AI/ARIA tree + numbered interactive elements ([N]) — the default and primary observation',
+          summary: 'Numbered interactive elements ([N]) first, then the AI/ARIA tree — the default and primary observation',
         },
         screenshot: {
           signature: 'screenshot({ fullPage?, selector? }?): Promise<{emitted}>',
