@@ -175,7 +175,7 @@ const zh = {
     knowledge_search: '检索知识库',
     knowledge_read: '阅读知识',
     experience_read: '读取经验',
-    spawn_agent: '派出专家',
+    spawn_agent: '召唤专家',
     create_plan: '制定计划',
     advance_plan: '更新计划',
     git_status: '查看改动',

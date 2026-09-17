@@ -16,7 +16,7 @@ const zh = (key: string): string => {
     'toolLabel.list_dir': '浏览目录',
     'toolLabel.webfetch': '访问网页',
     'toolLabel.git_commit': '创建提交',
-    'toolLabel.spawn_agent': '派出专家',
+    'toolLabel.spawn_agent': '召唤专家',
     'toolLabel.knowledge_search': '检索知识库',
     'toolLabel.find': '查找文件',
     'toolLabel.page_click': '点击元素',
@@ -81,7 +81,7 @@ describe('toolBlockSummary object half stays verbatim', () => {
 
   it('unknown family falls to the k=v chain with description excluded, label prefixed', () => {
     expect(toolBlockSummary(block('spawn_agent', { subAgentId: 'exp_1', task: 'do it', description: 'intent' }), zh))
-      .toBe('派出专家 · subAgentId=exp_1')
+      .toBe('召唤专家 · subAgentId=exp_1')
     expect(toolBlockSummary(block('mcp__x__y', { repo: 'foo' }), zh)).toBe('mcp__x__y · repo=foo')
   })
 
