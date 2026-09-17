@@ -80,7 +80,7 @@ const SKILLS = [
 ]
 
 const TOOLS = [
-  { definition: { name: 'read_file', description: '读取文件内容', category: 'file', input_schema: { type: 'object', properties: {} }, instructions: '' }, enabled: true },
+  { definition: { name: 'read_file', description: '读取文件内容', category: 'file', input_schema: { type: 'object', properties: {} }, instructions: 'Read a file by path. Returns text or bytes.' }, enabled: true },
   { definition: { name: 'write_file', description: '写入文件内容', category: 'file', input_schema: { type: 'object', properties: {} }, instructions: '' }, enabled: true },
   { definition: { name: 'run_terminal', description: '执行终端命令', category: 'system', input_schema: { type: 'object', properties: {} }, instructions: '' }, enabled: false },
   { definition: { name: 'memory_save', description: '保存长期记忆', category: 'memory', input_schema: { type: 'object', properties: {} }, instructions: '' }, enabled: true },
@@ -171,11 +171,11 @@ const PAGE = '<!doctype html><html><body style="margin:0"><div id="app"></div></
 await page.route('http://pm-probe.local/**', (route) => route.fulfill({ contentType: 'text/html', body: PAGE }))
 await page.goto('http://pm-probe.local/')
 await page.addScriptTag({ path: OUT })
-// All three grids fetch asynchronously; wait until every card grid has a card AND
-// the tools pane has rendered its collapse groups.
+// All four grids fetch asynchronously; wait until every card grid has a card.
+// The tools pane now renders `.ant-card` (not `.ant-collapse-item`) — it joined
+// the shared CapabilityCard shell.
 await page.waitForFunction(
-  () => ['mcp', 'skills', 'expert'].every((p) => document.querySelector(`[data-panel="${p}"] .ant-card`)) &&
-    document.querySelectorAll('[data-panel="tools"] .ant-collapse-item').length > 0,
+  () => ['mcp', 'skills', 'expert', 'tools'].every((p) => document.querySelector(`[data-panel="${p}"] .ant-card`)),
   null,
   { timeout: 15000 }
 )
@@ -200,10 +200,14 @@ check('不传 initialTab 时默认高亮专家（第一个 pill）', tabState.de
   tabState.defaultTab.map((t) => `${t.label}${t.active ? '●' : '○'}`).join(''))
 
 const toolsPane = await page.locator('[data-panel="tools"]').evaluate((panel) => ({
-  groups: panel.querySelectorAll('.ant-collapse-item').length,
+  cards: panel.querySelectorAll('.ant-card').length,
   switches: panel.querySelectorAll('.ant-switch').length,
+  // Section headers still group cards by category — the tools pane is the one
+  // capability tab where a flat grid would bury 38 tools in 9 categories.
+  sections: [...panel.querySelectorAll('section')].length,
+  grids: panel.querySelectorAll('.ant-card').length > 0 ? panel.querySelectorAll('section > div[style]').length : 0,
 }))
-check('内置工具显示全部四个开关与三个分组', toolsPane.switches === 4 && toolsPane.groups === 3, JSON.stringify(toolsPane))
+check('内置工具显示全部四个开关与卡片（不再是 Collapse 列表）', toolsPane.switches === 4 && toolsPane.cards === 4, JSON.stringify(toolsPane))
 await page.locator('[data-panel="tools"] .ant-switch').first().click()
 check('工具开关把正确名称交给调用方一次', await page.evaluate(() => JSON.stringify(window.toolToggles) === '["read_file"]'))
 
@@ -256,13 +260,13 @@ const snap = await page.evaluate(() => {
       cardCount: panel.querySelectorAll('.ant-card').length,
     }
   }
-  return { mcp: read('mcp'), skills: read('skills'), expert: read('expert') }
+  return { mcp: read('mcp'), skills: read('skills'), expert: read('expert'), tools: read('tools') }
 })
 
-const PANELS = ['mcp', 'skills', 'expert']
-const LABEL = { mcp: '连接器', skills: '技能', expert: '专家' }
+const PANELS = ['mcp', 'skills', 'expert', 'tools']
+const LABEL = { mcp: '连接器', skills: '技能', expert: '专家', tools: '内置工具' }
 const missing = PANELS.filter((p) => !snap[p])
-check('三个页签都渲染出卡片', missing.length === 0, missing.length ? `missing: ${missing}` : PANELS.map((p) => `${LABEL[p]}×${snap[p]?.cardCount}`).join(' '))
+check('四个页签都渲染出卡片', missing.length === 0, missing.length ? `missing: ${missing}` : PANELS.map((p) => `${LABEL[p]}×${snap[p]?.cardCount}`).join(' '))
 
 /** Cross-panel equality for one property — the whole point of the exercise. */
 function same(prop, label) {
@@ -290,16 +294,24 @@ check('名字字号是 14px（跟 head 走，不再各写各的）', snap.mcp?.n
 check('圆角是 10px', snap.mcp?.radius === '10px', String(snap.mcp?.radius))
 
 // ── Action row: the connector used to be switch-first while skills was delete-first,
-//    and the skill delete was a grey icon rather than danger. ──
-check('操作行都是「开关在前」', PANELS.every((p) => snap[p]?.actions[0] === 'switch'),
+//    and the skill delete was a grey icon rather than danger. 内置工具 has no delete
+//    (built-in tools can't be removed, only toggled), so it's switch-only. ──
+const DELETABLE = ['mcp', 'skills', 'expert']
+check('操作行都是「开关在前」',
+  PANELS.every((p) => snap[p]?.actions[0] === 'switch'),
   PANELS.map((p) => `${LABEL[p]}=${snap[p]?.actions.join('·')}`).join('  |  '))
-check('操作行都是「删除在后」', PANELS.every((p) => snap[p]?.actions.at(-1) === 'delete'),
-  PANELS.map((p) => `${LABEL[p]}=${snap[p]?.actions.at(-1)}`).join(' | '))
+check('操作行都是「删除在后」(可删除的三个 tab)',
+  DELETABLE.every((p) => snap[p]?.actions.at(-1) === 'delete'),
+  DELETABLE.map((p) => `${LABEL[p]}=${snap[p]?.actions.at(-1)}`).join(' | '))
+check('内置工具的操作行只有开关（不可删除）',
+  snap.tools?.actions.length === 1 && snap.tools?.actions[0] === 'switch',
+  snap.tools?.actions.join('·'))
 check('没有卡片再渲染多余的编辑按钮', PANELS.every((p) => !snap[p]?.actions.includes('edit')))
 check('连接器的条件「重启」排在开关与删除之间',
   snap.mcp?.actions.join('·') === 'switch·restart·delete', snap.mcp?.actions.join('·'))
 
 // ── Hover + whole-card click: the expert card used to be the odd one out ──
+// 内置工具 now uses the same CapabilityCard shell, so it must be hoverable too.
 const hover = {}
 for (const p of PANELS) {
   const card = page.locator(`[data-panel="${p}"] .ant-card`).first()
@@ -308,9 +320,46 @@ for (const p of PANELS) {
   const after = await card.evaluate((el) => getComputedStyle(el).boxShadow)
   hover[p] = { changed: before !== after, cursor: await card.evaluate((el) => getComputedStyle(el).cursor) }
 }
-check('三张卡都 hoverable（悬停出现阴影 + pointer）',
+check('四张卡都 hoverable（悬停出现阴影 + pointer）',
   PANELS.every((p) => hover[p].changed && hover[p].cursor === 'pointer'),
   PANELS.map((p) => `${LABEL[p]}:${hover[p].changed ? 'shadow' : 'static'}/${hover[p].cursor}`).join(' | '))
+
+// ── Pill hover: a non-active pill must show antd's text-button hover wash.
+//    The inline `background: 'transparent'` on the non-active pill used to outrank
+//    antd's `:hover` by specificity and silently kill it (the reported "hover 没了").
+//    The fix leaves `background: undefined` on the non-active pill.
+//    CSS `:hover` needs a real pointer — synthetic mouseenter events don't trigger it.
+const nonActivePillInfo = await page.evaluate(() => {
+  const panel = document.querySelector('[data-panel="tools"]')
+  const pills = [...panel.querySelectorAll('button')].filter((b) => b.style.borderRadius === '999px')
+  const nonActive = pills.find((b) => !b.style.background.includes('0.08'))
+  if (!nonActive) return null
+  // Tag the pill so Playwright can target it.
+  nonActive.setAttribute('data-pill-hover-target', '')
+  return { label: nonActive.textContent.trim() }
+})
+let pillHover = { found: false }
+if (nonActivePillInfo) {
+  const pill = page.locator('[data-pill-hover-target]')
+  await pill.waitFor({ state: 'visible', timeout: 5000 })
+  const before = await pill.evaluate((el) => getComputedStyle(el).backgroundColor)
+  await pill.hover()
+  await page.waitForTimeout(150)
+  const after = await pill.evaluate((el) => getComputedStyle(el).backgroundColor)
+  // Also dump the inline style + classList for diagnosis.
+  const diag = await pill.evaluate((el) => ({ inline: el.getAttribute('style'), cls: el.className }))
+  pillHover = {
+    found: true,
+    label: nonActivePillInfo.label,
+    before,
+    after,
+    changed: before !== after && after !== 'rgba(0, 0, 0, 0)',
+    diag,
+  }
+}
+check('非激活 pill 悬停出现底色（hover 恢复）',
+  pillHover.found && pillHover.changed,
+  pillHover.found ? `${pillHover.label}: ${pillHover.before} → ${pillHover.after}` : 'no non-active pill found')
 
 // ── The connector card keeps the body blocks it always had ──
 const mcpBody = await page.evaluate(() => {
@@ -346,9 +395,9 @@ check('没有卡片横向溢出', Object.values(layout).every((l) => l.overflowX
 check('操作行装得进标题头（没有把 head 撑高）',
   Object.values(layout).every((l) => l.extraHeight <= l.headHeight),
   Object.entries(layout).map(([p, l]) => `${LABEL[p]}:${l.extraHeight}/${l.headHeight}`).join(' '))
-check('三张卡的高度接近（同一种正文节奏）',
-  Math.max(...Object.values(layout).map((l) => l.height)) - Math.min(...Object.values(layout).map((l) => l.height)) <= 90,
-  Object.entries(layout).map(([p, l]) => `${LABEL[p]}:${l.height}`).join(' '))
+check('可删除三个 tab 的卡片高度接近（同一种正文节奏）',
+  Math.max(...['mcp', 'skills', 'expert'].map((p) => layout[p].height)) - Math.min(...['mcp', 'skills', 'expert'].map((p) => layout[p].height)) <= 90,
+  ['mcp', 'skills', 'expert'].map((p) => `${LABEL[p]}:${layout[p].height}`).join(' '))
 
 // ── Two failures this shell can produce and computed styles alone would not show ──
 // 1. The body must not claim the card's full height any more: since the head arrived,
@@ -369,7 +418,7 @@ const containment = await page.evaluate(() => {
     return null
   }
   const out = {}
-  for (const p of ['mcp', 'skills', 'expert']) {
+  for (const p of ['mcp', 'skills', 'expert', 'tools']) {
     const panel = document.querySelector(`[data-panel="${p}"]`)
     const cards = [...panel.querySelectorAll('.ant-card')]
     const card = cards[0]
@@ -385,6 +434,7 @@ const containment = await page.evaluate(() => {
         bottom: Math.round(s.bottom - Math.max(...boxes.map((b) => b.bottom))),
       },
       // > 0 means the footer hangs below the card's own border box.
+      // null when the card has no footer (内置工具 cards have no footer band).
       footerOutsideBy: footer ? Math.round((footer.getBoundingClientRect().bottom - card.getBoundingClientRect().bottom) * 10) / 10 : null,
       bodyOverflowsCard: card.scrollHeight - card.clientHeight,
     }
@@ -393,8 +443,8 @@ const containment = await page.evaluate(() => {
 })
 
 check('工具计数页脚留在卡片里（没有跑到卡片外面）',
-  PANELS.every((p) => containment[p].footerOutsideBy === null || containment[p].footerOutsideBy <= 0),
-  PANELS.map((p) => `${LABEL[p]}:${containment[p].footerOutsideBy > 0 ? `越界 ${containment[p].footerOutsideBy}px` : '卡内'}`).join(' '))
+  ['mcp', 'skills', 'expert'].every((p) => containment[p].footerOutsideBy === null || containment[p].footerOutsideBy <= 0),
+  ['mcp', 'skills', 'expert'].map((p) => `${LABEL[p]}:${containment[p].footerOutsideBy > 0 ? `越界 ${containment[p].footerOutsideBy}px` : '卡内'}`).join(' '))
 check('卡片内容不纵向溢出卡片',
   PANELS.every((p) => containment[p].bodyOverflowsCard <= 1),
   PANELS.map((p) => `${LABEL[p]}:${containment[p].bodyOverflowsCard}`).join(' '))
@@ -420,7 +470,7 @@ const scrolled = await page.evaluate(() => {
     return null
   }
   const out = {}
-  for (const p of ['mcp', 'skills', 'expert']) {
+  for (const p of ['mcp', 'skills', 'expert', 'tools']) {
     const panel = document.querySelector(`[data-panel="${p}"]`)
     const cards = [...panel.querySelectorAll('.ant-card')]
     const scroller = scrollerOf(cards[0])
@@ -480,6 +530,20 @@ await page.locator('[data-panel="mcp"] .ant-card').first().click()
 await page.waitForTimeout(300)
 check('点连接器卡打开编辑弹窗',
   await page.evaluate((s) => document.body.textContent.includes(s), OPENED.mcp))
+
+// Close the MCP modal so it doesn't intercept the tools card click below.
+await page.keyboard.press('Escape')
+await page.waitForTimeout(200)
+
+// ── 内置工具: clicking the card expands its instructions (no navigation). The
+//    expanded card shows its monospace instructions block; an unexpanded one does not.
+const toolCard = page.locator('[data-panel="tools"] .ant-card').first()
+const beforeExpand = await toolCard.evaluate((c) => !!c.querySelector('.ant-card-body [style*="monospace"]'))
+await toolCard.click()
+await page.waitForTimeout(200)
+const afterExpand = await toolCard.evaluate((c) => !!c.querySelector('.ant-card-body [style*="monospace"]'))
+check('点内置工具卡展开说明（不跳转）',
+  !beforeExpand && afterExpand, `before=${beforeExpand} after=${afterExpand}`)
 
 await browser.close()
 

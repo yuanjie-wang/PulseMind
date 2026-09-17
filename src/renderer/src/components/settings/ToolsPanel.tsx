@@ -1,20 +1,29 @@
+// ── Built-in tools panel ──
+// The fourth capability-center tab. Composes the same CapabilityCard shell as
+// 专家 / 技能 / 连接器 so the grid rhythm, hover, head/divider and action order
+// cannot drift — the previous Collapse-list shape was the one skeleton the
+// center's unification pass (P1) missed. Category section headers survive, since
+// 38 tools across 9 categories are more navigable grouped than as one flat grid.
+
 import React, { useState } from 'react'
-import {
-  Collapse,
-  Switch,
-  Tag,
-  Typography
-} from 'antd'
+import { Tag, Typography } from 'antd'
 import {
   CodeOutlined,
   FileOutlined,
   ToolOutlined,
   GlobalOutlined,
   QuestionCircleOutlined,
-  DatabaseOutlined
+  DatabaseOutlined,
+  BranchesOutlined,
+  ReadOutlined,
+  TrophyOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ToolState } from '../../tools/types'
+import CapabilityCard, {
+  CAPABILITY_GRID,
+  CapabilitySwitch
+} from '../common/CapabilityCard'
 
 const { Text, Paragraph } = Typography
 
@@ -25,10 +34,13 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   browser: <GlobalOutlined />,
   interaction: <QuestionCircleOutlined />,
   memory: <DatabaseOutlined />,
-  knowledge: <DatabaseOutlined />
+  knowledge: <ReadOutlined />,
+  git: <BranchesOutlined />,
+  page: <GlobalOutlined />,
+  experience: <TrophyOutlined />
 }
 
-const CATEGORY_ORDER = ['file', 'system', 'browser', 'interaction', 'memory', 'knowledge']
+const CATEGORY_ORDER = ['file', 'system', 'browser', 'page', 'interaction', 'memory', 'knowledge', 'experience', 'git']
 
 interface ToolsPanelProps {
   tools: ToolState[]
@@ -45,10 +57,12 @@ function ToolsPanel({
     file: t('tools.categories.file'),
     system: t('tools.categories.system'),
     browser: t('tools.categories.browser'),
+    page: t('tools.categories.page'),
     interaction: t('tools.categories.interaction'),
     memory: t('tools.categories.memory'),
     knowledge: t('tools.categories.knowledge'),
-    git: t('tools.categories.git'),
+    experience: t('tools.categories.experience'),
+    git: t('tools.categories.git')
   }
 
   if (tools.length === 0) {
@@ -72,42 +86,43 @@ function ToolsPanel({
   )
   const sortedKeys = [...knownKeys, ...unknownKeys]
 
-  // Build collapse items
-  const collapseItems = sortedKeys.map((category) => {
-    const catTools = grouped.get(category)!
-    const enabledCount = catTools.filter((t) => t.enabled).length
-    const totalCount = catTools.length
-
-    return {
-      key: category,
-      label: (
-        <span>
-          {CATEGORY_ICONS[category] || <ToolOutlined />}
-          <Text style={{ marginLeft: 8 }}>
-            {CATEGORY_LABELS[category] || category}
-          </Text>
-          <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-            ({enabledCount}/{totalCount})
-          </Text>
-        </span>
-      ),
-      children: catTools.map((tool) => (
-        <ToolCard
-          key={tool.definition.name}
-          tool={tool}
-          onToggle={onToggleTool}
-        />
-      ))
-    }
-  })
-
   return (
-    <Collapse
-      ghost
-      defaultActiveKey={sortedKeys}
-      items={collapseItems}
-      style={{ background: 'transparent' }}
-    />
+    <div style={{ background: 'transparent' }}>
+      {sortedKeys.map((category) => {
+        const catTools = grouped.get(category)!
+        const enabledCount = catTools.filter((tl) => tl.enabled).length
+        return (
+          <section key={category} style={{ marginBottom: 20 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 8,
+                padding: '0 2px'
+              }}
+            >
+              {CATEGORY_ICONS[category] || <ToolOutlined />}
+              <Text strong style={{ fontSize: 13 }}>
+                {CATEGORY_LABELS[category] || category}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                {enabledCount}/{catTools.length}
+              </Text>
+            </div>
+            <div style={CAPABILITY_GRID}>
+              {catTools.map((tool) => (
+                <BuiltInToolCard
+                  key={tool.definition.name}
+                  tool={tool}
+                  onToggle={onToggleTool}
+                />
+              ))}
+            </div>
+          </section>
+        )
+      })}
+    </div>
   )
 }
 
@@ -118,78 +133,43 @@ interface ToolCardProps {
   onToggle: (name: string) => void
 }
 
-function ToolCard({ tool, onToggle }: ToolCardProps): React.ReactElement {
+function BuiltInToolCard({ tool, onToggle }: ToolCardProps): React.ReactElement {
   const [expanded, setExpanded] = useState(false)
   const { t } = useTranslation()
   const { definition, enabled } = tool
 
   return (
-    <div
-      style={{
-        padding: '12px',
-        borderBottom: '1px solid #f0f0f0',
-        backgroundColor: '#F8F8F8'
-      }}
+    <CapabilityCard
+      icon={CATEGORY_ICONS[definition.category] || <ToolOutlined />}
+      name={definition.name}
+      badge={
+        definition.availability === 'gated' ? (
+          <Tag color="gold" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', flexShrink: 0 }}>
+            {t('tools.status.awaitActivation')}
+          </Tag>
+        ) : (
+          <Tag color="green" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', flexShrink: 0 }}>
+            {t('tools.status.activated')}
+          </Tag>
+        )
+      }
+      onClick={() => setExpanded((e) => !e)}
+      actions={
+        <CapabilitySwitch checked={enabled} onToggle={() => onToggle(definition.name)} />
+      }
     >
-      {/* Header row: icon + name + badges + switch */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-          cursor: 'pointer'
-        }}
-        onClick={() => setExpanded(!expanded)}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            flex: 1,
-            minWidth: 0
-          }}
-        >
-          {CATEGORY_ICONS[definition.category] || <ToolOutlined />}
-          <Text strong style={{ fontSize: 14, color: enabled ? undefined : '#bbb' }} ellipsis>
-            {definition.name}
-          </Text>
-          {definition.availability === 'gated' ? (
-            <Tag color="gold" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', flexShrink: 0 }}>
-              {t('tools.status.awaitActivation')}
-            </Tag>
-          ) : (
-            <Tag color="green" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', flexShrink: 0 }}>
-              {t('tools.status.activated')}
-            </Tag>
-          )}
-        </div>
-
-        <Switch
-          size='small'
-          checked={enabled}
-          onClick={(checked, e) => {
-            e.stopPropagation()
-            onToggle(definition.name)
-          }}
-        />
-      </div>
-
-      {/* Description */}
       <Paragraph
         style={{
           fontSize: 12,
-          margin: '4px 0 0 0',
+          margin: 0,
           lineHeight: '1.4',
           color: '#888'
         }}
-        ellipsis={!expanded ? { rows: 2 } : false}
+        ellipsis={!expanded ? { rows: 2, expandable: false } : false}
       >
         {definition.description}
       </Paragraph>
 
-      {/* Expanded: instructions */}
       {expanded && definition.instructions && (
         <div
           style={{
@@ -208,7 +188,7 @@ function ToolCard({ tool, onToggle }: ToolCardProps): React.ReactElement {
           {definition.instructions}
         </div>
       )}
-    </div>
+    </CapabilityCard>
   )
 }
 
