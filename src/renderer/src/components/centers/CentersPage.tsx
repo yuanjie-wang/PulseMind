@@ -12,6 +12,7 @@ import KnowledgePanel from '../knowledge/KnowledgePanel'
 import type { KnowledgePanelHandle, KnowledgePanelState } from '../knowledge/KnowledgePanel'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 import type { SkillState } from '../../skills/types'
+import type { ToolState } from '../../tools/types'
 import CapabilityCenter from '../capability/CapabilityCenter'
 import ToolCenter from '../tool-studio/ToolCenter'
 
@@ -23,6 +24,8 @@ export interface CentersPageProps {
   onRefreshSkills?: () => void
   onDeleteSkill?: (name: string) => void
   importError?: string | null
+  tools?: ToolState[]
+  onToggleTool?: (name: string) => void
 }
 
 /** The knowledge tab's own toolbar — moved out of the global header (M1.5) so
@@ -133,6 +136,8 @@ export function CentersPage({
   onRefreshSkills,
   onDeleteSkill,
   importError,
+  tools,
+  onToggleTool,
 }: CentersPageProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
 
@@ -152,6 +157,8 @@ export function CentersPage({
           onRefreshSkills={onRefreshSkills}
           onDeleteSkill={onDeleteSkill}
           importError={importError}
+          tools={tools}
+          onToggleTool={onToggleTool}
         />
       )
   }

@@ -65,7 +65,7 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
     case 'search':
       return <SearchView onOpenConversation={onSelectConversation} />
     case 'settings':
-      return <SettingsPage memoryManager={memoryManager} tools={tools} onToggleTool={onToggleTool} />
+      return <SettingsPage memoryManager={memoryManager} />
     case 'usage':
       return <StatisticsPage />
     case 'about':
@@ -87,6 +87,8 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
           onRefreshSkills={onRefreshSkills}
           onDeleteSkill={onDeleteSkill}
           importError={importError}
+          tools={tools}
+          onToggleTool={onToggleTool}
         />
       )
     default:

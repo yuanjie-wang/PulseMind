@@ -12,6 +12,7 @@ import {
   ApiOutlined,
   ThunderboltOutlined,
   ApartmentOutlined,
+  ToolOutlined,
   PlusOutlined,
   ReloadOutlined,
   UndoOutlined
@@ -20,12 +21,14 @@ import { useTranslation } from '../../i18n/useTranslation'
 import MCPSettings from '../settings/MCPSettings'
 import SkillsSettings from '../settings/SkillSettings'
 import ExpertSettings from '../settings/ExpertSettings'
+import ToolsPanel from '../settings/ToolsPanel'
 import { CAPABILITY_PANE_PADDING } from '../common/CapabilityCard'
 import type { MCPSettingsHandle } from '../settings/MCPSettings'
 import type { ExpertSettingsHandle } from '../settings/ExpertSettings'
 import type { SkillState } from '../../skills/types'
+import type { ToolState } from '../../tools/types'
 
-export type CapabilityTab = 'mcp' | 'skills' | 'expert'
+export type CapabilityTab = 'mcp' | 'skills' | 'expert' | 'tools'
 
 export interface CapabilityCenterProps {
   /** Pre-select a tab (used by jump-to-capability entries, e.g. after `install`). */
@@ -36,6 +39,8 @@ export interface CapabilityCenterProps {
   onRefreshSkills?: () => void
   onDeleteSkill?: (name: string) => void
   importError?: string | null
+  tools?: ToolState[]
+  onToggleTool?: (name: string) => void
 }
 
 export default function CapabilityCenter({
@@ -45,21 +50,24 @@ export default function CapabilityCenter({
   onImportSkill,
   onRefreshSkills,
   onDeleteSkill,
-  importError
+  importError,
+  tools,
+  onToggleTool
 }: CapabilityCenterProps): React.ReactElement {
   const { t } = useTranslation()
-  const [tab, setTab] = useState<CapabilityTab>(initialTab ?? 'mcp')
+  const [tab, setTab] = useState<CapabilityTab>(initialTab ?? 'expert')
   // The old antd Tabs kept every visited pane mounted, so panel state (open
   // add/edit drawers, expanded tool lists) survives tab switches — the visited
   // set below reproduces that; unvisited panes stay lazily unmounted.
-  const [visited, setVisited] = useState<ReadonlySet<CapabilityTab>>(() => new Set([initialTab ?? 'mcp']))
+  const [visited, setVisited] = useState<ReadonlySet<CapabilityTab>>(() => new Set([initialTab ?? 'expert']))
   const mcpRef = useRef<MCPSettingsHandle>(null)
   const expertRef = useRef<ExpertSettingsHandle>(null)
 
   const tabs: Array<{ key: CapabilityTab; icon: React.ReactNode; label: string }> = [
-    { key: 'mcp', icon: <ApiOutlined />, label: t('appLayout.mcp') },
+    { key: 'expert', icon: <ApartmentOutlined />, label: t('expertCenter.tabLabel') },
     { key: 'skills', icon: <ThunderboltOutlined />, label: t('appLayout.skills') },
-    { key: 'expert', icon: <ApartmentOutlined />, label: t('expertCenter.tabLabel') }
+    { key: 'mcp', icon: <ApiOutlined />, label: t('appLayout.mcp') },
+    { key: 'tools', icon: <ToolOutlined />, label: t('appLayout.tools') }
   ]
 
   const selectTab = (key: CapabilityTab): void => {
@@ -111,7 +119,8 @@ export default function CapabilityCenter({
           </Button>
         </Tooltip>
       </>
-    )
+    ),
+    tools: <></>
   }
 
   const panes: Record<CapabilityTab, React.ReactNode> = {
@@ -124,7 +133,10 @@ export default function CapabilityCenter({
         importError={importError}
       />
     ),
-    expert: <ExpertSettings ref={expertRef} />
+    expert: <ExpertSettings ref={expertRef} />,
+    // The settings page's ToolsPanel as-is, minus its ToolSettings title row —
+    // the center's panels carry no titles of their own (the pills name the tab).
+    tools: <ToolsPanel tools={tools ?? []} onToggleTool={onToggleTool ?? (() => {})} />
   }
 
   return (

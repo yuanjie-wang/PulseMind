@@ -79,12 +79,20 @@ const SKILLS = [
   { definition: { name: 'builtin-skill', description: '内置技能示例，用于演示内置徽标', category: 'education', builtIn: true }, enabled: true },
 ]
 
+const TOOLS = [
+  { definition: { name: 'read_file', description: '读取文件内容', category: 'file', input_schema: { type: 'object', properties: {} }, instructions: '' }, enabled: true },
+  { definition: { name: 'write_file', description: '写入文件内容', category: 'file', input_schema: { type: 'object', properties: {} }, instructions: '' }, enabled: true },
+  { definition: { name: 'run_terminal', description: '执行终端命令', category: 'system', input_schema: { type: 'object', properties: {} }, instructions: '' }, enabled: false },
+  { definition: { name: 'memory_save', description: '保存长期记忆', category: 'memory', input_schema: { type: 'object', properties: {} }, instructions: '' }, enabled: true },
+]
+
 /** Each panel is a *real* CapabilityCenter pinned to one tab — not the bare panel —
  *  so the pill-row → pane → panel → grid chain (and the pane's scroll/clip box) is
- *  the shipped one. */
+ *  the shipped one. The default fixture mounts with NO initialTab — that is the shipped
+ *  landing tab. */
 function Tab({ id, tab }) {
   return (
-    <div data-panel={id} style={{ width: 640, height: 820, background: '#fff' }}>
+    <div data-panel={id} style={{ width: 640, flexShrink: 0, height: 820, background: '#fff' }}>
       <CapabilityCenter
         initialTab={tab}
         skills={SKILLS}
@@ -92,6 +100,24 @@ function Tab({ id, tab }) {
         onImportSkill={() => {}}
         onRefreshSkills={() => {}}
         onDeleteSkill={() => {}}
+        tools={TOOLS}
+        onToggleTool={(name) => { window.toolToggles = [...(window.toolToggles || []), name] }}
+      />
+    </div>
+  )
+}
+
+function DefaultTab() {
+  return (
+    <div data-panel="default" style={{ width: 640, flexShrink: 0, height: 820, background: '#fff' }}>
+      <CapabilityCenter
+        skills={SKILLS}
+        onToggleSkill={() => {}}
+        onImportSkill={() => {}}
+        onRefreshSkills={() => {}}
+        onDeleteSkill={() => {}}
+        tools={TOOLS}
+        onToggleTool={(name) => { window.toolToggles = [...(window.toolToggles || []), name] }}
       />
     </div>
   )
@@ -107,6 +133,8 @@ function Harness() {
               <Tab id="mcp" tab="mcp" />
               <Tab id="skills" tab="skills" />
               <Tab id="expert" tab="expert" />
+              <Tab id="tools" tab="tools" />
+              <DefaultTab />
             </div>
           </TranslationProvider>
         </SettingsProvider>
@@ -143,12 +171,41 @@ const PAGE = '<!doctype html><html><body style="margin:0"><div id="app"></div></
 await page.route('http://pm-probe.local/**', (route) => route.fulfill({ contentType: 'text/html', body: PAGE }))
 await page.goto('http://pm-probe.local/')
 await page.addScriptTag({ path: OUT })
-// All three panels fetch asynchronously; wait until every grid has a card.
+// All three grids fetch asynchronously; wait until every card grid has a card AND
+// the tools pane has rendered its collapse groups.
 await page.waitForFunction(
-  () => ['mcp', 'skills', 'expert'].every((p) => document.querySelector(`[data-panel="${p}"] .ant-card`)),
+  () => ['mcp', 'skills', 'expert'].every((p) => document.querySelector(`[data-panel="${p}"] .ant-card`)) &&
+    document.querySelectorAll('[data-panel="tools"] .ant-collapse-item').length > 0,
   null,
   { timeout: 15000 }
 )
+
+// ── Tab order + default (P1): 专家 → 技能 → 连接器 → 内置工具, default = 专家 ──
+const tabState = await page.evaluate(() => {
+  const read = (panelId) => {
+    const panel = document.querySelector(`[data-panel="${panelId}"]`)
+    const buttons = [...panel.querySelectorAll('button')].filter((b) => b.style.borderRadius === '999px')
+    return buttons.map((b) => ({
+      label: b.textContent.trim(),
+      active: getComputedStyle(b).background !== 'rgba(0, 0, 0, 0)' && b.style.background.includes('0.08'),
+    }))
+  }
+  return { pinned: read('mcp'), defaultTab: read('default') }
+})
+check('四个 pill 的顺序是 专家/技能/连接器/内置工具',
+  JSON.stringify(tabState.pinned.map((t) => t.label)) ===
+  JSON.stringify(['专家', '技能', '连接器', '内置工具']),
+  tabState.pinned.map((t) => t.label).join('/'))
+check('不传 initialTab 时默认高亮专家（第一个 pill）', tabState.defaultTab[0]?.active === true,
+  tabState.defaultTab.map((t) => `${t.label}${t.active ? '●' : '○'}`).join(''))
+
+const toolsPane = await page.locator('[data-panel="tools"]').evaluate((panel) => ({
+  groups: panel.querySelectorAll('.ant-collapse-item').length,
+  switches: panel.querySelectorAll('.ant-switch').length,
+}))
+check('内置工具显示全部四个开关与三个分组', toolsPane.switches === 4 && toolsPane.groups === 3, JSON.stringify(toolsPane))
+await page.locator('[data-panel="tools"] .ant-switch').first().click()
+check('工具开关把正确名称交给调用方一次', await page.evaluate(() => JSON.stringify(window.toolToggles) === '["read_file"]'))
 
 /** Read the three cards' geometry + their action-row composition. */
 const snap = await page.evaluate(() => {
