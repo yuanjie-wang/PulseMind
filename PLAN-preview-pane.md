@@ -74,7 +74,7 @@ PreviewTab { path, kind, title }        // path 即 tab 身份，同文件不重
 
 ## 五、非目标（本期不做）
 
-Office 任何形式预览（D1）、变更 diff 视图（D2）、面板内编辑、文件树/工作空间浏览、fs.watch 监听、产物聚合视图、选区引用提问（「指哪改哪」）。
+Office 任何形式预览（D1）、变更 diff 视图（D2）、文件树/工作空间浏览、fs.watch 监听、产物聚合视图、选区引用提问（「指哪改哪」）。~~面板内编辑~~ 已立项兑现：`_task/20260916/PLAN-preview-edit.md`（2026-09-16 落地，markdown/text/html源码/csv 可编辑，image 只读）。
 
 ## 六、二期路线图
 
