@@ -28,7 +28,7 @@ const TOOL_LABELS: Record<string, string> = {
   memory_save: '保存记忆',
   conversation_search: '搜索历史会话',
   tool_result_search: '搜索工具结果',
-  pick_skill: '选择技能',
+  pick_skill: '查找技能',
   pick_tool: '启动工具',
   knowledge_search: '检索知识库',
   knowledge_read: '阅读知识',
