@@ -24,6 +24,9 @@
  *      after the reposition)
  *   5. keyboard navigation (ArrowUp/Down, real keys) keeps the highlighted row
  *      inside the popup's visible box by scrolling the popup alone
+ *   6. Enter picks the highlighted expert instead of sending (and the next
+ *      Enter sends the picked text); Escape dismisses so a hand-typed @name
+ *      can still be sent; a pick closes the popup
  *
  * No Electron, no LLM, no extension: `window.electronAPI` is stubbed and the
  * expert list is fixture data, so this cannot touch a real session.
@@ -272,6 +275,50 @@ await page.waitForTimeout(50)
 const s4 = await readKb()
 check('typing: selection resets to the first (visible) match', s4.rows.length === 1 && s4.highlightedIdx === 0 && s4.rows[0].visible && s4.scrollTop === 0, `rows=${s4.rows.length} scrollTop=${s4.scrollTop}`)
 
+console.log('── 回车选中专家而不是发送 ──')
+/** Sender's Enter-submit runs its own internal handler after the composer's
+ *  onKeyDown and only skips it when that handler returns `false` —
+ *  preventDefault alone cannot veto it. So the popup's Enter must be proven
+ *  end to end: token rewritten, popup closed, and the NEXT Enter really sends. */
+const popupOpen = () => page.evaluate(() => !!document.querySelector('[data-case=floating] [data-mention-popup]'))
+
+await karea.fill('')
+await page.waitForFunction(() => !document.querySelector('[data-case=floating] [data-mention-popup]'))
+await karea.pressSequentially('@')
+await page.waitForFunction(() => document.querySelectorAll('[data-case=floating] [data-mention-idx]').length >= 8)
+await karea.press('Enter')
+await page.waitForTimeout(50)
+const enterVal = await karea.inputValue()
+check('Enter picks the highlighted (first) expert', enterVal === '@写作专家 ', `value="${enterVal}"`)
+check('Enter pick closes the popup', !(await popupOpen()))
+await page.evaluate(() => { window.__sent = undefined })
+await karea.press('Enter')
+await page.waitForTimeout(50)
+const sentVal = await page.evaluate(() => window.__sent)
+// submit() trims, so the trailing space of the picked token does not survive
+check('the next Enter sends the picked text', sentVal === '@写作专家', `sent="${sentVal}"`)
+
+await karea.fill('')
+await page.waitForFunction(() => !document.querySelector('[data-case=floating] [data-mention-popup]'))
+await karea.pressSequentially('@')
+await page.waitForFunction(() => document.querySelectorAll('[data-case=floating] [data-mention-idx]').length >= 8)
+for (let i = 0; i < 3; i++) await karea.press('ArrowDown')
+await karea.press('Enter')
+await page.waitForTimeout(50)
+check('Enter picks the row the arrows moved to', (await karea.inputValue()) === '@产品专家 ', `value="${await karea.inputValue()}"`)
+
+await karea.fill('')
+await page.waitForFunction(() => !document.querySelector('[data-case=floating] [data-mention-popup]'))
+await karea.pressSequentially('@写')
+await page.waitForFunction(() => !!document.querySelector('[data-case=floating] [data-mention-popup]'))
+await karea.press('Escape')
+await page.waitForTimeout(50)
+check('Escape dismisses the popup', !(await popupOpen()))
+await page.evaluate(() => { window.__sent = undefined })
+await karea.press('Enter')
+await page.waitForTimeout(50)
+check('Enter after Escape sends the raw text', (await page.evaluate(() => window.__sent)) === '@写', `sent=${await page.evaluate(() => window.__sent)}`)
+
 console.log('── 选择仍然生效 ──')
 const area = page.locator('[data-case=floating] textarea')
 await area.fill('')
@@ -283,6 +330,7 @@ await row.click()
 await page.waitForTimeout(50)
 const val = await area.inputValue()
 check('floating: clicking an entry rewrites the token', val.includes('@写作专家'), `value="${val}"`)
+check('floating: clicking an entry closes the popup', !(await popupOpen()))
 
 await browser.close()
 const failed = results.filter((r) => !r.pass)

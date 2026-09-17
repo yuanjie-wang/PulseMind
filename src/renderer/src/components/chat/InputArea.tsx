@@ -165,8 +165,17 @@ export function InputArea({
   // controller parses `@<name>` on submit, so the popup is pure assistance.
   const [mentionNavIdx, setMentionNavIdx] = useState(0)
   const mentionPopupRef = useRef<HTMLDivElement | null>(null)
+  // The popup is derived from the text, so the token a selection just wrote
+  // (`@写作专家 `) would re-arm it — its query exactly matches the inserted
+  // name. Selection and Escape park the current text here to keep the popup
+  // shut; any further edit produces a different string and re-arms normally.
+  const [mentionDismissedValue, setMentionDismissedValue] = useState<string | null>(null)
   const atIdx = inputValue.lastIndexOf('@')
-  const mentionActive = showExperts && atIdx >= 0 && (atIdx === 0 || /\s/.test(inputValue[atIdx - 1]))
+  const mentionActive =
+    showExperts &&
+    atIdx >= 0 &&
+    (atIdx === 0 || /\s/.test(inputValue[atIdx - 1])) &&
+    inputValue !== mentionDismissedValue
   const mentionQuery = mentionActive ? inputValue.slice(atIdx + 1) : ''
   const mentionMatches = useMemo(() => {
     if (!mentionActive) return []
@@ -183,7 +192,9 @@ export function InputArea({
   }
 
   const selectMention = (expert: ExpertProfile): void => {
-    setInputValue(`${inputValue.slice(0, atIdx)}@${expert.name} `)
+    const next = `${inputValue.slice(0, atIdx)}@${expert.name} `
+    setInputValue(next)
+    setMentionDismissedValue(next)
   }
 
   // Arrow keys move the highlight, and the popup is a maxHeight+overflow box,
@@ -286,15 +297,39 @@ export function InputArea({
 
   const hasAttachments = selectedFiles.length + selectedFolders.length > 0
 
-  const handleComposerKeyDown = (e: React.KeyboardEvent<Element>): void => {
-    // @-popup owns the navigation keys while it's open; the input-history hook
-    // must not eat ArrowUp/Down then.
-    if (mentionActive && mentionMatches.length > 0 && ['ArrowUp', 'ArrowDown', 'Escape'].includes(e.key)) {
-      e.preventDefault()
-      if (e.key === 'Escape') return
-      if (e.key === 'ArrowUp') setMentionNavIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length)
-      else setMentionNavIdx((i) => (i + 1) % mentionMatches.length)
-      return
+  const handleComposerKeyDown = (e: React.KeyboardEvent<Element>): false | void => {
+    // @-popup owns the navigation keys while it's open — including Enter, which
+    // picks the highlighted expert instead of sending — and the input-history
+    // hook must not eat ArrowUp/Down then. IME composition keys (candidate
+    // navigation, the Enter that confirms pinyin) belong to the IME, not the
+    // popup. Returning false is Sender's own veto contract for "don't submit":
+    // preventDefault alone never reaches its internal handler.
+    if (mentionActive && mentionMatches.length > 0 && !e.nativeEvent.isComposing) {
+      const expert = mentionMatches[mentionNavIdx]
+      switch (e.key) {
+        case 'ArrowUp':
+          e.preventDefault()
+          setMentionNavIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length)
+          return false
+        case 'ArrowDown':
+          e.preventDefault()
+          setMentionNavIdx((i) => (i + 1) % mentionMatches.length)
+          return false
+        case 'Enter':
+          // Shift/modified Enter is a newline or an editor shortcut, not a pick.
+          if (expert && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault()
+            selectMention(expert)
+            return false
+          }
+          break
+        case 'Escape':
+          e.preventDefault()
+          // Dismiss rather than select — the hatch for an @name typed by hand:
+          // the next Enter sends the text instead.
+          setMentionDismissedValue(inputValue)
+          return false
+      }
     }
     history.onKeyDown(e, inputValue, setInputValue)
   }

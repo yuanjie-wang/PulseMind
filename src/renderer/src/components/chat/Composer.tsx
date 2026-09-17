@@ -92,7 +92,11 @@ export interface ComposerProps {
    *  'inline' lays it out in place (studio panel). */
   layout?: 'floating' | 'inline'
   maxRows?: number
-  onKeyDown?: (e: React.KeyboardEvent<Element>) => void
+  /** Pre-submit key handling on the textarea. May return `false` to veto the
+   *  Sender's Enter-submit — preventDefault alone cannot reach it (this is how
+   *  InputArea's @-popup turns Enter into "select the highlighted expert").
+   *  `false | void` is Sender's own declared contract, not our invention. */
+  onKeyDown?: (e: React.KeyboardEvent<Element>) => false | void
   /** Focus the textarea once mounted. */
   autoFocus?: boolean
 }
