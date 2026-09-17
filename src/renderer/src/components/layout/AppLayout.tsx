@@ -10,7 +10,6 @@ import {
   PlusOutlined
 } from '@ant-design/icons'
 import ConversationSidebar from './ConversationSidebar'
-import ConversationManageModal from './ConversationManageModal'
 import ProjectSidebarList from './ProjectSidebarList'
 import SidebarNav from './SidebarNav'
 import { ViewHost } from './ViewHost'
@@ -105,8 +104,6 @@ interface AppLayoutProps {
   knowledgeManager?: KnowledgeManager
   activeLoopConvIds?: string[]
   retryingConvIds?: string[]
-  /** Re-read the conversation list from the DB (after main-side cleanup). */
-  onReloadConversations?: () => void
 }
 
 function AppLayout({
@@ -131,7 +128,6 @@ function AppLayout({
   knowledgeManager,
   activeLoopConvIds,
   retryingConvIds,
-  onReloadConversations,
   children
 }: AppLayoutProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
@@ -145,13 +141,11 @@ function AppLayout({
   // The history area's tab: the conversation list or the project list.
   const [listTab, setListTab] = useState<'chats' | 'projects'>('chats')
 
-  // Switcher-row actions (PLAN-0.4.0): 管理 + 新增 sit right of the 对话/项目
-  // pill. 管理 (the unified cleanup-policy dialog) opens from both tabs — the
-  // retention policy covers every conversation, project-bound ones included;
-  // 新增 follows the selected tab. The former project center is gone, so the
+  // Switcher-row actions (PLAN-0.4.0): 新增 sits right of the 对话/项目 pill
+  // and follows the selected tab — the former project center is gone, so the
   // 项目 tab's own action is 新增 (the same ProjectModal the welcome picker
-  // uses).
-  const [manageOpen, setManageOpen] = useState(false)
+  // uses). Conversation-management (清理策略) moved to the settings page's
+  // 数据与运行 section.
   const [projectModalOpen, setProjectModalOpen] = useState(false)
   const reloadProjects = useProjectStore((s) => s.reload)
 
@@ -169,11 +163,6 @@ function AppLayout({
   // The 对话 tab covers the loose — project-less — conversations; project-bound
   // ones live under the 项目 tab, so the two tabs never duplicate each other.
   const looseConversations = conversations.filter((c) => !c.projectId)
-
-  // 管理: the unified conversation-management dialog (清理策略 · 最长保留时长).
-  const handleTabManage = (): void => {
-    setManageOpen(true)
-  }
 
   // 新建任务 follows the list switcher: with the 项目 tab selected it opens the
   // welcome form on a project task, with 对话 on a plain conversation — the same
@@ -313,15 +302,6 @@ function AppLayout({
               </Button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginRight: 8 }}>
-              <Tooltip title={t('appLayout.manageChats')}>
-                <Button
-                  type="text"
-                  className="sidebar-list-action"
-                  aria-label={t('appLayout.manageChats')}
-                  icon={<SettingOutlined style={{ fontSize: 14 }} />}
-                  onClick={handleTabManage}
-                />
-              </Tooltip>
               <Tooltip title={listTab === 'chats' ? t('menu.newChat') : t('menu.newProject')}>
                 <Button
                   type="text"
@@ -504,13 +484,8 @@ function AppLayout({
         </Content>
       </Layout>
 
-      {/* Switcher-row actions' surfaces: the chats tab's manage dialog and the
-          projects tab's create modal. Both portal out of the sidebar. */}
-      <ConversationManageModal
-        open={manageOpen}
-        onClose={() => setManageOpen(false)}
-        onRetentionChanged={() => onReloadConversations?.()}
-      />
+      {/* Switcher-row actions' surfaces: the projects tab's create modal
+          portals out of the sidebar. */}
       <ProjectModal
         open={projectModalOpen}
         editing={null}

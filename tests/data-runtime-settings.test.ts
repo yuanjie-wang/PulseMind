@@ -13,7 +13,6 @@ const REPO = process.cwd()
 const read = (...p: string[]): string => readFileSync(join(REPO, ...p), 'utf-8')
 
 const HANDLER = read('src', 'main', 'ipc', 'settings.handler.ts')
-const MODAL = read('src', 'renderer', 'src', 'components', 'layout', 'ConversationManageModal.tsx')
 const WORKSPACE = read('src', 'renderer', 'src', 'components', 'routine', 'RoutineWorkspace.tsx')
 const COMPONENT = read('src', 'renderer', 'src', 'components', 'settings', 'DataRuntimeSettings.tsx')
 const NAV_TYPES = read('src', 'renderer', 'src', 'navigation', 'types.ts')
@@ -39,7 +38,7 @@ describe('shared retention options', () => {
   it('no consumer keeps a local copy of the option list any more', () => {
     // Non-vacuous: reintroducing a literal {label:'永久保留'} list in either old
     // consumer fails this.
-    for (const [name, src] of [['ConversationManageModal', MODAL], ['RoutineWorkspace', WORKSPACE]] as const) {
+    for (const [name, src] of [['RoutineWorkspace', WORKSPACE]] as const) {
       expect(src.includes("label: '永久保留'"), name).toBe(false)
       expect(/RETENTION_OPTIONS\s*[:=]/.test(src), name).toBe(false)
       expect(src, name).toContain('retentionOptions(t)')
@@ -73,8 +72,8 @@ describe('the 数据与运行 section is wired end to end', () => {
   })
 
   it('the section renders the live settings through the shared save path', () => {
-    // A cached local copy would let three surfaces (manage modal, routine
-    // workspace, this tab) overwrite each other's fields on save.
+    // A cached local copy would let two surfaces (routine workspace, this
+    // tab) overwrite each other's fields on save.
     expect(COMPONENT).toContain('useSettings()')
     expect(COMPONENT).toContain('saveSettings({ ...settings,')
     expect(COMPONENT).not.toMatch(/useState<AppSettings>/)
@@ -138,7 +137,6 @@ describe('the 数据与运行 section is wired end to end', () => {
 
 describe('retention writers stay in sync', () => {
   it('all three surfaces write the same settings fields', () => {
-    expect(MODAL).toContain('conversationRetentionDays: days')
     expect(WORKSPACE).toContain('routineRunRetentionDays: days')
     expect(COMPONENT).toContain('conversationRetentionDays: days')
     expect(COMPONENT).toContain('routineRunRetentionDays: days')
@@ -149,14 +147,10 @@ describe('retention writers stay in sync', () => {
     expect(WORKSPACE).toMatch(/try \{[\s\S]*?routineRunRetentionDays: days[\s\S]*?\} catch/)
   })
 
-  it('the manage modal still maps the shared presets to Segmented values', () => {
-    expect(MODAL).toContain("retentionOptions(t).map(({ days, label }) => ({ value: days, label }))")
-  })
-
   it('the shared list lives in exactly one file, localized through the mapper', () => {
     // Exactly one definition lives in retention-options.ts; every consumer takes
     // labels from it via retentionOptions(t) so no surface re-declares the copy.
-    const defCount = [MODAL, WORKSPACE].filter((s) => s.includes('const RETENTION_OPTIONS')).length
+    const defCount = [WORKSPACE].filter((s) => s.includes('const RETENTION_OPTIONS')).length
     expect(defCount).toBe(0)
     expect(retentionOptionsSrc).toContain('export const RETENTION_OPTIONS')
     expect(retentionOptionsSrc).toContain("t('dataRuntime.keepForever')")

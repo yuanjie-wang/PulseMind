@@ -196,7 +196,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     messages,
     isRequesting,
     createNewConversation,
-    reloadConversations,
     getWorkspaceDir,
     deleteConversation,
     renameConversation,
@@ -492,7 +491,6 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             knowledgeManager={knowledgeManager}
             activeLoopConvIds={activeLoopConvIds}
             retryingConvIds={retryingConvIds}
-            onReloadConversations={() => reloadConversations()}
           >
             {/* The drill-in is a display layer over the chat pane, not a
                 replacement for it (AppLayout's own view swap is the precedent):
