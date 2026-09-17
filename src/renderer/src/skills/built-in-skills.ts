@@ -137,16 +137,15 @@ const tab = await browsers.tabs.get(tabs[0].id)   // pick by id/url/title — ne
 \`const tab = await browsers.open(url)\` is the preferred entry: it reuses a same-site tab (exact URL > same origin > same host) and navigates in place. Waits: domcontentloaded only; no networkidle; no fixed sleeps; keep waits under 3s (\`tab.waitForTimeout(ms)\` is bounded at 30s).
 
 ### 3. Observe: snapshot first
-\`const snap = await tab.domSnapshot()\` returns the AI/ARIA tree — roles, names, states. It is your DEFAULT and PRIMARY observation. Construct locators ONLY from snapshot facts:
+\`const snap = await tab.domSnapshot()\` returns the AI/ARIA tree PLUS a numbered list of interactive elements — \`[3] button "登录" (button#login)\`. It is your DEFAULT and PRIMARY observation. Address elements BY NUMBER from the latest snapshot:
 \`\`js
-playwright.getByRole('button', { name: '登录' })
-playwright.getByLabel('用户名')          // then .fill('...')
-playwright.getByRole('list').getByRole('listitem').first()
+await tab.playwright(3, 'click')            // the [3] element
+await tab.playwright(2, 'fill', 'text')     // fill the [2] textbox
 \`\`
-NEVER guess labels/selectors/URLs. If \`count()\` is 0, take a NEW snapshot — don't wait, don't retry the same locator.
+Well-named elements may also take role locators built from snapshot facts (\`playwright.getByRole('button', { name: '登录' })\`, \`playwright.getByLabel('用户名')\`). NEVER guess labels/selectors/URLs. Numbers die when the page changes: if anything misses or fails, take a NEW snapshot and re-address — never retry an old number or locator.
 
 ### 4. Act: one change per observation
-\`await tab.playwright(locator, 'click')\` — then VERIFY the expected effect appeared via a fresh snapshot (not "URL unchanged"). Suspected popup: in the SAME call, take \`tabs.list()\` before and after and merge into controlled/user groups.
+\`await tab.playwright(target, 'click')\` — then VERIFY the expected effect appeared via a fresh snapshot (not "URL unchanged"). Suspected popup: in the SAME call, take \`tabs.list()\` before and after and merge into controlled/user groups.
 
 ### 5. Screenshots
 Only on trigger: user asked for an image / pixel judgment is needed / the target is invisible in the ARIA tree. \`await tab.screenshot()\` attaches inline in the same call — never return image bytes.

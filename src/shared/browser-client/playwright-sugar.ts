@@ -8,6 +8,9 @@
 // live engine: role names take the `s` suffix when exact (bare = substring),
 // and placeholder/testid must use the attr/testid engines' bracketed forms.
 
+import { pmRefSelector } from './pm-refs'
+import { guardMembers } from './member-guard'
+
 type RoleOptions = { name?: string | RegExp; exact?: boolean; checked?: boolean; disabled?: boolean; level?: number }
 
 /** Serializable locator handle: a selector string with sugar chain methods. */
@@ -53,19 +56,25 @@ function roleSelector(role: string, options?: RoleOptions): string {
 
 function makeLocator(selector: string): LocatorSugar {
   const chain = (next: string): LocatorSugar => makeLocator(`${selector} >> ${next}`)
-  return {
-    selector,
-    getByRole: (role, options) => chain(roleSelector(role, options)),
-    getByText: (text, options) => chain(`internal:text=${textMatcher(text, options?.exact)}`),
-    getByLabel: (text, options) => chain(`internal:label=${textMatcher(text, options?.exact)}`),
-    // no dedicated placeholder engine — only the attr engine's bracketed form parses
-    getByPlaceholder: (text, options) => chain(`internal:attr=[placeholder=${textMatcher(text, options?.exact)}]`),
-    // the testid engine parses an attribute selector, not a bare literal
-    getByTestId: (id) => chain(`internal:testid=[data-testid=${quote(id)}]`),
-    first: () => chain('nth=0'),
-    last: () => chain('nth=-1'),
-    nth: (index) => chain(`nth=${index}`),
-  }
+  // Guarded: a typo'd chain method (getByNmae) answers with this object's own
+  // menu instead of a bare TypeError. A locator DESCRIBES; it never acts.
+  return guardMembers(
+    {
+      selector,
+      getByRole: (role, options) => chain(roleSelector(role, options)),
+      getByText: (text, options) => chain(`internal:text=${textMatcher(text, options?.exact)}`),
+      getByLabel: (text, options) => chain(`internal:label=${textMatcher(text, options?.exact)}`),
+      // no dedicated placeholder engine — only the attr engine's bracketed form parses
+      getByPlaceholder: (text, options) => chain(`internal:attr=[placeholder=${textMatcher(text, options?.exact)}]`),
+      // the testid engine parses an attribute selector, not a bare literal
+      getByTestId: (id) => chain(`internal:testid=[data-testid=${quote(id)}]`),
+      first: () => chain('nth=0'),
+      last: () => chain('nth=-1'),
+      nth: (index) => chain(`nth=${index}`),
+    },
+    'locator',
+    `（定位器只是“描述元素”，不执行操作——交给 await tab.playwright(locator, 'click') 执行；按快照编号更直接：await tab.playwright(3, 'click')。）`,
+  )
 }
 
 /** Root sugar factories, exposed to the kernel as `agent.playwright`. */
@@ -76,6 +85,9 @@ export const playwrightSugar = {
   getByPlaceholder: (text: string | RegExp, options?: { exact?: boolean }): LocatorSugar =>
     makeLocator(`internal:attr=[placeholder=${textMatcher(text, options?.exact)}]`),
   getByTestId: (id: string): LocatorSugar => makeLocator(`internal:testid=[data-testid=${quote(id)}]`),
+  /** Snapshot ref: the [N] assigned by THIS tab's latest domSnapshot(). The
+   *  deterministic address — no name transcription between seeing and acting. */
+  ref: (n: number): LocatorSugar => makeLocator(pmRefSelector(n)),
   /** Accept a raw CSS/XPath selector as an escape hatch. */
   selector: (raw: string): LocatorSugar => makeLocator(raw),
 }

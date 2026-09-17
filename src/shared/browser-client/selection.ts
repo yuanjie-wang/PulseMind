@@ -25,10 +25,25 @@ export function tabUrlRank(tabUrl: string, targetUrl: string): number {
 
 /** Best matching tab id for the URL, or null when nothing matches. */
 export function selectTabForUrl(tabs: SelectableTab[], url: string): string | null {
-  let best: { id: string; rank: number } | null = null
+  return matchTabForUrl(tabs, url)?.id ?? null
+}
+
+export interface TabMatch {
+  id: string
+  /** The tab's URL as it was when matched (what the reuse note quotes). */
+  url: string
+  /** 3 exact · 2 same origin · 1 same host — open()'s note differs by rank,
+   *  so the caller needs the strength, not just the id. */
+  rank: number
+}
+
+/** The match AND its strength — `open()` reports whether the call reused a tab
+ *  and whether that tab was already at the target address. */
+export function matchTabForUrl(tabs: SelectableTab[], url: string): TabMatch | null {
+  let best: TabMatch | null = null
   for (const tab of tabs) {
     const rank = tabUrlRank(tab.url, url)
-    if (rank > 0 && (!best || rank > best.rank)) best = { id: tab.id, rank }
+    if (rank > 0 && (!best || rank > best.rank)) best = { id: tab.id, url: tab.url, rank }
   }
-  return best?.id ?? null
+  return best
 }

@@ -6,9 +6,10 @@
  * so pick_tool's intent mode treats built-ins exactly like MCP servers.
  *
  * A category needs an entry only when it can appear in pick_tool's activation
- * list — i.e. when it has gated members. `page` has none (its availability is
- * the extension's connection, not a keyword), so its summary is here for the
- * category to be readable wherever categories are listed.
+ * list — i.e. when it has gated members. `page` and `browser` have none (page's
+ * availability is the extension's connection; browser is always in the tool
+ * list), so their summaries are here for the category to be readable wherever
+ * categories are listed.
  */
 
 export const BUILTIN_CATEGORY_SUMMARIES: Record<string, string> = {

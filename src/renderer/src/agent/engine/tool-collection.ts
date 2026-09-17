@@ -194,9 +194,6 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
         }
       }
 
-      // URL-based browser activation lives in the gated-keyword block above
-      // ('http://'/'https://' are browser triggers) — it must run BEFORE the
-      // gate filter, so no late mutation happens here.
       const selectedSet = new Set(deps.selectedMcpTools)
 
       for (const t of mcpToolList) {

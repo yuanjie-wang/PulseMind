@@ -41,6 +41,7 @@ import { AppViewBackend } from './backends/AppViewBackend'
 import { appViewDock } from './app-view-dock'
 import { readDevToolsPort } from './cdp-port'
 import { runPlaywrightOp } from './PlaywrightCommands'
+import { takeDomSnapshot } from './snapshot-refs'
 import { runBrowserCode, type BrowserRunOutput } from './kernel'
 
 /** Playwright ops that change page state — the audit-worthy subset. */
@@ -284,7 +285,7 @@ export class BrowserService {
           this.syncPane()
           return browserOk()
         case 'snapshot':
-          return browserOk(await page.locator('html').ariaSnapshot())
+          return browserOk(await takeDomSnapshot(page))
         case 'screenshot': {
           const buffer = cmd.selector ? await page.locator(cmd.selector).screenshot() : await page.screenshot({ fullPage: cmd.fullPage })
           return browserOk({ mime: 'image/png', base64: buffer.toString('base64') })

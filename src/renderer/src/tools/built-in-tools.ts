@@ -941,13 +941,14 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // One tool for the whole browser capability: `code` runs against the
   // host-side facade (agent.browsers). The full calling convention lives in
   // the returned documentation()/the browser-use skill — the model bootstraps
-  // by reading it, never by guessing member names.
+  // by reading it, never by guessing member names. Always in the tool list —
+  // no `triggers` and no `availability`, like the page_* family above (the
+  // settings toggle is what turns it off).
   {
     name: 'browser',
     description:
       'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts.',
     category: 'browser',
-    triggers: ['http://', 'https://', 'browser', '网页', '浏览器', '网站', '截图', '自动化', '打开', '点', '填表', '登录', '下单'],
     input_schema: {
       type: 'object',
       properties: {
@@ -965,6 +966,5 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.browser,
     builtIn: true,
-    availability: 'gated',
   },
 ]

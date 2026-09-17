@@ -36,7 +36,19 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
           signature: "setActiveBackend('managed' | 'app-view'): Promise<Descriptor>",
           summary: "Switch this conversation's backend — ONE choice per task (workflow §1)",
         },
-        open: { signature: 'open(url): Promise<Tab>', summary: 'Open a URL — reuses a same-site tab (exact > same-origin > same-host), else creates one' },
+        open: {
+          signature: "open(url): Promise<Tab & { opened: 'new' | 'reused'; note: string }>",
+          summary:
+            'Open a URL — reuses a same-site tab (exact > same-origin > same-host) and navigates it in place. The handle SAYS which happened (`opened` + `note`): a repeat is not a retry, it is the same tab reloaded — calling open() again never creates a second tab',
+        },
+        downloads: {
+          signature: 'downloads(): Promise<Array<{name, path, size, savedAt}>>',
+          summary: 'Newest first — files a page downloaded land in this conversation\u2019s workspace; read/upload them via the file tools',
+        },
+        documentation: {
+          signature: 'documentation(): Promise<string>',
+          summary: 'The full readout (effective API + workflow docs) — the same object as agent.documentation',
+        },
       },
     },
     'agent.browsers.tabs': {
@@ -44,7 +56,10 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
       members: {
         list: { signature: 'list(): Promise<Array<{id, url, title}>>', summary: 'Rebind protocol step 1 — list before every logical batch' },
         get: { signature: 'get(id): Promise<Tab>', summary: 'Rebind protocol step 2 — fails loudly for a closed/foreign id' },
-        new: { signature: 'new({ url }?): Promise<Tab>', summary: 'Create a tab' },
+        new: {
+          signature: "new({ url }?): Promise<Tab & { opened: 'new'; note: string }>",
+          summary: 'ALWAYS creates a tab (never reuses); the note names it and says whether it is about:blank',
+        },
       },
     },
     tab: {
@@ -58,43 +73,48 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
         forward: { signature: 'forward(): Promise<void>', summary: 'History forward' },
         reload: { signature: 'reload(): Promise<void>', summary: 'Reload (domcontentloaded)' },
         close: { signature: 'close(): Promise<void>', summary: 'Close the tab; after this the id is dead' },
-        domSnapshot: { signature: 'domSnapshot(): Promise<string>', summary: 'AI/ARIA tree — the default and primary observation' },
+        domSnapshot: {
+          signature: 'domSnapshot(): Promise<string>',
+          summary: 'AI/ARIA tree + numbered interactive elements ([N]) — the default and primary observation',
+        },
         screenshot: {
           signature: 'screenshot({ fullPage?, selector? }?): Promise<{emitted}>',
           summary: 'Screenshot emitted inline in the same call — never returned as bytes',
         },
         evaluate: { signature: 'evaluate(expression): Promise<unknown>', summary: 'Run JS in the page (page context, not the kernel)' },
         playwright: {
-          signature: 'playwright(selector, op, arg?, { timeoutMs }?): Promise<unknown>',
-          summary: 'The selector engine: one locator op — click/fill/count/textContent/…',
+          signature: "playwright(ref | selector | locator, op, arg?, { timeoutMs }?): Promise<unknown>",
+          summary:
+            "THE selector engine (this is the executor; `agent.playwright` only BUILDS locators): one op — click/fill/count/textContent/… A bare number N addresses snapshot ref [N]. State-changing ops answer with a change signal: 「未检测到本页变化」 means the page did not react — check tabs.list() for a popup, then re-snapshot; never retry the old ref",
         },
         waitForTimeout: { signature: 'waitForTimeout(ms): Promise<void>', summary: 'Bounded sleep (≤30s). Prefer domSnapshot re-checks over waiting' },
       },
     },
     'agent.playwright': {
-      summary: 'Locator sugar: getBy* chains serialize to Playwright internal selectors.',
+      summary: 'Locator FACTORY — getBy* chains serialize to Playwright internal selectors. It does NOT act: hand a locator to `tab.playwright(locator, op)`, or address by snapshot number `tab.playwright(3, \'click\')`.',
       members: {
         getByRole: { signature: 'getByRole(role, { name?, exact?, checked?, disabled?, level? })', summary: 'ARIA role locator' },
         getByText: { signature: 'getByText(text, { exact? })', summary: 'Text content locator' },
         getByLabel: { signature: 'getByLabel(text, { exact? })', summary: 'Form label locator' },
         getByPlaceholder: { signature: 'getByPlaceholder(text, { exact? })', summary: 'Input placeholder locator' },
         getByTestId: { signature: 'getByTestId(id)', summary: 'Test id locator' },
+        ref: { signature: 'ref(n)', summary: 'Snapshot ref locator: the [N] from this tab\u2019s latest domSnapshot()' },
         selector: { signature: 'selector(raw)', summary: 'Raw CSS/XPath escape hatch' },
         chain: { signature: '.getBy*(...) .first() .last() .nth(i)', summary: 'Narrow within a locator' },
       },
     },
     'agent.documentation': {
-      summary: 'Bundled workflow documents. Included ones ride with documentation(); lookup ones cost a call.',
+      summary: 'Callable: `documentation()` prints everything (effective API + workflow). Its `.list()` / `.get(name)` fetch one lookup document. Same object as `agent.browsers.documentation`.',
       members: {
         list: { signature: 'list(): Promise<Array<{name, mode, title}>>', summary: 'Available documents' },
-        get: { signature: 'get(name): Promise<string>', summary: 'Fetch one document (lookup: screenshots/recording/troubleshooting)' },
+        get: { signature: 'get(name): Promise<string>', summary: 'Fetch one document (lookup: screenshots/app-view/troubleshooting)' },
       },
     },
-    'tab.user': {
+    'agent.browsers.user': {
       summary: 'Pane surfaces (A-M5): the pane is bound to this conversation; user tabs share the tabs registry.',
       members: {
         openTabs: {
-          signature: 'user.openTabs(): Promise<Array<{id, url, title}>>',
+          signature: 'openTabs(): Promise<Array<{id, url, title}>>',
           summary: 'This conversation\u2019s pane tabs (user-created ones included)',
         },
         claimTab: {
@@ -104,12 +124,6 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
       },
       // Requires the in-app view backend (M3) — hidden entirely on managed.
       unsupportedByDefaultIn: ['managed'],
-    },
-    'agent.downloads': {
-      summary: 'Files a page downloaded land in this conversation\u2019s workspace — list them here.',
-      members: {
-        list: { signature: 'downloads(): Promise<Array<{name, path, size, savedAt}>>', summary: 'Newest first; read/upload the files via the file tools' },
-      },
     },
   },
 }
