@@ -2,7 +2,7 @@ export interface KnowledgeFile {
   id: string
   filePath: string      // relative path within knowledge/raw/
   title: string
-  sourceType: 'file' | 'url' | 'experience'
+  sourceType: 'file' | 'url' | 'experience' | 'favorite'
   sourceUrl: string | null
   sourcePath: string | null
   convId: string | null
@@ -29,7 +29,7 @@ export interface KnowledgeImportResult {
 
 export interface KnowledgeListOptions {
   status?: 'raw' | 'compiled'
-  sourceType?: 'file' | 'url' | 'experience'
+  sourceType?: 'file' | 'url' | 'experience' | 'favorite'
   search?: string
   sortBy?: 'createdAt' | 'title' | 'status'
   sortOrder?: 'asc' | 'desc'

@@ -609,6 +609,125 @@ export function saveExperienceToRaw(content: string, convId: string, title?: str
   return getFile(id)!
 }
 
+// ─── Favorite capture (PLAN-settings-restructure P2) ──────────────────────
+
+export interface FavoriteSaveInput {
+  content: string
+  messageId: string
+  conversationId: string
+  title?: string
+}
+
+/** Pure: validate the renderer's payload. Throws with a user-facing message. */
+export function validateFavoriteInput(input: FavoriteSaveInput): void {
+  if (!input || typeof input !== 'object') throw new Error('收藏内容不能为空')
+  for (const [key, min] of [['content', 1], ['messageId', 1], ['conversationId', 1]] as const) {
+    const value = (input as unknown as Record<string, unknown>)[key]
+    if (typeof value !== 'string' || value.trim().length < min) {
+      throw new Error(`收藏缺少 ${key}，无法录入知识库`)
+    }
+  }
+  if (input.title !== undefined && typeof input.title !== 'string') {
+    throw new Error('收藏标题格式不正确')
+  }
+}
+
+/** Pure: the raw filename for a favorite. Hashed over conversation+message —
+ *  a message id is app-generated but never trust it as path material, and the
+ *  hash keeps double-click / replay / restart idempotent on exactly one file. */
+export function favoriteRawFileName(conversationId: string, messageId: string): string {
+  const hash = createHash('sha256')
+    .update(`${conversationId}\u0000${messageId}`)
+    .digest('hex')
+    .slice(0, 24)
+  return `favorite_${hash}.md`
+}
+
+/** Pure: the YAML frontmatter block (including its trailing newline) for a favorite raw file. */
+export function buildFavoriteFrontmatter(input: { title: string; conversationId: string; messageId: string; savedAt: string }): string {
+  return buildFrontmatter({
+    title: input.title,
+    source_type: 'favorite',
+    source_conv_id: input.conversationId,
+    source_msg_id: input.messageId,
+    saved: input.savedAt
+  })
+}
+
+/** Pure: display title for a favorite (falls back to a snippet of the content). */
+export function favoriteDisplayTitle(content: string, title?: string): string {
+  const clean = sanitizeName(title ?? '').trim()
+  if (clean) return clean.slice(0, 100)
+  return content.replace(/\s+/g, ' ').trim().slice(0, 60) || '收藏'
+}
+
+/**
+ * Save a starred message into the knowledge base as `raw/favorite_<hash>.md`.
+ * Idempotent per (conversationId, messageId): a second save returns the existing
+ * row without rewriting anything. The DB row, its FTS index, and the message's
+ * favorited marker are stamped inside one IMMEDIATE transaction, and the raw
+ * file only stays written when that whole transaction commits — so a failed
+ * capture never leaves a marker, an orphan file, or a half-index behind, and a
+ * retry replays cleanly (re-reading the file repairs an incomplete FTS row).
+ */
+export function saveFavoriteToRaw(content: string, opts: { conversationId: string; messageId: string; title?: string }): KnowledgeFile {
+  const input = { content, ...opts }
+  validateFavoriteInput(input)
+
+  const relativePath = favoriteRawFileName(opts.conversationId, opts.messageId)
+  const fullPath = join(KNOWLEDGE_RAW_DIR, relativePath)
+  const database = getDb()
+  let createdRaw = false
+  try {
+    // IMMEDIATE serializes the lookup + insert across connections as well as
+    // double clicks. No await occurs while this transaction owns the write lock.
+    return database.transaction(() => {
+      const message = database.prepare(
+        'SELECT 1 FROM messages WHERE id = ? AND conversation_id = ?'
+      ).get(opts.messageId, opts.conversationId)
+      if (!message) throw new Error('消息尚未保存或不属于此会话，请稍后重试')
+
+      const existing = getKnowledgeFileByPath(relativePath)
+      const displayTitle = existing?.title ?? favoriteDisplayTitle(content, opts.title)
+      if (!existing || !existsSync(fullPath)) {
+        const frontmatter = buildFavoriteFrontmatter({
+          title: displayTitle,
+          conversationId: opts.conversationId,
+          messageId: opts.messageId,
+          savedAt: localTimestamp()
+        })
+        // Mark before writing so even a partial filesystem write is cleaned up.
+        createdRaw = !existsSync(fullPath)
+        writeFileSync(fullPath, frontmatter + stripFrontmatter(content), 'utf-8')
+      }
+      const id = existing?.id ?? generateId()
+      if (!existing) insertKnowledgeFile({
+        id,
+        filePath: relativePath,
+        title: displayTitle,
+        sourceType: 'favorite',
+        convId: opts.conversationId,
+        contentHash: createHash('sha256').update(content).digest('hex')
+      })
+
+      // Unlike the best-effort import indexer, capture MUST propagate failures.
+      // A replay verifies the raw file and repairs any incomplete old index.
+      const row = database.prepare('SELECT rowid FROM knowledge_files WHERE id = ?').get(id) as { rowid: number }
+      knowledgeFtsAdd(row.rowid, readFileSync(fullPath, 'utf-8'))
+      database.prepare('UPDATE messages SET favorited = 1 WHERE id = ? AND conversation_id = ?')
+        .run(opts.messageId, opts.conversationId)
+      const file = getFile(id)
+      if (!file) throw new Error('收藏已写入但无法读回知识库记录')
+      return file
+    }).immediate()
+  } catch (error) {
+    if (createdRaw) {
+      try { unlinkSync(fullPath) } catch { /* an orphan is safe to overwrite on retry */ }
+    }
+    throw error
+  }
+}
+
 /** Clear all knowledge: delete all DB records, raw files, wiki files, schema, and wiki index */
 export function clearAllKnowledge(): { deletedRaw: number; deletedWiki: number } {
   const { readdirSync, rmSync } = require('node:fs') as typeof import('node:fs')

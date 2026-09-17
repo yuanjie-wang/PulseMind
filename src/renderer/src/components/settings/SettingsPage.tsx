@@ -4,7 +4,7 @@
 // onClose) — `inline` renders the bare body, which is what a page wants.
 
 import React from 'react'
-import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, StarOutlined, DatabaseOutlined, UserOutlined } from '@ant-design/icons'
+import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, DatabaseOutlined, UserOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { PAGE_COLUMN_MAX_WIDTH } from '../layout/CenteredPage'
@@ -14,7 +14,6 @@ import AgentSettings from './AgentSettings'
 import EnvironmentSettings from './EnvironmentSettings'
 import ExperiencePanel from './ExperiencePanel'
 import DataRuntimeSettings from './DataRuntimeSettings'
-import FavoritesSettings from './FavoritesSettings'
 import LlmSettings from './LlmSettings'
 import MemorySettings from './MemorySettings'
 
@@ -26,7 +25,6 @@ const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] =
   { key: 'assistant', icon: <UserOutlined />, labelKey: 'appLayout.assistant' },
   { key: 'memory', icon: <BookOutlined />, labelKey: 'appLayout.memory' },
   { key: 'experiences', icon: <ExperimentOutlined />, labelKey: 'appLayout.experiences' },
-  { key: 'favorites', icon: <StarOutlined />, labelKey: 'appLayout.favorites' },
   { key: 'data', icon: <DatabaseOutlined />, labelKey: 'appLayout.dataRuntime' },
 ]
 
@@ -50,8 +48,6 @@ function SettingsPage({ memoryManager }: SettingsPageProps): React.ReactElement 
   const renderSection = (): React.ReactNode => {
     // onClose is drawer-era: inline sections never render the close affordance.
     switch (tab) {
-      case 'favorites':
-        return <FavoritesSettings inline open onClose={() => {}} />
       case 'data':
         return <DataRuntimeSettings inline open onClose={() => {}} />
       case 'memory':

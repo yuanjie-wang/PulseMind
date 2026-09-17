@@ -117,20 +117,6 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
     CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
 
-    CREATE TABLE IF NOT EXISTS favorites (
-      id                TEXT PRIMARY KEY,
-      message_id        TEXT NOT NULL,
-      conversation_id   TEXT NOT NULL,
-      conversation_title TEXT NOT NULL DEFAULT '',
-      role              TEXT NOT NULL DEFAULT 'assistant',
-      content           TEXT NOT NULL DEFAULT '',
-      content_blocks    TEXT,
-      created_at        TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_favorites_created_at ON favorites(created_at);
-    CREATE INDEX IF NOT EXISTS idx_favorites_message_id ON favorites(message_id);
-
     CREATE TABLE IF NOT EXISTS token_usage (
       id             TEXT PRIMARY KEY,
       input_tokens   INTEGER NOT NULL DEFAULT 0,
@@ -145,7 +131,7 @@ function createTables(): void {
       file_path     TEXT NOT NULL,
       title         TEXT NOT NULL DEFAULT '',
       source_type   TEXT NOT NULL DEFAULT 'file'
-                      CHECK(source_type IN ('file', 'url', 'experience')),
+                      CHECK(source_type IN ('file', 'url', 'experience', 'favorite')),
       source_url    TEXT,
       source_path   TEXT,
       conv_id       TEXT,
@@ -347,6 +333,77 @@ function createTables(): void {
   // They used to derive as 'normal' and leak into the chat list; upsert's
   // ON CONFLICT never updates type, so existing rows need this one-time sweep.
   try { database.exec("UPDATE conversations SET type='tool' WHERE id LIKE 'toolstudio_%'") } catch (e) {}
+
+  // ── PLAN-settings-restructure P2: knowledge favorite source + favorites removal ──
+  migrateKnowledgeFavoriteSource(database)
+}
+
+/**
+ * SQLite cannot ALTER a CHECK constraint, so an existing knowledge_files table
+ * (built with `source_type IN ('file','url','experience')`) must be rebuilt to
+ * accept the new 'favorite' source. The full 12-step table-rebuild procedure
+ * is trimmed: this table has no foreign keys, no triggers and no views.
+ *
+ * The rebuild, the one-time reset of the legacy favorites markers, and the
+ * favorites drop (user-ruled discard, D2) run in ONE transaction: the marker
+ * reset and the table that justified it are retired together, so an interrupted
+ * startup can never leave a database where favorited was cleared while the old
+ * data still existed (or vice versa). Idempotent: after it runs once, the
+ * CREATE TABLE in createTables() already matches the rebuilt shape and every
+ * probe here short-circuits.
+ */
+function migrateKnowledgeFavoriteSource(database: Database.Database): void {
+  const rebuild = database.transaction(() => {
+    // 1) Probe the CREATE statement — PRAGMA table_info cannot see a CHECK.
+    const table = database
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_files'")
+      .get() as { sql: string } | undefined
+    if (!table?.sql) return
+
+    const needsRebuild = !table.sql.includes("'favorite'")
+    const hasLegacyFavorites = !!database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favorites'"
+    ).get()
+    // The old CHECK or favorites table is the migration sentinel. Fresh and
+    // already-migrated databases must never clear newly captured markers.
+    if (!needsRebuild && !hasLegacyFavorites) return
+    database.exec('UPDATE messages SET favorited = 0 WHERE favorited <> 0')
+    database.exec('DROP TABLE IF EXISTS favorites')
+    if (!needsRebuild) return
+
+    // Preserve every explicit index, including indexes added by older installs.
+    const indexes = database.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'knowledge_files' AND sql IS NOT NULL"
+    ).all() as { sql: string }[]
+    database.exec(`
+      CREATE TABLE knowledge_files_new (
+        id            TEXT PRIMARY KEY,
+        file_path     TEXT NOT NULL,
+        title         TEXT NOT NULL DEFAULT '',
+        source_type   TEXT NOT NULL DEFAULT 'file'
+                        CHECK(source_type IN ('file', 'url', 'experience', 'favorite')),
+        source_url    TEXT,
+        source_path   TEXT,
+        conv_id       TEXT,
+        content_hash  TEXT,
+        status        TEXT NOT NULL DEFAULT 'raw'
+                        CHECK(status IN ('raw', 'compiled')),
+        wiki_outputs  TEXT,
+        created_at    TEXT NOT NULL,
+        compiled_at   TEXT
+      );
+      INSERT INTO knowledge_files_new
+        (rowid, id, file_path, title, source_type, source_url, source_path, conv_id, content_hash, status, wiki_outputs, created_at, compiled_at)
+      SELECT rowid, id, file_path, title, source_type, source_url, source_path, conv_id, content_hash, status, wiki_outputs, created_at, compiled_at
+        FROM knowledge_files;
+      DROP TABLE knowledge_files;
+      ALTER TABLE knowledge_files_new RENAME TO knowledge_files;
+    `)
+    // FTS addresses rows by rowid (preserved above), not by id.
+    for (const index of indexes) database.exec(index.sql)
+    console.log('[DB] knowledge_files rebuilt with the favorite source type; legacy favorites table dropped')
+  })
+  rebuild()
 }
 
 // ── FTS5 helpers ──

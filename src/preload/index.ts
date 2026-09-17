@@ -321,30 +321,6 @@ const electronAPI = {
   updateMemory: (id: string, data: { content?: string; type?: string; category?: string }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.MEMORY_UPDATE, id, data),
 
-  // Favorites
-  addFavorite: (data: {
-    id: string
-    messageId: string
-    conversationId: string
-    conversationTitle: string
-    role: string
-    content: string
-    contentBlocks?: string | null
-  }): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.FAVORITE_ADD, data),
-  removeFavorite: (messageId: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.FAVORITE_REMOVE, messageId),
-  listFavorites: (): Promise<
-    Array<{
-      id: string
-      messageId: string
-      conversationId: string
-      conversationTitle: string
-      role: string
-      content: string
-      contentBlocks?: any
-      createdAt: string
-    }>
-  > => ipcRenderer.invoke(IPC_CHANNELS.FAVORITE_LIST),
-
   // MCP - Model Context Protocol
   mcpListServers: (): Promise<MCPManagedServer[]> => ipcRenderer.invoke(IPC_CHANNELS.MCP_LIST_SERVERS),
   mcpGetServer: (id: string): Promise<MCPManagedServer | null> => ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_SERVER, id),
@@ -379,6 +355,8 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_READ_WIKI, relativePath),
   knowledgeWriteExperience: (data: { content: string; convId: string; title?: string }): Promise<KnowledgeFile> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_WRITE_EXPERIENCE, data),
+  knowledgeWriteFavorite: (data: { content: string; messageId: string; conversationId: string; title?: string }): Promise<KnowledgeFile> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_WRITE_FAVORITE, data),
   knowledgeGetStats: (): Promise<KnowledgeStats> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_STATS),
   knowledgeApplyWikiChanges: (data: {
     actions: { filePath: string; content: string }[]

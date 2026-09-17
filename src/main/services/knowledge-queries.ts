@@ -16,6 +16,7 @@ import {
   readWikiContent,
   listWikiFiles,
   saveExperienceToRaw,
+  saveFavoriteToRaw,
   getStats,
   markFileCompiled,
   applyWikiChanges,
@@ -29,6 +30,7 @@ import {
   deleteFile,
 } from '../storage/knowledge-store'
 import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
+import type { KnowledgeFile } from '../../shared/types/knowledge'
 
 export interface WikiSearchMatch {
   wikiPath: string
@@ -144,6 +146,21 @@ export function svcReadWiki(relativePath?: string): { content: string | null; fi
 
 export function svcWriteExperience(data: { content: string; convId: string; title?: string }) {
   return saveExperienceToRaw(data.content, data.convId, data.title)
+}
+
+/** DB row, FTS and marker commit together after the raw write succeeds.
+ *  Reject rather than returning a success envelope, so capture stays retryable. */
+export async function svcWriteFavorite(data: {
+  content: string
+  messageId: string
+  conversationId: string
+  title?: string
+}): Promise<KnowledgeFile> {
+  return saveFavoriteToRaw(data.content, {
+    conversationId: data.conversationId,
+    messageId: data.messageId,
+    title: data.title
+  })
 }
 
 export function svcGetStats() {

@@ -248,7 +248,14 @@ export function saveConversation(conversation: Conversation): void {
        history_summary = excluded.history_summary, history_summary_frontier = excluded.history_summary_frontier`
   )
   const upsertMsg = database.prepare(
-    `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       role = excluded.role, content = excluded.content, content_blocks = excluded.content_blocks,
+       created_at = excluded.created_at,
+       liked = excluded.liked,
+       favorited = messages.favorited,
+       processing_ms = excluded.processing_ms, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens`
   )
   const insertTokenUsage = database.prepare(
     'INSERT OR REPLACE INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)'
@@ -298,7 +305,14 @@ export function appendConversationMessages(
        updated_at = MAX(conversations.updated_at, excluded.updated_at)`
   )
   const upsertMsg = database.prepare(
-    `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       role = excluded.role, content = excluded.content, content_blocks = excluded.content_blocks,
+       created_at = excluded.created_at,
+       liked = excluded.liked,
+       favorited = messages.favorited,
+       processing_ms = excluded.processing_ms, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens`
   )
   const insertTokenUsage = database.prepare(
     'INSERT OR REPLACE INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)'

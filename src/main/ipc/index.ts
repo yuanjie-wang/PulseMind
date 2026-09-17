@@ -12,7 +12,6 @@ import { registerDialogHandlers } from './dialog.handler'
 import { registerFileOpsHandlers } from './file-ops.handler'
 import { registerAgentSessionHandlers } from './agent-session.handler'
 import { registerServiceHandlers } from './service.handler'
-import { registerFavoriteHandlers } from './favorites.handler'
 import { registerMcpHandlers } from './mcp.handler'
 import { registerCanvasHandlers } from './canvas.handler'
 import { registerKnowledgeHandlers } from './knowledge.handler'
@@ -49,7 +48,6 @@ export function registerIpcHandlers(): void {
   registerFileOpsHandlers()
   registerAgentSessionHandlers()
   registerServiceHandlers()
-  registerFavoriteHandlers()
   registerMcpHandlers()
   registerCanvasHandlers()
   registerKnowledgeHandlers()

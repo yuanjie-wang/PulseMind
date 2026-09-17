@@ -20,6 +20,7 @@ import {
   svcGetRawPath,
   svcReadWiki,
   svcWriteExperience,
+  svcWriteFavorite,
   svcGetStats,
   svcApplyWikiChanges,
   svcRebuildIndex,
@@ -51,6 +52,14 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, withRawResponse(async (relativePath: string) => svcGetRawPath(relativePath)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_READ_WIKI, withRawResponse(async (relativePath?: string) => svcReadWiki(relativePath)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_WRITE_EXPERIENCE, withRawResponse(async (data: { content: string; convId: string; title?: string }) => svcWriteExperience(data)))
+  // Favorites capture: rejects on failure (no {success:false} envelope) so the
+  // renderer's star stays retryable and the marker is only stamped on success.
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_WRITE_FAVORITE, withRawResponse(async (data: {
+    content: string
+    messageId: string
+    conversationId: string
+    title?: string
+  }) => svcWriteFavorite(data)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_STATS, withRawResponse(async () => svcGetStats()))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_APPLY_WIKI_CHANGES, withRawResponse(async (data: {
     actions: { filePath: string; content: string }[]

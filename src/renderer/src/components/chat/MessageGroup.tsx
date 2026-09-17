@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
-import { Modal, theme } from 'antd'
+import { App as AntdApp, message as antdMessage, Modal, theme } from 'antd'
 import {
   CopyOutlined,
   CheckOutlined,
@@ -33,6 +33,11 @@ import { ThinkingBlockView } from './ThinkingBlockView'
 import { FileRefChip } from './FileRefChip'
 import { ContextRing, estimateContextUsed } from './ContextRing'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
+import { enqueueCompileForFile } from '../knowledge/KnowledgePanel'
+import { createKnowledgeSaveAction } from './knowledge-save'
+
+// Fallback toast host for renders outside an antd <App> (probes, previews).
+const antdMessageStatic = antdMessage
 
 // Blinking cursor keyframe for live sub-agent preview
 const cursorKeyframe = `@keyframes pulsemind-blink-cursor {
@@ -415,9 +420,10 @@ function CollapsibleToolBlock({
 // --- Component ---
 
 /** Which buttons the assistant action row offers. 'viewOnly' is for transcripts
- *  whose messages are not stored: liking and favoriting write message metadata
- *  and a favorite row keyed by conversation, so those two have nothing to write
- *  to. Copy, download and the token/time stats work on the message itself. */
+ *  whose messages are not stored: liking and the knowledge entry write message
+ *  metadata (and, for the entry, a `raw/favorite_<hash>.md` knowledge file)
+ *  keyed by the conversation, so those two have nothing to write to. Copy,
+ *  download and the token/time stats work on the message itself. */
 export type MessageActions = 'full' | 'viewOnly' | 'none'
 
 export const MessageGroup = React.memo(function MessageGroup({
@@ -447,7 +453,16 @@ export const MessageGroup = React.memo(function MessageGroup({
   const [liked, setLiked] = useState(msg.liked ?? false)
   const [favorited, setFavorited] = useState(msg.favorited ?? false)
   const [copied, setCopied] = useState(false)
+  // One-way knowledge entry (PLAN-settings-restructure P2): the save is not
+  // reversible from here — delete only via the Knowledge Center. A visible
+  // failure must allow a retry, so the saved state is only flipped after the
+  // backend resolves (an in-flight save is latched against double clicks).
+  const [savingFavorite, setSavingFavorite] = useState(false)
+  const favoriteLatch = useRef({ pending: false, saved: false })
   const { t } = useTranslation()
+  // antd static message APIs can't see ConfigProvider's context; prefer the
+  // App-scoped instance when one exists so the toasts honor the app's theme.
+  const antdMessage = AntdApp.useApp()?.message ?? antdMessageStatic
 
   if (!hasDisplayableContent(msg)) return null
 
@@ -489,6 +504,23 @@ export const MessageGroup = React.memo(function MessageGroup({
       console.warn('[MessageGroup] Download failed:', err)
     }
   }
+
+  // ── Star = one-way entry into the knowledge base ────────────────────────
+  // The toasts ride antd's App.useApp() context when one is mounted (the app
+  // root provides it) and fall back to the static methods otherwise — the
+  // component must also render in hosts without an antd App ancestor
+  // (sub-agent previews, probes).
+  const handleSaveToKnowledge = createKnowledgeSaveAction({
+    save: (input) => window.electronAPI.knowledgeWriteFavorite(input),
+    // Backend owns the marker; always enqueue even before the panel mounts.
+    enqueue: (file) => { if (file.status === 'raw') enqueueCompileForFile(file.id) },
+    pending: setSavingFavorite,
+    success: () => { setFavorited(true); antdMessage.success(t('chatView.favorited')) },
+    error: (err) => {
+      console.warn('[MessageGroup] Knowledge save failed:', err)
+      antdMessage.error(`${t('chatView.error')}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, favoriteLatch.current)
 
   const btnBase: React.CSSProperties = {
     background: 'transparent',
@@ -660,29 +692,24 @@ export const MessageGroup = React.memo(function MessageGroup({
                 {liked ? <LikeFilled /> : <LikeOutlined />}
               </button>
               <button
-                style={{ ...btnBase, color: favorited ? '#aaa' : '#bbb' }}
+                data-testid="knowledge-star"
+                aria-label={favorited ? t('chatView.favorited') : t('chatView.favorite')}
+                style={{ ...btnBase, color: favorited ? '#aaa' : '#bbb', cursor: savingFavorite ? 'wait' : 'pointer', opacity: savingFavorite ? 0.6 : 1 }}
                 onClick={() => {
-                  const next = !favorited
-                  setFavorited(next)
-                  window.electronAPI.updateMessageMetadata(msg.id, { favorited: next })
-                  if (next && conversationId && msg.id) {
-                    const text = msg.contentBlocks
-                      .filter((b) => b.type === 'text')
-                      .map((b) => (b as any).text)
-                      .join('\n')
-                    window.electronAPI.addFavorite({
-                      id: `fav_${conversationId}_${msg.id}`,
-                      messageId: msg.id,
-                      conversationId,
-                      conversationTitle: conversationTitle || '',
-                      role: msg.role,
-                      content: text || (msg as any).content || ''
-                    })
-                  } else if (!next) {
-                    window.electronAPI.removeFavorite(msg.id)
-                  }
+                  // One-way: already saved → nothing to do. While a save is in
+                  // flight the action is latched (no double click can issue a
+                  // second write). viewOnly/none hosts never reach here.
+                  if (favorited || savingFavorite) return
+                  void handleSaveToKnowledge({
+                    content: assistantText,
+                    messageId: msg.id,
+                    conversationId,
+                    title: conversationTitle,
+                    writable: actions === 'full',
+                    favorited
+                  })
                 }}
-                title={t('chatView.favorite')}
+                title={favorited ? t('chatView.favorited') : t('chatView.favorite')}
                 onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
               >

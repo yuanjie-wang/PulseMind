@@ -368,31 +368,6 @@ export interface ElectronAPI {
   appendMemoryMd: (data: { sectionHeading: string; entry: string }) => Promise<void>
   updateMemory: (id: string, data: { content?: string; type?: string; category?: string }) => Promise<void>
 
-  // Favorites
-  addFavorite: (data: {
-    id: string
-    messageId: string
-    conversationId: string
-    conversationTitle: string
-    role: string
-    content: string
-    contentBlocks?: string | null
-  }) => Promise<{ success: boolean; error?: string }>
-  removeFavorite: (messageId: string) => Promise<{ success: boolean; error?: string }>
-  listFavorites: () => Promise<
-    Array<{
-      id: string
-      messageId: string
-      conversationId: string
-      conversationTitle: string
-      role: string
-      content: string
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy shape kept for compat
-      contentBlocks?: any
-      createdAt: string
-    }>
-  >
-
   // MCP - Model Context Protocol
   mcpListServers: () => Promise<MCPManagedServer[]>
   mcpGetServer: (id: string) => Promise<MCPManagedServer | null>
@@ -420,6 +395,7 @@ export interface ElectronAPI {
   knowledgeGetRawPath: (relativePath: string) => Promise<string>
   knowledgeReadWiki: (relativePath?: string) => Promise<{ content: string | null; files: string[] | null }>
   knowledgeWriteExperience: (data: { content: string; convId: string; title?: string }) => Promise<KnowledgeFile>
+  knowledgeWriteFavorite: (data: { content: string; messageId: string; conversationId: string; title?: string }) => Promise<KnowledgeFile>
   knowledgeGetStats: () => Promise<KnowledgeStats>
   knowledgeApplyWikiChanges: (data: {
     actions: { filePath: string; content: string }[]

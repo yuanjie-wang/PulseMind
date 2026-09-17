@@ -75,10 +75,10 @@ PulseMind 是一款桌面端 AI 助手应用，搭载自主 Agent 引擎，支�
 可视化 HTML 页面生成模式：AI 生成代码 → iframe 实时预览 → 画布标注反馈 → 迭代优化。支持 WebGL 渐变加载动画、多区域并行生成、一键导出 HTML。
 
 ### 会话管理
-所有对话持久化存储于本地 SQLite（WAL 模式），支持自动标题生成。每条消息可点赞、收藏、查看 Token 用量。支持自动清理旧会话。
+所有对话持久化存储于本地 SQLite（WAL 模式），支持自动标题生成。每条消息可点赞、录入知识库、查看 Token 用量。支持自动清理旧会话。
 
-### 收藏与统计
-单条消息可收藏至专属收藏夹，方便归档查阅。Token 用量按小时、日、月以堆叠柱状图展示，全部数据本地存储。
+### 知识库录入与统计
+单条消息可一键录入知识库，以「收藏」来源保存并自动编译；没有可用模型配置时保留可检索的原文。录入不可撤销，需要删除时请前往知识中心。Token 用量按小时、日、月以堆叠柱状图展示，全部数据本地存储。
 
 ### Plan 任务规划
 支持多步骤任务规划（create_plan / advance_plan），AI 可制定结构化执行计划并逐步推进，适合复杂工作流场景。
@@ -150,10 +150,10 @@ Triple-tier memory: manually written persistent memories + auto-extracted key in
 Visual HTML page generation mode: AI generates code → iframe live preview → canvas annotation feedback → iterative refinement. Features WebGL gradient loading animations, multi-region parallel generation, and one-click HTML export.
 
 ### Conversation Management
-All conversations are persisted in local SQLite (WAL mode) with auto-title generation. Individual messages can be liked, favorited, and inspected for token usage. Auto-cleanup for old sessions.
+All conversations are persisted in local SQLite (WAL mode) with auto-title generation. Individual messages can be liked, saved to the knowledge base, and inspected for token usage. Auto-cleanup for old sessions.
 
-### Favorites & Statistics
-Save individual messages to a dedicated favorites collection. Token usage displayed as stacked bar charts across hourly, daily, and monthly views — all data stored locally.
+### Knowledge Saving & Statistics
+Save individual messages to the knowledge base with the Favorite source type and automatic compilation. Without an available model configuration, the searchable original remains available. Saving is one-way; delete entries in the Knowledge Center. Token usage is displayed as stacked bar charts across hourly, daily, and monthly views — all data stored locally.
 
 ### Plan System
 Multi-step task planning (create_plan / advance_plan) — AI can create structured execution plans and work through them step by step, ideal for complex workflows.

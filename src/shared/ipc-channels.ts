@@ -52,11 +52,6 @@ export const IPC_CHANNELS = {
   DIALOG_SHOW_OPEN: 'dialog:show-open',
   DIALOG_SHOW_SAVE: 'dialog:show-save',
 
-  // ── Favorites ──
-  FAVORITE_LIST: 'favorite:list',
-  FAVORITE_ADD: 'favorite:add',
-  FAVORITE_REMOVE: 'favorite:remove',
-
   // ── MCP ──
   MCP_LIST_SERVERS: 'mcp:list-servers',
   MCP_GET_SERVER: 'mcp:get-server',
@@ -186,6 +181,7 @@ export const IPC_CHANNELS = {
   KNOWLEDGE_GET_RAW_PATH: 'knowledge:get-raw-path',
   KNOWLEDGE_READ_WIKI: 'knowledge:read-wiki',
   KNOWLEDGE_WRITE_EXPERIENCE: 'knowledge:write-experience',
+  KNOWLEDGE_WRITE_FAVORITE: 'knowledge:write-favorite',
   KNOWLEDGE_GET_STATS: 'knowledge:get-stats',
   KNOWLEDGE_APPLY_WIKI_CHANGES: 'knowledge:apply-wiki-changes',
   KNOWLEDGE_UPDATE_STATUS: 'knowledge:update-status',

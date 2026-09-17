@@ -6,6 +6,7 @@ import {
   FileTextOutlined,
   GlobalOutlined,
   BulbOutlined,
+  StarOutlined,
   PlayCircleOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
@@ -36,25 +37,34 @@ const _pendingCompileIds: string[] = []
 let _compileRunning = false
 let _compilingFileId: string | null = null
 let _startupCompileEnqueued = false
+let _wakeCompile: (() => void) | null = null
 
-// Enqueue un-compiled raw files for compilation on startup.
-// Does NOT process them — the KnowledgePanel mount effect starts the compile
-// queue when it detects _pendingCompileIds has items (see mount effect below).
+/** All producers share the existing queue; preserve work until a panel mounts. */
+export function enqueueCompileForFile(fileId: string): void {
+  if (!fileId.trim()) return
+  if (_compilingFileId !== fileId && !_pendingCompileIds.includes(fileId)) {
+    _pendingCompileIds.push(fileId)
+    _onMarkQueued?.(fileId)
+  }
+  _onRefresh?.()
+  _wakeCompile?.()
+}
+
+// Enqueue uncompiled raw files on startup. A mounted panel wakes immediately;
+// otherwise the queue is retained until the panel registers its processor.
 export async function enqueueStartupCompile(): Promise<void> {
   if (_startupCompileEnqueued) return
   _startupCompileEnqueued = true
   try {
     const rawFiles = await window.electronAPI.knowledgeListFiles('raw') as Array<{ id: string }>
     if (rawFiles.length === 0) return
-    for (const f of rawFiles) _pendingCompileIds.push(f.id)
-    // Notify via callbacks if component is mounted
-    if (_onMarkQueued) for (const f of rawFiles) _onMarkQueued(f.id)
+    for (const f of rawFiles) enqueueCompileForFile(f.id)
   } catch { /* ignore */ }
 }
 
 // Callbacks — registered by the component on mount, cleared on unmount.
 let _onProgress: ((current: number, total: number) => void) | null = null
-let _onFileStatusChange: ((fileId: string, status: 'compiling' | 'compiled') => void) | null = null
+let _onFileStatusChange: ((fileId: string, status: 'compiling' | 'compiled' | 'raw') => void) | null = null
 let _onRefresh: (() => void) | null = null
 let _onResetProgress: (() => void) | null = null
 let _onMarkQueued: ((fileId: string) => void) | null = null
@@ -87,7 +97,8 @@ interface KnowledgePanelProps {
 const SOURCE_TAGS: Record<string, { color: string; icon: React.ReactNode }> = {
   file: { color: '#858585', icon: <FileTextOutlined /> },
   url: { color: '#84b9ea', icon: <GlobalOutlined /> },
-  experience: { color: 'orange', icon: <BulbOutlined /> }
+  experience: { color: 'orange', icon: <BulbOutlined /> },
+  favorite: { color: '#faad14', icon: <StarOutlined /> }
 }
 
 /** Parse YAML frontmatter from markdown content. Returns [frontmatter, body]. */
@@ -119,6 +130,8 @@ const FRONTMATTER_LABELS: Record<string, string> = {
   source_url: '来源 URL',
   source_path: '来源路径',
   source_conv_id: '对话 ID',
+  source_msg_id: '消息 ID',
+  saved: '录入时间',
   extracted: '提取时间',
 }
 
@@ -130,6 +143,7 @@ const FRONTMATTER_COLORS: Record<string, string> = {
   file: '#1677ff',
   url: '#52c41a',
   experience: '#faad14',
+  favorite: '#faad14',
 }
 
 function CompiledPreview({ content }: { content: string }): React.ReactElement {
@@ -200,7 +214,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       const [result, currentStats] = await Promise.all([
         knowledgeManager.listFilesAdvanced({
           ...(searchQuery && { search: searchQuery }),
-          ...(filterSourceType !== 'all' && { sourceType: filterSourceType as 'file' | 'url' | 'experience' }),
+          ...(filterSourceType !== 'all' && { sourceType: filterSourceType as KnowledgeFile['sourceType'] }),
           ...(filterStatus !== 'all' && { status: filterStatus as 'raw' | 'compiled' }),
           ...(sortState && { sortBy: sortState.key as 'createdAt' | 'title' | 'status' }),
           ...(sortState && { sortOrder: sortState.order }),
@@ -264,7 +278,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       } else {
         setCompilingFileIds(prev => { const next = new Set(prev); next.delete(fileId); return next })
         setQueuedFileIds(prev => { const next = new Set(prev); next.delete(fileId); return next })
-        setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'compiled' } : f))
+        setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status } : f))
       }
     }
     _onResetProgress = () => {
@@ -505,11 +519,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   }, [])
 
   /** Enqueue a single file for compilation. */
-  const enqueueCompileOne = useCallback((fileId: string) => {
-    _pendingCompileIds.push(fileId)
-    setQueuedFileIds(prev => new Set(prev).add(fileId))
-    runCompileQueueRef.current()
-  }, [])
+  const enqueueCompileOne = enqueueCompileForFile
 
   /** Enqueue all raw files for compilation ("compile all" button). */
   const enqueueCompileAll = useCallback(async () => {
@@ -550,10 +560,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
           result = await knowledgeManager.importUrl(item.url)
         }
         if (result.success && result.file) {
-          _pendingCompileIds.push(result.file.id)
-          _onMarkQueued?.(result.file.id)
-          // Trigger compile queue for this file
-          runCompileQueueRef.current()
+          enqueueCompileForFile(result.file.id)
         }
       } catch {
         // Import failed — skip
@@ -584,7 +591,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
 
   /** Process the compile queue — independent of import state. */
   const runCompileQueue = useCallback(async () => {
-    if (_compileRunning) return
+    if (_compileRunning || !knowledgeManager.canCompile) return
     if (_pendingCompileIds.length === 0) return
 
     _compileRunning = true
@@ -594,11 +601,13 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       _compilingFileId = fileId
       _onFileStatusChange?.(fileId, 'compiling')
       let lastError: unknown
+      let compiled = false
       for (let attempt = 0; attempt <= 2; attempt++) {
         if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 3000))
         try {
           const result = await knowledgeManager.compileFile(fileId)
           if (result.ok && result.written > 0) {
+            compiled = true
             _onFileStatusChange?.(fileId, 'compiled')
             lastError = undefined
             break
@@ -613,6 +622,8 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
         }
       }
       if (lastError) console.error('[KnowledgePanel] Compile failed:', fileId, lastError)
+      // Failure/no-key is raw and retryable, not an eternal loading spinner.
+      if (!compiled) _onFileStatusChange?.(fileId, 'raw')
       _compilingFileId = null
       _onRefresh?.()
     }
@@ -635,6 +646,11 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     runImportQueueRef.current = runImportQueue
     // eslint-disable-next-line react-hooks/immutability
     runCompileQueueRef.current = runCompileQueue
+    _wakeCompile = () => { void runCompileQueueRef.current() }
+    // This runs after the refs are wired; the earlier mount effect sees the
+    // initial no-op ref. Also retry retained raw work when config becomes usable.
+    if (knowledgeManager.canCompile) _wakeCompile()
+    return () => { _wakeCompile = null }
   })
 
   /** Reset all knowledge: show confirmation, then clear everything */
@@ -841,6 +857,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
               { text: t('knowledgePanel.typeFile'), value: 'file' },
               { text: t('knowledgePanel.typeUrl'), value: 'url' },
               { text: t('knowledgePanel.typeExperience'), value: 'experience' },
+              { text: t('knowledgePanel.typeFavorite'), value: 'favorite' },
             ],
             filteredValue: filterSourceType !== 'all' ? [filterSourceType] : [],
             render: (_, record) => {

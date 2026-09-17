@@ -20,8 +20,8 @@ export interface AppView {
   /** `capability`: which tab is active (used by jump entries, e.g. after `install`). */
   capabilityTab?: 'mcp' | 'skills' | 'expert' | 'tools'
   /** `settings`: which section to open (jump entries, e.g. search → 记忆).
-   *  `tools` moved to the capability center. */
-  settingsTab?: 'environment' | 'settings' | 'assistant' | 'memory' | 'experiences' | 'favorites' | 'data'
+   *  `tools` moved to the capability center; `favorites` became knowledge entries. */
+  settingsTab?: 'environment' | 'settings' | 'assistant' | 'memory' | 'experiences' | 'data'
   /** `routines` detail: open the run-history workspace for this routine
    *  (deep links, e.g. the welcome page's routine card). */
   runHistoryOf?: string
