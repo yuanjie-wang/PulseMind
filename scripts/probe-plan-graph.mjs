@@ -165,13 +165,25 @@ function ClickMount() {
   )
 }
 
-/** Narrow pane: even the 0.55 scale floor cannot fit the graph, so this is the
+/** Narrow pane: the graph never shrinks (canvas D1, floor 1), so this is the
  *  one mount where centring must NOT apply — auto margins have to collapse to 0
  *  or the 开始 anchor would be pushed out of reach to the left. */
 function NarrowMount() {
   return (
     <div id="narrow" style={{ width: 200, height: 300, border: '1px solid #ccc', position: 'relative' }}>
       <PlanGraphView plan={plan} onJumpToStep={() => {}} />
+    </div>
+  )
+}
+
+/** Canvas fixture (PLAN-plan-graph-canvas M4): a 300px pane + a click
+ *  recorder, for pan / click-guard / reset assertions with a real mouse. */
+window.__canvasClicks = []
+function CanvasMount() {
+  return (
+    <div id="canvas" style={{ width: 300, height: 400, border: '1px solid #ccc', position: 'relative' }}>
+      <PlanGraphView plan={plan} onJumpToStep={() => {}} canOpenNode={() => true}
+        onOpenPlanNode={(id) => { window.__canvasClicks.push(['open', id]) }} />
     </div>
   )
 }
@@ -186,6 +198,7 @@ createRoot(document.getElementById('app')).render(
       <HeadMount p={longObjective} />
       <ClickMount />
       <NarrowMount />
+      <CanvasMount />
     </div>
   </ConfigProvider>
 )
@@ -294,7 +307,9 @@ function expected(id) {
   const rV = Math.min(w / g.v.width, h / g.v.height, 1)
   const direction = rV > rH ? 'vertical' : 'horizontal'
   const l = direction === 'vertical' ? g.v : g.h
-  const scale = Math.max(0.55, Math.min(1, direction === 'vertical' ? rV : rH))
+  // PLAN-plan-graph-canvas D1: the floor is 1 — the graph never shrinks; a
+  // narrow pane pans instead. (fit ratios still pick the direction.)
+  const scale = Math.max(1, Math.min(1, direction === 'vertical' ? rV : rH))
   return { direction, w: l.width * scale, h: l.height * scale }
 }
 
@@ -702,6 +717,89 @@ await page.locator('#click g[data-node="__start__"]').click()
 await page.waitForTimeout(80)
 const afterAnchor = await page.evaluate(() => window.__clicks)
 check('[click] the 开始/结束 anchors are not click targets', afterAnchor.length === 0, JSON.stringify(afterAnchor))
+
+
+// ── Canvas (PLAN-plan-graph-canvas M4): 100% floor + drag-to-scroll + click
+// guard + reset — all with a real pointer, never dispatched events. ──
+const cvBox = page.locator('#canvas')
+const cvViewport = cvBox.locator('[data-graph-viewport]')
+await cvViewport.waitFor()
+// The canvas fixture sits below the fold in the flex-wrap wall of mounts —
+// pointer events at off-viewport coordinates are silently dropped.
+await cvBox.scrollIntoViewIfNeeded()
+await page.waitForTimeout(120)
+
+// ① Narrow pane renders at 100%: the first card is its native 180px wide and
+// the description text keeps its native 11.5px. (Reverting MIN_PLAN_SCALE to
+// 0.55 fails exactly here.)
+await cvBox.locator('g[data-node="n1"] rect').scrollIntoViewIfNeeded()
+const n1box = await cvBox.locator('g[data-node="n1"] rect').boundingBox()
+const n1attr = await cvBox.locator('g[data-node="n1"] rect').evaluate((el) => ({
+  w: el.getAttribute('width'),
+  bbox: el.getBoundingClientRect().width,
+  svgScale: el.ownerSVGElement.getBoundingClientRect().width / +el.ownerSVGElement.getAttribute('width'),
+}))
+const descFont = await cvBox.locator('g[data-node="n1"] text').filter({ hasText: '调研竞品' }).first().evaluate((el) => getComputedStyle(el).fontSize)
+check('[canvas] a 300px pane renders cards at native 180px at scale 1 (100% floor, D1)',
+  n1attr.w === '180' && Math.abs(n1attr.bbox - 180) < 0.5 && Math.abs(n1attr.svgScale - 1) < 0.01,
+  `attr=${n1attr.w} bbox=${n1attr.bbox?.toFixed(1)} svgScale=${n1attr.svgScale.toFixed(3)}`)
+check('[canvas] card text keeps its native 11.5px size', descFont === '11.5px', descFont)
+
+// ② Drag from a blank corner pans the canvas exactly with the pointer (D2).
+const vpBox = await cvViewport.boundingBox()
+const scrollBefore = await cvViewport.evaluate((el) => ({ left: el.scrollLeft, top: el.scrollTop }))
+const maxScroll = await cvViewport.evaluate((el) => ({ left: el.scrollWidth - el.clientWidth, top: el.scrollHeight - el.clientHeight }))
+await page.mouse.move(vpBox.x + 12, vpBox.y + 14)
+await page.mouse.down()
+await page.mouse.move(vpBox.x + 12 - 120, vpBox.y + 14 - Math.min(60, maxScroll.top - scrollBefore.top - 2), { steps: 12 })
+await page.mouse.up()
+await page.waitForTimeout(80)
+const scrollAfterDrag = await cvViewport.evaluate((el) => ({ left: el.scrollLeft, top: el.scrollTop }))
+const dragDx = scrollAfterDrag.left - scrollBefore.left
+check('[canvas] dragging 120px pans scrollLeft by exactly 120 (D2)',
+  Math.abs(dragDx - 120) < 1.5, `ΔscrollLeft=${dragDx.toFixed(1)} (max ${maxScroll.left})`)
+check('[canvas] vertical drag pans scrollTop too', scrollAfterDrag.top > scrollBefore.top,
+  `${scrollBefore.top} → ${scrollAfterDrag.top} (max ${maxScroll.top})`)
+
+// ③ Drag that starts ON a card pans AND swallows the click that would follow (D3).
+await page.evaluate(() => { window.__canvasClicks = [] })
+const cardCenter = { x: n1box.x + n1box.width / 2, y: n1box.y + n1box.height / 2 }
+const scrollPre3 = await cvViewport.evaluate((el) => ({ left: el.scrollLeft, top: el.scrollTop }))
+await page.mouse.move(cardCenter.x, cardCenter.y)
+await page.mouse.down()
+await page.mouse.move(cardCenter.x - 90, cardCenter.y - 40, { steps: 10 })
+await page.mouse.up()
+await page.waitForTimeout(100)
+const scrollPost3 = await cvViewport.evaluate((el) => ({ left: el.scrollLeft, top: el.scrollTop }))
+const clicks3 = await page.evaluate(() => window.__canvasClicks)
+// Direction-agnostic: dragging left/up MUST grow the scroll offsets by the
+// drag distance (scroll moves opposite to the pointer).
+check('[canvas] a card-originated drag pans the canvas',
+  Math.abs(scrollPost3.left - scrollPre3.left) >= 50 || Math.abs(scrollPost3.top - scrollPre3.top) >= 40,
+  `${JSON.stringify(scrollPre3)} → ${JSON.stringify(scrollPost3)}`)
+check('[canvas] the drag swallows the node click that follows it (D3)', clicks3.length === 0, JSON.stringify(clicks3))
+// Deleting the swallow guard fails exactly this check.
+
+// ④ Press and release WITHOUT moving wherever the pointer now sits: that is
+// a click, not a drag — and it opens whatever node is under it (the pan from
+// ③ may have moved a different card under the pointer; WHICH node is
+// irrelevant, the point is that the click was NOT swallowed).
+await page.mouse.move(cardCenter.x, cardCenter.y)
+await page.mouse.down()
+await page.mouse.up()
+await page.waitForTimeout(100)
+const clicks4 = await page.evaluate(() => window.__canvasClicks)
+check('[canvas] a stationary press on a card still opens the node (D3)', clicks3.length === 0 && clicks4.length === 1, JSON.stringify(clicks4))
+
+// ⑤ The reset button exists only when the graph overflows, and returns the view.
+const hasReset = await cvBox.locator('[data-graph-reset]').count()
+check('[canvas] the reset button appears for an overflowing graph (D5)', hasReset === 1, `count=${hasReset}`)
+const noResetZoom = await page.locator('#zoom [data-graph-reset]').count()
+check('[canvas] a fitting graph renders no reset button (D5)', noResetZoom === 0, `count=${noResetZoom}`)
+await cvBox.locator('[data-graph-reset]').click()
+await page.waitForTimeout(80)
+const scrollReset = await cvViewport.evaluate((el) => ({ left: el.scrollLeft, top: el.scrollTop }))
+check('[canvas] reset returns the view to the initial position', scrollReset.left === 0 && scrollReset.top === 0, JSON.stringify(scrollReset))
 
 for (const id of ['mid', 'fresh', 'chain']) {
   await page.locator(`#${id}`).screenshot({ path: join(SHOTS, `plan-${id}.png`) })
