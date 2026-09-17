@@ -311,8 +311,13 @@ export async function performLlmStream(
         console.log(`[API-Proxy] Stream idle timeout: ${requestId}`)
         sinks.onError('连接闲置超时，请重试')
       } else {
+        // External abort (sleep/resume cancelAllRequests, entry teardown):
+        // report ERROR, not done (PLAN-parallel-experts T11) — a `done` lets
+        // the engine finalize a half-received response as a normal turn. The
+        // renderer's own user-stop path sets isCancelled before aborting and
+        // swallows this error in its catch.
         console.log(`[API-Proxy] Request aborted: ${requestId}`)
-        sinks.onDone()
+        sinks.onError('Request aborted')
       }
       return
     }
