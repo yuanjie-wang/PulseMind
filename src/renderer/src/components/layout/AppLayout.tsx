@@ -442,7 +442,9 @@ function AppLayout({
                 {view.kind === 'chat' ? (activeConvTitle || '') : t(VIEW_TITLE_KEY[view.kind])}
               </span>
               {/* The workbench pane only renders for an open conversation in the
-                  chat view — hide the toggle when there is nothing to show. */}
+                  chat view — hide the toggle when there is nothing to show.
+                  Manual opens land on 工作区 (not the last-active tab); the
+                  auto-open funnel (plan/browser/files) keeps its own tab. */}
               {view.kind === 'chat' && activeConvKey && (
                 <Tooltip
                   title={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
@@ -452,7 +454,11 @@ function AppLayout({
                     className={`header-pane-btn${workbenchOpen ? ' on' : ''}`}
                     aria-label={workbenchOpen ? t('appLayout.hideWorkbench') : t('appLayout.showWorkbench')}
                     icon={<PanelRightIcon size={16} filled={workbenchOpen} />}
-                    onClick={() => useWorkbenchStore.getState().setOpen(wbKey, !workbenchOpen)}
+                    onClick={() =>
+                      workbenchOpen
+                        ? useWorkbenchStore.getState().setOpen(wbKey, false)
+                        : useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+                    }
                     style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                   />
                 </Tooltip>
