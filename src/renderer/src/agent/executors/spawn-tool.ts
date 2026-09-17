@@ -118,10 +118,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
     ex.notify()
 
-    // 并行专家上限（PLAN-parallel-experts P2，用户裁定 2026-09-16：同一会话最多 3 个；
+    // 并行专家上限（PLAN-parallel-experts P2，用户裁定 2026-09-16：同一会话最多 5 个；
     // 计划文档在 _task/20260916/PLAN-parallel-experts.md）。
     // The slot is taken AFTER validation (a bad planNode must fail fast, not
-    // after queueing behind three long experts) and held for the whole
+    // after queueing behind five long experts) and held for the whole
     // dispatch — i.e. across `waitForCompletion` below. See the header of
     // engine/subagent-limiter.ts for why that is the shape that survives
     // pause/resume and stop.

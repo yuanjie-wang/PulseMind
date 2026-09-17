@@ -261,10 +261,12 @@ describe('spawn_agent planNode linkage', () => {
   })
 })
 
-/** 并行专家上限（PLAN-parallel-experts P2，用户裁定 2026-09-16：同一会话最多 3 人）。
- *  派发层的证明——一批五个 spawn 里同时在跑的专家数峰值必须是 3（引擎数、LLM
- *  流数跟着一起被压住），多出来的按 FIFO 等空位，且"停止之后不再起新专家"。 */
-describe('parallel expert cap at dispatch (three per session)', () => {
+/** 并行专家上限（PLAN-parallel-experts P2，用户裁定 2026-09-16，2026-09-17 由 3 上调为
+ *  5：同一会话最多 5 人）。派发层的证明——一批七个 spawn 里同时在跑的专家数峰值必须
+ *  是 5（引擎数、LLM 流数跟着一起被压住），多出来的按 FIFO 等空位，且"停止之后不再起
+ *  新专家"。批量大小一律取 MAX+2，好让"有人排队"与"排队的最后也跑完"两件事都被证到：
+ *  批量恰好等于上限时峰值断言会退化成恒真。 */
+describe('parallel expert cap at dispatch (five per session)', () => {
   /** Fake sub-agents that count how many are in flight at once. The label comes
    *  from the delegated task, so the started order is assertable. */
   function stubTimedSpawns(engine: AgentEngine, delayMs: number) {
@@ -306,15 +308,16 @@ describe('parallel expert cap at dispatch (three per session)', () => {
       .map(b => (b as { content: string }).content)
       .join('\n')
 
-  it('never runs more than three experts at once, and drains all five in FIFO order', async () => {
+  it('never runs more than five experts at once, and drains all seven in FIFO order', async () => {
     const engine = makeEngine('conv_cap_batch')
     const state = stubTimedSpawns(engine, 30)
-    const batch = [1, 2, 3, 4, 5].map(n => makeSpawnTool(`tu_${n}`, `task ${n}`))
+    const tasks = ['task 1', 'task 2', 'task 3', 'task 4', 'task 5', 'task 6', 'task 7']
+    const batch = tasks.map((task, i) => makeSpawnTool(`tu_${i + 1}`, task))
 
     await engine.handleToolUseResponse(batch)
 
     expect(state.peak).toBe(MAX_PARALLEL_SUBAGENTS)
-    expect(state.started).toEqual(['task 1', 'task 2', 'task 3', 'task 4', 'task 5'])
+    expect(state.started).toEqual(tasks)
     expect(batch.every(t => t.exitCode === 0)).toBe(true)
     expect(new Set(toolResultIds(engine))).toEqual(new Set(batch.map(t => t.id)))
     // 全部收工后槽位归零：下一次派发不会排在上一次的队尾。
@@ -326,32 +329,34 @@ describe('parallel expert cap at dispatch (three per session)', () => {
     const right = makeEngine('conv_cap_right')
     const leftState = stubTimedSpawns(left, 30)
     const rightState = stubTimedSpawns(right, 30)
-    const leftBatch = [1, 2, 3, 4].map(n => makeSpawnTool(`l_${n}`, `L${n}`))
-    const rightBatch = [1, 2, 3].map(n => makeSpawnTool(`r_${n}`, `R${n}`))
+    // 左边超额（6 > 5），右边刚好塞满上限（5）：右边的满额从没被左边挡住。
+    const leftBatch = [1, 2, 3, 4, 5, 6].map(n => makeSpawnTool(`l_${n}`, `L${n}`))
+    const rightBatch = [1, 2, 3, 4, 5].map(n => makeSpawnTool(`r_${n}`, `R${n}`))
 
     await Promise.all([left.handleToolUseResponse(leftBatch), right.handleToolUseResponse(rightBatch)])
 
     expect(leftState.peak).toBe(MAX_PARALLEL_SUBAGENTS)
-    expect(rightState.peak).toBe(MAX_PARALLEL_SUBAGENTS) // 右边的三个没被左边挡住
-    expect(rightState.started).toEqual(['R1', 'R2', 'R3'])
-    expect(leftState.started).toHaveLength(4)
+    expect(rightState.peak).toBe(MAX_PARALLEL_SUBAGENTS) // 右边的五个没被左边挡住
+    expect(rightState.started).toEqual(['R1', 'R2', 'R3', 'R4', 'R5'])
+    expect(leftState.started).toHaveLength(6)
   })
 
   it('starts no queued expert after the session is stopped', async () => {
     const engine = makeEngine('conv_cap_stop')
     const state = stubTimedSpawns(engine, 40)
-    const batch = [1, 2, 3, 4].map(n => makeSpawnTool(`tu_${n}`, `task ${n}`))
+    const batch = [1, 2, 3, 4, 5, 6].map(n => makeSpawnTool(`tu_${n}`, `task ${n}`))
+    const starting = ['task 1', 'task 2', 'task 3', 'task 4', 'task 5']
 
     const dispatch = engine.handleToolUseResponse(batch)
     await new Promise(r => setTimeout(r, 5))
-    expect(state.started).toEqual(['task 1', 'task 2', 'task 3']) // 第四个在排队
+    expect(state.started).toEqual(starting) // 第六个在排队
 
     engine.stopExecution()
     await dispatch
 
-    expect(state.started).toEqual(['task 1', 'task 2', 'task 3']) // 停止后没有新专家启动
-    expect(batch[3].exitCode).toBe(-1)
-    expect(toolResultContent(engine, batch[3].id)).toContain('子代理未启动')
+    expect(state.started).toEqual(starting) // 停止后没有新专家启动
+    expect(batch[5].exitCode).toBe(-1)
+    expect(toolResultContent(engine, batch[5].id)).toContain('子代理未启动')
     expect(activeSubAgentCount('conv_cap_stop')).toBe(0)
   })
 
@@ -366,7 +371,7 @@ describe('parallel expert cap at dispatch (three per session)', () => {
     })
     const subEngine = engine.activeSubAgents.get(handle.id)!
     // 子代理的会话是自己的 sub_…，但预算键必须是父会话——否则嵌套 spawn 等于每层
-    // 各拿三个槽位，上限形同虚设。
+    // 各拿一份满额，上限形同虚设。
     expect(subEngine.opts.conversationId).toMatch(/^sub_/)
     expect(subAgentBudgetKey(subEngine.opts)).toBe('conv_cap_nested')
 
@@ -374,7 +379,7 @@ describe('parallel expert cap at dispatch (three per session)', () => {
     // 结算时 completionPromise 被清空，之后再去读会拿到 undefined）。
     const completion = handle.waitForCompletion()
     // 停止把真实子引擎结算为 aborted：不结算就没人清它的 5s 存档定时器、没人放回
-    // 槽位（本会话的三个槽位就此永久占死），尾部消息也不会落库。
+    // 槽位（本会话的槽位就此永久占死），尾部消息也不会落库。
     engine.stopExecution()
     const result = await completion
     expect(result.status).toBe('aborted')
@@ -406,7 +411,7 @@ describe('dispose settles a mid-flight expert tree (no resume path)', () => {
       dispatch,
       new Promise((_, reject) => setTimeout(() => reject(new Error('dispose 未结算派发：waitForCompletion 永挂')), 1_000)),
     ])
-    // 槽位已归还：本会话还能再跑满三个专家，而不是带着泄漏只剩两个。
+    // 槽位已归还：本会话还能再跑满上限，而不是带着泄漏少一个。
     expect(activeSubAgentCount('conv_dispose')).toBe(0)
     expect(engine.activeSubAgents.size).toBe(0)
     // 派发方按 aborted 收到结果并落卡。
@@ -440,10 +445,10 @@ describe('sub-agent loop limit settles for real (T8)', () => {
     expect(String(subEngine.agentStatus.error)).toContain('loop limit')
   })
 
-  it('a limit-failed expert frees its slot — the queued fourth still starts', async () => {
+  it('a limit-failed expert frees its slot — the queued one still starts', async () => {
     const engine = makeEngine('conv_cap_limitfail')
     // task 1 以 T8 产生的形态收场（completion 结算为 status:'error'），
-    // 其余照常完成；五个里前三个占满槽位，第四个必须等 task 1 出错释放后启动。
+    // 其余照常完成；前五个占满槽位，第六个必须等 task 1 出错释放后启动。
     const state = { running: 0, peak: 0, started: [] as string[] }
     engine.toolExecutor.spawnSubAgent = (config: SpawnSubAgentConfig): SubAgentHandle => {
       const label = String(config.title || '').split(': ').pop() || '?'
@@ -475,13 +480,14 @@ describe('sub-agent loop limit settles for real (T8)', () => {
       }
     }
 
-    const batch = [1, 2, 3, 4].map(n => makeSpawnTool(`tu_${n}`, `task ${n}`))
+    const tasks = ['task 1', 'task 2', 'task 3', 'task 4', 'task 5', 'task 6']
+    const batch = tasks.map((task, i) => makeSpawnTool(`tu_${i + 1}`, task))
     await engine.handleToolUseResponse(batch)
 
     expect(state.peak).toBe(MAX_PARALLEL_SUBAGENTS)
-    expect(state.started).toEqual(['task 1', 'task 2', 'task 3', 'task 4']) // 出错释放后第四个照常启动
+    expect(state.started).toEqual(tasks) // 出错释放后第六个照常启动
     expect(batch[0].exitCode).toBe(1) // 失败专家的卡上报失败
-    expect(batch[3].exitCode).toBe(0)
+    expect(batch[5].exitCode).toBe(0)
     expect(activeSubAgentCount('conv_cap_limitfail')).toBe(0)
   })
 })

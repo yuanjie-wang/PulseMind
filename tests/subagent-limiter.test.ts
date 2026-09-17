@@ -11,12 +11,16 @@ import {
 } from '../src/renderer/src/agent/engine/subagent-limiter'
 
 /**
- * 并行专家上限（PLAN-parallel-experts P2）：同一会话最多三个专家同时在跑。
+ * 并行专家上限（PLAN-parallel-experts P2）：同一会话最多五个专家同时在跑
+ * （2026-09-16 定为 3，2026-09-17 上调为 5）。
  *
- * 这里的每一条都是"用户会看到什么"的直接翻译——第四个专家要排队而不是也起一个
- * 引擎；空出的槽位交给队首（否则重活先到的专家永远排不上）；停止会话时排队者不
- * 能再起（用户刚按了停止）；一个会话的预算不能挡住另一个会话（两个对话各跑三个
+ * 这里的每一条都是"用户会看到什么"的直接翻译——超出上限的那个专家要排队而不是也起
+ * 一个引擎；空出的槽位交给队首（否则重活先到的专家永远排不上）；停止会话时排队者不
+ * 能再起（用户刚按了停止）；一个会话的预算不能挡住另一个会话（两个对话各跑五个
  * 是正常的，不是超额）。
+ *
+ * 用例里的序号一律写「超上限的那一个」而不是写死"第几个"，因为上限本身是用户裁定
+ * 的数字、会变（3 → 5 就是这么来的）；钉住它的只有下面那一条断言常量本身的用例。
  *
  * 模块级状态：`resetSubAgentLimiter()` 在 beforeEach 里，因为同一会话键会跨测试
  * 存活，泄漏的槽位会让后面的用例假失败。
@@ -43,33 +47,33 @@ beforeEach(() => {
   resetSubAgentLimiter()
 })
 
-describe('parallel expert cap: three per session', () => {
-  it('caps a session at three experts (the number the user set)', () => {
-    expect(MAX_PARALLEL_SUBAGENTS).toBe(3)
+describe('parallel expert cap: five per session', () => {
+  it('caps a session at five experts (the number the user set)', () => {
+    expect(MAX_PARALLEL_SUBAGENTS).toBe(5)
   })
 
-  it('gives the first three slots immediately and parks the fourth', async () => {
+  it('gives the first MAX slots immediately and parks the next one', async () => {
     const key = 'conv_a'
     const held = await takeSlots(key, MAX_PARALLEL_SUBAGENTS)
     expect(activeSubAgentCount(key)).toBe(MAX_PARALLEL_SUBAGENTS)
     expect(queuedSubAgentCount(key)).toBe(0)
 
-    const fourth = queueWaiter(key)
+    const overflow = queueWaiter(key)
     await Promise.resolve()
     await Promise.resolve()
-    expect(fourth.resolved).toBe(false)
+    expect(overflow.resolved).toBe(false)
     expect(queuedSubAgentCount(key)).toBe(1)
 
     // 一个专家收工：槽位**转交**而不是释放重建——排队者立刻拿到，且占用数不变。
     held[0]()
     await Promise.resolve()
     await Promise.resolve()
-    expect(fourth.resolved).toBe(true)
-    expect(fourth.release).toBeTypeOf('function')
+    expect(overflow.resolved).toBe(true)
+    expect(overflow.release).toBeTypeOf('function')
     expect(activeSubAgentCount(key)).toBe(MAX_PARALLEL_SUBAGENTS)
     expect(queuedSubAgentCount(key)).toBe(0)
 
-    for (const release of [...held.slice(1), fourth.release!]) release()
+    for (const release of [...held.slice(1), overflow.release!]) release()
     expect(activeSubAgentCount(key)).toBe(0)
   })
 
@@ -95,6 +99,9 @@ describe('parallel expert cap: three per session', () => {
     expect(order).toEqual([1, 2, 3])
 
     for (const release of await Promise.all(waiting)) release!()
+    // 驱动队列只放掉前三个槽位；剩下的按序放，占用数必须归零（上限改成 5 之后
+    // "放三个就放完"不再成立——这正是这条用例该跟着上限一起变的地方）。
+    for (const release of held.slice(3)) release()
     expect(activeSubAgentCount(key)).toBe(0)
   })
 
@@ -106,9 +113,9 @@ describe('parallel expert cap: three per session', () => {
     expect(activeSubAgentCount(key)).toBe(0)
 
     const held = await takeSlots(key, MAX_PARALLEL_SUBAGENTS)
-    const fifth = queueWaiter(key)
+    const overflow = queueWaiter(key)
     await Promise.resolve()
-    expect(fifth.resolved).toBe(false)
+    expect(overflow.resolved).toBe(false)
     expect(queuedSubAgentCount(key)).toBe(1)
     for (const r of held) r()
   })
@@ -133,12 +140,12 @@ describe('parallel expert cap: three per session', () => {
     for (const r of held) r()
     expect(activeSubAgentCount(key)).toBe(0)
 
-    // 会话没有被打成永久满额：下一条消息照样能立刻起三个。
+    // 会话没有被打成永久满额：下一条消息照样能立刻起满。
     const fresh = await takeSlots(key, MAX_PARALLEL_SUBAGENTS)
     for (const r of fresh) r()
   })
 
-  it('keeps each session on its own three slots', async () => {
+  it('keeps each session on its own slots', async () => {
     const heldA = await takeSlots('conv_left', MAX_PARALLEL_SUBAGENTS)
     const heldB = await takeSlots('conv_right', MAX_PARALLEL_SUBAGENTS)
     expect(activeSubAgentCount('conv_left')).toBe(MAX_PARALLEL_SUBAGENTS)
@@ -155,7 +162,7 @@ describe('parallel expert cap: three per session', () => {
 
 describe('expert budget key: the session, not the expert', () => {
   it('roots a nested spawn at its parent session', () => {
-    // 专家的 conversationId 是 sub_…，但它要花的是父会话的三个槽位。
+    // 专家的 conversationId 是 sub_…，但它要花的是父会话的槽位。
     expect(subAgentBudgetKey({ sessionRootId: 'conv_root', conversationId: 'sub_abc' })).toBe('conv_root')
     // 普通引擎没有 sessionRootId，会话就是它自己的会话。
     expect(subAgentBudgetKey({ conversationId: 'conv_root' })).toBe('conv_root')
@@ -166,7 +173,7 @@ describe('expert budget key: the session, not the expert', () => {
   it('does not let a nested spawn borrow an unspent budget', async () => {
     const root = subAgentBudgetKey({ conversationId: 'conv_root' })
     const held = await takeSlots(root, MAX_PARALLEL_SUBAGENTS)
-    // 孙辈专家的键同样是根会话 → 排在同一个队里，不会另开三个槽位。
+    // 孙辈专家的键同样是根会话 → 排在同一个队里，不会另开一份预算。
     const nested = queueWaiter(subAgentBudgetKey({ sessionRootId: 'conv_root', conversationId: 'sub_child' }))
     await Promise.resolve()
     expect(nested.resolved).toBe(false)

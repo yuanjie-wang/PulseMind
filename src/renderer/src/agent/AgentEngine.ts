@@ -104,7 +104,7 @@ export interface AgentEngineOptions {
   locale?: 'zh' | 'en'
   conversationId?: string
   /** The session this engine's expert budget belongs to. A sub-agent is its own
-   *  conversation (`conversationId: sub_…`) but must spend the SAME three slots
+   *  conversation (`conversationId: sub_…`) but must spend the SAME slots
    *  as its parent, so spawn-manager copies the root id here — nested spawns
    *  count against it too (see engine/subagent-limiter.ts). Absent on a normal
    *  engine, where the conversation id is the session. */

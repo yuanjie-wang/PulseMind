@@ -10,7 +10,7 @@
 //
 // The cap is per SESSION and the budget is shared with nested spawns (the
 // session key is threaded through `sessionRootId`, see spawn-manager), so
-// "本会话最多 3 个专家同时在跑" holds for the whole tree rather than per level.
+// "本会话最多 5 个专家同时在跑" holds for the whole tree rather than per level.
 //
 // Where the slot lives (this is the part that has to be right): a dispatch
 // acquires immediately before `spawnSubAgent` and releases when the expert's
@@ -28,8 +28,8 @@
 // `AgentEngine` instances (they share nothing else), so a per-engine counter
 // could not see the siblings it is supposed to be limiting.
 
-/** 同一会话内并行工作的专家上限（用户裁定 2026-09-16）。 */
-export const MAX_PARALLEL_SUBAGENTS = 3
+/** 同一会话内并行工作的专家上限（用户裁定 2026-09-16，2026-09-17 由 3 上调为 5）。 */
+export const MAX_PARALLEL_SUBAGENTS = 5
 
 /** Release a held slot. Idempotent — safe to call from a `finally`. */
 export type ReleaseSubAgentSlot = () => void
@@ -55,7 +55,7 @@ function budgetOf(key: string): SessionBudget {
 /** Budget key for one engine: the session it belongs to, not the expert's own
  *  sub-conversation. A sub-agent inherits the root id (spawn-manager writes
  *  `sessionRootId`), which is what makes nested spawns count against the same
- *  three slots instead of starting a fresh three per level. */
+ *  five slots instead of starting a fresh five per level. */
 export function subAgentBudgetKey(opts: { sessionRootId?: string; conversationId?: string }): string {
   return opts.sessionRootId || opts.conversationId || 'default'
 }
