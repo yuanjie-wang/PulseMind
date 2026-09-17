@@ -200,6 +200,19 @@ async function buildStateBlock(params: {
   const hints = await buildTurnHints(params)
   if (hints) sections.push(hints)
 
+  // K9 (PLAN-knowledge-base D9): the model gets ONE line saying the base is
+  // non-empty — enough to know `knowledge_search` can pay off, without a
+  // title index (ruled out). Counts only, inside the state block (the frozen
+  // core already carries the static "look it up" hint), clock still last.
+  if (opts.knowledgeManager) {
+    try {
+      const stats = await opts.knowledgeManager.getStats()
+      if (stats.total > 0) {
+        sections.push(`## Knowledge Base\n- 知识库：${stats.total} 个源（${stats.compiled} 已编译），wiki ${stats.wikiFileCount ?? 0} 页`)
+      }
+    } catch { /* stats unavailable — the section just stays out */ }
+  }
+
   sections.push(buildClockSection())
 
   return `<session-state>\n${sections.join('\n\n')}\n</session-state>`

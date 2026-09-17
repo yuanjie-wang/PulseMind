@@ -316,7 +316,8 @@ export const anthropicAdapter: LlmAdapter = {
     systemPrompt: string,
     userMessages: { role: string; content: string }[],
     maxTokens: number = 1000,
-    onUsage?: (usage: LlmUsage) => void
+    onUsage?: (usage: LlmUsage) => void,
+    onFinishReason?: (reason: string | null) => void
   ): Promise<string | null> {
     const url = `${baseURL.replace(/\/+$/, '')}/v1/messages`
     const headers = {
@@ -349,6 +350,7 @@ export const anthropicAdapter: LlmAdapter = {
           promptCacheHitTokens: parsed?.usage?.cache_read_input_tokens
         })
       }
+      if (onFinishReason) onFinishReason(parsed?.stop_reason ?? null)
       const textBlock = parsed?.content?.find((b: { type: string }) => b.type === 'text')
       return textBlock?.text || null
     } catch (err) {

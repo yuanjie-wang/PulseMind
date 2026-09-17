@@ -495,7 +495,8 @@ export const openaiAdapter: LlmAdapter = {
     systemPrompt: string,
     userMessages: { role: string; content: string }[],
     maxTokens: number = 1000,
-    onUsage?: (usage: LlmUsage) => void
+    onUsage?: (usage: LlmUsage) => void,
+    onFinishReason?: (reason: string | null) => void
   ): Promise<string | null> {
     const requestId = `ns_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     const url = `${baseURL.replace(/\/+$/, '')}/chat/completions`
@@ -526,6 +527,7 @@ export const openaiAdapter: LlmAdapter = {
       // `stream_options.include_usage` makes the endpoint send one final chunk
       // carrying the totals; it has no choices, so it is read on its own.
       let usage: LlmUsage | undefined
+      let streamFinishReason: string | null = null
       for (const chunk of rawChunks) {
         buffer += chunk
         const lines = buffer.split('\n')
@@ -537,6 +539,8 @@ export const openaiAdapter: LlmAdapter = {
           try {
             const parsed = JSON.parse(data)
             if (parsed.usage) usage = openAiUsage(parsed.usage)
+            const chunkFinish = parsed.choices?.[0]?.finish_reason
+            if (chunkFinish) streamFinishReason = chunkFinish
             const delta = parsed.choices?.[0]?.delta
             if (delta?.content) contentText += delta.content
           } catch { /* skip malformed JSON */ }
@@ -559,7 +563,7 @@ export const openaiAdapter: LlmAdapter = {
       }
 
       if (usage && onUsage) onUsage(usage)
-
+      if (onFinishReason) onFinishReason(streamFinishReason)
 
       if (!contentText) {
         console.warn(`[OpenAIAdapter] callNonStreaming: contentText empty, rawChunks.length=${rawChunks.length}`)

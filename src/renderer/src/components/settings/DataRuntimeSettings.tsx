@@ -124,6 +124,12 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
           <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 8 }}>{t('dataRuntime.runRetentionHelp')}</Text>
         </section>
         <section>
+          {heading('knowledge')}
+          {toggle('autoCompile', settings.knowledge?.autoCompile ?? false, (value) => {
+            void save({ knowledge: { ...settings.knowledge, autoCompile: value } })
+          })}
+        </section>
+        <section>
           {heading('debug')}
           {toggle('debugLlmRequests', settings.debugLlmRequests ?? false, (value) => { void save({ debugLlmRequests: value }) })}
           <Button icon={<FolderOpenOutlined />} disabled={!paths?.dataDir} style={{ marginBottom: 16 }}

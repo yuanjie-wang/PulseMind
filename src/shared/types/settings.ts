@@ -36,6 +36,8 @@ export interface AppSettings {
   experienceEnabled?: boolean
   /** 运行历史自动清理策略：保留天数（未设 / 0 = 永久保留）。启动时按此清理已结束的运行记录。 */
   routineRunRetentionDays?: number
+  /** PLAN-knowledge-base D7: 导入完成后自动把新源压入编译队列。默认关（手动编译为主）。 */
+  knowledge?: { autoCompile?: boolean }
   /** 会话自动清理策略（对话管理 · 最长保留时长）：保留天数（未设 / 0 = 永久保留）。
    *  启动时及每次保存设置时按此清理过期的未置顶会话（置顶会话永不过期）。 */
   conversationRetentionDays?: number

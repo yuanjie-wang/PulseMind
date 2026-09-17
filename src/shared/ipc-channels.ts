@@ -177,6 +177,7 @@ export const IPC_CHANNELS = {
   KNOWLEDGE_ADD_FOLDER: 'knowledge:add-folder',
   KNOWLEDGE_ADD_URL: 'knowledge:add-url',
   KNOWLEDGE_DELETE: 'knowledge:delete',
+  KNOWLEDGE_REEXTRACT: 'knowledge:reextract',
   KNOWLEDGE_GET_RAW: 'knowledge:get-raw',
   KNOWLEDGE_GET_RAW_PATH: 'knowledge:get-raw-path',
   KNOWLEDGE_READ_WIKI: 'knowledge:read-wiki',
@@ -190,6 +191,8 @@ export const IPC_CHANNELS = {
   KNOWLEDGE_REBUILD_INDEX: 'knowledge:rebuild-index',
   KNOWLEDGE_ABORT_IMPORT: 'knowledge:abort-import',
   KNOWLEDGE_SEARCH_WIKI: 'knowledge:search-wiki',
+  KNOWLEDGE_GET_SCHEMA: 'knowledge:get-schema',
+  KNOWLEDGE_GET_WIKI_DIR: 'knowledge:get-wiki-dir',
 
   // ── PLAN-0.4.0 M3: projects, sandbox, audit ──
   PROJECT_LIST: 'project:list',

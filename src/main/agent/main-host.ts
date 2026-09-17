@@ -248,6 +248,9 @@ export const mainHost: PulseHost = {
   },
   knowledgeSearchContent: async (query) => kq.svcSearchContent(query),
   knowledgeSearchWiki: (query) => kq.svcSearchWiki(query) as Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>>,
+  knowledgeGetSchema: async () => kq.svcGetSchema(),
+  knowledgeGetWikiDir: async () => kq.svcGetWikiDir(),
+  knowledgeReextract: async (id: string) => kq.svcReextract(id) as { success: boolean; error?: string },
   knowledgeWriteExperience: (data) => Promise.resolve(kq.svcWriteExperience(data)),
 
   // ── Memory store + conversation counters ──

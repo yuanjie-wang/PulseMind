@@ -208,7 +208,13 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
     if (t.name === 'knowledge_read') {
       const km = ex.opts.knowledgeManager
       const filePath = String(t.input.path || '')
+      // K6: the DOC said default raw while the code defaulted wiki — docs and
+      // implementation now agree (default wiki), and a miss in the named
+      // directory falls back to the other one, with the result noting where
+      // the content actually came from.
       const readType = String(t.input.type || 'wiki')
+      const offset = Math.max(1, Math.floor(Number(t.input.offset) || 1))
+      const lineCount = Math.max(0, Math.floor(Number(t.input.lines) || 0))
       if (!filePath) {
         t.output = 'Error: path is required.'; ex.addToolResult(t.id, 'Error: path is required.', true); t.exitCode = 1
       } else if (!km) {
@@ -216,14 +222,34 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
       } else {
         try {
           let content: string | null = null
+          let actualType = readType
           if (readType === 'raw') {
-            content = await km.readRawContent(filePath)
+            content = await km.readRawContent(filePath).catch(() => null)
+            if (content === null) {
+              const result = await km.readWiki(filePath)
+              content = result.content
+              if (content !== null) actualType = 'wiki'
+            }
           } else {
             const result = await km.readWiki(filePath)
             content = result.content
+            if (content === null) {
+              content = await km.readRawContent(filePath).catch(() => null)
+              if (content !== null) actualType = 'raw'
+            }
           }
           if (content) {
-            t.output = content.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, content, false)
+            // Paging happens INSIDE the knowledge dirs — the content no longer
+            // has to ride the 4000-token truncation + tmp offload path.
+            const allLines = content.split('\n')
+            const start = offset - 1
+            const page = lineCount > 0 ? allLines.slice(start, start + lineCount) : allLines.slice(start)
+            const header = `[type=${actualType}${actualType !== readType ? `, fallback from ${readType}` : ''}]`
+            const footer = start + page.length < allLines.length
+              ? `\n\n[... ${allLines.length - start - page.length} more lines — read again with offset=${start + page.length + 1}]`
+              : ''
+            const paged = header + '\n' + page.join('\n') + footer
+            t.output = paged.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, paged, false)
           } else {
             t.output = `File "${filePath}" not found in knowledge base.`; ex.addToolResult(t.id, `File "${filePath}" not found in knowledge base.`, false)
           }

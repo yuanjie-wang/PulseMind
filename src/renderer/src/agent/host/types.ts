@@ -93,6 +93,9 @@ const HOST_METHOD_KEYS = [
   'knowledgeScanFolder',
   'knowledgeSearchContent',
   'knowledgeSearchWiki',
+  'knowledgeGetSchema',
+  'knowledgeGetWikiDir',
+  'knowledgeReextract',
   'knowledgeWriteExperience',
   // memory store + conversation summary counters (MemoryManager)
   'countMemories',

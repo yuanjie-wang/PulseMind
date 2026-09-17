@@ -9,7 +9,9 @@ import { execFile } from 'node:child_process'
 import { KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR } from '../storage'
 import {
   importLocalFile,
+  importLocalFiles,
   importUrl,
+  reextractKnowledge,
   abortKnowledgeImport,
   prepareImport,
   readRawContent,
@@ -28,8 +30,12 @@ import {
   listAllFilesAdvanced,
   getFile,
   deleteFile,
+  getSchemaContent,
+  isValidWikiPagePath,
+  wikiFtsCount,
 } from '../storage/knowledge-store'
 import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
+import { getDb } from '../storage/database'
 import type { KnowledgeFile } from '../../shared/types/knowledge'
 
 export interface WikiSearchMatch {
@@ -107,11 +113,9 @@ export async function svcScanFolder(folderPath: string): Promise<string[]> {
 }
 
 export async function svcAddFolder(folderPath: string) {
-  const results = []
-  for (const fp of collectSupportedFiles(folderPath)) {
-    results.push(await importLocalFile(fp))
-  }
-  return results
+  // K11: the whole folder extracts through ONE worker session (the old loop
+  // forked a fresh process per file).
+  return importLocalFiles(collectSupportedFiles(folderPath))
 }
 
 export function svcAddUrl(url: string) {
@@ -124,6 +128,10 @@ export function svcAbortImport(): void {
 
 export function svcDelete(id: string): void {
   deleteFile(id)
+}
+
+export function svcReextract(id: string) {
+  return reextractKnowledge(id)
 }
 
 export function svcGetRaw(relativePath: string): string {
@@ -172,19 +180,46 @@ export function svcApplyWikiChanges(data: {
   logEntry?: string
   compiledIds?: string[]
 }): { written: number; logAppended: boolean; markedCompiled: number } {
+  // K1: refuse rather than sanitize — the compiler validates too, this is the
+  // last line before disk.
+  for (const action of data.actions) {
+    if (!isValidWikiPagePath(action.filePath)) {
+      throw new Error(`非法的 wiki 页面路径，已拒绝写入: ${action.filePath.slice(0, 100)}`)
+    }
+  }
+  // K3: batch attribution stamped EVERY compiled id with EVERY action path —
+  // a merged entity page became "produced by" all three sources. The only
+  // live caller compiles ONE file per request, so the 1:1 shape is asserted.
+  if (data.compiledIds && data.compiledIds.length > 1) {
+    throw new Error('compiledIds 必须逐文件传递（一次一个源），拒绝整批归因')
+  }
   const written = applyWikiChanges(data.actions)
   if (data.logEntry) appendWikiLog(data.logEntry)
-  if (data.compiledIds) {
-    const wikiPaths = data.actions.map(a => a.filePath)
-    for (const id of data.compiledIds) {
-      markFileCompiled(id, wikiPaths)
-    }
+  if (data.compiledIds && data.compiledIds.length === 1) {
+    markFileCompiled(data.compiledIds[0], data.actions.map(a => a.filePath))
   }
   return { written, logAppended: !!data.logEntry, markedCompiled: data.compiledIds?.length ?? 0 }
 }
 
 export function svcRebuildIndex(): void {
   rebuildWikiIndex()
+}
+
+/** The wiki schema document the compiler prompt must carry (K2): the file
+ *  existed on disk all along; no reader did. */
+export function svcGetSchema(): string {
+  return getSchemaContent()
+}
+
+/** Wiki page count vs FTS rows — K7's panel entry and startup sync read it. */
+export function svcWikiFtsCount(): number {
+  return wikiFtsCount()
+}
+
+/** Absolute wiki dir so the renderer can open compiled pages in the workbench
+ *  file tab (K7①): they are ordinary markdown files to that surface. */
+export function svcGetWikiDir(): string {
+  return KNOWLEDGE_WIKI_DIR
 }
 
 export function svcSearchContent(query: string) {
@@ -215,6 +250,12 @@ function guessTitle(absPath: string, wikiPath: string): string {
 /** Search wiki content via ripgrep (grep fallback, Unix only). */
 export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
   if (!query || !existsSync(KNOWLEDGE_WIKI_DIR)) return []
+
+  // K4: the wiki pages live in knowledge_wiki_fts — bm25-ranked, one hit per
+  // page, snippet() showing the matching region. Ripgrep stays below as the
+  // fallback for <3-char tokens (trigram floor) and identifier-style queries.
+  const ftsResults = searchWikiFts(query, 30)
+  if (ftsResults.length > 0) return ftsResults
 
   const results: WikiSearchMatch[] = []
   const limit = 30
@@ -286,4 +327,38 @@ export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
   // searcher (execFile('grep') would ENOENT and silently yield nothing).
   if (results.length === 0 && process.platform !== 'win32') await tryGrep()
   return results.slice(0, limit)
+}
+
+
+/** FTS search over wiki pages (K4): bm25-ranked, one result per page, with
+ *  the matching region as the snippet. Empty when nothing matches (caller
+ *  falls back to ripgrep) or when the table does not exist yet. */
+function searchWikiFts(query: string, limit: number): WikiSearchMatch[] {
+  const terms = query.trim().split(/\s+/).filter(Boolean).filter((t) => [...t].length >= 3)
+  if (terms.length === 0 || wikiFtsCount() === 0) return []
+  const ftsQuery = terms.map((t) => `"${t}"`).join(' OR ')
+  try {
+    const rows = getDb().prepare(`
+      SELECT path, title,
+             snippet(knowledge_wiki_fts, 1, '…', '…', '…', 48) AS excerpt,
+             snippet(knowledge_wiki_fts, 1, '', '', '', 1) AS marker
+      FROM knowledge_wiki_fts
+      WHERE knowledge_wiki_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, limit) as { path: string; title: string; excerpt: string; marker: string }[]
+    return rows.map((r) => ({
+      wikiPath: r.path,
+      title: r.title || guessTitleFromPath(r.path),
+      type: r.path.split('/')[0] as WikiPageType,
+      lineNum: 0,
+      content: r.excerpt.slice(0, 200),
+    }))
+  } catch {
+    return []
+  }
+}
+
+function guessTitleFromPath(wikiPath: string): string {
+  return basename(wikiPath, '.md').replace(/[-_]/g, ' ')
 }

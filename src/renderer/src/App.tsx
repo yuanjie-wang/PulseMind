@@ -334,8 +334,9 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // Uses enqueueStartupCompile so status icons show correctly in KnowledgePanel
   useEffect(() => {
     if (!apiKey) return
-    enqueueStartupCompile()
-  }, [apiKey])
+    // D7 (PLAN-knowledge-base): startup auto-compile only when explicitly on.
+    if (settings.knowledge?.autoCompile) enqueueStartupCompile()
+  }, [apiKey, settings.knowledge?.autoCompile])
 
   // Open external links in system browser (not Electron webview)
   useEffect(() => {

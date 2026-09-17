@@ -163,7 +163,11 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_tool_results_conv ON tool_results(conversation_id);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
-      content, tokenize='porter unicode61'
+      content, file_rowid UNINDEXED, chunk_offset UNINDEXED, tokenize='trigram'
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_wiki_fts USING fts5(
+      title, content, path UNINDEXED, tokenize='trigram'
     );
 
     CREATE TABLE IF NOT EXISTS tool_preferences (
@@ -461,11 +465,34 @@ export async function initializeDatabase(): Promise<void> {
 
     console.log('[DB] Database initialized')
 
+    // PLAN-knowledge-base K4/K5 migration: the pre-chunking knowledge_fts had
+    // no file_rowid column and a unicode61 tokenizer. Detect by shape (CREATE
+    // IF NOT EXISTS would silently keep the old table), drop, recreate in the
+    // new shape, and rebuild from disk — idempotent, second run is a no-op.
+    const kfColumns = getDb().prepare("PRAGMA table_info(knowledge_fts)").all() as { name: string }[]
+    if (kfColumns.length > 0 && !kfColumns.some((c) => c.name === 'file_rowid')) {
+      console.log('[DB] knowledge_fts is pre-chunking (unicode61, file-level) — migrating to chunked trigram...')
+      getDb().exec('DROP TABLE knowledge_fts')
+      getDb().exec("CREATE VIRTUAL TABLE knowledge_fts USING fts5(content, file_rowid UNINDEXED, chunk_offset UNINDEXED, tokenize='trigram')")
+      rebuildKnowledgeFts(KNOWLEDGE_RAW_DIR)
+    }
+
     const ftsCount = (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_fts').get() as { c: number }).c
     if (ftsCount === 0) {
       const kfCount = (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_files').get() as { c: number }).c
       if (kfCount > 0) { console.log('[DB] Rebuilding knowledge_fts index...'); rebuildKnowledgeFts(KNOWLEDGE_RAW_DIR) }
     }
+
+    // Wiki pages: rebuild when the FTS row count diverges from the page files
+    // (K4) — deletion bugs or manual edits leave ghosts; a rebuild is cheap.
+    try {
+      const wikiFtsCount = (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_wiki_fts').get() as { c: number }).c
+      const onPage = countWikiPageFiles()
+      if (wikiFtsCount !== onPage) {
+        console.log(`[DB] knowledge_wiki_fts (${wikiFtsCount}) out of sync with ${onPage} page files — rebuilding`)
+        rebuildWikiFts()
+      }
+    } catch (err) { console.warn('[DB] wiki FTS sync check failed:', err) }
 
     // Sweep orphaned tool_results: tool_results.message_id has no FK, so message
     // deletion (replaceMessagesAtomic, crash-mid-save) leaves dead rows behind.
@@ -503,5 +530,30 @@ function rebuildKnowledgeFts(rawDir: string): void {
   if (!_rebuildKnowledgeFts) {
     _rebuildKnowledgeFts = require('./knowledge.db').rebuildKnowledgeFts
   }
-  _rebuildKnowledgeFts(rawDir)
+  _rebuildKnowledgeFts!(rawDir)
+}
+
+/** Wiki page files on disk (the four page dirs, K4's sync baseline). Lazy
+ *  require of node:fs keeps this import-free at module load. */
+function countWikiPageFiles(): number {
+  const { existsSync, readdirSync, statSync } = require('node:fs') as typeof import('node:fs')
+  const wikiDir = require('./index').KNOWLEDGE_WIKI_DIR as string
+  if (!existsSync(wikiDir)) return 0
+  let count = 0
+  for (const subdir of ['sources', 'entities', 'concepts', 'syntheses']) {
+    const dirPath = require('node:path').join(wikiDir, subdir)
+    if (!existsSync(dirPath)) continue
+    for (const entry of readdirSync(dirPath)) {
+      if (entry.endsWith('.md') && statSync(require('node:path').join(dirPath, entry)).isFile()) count++
+    }
+  }
+  return count
+}
+
+let _rebuildWikiFts: (() => void) | null = null
+function rebuildWikiFts(): void {
+  if (!_rebuildWikiFts) {
+    _rebuildWikiFts = require('./knowledge-store').rebuildWikiFts
+  }
+  _rebuildWikiFts!()
 }

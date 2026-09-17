@@ -12,10 +12,12 @@ import {
   ClockCircleOutlined,
   SearchOutlined,
   FileSearchOutlined,
+  ReadOutlined,
   LoadingOutlined
 } from '@ant-design/icons'
 import { XMarkdown } from '@ant-design/x-markdown'
 import { useTranslation } from '../../i18n/useTranslation'
+import { openInPreviewPane } from '../../stores/previewPaneStore'
 import type { KnowledgeFile, KnowledgeImportResult } from '../../../../shared/types/knowledge'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 
@@ -199,6 +201,8 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   // ── Filter, sort, search, pagination, selection ──
   const [searchQuery, setSearchQuery] = useState('')
   const [filterSourceType, setFilterSourceType] = useState<string>('all')
+  // K7②: 按文件名(默认)或全文检索。全文走 K5 后的排序检索(svcSearchContent)。
+  const [searchMode, setSearchMode] = useState<'name' | 'fulltext'>('name')
   const [filterStatus, setFilterStatus] = useState<string>('all')
   const [sortState, setSortState] = useState<{ key: string; order: 'asc' | 'desc' } | null>(null)
   const [page, setPage] = useState(1)
@@ -211,9 +215,24 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
 
   const loadFiles = useCallback(async () => {
     try {
+      // 全文模式：先检索内容命中的文件 id，再按 id 过滤当页列表（排序检索本身
+      // 就是 K5 的 trigram FTS；命中率低时页面显示过滤后的文件）。
+      let fulltextIds: Set<string> | null = null
+      if (searchQuery && searchMode === 'fulltext') {
+        try {
+          const matches = await knowledgeManager.searchContent(searchQuery)
+          fulltextIds = new Set(matches.map((m) => m.id))
+          if (fulltextIds.size === 0) {
+            setFiles([]); setTotalItems(0)
+            const currentStats = await knowledgeManager.getStats()
+            setStats(currentStats)
+            return
+          }
+        } catch { fulltextIds = null }
+      }
       const [result, currentStats] = await Promise.all([
         knowledgeManager.listFilesAdvanced({
-          ...(searchQuery && { search: searchQuery }),
+          ...(searchQuery && searchMode === 'name' && { search: searchQuery }),
           ...(filterSourceType !== 'all' && { sourceType: filterSourceType as KnowledgeFile['sourceType'] }),
           ...(filterStatus !== 'all' && { status: filterStatus as 'raw' | 'compiled' }),
           ...(sortState && { sortBy: sortState.key as 'createdAt' | 'title' | 'status' }),
@@ -223,13 +242,14 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
         }),
         knowledgeManager.getStats()
       ])
-      setFiles(result.items)
-      setTotalItems(result.total)
+      const items = fulltextIds ? result.items.filter((f) => fulltextIds!.has(f.id)) : result.items
+      setFiles(items)
+      setTotalItems(fulltextIds ? items.length : result.total)
       setStats(currentStats)
     } catch (err) {
       console.error('[KnowledgePanel] Failed to load files:', err)
     }
-  }, [knowledgeManager, searchQuery, filterSourceType, filterStatus, sortState, page, pageSize])
+  }, [knowledgeManager, searchQuery, searchMode, filterSourceType, filterStatus, sortState, page, pageSize])
 
   const loadFilesRef = useRef(loadFiles)
   loadFilesRef.current = loadFiles
@@ -560,7 +580,13 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
           result = await knowledgeManager.importUrl(item.url)
         }
         if (result.success && result.file) {
-          enqueueCompileForFile(result.file.id)
+          // D7: imports only auto-compile when the setting is on — the default
+          // is manual (编译按钮 / 编译全部). The old unconditional enqueue made
+          // every import silently fire LLM calls.
+          try {
+            const appSettings = await window.electronAPI.getSettings()
+            if (appSettings?.knowledge?.autoCompile) enqueueCompileForFile(result.file.id)
+          } catch { /* setting unreadable — stay manual */ }
         }
       } catch {
         // Import failed — skip
@@ -873,7 +899,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
             filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
               <div style={{ padding: 8 }}>
                 <Input.Search
-                  placeholder={t('knowledgePanel.searchPlaceholder')}
+                  placeholder={searchMode === 'fulltext' ? t('knowledgePanel.searchFulltextPlaceholder') : t('knowledgePanel.searchPlaceholder')}
                   value={selectedKeys[0] as string || ''}
                   onChange={e => setSelectedKeys(e.target.value ? [e.target.value] : [])}
                   onSearch={(value) => { confirm(); handleSearch(value) }}
@@ -969,6 +995,22 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
                 <Tooltip title="预览">
                   <Button type="text" size="small" icon={<FileSearchOutlined />} style={{ color: '#aaa' }} onClick={() => handleOpenRaw(record)} />
                 </Tooltip>
+                {record.wikiOutputs && record.wikiOutputs.length > 0 && (
+                  <Tooltip title="查看编译结果">
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ReadOutlined />}
+                      style={{ color: '#aaa' }}
+                      onClick={() => void (async () => {
+                        try {
+                          const wikiDir = await window.electronAPI.knowledgeGetWikiDir()
+                          openInPreviewPane(`${wikiDir.replace(/\\/g, '/')}/${record.wikiOutputs![0]}`)
+                        } catch { /* dir unavailable — no entry jump */ }
+                      })()}
+                    />
+                  </Tooltip>
+                )}
                 {(record.sourcePath || record.sourceUrl) && (
                   <Tooltip title={record.sourceType === 'url' ? '在浏览器中打开' : '打开原始文件'}>
                     <Button type="text" size="small" icon={<LinkOutlined />} style={{ color: '#aaa' }} onClick={() => handleOpenSource(record)} />

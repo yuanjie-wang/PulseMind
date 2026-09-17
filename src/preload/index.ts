@@ -372,6 +372,9 @@ const electronAPI = {
   knowledgeSearchWiki: (query: string): Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_WIKI, query),
   knowledgeRebuildIndex: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_INDEX),
+  knowledgeGetSchema: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_SCHEMA),
+  knowledgeGetWikiDir: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_WIKI_DIR),
+  knowledgeReextract: (id: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REEXTRACT, id),
   knowledgeAbortImport: (): void => ipcRenderer.send(IPC_CHANNELS.KNOWLEDGE_ABORT_IMPORT),
 
   // SubAgent

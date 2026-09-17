@@ -28,6 +28,9 @@ import {
   svcClearAll,
   svcUpdateStatus,
   svcSearchWiki,
+  svcGetSchema,
+  svcGetWikiDir,
+  svcReextract,
 } from '../services/knowledge-queries'
 
 function withRawResponse<R>(fn: (...args: any[]) => R | Promise<R>) {
@@ -48,6 +51,7 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_URL, withRawResponse(async (url: string) => svcAddUrl(url)))
   ipcMain.on(IPC_CHANNELS.KNOWLEDGE_ABORT_IMPORT, () => svcAbortImport())
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_DELETE, withRawResponse(async (id: string) => svcDelete(id)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_REEXTRACT, withRawResponse(async (id: string) => svcReextract(id)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_RAW, withRawResponse(async (relativePath: string) => svcGetRaw(relativePath)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, withRawResponse(async (relativePath: string) => svcGetRawPath(relativePath)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_READ_WIKI, withRawResponse(async (relativePath?: string) => svcReadWiki(relativePath)))
@@ -71,4 +75,6 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_CLEAR_ALL, withRawResponse(async () => svcClearAll()))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_UPDATE_STATUS, withRawResponse(async (data: { id: string; status: 'compiled' }) => svcUpdateStatus(data)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SEARCH_WIKI, withRawResponse(async (query: string) => svcSearchWiki(query)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_SCHEMA, withRawResponse(async () => svcGetSchema()))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_WIKI_DIR, withRawResponse(async () => svcGetWikiDir()))
 }

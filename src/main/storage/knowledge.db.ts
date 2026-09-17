@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { getDb } from './database'
 import type { KnowledgeListOptions, KnowledgeListResult } from '../../shared/types/knowledge'
+import { chunkText } from '../../shared/knowledge/chunk'
 
 // ── Knowledge Files CRUD ──
 
@@ -120,7 +121,7 @@ export function updateKnowledgeFileStatus(id: string, status: 'compiled', wikiOu
 export function deleteKnowledgeFile(id: string): void {
   const database = getDb()
   const del = database.transaction(() => {
-    database.prepare('DELETE FROM knowledge_fts WHERE rowid IN (SELECT rowid FROM knowledge_files WHERE id = ?)').run(id)
+    database.prepare('DELETE FROM knowledge_fts WHERE file_rowid IN (SELECT rowid FROM knowledge_files WHERE id = ?)').run(id)
     database.prepare('DELETE FROM knowledge_files WHERE id = ?').run(id)
   })
   del()
@@ -134,14 +135,31 @@ export function getKnowledgeStats(): { total: number; raw: number; compiled: num
   return { total, raw, compiled }
 }
 
-// ── Knowledge FTS5 ──
+// ── Knowledge FTS5 (chunked trigram, PLAN-knowledge-base K5) ──
+// One FTS row per ~1200-char chunk (file_rowid UNINDEXED joins back to
+// knowledge_files, chunk_offset keeps provenance): BM25 ranks passages, not
+// whole documents, and snippet() lands inside the relevant region. Trigram
+// tokenization makes CJK substring queries native — the four-layer fallback
+// ladder (phrase OR → char AND → prefix stripping → LIKE) collapses to
+// "trigram MATCH, with LIKE for <3-char queries" (the tokenizer's known floor).
 
-export function knowledgeFtsAdd(rowid: number, content: string): void {
-  getDb().prepare('INSERT OR REPLACE INTO knowledge_fts(rowid, content) VALUES (?, ?)').run(rowid, content)
+/** Replace every chunk row for one knowledge file. The capture path (favorite)
+ *  and the import indexer both funnel here. */
+export function knowledgeFtsSync(fileRowid: number, content: string): void {
+  const database = getDb()
+  const tx = database.transaction(() => {
+    database.prepare('DELETE FROM knowledge_fts WHERE file_rowid = ?').run(fileRowid)
+    const insert = database.prepare('INSERT INTO knowledge_fts(content, file_rowid, chunk_offset) VALUES (?, ?, ?)')
+    chunkText(content).forEach((chunk, i) => insert.run(chunk, fileRowid, i))
+  })
+  tx()
 }
 
-export function knowledgeFtsRemove(rowid: number): void {
-  getDb().prepare('DELETE FROM knowledge_fts WHERE rowid = ?').run(rowid)
+/** Historical name kept for callers that replace a whole file's rows. */
+export const knowledgeFtsAdd = knowledgeFtsSync
+
+export function knowledgeFtsRemoveByRowid(fileRowid: number): void {
+  getDb().prepare('DELETE FROM knowledge_fts WHERE file_rowid = ?').run(fileRowid)
 }
 
 export interface KnowledgeFtsResult {
@@ -154,94 +172,57 @@ export function searchKnowledgeFts(query: string, limit: number = 10): Knowledge
   if (!escaped) return []
 
   const terms = escaped.split(/\s+/).filter(Boolean)
-  // Use OR by default — AND is too strict for keyword search. BM25 ranking
-  // handles relevance, so matching any term is fine.
-  const ftsQuery = terms.map(t => `"${t}"*`).join(' OR ')
+  // Trigram needs ≥3 characters per token — shorter queries fall back to LIKE
+  // (D4: a known tokenizer floor, not a fallback ladder rung).
+  const ftsTerms = terms.filter(t => [...t].length >= 3)
 
-  const baseSql = `
-    SELECT k.id, k.file_path, k.title, k.source_type,
-           snippet(knowledge_fts, 1, '…', '…', '…', 64) AS excerpt
-    FROM knowledge_fts f
-    JOIN knowledge_files k ON k.rowid = f.rowid
-    WHERE knowledge_fts MATCH ?
-    ORDER BY rank
-    LIMIT ?`
-
-  // 1. FTS5 match (OR) — broad keyword search, BM25 ranks best matches first.
-  //    Single-term queries behave the same with OR and AND.
-  try {
-    const results = database.prepare(baseSql).all(ftsQuery, limit) as KnowledgeFtsResult[]
-    if (results.length > 0) return results
-  } catch { /* FTS5 syntax error */ }
-
-  // 2. CJK character-level fallback — try each search term independently and union.
-  //    The unicode61 tokenizer indexes each CJK character as a separate token.
-  //    A phrase query like "什么是上下文硬盘缓存" requires all N chars consecutively,
-  //    but documents only contain "上下文硬盘缓存" without question words. By AND'ing
-  //    individual character tokens of each term we match documents containing all
-  //    characters of at least one term. Each term is tried independently so that
-  //    "上下文硬盘缓存" and "磁盘缓存" don't both need to match in the same doc.
-  const termResults: KnowledgeFtsResult[] = []
-  for (const term of terms) {
-    const chars = [...term]
-    if (chars.length < 2) continue
-    const charQuery = chars.map(c => `"${c}"*`).join(' AND ')
-    if (charQuery === `"${term}"*`) continue // same as the original phrase query
-    try {
-      const results = database.prepare(baseSql).all(charQuery, limit) as KnowledgeFtsResult[]
-      for (const r of results) {
-        if (!termResults.some(existing => existing.id === r.id)) {
-          termResults.push(r)
-        }
-      }
-    } catch { /* too many terms or other FTS5 error */ }
-  }
-  if (termResults.length > 0) return termResults.slice(0, limit)
-
-  // 2b. Progressive CJK shortening: if character AND fails, strip characters
-  //      from the left of each term one at a time. Naturally handles CJK
-  //      question-word prefixes ("什么是X" → "X") that the AND requires.
-  if (termResults.length === 0) {
-    for (const term of terms) {
-      const chars = [...term]
-      for (let start = 1; start < chars.length - 1; start++) {
-        const suffix = chars.slice(start)
-        const suffixQuery = suffix.map(c => `"${c}"*`).join(' AND ')
-        try {
-          const results = database.prepare(baseSql).all(suffixQuery, limit) as KnowledgeFtsResult[]
-          for (const r of results) {
-            if (!termResults.some(existing => existing.id === r.id)) {
-              termResults.push(r)
-            }
-          }
-          if (results.length > 0) break
-        } catch { /* FTS5 error */ }
-      }
-      if (termResults.length > 0) break
+  // 1. Trigram MATCH over chunks — BM25 ranks passages; snippet() shows the
+  //    matching region of the winning chunk. One row per file (best chunk).
+  //    A long CJK term that is a QUESTION ("什么是上下文硬盘缓存") does not
+  //    appear verbatim in any document, so each long term also ORs its 4-char
+  //    suffix window ("硬盘缓存") — the bounded replacement for the old
+  //    progressive prefix-stripping ladder.
+  if (ftsTerms.length > 0) {
+    const phrases: string[] = []
+    for (const t of ftsTerms) {
+      phrases.push(`"${t}"`)
+      const chars = [...t]
+      if (/[一-鿿]/.test(t) && chars.length > 4) phrases.push(`"${chars.slice(-4).join('')}"`)
     }
-    if (termResults.length > 0) return termResults.slice(0, limit)
+    const ftsQuery = phrases.join(' OR ')
+    try {
+      const results = database.prepare(`
+        SELECT k.id, k.file_path AS filePath, k.title, k.source_type AS sourceType,
+               snippet(knowledge_fts, 0, '…', '…', '…', 64) AS excerpt
+        FROM knowledge_fts f
+        JOIN knowledge_files k ON k.rowid = f.file_rowid
+        WHERE knowledge_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?
+      `).all(ftsQuery, limit) as KnowledgeFtsResult[]
+      if (results.length > 0) return results
+    } catch { /* FTS5 syntax error */ }
   }
 
-  // 3. LIKE on title + file_path
+  // 2. LIKE on title + file_path (empty results keep falling — the chunk
+  //    content scan below can still hit)
   try {
-    return database.prepare(`
-      SELECT id, file_path, title, source_type, '' AS excerpt
+    const likeRows = database.prepare(`
+      SELECT id, file_path AS filePath, title, source_type AS sourceType, '' AS excerpt
       FROM knowledge_files WHERE title LIKE ? OR file_path LIKE ? LIMIT ?
     `).all(`%${query}%`, `%${query}%`, limit) as KnowledgeFtsResult[]
+    if (likeRows.length > 0) return likeRows
   } catch {
     // fall through
   }
 
-  // 4. Last-resort: LIKE scan on raw file content from knowledge_fts.
-  //    Handles long CJK queries where FTS5 character AND is too strict
-  //    (e.g., "什么是X" requires all CJK chars including question words).
-  //    knowledge_fts is standalone so its content column stores the raw text.
+  // 3. Last-resort: LIKE scan over chunk content.
   try {
     return database.prepare(`
-      SELECT k.id, k.file_path, k.title, k.source_type,
+      SELECT k.id, k.file_path AS filePath, k.title, k.source_type AS sourceType,
              substr(f.content, 1, 200) AS excerpt
       FROM knowledge_fts f
-      JOIN knowledge_files k ON k.rowid = f.rowid
+      JOIN knowledge_files k ON k.rowid = f.file_rowid
       WHERE f.content LIKE ?
       LIMIT ?
     `).all(`%${escaped}%`, limit) as KnowledgeFtsResult[]
@@ -257,17 +238,21 @@ export function rebuildKnowledgeFts(rawDir: string): void {
   database.exec('DELETE FROM knowledge_fts')
 
   const rows = database.prepare('SELECT rowid, file_path FROM knowledge_files').all() as { rowid: number; file_path: string }[]
+  const insert = database.prepare('INSERT INTO knowledge_fts(content, file_rowid, chunk_offset) VALUES (?, ?, ?)')
   let count = 0
   for (const row of rows) {
     const fullPath = join(rawDir, row.file_path)
     if (!existsSync(fullPath)) continue
     try {
       const content = readFileSync(fullPath, 'utf-8')
-      database.prepare('INSERT INTO knowledge_fts(rowid, content) VALUES (?, ?)').run(row.rowid, content)
+      const tx = database.transaction(() => {
+        chunkText(content).forEach((chunk, i) => insert.run(chunk, row.rowid, i))
+      })
+      tx()
       count++
     } catch (err) {
       console.warn(`[DB] Failed to index knowledge file ${row.file_path}:`, err)
     }
   }
-  console.log(`[DB] Rebuilt knowledge_fts: ${count}/${rows.length} files indexed`)
+  console.log(`[DB] Rebuilt knowledge_fts (chunked): ${count}/${rows.length} files indexed`)
 }

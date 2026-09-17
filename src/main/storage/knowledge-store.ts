@@ -24,6 +24,8 @@ import {
   KNOWLEDGE_SCHEMA_DIR
 } from './index'
 import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../../shared/types/knowledge'
+import { wikiPageSources, wikiPageIsOrphan } from '../../shared/knowledge/wiki'
+export { wikiPageSources, wikiPageIsOrphan }
 
 export interface ContentMatch {
   id: string
@@ -134,32 +136,39 @@ export function getFile(id: string): KnowledgeFile | null {
   return row ? toKnowledgeFile(row) : null
 }
 
+
 export function deleteFile(id: string): void {
   const row = getKnowledgeFile(id)
-  if (row) {
-    // Delete raw file
-    const rawPath = join(KNOWLEDGE_RAW_DIR, row.file_path)
-    try { unlinkSync(rawPath) } catch { /* ignore */ }
+  if (!row) return
+  const wikiOutputs: string[] = JSON.parse(row.wiki_outputs || '[]')
 
-    // Delete compiled wiki pages that were generated from this file
-    const wikiOutputs: string[] = JSON.parse(row.wiki_outputs || '[]')
-    for (const wikiPath of wikiOutputs) {
-      const fullPath = join(KNOWLEDGE_WIKI_DIR, wikiPath)
-      try { unlinkSync(fullPath) } catch { /* ignore if shared with other sources */ }
+  // K3: delete a wiki page only when nothing else still needs it — no other
+  // knowledge file lists it in wiki_outputs, and its own `sources:` names no
+  // other raw file. Otherwise the page survives (a merged entity page is
+  // shared property, not the deleting source's property).
+  for (const wikiPath of wikiOutputs) {
+    const fullPath = join(KNOWLEDGE_WIKI_DIR, wikiPath)
+    let content: string | null = null
+    try { content = existsSync(fullPath) ? readFileSync(fullPath, 'utf-8') : null } catch { content = null }
+    const survivors = listAllFiles().filter((f) => f.id !== id)
+    const others = survivors.map((f) => f.wikiOutputs ?? [])
+    const existingRawPaths = survivors.map((f) => f.filePath)
+    if (!wikiPageIsOrphan(content, wikiPath, row.file_path, others, existingRawPaths)) {
+      console.log(`[knowledge] Wiki page ${wikiPath} is still referenced — kept`)
+      continue
     }
-
-    // Remove reference from wiki/index.md
-    try {
-      const indexPath = join(KNOWLEDGE_WIKI_DIR, 'index.md')
-      if (existsSync(indexPath)) {
-        const content = readFileSync(indexPath, 'utf-8')
-        const lines = content.split('\n').filter(line => !line.includes(row.file_path))
-        writeFileSync(indexPath, lines.join('\n'), 'utf-8')
-      }
-    } catch { /* index may not exist */ }
-
-    deleteKnowledgeFile(id)
+    try { unlinkSync(fullPath) } catch { /* already gone */ }
+    wikiFtsRemove(wikiPath)
   }
+
+  // Delete raw file + its DB row (FTS rows clean up in the same transaction)
+  const rawPath = join(KNOWLEDGE_RAW_DIR, row.file_path)
+  try { unlinkSync(rawPath) } catch { /* ignore */ }
+  deleteKnowledgeFile(id)
+
+  // The index must stop listing whatever this delete removed — rebuilding is
+  // cheap and idempotent (K3: the old path-match filter never matched).
+  try { rebuildWikiIndex() } catch { /* index rebuild is best-effort */ }
 }
 
 export function getStats(): KnowledgeStats {
@@ -190,11 +199,26 @@ export function markFileCompiled(id: string, wikiOutputs?: string[]): void {
   updateKnowledgeFileStatus(id, 'compiled', wikiOutputs)
 }
 
-/** Apply a batch of wiki changes: write files, update index, update log */
+/** Wiki pages live in exactly four directories — anything else is refused,
+ *  not sanitized (K1: rewriting `../` away let a model-issued path land where
+ *  it should not; refusing surfaces the problem instead). Mirrors the
+ *  compiler-side validator in KnowledgeCompilerAgent. */
+const WIKI_PAGE_PATH_RE = /^(sources|entities|concepts|syntheses)\/[A-Za-z0-9._-]+\.md$/
+
+export function isValidWikiPagePath(filePath: string): boolean {
+  return WIKI_PAGE_PATH_RE.test(filePath) && !/(^|\/)(index|log)\.md$/.test(filePath)
+}
+
+/** Apply a batch of wiki changes: write files, update index, update log.
+ *  K1: invalid paths throw (the whole batch is suspect) instead of being
+ *  silently rewritten. */
 export function applyWikiChanges(actions: { filePath: string; content: string }[]): number {
   let count = 0
   for (const action of actions) {
-    const safePath = action.filePath.replace(/\.\./g, '')
+    if (!isValidWikiPagePath(action.filePath)) {
+      throw new Error(`非法的 wiki 页面路径，已拒绝写入: ${action.filePath.slice(0, 100)}`)
+    }
+    const safePath = action.filePath
     const fullPath = join(KNOWLEDGE_WIKI_DIR, safePath)
     const dir = dirname(fullPath)
     try {
@@ -204,11 +228,61 @@ export function applyWikiChanges(actions: { filePath: string; content: string }[
       }
       writeFileSync(fullPath, action.content, 'utf-8')
       count++
+      wikiFtsUpsert(action.filePath, action.content)
     } catch (err) {
       console.error(`[knowledge] Failed to write wiki file ${safePath}:`, err)
     }
   }
   return count
+}
+
+// ── Wiki page FTS (PLAN-knowledge-base K4) ──
+// A standalone FTS5 table over wiki page bodies: file-level grep gave way to
+// ranked chunk search. Upserts ride applyWikiChanges; deletes ride the
+// reference-safe deleteFile; a page-count mismatch rebuilds at startup.
+
+/** Insert/replace one wiki page's row, keyed by its wiki-relative path. */
+export function wikiFtsUpsert(wikiPath: string, content: string, title = ''): void {
+  const db = getDb()
+  db.prepare('DELETE FROM knowledge_wiki_fts WHERE path = ?').run(wikiPath)
+  db.prepare('INSERT INTO knowledge_wiki_fts(title, content, path) VALUES (?, ?, ?)').run(title, content, wikiPath)
+}
+
+export function wikiFtsRemove(wikiPath: string): void {
+  try { getDb().prepare('DELETE FROM knowledge_wiki_fts WHERE path = ?').run(wikiPath) } catch { /* table may not exist yet */ }
+}
+
+export function wikiFtsCount(): number {
+  try {
+    return (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_wiki_fts').get() as { c: number }).c
+  } catch { return 0 }
+}
+
+/** Full rebuild of the wiki FTS table from the page files on disk (K4). */
+export function rebuildWikiFts(): void {
+  const db = getDb()
+  db.exec('DELETE FROM knowledge_wiki_fts')
+  if (!existsSync(KNOWLEDGE_WIKI_DIR)) return
+  const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs')
+  const subdirs = ['sources', 'entities', 'concepts', 'syntheses']
+  let count = 0
+  for (const subdir of subdirs) {
+    const dirPath = join(KNOWLEDGE_WIKI_DIR, subdir)
+    if (!existsSync(dirPath)) continue
+    for (const entry of readdirSync(dirPath)) {
+      if (!entry.endsWith('.md')) continue
+      const full = join(dirPath, entry)
+      if (!statSync(full).isFile()) continue
+      try {
+        const content = readFileSync(full, 'utf-8')
+        const wikiPath = `${subdir}/${entry}`
+        const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m)
+        wikiFtsUpsert(wikiPath, content, titleMatch?.[1] ?? '')
+        count++
+      } catch { /* unreadable page: skip */ }
+    }
+  }
+  console.log(`[knowledge] Rebuilt knowledge_wiki_fts: ${count} pages indexed`)
 }
 
 /** Append an entry to wiki/log.md */
@@ -365,6 +439,52 @@ function extractInWorker(filePath: string): Promise<{ title: string; content: st
   })
 }
 
+// ─── Batch extraction (K11①): one worker, many files ───────────────────
+
+/** Extract several files through ONE forked worker: the protocol accepts
+ *  repeated {type:'extract'} messages, so a folder import no longer pays one
+ *  process spawn per file (measured: the dominant cost of large imports).
+ *  Results keep input order; a failed extraction yields its error entry. */
+export async function extractManyInWorker(filePaths: string[]): Promise<Array<{ ok: true; title: string; content: string } | { ok: false; error: string }>> {
+  if (filePaths.length === 0) return []
+  const workerPath = getWorkerPath()
+  if (!existsSync(workerPath)) {
+    throw new Error(`Extraction worker not found at ${workerPath}. Run build first.`)
+  }
+  return new Promise((resolve) => {
+    const child = fork(workerPath, [], { stdio: 'pipe', silent: true })
+    const results: Array<{ ok: true; title: string; content: string } | { ok: false; error: string }> = []
+    const timeout = setTimeout(() => {
+      child.kill()
+      resolve(filePaths.map(() => ({ ok: false, error: 'Extraction timed out after 300s' })))
+    }, 300_000)
+    child.on('message', (msg: any) => {
+      results.push(msg.success
+        ? { ok: true, title: msg.title, content: msg.content }
+        : { ok: false, error: msg.error || 'Unknown extraction error' })
+      if (results.length === filePaths.length) {
+        clearTimeout(timeout)
+        child.kill()
+        resolve(results)
+        return
+      }
+      child.send({ type: 'extract', filePath: filePaths[results.length] })
+    })
+    child.on('error', (err) => {
+      clearTimeout(timeout)
+      resolve(filePaths.map(() => ({ ok: false, error: err.message })))
+    })
+    child.on('exit', (code) => {
+      clearTimeout(timeout)
+      if (results.length < filePaths.length) {
+        while (results.length < filePaths.length) results.push({ ok: false, error: `Extraction worker exited with code ${code}` })
+        resolve(results)
+      }
+    })
+    child.send({ type: 'extract', filePath: filePaths[0] })
+  })
+}
+
 // ─── Prepare Import ──────────────────────────────────────────────────
 
 /** Check each file path against the DB; return paths sorted into existing and new */
@@ -423,17 +543,43 @@ function extractBase64Images(content: string): string {
 
 /** Import a local file: extract → normalize to MD → write to raw/ */
 export async function importLocalFile(filePath: string): Promise<KnowledgeImportResult> {
+  const [result] = await importLocalFiles([filePath])
+  return result
+}
+
+/** K11: folder import through ONE worker session, content-hashed on the
+ *  extracted body. Same content at a new path reports duplicate-by-content
+ *  (the DB keeps provenance AND the hash — the column existed, nobody wrote it). */
+export async function importLocalFiles(filePaths: string[]): Promise<KnowledgeImportResult[]> {
+  const extractions = await extractManyInWorker(filePaths)
+  const results: KnowledgeImportResult[] = []
+  for (let i = 0; i < filePaths.length; i++) {
+    const filePath = filePaths[i]
+    const extraction = extractions[i]
+    if (!extraction.ok) {
+      results.push({ success: false, error: extraction.error })
+      continue
+    }
+    results.push(ingestExtractedFile(filePath, extraction))
+  }
+  return results
+}
+
+function ingestExtractedFile(filePath: string, extraction: { title: string; content: string }): KnowledgeImportResult {
   try {
     if (!existsSync(filePath)) {
       return { success: false, error: `File not found: ${filePath}` }
     }
-
     if (getKnowledgeFileBySource(filePath)) {
       return { success: false, duplicate: true, error: `Already exists: ${filePath}` }
     }
 
-    const { content } = await extractInWorker(filePath)
-    let cleanContent = stripFrontmatter(content)
+    let cleanContent = stripFrontmatter(extraction.content)
+    const contentHash = createHash('sha256').update(cleanContent).digest('hex')
+    const byContent = getDb().prepare('SELECT id, source_path FROM knowledge_files WHERE content_hash = ? LIMIT 1').get(contentHash) as { id: string; source_path: string | null } | undefined
+    if (byContent) {
+      return { success: false, duplicate: true, error: `内容重复：与已导入的 ${byContent.source_path ?? byContent.id} 内容相同` }
+    }
     const relativePath = generateRawFilePath(filePath)
     const destPath = join(KNOWLEDGE_RAW_DIR, relativePath)
     const displayTitle = basename(filePath).replace(/\.[^.]+$/, '')
@@ -454,7 +600,8 @@ export async function importLocalFile(filePath: string): Promise<KnowledgeImport
       filePath: relativePath,
       title: displayTitle,
       sourceType: 'file',
-      sourcePath: filePath
+      sourcePath: filePath,
+      contentHash
     })
 
     syncKnowledgeFileToFts(id)
@@ -463,6 +610,25 @@ export async function importLocalFile(filePath: string): Promise<KnowledgeImport
     const message = err instanceof Error ? err.message : String(err)
     return { success: false, error: message }
   }
+}
+
+/** K11③: re-run extraction for an existing source — the raw file is
+ *  overwritten, the row returns to `raw` (wiki_outputs cleared), and the FTS
+ *  is re-synced. The compile queue picks it up from the status. */
+export async function reextractKnowledge(id: string): Promise<KnowledgeImportResult> {
+  const row = getKnowledgeFile(id)
+  if (!row) return { success: false, error: `Knowledge file not found: ${id}` }
+  if (!row.source_path) return { success: false, error: '该源没有本地文件路径（URL/收藏/经验源请删除后重新导入）' }
+  if (!existsSync(row.source_path)) return { success: false, error: `源文件不存在: ${row.source_path}` }
+  const extraction = await extractInWorker(row.source_path)
+  let cleanContent = stripFrontmatter(extraction.content)
+  cleanContent = extractBase64Images(cleanContent)
+  const contentHash = createHash('sha256').update(cleanContent).digest('hex')
+  const fullPath = join(KNOWLEDGE_RAW_DIR, row.file_path)
+  writeFileSync(fullPath, cleanContent, 'utf-8')
+  getDb().prepare("UPDATE knowledge_files SET content_hash = ?, status = 'raw', wiki_outputs = NULL, compiled_at = NULL WHERE id = ?").run(contentHash, id)
+  syncKnowledgeFileToFts(id)
+  return { success: true, file: getFile(id)! }
 }
 
 // ── URL import cancellation ──
@@ -734,12 +900,22 @@ export function clearAllKnowledge(): { deletedRaw: number; deletedWiki: number }
   let deletedRaw = 0
   let deletedWiki = 0
 
-  // Delete all raw files
+  // Delete all raw files (images/ subdir needs recursion — unlink on a
+  // directory always throws, which is why images survived clearAll, K11④)
   try {
-    const rawFiles = readdirSync(KNOWLEDGE_RAW_DIR)
-    for (const f of rawFiles) {
-      try { unlinkSync(join(KNOWLEDGE_RAW_DIR, f)); deletedRaw++ } catch { /* ignore */ }
+    function removeRaw(dir: string) {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          removeRaw(full)
+          try { rmSync(full, { recursive: true, force: true }) } catch { /* ignore */ }
+        } else {
+          try { unlinkSync(full); deletedRaw++ } catch { /* ignore */ }
+        }
+      }
     }
+    removeRaw(KNOWLEDGE_RAW_DIR)
   } catch { /* dir may not exist */ }
 
   // Delete all wiki files (including subdirectories)
@@ -763,6 +939,7 @@ export function clearAllKnowledge(): { deletedRaw: number; deletedWiki: number }
   const { getDb } = require('./database') as typeof import('./database')
   getDb().prepare('DELETE FROM knowledge_files').run()
   getDb().prepare('DELETE FROM knowledge_fts').run()
+  try { getDb().prepare('DELETE FROM knowledge_wiki_fts').run() } catch { /* table may not exist */ }
 
   return { deletedRaw, deletedWiki }
 }

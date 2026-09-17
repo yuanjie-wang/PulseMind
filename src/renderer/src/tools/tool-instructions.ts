@@ -301,7 +301,8 @@ Read the content of a knowledge base file or compiled wiki page.
 
 ### Parameters
 - **path** (required) — The file path (raw path or wiki path, see below)
-- **type** (optional) — "wiki" for compiled wiki pages, "raw" for imported source documents (default "raw")
+- **type** (optional) — "wiki" for compiled wiki pages, "raw" for imported source documents. Default "wiki". If the path misses in the named directory, the other one is tried and the result notes where it came from
+- **offset** (optional, 1-based) + **lines** (optional) — page through long files; the result tells you the next offset
 
 ### Guidelines
 - Use after knowledge_search to view full document content

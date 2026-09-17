@@ -410,6 +410,9 @@ export interface ElectronAPI {
   knowledgeSearchContent: (query: string) => Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>>
   knowledgeSearchWiki: (query: string) => Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>>
   knowledgeRebuildIndex: () => Promise<void>
+  knowledgeGetSchema: () => Promise<string>
+  knowledgeGetWikiDir: () => Promise<string>
+  knowledgeReextract: (id: string) => Promise<{ success: boolean; error?: string }>
   knowledgeAbortImport: () => void
 
   // Canvas

@@ -524,8 +524,16 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         },
         type: {
           type: 'string',
-          description: 'Whether to read from the wiki (compiled) or raw (source) directory.',
+          description: 'Which directory to read from. Defaults to wiki (compiled). If the path is not found there, the other directory is tried and the result notes the actual source.',
           enum: ['wiki', 'raw'],
+        },
+        offset: {
+          type: 'number',
+          description: '1-based line number to start reading from (with lines, for paging through long files).',
+        },
+        lines: {
+          type: 'number',
+          description: 'How many lines to return per page (default: all).',
         },
       },
       required: ['path'],
