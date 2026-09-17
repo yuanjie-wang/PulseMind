@@ -1,25 +1,44 @@
-// ── Preview content dispatcher (PLAN-preview-pane §设计3) ──
-// Loads the file (read guard applies main-side via UTIL_READ_FILE) and hands
-// the text to the per-kind renderer. Re-reads when the tab's reload tick is
-// bumped (agent write/edit events) or the path changes. Non-previewable kinds
-// get the fallback card (D1: office deferred); csv/html renderers land in T3.
+// ── Preview content dispatcher (PLAN-preview-pane §设计3; PLAN-preview-edit
+// T2/T3) ── Loads the file (read guard applies main-side via UTIL_READ_FILE)
+// and hands the text to the per-kind renderer — or, in edit mode, to the
+// zero-dep FileEditor. Re-reads when the tab's reload tick is bumped (agent
+// write/edit events) or the path changes; every re-read funnels through
+// conflictDecision (stores/preview-edit.ts), which is also what keeps a
+// dirty draft alive across tab switches (the component remounts, the draft
+// lives in the store).
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { Button } from 'antd'
-import { RefreshCw, ExternalLink } from 'lucide-react'
+import { RefreshCw, ExternalLink, AlertTriangle } from 'lucide-react'
 import { detectFileKind, isPreviewable, type FileKind } from '../../../../shared/preview/file-kind'
 import { MarkdownPreview } from './MarkdownPreview'
 import { TextPreview } from './TextPreview'
 import { CsvPreview } from './CsvPreview'
 import { HtmlPreview } from './HtmlPreview'
+import { FileEditor } from './FileEditor'
 import { LocalImage } from '../chat/LocalImage'
 import { useTranslation } from '../../i18n/useTranslation'
+import { usePreviewPaneStore } from '../../stores/previewPaneStore'
+import {
+  makeDraftFromDisk,
+  conflictDecision,
+  isDirty,
+  isEditableSize,
+  MAX_EDITABLE_BYTES,
+} from '../../stores/preview-edit'
 
 type LoadState =
   | { status: 'loading' }
   | { status: 'ready'; text: string }
   | { status: 'missing' }
   | { status: 'error' }
+
+/** Kinds whose source text can be edited in place (D1): markdown / text(代码)
+ *  / html(源码) / csv(文本方式). Image is read-only; office/binary keep the
+ *  fallback card. */
+function isEditableKind(kind: FileKind): boolean {
+  return kind === 'markdown' || kind === 'text' || kind === 'csv' || kind === 'html'
+}
 
 /** Read a text file through the util bridge. Images skip the read — the
  *  <img> streams bytes straight from local-file://. */
@@ -56,6 +75,45 @@ function ErrorCard({ missing, onRetry }: { missing: boolean; onRetry: () => void
       <div style={{ marginBottom: 12 }}>{missing ? t('previewPane.notFound') : t('previewPane.loadError')}</div>
       <Button size="small" icon={<RefreshCw size={12} />} onClick={onRetry}>
         {t('previewPane.retry')}
+      </Button>
+    </div>
+  )
+}
+
+/** The D7 banner: shown only while an external change is waiting on the
+ *  user's decision. 重新加载 discards the draft; 保留我的修改 clears the
+ *  mark — the next save overwrites the external change. */
+function ConflictBanner({ path }: { path: string }): React.ReactElement {
+  const { t } = useTranslation()
+  const store = usePreviewPaneStore.getState()
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '6px 12px',
+        background: '#fff7e6',
+        borderBottom: '1px solid #ffd591',
+        fontSize: 12,
+        color: '#d46b08',
+        flexShrink: 0,
+      }}
+    >
+      <AlertTriangle size={13} style={{ flexShrink: 0 }} />
+      <span style={{ flex: 1, minWidth: 0 }}>{t('previewPane.conflictBanner')}</span>
+      <Button
+        size="small"
+        onClick={() => {
+          store.clearDraft(path)
+          store.clearExternalChange(path)
+          store.bumpReload(path)
+        }}
+      >
+        {t('previewPane.conflictReload')}
+      </Button>
+      <Button size="small" type="primary" onClick={() => store.clearExternalChange(path)}>
+        {t('previewPane.conflictKeep')}
       </Button>
     </div>
   )
@@ -113,8 +171,40 @@ function FallbackCard({ path, kind }: { path: string; kind: FileKind }): React.R
 }
 
 export function PreviewContent({ path, reloadTick }: { path: string; reloadTick: number }): React.ReactElement {
+  const { t } = useTranslation()
   const kind = detectFileKind(path)
   const { state, reload } = usePreviewFile(path, kind, reloadTick)
+  const editMode = usePreviewPaneStore((s) => !!s.editModes[path])
+  const draft = usePreviewPaneStore((s) => s.drafts[path])
+  const externalChange = usePreviewPaneStore((s) => !!s.externalChanges[path])
+
+  // Every freshly-read disk text funnels through the conflict decision
+  // (PLAN-preview-edit T3/D7). The initial load has no decision to make
+  // (no draft → nothing); a remount with a persisted dirty draft and an
+  // unchanged disk lands on 'same' — the banner logic is exactly the same
+  // code path as the agent-write case.
+  useEffect(() => {
+    if (state.status !== 'ready') return
+    const st = usePreviewPaneStore.getState()
+    // Publish the size gate (D8) — the toolbar's edit toggle reads it.
+    const bytes = new TextEncoder().encode(state.text).length
+    st.setOversized(path, isEditableKind(kind) && bytes > MAX_EDITABLE_BYTES)
+    const existing = st.drafts[path]
+    if (!existing) return
+    const decision = conflictDecision(isDirty(existing), state.text, existing.baseline)
+    if (decision === 'conflict') {
+      st.markExternalChange(path)
+      return
+    }
+    st.clearExternalChange(path)
+    if (decision === 'silent-refresh') {
+      // Clean draft: adopt the new disk text as the new baseline.
+      st.setDraft(path, makeDraftFromDisk(state.text))
+    }
+    // state.text IS a dependency: the whole point is to re-decide on every
+    // fresh read (a reload tick re-reads the same path, so `path`/`status`
+    // alone never change).
+  }, [state, path, kind])
 
   if (kind === 'image') return <ImagePreview path={path} />
   if (!isPreviewable(kind)) return <FallbackCard path={path} kind={kind} />
@@ -125,6 +215,42 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   if (state.status === 'missing' || state.status === 'error') {
     return <ErrorCard missing={state.status === 'missing'} onRetry={reload} />
   }
+
+  // ── Edit mode (D1/D3): markdown / text / csv / html all edit their SOURCE
+  // text — the view mode's renderer is irrelevant here. Display text prefers
+  // the store draft (survives tab switches and agent conflicts). ──
+  if (editMode && isEditableKind(kind)) {
+    const bytes = new TextEncoder().encode(state.text).length
+    if (!isEditableSize(bytes)) {
+      return (
+        <div style={{ padding: 24, textAlign: 'center', color: '#999', fontSize: 13 }}>
+          {t('previewPane.tooLarge')}
+        </div>
+      )
+    }
+    const value = draft?.content ?? state.text
+    return (
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        {externalChange && <ConflictBanner path={path} />}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <FileEditor
+            value={value}
+            onChange={(next) => {
+              const st = usePreviewPaneStore.getState()
+              const entry = st.drafts[path] ?? makeDraftFromDisk(state.text)
+              st.setDraft(path, { ...entry, content: next })
+            }}
+            onSave={() => {
+              // The toolbar's save button owns the actual write; dispatch a
+              // custom event so ⌘S in the editor and the button share one path.
+              window.dispatchEvent(new CustomEvent('pulsemind-preview-save', { detail: path }))
+            }}
+          />
+        </div>
+      </div>
+    )
+  }
+
   if (kind === 'markdown') return <MarkdownPreview text={state.text} />
   if (kind === 'text') return <TextPreview text={state.text} path={path} />
   if (kind === 'csv') return <CsvPreview text={state.text} path={path} />
