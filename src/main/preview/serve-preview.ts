@@ -17,7 +17,10 @@
 import { readFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { buildPreviewCopy, isPreviewUrl } from '../../shared/preview/html-inject'
 import { PICKER_SCRIPT } from './picker-source.generated'
+
+export { stripCspMeta, injectPickerScript, isPreviewUrl } from '../../shared/preview/html-inject'
 
 const MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -59,37 +62,7 @@ export function resolveLocalFilePath(url: string): string {
 
 /** True when the URL asks for the element-editable preview copy. */
 export function isPreviewRequest(url: string): boolean {
-  try {
-    return new URL(url).searchParams.get('pmPreview') === '1'
-  } catch {
-    return false
-  }
-}
-
-/** Remove <meta http-equiv="Content-Security-Policy"> tags. local-file has
- *  no response headers, so meta is the only CSP vector — without stripping
- *  it, strictly-CSP pages would silently refuse to run the picker. */
-export function stripCspMeta(html: string): string {
-  return html.replace(/<meta\b[^>]*>/gi, (tag) =>
-    /http-equiv\s*=\s*["']?content-security-policy["']?/i.test(tag) ? '' : tag,
-  )
-}
-
-/** Inject the picker IIFE before the last </body> (or append when a page
- *  omits it — the parser hoists the script into body either way). */
-export function injectPickerScript(html: string): string {
-  const tag = `<script id="pm-picker-script">${PICKER_SCRIPT}</script>`
-  const closer = /<\/body\s*>\s*<\/html\s*>\s*$/i.exec(html)
-  if (closer) {
-    const at = closer.index
-    return `${html.slice(0, at)}${tag}${html.slice(at)}`
-  }
-  const bodyCloser = /<\/body\s*>/gi
-  let last: RegExpExecArray | null = null
-  let match: RegExpExecArray | null
-  while ((match = bodyCloser.exec(html)) !== null) last = match
-  if (last) return `${html.slice(0, last.index)}${tag}${html.slice(last.index)}`
-  return `${html}${tag}`
+  return isPreviewUrl(url)
 }
 
 /** The whole protocol handler: unchanged file-serving branch plus the
@@ -103,7 +76,7 @@ export async function serveLocalFile(request: Request): Promise<Response> {
   try {
     if (previewCopy) {
       const text = await readFile(filePath, 'utf8')
-      return new Response(injectPickerScript(stripCspMeta(text)), {
+      return new Response(buildPreviewCopy(text, PICKER_SCRIPT), {
         status: 200,
         headers: { 'Content-Type': MIME[ext] },
       })
