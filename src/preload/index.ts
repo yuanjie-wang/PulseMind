@@ -289,6 +289,8 @@ const electronAPI = {
   readFile: (filePath: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_READ_FILE, filePath),
   listDir: (dirPath: string): Promise<{ entries: Array<{ name: string; path: string; isDir: boolean }> } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_LIST_DIR, dirPath),
+  deletePath: (target: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_DELETE_PATH, target),
   editFile: (input: {
     filePath: string
     oldStr: string

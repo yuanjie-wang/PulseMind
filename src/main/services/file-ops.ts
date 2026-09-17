@@ -289,6 +289,54 @@ export async function svcFileStat(filePath: string): Promise<{ size: number; bir
   }
 }
 
+export interface DeletePathResult {
+  success: boolean
+  error?: string
+}
+
+/**
+ * Delete one entry of the workbench 工作区 tree (its hover 删除 button).
+ *
+ * Guarded as a WRITE: a renderer-initiated op carries no agent session, so the
+ * jail's *baseline* deny roots apply (guard.ts) — the tree only ever passes a
+ * path it just listed, but the guard is what makes that a guarantee rather
+ * than a hope. Trash first: `shell.trashItem` is the platform's own delete and
+ * keeps the entry recoverable, which is what a 删除 sitting next to a 复制
+ * should mean; where no trash exists it throws and a real removal takes over,
+ * so the click still does what it says instead of failing silently.
+ */
+export async function svcDeletePath(target: string): Promise<DeletePathResult> {
+  try {
+    // A destructive op may not guess a base directory: `resolvePath` resolves a
+    // relative input against process.cwd() (the app bundle in a packaged run),
+    // which is the last place a delete should ever land. Every caller here
+    // passes a path it just listed, so this only ever rejects nonsense.
+    if (!path.isAbsolute(target)) return { success: false, error: `Path must be absolute: ${target}` }
+    const guard = await guardFsTarget(target, 'write')
+    if (!guard.ok) return { success: false, error: guard.reason }
+    const safePath = await resolveWritablePath(target)
+    // The filesystem root is the one path a wrong click cannot undo, and no
+    // surface offers it.
+    if (safePath === path.parse(safePath).root) {
+      return { success: false, error: `refusing to delete ${safePath}` }
+    }
+    // Same per-path lock as every other write: an in-flight edit of this file
+    // finishes (or fails) before the file disappears under it.
+    return await withPathLock(safePath, async (): Promise<DeletePathResult> => {
+      const { shell } = await import('electron')
+      try {
+        await shell.trashItem(safePath)
+      } catch {
+        const { rm } = await import('node:fs/promises')
+        await rm(safePath, { recursive: true })
+      }
+      return { success: true }
+    })
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
+}
+
 export interface DirEntry {
   name: string
   path: string

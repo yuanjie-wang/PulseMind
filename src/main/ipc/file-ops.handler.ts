@@ -15,6 +15,7 @@ import {
   svcCopyFileToTmp,
   svcCopyFile,
   svcListDir,
+  svcDeletePath,
 } from '../services/file-ops'
 import type {
   EditFileInput,
@@ -24,6 +25,7 @@ import type {
   WriteFileInput,
   WriteFileResult,
   DirEntry,
+  DeletePathResult,
 } from '../services/file-ops'
 
 export type { EditFileInput, EditFileResult, PatchFileInput, PatchFileResult, WriteFileInput, WriteFileResult }
@@ -46,6 +48,9 @@ export function registerFileOpsHandlers(): void {
 
   // ── List one directory level (workbench 工作区 file tree) ────────
   ipcMain.handle(IPC_CHANNELS.UTIL_LIST_DIR, (_event, dirPath: string): Promise<{ entries: DirEntry[] } | null> => svcListDir(dirPath))
+
+  // ── Delete one entry (workbench 工作区 tree hover 删除) ───────────
+  ipcMain.handle(IPC_CHANNELS.UTIL_DELETE_PATH, (_event, target: string): Promise<DeletePathResult> => svcDeletePath(target))
 
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_FILE, (_event, input: EditFileInput): Promise<EditFileResult> => svcEditFile(input))
 

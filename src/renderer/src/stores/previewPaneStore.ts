@@ -12,6 +12,7 @@ import { openTabInList, closeTabInList, type PreviewTab } from './preview-tabs'
 import { resolvePreviewPath } from '../../../shared/preview/file-kind'
 import { useWorkbenchStore } from './workbenchStore'
 import type { DraftEntry } from './preview-edit'
+import { touchRecord } from '../utils/lru-record'
 
 /** Key for conversations that have no id yet (new-task draft). */
 export const DRAFT_CONVERSATION_KEY = '__draft__'
@@ -191,9 +192,7 @@ function omitKeys<T>(map: Record<string, T>, keys: string[]): Record<string, T> 
 /** Re-insert a conversation's tab list as most-recently-used, then prune
  *  beyond the LRU cap (insertion order = recency order). */
 function touch(map: Record<string, PreviewTab[]>, key: string, tabs: PreviewTab[]): Record<string, PreviewTab[]> {
-  const entries = Object.entries(map).filter(([k]) => k !== key)
-  entries.push([key, tabs])
-  return Object.fromEntries(entries.slice(entries.length - MAX_CONVERSATION_MAPS))
+  return touchRecord(map, key, tabs, MAX_CONVERSATION_MAPS)
 }
 
 /** Entry point for chat-side previews (tool cards, file chips): resolves

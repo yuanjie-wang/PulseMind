@@ -131,6 +131,7 @@ export const IPC_CHANNELS = {
   // ── Utilities ──
   UTIL_READ_FILE: 'util:read-file',
   UTIL_LIST_DIR: 'util:list-dir',
+  UTIL_DELETE_PATH: 'util:delete-path',
   UTIL_EDIT_FILE: 'util:edit-file',
   UTIL_PATCH_FILE: 'util:patch-file',
   UTIL_WRITE_FILE: 'util:write-file',
