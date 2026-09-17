@@ -18,6 +18,15 @@ export interface BrowserHistoryRow {
   lastVisitAt: number
 }
 
+function toRow(r: Record<string, unknown>): BrowserHistoryRow {
+  return {
+    url: String(r.url),
+    title: (r.title as string) || null,
+    visitCount: Number(r.visit_count),
+    lastVisitAt: Number(r.last_visit_at),
+  }
+}
+
 export const browserHistoryStore = {
   /** Upsert one visit: +1 count, refresh title/timestamp, then evict beyond
    *  the cap by last_visit_at (LRU). `at` is injectable for tests. */
@@ -47,26 +56,31 @@ export const browserHistoryStore = {
     }
   },
 
-  /** Substring match over url + title, newest first. `limit` caps the panel's
-   *  dropdown; ranking happens in shared/browser/pane.ts (pure). */
+  /** Substring match over url + title, newest first. Empty text returns the
+   *  most recent rows — the pane's empty-state 「最近访问」 list reads that
+   *  (T4.2); the address-bar suggestions never call it empty (the chrome
+   *  short-circuits blank drafts before the IPC). `limit` caps the result;
+   *  ranking happens in shared/browser/pane.ts (pure). */
   query(text: string, limit = 50): BrowserHistoryRow[] {
     const needle = text.trim()
-    if (!needle) return []
     try {
-      const like = `%${needle.replace(/[%_]/g, (c) => `\\${c}`)}%`
-      const rows = getDb()
-        .prepare(
-          `SELECT url, title, visit_count, last_visit_at FROM browser_history
-           WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
-           ORDER BY last_visit_at DESC LIMIT ?`
-        )
-        .all(like, like, limit) as Array<Record<string, unknown>>
-      return rows.map((r) => ({
-        url: String(r.url),
-        title: (r.title as string) || null,
-        visitCount: Number(r.visit_count),
-        lastVisitAt: Number(r.last_visit_at),
-      }))
+      const rows = (
+        needle
+          ? getDb()
+              .prepare(
+                `SELECT url, title, visit_count, last_visit_at FROM browser_history
+                 WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
+                 ORDER BY last_visit_at DESC LIMIT ?`
+              )
+              .all(`%${needle.replace(/[%_]/g, (c) => `\\${c}`)}%`, `%${needle.replace(/[%_]/g, (c) => `\\${c}`)}%`, limit)
+          : getDb()
+              .prepare(
+                `SELECT url, title, visit_count, last_visit_at FROM browser_history
+                 ORDER BY last_visit_at DESC LIMIT ?`
+              )
+              .all(limit)
+      ) as Array<Record<string, unknown>>
+      return rows.map(toRow)
     } catch (err) {
       console.warn('[BrowserHistory] query failed:', err)
       return []

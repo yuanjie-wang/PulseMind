@@ -37,6 +37,7 @@ const SCOPE_A = 'conv_pane_a'
 const SCOPE_B = 'conv_pane_b'
 const SCOPE_C = 'conv_pane_c'
 const SCOPE_D = 'conv_pane_d'
+const SCOPE_E = 'conv_pane_e'
 
 const results = []
 function check(name, pass, detail) {
@@ -45,27 +46,31 @@ function check(name, pass, detail) {
   return !!pass
 }
 
-/** Replacement for the app-view backend: records what the service asks of it. */
+/** Replacement for the app-view backend: records what the service asks of it.
+ *  `currents` is what a real page.url()/webContents.getURL() would report —
+ *  the T4.3 fold reads getURL, so the fake view must follow navigations. */
 function fakeAppView(dockCalls) {
   const created = []
   const navigations = []
   const views = new Map()
+  const currents = new Map()
   return {
     created,
     navigations,
+    currentUrl: (tabId) => currents.get(tabId) ?? '',
     descriptor: () => ({ id: 'app-view', type: 'app-view', capabilities: { browser: ['open', 'tabs', 'user'], tab: ['navigate'] } }),
     async start() {},
     async stop() {},
     async newTab({ tabId, origin, scopeId, url }) {
       created.push({ tabId, origin, scopeId, url: url ?? null })
-      let current = url ?? 'about:blank' // a real page.url() follows navigations
+      currents.set(tabId, url ?? 'about:blank') // a real page.url() follows navigations
       return {
         page: {
-          url: () => current,
+          url: () => currents.get(tabId) ?? '',
           title: async () => '',
           goto: async (target) => {
             navigations.push({ tabId, url: target })
-            current = target
+            currents.set(tabId, target)
             return null
           },
           goBack: async () => {},
@@ -81,7 +86,7 @@ function fakeAppView(dockCalls) {
       if (!views.has(tabId)) {
         views.set(tabId, {
           setBounds: (b) => dockCalls.bounds.push({ tabId, w: b.width }),
-          webContents: { setZoomFactor: () => {}, getURL: () => '', getTitle: () => '' },
+          webContents: { setZoomFactor: () => {}, getURL: () => currents.get(tabId) ?? '', getTitle: () => '' },
         })
       }
       return views.get(tabId)
@@ -110,18 +115,8 @@ async function phaseRun() {
   const { BrowserService } = await import('../src/main/browser/BrowserService')
 
   const { browserHistoryStore } = await import('../src/main/storage/browser-history-store')
-  const historyUrls = () => browserHistoryStore.query('', 0) && null // placeholder, replaced below
-  const historyRows = () => {
-    // query('') returns nothing by design; read the table through per-row queries.
-    const all = []
-    for (const n of backend.navigations.map((x) => x.url)) {
-      for (const r of browserHistoryStore.query(new URL(n).host, 50)) {
-        if (!all.some((x) => x.url === r.url)) all.push(r)
-      }
-    }
-    return all
-  }
-  void historyUrls
+  // query('') is the recency feed since T4.2 — the whole table, newest first.
+  const allRows = () => browserHistoryStore.query('', 500)
 
   const service = new BrowserService()
   await new Promise((r) => setTimeout(r, 50)) // loadDefaults settles
@@ -141,6 +136,9 @@ async function phaseRun() {
   })
   const backend = fakeAppView(dockCalls)
   service.backends.set('app-view', backend)
+  // backendFor wires this on the real AppViewBackend; the pre-set fake gets
+  // the same hook so section 9 can fire it by hand.
+  backend.onTabActivity = () => service.handleTabActivity()
 
   const updatesSink = []
   const updates = updatesSink
@@ -220,6 +218,15 @@ async function phaseRun() {
   await service.handlePaneAction({ op: 'newTab' }, sender)
   const dTabs = tabsOf(SCOPE_D)
   check('the switch section has two tabs to flip between', dTabs.length === 2, JSON.stringify(dTabs))
+  // T4.3: a fresh about:blank tab folds the webview — navigate both so there
+  // is something to switch between (the fold section below owns fresh tabs).
+  await service.handlePaneAction({ op: 'navigate', tabId: dTabs[0].tabId, url: 'https://d-one.example/' }, sender)
+  await service.handlePaneAction({ op: 'navigate', tabId: dTabs[1].tabId, url: 'https://d-two.example/' }, sender)
+  // A view mounts on its FIRST SIGHTING, and navigating an inactive tab does
+  // not show it — warm both up so the flip loop below really tests "switching
+  // mounts nothing", not "the first switch pays the first mount".
+  await service.handlePaneAction({ op: 'selectTab', tabId: dTabs[0].tabId }, sender)
+  await service.handlePaneAction({ op: 'selectTab', tabId: dTabs[1].tabId }, sender)
   const addAfterCreate = dockCalls.add
   const removeAfterCreate = dockCalls.remove
   for (let i = 0; i < 4; i++) {
@@ -258,7 +265,7 @@ async function phaseRun() {
   )
   check(
     'every navigation is audited against the completed URL',
-    navRows.map((e) => e.target).sort().join(' ') === 'https://example.com/ https://example.org/ https://mail.163.com/',
+    navRows.map((e) => e.target).sort().join(' ') === 'https://d-one.example/ https://d-two.example/ https://example.com/ https://example.org/ https://mail.163.com/',
     navRows.map((e) => e.target).join(' '),
   )
   check(
@@ -294,20 +301,67 @@ async function phaseRun() {
   const ranked = browserHistoryStore.query('mail', 10)
   check('query matches url substrings and orders newest-first', ranked.length >= 1 && ranked[0].url === 'https://mail.163.com/', JSON.stringify(ranked))
 
-  // LRU cap: push the table past MAX and the oldest rows fall out.
+  /* ── 8. A fresh (about:blank) tab folds the webview — the renderer's empty
+     state owns the area until the tab gains a URL (T4.3) ─────────────────── */
+  service.handlePaneState(paneState(SCOPE_E), sender)
+  const addBeforeFresh = dockCalls.add
+  await service.handlePaneAction({ op: 'newTab' }, sender)
+  const eTabs = tabsOf(SCOPE_E)
+  check('the fresh tab exists and the chrome lists it active', eTabs.length === 1 && lastUpdate()?.tabs?.length === 1 && lastUpdate().tabs[0].active === true, JSON.stringify(lastUpdate()?.tabs))
+  check('…but its view is NOT mounted (folded so the empty state shows)', dockCalls.add === addBeforeFresh, `add ${addBeforeFresh}→${dockCalls.add}`)
+  check('…and no non-zero bounds were written for it', !dockCalls.bounds.some((b) => b.tabId === eTabs[0].tabId && b.w > 0), JSON.stringify(dockCalls.bounds.filter((b) => b.tabId === eTabs[0].tabId)))
+  await service.handlePaneAction({ op: 'navigate', tabId: eTabs[0].tabId, url: 'https://unfold.example/' }, sender)
+  check('navigating the fresh tab mounts its view exactly once', dockCalls.add === addBeforeFresh + 1, `add →${dockCalls.add}`)
+  const lastWidthE = new Map()
+  for (const b of dockCalls.bounds) lastWidthE.set(b.tabId, b.w)
+  check('…and the view ends non-zero (webview visible again)', (lastWidthE.get(eTabs[0].tabId) ?? 0) > 0, JSON.stringify([...lastWidthE.entries()].filter(([id]) => id === eTabs[0].tabId)))
+
+  /* ── 9. An agent navigate bypasses handlePaneAction — the backend's activity
+     event must lift the fold (handleTabActivity, T4.3) ────────────────────── */
+  await service.executeCommand({ method: 'newTab' }, SCOPE_E)
+  const agentTab = tabsOf(SCOPE_E)[1]
+  check('the agent opened its own fresh tab', !!agentTab && backend.currentUrl(agentTab.tabId) === 'about:blank', backend.currentUrl(agentTab?.tabId ?? ''))
+  await service.handlePaneAction({ op: 'selectTab', tabId: agentTab.tabId }, sender)
+  const addBeforeAgent = dockCalls.add
+  check('selecting the fresh agent tab keeps the fold', dockCalls.add === addBeforeAgent, `add →${dockCalls.add}`)
+  await service.executeCommand({ method: 'navigate', tabId: agentTab.tabId, url: 'https://agent-unfold.example/' }, SCOPE_E)
+  check('the agent navigate alone does not lift it (executeCommand never syncs)', dockCalls.add === addBeforeAgent, `add →${dockCalls.add}`)
+  backend.onTabActivity()
+  check('the activity event lifts the fold (view mounted)', dockCalls.add === addBeforeAgent + 1, `add →${dockCalls.add}`)
+  const lastWidth9 = new Map()
+  for (const b of dockCalls.bounds) lastWidth9.set(b.tabId, b.w)
+  check('…and the agent tab ends non-zero', (lastWidth9.get(agentTab.tabId) ?? 0) > 0, String(lastWidth9.get(agentTab.tabId)))
+  check('…and still no history row (L1 again)', browserHistoryStore.query('agent-unfold', 10).length === 0, '')
+
+  /* ── 10. query('') is the recency feed for the empty state's 最近访问 (T4.2) ── */
+  browserHistoryStore.recordVisit('https://recents-a.example/', 'A', Date.now() + 1000)
+  browserHistoryStore.recordVisit('https://recents-b.example/', 'B', Date.now() + 2000)
+  const recents = browserHistoryStore.query('', 5)
+  check('empty query returns the most recent rows first', recents[0]?.url === 'https://recents-b.example/' && recents[1]?.url === 'https://recents-a.example/', JSON.stringify(recents.slice(0, 2).map((r) => r.url)))
+
+  // LRU cap: push the table past MAX and the oldest rows fall out. The table
+  // holds other rows by now (later sections' navigations), so assert the
+  // invariants — cap enforced, oldest flood rows gone, and every row older
+  // than the flood evicted — rather than a flood-kept count that depends on
+  // how many rows preceded it.
   const { MAX_BROWSER_HISTORY } = await import('../src/main/storage/browser-history-store')
   const base = Date.now()
+  const preOldUrls = browserHistoryStore
+    .query('', 1000)
+    .filter((r) => r.lastVisitAt < base)
+    .map((r) => r.url)
   for (let i = 0; i < MAX_BROWSER_HISTORY + 1; i++) {
     browserHistoryStore.recordVisit(`https://flood.example/${i}`, undefined, base + i)
   }
   const kept = browserHistoryStore.query('flood.example', MAX_BROWSER_HISTORY + 10)
   const oldestFlood = browserHistoryStore.query('flood.example/0', 10)
   const newestFlood = browserHistoryStore.query(`flood.example/${MAX_BROWSER_HISTORY}`, 10)
-  const manualSurvivors = manualUrls.filter((u) => browserHistoryStore.query(new URL(u).host, 10).some((r) => r.url === u))
+  const total = browserHistoryStore.query('', 2000).length
+  const preOldGone = preOldUrls.every((u) => browserHistoryStore.query(u, 10).length === 0)
   check(
     `a ${MAX_BROWSER_HISTORY + 1}st visit evicts exactly the oldest rows (table capped at ${MAX_BROWSER_HISTORY})`,
-    kept.length === MAX_BROWSER_HISTORY && oldestFlood.length === 0 && newestFlood.length === 1 && manualSurvivors.length === 0,
-    `flood kept=${kept.length}, oldest gone=${oldestFlood.length === 0}, manual rows evicted too=${manualSurvivors.length === 0}`,
+    total === MAX_BROWSER_HISTORY && oldestFlood.length === 0 && newestFlood.length === 1 && preOldGone,
+    `total=${total}, flood kept=${kept.length}, oldest gone=${oldestFlood.length === 0}, newest present=${newestFlood.length === 1}, pre-flood old rows evicted=${preOldGone}`,
   )
 
   // Clear: the dropdown footer's confirmation path ends here.

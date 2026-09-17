@@ -129,6 +129,27 @@ export function webviewBox(paneWidth: number, paneTop: number, paneHeight: numbe
   return { x: PANE_BORDER_WIDTH, y: Math.max(paneTop + chromeHeight, top), width, height: Math.min(height, available) }
 }
 
+/** True while a tab has nothing the user navigated to: '' (no URL reported
+ *  yet) or about:blank (a just-opened tab). ONE predicate for two readers —
+ *  the main-process dock folds a fresh tab so the renderer's empty state is
+ *  visible (T4.3), and the renderer shows that empty state on it (T4.4); a
+ *  second copy of this rule would fold one side while the other shows a page.
+ *  A tab that navigated somewhere and came BACK to about:blank also reads
+ *  fresh — a blank view is a blank view, and the empty state is nicer. */
+export function isFreshTabUrl(url: string | null | undefined): boolean {
+  return !url || url === 'about:blank'
+}
+
+/** Display host for a URL ('example.com'); unparseable input falls back to
+ *  the input itself. */
+export function hostLabel(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
+}
+
 /** One address-bar history suggestion (PLAN-browser-pane-ux T3.4). */
 export interface HistorySuggestionRow {
   url: string
@@ -162,18 +183,23 @@ function stripScheme(url: string): string {
  * covered in vitest): a host that STARTS WITH the text wins over a url that
  * merely contains it, which wins over a title match; peers order by
  * last_visit_at desc then visit_count desc. Rows that match nothing drop.
+ * The typed text is compared SCHEME-LESS (same as the stored url): re-typing
+ * the full "https://…" just visited — or a wrong-scheme variant of it — must
+ * still联想 (user repro 2026-09-17: SQL LIKE matched, this ranker dropped the
+ * row, dropdown never opened).
  */
 export function rankHistorySuggestions(text: string, rows: HistorySuggestionRow[], limit = 8): RankedSuggestion[] {
   const needle = text.trim().toLowerCase()
   if (!needle) return []
+  const bare = stripScheme(needle)
   const ranked: Array<RankedSuggestion & { lastVisitAt: number; visitCount: number }> = []
   for (const row of rows) {
     const url = row.url || ''
     const title = (row.title || '').toLowerCase()
     const host = hostOf(url)
     let rank: 0 | 1 | 2 | null = null
-    if (host.startsWith(needle)) rank = 0
-    else if (stripScheme(url).toLowerCase().includes(needle)) rank = 1
+    if (host.startsWith(bare)) rank = 0
+    else if (stripScheme(url).toLowerCase().includes(bare)) rank = 1
     else if (title.includes(needle)) rank = 2
     if (rank === null) continue
     ranked.push({

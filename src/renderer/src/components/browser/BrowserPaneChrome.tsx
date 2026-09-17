@@ -7,12 +7,15 @@
 // belong to WorkbenchPane; this component fills its parent.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Plus, X, Clock, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2 } from 'lucide-react'
 import {
+  hostLabel,
+  isFreshTabUrl,
   normalizeAddressBarInput,
   rankHistorySuggestions,
   type BrowserPaneAction,
   type BrowserPaneUpdate,
+  type HistorySuggestionRow,
   type RankedSuggestion,
 } from '../../../../shared/browser/pane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
@@ -91,6 +94,26 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   const dropdownRef = useRef<HTMLDivElement | null>(null)
   const suggestSeq = useRef(0)
 
+  // ── Empty state (PLAN-browser-pane-ux T4) ──
+  // Zero tabs OR a fresh (never-navigated) about:blank tab — main folds the
+  // webview for both (isFreshTabUrl, T4.3), so this DOM is fully visible in
+  // each; a navigated tab hands the area to the native view.
+  const showEmpty = pane.tabs.length === 0 || !activeTab || isFreshTabUrl(activeTab.url)
+  const [recents, setRecents] = useState<HistorySuggestionRow[]>([])
+  const [recentsTick, setRecentsTick] = useState(0)
+  useEffect(() => {
+    if (!showEmpty) return
+    let alive = true
+    window.electronAPI.browserHistoryQuery('')
+      .then((rows) => {
+        if (alive) setRecents((rows ?? []).slice(0, 6))
+      })
+      .catch(() => { /* history is best-effort — the guidance copy still shows */ })
+    return () => {
+      alive = false
+    }
+  }, [showEmpty, recentsTick])
+
   const refreshSuggestions = (text: string, open: boolean) => {
     const query = text.trim()
     if (!query) {
@@ -117,12 +140,15 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
     setConfirmingClear(false)
   }
 
+  const navigateTo = (url: string) => {
+    const target = normalizeAddressBarInput(url)
+    onAction(activeTab ? { op: 'navigate', tabId: activeTab.id, url: target } : { op: 'navigate', url: target })
+    setDraft({ tabId: activeId, text: null })
+  }
+
   const openSuggestion = (s: RankedSuggestion) => {
     closeDropdown()
-    const url = normalizeAddressBarInput(s.url)
-    onAction(activeTab ? { op: 'navigate', tabId: activeTab.id, url } : { op: 'navigate', url })
-    // The chosen suggestion becomes the field's address (it IS where we're going).
-    setDraft({ tabId: activeId, text: null })
+    navigateTo(s.url)
   }
 
   const clearHistory = () => {
@@ -133,6 +159,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
     setConfirmingClear(false)
     closeDropdown()
     void window.electronAPI.browserHistoryClear?.().catch(() => {})
+    setRecentsTick((t) => t + 1) // the empty state's 最近访问 list reads the same table
   }
 
   // Report the dropdown's actual height so the dock can make room for it.
@@ -196,15 +223,18 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
 
   return (
     <div
+      data-pm-pane
       style={{
         height: '100%',
-        background: '#f7f8fa',
+        // 面板底色统一为白（用户裁定 2026-09-17）：两条 chrome 行本就 #fff，
+        // 这里原来是 #f7f8fa，只在折叠态（空态/无页面）露出来。
+        background: '#fff',
         display: 'flex',
         flexDirection: 'column',
       }}
     >
       {/* 滚动条隐藏写不了内联伪元素——组件自带一小段 style（Composer 先例）。 */}
-      <style>{`.pm-pane-tabstrip { scrollbar-width: none; } .pm-pane-tabstrip::-webkit-scrollbar { display: none; }`}</style>
+      <style>{`.pm-pane-tabstrip { scrollbar-width: none; } .pm-pane-tabstrip::-webkit-scrollbar { display: none; } .pm-pane-empty-item:hover { background: #ececf0; }`}</style>
       {/* Tab strip (32px) */}
       <div
         style={{
@@ -421,9 +451,81 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
         </div>
       </div>
 
-      {/* The rest of the pane is transparent — the native WebView sits there
-          (16:9, vertically centered; empty letterbox shows the pane bg). */}
-      <div style={{ flex: 1 }} />
+      {/* 空态（T4）：零页签或未导航的 about:blank 页签——两种状态主进程都把
+          webview 折叠了，这块 DOM 才完整可见；历史为空时列表整块隐藏。 */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        {showEmpty ? (
+          <div
+            data-pm-empty
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 18,
+              padding: '24px 20px',
+              overflowY: 'auto',
+            }}
+          >
+            <div
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: '50%',
+                background: '#ececf0',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <Globe size={20} color="#999" />
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#333' }}>打开一个网页，或让 AI 帮你查资料</div>
+              <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>在上方输入网址回车，也可以在对话里直接吩咐</div>
+            </div>
+            {recents.length > 0 && (
+              <div
+                data-pm-empty-recents
+                style={{
+                  width: '100%',
+                  maxWidth: 280,
+                  // 边框盒，否则 6px 内边距会把卡片整体撑到 292 宽。
+                  boxSizing: 'border-box',
+                  // 近白浅灰（沿用面板转白前那档底色）：白底上刚好读出一层卡，
+                  // 再深就成了灰块——用户裁定 2026-09-17「再浅一些」。
+                  background: '#f7f8fa',
+                  borderRadius: 10,
+                  padding: 6,
+                }}
+              >
+                {/* 11px + 10px 缩进 = 行内文字左沿（6 + 10），标签与列表共一条左边线。 */}
+                <div style={{ fontSize: 11, color: '#999', margin: '2px 0 6px 10px' }}>最近访问</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {recents.slice(0, 6).map((r) => (
+                    <div
+                      key={r.url}
+                      data-pm-empty-item
+                      className="pm-pane-empty-item"
+                      onClick={() => navigateTo(r.url)}
+                      style={{ padding: '5px 10px', borderRadius: 6, cursor: 'pointer', minWidth: 0 }}
+                    >
+                      <div style={{ fontSize: 12, color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {r.title || hostLabel(r.url)}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {hostLabel(r.url)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }

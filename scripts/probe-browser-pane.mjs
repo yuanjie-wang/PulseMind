@@ -448,6 +448,179 @@ check('…and the dropdown closes afterwards', (await page.locator('div[style*="
 const overlayPush = await page.evaluate(() => window.__paneStates.some((s) => s.chromeOverlayHeight > 0))
 check('an open dropdown reports its height so main shifts the webview', overlayPush)
 
+/* ── 6b. 用户复现（2026-09-17）：原样重输刚去过的完整网址（带 scheme）必须
+   出联想。SQL LIKE 能查到该行，但 rankHistorySuggestions 此前只拿 scheme-less
+   的存储 URL 比对，把它过滤光 → 下拉不弹（fixture 用用户库的真实行形状）。 ── */
+await page.evaluate(() => {
+  window.__historyFixture = [
+    { url: 'https://www.baidu.com/', title: '百度一下，你就知道', visitCount: 2, lastVisitAt: 99 },
+  ]
+  window.__actions = []
+})
+await address().click()
+await page.keyboard.press('Meta+A')
+await page.keyboard.type('https://www.baidu.com')
+await page.locator('div[style*="z-index: 40"]').waitFor({ timeout: 3000 }).catch(() => {})
+const reproRows = await suggestionItems().count()
+check('re-typing the visited full URL (with scheme) still suggests it', reproRows === 1, `${reproRows} rows`)
+await page.keyboard.press('ArrowDown') // 选中条目再 Enter —— 无选中时 Enter 按原文导航（另一条路径）
+await page.keyboard.press('Enter')
+await page.waitForTimeout(100)
+const reproNav = await page.evaluate(() => window.__actions)
+check(
+  'Enter on the full-URL suggestion navigates to it',
+  reproNav.length === 1 && reproNav[0].op === 'navigate' && reproNav[0].url === 'https://www.baidu.com/',
+  JSON.stringify(reproNav),
+)
+
+/* ── 7. Empty state (T4.4): zero tabs or a fresh about:blank tab shows the
+   new-tab empty state — guidance copy + 最近访问 fed by the SAME query
+   channel (the stub serves it); main folds the webview for both states
+   (asserted over in probe-pane-actions). ─────────────────────────────────── */
+const EMPTY_COPY = '打开一个网页，或让 AI 帮你查资料'
+await page.evaluate(() => {
+  window.__historyFixture = [
+    { url: 'https://github.com/', title: 'GitHub', visitCount: 5, lastVisitAt: 77 },
+    { url: 'https://news.example/', title: null, visitCount: 1, lastVisitAt: 55 },
+  ]
+  window.__actions = []
+})
+await page.evaluate(() => window.__mount({ tabs: [] }))
+check('a pane with no tab shows the empty state', await page.getByText(EMPTY_COPY).isVisible().catch(() => false))
+const emptyRows = await page.locator('[data-pm-empty-item]').count()
+check('…with the recents list rendered from history', emptyRows === 2, `${emptyRows} rows`)
+check('…a titleless row falls back to its host', (await page.locator('[data-pm-empty-item]').nth(1).textContent())?.includes('news.example'), await page.locator('[data-pm-empty-item]').nth(1).textContent())
+await page.locator('[data-pm-empty-item]').first().click()
+await page.waitForTimeout(100)
+const emptyNav = await page.evaluate(() => window.__actions)
+check(
+  'clicking a recents row navigates (no tabId — main opens the tab)',
+  emptyNav.length === 1 && emptyNav[0].op === 'navigate' && emptyNav[0].url === 'https://github.com/' && !emptyNav[0].tabId,
+  JSON.stringify(emptyNav),
+)
+
+/* ── 7b. The recents block is a centred surface (user feedback 2026-09-17:
+   「最近访问 视觉上重心靠左」). With no visible box, a 280px column of
+   left-aligned rows under centred icon+copy reads as ink hanging off the
+   left — the box already was centred, so "centred" cannot be reviewed from
+   the box alone; the surface is what makes the centring visible. Pins the
+   light-grey rounded background, the centring, the row inset (a hover fill
+   must not touch a corner) and the label sharing the rows' text edge. ───── */
+const cardGeo = await page.evaluate(() => {
+  const empty = document.querySelector('[data-pm-empty]')
+  const card = document.querySelector('[data-pm-empty-recents]')
+  if (!empty || !card) return null
+  const rgbOf = (s) => (s.match(/[\d.]+/g) ?? []).map(Number)
+  const lum = (a) => a[0] * 0.299 + a[1] * 0.587 + a[2] * 0.114
+  // The nearest ancestor that actually paints is the pane body (now #fff —
+  // the user's ruling of 2026-09-17 made the whole pane white).
+  let backdrop = null
+  for (let n = empty.parentElement; n && !backdrop; n = n.parentElement) {
+    const m = rgbOf(getComputedStyle(n).backgroundColor)
+    if (m.length >= 3 && (m.length < 4 || m[3] > 0)) backdrop = m.slice(0, 3)
+  }
+  const e = empty.getBoundingClientRect()
+  const c = card.getBoundingClientRect()
+  const cs = getComputedStyle(card)
+  const pad = parseFloat(getComputedStyle(empty).paddingLeft) || 0
+  const row = card.querySelector('[data-pm-empty-item]')
+  const label = [...card.children].find((el) => el.textContent?.startsWith('最近访问'))
+  const rgb = rgbOf(cs.backgroundColor)
+  const rowPadLeft = row ? parseFloat(getComputedStyle(row).paddingLeft) || 0 : -1
+  return {
+    gapLeft: c.left - (e.left + pad),
+    gapRight: e.right - pad - c.right,
+    width: c.width,
+    radius: parseFloat(cs.borderRadius) || 0,
+    bg: cs.backgroundColor,
+    rgb,
+    chroma: rgb.length === 3 ? Math.max(...rgb) - Math.min(...rgb) : 99,
+    dLum: backdrop && rgb.length === 3 ? lum(rgb) - lum(backdrop) : 0,
+    rowInset: row ? row.getBoundingClientRect().left - c.left : -1,
+    labelInset: label ? label.getBoundingClientRect().left - c.left : -1,
+    rowTextInset: row ? row.getBoundingClientRect().left + rowPadLeft - c.left : -1,
+  }
+})
+const g = cardGeo
+// The pane body is white in every folded state (user ruling 2026-09-17:
+// 「把页面整体背景色改为白色」). Pinned because the empty state is its only
+// reader: with a page mounted the native WebView covers it, so a leftover
+// grey would only ever show up here — and grey-on-white is what a stale
+// value looks like.
+const paneBg = await page.evaluate(() => getComputedStyle(document.querySelector('[data-pm-pane]')).backgroundColor)
+check('the pane body itself is white', paneBg === 'rgb(255, 255, 255)', paneBg)
+check('the recents block paints its own surface', Boolean(g) && g.rgb.length >= 3 && (g.rgb.length < 4 || g.rgb[3] > 0), g?.bg)
+check(
+  '…horizontally centred in the empty area',
+  Boolean(g) && Math.abs(g.gapLeft - g.gapRight) <= 1,
+  g && `left ${g.gapLeft.toFixed(1)} vs right ${g.gapRight.toFixed(1)}`,
+)
+check(
+  '…light grey: near-neutral, a touch darker than the pane body',
+  Boolean(g) && g.chroma <= 4 && g.dLum < -3 && g.dLum > -26,
+  g && `${g.bg} chroma ${g.chroma} Δlum ${g.dLum.toFixed(1)}`,
+)
+check('…rounded', Boolean(g) && g.radius >= 8, String(g?.radius))
+// border-box: the 6px padding is INSIDE the 280 — a content-box card would
+// paint 292 wide and eat the empty area's margin.
+check('…280px wide: the padding sits inside the box, not outside it', Boolean(g) && Math.abs(g.width - 280) <= 1, String(g?.width))
+// Hit-testing honours border-radius, so the corner point proves the SHAPE the
+// user sees — 10px in the computed style would still be square if the paint
+// were clipped elsewhere. The inside point is the non-vacuous half.
+const cornerHit = await page.evaluate(() => {
+  const card = document.querySelector('[data-pm-empty-recents]')
+  const c = card.getBoundingClientRect()
+  const hit = (x, y) => {
+    const el = document.elementFromPoint(x, y)
+    return el === card || card.contains(el)
+  }
+  return { corner: hit(c.left + 1.5, c.top + 1.5), inside: hit(c.left + 12, c.top + 12) }
+})
+check('…and the corners really are cut (a hit-test at the corner misses the card)', cornerHit.corner === false, JSON.stringify(cornerHit))
+check('…while 12px in lands on it (the region is painted, not empty)', cornerHit.inside === true, JSON.stringify(cornerHit))
+check('…with the rows inset inside it (a hover fill stays off the corners)', Boolean(g) && g.rowInset >= 4, String(g?.rowInset))
+check(
+  '…and the 最近访问 label sharing the rows\' text edge',
+  Boolean(g) && Math.abs(g.labelInset - g.rowTextInset) <= 1,
+  g && `label ${g.labelInset} vs text ${g.rowTextInset}`,
+)
+// The hover fill must stay distinguishable from the card it sits on — equal
+// values would make a hovered row read as nothing happening at all.
+await page.locator('[data-pm-empty-item]').first().hover()
+await page.waitForTimeout(60)
+const rowHover = await page.evaluate(() => {
+  const row = document.querySelector('[data-pm-empty-item]')
+  const card = document.querySelector('[data-pm-empty-recents]')
+  const rgbOf = (s) => (s.match(/[\d.]+/g) ?? []).map(Number)
+  const lum = (a) => a[0] * 0.299 + a[1] * 0.587 + a[2] * 0.114
+  return {
+    hover: getComputedStyle(row).backgroundColor,
+    card: getComputedStyle(card).backgroundColor,
+    dLum: lum(rgbOf(getComputedStyle(row).backgroundColor)) - lum(rgbOf(getComputedStyle(card).backgroundColor)),
+  }
+})
+check(
+  'a hovered row darkens against the card (a real mouse, no navigation)',
+  rowHover.dLum < -4 && rowHover.dLum > -26,
+  `${rowHover.hover} on ${rowHover.card} Δlum ${rowHover.dLum.toFixed(1)}`,
+)
+await page.mouse.move(0, 0) // release the hover before the shot
+await page.waitForTimeout(60)
+await shot('pane-empty-state.png')
+
+await page.evaluate(() => window.__mount({ tabs: [{ id: 'tab_fresh', url: 'about:blank', title: '', active: true }] }))
+check('a fresh about:blank tab shows the same empty state', await page.getByText(EMPTY_COPY).isVisible().catch(() => false))
+await page.evaluate(() => window.__mount({ tabs: [{ id: 'tab_real', url: 'https://www.baidu.com/', title: '百度一下', active: true }] }))
+check('a navigated tab hides the empty state (the webview owns the area)', !(await page.getByText(EMPTY_COPY).isVisible().catch(() => false)))
+await page.evaluate(() => {
+  window.__historyFixture = []
+})
+await page.evaluate(() => window.__mount({ tabs: [] }))
+check(
+  'empty history hides the recents block but keeps the guidance',
+  (await page.locator('[data-pm-empty-recents]').count()) === 0 && (await page.getByText(EMPTY_COPY).isVisible().catch(() => false)),
+)
+
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 console.log(`screenshots: ${SHOTS}`)

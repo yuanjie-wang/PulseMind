@@ -22,6 +22,7 @@ import {
 import {
   clampPaneWidth,
   defaultPaneWidth,
+  isFreshTabUrl,
   normalizeAddressBarInput,
   type BrowserPaneAction,
   type BrowserPaneState,
@@ -169,7 +170,9 @@ export class BrowserService {
         // (redirects land under where the user actually went); a goto that
         // never committed — page.url unchanged — is not a visit.
         const finalUrl = entry.tab.page.url()
-        if (finalUrl && finalUrl !== beforeUrl) {
+        // about:blank / chrome-error 是导航失败或空页签的落点，不是「去过哪」
+        // ——记进去只会在联想里冒出噪声行（用户库里的 about:blank 行即此洞）。
+        if (finalUrl && finalUrl !== beforeUrl && !/^(about:|chrome-error:)/i.test(finalUrl)) {
           const title = await entry.tab.page.title().catch(() => '')
           browserHistoryStore.recordVisit(finalUrl, title || undefined)
         }
@@ -352,7 +355,7 @@ export class BrowserService {
     if (!backend) {
       if (id === 'app-view') {
         const appView = new AppViewBackend()
-        appView.onTabActivity = () => this.pushPaneUpdates()
+        appView.onTabActivity = () => this.handleTabActivity()
         backend = appView
         this.backends.set(id, backend)
       } else {
@@ -465,9 +468,44 @@ export class BrowserService {
     const scope = viewKind === 'chat' ? conversationId : null
     appViewDock.setWidth(this.resolvePaneWidth())
     const active = browserActive && scope ? this.activePaneEntry(scope) : null
-    appViewDock.show(active ? this.viewOfTab(active.id) : null)
-    appViewDock.setVisible(Boolean(active))
+    // T4.3: a never-navigated tab (''/about:blank) shows the renderer's empty
+    // state instead of a white native page — fold exactly like "no tab"; the
+    // tab itself stays alive and listed (折叠保留语义不变).
+    const fresh = active ? this.activeFresh() : null
+    this.lastShownFresh = fresh
+    const view = active ? this.viewOfTab(active.id) : null
+    appViewDock.show(view && fresh === false ? view : null)
+    appViewDock.setVisible(Boolean(active) && fresh === false)
     this.pushPaneUpdates(true)
+  }
+
+  /** The freshness of the pane's active tab (false = a real page is showing),
+   *  or null when there is no active tab. One read shared by syncPane and the
+   *  activity hook — a second copy could fold one side while the other shows
+   *  a page. */
+  private activeFresh(): boolean | null {
+    const { viewKind, conversationId } = this.paneState
+    const browserActive = this.paneState.browserActive !== false
+    const scope = viewKind === 'chat' ? conversationId : null
+    const active = browserActive && scope ? this.activePaneEntry(scope) : null
+    if (!active) return null
+    const view = this.viewOfTab(active.id)
+    return !view || isFreshTabUrl(view.webContents.getURL() ?? '')
+  }
+
+  /** Freshness at last syncPane — the fold-flip detector below compares
+   *  against it so only the transition pushes immediately. */
+  private lastShownFresh: boolean | null = null
+
+  /** AppViewBackend activity hook (wired in backendFor): agent-driven
+   *  navigations bypass handlePaneAction (executeCommand never syncs), so the
+   *  backend's activity event is the only signal that a folded fresh tab has
+   *  gained a real URL — that transition must lift the fold at once. Every
+   *  other activity stays on the throttled push (T1.3). */
+  handleTabActivity(): void {
+    const fresh = this.activeFresh()
+    if (fresh === null || fresh !== this.lastShownFresh) this.syncPane()
+    else this.pushPaneUpdates()
   }
 
   /** The last pane update actually sent — content-equality gate below. */
