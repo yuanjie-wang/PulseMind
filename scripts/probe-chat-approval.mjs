@@ -97,6 +97,15 @@ const SETTLED_HELD_MESSAGES = [user('继续2'), assistant('a3', [
   { type: 'tool_use', id: 's6', name: 'exec', status: 'pending', input: { command: 'rm -rf ./dist', description: '清理产物' } },
 ])]
 
+/** Mid-loop (PLAN-tool-ux T5): settled work behind a tool that is running with
+ *  no output yet — the header falls to the last extracted text, which used to
+ *  read as: exec + a space + the raw command, spliced locally. */
+const EXECUTING_MESSAGES = [user('跑一遍构建'), assistant('a4', [
+  { type: 'text', text: '先读配置，再构建：' },
+  { type: 'tool_use', id: 'x1', name: 'read', status: 'completed', exitCode: 0, input: { file_path: 'vite.config.ts' }, output: 'config' },
+  { type: 'tool_use', id: 'x2', name: 'exec', status: 'running', input: { command: 'npm run build' } },
+])]
+
 function Harness() {
   const [scenario, setScenario] = useState('held')
   const [blocks, setBlocks] = useState(GENERATING)
@@ -113,7 +122,8 @@ function Harness() {
   const streaming = scenario === 'streaming'
   const settled = scenario === 'settled'
   const settledHeld = scenario === 'settledHeld'
-  const scenarioMessages = settled ? SETTLED_MESSAGES : settledHeld ? SETTLED_HELD_MESSAGES : MESSAGES
+  const executing = scenario === 'executing'
+  const scenarioMessages = settled ? SETTLED_MESSAGES : settledHeld ? SETTLED_HELD_MESSAGES : executing ? EXECUTING_MESSAGES : MESSAGES
   return (
     <ConfigProvider theme={{ token: { colorPrimary: '#1677ff' } }}>
       <TranslationProvider>
@@ -338,7 +348,21 @@ const amberBoxes = () =>
   await page.evaluate(() => window.__streamMore())
   await page.waitForTimeout(300)
   check('a later stream chunk leaves it collapsed and undecided', (await openCards()) === 0 && (await areas().count()) === 0)
-  check('the segment header reports the generating call', await page.getByText('指令生成中...').first().isVisible())
+  const genHead = await page.locator('[data-segment-head]').textContent()
+  check('the generating header names the calls in human form', !!genHead && genHead.includes('运行命令、写入文件 指令生成中...'), genHead?.slice(0, 80))
+}
+
+// ── 4.5 Executing mid-loop (PLAN-tool-ux T5): the header narrates the running
+//    call in the same human form the tool block's header uses ──
+{
+  console.log('== executing: the running call reads human, not raw ==')
+  await page.evaluate(() => window.__scenario('executing'))
+  await page.locator('[data-segment-head]').waitFor()
+  await page.waitForTimeout(300)
+  const head = page.locator('[data-segment-head]')
+  const text = await head.textContent()
+  check('the executing header shows 动词 · 对象（运行命令 · npm run build）', !!text && text.includes('运行命令 · npm run build'), text?.slice(0, 80))
+  check('the executing header no longer splices `exec` + command', !!text && !text.includes('exec npm run build'), text?.slice(0, 80))
 }
 
 // ── 5. The composer's 授权 button: 全部允许 is the amber one ──

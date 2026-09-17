@@ -4,6 +4,7 @@ import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent
 import { MessageGroup } from './MessageGroup'
 import { ApprovalArea } from './ApprovalArea'
 import { useTranslation } from '../../i18n/useTranslation'
+import { toolBlockSummary, toolDisplayName, type ToolTranslator } from './tool-summary'
 
 // Injected once into <head> to avoid creating a new <style> element on every render
 const KEYFRAMES = `@keyframes pulsemind-spin { 100% { transform: rotate(360deg); } } @keyframes pulsemind-fade-in { 0% { opacity: 0; transform: translateY(2px); } 100% { opacity: 1; transform: translateY(0); } }`
@@ -35,27 +36,21 @@ interface ExecutionSegmentProps {
 
 // --- Extract displayable items from segment messages in LLM order ---
 
-function summarizeInput(input: Record<string, unknown> | undefined): string {
-  if (!input) return ''
-  const entries = Object.entries(input).filter(([k]) => k !== 'description')
-  if (entries.length === 0) return ''
-  const [, v] = entries[0]
-  const s = typeof v === 'string' ? v : JSON.stringify(v)
-  return s.length > 60 ? s.slice(0, 57) + '...' : s + '...'
-}
-
-function contentBlocksToTexts(blocks: ContentBlock[]): string[] {
+function contentBlocksToTexts(blocks: ContentBlock[], t: ToolTranslator): string[] {
   const texts: string[] = []
   for (const block of blocks) {
     if (block.type === 'thinking') {
-      const t = block.thinking.replace(/\n+/g, ' ').trim()
-      if (t) texts.push(t)
+      const line = block.thinking.replace(/\n+/g, ' ').trim()
+      if (line) texts.push(line)
     } else if (block.type === 'text') {
-      const t = block.text.replace(/\n+/g, ' ').trim()
-      if (t) texts.push(t)
+      const line = block.text.replace(/\n+/g, ' ').trim()
+      if (line) texts.push(line)
     } else if (block.type === 'tool_use') {
-      const input = summarizeInput(block.input)
-      texts.push(`${block.name}${input ? ` ${input}` : ''}`)
+      // PLAN-tool-ux T5: the same human summary the tool block's header uses —
+      // the loop-state line used to splice `name + first input value` itself,
+      // which read as `exec npm install…` mid-run while everything else had
+      // moved to 运行命令 · …. (D1=C: exec's object stays the raw command.)
+      texts.push(toolBlockSummary(block, t))
     }
   }
   return texts
@@ -88,7 +83,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
 
     for (const msg of props.messages) {
       if (msg.role !== 'user') {
-        texts.push(...contentBlocksToTexts(msg.contentBlocks))
+        texts.push(...contentBlocksToTexts(msg.contentBlocks, t))
       }
       for (const block of msg.contentBlocks) {
         if (block.type === 'tool_use') {
@@ -136,14 +131,14 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
       liveOutput,
       heldCalls,
       receivingText: props.isReceiving && toolNames.size > 0
-        ? Array.from(toolNames).join(', ') + ' 指令生成中...'
+        ? Array.from(toolNames).map((name) => toolDisplayName(name, t)).join('、') + ' 指令生成中...'
         : ''
     }
-  }, [props.messages, props.isReceiving, props.awaitingApproval])
+  }, [props.messages, props.isReceiving, props.awaitingApproval, t])
 
   const anyHeld = heldCalls.length > 0
 
-  // - Receiving (streaming blocks not yet committed): show "write 指令生成中..."
+  // - Receiving (streaming blocks not yet committed): show "写入文件 指令生成中..."
   // - Initial state (all tools still pending): show "开始执行"
   // - Done state (tools all done AND segment no longer last / engine idle): show "已完成（工具调用X次）"
   // - Held for approval: show 待批准 (the engine cannot move until it is answered)

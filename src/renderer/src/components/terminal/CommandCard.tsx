@@ -282,9 +282,10 @@ function WritePreview({ content }: { content: string }): React.ReactElement {
 
 // ── Command summary helper ────────────────────────────────────────────
 
-function buildCommandSummary(t: (key: string, params?: any) => string, toolName: string, input: Record<string, unknown> | undefined): string {
+function buildCommandSummary(t: (key: string, params?: any) => string, block: ToolUseBlock): string {
+  const input = block.input
   if (!input) return ''
-  switch (toolName) {
+  switch (block.name) {
     case 'exec':
       return String(input.command || '')
     case 'write': {
@@ -299,11 +300,15 @@ function buildCommandSummary(t: (key: string, params?: any) => string, toolName:
       return 'write (truncated \u2014 empty input)'
     }
     default:
-      // For non-exec tools, show the tool name with a brief summary
-      const entries = Object.entries(input)
-        .filter(([k]) => k !== 'description')
-        .map(([k, v]) => `${k}=${formatParam(v)}`)
-      return entries.length ? `${toolName}(${entries.join(', ')})` : toolName
+      // The object half — path / query / host, the same string the 对象行 shows —
+      // not `toolName(k=v, …)`; the raw k=v form only survives for tools the
+      // family table doesn't know (MCP / user tools).
+      return toolObjectSummary(block) || (() => {
+        const entries = Object.entries(input)
+          .filter(([k]) => k !== 'description')
+          .map(([k, v]) => `${k}=${formatParam(v)}`)
+        return entries.length ? `${block.name}(${entries.join(', ')})` : block.name
+      })()
   }
 }
 
@@ -324,7 +329,7 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
   const description = String(block.input?.description || '')
 
   // For non-exec tools, derive a human-readable summary from the input fields
-  const commandLabel = command || buildCommandSummary(t, block.name, block.input)
+  const commandLabel = command || buildCommandSummary(t, block)
 
   // Determine if we're still streaming this tool_use block (pending but no buttons yet)
   const isStreaming = block.status === 'pending' && !onApprove

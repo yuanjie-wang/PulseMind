@@ -49,12 +49,16 @@ export function ThinkingBlock({ block }: { block: ThinkingBlockType }): React.JS
 // ── tool call ────────────────────────────────────────────────────────
 
 /** The tool card's 输入 line: exec shows the command, every other tool the
- *  chat's `toolName(k=v, …)` summary (CommandCard.buildCommandSummary). */
+ *  object half (CommandCard.buildCommandSummary's default → toolObjectSummary);
+ *  the raw `toolName(k=v, …)` only survives for tools the family table
+ *  doesn't know (MCP / user tools). */
 function commandLine(block: ToolUseBlock): string {
   const input = block.input
   if (!input) return block.name
   const command = String(input.command ?? '')
   if (command) return command
+  const object = toolObjectSummary(block)
+  if (object) return object
   const entries = Object.entries(input)
     .filter(([k]) => k !== 'description')
     .map(([k, v]) => {
@@ -94,7 +98,7 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
 }): React.JSX.Element {
   const input = block.input
   const hasParams = !!input && Object.keys(input).length > 0 && !String(input.command ?? '')
-  const title = streaming ? '正在生成命令...' : block.status === 'running' ? '运行中' : toolDisplayName(block.name)
+  const title = streaming ? '正在生成命令...' : block.status === 'running' ? '运行中...' : toolDisplayName(block.name)
   // 对象行（T3/D3）与结果摘要（D3-B）、diff/write 预览（D3-C）—— 桌面 CommandCard 的手工镜像。
   const objectLine = hasParams ? toolObjectSummary(block) : ''
   const summaryLine = resultSummary(block.name, block.output)?.line ?? null
