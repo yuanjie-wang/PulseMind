@@ -164,6 +164,7 @@ export function InputArea({
   // an expert rewrites the token; sending the raw text also works — the
   // controller parses `@<name>` on submit, so the popup is pure assistance.
   const [mentionNavIdx, setMentionNavIdx] = useState(0)
+  const mentionPopupRef = useRef<HTMLDivElement | null>(null)
   const atIdx = inputValue.lastIndexOf('@')
   const mentionActive = showExperts && atIdx >= 0 && (atIdx === 0 || /\s/.test(inputValue[atIdx - 1]))
   const mentionQuery = mentionActive ? inputValue.slice(atIdx + 1) : ''
@@ -184,6 +185,21 @@ export function InputArea({
   const selectMention = (expert: ExpertProfile): void => {
     setInputValue(`${inputValue.slice(0, atIdx)}@${expert.name} `)
   }
+
+  // Arrow keys move the highlight, and the popup is a maxHeight+overflow box,
+  // so the highlighted row can leave the visible rows. Reveal it by writing the
+  // popup's own scrollTop — scrollIntoView is not scoped to the popup and would
+  // also drag the chat pane's scroller sitting behind it.
+  useEffect(() => {
+    const popup = mentionPopupRef.current
+    if (!popup || !mentionActive) return
+    const item = popup.querySelector<HTMLElement>(`[data-mention-idx="${mentionNavIdx}"]`)
+    if (!item) return
+    const top = item.offsetTop
+    const bottom = top + item.offsetHeight
+    if (top < popup.scrollTop) popup.scrollTop = top
+    else if (bottom > popup.scrollTop + popup.clientHeight) popup.scrollTop = bottom - popup.clientHeight
+  }, [mentionNavIdx, mentionActive, mentionMatches])
 
   /** The @ button: write an @-token into the input so the summon popup opens. A
    *  separator space comes along when the text would otherwise run the @ into a
@@ -344,11 +360,15 @@ export function InputArea({
               )}
               {mentionActive && mentionMatches.length > 0 && (
                 <div
+                  ref={mentionPopupRef}
                   data-mention-popup
                   style={{
                     // Mirror the visible .ant-sender box (COMPOSER_MAX_WIDTH,
                     // centered): the column is wider, so plain width would let
                     // the selector outgrow the input box it belongs to.
+                    // position:relative makes the rows' offsetTop popup-relative,
+                    // which the keyboard-scroll effect below reads.
+                    position: 'relative',
                     maxWidth: COMPOSER_MAX_WIDTH,
                     margin: '0 auto',
                     maxHeight: 264,
@@ -364,6 +384,7 @@ export function InputArea({
                   {mentionMatches.map((expert, i) => (
                     <div
                       key={expert.id}
+                      data-mention-idx={i}
                       onClick={() => selectMention(expert)}
                       onMouseEnter={() => setMentionNavIdx(i)}
                       style={{

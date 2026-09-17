@@ -22,6 +22,8 @@
  *      fix may not regress the width mirroring (COMPOSER_MAX_WIDTH)
  *   4. selecting an entry still rewrites the token (the popup stays functional
  *      after the reposition)
+ *   5. keyboard navigation (ArrowUp/Down, real keys) keeps the highlighted row
+ *      inside the popup's visible box by scrolling the popup alone
  *
  * No Electron, no LLM, no extension: `window.electronAPI` is stubbed and the
  * expert list is fixture data, so this cannot touch a real session.
@@ -41,6 +43,10 @@ const EXPERTS = [
   { id: 'expert-code', name: '代码专家', description: '实现与重构', enabled: true },
   { id: 'expert-data', name: '数据分析专家', description: '表格与图表', enabled: true },
   { id: 'expert-pm', name: '产品专家', description: '需求与排期', enabled: true },
+  { id: 'expert-trans', name: '翻译专家', description: '多语言互译', enabled: true },
+  { id: 'expert-test', name: '测试专家', description: '用例与回归', enabled: true },
+  { id: 'expert-ops', name: '运维专家', description: '部署与监控', enabled: true },
+  { id: 'expert-design', name: '设计专家', description: '界面与体验', enabled: true },
   { id: 'expert-off', name: '离职专家', description: '已停用，不应出现', enabled: false },
 ]
 
@@ -192,6 +198,79 @@ if (st.error) {
   check('floating: plan strip clears the card, zero overlap', geo.stripOverlap <= 0.5, `overlap ${geo.stripOverlap.toFixed(1)}px`)
   check('floating: strip and popup stack (strip above popup)', geo.stripAbovePopup)
 }
+
+console.log('── 键盘导航把高亮行滚回视窗 ──')
+// 8 enabled experts = the popup's own match cap, and 8 rows exceed the 264px
+// maxHeight, so the box really scrolls. Arrow keys move the highlight; the
+// highlighted row must stay inside the popup's visible box — scrolled by the
+// popup alone, never by the page behind it.
+const karea = page.locator('[data-case=floating] textarea')
+await karea.fill('')
+await karea.pressSequentially('@')
+await page.waitForFunction(() => {
+  const popup = document.querySelector('[data-case=floating] [data-mention-popup]')
+  return !!popup && popup.querySelectorAll('[data-mention-idx]').length >= 8
+})
+
+/** The popup's scroll state and each row's highlight/visibility. Visibility is
+ *  against the popup's own visible box (rects), the highlight is the
+ *  rgba(0,0,0,0.05) wash InputArea paints on the selected row. */
+const readKb = () => page.evaluate(() => {
+  const popup = document.querySelector('[data-case=floating] [data-mention-popup]')
+  const pr = popup.getBoundingClientRect()
+  const rows = [...popup.querySelectorAll('[data-mention-idx]')].map((el) => {
+    const r = el.getBoundingClientRect()
+    return {
+      idx: Number(el.dataset.mentionIdx),
+      top: r.top,
+      bottom: r.bottom,
+      visible: r.top >= pr.top - 0.5 && r.bottom <= pr.bottom + 0.5,
+      highlighted: getComputedStyle(el).backgroundColor === 'rgba(0, 0, 0, 0.05)',
+    }
+  })
+  return {
+    scrollTop: popup.scrollTop,
+    clientHeight: popup.clientHeight,
+    scrollHeight: popup.scrollHeight,
+    rows,
+    highlightedIdx: rows.findIndex((r) => r.highlighted),
+  }
+})
+const hl = (s) => {
+  const row = s.rows[s.highlightedIdx]
+  return row ? `row${row.idx} [${row.top.toFixed(0)}..${row.bottom.toFixed(0)}] visible=${row.visible}` : 'none'
+}
+
+const s0 = await readKb()
+check('popup lists 8 rows and the box actually scrolls', s0.rows.length === 8 && s0.scrollHeight > s0.clientHeight + 10, `rows=${s0.rows.length} scrollHeight=${s0.scrollHeight} clientHeight=${s0.clientHeight}`)
+check('open: first row highlighted and visible, unscrolled', s0.highlightedIdx === 0 && s0.rows[0].visible && s0.scrollTop === 0, `highlight=${s0.highlightedIdx} scrollTop=${s0.scrollTop}`)
+
+await karea.press('ArrowUp')
+await page.waitForTimeout(50)
+const s1 = await readKb()
+const lastIdx = s1.rows.length - 1
+check('wrap-up: highlight lands on the last row', s1.highlightedIdx === lastIdx, hl(s1))
+check('wrap-up: popup scrolled down to reach it', s1.scrollTop > 0 && s1.scrollTop + s1.clientHeight >= s1.scrollHeight - 5, `scrollTop=${s1.scrollTop} max=${s1.scrollHeight - s1.clientHeight}`)
+check('wrap-up: highlighted row is inside the popup box', s1.rows[lastIdx].visible, hl(s1))
+
+await karea.press('ArrowDown')
+await page.waitForTimeout(50)
+const s2 = await readKb()
+// keep-in-view scrolls back the minimum distance (row 0 flush at the top),
+// not a full reset to scrollTop 0 — visibility is the contract
+check('wrap-down: back to the first row, scrolled back into view', s2.highlightedIdx === 0 && s2.rows[0].visible && s2.scrollTop < s1.scrollTop, `highlight=${s2.highlightedIdx} scrollTop=${s2.scrollTop}`)
+
+for (let i = 0; i < 7; i++) await karea.press('ArrowDown')
+await page.waitForTimeout(50)
+const s3 = await readKb()
+check('walk-down: last row visible after 7 ArrowDown', s3.highlightedIdx === lastIdx && s3.rows[lastIdx].visible, hl(s3))
+
+// Typing filters the matches and resets the selection to row 0 (handleInputChange);
+// the popup must give up its scroll position so that row 0 is what the user sees.
+await karea.fill('@数据')
+await page.waitForTimeout(50)
+const s4 = await readKb()
+check('typing: selection resets to the first (visible) match', s4.rows.length === 1 && s4.highlightedIdx === 0 && s4.rows[0].visible && s4.scrollTop === 0, `rows=${s4.rows.length} scrollTop=${s4.scrollTop}`)
 
 console.log('── 选择仍然生效 ──')
 const area = page.locator('[data-case=floating] textarea')
