@@ -17,9 +17,8 @@ import {
   PlayCircleOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
-import { PromptChip } from '../chat/PromptChip'
+import { StarterPrompts } from './StarterPrompts'
 import { useNavigationStore } from '../../stores/navigationStore'
-import { useComposerDraftStore } from '../../stores/composerDraftStore'
 import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import { describeCron } from '../../utils/schedule-text'
 import {
@@ -177,7 +176,6 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
 }): React.ReactElement {
   const { t } = useTranslation()
   const { message } = AntdApp.useApp()
-  const setDraft = useComposerDraftStore((s) => s.setDraft)
   const [now, setNow] = useState(() => Date.now())
   // undefined = still loading, null = nothing to suggest; the two render differently.
   const [chat, setChat] = useState<ChatSlice | null | undefined>(undefined)
@@ -248,12 +246,7 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
       </div>
 
       {/* Starter prompts: one click drops the question into the composer. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'center' }}>
-        <span style={{ fontSize: 12, color: '#999' }}>{t('welcome.tryThese')}</span>
-        {starters.map((starter) => (
-          <PromptChip key={starter} label={starter} onClick={() => setDraft(starter)} />
-        ))}
-      </div>
+      <StarterPrompts labels={starters} />
     </div>
   )
 }
