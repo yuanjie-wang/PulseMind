@@ -169,6 +169,17 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
         results.push({ index, op: kind, ok: true, detail: `替换 ${count} 个单元格${includeFormulas ? '（含公式）' : ''}` })
         continue
       }
+      if (kind === 'add_row') {
+        const ws = resolveSheet(op.sheet as string | undefined)
+        const afterRow = Number(op.after_row)
+        if (!Number.isFinite(afterRow) || afterRow < 0) throw new Error(`add_row: after_row 必须是非负整数（收到 ${op.after_row}）`)
+        const values = Array.isArray(op.values) ? op.values : []
+        const beforeRowCount = ws.rowCount
+        ws.insertRows(afterRow + 1, [values])
+        const inserted = ws.rowCount - beforeRowCount
+        results.push({ index, op: kind, ok: true, detail: `在第 ${afterRow} 行后插入 ${inserted} 行（共 ${ws.rowCount} 行）` })
+        continue
+      }
       throw new Error(`未知 op: ${kind}`)
     } catch (err) {
       results.push({ index, op: kind, ok: false, detail: err instanceof Error ? err.message : String(err) })

@@ -9,9 +9,12 @@ import { promisify } from 'node:util'
 import { guardFsTarget } from '../sandbox/guard'
 import { withPathLock } from '../sandbox/write-lock'
 import { editXlsx, xlsxOutline, XlsxBatchError, scanXlsx } from '../xlsx/engine'
+import { needsOOXMLPath, editXlsxOOXML } from '../xlsx/ooxml-edit'
 import { resolveWritablePath } from './file-ops'
 import { backupOfficeOriginal } from './office-backup'
 import type { XlsxEditOutcome } from '../../shared/office/ops'
+import { snapshotToWorkspace, generateOfficeDiff, buildChangeSummary } from './office-snapshot'
+import { currentSessionSandbox } from '../sandbox/session-context'
 
 const pReadFile = promisify(readFile)
 const pWriteFile = promisify(writeFile)
@@ -21,6 +24,8 @@ export interface XlsxEditResult extends Partial<XlsxEditOutcome> {
   success: boolean
   error?: string
   backup?: string
+  diff?: string
+  changeSummary?: string
 }
 
 export async function svcEditXlsx(input: { filePath: string; ops: Array<Record<string, unknown>> }): Promise<XlsxEditResult> {
@@ -30,8 +35,50 @@ export async function svcEditXlsx(input: { filePath: string; ops: Array<Record<s
     const safePath = await resolveWritablePath(input.filePath)
     return await withPathLock(safePath, async (): Promise<XlsxEditResult> => {
       const original = await pReadFile(safePath)
-      // Precheck before anything: .xls/encrypted/chart-laden workbooks refuse
-      // with the actionable reason (L6).
+      const useOOXML = needsOOXMLPath(original)
+
+      if (useOOXML) {
+        // OOXML direct-edit path: bypass exceljs for chart/drawing/theme workbooks
+        const outlineOnly = input.ops.length === 1 && input.ops[0].op === 'inspect' && !input.ops[0].sheet
+        if (outlineOnly) {
+          // Simple outline from workbook.xml + sheet XML
+          const result = await editXlsxOOXML(original, [{ op: 'inspect' }])
+          return { success: true, results: [{ index: 0, op: 'inspect', ok: true, detail: '' }], outline: result.outline, warnings: [] }
+        }
+        const { backup, warning } = await backupOfficeOriginal(safePath)
+        // P2.5: snapshot to conversation workspace .versions/
+        const sandbox = currentSessionSandbox()
+        await snapshotToWorkspace(safePath, sandbox?.workspaceDir)
+        let outcome: XlsxEditOutcome
+        try {
+          outcome = await editXlsxOOXML(original, input.ops)
+        } catch (err) {
+          if (err instanceof XlsxBatchError) {
+            return { success: false, error: err.message, results: err.results, warnings: warning ? [warning] : [] }
+          }
+          return { success: false, error: err instanceof Error ? err.message : String(err), warnings: warning ? [warning] : [] }
+        }
+        const tmpPath = join(dirname(safePath), `.${basename(safePath)}.pm-tmp`)
+        await pWriteFile(tmpPath, outcome.buffer)
+        await pRename(tmpPath, safePath)
+        // P2.5: generate diff and change summary
+        let diff: string | undefined
+        let changeSummary: string | undefined
+        if (backup) {
+          diff = await generateOfficeDiff(backup, safePath)
+          changeSummary = buildChangeSummary(outcome.results)
+        }
+        return {
+          ...outcome,
+          success: true,
+          warnings: warning ? [warning, ...outcome.warnings] : outcome.warnings,
+          backup,
+          diff,
+          changeSummary,
+        }
+      }
+
+      // ExcelJS path: standard workbooks without charts/drawings/themes
       const scan = scanXlsx(original)
       if (!scan.ok) return { success: false, error: scan.reason }
 
@@ -41,6 +88,9 @@ export async function svcEditXlsx(input: { filePath: string; ops: Array<Record<s
       }
 
       const { backup, warning } = await backupOfficeOriginal(safePath)
+      // P2.5: snapshot to conversation workspace .versions/
+      const sandbox2 = currentSessionSandbox()
+      await snapshotToWorkspace(safePath, sandbox2?.workspaceDir)
       let outcome: XlsxEditOutcome
       try {
         outcome = await editXlsx(original, input.ops)
@@ -53,11 +103,20 @@ export async function svcEditXlsx(input: { filePath: string; ops: Array<Record<s
       const tmpPath = join(dirname(safePath), `.${basename(safePath)}.pm-tmp`)
       await pWriteFile(tmpPath, outcome.buffer)
       await pRename(tmpPath, safePath)
+      // P2.5: generate diff and change summary
+      let diff: string | undefined
+      let changeSummary: string | undefined
+      if (backup) {
+        diff = await generateOfficeDiff(backup, safePath)
+        changeSummary = buildChangeSummary(outcome.results)
+      }
       return {
         ...outcome,
         success: true,
         warnings: warning ? [warning, ...outcome.warnings] : outcome.warnings,
         backup,
+        diff,
+        changeSummary,
       }
     })
   } catch (err) {

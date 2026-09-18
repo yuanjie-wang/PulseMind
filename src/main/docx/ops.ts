@@ -11,7 +11,7 @@ import { buildDocumentModel, outlineOf, GAP_CHAR, type RunInfo } from './model'
 
 export type DocxOp =
   | { op: 'outline' }
-  | { op: 'replace_text'; find: string; replace: string; expected_count?: number; paragraph?: number }
+  | { op: 'replace_text'; find: string; replace: string; expected_count?: number; paragraph?: number; track_changes?: boolean }
   | { op: 'insert_paragraph'; paragraph: number; position: 'before' | 'after'; text: string; style?: string }
   | { op: 'delete_paragraph'; paragraph: number }
   | { op: 'set_paragraph_style'; paragraph: number; style: string }
@@ -181,20 +181,46 @@ function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
       if (matches.length !== expected) {
         throw new Error(`replace_text: 「${op.find.slice(0, 40)}」命中 ${matches.length} 处（expected_count=${expected}）— 用 paragraph 或 expected_count 明确范围`)
       }
-      for (const match of matches) {
-        const segments = segmentsFor(match.paragraph, match.start, match.end)
-        segments.forEach((seg, segIndex) => {
-          const inner = innerSpanOf(seg.run)
-          const rawStart = seg.from < seg.run.text.length ? seg.run.charMap[seg.from] : inner.end
-          let rawEnd = seg.to < seg.run.text.length ? seg.run.charMap[seg.to] : inner.end
-          if (rawEnd < rawStart) rawEnd = rawStart
-          const pre = inner.raw.slice(0, rawStart - inner.start)
-          const post = inner.raw.slice(rawEnd - inner.start)
-          const middle = segIndex === 0 ? escapeXmlText(op.replace) : ''
-          replacements.push({ start: rawStart, end: rawEnd, text: pre + middle + post })
-        })
+      if (op.track_changes) {
+        // Tracked changes mode: wrap original runs in <w:del>, add new runs in <w:ins>.
+        // Word/WPS will show these as revision marks (strikethrough + underline).
+        const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+        let revId = 1
+        for (const match of matches) {
+          const segments = segmentsFor(match.paragraph, match.start, match.end)
+          for (const seg of segments) {
+            const runEl = seg.run.element
+            const runOpenTag = xml.slice(runEl.startTagStart, runEl.startTagEnd)
+            // Extract rPr if present (shared by del and ins runs)
+            const rPrEl = runEl.children.find((c) => c.kind === 'element' && c.name === 'w:rPr') as XmlElementNode | undefined
+            const rPrXml = rPrEl ? xml.slice(rPrEl.start, rPrEl.end) : ''
+            // Original text goes into <w:delText> inside <w:del><w:r>
+            const spaceAttr = seg.run.text !== seg.run.text.trim() ? ' xml:space="preserve"' : ''
+            const delRun = `${runOpenTag}${rPrXml}<w:delText${spaceAttr}>${escapeXmlText(seg.run.text)}</w:delText></w:r>`
+            const delWrap = `<w:del w:id="${revId++}" w:author="PulseMind" w:date="${ts}">${delRun}</w:del>`
+            // Replacement text goes into <w:ins><w:r><w:t>
+            const insRun = `<w:r>${rPrXml}<w:t${spaceAttr}>${escapeXmlText(seg.run.text.slice(0, seg.from) + op.replace + seg.run.text.slice(seg.to))}</w:t></w:r>`
+            const insWrap = `<w:ins w:id="${revId++}" w:author="PulseMind" w:date="${ts}">${insRun}</w:ins>`
+            replacements.push({ start: runEl.start, end: runEl.end, text: delWrap + insWrap })
+          }
+        }
+        message = `修订替换 ${matches.length} 处`
+      } else {
+        for (const match of matches) {
+          const segments = segmentsFor(match.paragraph, match.start, match.end)
+          segments.forEach((seg, segIndex) => {
+            const inner = innerSpanOf(seg.run)
+            const rawStart = seg.from < seg.run.text.length ? seg.run.charMap[seg.from] : inner.end
+            let rawEnd = seg.to < seg.run.text.length ? seg.run.charMap[seg.to] : inner.end
+            if (rawEnd < rawStart) rawEnd = rawStart
+            const pre = inner.raw.slice(0, rawStart - inner.start)
+            const post = inner.raw.slice(rawEnd - inner.start)
+            const middle = segIndex === 0 ? escapeXmlText(op.replace) : ''
+            replacements.push({ start: rawStart, end: rawEnd, text: pre + middle + post })
+          })
+        }
+        message = `替换 ${matches.length} 处`
       }
-      message = `替换 ${matches.length} 处`
       break
     }
     case 'insert_paragraph': {

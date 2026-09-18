@@ -190,7 +190,7 @@ function officeBinaryReject(filePath: string): string | null {
   if (!ext) return null
   const tool = ext === '.docx' || ext === '.doc' ? 'docx_edit' : ext === '.xlsx' || ext === '.xls' ? 'xlsx_edit' : null
   return tool
-    ? `「${ext}」是 Office 二进制格式，write/edit 会损坏它——请改用 ${tool} 工具编辑`
+    ? `「${ext}」是 Office 二进制格式，write/edit 会损坏它——编辑用 ${tool} 工具，从内容生成新文件用 export_document 工具`
     : `「${ext}」是 Office 二进制格式，write/edit 会损坏它（pptx 编辑暂未支持）`
 }
 

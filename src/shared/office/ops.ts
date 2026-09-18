@@ -4,7 +4,7 @@
 
 export type DocxToolOp =
   | { op: 'outline' }
-  | { op: 'replace_text'; find: string; replace: string; expected_count?: number; paragraph?: number }
+  | { op: 'replace_text'; find: string; replace: string; expected_count?: number; paragraph?: number; track_changes?: boolean }
   | { op: 'insert_paragraph'; paragraph: number; position: 'before' | 'after'; text: string; style?: string }
   | { op: 'delete_paragraph'; paragraph: number }
   | { op: 'set_paragraph_style'; paragraph: number; style: string }
@@ -14,6 +14,7 @@ export type XlsxToolOp =
   | { op: 'inspect'; sheet?: string }
   | { op: 'set_cell'; sheet?: string; cell: string; value?: string | number | boolean | null; formula?: string; number_format?: string }
   | { op: 'find_replace'; find: string; replace: string; sheet?: string; include_formulas?: boolean; expected_count?: number }
+  | { op: 'add_row'; sheet?: string; after_row: number; values?: Array<string | number | boolean | null> }
 
 export type OfficeToolOp = DocxToolOp | XlsxToolOp
 
@@ -36,4 +37,22 @@ export interface XlsxEditOutcome {
   results: OfficeOpResult[]
   outline: Array<{ sheet: string; usedRange: string }>
   warnings: string[]
+}
+
+// ── office_inspect outcome (PLAN-office-editing §P1) ──
+
+export interface OfficeInspectResult {
+  success: boolean
+  format: 'docx' | 'xlsx' | 'pptx' | 'unknown'
+  summary: string
+  details: {
+    paragraphs?: Array<{ index: number; style: string | null; textLength: number }>
+    textBudget?: number
+    sheets?: Array<{ name: string; usedRange: string; rowCount: number; columnCount: number }>
+    formulas?: string[]
+    charts?: number
+    slides?: Array<{ index: number; text: string; shapeCount: number }>
+    images?: number
+  }
+  error?: string
 }

@@ -1,5 +1,7 @@
 # PulseMind Plan —— Office 原生输出(xlsx/docx 交付闭环)
 
+> **状态（2026-09-18）**：本计划保留为 **D1–D7 裁定记录**（用户裁定 2026-09-13，仍然有效）。实施计划已按 office-editing 落地后的现状**再基线重写**至 `_task/20260918/PLAN-office-export.md`（六处修正：host 路由替代新 IPC、instructions 替代系统提示词、exceljs 已入库、产物出口改预览/汇总区联动、服务形制照抄 svcEditDocx、护栏指针补齐）——执行以新计划为准，冲突处新计划胜。
+
 > **目标**:让 AI 的产出"拿得走"——用户说"把这份表格整理成 Excel""把这份报告转成 Word"时,能在会话工作目录里拿到真正的 `.xlsx`/`.docx` 文件,消息里点一下就能打开所在文件夹。补上"做数据、写文档"两类的最后一公里。
 > **背景**:原综合草案含功能提效 + 工程化底座两条线(内置搜索、模型预设、附件体验、Office 输出、日志/CI/更新、safeStorage/代理/migration 等)。**用户裁定(2026-09-13):仅提取其中 D4(Office 原生输出)立项,其余暂缓**——暂缓项保留在附录 E,恢复排期时以原草案为底稿,本计划不重复展开。
 > **读链路现状(为什么只补写链路)**:读 Office 文件已闭环——`read` 工具经 markitdown-js 自动把 PDF/DOCX/PPTX/XLSX 等转 markdown(`tool-executors.ts:73-76`),且有读缓存。缺的只有反向输出:AI 写 xlsx/docx 只能给 markdown/CSV,用户要自己手工转换。

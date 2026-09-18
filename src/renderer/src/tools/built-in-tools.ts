@@ -528,6 +528,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
               op: { type: 'string', enum: ['outline', 'replace_text', 'insert_paragraph', 'delete_paragraph', 'set_paragraph_style', 'format_text'] },
               find: { type: 'string' }, replace: { type: 'string' },
               expected_count: { type: 'number' }, paragraph: { type: 'number' },
+              track_changes: { type: 'boolean', description: 'Wrap replacement in <w:del>/<w:ins> revision marks (Word/WPS shows as tracked changes). Default false (direct replacement).' },
               position: { type: 'string', enum: ['before', 'after'] },
               text: { type: 'string' }, style: { type: 'string' },
               bold: { type: 'boolean' }, italic: { type: 'boolean' }, underline: { type: 'boolean' },
@@ -540,7 +541,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.docx_edit,
     builtIn: true,
-    availability: 'gated',
+    availability: 'always',
   },
   {
     name: 'xlsx_edit',
@@ -557,7 +558,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['inspect', 'set_cell', 'find_replace'] },
+              op: { type: 'string', enum: ['inspect', 'set_cell', 'find_replace', 'add_row'] },
               sheet: { type: 'string' },
               cell: { type: 'string', description: 'e.g. "B3"' },
               value: { type: ['string', 'number', 'boolean', 'null'] },
@@ -566,6 +567,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
               find: { type: 'string' }, replace: { type: 'string' },
               include_formulas: { type: 'boolean' },
               expected_count: { type: 'number' },
+              after_row: { type: 'number', description: 'Row index (0-based) after which to insert. Existing rows shift down.' },
+              values: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] }, description: 'Cell values for the new row.' },
             },
           },
         },
@@ -573,8 +576,41 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['file_path', 'ops'],
     },
     instructions: toolInstructions.xlsx_edit,
+  },
+  // ── office_inspect (PLAN-office-editing §P1) ─────────────────────
+  {
+    name: 'office_inspect',
+    description: 'Inspect an Office file (.docx/.xlsx/.pptx) and return a structured inventory: paragraphs/sheets/shapes, text budget, formulas, charts, images. Read-only — no modification.',
+    category: 'file',
+    triggers: ['inspect office', '检查文档', '盘点文档', 'office 清单'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Path to the Office file (absolute or workspace-relative).' },
+      },
+      required: ['file_path'],
+    },
+    instructions: toolInstructions.office_inspect,
+  },
+  // ── export_document (PLAN-office-export) ───────────────────────────
+  {
+    name: 'export_document',
+    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading) or .csv. Give inline markdown/CSV `content` OR a workspace `sourcePath`, never both. The file lands in the conversation workspace and opens in the preview pane.',
+    category: 'file',
+    triggers: ['export', '导出', '生成 excel', '生成 word', '转成表格', '转成文档'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        format: { type: 'string', enum: ['docx', 'xlsx', 'csv'], description: 'Target format.' },
+        content: { type: 'string', description: 'Inline source: full markdown for docx; a markdown table (or `## Sheet` sections) or CSV data for xlsx/csv. Soft cap 100KB — larger sources go through sourcePath.' },
+        sourcePath: { type: 'string', description: 'Path to an existing workspace .md/.csv file to convert instead of inline content.' },
+        file_path: { type: 'string', description: 'Relative target path (default: export-<timestamp>.<format> in the workspace root). Existing files are never overwritten — a -2 suffix is added.' },
+      },
+      required: ['format'],
+    },
+    instructions: toolInstructions.export_document,
     builtIn: true,
-    availability: 'gated',
+    availability: 'always',
   },
 
   // ── knowledge_read ─────────────────────────────────────────────────
@@ -1016,8 +1052,10 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── browser (Browser Use A-M1) ─────────────────────────────────────
   // One tool for the whole browser capability: `code` runs against the
   // host-side facade (agent.browsers). The full calling convention lives in
-  // the returned documentation()/the browser-use skill — the model bootstraps
-  // by reading it, never by guessing member names. Always in the tool list —
+  // the returned documentation() and in this tool's own `instructions` manual
+  // (tool-instructions.ts, shipped in every request via buildToolProtocols) —
+  // the model bootstraps by reading them, never by guessing member names.
+  // Always in the tool list —
   // no `triggers` and no `availability`, like the page_* family above (the
   // settings toggle is what turns it off).
   {

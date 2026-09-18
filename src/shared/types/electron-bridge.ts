@@ -357,6 +357,8 @@ export interface ElectronAPI {
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }) => Promise<{ success: boolean; error?: string }>
   editDocx: (input: { filePath: string; ops: import('../office/ops').DocxToolOp[] }) => Promise<import('../office/ops').DocxEditOutcome & { success: boolean; error?: string; backup?: string }>
   editXlsx: (input: { filePath: string; ops: import('../office/ops').XlsxToolOp[] }) => Promise<import('../office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>
+  inspectOffice: (input: { filePath: string }) => Promise<import('../office/ops').OfficeInspectResult>
+  exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv'; content?: string; sourcePath?: string; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
   saveBase64Image: (data: string) => Promise<{ success: boolean; path: string }>
   copyFileToTmp: (sourcePath: string) => Promise<{ success: boolean; path: string }>

@@ -6,7 +6,9 @@
 
 import { describe, expect, it } from 'vitest'
 import ExcelJS from 'exceljs'
+import AdmZip from 'adm-zip'
 import { editXlsx, scanXlsx, xlsxOutline } from '../src/main/xlsx/engine'
+import { needsOOXMLPath, editXlsxOOXML } from '../src/main/xlsx/ooxml-edit'
 
 async function buildWorkbook(): Promise<Buffer> {
   const wb = new ExcelJS.Workbook()
@@ -85,5 +87,86 @@ describe('editXlsx', () => {
         { op: 'set_cell', sheet: 'Nope', cell: 'A1', value: 1 },
       ]),
     ).rejects.toThrow(/整批未应用/)
+  })
+})
+
+// ── OOXML direct-edit path (P2.4) ──
+
+/** Build a workbook with a chart entry to trigger OOXML path. */
+async function buildWorkbookWithChart(): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('Sales')
+  ws.getCell('A1').value = 'Product'
+  ws.getCell('B1').value = 'Revenue'
+  ws.getCell('A2').value = 'Widget'
+  ws.getCell('B2').value = 100
+  ws.getCell('A3').value = 'Gadget'
+  ws.getCell('B3').value = 200
+  const base = Buffer.from(await wb.xlsx.writeBuffer())
+  // Inject a chart entry to make scanXlsx refuse but needsOOXMLPath detect
+  const zip = new AdmZip(base)
+  zip.addFile('xl/charts/chart1.xml', Buffer.from('<?xml version="1.0"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart/></c:chartSpace>'))
+  return zip.toBuffer()
+}
+
+describe('needsOOXLPath', () => {
+  it('returns true for workbook with charts', async () => {
+    expect(needsOOXMLPath(await buildWorkbookWithChart())).toBe(true)
+  })
+
+  it('returns false for plain workbook', async () => {
+    expect(needsOOXMLPath(await buildWorkbook())).toBe(false)
+  })
+
+  it('returns false for non-ZIP buffer', () => {
+    expect(needsOOXMLPath(Buffer.from('not a zip'))).toBe(false)
+  })
+})
+
+describe('editXlsxOOXML', () => {
+  it('set_cell modifies cell value in chart-containing workbook', async () => {
+    const buffer = await buildWorkbookWithChart()
+    const outcome = await editXlsxOOXML(buffer, [
+      { op: 'set_cell', sheet: 'Sales', cell: 'B2', value: 999 },
+    ])
+    expect(outcome.results).toHaveLength(1)
+    expect(outcome.results[0].ok).toBe(true)
+    // Verify via ExcelJS (reading, not writing — safe for charts)
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(outcome.buffer as unknown as ArrayBuffer)
+    expect(wb.getWorksheet('Sales').getCell('B2').value).toBe(999)
+  })
+
+  it('set_cell with formula sets formula in OOXML path', async () => {
+    const buffer = await buildWorkbookWithChart()
+    const outcome = await editXlsxOOXML(buffer, [
+      { op: 'set_cell', sheet: 'Sales', cell: 'C2', formula: 'B2*2' },
+    ])
+    expect(outcome.results[0].ok).toBe(true)
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.load(outcome.buffer as unknown as ArrayBuffer)
+    expect(wb.getWorksheet('Sales').getCell('C2').formula).toBe('B2*2')
+  })
+
+  it('inspect returns sheet inventory in OOXML path', async () => {
+    const buffer = await buildWorkbookWithChart()
+    const outcome = await editXlsxOOXML(buffer, [{ op: 'inspect' }])
+    expect(outcome.results).toHaveLength(1)
+    expect(outcome.results[0].ok).toBe(true)
+    expect(outcome.results[0].detail).toContain('OOXML 直改模式')
+  })
+
+  it('unknown op throws in OOXML path', async () => {
+    const buffer = await buildWorkbookWithChart()
+    await expect(
+      editXlsxOOXML(buffer, [{ op: 'add_row', after_row: 1, values: ['x'] }]),
+    ).rejects.toThrow(/不支持/)
+  })
+
+  it('invalid cell address throws', async () => {
+    const buffer = await buildWorkbookWithChart()
+    await expect(
+      editXlsxOOXML(buffer, [{ op: 'set_cell', cell: '123', value: 1 }]),
+    ).rejects.toThrow(/非法/)
   })
 })

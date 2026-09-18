@@ -14,6 +14,8 @@ import type { DocxToolOp } from '../../shared/office/ops'
 import { outlineOf, buildDocumentModel } from '../docx/model'
 import { resolveWritablePath } from './file-ops'
 import { backupOfficeOriginal } from './office-backup'
+import { snapshotToWorkspace, generateOfficeDiff, buildChangeSummary } from './office-snapshot'
+import { currentSessionSandbox } from '../sandbox/session-context'
 
 const pReadFile = promisify(readFile)
 const pWriteFile = promisify(writeFile)
@@ -26,6 +28,8 @@ export interface DocxEditResult {
   outline?: Array<{ index: number; style: string | null; text: string }>
   warnings?: string[]
   backup?: string
+  diff?: string
+  changeSummary?: string
 }
 
 export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[] }): Promise<DocxEditResult> {
@@ -47,6 +51,9 @@ export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[] }
         }
       }
       const { backup, warning } = await backupOfficeOriginal(safePath)
+      // P2.5: snapshot to conversation workspace .versions/
+      const sandbox = currentSessionSandbox()
+      await snapshotToWorkspace(safePath, sandbox?.workspaceDir)
       let outcome: EditDocxResult
       try {
         outcome = editDocx(original, input.ops)
@@ -60,12 +67,21 @@ export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[] }
       const tmpPath = join(dirname(safePath), `.${basename(safePath)}.pm-tmp`)
       await pWriteFile(tmpPath, outcome.buffer)
       await pRename(tmpPath, safePath)
+      // P2.5: generate diff and change summary for the tool result
+      let diff: string | undefined
+      let changeSummary: string | undefined
+      if (backup) {
+        diff = await generateOfficeDiff(backup, safePath)
+        changeSummary = buildChangeSummary(outcome.results)
+      }
       return {
         success: true,
         results: outcome.results,
         outline: outcome.outline,
         warnings: warning ? [warning, ...outcome.warnings] : outcome.warnings,
         backup,
+        diff,
+        changeSummary,
       }
     })
   } catch (err) {

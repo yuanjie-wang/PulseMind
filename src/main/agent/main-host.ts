@@ -30,6 +30,7 @@ import { saveMemory, listMemories, deleteMemory, searchMemories, updateMemory, c
 import { MEMORY_MD_PATH } from '../storage'
 import * as svcDocx from '../services/docx-ops'
 import * as svcXlsx from '../services/xlsx-ops'
+import * as svcExport from '../services/office-export'
 import { invokeGitAction } from '../git/git.service'
 import { serverManager } from '../mcp/MCPServerManager'
 import { persistCustomServers, validateMcpConfig } from '../ipc/mcp.handler'
@@ -262,6 +263,9 @@ export const mainHost: PulseHost = {
   knowledgeReextract: (id: string) => kq.svcReextract(id),
   editDocx: async (input: { filePath: string; ops: any[] }) => svcDocx.svcEditDocx(input as { filePath: string; ops: never[] }),
   editXlsx: async (input: { filePath: string; ops: any[] }) => svcXlsx.svcEditXlsx(input as { filePath: string; ops: never[] }),
+  inspectOffice: async (input: { filePath: string }) => (await import('../services/office-inspect')).svcInspectOffice(input),
+  exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv'; content?: string; sourcePath?: string; filePath: string }) =>
+    svcExport.svcExportDocument(input),
   knowledgeWriteExperience: (data) => Promise.resolve(kq.svcWriteExperience(data)),
 
   // ── Memory store + conversation counters ──

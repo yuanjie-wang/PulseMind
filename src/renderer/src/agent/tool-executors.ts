@@ -199,6 +199,16 @@ export class ToolExecutor implements ToolExecContext {
             // markitdown failed, fall through to shell
           }
 
+          // Legacy Office formats (.doc/.ppt) are not convertible — refuse with guidance
+          // instead of falling through to `cat` which outputs garbled binary.
+          if (ext === '.doc' || ext === '.ppt') {
+            const fmt = ext === '.doc' ? 'Word' : 'PowerPoint'
+            this.addToolResult(t.id,
+              `「${ext}」是旧版 ${fmt} 格式，无法直接读取。请先在 Office/WPS 中另存为 .docx/.pptx，再用 docx_edit 编辑或 read 查看。`,
+              true, undefined, Infinity)
+            return
+          }
+
           // shell path (text files, or markitdown fallback)
           const cmd = buildCommandFromSkillInput(t.name, { ...t.input, limit }, platform, this.opts.platformInfo?.ripgrepPath)
           const cwd = String(t.input?.cwd || '')
@@ -276,11 +286,59 @@ export class ToolExecutor implements ToolExecContext {
           const failedOp = (result.results ?? []).find((r: { ok: boolean }) => !r.ok)
           const detail = (result.results ?? []).filter((r: { ok: boolean }) => r.ok).map((r: { detail: string }) => r.detail).join('; ')
           const summary = `Edited ${fp}: ${detail || 'done'}${result.backup ? ` (备份: ${result.backup})` : ''}`
+          // P2.5: append change summary and diff preview
+          const parts = [summary]
+          if (result.changeSummary) parts.push(`变更摘要:\n${result.changeSummary}`)
+          if (result.diff) {
+            // Truncate diff to last 80 lines to keep tool result readable
+            const lines = result.diff.split('\n')
+            const truncated = lines.length > 80 ? `... (${lines.length - 80} 行省略)\n${lines.slice(-80).join('\n')}` : result.diff
+            parts.push(`变更预览:\n${truncated}`)
+          }
+          const toolText = parts.join('\n')
           t.output = summary
-          this.addToolResult(t.id, summary + (failedOp ? '' : ''), false)
+          this.addToolResult(t.id, toolText + (failedOp ? '' : ''), false)
           t.exitCode = 0
         } else {
           const msg = `Error: ${result.error || 'Edit failed'}`
+          t.output = msg
+          this.addToolResult(t.id, msg, true)
+          t.exitCode = 1
+        }
+      } else if (t.name === 'office_inspect') {
+        let fp = String(t.input.file_path || '')
+        if (!fp) throw new Error('file_path is required')
+        fp = this.resolveWorkspacePath(fp)
+        t.output = `Inspecting ${fp}...`; this.notify()
+        const result = await getHost().inspectOffice({ filePath: fp })
+        if (result.success) {
+          t.output = result.summary
+          this.addToolResult(t.id, result.summary, false)
+          t.exitCode = 0
+        } else {
+          const msg = `Error: ${result.error || result.summary}`
+          t.output = msg
+          this.addToolResult(t.id, msg, true)
+          t.exitCode = 1
+        }
+      } else if (t.name === 'export_document') {
+        const format = String(t.input.format || '')
+        if (!['docx', 'xlsx', 'csv'].includes(format)) throw new Error(`format 必须是 docx / xlsx / csv 之一`)
+        const content = typeof t.input.content === 'string' && t.input.content.trim() !== '' ? t.input.content : undefined
+        const sourcePath = typeof t.input.sourcePath === 'string' && t.input.sourcePath.trim() !== '' ? t.input.sourcePath : undefined
+        if (!content && !sourcePath) throw new Error('content 与 sourcePath 二选一')
+        const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+        const rawPath = String(t.input.file_path || '') || `export-${stamp}.${format}`
+        const fp = this.resolveWorkspacePath(rawPath)
+        t.output = `Exporting ${format.toUpperCase()} → ${fp}...`; this.notify()
+        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv', content, sourcePath, filePath: fp })
+        if (result.success) {
+          const summary = `Exported ${result.path} (${Math.round((result.bytes ?? 0) / 1024)} KB)`
+          t.output = summary
+          this.addToolResult(t.id, summary, false)
+          t.exitCode = 0
+        } else {
+          const msg = `Error: ${result.error || 'Export failed'}`
           t.output = msg
           this.addToolResult(t.id, msg, true)
           t.exitCode = 1

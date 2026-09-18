@@ -24,7 +24,7 @@ const LABEL_KEYS: ReadonlySet<string> = new Set([
   'read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec', 'install', 'webfetch',
   'memory_search', 'memory_save', 'conversation_search', 'tool_result_search',
   'pick_skill', 'pick_tool', 'knowledge_search', 'knowledge_read', 'experience_read',
-  'spawn_agent', 'create_plan', 'advance_plan', 'docx_edit', 'xlsx_edit',
+  'spawn_agent', 'create_plan', 'advance_plan', 'docx_edit', 'xlsx_edit', 'export_document',
   'git_status', 'git_diff', 'git_log', 'git_commit', 'git_restore',
   'page_get_content', 'page_scroll', 'page_wait', 'page_click', 'page_input', 'page_select', 'page_back', 'page_execute_js',
   'browser', 'ask_user',
@@ -68,6 +68,10 @@ export function toolObjectSummary(block: ToolUseBlock): string {
       return (input.file_path as string) || ''
     case 'write':
       return `${input.file_path || ''} (${((input.content as string) || '').length > 0 ? `${((input.content as string).length / 1024).toFixed(1)} KB` : '0 KB'})`
+    case 'export_document': {
+      const target = (input.file_path as string) || ''
+      return target ? `${input.format || ''} → ${target}`.replace(' → ', ' · ') : (input.format as string) || ''
+    }
     case 'list_dir': return (input.dir_path as string) || ''
     case 'search':
     case 'find':

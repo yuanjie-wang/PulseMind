@@ -4,6 +4,25 @@
  * definition from instruction content.
  */
 export const toolInstructions: Record<string, string> = {
+  export_document: `## export_document
+
+Produce a REAL deliverable file (docx / xlsx / csv) the user can take away — use it when the user wants a file, not a table pasted in chat.
+
+### Inputs (D3 — exactly one)
+- content: inline source. docx takes the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet (D4).
+- sourcePath: convert an existing workspace .md/.csv text file instead (large sources — avoids re-sending content).
+
+### Rules
+- file_path is workspace-relative; omit it to land \`export-<timestamp>.<format>\` in the workspace root. Existing files are NEVER overwritten — \`报告.xlsx\` taken → \`报告-2.xlsx\`.
+- content over ~100KB: write it to a file with \`write\` first, then export via sourcePath.
+- Failure refuses the WHOLE call with a readable reason (nothing is written) — fix the cause and retry.
+
+### Honest capability limits
+- docx: images / math / footnotes degrade to raw text with a closing note; no cover pages, headers or footers.
+- xlsx: NO formulas are generated, dates stay text, numbers convert only when the exact round-trip is safe (leading zeros like 工号 007 stay text on purpose).
+- csv: exports the FIRST table/sheet only.
+`,
+
   read: `## read
 
 Read a file from the local filesystem. Returns the file contents as text with a metadata header.
@@ -306,7 +325,7 @@ Byte-faithful Word (.docx) editing through structured operations.
 
 ### Ops
 - outline - list paragraphs (no edit).
-- replace_text - find/replace in the visible text; crosses style runs automatically. Default expects EXACTLY 1 hit; give expected_count or paragraph to widen/narrow. No hit = whole batch refused, nothing written.
+- replace_text - find/replace in the visible text; crosses style runs automatically. Default expects EXACTLY 1 hit; give expected_count or paragraph to widen/narrow. No hit = whole batch refused, nothing written. Add track_changes: true to wrap in revision marks (<w:del>/<w:ins>) so Word/WPS shows the edit as a tracked change — user can accept/reject later.
 - insert_paragraph - paragraph + position (before/after) + text; optional style.
 - delete_paragraph - refuses paragraphs carrying a section break.
 - set_paragraph_style - paragraph + style name (e.g. "Heading1").
@@ -329,10 +348,28 @@ Structured Excel (.xlsx) editing. The workbook is checked first: charts, pivot t
 - inspect - list sheets (+ used range).
 - set_cell - cell ("B3") + value OR formula, optional number_format (e.g. "0.00%", "yyyy-mm-dd").
 - find_replace - replaces in VALUES only; pass include_formulas: true to also rewrite formulas. expected_count defaults to actual.
+- add_row - after_row (0-based index) + values array. Inserts a new row and shifts existing rows down. Optional sheet (defaults to first).
 
 ### Never
-- Structural changes (insert/delete rows/columns): formulas would not re-aim; refuse and explain.
+- Structural changes (insert/delete columns): formulas would not re-aim; refuse and explain.
 - Chart data editing, pivot refresh - refuse.`,
+
+  office_inspect: `## office_inspect
+
+Read-only structured inventory for Office files (.docx/.xlsx/.pptx).
+
+### Workflow
+Call with {"file_path":"path/to/file"} to inspect the file.
+
+### Output
+- **docx**: paragraph list (index, style, text length), total text budget (110% of current), image count.
+- **xlsx**: sheet names, used ranges, row/column counts, formula list, chart count.
+- **pptx**: per-slide shape list, text content, shape count, image count.
+
+### When to use
+- Before editing with docx_edit/xlsx_edit to understand the document structure.
+- To check text budget before large replacements.
+- To detect charts/pivot tables that would prevent xlsx_edit from working.`,
 
   knowledge_read: `## knowledge_read
 

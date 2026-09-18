@@ -105,6 +105,8 @@ const HOST_METHOD_KEYS = [
   'knowledgeReextract',
   'editDocx',
   'editXlsx',
+  'inspectOffice',
+  'exportDocument',
   'knowledgeWriteExperience',
   // memory store + conversation summary counters (MemoryManager)
   'countMemories',

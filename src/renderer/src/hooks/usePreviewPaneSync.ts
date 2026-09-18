@@ -17,8 +17,12 @@ import { usePreviewPaneStore } from '../stores/previewPaneStore'
 
 export interface PaneFileEvent {
   toolUseId: string
-  tool: 'write' | 'edit'
+  tool: 'write' | 'edit' | 'export_document'
   path: string
+  /** export_document forces the pane open (D9): the moment a deliverable is
+   *  born is when the user wants to see it — office kinds would otherwise
+   *  fail shouldAutoOpen, which is write's own heuristic, not a law. */
+  force?: boolean
 }
 
 type KnownToolMeta = { name: string; path: string }
@@ -32,7 +36,7 @@ export function ingestAgentEvent(known: Map<string, KnownToolMeta>, data: AgentE
     return []
   }
   if (data.type === 'tool_start') {
-    if (data.name === 'write' || data.name === 'edit') {
+    if (data.name === 'write' || data.name === 'edit' || data.name === 'export_document') {
       const input = data.input as { file_path?: unknown } | null | undefined
       if (input && typeof input.file_path === 'string') {
         known.set(data.toolUseId, { name: data.name, path: input.file_path })
@@ -46,8 +50,8 @@ export function ingestAgentEvent(known: Map<string, KnownToolMeta>, data: AgentE
       if (u.status !== 'completed') continue
       if (u.exitCode !== undefined && u.exitCode !== 0) continue
       const meta = known.get(u.toolUseId)
-      if (meta && (meta.name === 'write' || meta.name === 'edit')) {
-        fired.push({ toolUseId: u.toolUseId, tool: meta.name, path: meta.path })
+      if (meta && (meta.name === 'write' || meta.name === 'edit' || meta.name === 'export_document')) {
+        fired.push({ toolUseId: u.toolUseId, tool: meta.name, path: meta.path, force: meta.name === 'export_document' })
       }
     }
     return fired
@@ -61,7 +65,7 @@ function ingestMessageItem(known: Map<string, KnownToolMeta>, item: unknown): vo
   for (const raw of blocks) {
     const b = raw as { type?: string; id?: string; name?: string; input?: Record<string, unknown> }
     if (b?.type !== 'tool_use' || !b.id) continue
-    if (b.name !== 'write' && b.name !== 'edit') continue
+    if (b.name !== 'write' && b.name !== 'edit' && b.name !== 'export_document') continue
     const path = b.input?.file_path
     if (typeof path === 'string') known.set(b.id, { name: b.name, path })
   }
@@ -80,8 +84,11 @@ export function usePreviewPaneSync(conversationId: string | undefined, workspace
         fired.add(ev.toolUseId)
         const store = usePreviewPaneStore.getState()
         const abs = resolvePreviewPath(ev.path, workspaceDir)
-        if (ev.tool === 'write' && shouldAutoOpen(abs)) store.openFile(sessionId, abs)
-        else store.bumpReload(abs)
+        if (ev.force || (ev.tool === 'write' && shouldAutoOpen(abs))) {
+          store.openFile(sessionId, abs)
+          // An already-open tab must re-read from disk too.
+          store.bumpReload(abs)
+        } else store.bumpReload(abs)
       }
     })
   }, [conversationId, workspaceDir])

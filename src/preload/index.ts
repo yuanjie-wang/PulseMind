@@ -307,6 +307,10 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_DOCX, input),
   editXlsx: (input: { filePath: string; ops: unknown }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_XLSX, input),
+  inspectOffice: (input: { filePath: string }): Promise<unknown> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_INSPECT_OFFICE, input),
+  exportDocument: (input: { format: string; content?: string; sourcePath?: string; filePath: string }): Promise<unknown> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, input),
   convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),
   saveBase64Image: (data: string): Promise<{ success: boolean; path: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_SAVE_BASE64_IMAGE, data),

@@ -17,8 +17,10 @@ import {
   svcListDir,
   svcDeletePath,
 } from '../services/file-ops'
+import { svcExportDocument } from '../services/office-export'
 import { svcEditDocx } from '../services/docx-ops'
 import { svcEditXlsx } from '../services/xlsx-ops'
+import { svcInspectOffice } from '../services/office-inspect'
 import type {
   EditFileInput,
   EditFileResult,
@@ -31,6 +33,18 @@ import type {
 } from '../services/file-ops'
 
 export type { EditFileInput, EditFileResult, PatchFileInput, PatchFileResult, WriteFileInput, WriteFileResult }
+
+/** File-local twin of knowledge.handler's helper: wraps a service call so the
+ *  raw result (or its rejection) crosses IPC unchanged. The docx/xlsx/export
+ *  handlers below had been referencing this name without any definition —
+ *  resolving only through esbuild's shared bundle scope, which tsc rightly
+ *  rejects per-file. */
+function withRawResponse<R>(fn: (...args: any[]) => R | Promise<R>) {
+  return async (_event: Electron.IpcMainInvokeEvent, ...args: any[]): Promise<R> => {
+    try { return await fn(...args) }
+    catch (e) { console.error('[IPC] file-ops error:', e); throw e }
+  }
+}
 
 export function registerFileOpsHandlers(): void {
   // ── Save base64 image to ~/.pulsemind/tmp/screenshot/ ──────────────
@@ -66,4 +80,6 @@ export function registerFileOpsHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.UTIL_WRITE_FILE, (_event, input: WriteFileInput): Promise<WriteFileResult> => svcWriteFile(input))
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_DOCX, withRawResponse(async (input: { filePath: string; ops: unknown[] }) => svcEditDocx(input as { filePath: string; ops: never[] })))
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_XLSX, withRawResponse(async (input: { filePath: string; ops: unknown[] }) => svcEditXlsx(input as { filePath: string; ops: never[] })))
+  ipcMain.handle(IPC_CHANNELS.UTIL_INSPECT_OFFICE, withRawResponse(async (input: { filePath: string }) => svcInspectOffice(input)))
+  ipcMain.handle(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, withRawResponse(async (input: import('../services/office-export').ExportDocumentInput) => svcExportDocument(input)))
 }
