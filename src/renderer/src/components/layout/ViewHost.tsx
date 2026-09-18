@@ -66,7 +66,12 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
       )
     case 'search':
       return <SearchView onOpenConversation={onSelectConversation} />
+    // M19 fallback: a stale `kind:'about'` (persisted view state from before
+    // 0.4.0, or a navigation the two redirected entries missed) used to reach
+    // `default: null` — a blank pane with no escape. About lives inside
+    // Settings now, so the kind renders Settings like `settings` does.
     case 'settings':
+    case 'about':
       return <SettingsPage memoryManager={memoryManager} onReloadConversations={onReloadConversations} />
     case 'usage':
       return <StatisticsPage />

@@ -165,6 +165,14 @@ export class ToolExecutor implements ToolExecContext {
     const platform = this.opts.platformInfo?.platform || ''
     await Promise.all(tools.map(async (t) => {
       try {
+        // ── office_inspect: a workspace tool living on the read tier ──
+        // (H10: READ_TIER_TOOLS routes it HERE; without this branch it fell
+        // through to the shell command builder below and died as
+        // "Unknown tool", or worse, ran as a shell command after approval.)
+        if (t.name === 'office_inspect') {
+          await this.execWorkspaceTool(t)
+          return
+        }
         // ── `read` tool: metadata header + content ────────────────────
         if (t.name === 'read') {
           const filePath = String(t.input?.file_path || '')
@@ -280,15 +288,34 @@ export class ToolExecutor implements ToolExecContext {
         if (ops.length === 0) throw new Error('ops is required (至少一个操作；先 outline 了解文档)')
         t.output = `Editing ${fp} (${ops.length} op)...`; this.notify()
         const result = t.name === 'docx_edit'
-          ? await getHost().editDocx({ filePath: fp, ops: ops as never })
-          : await getHost().editXlsx({ filePath: fp, ops: ops as never })
+          ? await getHost().editDocx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })
+          : await getHost().editXlsx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })
         if (result.success) {
-          const failedOp = (result.results ?? []).find((r: { ok: boolean }) => !r.ok)
-          const detail = (result.results ?? []).filter((r: { ok: boolean }) => r.ok).map((r: { detail: string }) => r.detail).join('; ')
-          const summary = `Edited ${fp}: ${detail || 'done'}${result.backup ? ` (备份: ${result.backup})` : ''}`
+          const allResults = (result.results ?? []) as Array<{ index: number; op: string; ok: boolean; detail: string }>
+          const outlineOnly = allResults.length === 1 && allResults[0]?.op === 'outline'
+          const detail = allResults.filter((r) => r.ok).map((r) => r.detail).join('; ')
+          const summary = outlineOnly
+            ? `Inspected ${fp}`
+            : `Edited ${fp}: ${detail || 'done'}${result.backup ? ` (备份: ${result.backup})` : ''}`
           // P2.5: append change summary and diff preview
           const parts = [summary]
           if (result.changeSummary) parts.push(`变更摘要:\n${result.changeSummary}`)
+          // M1: the outline is the payload of an outline-only call — without
+          // it in the tool result the manual's "FIRST call with outline" was
+          // unusable (index-based ops had nothing to index into).
+          const outline = (result.outline ?? []) as Array<Record<string, unknown>>
+          if (outline.length > 0) {
+            const isDocx = t.name === 'docx_edit'
+            const lines = outline.map((o) =>
+              isDocx
+                ? `[${o.index}] ${o.style ?? '-'}: ${String(o.text ?? '').slice(0, 80)}`
+                : `${o.sheet}: ${o.usedRange}`,
+            )
+            const shown = lines.length > 120
+              ? [...lines.slice(0, 120), `…（共 ${lines.length} 项，截断）`]
+              : lines
+            parts.push(`大纲:\n${shown.join('\n')}`)
+          }
           if (result.diff) {
             // Truncate diff to last 80 lines to keep tool result readable
             const lines = result.diff.split('\n')
@@ -297,7 +324,7 @@ export class ToolExecutor implements ToolExecContext {
           }
           const toolText = parts.join('\n')
           t.output = summary
-          this.addToolResult(t.id, toolText + (failedOp ? '' : ''), false)
+          this.addToolResult(t.id, toolText, false)
           t.exitCode = 0
         } else {
           const msg = `Error: ${result.error || 'Edit failed'}`

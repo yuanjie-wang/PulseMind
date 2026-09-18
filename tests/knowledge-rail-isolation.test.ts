@@ -119,3 +119,47 @@ describe('knowledge rail — base management lives on the rail', () => {
     }
   })
 })
+
+// review_20260919 H2: the READ path had no baseId at all — svcGetRaw/svcReadWiki
+// accepted it, but the handler, preload and manager dropped it, so a non-default
+// base's compile/preview resolved against the DEFAULT base's dirs and failed
+// 100% of the time (and when a read succeeded, applyWikiChanges still wrote
+// the pages into the default base). These pin the read chain the way the
+// search chain above is pinned.
+describe('knowledge read path — baseId travels GET_RAW / READ_WIKI / APPLY / REINDEX', () => {
+  it('non-vacuity: the scan reads real sources', () => {
+    expect(handler).toContain('svcGetRaw')
+    expect(manager).toContain('readRawContent')
+  })
+
+  it('the IPC handlers forward baseId for the read channels', () => {
+    expect(handler).toContain('svcGetRaw(relativePath, baseId)')
+    expect(handler).toContain('svcGetRawPath(relativePath, baseId)')
+    expect(handler).toContain('svcReadWiki(relativePath, baseId)')
+    expect(handler).toMatch(/baseId\?: string\n  \}\) => svcApplyWikiChanges/)
+    expect(handler).toContain('svcRebuildIndex(baseId)')
+  })
+
+  it('preload forwards the same parameters', () => {
+    expect(preload).toContain('KNOWLEDGE_GET_RAW, relativePath, baseId')
+    expect(preload).toContain('KNOWLEDGE_GET_RAW_PATH, relativePath, baseId')
+    expect(preload).toContain('KNOWLEDGE_READ_WIKI, relativePath, baseId')
+    expect(preload).toContain('baseId?: string\n  }): Promise<{ written: number; logAppended: boolean; markedCompiled: number }>')
+    expect(preload).toContain('KNOWLEDGE_REBUILD_INDEX, baseId')
+  })
+
+  it('the ElectronAPI contract declares the parameters', () => {
+    expect(bridge).toMatch(/knowledgeGetRaw: \(relativePath: string, baseId\?: string\)/)
+    expect(bridge).toMatch(/knowledgeReadWiki: \(relativePath\?: string, baseId\?: string\)/)
+    expect(bridge).toMatch(/baseId\?: string\n  \}\) => Promise<\{ written: number/)
+    expect(bridge).toMatch(/knowledgeRebuildIndex: \(baseId\?: string\)/)
+  })
+
+  it('compileFile rides file.baseId end to end', () => {
+    expect(manager).toContain('const baseId = file.baseId')
+    expect(manager).toContain('this.readRawContent(file.filePath, baseId)')
+    expect(manager).toContain('this.readWiki(\'index.md\', baseId)')
+    expect(manager).toMatch(/compiledIds: \[file\.id\],\n      baseId/)
+    expect(manager).toContain('await this.rebuildWikiIndex(baseId)')
+  })
+})

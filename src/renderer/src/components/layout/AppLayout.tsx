@@ -300,7 +300,7 @@ function AppLayout({
           justifyContent: 'space-between',
           WebkitAppRegion: 'drag'
         } as React.CSSProperties}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigateKind('about')}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigate({ kind: 'settings', settingsTab: 'about' })}>
             <span style={{ fontSize: FONT_SIZE.xl, fontWeight: FONT_WEIGHT.semibold, color: INK }}>{t('appLayout.title')}</span>
             {/* Version rides the Vite `define` global (package.json's version). */}
             <span style={{ fontSize: FONT_SIZE.sm, fontWeight: FONT_WEIGHT.medium, color: TEXT_MUTED, lineHeight: 1 }}>v{__APP_VERSION__}</span>

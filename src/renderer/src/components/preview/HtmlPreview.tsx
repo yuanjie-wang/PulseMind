@@ -12,7 +12,7 @@
 // when `event.source === iframe.contentWindow`; the frame is opaque-origin,
 // so this is the only channel it has.
 
-import React, { useEffect, useMemo, useRef } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   isFrameToParentMessage,
   type ParentToFrameMessage,
@@ -51,8 +51,27 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
   // eslint-disable-next-line react-hooks/exhaustive-deps -- generateNonce reads neither dep ON PURPOSE: the deps are the reset contract, not data
   const nonce = useMemo(() => generateNonce(), [path, elementMode])
   const src = elementMode
-    ? `local-file://${path.replace(/\\/g, '/')}?pmPreview=1&pmNonce=${nonce}`
+    ? `local-file://${path.replace(/\\/g, '/')}?pmPreview=1`
     : `local-file://${path.replace(/\\/g, '/')}`
+
+  // M10: the nonce is registered in the MAIN process (per mount) and the
+  // protocol handler stamps it into the served picker — the URL no longer
+  // carries it, because the served page reads location.search. The frame is
+  // held until registration lands so the serve can never race the register.
+  const [registeredTick, setRegisteredTick] = useState<number | null>(null)
+  useEffect(() => {
+    if (!elementMode) return
+    let cancelled = false
+    // Optional-call + Promise.resolve: a harness stubbing electronAPI without
+    // this method must not crash the pane — it just serves without a nonce
+    // and the parent drops pm:* messages.
+    const registered = window.electronAPI.registerPreviewNonce?.({ filePath: path, nonce })
+    Promise.resolve(registered)
+      .catch(() => { /* serve will carry no nonce; the parent drops pm:* */ })
+      .then(() => { if (!cancelled) setRegisteredTick(reloadTick) })
+    return () => { cancelled = true }
+  }, [elementMode, path, nonce, reloadTick])
+  const holdFrame = elementMode && registeredTick !== reloadTick
 
   // Keep the session alive with the disk text PreviewContent read.
   useEffect(() => {
@@ -149,8 +168,8 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
   return (
     <iframe
       ref={iframeRef}
-      key={reloadTick}
-      src={src}
+      key={holdFrame ? `hold-${reloadTick}` : `go-${reloadTick}`}
+      src={holdFrame ? undefined : src}
       sandbox="allow-scripts"
       title="preview"
       style={{ display: 'block', width: '100%', height: '100%', border: 'none', background: '#fff' }}

@@ -392,7 +392,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       return
     }
 
-    const { existing, new: newFiles } = await knowledgeManager.prepareImport(filePaths)
+    const { existing, new: newFiles } = await knowledgeManager.prepareImport(filePaths, scopedBaseId)
 
     Modal.confirm({
       title: '导入文件夹',
@@ -532,7 +532,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   /** Enqueue import items and start processing. */
   const enqueueImport = useCallback(async (filePaths: string[], importBaseId?: string) => {
     if (filePaths.length === 0) return
-    const { existing, new: newFiles } = await knowledgeManager.prepareImport(filePaths)
+    const { existing, new: newFiles } = await knowledgeManager.prepareImport(filePaths, importBaseId ?? scopedBaseId)
 
     if (newFiles.length === 0) {
       if (existing.length > 0) message.info('所有文件均已导入')
@@ -821,7 +821,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   /** Open the raw file content in a preview modal. */
   const handleOpenRaw = async (file: KnowledgeFile) => {
     try {
-      const content = await knowledgeManager.readRawContent(file.filePath)
+      const content = await knowledgeManager.readRawContent(file.filePath, file.baseId)
       if (content) {
         setCompiledPreview({ visible: true, content, title: file.title })
       }

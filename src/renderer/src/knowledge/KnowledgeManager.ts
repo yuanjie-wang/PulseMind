@@ -69,9 +69,10 @@ export class KnowledgeManager {
     return getHost().knowledgeAddFile(filePaths, baseId)
   }
 
-  /** Check each file path against DB; returns existing + new. */
-  async prepareImport(filePaths: string[]): Promise<{ existing: { id: string; filePath: string }[]; new: string[] }> {
-    return getHost().knowledgePrepareImport(filePaths)
+  /** Check each file path against DB; returns existing + new. `baseId`
+   *  scopes the duplicate check (M16) — the same file may live in two bases. */
+  async prepareImport(filePaths: string[], baseId?: string): Promise<{ existing: { id: string; filePath: string }[]; new: string[] }> {
+    return getHost().knowledgePrepareImport(filePaths, baseId)
   }
 
   /** Scan a folder and return the count of importable files (without importing). */
@@ -90,8 +91,8 @@ export class KnowledgeManager {
   }
 
   /** Get the absolute file-system path of a raw knowledge file. */
-  async getRawFilePath(relativePath: string): Promise<string> {
-    return getHost().knowledgeGetRawPath(relativePath)
+  async getRawFilePath(relativePath: string, baseId?: string): Promise<string> {
+    return getHost().knowledgeGetRawPath(relativePath, baseId)
   }
 
   /** Search raw file content for a query string. Returns matches with context excerpts.
@@ -105,21 +106,27 @@ export class KnowledgeManager {
     return getHost().knowledgeSearchWiki(query, baseId)
   }
 
-  /** Rebuild wiki/index.md from actual page files, grouped by type with descriptions. */
-  async rebuildWikiIndex(): Promise<void> {
-    return getHost().knowledgeRebuildIndex()
+  /** Rebuild wiki/index.md from actual page files, grouped by type with
+   *  descriptions. Scoped to one base (default 'default') — the manager's
+   *  compile path rebuilds the base it just wrote into, not always the
+   *  default one. */
+  async rebuildWikiIndex(baseId: string = 'default'): Promise<void> {
+    return getHost().knowledgeRebuildIndex(baseId)
   }
 
   // ─── Content Access ────────────────────────────────────────────────
 
-  /** Read the raw content of a knowledge file by its relative path. */
-  async readRawContent(relativePath: string): Promise<string> {
-    return getHost().knowledgeGetRaw(relativePath)
+  /** Read the raw content of a knowledge file by its relative path within a
+   *  base (H2): every read resolves through bases/<id>/raw, so the baseId is
+   *  not optional semantics — an omitted one reads the DEFAULT base and a
+   *  non-default file's compile/preview failed 100% of the time. */
+  async readRawContent(relativePath: string, baseId?: string): Promise<string> {
+    return getHost().knowledgeGetRaw(relativePath, baseId)
   }
 
-  /** Read wiki content or list wiki directory. */
-  async readWiki(relativePath?: string): Promise<{ content: string | null; files: string[] | null }> {
-    return getHost().knowledgeReadWiki(relativePath)
+  /** Read wiki content or list wiki directory, within a base. */
+  async readWiki(relativePath?: string, baseId?: string): Promise<{ content: string | null; files: string[] | null }> {
+    return getHost().knowledgeReadWiki(relativePath, baseId)
   }
 
   // ─── Compilation ───────────────────────────────────────────────────
@@ -169,16 +176,23 @@ export class KnowledgeManager {
       return { ok: false, written: 0, log: 'File not found or already compiled' }
     }
 
+    // H2: every read/write below resolves through bases/<id>/…, so the whole
+    // compile rides the file's own base. The base-less version resolved
+    // non-default files against the DEFAULT base: read threw (queue retried
+    // 3× then flagged the source back to raw — "compile 100% failed"), and
+    // when a read did succeed the pages landed in the default base's wiki.
+    const baseId = file.baseId
+
     const schema = await this.loadSchema()
 
     // Existing wiki index (context for merge decisions)
     let existingIndex = ''
     try {
-      existingIndex = (await this.readWiki('index.md')).content || ''
+      existingIndex = (await this.readWiki('index.md', baseId)).content || ''
     } catch { /* wiki may not exist */ }
 
     // Read raw content
-    const content = await this.readRawContent(file.filePath)
+    const content = await this.readRawContent(file.filePath, baseId)
     const fileContents = [{ id: file.id, filePath: file.filePath, title: file.title, content }]
 
     // K8 pass 1: plan the pages; fetch existing bodies for update targets.
@@ -187,7 +201,7 @@ export class KnowledgeManager {
       const planned = await this.planWikiPages(fileContents[0], schema)
       const bodies = await Promise.all(planned.map(async (p) => ({
         filePath: p.filePath,
-        content: (await this.readWiki(p.filePath).catch(() => ({ content: null }))).content,
+        content: (await this.readWiki(p.filePath, baseId).catch(() => ({ content: null }))).content,
       })))
       existingPages = bodies.filter((b): b is { filePath: string; content: string } => !!b.content)
     } catch (err) {
@@ -228,11 +242,12 @@ export class KnowledgeManager {
     const applyResult = await getHost().knowledgeApplyWikiChanges({
       actions: result.actions,
       logEntry: result.rejected?.length ? `${result.logEntry}（拒绝: ${result.rejected.join('; ')}）` : result.logEntry,
-      compiledIds: [file.id]
+      compiledIds: [file.id],
+      baseId
     })
 
-    // Rebuild structured wiki index
-    await this.rebuildWikiIndex()
+    // Rebuild structured wiki index (of the base that was just written)
+    await this.rebuildWikiIndex(baseId)
 
     this._wikiVersion++
     return {

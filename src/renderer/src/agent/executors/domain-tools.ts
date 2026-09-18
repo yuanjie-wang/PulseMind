@@ -195,6 +195,12 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
             } else {
               readSuggestion = `\`knowledge_read\` 参数: path="${f.filePath}", type="raw"`
             }
+            // H2: non-default bases must name themselves — the read resolves
+            // through bases/<id>/, and without the base parameter a hit from
+            // another base reads the default one and fails.
+            if (f.baseId && f.baseId !== 'default') {
+              readSuggestion += `, base="${f.baseId}"`
+            }
             const line = `- **${f.title || f.filePath}** (${f.sourceType === 'url' ? '链接' : f.sourceType === 'file' ? '文件' : f.sourceType}, ${f.status === 'compiled' ? '已编译' : '原始'})\n  ${readSuggestion}`
             const ex = contentExcerpts.get(f.id)
             if (ex && ex.length > 0) {
@@ -217,6 +223,11 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
       // directory falls back to the other one, with the result noting where
       // the content actually came from.
       const readType = String(t.input.type || 'wiki')
+      // H2: an explicit `base` wins; otherwise the turn's @知识库 scope; the
+      // default base is the last resort. All three ride every read below.
+      const readBaseId = (typeof t.input.base === 'string' && t.input.base.trim() !== '')
+        ? t.input.base.trim()
+        : (ex.opts.knowledgeBaseScope?.id ?? undefined)
       const offset = Math.max(1, Math.floor(Number(t.input.offset) || 1))
       const lineCount = Math.max(0, Math.floor(Number(t.input.lines) || 0))
       if (!filePath) {
@@ -228,17 +239,17 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
           let content: string | null = null
           let actualType = readType
           if (readType === 'raw') {
-            content = await km.readRawContent(filePath).catch(() => null)
+            content = await km.readRawContent(filePath, readBaseId).catch(() => null)
             if (content === null) {
-              const result = await km.readWiki(filePath)
+              const result = await km.readWiki(filePath, readBaseId)
               content = result.content
               if (content !== null) actualType = 'wiki'
             }
           } else {
-            const result = await km.readWiki(filePath)
+            const result = await km.readWiki(filePath, readBaseId)
             content = result.content
             if (content === null) {
-              content = await km.readRawContent(filePath).catch(() => null)
+              content = await km.readRawContent(filePath, readBaseId).catch(() => null)
               if (content !== null) actualType = 'raw'
             }
           }

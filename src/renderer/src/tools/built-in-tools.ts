@@ -631,6 +631,10 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           description: 'Which directory to read from. Defaults to wiki (compiled). If the path is not found there, the other directory is tried and the result notes the actual source.',
           enum: ['wiki', 'raw'],
         },
+        base: {
+          type: 'string',
+          description: 'Knowledge base id owning the file (from knowledge_search results). Required for non-default bases — the same relative path exists per base. Defaults to this turn\'s @-mentioned base, else the default base.',
+        },
         offset: {
           type: 'number',
           description: '1-based line number to start reading from (with lines, for paging through long files).',

@@ -68,6 +68,13 @@ export class ExecutionFlow {
       await this.engine.toolExecutor.execOtherTool(targetBlock)
       return
     }
+    // office_inspect is a read-tier workspace tool — it can no longer be held
+    // (reads never wait), but the branch keeps an approval release from ever
+    // reaching the shell default below (the H10 trap, same shape as page tools).
+    if (targetBlock.name === 'office_inspect') {
+      await this.engine.toolExecutor.execWorkspaceTool(targetBlock)
+      return
+    }
     // A held write reaches the executor from here (the gate skipped it in
     // dispatchToolExecution); the git tools run through execFile there, so they
     // must not fall through to the shell path below.

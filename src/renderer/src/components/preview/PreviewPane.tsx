@@ -56,22 +56,24 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
     const entry = store.drafts[path]
     if (!entry) return
     try {
-      // expectContent = the draft's baseline: if the disk moved under the
-      // draft (terminal / other process / a window the D8 bump missed), the
-      // main side refuses the overwrite instead of silently clobbering the
-      // external edit (review 2026-09-18 M6). The bumpReload below then
-      // re-reads and the normal conflict decision asks the user.
+      // expectContent = the disk text EXACTLY as the draft last saw it — the
+      // normalized `baseline` never equals a CRLF/BOM disk file, which used to
+      // refuse every save of such files with "文件已被外部修改" (H8). The
+      // serialized content below restores EOL/BOM, so the written bytes and
+      // this gate compare against the same shape. If the disk moved under the
+      // draft, the main side refuses the overwrite and bumpReload re-reads.
+      const serialized = serializeDraft(entry)
       const res = await window.electronAPI.writeFile({
         filePath: path,
-        content: serializeDraft(entry),
-        expectContent: entry.baseline,
+        content: serialized,
+        expectContent: entry.diskText ?? entry.baseline,
       })
       if (res && res.success === false) {
         void message.error(res.error || 'Save failed')
         store.bumpReload(path)
         return
       }
-      store.setDraft(path, { ...entry, baseline: entry.content })
+      store.setDraft(path, { ...entry, baseline: entry.content, diskText: serialized })
       store.clearExternalChange(path)
       useHtmlEditStore.getState().forgetFile(path)
       store.bumpReload(path)

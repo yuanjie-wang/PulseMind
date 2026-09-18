@@ -60,6 +60,22 @@ function extractFilePath(input: unknown): string | null {
   return typeof filePath === 'string' && filePath.trim() !== '' ? filePath : null
 }
 
+/** export_document's REAL output path rides the tool result text
+ *  (`Exported <path> (N KB)` — the executor's summary). file_path is optional
+ *  for the tool (a default name is minted), and a collision silently gains a
+ *  `-2` suffix — in both cases the input string names a file that does not
+ *  exist, so the result, not the input, is what a clickable row must carry
+ *  (M18). */
+function extractExportedPath(result: ToolResultBlock): string | null {
+  const content = Array.isArray(result.content)
+    ? result.content.map((c) => (typeof c === 'string' ? c : '')).join('\n')
+    : typeof result.content === 'string'
+      ? result.content
+      : ''
+  const m = /Exported (.+) \(\d+ KB\)/m.exec(content)
+  return m ? m[1] : null
+}
+
 /** Walk the messages once, pairing every writer tool_use with its tool_result
  *  regardless of which message carries the result (the engine folds a whole
  *  round's results into ONE later user message, and hydration replays the
@@ -82,10 +98,16 @@ export function collectDeliverables(
       if (block.type !== 'tool_use') continue
       const use = block as ToolUseBlock
       if (!FILE_WRITER_TOOLS.has(use.name)) continue
-      const path = extractFilePath(use.input)
-      if (!path) continue
+      let path = extractFilePath(use.input)
       const paired = resultMap.get(use.id)
       if (!paired || paired.result.is_error) continue
+      // export_document: the result names where the bytes actually are —
+      // the default name when file_path was omitted, and the suffixed name
+      // after a D6 collision (M18).
+      if (use.name === 'export_document') {
+        path = extractExportedPath(paired.result) ?? path
+      }
+      if (!path) continue
       const op: DeliverableOp = { tool: use.name, at: paired.at, ok: true }
       const existing = byPath.get(path)
       if (existing) {

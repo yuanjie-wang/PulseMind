@@ -93,7 +93,7 @@ export function WelcomeContent({
       <Typography.Text type="secondary" style={{ fontSize: 16, maxWidth: 400, display: 'block', margin: '0 auto', marginBottom: 24, marginTop: 20 }}>
         {t('welcome.subtitle')}
         <Tooltip title={t('welcome.about')}>
-          <ArrowRightOutlined style={{ marginLeft: 8, cursor: 'pointer', color: 'inherit', fontSize: 14 }} onClick={() => navigate({ kind: 'about' })} />
+          <ArrowRightOutlined style={{ marginLeft: 8, cursor: 'pointer', color: 'inherit', fontSize: 14 }} onClick={() => navigate({ kind: 'settings', settingsTab: 'about' })} />
         </Tooltip>
       </Typography.Text>
 

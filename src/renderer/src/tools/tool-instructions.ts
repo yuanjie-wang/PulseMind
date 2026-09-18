@@ -325,11 +325,11 @@ Byte-faithful Word (.docx) editing through structured operations.
 
 ### Ops
 - outline - list paragraphs (no edit).
-- replace_text - find/replace in the visible text; crosses style runs automatically. Default expects EXACTLY 1 hit; give expected_count or paragraph to widen/narrow. No hit = whole batch refused, nothing written. Add track_changes: true to wrap in revision marks (<w:del>/<w:ins>) so Word/WPS shows the edit as a tracked change — user can accept/reject later.
+- replace_text - find/replace in the visible text; crosses style runs automatically. Default expects EXACTLY 1 hit; give expected_count or paragraph to widen/narrow. No hit = whole batch refused, nothing written. Add track_changes: true to wrap in revision marks (<w:del>/<w:ins>) so Word/WPS shows the edit as a tracked change — user can accept/reject later. The tracked replacement text is inserted once (at the match's first run) and the deleted marks carry only the matched text.
 - insert_paragraph - paragraph + position (before/after) + text; optional style.
-- delete_paragraph - refuses paragraphs carrying a section break.
+- delete_paragraph - refuses paragraphs carrying a section break, and refuses a table cell's only paragraph (an empty cell is invalid).
 - set_paragraph_style - paragraph + style name (e.g. "Heading1").
-- format_text - find + optional bold/italic/underline/color/font_size (points). Only the matched range is formatted; runs split automatically.
+- format_text - find + optional bold/italic/underline/color/font_size (points). Only the matched range is formatted; runs split automatically, preserving breaks/tabs and sibling text around the match.
 
 ### Never
 - .doc / encrypted files: ask the user to save as .docx.
@@ -347,7 +347,7 @@ Structured Excel (.xlsx) editing. The workbook is checked first: charts, pivot t
 ### Ops
 - inspect - list sheets (+ used range).
 - set_cell - cell ("B3") + value OR formula, optional number_format (e.g. "0.00%", "yyyy-mm-dd").
-- find_replace - replaces in VALUES only; pass include_formulas: true to also rewrite formulas. expected_count defaults to actual.
+- find_replace - replaces in VALUES only. include_formulas: true extends matching to formula cells, whose cached RESULT text gets replaced — the formula expression itself is never rewritten. Rich-text/hyperlink cells that match are refused (whole-cell replacement would destroy their formatting). expected_count defaults to actual.
 - add_row - after_row (0-based index) + values array. Inserts a new row and shifts existing rows down. Optional sheet (defaults to first).
 
 ### Never

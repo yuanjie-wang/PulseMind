@@ -27,10 +27,15 @@ export function restoreBom(text: string, hadBom: boolean): string {
 }
 
 /** One open draft. `content` is the LF-normalized edited text; `baseline` is
- *  the on-disk text (also LF-normalized) the edit started from. */
+ *  the on-disk text (also LF-normalized) the edit started from; `diskText` is
+ *  the disk text EXACTLY as read — the write gate compares raw bytes, and a
+ *  CRLF/BOM file's normalized baseline never equals them, which made every
+ *  save of such a file refuse with "externally modified" forever (H8). */
 export interface DraftEntry {
   content: string
   baseline: string
+  /** Raw disk text (BOM/CRLF intact) — the expectContent of the first save. */
+  diskText: string
   eol: Eol
   bom: boolean
 }
@@ -41,7 +46,7 @@ export function makeDraftFromDisk(diskText: string): DraftEntry {
   const { text, hadBom } = stripBom(diskText)
   const eol = detectEol(text)
   const baseline = applyEol(text, '\n')
-  return { content: baseline, baseline, eol, bom: hadBom }
+  return { content: baseline, baseline, diskText, eol, bom: hadBom }
 }
 
 /** Dirty compares the edited text to the baseline — both LF-normalized, so
