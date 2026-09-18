@@ -7,7 +7,7 @@ import { takePendingApprovalMode } from '../stores/pendingApprovalStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
 import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
-import { parseExpertMentions, type SummonedExpert } from '../../../shared/expert-context'
+import { parseExpertMentions, parseKnowledgeBaseMention, type SummonedExpert } from '../../../shared/expert-context'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
@@ -309,6 +309,18 @@ export function useChatController(options: UseChatControllerOptions) {
         }
       }
 
+      // ── @知识库 (PLAN-knowledge-groups G5): resolve the base scope ──
+      // Runs AFTER the expert parse on the remaining text, so a name that is
+      // both reads as the expert (既有语义优先). The scope rides THIS send
+      // only — the next message without an @mention searches everything.
+      let knowledgeBase: { id: string; name: string } | null = null
+      try {
+        const bases = await window.electronAPI.knowledgeListBases()
+        const parsedBase = parseKnowledgeBaseMention(content, bases)
+        knowledgeBase = parsedBase.base
+        if (knowledgeBase) content = parsedBase.text
+      } catch { /* bases unavailable — unscoped turn */ }
+
       if (!convId) {
         // Materialize the conversation row here. Its working directory comes
         // from the welcome page's task form (M8.4): project mode binds the
@@ -357,8 +369,8 @@ export function useChatController(options: UseChatControllerOptions) {
       // differs: main dispatches the deterministic spawn_agent call (one
       // expert) or plans the work first (several), inside this conversation.
       const engineHandle = engine.getOrCreateEngine(convId)
-      if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned)
-      else engineHandle.startLoop(content)
+      if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned, knowledgeBase)
+      else engineHandle.startLoop(content, knowledgeBase)
     },
     [apiKey, persistence.activeConversationKey, persistence.addConversation,
      persistence.setActiveConversationKey, persistence.updateConversationTitleInList,

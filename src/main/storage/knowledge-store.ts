@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { join, basename, dirname, relative } from 'node:path'
 import { fork, execFile } from 'node:child_process'
 import { randomBytes, createHash } from 'node:crypto'
@@ -14,16 +14,28 @@ import {
   getKnowledgeStats,
   knowledgeFtsAdd,
   searchKnowledgeFts,
-  type KnowledgeFileRow
+  listKnowledgeBases,
+  getKnowledgeBase,
+  getKnowledgeBaseByName,
+  insertKnowledgeBase,
+  renameKnowledgeBase,
+  deleteKnowledgeBase,
+  setKnowledgeFileBase,
+  type KnowledgeFileRow,
+  type KnowledgeBaseRow
 } from './knowledge.db'
 import { getDb } from './database'
 import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
 import {
+  KNOWLEDGE_DIR,
+  KNOWLEDGE_SCHEMA_DIR,
   KNOWLEDGE_RAW_DIR,
   KNOWLEDGE_WIKI_DIR,
-  KNOWLEDGE_SCHEMA_DIR
+  getBaseRawDir,
+  getBaseWikiDir
 } from './index'
-import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../../shared/types/knowledge'
+import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../../shared/types/knowledge'
+import { stringToHue } from '../../shared/hash-color'
 import { wikiPageSources, wikiPageIsOrphan } from '../../shared/knowledge/wiki'
 export { wikiPageSources, wikiPageIsOrphan }
 
@@ -48,15 +60,17 @@ function toKnowledgeFile(row: KnowledgeFileRow): KnowledgeFile {
     status: row.status as KnowledgeFile['status'],
     createdAt: row.created_at,
     compiledAt: row.compiled_at,
-    wikiOutputs: row.wiki_outputs ? JSON.parse(row.wiki_outputs) : null
+    wikiOutputs: row.wiki_outputs ? JSON.parse(row.wiki_outputs) : null,
+    baseId: row.base_id
   }
 }
 
 /** Read a raw knowledge file from disk and add its content to the FTS5 index. */
-function syncKnowledgeFileToFts(id: string): void {
-  const row = getDb().prepare('SELECT rowid, file_path FROM knowledge_files WHERE id = ?').get(id) as { rowid: number; file_path: string } | undefined
+export function syncKnowledgeFileToFts(id: string): void {
+  const row = getDb().prepare('SELECT rowid, file_path, base_id FROM knowledge_files WHERE id = ?').get(id) as { rowid: number; file_path: string; base_id: string } | undefined
   if (!row) return
-  const fullPath = join(KNOWLEDGE_RAW_DIR, row.file_path)
+  const rawDir = getBaseRawDir(row.base_id)
+  const fullPath = join(rawDir, row.file_path)
   if (!existsSync(fullPath)) return
   try {
     const content = readFileSync(fullPath, 'utf-8')
@@ -93,14 +107,13 @@ function stripFrontmatter(content: string): string {
   }
   return content
 }
-function generateRawFilePath(originalName: string): string {
+function generateRawFilePath(originalName: string, rawDir: string): string {
   const date = new Date().toISOString().slice(0, 10)
   const base = sanitizeName(basename(originalName).replace(/\.[^.]+$/, ''))
-  // Truncate to avoid overly long filenames
   const name = `${date}_${base}`.slice(0, 180)
   let candidate = `${name}.md`
   let counter = 1
-  while (existsSync(join(KNOWLEDGE_RAW_DIR, candidate))) {
+  while (existsSync(join(rawDir, candidate))) {
     candidate = `${name}_${counter}.md`
     counter++
   }
@@ -131,6 +144,78 @@ export function listAllFilesAdvanced(opts: KnowledgeListOptions): KnowledgeListR
   return { ...result, items: result.items.map(toKnowledgeFile) }
 }
 
+// ─── Knowledge Bases ──────────────────────────────────────────────────
+
+function generateBaseId(): string {
+  return `kb_${Date.now()}_${randomBytes(4).toString('hex')}`
+}
+
+export function listAllBases(): KnowledgeBase[] {
+  return listKnowledgeBases().map((b) => ({
+    id: b.id,
+    name: b.name,
+    colorHue: b.color_hue,
+    createdAt: b.created_at,
+    fileCount: b.file_count
+  }))
+}
+
+export function createKnowledgeBase(name: string): KnowledgeBase {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('知识库名不能为空')
+  if (trimmed.length > 40) throw new Error('知识库名过长（最多 40 字）')
+  if (getKnowledgeBaseByName(trimmed)) throw new Error(`知识库已存在: ${trimmed}`)
+  const id = generateBaseId()
+  insertKnowledgeBase({ id, name: trimmed, colorHue: stringToHue(trimmed) })
+  // Create physical directories for the new base
+  const rawDir = getBaseRawDir(id)
+  const wikiDir = getBaseWikiDir(id)
+  mkdirSync(rawDir, { recursive: true })
+  mkdirSync(wikiDir, { recursive: true })
+  return { id, name: trimmed, colorHue: stringToHue(trimmed), createdAt: new Date().toISOString(), fileCount: 0 }
+}
+
+export function renameKnowledgeBaseById(id: string, name: string): KnowledgeBase {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('知识库名不能为空')
+  if (trimmed.length > 40) throw new Error('知识库名过长（最多 40 字）')
+  const clash = getKnowledgeBaseByName(trimmed)
+  if (clash && clash.id !== id) throw new Error(`知识库已存在: ${trimmed}`)
+  if (!getKnowledgeBase(id)) throw new Error(`知识库不存在: ${id}`)
+  renameKnowledgeBase(id, trimmed)
+  const row = getKnowledgeBase(id)!
+  return { id: row.id, name: row.name, colorHue: row.color_hue, createdAt: row.created_at }
+}
+
+/** Deleting a base removes its physical dirs and all files. Default base cannot be deleted. */
+export function removeKnowledgeBase(id: string): void {
+  if (!getKnowledgeBase(id)) throw new Error(`知识库不存在: ${id}`)
+  deleteKnowledgeBase(id)
+  // Remove physical directories
+  const { rmSync } = require('node:fs') as typeof import('node:fs')
+  try { rmSync(getBaseRawDir(id), { recursive: true, force: true }) } catch { /* ignore */ }
+  try { rmSync(getBaseWikiDir(id), { recursive: true, force: true }) } catch { /* ignore */ }
+}
+
+export function moveKnowledgeFileToBase(id: string, baseId: string): KnowledgeFile {
+  setKnowledgeFileBase(id, baseId)
+  const row = getKnowledgeFile(id)
+  if (!row) throw new Error(`Knowledge file not found: ${id}`)
+  return toKnowledgeFile(row)
+}
+
+export function moveKnowledgeFilesToBase(ids: string[], baseId: string): number {
+  let moved = 0
+  const tx = getDb().transaction(() => {
+    for (const id of ids) {
+      setKnowledgeFileBase(id, baseId)
+      moved++
+    }
+  })
+  tx()
+  return moved
+}
+
 export function getFile(id: string): KnowledgeFile | null {
   const row = getKnowledgeFile(id)
   return row ? toKnowledgeFile(row) : null
@@ -141,13 +226,11 @@ export function deleteFile(id: string): void {
   const row = getKnowledgeFile(id)
   if (!row) return
   const wikiOutputs: string[] = JSON.parse(row.wiki_outputs || '[]')
+  const wikiDir = getBaseWikiDir(row.base_id)
+  const rawDir = getBaseRawDir(row.base_id)
 
-  // K3: delete a wiki page only when nothing else still needs it — no other
-  // knowledge file lists it in wiki_outputs, and its own `sources:` names no
-  // other raw file. Otherwise the page survives (a merged entity page is
-  // shared property, not the deleting source's property).
   for (const wikiPath of wikiOutputs) {
-    const fullPath = join(KNOWLEDGE_WIKI_DIR, wikiPath)
+    const fullPath = join(wikiDir, wikiPath)
     let content: string | null = null
     try { content = existsSync(fullPath) ? readFileSync(fullPath, 'utf-8') : null } catch { content = null }
     const survivors = listAllFiles().filter((f) => f.id !== id)
@@ -158,38 +241,37 @@ export function deleteFile(id: string): void {
       continue
     }
     try { unlinkSync(fullPath) } catch { /* already gone */ }
-    wikiFtsRemove(wikiPath)
+    wikiFtsRemove(wikiPath, row.base_id)
   }
 
-  // Delete raw file + its DB row (FTS rows clean up in the same transaction)
-  const rawPath = join(KNOWLEDGE_RAW_DIR, row.file_path)
+  const rawPath = join(rawDir, row.file_path)
   try { unlinkSync(rawPath) } catch { /* ignore */ }
   deleteKnowledgeFile(id)
 
-  // The index must stop listing whatever this delete removed — rebuilding is
-  // cheap and idempotent (K3: the old path-match filter never matched).
-  try { rebuildWikiIndex() } catch { /* index rebuild is best-effort */ }
+  try { rebuildWikiIndex(row.base_id) } catch { /* index rebuild is best-effort */ }
 }
 
-export function getStats(): KnowledgeStats {
-  const base = getKnowledgeStats()
-  // Count actual wiki page files on disk
+export function getStats(baseId?: string): KnowledgeStats {
+  const base = getKnowledgeStats(baseId)
   let wikiFileCount = 0
   try {
     const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs')
-    function countFiles(dir: string) {
+    const countFiles = (dir: string) => {
       if (!existsSync(dir)) return
-      const entries = readdirSync(dir)
-      for (const entry of entries) {
+      for (const entry of readdirSync(dir)) {
         const full = join(dir, entry)
-        if (statSync(full).isDirectory()) {
-          countFiles(full)
-        } else if (entry.endsWith('.md')) {
-          wikiFileCount++
-        }
+        if (statSync(full).isDirectory()) countFiles(full)
+        else if (entry.endsWith('.md')) wikiFileCount++
       }
     }
-    countFiles(KNOWLEDGE_WIKI_DIR)
+    if (baseId !== undefined) {
+      countFiles(getBaseWikiDir(baseId))
+    } else {
+      // Count across all bases
+      try {
+        for (const b of listKnowledgeBases()) countFiles(getBaseWikiDir(b.id))
+      } catch { /* bases dir may not exist */ }
+    }
   } catch { /* wiki dir may not exist */ }
   return { ...base, wikiFileCount }
 }
@@ -212,82 +294,101 @@ export function isValidWikiPagePath(filePath: string): boolean {
 /** Apply a batch of wiki changes: write files, update index, update log.
  *  K1: invalid paths throw (the whole batch is suspect) instead of being
  *  silently rewritten. */
-export function applyWikiChanges(actions: { filePath: string; content: string }[]): number {
+export function applyWikiChanges(actions: { filePath: string; content: string }[], baseId: string = 'default'): number {
+  const wikiDir = getBaseWikiDir(baseId)
   let count = 0
   for (const action of actions) {
     if (!isValidWikiPagePath(action.filePath)) {
       throw new Error(`非法的 wiki 页面路径，已拒绝写入: ${action.filePath.slice(0, 100)}`)
     }
-    const safePath = action.filePath
-    const fullPath = join(KNOWLEDGE_WIKI_DIR, safePath)
+    const fullPath = join(wikiDir, action.filePath)
     const dir = dirname(fullPath)
     try {
       if (!existsSync(dir)) {
-        const { mkdirSync } = require('node:fs')
         mkdirSync(dir, { recursive: true })
       }
       writeFileSync(fullPath, action.content, 'utf-8')
       count++
-      wikiFtsUpsert(action.filePath, action.content)
+      wikiFtsUpsert(action.filePath, action.content, '', baseId)
     } catch (err) {
-      console.error(`[knowledge] Failed to write wiki file ${safePath}:`, err)
+      console.error(`[knowledge] Failed to write wiki file ${action.filePath}:`, err)
     }
   }
   return count
 }
 
 // ── Wiki page FTS (PLAN-knowledge-base K4) ──
-// A standalone FTS5 table over wiki page bodies: file-level grep gave way to
-// ranked chunk search. Upserts ride applyWikiChanges; deletes ride the
-// reference-safe deleteFile; a page-count mismatch rebuilds at startup.
 
-/** Insert/replace one wiki page's row, keyed by its wiki-relative path. */
-export function wikiFtsUpsert(wikiPath: string, content: string, title = ''): void {
+/** Insert/replace one wiki page's row, keyed by (base, wiki-relative path). */
+export function wikiFtsUpsert(wikiPath: string, content: string, title = '', baseId: string = 'default'): void {
   const db = getDb()
-  db.prepare('DELETE FROM knowledge_wiki_fts WHERE path = ?').run(wikiPath)
-  db.prepare('INSERT INTO knowledge_wiki_fts(title, content, path) VALUES (?, ?, ?)').run(title, content, wikiPath)
+  db.prepare('DELETE FROM knowledge_wiki_fts WHERE path = ? AND base_id = ?').run(wikiPath, baseId)
+  db.prepare('INSERT INTO knowledge_wiki_fts(title, content, path, base_id) VALUES (?, ?, ?, ?)').run(title, content, wikiPath, baseId)
 }
 
-export function wikiFtsRemove(wikiPath: string): void {
-  try { getDb().prepare('DELETE FROM knowledge_wiki_fts WHERE path = ?').run(wikiPath) } catch { /* table may not exist yet */ }
+export function wikiFtsRemove(wikiPath: string, baseId: string = 'default'): void {
+  try { getDb().prepare('DELETE FROM knowledge_wiki_fts WHERE path = ? AND base_id = ?').run(wikiPath, baseId) } catch { /* table may not exist yet */ }
 }
 
-export function wikiFtsCount(): number {
+export function wikiFtsCount(baseId?: string): number {
   try {
-    return (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_wiki_fts').get() as { c: number }).c
+    if (baseId === undefined) {
+      return (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_wiki_fts').get() as { c: number }).c
+    }
+    return (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_wiki_fts WHERE base_id = ?').get(baseId) as { c: number }).c
   } catch { return 0 }
 }
 
-/** Full rebuild of the wiki FTS table from the page files on disk (K4). */
+/** Full rebuild of the wiki FTS table from all bases' page files on disk. */
 export function rebuildWikiFts(): void {
   const db = getDb()
   db.exec('DELETE FROM knowledge_wiki_fts')
-  if (!existsSync(KNOWLEDGE_WIKI_DIR)) return
-  const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs')
   const subdirs = ['sources', 'entities', 'concepts', 'syntheses']
   let count = 0
-  for (const subdir of subdirs) {
-    const dirPath = join(KNOWLEDGE_WIKI_DIR, subdir)
-    if (!existsSync(dirPath)) continue
-    for (const entry of readdirSync(dirPath)) {
-      if (!entry.endsWith('.md')) continue
-      const full = join(dirPath, entry)
-      if (!statSync(full).isFile()) continue
-      try {
-        const content = readFileSync(full, 'utf-8')
-        const wikiPath = `${subdir}/${entry}`
-        const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m)
-        wikiFtsUpsert(wikiPath, content, titleMatch?.[1] ?? '')
-        count++
-      } catch { /* unreadable page: skip */ }
+  for (const b of listKnowledgeBases()) {
+    const wikiDir = getBaseWikiDir(b.id)
+    if (!existsSync(wikiDir)) continue
+    for (const subdir of subdirs) {
+      const dirPath = join(wikiDir, subdir)
+      if (!existsSync(dirPath)) continue
+      for (const entry of readdirSync(dirPath)) {
+        if (!entry.endsWith('.md')) continue
+        const full = join(dirPath, entry)
+        if (!statSync(full).isFile()) continue
+        try {
+          const content = readFileSync(full, 'utf-8')
+          const wikiPath = `${subdir}/${entry}`
+          const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m)
+          wikiFtsUpsert(wikiPath, content, titleMatch?.[1] ?? '', b.id)
+          count++
+        } catch { /* unreadable page: skip */ }
+      }
     }
   }
   console.log(`[knowledge] Rebuilt knowledge_wiki_fts: ${count} pages indexed`)
 }
 
-/** Append an entry to wiki/log.md */
-export function appendWikiLog(entry: string): void {
-  const logPath = join(KNOWLEDGE_WIKI_DIR, 'log.md')
+/** Wiki page files across every base (the four page dirs, K4's sync baseline). */
+export function countWikiPageFiles(): number {
+  const subdirs = ['sources', 'entities', 'concepts', 'syntheses']
+  let count = 0
+  for (const b of listKnowledgeBases()) {
+    for (const subdir of subdirs) {
+      const dirPath = join(getBaseWikiDir(b.id), subdir)
+      if (!existsSync(dirPath)) continue
+      for (const entry of readdirSync(dirPath)) {
+        if (entry.endsWith('.md') && statSync(join(dirPath, entry)).isFile()) count++
+      }
+    }
+  }
+  return count
+}
+
+/** Append an entry to a base's wiki/log.md */
+export function appendWikiLog(entry: string, baseId: string = 'default'): void {
+  const wikiDir = getBaseWikiDir(baseId)
+  if (!existsSync(wikiDir)) mkdirSync(wikiDir, { recursive: true })
+  const logPath = join(wikiDir, 'log.md')
   const timestamp = new Date().toISOString()
   const line = `- ${timestamp} — ${entry}\n`
   if (!existsSync(logPath)) {
@@ -297,32 +398,48 @@ export function appendWikiLog(entry: string): void {
   }
 }
 
-/** Read raw file content by its relative path */
-export function readRawContent(relativePath: string): string {
-  const fullPath = join(KNOWLEDGE_RAW_DIR, relativePath)
+/** Read raw file content by its relative path within a knowledge base. */
+export function readRawContent(relativePath: string, baseId: string = 'default'): string {
+  const fullPath = join(getBaseRawDir(baseId), relativePath)
   if (!existsSync(fullPath)) throw new Error(`Raw file not found: ${relativePath}`)
   return readFileSync(fullPath, 'utf-8')
 }
 
-/** Read wiki file content by its relative path. Returns null (not throws) when the file doesn't exist. */
-export function readWikiContent(relativePath: string): string | null {
-  const fullPath = join(KNOWLEDGE_WIKI_DIR, relativePath)
+/** Read wiki file content by its relative path within a knowledge base. Returns null when file doesn't exist. */
+export function readWikiContent(relativePath: string, baseId: string = 'default'): string | null {
+  const fullPath = join(getBaseWikiDir(baseId), relativePath)
   if (!existsSync(fullPath)) return null
   return readFileSync(fullPath, 'utf-8')
 }
 
 /** Search raw file content — ripgrep first, fallback to FTS5. */
-export async function searchContent(query: string): Promise<ContentMatch[]> {
-  if (!query || !existsSync(KNOWLEDGE_RAW_DIR)) return ftsContentSearch(query)
+export async function searchContent(query: string, baseId?: string): Promise<ContentMatch[]> {
+  if (!query) return ftsContentSearch(query, baseId)
 
-  const rgResults = await searchContentViaRipgrep(query)
-  if (rgResults.length > 0) return rgResults
+  // When searching a specific base, only rg that base's raw dir
+  if (baseId !== undefined) {
+    const rawDir = getBaseRawDir(baseId)
+    if (existsSync(rawDir)) {
+      const rgResults = await searchContentViaRipgrep(query, rawDir)
+      if (rgResults.length > 0) return rgResults
+    }
+    return ftsContentSearch(query, baseId)
+  }
 
-  return ftsContentSearch(query)
+  // Search all bases
+  let allResults: ContentMatch[] = []
+  for (const b of listKnowledgeBases()) {
+    const rawDir = getBaseRawDir(b.id)
+    if (!existsSync(rawDir)) continue
+    const rgResults = await searchContentViaRipgrep(query, rawDir)
+    allResults.push(...rgResults)
+  }
+  if (allResults.length > 0) return allResults
+  return ftsContentSearch(query, baseId)
 }
 
-function ftsContentSearch(query: string): ContentMatch[] {
-  const ftsResults = searchKnowledgeFts(query)
+function ftsContentSearch(query: string, baseId?: string): ContentMatch[] {
+  const ftsResults = searchKnowledgeFts(query, 10, baseId)
   return ftsResults.map(r => ({
     id: r.id,
     filePath: r.filePath,
@@ -333,7 +450,7 @@ function ftsContentSearch(query: string): ContentMatch[] {
 }
 
 /** Run ripgrep on raw knowledge files. Multi-keyword queries use -F -e for OR. */
-async function searchContentViaRipgrep(query: string): Promise<ContentMatch[]> {
+async function searchContentViaRipgrep(query: string, rawDir: string): Promise<ContentMatch[]> {
   return new Promise((resolve) => {
     const terms = query.trim().split(/\s+/).filter(Boolean)
     if (terms.length === 0) { resolve([]); return }
@@ -345,26 +462,23 @@ async function searchContentViaRipgrep(query: string): Promise<ContentMatch[]> {
     } else {
       args.push(query)
     }
-    args.push(KNOWLEDGE_RAW_DIR)
+    args.push(rawDir)
 
     execFile(ripgrepBinary(), args, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err && !stdout) { resolve([]); return }
 
-      // Group excerpts by file path (relative to raw dir)
       const fileMap = new Map<string, string[]>()
       for (const line of stdout.split('\n')) {
         if (!line.trim()) continue
         const parsed = parseRgLine(line)
         if (!parsed) continue
-        const relPath = relative(KNOWLEDGE_RAW_DIR, parsed.absPath)
+        const relPath = relative(rawDir, parsed.absPath)
         if (!relPath) continue
-
         const excerpts = fileMap.get(relPath) || []
         if (excerpts.length < 3) excerpts.push(parsed.content.slice(0, 200))
         fileMap.set(relPath, excerpts)
       }
 
-      // Map to ContentMatch by looking up the knowledge file row
       const results: ContentMatch[] = []
       for (const [relPath, excerpts] of fileMap) {
         const file = getKnowledgeFileByPath(relPath)
@@ -378,10 +492,10 @@ async function searchContentViaRipgrep(query: string): Promise<ContentMatch[]> {
 }
 
 /** List wiki directory structure (for browsing) */
-export function listWikiFiles(subdir?: string): string[] {
-  const root = subdir ? join(KNOWLEDGE_WIKI_DIR, subdir) : KNOWLEDGE_WIKI_DIR
+export function listWikiFiles(subdir?: string, baseId: string = 'default'): string[] {
+  const wikiDir = getBaseWikiDir(baseId)
+  const root = subdir ? join(wikiDir, subdir) : wikiDir
   if (!existsSync(root)) return []
-  const { readdirSync, statSync } = require('node:fs')
   const results: string[] = []
   const entries = readdirSync(root)
   for (const entry of entries) {
@@ -515,8 +629,8 @@ const MIME_TO_EXT: Record<string, string> = {
  * Replaces data URIs with local-file:// references so images remain viewable without
  * bloating the wiki compilation.
  */
-function extractBase64Images(content: string): string {
-  const imgDir = join(KNOWLEDGE_RAW_DIR, 'images')
+function extractBase64Images(content: string, rawDir: string): string {
+  const imgDir = join(rawDir, 'images')
   mkdirSync(imgDir, { recursive: true })
   return content.replace(/!\[.*?\]\(data:image\/([a-zA-Z+]+);base64,([^)]+)\)/g, (_match, mime: string, b64: string) => {
     const ext = MIME_TO_EXT[mime] || '.bin'
@@ -548,9 +662,8 @@ export async function importLocalFile(filePath: string): Promise<KnowledgeImport
 }
 
 /** K11: folder import through ONE worker session, content-hashed on the
- *  extracted body. Same content at a new path reports duplicate-by-content
- *  (the DB keeps provenance AND the hash — the column existed, nobody wrote it). */
-export async function importLocalFiles(filePaths: string[]): Promise<KnowledgeImportResult[]> {
+ *  extracted body. G4: `baseId` lands every imported file in that base. */
+export async function importLocalFiles(filePaths: string[], baseId?: string): Promise<KnowledgeImportResult[]> {
   const extractions = await extractManyInWorker(filePaths)
   const results: KnowledgeImportResult[] = []
   for (let i = 0; i < filePaths.length; i++) {
@@ -560,12 +673,12 @@ export async function importLocalFiles(filePaths: string[]): Promise<KnowledgeIm
       results.push({ success: false, error: extraction.error })
       continue
     }
-    results.push(ingestExtractedFile(filePath, extraction))
+    results.push(ingestExtractedFile(filePath, extraction, baseId))
   }
   return results
 }
 
-function ingestExtractedFile(filePath: string, extraction: { title: string; content: string }): KnowledgeImportResult {
+function ingestExtractedFile(filePath: string, extraction: { title: string; content: string }, baseId?: string): KnowledgeImportResult {
   try {
     if (!existsSync(filePath)) {
       return { success: false, error: `File not found: ${filePath}` }
@@ -580,13 +693,15 @@ function ingestExtractedFile(filePath: string, extraction: { title: string; cont
     if (byContent) {
       return { success: false, duplicate: true, error: `内容重复：与已导入的 ${byContent.source_path ?? byContent.id} 内容相同` }
     }
-    const relativePath = generateRawFilePath(filePath)
-    const destPath = join(KNOWLEDGE_RAW_DIR, relativePath)
+    const targetBaseId = baseId ?? 'default'
+    const rawDir = getBaseRawDir(targetBaseId)
+    mkdirSync(rawDir, { recursive: true })
+    const relativePath = generateRawFilePath(filePath, rawDir)
+    const destPath = join(rawDir, relativePath)
     const displayTitle = basename(filePath).replace(/\.[^.]+$/, '')
     const id = generateId()
 
-    // Extract base64 images to local files before writing
-    cleanContent = extractBase64Images(cleanContent)
+    cleanContent = extractBase64Images(cleanContent, rawDir)
 
     const frontmatter = buildFrontmatter({
       title: displayTitle,
@@ -601,7 +716,8 @@ function ingestExtractedFile(filePath: string, extraction: { title: string; cont
       title: displayTitle,
       sourceType: 'file',
       sourcePath: filePath,
-      contentHash
+      contentHash,
+      baseId: targetBaseId
     })
 
     syncKnowledgeFileToFts(id)
@@ -622,9 +738,10 @@ export async function reextractKnowledge(id: string): Promise<KnowledgeImportRes
   if (!existsSync(row.source_path)) return { success: false, error: `源文件不存在: ${row.source_path}` }
   const extraction = await extractInWorker(row.source_path)
   let cleanContent = stripFrontmatter(extraction.content)
-  cleanContent = extractBase64Images(cleanContent)
+  const rawDir = getBaseRawDir(row.base_id)
+  cleanContent = extractBase64Images(cleanContent, rawDir)
   const contentHash = createHash('sha256').update(cleanContent).digest('hex')
-  const fullPath = join(KNOWLEDGE_RAW_DIR, row.file_path)
+  const fullPath = join(rawDir, row.file_path)
   writeFileSync(fullPath, cleanContent, 'utf-8')
   getDb().prepare("UPDATE knowledge_files SET content_hash = ?, status = 'raw', wiki_outputs = NULL, compiled_at = NULL WHERE id = ?").run(contentHash, id)
   syncKnowledgeFileToFts(id)
@@ -638,8 +755,8 @@ export function abortKnowledgeImport(): void {
   _importAbortController?.abort()
 }
 
-/** Import a remote URL: rendered fetch → Readability → turndown → write to raw/ */
-export async function importUrl(url: string): Promise<KnowledgeImportResult> {
+/** Import a remote URL: rendered fetch → Readability → turndown → write to base raw/ */
+export async function importUrl(url: string, baseId?: string): Promise<KnowledgeImportResult> {
   // Validate URL format — only http/https allowed
   if (!/^https?:\/\/.+/.test(url)) {
     return { success: false, error: `不支持的链接格式: ${url.slice(0, 100)}。仅支持 http/https 链接。` }
@@ -703,7 +820,10 @@ export async function importUrl(url: string): Promise<KnowledgeImportResult> {
     const title = article?.title || url
     const slug = sanitizeName(title).slice(0, 60)
     const relativePath = `url_${slug}.md`
-    const destPath = join(KNOWLEDGE_RAW_DIR, relativePath)
+    const targetBaseId = baseId ?? 'default'
+    const rawDir = getBaseRawDir(targetBaseId)
+    mkdirSync(rawDir, { recursive: true })
+    const destPath = join(rawDir, relativePath)
     const id = generateId()
 
     // Extract base64 images to local files before writing
@@ -722,7 +842,8 @@ export async function importUrl(url: string): Promise<KnowledgeImportResult> {
       filePath: relativePath,
       title,
       sourceType: 'url',
-      sourceUrl: url
+      sourceUrl: url,
+      baseId: targetBaseId
     })
 
     syncKnowledgeFileToFts(id)
@@ -738,21 +859,20 @@ export async function importUrl(url: string): Promise<KnowledgeImportResult> {
 }
 
 /** Save an extracted experience as a raw knowledge file */
-export function saveExperienceToRaw(content: string, convId: string, title?: string): KnowledgeFile {
+export function saveExperienceToRaw(content: string, convId: string, title?: string, baseId?: string): KnowledgeFile {
   const date = new Date().toISOString().slice(0, 10)
   const displayTitle = title || `Experience from ${convId.slice(0, 8)}`
   const slug = sanitizeName(displayTitle).slice(0, 60)
   const relativePath = `experience_${slug}_${date}.md`
-  // Dedup: the same title saved on the same day collides on this file path. Check
-  // before writing — otherwise a second save overwrites the file on disk while
-  // inserting another DB row pointing at the same path (orphaned duplicate).
-  // importLocalFile/importUrl guard the same way via getKnowledgeFileBySource.
   const existing = getKnowledgeFileByPath(relativePath)
   if (existing) {
     console.log(`[knowledge-store] Experience already exists: ${relativePath}, skipping duplicate`)
     return toKnowledgeFile(existing)
   }
-  const destPath = join(KNOWLEDGE_RAW_DIR, relativePath)
+  const targetBaseId = baseId ?? 'default'
+  const rawDir = getBaseRawDir(targetBaseId)
+  mkdirSync(rawDir, { recursive: true })
+  const destPath = join(rawDir, relativePath)
 
   const frontmatter = buildFrontmatter({
     title: displayTitle,
@@ -768,7 +888,8 @@ export function saveExperienceToRaw(content: string, convId: string, title?: str
     filePath: relativePath,
     title: displayTitle,
     sourceType: 'experience',
-    convId
+    convId,
+    baseId: targetBaseId
   })
 
   syncKnowledgeFileToFts(id)
@@ -836,12 +957,16 @@ export function favoriteDisplayTitle(content: string, title?: string): string {
  * capture never leaves a marker, an orphan file, or a half-index behind, and a
  * retry replays cleanly (re-reading the file repairs an incomplete FTS row).
  */
-export function saveFavoriteToRaw(content: string, opts: { conversationId: string; messageId: string; title?: string }): KnowledgeFile {
+export function saveFavoriteToRaw(content: string, opts: { conversationId: string; messageId: string; title?: string; baseId?: string }): KnowledgeFile {
   const input = { content, ...opts }
   validateFavoriteInput(input)
 
+  const targetBaseId = opts.baseId ?? 'default'
+  const rawDir = getBaseRawDir(targetBaseId)
+  mkdirSync(rawDir, { recursive: true })
+
   const relativePath = favoriteRawFileName(opts.conversationId, opts.messageId)
-  const fullPath = join(KNOWLEDGE_RAW_DIR, relativePath)
+  const fullPath = join(rawDir, relativePath)
   const database = getDb()
   let createdRaw = false
   try {
@@ -894,54 +1019,81 @@ export function saveFavoriteToRaw(content: string, opts: { conversationId: strin
   }
 }
 
-/** Clear all knowledge: delete all DB records, raw files, wiki files, schema, and wiki index */
+/** Remove every file under `dir`, returning how many were unlinked. */
+function removeDirContents(dir: string): number {
+  const { rmSync } = require('node:fs') as typeof import('node:fs')
+  if (!existsSync(dir)) return 0
+  let removed = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      removed += removeDirContents(full)
+      try { rmSync(full, { recursive: true, force: true }) } catch { /* ignore */ }
+    } else {
+      try { unlinkSync(full); removed++ } catch { /* ignore */ }
+    }
+  }
+  return removed
+}
+
+/** Clear all knowledge: delete every base's files, the pre-refactor flat dirs,
+ *  and all DB records. */
 export function clearAllKnowledge(): { deletedRaw: number; deletedWiki: number } {
-  const { readdirSync, rmSync } = require('node:fs') as typeof import('node:fs')
   let deletedRaw = 0
   let deletedWiki = 0
 
-  // Delete all raw files (images/ subdir needs recursion — unlink on a
-  // directory always throws, which is why images survived clearAll, K11④)
-  try {
-    function removeRaw(dir: string) {
-      const entries = readdirSync(dir, { withFileTypes: true })
-      for (const entry of entries) {
-        const full = join(dir, entry.name)
-        if (entry.isDirectory()) {
-          removeRaw(full)
-          try { rmSync(full, { recursive: true, force: true }) } catch { /* ignore */ }
-        } else {
-          try { unlinkSync(full); deletedRaw++ } catch { /* ignore */ }
-        }
-      }
-    }
-    removeRaw(KNOWLEDGE_RAW_DIR)
-  } catch { /* dir may not exist */ }
+  // Every base's own raw + wiki files
+  for (const b of listKnowledgeBases()) {
+    deletedRaw += removeDirContents(getBaseRawDir(b.id))
+    deletedWiki += removeDirContents(getBaseWikiDir(b.id))
+  }
 
-  // Delete all wiki files (including subdirectories)
-  try {
-    function removeContents(dir: string) {
-      const entries = readdirSync(dir, { withFileTypes: true })
-      for (const entry of entries) {
-        const full = join(dir, entry.name)
-        if (entry.isDirectory()) {
-          removeContents(full)
-          try { rmSync(full, { recursive: true, force: true }) } catch { /* ignore */ }
-        } else {
-          try { unlinkSync(full); deletedWiki++ } catch { /* ignore */ }
-        }
-      }
-    }
-    removeContents(KNOWLEDGE_WIKI_DIR)
-  } catch { /* dir may not exist */ }
+  // Pre-refactor installs kept files in flat knowledge/raw and knowledge/wiki.
+  // The current pipeline never reads them, so reset removes them (and the dirs,
+  // which ensureDataDir no longer recreates).
+  deletedRaw += removeDirContents(KNOWLEDGE_RAW_DIR)
+  deletedWiki += removeDirContents(KNOWLEDGE_WIKI_DIR)
+  const { rmSync } = require('node:fs') as typeof import('node:fs')
+  for (const dir of [KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR]) {
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
+  }
 
-  // Delete all DB records (knowledge_fts must be cleaned too — it's a standalone FTS5 table)
   const { getDb } = require('./database') as typeof import('./database')
   getDb().prepare('DELETE FROM knowledge_files').run()
   getDb().prepare('DELETE FROM knowledge_fts').run()
   try { getDb().prepare('DELETE FROM knowledge_wiki_fts').run() } catch { /* table may not exist */ }
 
   return { deletedRaw, deletedWiki }
+}
+
+/** R4: wipe every compiled page in a base and return its sources to raw. */
+export function rebuildWiki(baseId?: string): { clearedPages: number; resetSources: number } {
+  let clearedPages = 0
+  const bases = baseId ? [listKnowledgeBases().find(b => b.id === baseId)].filter(Boolean) as KnowledgeBaseRow[] : listKnowledgeBases()
+  for (const b of bases) {
+    const wikiDir = getBaseWikiDir(b.id)
+    if (!existsSync(wikiDir)) continue
+    for (const subdir of ['sources', 'entities', 'concepts', 'syntheses']) {
+      const dir = join(wikiDir, subdir)
+      if (!existsSync(dir)) continue
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith('.md')) continue
+        try { unlinkSync(join(dir, entry)); clearedPages++ } catch { /* ignore */ }
+      }
+    }
+    for (const f of ['index.md', 'log.md']) {
+      try { unlinkSync(join(wikiDir, f)) } catch { /* already gone */ }
+    }
+  }
+  try { getDb().prepare('DELETE FROM knowledge_wiki_fts').run() } catch { /* table may not exist */ }
+
+  const clause = baseId !== undefined ? "WHERE status = 'compiled' AND base_id = ?" : "WHERE status = 'compiled'"
+  const params = baseId !== undefined ? [baseId] : []
+  const resetSources = getDb()
+    .prepare(`UPDATE knowledge_files SET status = 'raw', wiki_outputs = NULL, compiled_at = NULL ${clause}`)
+    .run(...params).changes
+  console.log(`[knowledge] Rebuilt wiki: ${clearedPages} pages cleared, ${resetSources} sources back to raw`)
+  return { clearedPages, resetSources }
 }
 
 // ─── Wiki Index Rebuild ────────────────────────────────────────────────
@@ -965,11 +1117,10 @@ function parseFrontmatter(content: string): { meta: Record<string, any>; body: s
   return { meta, body }
 }
 
-/** Rebuild wiki/index.md from actual wiki page files.
- *  Scans sources/, entities/, concepts/, syntheses/ subdirectories,
- *  reads YAML frontmatter, and generates a structured index grouped by type. */
-export function rebuildWikiIndex(): void {
-  if (!existsSync(KNOWLEDGE_WIKI_DIR)) return
+/** Rebuild wiki/index.md from actual wiki page files for a knowledge base. */
+export function rebuildWikiIndex(baseId: string = 'default'): void {
+  const wikiDir = getBaseWikiDir(baseId)
+  if (!existsSync(wikiDir)) return
 
   const { readdirSync, statSync } = require('node:fs') as typeof import('node:fs')
 
@@ -977,7 +1128,7 @@ export function rebuildWikiIndex(): void {
   const subdirs = ['sources', 'entities', 'concepts', 'syntheses']
 
   for (const subdir of subdirs) {
-    const dirPath = join(KNOWLEDGE_WIKI_DIR, subdir)
+    const dirPath = join(wikiDir, subdir)
     if (!existsSync(dirPath)) continue
     const entries = readdirSync(dirPath)
     for (const entry of entries) {
@@ -1048,7 +1199,7 @@ export function rebuildWikiIndex(): void {
   lines.push(`*Total: ${pages.length} pages — Last updated: ${new Date().toLocaleDateString('en-CA')}*`)
   lines.push('')
 
-  const indexPath = join(KNOWLEDGE_WIKI_DIR, 'index.md')
+  const indexPath = join(wikiDir, 'index.md')
   writeFileSync(indexPath, lines.join('\n'), 'utf-8')
 }
 

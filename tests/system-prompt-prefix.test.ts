@@ -202,3 +202,91 @@ describe('session state block', () => {
     expect(systemPrompt).toBe('You are a focused worker.\n\nSkills: none.')
   })
 })
+
+// ── K9: the knowledge-count line (PLAN-knowledge-groups R3) ───────────
+//
+// The knowledge section's acceptance had no test: the section lived in
+// buildStateBlock with nothing pinning WHERE it lives. The cache contract makes
+// that load-bearing — the count line moves per turn-cycle but rarely per turn,
+// so it rides the state block (re-sent, unpersisted); if it ever migrates into
+// the frozen core, EVERY conversation's prefix is re-billed and, worse, stale
+// counts are baked into the cached identity.
+
+const knowledgeStatsStub = (stats: { total: number; compiled: number; wikiFileCount: number } | null) =>
+  ({ getStats: async () => stats }) as unknown as AgentEngineOptions['knowledgeManager']
+
+describe('knowledge count line (K9, state block only)', () => {
+  it('rides the state block when the base is non-empty, before the clock', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-15T06:00:00.000Z'))
+    const { stateBlock } = await buildSystemPrompt({
+      opts: opts({ knowledgeManager: knowledgeStatsStub({ total: 3, compiled: 2, wikiFileCount: 13 }) }),
+      messages: [userMsg('hello')],
+      plan: plan('auto', false),
+    })
+
+    const block = stateBlock as string
+    expect(block).toContain('知识库：3 个源（2 已编译），wiki 13 页')
+    expect(block).toContain('## Knowledge Base')
+    // Cache reuse inside a tool loop runs up to the first differing byte, so the
+    // always-changing clock must stay AFTER the (rarely-moving) knowledge line.
+    expect(block.indexOf('## Knowledge Base')).toBeLessThan(block.indexOf('## Current Date'))
+  })
+
+  it('never leaks into the invariant core (moving it there must fail this test)', async () => {
+    const { systemPrompt, stateBlock } = await buildSystemPrompt({
+      opts: opts({ knowledgeManager: knowledgeStatsStub({ total: 3, compiled: 2, wikiFileCount: 13 }) }),
+      messages: [userMsg('hello')],
+      plan: plan('auto', false),
+    })
+
+    expect(systemPrompt).not.toContain('知识库：')
+    // The core DOES carry the static hint (a different '## Knowledge Base'
+    // heading, present since before K9) — only the count line is forbidden.
+    expect(systemPrompt).toContain('## Knowledge Base')
+    expect(stateBlock).toContain('知识库：')
+  })
+
+  it('is omitted entirely when the base is empty', async () => {
+    const { stateBlock } = await buildSystemPrompt({
+      opts: opts({ knowledgeManager: knowledgeStatsStub({ total: 0, compiled: 0, wikiFileCount: 0 }) }),
+      messages: [userMsg('hello')],
+      plan: plan('auto', false),
+    })
+
+    expect(stateBlock).not.toContain('知识库：')
+    expect(stateBlock).not.toContain('## Knowledge Base')
+  })
+})
+
+describe('scoped knowledge count line (G6)', () => {
+  it('an @知识库 turn counts (and names) only its scope', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-15T06:00:00.000Z'))
+    const scopedStub = {
+      getStats: async (baseId?: string | null) =>
+        baseId === 'kb_x'
+          ? { total: 2, compiled: 2, wikiFileCount: 3 }
+          : { total: 9, compiled: 5, wikiFileCount: 13 },
+    } as unknown as AgentEngineOptions['knowledgeManager']
+    const { stateBlock } = await buildSystemPrompt({
+      opts: opts({ knowledgeBaseScope: { id: 'kb_x', name: '项目X' }, knowledgeManager: scopedStub }),
+      messages: [userMsg('hello')],
+      plan: plan('auto', false),
+    })
+
+    const block = stateBlock as string
+    expect(block).toContain('知识库：@项目X · 2 个源（2 已编译），wiki 3 页')
+    expect(block).not.toContain('9 个源')
+  })
+
+  it('an unscoped turn keeps the plain count line (no @)', async () => {
+    const { stateBlock } = await buildSystemPrompt({
+      opts: opts({ knowledgeManager: knowledgeStatsStub({ total: 3, compiled: 2, wikiFileCount: 13 }) }),
+      messages: [userMsg('hello')],
+      plan: plan('auto', false),
+    })
+    expect(stateBlock).toContain('知识库：3 个源')
+    expect(stateBlock).not.toContain('@')
+  })
+})

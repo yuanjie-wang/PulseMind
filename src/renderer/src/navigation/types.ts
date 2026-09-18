@@ -21,7 +21,7 @@ export interface AppView {
   capabilityTab?: 'mcp' | 'skills' | 'expert' | 'tools'
   /** `settings`: which section to open (jump entries, e.g. search → 记忆).
    *  `tools` moved to the capability center; `favorites` became knowledge entries. */
-  settingsTab?: 'environment' | 'settings' | 'assistant' | 'memory' | 'experiences' | 'data'
+  settingsTab?: 'environment' | 'settings' | 'assistant' | 'memory' | 'experiences' | 'data' | 'about'
   /** `routines` detail: open the run-history workspace for this routine
    *  (deep links, e.g. the welcome page's routine card). */
   runHistoryOf?: string
@@ -31,6 +31,10 @@ export interface AppView {
   /** `routines` editor page: which routine is loaded into the form.
    *  Absent (with `routineEditing`) = the create-new flow. */
   routineId?: string
+  /** `knowledge`: which base the left rail has selected — the whole right side
+   *  (table, stats, search, import target, compile/rebuild) scopes to it.
+   *  Absent = the default base. Survives tab switches, not restarts. */
+  knowledgeBaseId?: string
 }
 
 export const CHAT_VIEW: AppView = { kind: 'chat' }

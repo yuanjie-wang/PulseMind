@@ -7,8 +7,8 @@ import {
   CheckOutlined,
   LikeOutlined,
   LikeFilled,
-  StarOutlined,
-  StarFilled,
+  BookOutlined,
+  BookFilled,
   DownloadOutlined,
   RightOutlined,
   DownOutlined,
@@ -536,7 +536,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                 {liked ? <LikeFilled /> : <LikeOutlined />}
               </button>
               <button
-                data-testid="knowledge-star"
+                data-testid="knowledge-save"
                 aria-label={favorited ? t('chatView.favorited') : t('chatView.favorite')}
                 style={{ ...btnBase, color: favorited ? '#aaa' : '#bbb', cursor: savingFavorite ? 'wait' : 'pointer', opacity: savingFavorite ? 0.6 : 1 }}
                 onClick={() => {
@@ -557,7 +557,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                 onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
               >
-                {favorited ? <StarFilled /> : <StarOutlined />}
+                {favorited ? <BookFilled /> : <BookOutlined />}
               </button>
             </>
           )}

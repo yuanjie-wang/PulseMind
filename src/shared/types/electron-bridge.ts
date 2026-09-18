@@ -11,7 +11,7 @@ import type { AppSettings } from './settings'
 import type { ToolPreferences } from './tool-types'
 import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from './skill-types'
 import type { MemoryEntry, MemorySearchInput } from './memory'
-import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
+import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
 import type { ExpertProfile } from './expert'
 import type { SummonedExpert } from '../expert-context'
 import type { GitAction, GitResult } from './git'
@@ -390,18 +390,18 @@ export interface ElectronAPI {
   knowledgeListFiles: (status?: string) => Promise<KnowledgeFile[]>
   knowledgeListAdvanced: (opts?: KnowledgeListOptions) => Promise<KnowledgeListResult>
   knowledgeGetFile: (id: string) => Promise<KnowledgeFile | null>
-  knowledgeAddFile: (filePaths: string[]) => Promise<KnowledgeImportResult[]>
+  knowledgeAddFile: (filePaths: string[], baseId?: string) => Promise<KnowledgeImportResult[]>
   knowledgeScanFolder: (folderPath: string) => Promise<{ fileCount: number; filePaths: string[] }>
   knowledgePrepareImport: (filePaths: string[]) => Promise<{ existing: { id: string; filePath: string }[]; new: string[] }>
-  knowledgeAddFolder: (folderPath: string) => Promise<KnowledgeImportResult[]>
-  knowledgeAddUrl: (url: string) => Promise<KnowledgeImportResult>
+  knowledgeAddFolder: (folderPath: string, baseId?: string) => Promise<KnowledgeImportResult[]>
+  knowledgeAddUrl: (url: string, baseId?: string) => Promise<KnowledgeImportResult>
   knowledgeDelete: (id: string) => Promise<void>
   knowledgeGetRaw: (relativePath: string) => Promise<string>
   knowledgeGetRawPath: (relativePath: string) => Promise<string>
   knowledgeReadWiki: (relativePath?: string) => Promise<{ content: string | null; files: string[] | null }>
   knowledgeWriteExperience: (data: { content: string; convId: string; title?: string }) => Promise<KnowledgeFile>
   knowledgeWriteFavorite: (data: { content: string; messageId: string; conversationId: string; title?: string }) => Promise<KnowledgeFile>
-  knowledgeGetStats: () => Promise<KnowledgeStats>
+  knowledgeGetStats: (baseId?: string) => Promise<KnowledgeStats>
   knowledgeApplyWikiChanges: (data: {
     actions: { filePath: string; content: string }[]
     logEntry?: string
@@ -409,11 +409,18 @@ export interface ElectronAPI {
   }) => Promise<{ written: number; logAppended: boolean; markedCompiled: number }>
   knowledgeUpdateStatus: (data: { id: string; status: 'compiled' }) => Promise<void>
   knowledgeClearAll: () => Promise<{ deletedRaw: number; deletedWiki: number }>
-  knowledgeSearchContent: (query: string) => Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>>
-  knowledgeSearchWiki: (query: string) => Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>>
+  knowledgeSearchContent: (query: string, baseId?: string) => Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>>
+  knowledgeSearchWiki: (query: string, baseId?: string) => Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>>
   knowledgeRebuildIndex: () => Promise<void>
   knowledgeGetSchema: () => Promise<string>
-  knowledgeGetWikiDir: () => Promise<string>
+  knowledgeGetWikiDir: (baseId?: string) => Promise<string>
+  knowledgeRebuildWiki: (baseId?: string) => Promise<{ clearedPages: number; resetSources: number }>
+  knowledgeListBases: () => Promise<KnowledgeBase[]>
+  knowledgeCreateBase: (name: string) => Promise<KnowledgeBase>
+  knowledgeRenameBase: (id: string, name: string) => Promise<KnowledgeBase>
+  knowledgeDeleteBase: (id: string) => Promise<void>
+  knowledgeSetFileBase: (id: string, baseId: string) => Promise<KnowledgeFile>
+  knowledgeSetFilesBase: (ids: string[], baseId: string) => Promise<number>
   knowledgeReextract: (id: string) => Promise<{ success: boolean; error?: string }>
   knowledgeAbortImport: () => void
 
@@ -426,7 +433,7 @@ export interface ElectronAPI {
   /** `summon` is the turn's @-mention roster: one name delegates (the expert's
    *  conclusion is delivered verbatim), several enter plan mode. Absent or empty
    *  is a normal turn. */
-  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[]) => Promise<void>
+  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null) => Promise<void>
   agentSessionCancel: (sessionId: string) => Promise<void>
   agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null) => Promise<void>

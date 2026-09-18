@@ -1,6 +1,6 @@
 import { KnowledgeCompilerAgent, WikiPlanAgent } from '../agent/one-shot-agent/KnowledgeCompilerAgent'
 import type { LlmAdapter } from '../llm/adapter'
-import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../../../shared/types/knowledge'
+import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../../../shared/types/knowledge'
 import { getHost } from '../agent/host'
 
 /**
@@ -16,7 +16,6 @@ export class KnowledgeManager {
   private adapter: LlmAdapter | null = null
   private model = ''
   private _wikiVersion = 0
-  private _consolidating = false
 
   /** Incremented each time compileFile() succeeds. AgentEngine
    *  checks this to decide whether its cached snapshot is stale. */
@@ -57,16 +56,17 @@ export class KnowledgeManager {
     return getHost().knowledgeDelete(id)
   }
 
-  /** Get aggregate stats (total / raw / compiled). */
-  async getStats(): Promise<KnowledgeStats> {
-    return getHost().knowledgeGetStats()
+  /** Get aggregate stats (total / raw / compiled). Scoped to one base
+   *  when given (undefined = whole base), for the state block's count line. */
+  async getStats(baseId?: string): Promise<KnowledgeStats> {
+    return getHost().knowledgeGetStats(baseId)
   }
 
   // ─── Import ─────────────────────────────────────────────────────────
 
-  /** Import one or more local files into the knowledge base. */
-  async importFiles(filePaths: string[]): Promise<KnowledgeImportResult[]> {
-    return getHost().knowledgeAddFile(filePaths)
+  /** Import one or more local files into the knowledge base (into `baseId`). */
+  async importFiles(filePaths: string[], baseId?: string): Promise<KnowledgeImportResult[]> {
+    return getHost().knowledgeAddFile(filePaths, baseId)
   }
 
   /** Check each file path against DB; returns existing + new. */
@@ -80,13 +80,13 @@ export class KnowledgeManager {
   }
 
   /** Import all supported files from a folder (recursive). */
-  async importFolder(folderPath: string): Promise<KnowledgeImportResult[]> {
-    return getHost().knowledgeAddFolder(folderPath)
+  async importFolder(folderPath: string, baseId?: string): Promise<KnowledgeImportResult[]> {
+    return getHost().knowledgeAddFolder(folderPath, baseId)
   }
 
   /** Import a remote URL into the knowledge base. */
-  async importUrl(url: string): Promise<KnowledgeImportResult> {
-    return getHost().knowledgeAddUrl(url)
+  async importUrl(url: string, baseId?: string): Promise<KnowledgeImportResult> {
+    return getHost().knowledgeAddUrl(url, baseId)
   }
 
   /** Get the absolute file-system path of a raw knowledge file. */
@@ -94,14 +94,15 @@ export class KnowledgeManager {
     return getHost().knowledgeGetRawPath(relativePath)
   }
 
-  /** Search raw file content for a query string. Returns matches with context excerpts. */
-  async searchContent(query: string): Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>> {
-    return getHost().knowledgeSearchContent(query)
+  /** Search raw file content for a query string. Returns matches with context excerpts.
+   *  `baseId` scopes the search (undefined = all). */
+  async searchContent(query: string, baseId?: string): Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>> {
+    return getHost().knowledgeSearchContent(query, baseId)
   }
 
-  /** Search compiled wiki pages via ripgrep. Returns matching wiki paths with snippets. */
-  async searchWiki(query: string): Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>> {
-    return getHost().knowledgeSearchWiki(query)
+  /** Search compiled wiki pages. Returns matching wiki paths with snippets. */
+  async searchWiki(query: string, baseId?: string): Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>> {
+    return getHost().knowledgeSearchWiki(query, baseId)
   }
 
   /** Rebuild wiki/index.md from actual page files, grouped by type with descriptions. */
@@ -251,6 +252,40 @@ export class KnowledgeManager {
   /** Clear all knowledge: delete all files and DB records. */
   async clearAll(): Promise<{ deletedRaw: number; deletedWiki: number }> {
     return getHost().knowledgeClearAll()
+  }
+
+  // ─── Knowledge Bases ──────────────────────────────────────────────
+
+  async listBases(): Promise<KnowledgeBase[]> {
+    return getHost().knowledgeListBases()
+  }
+
+  async createBase(name: string): Promise<KnowledgeBase> {
+    return getHost().knowledgeCreateBase(name)
+  }
+
+  async renameBase(id: string, name: string): Promise<KnowledgeBase> {
+    return getHost().knowledgeRenameBase(id, name)
+  }
+
+  async deleteBase(id: string): Promise<void> {
+    return getHost().knowledgeDeleteBase(id)
+  }
+
+  async setFileBase(id: string, baseId: string): Promise<KnowledgeFile> {
+    return getHost().knowledgeSetFileBase(id, baseId)
+  }
+
+  async setFilesBase(ids: string[], baseId: string): Promise<number> {
+    return getHost().knowledgeSetFilesBase(ids, baseId)
+  }
+
+  /** R4 (PLAN-knowledge-groups): wipe every compiled page and return all
+   *  sources to raw — the caller re-enqueues the compile queue. Manual wiki
+   *  edits are lost; the confirm dialog says so. Scoped to one base when
+   *  `baseId` is given (undefined = all bases). */
+  async rebuildWiki(baseId?: string): Promise<{ clearedPages: number; resetSources: number }> {
+    return getHost().knowledgeRebuildWiki(baseId)
   }
 
 }

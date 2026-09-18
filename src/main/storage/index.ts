@@ -12,6 +12,17 @@ export const KNOWLEDGE_DIR = join(DATA_DIR, 'knowledge')
 export const KNOWLEDGE_RAW_DIR = join(KNOWLEDGE_DIR, 'raw')
 export const KNOWLEDGE_WIKI_DIR = join(KNOWLEDGE_DIR, 'wiki')
 export const KNOWLEDGE_SCHEMA_DIR = join(KNOWLEDGE_DIR, '.schemas')
+export const KNOWLEDGE_BASES_DIR = join(KNOWLEDGE_DIR, 'bases')
+
+/** Physical directory for a knowledge base's raw files. */
+export function getBaseRawDir(baseId: string): string {
+  return join(KNOWLEDGE_BASES_DIR, baseId, 'raw')
+}
+
+/** Physical directory for a knowledge base's compiled wiki pages. */
+export function getBaseWikiDir(baseId: string): string {
+  return join(KNOWLEDGE_BASES_DIR, baseId, 'wiki')
+}
 export const HOOKS_DIR = join(DATA_DIR, 'hooks')
 export const MEMORY_MD_PATH = join(DATA_DIR, 'memory', 'MEMORY.md')
 export const WORKSPACE_DIR = join(DATA_DIR, 'workspace')
@@ -84,7 +95,7 @@ export function joinDataPath(...segments: string[]): string {
 
 export function ensureDataDir(): void {
   // Create parent directories if they don't exist
-  for (const dir of [DATA_DIR, SKILLS_DIR, EXPERIENCES_DIR, KNOWLEDGE_DIR, KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR, KNOWLEDGE_SCHEMA_DIR, WORKSPACE_DIR, HOOKS_DIR, join(DATA_DIR, 'db'), join(DATA_DIR, 'mcp'), join(DATA_DIR, 'memory'), join(DATA_DIR, 'tmp'), join(DATA_DIR, 'tmp', 'trunc')]) {
+  for (const dir of [DATA_DIR, SKILLS_DIR, EXPERIENCES_DIR, KNOWLEDGE_DIR, KNOWLEDGE_SCHEMA_DIR, KNOWLEDGE_BASES_DIR, getBaseRawDir('default'), getBaseWikiDir('default'), WORKSPACE_DIR, HOOKS_DIR, join(DATA_DIR, 'db'), join(DATA_DIR, 'mcp'), join(DATA_DIR, 'memory'), join(DATA_DIR, 'tmp'), join(DATA_DIR, 'tmp', 'trunc')]) {
     if (!existsSync(dir)) {
       try {
         mkdirSync(dir, { recursive: true })

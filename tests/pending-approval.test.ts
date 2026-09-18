@@ -86,7 +86,7 @@ describe('desktop 授权 wiring (new conversation)', () => {
 
     const take = controllerSrc.indexOf('takePendingApprovalMode()')
     const write = controllerSrc.indexOf('persistence.updateConversationApproval(convId, pendingApproval)')
-    const start = controllerSrc.indexOf('.startLoop(content)')
+    const start = controllerSrc.indexOf('.startLoop(content')
 
     expect(take).toBeGreaterThan(-1)
     expect(write).toBeGreaterThan(take)

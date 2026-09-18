@@ -615,12 +615,22 @@ export class AgentSessionManagerImpl {
    *  and lands in the prompt's dynamic (non-cached) Current Page section.
    *  `summon` (@-mention) is this turn's expert roster, and the ONE routing
    *  rule lives in the engine: one name is a spawn_agent delegation delivered
-   *  verbatim, several enter plan mode. Absent/empty is a normal turn. */
-  async ask(sessionId: string, content: string, pageContext?: PageContext, summon?: SummonedExpert[]): Promise<void> {
+   *  verbatim, several enter plan mode. Absent/empty is a normal turn.
+   *  `knowledgeBase` (PLAN-knowledge-groups G5) is this turn's @知识库 scope:
+   *  staged onto the engine so prepareTurn makes it the turn's retrieval
+   *  scope; null (no mention) unscopes. */
+  async ask(
+    sessionId: string,
+    content: string,
+    pageContext?: PageContext,
+    summon?: SummonedExpert[],
+    knowledgeBase?: { id: string; name: string } | null,
+  ): Promise<void> {
     const entry = await this.ensureEntry(sessionId)
     this.refreshConversationApproval(sessionId, entry)
     await this.refreshExpertContext(sessionId, entry)
     entry.engine.opts.pageContext = pageContext
+    entry.engine.setKnowledgeBaseScope(knowledgeBase ?? null)
     // Whether page_* tools are on this session's toolset at all: a browser
     // client is connected for it (tool-collection.ts reads this flag). Checked
     // per ask because the binding can come and go with the connection.

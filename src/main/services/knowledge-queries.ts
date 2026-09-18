@@ -6,7 +6,7 @@
 import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
 import { resolve, sep, extname, join, relative, basename } from 'node:path'
 import { execFile } from 'node:child_process'
-import { KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR } from '../storage'
+import { getBaseRawDir, getBaseWikiDir } from '../storage'
 import {
   importLocalFile,
   importLocalFiles,
@@ -33,10 +33,17 @@ import {
   getSchemaContent,
   isValidWikiPagePath,
   wikiFtsCount,
+  rebuildWiki,
+  listAllBases,
+  createKnowledgeBase,
+  renameKnowledgeBaseById,
+  removeKnowledgeBase,
+  moveKnowledgeFileToBase,
+  moveKnowledgeFilesToBase,
 } from '../storage/knowledge-store'
 import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
 import { getDb } from '../storage/database'
-import type { KnowledgeFile } from '../../shared/types/knowledge'
+import type { KnowledgeFile, KnowledgeBase } from '../../shared/types/knowledge'
 
 export interface WikiSearchMatch {
   wikiPath: string
@@ -100,26 +107,20 @@ export function svcPrepareImport(filePaths: string[]) {
   return prepareImport(filePaths)
 }
 
-export async function svcAddFile(filePaths: string[]) {
-  const results = []
-  for (const fp of filePaths) {
-    results.push(await importLocalFile(fp))
-  }
-  return results
+export async function svcAddFile(filePaths: string[], baseId?: string) {
+  return importLocalFiles(filePaths, baseId)
 }
 
 export async function svcScanFolder(folderPath: string): Promise<string[]> {
   return collectSupportedFiles(folderPath)
 }
 
-export async function svcAddFolder(folderPath: string) {
-  // K11: the whole folder extracts through ONE worker session (the old loop
-  // forked a fresh process per file).
-  return importLocalFiles(collectSupportedFiles(folderPath))
+export async function svcAddFolder(folderPath: string, baseId?: string) {
+  return importLocalFiles(collectSupportedFiles(folderPath), baseId)
 }
 
-export function svcAddUrl(url: string) {
-  return importUrl(url)
+export function svcAddUrl(url: string, baseId?: string) {
+  return importUrl(url, baseId)
 }
 
 export function svcAbortImport(): void {
@@ -134,22 +135,22 @@ export function svcReextract(id: string) {
   return reextractKnowledge(id)
 }
 
-export function svcGetRaw(relativePath: string): string {
-  resolveSafeRelative(KNOWLEDGE_RAW_DIR, relativePath) // validates traversal
-  return readRawContent(relativePath)
+export function svcGetRaw(relativePath: string, baseId: string = 'default'): string {
+  const rawDir = getBaseRawDir(baseId)
+  resolveSafeRelative(rawDir, relativePath) // validates traversal
+  return readRawContent(relativePath, baseId)
 }
 
-export function svcGetRawPath(relativePath: string): string {
-  return resolveSafeRelative(KNOWLEDGE_RAW_DIR, relativePath) // validates + resolves
+export function svcGetRawPath(relativePath: string, baseId: string = 'default'): string {
+  return resolveSafeRelative(getBaseRawDir(baseId), relativePath) // validates + resolves
 }
 
-export function svcReadWiki(relativePath?: string): { content: string | null; files: unknown } {
+export function svcReadWiki(relativePath?: string, baseId: string = 'default'): { content: string | null; files: unknown } {
   if (relativePath) {
-    resolveSafeRelative(KNOWLEDGE_WIKI_DIR, relativePath) // validates traversal
-    return { content: readWikiContent(relativePath), files: null }
+    resolveSafeRelative(getBaseWikiDir(baseId), relativePath) // validates traversal
+    return { content: readWikiContent(relativePath, baseId), files: null }
   }
-  // No path = return directory listing
-  return { content: null, files: listWikiFiles() }
+  return { content: null, files: listWikiFiles(undefined, baseId) }
 }
 
 export function svcWriteExperience(data: { content: string; convId: string; title?: string }) {
@@ -171,30 +172,27 @@ export async function svcWriteFavorite(data: {
   })
 }
 
-export function svcGetStats() {
-  return getStats()
+export function svcGetStats(baseId?: string) {
+  return getStats(baseId)
 }
 
 export function svcApplyWikiChanges(data: {
   actions: { filePath: string; content: string }[]
   logEntry?: string
   compiledIds?: string[]
+  baseId?: string
 }): { written: number; logAppended: boolean; markedCompiled: number } {
-  // K1: refuse rather than sanitize — the compiler validates too, this is the
-  // last line before disk.
+  const baseId = data.baseId ?? 'default'
   for (const action of data.actions) {
     if (!isValidWikiPagePath(action.filePath)) {
       throw new Error(`非法的 wiki 页面路径，已拒绝写入: ${action.filePath.slice(0, 100)}`)
     }
   }
-  // K3: batch attribution stamped EVERY compiled id with EVERY action path —
-  // a merged entity page became "produced by" all three sources. The only
-  // live caller compiles ONE file per request, so the 1:1 shape is asserted.
   if (data.compiledIds && data.compiledIds.length > 1) {
     throw new Error('compiledIds 必须逐文件传递（一次一个源），拒绝整批归因')
   }
-  const written = applyWikiChanges(data.actions)
-  if (data.logEntry) appendWikiLog(data.logEntry)
+  const written = applyWikiChanges(data.actions, baseId)
+  if (data.logEntry) appendWikiLog(data.logEntry, baseId)
   if (data.compiledIds && data.compiledIds.length === 1) {
     markFileCompiled(data.compiledIds[0], data.actions.map(a => a.filePath))
   }
@@ -218,12 +216,42 @@ export function svcWikiFtsCount(): number {
 
 /** Absolute wiki dir so the renderer can open compiled pages in the workbench
  *  file tab (K7①): they are ordinary markdown files to that surface. */
-export function svcGetWikiDir(): string {
-  return KNOWLEDGE_WIKI_DIR
+export function svcGetWikiDir(baseId: string = 'default'): string {
+  return getBaseWikiDir(baseId)
 }
 
-export function svcSearchContent(query: string) {
-  return searchContent(query)
+export function svcRebuildWiki(baseId?: string): { clearedPages: number; resetSources: number } {
+  return rebuildWiki(baseId)
+}
+
+// ── Knowledge bases ──
+
+export function svcListBases(): KnowledgeBase[] {
+  return listAllBases()
+}
+
+export function svcCreateBase(name: string): KnowledgeBase {
+  return createKnowledgeBase(name)
+}
+
+export function svcRenameBase(id: string, name: string): KnowledgeBase {
+  return renameKnowledgeBaseById(id, name)
+}
+
+export function svcDeleteBase(id: string): void {
+  removeKnowledgeBase(id)
+}
+
+export function svcSetFileBase(id: string, baseId: string): KnowledgeFile {
+  return moveKnowledgeFileToBase(id, baseId)
+}
+
+export function svcSetFilesBase(ids: string[], baseId: string): number {
+  return moveKnowledgeFilesToBase(ids, baseId)
+}
+
+export function svcSearchContent(query: string, baseId?: string) {
+  return searchContent(query, baseId)
 }
 
 export function svcClearAll() {
@@ -248,13 +276,11 @@ function guessTitle(absPath: string, wikiPath: string): string {
 }
 
 /** Search wiki content via ripgrep (grep fallback, Unix only). */
-export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
-  if (!query || !existsSync(KNOWLEDGE_WIKI_DIR)) return []
+export async function svcSearchWiki(query: string, baseId?: string): Promise<WikiSearchMatch[]> {
+  const wikiDir = baseId !== undefined ? getBaseWikiDir(baseId) : undefined
+  if (!query) return []
 
-  // K4: the wiki pages live in knowledge_wiki_fts — bm25-ranked, one hit per
-  // page, snippet() showing the matching region. Ripgrep stays below as the
-  // fallback for <3-char tokens (trigram floor) and identifier-style queries.
-  const ftsResults = searchWikiFts(query, 30)
+  const ftsResults = searchWikiFts(query, 30, baseId)
   if (ftsResults.length > 0) return ftsResults
 
   const results: WikiSearchMatch[] = []
@@ -262,10 +288,7 @@ export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
 
   const terms = query.split(/\s+/).filter(Boolean)
 
-  // Build ripgrep/grep args with OR semantics for multi-keyword queries.
-  // Multiple terms use `-F -e t1 -e t2` (literal OR), single term uses the
-  // raw query string directly (same behavior as before).
-  const buildRgArgs = (): string[] => {
+  const buildRgArgs = (dir: string): string[] => {
     const args = ['-n', '--no-heading', '-i', '--max-columns', '300', '--max-count', '5']
     if (terms.length > 1) {
       args.push('-F')
@@ -273,10 +296,10 @@ export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
     } else {
       args.push(query)
     }
-    args.push(KNOWLEDGE_WIKI_DIR)
+    args.push(dir)
     return args
   }
-  const buildGrepArgs = (): string[] => {
+  const buildGrepArgs = (dir: string): string[] => {
     const args = ['-rn', '-i', '--max-count', '5']
     if (terms.length > 1) {
       args.push('-F')
@@ -284,69 +307,84 @@ export async function svcSearchWiki(query: string): Promise<WikiSearchMatch[]> {
     } else {
       args.push(query)
     }
-    args.push(KNOWLEDGE_WIKI_DIR)
+    args.push(dir)
     return args
   }
 
-  const parseOutput = (stdout: string): void => {
+  const parseOutput = (stdout: string, dir: string): void => {
     for (const line of stdout.split('\n')) {
       if (!line.trim() || results.length >= limit) break
       const parsed = parseRgLine(line)
       if (!parsed) continue
-      const wikiPath = relative(KNOWLEDGE_WIKI_DIR, parsed.absPath)
-      const dir = wikiPath.split(sep)[0]
-      if (!results.some(r => r.wikiPath === wikiPath)) {
-        results.push({ wikiPath, title: guessTitle(parsed.absPath, wikiPath), type: dir as WikiPageType, lineNum: parsed.lineNum, content: parsed.content.slice(0, 200) })
-      }
+      const wikiPath = relative(dir, parsed.absPath)
+      const dirName = wikiPath.split(sep)[0]
+      if (results.some(r => r.wikiPath === wikiPath)) continue
+      results.push({ wikiPath, title: guessTitle(parsed.absPath, wikiPath), type: dirName as WikiPageType, lineNum: parsed.lineNum, content: parsed.content.slice(0, 200) })
     }
   }
 
-  const tryRg = (): Promise<void> => new Promise((resolve) => {
-    execFile(ripgrepBinary(), buildRgArgs(), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      if (err && !stdout) { resolve(); return }
-      parseOutput(stdout)
-      resolve()
+  // Search one directory
+  const searchDir = async (dir: string) => {
+    if (!existsSync(dir)) return
+    await new Promise<void>((resolve) => {
+      execFile(ripgrepBinary(), buildRgArgs(dir), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        if (err && !stdout) { resolve(); return }
+        parseOutput(stdout, dir)
+        resolve()
+      })
     })
-  })
-
-  const tryGrep = (): Promise<void> => new Promise((resolve) => {
-    execFile('grep', buildGrepArgs(), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      if (err && !stdout) { resolve(); return }
-      parseOutput(stdout)
-      resolve()
-    })
-  })
-
-  await tryRg()
-  if (results.length === 0 && terms.length > 1) {
-    // OR returned nothing — retry with full query as a single string
-    terms.length = 0; terms.push(query)
-    await tryRg()
+    if (results.length === 0 && terms.length > 1) {
+      terms.length = 0; terms.push(query)
+      await new Promise<void>((resolve) => {
+        execFile(ripgrepBinary(), buildRgArgs(dir), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+          if (err && !stdout) { resolve(); return }
+          parseOutput(stdout, dir)
+          resolve()
+        })
+      })
+    }
+    if (results.length === 0 && process.platform !== 'win32') {
+      await new Promise<void>((resolve) => {
+        execFile('grep', buildGrepArgs(dir), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+          if (err && !stdout) { resolve(); return }
+          parseOutput(stdout, dir)
+          resolve()
+        })
+      })
+    }
   }
-  // grep exists only on Unix; on Windows the bundled rg above is the only
-  // searcher (execFile('grep') would ENOENT and silently yield nothing).
-  if (results.length === 0 && process.platform !== 'win32') await tryGrep()
+
+  if (wikiDir) {
+    await searchDir(wikiDir)
+  } else {
+    // Search all bases
+    const { listKnowledgeBases } = require('../storage/knowledge.db') as typeof import('../storage/knowledge.db')
+    for (const b of listKnowledgeBases()) {
+      await searchDir(getBaseWikiDir(b.id))
+      if (results.length >= limit) break
+    }
+  }
+
   return results.slice(0, limit)
 }
 
 
-/** FTS search over wiki pages (K4): bm25-ranked, one result per page, with
- *  the matching region as the snippet. Empty when nothing matches (caller
- *  falls back to ripgrep) or when the table does not exist yet. */
-function searchWikiFts(query: string, limit: number): WikiSearchMatch[] {
+/** FTS search over wiki pages (K4): bm25-ranked, one result per page. */
+function searchWikiFts(query: string, limit: number, baseId?: string): WikiSearchMatch[] {
   const terms = query.trim().split(/\s+/).filter(Boolean).filter((t) => [...t].length >= 3)
-  if (terms.length === 0 || wikiFtsCount() === 0) return []
+  if (terms.length === 0 || wikiFtsCount(baseId) === 0) return []
   const ftsQuery = terms.map((t) => `"${t}"`).join(' OR ')
+  const scoped = baseId !== undefined
   try {
     const rows = getDb().prepare(`
       SELECT path, title,
              snippet(knowledge_wiki_fts, 1, '…', '…', '…', 48) AS excerpt,
              snippet(knowledge_wiki_fts, 1, '', '', '', 1) AS marker
       FROM knowledge_wiki_fts
-      WHERE knowledge_wiki_fts MATCH ?
+      WHERE knowledge_wiki_fts MATCH ?${scoped ? ' AND base_id = ?' : ''}
       ORDER BY rank
       LIMIT ?
-    `).all(ftsQuery, limit) as { path: string; title: string; excerpt: string; marker: string }[]
+    `).all(...(scoped ? [ftsQuery, baseId, limit] : [ftsQuery, limit])) as { path: string; title: string; excerpt: string; marker: string }[]
     return rows.map((r) => ({
       wikiPath: r.path,
       title: r.title || guessTitleFromPath(r.path),

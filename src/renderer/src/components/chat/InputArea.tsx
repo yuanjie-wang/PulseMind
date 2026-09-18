@@ -159,6 +159,17 @@ export function InputArea({
   )
   const boundExpert = experts.find((e) => e.id === boundExpertId)
 
+  // ── Knowledge bases (PLAN-knowledge-groups G5) ──
+  // Same @-popup, second section: @库名 scopes THIS turn's knowledge searches.
+  // Loaded like the experts; the token it writes is parsed off the text at
+  // submit by useChatController (parseKnowledgeBaseMention).
+  const [knowledgeBases, setKnowledgeBases] = useState<Array<{ id: string; name: string }>>([])
+  useEffect(() => {
+    window.electronAPI.knowledgeListBases?.()
+      .then(setKnowledgeBases)
+      .catch(() => {})
+  }, [])
+
   // ── @-mention popup ──
   // Active while the caret-text ends with an @token (@ at word start). Selecting
   // an expert rewrites the token; sending the raw text also works — the
@@ -177,22 +188,29 @@ export function InputArea({
     (atIdx === 0 || /\s/.test(inputValue[atIdx - 1])) &&
     inputValue !== mentionDismissedValue
   const mentionQuery = mentionActive ? inputValue.slice(atIdx + 1) : ''
-  const mentionMatches = useMemo(() => {
+  type MentionItem = { kind: 'expert'; expert: ExpertProfile } | { kind: 'base'; base: { id: string; name: string } }
+  const mentionMatches = useMemo((): MentionItem[] => {
     if (!mentionActive) return []
     const q = mentionQuery.trim().toLowerCase()
-    const list = q
+    const expertItems: MentionItem[] = (q
       ? summonableExperts.filter((e) => e.name.toLowerCase().includes(q) || (e.description || '').toLowerCase().includes(q))
       : summonableExperts
-    return list.slice(0, 8)
-  }, [mentionActive, mentionQuery, summonableExperts])
+    ).slice(0, 8).map((expert) => ({ kind: 'expert', expert }))
+    const baseItems: MentionItem[] = (q
+      ? knowledgeBases.filter((g) => g.name.toLowerCase().includes(q))
+      : knowledgeBases
+    ).slice(0, 4).map((base) => ({ kind: 'base', base }))
+    return [...expertItems, ...baseItems]
+  }, [mentionActive, mentionQuery, summonableExperts, knowledgeBases])
 
   const handleInputChange = (v: string): void => {
     setInputValue(v)
     setMentionNavIdx(0)
   }
 
-  const selectMention = (expert: ExpertProfile): void => {
-    const next = `${inputValue.slice(0, atIdx)}@${expert.name} `
+  const selectMention = (item: MentionItem): void => {
+    const name = item.kind === 'expert' ? item.expert.name : item.base.name
+    const next = `${inputValue.slice(0, atIdx)}@${name} `
     setInputValue(next)
     setMentionDismissedValue(next)
   }
@@ -305,7 +323,7 @@ export function InputArea({
     // popup. Returning false is Sender's own veto contract for "don't submit":
     // preventDefault alone never reaches its internal handler.
     if (mentionActive && mentionMatches.length > 0 && !e.nativeEvent.isComposing) {
-      const expert = mentionMatches[mentionNavIdx]
+      const picked = mentionMatches[mentionNavIdx]
       switch (e.key) {
         case 'ArrowUp':
           e.preventDefault()
@@ -317,9 +335,9 @@ export function InputArea({
           return false
         case 'Enter':
           // Shift/modified Enter is a newline or an editor shortcut, not a pick.
-          if (expert && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          if (picked && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
             e.preventDefault()
-            selectMention(expert)
+            selectMention(picked)
             return false
           }
           break
@@ -426,12 +444,16 @@ export function InputArea({
                   <div style={{ padding: '2px 8px 4px', fontSize: 11, color: '#999', lineHeight: 1.6 }}>
                     <div>{t('chatView.expert.summonHintOne')}</div>
                     <div>{t('chatView.expert.summonHintMany')}</div>
+                    <div>{t('chatView.knowledgeBase.hint')}</div>
                   </div>
-                  {mentionMatches.map((expert, i) => (
+                  {mentionMatches.map((item, i) => {
+                    const isBase = item.kind === 'base'
+                    const name = isBase ? item.base.name : item.expert.name
+                    return (
                     <div
-                      key={expert.id}
+                      key={`${item.kind}-${name}`}
                       data-mention-idx={i}
-                      onClick={() => selectMention(expert)}
+                      onClick={() => selectMention(item)}
                       onMouseEnter={() => setMentionNavIdx(i)}
                       style={{
                         display: 'flex',
@@ -444,13 +466,19 @@ export function InputArea({
                       }}
                     >
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.name}</div>
-                        {expert.description && (
-                          <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.description}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</div>
+                        {!isBase && item.expert.description && (
+                          <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.expert.description}</div>
                         )}
                       </div>
+                      {isBase && (
+                        <span style={{ flexShrink: 0, fontSize: 10, color: '#999', border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, padding: '0 6px' }}>
+                          {t('chatView.knowledgeBase.tag')}
+                        </span>
+                      )}
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </>

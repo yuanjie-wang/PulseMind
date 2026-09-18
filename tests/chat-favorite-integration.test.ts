@@ -2,7 +2,7 @@
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { StarFilled, StarOutlined } from '@ant-design/icons'
+import { BookFilled, BookOutlined } from '@ant-design/icons'
 import { App, ConfigProvider } from 'antd'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageGroup, type MessageActions } from '../src/renderer/src/components/chat/MessageGroup'
@@ -12,7 +12,7 @@ import type { KnowledgeFile } from '../src/shared/types/knowledge'
 
 const noop = () => {}
 const iconPaths = (element: Element) => [...element.querySelectorAll('svg path')].map(path => path.getAttribute('d'))
-function expectedIconPaths(icon: typeof StarFilled) {
+function expectedIconPaths(icon: typeof BookFilled) {
   const element = document.createElement('div')
   element.innerHTML = renderToStaticMarkup(React.createElement(icon))
   return iconPaths(element)
@@ -58,42 +58,42 @@ async function mount(actions: MessageActions, save: ReturnType<typeof vi.fn>) {
 }
 
 describe('MessageGroup knowledge-save integration', () => {
-  it('saves one exact payload, waits for persistence, then shows a one-way solid star', async () => {
+  it('saves one exact payload, waits for persistence, then shows a one-way solid book', async () => {
     let finish!: (file: KnowledgeFile) => void
     const save = vi.fn(() => new Promise<KnowledgeFile>(resolve => { finish = resolve }))
     const mounted = await mount('full', save)
     try {
-      const star = mounted.container.querySelector<HTMLButtonElement>('[data-testid="knowledge-star"]')!
-      expect(star).not.toBeNull()
-      expect(star.title).toBe('录入知识库')
-      expect(iconPaths(star)).toEqual(expectedIconPaths(StarOutlined))
+      const saveBtn = mounted.container.querySelector<HTMLButtonElement>('[data-testid="knowledge-save"]')!
+      expect(saveBtn).not.toBeNull()
+      expect(saveBtn.title).toBe('录入知识库')
+      expect(iconPaths(saveBtn)).toEqual(expectedIconPaths(BookOutlined))
       // Same-turn clicks exercise the synchronous latch, not just React state.
-      await act(async () => { star.click(); star.click(); await flush() })
+      await act(async () => { saveBtn.click(); saveBtn.click(); await flush() })
       expect(save).toHaveBeenCalledTimes(1)
       expect(save).toHaveBeenCalledWith({
         content: 'A useful conclusion.\nDetails stay intact.', messageId: msg.id,
         conversationId: 'favorite-integration-conversation', title: 'Fixture title',
       })
-      expect(star.title).toBe('录入知识库')
-      expect(iconPaths(star)).toEqual(expectedIconPaths(StarOutlined))
+      expect(saveBtn.title).toBe('录入知识库')
+      expect(iconPaths(saveBtn)).toEqual(expectedIconPaths(BookOutlined))
       await act(async () => {
         finish({ id: 'favorite-integration-raw', status: 'raw' } as KnowledgeFile)
         await flush()
       })
-      expect(star.title).toBe('已录入知识库')
-      expect(star.getAttribute('aria-label')).toBe('已录入知识库')
-      expect(iconPaths(star)).toEqual(expectedIconPaths(StarFilled))
-      await act(async () => { star.click(); await flush() })
+      expect(saveBtn.title).toBe('已录入知识库')
+      expect(saveBtn.getAttribute('aria-label')).toBe('已录入知识库')
+      expect(iconPaths(saveBtn)).toEqual(expectedIconPaths(BookFilled))
+      await act(async () => { saveBtn.click(); await flush() })
       expect(save).toHaveBeenCalledTimes(1)
       expect(mounted.marker).not.toHaveBeenCalled()
     } finally { await mounted.close() }
   })
 
-  it('offers no star and performs no writes for a viewOnly transcript', async () => {
+  it('offers no save button and performs no writes for a viewOnly transcript', async () => {
     const save = vi.fn()
     const mounted = await mount('viewOnly', save)
     try {
-      expect(mounted.container.querySelector('[data-testid="knowledge-star"]')).toBeNull()
+      expect(mounted.container.querySelector('[data-testid="knowledge-save"]')).toBeNull()
       // Prove the actual transcript rendered instead of vacuously finding no button.
       expect(mounted.container.textContent).toContain('A useful conclusion.')
       expect(mounted.container.querySelector('button[title="复制"]')).not.toBeNull()

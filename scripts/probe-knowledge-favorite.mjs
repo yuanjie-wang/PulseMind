@@ -17,12 +17,13 @@ function check(name, value) {
   console.log(`PASS ${name}`)
 }
 async function phase() {
-  const { DATA_DIR, KNOWLEDGE_RAW_DIR, ensureDataDir } = await import('../src/main/storage/index')
+  const { DATA_DIR, getBaseRawDir, ensureDataDir } = await import('../src/main/storage/index')
   const home = process.env.PM_HOME
   if (!home || resolve(DATA_DIR) !== join(resolve(home), '.pulsemind') || resolve(process.env.HOME) !== resolve(home)) {
     throw new Error('Refusing to touch data outside isolated HOME')
   }
   ensureDataDir()
+  const RAW_ROOT = getBaseRawDir('default')
   const { initializeDatabase, getDb } = await import('../src/main/storage/database')
   await initializeDatabase()
   const db = getDb()
@@ -78,7 +79,7 @@ async function phase() {
   seedMessage('saved')
   const file = await capture('saved')
   check('IPC returns KnowledgeFile, not envelope', file.id && file.sourceType === 'favorite' && file.status === 'raw' && !('success' in file))
-  const raw = readFileSync(join(KNOWLEDGE_RAW_DIR, file.filePath), 'utf8')
+  const raw = readFileSync(join(RAW_ROOT, file.filePath), 'utf8')
   check('raw has source IDs and full body', raw.includes('source_conv_id: "conv"') && raw.includes('source_msg_id: "saved"') && raw.includes('nebula favorite body'))
   check('marker set after successful capture', mark('saved') === 1)
   const { saveConversation, appendConversationMessages } = await import('../src/main/storage/conversation.db')
@@ -91,7 +92,7 @@ async function phase() {
   check('FTS contains capture', !!db.prepare("SELECT k.id FROM knowledge_fts f JOIN knowledge_files k ON k.rowid=f.rowid WHERE knowledge_fts MATCH 'nebula' AND k.id=?").get(file.id))
   const replay = await Promise.all([capture('saved', 'changed'), capture('saved', 'changed')])
   check('duplicate requests reuse identity', replay.every(f => f.id === file.id))
-  check('duplicate does not overwrite raw', readFileSync(join(KNOWLEDGE_RAW_DIR, file.filePath), 'utf8') === raw)
+  check('duplicate does not overwrite raw', readFileSync(join(RAW_ROOT, file.filePath), 'utf8') === raw)
   check('exactly one row for pair', db.prepare('SELECT count(*) n FROM knowledge_files WHERE file_path=?').get(file.filePath).n === 1)
   check('filename includes conversation identity', favoriteRawFileName('other', 'saved') !== file.filePath)
   await assert.rejects(capture('saved', 'body', 'wrong-conversation'))
@@ -104,15 +105,15 @@ async function phase() {
   for (const failure of ['file', 'row', 'fts', 'marker']) {
     const id = `fail_${failure}`
     seedMessage(id)
-    const path = join(KNOWLEDGE_RAW_DIR, favoriteRawFileName('conv', id))
+    const path = join(RAW_ROOT, favoriteRawFileName('conv', id))
     const counts = () => JSON.stringify([
       db.prepare('SELECT count(*) n FROM knowledge_files').get().n,
       db.prepare('SELECT count(*) n FROM knowledge_fts').get().n
     ])
     const before = counts()
     if (failure === 'file') {
-      renameSync(KNOWLEDGE_RAW_DIR, KNOWLEDGE_RAW_DIR + '.backup')
-      writeFileSync(KNOWLEDGE_RAW_DIR, 'not a directory')
+      renameSync(RAW_ROOT, RAW_ROOT + '.backup')
+      writeFileSync(RAW_ROOT, 'not a directory')
     } else if (failure === 'row') {
       db.exec("CREATE TRIGGER reject_capture BEFORE INSERT ON knowledge_files BEGIN SELECT RAISE(ABORT,'probe row failure'); END")
     } else if (failure === 'fts') {
@@ -126,8 +127,8 @@ async function phase() {
       check(`${failure} failure leaves no raw file`, !existsSync(path))
     } finally {
       if (failure === 'file') {
-        rmSync(KNOWLEDGE_RAW_DIR)
-        renameSync(KNOWLEDGE_RAW_DIR + '.backup', KNOWLEDGE_RAW_DIR)
+        rmSync(RAW_ROOT)
+        renameSync(RAW_ROOT + '.backup', RAW_ROOT)
       } else if (failure === 'fts') db.exec('ALTER TABLE knowledge_fts_backup RENAME TO knowledge_fts')
       else db.exec('DROP TRIGGER reject_capture')
     }

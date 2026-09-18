@@ -19,7 +19,7 @@ import type { ToolPreferences } from '../shared/types/tool-types'
 import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '../shared/types/skill-types'
 import type { ExperienceRecord, ExperienceDraft } from '../shared/types/experience-types'
 import type { MemoryEntry, MemorySearchInput } from '../shared/types/memory'
-import type { KnowledgeFile, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../shared/types/knowledge'
+import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../shared/types/knowledge'
 import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../shared/types/electron-bridge'
 import type { ExpertProfile } from '../shared/types/expert'
 import type { SummonedExpert } from '../shared/expert-context'
@@ -347,13 +347,16 @@ const electronAPI = {
   knowledgeListFiles: (status?: string): Promise<KnowledgeFile[]> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_LIST, status),
   knowledgeListAdvanced: (opts?: KnowledgeListOptions): Promise<KnowledgeListResult> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_LIST_ADVANCED, opts),
   knowledgeGetFile: (id: string): Promise<KnowledgeFile | null> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET, id),
-  knowledgeAddFile: (filePaths: string[]): Promise<KnowledgeImportResult[]> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_FILE, filePaths),
+  knowledgeAddFile: (filePaths: string[], baseId?: string): Promise<KnowledgeImportResult[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_FILE, filePaths, baseId),
   knowledgePrepareImport: (filePaths: string[]): Promise<{ existing: { id: string; filePath: string }[]; new: string[] }> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_PREPARE_IMPORT, filePaths),
   knowledgeScanFolder: (folderPath: string): Promise<{ fileCount: number; filePaths: string[] }> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SCAN_FOLDER, folderPath),
-  knowledgeAddFolder: (folderPath: string): Promise<KnowledgeImportResult[]> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_FOLDER, folderPath),
-  knowledgeAddUrl: (url: string): Promise<KnowledgeImportResult> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_URL, url),
+  knowledgeAddFolder: (folderPath: string, baseId?: string): Promise<KnowledgeImportResult[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_FOLDER, folderPath, baseId),
+  knowledgeAddUrl: (url: string, baseId?: string): Promise<KnowledgeImportResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_URL, url, baseId),
   knowledgeDelete: (id: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_DELETE, id),
   knowledgeGetRaw: (relativePath: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW, relativePath),
   knowledgeGetRawPath: (relativePath: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, relativePath),
@@ -363,7 +366,7 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_WRITE_EXPERIENCE, data),
   knowledgeWriteFavorite: (data: { content: string; messageId: string; conversationId: string; title?: string }): Promise<KnowledgeFile> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_WRITE_FAVORITE, data),
-  knowledgeGetStats: (): Promise<KnowledgeStats> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_STATS),
+  knowledgeGetStats: (baseId?: string): Promise<KnowledgeStats> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_STATS, baseId),
   knowledgeApplyWikiChanges: (data: {
     actions: { filePath: string; content: string }[]
     logEntry?: string
@@ -371,13 +374,20 @@ const electronAPI = {
   }): Promise<{ written: number; logAppended: boolean; markedCompiled: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_APPLY_WIKI_CHANGES, data),
   knowledgeUpdateStatus: (data: { id: string; status: 'compiled' }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_UPDATE_STATUS, data),
   knowledgeClearAll: (): Promise<{ deletedRaw: number; deletedWiki: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_CLEAR_ALL),
-  knowledgeSearchContent: (query: string): Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>> =>
-    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_CONTENT, query),
-  knowledgeSearchWiki: (query: string): Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>> =>
-    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_WIKI, query),
+  knowledgeSearchContent: (query: string, baseId?: string): Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_CONTENT, query, baseId),
+  knowledgeSearchWiki: (query: string, baseId?: string): Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_WIKI, query, baseId),
   knowledgeRebuildIndex: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_INDEX),
   knowledgeGetSchema: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_SCHEMA),
-  knowledgeGetWikiDir: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_WIKI_DIR),
+  knowledgeGetWikiDir: (baseId?: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_WIKI_DIR, baseId),
+  knowledgeRebuildWiki: (baseId?: string): Promise<{ clearedPages: number; resetSources: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_WIKI, baseId),
+  knowledgeListBases: (): Promise<KnowledgeBase[]> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_BASE_LIST),
+  knowledgeCreateBase: (name: string): Promise<KnowledgeBase> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_BASE_CREATE, name),
+  knowledgeRenameBase: (id: string, name: string): Promise<KnowledgeBase> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_BASE_RENAME, id, name),
+  knowledgeDeleteBase: (id: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_BASE_DELETE, id),
+  knowledgeSetFileBase: (id: string, baseId: string): Promise<KnowledgeFile> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SET_FILE_BASE, id, baseId),
+  knowledgeSetFilesBase: (ids: string[], baseId: string): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SET_FILES_BASE, ids, baseId),
   knowledgeReextract: (id: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REEXTRACT, id),
   knowledgeAbortImport: (): void => ipcRenderer.send(IPC_CHANNELS.KNOWLEDGE_ABORT_IMPORT),
 
@@ -397,8 +407,8 @@ const electronAPI = {
   // ── Agent sessions (engines hosted in main) ──
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CREATE, sessionId, opts),
-  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[]): Promise<void> =>
-    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon),
+  agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon, knowledgeBase),
   agentSessionCancel: (sessionId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CANCEL, sessionId),
   agentSessionHistory: (sessionId: string): Promise<{ messages: unknown[]; agentId: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),

@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { getDb } from './database'
+import { getBaseRawDir, KNOWLEDGE_RAW_DIR } from './index'
 import type { KnowledgeListOptions, KnowledgeListResult } from '../../shared/types/knowledge'
 import { chunkText } from '../../shared/knowledge/chunk'
 
@@ -18,6 +19,7 @@ export interface KnowledgeFileRow {
   created_at: string
   compiled_at: string | null
   wiki_outputs: string | null
+  base_id: string
 }
 
 export function listKnowledgeFiles(opts?: KnowledgeListOptions): KnowledgeListResult {
@@ -27,11 +29,10 @@ export function listKnowledgeFiles(opts?: KnowledgeListOptions): KnowledgeListRe
 
   if (opts?.status) { conditions.push('status = ?'); params.push(opts.status) }
   if (opts?.sourceType) { conditions.push('source_type = ?'); params.push(opts.sourceType) }
+  if (opts?.baseId !== undefined) { conditions.push('base_id = ?'); params.push(opts.baseId) }
   if (opts?.search) {
     const words = opts.search.trim().split(/\s+/).filter(Boolean)
     if (words.length > 1) {
-      // Multi-word: OR each word independently so "A B" matches files
-      // with "A" OR "B" in title/path instead of requiring literal "A B".
       const clauses = words.map(() => '(title LIKE ? OR file_path LIKE ?)').join(' OR ')
       conditions.push(`(${clauses})`)
       for (const w of words) {
@@ -98,13 +99,14 @@ export function getKnowledgeFileBySource(sourcePath: string, sourceUrl?: string)
 export function insertKnowledgeFile(row: {
   id: string; filePath: string; title: string; sourceType: string
   sourceUrl?: string | null; sourcePath?: string | null; convId?: string | null; contentHash?: string | null
+  baseId?: string
 }): void {
   const database = getDb()
   const now = new Date().toISOString()
   database.prepare(`
-    INSERT INTO knowledge_files (id, file_path, title, source_type, source_url, source_path, conv_id, content_hash, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'raw', ?)
-  `).run(row.id, row.filePath, row.title, row.sourceType, row.sourceUrl ?? null, row.sourcePath ?? null, row.convId ?? null, row.contentHash ?? null, now)
+    INSERT INTO knowledge_files (id, file_path, title, source_type, source_url, source_path, conv_id, content_hash, status, created_at, base_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'raw', ?, ?)
+  `).run(row.id, row.filePath, row.title, row.sourceType, row.sourceUrl ?? null, row.sourcePath ?? null, row.convId ?? null, row.contentHash ?? null, now, row.baseId ?? 'default')
 }
 
 export function updateKnowledgeFileStatus(id: string, status: 'compiled', wikiOutputs?: string[]): void {
@@ -127,24 +129,77 @@ export function deleteKnowledgeFile(id: string): void {
   del()
 }
 
-export function getKnowledgeStats(): { total: number; raw: number; compiled: number } {
+// ── Knowledge Bases ──
+
+export interface KnowledgeBaseRow {
+  id: string
+  name: string
+  color_hue: number | null
+  created_at: string
+  file_count?: number
+}
+
+/** All bases, oldest first, each with its live file count. */
+export function listKnowledgeBases(): KnowledgeBaseRow[] {
+  return getDb().prepare(`
+    SELECT b.id, b.name, b.color_hue, b.created_at,
+           (SELECT COUNT(*) FROM knowledge_files f WHERE f.base_id = b.id) AS file_count
+    FROM knowledge_bases b ORDER BY b.created_at ASC, b.name ASC
+  `).all() as KnowledgeBaseRow[]
+}
+
+export function getKnowledgeBase(id: string): KnowledgeBaseRow | null {
+  const row = getDb().prepare('SELECT id, name, color_hue, created_at FROM knowledge_bases WHERE id = ?').get(id) as KnowledgeBaseRow | undefined
+  return row ?? null
+}
+
+export function getKnowledgeBaseByName(name: string): KnowledgeBaseRow | null {
+  const row = getDb().prepare('SELECT id, name, color_hue, created_at FROM knowledge_bases WHERE name = ?').get(name) as KnowledgeBaseRow | undefined
+  return row ?? null
+}
+
+export function insertKnowledgeBase(row: { id: string; name: string; colorHue?: number | null }): void {
+  getDb().prepare('INSERT INTO knowledge_bases (id, name, color_hue, created_at) VALUES (?, ?, ?, ?)')
+    .run(row.id, row.name, row.colorHue ?? null, new Date().toISOString())
+}
+
+export function renameKnowledgeBase(id: string, name: string): void {
+  getDb().prepare('UPDATE knowledge_bases SET name = ? WHERE id = ?').run(name, id)
+}
+
+/** Delete a base and all its files. The 'default' base cannot be deleted. */
+export function deleteKnowledgeBase(id: string): void {
+  if (id === 'default') throw new Error('默认知识库不可删除')
+  const tx = getDb().transaction(() => {
+    getDb().prepare('DELETE FROM knowledge_fts WHERE file_rowid IN (SELECT rowid FROM knowledge_files WHERE base_id = ?)').run(id)
+    getDb().prepare('DELETE FROM knowledge_files WHERE base_id = ?').run(id)
+    getDb().prepare('DELETE FROM knowledge_bases WHERE id = ?').run(id)
+  })
+  tx()
+}
+
+/** Move one file between bases. The base's existence is checked so a stale
+ *  renderer id cannot strand the file in a dangling base. */
+export function setKnowledgeFileBase(id: string, baseId: string): void {
+  if (!getKnowledgeBase(baseId)) {
+    throw new Error(`知识库不存在: ${baseId}`)
+  }
+  getDb().prepare('UPDATE knowledge_files SET base_id = ? WHERE id = ?').run(baseId, id)
+}
+
+export function getKnowledgeStats(baseId?: string): { total: number; raw: number; compiled: number } {
   const database = getDb()
-  const total = (database.prepare('SELECT COUNT(*) as c FROM knowledge_files').get() as { c: number }).c
-  const raw = (database.prepare("SELECT COUNT(*) as c FROM knowledge_files WHERE status = 'raw'").get() as { c: number }).c
-  const compiled = (database.prepare("SELECT COUNT(*) as c FROM knowledge_files WHERE status = 'compiled'").get() as { c: number }).c
+  const clause = baseId !== undefined ? 'WHERE base_id = ?' : ''
+  const params = baseId !== undefined ? [baseId] : []
+  const total = (database.prepare(`SELECT COUNT(*) as c FROM knowledge_files ${clause}`).get(...params) as { c: number }).c
+  const raw = (database.prepare(`SELECT COUNT(*) as c FROM knowledge_files ${clause ? `${clause} AND ` : 'WHERE '}status = 'raw'`).get(...params) as { c: number }).c
+  const compiled = (database.prepare(`SELECT COUNT(*) as c FROM knowledge_files ${clause ? `${clause} AND ` : 'WHERE '}status = 'compiled'`).get(...params) as { c: number }).c
   return { total, raw, compiled }
 }
 
 // ── Knowledge FTS5 (chunked trigram, PLAN-knowledge-base K5) ──
-// One FTS row per ~1200-char chunk (file_rowid UNINDEXED joins back to
-// knowledge_files, chunk_offset keeps provenance): BM25 ranks passages, not
-// whole documents, and snippet() lands inside the relevant region. Trigram
-// tokenization makes CJK substring queries native — the four-layer fallback
-// ladder (phrase OR → char AND → prefix stripping → LIKE) collapses to
-// "trigram MATCH, with LIKE for <3-char queries" (the tokenizer's known floor).
 
-/** Replace every chunk row for one knowledge file. The capture path (favorite)
- *  and the import indexer both funnel here. */
+/** Replace every chunk row for one knowledge file. */
 export function knowledgeFtsSync(fileRowid: number, content: string): void {
   const database = getDb()
   const tx = database.transaction(() => {
@@ -166,22 +221,16 @@ export interface KnowledgeFtsResult {
   id: string; filePath: string; title: string; sourceType: string; excerpt: string
 }
 
-export function searchKnowledgeFts(query: string, limit: number = 10): KnowledgeFtsResult[] {
+export function searchKnowledgeFts(query: string, limit: number = 10, baseId?: string): KnowledgeFtsResult[] {
   const database = getDb()
   const escaped = query.replace(/[^\w\s一-鿿]/g, ' ').trim()
   if (!escaped) return []
+  const baseClause = baseId !== undefined ? 'AND k.base_id = ?' : ''
+  const baseParams = baseId !== undefined ? [baseId] : []
 
   const terms = escaped.split(/\s+/).filter(Boolean)
-  // Trigram needs ≥3 characters per token — shorter queries fall back to LIKE
-  // (D4: a known tokenizer floor, not a fallback ladder rung).
   const ftsTerms = terms.filter(t => [...t].length >= 3)
 
-  // 1. Trigram MATCH over chunks — BM25 ranks passages; snippet() shows the
-  //    matching region of the winning chunk. One row per file (best chunk).
-  //    A long CJK term that is a QUESTION ("什么是上下文硬盘缓存") does not
-  //    appear verbatim in any document, so each long term also ORs its 4-char
-  //    suffix window ("硬盘缓存") — the bounded replacement for the old
-  //    progressive prefix-stripping ladder.
   if (ftsTerms.length > 0) {
     const phrases: string[] = []
     for (const t of ftsTerms) {
@@ -196,52 +245,53 @@ export function searchKnowledgeFts(query: string, limit: number = 10): Knowledge
                snippet(knowledge_fts, 0, '…', '…', '…', 64) AS excerpt
         FROM knowledge_fts f
         JOIN knowledge_files k ON k.rowid = f.file_rowid
-        WHERE knowledge_fts MATCH ?
+        WHERE knowledge_fts MATCH ? ${baseClause}
         ORDER BY rank
         LIMIT ?
-      `).all(ftsQuery, limit) as KnowledgeFtsResult[]
+      `).all(ftsQuery, ...baseParams, limit) as KnowledgeFtsResult[]
       if (results.length > 0) return results
     } catch { /* FTS5 syntax error */ }
   }
 
-  // 2. LIKE on title + file_path (empty results keep falling — the chunk
-  //    content scan below can still hit)
   try {
     const likeRows = database.prepare(`
       SELECT id, file_path AS filePath, title, source_type AS sourceType, '' AS excerpt
-      FROM knowledge_files WHERE title LIKE ? OR file_path LIKE ? LIMIT ?
-    `).all(`%${query}%`, `%${query}%`, limit) as KnowledgeFtsResult[]
+      FROM knowledge_files WHERE (title LIKE ? OR file_path LIKE ?) ${baseClause} LIMIT ?
+    `).all(`%${query}%`, `%${query}%`, ...baseParams, limit) as KnowledgeFtsResult[]
     if (likeRows.length > 0) return likeRows
   } catch {
     // fall through
   }
 
-  // 3. Last-resort: LIKE scan over chunk content.
   try {
     return database.prepare(`
       SELECT k.id, k.file_path AS filePath, k.title, k.source_type AS sourceType,
              substr(f.content, 1, 200) AS excerpt
       FROM knowledge_fts f
       JOIN knowledge_files k ON k.rowid = f.file_rowid
-      WHERE f.content LIKE ?
+      WHERE f.content LIKE ? ${baseClause}
       LIMIT ?
-    `).all(`%${escaped}%`, limit) as KnowledgeFtsResult[]
+    `).all(`%${escaped}%`, ...baseParams, limit) as KnowledgeFtsResult[]
   } catch {
     return []
   }
 }
 
-export function rebuildKnowledgeFts(rawDir: string): void {
+export function rebuildKnowledgeFts(): void {
   const database = getDb()
   const { existsSync, readFileSync } = require('node:fs') as typeof import('node:fs')
 
   database.exec('DELETE FROM knowledge_fts')
 
-  const rows = database.prepare('SELECT rowid, file_path FROM knowledge_files').all() as { rowid: number; file_path: string }[]
+  const rows = database.prepare('SELECT rowid, file_path, base_id FROM knowledge_files').all() as { rowid: number; file_path: string; base_id: string }[]
   const insert = database.prepare('INSERT INTO knowledge_fts(content, file_rowid, chunk_offset) VALUES (?, ?, ?)')
   let count = 0
   for (const row of rows) {
-    const fullPath = join(rawDir, row.file_path)
+    const basePath = join(getBaseRawDir(row.base_id ?? 'default'), row.file_path)
+    // Existing installs predate base isolation and still hold their raw files
+    // in the legacy flat dir; fall back so a rebuild does not silently drop
+    // every row on disk. `clearAllKnowledge` clears both locations.
+    const fullPath = existsSync(basePath) ? basePath : join(KNOWLEDGE_RAW_DIR, row.file_path)
     if (!existsSync(fullPath)) continue
     try {
       const content = readFileSync(fullPath, 'utf-8')

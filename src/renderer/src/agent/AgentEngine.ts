@@ -90,6 +90,10 @@ export interface AgentEngineOptions {
   platformInfo?: PlatformInfo
   memoryManager?: MemoryManager
   knowledgeManager?: KnowledgeManager
+  /** PLAN-knowledge-groups G5: the @知识库 scope of the CURRENT turn (null =
+   *  unscoped = search everything). Written by prepareTurn from the staged
+   *  value — never set directly; domain-tools reads it via ex.opts. */
+  knowledgeBaseScope?: { id: string; name: string } | null
   experienceManager?: import('../experiences/ExperienceManager').ExperienceManager
   hooks?: HooksConfig
   onSkillStateChange?: () => void
@@ -293,6 +297,14 @@ export class AgentEngine implements EngineCore {
   /** @internal Multi-expert @-summon state (plan mode). Null outside such a
    *  turn — see startPlanningLoop / buildSummonNudge. */
   summon: SummonState | null = null
+  /** G5: the caller (renderer send or hosted ask) stages the @知识库 scope
+   *  here BEFORE startLoop; prepareTurn consumes it into
+   *  opts.knowledgeBaseScope for exactly one turn, so a later send without an
+   *  @mention runs unscoped — mirrors the summon's per-turn recast. */
+  stagedKnowledgeBaseScope: { id: string; name: string } | null = null
+  setKnowledgeBaseScope = (scope: { id: string; name: string } | null): void => {
+    this.stagedKnowledgeBaseScope = scope
+  }
   // Public access to plan (delegated to PlanManager)
   get plan(): Plan | null { return this.planManager.plan }
   // Managers for extracted concerns
@@ -485,6 +497,10 @@ export class AgentEngine implements EngineCore {
     this.delegatedToolUseId = null
     this.pendingVerbatimReply = null
     this.summon = null
+    // The staged @知识库 scope belongs to the turn the caller is about to
+    // open; an explicit null (no mention this send) unscopes too.
+    this.opts.knowledgeBaseScope = this.stagedKnowledgeBaseScope
+    this.stagedKnowledgeBaseScope = null
     // Cancel any in-flight request so two don't write to this.messages concurrently
     this.abortController?.abort()
     if (this.currentRequestId) {

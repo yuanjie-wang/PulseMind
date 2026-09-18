@@ -1,6 +1,6 @@
 export interface KnowledgeFile {
   id: string
-  filePath: string      // relative path within knowledge/raw/
+  filePath: string      // relative path within knowledge/bases/<baseId>/raw/
   title: string
   sourceType: 'file' | 'url' | 'experience' | 'favorite'
   sourceUrl: string | null
@@ -11,6 +11,21 @@ export interface KnowledgeFile {
   createdAt: string
   compiledAt: string | null
   wikiOutputs: string[] | null  // wiki file paths produced by compilation
+  /** Owning knowledge base. 'default' = the implicit default base. */
+  baseId: string
+}
+
+/** The always-present base every file falls back to. Cannot be deleted. */
+export const DEFAULT_BASE_ID = 'default'
+
+/** A user-named knowledge base with physical file isolation. */
+export interface KnowledgeBase {
+  id: string
+  name: string
+  colorHue: number | null
+  createdAt: string
+  /** File count in this base (the list endpoint joins it in). */
+  fileCount?: number
 }
 
 export interface KnowledgeStats {
@@ -35,6 +50,9 @@ export interface KnowledgeListOptions {
   sortOrder?: 'asc' | 'desc'
   page?: number
   pageSize?: number
+  /** Scope to one knowledge base. `undefined` = no filter (all bases);
+   *  a string = that base. */
+  baseId?: string
 }
 
 export interface KnowledgeListResult {

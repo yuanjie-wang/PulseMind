@@ -224,8 +224,8 @@ describe('expert delegation: renderer wiring (source-scanned)', () => {
   it('routes a resolved roster through startSummonedLoop and everything else to startLoop', () => {
     // Non-vacuity: the branch this invariant talks about exists.
     expect(controllerSrc).toContain('parseExpertMentions(content, experts)')
-    expect(controllerSrc).toContain('if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned)')
-    expect(controllerSrc).toContain('else engineHandle.startLoop(content)')
+    expect(controllerSrc).toContain('if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned, knowledgeBase)')
+    expect(controllerSrc).toContain('else engineHandle.startLoop(content, knowledgeBase)')
   })
 
   it('no longer binds the expert to the conversation from the summon path', () => {
@@ -240,7 +240,7 @@ describe('expert delegation: renderer wiring (source-scanned)', () => {
   it('carries the roster over the wire as a list and routes it in ONE place', () => {
     // The old scalar param would silently drop a second expert — the whole
     // point of the plural path — so the field itself is pinned.
-    expect(bridgeSrc).toContain('agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[])')
+    expect(bridgeSrc).toContain('agentSessionAsk: (sessionId: string, content: string, summon?: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null)')
     expect(bridgeSrc).not.toContain('delegateExpertId')
     // Main's only routing rule (the engine collapses 1 → delegation itself).
     expect(sessionMgrSrc).toContain('const roster = normalizeSummonedExperts(summon)')
@@ -258,13 +258,13 @@ describe('expert delegation: renderer wiring (source-scanned)', () => {
     const preloadSrc = readFileSync('src/preload/index.ts', 'utf8')
     const clientSrc = readFileSync('src/renderer/src/hooks/useConversationEngine.ts', 'utf8')
     // Preload: the invoke must carry it (a 2-arg invoke textually drops it).
-    expect(preloadSrc).toContain('ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon)')
+    expect(preloadSrc).toContain('ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ASK, sessionId, content, summon, knowledgeBase)')
     // Handler: main's ask signature is (sessionId, content, pageContext, summon),
     // so the summon must ride the FOURTH slot — a 3-arg forward binds it to
     // pageContext and every summon becomes an ordinary turn.
-    expect(handlerSrc).toContain('agentSessionManager.ask(sessionId, content, undefined, summon)')
+    expect(handlerSrc).toContain('agentSessionManager.ask(sessionId, content, undefined, summon, knowledgeBase)')
     // The client handle: the roster reaches the IPC call, not just its signature.
-    expect(clientSrc).toContain('agentSessionAsk(convId, content, summon)')
-    expect(clientSrc).toContain('return ask(userMessage, experts)')
+    expect(clientSrc).toContain('agentSessionAsk(convId, content, summon, knowledgeBase)')
+    expect(clientSrc).toContain('return ask(userMessage, experts, knowledgeBase)')
   })
 })

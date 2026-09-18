@@ -195,6 +195,13 @@ export const IPC_CHANNELS = {
   KNOWLEDGE_SEARCH_WIKI: 'knowledge:search-wiki',
   KNOWLEDGE_GET_SCHEMA: 'knowledge:get-schema',
   KNOWLEDGE_GET_WIKI_DIR: 'knowledge:get-wiki-dir',
+  KNOWLEDGE_REBUILD_WIKI: 'knowledge:rebuild-wiki',
+  KNOWLEDGE_BASE_LIST: 'knowledge:base-list',
+  KNOWLEDGE_BASE_CREATE: 'knowledge:base-create',
+  KNOWLEDGE_BASE_RENAME: 'knowledge:base-rename',
+  KNOWLEDGE_BASE_DELETE: 'knowledge:base-delete',
+  KNOWLEDGE_SET_FILE_BASE: 'knowledge:set-file-base',
+  KNOWLEDGE_SET_FILES_BASE: 'knowledge:set-files-base',
 
   // ── PLAN-0.4.0 M3: projects, sandbox, audit ──
   PROJECT_LIST: 'project:list',

@@ -30,6 +30,13 @@ import {
   svcSearchWiki,
   svcGetSchema,
   svcGetWikiDir,
+  svcRebuildWiki,
+  svcListBases,
+  svcCreateBase,
+  svcRenameBase,
+  svcDeleteBase,
+  svcSetFileBase,
+  svcSetFilesBase,
   svcReextract,
 } from '../services/knowledge-queries'
 
@@ -45,10 +52,10 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_LIST, withRawResponse(async (status?: string) => svcListFiles(status)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET, withRawResponse(async (id: string) => svcGetFile(id)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_PREPARE_IMPORT, withRawResponse(async (filePaths: string[]) => svcPrepareImport(filePaths)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_FILE, withRawResponse(async (filePaths: string[]) => svcAddFile(filePaths)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_FILE, withRawResponse(async (filePaths: string[], baseId?: string) => svcAddFile(filePaths, baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SCAN_FOLDER, withRawResponse(async (folderPath: string) => svcScanFolder(folderPath)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_FOLDER, withRawResponse(async (folderPath: string) => svcAddFolder(folderPath)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_URL, withRawResponse(async (url: string) => svcAddUrl(url)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_FOLDER, withRawResponse(async (folderPath: string, baseId?: string) => svcAddFolder(folderPath, baseId)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_URL, withRawResponse(async (url: string, baseId?: string) => svcAddUrl(url, baseId)))
   ipcMain.on(IPC_CHANNELS.KNOWLEDGE_ABORT_IMPORT, () => svcAbortImport())
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_DELETE, withRawResponse(async (id: string) => svcDelete(id)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_REEXTRACT, withRawResponse(async (id: string) => svcReextract(id)))
@@ -64,17 +71,24 @@ export function registerKnowledgeHandlers(): void {
     conversationId: string
     title?: string
   }) => svcWriteFavorite(data)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_STATS, withRawResponse(async () => svcGetStats()))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_STATS, withRawResponse(async (baseId?: string) => svcGetStats(baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_APPLY_WIKI_CHANGES, withRawResponse(async (data: {
     actions: { filePath: string; content: string }[]
     logEntry?: string
     compiledIds?: string[]
   }) => svcApplyWikiChanges(data)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_REBUILD_INDEX, withRawResponse(async () => svcRebuildIndex()))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SEARCH_CONTENT, withRawResponse(async (query: string) => svcSearchContent(query)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SEARCH_CONTENT, withRawResponse(async (query: string, baseId?: string) => svcSearchContent(query, baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_CLEAR_ALL, withRawResponse(async () => svcClearAll()))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_UPDATE_STATUS, withRawResponse(async (data: { id: string; status: 'compiled' }) => svcUpdateStatus(data)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SEARCH_WIKI, withRawResponse(async (query: string) => svcSearchWiki(query)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SEARCH_WIKI, withRawResponse(async (query: string, baseId?: string) => svcSearchWiki(query, baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_SCHEMA, withRawResponse(async () => svcGetSchema()))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_WIKI_DIR, withRawResponse(async () => svcGetWikiDir()))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_WIKI_DIR, withRawResponse(async (baseId?: string) => svcGetWikiDir(baseId)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_REBUILD_WIKI, withRawResponse(async (baseId?: string) => svcRebuildWiki(baseId)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_BASE_LIST, withRawResponse(async () => svcListBases()))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_BASE_CREATE, withRawResponse(async (name: string) => svcCreateBase(name)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_BASE_RENAME, withRawResponse(async (id: string, name: string) => svcRenameBase(id, name)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_BASE_DELETE, withRawResponse(async (id: string) => svcDeleteBase(id)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SET_FILE_BASE, withRawResponse(async (id: string, baseId: string) => svcSetFileBase(id, baseId)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SET_FILES_BASE, withRawResponse(async (ids: string[], baseId: string) => svcSetFilesBase(ids, baseId)))
 }

@@ -165,6 +165,38 @@ export function parseExpertMentions(
   return { experts: found, text: rest.replace(/[ \t]{2,}/g, ' ').trim() }
 }
 
+/** A knowledge base the user @-mentioned. Same wire shape as SummonedExpert
+ *  so the ask channel carries them alike. */
+export type MentionedKnowledgeBase = { id: string; name: string }
+
+/** Scope ONE @-mention against the base list: the first matching base name
+ *  wins (v1 = single-base scope), the token is cut from the text exactly the
+ *  way expert mentions are. Runs AFTER the expert parse on the remaining text,
+ *  so a name that is both an expert and a base is claimed by the expert —
+ *  既有语义优先. Pure; a malformed list yields null, never a throw. */
+export function parseKnowledgeBaseMention(
+  text: string,
+  bases: ReadonlyArray<{ id: string; name: string }>
+): { base: MentionedKnowledgeBase | null; text: string } {
+  const candidates = bases
+    .filter((b) => b.id && b.name)
+    .sort((a, b) => b.name.length - a.name.length)
+  let i = 0
+  while (i < text.length) {
+    if (text[i] === '@') {
+      const hit = candidates.find((b) => text.startsWith(`@${b.name}`, i))
+      if (hit) {
+        const rest = (text.slice(0, i) + text.slice(i + 1 + hit.name.length))
+          .replace(/[ \t]{2,}/g, ' ')
+          .trim()
+        return { base: { id: hit.id, name: hit.name }, text: rest }
+      }
+    }
+    i += 1
+  }
+  return { base: null, text }
+}
+
 /** Single-expert view of `parseExpertMentions` — the @-summon's original
  *  contract (one mention = delegate to that one expert). Kept as a wrapper so
  *  the two paths can never disagree about what a mention is. */

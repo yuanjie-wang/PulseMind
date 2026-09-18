@@ -206,9 +206,13 @@ async function buildStateBlock(params: {
   // core already carries the static "look it up" hint), clock still last.
   if (opts.knowledgeManager) {
     try {
-      const stats = await opts.knowledgeManager.getStats()
+      // G6: an @知识库 turn counts (and says) only its scope — the model must
+      // know its retrieval is narrowed, not assume the whole base is empty.
+      const scope = opts.knowledgeBaseScope
+      const stats = await opts.knowledgeManager.getStats(scope ? scope.id : undefined)
       if (stats.total > 0) {
-        sections.push(`## Knowledge Base\n- 知识库：${stats.total} 个源（${stats.compiled} 已编译），wiki ${stats.wikiFileCount ?? 0} 页`)
+        const prefix = scope ? `@${scope.name} · ` : ''
+        sections.push(`## Knowledge Base\n- 知识库：${prefix}${stats.total} 个源（${stats.compiled} 已编译），wiki ${stats.wikiFileCount ?? 0} 页`)
       }
     } catch { /* stats unavailable — the section just stays out */ }
   }

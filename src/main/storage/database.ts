@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import { DATA_DIR, KNOWLEDGE_RAW_DIR } from './index'
+import { DATA_DIR } from './index'
 
 const DB_PATH = join(DATA_DIR, 'db', 'pulsemind.db')
 
@@ -140,7 +140,8 @@ function createTables(): void {
                       CHECK(status IN ('raw', 'compiled')),
       wiki_outputs  TEXT,
       created_at    TEXT NOT NULL,
-      compiled_at   TEXT
+      compiled_at   TEXT,
+      base_id       TEXT NOT NULL DEFAULT 'default'
     );
 
     CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_files(status);
@@ -148,6 +149,15 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_knowledge_created_at ON knowledge_files(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_knowledge_list_query ON knowledge_files(source_type, status, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_knowledge_file_path ON knowledge_files(file_path);
+
+    -- Knowledge bases: each base has physical file isolation (raw/ + wiki/).
+    -- The 'default' base is implicit and cannot be deleted.
+    CREATE TABLE IF NOT EXISTS knowledge_bases (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL UNIQUE,
+      color_hue  INTEGER,
+      created_at TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS tool_results (
       ref_id          TEXT PRIMARY KEY,
@@ -167,7 +177,7 @@ function createTables(): void {
     );
 
     CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_wiki_fts USING fts5(
-      title, content, path UNINDEXED, tokenize='trigram'
+      title, content, path UNINDEXED, base_id UNINDEXED, tokenize='trigram'
     );
 
     CREATE TABLE IF NOT EXISTS tool_preferences (
@@ -465,6 +475,52 @@ export async function initializeDatabase(): Promise<void> {
 
     console.log('[DB] Database initialized')
 
+    // Knowledge bases migration: migrate from group_id → base_id.
+    // On fresh DBs the CREATE TABLE already has base_id; on old DBs we:
+    // 1. Ensure knowledge_bases table exists
+    // 2. Insert default base row
+    // 3. Add base_id column if missing, backfill from group_id
+    // 4. Drop old group_id column and knowledge_groups table
+    //
+    // This MUST run before any knowledge_fts/wiki rebuild below: those read
+    // `knowledge_files.base_id` (PLAN-knowledge-bases), which does not exist on
+    // a pre-migration database.
+    const kbCols = getDb().prepare('PRAGMA table_info(knowledge_bases)').all() as { name: string }[]
+    if (kbCols.length === 0) {
+      getDb().exec("CREATE TABLE IF NOT EXISTS knowledge_bases (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, color_hue INTEGER, created_at TEXT NOT NULL)")
+    }
+    // Ensure default base exists
+    const defaultBase = getDb().prepare("SELECT id FROM knowledge_bases WHERE id = 'default'").get()
+    if (!defaultBase) {
+      getDb().prepare("INSERT INTO knowledge_bases (id, name, color_hue, created_at) VALUES ('default', '默认知识库', NULL, ?)").run(new Date().toISOString())
+    }
+
+    const kfCols = getDb().prepare('PRAGMA table_info(knowledge_files)').all() as { name: string }[]
+    const hasBaseId = kfCols.some((c) => c.name === 'base_id')
+    const hasGroupId = kfCols.some((c) => c.name === 'group_id')
+
+    if (!hasBaseId && hasGroupId) {
+      // Old schema: migrate group_id → base_id
+      console.log('[DB] Migrating knowledge_files: group_id → base_id...')
+      getDb().exec("ALTER TABLE knowledge_files ADD COLUMN base_id TEXT NOT NULL DEFAULT 'default'")
+      // Backfill: files in a known group keep their mapping; NULL group_id → default
+      getDb().exec(`
+        UPDATE knowledge_files SET base_id = group_id
+        WHERE group_id IS NOT NULL AND EXISTS (SELECT 1 FROM knowledge_groups WHERE knowledge_groups.id = knowledge_files.group_id)
+      `)
+      getDb().exec("DELETE FROM knowledge_files WHERE group_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM knowledge_groups WHERE knowledge_groups.id = knowledge_files.group_id)")
+      getDb().exec('ALTER TABLE knowledge_files DROP COLUMN group_id')
+      getDb().exec('DROP TABLE IF EXISTS knowledge_groups')
+      console.log('[DB] Migration complete: group_id → base_id')
+    } else if (!hasBaseId && !hasGroupId) {
+      // Very old schema without either column
+      getDb().exec("ALTER TABLE knowledge_files ADD COLUMN base_id TEXT NOT NULL DEFAULT 'default'")
+    }
+
+    if (kfCols.length > 0 || hasBaseId) {
+      getDb().exec('CREATE INDEX IF NOT EXISTS idx_knowledge_base ON knowledge_files(base_id)')
+    }
+
     // PLAN-knowledge-base K4/K5 migration: the pre-chunking knowledge_fts had
     // no file_rowid column and a unicode61 tokenizer. Detect by shape (CREATE
     // IF NOT EXISTS would silently keep the old table), drop, recreate in the
@@ -474,13 +530,24 @@ export async function initializeDatabase(): Promise<void> {
       console.log('[DB] knowledge_fts is pre-chunking (unicode61, file-level) — migrating to chunked trigram...')
       getDb().exec('DROP TABLE knowledge_fts')
       getDb().exec("CREATE VIRTUAL TABLE knowledge_fts USING fts5(content, file_rowid UNINDEXED, chunk_offset UNINDEXED, tokenize='trigram')")
-      rebuildKnowledgeFts(KNOWLEDGE_RAW_DIR)
+      rebuildKnowledgeFts()
     }
 
     const ftsCount = (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_fts').get() as { c: number }).c
     if (ftsCount === 0) {
       const kfCount = (getDb().prepare('SELECT COUNT(*) as c FROM knowledge_files').get() as { c: number }).c
-      if (kfCount > 0) { console.log('[DB] Rebuilding knowledge_fts index...'); rebuildKnowledgeFts(KNOWLEDGE_RAW_DIR) }
+      if (kfCount > 0) { console.log('[DB] Rebuilding knowledge_fts index...'); rebuildKnowledgeFts() }
+    }
+
+    // knowledge-bases migration: the wiki FTS used to carry an unused `groups`
+    // column. Per-base scoping needs the owning base instead, so detect the old
+    // shape, drop, recreate with `base_id` and let the sync check below
+    // repopulate it from disk (the emptied table is out of sync by definition).
+    const wikiCols = getDb().prepare('PRAGMA table_info(knowledge_wiki_fts)').all() as { name: string }[]
+    if (wikiCols.length > 0 && !wikiCols.some((c) => c.name === 'base_id')) {
+      console.log('[DB] knowledge_wiki_fts is pre-bases (groups column) — migrating to base_id...')
+      getDb().exec('DROP TABLE knowledge_wiki_fts')
+      getDb().exec("CREATE VIRTUAL TABLE knowledge_wiki_fts USING fts5(title, content, path UNINDEXED, base_id UNINDEXED, tokenize='trigram')")
     }
 
     // Wiki pages: rebuild when the FTS row count diverges from the page files
@@ -525,29 +592,19 @@ export async function initializeDatabase(): Promise<void> {
 
 // Circular-safe import: rebuildKnowledgeFts is called from initializeDatabase
 // but lives in knowledge.db.ts. We import it lazily after init.
-let _rebuildKnowledgeFts: ((rawDir: string) => void) | null = null
-function rebuildKnowledgeFts(rawDir: string): void {
+let _rebuildKnowledgeFts: (() => void) | null = null
+function rebuildKnowledgeFts(): void {
   if (!_rebuildKnowledgeFts) {
     _rebuildKnowledgeFts = require('./knowledge.db').rebuildKnowledgeFts
   }
-  _rebuildKnowledgeFts!(rawDir)
+  _rebuildKnowledgeFts!()
 }
 
-/** Wiki page files on disk (the four page dirs, K4's sync baseline). Lazy
- *  require of node:fs keeps this import-free at module load. */
+/** Wiki page files across every base (K4's sync baseline). Lazy require keeps
+ *  the storage module graph acyclic at load. */
 function countWikiPageFiles(): number {
-  const { existsSync, readdirSync, statSync } = require('node:fs') as typeof import('node:fs')
-  const wikiDir = require('./index').KNOWLEDGE_WIKI_DIR as string
-  if (!existsSync(wikiDir)) return 0
-  let count = 0
-  for (const subdir of ['sources', 'entities', 'concepts', 'syntheses']) {
-    const dirPath = require('node:path').join(wikiDir, subdir)
-    if (!existsSync(dirPath)) continue
-    for (const entry of readdirSync(dirPath)) {
-      if (entry.endsWith('.md') && statSync(require('node:path').join(dirPath, entry)).isFile()) count++
-    }
-  }
-  return count
+  const fn = require('./knowledge-store').countWikiPageFiles as () => number
+  return fn()
 }
 
 let _rebuildWikiFts: (() => void) | null = null

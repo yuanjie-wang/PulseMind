@@ -47,6 +47,10 @@ export interface LlmAdapter {
    *
    * `onUsage` reports the provider's token accounting for the call when the
    * response carries it; callers that show token counts pass it, the rest omit it.
+   *
+   * `onFinishReason` reports the provider finish/stop reason ('stop' | 'length'
+   * | 'max_tokens' | …) before the promise settles — compilation (K1) treats a
+   * truncated completion as a failure and must be able to see it.
    */
   callNonStreaming(
     apiKey: string,
@@ -55,7 +59,8 @@ export interface LlmAdapter {
     systemPrompt: string,
     messages: { role: string; content: string }[],
     maxTokens?: number,
-    onUsage?: (usage: LlmUsage) => void
+    onUsage?: (usage: LlmUsage) => void,
+    onFinishReason?: (reason: string | null) => void
   ): Promise<string | null>
 
   /** Extract plain text from a non-streaming provider response. */

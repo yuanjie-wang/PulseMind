@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { Button, Typography, Space, Input, Modal, Tooltip, App, Table } from 'antd'
+import { Button, Typography, Space, Input, Modal, Tooltip, App, Table, Segmented, Dropdown, Select } from 'antd'
 import {
   LinkOutlined,
   DeleteOutlined,
@@ -13,12 +13,14 @@ import {
   SearchOutlined,
   FileSearchOutlined,
   ReadOutlined,
+  GroupOutlined,
   LoadingOutlined
 } from '@ant-design/icons'
 import { XMarkdown } from '@ant-design/x-markdown'
 import { useTranslation } from '../../i18n/useTranslation'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
-import type { KnowledgeFile, KnowledgeImportResult } from '../../../../shared/types/knowledge'
+import type { KnowledgeFile, KnowledgeBase, KnowledgeImportResult } from '../../../../shared/types/knowledge'
+import { DEFAULT_BASE_ID } from '../../../../shared/types/knowledge'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 
 // ── Module-level dual queue engine ──
@@ -28,7 +30,7 @@ import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 // the remounted component via registered callbacks.
 
 // ── Import queue (supports both file paths and URLs) ──
-type ImportItem = { type: 'file'; path: string } | { type: 'url'; url: string }
+type ImportItem = { type: 'file'; path: string; baseId?: string } | { type: 'url'; url: string; baseId?: string }
 const _pendingImportItems: ImportItem[] = []
 let _importRunning = false
 let _importCurrent = 0
@@ -75,12 +77,13 @@ let _onStateChange: ((state: KnowledgePanelState) => void) | null = null
 const { Text } = Typography
 
 export interface KnowledgePanelHandle {
-  handleAddFile: () => Promise<void>
-  handleAddFolder: () => Promise<void>
+  handleAddFile: (importBaseId?: string) => Promise<void>
+  handleAddFolder: (importBaseId?: string) => Promise<void>
   setShowUrlInput: (v: boolean) => void
-  enqueueImport: (filePaths: string[]) => Promise<void>
-  enqueueUrlImport: (url: string) => void
+  enqueueImport: (filePaths: string[], importBaseId?: string) => Promise<void>
+  enqueueUrlImport: (url: string, importBaseId?: string) => void
   enqueueCompileAll: () => Promise<void>
+  handleRebuildWiki: () => Promise<void>
   handleReset: () => Promise<void>
 }
 
@@ -93,6 +96,10 @@ export interface KnowledgePanelState {
 
 interface KnowledgePanelProps {
   knowledgeManager: KnowledgeManager
+  /** The base this panel is scoped to (the left rail's selection). Every
+   *  query, import, search and maintenance call threads it — the selection IS
+   *  the scope. Absent = the default base. */
+  baseId?: string
   onStateChange?: (state: KnowledgePanelState) => void
 }
 
@@ -185,9 +192,11 @@ function CompiledPreview({ content }: { content: string }): React.ReactElement {
   )
 }
 
-const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProps>(function KnowledgePanel({ knowledgeManager, onStateChange }, ref): React.ReactElement {
+const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProps>(function KnowledgePanel({ knowledgeManager, baseId, onStateChange }, ref): React.ReactElement {
   const { t } = useTranslation()
   const { message } = App.useApp()
+  // One resolved scope for the whole component: the selection IS the scope.
+  const scopedBaseId = baseId ?? DEFAULT_BASE_ID
   const [files, setFiles] = useState<KnowledgeFile[]>([])
   const [loading, setLoading] = useState(false)
   const [compilingFileIds, setCompilingFileIds] = useState<Set<string>>(new Set())
@@ -209,6 +218,9 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   const pageSize = 50
   const [totalItems, setTotalItems] = useState(0)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // Bases for the row/batch assigns; refreshed with the file list so an
+  // assign made elsewhere (toolbar menu) is visible on the next reload.
+  const [bases, setBases] = useState<KnowledgeBase[]>([])
 
   // ── Progress ──
   const [, setImportProgress] = useState<{ current: number; total: number } | null>(null)
@@ -216,15 +228,15 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   const loadFiles = useCallback(async () => {
     try {
       // 全文模式：先检索内容命中的文件 id，再按 id 过滤当页列表（排序检索本身
-      // 就是 K5 的 trigram FTS；命中率低时页面显示过滤后的文件）。
+      // 就是 K5 后的排序检索(svcSearchContent)；命中范围限定在当前库）。
       let fulltextIds: Set<string> | null = null
       if (searchQuery && searchMode === 'fulltext') {
         try {
-          const matches = await knowledgeManager.searchContent(searchQuery)
+          const matches = await knowledgeManager.searchContent(searchQuery, scopedBaseId)
           fulltextIds = new Set(matches.map((m) => m.id))
           if (fulltextIds.size === 0) {
             setFiles([]); setTotalItems(0)
-            const currentStats = await knowledgeManager.getStats()
+            const currentStats = await knowledgeManager.getStats(scopedBaseId)
             setStats(currentStats)
             return
           }
@@ -232,6 +244,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       }
       const [result, currentStats] = await Promise.all([
         knowledgeManager.listFilesAdvanced({
+          baseId: scopedBaseId,
           ...(searchQuery && searchMode === 'name' && { search: searchQuery }),
           ...(filterSourceType !== 'all' && { sourceType: filterSourceType as KnowledgeFile['sourceType'] }),
           ...(filterStatus !== 'all' && { status: filterStatus as 'raw' | 'compiled' }),
@@ -240,19 +253,25 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
           page,
           pageSize
         }),
-        knowledgeManager.getStats()
+        knowledgeManager.getStats(scopedBaseId)
       ])
       const items = fulltextIds ? result.items.filter((f) => fulltextIds!.has(f.id)) : result.items
       setFiles(items)
       setTotalItems(fulltextIds ? items.length : result.total)
       setStats(currentStats)
+      try { setBases(await knowledgeManager.listBases()) } catch { /* keep the last list */ }
     } catch (err) {
       console.error('[KnowledgePanel] Failed to load files:', err)
     }
-  }, [knowledgeManager, searchQuery, searchMode, filterSourceType, filterStatus, sortState, page, pageSize])
+  }, [knowledgeManager, scopedBaseId, searchQuery, searchMode, filterSourceType, filterStatus, sortState, page, pageSize])
 
   const loadFilesRef = useRef(loadFiles)
   loadFilesRef.current = loadFiles
+
+  // The mount-assigned callbacks below (e.g. _onRefresh) must read the CURRENT
+  // base, not the one from their capture — same pattern as loadFilesRef.
+  const baseIdRef = useRef(scopedBaseId)
+  baseIdRef.current = scopedBaseId
 
   useEffect(() => {
     setLoading(true)
@@ -280,9 +299,10 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     }
     _onRefresh = async () => {
       await loadFilesRef.current()
-      // Push latest stats to parent so header stats stay in sync
+      // Push latest stats to parent so header stats stay in sync (scoped to
+      // the current base — read through the ref, this closure never re-runs).
       try {
-        const currentStats = await knowledgeManager.getStats()
+        const currentStats = await knowledgeManager.getStats(baseIdRef.current)
         setStats(currentStats)
         _onStateChange?.({
           importProgress: _importRunning ? { current: _importCurrent, total: _importTotal } : null,
@@ -346,7 +366,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     }
   }, [])
 
-  const handleAddFile = async () => {
+  const handleAddFile = async (importBaseId?: string) => {
     const result = await window.electronAPI.showOpenDialog({
       properties: ['openFile', 'multiSelections'],
       filters: [{
@@ -355,10 +375,10 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       }]
     })
     if (result.canceled || result.filePaths.length === 0) return
-    enqueueImport(result.filePaths)
+    enqueueImport(result.filePaths, importBaseId ?? scopedBaseId)
   }
 
-  const handleAddFolder = async () => {
+  const handleAddFolder = async (importBaseId?: string) => {
     const dialogResult = await window.electronAPI.showOpenDialog({
       properties: ['openDirectory']
     })
@@ -380,7 +400,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       okText: '开始导入',
       cancelText: t('common.cancel'),
       onOk: () => {
-        if (newFiles.length > 0) enqueueImport(newFiles)
+        if (newFiles.length > 0) enqueueImport(newFiles, importBaseId ?? scopedBaseId)
       }
     })
   }
@@ -393,13 +413,14 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       return
     }
 
-    // Pre-check duplicates before enqueuing
+    // Pre-check duplicates before enqueuing — scoped to THIS base: under the
+    // rail's isolation the same URL may legitimately live in two bases.
     const allFiles = await knowledgeManager.listFiles()
-    const existing = allFiles.find(f => f.sourceType === 'url' && f.sourceUrl === url)
+    const existing = allFiles.find(f => f.baseId === scopedBaseId && f.sourceType === 'url' && f.sourceUrl === url)
     if (existing) {
       Modal.confirm({
         title: '已导入过该链接',
-        content: `"${url}" 已经导入过知识库，是否重新导入？`,
+        content: `"${url}" 已经导入过当前知识库，是否重新导入？`,
         okText: '重新导入',
         cancelText: '取消',
         onOk: async () => {
@@ -408,7 +429,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
           } catch { /* ignore */ }
           setUrlInput('')
           setShowUrlInput(false)
-          enqueueUrlImport(url)
+          enqueueUrlImport(url, scopedBaseId)
         },
         onCancel: () => {
           setUrlInput('')
@@ -420,7 +441,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
 
     setUrlInput('')
     setShowUrlInput(false)
-    enqueueUrlImport(url)
+    enqueueUrlImport(url, scopedBaseId)
   }
 
   const handleDelete = (file: KnowledgeFile) => {
@@ -509,7 +530,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   // ── Serial queue processor ──
 
   /** Enqueue import items and start processing. */
-  const enqueueImport = useCallback(async (filePaths: string[]) => {
+  const enqueueImport = useCallback(async (filePaths: string[], importBaseId?: string) => {
     if (filePaths.length === 0) return
     const { existing, new: newFiles } = await knowledgeManager.prepareImport(filePaths)
 
@@ -518,35 +539,73 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       return
     }
 
-    _pendingImportItems.push(...newFiles.map(p => ({ type: 'file' as const, path: p })))
+    // G4: the toolbar's target base rides each item — a batch never mixes
+    // bases, because the pick was made once for the whole import. The fallback
+    // is the panel's own scope (the rail's selection), not a global default.
+    _pendingImportItems.push(...newFiles.map(p => ({ type: 'file' as const, path: p, baseId: importBaseId ?? scopedBaseId })))
     // Update progress immediately if queue is already running
     if (_importRunning) {
       _importTotal += newFiles.length
       _onProgress?.(_importCurrent, _importTotal)
     }
     runImportQueueRef.current()
-  }, [knowledgeManager])
+  }, [knowledgeManager, scopedBaseId])
 
   /** Enqueue a URL for import. The URL is already validated and deduplicated by the caller. */
-  const enqueueUrlImport = useCallback((url: string) => {
-    _pendingImportItems.push({ type: 'url', url })
+  const enqueueUrlImport = useCallback((url: string, importBaseId?: string) => {
+    _pendingImportItems.push({ type: 'url', url, baseId: importBaseId ?? scopedBaseId })
     // Update progress immediately if queue is already running
     if (_importRunning) {
       _importTotal += 1
       _onProgress?.(_importCurrent, _importTotal)
     }
     runImportQueueRef.current()
-  }, [])
+  }, [scopedBaseId])
 
   /** Enqueue a single file for compilation. */
   const enqueueCompileOne = enqueueCompileForFile
 
-  /** Enqueue all raw files for compilation ("compile all" button). */
+  /** Enqueue the current base's raw files for compilation ("compile all").
+   *  Scoped: with the rail's isolation this must never touch another base. */
   const enqueueCompileAll = useCallback(async () => {
-    const rawFiles = await knowledgeManager.listFiles('raw')
-    if (rawFiles.length === 0) return
-    for (const f of rawFiles) enqueueCompileOne(f.id)
-  }, [knowledgeManager, enqueueCompileOne])
+    const { items } = await knowledgeManager.listFilesAdvanced({ status: 'raw', baseId: scopedBaseId })
+    if (items.length === 0) {
+      message.info(t('knowledgePanel.nothingToCompile'))
+      return
+    }
+    for (const f of items) enqueueCompileOne(f.id)
+  }, [knowledgeManager, enqueueCompileOne, scopedBaseId, message, t])
+
+  /** R4 (PLAN-knowledge-groups): wipe every compiled page in the CURRENT base
+   *  and recompile its sources from scratch — the one-shot repair for
+   *  junk/溯源-less pages. Manual wiki edits are lost (the confirm says so).
+   *  An explicit user action, so the queue is refilled regardless of
+   *  knowledge.autoCompile — that gate is for imports, not for this. */
+  const handleRebuildWiki = useCallback(async (): Promise<void> => {
+    if (!knowledgeManager.canCompile) {
+      message.warning(t('knowledgePanel.llmNotConfigured'))
+      return
+    }
+    Modal.confirm({
+      title: '重建 Wiki',
+      content: '将清空当前知识库编译产生的 Wiki 页面，并重新编译它的所有源文件。你在 Wiki 页面上的手工修改会丢失。',
+      okText: '重建',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const { clearedPages, resetSources } = await knowledgeManager.rebuildWiki(scopedBaseId)
+          message.success(`已清空 ${clearedPages} 个 Wiki 页面，${resetSources} 个源待重编`)
+          await loadFilesRef.current()
+          const { items } = await knowledgeManager.listFilesAdvanced({ status: 'raw', baseId: scopedBaseId })
+          for (const f of items) enqueueCompileOne(f.id)
+        } catch (err) {
+          console.error('[KnowledgePanel] Rebuild failed:', err)
+          message.error('重建失败')
+        }
+      },
+    })
+  }, [knowledgeManager, enqueueCompileOne, message, scopedBaseId, t])
 
   // ── Independent queue processors ──
   //
@@ -574,10 +633,10 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       try {
         let result: KnowledgeImportResult
         if (item.type === 'file') {
-          const [r] = await knowledgeManager.importFiles([item.path])
+          const [r] = await knowledgeManager.importFiles([item.path], item.baseId)
           result = r
         } else {
-          result = await knowledgeManager.importUrl(item.url)
+          result = await knowledgeManager.importUrl(item.url, item.baseId)
         }
         if (result.success && result.file) {
           // D7: imports only auto-compile when the setting is on — the default
@@ -712,7 +771,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     })
   }
 
-  // Expose handlers to parent (AppLayout for header buttons)
+  // Expose handlers to parent (CentersPage for the toolbar menus)
   React.useImperativeHandle(ref, () => ({
     handleAddFile,
     handleAddFolder,
@@ -720,8 +779,9 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     enqueueImport,
     enqueueUrlImport,
     enqueueCompileAll,
+    handleRebuildWiki,
     handleReset,
-  }), [handleAddFile, handleAddFolder, enqueueImport, enqueueUrlImport, enqueueCompileAll, handleReset])
+  }), [handleAddFile, handleAddFolder, enqueueImport, enqueueUrlImport, enqueueCompileAll, handleRebuildWiki, handleReset])
 
   // Report state changes to parent for header progress display.
   // Progress values are read from module-level state to avoid stale-closure
@@ -829,6 +889,25 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
           <Button size="small" danger onClick={handleBatchDelete}>
             {t('knowledgePanel.batchDelete')}
           </Button>
+          {/* G3: move the whole selection into a base in one IPC call. */}
+          <Select<string>
+            size="small"
+            style={{ minWidth: 150 }}
+            placeholder="移动到知识库…"
+            value={undefined}
+            onChange={async (baseId) => {
+              try {
+                await knowledgeManager.setFilesBase(Array.from(selectedIds), baseId)
+                message.success('已移动到知识库')
+                setSelectedIds(new Set())
+                loadFiles()
+              } catch (err) {
+                console.error('[KnowledgePanel] Batch assign failed:', err)
+                message.error('分配失败')
+              }
+            }}
+            options={bases.map((b) => ({ value: b.id, label: b.name }))}
+          />
         </div>
       )}
 
@@ -898,6 +977,21 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
             sortOrder: sortState?.key === 'title' ? (sortState.order === 'asc' ? 'ascend' : 'descend') : null,
             filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
               <div style={{ padding: 8 }}>
+                {/* R1 (PLAN-knowledge-groups): the mode switch the full-text
+                    wiring always needed — without it setSearchMode had zero
+                    call sites and mode=fulltext was unreachable. searchMode is
+                    a loadFiles dep, so flipping it re-queries by itself. */}
+                <Segmented
+                  size="small"
+                  block
+                  value={searchMode}
+                  onChange={(value) => setSearchMode(value as 'name' | 'fulltext')}
+                  options={[
+                    { label: t('knowledgePanel.searchModeName'), value: 'name' },
+                    { label: t('knowledgePanel.searchModeFulltext'), value: 'fulltext' },
+                  ]}
+                  style={{ marginBottom: 8 }}
+                />
                 <Input.Search
                   placeholder={searchMode === 'fulltext' ? t('knowledgePanel.searchFulltextPlaceholder') : t('knowledgePanel.searchPlaceholder')}
                   value={selectedKeys[0] as string || ''}
@@ -992,6 +1086,26 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
             filteredValue: null,
             render: (_, record) => (
               <Space size={0}>
+                {/* G3: one click-opens-a-menu assign per row. */}
+                <Dropdown
+                  menu={{
+                    items: bases.filter((b) => b.id !== record.baseId).map((b) => ({ key: b.id, label: b.name })),
+                    onClick: async ({ key }) => {
+                      try {
+                        await knowledgeManager.setFileBase(record.id, key)
+                        loadFiles()
+                      } catch (err) {
+                        console.error('[KnowledgePanel] Assign failed:', err)
+                        message.error('分配失败')
+                      }
+                    },
+                  }}
+                  trigger={['click']}
+                >
+                  <Tooltip title="移动到知识库">
+                    <Button type="text" size="small" icon={<GroupOutlined />} style={{ color: '#aaa' }} />
+                  </Tooltip>
+                </Dropdown>
                 <Tooltip title="预览">
                   <Button type="text" size="small" icon={<FileSearchOutlined />} style={{ color: '#aaa' }} onClick={() => handleOpenRaw(record)} />
                 </Tooltip>
@@ -1004,7 +1118,9 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
                       style={{ color: '#aaa' }}
                       onClick={() => void (async () => {
                         try {
-                          const wikiDir = await window.electronAPI.knowledgeGetWikiDir()
+                          // wikiOutputs are relative to the file's OWN base's
+                          // wiki dir — the global dir is the default base's.
+                          const wikiDir = await window.electronAPI.knowledgeGetWikiDir(record.baseId)
                           openInPreviewPane(`${wikiDir.replace(/\\/g, '/')}/${record.wikiOutputs![0]}`)
                         } catch { /* dir unavailable — no entry jump */ }
                       })()}

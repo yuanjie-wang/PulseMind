@@ -84,6 +84,6 @@ describe('search call sites use the shared resolver', () => {
     expect(src).toContain("import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'")
     expect(src).not.toContain("execFile('rg'")
     expect(src).toContain('execFile(ripgrepBinary()')
-    expect(src).toContain("process.platform !== 'win32') await tryGrep()")
+    expect(src).toContain("process.platform !== 'win32')")
   })
 })

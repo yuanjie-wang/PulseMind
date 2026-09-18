@@ -58,7 +58,10 @@ import { createRoot } from 'react-dom/client'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import { InputArea } from './src/renderer/src/components/chat/InputArea'
 
-window.electronAPI = new Proxy({}, { get: (_t, key) => () => Promise.resolve(key === 'expertList' ? ${JSON.stringify(EXPERTS)} : undefined) })
+// knowledgeListBases must answer an array: the @-popup's knowledge-base
+// section setKnowledgeBases(es) the answer verbatim, and the fallback
+// undefined would blank the list and throw on .slice.
+window.electronAPI = new Proxy({}, { get: (_t, key) => () => Promise.resolve(key === 'expertList' ? ${JSON.stringify(EXPERTS)} : key === 'knowledgeListBases' ? [] : undefined) })
 
 function Case({ id, layout, topSlot }) {
   return (

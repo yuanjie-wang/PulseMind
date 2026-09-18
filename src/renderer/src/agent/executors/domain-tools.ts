@@ -99,6 +99,9 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
       if (!km) {
         t.output = 'Knowledge base not available.'; ex.addToolResult(t.id, 'Knowledge base not available.', true); t.exitCode = 1
       } else {
+        // G5: an @知识库 mention scopes this turn's searches to one base
+        // (undefined = the whole base). Every search shape below funnels it.
+        const scopeBaseId = ex.opts.knowledgeBaseScope?.id ?? undefined
         const query = String(t.input.query || '').toLowerCase()
         const mode = String(t.input.mode || 'title')
         const sourceType = String(t.input.sourceType || '')
@@ -108,7 +111,7 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
         const contentMatchIds = new Set<string>()
         const contentExcerpts = new Map<string, string[]>()
         if (doContentSearch) {
-          const matches = await km.searchContent(query)
+          const matches = await km.searchContent(query, scopeBaseId)
           for (const m of matches) {
             contentMatchIds.add(m.id)
             contentExcerpts.set(m.id, m.excerpts)
@@ -122,12 +125,13 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
           if (search) opts.search = search
           if (sourceType) opts.sourceType = sourceType
           if (status) opts.status = status
+          if (scopeBaseId !== undefined) opts.baseId = scopeBaseId
           return opts
         }
 
         if (mode === 'wiki') {
           // Wiki mode: ripgrep search across compiled wiki pages (fastest path)
-          let matches = query ? await km.searchWiki(query) : []
+          let matches = query ? await km.searchWiki(query, scopeBaseId) : []
           if (matches.length === 0) {
             t.output = 'No matching wiki pages found.'; ex.addToolResult(t.id, 'No matching wiki pages found.', false)
           } else {
@@ -168,7 +172,7 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
           filtered = result.items
           // Fallback: no title match → try content search (for CJK queries)
           if (filtered.length === 0 && query) {
-            const fallbackMatches = await km.searchContent(query)
+            const fallbackMatches = await km.searchContent(query, scopeBaseId)
             if (fallbackMatches.length > 0) {
               const fallbackIds = new Set(fallbackMatches.map(m => m.id))
               const fallback = await km.listFilesAdvanced(buildOpts())
