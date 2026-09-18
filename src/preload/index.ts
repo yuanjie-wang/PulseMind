@@ -3,6 +3,7 @@ import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveWindowControlsLayout } from '../shared/window-chrome'
 import type { WindowControlsLayout } from '../shared/window-chrome'
 import type { Conversation, ConversationIndexEntry, Message, TokenStats, ToolResultBatchEntry } from '../shared/types/conversation'
+import type { ProjectCreateInput, ProjectUpdateInput } from '../shared/types/project'
 import type { AppSettings } from '../shared/types/settings'
 import type {
   TerminalOutputEvent,
@@ -35,8 +36,12 @@ const electronAPI = {
   // ── Projects (welcome page picker; management UI removed) ──
   projectList: () => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_LIST),
   projectGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_GET, id),
-  projectCreate: (input: { name: string; workspaceDir: string; icon?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, input),
-  projectUpdate: (id: string, patch: { name?: string; icon?: string }) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_UPDATE, id, patch),
+  // Project input/patch types are the shared ones (ProjectCreateInput /
+  // ProjectUpdateInput) — inline copies here went stale the day overview was
+  // added (2026-09-18): the payload passes through untouched at runtime, but
+  // an inline shape silently drops new fields from the typed surface.
+  projectCreate: (input: ProjectCreateInput) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_CREATE, input),
+  projectUpdate: (id: string, patch: ProjectUpdateInput) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_UPDATE, id, patch),
   projectDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.PROJECT_DELETE, id),
   projectValidateDir: (workspaceDir: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.PROJECT_VALIDATE_DIR, workspaceDir),
