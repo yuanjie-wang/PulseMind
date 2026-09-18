@@ -10,6 +10,8 @@ import { buildSegments, getSegmentAnchorId, getSegmentKey, type Segment } from '
 import { StreamingCursor } from '../chat/StreamingCursor'
 import { ErrorDisplay } from '../chat/ErrorDisplay'
 import { ExtensionPrompt, SubAgentStopPrompt } from '../chat/ExtensionPrompt'
+import { DeliverablesCard } from '../chat/DeliverablesCard'
+import { useDeliverables } from '../../hooks/useDeliverables'
 import { InputArea } from '../chat/InputArea'
 import { estimateContextUsed } from '../chat/ContextRing'
 import { WelcomeContent } from '../chat/WelcomeContent'
@@ -152,6 +154,9 @@ function ChatView({
   // Context usage for the input area's ring: real input tokens from the API when
   // available, otherwise estimated from the message contents.
   const contextUsed = useMemo(() => estimateContextUsed(messages), [messages])
+  // The turn's delivered files (main session derived live; spawn-tree children
+  // hydrated at terminal status — see useDeliverables).
+  const deliverable = useDeliverables(conversationId, messages, agentStatus)
   const animName = `ecg-scroll-${uid.replace(/[:.]/g, '')}`
   const scrollRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
@@ -743,6 +748,17 @@ function ChatView({
               />
             </div>
           )}
+
+          {/* Deliverables (PLAN-deliverables): the turn's written files. Fed the
+              FULL messages, never the render window — head truncation would make
+              delivered files vanish when the user scrolls. Empty → nothing. */}
+          <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
+            <DeliverablesCard
+              deliverable={deliverable}
+              conversationId={conversationId}
+              workspaceDir={workspaceDir}
+            />
+          </div>
         </div>
       </div>
 
