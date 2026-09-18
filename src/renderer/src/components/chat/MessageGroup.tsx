@@ -571,7 +571,10 @@ export const MessageGroup = React.memo(function MessageGroup({
                 marginLeft: 6,
                 color: '#bbb',
                 fontSize: 12,
-                lineHeight: 1
+                lineHeight: 1,
+                // Durations and token counts align their digit columns across
+                // neighboring messages instead of jittering with each render.
+                fontVariantNumeric: 'tabular-nums'
               }}
             >
               <span style={{ color: '#ddd' }}>|</span>

@@ -25,6 +25,7 @@ import { usePreviewPaneSync } from '../../hooks/usePreviewPaneSync'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ConversationListItem } from '../../types/conversation'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
+import { LINK, TABULAR_NUMS } from '../../theme/tokens'
 
 // --- Props ---
 
@@ -262,11 +263,12 @@ function ChatView({
         display: 'flex', alignItems: 'center', gap: 6, height: 26, padding: '0 12px',
         borderRadius: 13, background: '#fff', border: '1px solid #e5e6eb',
         boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: 11, color: '#555', cursor: 'pointer',
+        ...TABULAR_NUMS,
       }}
     >
-      <span style={{ width: 6, height: 6, borderRadius: 3, background: '#1677ff', flexShrink: 0 }} />
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: LINK, flexShrink: 0 }} />
       <span>计划进行中 · {planSettled}/{planTotal}</span>
-      <span style={{ color: '#1677ff' }}>查看</span>
+      <span style={{ color: LINK }}>查看</span>
     </div>
   ) : null
   const pendingScrollRef = useRef(false)

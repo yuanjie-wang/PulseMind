@@ -330,7 +330,7 @@ export default function RectFrame({ annotation, childAnnotations, isSelected, is
             <span style={{
               fontSize: 13,
               color: '#202020',
-              fontWeight: 700,
+              fontWeight: 600,
               letterSpacing: '0.4px',
               animation: 'text-breath 1.8s ease-in-out infinite',
             }}>

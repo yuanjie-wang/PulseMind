@@ -5,7 +5,6 @@ import {
   SettingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  InfoCircleOutlined,
   BarChartOutlined,
   PlusOutlined,
   SortAscendingOutlined
@@ -23,6 +22,7 @@ import { useProjectStore } from '../../stores/projectStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
 import { DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { conversationKeyOf } from '../../../../shared/conversation-key'
+import { FONT_SIZE, FONT_WEIGHT, INK, SURFACE, TEXT, TEXT_MUTED, BORDER_HAIRLINE } from '../../theme/tokens'
 import type { Project, ProjectSortMode } from '../../../../shared/types/project'
 import { useSettings } from '../../hooks/SettingsContext'
 import type { ConversationListItem } from '../../types/conversation'
@@ -286,7 +286,7 @@ function AppLayout({
         onCollapse={setCollapsed}
         theme="light"
         trigger={null}
-        style={{ borderRight: `1px solid ${token.colorBorderSecondary}`, background: '#F8F8F8' }}>
+        style={{ borderRight: `1px solid ${token.colorBorderSecondary}`, background: SURFACE }}>
         {/* Space for the macOS traffic lights; the sidebar title deliberately sits below
             them. Not rendered elsewhere, where the sidebar starts at the top. */}
         {SIDEBAR_TOP_BAND_HEIGHT > 0 && (
@@ -301,9 +301,9 @@ function AppLayout({
           WebkitAppRegion: 'drag'
         } as React.CSSProperties}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigateKind('about')}>
-            <span style={{ fontSize: 16, fontWeight: 700, color: '#000' }}>{t('appLayout.title')}</span>
+            <span style={{ fontSize: FONT_SIZE.xl, fontWeight: FONT_WEIGHT.semibold, color: INK }}>{t('appLayout.title')}</span>
             {/* Version rides the Vite `define` global (package.json's version). */}
-            <span style={{ fontSize: 12, fontWeight: 500, color: '#999', lineHeight: 1 }}>v{__APP_VERSION__}</span>
+            <span style={{ fontSize: FONT_SIZE.sm, fontWeight: FONT_WEIGHT.medium, color: TEXT_MUTED, lineHeight: 1 }}>v{__APP_VERSION__}</span>
           </div>
         </div>
         <SidebarNav canCreateNew={canCreateNew} onCreateNew={handleNewTask} />
@@ -365,7 +365,7 @@ function AppLayout({
           <div className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
             {listTab === 'chats' ? (
               looseConversations.length === 0 ? (
-                <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>
+                <div style={{ padding: '16px 0', color: TEXT_MUTED, fontSize: FONT_SIZE.sm, textAlign: 'center' }}>
                   {t('appLayout.noConversations')}
                 </div>
               ) : (
@@ -398,17 +398,9 @@ function AppLayout({
             )}
           </div>
         </div>
-        <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 4, borderTop: '1px solid #f0f0f0' }}>
-          {/* Bottom entries navigate to standard views (the former modal/drawers). */}
-          <Tooltip title={t('menu.settings')}>
-            <Button
-              type="text"
-              className={`sidebar-icon-btn${view.kind === 'settings' ? ' active-mode-btn' : ''}`}
-              aria-label={t('menu.settings')}
-              icon={<SettingOutlined style={{ fontSize: 16 }} />}
-              onClick={() => navigateKind('settings')}
-            />
-          </Tooltip>
+        <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 4, borderTop: `1px solid ${BORDER_HAIRLINE}` }}>
+          {/* Bottom entries navigate to standard views (the former modal/drawers).
+              用量/关于 stay left, 设置 pins right via the auto margin. */}
           <Tooltip title={t('sessionManager.statsTooltip')}>
             <Button
               type="text"
@@ -418,13 +410,14 @@ function AppLayout({
               onClick={() => navigateKind('usage')}
             />
           </Tooltip>
-          <Tooltip title={t('menu.about')}>
+          <Tooltip title={t('menu.settings')}>
             <Button
               type="text"
-              className={`sidebar-icon-btn${view.kind === 'about' ? ' active-mode-btn' : ''}`}
-              aria-label={t('menu.about')}
-              icon={<InfoCircleOutlined style={{ fontSize: 16 }} />}
-              onClick={() => navigateKind('about')}
+              style={{ marginLeft: 'auto' }}
+              className={`sidebar-icon-btn${view.kind === 'settings' ? ' active-mode-btn' : ''}`}
+              aria-label={t('menu.settings')}
+              icon={<SettingOutlined style={{ fontSize: 16 }} />}
+              onClick={() => navigateKind('settings')}
             />
           </Tooltip>
         </div>
@@ -461,9 +454,9 @@ function AppLayout({
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '60%', minWidth: 0 }}>
               <span
                 style={{
-                  fontSize: 15,
-                  fontWeight: 600,
-                  color: '#333',
+                  fontSize: FONT_SIZE.lg,
+                  fontWeight: FONT_WEIGHT.semibold,
+                  color: TEXT,
                   minWidth: 0,
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
@@ -570,25 +563,16 @@ function AppLayout({
         }
 
         .ant-layout-sider-children {
-          background: #F8F8F8;
+          background: ${SURFACE};
         }
 
-        .ant-btn-primary {
-          background: #000 !important;
-          border-color: #000 !important;
-          color: #fff !important;
-        }
-        .ant-btn-primary:hover {
-          background: #333 !important;
-          border-color: #333 !important;
-        }
-
-        .ant-switch.ant-switch-checked {
-          background: #000 !important;
-        }
-        .ant-switch.ant-switch-checked:hover {
-          background: #333 !important;
-        }
+        /* Primary buttons, checked switches, active tabs and the like take the
+           brand ink from the antd theme (colorPrimary) — there is deliberately
+           no !important paint here: the blunt override used to erase antd's own
+           hover and disabled states app-wide, which is how a disabled circle
+           once painted byte-for-byte like an enabled one. The send circle's
+           disabled fill is re-pinned in Composer's own scoped rules, the one
+           place the dim language is "solid fill at reduced opacity". */
 
         .new-chat-btn {
           background: transparent !important;

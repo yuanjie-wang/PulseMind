@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { XProvider } from '@ant-design/x'
-import { ConfigProvider, theme as antdTheme, App as AntdApp } from 'antd'
+import { ConfigProvider, App as AntdApp } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import enUS from 'antd/locale/en_US'
 import AppLayout from './components/layout/AppLayout'
@@ -23,6 +23,7 @@ import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
 import { conversationKeyOf } from '../../shared/conversation-key'
+import { buildAntdTheme } from './theme/tokens'
 
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
@@ -449,21 +450,17 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     hadPlanRef.current = { convKey: key, has }
   }, [plan, activeConvKey])
 
+  // The theme is a pure function of one setting; memoizing keeps antd's token
+  // recomputation (and the cssinjs style churn that follows it) off every render.
+  const antdTheme = useMemo(
+    () => buildAntdTheme(settings.theme === 'dark' ? 'dark' : 'light'),
+    [settings.theme]
+  )
+
   return (
     <ErrorBoundary>
       <XProvider>
-        <ConfigProvider
-          locale={locale === 'zh' ? zhCN : enUS}
-          theme={{
-            algorithm:
-              settings.theme === 'dark'
-                ? antdTheme.darkAlgorithm
-                : antdTheme.defaultAlgorithm,
-            token: {
-              fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji'"
-            }
-          }}
-        >
+        <ConfigProvider locale={locale === 'zh' ? zhCN : enUS} theme={antdTheme}>
           <AntdApp>
             <AppLayout
             conversations={conversations.map((c: any) => ({

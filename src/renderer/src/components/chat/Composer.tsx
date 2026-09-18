@@ -202,16 +202,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   size="small"
                   type="primary"
                   shape="circle"
-                  className={accent ? 'pm-accent-send' : undefined}
+                  className={accent ? 'pm-accent-send' : 'pm-send'}
                   icon={isRequesting ? <LoadingOutlined /> : <ArrowUpOutlined />}
                   disabled={sendDisabled}
                   style={
                     {
                       opacity: sendDisabled ? SEND_DISABLED_OPACITY : 1,
-                      // The fill itself cannot ride this style object: AppLayout
-                      // paints every primary button black with !important, and an
-                      // inline declaration loses to that. It travels as a custom
-                      // property instead, consumed by the rules below.
+                      // The fill itself cannot ride this style object: antd's own
+                      // primary rules (base, :hover, :disabled) would each fight
+                      // an inline declaration per-state. It travels as a custom
+                      // property instead, consumed by the !important rules below,
+                      // which outrank every one of those states at once.
                       ...(accent
                         ? { '--pm-send-accent': accent.fill, '--pm-send-accent-hover': accent.hover }
                         : null),
@@ -249,12 +250,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           margin: 0 auto;
           box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%) !important;
         }
-        /* The send button in its project's color. These selectors are *more
-           specific* than AppLayout's .ant-btn-primary rules — that is what lets
-           the hue win over the app-wide black, since !important outranks the
-           inline background we would otherwise use. The disabled case is left
-           alone on purpose: it keeps the hue and rides the opacity above, so a
-           project task with an empty box reads as its own color, dimmed. */
+        /* The send button's fills. The base circle is black from the antd theme
+           (colorPrimary); pm-send lands only on that plain circle, so its
+           disabled rule cannot leak onto the accent one. The accent rules exist
+           so the project hue can beat antd's own primary states — !important
+           outranks the plain cascade, including antd's :disabled, which is how
+           the hue survives a blocked send. The disabled case is pinned to the
+           enabled fill on purpose: the dim language here is the solid fill at
+           reduced opacity, not antd's washed-grey disabled paint, so a project
+           task with an empty box reads as its own color, dimmed. */
+        .ant-btn-primary.pm-send:disabled {
+          background: #000 !important;
+          border-color: #000 !important;
+          color: #fff !important;
+        }
         .ant-btn-primary.pm-accent-send {
           background: var(--pm-send-accent) !important;
           border-color: var(--pm-send-accent) !important;
