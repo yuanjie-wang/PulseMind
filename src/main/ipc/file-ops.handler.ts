@@ -7,6 +7,7 @@ import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import {
   svcReadFile,
+  svcReadFileBinary,
   svcWriteFile,
   svcEditFile,
   svcPatchFile,
@@ -61,6 +62,9 @@ export function registerFileOpsHandlers(): void {
 
   // ── Read file ────────────────────────────────────────────────────
   ipcMain.handle(IPC_CHANNELS.UTIL_READ_FILE, (_event, filePath: string) => svcReadFile(filePath))
+
+  // ── Read file as base64 (binary formats the renderer decodes itself) ──
+  ipcMain.handle(IPC_CHANNELS.UTIL_READ_FILE_BINARY, (_event, filePath: string) => svcReadFileBinary(filePath))
 
   // ── List one directory level (workbench 工作区 file tree) ────────
   ipcMain.handle(IPC_CHANNELS.UTIL_LIST_DIR, (_event, dirPath: string): Promise<{ entries: DirEntry[] } | null> => svcListDir(dirPath))

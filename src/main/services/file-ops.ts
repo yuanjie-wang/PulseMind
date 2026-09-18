@@ -178,6 +178,21 @@ export async function svcReadFile(filePath: string): Promise<string | null> {
   }
 }
 
+/** Binary twin of svcReadFile: the renderer preview pane needs raw bytes for
+ *  formats it renders itself (docx via docx-preview) — a utf-8 read would
+ *  mangle them. Base64 because that is what survives the IPC structured clone
+ *  as a plain string (Uint8Array would too, but base64 is the established
+ *  shape for saveBase64Image / read-cache). Same read guard as svcReadFile. */
+export async function svcReadFileBinary(filePath: string): Promise<string | null> {
+  try {
+    const guard = await checkFsTarget(filePath, 'read')
+    if (!guard.ok) return null
+    return (await readFile(resolvePath(filePath))).toString('base64')
+  } catch {
+    return null
+  }
+}
+
 
 /** L11 (PLAN-office-editing): text write tools must not pour text into an
  *  office binary — that corrupts it. The dedicated docx_edit / xlsx_edit

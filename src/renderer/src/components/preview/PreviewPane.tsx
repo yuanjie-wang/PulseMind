@@ -1,17 +1,16 @@
 // ── Preview pane body (PLAN-preview-pane §设计3; PLAN-workbench W1;
 //    PLAN-preview-edit T2/T3) ──
 // The workbench's FILE tab content: file tab strip, toolbar (edit toggle /
-// save / refresh / open-in-system / save-as), and the per-kind content
-// dispatcher. Positioning and the drag handle belong to WorkbenchPane — this
+// save / refresh / open-in-system), and the per-kind content dispatcher. Positioning and the drag handle belong to WorkbenchPane — this
 // component always fills its parent. Pure DOM — no native WebContentsView
 // behind it. Editing state (drafts / edit modes / dirty dots) lives in
 // previewPaneStore; the save path is owned HERE so ⌘S inside the editor and
 // the toolbar button share one write+refresh sequence (they meet at the
 // `pulsemind-preview-save` event).
 
-import React, { useEffect } from 'react'
+import React, { useEffect, useRef } from 'react'
 import { Modal, message } from 'antd'
-import { RotateCw, ExternalLink, Download, X, FileText, Eye, PenLine, Save, MousePointerClick } from 'lucide-react'
+import { RotateCw, FolderOpen, X, FileText, Eye, PenLine, Save, MousePointerClick } from 'lucide-react'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { useHtmlEditStore } from '../../stores/htmlEditStore'
 import { isDirty, serializeDraft } from '../../stores/preview-edit'
@@ -90,6 +89,46 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
     return () => window.removeEventListener('pulsemind-preview-save', onSaveRequest)
   }, [])
 
+  // ── Tab-strip overflow (mirrors BrowserPaneChrome) ──
+  // Tabs shrink to a floor (minWidth 64) before the strip scrolls; heights stay
+  // exactly 32/36 — that is a pixel contract with the main-process workbench.
+  const stripRef = useRef<HTMLDivElement | null>(null)
+
+  // 滚轮横滑：竖向滚轮手势换算成横向滚动。passive: false 才能 preventDefault，
+  // 否则外层滚动容器（工作台）会跟着滚。
+  useEffect(() => {
+    const el = stripRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0 || el.scrollWidth <= el.clientWidth) return
+      e.preventDefault()
+      el.scrollLeft += e.deltaY
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  // 激活页签自动露出。手动写 scrollLeft，禁用 scrollIntoView —— 它会连滚外层
+  // 滚动容器（probe-panel-scroll 的老教训）。坐标一律用 bounding rect 换算成
+  // 滚动内容坐标：这棵子树里页签的 offsetParent 是 body（没有定位祖先），
+  // offsetLeft 会把滚动容器自己的 12px 左边距算进去，照抄会多滚一格边距。
+  const revealPath =
+    tabs && tabs.length > 0
+      ? tabs.some((tab) => tab.path === activePath)
+        ? activePath
+        : tabs[tabs.length - 1].path
+      : null
+  useEffect(() => {
+    const el = stripRef.current
+    if (!el || !revealPath) return
+    const tab = el.querySelector<HTMLElement>(`[data-tab-path="${CSS.escape(revealPath)}"]`)
+    if (!tab) return
+    const left = tab.getBoundingClientRect().left - el.getBoundingClientRect().left + el.scrollLeft
+    const right = left + tab.getBoundingClientRect().width
+    if (left < el.scrollLeft) el.scrollLeft = left
+    else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = right - el.clientWidth
+  }, [revealPath, tabs?.length])
+
   if (!tabs || tabs.length === 0) {
     return (
       <div style={{ padding: 24, fontSize: 12, color: '#999', textAlign: 'center' }}>
@@ -144,18 +183,15 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
     })
   }
 
-  const saveAs = async () => {
-    try {
-      const { filePath, canceled } = await window.electronAPI.showSaveDialog({ defaultName: active.title })
-      if (canceled || !filePath) return
-      await window.electronAPI.copyFile({ source: active.path, destination: filePath })
-    } catch (err) {
-      console.warn('[preview-pane] save-as failed:', err)
-    }
-  }
-
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff' }}>
+      {/* Tab hover is a stylesheet rule, so it cannot ride the tab's inline
+          style (inline declarations win). The scrollbar is hidden the same way
+          — a pseudo-element cannot be written inline (Composer precedent).
+          The selected tab wears the same light grey as its hover state (the
+          in-app browser pane does the same); the shadow is what still tells
+          the two apart at rest. */}
+      <style>{`.pm-preview-tabstrip { scrollbar-width: none; } .pm-preview-tabstrip::-webkit-scrollbar { display: none; } .pm-preview-tab { background: transparent; } .pm-preview-tab[data-active='true'] { background: #f0f1f4; box-shadow: 0 1px 2px rgba(0,0,0,0.08); } .pm-preview-tab:hover { background: #f0f1f4; }`}</style>
       {/* File tab strip (32px) */}
       <div
         style={{
@@ -166,16 +202,23 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
           gap: 4,
           padding: '0 6px 0 12px',
           borderBottom: '1px solid #ececf0',
-          background: '#f0f1f4',
+          background: '#fff',
           overflow: 'hidden',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, overflow: 'hidden' }}>
+        <div
+          ref={stripRef}
+          className="pm-preview-tabstrip"
+          style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0, overflowX: 'auto', overflowY: 'hidden' }}
+        >
           {tabs.map((tab) => {
             const tabDirty = !!drafts[tab.path] && isDirty(drafts[tab.path])
             return (
               <div
                 key={tab.path}
+                data-tab-path={tab.path}
+                data-active={tab.path === active.path}
+                className="pm-preview-tab"
                 onClick={() => tab.path !== active.path && store.setActive(convArg, tab.path)}
                 title={tab.path}
                 style={{
@@ -183,14 +226,15 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
                   alignItems: 'center',
                   gap: 4,
                   maxWidth: 140,
+                  minWidth: 64,
                   padding: '3px 8px',
                   borderRadius: 6,
                   fontSize: 11,
                   cursor: 'pointer',
-                  background: tab.path === active.path ? '#fff' : 'transparent',
-                  boxShadow: tab.path === active.path ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
                   color: tab.path === active.path ? '#333' : '#888',
-                  flexShrink: 0,
+                  flexShrink: 1,
+                  flexBasis: 'auto',
+                  overflow: 'hidden',
                 }}
               >
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.title}</span>
@@ -214,7 +258,7 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
         </div>
       </div>
 
-      {/* Toolbar row (36px): edit toggle / save / refresh / path / open-in-system / save-as */}
+      {/* Toolbar row (36px): edit toggle / save / refresh / path / open-in-system */}
       <div
         style={{
           height: 36,
@@ -279,13 +323,15 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
           }}
           title={active.path}
         >
-          {active.path}
+          {/* The box is `direction: rtl` so the ellipsis eats the path's head
+              and the file name stays readable — but an RTL paragraph reorders
+              the path's leading `/` (a neutral) to the visual END, so the path
+              read `…/report.docx/`. `unicode-bidi: embed` + LTR on an inner
+              span restores the natural order without touching the truncation. */}
+          <span style={{ direction: 'ltr', unicodeBidi: 'embed' }}>{active.path}</span>
         </div>
         <div style={{ ...ICON_BUTTON }} onClick={() => void window.electronAPI.openFolder(active.path).catch(() => {})} title={t('previewPane.openInOs')}>
-          <ExternalLink size={12} />
-        </div>
-        <div style={{ ...ICON_BUTTON }} onClick={() => void saveAs()} title={t('previewPane.saveAs')}>
-          <Download size={12} />
+          <FolderOpen size={13} />
         </div>
       </div>
 

@@ -9,15 +9,20 @@
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { Button, message } from 'antd'
-import { RefreshCw, ExternalLink, AlertTriangle } from 'lucide-react'
-import { detectFileKind, isPreviewable, type FileKind } from '../../../../shared/preview/file-kind'
+import { RefreshCw, AlertTriangle } from 'lucide-react'
+import { detectFileKind, isPreviewable, extensionOf, type FileKind } from '../../../../shared/preview/file-kind'
 import { MarkdownPreview } from './MarkdownPreview'
 import { TextPreview } from './TextPreview'
 import { CsvPreview } from './CsvPreview'
 import { HtmlPreview } from './HtmlPreview'
 import { FileEditor } from './FileEditor'
 import { ElementEditPanel } from './ElementEditPanel'
-import { LocalImage } from '../chat/LocalImage'
+import { DocxPreview } from './DocxPreview'
+import { XlsxPreview } from './XlsxPreview'
+import { PdfPreview } from './PdfPreview'
+import { FallbackCard } from './FallbackCard'
+import { FileInfoBar } from './FileInfoBar'
+import { ImagePreview } from './ImagePreview'
 import { useTranslation } from '../../i18n/useTranslation'
 import { usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { useHtmlEditStore } from '../../stores/htmlEditStore'
@@ -121,25 +126,11 @@ function ConflictBanner({ path }: { path: string }): React.ReactElement {
   )
 }
 
-function ImagePreview({ path }: { path: string }): React.ReactElement {
-  // LocalImage normalizes the path to local-file:// and opens the shared
-  // lightbox (ImageViewer) on click — same behavior as chat images.
-  return (
-    <div style={{ padding: 16, display: 'flex', justifyContent: 'center', alignItems: 'flex-start' }}>
-      <LocalImage src={`local-file://${path.replace(/\\/g, '/')}`} style={{ maxHeight: 'none' }} />
-    </div>
-  )
-}
-
-function baseName(path: string): string {
-  return path.split(/[\\/]/).pop() || path
-}
-
 /** PLAN-office-editing T16: office documents render as read-only markdown via
  *  the same conversion the `read` tool uses (read-cache makes the mtime the
- *  only invalidation needed). A failed conversion falls back to the card. */
+ *  only invalidation needed). A failed conversion falls back to the card.
+ *  DOCX no longer lands here — see the dispatcher below. */
 function OfficePreview({ path, kind }: { path: string; kind: FileKind }): React.ReactElement {
-  const { t } = useTranslation()
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [markdown, setMarkdown] = useState('')
   useEffect(() => {
@@ -166,48 +157,9 @@ function OfficePreview({ path, kind }: { path: string; kind: FileKind }): React.
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 16px' }}>
         <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12.5, lineHeight: 1.7, color: '#333', fontFamily: 'inherit' }}>{markdown}</pre>
       </div>
-      <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'flex-end', padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
-        <Button size="small" icon={<ExternalLink size={12} />} onClick={() => void window.electronAPI.openFolder(path).catch(() => {})}>
-          {t('previewPane.openInOs')}
-        </Button>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+        <FileInfoBar path={path} />
       </div>
-    </div>
-  )
-}
-
-function FallbackCard({ path, kind }: { path: string; kind: FileKind }): React.ReactElement {
-  const { t } = useTranslation()
-  const [info, setInfo] = useState<{ size: number | null; mtime: string | null }>({ size: null, mtime: null })
-
-  useEffect(() => {
-    let alive = true
-    window.electronAPI
-      .getFileStat(path)
-      .then((stat) => {
-        if (alive) setInfo(stat ? { size: stat.size, mtime: stat.mtime } : { size: null, mtime: null })
-      })
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [path])
-
-  const size = info.size
-  const sizeText =
-    size === null ? '' : size < 1024 ? `${size} B` : size < 1024 * 1024 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`
-
-  return (
-    <div style={{ padding: 24, textAlign: 'center' }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: '#333', marginBottom: 4, wordBreak: 'break-all' }}>{baseName(path)}</div>
-      <div style={{ fontSize: 11, color: '#999', marginBottom: 2 }}>
-        {kind === 'office' ? 'Office' : 'Binary'}
-        {sizeText ? ` · ${sizeText}` : ''}
-        {info.mtime ? ` · ${new Date(info.mtime).toLocaleString()}` : ''}
-      </div>
-      <div style={{ fontSize: 12, color: '#999', margin: '12px 0 16px' }}>{t('previewPane.binaryHint')}</div>
-      <Button size="small" icon={<ExternalLink size={12} />} onClick={() => void window.electronAPI.openFolder(path).catch(() => {})}>
-        {t('previewPane.openInOs')}
-      </Button>
     </div>
   )
 }
@@ -267,7 +219,17 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   }, [state, path, kind, elementMode, t])
 
   if (kind === 'image') return <ImagePreview path={path} />
-  if (kind === 'office') return <OfficePreview path={path} kind={kind} />
+  if (kind === 'office') {
+    // DOCX renders itself (layout / styles / images) via docx-preview, XLSX
+    // renders its grid via the same exceljs build the edit engine uses, and
+    // PDF rasterises its pages via pdfjs-dist; the remaining office formats
+    // (doc / xls / ppt / pptx) keep the markitdown → raw-text path.
+    const ext = extensionOf(path)
+    if (ext === 'docx') return <DocxPreview path={path} kind={kind} reloadTick={reloadTick} />
+    if (ext === 'xlsx') return <XlsxPreview path={path} kind={kind} reloadTick={reloadTick} />
+    if (ext === 'pdf') return <PdfPreview path={path} kind={kind} reloadTick={reloadTick} />
+    return <OfficePreview path={path} kind={kind} />
+  }
   if (!isPreviewable(kind)) return <FallbackCard path={path} kind={kind} />
 
   if (state.status === 'loading') {

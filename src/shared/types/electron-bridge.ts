@@ -350,6 +350,7 @@ export interface ElectronAPI {
   }) => Promise<{ filePaths: string[]; canceled: boolean }>
 
   readFile: (filePath: string) => Promise<string | null>
+  readFileBinary: (filePath: string) => Promise<string | null>
   listDir: (dirPath: string) => Promise<{ entries: Array<{ name: string; path: string; isDir: boolean }> } | null>
   deletePath: (target: string) => Promise<{ success: boolean; error?: string }>
   editFile: (input: { filePath: string; oldStr: string; newStr: string; multi: boolean }) => Promise<{ success: boolean; replacements: number; error?: string }>
