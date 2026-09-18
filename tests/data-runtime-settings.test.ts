@@ -123,7 +123,7 @@ describe('the 数据与运行 section is wired end to end', () => {
   })
 
   it('the new tab rides the existing navigation union, not a new kind', () => {
-    expect(NAV_TYPES).not.toMatch(/kind: 'data'|'data' \|/)
+    expect(NAV_TYPES).not.toMatch(/kind:.*'data'/)
     expect(NAV_TYPES).toContain("settingsTab?: 'environment'")
     // The plan pins 'one delegation per task' style red lines elsewhere; here the
     // pinned literal is the menu label key the i18n additions must provide.

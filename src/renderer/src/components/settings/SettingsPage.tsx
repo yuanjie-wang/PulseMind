@@ -4,7 +4,7 @@
 // onClose) — `inline` renders the bare body, which is what a page wants.
 
 import React from 'react'
-import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, DatabaseOutlined, UserOutlined } from '@ant-design/icons'
+import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, DatabaseOutlined, UserOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { PAGE_COLUMN_MAX_WIDTH } from '../layout/CenteredPage'
@@ -16,6 +16,7 @@ import ExperiencePanel from './ExperiencePanel'
 import DataRuntimeSettings from './DataRuntimeSettings'
 import LlmSettings from './LlmSettings'
 import MemorySettings from './MemorySettings'
+import AboutPage from './AboutPage'
 
 type SettingsTab = NonNullable<AppView['settingsTab']>
 
@@ -26,6 +27,7 @@ const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] =
   { key: 'memory', icon: <BookOutlined />, labelKey: 'appLayout.memory' },
   { key: 'experiences', icon: <ExperimentOutlined />, labelKey: 'appLayout.experiences' },
   { key: 'data', icon: <DatabaseOutlined />, labelKey: 'appLayout.dataRuntime' },
+  { key: 'about', icon: <InfoCircleOutlined />, labelKey: 'menu.about' },
 ]
 
 interface SettingsPageProps {
@@ -63,13 +65,15 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
         return <LlmSettings inline open onClose={() => {}} />
       case 'environment':
         return <EnvironmentSettings inline open onClose={() => {}} />
+      case 'about':
+        return <AboutPage />
       default:
         return null
     }
   }
 
   return (
-    // Same centered treatment as 用量统计 / 关于: the menu + body block is
+    // Same centered treatment as 用量统计: the menu + body block is
     // capped and centered instead of stretching to the window edges, so wide
     // windows grow margins. The panes keep their independent scrolling, which
     // is why this page composes around PAGE_COLUMN_MAX_WIDTH rather than
