@@ -16,7 +16,7 @@ interface P5ParentNode {
   childNodes?: P5Node[]
 }
 
-import { parsePmPath, type PmPathSegment } from './pm-path'
+import { formatPmPath, parsePmPath, type PmPathSegment } from './pm-path'
 
 export interface Span {
   start: number
@@ -139,6 +139,108 @@ export function resolveElement(html: string, pmPath: string): ResolveResult {
   const el = chain[chain.length - 1]
   if (!el.sourceCodeLocation?.startTag) return { ok: false, reason: NO_SOURCE_REASON }
   return { ok: true, location: buildLocation(el, chain) }
+}
+
+// ── Smart resolution (live DOM path ≠ disk source) ──
+// The picker builds pmPath in the SERVED page's live DOM; the resolver walks
+// the DISK text. They agree only while the page's scripts have not touched
+// the tree: content a script created (or a sibling it inserted) shifts every
+// later index, and the walk then fails for elements that ARE in the source.
+// resolveElementSmart falls back to locating the element by tag + inner text
+// (unique match required — patching the wrong twin is data corruption), and
+// reports the element's TRUE source path so verifyPatch / undo-reselect aim
+// at the disk, not at the runtime tree.
+
+export type SmartResolveResult =
+  | { ok: true; location: ElementLocation; matchedBy: 'path' | 'content'; sourcePmPath: string }
+  | { ok: false; reason: string }
+
+export const GENERATED_ELEMENT_REASON =
+  '该元素不在文件源码中——它可能由页面脚本在运行时生成，脚本生成的内容无法安全写盘。请编辑源码中的静态元素，或让 AI 修改生成它的脚本'
+
+function ambiguousReason(count: number): string {
+  return `选中内容在源码中匹配到 ${count} 处相同元素，无法确定要修改哪一处——请让 AI 按你的描述修改，或先让元素文本彼此不同`
+}
+
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+/** Comparison-only decode (mirror of patch.ts's verification decoder — kept
+ *  local because patch.ts imports this module). */
+function comparisonText(html: string): string {
+  return normalizeText(
+    html
+      .replace(/<[^>]*>/g, '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&'),
+  )
+}
+
+/** The pmPath of `chain` (root first) as the DISK lays the elements out —
+ *  same counting rule as the picker's buildPmPath (element siblings, 1-based). */
+function pmPathOfChain(chain: P5Element[]): string {
+  return formatPmPath(
+    chain.map((node, i) => ({
+      tag: node.tagName,
+      index: i === 0 ? 1 : elementChildren(chain[i - 1]).indexOf(node) + 1,
+    })),
+  )
+}
+
+export interface SmartSelection {
+  pmPath: string
+  tag: string
+  /** The LIVE textContent the picker reported (trimmed, ≤400 chars). */
+  text: string
+}
+
+/** Resolve the selected element against the disk text: exact pmPath first,
+ *  then a unique tag+text match. Never guesses between duplicates. */
+export function resolveElementSmart(html: string, selection: SmartSelection): SmartResolveResult {
+  const direct = resolveElement(html, selection.pmPath)
+  if (direct.ok) return { ok: true, location: direct.location, matchedBy: 'path', sourcePmPath: selection.pmPath }
+  // A parse failure is hopeless; everything else may still be findable.
+  if (direct.reason.startsWith('HTML 解析失败')) return { ok: false, reason: direct.reason }
+
+  const hint = normalizeText(selection.text)
+  if (!hint) return { ok: false, reason: GENERATED_ELEMENT_REASON }
+  // The picker caps textContent at 400 chars — a capped hint matches by prefix.
+  const capped = selection.text.trim().length >= 400
+  let tree
+  try {
+    tree = parse(html, { sourceCodeLocationInfo: true })
+  } catch (err) {
+    return { ok: false, reason: `HTML 解析失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+
+  const matches: P5Element[][] = []
+  const walk = (node: P5ParentNode, chain: P5Element[]): void => {
+    for (const child of elementChildren(node)) {
+      const nextChain = [...chain, child]
+      const sl = child.sourceCodeLocation
+      if (child.tagName === selection.tag && sl?.startTag && sl.endTag) {
+        const inner = html.slice(sl.startTag.endOffset, sl.endTag.startOffset)
+        const sourceText = comparisonText(inner)
+        if (sourceText === hint || (capped && sourceText.startsWith(hint))) matches.push(nextChain)
+      }
+      walk(child, nextChain)
+    }
+  }
+  walk(tree as unknown as P5ParentNode, [])
+
+  if (matches.length === 1) {
+    const chain = matches[0]
+    const el = chain[chain.length - 1]
+    if (!el.sourceCodeLocation?.startTag) return { ok: false, reason: NO_SOURCE_REASON }
+    return { ok: true, location: buildLocation(el, chain), matchedBy: 'content', sourcePmPath: pmPathOfChain(chain) }
+  }
+  if (matches.length > 1) return { ok: false, reason: ambiguousReason(matches.length) }
+  return { ok: false, reason: GENERATED_ELEMENT_REASON }
 }
 
 /** Fragment variant: resolve a pmPath inside a fragment (used by AI-output

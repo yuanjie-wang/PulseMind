@@ -14,7 +14,23 @@
  *   3. undo restores the original file bytes and remounts the frame;
  *   4. the AI run applies a replacement (SSE stub) and reloads+reselects;
  *   5. an AI that returns a whole document is refused, file untouched;
- *   6. a script-generated element is refused (no source span, D6);
+ *   6. a script-generated element is refused with the generated-content
+ *      reason (no source span, D6 — smart resolve cannot match it either);
+ *   6b. a STATIC element whose live pmPath shifted (a script inserted a
+ *      sibling before it) still edits: the content fallback locates its true
+ *      source span and the patch verifies at the source path;
+ *   6c. double-click on a text element enters in-place contenteditable
+ *       editing and Enter commits it to the file (D7);
+ *   6d. double-click on a script-generated text element stays read-only and
+ *       names the cause — the parent arbitrates before the frame may edit;
+ *   6e. a click INSIDE the text mid-edit is a caret move, not a reselect —
+ *       without the picker's editing guard it cleared `editing` and the
+ *       commit died in exitEditing's early-return (「无法直接编辑文字」,
+ *       measured 2026-09-18);
+ *   6f. a pure-text div edits directly: 文本 field commit + double-click
+ *       in-place commit (the container case had NO text entry at all);
+ *   6g. a p with inline children keeps 就地编辑 (no 文本 field — replace
+ *       would flatten the markup) and the commit preserves the <strong>;
  *   7. a strict-CSP meta page still gets a live picker (D2: strip before
  *      inject);
  *   8. an `<a>` click does not navigate (D10);
@@ -143,8 +159,24 @@ const FIXTURE = [
   '<p>intro paragraph</p>',
   '<a href="http://pm-probe.local/nav">a link away</a>',
   '<div style="height:1200px"></div>',
+  '<div id="textdiv" style="font-size:16px">容器里的纯文本</div>',
+  '<p id="rich">带 <strong>加粗</strong> 的段落</p>',
   '</div>',
-  '<script>document.body.appendChild(Object.assign(document.createElement("div"), {id: "made-by-js", textContent: "runtime"}))</script>',
+  '<script>document.body.appendChild(Object.assign(document.createElement("div"), {id: "made-by-js", textContent: "runtime"}));',
+  'document.body.appendChild(Object.assign(document.createElement("p"), {id: "made-p", textContent: "runtime paragraph"}))</script>',
+  '</body></html>',
+].join('\n')
+
+// A static page whose LIVE tree disagrees with the source: the script
+// inserts a sibling BEFORE #hero, so every later sibling's pmPath index
+// shifts by one. Clicking the h1 reports div:nth-child(2); the source has
+// it at nth-child(1). Only the content fallback can place it.
+const SHIFT_FIXTURE = [
+  '<!DOCTYPE html>',
+  '<html><head><title>Shift</title></head>',
+  '<body style="margin:24px">',
+  '<div id="hero"><h1 id="st">Static Title</h1><p>shift page body</p></div>',
+  '<script>document.body.insertAdjacentHTML("afterbegin", \'<div id="injected">injected</div>\')</script>',
   '</body></html>',
 ].join('\n')
 
@@ -168,6 +200,7 @@ await page.addScriptTag({
   content: `window.__files = {
     '/w/page.html': ${JSON.stringify(FIXTURE)},
     '/w/strict.html': ${JSON.stringify(CSP_FIXTURE)},
+    '/w/shift.html': ${JSON.stringify(SHIFT_FIXTURE)},
   };
   window.__writeCalls = [];
   window.__deny = {};
@@ -289,7 +322,7 @@ await page.getByText('运行', { exact: true }).click()
 await page.getByText('整篇文档', { exact: false }).first().waitFor()
 check('an AI answer shaped like a whole document is refused with the reason shown', (await page.evaluate(() => window.__writeCalls.length)) === writesBeforeRefusal)
 
-/* ── 6. Script-generated element: no source span → refuse (D6). ── */
+/* ── 6. Script-generated element: no source span, no content match → refuse (D6). ── */
 await frame().locator('#made-by-js').click()
 await page.waitForTimeout(200)
 const jsSel = await page.evaluate(() => window.__editStore.getState().sessions['/w/page.html']?.selection)
@@ -299,8 +332,219 @@ await page.locator('label:has-text("内边距") input').first().fill('8')
 await page.locator('label:has-text("内边距") input').first().press('Enter')
 await page.waitForTimeout(300)
 check('editing it refuses to write (脚本生成元素没有源码)', (await page.evaluate(() => window.__writeCalls.length)) === writesBeforeJs)
-await page.getByText('源码中找不到该路径对应的元素').waitFor()
-check('…and the refusal names the cause as a toast', true)
+await page.getByText('该元素不在文件源码中').waitFor()
+check('…and the refusal names the generated-content cause as a toast', true)
+// The field still holds the refused value — a later blur would re-commit it.
+// Clear it so the next sections see no stray blur-commit toasts.
+await page.locator('label:has-text("内边距") input').first().fill('')
+await page.locator('label:has-text("内边距") input').first().press('Enter')
+
+/* ── 6d. Double-click on a GENERATED text element must not open the editor. ── */
+// Section 6's refusal bumped the reload (afterDirectEdit) — the frame
+// remounts, and a click racing the remount dies on the new frame's
+// source gate. Wait for the fresh frame before driving it.
+await frame().locator('#made-p').waitFor()
+await page.waitForTimeout(300)
+await frame().locator('#made-p').click()
+await page.waitForTimeout(300)
+const madeSel = await page.evaluate(() => window.__editStore.getState().sessions['/w/page.html']?.selection)
+check('the runtime-created p selects (text category)', madeSel && madeSel.tag === 'p' && madeSel.text === 'runtime paragraph', JSON.stringify(madeSel?.text))
+await page.waitForTimeout(300)
+const madeEditable = await frame().locator('#made-p').evaluate((el) => el.isContentEditable)
+check('double-click on the generated text element does NOT enter in-place editing', madeEditable === false)
+// The arbitration toast: count matching notice TEXTS so the section-6 toast
+// (identical copy, still on screen) cannot satisfy this vacuously.
+// Deterministic toast check: let every earlier toast expire (antd keeps
+// them ~3s), then the ONLY acceptable notice after the dblclick is the
+// arbitration reason.
+await page.waitForFunction(() => document.querySelectorAll('.ant-message-notice').length === 0, { timeout: 8000 })
+await frame().locator('#made-p').dblclick()
+await page.getByText('该元素不在文件源码中').waitFor({ timeout: 3000 })
+check('…and the arbitration explains why (the reason is toasted)', true)
+
+/* ── 6b. A shifted live path still edits via the content fallback. ── */
+await openFile('/w/shift.html')
+await page.waitForTimeout(150)
+await elementToggle().click()
+await frame().locator('h1#st').waitFor()
+await frame().locator('h1#st').click()
+await page.waitForTimeout(200)
+const shiftSel = await page.evaluate(() => window.__editStore.getState().sessions['/w/shift.html']?.selection)
+check('the shifted h1 reports its LIVE path (div:nth-child(2) — the script shifted it)', shiftSel && shiftSel.pmPath === 'html>body:nth-child(2)>div:nth-child(2)>h1:nth-child(1)', JSON.stringify(shiftSel?.pmPath))
+const writesBeforeShift = await page.evaluate(() => window.__writeCalls.length)
+await page.locator('label:has-text("字号") input').first().fill('28')
+await page.locator('label:has-text("字号") input').first().press('Enter')
+await page.waitForTimeout(300)
+const shiftCalls = await page.evaluate(() => window.__writeCalls)
+const shiftCall = shiftCalls[shiftCalls.length - 1]
+check(
+  'the shifted element STILL edits: patched at its true source span (content fallback)',
+  shiftCalls.length === writesBeforeShift + 1 && shiftCall.content.includes('<div id="hero"><h1 id="st" style="font-size: 28px">'),
+  JSON.stringify(shiftCall?.content?.match(/<div id="hero">.{0,60}/)?.[0]),
+)
+const liveShift = await frame().locator('h1#st').evaluate((el) => el.style.fontSize)
+check('…and the live DOM re-rendered (frame message rides the live path)', liveShift === '28px', JSON.stringify(liveShift))
+
+/* ── 6c. Double-click on a static text element edits in place (D7). ── */
+await openFile('/w/page.html')
+await page.waitForTimeout(150)
+await page.evaluate(() => {
+  window.__store.getState().setPreviewMode('/w/page.html', 'element')
+  window.__store.getState().bumpReload('/w/page.html')
+})
+await frame().locator('h1#t').waitFor()
+await frame().locator('h1#t').click()
+await page.waitForTimeout(150)
+await frame().locator('h1#t').dblclick()
+await page.waitForTimeout(300)
+const inPlaceEditable = await frame().locator('h1#t').evaluate((el) => el.isContentEditable)
+check('double-click on the static h1 enters in-place editing (contenteditable)', inPlaceEditable === true)
+const writesBeforeInPlace = await page.evaluate(() => window.__writeCalls.length)
+const frameCtxEdit = await (await page.locator('iframe').elementHandle()).contentFrame()
+await frameCtxEdit.evaluate(() => {
+  const h1 = document.getElementById('t')
+  h1.focus()
+  // Place the caret at the end of the existing text.
+  const range = document.createRange()
+  range.selectNodeContents(h1)
+  range.collapse(false)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+})
+await page.keyboard.type(' (edited)')
+await page.keyboard.press('Enter')
+await page.waitForTimeout(400)
+const inPlaceCalls = await page.evaluate(() => window.__writeCalls)
+const inPlaceCall = inPlaceCalls[inPlaceCalls.length - 1]
+// The h1 carries section 4's AI replacement text at this point.
+check(
+  'the in-place commit wrote the typed text into the file (D7)',
+  inPlaceCalls.length === writesBeforeInPlace + 1 && inPlaceCall.content.includes('>AI 改的标题 (edited)</h1>'),
+  JSON.stringify(inPlaceCall?.content?.match(/<h1[^>]*>[^<]*/)?.[0]),
+)
+const h1StillEditable = await frame().locator('h1#t').evaluate((el) => el.isContentEditable)
+const h1TextNow = await frame().locator('h1#t').textContent()
+check('…the editor closed on Enter and the frame kept the text (no reload)', h1StillEditable === false && h1TextNow === 'AI 改的标题 (edited)', JSON.stringify(h1TextNow))
+
+/* ── 6e. A click INSIDE the text mid-edit is a caret move, not a reselect. ── */
+// Measured 2026-09-18 (「无法直接编辑文字」): without the picker's editing
+// guard, this click ran select() → editing = false → the later Enter commit
+// died in exitEditing's early-return and the file never changed — the typed
+// text lived only in the live DOM until a reload discarded it.
+await frame().locator('h1#t').dblclick()
+await page.waitForTimeout(300)
+await frame().locator('h1#t').click()
+await page.waitForTimeout(150)
+const midSel = await page.evaluate(() => window.__editStore.getState().sessions['/w/page.html']?.selection)
+const midEditable = await frame().locator('h1#t').evaluate((el) => el.isContentEditable)
+check(
+  'a click inside the element mid-edit keeps editing and the selection',
+  midEditable === true && midSel?.pmPath === 'html>body:nth-child(2)>div:nth-child(1)>h1:nth-child(1)',
+  JSON.stringify({ editable: midEditable, pmPath: midSel?.pmPath }),
+)
+const frameCtx6e = await (await page.locator('iframe').elementHandle()).contentFrame()
+await frameCtx6e.evaluate(() => {
+  const h1 = document.getElementById('t')
+  h1.focus()
+  const range = document.createRange()
+  range.selectNodeContents(h1)
+  range.collapse(false)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+})
+const writesBeforeMid = await page.evaluate(() => window.__writeCalls.length)
+await page.keyboard.type(' 再补')
+await page.keyboard.press('Enter')
+await page.waitForTimeout(400)
+const midCalls = await page.evaluate(() => window.__writeCalls)
+const midCall = midCalls[midCalls.length - 1]
+check(
+  '…the caret-reposition click did NOT kill the commit (D7 still lands)',
+  midCalls.length > writesBeforeMid && midCall.content.includes('>AI 改的标题 (edited) 再补</h1>'),
+  JSON.stringify(midCall?.content?.match(/<h1[^>]*>[^<]*/)?.[0]),
+)
+
+/* ── 6f. A pure-text div edits directly (container case). ── */
+// 2026-09-18 「无法直接编辑文字」: a div-wrapped text line had NO text entry
+// at all — the panel offered style controls only and double-click did
+// nothing. Both gates now reach it: the replace field and in-place editing.
+await frame().locator('#textdiv').click()
+await page.waitForTimeout(200)
+const divTextField = await page.locator('label:has-text("文本")').count()
+check('a pure-text div gets the 文本 field (container category)', divTextField === 1, JSON.stringify(divTextField))
+const writesBeforeDiv = await page.evaluate(() => window.__writeCalls.length)
+await page.locator('label:has-text("文本") input').first().fill('容器文本已改')
+await page.locator('label:has-text("文本") input').first().press('Enter')
+await page.waitForTimeout(400)
+const divCalls = await page.evaluate(() => window.__writeCalls)
+check(
+  '…the 文本 field commit replaces the div inner at the right bytes',
+  divCalls.length > writesBeforeDiv && divCalls[writesBeforeDiv].content.includes('<div id="textdiv" style="font-size:16px">容器文本已改</div>'),
+  JSON.stringify(divCalls[writesBeforeDiv]?.content?.match(/<div id="textdiv"[^>]*>[^<]*/)?.[0]),
+)
+const divLive = await frame().locator('#textdiv').textContent()
+check('…and the live div re-rendered without a reload', divLive === '容器文本已改', JSON.stringify(divLive))
+await frame().locator('#textdiv').dblclick()
+await page.waitForTimeout(300)
+const divEditable = await frame().locator('#textdiv').evaluate((el) => el.isContentEditable)
+check('double-click on the pure-text div enters in-place editing', divEditable === true)
+const frameCtx6f = await (await page.locator('iframe').elementHandle()).contentFrame()
+await frameCtx6f.evaluate(() => {
+  const el = document.getElementById('textdiv')
+  el.focus()
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  range.collapse(false)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+})
+await page.keyboard.type(' 就地')
+await page.keyboard.press('Enter')
+await page.waitForTimeout(400)
+const divCalls2 = await page.evaluate(() => window.__writeCalls)
+check(
+  '…the in-place commit on the div lands (container category, D7)',
+  divCalls2.length > divCalls.length && divCalls2[divCalls2.length - 1].content.includes('>容器文本已改 就地</div>'),
+  JSON.stringify(divCalls2[divCalls2.length - 1]?.content?.match(/<div id="textdiv"[^>]*>[^<]*/)?.[0]),
+)
+
+/* ── 6g. A p with inline children: 就地编辑 stays, commit keeps markup. ── */
+await frame().locator('#rich').click()
+await page.waitForTimeout(200)
+const richTextField = await page.locator('label:has-text("文本")').count()
+const richInPlaceBtn = await page.getByText('就地编辑', { exact: true }).count()
+check(
+  'a p with <strong> inside offers 就地编辑 but no 文本 field',
+  richTextField === 0 && richInPlaceBtn === 1,
+  JSON.stringify({ text: richTextField, inPlace: richInPlaceBtn }),
+)
+await frame().locator('#rich').dblclick()
+await page.waitForTimeout(300)
+const richEditable = await frame().locator('#rich').evaluate((el) => el.isContentEditable)
+check('double-click on the rich p enters in-place editing (inline children kept)', richEditable === true)
+const frameCtx6g = await (await page.locator('iframe').elementHandle()).contentFrame()
+await frameCtx6g.evaluate(() => {
+  const el = document.getElementById('rich')
+  el.focus()
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  range.collapse(false)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+})
+await page.keyboard.type(' 就地改')
+await page.keyboard.press('Enter')
+await page.waitForTimeout(400)
+const richCalls = await page.evaluate(() => window.__writeCalls)
+check(
+  '…the commit keeps the <strong> and appends only the typed text',
+  richCalls[richCalls.length - 1].content.includes('<p id="rich">带 <strong>加粗</strong> 的段落 就地改</p>'),
+  JSON.stringify(richCalls[richCalls.length - 1]?.content?.match(/<p id="rich">.{0,40}/)?.[0]),
+)
 
 /* ── 7. Strict-CSP page: the picker still runs (meta stripped pre-inject). ── */
 await openFile('/w/strict.html')

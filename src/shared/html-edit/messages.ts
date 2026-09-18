@@ -54,6 +54,11 @@ export type FrameToParentMessage =
    *  element. The parent patches the FILE with it; the live DOM already
    *  carries the change. */
   | { type: 'pm:commit-text'; pmPath: string; html: string; nonce: string }
+  /** Double-click asked for in-place editing (D7). The PARENT arbitrates:
+   *  the element must resolve against the disk text before the frame may
+   *  edit it — an unresolvable (script-generated) element would only produce
+   *  a commit that refuses and reloads away what the user typed. */
+  | { type: 'pm:request-edit'; pmPath: string; nonce: string }
   | { type: 'pm:scroll'; y: number; nonce: string }
 
 /** The message a caller builds, before post() stamps the nonce on it. */
@@ -82,6 +87,7 @@ export function isFrameToParentMessage(data: unknown): data is FrameToParentMess
       (data as { type: string }).type === 'pm:select' ||
       (data as { type: string }).type === 'pm:deselect' ||
       (data as { type: string }).type === 'pm:commit-text' ||
+      (data as { type: string }).type === 'pm:request-edit' ||
       (data as { type: string }).type === 'pm:scroll')
   )
 }

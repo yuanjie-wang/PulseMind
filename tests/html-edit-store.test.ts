@@ -80,7 +80,8 @@ describe('direct edits (apply → write, no reload)', () => {
     const ok = await useHtmlEditStore.getState().applyStyle(FILE, { color: 'blue' })
     expect(ok).toBe(false)
     expect(written).toHaveLength(0)
-    expect(consumeFailure()).toContain('找不到')
+    // Smart resolve: no path, no text → the generated-content reason.
+    expect(consumeFailure()).toContain('不在文件源码中')
   })
 
   it('applyAttrs writes href/target attributes', async () => {
@@ -95,6 +96,35 @@ describe('direct edits (apply → write, no reload)', () => {
     const ok = await useHtmlEditStore.getState().applyAttrs(FILE, { title: 'T' })
     expect(ok).toBe(true)
     expect(written[0].content).toContain('<p title="T">para</p>')
+  })
+
+  it('applyText replaces a pure-text container inner with escaped text (2026-09-18 div 包字)', async () => {
+    useHtmlEditStore.getState().select(FILE, {
+      pmPath: 'html>body:nth-child(2)>div:nth-child(1)',
+      tag: 'div',
+      rect: { x: 0, y: 0, w: 0, h: 0 },
+      text: 'Hello para',
+      ancestors: [],
+      computed: {},
+    })
+    const ok = await useHtmlEditStore.getState().applyText(FILE, 'x < y')
+    expect(ok).toBe(true)
+    expect(written[0].content).toContain('<div class="hero">x &lt; y</div>')
+  })
+
+  it('commitInPlaceText writes the frame inner verbatim into a container', async () => {
+    const hero = 'html>body:nth-child(2)>div:nth-child(1)'
+    useHtmlEditStore.getState().select(FILE, {
+      pmPath: hero,
+      tag: 'div',
+      rect: { x: 0, y: 0, w: 0, h: 0 },
+      text: 'Hello para',
+      ancestors: [],
+      computed: {},
+    })
+    const ok = await useHtmlEditStore.getState().commitInPlaceText(FILE, hero, 'Hello <strong>para</strong>')
+    expect(ok).toBe(true)
+    expect(written[0].content).toContain('<div class="hero">Hello <strong>para</strong></div>')
   })
 })
 

@@ -80,7 +80,7 @@ const zh = {
   },
   htmlEdit: {
     modeToggle: '元素编辑',
-    hint: '点击页面元素开始编辑',
+    hint: '点击选择元素 · 双击文字可直接编辑',
     undo: '撤销',
     restoreOriginal: '恢复原始',
     aiPlaceholder: '想怎么改？用一句话描述',

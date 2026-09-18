@@ -83,7 +83,7 @@ const en: TranslationDict = {
   },
   htmlEdit: {
     modeToggle: 'Element edit',
-    hint: 'Click a page element to start editing',
+    hint: 'Click to select · double-click text to edit in place',
     undo: 'Undo',
     restoreOriginal: 'Restore original',
     aiPlaceholder: 'How should it change? Describe in one line',

@@ -11,35 +11,17 @@ import React, { useState } from 'react'
 import { Input, Select, Modal, message } from 'antd'
 import { Undo2, RotateCcw, Trash2, ChevronRight, Sparkles } from 'lucide-react'
 import { useTranslation } from '../../i18n/useTranslation'
-import { useHtmlEditStore, consumeFailure, sendToFrame } from '../../stores/htmlEditStore'
+import { useHtmlEditStore, consumeFailure, sendToFrame, STALE_WRITE_TOAST_PREFIX } from '../../stores/htmlEditStore'
 import { usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { runHtmlAiEdit } from '../../agent/one-shot-agent/HtmlElementEditAgent'
-import { resolveElement } from '../../../../shared/html-edit/resolve'
+import { resolveElementSmart } from '../../../../shared/html-edit/resolve'
+import { categoryOf } from '../../../../shared/html-edit/categories'
 import { decodedInnerText } from '../../../../shared/html-edit/patch'
 import { useSettings } from '../../hooks/SettingsContext'
 import { createLlmAdapter } from '../../llm'
 
-const TEXT_TAGS = new Set([
-  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'li', 'td', 'th', 'button', 'label',
-  'blockquote', 'strong', 'em', 'b', 'i', 'u', 'small', 'code', 'figcaption', 'dt', 'dd',
-  'summary', 'cite', 'q', 'time', 'pre', 'a',
-])
-const CONTAINER_TAGS = new Set([
-  'div', 'section', 'header', 'footer', 'main', 'nav', 'article', 'aside', 'form',
-  'figure', 'table', 'tr', 'body',
-])
-const LIST_TAGS = new Set(['ul', 'ol'])
-const FORM_TAGS = new Set(['input', 'textarea', 'select'])
-
-type Category = 'text' | 'image' | 'list' | 'form' | 'container'
-
-function categoryOf(tag: string): Category {
-  if (tag === 'img') return 'image'
-  if (LIST_TAGS.has(tag)) return 'list'
-  if (FORM_TAGS.has(tag)) return 'form'
-  if (TEXT_TAGS.has(tag)) return 'text'
-  return 'container'
-}
+// Element categories moved to shared/html-edit/categories — the picker's
+// double-click gate must agree with the panel's controls byte for byte.
 
 /** '16px' → 16; non-px or missing → '' (empty input). */
 function px(value: string | undefined): string {
@@ -211,15 +193,41 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
 
   const store = useHtmlEditStore.getState()
   const previewStore = usePreviewPaneStore.getState()
-  const resolved = resolveElement(session.fileText, selection.pmPath)
+  // Smart resolution: the same fallback the commits use, so a selection the
+  // live-DOM path cannot place (script-inserted siblings shift pmPath
+  // indices) still prefills the controls from its true source span.
+  const resolved = resolveElementSmart(session.fileText, selection)
   const attributes = resolved.ok ? resolved.location.attributes : {}
-  const hasElementChildren = resolved.ok ? resolved.location.hasScriptLikeChildren || /<[a-z]/i.test(innerOf(session.fileText, resolved.location)) : false
+  const category = categoryOf(selection.tag)
+  const innerHtml = resolved.ok ? innerOf(session.fileText, resolved.location) : ''
+  const hasScriptLikeChildren = resolved.ok ? resolved.location.hasScriptLikeChildren : false
+  // 子节点判定都在磁盘文本的 inner span 上做（frame 侧看不到磁盘）：
+  // - hasElementChildren 只数标签（注释不算——frame 的双击门看 children.length，
+  //   两侧必须一致）；hasAnyMarkup 连注释也算——「文本」框是整体替换语义，
+  //   注释也会被压平，宁可不给。
+  // - script 系（script/style/template 直接子节点）两种编辑两侧都拒绝：
+  //   frame 的 enableEditing 深查后弹 toast，面板直接不给入口。
+  const hasElementChildren = /<[a-z]/i.test(innerHtml.replace(/<!--[\s\S]*?-->/g, ''))
+  const hasAnyMarkup = /<[a-z!]/i.test(innerHtml)
   // 文本框初值 = 磁盘上该元素的完整解码文本（review 2026-09-18 H3）：
   // selection.text 被 picker 截到 400、曾被面板再截到 120——拿它当初值，
   // 一次提交就把第 121 字符起的内容从文件里抹掉。解析失败时才回落。
   const innerText = resolved.ok && resolved.location.inner
     ? decodedInnerText(session.fileText.slice(resolved.location.inner.start, resolved.location.inner.end))
     : selection.text || ''
+  // 两条直接改字的门，与 frame 双击的 isInPlaceEditableCategory 同源对齐
+  // （2026-09-18 「无法直接编辑文字」：带 strong 的 p 两个入口都没了只剩
+  // 双击暗道；div 包字则彻底无处下手）：
+  // - 「文本」框（applyText 整体替换 inner）只给纯文本内容：text/list/container。
+  // - 「就地编辑」= isInPlaceEditableCategory 的磁盘侧镜像：text 恒可（内联
+  //   子标签由 live-DOM 提交原样保留）；list/container 仅无子元素时（布局
+  //   容器的提交会重串整个子树，不做）。
+  const canReplaceText =
+    (category === 'text' || category === 'list' || category === 'container') &&
+    !hasAnyMarkup && !hasScriptLikeChildren
+  const canEditInPlace =
+    !hasScriptLikeChildren &&
+    (category === 'text' || ((category === 'list' || category === 'container') && !hasElementChildren))
 
   const toastFail = () => {
     const reason = consumeFailure()
@@ -228,10 +236,13 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
 
   const afterDirectEdit = (ok: boolean) => {
     if (!ok) {
-      toastFail()
-      // 失败也可能是写前新鲜度拒绝（磁盘被外部改写）：重读让 D8 的
-      // external-change 流程接管；普通失败时这次重读是无害的 no-op。
-      previewStore.bumpReload(path)
+      const reason = consumeFailure()
+      if (reason) void message.error(reason)
+      // 只有「磁盘被外部改写」的拒绝才重读（D8 接管）；普通拒绝（元素无法
+      // 解析/校验失败）重读会卸载重挂 iframe——紧随其后的 pm:select 会死在
+      // 新 frame 的 source 门上，用户刚点中的选区直接丢失（实测 2026-09-18：
+      // 点新元素触发旧输入框的 blur 提交被拒 → 重挂 → 选区吞掉）。
+      if (reason?.startsWith(STALE_WRITE_TOAST_PREFIX)) previewStore.bumpReload(path)
     }
   }
 
@@ -296,7 +307,6 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
     })
   }
 
-  const category = categoryOf(selection.tag)
   const computed = selection.computed
 
   const crumbs = selection.ancestors.slice(-6)
@@ -372,20 +382,28 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
 
       {/* Row 3: typed controls, reset per selection */}
       <div key={selection.pmPath} style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', padding: '2px 8px 8px' }}>
-        {(category === 'text' || category === 'list') && !hasElementChildren && (
+        {(canReplaceText || canEditInPlace) && (
           <>
-            <TextField
-              label={t('htmlEdit.text')}
-              initial={innerText}
-              width={150}
-              onCommit={(value) => void store.applyText(path, value).then(afterDirectEdit)}
-            />
-            <button
-              onClick={() => sendToFrame(path, { type: 'pm:enable-edit', pmPath: selection.pmPath })}
-              style={{ border: '1px solid #d9d9d9', borderRadius: 6, background: '#fff', fontSize: 11, padding: '1px 8px', cursor: 'pointer', color: '#555', flexShrink: 0 }}
-            >
-              {t('htmlEdit.editInPlace')}
-            </button>
+            {canReplaceText && (
+              <TextField
+                label={t('htmlEdit.text')}
+                initial={innerText}
+                width={150}
+                onCommit={(value) => void store.applyText(path, value).then(afterDirectEdit)}
+              />
+            )}
+            {canEditInPlace && (
+              <button
+                onClick={() =>
+                  void store.requestInPlaceEdit(path, selection.pmPath).then((ok) => {
+                    if (!ok) toastFail()
+                  })
+                }
+                style={{ border: '1px solid #d9d9d9', borderRadius: 6, background: '#fff', fontSize: 11, padding: '1px 8px', cursor: 'pointer', color: '#555', flexShrink: 0 }}
+              >
+                {t('htmlEdit.editInPlace')}
+              </button>
+            )}
           </>
         )}
         {(category === 'text' || category === 'list' || category === 'form') && (

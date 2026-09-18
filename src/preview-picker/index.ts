@@ -19,6 +19,7 @@ import {
   PM_PICKER_HOST_ID,
   type PmPathSegment,
 } from '../shared/html-edit/pm-path'
+import { isInPlaceEditableCategory } from '../shared/html-edit/categories'
 import type { ComputedSnapshot, ElementAncestor, ElementRect, FrameToParentPayload, ParentToFrameMessage } from '../shared/html-edit/messages'
 
 // The computed-style properties reported with a selection; the typed controls
@@ -335,6 +336,14 @@ document.addEventListener(
       e.stopPropagation()
       showToast('已阻止链接跳转（元素编辑模式中）')
     }
+    // A click while in-place editing is the user repositioning the caret,
+    // never a reselect: select() would flip `editing` back to false and the
+    // pending blur/Enter commit would die in exitEditing's early-return —
+    // everything typed stays in the live DOM only and a reload discards it
+    // (measured 2026-09-18: type → click mid-text → Enter writes nothing).
+    // A click OUTSIDE has already committed through its mousedown blur by
+    // the time this event runs, so selecting the new target still works.
+    if (editing) return
     const target = document.elementFromPoint(e.clientX, e.clientY)
     if (!target || isPickerNode(target)) return
     select(target)
@@ -349,6 +358,25 @@ document.addEventListener(
     e.preventDefault()
     e.stopPropagation()
     showToast('已阻止表单提交（元素编辑模式中）')
+  },
+  { capture: true },
+)
+
+// Double-click = direct text editing (D7, user ask 2026-09-18: 文字类元素能
+// 直接编辑文字). The picker does NOT flip contenteditable itself: whether the
+// element exists in the DISK source is parent-side knowledge, and an
+// unresolvable element would only take the user's typed text into a commit
+// that refuses and reloads it away. So: ask the parent (pm:request-edit);
+// it enables editing back (pm:enable-edit) or explains the refusal.
+document.addEventListener(
+  'dblclick',
+  (e) => {
+    if (!modeOn || editing) return
+    const target = document.elementFromPoint(e.clientX, e.clientY)
+    if (!target || isPickerNode(target)) return
+    if (!isInPlaceEditableCategory(target.tagName.toLowerCase(), target.children.length)) return
+    select(target)
+    post({ type: 'pm:request-edit', pmPath: buildPmPath(target) })
   },
   { capture: true },
 )

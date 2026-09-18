@@ -18,7 +18,7 @@
 
 import { create } from 'zustand'
 import type { ParentToFrameMessage, ElementRect, ElementAncestor, ComputedSnapshot } from '../../../shared/html-edit/messages'
-import { resolveElement } from '../../../shared/html-edit/resolve'
+import { resolveElement, resolveElementSmart } from '../../../shared/html-edit/resolve'
 import {
   applyInnerHtml,
   escapeHtmlText,
@@ -81,6 +81,11 @@ interface HtmlEditState {
   applyText: (path: string, text: string) => Promise<boolean>
   /** In-place contenteditable commit (D7) — the frame's inner HTML verbatim. */
   commitInPlaceText: (path: string, pmPath: string, html: string) => Promise<boolean>
+  /** A double-click (or the 就地编辑 button) asked to edit in place. The
+   *  PARENT arbitrates: the element must resolve against the disk text (D7)
+   *  before the frame may edit it — otherwise the user's typed text dies in
+   *  a refusing commit and a reload. */
+  requestInPlaceEdit: (path: string, pmPath: string) => Promise<boolean>
   /** Structural edits: write, then the caller reloads. */
   deleteElement: (path: string) => Promise<boolean>
   undo: (path: string) => Promise<boolean>
@@ -195,12 +200,14 @@ export const useHtmlEditStore = create<HtmlEditState>()((set, get) => ({
   applyStyle: async (path, decls) => {
     const session = get().sessions[path]
     if (!session?.selection) return false
-    const resolved = resolveElement(session.fileText, session.selection.pmPath)
-    if (!resolved.ok) return fail(resolved.reason)
-    const patched = setInlineStyle(session.fileText, resolved.location, decls)
+    const smart = resolveElementSmart(session.fileText, session.selection)
+    if (!smart.ok) return fail(smart.reason)
+    const patched = setInlineStyle(session.fileText, smart.location, decls)
     const applied = Object.keys(decls).filter((k) => decls[k] !== null)
     const verified = verifyPatch(patched, {
-      pmPath: session.selection.pmPath,
+      // Verify at the element's TRUE source path — a content-matched
+      // selection's live pmPath may not resolve in the disk text at all.
+      pmPath: smart.sourcePmPath,
       tag: session.selection.tag,
       styleProps: applied,
     })
@@ -213,10 +220,10 @@ export const useHtmlEditStore = create<HtmlEditState>()((set, get) => ({
   applyAttrs: async (path, attrs) => {
     const session = get().sessions[path]
     if (!session?.selection) return false
-    const resolved = resolveElement(session.fileText, session.selection.pmPath)
-    if (!resolved.ok) return fail(resolved.reason)
-    const patched = setAttributes(session.fileText, resolved.location, attrs)
-    const verified = verifyPatch(patched, { pmPath: session.selection.pmPath, tag: session.selection.tag })
+    const smart = resolveElementSmart(session.fileText, session.selection)
+    if (!smart.ok) return fail(smart.reason)
+    const patched = setAttributes(session.fileText, smart.location, attrs)
+    const verified = verifyPatch(patched, { pmPath: smart.sourcePmPath, tag: session.selection.tag })
     if (!verified.ok) return fail(verified.reason)
     const ok = await writeDirect(path, session, patched)
     if (ok) sendToFrame(path, { type: 'pm:apply-attrs', pmPath: session.selection.pmPath, attrs })
@@ -235,17 +242,27 @@ export const useHtmlEditStore = create<HtmlEditState>()((set, get) => ({
     return commitInner(path, session, html)
   },
 
+  requestInPlaceEdit: async (path, pmPath) => {
+    const session = get().sessions[path]
+    if (!session?.selection || session.selection.pmPath !== pmPath) return false
+    const smart = resolveElementSmart(session.fileText, session.selection)
+    if (!smart.ok) return fail(smart.reason)
+    sendToFrame(path, { type: 'pm:enable-edit', pmPath })
+    return true
+  },
+
   deleteElement: async (path) => {
     const session = get().sessions[path]
     if (!session?.selection) return false
-    const selectPath = session.selection.pmPath
-    const parentPath = parentPathOf(selectPath)
-    const resolved = resolveElement(session.fileText, selectPath)
-    if (!resolved.ok) return fail(resolved.reason)
-    const patched = removeElement(session.fileText, resolved.location)
+    const smart = resolveElementSmart(session.fileText, session.selection)
+    if (!smart.ok) return fail(smart.reason)
+    const patched = removeElement(session.fileText, smart.location)
     // Structural verification: the PARENT must still resolve — a cut that
     // lacerated the tree refuses here (the removed element's own path
-    // refusing is the expected outcome, not a failure).
+    // refusing is the expected outcome, not a failure). The parent of the
+    // TRUE source path, not of the live one (they differ when the selection
+    // was content-matched).
+    const parentPath = parentPathOf(smart.sourcePmPath)
     if (resolveElement(patched, parentPath).ok === false) {
       return fail('删除校验失败：父元素不再可解析，已拒绝写入')
     }
@@ -331,6 +348,13 @@ function fail(error: string): false {
  *  write (review 2026-09-18 M6). */
 export const STALE_WRITE_PREFIX = 'file changed on disk'
 
+/** failStale rewrites the refusal into this user-facing message; the
+ *  components use the prefix to tell a STALE refusal (disk moved — the
+ *  reload lets D8 take over) from a plain one (unresolvable element — where
+ *  a reload would only remount the frame and swallow the selection the user
+ *  just clicked). */
+export const STALE_WRITE_TOAST_PREFIX = '文件已被外部修改'
+
 /** A write refused for staleness must not leave the session believing it
  *  still knows the disk: adopt the fresh text (external-change semantics —
  *  undo stack gone, selection dropped) and report it. The caller reloads the
@@ -340,7 +364,7 @@ async function failStale(path: string, error: string): Promise<false> {
   if (!error.startsWith(STALE_WRITE_PREFIX)) return fail(error)
   const fresh = await window.electronAPI.readFile(path).catch(() => null)
   if (fresh !== null) useHtmlEditStore.getState().handleExternalChange(path, fresh)
-  return fail('文件已被外部修改，本次修改没有写入；已重新读取磁盘内容')
+  return fail(`${STALE_WRITE_TOAST_PREFIX}，本次修改没有写入；已重新读取磁盘内容`)
 }
 
 /** Direct edit write path: undo push + fileText adopt; the live DOM is
@@ -389,14 +413,14 @@ async function commitInner(
   if (/<script[\s>]/i.test(newInner) || /<style[\s>]/i.test(newInner)) {
     return fail('内联编辑不允许写入 script/style 节点')
   }
-  const resolved = resolveElement(session.fileText, selection.pmPath)
-  if (!resolved.ok) return fail(resolved.reason)
-  if (resolved.location.hasScriptLikeChildren) {
+  const smart = resolveElementSmart(session.fileText, selection)
+  if (!smart.ok) return fail(smart.reason)
+  if (smart.location.hasScriptLikeChildren) {
     return fail('该元素包含 script/style/template 子节点，不能整体改写内部 HTML')
   }
-  const patched = applyInnerHtml(session.fileText, resolved.location, newInner)
+  const patched = applyInnerHtml(session.fileText, smart.location, newInner)
   const verified = verifyPatch(patched, {
-    pmPath: selection.pmPath,
+    pmPath: smart.sourcePmPath,
     tag: selection.tag,
     textContains: extra?.textContains,
   })
