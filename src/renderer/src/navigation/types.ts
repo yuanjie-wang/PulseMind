@@ -31,6 +31,11 @@ export interface AppView {
   /** `routines` editor page: which routine is loaded into the form.
    *  Absent (with `routineEditing`) = the create-new flow. */
   routineId?: string
+  /** `routines` editor page: a recommended template (routine-templates.ts) to
+   *  prefill the create-new form with. Ignored when `routineId` is set — editing
+   *  an existing routine is never a template application. Nothing is created
+   *  until the user saves. */
+  routineTemplateId?: string
   /** `knowledge`: which base the left rail has selected — the whole right side
    *  (table, stats, search, import target, compile/rebuild) scopes to it.
    *  Absent = the default base. Survives tab switches, not restarts. */

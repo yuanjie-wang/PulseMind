@@ -20,7 +20,6 @@ import RoutineCenter from '../routine/RoutineCenter'
 import RoutineEditorPage from '../routine/RoutineEditorPage'
 import { SearchView } from '../search/SearchView'
 import SettingsPage from '../settings/SettingsPage'
-import AboutPage from '../settings/AboutPage'
 import StatisticsPage from './StatisticsPage'
 
 const LazyCanvasView = lazy(() => import('../canvas/CanvasView'))
@@ -71,12 +70,10 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
       return <SettingsPage memoryManager={memoryManager} onReloadConversations={onReloadConversations} />
     case 'usage':
       return <StatisticsPage />
-    case 'about':
-      return <AboutPage />
     case 'routines':
       // routineEditing routes to the dedicated create/edit page (list · form ·
       // assistant); without it the kind renders the card grid / run workspace.
-      if (view.routineEditing) return <RoutineEditorPage routineId={view.routineId} />
+      if (view.routineEditing) return <RoutineEditorPage routineId={view.routineId} templateId={view.routineTemplateId} />
       return <RoutineCenter runHistoryOf={view.runHistoryOf} />
     case 'capability':
     case 'knowledge':

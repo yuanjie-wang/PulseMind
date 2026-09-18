@@ -8,9 +8,19 @@
 // `routineEditing` view params; Schedules are configured in friendly terms
 // (每天/每周/每月/每隔) via utils/schedule-builder; raw cron is the "高级"
 // escape hatch.
+//
+// Landing-page layout (user ruling 2026-09-18): two columns split by a rule —
+// the LEFT is what the user owns and can start, the RIGHT is what has already
+// happened. Left is stacked: 我的任务 (whose 新建任务 affordance is a dashed card
+// closing the task grid — it was a button in the section head until the
+// follow-up ruling of the same day) above 推荐模板 (the five workplace starters
+// from routine-templates.ts). The page's own title row is GONE — the window
+// title bar already names the view, so a second 日常 • 自动化 above the content
+// was pure chrome. Right is the recent-runs list: unchanged in content, now a
+// bordered column of its own.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { App as AntdApp, Button, Space, Switch, Tag, Tooltip } from 'antd'
+import { App as AntdApp, Button, Switch, Tag, Tooltip } from 'antd'
 import { ClockCircleOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -18,6 +28,7 @@ import { checkCron } from '../../../../shared/schedule/cron'
 import { describeCron } from '../../utils/schedule-text'
 import { describeRelativeTimeText, bucketRunByDate, type DateBucket } from '../../utils/relative-time'
 import { RoutineWorkspace, RUN_STATUS_TAG, RunStatusIcon } from './RoutineWorkspace'
+import { ROUTINE_TEMPLATES, routineScheduleLabel } from './routine-templates'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
 
 export interface RoutineCenterProps {
@@ -29,8 +40,73 @@ export interface RoutineCenterProps {
 /** Order the sidebar buckets render in — newest first. */
 const BUCKET_ORDER: DateBucket[] = ['today', 'yesterday', 'thisWeek', 'earlier']
 
+/** Width of the 近期运行 column. Fixed rather than proportional: a run row is
+ *  one line of name + meta, so the list wants a constant measure and the half
+ *  the user works in takes the rest. */
+const RUNS_COLUMN_WIDTH = 300
+
+/** Page styles. `.routine-card` / `.routine-run-row` keep their treatment;
+ *  `.routine-template` is the template card, wearing the same hover recipe as a
+ *  task card so the two halves read as one page. It is a real `<button>` (the
+ *  task cards are clickable divs) so the starters are keyboard-reachable and a
+ *  click is unambiguous.
+ *  `.routine-new-card` is the 新建任务 card — the same dashed recipe the welcome
+ *  page's 新建项目 card wears, in this page's card metrics (radius 12, so it sits
+ *  in the task grid's rhythm rather than the project grid's). Hover lives in CSS
+ *  here rather than in the inline handlers the project page uses, so the
+ *  computed border/label colours are what a probe can read. */
+const CENTER_STYLES = `
+  .routine-card { transition: box-shadow 0.2s, border-color 0.2s; cursor: pointer; }
+  .routine-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-color: #d9d9d9; }
+  .routine-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; background: #f5f5f5; color: #666; font-size: 11px; line-height: 18px; white-space: nowrap; }
+  .routine-run-row { transition: background 0.15s; cursor: pointer; }
+  .routine-run-row:hover { background: #f5f5f5; }
+  .routine-template { display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+    text-align: left; font: inherit; color: inherit; background: #fff; cursor: pointer;
+    border: 1px solid #f0f0f0; border-radius: 12px; padding: 12px 14px;
+    transition: box-shadow 0.2s, border-color 0.2s; }
+  .routine-template:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-color: #d9d9d9; }
+  .routine-new-card { display: flex; align-items: center; justify-content: center; gap: 8px;
+    min-height: 72px; font: inherit; font-size: 14px; color: #888; background: transparent; cursor: pointer;
+    border: 1px dashed #c8c8cc; border-radius: 12px; padding: 14px 16px;
+    transition: border-color 0.2s, color 0.2s; }
+  .routine-new-card:hover { border-color: #666; color: #444; }
+`
+
+/** The template grid: the task grid's rhythm one notch narrower, and it reflows
+ *  down to a single column on a half-screen window. */
+const TEMPLATE_GRID: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+  gap: 12,
+}
+
+/** Head shared by the three sections: a title, an optional count/hint beside
+ *  it, and the section's own action pinned right. The note is #999 rather than
+ *  the pill grey because the template half carries a whole sentence in it — a
+ *  hint nobody can read is not a hint. */
+/** One head per section, and its `minHeight` is load-bearing: it is what makes
+ *  the title sit 17px above its own content (5px of centred slack inside the
+ *  32px box + the 12px margin below it) and makes all three heads the same box,
+ *  so the three titles sit identically. The 32px was originally reserved for the
+ *  新建任务 button that used to live here; the button is now a card in the task
+ *  grid (see the tasks section), and the height stayed because it *is* the
+ *  spacing — dropping it measures 12px instead of the 17px the user signed off
+ *  on (user request 2026-09-18: 「【我的任务】与【任务卡片】的间距要和【推荐模版】
+ *  与【模版卡片】的间距保持一致」). */
+function SectionHead({ title, note, action }: { title: string; note?: string; action?: React.ReactNode }): React.ReactElement {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 32, flexShrink: 0 }}>
+      <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>{title}</span>
+      {note && <span style={{ fontSize: 12, color: '#999' }}>{note}</span>}
+      <span style={{ flex: 1 }} />
+      {action}
+    </div>
+  )
+}
+
 function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement {
-  const { t } = useTranslation()
+  const { t, locale } = useTranslation()
   const { modal, message } = AntdApp.useApp()
   const navigate = useNavigationStore((s) => s.navigate)
   const [routines, setRoutines] = useState<Routine[]>([])
@@ -76,6 +152,13 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
     navigate(routine
       ? { kind: 'routines', routineId: routine.id, routineEditing: true }
       : { kind: 'routines', routineEditing: true })
+  }
+
+  /** Open the editor prefilled with a recommended template. Nothing is stored by
+   *  this click — the editor's 保存 is what creates the routine, so a template
+   *  the user tries and abandons leaves no trace. */
+  const openTemplate = (templateId: string): void => {
+    navigate({ kind: 'routines', routineEditing: true, routineTemplateId: templateId })
   }
 
   /** Open the run-history workspace for a routine. When `runId` is supplied
@@ -151,31 +234,40 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
           onRunNow={(r) => void runNow(r)}
         />
       ) : (
-        <div style={{ height: '100%', overflow: 'auto', padding: 24 }}>
-          <style>{`
-        .routine-card { transition: box-shadow 0.2s, border-color 0.2s; cursor: pointer; }
-        .routine-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-color: #d9d9d9; }
-        .routine-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; background: #f5f5f5; color: #666; font-size: 11px; line-height: 18px; white-space: nowrap; }
-        .routine-run-row { transition: background 0.15s; cursor: pointer; }
-        .routine-run-row:hover { background: #f5f5f5; }
-      `}</style>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-            <span style={{ fontSize: 18, fontWeight: 700 }}>{t('viewTitle.routines')}</span>
-            <Space>
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => openEditor()}>
-                {t('routine.createTask')}
-              </Button>
-            </Space>
-          </div>
+        <div style={{ height: '100%', display: 'flex', minHeight: 0 }}>
+          <style>{CENTER_STYLES}</style>
 
-          {routines.length === 0 ? (
-            <div style={{ color: '#999', padding: '32px 0', fontSize: 13 }}>
-              {t('routine.emptyHint')}
-            </div>
-          ) : (
-            <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-              {/* Left: routine card grid */}
-              <div style={{ flex: 1, minWidth: 0 }}>
+          {/* ── Left: 我的任务 (upper) over 推荐模板 (lower) ── */}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            {/* Upper — the tasks the user already has. It HUGS its content
+                (`flex: 0 1 auto`, not `flex: 1`): the lower half must sit
+                directly under the last card with no blank band between them
+                (user ruling 2026-09-18 — 「上下两部分间不用留白」), so any
+                leftover height goes below both halves, never between them.
+                It still shrinks (`minHeight: 0`) when the list is longer than
+                the column, and the scroller below takes the overflow. */}
+            <section
+              data-section="tasks"
+              style={{ flex: '0 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', padding: '24px 24px 0' }}
+            >
+              <SectionHead
+                title={t('routine.myTasks')}
+                note={routines.length > 0 ? String(routines.length) : undefined}
+              />
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+                {/* The empty explanation stays a line of copy (it explains what
+                    a routine is and points at the templates) — the ACTION is the
+                    card at the end of the grid below, which every state shows
+                    (user request 2026-09-18: 「在【日常 自动化】页面中，也同样用
+                    卡片的方式呈现新建任务按钮」, i.e. the same shape the welcome
+                    page's 新建项目 card has). The 24px it used to carry above was
+                    the gap to a section head that no longer has a button in it;
+                    16px below is what keeps it off the first card. */}
+                {routines.length === 0 && (
+                  <div style={{ color: '#999', padding: '0 0 16px', fontSize: 13 }}>
+                    {t('routine.emptyHint')}
+                  </div>
+                )}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
                   {routines.map((routine) => {
                     const scheduleText = routine.enabled && routine.schedule
@@ -241,68 +333,146 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                       </div>
                     )
                   })}
+
+                  {/* 新建任务 as a card, in the last cell of the grid — the same
+                      affordance the welcome page gives 新建项目 (user request
+                      2026-09-18: 「也同样用卡片的方式呈现新建任务按钮」). A real
+                      <button> like the template cards, so it is keyboard-
+                      reachable and the whole card is one unambiguous target; the
+                      click creates nothing — it opens the editor, and 保存 is
+                      what writes. */}
+                  <button
+                    type="button"
+                    data-action="create-task"
+                    className="routine-new-card"
+                    onClick={() => openEditor()}
+                  >
+                    <PlusOutlined />
+                    {t('routine.createTask')}
+                  </button>
                 </div>
               </div>
+            </section>
 
-              {/* Right: recent runs sidebar — grouped by 今天 / 昨天 / 本周 / 更早 */}
-              <aside style={{ width: 300, flexShrink: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: '#333', marginBottom: 10 }}>
-                  {t('routine.recentRuns')}
+            {/* Lower — 推荐模板. It follows the task list directly, separated
+                only by this top padding (24px → a 29px band measured from the
+                last card to the title, a little wider than the ~17px a head
+                leaves inside its own half, per 「略微增加两大块的间距」; the
+                user asked for more again on 2026-09-18 — 「略微增加…间距」 —
+                so it went 12 → 16 → 24, and 24 matches the page's own 24px
+                gutter on the tasks and runs columns), capped
+                at 52% so that on a narrow window, where the grid wraps, it
+                scrolls instead of pushing the task list off screen.
+                `boxSizing: border-box` is what makes the cap mean what it says —
+                antd only sets border-box on its own classes, so a content-box
+                slab would add its 36px of padding ON TOP of the 52% (measured
+                58% before the fix).
+                No rule at the seam either: the two halves abut directly (user
+                ruling, 2026-09-18 — 「不用硬分隔…直接接壤」); the section head
+                is what separates them. The vertical rule against the runs
+                column is a different thing and stays. */}
+            <section
+              data-section="templates"
+              style={{
+                flexShrink: 0, maxHeight: '52%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column',
+                padding: '24px 24px 20px',
+              }}
+            >
+              <SectionHead title={t('routine.templates')} note={t('routine.templatesHint')} />
+              <div style={{ overflowY: 'auto' }}>
+                <div style={TEMPLATE_GRID}>
+                  {ROUTINE_TEMPLATES.map((template) => (
+                    <button
+                      key={template.id}
+                      type="button"
+                      data-template={template.id}
+                      className="routine-template"
+                      onClick={() => openTemplate(template.id)}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: '#333' }}>
+                          {template.name[locale] || template.name.zh}
+                        </span>
+                        {template.cron && (
+                          <span className="routine-pill">
+                            <ClockCircleOutlined />{routineScheduleLabel(template.cron, locale)}
+                          </span>
+                        )}
+                      </span>
+                      <span style={{ fontSize: 12, color: '#888', lineHeight: '18px' }}>
+                        {template.description[locale] || template.description.zh}
+                      </span>
+                    </button>
+                  ))}
                 </div>
-                {recentRuns.length === 0 ? (
-                  <div style={{ color: '#bbb', fontSize: 12, padding: '12px 0' }}>
-                    {t('routine.recentRunsEmpty')}
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {BUCKET_ORDER.map((bucket) => {
-                      const runs = groupedRuns[bucket]
-                      if (runs.length === 0) return null
-                      return (
-                        <div key={bucket}>
-                          <div style={{ fontSize: 11, color: '#999', fontWeight: 600, padding: '10px 4px 6px', textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                            {bucketLabel[bucket]}
-                          </div>
-                          {runs.map((run) => {
-                            const name = routineNameById.get(run.routineId) ?? run.routineId
-                            const triggerText = run.trigger === 'schedule' ? t('routine.triggerSchedule') : t('routine.triggerManual')
-                            const timeText = describeRelativeTimeText(run.startedAt, runsFetchedAt, t) ?? ''
-                            const isRunning = run.status === 'running'
-                            return (
-                              <div
-                                key={run.id}
-                                className="routine-run-row"
-                                style={{
-                                  display: 'flex', alignItems: 'center', gap: 8,
-                                  padding: '7px 8px', borderRadius: 8,
-                                }}
-                                onClick={() => openHistory(run.routineId, run.id)}
-                              >
-                                <RunStatusIcon status={run.status} />
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{
-                                    fontSize: 12.5, color: isRunning ? '#1677ff' : '#333',
-                                    fontWeight: isRunning ? 600 : 500,
-                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                  }}>
-                                    {name}
-                                  </div>
-                                  <div style={{ fontSize: 11, color: '#999', display: 'flex', gap: 6, alignItems: 'center' }}>
-                                    <span>{triggerText}</span>
-                                    {timeText && <span>· {timeText}</span>}
-                                  </div>
+              </div>
+            </section>
+          </div>
+
+          {/* ── Right: recent runs — grouped by 今天 / 昨天 / 本周 / 更早, ruled
+              off from the left column ── */}
+          <aside
+            data-section="runs"
+            style={{
+              width: RUNS_COLUMN_WIDTH, flexShrink: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
+              borderLeft: '1px solid #f0f0f0', padding: '24px 16px',
+            }}
+          >
+            <SectionHead title={t('routine.recentRuns')} />
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+              {recentRuns.length === 0 ? (
+                <div style={{ color: '#bbb', fontSize: 12, padding: '12px 0' }}>
+                  {t('routine.recentRunsEmpty')}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {BUCKET_ORDER.map((bucket) => {
+                    const runs = groupedRuns[bucket]
+                    if (runs.length === 0) return null
+                    return (
+                      <div key={bucket}>
+                        <div style={{ fontSize: 11, color: '#999', fontWeight: 600, padding: '10px 4px 6px', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                          {bucketLabel[bucket]}
+                        </div>
+                        {runs.map((run) => {
+                          const name = routineNameById.get(run.routineId) ?? run.routineId
+                          const triggerText = run.trigger === 'schedule' ? t('routine.triggerSchedule') : t('routine.triggerManual')
+                          const timeText = describeRelativeTimeText(run.startedAt, runsFetchedAt, t) ?? ''
+                          const isRunning = run.status === 'running'
+                          return (
+                            <div
+                              key={run.id}
+                              className="routine-run-row"
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 8,
+                                padding: '7px 8px', borderRadius: 8,
+                              }}
+                              onClick={() => openHistory(run.routineId, run.id)}
+                            >
+                              <RunStatusIcon status={run.status} />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{
+                                  fontSize: 12.5, color: isRunning ? '#1677ff' : '#333',
+                                  fontWeight: isRunning ? 600 : 500,
+                                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                }}>
+                                  {name}
+                                </div>
+                                <div style={{ fontSize: 11, color: '#999', display: 'flex', gap: 6, alignItems: 'center' }}>
+                                  <span>{triggerText}</span>
+                                  {timeText && <span>· {timeText}</span>}
                                 </div>
                               </div>
-                            )
-                          })}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </aside>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
-          )}
+          </aside>
         </div>
       )}
     </div>

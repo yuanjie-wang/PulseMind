@@ -9,7 +9,7 @@
 // the assistant sits inside it as a white card, so the conversation reads as an
 // accessory of the form rather than a third peer column.
 
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { App as AntdApp, Button, Modal, Tooltip } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, FormOutlined, ImportOutlined, LoadingOutlined, PlusOutlined, SaveOutlined, ScheduleOutlined } from '@ant-design/icons'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -27,17 +27,22 @@ import { PANE_ROW_STYLES } from './pane-styles'
 import { ROUTINE_ASSIST_SPEC } from './routine-assist'
 import { applyAssistantPatch, draftToRoutineInput, EMPTY_DRAFT, routineToDraft, validateDraft, draftScheduleFromCron } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
+import { draftFromTemplate, routineTemplateById } from './routine-templates'
 import type { Routine } from '../../../../shared/types/routine'
 
 export interface RoutineEditorPageProps {
   /** Routine loaded into the form; absent = the create-new flow. */
   routineId?: string
+  /** Recommended template (routine-templates.ts) to prefill the create-new
+   *  form with — the 推荐模板 half of the landing page links here this way.
+   *  Ignored when `routineId` is set. */
+  templateId?: string
 }
 
-function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps): React.ReactElement {
+function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEditorPageProps): React.ReactElement {
   const { modal, message } = AntdApp.useApp()
   const navigate = useNavigationStore((s) => s.navigate)
-  const { settings, switchProfile } = useSettings()
+  const { settings, switchProfile, loading: settingsLoading } = useSettings()
   const [routines, setRoutines] = useState<Routine[]>([])
   /** Which stored routine the assistant conversation is bound to; null = the
    *  shared create-new draft bucket. Deliberately NOT bumped by a first save
@@ -93,6 +98,26 @@ function RoutineEditorPage({ routineId: routineIdProp }: RoutineEditorPageProps)
     })()
     return () => { alive = false }
   }, [routineIdProp, message])
+
+  // Template prefill (the landing page's 推荐模板 cards): fills the create-new
+  // form so the user reviews and saves instead of typing from scratch — nothing
+  // is created here. Waits for settings to land, because the copy the template
+  // contributes (name / description / prompt / param labels) is locale-dependent
+  // and the context answers with the default locale until settings load; the ref
+  // then freezes the application, so a later locale switch cannot overwrite what
+  // the user has edited.
+  const templateAppliedRef = useRef(false)
+  useEffect(() => {
+    if (routineIdProp || templateAppliedRef.current || settingsLoading) return
+    const template = routineTemplateById(templateId)
+    templateAppliedRef.current = true
+    if (!template) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- consuming a one-shot navigation param, not derived state
+    setDraft(draftFromTemplate(template, settings.locale === 'en' ? 'en' : 'zh'))
+    setDirty(false)
+    setBoundId(null)
+    setUpdateId(null)
+  }, [templateId, routineIdProp, settingsLoading, settings.locale])
 
   const assist = useFormAssistSession({
     convId: formAssistConversationId(ROUTINE_ASSIST_SPEC.conversationPrefix, boundId),

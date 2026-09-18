@@ -602,6 +602,10 @@ const zh = {
     about: '关于',
   },
   routine: {
+    myTasks: '我的任务',
+    createTask: '新建任务',
+    templates: '推荐模板',
+    templatesHint: '职场常用任务，点击带入编辑器，保存后才会创建',
     recentRuns: '近期运行',
     recentRunsEmpty: '暂无运行记录',
     bucketToday: '今天',
@@ -610,8 +614,7 @@ const zh = {
     bucketEarlier: '更早',
     triggerSchedule: '定时',
     triggerManual: '手动',
-    createTask: '新建任务',
-    emptyHint: '还没有日常工作。新建一个提示词任务，或从一段对话中提炼；可以立即执行，也可以设定每天/每周等固定时间自动跑。',
+    emptyHint: '还没有日常工作。点「新建任务」卡片自己写一个提示词，或从一段对话中提炼；也可以直接用下面的推荐模板。',
   },
   search: {
     placeholder: '搜索会话、消息、记忆、知识',

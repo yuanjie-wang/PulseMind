@@ -609,6 +609,10 @@ const en: TranslationDict = {
     about: 'About',
   },
   routine: {
+    myTasks: 'My Tasks',
+    createTask: 'New Task',
+    templates: 'Templates',
+    templatesHint: 'Common workplace tasks — click one to open it in the editor; nothing is created until you save',
     recentRuns: 'Recent Runs',
     recentRunsEmpty: 'No runs yet',
     bucketToday: 'Today',
@@ -617,8 +621,7 @@ const en: TranslationDict = {
     bucketEarlier: 'Earlier',
     triggerSchedule: 'Scheduled',
     triggerManual: 'Manual',
-    createTask: 'New Task',
-    emptyHint: 'No routines yet. Create a prompt task, or distill one from a conversation; run it on demand or schedule it for daily/weekly automatic runs.',
+    emptyHint: 'No routines yet. Use the “New Task” card to write one yourself or distill one from a conversation — or start from a template below.',
   },
   search: {
     placeholder: 'Search conversations, messages, memories, knowledge',
