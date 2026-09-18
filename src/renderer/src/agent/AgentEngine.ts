@@ -86,6 +86,14 @@ export interface AgentEngineOptions {
   toolManager: ToolManager
   skillManager: SkillManager
   workspaceDir?: string
+  /** The bound project's identity (2026-09-18 项目概述). The session manager
+   *  reads it fresh at create AND at every refreshOptions, so an overview
+   *  edited mid-conversation lands on the very next request. Rendered into
+   *  the stateBlock's `## Project` section — per-turn state, never the
+   *  invariant core. Absent for unbound/default-project conversations, where
+   *  the whole section stays out. */
+  projectName?: string
+  projectOverview?: string
   skillsDir?: string
   platformInfo?: PlatformInfo
   memoryManager?: MemoryManager

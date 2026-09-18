@@ -182,6 +182,14 @@ async function buildStateBlock(params: {
     }
   }
 
+  // 项目概述 (2026-09-18): the bound project's name + ≤50 字 overview, ABOVE
+  // its workspace (project → workspace hierarchy). Stable across turns — it
+  // only moves when the user edits the project — so the low-volatility bytes
+  // sit as early in the block as the contract allows; an unbound or
+  // default-project conversation ships no section at all (若无则忽略).
+  const projectSection = buildProjectSection(opts.projectName, opts.projectOverview)
+  if (projectSection) sections.push(projectSection)
+
   const workspace = buildWorkspaceSection(opts.workspaceDir)
   if (workspace) sections.push(workspace)
 
@@ -225,6 +233,14 @@ async function buildStateBlock(params: {
 function buildWorkspaceSection(workspaceDir?: string): string | null {
   if (!workspaceDir) return null
   return `## Workspace\n- Workspace: ${workspaceDir}`
+}
+
+function buildProjectSection(name?: string, overview?: string): string | null {
+  if (!name && !overview) return null
+  const lines = ['## Project']
+  if (name) lines.push(`- Name: ${name}`)
+  if (overview) lines.push(`- Overview: ${overview}`)
+  return lines.join('\n')
 }
 
 /** Whether the user left git-context injection on (default true, missing settings = on). */

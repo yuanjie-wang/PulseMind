@@ -53,6 +53,7 @@ import ChatView from './src/renderer/src/components/layout/ChatView'
 import { useNewTaskStore } from './src/renderer/src/stores/newTaskStore'
 import { projectHue } from './src/renderer/src/stores/projectStore'
 import { sendAccent } from './src/renderer/src/components/chat/Composer'
+import { buildAntdTheme } from './src/renderer/src/theme/tokens'
 
 
 /** The conversation the chat-state mount opens — matches the projectId the
@@ -64,7 +65,7 @@ const mount = (node) => {
   if (root) root.unmount()
   root = createRoot(document.getElementById('root'))
   root.render(
-    <ConfigProvider>
+    <ConfigProvider theme={buildAntdTheme('light')}>
       <SettingsProvider>
         <TranslationProvider initialLocale={window.__probeLocale}>
           {node}
@@ -96,9 +97,10 @@ window.__mountLayout = ({ locale = 'zh', totalSessions = 0, autoCleanup = true }
 }
 
 // ChatView in its welcome state, mounted the way App.tsx mounts it — as
-// AppLayout's child — so AppLayout's global stylesheet is in the DOM. That
-// matters here: its !important rules repainting every primary button black are
-// exactly what the send button's disabled look has to survive.
+// AppLayout's child under the app's own theme — so AppLayout's global
+// stylesheet is in the DOM and ConfigProvider carries the brand ink the send
+// button paints with. The disabled look has to survive both: the theme's black
+// primary and Composer's own scoped disabled pin.
 window.__mountChatView = ({ locale = 'zh' } = {}) => {
   window.__probeLocale = locale
   window.__sent = []
@@ -231,6 +233,10 @@ await page.addScriptTag({
     key === 'getWindowControls' ? () => ({ side: 'left', inset: 70 })
       : key === 'getPlatformInfo' ? () => Promise.resolve({ platform: 'darwin' })
       : key === 'projectList' ? () => Promise.resolve(${JSON.stringify(PROJECT_FIXTURES)})
+      : key === 'projectUpdate' ? (id, patch) => {
+          (window.__projectCalls = window.__projectCalls || []).push({ id, patch })
+          return Promise.resolve(null)
+        }
       : key === 'getSettings' ? () => Promise.resolve({
           activeProfileId: '', profiles: [], theme: 'light', myName: '', soul: '', yourName: '',
           workspaceDir: '', autoCleanup: true, locale: window.__probeLocale || 'zh',
@@ -509,6 +515,57 @@ await page.waitForSelector('.ant-sender textarea')
 await composerText().fill('普通对话')
 const looseLook = await settledLook(false)
 check('an unbound conversation stays black', looseLook.background === 'rgb(0, 0, 0)', looseLook.background)
+
+// ── the project row's 编辑 button → the edit modal (2026-09-18 项目概述) ──
+// The hover cluster grows by one icon between 新建任务 and 删除; clicking it
+// opens the SAME ProjectModal the create flow uses, but in edit mode — the
+// workspace read-only, the overview box present with its 50-char cap, and the
+// 自动总结 affordance that only exists in this mode.
+
+await page.evaluate(() => window.__mountLayout({}))
+await page.waitForSelector('.ant-layout-sider')
+await listTab('项目').click()
+await page.waitForSelector('div[data-project-header="p1"]')
+const alphaHeader = page.locator('div[data-project-header="p1"]')
+await alphaHeader.hover()
+check('hovering the project row reveals 新建任务/编辑/删除', (await alphaHeader.locator('.project-row-action').count()) === 3)
+const editBtn = alphaHeader.locator('.project-row-action').nth(1)
+check('the new middle action is not the danger one', !(await editBtn.getAttribute('class')).includes('danger'))
+await editBtn.click()
+await page.waitForSelector('.ant-modal-title')
+// afterOpenChange repopulates the fields at animation END — typing any earlier
+// races the reset and the save would ship the pre-fill value (measured: fill
+// immediately after the title appears lands a patch with overview '').
+await page.waitForTimeout(500)
+check('the edit modal opens as 项目设置', (await page.locator('.ant-modal-title').textContent()) === '项目设置')
+check('the workspace reads back read-only', (await page.locator('.ant-modal code').textContent()) === '/tmp/alpha')
+const overviewBox = page.locator('.ant-modal textarea')
+check('the edit modal carries the overview box', (await overviewBox.count()) === 1)
+check('the overview box caps at 50 chars', (await overviewBox.getAttribute('maxlength')) === '50')
+check('the count reads 0/50', /0\s*\/\s*50/.test(await page.locator('.ant-modal .ant-input-data-count').textContent()))
+check('edit mode offers 自动总结', (await page.locator('.ant-modal button', { hasText: '自动总结' }).count()) === 1)
+await overviewBox.fill('给设计师用的组件库')
+await page.locator('.ant-modal .ant-btn-primary').click()
+await page.waitForFunction(() => (window.__projectCalls || []).length > 0)
+const upd = await page.evaluate(() => window.__projectCalls[0])
+check('保存 writes projectUpdate for Alpha with the overview', upd && upd.id === 'p1' && upd.patch.overview === '给设计师用的组件库' && upd.patch.name === 'Alpha', JSON.stringify(upd))
+// antd keeps the wrap ELEMENT in the DOM after a close (display:none), so the
+// wait is on visibility, not on absence.
+const modalGone = () => {
+  const wrap = document.querySelector('.ant-modal-wrap')
+  return !wrap || getComputedStyle(wrap).display === 'none'
+}
+await page.waitForFunction(modalGone)
+
+// The create modal must NOT offer 自动总结 — the ruling scoped it to edit mode.
+await page.locator('.sidebar-list-action[aria-label="新建项目"]').click()
+await page.waitForSelector('.ant-modal-title')
+await page.waitForTimeout(500) // same afterOpenChange race as above
+check('the create modal opens as 新建项目', (await page.locator('.ant-modal-title').textContent()) === '新建项目')
+check('create carries the same overview box', (await page.locator('.ant-modal textarea').count()) === 1)
+check('create has no 自动总结', (await page.locator('.ant-modal button', { hasText: '自动总结' }).count()) === 0)
+await page.locator('.ant-modal .ant-btn').filter({ hasText: /取\s*消/ }).click() // antd auto-inserts a space: 取 消
+await page.waitForFunction(modalGone)
 
 await browser.close()
 const failed = results.filter((r) => !r.pass)

@@ -480,6 +480,21 @@ export class AgentSessionManagerImpl {
       workspaceDir = await resolveConversationWorkspace(sessionId, projectId)
     }
     workspaceDir = workspaceDir || settings.workspaceDir || WORKSPACE_DIR
+    // 项目概述 (2026-09-18): the bound project's name/overview ride the state
+    // block's `## Project` section (project → workspace hierarchy). Only a real
+    // row contributes — the synthesized default project has neither, and the
+    // section stays out entirely (若无则忽略). Spawn/derived sessions resolve
+    // to 'default' here and are unaffected; spawn prompts carry no state block.
+    const boundProjectId = opts.projectId ?? getConversationProjectId(sessionId)
+    let projectName: string | undefined
+    let projectOverview: string | undefined
+    if (boundProjectId && boundProjectId !== DEFAULT_PROJECT_ID) {
+      const boundProject = await projectStore.get(boundProjectId).catch(() => null)
+      if (boundProject) {
+        projectName = boundProject.name
+        projectOverview = boundProject.overview
+      }
+    }
     // Approval precedence: an explicit per-session override (derived sessions
     // run unattended) > the conversation's own stored choice > the shared
     // default for a conversation that never chose (按需确认).
@@ -503,6 +518,8 @@ export class AgentSessionManagerImpl {
       experienceManager: managers.experienceManager,
       platformInfo: managers.platformInfo,
       workspaceDir,
+      projectName,
+      projectOverview,
       skillsDir: SKILLS_DIR,
       approvalMode,
       locale: settings.locale === 'en' ? 'en' : 'zh',
@@ -737,6 +754,19 @@ export class AgentSessionManagerImpl {
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
     const profile = await this.resolveProfile()
+    // 项目概述 is re-read here (NOT a session pin, unlike workspaceDir): a
+    // project edit mid-conversation lands on the session's next request via
+    // the refreshProjectSessions sweep below.
+    const boundProjectId = getConversationProjectId(sessionId)
+    let projectName: string | undefined
+    let projectOverview: string | undefined
+    if (boundProjectId && boundProjectId !== DEFAULT_PROJECT_ID) {
+      const boundProject = await projectStore.get(boundProjectId).catch(() => null)
+      if (boundProject) {
+        projectName = boundProject.name
+        projectOverview = boundProject.overview
+      }
+    }
     entry.engine.updateOptions({
       apiKey: profile.apiKey ?? null,
       baseURL: profile.baseURL,
@@ -755,6 +785,8 @@ export class AgentSessionManagerImpl {
       experienceManager: managers.experienceManager,
       platformInfo: managers.platformInfo,
       workspaceDir: this.sandboxContexts.get(sessionId)?.workspaceDir ?? settings.workspaceDir ?? WORKSPACE_DIR,
+      projectName,
+      projectOverview,
       skillsDir: SKILLS_DIR,
       approvalMode: this.effectiveApprovalMode(sessionId, entry),
       locale: settings.locale === 'en' ? 'en' : 'zh',
@@ -769,6 +801,21 @@ export class AgentSessionManagerImpl {
       // refreshes, and updateOptions replaces the bag wholesale.
       hostedAvailable: agentClientRegistry.isHostedCapable(sessionId),
     })
+  }
+
+  /** A project's name/overview changed (PROJECT_UPDATE): re-read it onto every
+   *  live session bound to that project, so the edit takes effect on the very
+   *  next request (2026-09-18 立即生效 ruling). Same sweep shape as
+   *  setActiveProfile, scoped to the project's own sessions; the derived/
+   *  spawn sessions among them carry no state block, and refreshing them is a
+   *  harmless no-op. */
+  async refreshProjectSessions(projectId: string): Promise<void> {
+    for (const sessionId of this.sessions.keys()) {
+      if (getConversationProjectId(sessionId) !== projectId) continue
+      await this.refreshOptions(sessionId).catch((err) => {
+        console.warn('[AgentSession] project update: refresh failed', sessionId, err)
+      })
+    }
   }
 
   /** Map engine callbacks onto protocol session events. */

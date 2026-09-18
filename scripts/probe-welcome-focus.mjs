@@ -45,6 +45,7 @@ import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider, App as AntdApp } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import ChatView from './src/renderer/src/components/layout/ChatView'
 import { InputArea } from './src/renderer/src/components/chat/InputArea'
 import { ProjectModal } from './src/renderer/src/components/project/ProjectModal'
@@ -63,6 +64,10 @@ const TABLE = {
   knowledgeListFiles: [],
   projectValidateDir: { ok: true },
   showOpenDialog: { canceled: true, filePaths: [] },
+  // SettingsProvider (added when ProjectCards grew its own ProjectModal) loads
+  // this and useAppSettings setSettings(es) it verbatim — undefined here would
+  // blank the whole settings object and throw on settings.profiles.
+  getSettings: { activeProfileId: '', profiles: [], theme: 'light', myName: '', soul: '', yourName: '', workspaceDir: '', autoCleanup: false, locale: 'zh' },
 }
 window.electronAPI = new Proxy({}, {
   get: (_t, key) => (...args) => {
@@ -186,7 +191,13 @@ window.__mount = (kind, opts) => {
   root.render(
     <ConfigProvider>
       <AntdApp>
-        <TranslationProvider>{body}</TranslationProvider>
+        {/* The real app wraps everything in SettingsProvider (App.tsx), and the
+            welcome project form now renders ProjectModal through ProjectCards —
+            ProjectModal reads useSettings, so without the provider the 项目
+            capsule switch throws before the composer can take focus. */}
+        <SettingsProvider>
+          <TranslationProvider>{body}</TranslationProvider>
+        </SettingsProvider>
       </AntdApp>
     </ConfigProvider>
   )

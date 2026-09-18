@@ -307,8 +307,12 @@ async function launcher() {
     format: 'cjs',
     outfile: bundle,
     // better-sqlite3 is resolved at runtime from the repo (NODE_PATH) so its
-    // native binding keeps working; esbuild is the bundler itself.
-    external: ['better-sqlite3', 'esbuild'],
+    // native binding keeps working; esbuild is the bundler itself. jsdom /
+    // playwright-core / chromium-bidi ride in through the knowledge-store
+    // extractor's import graph: pure-JS, never exercised here, and marked
+    // external because esbuild cannot resolve playwright-core's internal
+    // subpaths (the runtime requires resolve from NODE_PATH).
+    external: ['better-sqlite3', 'esbuild', 'jsdom', 'playwright-core', 'chromium-bidi'],
     plugins: [
       {
         name: 'electron-stub',

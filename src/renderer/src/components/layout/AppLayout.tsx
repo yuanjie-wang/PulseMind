@@ -23,7 +23,7 @@ import { useProjectStore } from '../../stores/projectStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
 import { DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { conversationKeyOf } from '../../../../shared/conversation-key'
-import type { ProjectSortMode } from '../../../../shared/types/project'
+import type { Project, ProjectSortMode } from '../../../../shared/types/project'
 import { useSettings } from '../../hooks/SettingsContext'
 import type { ConversationListItem } from '../../types/conversation'
 import type { MemoryManager } from '../../memory/MemoryManager'
@@ -154,6 +154,10 @@ function AppLayout({
   // uses). Conversation-management (清理策略) moved to the settings page's
   // 数据与运行 section.
   const [projectModalOpen, setProjectModalOpen] = useState(false)
+  // The project being edited (sidebar row's 编辑 / welcome card's edit entry
+  // land here). Same ProjectModal instance serves both modes: open is true
+  // while either trigger is set, and `editing` switches the modal's mode.
+  const [projectEditTarget, setProjectEditTarget] = useState<Project | null>(null)
   const reloadProjects = useProjectStore((s) => s.reload)
 
   // The 项目 list's group order. A global preference (settings.projectSortMode),
@@ -202,6 +206,7 @@ function AppLayout({
   // pick); projects tab → the project create modal.
   const handleTabAdd = (): void => {
     if (listTab === 'projects') {
+      setProjectEditTarget(null) // create mode, even if an edit modal just closed
       setProjectModalOpen(true)
       return
     }
@@ -384,6 +389,7 @@ function AppLayout({
                 sortMode={projectSortMode}
                 onManualOrder={() => changeProjectSort('manual')}
                 onCreateTask={handleProjectNewTask}
+                onEditProject={setProjectEditTarget}
                 onOpenConversation={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
                 onDelete={onDeleteConversation}
                 onRename={onRenameConversation}
@@ -531,16 +537,21 @@ function AppLayout({
       </Layout>
 
       {/* Switcher-row actions' surfaces: the projects tab's create modal
-          portals out of the sidebar. */}
+          portals out of the sidebar. The same instance serves the project
+          edit flow (sidebar row / welcome card) via `editing`. */}
       <ProjectModal
-        open={projectModalOpen}
-        editing={null}
-        onClose={() => setProjectModalOpen(false)}
+        open={projectModalOpen || projectEditTarget !== null}
+        editing={projectEditTarget}
+        onClose={() => {
+          setProjectModalOpen(false)
+          setProjectEditTarget(null)
+        }}
         onSaved={(project) => {
           void reloadProjects()
           // Created (or directory-adopted, which reports the existing project):
           // jump straight into that project's new-task state — welcome page,
-          // 项目 half of the capsule lit, the new project preselected.
+          // 项目 half of the capsule lit, the new project preselected. An edit
+          // save reports no project and must not jump.
           if (project) handleProjectNewTask(project.id)
         }}
       />

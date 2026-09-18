@@ -15,6 +15,10 @@ export interface Project {
   /** Fixed workspace directory — every conversation in the project resolves
    *  relative paths against this, and writes are jailed to it. */
   workspaceDir: string
+  /** ≤50 字的项目概述。可空：创建时允许留空，编辑时也可清空。落在会话提示词的
+   *  `## Project` 小节（stateBlock，per-turn 值，不进不变量核心）——没有它整个
+   *  小节就不出现。 */
+  overview?: string
   icon?: string
   /** Identity hue (0–360) of the project's color, stored on the row rather than
    *  derived per render: the welcome card's wash and the composer's send button
@@ -53,13 +57,30 @@ export type ProjectSortMode = 'created' | 'name' | 'activity' | 'manual'
 export interface ProjectCreateInput {
   name: string
   workspaceDir: string
+  overview?: string
   icon?: string
 }
 
-/** name/icon are editable; workspaceDir is deliberately excluded — it is fixed
- *  at creation, so a patch can never retarget a project's jail root behind
- *  conversations that already resolved (and persisted) the old dir. */
+/** name/icon/overview are editable; workspaceDir is deliberately excluded — it
+ *  is fixed at creation, so a patch can never retarget a project's jail root
+ *  behind conversations that already resolved (and persisted) the old dir. */
 export interface ProjectUpdateInput {
   name?: string
+  overview?: string
   icon?: string
+}
+
+/** Cap of the project overview, counted in JS `.length` (one CJK char = 1).
+ *  The UI enforces it with `maxLength`; this normalizer is the same rule for
+ *  every writer behind it (store create/update, LLM auto-summarize output). */
+export const PROJECT_OVERVIEW_MAX_LENGTH = 50
+
+/** One normalization rule for every overview write: trim, cap at 50 chars,
+ *  and collapse empties to `undefined` so a cleared field is a cleared field —
+ *  not an empty string riding along forever. */
+export function normalizeProjectOverview(raw: string | null | undefined): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+  return trimmed.slice(0, PROJECT_OVERVIEW_MAX_LENGTH)
 }

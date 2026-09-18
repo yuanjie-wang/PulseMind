@@ -29,3 +29,5 @@ export type { CompilerInput, CompilerOutput, WikiAction, RawFileInfo } from './K
 export type { LlmConfig, ExecuteOptions } from './LlmConfig'
 export { RoutineExtractionAgent } from './RoutineExtractionAgent'
 export type { RoutineExtractionInput, RoutineDraft } from './RoutineExtractionAgent'
+export { ProjectOverviewAgent } from './ProjectOverviewAgent'
+export type { ProjectOverviewInput } from './ProjectOverviewAgent'

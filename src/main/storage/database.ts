@@ -261,6 +261,7 @@ function createTables(): void {
       id            TEXT PRIMARY KEY,
       name          TEXT NOT NULL,
       workspace_dir TEXT NOT NULL,
+      overview      TEXT,
       icon          TEXT,
       color_hue     INTEGER,
       sandbox_json  TEXT NOT NULL DEFAULT '{}',
@@ -313,6 +314,9 @@ function createTables(): void {
   // dragged: those rows keep their created_at order in the 'manual' sort mode,
   // so a project created after the last drag still appears newest-first.
   try { database.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER') } catch { /* column may already exist */ }
+  // ≤50 字的项目概述 (2026-09-18). NULL/空 = 用户没写：会话提示词的 `## Project`
+  // 小节整个不出现，而不是拼一行空的。
+  try { database.exec('ALTER TABLE projects ADD COLUMN overview TEXT') } catch { /* column may already exist */ }
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);

@@ -6,17 +6,25 @@
 // with none to quote, starts the first one (the row then reads 立即开始).
 // Visual language mirrors the chat-mode cards: soft filled surfaces, one 952px
 // column.
+// The 新建项目 card is the grid's LAST cell whenever there is a project to
+// list. On an empty page the explanation and the create action are merged into
+// ONE full-row card wearing the create card's transparent + dashed recipe, so
+// the first run ends on a single actionable card rather than a dead grey panel
+// (user request 2026-09-18: 「把【还没有项目】这个卡片和【新建项目】的卡片
+// 合并，透明背景、灰色虚线边框，把【还没有项目】改为【立即创建项目】」).
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Button, Tooltip } from 'antd'
 import {
   ArrowRightOutlined,
   CheckOutlined,
+  EditOutlined,
   FolderOutlined,
   PlayCircleOutlined,
   PlusOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { StarterPrompts } from './StarterPrompts'
 import { useProjectStore, projectHue } from '../../stores/projectStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
 import { ProjectModal } from '../project/ProjectModal'
@@ -174,6 +182,9 @@ export function ProjectCards({
   const projectId = useNewTaskStore((s) => s.projectId)
   const setProjectId = useNewTaskStore((s) => s.setProjectId)
   const [modalOpen, setModalOpen] = useState(false)
+  // The project being edited (a card's hover edit affordance). The same
+  // ProjectModal serves create and edit via `editing`.
+  const [editTarget, setEditTarget] = useState<Project | null>(null)
   // The cards' meta line is a relative time, so the grid holds the clock all
   // such lines are rendered against — same tick as the sidebar and the band.
   const [now, setNow] = useState(() => Date.now())
@@ -197,6 +208,7 @@ export function ProjectCards({
   }, [projectId])
 
   const userProjects = projects.filter((p) => p.id !== DEFAULT_PROJECT_ID)
+  const projectStarters = [t('welcome.projectStarter1'), t('welcome.projectStarter2'), t('welcome.projectStarter3')]
 
   return (
     <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -223,7 +235,10 @@ export function ProjectCards({
             content edge, so the pill lines up with the cards below it. */}
           <button
             type="button"
-            onClick={() => setModalOpen(true)}
+            onClick={() => {
+              setEditTarget(null) // create mode, even if an edit modal just closed
+              setModalOpen(true)
+            }}
             style={{
               marginLeft: 'auto',
               display: 'inline-flex',
@@ -266,28 +281,77 @@ export function ProjectCards({
                 selected={projectId === project.id}
                 onSelect={() => setProjectId(project.id)}
                 onOpenConversation={onOpenConversation}
+                onEdit={() => setEditTarget(project)}
                 cardRef={projectId === project.id ? selectedCardRef : undefined}
               />
             ))}
 
-            {userProjects.length === 0 && (
-              <div style={{ gridColumn: '1 / -1', background: CARD_BG, borderRadius: 16, padding: '18px 20px 16px' }}>
-                <div style={{ fontSize: 16, fontWeight: 600, color: '#666' }}>{t('welcome.noProjects')}</div>
-                <div style={{ marginTop: 6, fontSize: 13, lineHeight: '19px', color: '#999' }}>{t('welcome.noProjectsHint')}</div>
-              </div>
-            )}
-
-            {userProjects.length > 0 && (
-              <div
+            {/* Empty state: ONE card, not two — the explanation and the create
+                action are the same affordance now, so the page never shows a
+                grey panel beside a dashed cell that say the same thing. It
+                spans the whole row and wears the create card's transparent +
+                dashed recipe (user request 2026-09-18: 「把【还没有项目】这个
+                卡片和【新建项目】的卡片合并，透明背景、灰色虚线边框，把
+                【还没有项目】改为【立即创建项目】」). A real <button>, so it
+                takes focus and answers Enter/Space. */}
+            {userProjects.length === 0 ? (
+              <button
+                type="button"
+                data-project-empty
+                data-action="create-project"
+                onClick={() => setModalOpen(true)}
+                style={{
+                  gridColumn: 'span 3',
+                  border: '1px dashed #c8c8cc',
+                  borderRadius: 16,
+                  padding: '18px 20px 16px',
+                  boxSizing: 'border-box',
+                  background: 'transparent',
+                  font: 'inherit',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  minHeight: CARD_MIN_HEIGHT,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  gap: 6,
+                  color: '#666',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#666'
+                  e.currentTarget.style.color = '#444'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#c8c8cc'
+                  e.currentTarget.style.color = '#666'
+                }}
+              >
+                <div style={{ fontSize: 16, fontWeight: 600 }}>{t('welcome.createProjectNow')}</div>
+                <div style={{ fontSize: 13, lineHeight: '19px', color: '#999' }}>{t('welcome.noProjectsHint')}</div>
+              </button>
+            ) : (
+              /* The create card — the last cell whenever projects are listed.
+                 A real <button> (like the routine page's 新建任务 card) rather
+                 than the clickable div it used to be: `font: inherit` keeps the
+                 label on this page's type scale — a bare <button> would fall
+                 back to the UA's 13.33px Arial — and the transparent background
+                 undoes the UA's grey face. The dashed recipe is the same one the
+                 routine page wears. */
+              <button
+                type="button"
+                data-action="create-project"
                 onClick={() => setModalOpen(true)}
                 style={{
                   border: '1px dashed #c8c8cc',
                   borderRadius: 16,
                   padding: CARD_PADDING,
                   boxSizing: 'border-box',
+                  background: 'transparent',
+                  font: 'inherit',
                   cursor: 'pointer',
                   userSelect: 'none',
-                  textAlign: 'left',
                   minHeight: CARD_MIN_HEIGHT,
                   display: 'flex',
                   alignItems: 'center',
@@ -307,17 +371,29 @@ export function ProjectCards({
               >
                 <PlusOutlined />
                 {t('welcome.newProject')}
-              </div>
+              </button>
             )}
+          </div>
+          {/* The same 试试 row chat mode carries under its band, with prompts
+              shaped for a project's workspace: one click drops the question
+              into the composer. Inside the scroll region, so a long project
+              list scrolls the starters with it rather than pinning them. */}
+          <div style={{ marginTop: 14 }}>
+            <StarterPrompts labels={projectStarters} />
           </div>
         </div>
       </div>
       <ProjectModal
-        open={modalOpen}
-        editing={null}
-        onClose={() => setModalOpen(false)}
+        open={modalOpen || editTarget !== null}
+        editing={editTarget}
+        onClose={() => {
+          setModalOpen(false)
+          setEditTarget(null)
+        }}
         onSaved={(project) => {
           void reload()
+          // Created (or directory-adopted) → select it; an edit save reports
+          // no project and must not touch the selection.
           if (project) setProjectId(project.id)
         }}
       />
@@ -342,6 +418,7 @@ function ProjectCard({
   selected,
   onSelect,
   onOpenConversation,
+  onEdit,
   cardRef,
 }: {
   project: Project
@@ -351,6 +428,8 @@ function ProjectCard({
   selected: boolean
   onSelect: () => void
   onOpenConversation: (key: string) => void
+  /** Open the project's edit modal — the card's hover edit affordance. */
+  onEdit: () => void
   /** Attached only while selected — lets the parent scroll the card into view. */
   cardRef?: React.Ref<HTMLDivElement>
 }): React.ReactElement {
@@ -358,6 +437,8 @@ function ProjectCard({
   const inProject = conversations.filter((c) => c.projectId === project.id)
   const latest = inProject.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
   const latestKey = latest?.key
+  // The edit affordance rides card hover, alongside the background swap.
+  const [hovered, setHovered] = useState(false)
 
   // The meta line quotes the conversation's last user message, which the list
   // item does not carry — one lookup per card, falling back to the title while
@@ -425,9 +506,11 @@ function ProjectCard({
           minHeight: CARD_MIN_HEIGHT,
         }}
         onMouseEnter={(e) => {
+          setHovered(true)
           e.currentTarget.style.background = selected ? selectedWash(hue, WASH_HOVER) : CARD_BG_HOVER
         }}
         onMouseLeave={(e) => {
+          setHovered(false)
           e.currentTarget.style.background = selected ? selectedWash(hue, WASH) : CARD_BG
         }}
       >
@@ -450,6 +533,39 @@ function ProjectCard({
           >
             {project.name}
           </span>
+          {/* Edit affordance: rides card hover, sits in the pinned 22px row —
+              exactly 22px tall so hover never shifts the row. Its own stopPropagation
+              keeps the click from also targeting the project. */}
+          {hovered && (
+            <button
+              type="button"
+              aria-label={t('appLayout.editProject')}
+              title={t('appLayout.editProject')}
+              onClick={(e) => {
+                e.stopPropagation()
+                onEdit()
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              style={{
+                width: 22,
+                height: 22,
+                flexShrink: 0,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                border: 'none',
+                background: 'transparent',
+                borderRadius: 4,
+                cursor: 'pointer',
+                color: '#999',
+                padding: 0,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#333'; e.currentTarget.style.background = 'rgba(0,0,0,0.06)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = '#999'; e.currentTarget.style.background = 'transparent' }}
+            >
+              <EditOutlined style={{ fontSize: 13 }} />
+            </button>
+          )}
           {selected && <CheckOutlined style={{ fontSize: 14, color: accent, flexShrink: 0 }} />}
         </div>
         {/* Second line: the project's last conversation when there is one to

@@ -14,7 +14,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { App as AntdApp, Button, Tooltip } from 'antd'
-import { DeleteOutlined, FolderOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, FolderOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useProjectStore } from '../../stores/projectStore'
 import ConversationRows from './ConversationRows'
@@ -35,6 +35,8 @@ interface ProjectSidebarListProps {
   onManualOrder?: () => void
   /** Start a new task bound to the project (AppLayout's onCreateProjectConversation). */
   onCreateTask?: (projectId: string) => void
+  /** Open the project's edit modal (AppLayout owns the ProjectModal). */
+  onEditProject?: (project: Project) => void
   onOpenConversation: (key: string) => void
   onDelete: (key: string) => void
   onRename: (key: string, newLabel: string) => void
@@ -49,6 +51,7 @@ function ProjectSidebarList({
   sortMode = 'created',
   onManualOrder,
   onCreateTask,
+  onEditProject,
   onOpenConversation,
   onDelete,
   onRename,
@@ -213,8 +216,8 @@ function ProjectSidebarList({
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {project.name}
               </span>
-              {/* Hover: the row actions (新建任务 / 删除项目). The cluster stops
-                  propagation so the row click stays collapse-only. */}
+              {/* Hover: the row actions (新建任务 / 编辑 / 删除项目). The cluster
+                  stops propagation so the row click stays collapse-only. */}
               {hoveredId === project.id && (
                 <span
                   onClick={(e) => e.stopPropagation()}
@@ -227,6 +230,14 @@ function ProjectSidebarList({
                       icon={<PlusOutlined style={{ fontSize: 13 }} />}
                       disabled={!onCreateTask}
                       onClick={() => onCreateTask?.(project.id)}
+                    />
+                  </Tooltip>
+                  <Tooltip title={t('appLayout.editProject')}>
+                    <Button
+                      type="text"
+                      className="project-row-action"
+                      icon={<EditOutlined style={{ fontSize: 13 }} />}
+                      onClick={() => onEditProject?.(project)}
                     />
                   </Tooltip>
                   <Tooltip title={t('appLayout.deleteProject')}>

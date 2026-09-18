@@ -10,7 +10,7 @@ import { getDb } from './database'
 import { settingsStore } from './settings-store'
 import { WORKSPACE_DIR } from './index'
 import { deleteConversation } from './conversation.db'
-import { DEFAULT_PROJECT_ID, type Project, type ProjectCreateInput, type ProjectUpdateInput } from '../../shared/types/project'
+import { DEFAULT_PROJECT_ID, normalizeProjectOverview, type Project, type ProjectCreateInput, type ProjectUpdateInput } from '../../shared/types/project'
 import { checkWorkspacePathFormat, windowsReservedNameError } from '../../shared/workspace-path'
 import { stringToHue } from '../../shared/hash-color'
 
@@ -92,6 +92,7 @@ interface ProjectRow {
   id: string
   name: string
   workspace_dir: string
+  overview: string | null
   icon: string | null
   color_hue: number | null
   sort_order: number | null
@@ -104,6 +105,8 @@ function rowToProject(r: ProjectRow): Project {
     id: r.id,
     name: r.name,
     workspaceDir: r.workspace_dir,
+    // null/空 = 用户没写：提示词的 `## Project` 小节整个不出现。
+    overview: r.overview || undefined,
     icon: r.icon || undefined,
     // null (a row the backfill has not reached yet) stays undefined, which
     // projectHue reads as "no stored color — hash the name for now".
@@ -166,21 +169,24 @@ export const projectStore = {
       id: prefixedId('proj'),
       name,
       workspaceDir: input.workspaceDir,
+      overview: normalizeProjectOverview(input.overview),
       icon: input.icon,
       colorHue: hueForProjectName(name),
       createdAt: now,
       updatedAt: now,
     }
     getDb()
-      .prepare('INSERT INTO projects (id, name, workspace_dir, icon, color_hue, sandbox_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(project.id, project.name, project.workspaceDir, project.icon ?? null, project.colorHue, LEGACY_SANDBOX_JSON, project.createdAt, project.updatedAt)
+      .prepare('INSERT INTO projects (id, name, workspace_dir, overview, icon, color_hue, sandbox_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(project.id, project.name, project.workspaceDir, project.overview ?? null, project.icon ?? null, project.colorHue, LEGACY_SANDBOX_JSON, project.createdAt, project.updatedAt)
     return project
   },
 
-  /** name/icon are editable; workspaceDir is not — the type has no such field
-   *  and the UPDATE statement below never touches workspace_dir. color_hue is
-   *  out of reach for the same reason, in the other direction: the color is
-   *  the project's identity across surfaces, so renaming must not re-roll it. */
+  /** name/icon/overview are editable; workspaceDir is not — the type has no such
+   *  field and the UPDATE statement below never touches workspace_dir. color_hue
+   *  is out of reach for the same reason, in the other direction: the color is
+   *  the project's identity across surfaces, so renaming must not re-roll it.
+   *  overview: `undefined` = not in this patch (keep); a provided empty string
+   *  normalizes to `undefined` too, so clearing works — write NULL, not ''. */
   async update(id: string, patch: ProjectUpdateInput): Promise<Project | null> {
     const existing = await this.get(id)
     if (!existing || id === DEFAULT_PROJECT_ID) return existing // default project is not editable
@@ -188,12 +194,13 @@ export const projectStore = {
     const next: Project = {
       ...existing,
       name: patch.name?.trim() || existing.name,
+      overview: patch.overview !== undefined ? normalizeProjectOverview(patch.overview) : existing.overview,
       icon: patch.icon !== undefined ? patch.icon : existing.icon,
       updatedAt: new Date().toISOString(),
     }
     getDb()
-      .prepare('UPDATE projects SET name = ?, icon = ?, updated_at = ? WHERE id = ?')
-      .run(next.name, next.icon ?? null, next.updatedAt, id)
+      .prepare('UPDATE projects SET name = ?, overview = ?, icon = ?, updated_at = ? WHERE id = ?')
+      .run(next.name, next.overview ?? null, next.icon ?? null, next.updatedAt, id)
     return next
   },
 

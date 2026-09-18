@@ -19,6 +19,22 @@
  *     by a real mouse — `e.stopPropagation()` on a path jsdom cannot walk
  *     (vitest here is node-env, no mounting at all).
  *
+ * The 新建项目 card gets its own section, WITH and WITHOUT projects. With
+ * projects it is the grid's last cell and nothing more (user request
+ * 2026-09-18: 「如果没有任何项目，那么也要展示新建项目的那个卡片」). On an empty
+ * page the explanation and the create action are MERGED into one full-row card
+ * — 「把【还没有项目】这个卡片和【新建项目】的卡片合并，透明背景、灰色虚线边框，
+ * 把【还没有项目】改为【立即创建项目】」 — so what is measured there is that the
+ * two are genuinely one element spanning all three columns, its title and hint
+ * lines, the transparent + dashed recipe, its hover, and that a click (mouse
+ * AND Enter: it is a real <button>) reaches the create modal without writing
+ * anything.
+ *
+ * The 试试 row is asserted last (user request 2026-09-18): the project view now
+ * carries the same example-prompt chips the plain chat welcome shows, and the
+ * chips are inline-styled spans whose onClick hands the prompt to the composer
+ * draft store — a real mouse click is the only layer that can see the handoff.
+ *
  * What this mounts is the production `ProjectCards` behind a stubbed
  * `window.electronAPI` (project list + last-user-message lookups) and the real
  * `projectStore` / `newTaskStore` / i18n, so the assertions run against the
@@ -41,9 +57,11 @@ const HARNESS = `
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider, App as AntdApp } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import { ProjectCards } from './src/renderer/src/components/welcome/ProjectCards'
 import { useProjectStore } from './src/renderer/src/stores/projectStore'
 import { useNewTaskStore } from './src/renderer/src/stores/newTaskStore'
+import { useComposerDraftStore } from './src/renderer/src/stores/composerDraftStore'
 
 // 30h back reads as 1天前 for the whole life of a probe run.
 const LAST_TOUCH = new Date(Date.now() - 30 * 3600 * 1000).toISOString()
@@ -56,12 +74,21 @@ const CONVERSATIONS = [
   { key: 'c1', label: '之前的对话', projectId: 'p_used', updatedAt: LAST_TOUCH },
 ]
 window.__QUOTE = '把周报整理一下'
+/** Set by __mount — the empty state is a real state of this page, not a fixture. */
+window.__projects = PROJECTS
 
+window.__calls = []
 window.electronAPI = new Proxy({}, {
   get: (_t, key) => (...args) => {
     // Subscribe-style APIs must answer with a cleanup function, not a Promise.
     if (typeof key === 'string' && /^on[A-Z]/.test(key)) return () => {}
-    if (key === 'projectList') return Promise.resolve(PROJECTS)
+    window.__calls.push(String(key))
+    // SettingsProvider (which the app wraps this page in, and ProjectModal's
+    // 自动总结 reads the active profile from) needs a real shape back.
+    if (key === 'getSettings') {
+      return Promise.resolve({ activeProfileId: '', profiles: [], theme: 'light', locale: 'zh' })
+    }
+    if (key === 'projectList') return Promise.resolve(window.__projects)
     if (key === 'getConversationLastUserMessage') {
       return Promise.resolve(args[0] === 'c1' ? window.__QUOTE : null)
     }
@@ -71,27 +98,116 @@ window.electronAPI = new Proxy({}, {
 
 window.__opened = null
 let root = null
-window.__mount = ({ locale = 'zh' } = {}) => {
+window.__mount = ({ locale = 'zh', projects } = {}) => {
+  window.__projects = projects ?? PROJECTS
   if (root) root.unmount()
   root = createRoot(document.getElementById('root'))
   root.render(
     <ConfigProvider>
       <AntdApp>
-        <TranslationProvider initialLocale={locale}>
-          <div style={{ width: 1000, padding: 24 }}>
-            <ProjectCards
-              conversations={CONVERSATIONS}
-              onOpenConversation={(key) => { window.__opened = key }}
-            />
-          </div>
-        </TranslationProvider>
+        <SettingsProvider>
+          <TranslationProvider initialLocale={locale}>
+            <div style={{ width: 1000, padding: 24 }}>
+              <ProjectCards
+                conversations={CONVERSATIONS}
+                onOpenConversation={(key) => { window.__opened = key }}
+              />
+            </div>
+          </TranslationProvider>
+        </SettingsProvider>
       </AntdApp>
     </ConfigProvider>
   )
   return true
 }
 
+/** The 新建项目 card — and, when the page is empty, the explanation beside it.
+ *  Read as geometry (its cell) + paint (the dashed recipe) + where it sits. */
+window.__createCard = () => {
+  const b = document.querySelector('[data-action="create-project"]')
+  if (!b) return null
+  const gb = (el) => {
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
+  }
+  const cs = getComputedStyle(b)
+  const grid = b.parentElement
+  const gridStyle = getComputedStyle(grid)
+  const empty = document.querySelector('[data-project-empty]')
+  const parentFont = getComputedStyle(document.querySelector('#root > div > div')).fontFamily
+  return {
+    tag: b.tagName,
+    type: b.getAttribute('type'),
+    text: b.textContent.trim(),
+    box: gb(b),
+    last: grid.lastElementChild === b,
+    siblings: grid.children.length,
+    columnCount: gridStyle.gridTemplateColumns.split(' ').length,
+    gap: parseFloat(gridStyle.columnGap),
+    gridBox: gb(grid),
+    emptyBox: gb(empty),
+    emptyColumns: empty ? getComputedStyle(empty).gridColumn : null,
+    emptyText: empty ? empty.textContent.trim() : null,
+    // On an empty page the explanation and the create action are the same
+    // element (the merge) — this is the check that says so rather than two
+    // cells that merely line up.
+    emptyIsCard: empty === b,
+    emptyLines: empty
+      ? [...empty.querySelectorAll(':scope > div')].map((d) => {
+          const r = d.getBoundingClientRect()
+          return { text: d.textContent.trim(), top: r.top, bottom: r.bottom, left: r.left, right: r.right }
+        })
+      : [],
+    fontMatchesPage: cs.fontFamily === parentFont,
+    paint: {
+      borderStyle: cs.borderTopStyle, borderWidth: cs.borderTopWidth, borderColor: cs.borderTopColor,
+      radius: cs.borderRadius, fontSize: cs.fontSize, color: cs.color,
+      background: cs.backgroundColor, minHeight: cs.minHeight, cursor: cs.cursor,
+      textAlign: cs.textAlign,
+    },
+  }
+}
+
+/** The create modal's own presence + the form the user is meant to fill. */
+window.__modal = () => {
+  const m = document.querySelector('.ant-modal')
+  if (!m) return null
+  return {
+    title: m.querySelector('.ant-modal-title')?.textContent ?? '',
+    inputs: [...m.querySelectorAll('input')].map((i) => i.placeholder),
+  }
+}
+
 window.__selected = () => useNewTaskStore.getState().projectId
+window.__draft = () => useComposerDraftStore.getState().draft
+window.__clearDraft = () => { useComposerDraftStore.getState().clearDraft(); return true }
+/** The 试试 row: the element right below the grid (the picker and the starters
+ *  are the only two things inside the scroll region), read as label + chips. */
+window.__starters = () => {
+  const createBtn = document.querySelector('[data-action="create-project"]')
+  if (!createBtn) return null
+  const grid = createBtn.parentElement
+  const row = grid.nextElementSibling?.firstElementChild
+  if (!row) return null
+  const gb = (el) => {
+    const r = el.getBoundingClientRect()
+    return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height }
+  }
+  const chips = [...row.querySelectorAll('span')].slice(1)
+  return {
+    label: row.firstElementChild?.textContent.trim() ?? null,
+    texts: chips.map((c) => c.textContent.trim()),
+    gridBox: gb(grid),
+    rowBox: gb(row),
+    chips: chips.map((c) => ({
+      text: c.textContent.trim(),
+      box: gb(c),
+      radius: getComputedStyle(c).borderRadius,
+      fontSize: getComputedStyle(c).fontSize,
+    })),
+  }
+}
 // Counted outside __reset: a subscription installed per reset would count each
 // write once per reset, and the whole point is "exactly one write per click".
 window.__writes = 0
@@ -280,6 +396,237 @@ check('EN: the row reads “Start now” over the same play button', enLine === 
 check('EN: the line still fits', en.line.right <= en.contentRight + 0.5, `${en.line.right.toFixed(1)} <= ${en.contentRight.toFixed(1)}`)
 check('EN: the card keeps its height', Math.abs(en.height - 72) < 0.5, `${en.height.toFixed(1)}px`)
 await page.screenshot({ path: join(SHOTS, 'en.png'), clip: { x: 0, y: 0, width: 1000, height: 300 } })
+
+// ── 6 · the 新建项目 card — with projects, as it always was ──
+await page.evaluate(() => window.__mount({}))
+await page.waitForSelector('div[role="button"]')
+await page.waitForTimeout(150)
+const withProjects = await page.evaluate(() => window.__createCard())
+check(
+  'with projects: the create card is the grid’s last cell',
+  !!withProjects && withProjects.last && withProjects.siblings === 3 && withProjects.columnCount === 3,
+  withProjects ? `${withProjects.siblings} cells in ${withProjects.columnCount} columns, last=${withProjects.last}` : 'no card'
+)
+check(
+  'with projects: no 还没有项目 panel (there are projects to show)',
+  withProjects?.emptyBox == null,
+  String(withProjects?.emptyText)
+)
+// The three-column grid's cell width: (952 - 2*14) / 3, and a project card is
+// exactly that wide — the create card must read as one of them.
+const threeColWidth = (952 - 2 * 14) / 3
+check(
+  'with projects: it takes a project card’s own cell width',
+  !!withProjects && Math.abs(withProjects.box.width - threeColWidth) < 0.5,
+  `${withProjects?.box.width.toFixed(1)} vs ${threeColWidth.toFixed(1)}`
+)
+
+// ── 7 · the empty state: ONE card (the merge) ──
+// Before the merge the page showed the explanation as a grey panel (2 of 3
+// columns) beside the dashed create card (the third), both saying the same
+// thing. Now they are a single full-row card: transparent, grey dashed, titled
+// 立即创建项目 (user request 2026-09-18).
+await page.evaluate(() => { window.__calls = []; window.__mount({ projects: [] }) })
+// No waitForSelector: the card's absence IS one of the things under test, so it
+// has to come back as a FAIL line rather than a 30s timeout that kills the run.
+await page.waitForTimeout(250)
+const emptyState = await page.evaluate(() => window.__createCard())
+check(
+  'no projects: explanation and create action are ONE element (the merge)',
+  !!emptyState && emptyState.emptyIsCard === true && emptyState.siblings === 1 && emptyState.last,
+  emptyState ? `sameEl=${emptyState.emptyIsCard} cells=${emptyState.siblings} last=${emptyState.last}` : 'no card'
+)
+check(
+  'no projects: it spans the whole grid row',
+  !!emptyState && emptyState.emptyColumns === 'span 3' &&
+    Math.abs(emptyState.box.width - emptyState.gridBox.width) < 0.5 &&
+    Math.abs(emptyState.box.left - emptyState.gridBox.left) < 0.5 &&
+    Math.abs(emptyState.box.right - emptyState.gridBox.right) < 0.5,
+  emptyState
+    ? `${emptyState.emptyColumns} / ${emptyState.box.width.toFixed(1)} of ${emptyState.gridBox.width.toFixed(1)}`
+    : 'no card'
+)
+check(
+  'no projects: the title reads 立即创建项目, with the hint under it',
+  !!emptyState && emptyState.emptyLines.length === 2 &&
+    emptyState.emptyLines[0].text === '立即创建项目' &&
+    emptyState.emptyLines[1].text.includes('给项目一个专属文件夹') &&
+    emptyState.emptyLines[1].top >= emptyState.emptyLines[0].bottom - 0.5,
+  emptyState ? emptyState.emptyLines.map((l) => l.text).join(' | ') : 'no card'
+)
+check(
+  'no projects: the card is a real <button>, not a clickable div',
+  emptyState?.tag === 'BUTTON' && emptyState?.type === 'button',
+  `${emptyState?.tag}:${emptyState?.type} "${emptyState?.text}"`
+)
+// Both lines sit on the card's horizontal centre (the full-row card reads as
+// one centred affordance, not a left-aligned paragraph).
+check(
+  'no projects: both lines are centred on the card’s axis',
+  !!emptyState && emptyState.paint.textAlign === 'center' &&
+    emptyState.emptyLines.every((l) => Math.abs((l.left + l.right) / 2 - (emptyState.box.left + emptyState.box.right) / 2) <= 1),
+  emptyState
+    ? `${emptyState.paint.textAlign} · ` + emptyState.emptyLines.map((l) => ((l.left + l.right) / 2).toFixed(1)).join(' | ') +
+      ` vs ${((emptyState.box.left + emptyState.box.right) / 2).toFixed(1)}`
+    : 'no card'
+)
+check(
+  'no projects: the dashed recipe + the page’s own type scale',
+  !!emptyState &&
+    emptyState.paint.borderStyle === 'dashed' && emptyState.paint.borderWidth === '1px' &&
+    emptyState.paint.borderColor === 'rgb(200, 200, 204)' && emptyState.paint.radius === '16px' &&
+    emptyState.paint.minHeight === '72px' && emptyState.paint.background === 'rgba(0, 0, 0, 0)' &&
+    emptyState.fontMatchesPage && emptyState.paint.cursor === 'pointer',
+  emptyState
+    ? `${emptyState.paint.borderStyle} ${emptyState.paint.borderColor} r${emptyState.paint.radius} min${emptyState.paint.minHeight} fontInherited=${emptyState.fontMatchesPage} on ${emptyState.paint.background}`
+    : 'no card'
+)
+// The floor, not a fixed height: the card is alone in the row, so it takes the
+// height its two lines want — never below the 72px floor.
+check(
+  'no projects: the card clears the 72px floor with both lines inside',
+  !!emptyState && emptyState.box.height >= 71.5 &&
+    emptyState.emptyLines.every((l) => l.top >= emptyState.box.top - 0.5 && l.bottom <= emptyState.box.bottom + 0.5),
+  emptyState ? `${emptyState.box.height.toFixed(1)}px, ${emptyState.emptyLines.length} line(s) inside` : 'no card'
+)
+// A real mouse: the dashed recipe darkens on hover (inline handlers, so this is
+// the only layer that can see it). The title inherits the button's color, so it
+// darkens with it.
+if (emptyState) {
+  // Park the pointer off the card first: the previous section's click left it
+  // inside the grid's area, and the merged card spans the whole row — moving
+  // within the same element fires no mouseover, so the hover handlers would
+  // never run and the check would read the resting paint.
+  await page.mouse.move(0, 0)
+  await page.waitForTimeout(120)
+  await page.mouse.move(emptyState.box.left + emptyState.box.width / 2, emptyState.box.top + emptyState.box.height / 2)
+  await page.waitForTimeout(200)
+}
+const createHover = await page.evaluate(() => {
+  const b = document.querySelector('[data-action="create-project"]')
+  const cs = getComputedStyle(b)
+  return { borderColor: cs.borderTopColor, color: cs.color }
+})
+check(
+  'no projects: it answers the pointer (border and title darken)',
+  createHover.borderColor === 'rgb(102, 102, 102)' && createHover.color === 'rgb(68, 68, 68)',
+  `${createHover.borderColor} / ${createHover.color}`
+)
+await page.mouse.move(0, 0)
+await page.waitForTimeout(200)
+await page.screenshot({ path: join(SHOTS, 'no-projects.png'), clip: { x: 0, y: 0, width: 1000, height: 300 } })
+
+// A click — and Enter, since it takes focus — reaches the create modal, and
+// neither writes a project (nothing is created until the modal is submitted).
+if (emptyState) {
+  await page.mouse.click(emptyState.box.left + emptyState.box.width / 2, emptyState.box.top + emptyState.box.height / 2)
+  await page.waitForTimeout(400)
+}
+const modalByMouse = await page.evaluate(() => window.__modal())
+check(
+  'no projects: a click opens the create modal',
+  !!modalByMouse && modalByMouse.inputs.some((p) => p.includes('my-app')),
+  JSON.stringify(modalByMouse)
+)
+check(
+  'no projects: …and writes nothing (the modal’s 保存 is what creates)',
+  !(await page.evaluate(() => window.__calls)).includes('projectCreate'),
+  (await page.evaluate(() => window.__calls)).join(', ')
+)
+await page.keyboard.press('Escape')
+await page.waitForTimeout(300)
+const focusable = await page.evaluate(() => {
+  const b = document.querySelector('[data-action="create-project"]')
+  if (!b) return false
+  b.focus()
+  return document.activeElement === b
+})
+if (focusable) {
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(400)
+}
+check(
+  'no projects: Enter opens it too (the card is focusable)',
+  focusable && (await page.evaluate(() => window.__modal())) != null,
+  `focusable=${focusable}`
+)
+await page.keyboard.press('Escape')
+await page.waitForTimeout(300)
+
+// ── 8 · EN in the empty state: the same merged card, translated ──
+await page.evaluate(() => window.__mount({ locale: 'en', projects: [] }))
+await page.waitForTimeout(250)
+const enEmpty = await page.evaluate(() => window.__createCard())
+check(
+  'EN no projects: the merged card is translated, not hard-coded',
+  !!enEmpty && enEmpty.emptyIsCard === true && enEmpty.emptyLines[0]?.text === 'Create a project now' &&
+    (enEmpty.emptyLines[1]?.text ?? '').includes('own folder'),
+  enEmpty ? enEmpty.emptyLines.map((l) => l.text).join(' | ') : 'no card'
+)
+check(
+  'EN no projects: it still spans the row',
+  !!enEmpty && Math.abs(enEmpty.box.width - enEmpty.gridBox.width) < 0.5 && enEmpty.emptyColumns === 'span 3',
+  enEmpty ? `${enEmpty.box.width.toFixed(1)} / ${enEmpty.emptyColumns}` : 'no card'
+)
+await page.screenshot({ path: join(SHOTS, 'no-projects-en.png'), clip: { x: 0, y: 0, width: 1000, height: 300 } })
+
+// ── 9 · the 试试 row in the project view ──
+// The user asked for the same 「试试」 affordance the plain welcome page has
+// (2026-09-18): chat mode shows three example prompts, project mode showed none.
+// The chips are spans with an inline onClick, so the draft handoff is invisible
+// to jsdom and to reading the source — it has to be clicked for real.
+const ZH_STARTERS = [
+  '看一下这个项目里的文件，给我讲讲整体结构',
+  '根据项目里的资料，帮我写一份项目说明',
+  '找出项目里值得改进的地方，给出建议',
+]
+const EN_STARTERS = [
+  'Look through this project’s files and walk me through its structure',
+  'Write a project overview from the material in this folder',
+  'Find what is worth improving in this project and suggest fixes',
+]
+await page.evaluate(() => { window.__clearDraft(); window.__mount({}) })
+await page.waitForSelector('[data-action="create-project"]')
+await page.waitForTimeout(200)
+const zhStarters = await page.evaluate(() => window.__starters())
+check(
+  'the 试试 row renders under the project grid',
+  !!zhStarters && zhStarters.label === '试试' && JSON.stringify(zhStarters.texts) === JSON.stringify(ZH_STARTERS),
+  zhStarters ? `${zhStarters.label} / ${zhStarters.texts.length} chip(s)` : 'no row'
+)
+check(
+  '…strictly below the grid, inside the scroll region',
+  !!zhStarters && zhStarters.rowBox.top >= zhStarters.gridBox.bottom - 0.5,
+  zhStarters ? `row ${zhStarters.rowBox.top.toFixed(1)} >= grid ${zhStarters.gridBox.bottom.toFixed(1)}` : 'no row'
+)
+check(
+  'each starter is a pill from the shared chip',
+  !!zhStarters && zhStarters.chips.every((c) => c.radius === '999px' && c.fontSize === '13px'),
+  zhStarters ? zhStarters.chips.map((c) => `${c.radius}/${c.fontSize}`).join(', ') : 'no row'
+)
+if (zhStarters?.chips[1]) {
+  const c = zhStarters.chips[1]
+  await page.mouse.click(c.box.left + c.box.width / 2, c.box.top + c.box.height / 2)
+  await page.waitForTimeout(120)
+}
+check(
+  'clicking a project starter writes it into the composer draft',
+  (await page.evaluate(() => window.__draft())) === ZH_STARTERS[1],
+  String(await page.evaluate(() => window.__draft()))
+)
+await page.screenshot({ path: join(SHOTS, 'starters-zh.png'), clip: { x: 0, y: 0, width: 1000, height: 380 } })
+
+// ── 10 · the starters are translated, not hard-coded ──
+await page.evaluate(() => { window.__clearDraft(); window.__mount({ locale: 'en' }) })
+await page.waitForSelector('[data-action="create-project"]')
+await page.waitForTimeout(200)
+const enStarters = await page.evaluate(() => window.__starters())
+check(
+  'EN: the 试试 row is “Try” over the translated prompts',
+  !!enStarters && enStarters.label === 'Try' && JSON.stringify(enStarters.texts) === JSON.stringify(EN_STARTERS),
+  enStarters ? `${enStarters.label} / ${enStarters.texts.join(' | ')}` : 'no row'
+)
+await page.screenshot({ path: join(SHOTS, 'starters-en.png'), clip: { x: 0, y: 0, width: 1000, height: 380 } })
 
 await browser.close()
 

@@ -1,20 +1,36 @@
-// ── Project create modal (PLAN-0.4.0 M3.7, reused by the welcome page's
-// project picker; management UI is gone — the welcome flow is the only place
-// a project is created, collecting name + workspace, nothing else) ──
+// ── Project create/edit modal (PLAN-0.4.0 M3.7; 编辑模式 2026-09-18) ──
+// One modal, two modes: create (name + workspace) and edit (name + overview,
+// workspace shown read-only — it is fixed at creation). The welcome page's
+// project picker created the create flow; the sidebar/welcome edit entries
+// drive the edit one.
 // Workspace input is validated twice (2026-09: 手工输入需要校验): the pure
 // format check in shared/workspace-path answers on every keystroke, and a
 // debounced PROJECT_VALIDATE_DIR probe catches existence/permission problems
 // the format cannot see. A blank name is auto-filled from the path's last
 // segment so typing (or picking) the workspace first is enough.
+// 项目概述 (≤50 字, optional): manual input in both modes; edit mode adds
+// 自动总结, a one-shot LLM rewrite of the field — it fills the box, never
+// saves by itself, and read-only context (conversation titles + last messages
+// + workspace top-level names) is gathered fresh per click.
 
 import React, { useEffect, useRef, useState } from 'react'
 import { App as AntdApp, Button, Input, Modal, Space } from 'antd'
-import { FolderOpenOutlined } from '@ant-design/icons'
+import { FolderOpenOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from '../../../../shared/types/project'
+import { PROJECT_OVERVIEW_MAX_LENGTH } from '../../../../shared/types/project'
 import { basenameOfPath, checkWorkspacePathFormat } from '../../../../shared/workspace-path'
+import { useSettings } from '../../hooks/SettingsContext'
+import { createLlmAdapter } from '../../llm'
+import { ProjectOverviewAgent } from '../../agent/one-shot-agent'
 
 /** ms of typing quiet before the workspace path is probed on the main side. */
 const DIR_PROBE_DELAY_MS = 500
+
+/** Context caps for 自动总结 — briefs per conversation, workspace entries,
+ *  and the visible tail of a last message. All read-only, all local. */
+const SUMMARIZE_CONVERSATIONS = 8
+const SUMMARIZE_WORKSPACE_ENTRIES = 30
+const SUMMARIZE_MESSAGE_TAIL = 80
 
 export function ProjectModal({ open, editing, onClose, onSaved }: {
   open: boolean
@@ -24,14 +40,22 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
   onSaved: (project?: Project) => void
 }): React.ReactElement {
   const { message } = AntdApp.useApp()
+  const { settings, activeProfile } = useSettings()
   const [name, setName] = useState('')
+  const [overview, setOverview] = useState('')
   const [workspaceDir, setWorkspaceDir] = useState('')
   const [dirError, setDirError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [summarizing, setSummarizing] = useState(false)
   const probeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // The probe result of an earlier keystroke must not label a newer input —
   // only the value this ref still points at may write dirError.
   const latestDirRef = useRef('')
+  // 自动总结 resolves after awaits; a close/reopen of the modal must not let a
+  // stale result overwrite the freshly-repopulated field — each open mints a
+  // token and only the still-current one may write state.
+  const summarizeTokenRef = useRef(0)
+  const overviewAgentRef = useRef(new ProjectOverviewAgent())
 
   const clearProbe = (): void => {
     if (probeTimer.current) {
@@ -46,9 +70,12 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
   const afterOpenChange = (open: boolean): void => {
     if (open) {
       setName(editing?.name ?? '')
+      setOverview(editing?.overview ?? '')
       setWorkspaceDir(editing?.workspaceDir ?? '')
       setDirError(null)
       latestDirRef.current = editing?.workspaceDir ?? ''
+      summarizeTokenRef.current++ // a summarize left in flight by the last open is now stale
+      setSummarizing(false)
       clearProbe()
     }
   }
@@ -78,13 +105,69 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
     if (!res.canceled && res.filePaths[0]) updateWorkspaceDir(res.filePaths[0])
   }
 
+  /** 自动总结 (edit mode only, per the feature's ruling): gather the project's
+   *  conversations + workspace listing, ask the one-shot agent, fill the box.
+   *  Fills — never saves; the user still owns the text. */
+  const summarize = async (): Promise<void> => {
+    if (!editing || summarizing) return
+    if (!activeProfile?.baseURL || !activeProfile.model) {
+      message.warning('请先在 设置 → LLM 设置 中配置模型')
+      return
+    }
+    setSummarizing(true)
+    const token = ++summarizeTokenRef.current
+    try {
+      const convs = await window.electronAPI.listConversations()
+      const briefs = convs
+        .filter((c) => c.projectId === editing.id)
+        .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+        .slice(0, SUMMARIZE_CONVERSATIONS)
+        .map((c) => {
+          const tail = (c.lastMessage ?? '').trim().slice(0, SUMMARIZE_MESSAGE_TAIL)
+          return tail ? `「${c.title}」最近提到：${tail}` : `「${c.title}」`
+        })
+      const dir = await window.electronAPI.listDir(editing.workspaceDir).catch(() => null)
+      const entries = (dir?.entries ?? [])
+        .slice(0, SUMMARIZE_WORKSPACE_ENTRIES)
+        .map((e) => e.name)
+      const text = await overviewAgentRef.current.execute(
+        {
+          name: name.trim() || editing.name,
+          conversationBriefs: briefs,
+          workspaceEntries: entries,
+          locale: settings.locale === 'en' ? 'en' : 'zh',
+        },
+        {
+          llmConfig: {
+            adapter: createLlmAdapter(activeProfile.provider ?? 'anthropic'),
+            apiKey: activeProfile.apiKey ?? '',
+            baseURL: activeProfile.baseURL,
+            model: activeProfile.model,
+          },
+          maxTokens: 2048,
+        },
+      )
+      if (token !== summarizeTokenRef.current) return // modal closed/reopened mid-flight
+      if (text) setOverview(text)
+      else message.warning('自动总结没有生成结果，请手动填写')
+    } catch (err) {
+      if (token === summarizeTokenRef.current) {
+        message.warning(`自动总结失败：${err instanceof Error ? err.message : String(err)}`)
+      }
+    } finally {
+      if (token === summarizeTokenRef.current) setSummarizing(false)
+    }
+  }
+
   const save = async (): Promise<void> => {
     if (!name.trim() || (!editing && !workspaceDir.trim())) return
     setSaving(true)
     try {
       if (editing) {
-        // workspaceDir is fixed at creation — renames only.
-        const patch: ProjectUpdateInput = { name }
+        // workspaceDir is fixed at creation — name/overview only. The overview
+        // always rides the patch so clearing it (empty string) clears the
+        // stored value instead of being read as "not in this patch".
+        const patch: ProjectUpdateInput = { name, overview: overview.trim() }
         await window.electronAPI.projectUpdate(editing.id, patch)
         onSaved()
       } else {
@@ -99,7 +182,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
           onClose()
           return
         }
-        const input: ProjectCreateInput = { name, workspaceDir }
+        const input: ProjectCreateInput = { name, workspaceDir, overview: overview.trim() || undefined }
         const project = await window.electronAPI.projectCreate(input)
         onSaved(project)
       }
@@ -134,6 +217,34 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
         <div>
           <div style={{ marginBottom: 6, fontSize: 13 }}>项目名称</div>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：my-app" autoFocus />
+        </div>
+        <div>
+          <div style={{ marginBottom: 6, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span>
+              项目概述
+              <span style={{ color: '#999', marginLeft: 4 }}>（选填，{PROJECT_OVERVIEW_MAX_LENGTH} 字以内）</span>
+            </span>
+            {editing && (
+              <Button
+                type="link"
+                size="small"
+                icon={<ThunderboltOutlined />}
+                loading={summarizing}
+                onClick={() => { void summarize() }}
+                style={{ padding: 0, height: 22 }}
+              >
+                自动总结
+              </Button>
+            )}
+          </div>
+          <Input.TextArea
+            value={overview}
+            onChange={(e) => setOverview(e.target.value)}
+            maxLength={PROJECT_OVERVIEW_MAX_LENGTH}
+            showCount
+            autoSize={{ minRows: 2, maxRows: 3 }}
+            placeholder="一句话说明这个项目是做什么的，会随对话告知 AI"
+          />
         </div>
         {editing ? (
           <div>
