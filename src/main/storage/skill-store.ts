@@ -7,6 +7,7 @@ import { getDb } from './database'
 const SKILL_PREFS_FALLBACK: SkillPreferences = { enabledSkills: ['create_skill', 'create_mcp'] }
 import { withZipExtraction, findSkillFiles } from '../utils/zip-extractor'
 import { parseSkillMarkdown, formatSkillMd, validateSkillSpec, type ParsedFrontmatter } from '../utils/skill-parser'
+import { RETIRED_BUILT_IN_SKILLS } from '../../renderer/src/skills/built-in-skills'
 import { parseJsonColumn } from '../utils/json'
 
 /** Map parsed frontmatter onto a user-installed SkillDefinition, keeping spec/extra fields. */
@@ -306,6 +307,11 @@ export class SkillStore {
   /**
    * Ensure built-in skills exist on disk so the `read` tool can access them.
    * Only writes files that don't already exist (never overwrites user modifications).
+   * Also sweeps copies of retired built-ins (RETIRED_BUILT_IN_SKILLS) — otherwise
+   * `listImported` would re-register the seeded SKILL.md as a user skill after the
+   * built-in is gone. A copy whose body was edited by the user is left alone.
+   * Stale preference entries (enabled/keywords) for a swept name are pruned by
+   * the startup `calibrate()` once the directory is gone.
    */
   async ensureBuiltInSkills(skills: SkillDefinition[]): Promise<void> {
     await this.ensureSkillsDir()
@@ -320,6 +326,27 @@ export class SkillStore {
         await mkdir(skillDir, { recursive: true })
         await writeFile(mdPath, formatSkillMd(skill), 'utf-8')
       }
+    }
+    for (const retired of RETIRED_BUILT_IN_SKILLS) {
+      const skillDir = join(SKILLS_DIR, retired)
+      const mdPath = join(skillDir, 'SKILL.md')
+      let content: string
+      try {
+        content = await readFile(mdPath, 'utf-8')
+      } catch {
+        continue // never seeded, or already swept
+      }
+      // "Untouched" is byte-identity with what the app regenerates from the
+      // file's own frontmatter — a user edit ANYWHERE in the file fails the
+      // compare, and an unparseable file counts as user content. The compare
+      // can only ever fail towards keeping the file.
+      try {
+        const regenerated = formatSkillMd(toDefinition(parseSkillMarkdown(content, `${retired}/SKILL.md`)))
+        if (regenerated !== content) continue
+      } catch {
+        continue
+      }
+      await rm(skillDir, { recursive: true, force: true })
     }
   }
 }
