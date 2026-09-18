@@ -1,42 +1,22 @@
+import { BUILT_IN_TOOLS } from '../../renderer/src/tools/built-in-tools'
 import type { ToolPreferences } from '../../shared/types/tool-types'
-import { PAGE_TOOL_NAMES } from '../../shared/agent-protocol/page-tools'
 import { getDb } from './database'
 
-const DEFAULT_ENABLED_TOOLS = [
-  'exec',
-  'read',
-  'write',
-  'edit',
-  'search',
-  'list_dir',
-  'git_status',
-  'git_diff',
-  'git_log',
-  'git_commit',
-  'git_restore',
-  'browser',
-  'ask_user',
-  'memory_search',
-  'memory_save',
-  'conversation_search',
-  'tool_result_search',
-  'webfetch',
-  'install',
-  'pick_skill',
-  'pick_tool',
-  'find',
-  'spawn_agent',
-  'create_plan',
-  'advance_plan',
-  'knowledge_search',
-  'knowledge_read',
-  'experience_read',
-  // The browser-extension page tools default to enabled: `get()` enables any
-  // default tool the DB has no row for, so an upgrading user sees them without
-  // touching settings. They only ever reach the model for a session the
-  // extension is driving (see `hostedAvailable` in tool-collection.ts).
-  ...PAGE_TOOL_NAMES,
-]
+/**
+ * Every built-in tool is enabled by default (user ruling 2026-09-18:
+ * 「把所有 tool 都加入白名单…第一层的 enable 开关都默认打开」).
+ *
+ * This is layer 1 only — the capability-center `enabled` switch. It does NOT
+ * mean every tool reaches the model: `availability: 'gated'` (layer 2, see
+ * tool-collection.ts) still keeps a gated tool out of the tool list until a
+ * trigger keyword or `pick_tool` activates it, and the page_* family is only
+ * reachable for a session the browser extension is driving (`hostedAvailable`).
+ *
+ * Derived from the registry rather than enumerated, so a tool added in a later
+ * version is on by default for new AND upgrading installs — which is exactly
+ * what `get()`'s missing-row branch exists to guarantee.
+ */
+const DEFAULT_ENABLED_TOOLS: string[] = BUILT_IN_TOOLS.map((t) => t.name)
 
 interface PrefRow {
   tool_name: string
