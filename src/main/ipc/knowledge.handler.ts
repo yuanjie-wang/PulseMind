@@ -51,7 +51,7 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_LIST_ADVANCED, withRawResponse(async (opts: unknown) => svcListAdvanced(opts)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_LIST, withRawResponse(async (status?: string) => svcListFiles(status)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET, withRawResponse(async (id: string) => svcGetFile(id)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_PREPARE_IMPORT, withRawResponse(async (filePaths: string[]) => svcPrepareImport(filePaths)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_PREPARE_IMPORT, withRawResponse(async (filePaths: string[], baseId?: string) => svcPrepareImport(filePaths, baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_FILE, withRawResponse(async (filePaths: string[], baseId?: string) => svcAddFile(filePaths, baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SCAN_FOLDER, withRawResponse(async (folderPath: string) => svcScanFolder(folderPath)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_ADD_FOLDER, withRawResponse(async (folderPath: string, baseId?: string) => svcAddFolder(folderPath, baseId)))
@@ -59,9 +59,9 @@ export function registerKnowledgeHandlers(): void {
   ipcMain.on(IPC_CHANNELS.KNOWLEDGE_ABORT_IMPORT, () => svcAbortImport())
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_DELETE, withRawResponse(async (id: string) => svcDelete(id)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_REEXTRACT, withRawResponse(async (id: string) => svcReextract(id)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_RAW, withRawResponse(async (relativePath: string) => svcGetRaw(relativePath)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, withRawResponse(async (relativePath: string) => svcGetRawPath(relativePath)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_READ_WIKI, withRawResponse(async (relativePath?: string) => svcReadWiki(relativePath)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_RAW, withRawResponse(async (relativePath: string, baseId?: string) => svcGetRaw(relativePath, baseId)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, withRawResponse(async (relativePath: string, baseId?: string) => svcGetRawPath(relativePath, baseId)))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_READ_WIKI, withRawResponse(async (relativePath?: string, baseId?: string) => svcReadWiki(relativePath, baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_WRITE_EXPERIENCE, withRawResponse(async (data: { content: string; convId: string; title?: string }) => svcWriteExperience(data)))
   // Favorites capture: rejects on failure (no {success:false} envelope) so the
   // renderer's star stays retryable and the marker is only stamped on success.
@@ -76,8 +76,9 @@ export function registerKnowledgeHandlers(): void {
     actions: { filePath: string; content: string }[]
     logEntry?: string
     compiledIds?: string[]
+    baseId?: string
   }) => svcApplyWikiChanges(data)))
-  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_REBUILD_INDEX, withRawResponse(async () => svcRebuildIndex()))
+  ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_REBUILD_INDEX, withRawResponse(async (baseId?: string) => svcRebuildIndex(baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_SEARCH_CONTENT, withRawResponse(async (query: string, baseId?: string) => svcSearchContent(query, baseId)))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_CLEAR_ALL, withRawResponse(async () => svcClearAll()))
   ipcMain.handle(IPC_CHANNELS.KNOWLEDGE_UPDATE_STATUS, withRawResponse(async (data: { id: string; status: 'compiled' }) => svcUpdateStatus(data)))

@@ -1,8 +1,8 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, mkdirSync, renameSync, copyFileSync, rmSync } from 'node:fs'
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import { DATA_DIR } from './index'
+import { DATA_DIR, KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR, getBaseRawDir, getBaseWikiDir } from './index'
 
 const DB_PATH = join(DATA_DIR, 'db', 'pulsemind.db')
 
@@ -458,6 +458,48 @@ export function withFtsRecovery<T>(fn: () => T): T {
 
 // ── Init ──
 
+/** Move one directory's entries into a target directory (creating it), entry
+ *  by entry so a partially-migrated install resumes cleanly. rename first,
+ *  copy+delete fallback for cross-device mounts. */
+function migrateDirEntries(fromDir: string, toDir: string): number {
+  if (!existsSync(fromDir)) return 0
+  let moved = 0
+  mkdirSync(toDir, { recursive: true })
+  for (const entry of readdirSync(fromDir)) {
+    const src = join(fromDir, entry)
+    const dest = join(toDir, entry)
+    if (existsSync(dest)) continue // already migrated — never overwrite
+    try {
+      renameSync(src, dest)
+    } catch {
+      try {
+        copyFileSync(src, dest)
+        rmSync(src, { force: true })
+      } catch (err) {
+        console.warn(`[DB] Failed to migrate legacy knowledge entry ${src}:`, err)
+        continue
+      }
+    }
+    moved++
+  }
+  try { rmSync(fromDir, { recursive: true, force: true }) } catch { /* emptied above; ignore */ }
+  return moved
+}
+
+/** H1: carry pre-bases files into the default base's directories. Runs before
+ *  the FTS rebuilds below so they index the files at their NEW paths. */
+function migrateLegacyKnowledgeDirs(): void {
+  try {
+    const rawMoved = migrateDirEntries(KNOWLEDGE_RAW_DIR, getBaseRawDir('default'))
+    const wikiMoved = migrateDirEntries(KNOWLEDGE_WIKI_DIR, getBaseWikiDir('default'))
+    if (rawMoved > 0 || wikiMoved > 0) {
+      console.log(`[DB] Migrated legacy knowledge dirs into bases/default: ${rawMoved} raw, ${wikiMoved} wiki entries`)
+    }
+  } catch (err) {
+    console.warn('[DB] Legacy knowledge migration failed (will retry next start):', err)
+  }
+}
+
 export async function initializeDatabase(): Promise<void> {
   console.log('[DB] Initializing database...')
   db = openDb()
@@ -524,6 +566,16 @@ export async function initializeDatabase(): Promise<void> {
     if (kfCols.length > 0 || hasBaseId) {
       getDb().exec('CREATE INDEX IF NOT EXISTS idx_knowledge_base ON knowledge_files(base_id)')
     }
+
+    // knowledge-bases physical migration (H1): pre-bases installs kept raw and
+    // wiki files in the flat knowledge/raw|wiki dirs while every reader now
+    // resolves through bases/<id>/raw|wiki — without moving the bytes, every
+    // preview/compile/delete of an upgraded file threw, and the wiki rebuild
+    // comparison (0 pages on disk === 0 FTS rows) silently skipped reindexing
+    // a wiki whose pages were all still in the old location. One-time,
+    // idempotent: the legacy dirs are renamed away entry by entry, so the
+    // second run finds nothing.
+    migrateLegacyKnowledgeDirs()
 
     // PLAN-knowledge-base K4/K5 migration: the pre-chunking knowledge_fts had
     // no file_rowid column and a unicode61 tokenizer. Detect by shape (CREATE

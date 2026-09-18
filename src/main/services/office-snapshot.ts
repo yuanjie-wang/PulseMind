@@ -13,6 +13,15 @@ import { MarkItDown } from 'markitdown-js'
 const VERSIONS_DIR = '.versions'
 const MAX_VERSIONS_PER_NAME = 5
 
+/** Only THIS file's own snapshots: the old `startsWith(`${stem}-`)` prune
+ *  counted (and evicted) `报告-终稿-<stamp>.docx`'s versions under
+ *  `报告.docx`'s quota (M5). The stamp is always an ISO date head — anchor. */
+function ownSnapshotFiles(names: string[], stem: string, ext: string): string[] {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`^${esc(stem)}-\\d{4}-\\d{2}-\\d{2}T.*\\${ext}$`)
+  return names.filter((f) => re.test(f))
+}
+
 /**
  * Store the original file in the conversation workspace's `.versions/` directory.
  * LRU-prunes to MAX_VERSIONS_PER_NAME per filename stem.
@@ -36,9 +45,7 @@ export async function snapshotToWorkspace(
 
     // LRU prune: keep only the most recent N per stem
     const { readdirSync } = await import('node:fs')
-    const entries = readdirSync(versionsDir)
-      .filter((f) => f.startsWith(`${stem}-`) && f.endsWith(ext))
-      .sort()
+    const entries = ownSnapshotFiles(readdirSync(versionsDir), stem, ext).sort()
     while (entries.length > MAX_VERSIONS_PER_NAME) {
       const oldest = entries.shift()!
       try { await import('node:fs/promises').then((fs) => fs.unlink(join(versionsDir, oldest))) } catch { /* best-effort */ }
@@ -82,35 +89,67 @@ export async function generateOfficeDiff(
 /**
  * Build a simple unified-diff string (no library dependency).
  * Groups changes into hunks of context + changed lines.
+ * The LCS matrix is (n+1)×(m+1) numbers allocated in THIS process, inside a
+ * tool call — a 20k×20k spreadsheet diff used to mean a ~3.2GB allocation on
+ * the main process (M6). Common head/tail is trimmed first (a one-cell edit
+ * in a huge sheet diffs like the small core it is); anything still too large
+ * gets an honest size summary instead of a per-line diff.
  */
+const MAX_DIFF_LINES = 5_000
+const MAX_LCS_CELLS = 4_000_000 // 2000×2000 — the matrix stays well under 100MB
+
 function buildUnifiedDiff(before: string, after: string): string {
   const beforeArr = before.split('\n')
   const afterArr = after.split('\n')
 
+  // Trim the common head/tail so the LCS runs on the changed core only.
+  let head = 0
+  while (head < beforeArr.length && head < afterArr.length && beforeArr[head] === afterArr[head]) head++
+  let tail = 0
+  while (tail < beforeArr.length - head && tail < afterArr.length - head &&
+         beforeArr[beforeArr.length - 1 - tail] === afterArr[afterArr.length - 1 - tail]) tail++
+
+  const headLines = beforeArr.slice(0, head)
+  const tailLines = beforeArr.slice(beforeArr.length - tail)
+  const beforeCore = beforeArr.slice(head, beforeArr.length - tail)
+  const afterCore = afterArr.slice(head, afterArr.length - tail)
+
+  if (
+    beforeCore.length > MAX_DIFF_LINES || afterCore.length > MAX_DIFF_LINES ||
+    beforeCore.length * afterCore.length > MAX_LCS_CELLS
+  ) {
+    const output: string[] = [
+      `@@ 变更过大，仅报告规模（原 ${beforeArr.length} 行 → 新 ${afterArr.length} 行）@@`,
+      `前 ${headLines.length} 行未变；末 ${tailLines.length} 行未变`,
+      `核心差异区：${beforeCore.length} 行 → ${afterCore.length} 行`,
+    ]
+    return output.join('\n')
+  }
+
   // Simple LCS-based diff
-  const lcs = computeLCS(beforeArr, afterArr)
+  const lcs = computeLCS(beforeCore, afterCore)
   const hunks: UnifiedHunk[] = []
   let currentHunk: UnifiedHunk | null = null
 
   let bi = 0, ai = 0, li = 0
-  while (bi < beforeArr.length || ai < afterArr.length) {
-    if (li < lcs.length && bi < beforeArr.length && ai < afterArr.length && beforeArr[bi] === lcs[li] && afterArr[ai] === lcs[li]) {
+  while (bi < beforeCore.length || ai < afterCore.length) {
+    if (li < lcs.length && bi < beforeCore.length && ai < afterCore.length && beforeCore[bi] === lcs[li] && afterCore[ai] === lcs[li]) {
       // Common line
       if (currentHunk) {
-        currentHunk.lines.push({ type: ' ', text: beforeArr[bi] })
+        currentHunk.lines.push({ type: ' ', text: beforeCore[bi] })
       }
       bi++; ai++; li++
     } else {
       // Change region
       if (!currentHunk) {
-        currentHunk = { startBefore: bi, startAfter: ai, lines: [] }
+        currentHunk = { startBefore: head + bi, startAfter: head + ai, lines: [] }
         hunks.push(currentHunk)
       }
-      if (bi < beforeArr.length && (li >= lcs.length || beforeArr[bi] !== lcs[li])) {
-        currentHunk.lines.push({ type: '-', text: beforeArr[bi] })
+      if (bi < beforeCore.length && (li >= lcs.length || beforeCore[bi] !== lcs[li])) {
+        currentHunk.lines.push({ type: '-', text: beforeCore[bi] })
         bi++
-      } else if (ai < afterArr.length && (li >= lcs.length || afterArr[ai] !== lcs[li])) {
-        currentHunk.lines.push({ type: '+', text: afterArr[ai] })
+      } else if (ai < afterCore.length && (li >= lcs.length || afterCore[ai] !== lcs[li])) {
+        currentHunk.lines.push({ type: '+', text: afterCore[ai] })
         ai++
       } else {
         // Both match next LCS entry — close current hunk

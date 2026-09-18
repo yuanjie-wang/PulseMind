@@ -31,6 +31,9 @@ export interface ParagraphInfo {
   /** concat char i → { run, offset } (offset < 0 for gap chars). */
   charMap: Array<{ run: number; offset: number }>
   hasSectPr: boolean
+  /** True when this paragraph is the ONLY block-level element of its table
+   *  cell — deleting it would leave a schema-illegal empty `<w:tc/>` (M8). */
+  soleBlockOfCell?: boolean
 }
 
 export interface DocumentModel {
@@ -121,7 +124,24 @@ export function buildDocumentModel(xml: string): DocumentModel {
     }
   }
   collect(body as XmlElementNode)
+  markSoleCellParagraphs(body as XmlElementNode, paragraphs)
   return { paragraphs }
+}
+
+/** OOXML requires every `w:tc` to keep at least one block-level element; a
+ *  cell whose single block is one `w:p` must never have that `w:p` deleted. */
+function markSoleCellParagraphs(node: XmlElementNode, paragraphs: ParagraphInfo[]): void {
+  for (const child of node.children) {
+    if (!isElement(child)) continue
+    if (child.name === 'w:tc') {
+      const blocks = child.children.filter((c) => isElement(c) && (c.name === 'w:p' || c.name === 'w:tbl' || c.name === 'w:sdt')) as XmlElementNode[]
+      if (blocks.length === 1 && blocks[0].name === 'w:p') {
+        const p = paragraphs.find((pp) => pp.element === blocks[0])
+        if (p) p.soleBlockOfCell = true
+      }
+    }
+    if (child.children.length > 0) markSoleCellParagraphs(child, paragraphs)
+  }
 }
 
 export interface OutlineEntry {

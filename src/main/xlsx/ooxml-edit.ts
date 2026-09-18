@@ -174,6 +174,48 @@ function escapeXmlText(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// ── post-edit structural gate ──
+
+/** Throw unless every tag in `xml` is balanced. Offset-splice edits must
+ *  leave the sheet well-formed; this is the check a bad splice cannot pass
+ *  (duplicated document bodies, unclosed rows). */
+function assertWellFormedXml(xml: string, label: string): void {
+  const stack: Array<{ name: string }> = []
+  let i = 0
+  while (i < xml.length) {
+    if (xml[i] !== '<') {
+      const next = xml.indexOf('<', i)
+      i = next < 0 ? xml.length : next
+      continue
+    }
+    if (xml.startsWith('<!--', i)) { const c = xml.indexOf('-->', i + 4); i = c >= 0 ? c + 3 : xml.length; continue }
+    if (xml.startsWith('<?', i)) { const c = xml.indexOf('?>', i + 2); i = c >= 0 ? c + 2 : xml.length; continue }
+    if (xml.startsWith('<![CDATA[', i)) { const c = xml.indexOf(']]>', i + 9); i = c >= 0 ? c + 3 : xml.length; continue }
+    if (xml[i + 1] === '/') {
+      const closeEnd = xml.indexOf('>', i + 2)
+      if (closeEnd < 0) throw new Error(`OOXML 直改产物结构校验失败（${label}）：存在残缺的闭合标签`)
+      const name = xml.slice(i + 2, closeEnd).trim()
+      const top = stack.pop()
+      if (!top || top.name !== name) {
+        throw new Error(`OOXML 直改产物结构校验失败（${label}）：</${name}> 与 <${top?.name ?? '（空）'}> 不匹配，拒绝写盘`)
+      }
+      i = closeEnd + 1
+      continue
+    }
+    const tagEnd = xml.indexOf('>', i + 1)
+    if (tagEnd < 0) throw new Error(`OOXML 直改产物结构校验失败（${label}）：存在未闭合的标签，拒绝写盘`)
+    const tagContent = xml.slice(i + 1, xml[tagEnd - 1] === '/' ? tagEnd - 1 : tagEnd)
+    const spaceIdx = tagContent.search(/\s/)
+    const name = spaceIdx > 0 ? tagContent.slice(0, spaceIdx) : tagContent
+    const selfClose = tagContent.endsWith('/') || xml[tagEnd - 1] === '/'
+    if (!selfClose) stack.push({ name })
+    i = tagEnd + 1
+  }
+  if (stack.length > 0) {
+    throw new Error(`OOXML 直改产物结构校验失败（${label}）：${stack.length} 个标签未闭合（如 <${stack[stack.length - 1].name}>），拒绝写盘`)
+  }
+}
+
 // ── OOXML edit engine ──
 
 const MAX_CELL_TEXT = 32_000
@@ -182,6 +224,10 @@ interface OOXMLSheetState {
   name: string
   fileName: string
   xml: string
+  /** XML as loaded from the ZIP — the change detector for the write gate
+   *  (replacements can be drained mid-batch by the re-parse flow, so their
+   *  count is not a dirty flag). */
+  originalXml: string
   tree: XmlNode
   rows: Map<number, XmlNode>
   /** Accumulated string replacements (applied at the end, right-to-left by offset). */
@@ -266,7 +312,7 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
         }
       }
     }
-    sheetStates.set(name, { name, fileName, xml, tree, rows, replacements: [] })
+    sheetStates.set(name, { name, fileName, xml, originalXml: xml, tree, rows, replacements: [] })
   }
 
   const resolveSheetState = (name?: string): OOXMLSheetState => {
@@ -283,6 +329,22 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
   /** Queue a replacement on the sheet's XML string. */
   const queueReplacement = (state: OOXMLSheetState, start: number, end: number, text: string) => {
     state.replacements.push({ start, end, text })
+  }
+
+  /** Queue content to be appended just inside `el`'s closing tag. A
+   *  self-closing element (Excel writes `<row/>` for empty rows carrying a
+   *  row height) has no closing tag, so its whole tag is replaced by the
+   *  opened form — splicing at its undefined closeStart would replicate the
+   *  entire sheet XML (the H4 corruption). */
+  const appendInsideElement = (state: OOXMLSheetState, el: XmlNode, innerXml: string) => {
+    if (el.closeStart !== undefined && el.closeStart >= (el.tagEnd ?? 0)) {
+      queueReplacement(state, el.closeStart, el.closeStart, innerXml)
+      return
+    }
+    const tagXml = state.xml.slice(el.start!, el.end!)
+    const opened = tagXml.replace(/\/>$/, '>')
+    if (opened === tagXml) throw new Error(`无法在自闭合元素 <${el.name}/> 内插入内容（标签形态异常）`)
+    queueReplacement(state, el.start!, el.end!, `${opened}${innerXml}</${el.name}>`)
   }
 
   /** Build the final XML for a sheet by applying all queued replacements (right-to-left). */
@@ -331,9 +393,7 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
           let sheetData = findElement(ws, 'sheetData')
           if (!sheetData) {
             // sheetData doesn't exist — add it before </worksheet>
-            const insertPos = ws.closeStart!
-            const newSheetData = `\n    <sheetData>\n      <row r="${ref.row}">\n        <c r="${address}"/>\n      </row>\n    </sheetData>`
-            queueReplacement(state, insertPos, insertPos, newSheetData)
+            appendInsideElement(state, ws, `\n    <sheetData>\n      <row r="${ref.row}">\n        <c r="${address}"/>\n      </row>\n    </sheetData>`)
             // Re-parse to update tree for subsequent ops
             const updatedXml = buildSheetXml(state)
             state.xml = updatedXml
@@ -369,7 +429,7 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
               }
             }
             if (!inserted) {
-              queueReplacement(state, sheetData.closeStart!, sheetData.closeStart!, rowXml)
+              appendInsideElement(state, sheetData, rowXml)
             }
             // Re-parse
             const updatedXml = buildSheetXml(state)
@@ -422,7 +482,7 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
             queueReplacement(state, cellEl.start!, cellEl.end!, newCellXml)
           } else {
             // New cell — append to row
-            queueReplacement(state, rowEl.closeStart!, rowEl.closeStart!, `\n        ${newCellXml}`)
+            appendInsideElement(state, rowEl, `\n        ${newCellXml}`)
           }
         } else if ('value' in op) {
           const value = op.value as string | number | boolean | null
@@ -440,7 +500,7 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
             } else {
               newCellXml = `<c r="${address}" t="inlineStr"><is><t>${escapeXmlText(String(value))}</t></is></c>`
             }
-            queueReplacement(state, rowEl.closeStart!, rowEl.closeStart!, `\n        ${newCellXml}`)
+            appendInsideElement(state, rowEl, `\n        ${newCellXml}`)
           } else {
             // Existing cell — replace entire cell
             let newCellXml: string
@@ -467,10 +527,15 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
         if (!find) throw new Error('find_replace: find 不能为空')
         const replace = String(op.replace ?? '')
         let count = 0
+        let sharedHits = 0
 
-        // Scan shared strings (read-only, report matches)
+        // Shared strings are READ-ONLY here (the table is workbook-global;
+        // rewriting it would touch every cell that references it). Counting
+        // hits into the replaced total reported "replaced N cells" while the
+        // bytes never moved — real Excel/WPS files keep almost all strings
+        // there, so that lie fired on nearly every real file (H5).
         for (let i = 0; i < sharedStrings.length; i++) {
-          if (sharedStrings[i].includes(find)) count++
+          if (sharedStrings[i].includes(find)) sharedHits++
         }
 
         // Scan sheet cells for inline strings — modify via offset replacement
@@ -497,11 +562,15 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
           }
         }
 
+        if (sharedHits > 0) {
+          warnings.push(`find_replace「${find.slice(0, 40)}」：另有 ${sharedHits} 处命中共享字符串表（本模式只读该表、未替换）——如需替换请先用 read 导出内容评估或人工处理`)
+        }
+
         const expected = (op.expected_count as number | undefined) ?? count
         if (count !== expected) {
-          throw new Error(`find_replace: 匹配了 ${count} 个（expected_count=${expected}）；OOXML 直改模式仅搜索内联字符串，共享字符串表中的匹配需用 exceljs 路径`)
+          throw new Error(`find_replace: 替换了 ${count} 个单元格（expected_count=${expected}）${sharedHits > 0 ? `；另有 ${sharedHits} 处在共享字符串表中，本模式不替换` : '；OOXML 直改模式仅修改内联字符串单元格'}`)
         }
-        results.push({ index, op: kind, ok: true, detail: `替换 ${count} 个单元格（OOXML 直改模式）` })
+        results.push({ index, op: kind, ok: true, detail: `替换 ${count} 个单元格（OOXML 直改模式）${sharedHits > 0 ? `，${sharedHits} 处共享字符串命中未替换` : ''}` })
         continue
       }
 
@@ -512,11 +581,17 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
     }
   }
 
-  // Apply all queued replacements and write back to ZIP
+  // Structural gate before any byte reaches the ZIP (mirrors the docx
+  // re-tokenize gate): the offset-splice edits must leave every touched
+  // sheet balanced. A bad splice (e.g. the self-closing-row duplication)
+  // fails HERE — refusing the write — instead of corrupting the file and
+  // reporting success.
   for (const [name, state] of sheetStates) {
     const fileName = sheetFileMap.get(name)
     if (!fileName) continue
     const finalXml = buildSheetXml(state)
+    if (finalXml === state.originalXml) continue
+    assertWellFormedXml(finalXml, `工作表「${name}」`)
     zip.updateFile(fileName, Buffer.from(finalXml, 'utf8'))
   }
 

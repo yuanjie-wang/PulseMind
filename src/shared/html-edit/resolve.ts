@@ -199,18 +199,34 @@ export interface SmartSelection {
   text: string
 }
 
-/** Resolve the selected element against the disk text: exact pmPath first,
- *  then a unique tag+text match. Never guesses between duplicates. */
+/** Resolve the selected element against the disk text: exact pmPath first
+ *  (verified against the picker's text hint — H9), then a unique tag+text
+ *  match. Never guesses between duplicates. */
 export function resolveElementSmart(html: string, selection: SmartSelection): SmartResolveResult {
-  const direct = resolveElement(html, selection.pmPath)
-  if (direct.ok) return { ok: true, location: direct.location, matchedBy: 'path', sourcePmPath: selection.pmPath }
-  // A parse failure is hopeless; everything else may still be findable.
-  if (direct.reason.startsWith('HTML 解析失败')) return { ok: false, reason: direct.reason }
-
   const hint = normalizeText(selection.text)
-  if (!hint) return { ok: false, reason: GENERATED_ELEMENT_REASON }
   // The picker caps textContent at 400 chars — a capped hint matches by prefix.
   const capped = selection.text.trim().length >= 400
+  const direct = resolveElement(html, selection.pmPath)
+  if (direct.ok) {
+    if (!hint) return { ok: true, location: direct.location, matchedBy: 'path', sourcePmPath: selection.pmPath }
+    // The pmPath indexes were built in the LIVE served DOM; a page script that
+    // inserted or removed a sibling shifts every later index, and the walk can
+    // land on a same-tag sibling of a template card list — patching the wrong
+    // twin. The picker's text hint is the guard: a resolved path whose source
+    // text disagrees with what the user actually selected falls through to the
+    // content match below instead of being blessed by verifyPatch (which only
+    // re-checks the same wrong path).
+    const inner = direct.location.inner
+    const sourceText = inner ? comparisonText(html.slice(inner.start, inner.end)) : ''
+    if (sourceText === hint || (capped && sourceText.startsWith(hint))) {
+      return { ok: true, location: direct.location, matchedBy: 'path', sourcePmPath: selection.pmPath }
+    }
+  } else {
+    // A parse failure is hopeless; everything else may still be findable.
+    if (direct.reason.startsWith('HTML 解析失败')) return { ok: false, reason: direct.reason }
+  }
+
+  if (!hint) return { ok: false, reason: GENERATED_ELEMENT_REASON }
   let tree
   try {
     tree = parse(html, { sourceCodeLocationInfo: true })

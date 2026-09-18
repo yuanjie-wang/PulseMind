@@ -165,6 +165,14 @@ function hasDateTokens(skeleton: string): boolean {
   return /[yY]/.test(skeleton) || /[dD]/.test(skeleton) || /[hH]/.test(skeleton) || /[sS]/.test(skeleton) || /A[MP]\/?P?M/i.test(skeleton)
 }
 
+// en-US month/weekday names for mmmm/mmm/dddd/ddd. Locale prefixes
+// ([$-804] etc.) are dropped as directives — English names are the honest
+// default; what the tokenizer must never do again is print "mmmm" raw (M12).
+const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const MONTHS_SHORT = MONTHS_LONG.map((m) => m.slice(0, 3))
+const DAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const DAYS_SHORT = DAYS_LONG.map((d) => d.slice(0, 3))
+
 function formatDateValue(date: Date, numFmt?: string): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   const fmt = numFmt ?? ''
@@ -195,14 +203,25 @@ function formatDateValue(date: Date, numFmt?: string): string {
       continue
     }
     const rest = fmt.slice(i)
-    const m = /^(yyyy|yy|y|mm|m|dd|d|hh|h|ss|s|AM\/PM|A)(?![a-zA-Z])/.exec(rest)
+    // Longest tokens first — mmmm/mmm/dddd/ddd must beat mm/m/dd/d, or the
+    // negative lookahead made the whole run fall through to literals and
+    // en-US long dates rendered as raw text (M12).
+    const m = /^(yyyy|yy|y|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|AM\/PM|am\/pm|A|a)(?![a-zA-Z])/.exec(rest)
     if (m && !/^\[[^\]]*\]/.test(rest)) {
       toks.push({ kind: 'tok', name: m[1].toLowerCase() })
       i += m[1].length
       continue
     }
-    const lit = /^("[^"]*"|\[[^\]]*\]|.)/.exec(rest)![1]
-    toks.push({ kind: 'lit', text: lit.replace(/[[\]]/g, (b, off) => (off === 0 ? '' : b)) })
+    const bracket = /^\[[^\]]*\]/.exec(rest)
+    if (bracket) {
+      // Bracket groups ([Red], [$-409], [h]:mm prefixes) are directives, not
+      // display text — drop whole. (The old single-char literal path kept the
+      // group's `]` behind, leaking "$-409]dd18" into the grid.)
+      i += bracket[0].length
+      continue
+    }
+    const lit = /^("[^"]*"|.)/.exec(rest)![1]
+    toks.push({ kind: 'lit', text: lit === '[' || lit === ']' ? '' : lit })
     i += lit.length
   }
   let out = ''
@@ -216,6 +235,10 @@ function formatDateValue(date: Date, numFmt?: string): string {
       case 'yyyy': out += String(date.getFullYear()); break
       case 'yy': out += pad(date.getFullYear() % 100); break
       case 'y': out += String(date.getFullYear()); break
+      case 'mmmm': out += MONTHS_LONG[date.getMonth()]; break
+      case 'mmm': out += MONTHS_SHORT[date.getMonth()]; break
+      case 'dddd': out += DAYS_LONG[date.getDay()]; break
+      case 'ddd': out += DAYS_SHORT[date.getDay()]; break
       case 'dd': out += pad(date.getDate()); break
       case 'd': out += String(date.getDate()); break
       case 'hh': out += pad(use12 ? h12 : h24); break

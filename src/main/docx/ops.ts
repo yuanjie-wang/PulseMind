@@ -77,6 +77,14 @@ function innerSpanOf(run: RunInfo): { start: number; end: number; raw: string } 
   return { start: textNode.start, end: textNode.end, raw: textNode.raw }
 }
 
+/** True when the run carries a SECOND direct `w:t` besides its modelled text
+ *  element — text the model cannot match but an in-place rPr rewrite would
+ *  still style. Only direct children count: deeper `w:t` (a drawing's textbox)
+ *  is not run content and a run-level rPr never reaches it. */
+function hasDirectTextSibling(runEl: XmlElementNode, textEl: XmlElementNode): boolean {
+  return runEl.children.some((c) => c.kind === 'element' && c.name === 'w:t' && c !== textEl)
+}
+
 function findMatches(model: ReturnType<typeof buildDocumentModel>, find: string, paragraphIndex?: number) {
   const matches: Array<{ paragraph: ReturnType<typeof buildDocumentModel>['paragraphs'][number]; start: number; end: number }> = []
   const paragraphs = paragraphIndex !== undefined ? [model.paragraphs[paragraphIndex]].filter(Boolean) : model.paragraphs
@@ -182,27 +190,51 @@ function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
         throw new Error(`replace_text: 「${op.find.slice(0, 40)}」命中 ${matches.length} 处（expected_count=${expected}）— 用 paragraph 或 expected_count 明确范围`)
       }
       if (op.track_changes) {
-        // Tracked changes mode: wrap original runs in <w:del>, add new runs in <w:ins>.
-        // Word/WPS will show these as revision marks (strikethrough + underline).
+        // Tracked changes mode: wrap each matched slice in <w:del>, add the
+        // replacement text in <w:ins> — once per match, on its FIRST segment
+        // (the non-track path below has the same rule). The rewrite is PER
+        // RUN with all of that run's matched ranges merged in: one full-run
+        // replacement per segment used to overlap when a single run held two
+        // matches (whole batch refused), and per-segment inserts of the full
+        // replacement duplicated the text on cross-run matches (H6).
         const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
         let revId = 1
+        interface TrackedRange { from: number; to: number; withReplace: boolean }
+        const perRun = new Map<RunInfo, TrackedRange[]>()
         for (const match of matches) {
           const segments = segmentsFor(match.paragraph, match.start, match.end)
-          for (const seg of segments) {
-            const runEl = seg.run.element
-            const runOpenTag = xml.slice(runEl.startTagStart, runEl.startTagEnd)
-            // Extract rPr if present (shared by del and ins runs)
-            const rPrEl = runEl.children.find((c) => c.kind === 'element' && c.name === 'w:rPr') as XmlElementNode | undefined
-            const rPrXml = rPrEl ? xml.slice(rPrEl.start, rPrEl.end) : ''
-            // Original text goes into <w:delText> inside <w:del><w:r>
-            const spaceAttr = seg.run.text !== seg.run.text.trim() ? ' xml:space="preserve"' : ''
-            const delRun = `${runOpenTag}${rPrXml}<w:delText${spaceAttr}>${escapeXmlText(seg.run.text)}</w:delText></w:r>`
-            const delWrap = `<w:del w:id="${revId++}" w:author="PulseMind" w:date="${ts}">${delRun}</w:del>`
-            // Replacement text goes into <w:ins><w:r><w:t>
-            const insRun = `<w:r>${rPrXml}<w:t${spaceAttr}>${escapeXmlText(seg.run.text.slice(0, seg.from) + op.replace + seg.run.text.slice(seg.to))}</w:t></w:r>`
-            const insWrap = `<w:ins w:id="${revId++}" w:author="PulseMind" w:date="${ts}">${insRun}</w:ins>`
-            replacements.push({ start: runEl.start, end: runEl.end, text: delWrap + insWrap })
+          segments.forEach((seg, segIndex) => {
+            let ranges = perRun.get(seg.run)
+            if (!ranges) perRun.set(seg.run, ranges = [])
+            ranges.push({ from: seg.from, to: seg.to, withReplace: segIndex === 0 })
+          })
+        }
+        for (const [run, ranges] of perRun) {
+          ranges.sort((a, b) => a.from - b.from)
+          const runEl = run.element
+          const runOpenTag = xml.slice(runEl.startTagStart, runEl.startTagEnd)
+          const rPrEl = runEl.children.find((c) => c.kind === 'element' && c.name === 'w:rPr') as XmlElementNode | undefined
+          const rPrXml = rPrEl ? xml.slice(rPrEl.start, rPrEl.end) : ''
+          const untouchedRun = (content: string) => `${runOpenTag}${rPrXml}<w:t xml:space="preserve">${escapeXmlText(content)}</w:t></w:r>`
+          const parts: string[] = []
+          let cursor = 0
+          for (const range of ranges) {
+            if (range.from > cursor) parts.push(untouchedRun(run.text.slice(cursor, range.from)))
+            // The delText carries ONLY the matched slice — the whole run text
+            // made the revision unreadable and doubled it on accept.
+            const matched = run.text.slice(range.from, range.to)
+            const spaceAttr = matched !== matched.trim() ? ' xml:space="preserve"' : ''
+            const delRun = `${runOpenTag}${rPrXml}<w:delText${spaceAttr}>${escapeXmlText(matched)}</w:delText></w:r>`
+            parts.push(`<w:del w:id="${revId++}" w:author="PulseMind" w:date="${ts}">${delRun}</w:del>`)
+            if (range.withReplace && op.replace) {
+              const insSpace = op.replace !== op.replace.trim() ? ' xml:space="preserve"' : ''
+              const insRun = `<w:r>${rPrXml}<w:t${insSpace}>${escapeXmlText(op.replace)}</w:t></w:r>`
+              parts.push(`<w:ins w:id="${revId++}" w:author="PulseMind" w:date="${ts}">${insRun}</w:ins>`)
+            }
+            cursor = range.to
           }
+          if (cursor < run.text.length) parts.push(untouchedRun(run.text.slice(cursor)))
+          replacements.push({ start: runEl.start, end: runEl.end, text: parts.join('') })
         }
         message = `修订替换 ${matches.length} 处`
       } else {
@@ -245,6 +277,9 @@ function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
       if (paragraph.hasSectPr) {
         throw new Error('delete_paragraph: 该段落的 pPr 含分节符（w:sectPr），删除会破坏文档分节——请改用 set_paragraph_style 或手工处理')
       }
+      if (paragraph.soleBlockOfCell) {
+        throw new Error('delete_paragraph: 该段落是表格单元格内唯一的块级元素，删除会产生非法的空单元格（Word 报「内容有问题」）——请清空文本或删除整行/表格')
+      }
       replacements.push({ start: paragraph.element.start, end: paragraph.element.end, text: '' })
       message = `删除段落 ${op.paragraph}`
       break
@@ -285,7 +320,11 @@ function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
         const segments = segmentsFor(match.paragraph, match.start, match.end)
         for (const seg of segments) {
           const inner = innerSpanOf(seg.run)
-          const coversAll = seg.from === 0 && seg.to >= seg.run.text.length
+          // "Whole run covered" must mean the covered text IS the run's whole
+          // text: a second direct `w:t` sibling holds text outside run.text
+          // (the model reads only the first w:t), and an in-place rPr rewrite
+          // would style text the op never matched.
+          const coversAll = seg.from === 0 && seg.to >= seg.run.text.length && !hasDirectTextSibling(seg.run.element, seg.run.textElement)
           if (coversAll) {
             // Whole run covered — rewrite its rPr in place.
             const rPr = seg.run.element.children.find((c) => c.kind === 'element' && c.name === 'w:rPr') as XmlElementNode | undefined
@@ -296,6 +335,9 @@ function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
             }
           } else {
             // Partial coverage — SPLIT the run: pre(original rPr) + covered(new rPr) + post(original rPr).
+            // The siblings around the covered `w:t` (w:br / w:tab / further
+            // w:t) ride along in the pre/post runs — rebuilding from the text
+            // node alone deleted them from the document (H7).
             const rawStart = seg.run.charMap[seg.from]
             const rawEnd = seg.to < seg.run.text.length ? seg.run.charMap[seg.to] : inner.end
             const rPrEl = seg.run.element.children.find((c) => c.kind === 'element' && c.name === 'w:rPr') as XmlElementNode | undefined
@@ -303,16 +345,20 @@ function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
             // The open tag is ONLY `<w:r …>` — any rPr child is rebuilt below
             // (rPrOriginal / rPrModified); including it here would double it.
             const openTag = xml.slice(seg.run.element.startTagStart, seg.run.element.startTagEnd)
-            const closeTag = '</w:r>'
             const rPrOriginal = rPrInner !== null ? `<w:rPr>${rPrInner}</w:rPr>` : ''
             const rPrModified = buildRpr(rPrInner, wants)
             const pre = inner.raw.slice(0, rawStart - inner.start)
             const covered = inner.raw.slice(rawStart - inner.start, rawEnd - inner.start)
             const post = inner.raw.slice(rawEnd - inner.start)
+            const sibRaw = (c: { start?: number; end?: number }): string => (c.start !== undefined && c.end !== undefined ? xml.slice(c.start, c.end) : '')
+            const isSkippedChild = (c: { kind?: string; name?: string }) => c.kind === 'element' && (c.name === 'w:rPr' || c === seg.run.textElement)
+            const textIdx = seg.run.element.children.indexOf(seg.run.textElement)
+            const beforeSiblings = seg.run.element.children.slice(0, textIdx).filter((c) => !isSkippedChild(c)).map(sibRaw).join('')
+            const afterSiblings = seg.run.element.children.slice(textIdx + 1).filter((c) => !isSkippedChild(c)).map(sibRaw).join('')
             const split =
-              (pre ? `${openTag}${rPrOriginal}<w:t xml:space="preserve">${pre}</w:t></w:r>` : '') +
+              (pre || beforeSiblings ? `${openTag}${rPrOriginal}${beforeSiblings}<w:t xml:space="preserve">${pre}</w:t></w:r>` : '') +
               `${openTag}${rPrModified}<w:t xml:space="preserve">${covered}</w:t></w:r>` +
-              (post ? `${openTag}${rPrOriginal}<w:t xml:space="preserve">${post}</w:t></w:r>` : '')
+              (post || afterSiblings ? `${openTag}${rPrOriginal}<w:t xml:space="preserve">${post}</w:t>${afterSiblings}</w:r>` : '')
             replacements.push({ start: seg.run.element.start, end: seg.run.element.end, text: split })
           }
         }

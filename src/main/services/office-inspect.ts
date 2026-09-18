@@ -1,21 +1,32 @@
 /**
  * office_inspect — structured inventory for docx/xlsx/pptx files.
- * Read-only: no backup, no write. Pure analysis.
+ * Read-only: no backup, no write. Pure analysis — but still behind the same
+ * read guard as every other read mouth: without it this was the one read
+ * entry point any drive letter reached and nothing recorded it (M2).
  */
 import AdmZip from 'adm-zip'
 import { parseXml } from '../docx/xml-splice'
 import { buildDocumentModel, outlineOf } from '../docx/model'
-import { scanXlsx } from '../xlsx/engine'
+import { guardFsTarget } from '../sandbox/guard'
 import type { OfficeInspectResult } from '../../shared/office/ops'
+
+/** Result-size caps: an inspect answer is a tool result, not a file dump. */
+const MAX_SLIDE_TEXT_CHARS = 4000
+const MAX_FORMULAS = 200
 
 export async function svcInspectOffice(input: { filePath: string }): Promise<OfficeInspectResult> {
   const { filePath } = input
   if (!filePath) return { success: false, format: 'unknown', summary: 'file_path is required', details: {}, error: 'file_path is required' }
 
+  const guard = await guardFsTarget(filePath, 'read')
+  if (!guard.ok) {
+    return { success: false, format: 'unknown', summary: guard.reason ?? '路径被拒绝', details: {}, error: guard.reason }
+  }
+
   const { readFile } = await import('fs/promises')
   let buffer: Buffer
   try {
-    buffer = await readFile(filePath)
+    buffer = await readFile(guard.resolved)
   } catch (err: any) {
     return { success: false, format: 'unknown', summary: `无法读取文件: ${err.message}`, details: {}, error: err.message }
   }
@@ -70,11 +81,11 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
   // ── xlsx ──
   if (names.includes('xl/workbook.xml')) {
     try {
-      const scan = scanXlsx(buffer)
-      if (!scan.ok) {
-        return { success: false, format: 'xlsx', summary: scan.reason!, details: {}, error: scan.reason }
-      }
-
+      // Inspect is READ-ONLY, so the edit fence (scanXlsx) does not apply —
+      // a chart workbook is perfectly inspectable, and refusing it here with
+      // an edit-worded denial contradicted the OOXML edit path next door.
+      // Anything exceljs cannot even LOAD (OLE/encrypted) fails below with an
+      // honest message.
       const ExcelJS = (await import('exceljs')).default
       const workbook = new ExcelJS.Workbook()
       await workbook.xlsx.load(buffer as unknown as ArrayBuffer)
@@ -86,14 +97,21 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
         columnCount: ws.columnCount,
       }))
 
-      // Collect formulas
+      // Collect formulas (capped — a model answer, not an inventory dump)
       const formulas: string[] = []
+      let formulaTotal = 0
       for (const ws of workbook.worksheets) {
         ws.eachRow({ includeEmpty: false }, row => {
           row.eachCell({ includeEmpty: false }, cell => {
-            if (cell.formula) formulas.push(`${cell.address}: ${cell.formula}`)
+            if (cell.formula) {
+              formulaTotal++
+              if (formulas.length < MAX_FORMULAS) formulas.push(`${cell.address}: ${cell.formula}`)
+            }
           })
         })
+      }
+      if (formulaTotal > formulas.length) {
+        formulas.push(`…（共 ${formulaTotal} 个公式，仅列出前 ${formulas.length} 个）`)
       }
 
       // Detect charts
@@ -126,22 +144,28 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
         const { root } = parseXml(xml)
         const index = parseInt(slideName.match(/slide(\d+)\.xml/)![1], 10)
 
-        const texts: string[] = []
-        let shapeCount = 0
-        const collectText = (node: any): void => {
-          for (const child of node.children ?? []) {
-            if (child.kind !== 'element') continue
-            if (child.name === 'p:sp') shapeCount++
-            if (child.name === 'a:t') {
-              for (const t of child.children ?? []) {
-                if (t.kind === 'text') texts.push(t.decoded)
-              }
+      const texts: string[] = []
+      let shapeCount = 0
+      const collectText = (node: any): void => {
+        for (const child of node.children ?? []) {
+          if (child.kind !== 'element') continue
+          if (child.name === 'p:sp') shapeCount++
+          if (child.name === 'a:t') {
+            for (const t of child.children ?? []) {
+              if (t.kind === 'text') texts.push(t.decoded)
             }
-            if (child.children?.length > 0) collectText(child)
           }
+          if (child.children?.length > 0) collectText(child)
         }
-        collectText(root)
-        slides.push({ index, text: texts.join(''), shapeCount })
+      }
+      collectText(root)
+      // Truncate per slide — the full concatenation of a big deck was an
+      // unbounded payload riding one tool result (M2).
+      const fullText = texts.join('')
+      const slideText = fullText.length > MAX_SLIDE_TEXT_CHARS
+        ? fullText.slice(0, MAX_SLIDE_TEXT_CHARS) + `…（截断，原 ${fullText.length} 字符）`
+        : fullText
+      slides.push({ index, text: slideText, shapeCount })
       }
 
       // Detect embedded media

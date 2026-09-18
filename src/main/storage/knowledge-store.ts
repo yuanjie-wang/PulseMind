@@ -7,6 +7,7 @@ import {
   listKnowledgeFiles,
   getKnowledgeFile,
   getKnowledgeFileByPath,
+  getKnowledgeFileByPathAndBase,
   getKnowledgeFileBySource,
   insertKnowledgeFile,
   deleteKnowledgeFile,
@@ -197,22 +198,68 @@ export function removeKnowledgeBase(id: string): void {
   try { rmSync(getBaseWikiDir(id), { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
+/** Move one file between bases — the DB row AND its bytes (H3): the raw file
+ *  is what every read path resolves through bases/<id>/raw, so a row-only
+ *  move made the file unfindable (delete orphaned it, FTS froze, and deleting
+ *  the OLD base later destroyed the bytes outright). Wiki outputs move with
+ *  it when the destination has no page of the same name. */
 export function moveKnowledgeFileToBase(id: string, baseId: string): KnowledgeFile {
-  setKnowledgeFileBase(id, baseId)
+  if (!getKnowledgeBase(baseId)) {
+    throw new Error(`知识库不存在: ${baseId}`)
+  }
   const row = getKnowledgeFile(id)
   if (!row) throw new Error(`Knowledge file not found: ${id}`)
-  return toKnowledgeFile(row)
+  if (row.base_id === baseId) return toKnowledgeFile(row)
+
+  const { renameSync } = require('node:fs') as typeof import('node:fs')
+  const srcRaw = join(getBaseRawDir(row.base_id), row.file_path)
+  if (existsSync(srcRaw)) {
+    mkdirSync(getBaseRawDir(baseId), { recursive: true })
+    const destRaw = join(getBaseRawDir(baseId), row.file_path)
+    if (existsSync(destRaw)) {
+      // Name collision: keep both by regenerating the raw file name (the
+      // relative path is row-owned and self-contained, unlike wiki pages).
+      const newPath = generateRawFilePath(row.file_path, getBaseRawDir(baseId))
+      renameSync(srcRaw, join(getBaseRawDir(baseId), newPath))
+      getDb().prepare('UPDATE knowledge_files SET file_path = ? WHERE id = ?').run(newPath, id)
+    } else {
+      renameSync(srcRaw, destRaw)
+    }
+  }
+
+  const wikiOutputs: string[] = JSON.parse(row.wiki_outputs || '[]')
+  const srcWikiDir = getBaseWikiDir(row.base_id)
+  const destWikiDir = getBaseWikiDir(baseId)
+  const movedWiki: string[] = []
+  for (const wikiPath of wikiOutputs) {
+    const src = join(srcWikiDir, wikiPath)
+    if (!existsSync(src)) continue
+    mkdirSync(destWikiDir, { recursive: true })
+    const dest = join(destWikiDir, wikiPath)
+    if (existsSync(dest)) continue // destination already has this page — leave the source copy alone
+    renameSync(src, dest)
+    movedWiki.push(wikiPath)
+  }
+
+  setKnowledgeFileBase(id, baseId)
+  // Re-key the moved pages' wiki FTS rows so scoped wiki search follows.
+  for (const wikiPath of movedWiki) {
+    try {
+      getDb().prepare('UPDATE knowledge_wiki_fts SET base_id = ? WHERE path = ? AND base_id = ?').run(baseId, wikiPath, row.base_id)
+    } catch { /* table may not exist */ }
+  }
+  const updated = getKnowledgeFile(id)
+  return updated ? toKnowledgeFile(updated) : toKnowledgeFile(row)
 }
 
 export function moveKnowledgeFilesToBase(ids: string[], baseId: string): number {
   let moved = 0
-  const tx = getDb().transaction(() => {
-    for (const id of ids) {
-      setKnowledgeFileBase(id, baseId)
+  for (const id of ids) {
+    try {
+      moveKnowledgeFileToBase(id, baseId)
       moved++
-    }
-  })
-  tx()
+    } catch { /* a missing row/base must not strand the rest of the batch */ }
+  }
   return moved
 }
 
@@ -420,7 +467,7 @@ export async function searchContent(query: string, baseId?: string): Promise<Con
   if (baseId !== undefined) {
     const rawDir = getBaseRawDir(baseId)
     if (existsSync(rawDir)) {
-      const rgResults = await searchContentViaRipgrep(query, rawDir)
+      const rgResults = await searchContentViaRipgrep(query, rawDir, baseId)
       if (rgResults.length > 0) return rgResults
     }
     return ftsContentSearch(query, baseId)
@@ -431,7 +478,7 @@ export async function searchContent(query: string, baseId?: string): Promise<Con
   for (const b of listKnowledgeBases()) {
     const rawDir = getBaseRawDir(b.id)
     if (!existsSync(rawDir)) continue
-    const rgResults = await searchContentViaRipgrep(query, rawDir)
+    const rgResults = await searchContentViaRipgrep(query, rawDir, b.id)
     allResults.push(...rgResults)
   }
   if (allResults.length > 0) return allResults
@@ -449,8 +496,10 @@ function ftsContentSearch(query: string, baseId?: string): ContentMatch[] {
   }))
 }
 
-/** Run ripgrep on raw knowledge files. Multi-keyword queries use -F -e for OR. */
-async function searchContentViaRipgrep(query: string, rawDir: string): Promise<ContentMatch[]> {
+/** Run ripgrep on raw knowledge files. Multi-keyword queries use -F -e for OR.
+ *  `baseId` is the dir's owning base — relative paths repeat per base, so the
+ *  DB row must be resolved against the SAME base the scan ran in (M15). */
+async function searchContentViaRipgrep(query: string, rawDir: string, baseId: string): Promise<ContentMatch[]> {
   return new Promise((resolve) => {
     const terms = query.trim().split(/\s+/).filter(Boolean)
     if (terms.length === 0) { resolve([]); return }
@@ -481,7 +530,7 @@ async function searchContentViaRipgrep(query: string, rawDir: string): Promise<C
 
       const results: ContentMatch[] = []
       for (const [relPath, excerpts] of fileMap) {
-        const file = getKnowledgeFileByPath(relPath)
+        const file = getKnowledgeFileByPathAndBase(relPath, baseId)
         if (file) {
           results.push({ id: file.id, filePath: relPath, title: file.title, sourceType: file.source_type, excerpts })
         }
@@ -601,12 +650,13 @@ export async function extractManyInWorker(filePaths: string[]): Promise<Array<{ 
 
 // ─── Prepare Import ──────────────────────────────────────────────────
 
-/** Check each file path against the DB; return paths sorted into existing and new */
-export function prepareImport(filePaths: string[]): { existing: { id: string; filePath: string }[]; new: string[] } {
+/** Check each file path against the DB; return paths sorted into existing and new.
+ *  `baseId` scopes the check (M16) — the same file may legally live in two bases. */
+export function prepareImport(filePaths: string[], baseId?: string): { existing: { id: string; filePath: string }[]; new: string[] } {
   const existing: { id: string; filePath: string }[] = []
   const newFiles: string[] = []
   for (const fp of filePaths) {
-    const row = getKnowledgeFileBySource(fp)
+    const row = getKnowledgeFileBySource(fp, undefined, baseId)
     if (row) {
       existing.push({ id: row.id, filePath: fp })
     } else {
@@ -627,11 +677,14 @@ const MIME_TO_EXT: Record<string, string> = {
  * Extract base64-embedded images from markdown content and save them locally.
  * Images are deduplicated by content hash so repeated imports don't create duplicates.
  * Replaces data URIs with local-file:// references so images remain viewable without
- * bloating the wiki compilation.
+ * bloating the wiki compilation. The reference names the file's OWN base (M17):
+ * the bytes land in bases/<id>/raw/images/, so a reference to the legacy flat
+ * dir was a broken link for every import after the multi-base move.
  */
-function extractBase64Images(content: string, rawDir: string): string {
+function extractBase64Images(content: string, rawDir: string, baseId: string): string {
   const imgDir = join(rawDir, 'images')
   mkdirSync(imgDir, { recursive: true })
+  const refBase = baseId || 'default'
   return content.replace(/!\[.*?\]\(data:image\/([a-zA-Z+]+);base64,([^)]+)\)/g, (_match, mime: string, b64: string) => {
     const ext = MIME_TO_EXT[mime] || '.bin'
     let buf: Buffer
@@ -649,7 +702,7 @@ function extractBase64Images(content: string, rawDir: string): string {
     } catch {
       // File may already exist from a previous import — that's fine
     }
-    return `![image](local-file:///.pulsemind/knowledge/raw/images/${filename})`
+    return `![image](local-file:///.pulsemind/knowledge/bases/${refBase}/raw/images/${filename})`
   })
 }
 
@@ -683,17 +736,17 @@ function ingestExtractedFile(filePath: string, extraction: { title: string; cont
     if (!existsSync(filePath)) {
       return { success: false, error: `File not found: ${filePath}` }
     }
-    if (getKnowledgeFileBySource(filePath)) {
-      return { success: false, duplicate: true, error: `Already exists: ${filePath}` }
+    const targetBaseId = baseId ?? 'default'
+    if (getKnowledgeFileBySource(filePath, undefined, targetBaseId)) {
+      return { success: false, duplicate: true, error: `Already exists in this base: ${filePath}` }
     }
 
     let cleanContent = stripFrontmatter(extraction.content)
     const contentHash = createHash('sha256').update(cleanContent).digest('hex')
-    const byContent = getDb().prepare('SELECT id, source_path FROM knowledge_files WHERE content_hash = ? LIMIT 1').get(contentHash) as { id: string; source_path: string | null } | undefined
+    const byContent = getDb().prepare('SELECT id, source_path, base_id FROM knowledge_files WHERE content_hash = ? AND base_id = ? LIMIT 1').get(contentHash, targetBaseId) as { id: string; source_path: string | null; base_id: string } | undefined
     if (byContent) {
-      return { success: false, duplicate: true, error: `内容重复：与已导入的 ${byContent.source_path ?? byContent.id} 内容相同` }
+      return { success: false, duplicate: true, error: `内容重复：与知识库「${byContent.base_id}」中已导入的 ${byContent.source_path ?? byContent.id} 内容相同` }
     }
-    const targetBaseId = baseId ?? 'default'
     const rawDir = getBaseRawDir(targetBaseId)
     mkdirSync(rawDir, { recursive: true })
     const relativePath = generateRawFilePath(filePath, rawDir)
@@ -701,7 +754,7 @@ function ingestExtractedFile(filePath: string, extraction: { title: string; cont
     const displayTitle = basename(filePath).replace(/\.[^.]+$/, '')
     const id = generateId()
 
-    cleanContent = extractBase64Images(cleanContent, rawDir)
+    cleanContent = extractBase64Images(cleanContent, rawDir, targetBaseId)
 
     const frontmatter = buildFrontmatter({
       title: displayTitle,
@@ -739,7 +792,7 @@ export async function reextractKnowledge(id: string): Promise<KnowledgeImportRes
   const extraction = await extractInWorker(row.source_path)
   let cleanContent = stripFrontmatter(extraction.content)
   const rawDir = getBaseRawDir(row.base_id)
-  cleanContent = extractBase64Images(cleanContent, rawDir)
+  cleanContent = extractBase64Images(cleanContent, rawDir, row.base_id)
   const contentHash = createHash('sha256').update(cleanContent).digest('hex')
   const fullPath = join(rawDir, row.file_path)
   writeFileSync(fullPath, cleanContent, 'utf-8')
@@ -774,7 +827,7 @@ export async function importUrl(url: string, baseId?: string): Promise<Knowledge
     if (signal.aborted) return { success: false, error: 'cancelled' }
     if (!html) return { success: false, error: 'Failed to fetch rendered URL' }
 
-    const existingRow = getKnowledgeFileBySource('', url)
+    const existingRow = getKnowledgeFileBySource('', url, baseId ?? 'default')
     if (existingRow) {
       return { success: false, duplicate: true, file: toKnowledgeFile(existingRow), error: `Already exists: ${url}` }
     }
@@ -827,7 +880,7 @@ export async function importUrl(url: string, baseId?: string): Promise<Knowledge
     const id = generateId()
 
     // Extract base64 images to local files before writing
-    cleanMarkdown = extractBase64Images(cleanMarkdown)
+    cleanMarkdown = extractBase64Images(cleanMarkdown, rawDir, targetBaseId)
 
     const frontmatter = buildFrontmatter({
       title,
@@ -864,12 +917,14 @@ export function saveExperienceToRaw(content: string, convId: string, title?: str
   const displayTitle = title || `Experience from ${convId.slice(0, 8)}`
   const slug = sanitizeName(displayTitle).slice(0, 60)
   const relativePath = `experience_${slug}_${date}.md`
-  const existing = getKnowledgeFileByPath(relativePath)
+  const targetBaseId = baseId ?? 'default'
+  // Scoped to the target base (M16): a same-named file in ANOTHER base is not
+  // this experience, and returning it would hand the caller a foreign row.
+  const existing = getKnowledgeFileByPathAndBase(relativePath, targetBaseId)
   if (existing) {
     console.log(`[knowledge-store] Experience already exists: ${relativePath}, skipping duplicate`)
     return toKnowledgeFile(existing)
   }
-  const targetBaseId = baseId ?? 'default'
   const rawDir = getBaseRawDir(targetBaseId)
   mkdirSync(rawDir, { recursive: true })
   const destPath = join(rawDir, relativePath)
@@ -1085,7 +1140,16 @@ export function rebuildWiki(baseId?: string): { clearedPages: number; resetSourc
       try { unlinkSync(join(wikiDir, f)) } catch { /* already gone */ }
     }
   }
-  try { getDb().prepare('DELETE FROM knowledge_wiki_fts').run() } catch { /* table may not exist */ }
+  // M14: only the rebuilt scope loses its FTS rows — wiping every base's wiki
+  // index degraded all the OTHER bases' searches to the unranked rg fallback
+  // until the next startup.
+  try {
+    if (baseId !== undefined) {
+      getDb().prepare('DELETE FROM knowledge_wiki_fts WHERE base_id = ?').run(baseId)
+    } else {
+      getDb().prepare('DELETE FROM knowledge_wiki_fts').run()
+    }
+  } catch { /* table may not exist */ }
 
   const clause = baseId !== undefined ? "WHERE status = 'compiled' AND base_id = ?" : "WHERE status = 'compiled'"
   const params = baseId !== undefined ? [baseId] : []

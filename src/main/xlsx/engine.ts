@@ -38,10 +38,22 @@ export function scanXlsx(buffer: Buffer): XlsxScanResult {
     [/vbaProject\.bin$/, 'VBA 宏（exceljs 不保留宏）'],
     [/^xl\/drawings\//, '绘图/图形对象（exceljs 往返可能丢失）'],
     [/^xl\/themes\//, '主题部件（exceljs 往返可能改写主题）'],
+    // The rest of what an exceljs round-trip silently drops (M3):
+    [/^xl\/threadedComments\//, '串联批注（exceljs 往返会丢失）'],
+    [/^xl\/slicers\//, '切片器（exceljs 往返会丢失）'],
   ]
   for (const [pattern, why] of forbidden) {
     if (names.some((n) => pattern.test(n))) {
       return { ok: false, reason: `工作簿包含${why}——拒绝编辑以避免静默损坏` }
+    }
+  }
+  // Sparklines live INSIDE the sheet XML (x14 extension), not in their own
+  // part — the entry-name scan above cannot see them.
+  for (const entry of zip.getEntries()) {
+    if (!/^xl\/worksheets\/.*\.xml$/.test(entry.entryName)) continue
+    const head = (zip.readFile(entry.entryName) as Buffer).toString('utf8')
+    if (head.includes('sparklineGroup')) {
+      return { ok: false, reason: `工作簿包含迷你图（${entry.entryName}，exceljs 往返会丢失）——拒绝编辑以避免静默损坏` }
     }
   }
   return { ok: true }
@@ -100,7 +112,10 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
   const beforeSheets = workbook.worksheets.map((ws) => ws.name)
   const results: XlsxEditOutcome['results'] = []
   const warnings: string[] = []
-  const readBacks: Array<() => void> = []
+  /** Ops whose write must survive the round-trip, verified against the
+   *  RELOADED buffer below — the old gate read back from the very workbook
+   *  object the write had just set, so it was a tautology (M4). */
+  const readBacks: Array<{ sheetName: string; address: string; op: Record<string, unknown>; after: XlsxCellSnapshot }> = []
 
   for (let index = 0; index < ops.length; index++) {
     const op = ops[index] as Record<string, unknown>
@@ -126,20 +141,7 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
         }
         if (typeof op.number_format === 'string') cell.numFmt = op.number_format
         const after = cellSnapshot(cell)
-        // Read-back gate (L6): value/formula must read back as intended.
-        readBacks.push(() => {
-          const check = ws.getCell(address)
-          if (typeof op.formula === 'string' && op.formula) {
-            if (check.formula !== (op.formula.startsWith('=') ? op.formula.slice(1) : op.formula)) {
-              throw new Error(`set_cell ${address}: 公式读回不一致`)
-            }
-          } else if (!sameValue(after.value, check.value ?? null)) {
-            throw new Error(`set_cell ${address}: 值读回不一致`)
-          }
-          if (typeof op.number_format === 'string' && check.numFmt !== op.number_format) {
-            throw new Error(`set_cell ${address}: 数字格式读回不一致`)
-          }
-        })
+        readBacks.push({ sheetName: ws.name, address, op, after })
         results.push({ index, op: kind, ok: true, detail: `${address} ← ${op.formula ? '=' + String(op.formula) : JSON.stringify(op.value ?? null)}（原: ${beforeText.slice(0, 40) || '空'}）` })
         continue
       }
@@ -154,9 +156,23 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
           row.eachCell({ includeEmpty: false }, (cell) => {
             const isFormula = typeof cell.formula === 'string' && cell.formula.length > 0
             if (isFormula && !includeFormulas) return // L7: formulas untouched by default
-            const text = typeof cell.value === 'string' ? cell.value : cell.text
+            // A rich-text or hyperlink cell rewritten as a plain string loses
+            // its formatting/link — that silent downgrade used to pass as a
+            // successful replacement. Name the cell and refuse the op (the
+            // batch refuses with it).
+            const v = cell.value
+            const isRichText = typeof v === 'object' && v !== null && 'richText' in (v as object)
+            const isHyperlink = typeof v === 'object' && v !== null && 'hyperlink' in (v as object)
+            if (isRichText || isHyperlink) {
+              const flat = typeof cell.text === 'string' ? cell.text : ''
+              if (flat.includes(find)) {
+                throw new Error(`find_replace: ${cell.address} 是${isRichText ? '富文本' : '超链接'}单元格——整格替换会丢失其格式/链接，本批拒绝。请先用 read 查看该单元格或改用 set_cell 明确重写`)
+              }
+              return
+            }
+            const text = typeof v === 'string' ? v : cell.text
             if (typeof text === 'string' && text.includes(find)) {
-              const next = (typeof cell.value === 'string' ? cell.value : text).split(find).join(replace)
+              const next = (typeof v === 'string' ? v : text).split(find).join(replace)
               cell.value = next
               count++
             }
@@ -193,11 +209,30 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
   if (afterSheets.join('|') !== beforeSheets.join('|')) {
     throw new Error('门禁未通过：工作表清单发生了变化')
   }
-  for (const verify of readBacks) verify()
 
   const outBuffer = Buffer.from(await workbook.xlsx.writeBuffer() as ArrayBuffer)
   const reloaded = new ExcelJS.Workbook()
   await reloaded.xlsx.load(outBuffer as unknown as ArrayBuffer)
+
+  // Read-back gate (L6, M4): every written cell is read back from the
+  // re-serialized buffer — the bytes a client will actually open — not from
+  // the in-memory workbook the write just mutated.
+  for (const rb of readBacks) {
+    const ws2 = reloaded.getWorksheet(rb.sheetName)
+    if (!ws2) throw new Error(`门禁未通过：重载后缺少工作表「${rb.sheetName}」`)
+    const check = ws2.getCell(rb.address)
+    if (typeof rb.op.formula === 'string' && rb.op.formula) {
+      if (check.formula !== (rb.op.formula.startsWith('=') ? rb.op.formula.slice(1) : rb.op.formula)) {
+        throw new Error(`set_cell ${rb.address}: 公式写盘回读不一致`)
+      }
+    } else if (!sameValue(rb.after.value, check.value ?? null)) {
+      throw new Error(`set_cell ${rb.address}: 值写盘回读不一致`)
+    }
+    if (typeof rb.op.number_format === 'string' && check.numFmt !== rb.op.number_format) {
+      throw new Error(`set_cell ${rb.address}: 数字格式写盘回读不一致`)
+    }
+  }
+
   const outline = reloaded.worksheets.map((ws) => ({ sheet: ws.name, usedRange: `${ws.rowCount} 行 × ${ws.columnCount} 列` }))
   return { buffer: outBuffer, results, outline, warnings }
 }

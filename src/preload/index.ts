@@ -310,9 +310,9 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_PATCH_FILE, input),
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_WRITE_FILE, input),
-  editDocx: (input: { filePath: string; ops: unknown }): Promise<unknown> =>
+  editDocx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_DOCX, input),
-  editXlsx: (input: { filePath: string; ops: unknown }): Promise<unknown> =>
+  editXlsx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_XLSX, input),
   inspectOffice: (input: { filePath: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_INSPECT_OFFICE, input),
@@ -320,6 +320,8 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, input),
   convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),
+  registerPreviewNonce: (input: { filePath: string; nonce: string }): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, input),
   saveBase64Image: (data: string): Promise<{ success: boolean; path: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_SAVE_BASE64_IMAGE, data),
   copyFileToTmp: (sourcePath: string): Promise<{ success: boolean; path: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_COPY_FILE_TO_TMP, sourcePath),
   copyFile: (input: { sourceUrl?: string; destination: string }): Promise<{ success: boolean; error?: string }> =>
@@ -360,8 +362,8 @@ const electronAPI = {
   knowledgeGetFile: (id: string): Promise<KnowledgeFile | null> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET, id),
   knowledgeAddFile: (filePaths: string[], baseId?: string): Promise<KnowledgeImportResult[]> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_FILE, filePaths, baseId),
-  knowledgePrepareImport: (filePaths: string[]): Promise<{ existing: { id: string; filePath: string }[]; new: string[] }> =>
-    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_PREPARE_IMPORT, filePaths),
+  knowledgePrepareImport: (filePaths: string[], baseId?: string): Promise<{ existing: { id: string; filePath: string }[]; new: string[] }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_PREPARE_IMPORT, filePaths, baseId),
   knowledgeScanFolder: (folderPath: string): Promise<{ fileCount: number; filePaths: string[] }> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SCAN_FOLDER, folderPath),
   knowledgeAddFolder: (folderPath: string, baseId?: string): Promise<KnowledgeImportResult[]> =>
@@ -369,10 +371,10 @@ const electronAPI = {
   knowledgeAddUrl: (url: string, baseId?: string): Promise<KnowledgeImportResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_ADD_URL, url, baseId),
   knowledgeDelete: (id: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_DELETE, id),
-  knowledgeGetRaw: (relativePath: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW, relativePath),
-  knowledgeGetRawPath: (relativePath: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, relativePath),
-  knowledgeReadWiki: (relativePath?: string): Promise<{ content: string | null; files: string[] | null }> =>
-    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_READ_WIKI, relativePath),
+  knowledgeGetRaw: (relativePath: string, baseId?: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW, relativePath, baseId),
+  knowledgeGetRawPath: (relativePath: string, baseId?: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_RAW_PATH, relativePath, baseId),
+  knowledgeReadWiki: (relativePath?: string, baseId?: string): Promise<{ content: string | null; files: string[] | null }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_READ_WIKI, relativePath, baseId),
   knowledgeWriteExperience: (data: { content: string; convId: string; title?: string }): Promise<KnowledgeFile> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_WRITE_EXPERIENCE, data),
   knowledgeWriteFavorite: (data: { content: string; messageId: string; conversationId: string; title?: string }): Promise<KnowledgeFile> =>
@@ -382,6 +384,7 @@ const electronAPI = {
     actions: { filePath: string; content: string }[]
     logEntry?: string
     compiledIds?: string[]
+    baseId?: string
   }): Promise<{ written: number; logAppended: boolean; markedCompiled: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_APPLY_WIKI_CHANGES, data),
   knowledgeUpdateStatus: (data: { id: string; status: 'compiled' }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_UPDATE_STATUS, data),
   knowledgeClearAll: (): Promise<{ deletedRaw: number; deletedWiki: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_CLEAR_ALL),
@@ -389,7 +392,7 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_CONTENT, query, baseId),
   knowledgeSearchWiki: (query: string, baseId?: string): Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_SEARCH_WIKI, query, baseId),
-  knowledgeRebuildIndex: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_INDEX),
+  knowledgeRebuildIndex: (baseId?: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_INDEX, baseId),
   knowledgeGetSchema: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_SCHEMA),
   knowledgeGetWikiDir: (baseId?: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_GET_WIKI_DIR, baseId),
   knowledgeRebuildWiki: (baseId?: string): Promise<{ clearedPages: number; resetSources: number }> => ipcRenderer.invoke(IPC_CHANNELS.KNOWLEDGE_REBUILD_WIKI, baseId),

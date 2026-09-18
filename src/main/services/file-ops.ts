@@ -182,12 +182,22 @@ export async function svcReadFile(filePath: string): Promise<string | null> {
  *  formats it renders itself (docx via docx-preview) — a utf-8 read would
  *  mangle them. Base64 because that is what survives the IPC structured clone
  *  as a plain string (Uint8Array would too, but base64 is the established
- *  shape for saveBase64Image / read-cache). Same read guard as svcReadFile. */
+ *  shape for saveBase64Image / read-cache). Same read guard as svcReadFile.
+ *  Stat-gated BEFORE reading (M9): a multi-GB file used to materialize a
+ *  full Buffer + a base64 string in this process and again across the IPC
+ *  boundary before any renderer-side gate could object. 256MB is a process
+ *  guard, deliberately above the per-kind renderer gates (pdfjs 64MB), so
+ *  those still deliver their own honest oversized cards for realistic files. */
+const MAX_BINARY_READ_BYTES = 256 * 1024 * 1024
+
 export async function svcReadFileBinary(filePath: string): Promise<string | null> {
   try {
     const guard = await checkFsTarget(filePath, 'read')
     if (!guard.ok) return null
-    return (await readFile(resolvePath(filePath))).toString('base64')
+    const resolved = resolvePath(filePath)
+    const s = await stat(resolved)
+    if (s.size > MAX_BINARY_READ_BYTES) return null
+    return (await readFile(resolved)).toString('base64')
   } catch {
     return null
   }

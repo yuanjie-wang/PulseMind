@@ -103,8 +103,8 @@ export function svcGetFile(id: string) {
   return getFile(id)
 }
 
-export function svcPrepareImport(filePaths: string[]) {
-  return prepareImport(filePaths)
+export function svcPrepareImport(filePaths: string[], baseId?: string) {
+  return prepareImport(filePaths, baseId)
 }
 
 export async function svcAddFile(filePaths: string[], baseId?: string) {
@@ -199,8 +199,8 @@ export function svcApplyWikiChanges(data: {
   return { written, logAppended: !!data.logEntry, markedCompiled: data.compiledIds?.length ?? 0 }
 }
 
-export function svcRebuildIndex(): void {
-  rebuildWikiIndex()
+export function svcRebuildIndex(baseId: string = 'default'): void {
+  rebuildWikiIndex(baseId)
 }
 
 /** The wiki schema document the compiler prompt must carry (K2): the file

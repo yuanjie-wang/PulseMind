@@ -356,11 +356,14 @@ export interface ElectronAPI {
   editFile: (input: { filePath: string; oldStr: string; newStr: string; multi: boolean }) => Promise<{ success: boolean; replacements: number; error?: string }>
   patchFile: (input: { filePath: string; diff: string }) => Promise<{ success: boolean; replacements: number; error?: string }>
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }) => Promise<{ success: boolean; error?: string }>
-  editDocx: (input: { filePath: string; ops: import('../office/ops').DocxToolOp[] }) => Promise<import('../office/ops').DocxEditOutcome & { success: boolean; error?: string; backup?: string }>
-  editXlsx: (input: { filePath: string; ops: import('../office/ops').XlsxToolOp[] }) => Promise<import('../office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>
+  editDocx: (input: { filePath: string; ops: import('../office/ops').DocxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').DocxEditOutcome & { success: boolean; error?: string; backup?: string }>
+  editXlsx: (input: { filePath: string; ops: import('../office/ops').XlsxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>
   inspectOffice: (input: { filePath: string }) => Promise<import('../office/ops').OfficeInspectResult>
   exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv'; content?: string; sourcePath?: string; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
+  /** M10: register the per-mount element-edit nonce in the main process —
+   *  the served picker copy reads it there, never the frame URL. */
+  registerPreviewNonce: (input: { filePath: string; nonce: string }) => Promise<void>
   saveBase64Image: (data: string) => Promise<{ success: boolean; path: string }>
   copyFileToTmp: (sourcePath: string) => Promise<{ success: boolean; path: string }>
   copyFile: (input: { source?: string; sourceUrl?: string; destination: string }) => Promise<{ success: boolean; error?: string }>
@@ -395,13 +398,13 @@ export interface ElectronAPI {
   knowledgeGetFile: (id: string) => Promise<KnowledgeFile | null>
   knowledgeAddFile: (filePaths: string[], baseId?: string) => Promise<KnowledgeImportResult[]>
   knowledgeScanFolder: (folderPath: string) => Promise<{ fileCount: number; filePaths: string[] }>
-  knowledgePrepareImport: (filePaths: string[]) => Promise<{ existing: { id: string; filePath: string }[]; new: string[] }>
+  knowledgePrepareImport: (filePaths: string[], baseId?: string) => Promise<{ existing: { id: string; filePath: string }[]; new: string[] }>
   knowledgeAddFolder: (folderPath: string, baseId?: string) => Promise<KnowledgeImportResult[]>
   knowledgeAddUrl: (url: string, baseId?: string) => Promise<KnowledgeImportResult>
   knowledgeDelete: (id: string) => Promise<void>
-  knowledgeGetRaw: (relativePath: string) => Promise<string>
-  knowledgeGetRawPath: (relativePath: string) => Promise<string>
-  knowledgeReadWiki: (relativePath?: string) => Promise<{ content: string | null; files: string[] | null }>
+  knowledgeGetRaw: (relativePath: string, baseId?: string) => Promise<string>
+  knowledgeGetRawPath: (relativePath: string, baseId?: string) => Promise<string>
+  knowledgeReadWiki: (relativePath?: string, baseId?: string) => Promise<{ content: string | null; files: string[] | null }>
   knowledgeWriteExperience: (data: { content: string; convId: string; title?: string }) => Promise<KnowledgeFile>
   knowledgeWriteFavorite: (data: { content: string; messageId: string; conversationId: string; title?: string }) => Promise<KnowledgeFile>
   knowledgeGetStats: (baseId?: string) => Promise<KnowledgeStats>
@@ -409,12 +412,13 @@ export interface ElectronAPI {
     actions: { filePath: string; content: string }[]
     logEntry?: string
     compiledIds?: string[]
+    baseId?: string
   }) => Promise<{ written: number; logAppended: boolean; markedCompiled: number }>
   knowledgeUpdateStatus: (data: { id: string; status: 'compiled' }) => Promise<void>
   knowledgeClearAll: () => Promise<{ deletedRaw: number; deletedWiki: number }>
   knowledgeSearchContent: (query: string, baseId?: string) => Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>>
   knowledgeSearchWiki: (query: string, baseId?: string) => Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>>
-  knowledgeRebuildIndex: () => Promise<void>
+  knowledgeRebuildIndex: (baseId?: string) => Promise<void>
   knowledgeGetSchema: () => Promise<string>
   knowledgeGetWikiDir: (baseId?: string) => Promise<string>
   knowledgeRebuildWiki: (baseId?: string) => Promise<{ clearedPages: number; resetSources: number }>

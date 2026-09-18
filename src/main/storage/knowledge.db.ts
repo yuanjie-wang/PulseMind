@@ -84,13 +84,26 @@ export function getKnowledgeFileByPath(filePath: string): KnowledgeFileRow | nul
   return row ?? null
 }
 
-export function getKnowledgeFileBySource(sourcePath: string, sourceUrl?: string): KnowledgeFileRow | null {
+/** Same relative paths exist per base (M15): resolving an rg hit needs the
+ *  owning base, or the first global row wins and attributes the match to the
+ *  wrong file. */
+export function getKnowledgeFileByPathAndBase(filePath: string, baseId: string): KnowledgeFileRow | null {
+  const row = getDb().prepare('SELECT * FROM knowledge_files WHERE file_path = ? AND base_id = ?').get(filePath, baseId) as KnowledgeFileRow | undefined
+  return row ?? null
+}
+
+/** Source-duplicate check. `baseId` scopes it (M16): the rail's isolation
+ *  contract means the SAME url/file may live in two bases — a global check
+ *  silently refused every re-import into a second base. */
+export function getKnowledgeFileBySource(sourcePath: string, sourceUrl?: string, baseId?: string): KnowledgeFileRow | null {
+  const clause = baseId !== undefined ? ' AND base_id = ?' : ''
+  const baseParams = baseId !== undefined ? [baseId] : []
   if (sourcePath) {
-    const row = getDb().prepare('SELECT * FROM knowledge_files WHERE source_path = ?').get(sourcePath) as KnowledgeFileRow | undefined
+    const row = getDb().prepare(`SELECT * FROM knowledge_files WHERE source_path = ?${clause}`).get(sourcePath, ...baseParams) as KnowledgeFileRow | undefined
     if (row) return row
   }
   if (sourceUrl) {
-    const row = getDb().prepare('SELECT * FROM knowledge_files WHERE source_url = ?').get(sourceUrl) as KnowledgeFileRow | undefined
+    const row = getDb().prepare(`SELECT * FROM knowledge_files WHERE source_url = ?${clause}`).get(sourceUrl, ...baseParams) as KnowledgeFileRow | undefined
     if (row) return row
   }
   return null
@@ -172,6 +185,9 @@ export function deleteKnowledgeBase(id: string): void {
   if (id === 'default') throw new Error('默认知识库不可删除')
   const tx = getDb().transaction(() => {
     getDb().prepare('DELETE FROM knowledge_fts WHERE file_rowid IN (SELECT rowid FROM knowledge_files WHERE base_id = ?)').run(id)
+    // M13: the wiki FTS is keyed by base too — a base deleted without this
+    // left its pages searchable until the next startup's sync check converged.
+    getDb().prepare('DELETE FROM knowledge_wiki_fts WHERE base_id = ?').run(id)
     getDb().prepare('DELETE FROM knowledge_files WHERE base_id = ?').run(id)
     getDb().prepare('DELETE FROM knowledge_bases WHERE id = ?').run(id)
   })

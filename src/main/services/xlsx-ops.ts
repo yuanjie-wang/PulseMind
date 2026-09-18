@@ -20,6 +20,9 @@ const pReadFile = promisify(readFile)
 const pWriteFile = promisify(writeFile)
 const pRename = promisify(rename)
 
+/** Same payload ceiling the docx engine enforces (docx/ops.ts MAX_OPS_CHARS). */
+const MAX_OPS_CHARS = 120_000
+
 export interface XlsxEditResult extends Partial<XlsxEditOutcome> {
   success: boolean
   error?: string
@@ -28,8 +31,13 @@ export interface XlsxEditResult extends Partial<XlsxEditOutcome> {
   changeSummary?: string
 }
 
-export async function svcEditXlsx(input: { filePath: string; ops: Array<Record<string, unknown>> }): Promise<XlsxEditResult> {
+export async function svcEditXlsx(input: { filePath: string; ops: Array<Record<string, unknown>>; workspaceDir?: string }): Promise<XlsxEditResult> {
   try {
+    // The ops payload cap the docx engine enforces internally (MAX_OPS_CHARS):
+    // applied HERE so both the exceljs and the OOXML-direct path honor it (M4).
+    if (JSON.stringify(input.ops ?? []).length > MAX_OPS_CHARS) {
+      return { success: false, error: `ops payload too large (limit ${MAX_OPS_CHARS} chars)` }
+    }
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
@@ -46,9 +54,10 @@ export async function svcEditXlsx(input: { filePath: string; ops: Array<Record<s
           return { success: true, results: [{ index: 0, op: 'inspect', ok: true, detail: '' }], outline: result.outline, warnings: [] }
         }
         const { backup, warning } = await backupOfficeOriginal(safePath)
-        // P2.5: snapshot to conversation workspace .versions/
+        // P2.5: snapshot to conversation workspace .versions/ (renderer-driven
+        // sessions carry their workspaceDir in the payload — see docx-ops, M7)
         const sandbox = currentSessionSandbox()
-        await snapshotToWorkspace(safePath, sandbox?.workspaceDir)
+        await snapshotToWorkspace(safePath, sandbox?.workspaceDir ?? input.workspaceDir)
         let outcome: XlsxEditOutcome
         try {
           outcome = await editXlsxOOXML(original, input.ops)
@@ -88,9 +97,9 @@ export async function svcEditXlsx(input: { filePath: string; ops: Array<Record<s
       }
 
       const { backup, warning } = await backupOfficeOriginal(safePath)
-      // P2.5: snapshot to conversation workspace .versions/
+      // P2.5: snapshot to conversation workspace .versions/ (see M7 above)
       const sandbox2 = currentSessionSandbox()
-      await snapshotToWorkspace(safePath, sandbox2?.workspaceDir)
+      await snapshotToWorkspace(safePath, sandbox2?.workspaceDir ?? input.workspaceDir)
       let outcome: XlsxEditOutcome
       try {
         outcome = await editXlsx(original, input.ops)

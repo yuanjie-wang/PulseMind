@@ -57,13 +57,15 @@ import { PreviewPane } from './src/renderer/src/components/preview/PreviewPane'
 import { buildPreviewCopy } from './src/shared/preview/html-inject'
 import { PICKER_SCRIPT } from './src/main/preview/picker-source.generated'
 
+window.__previewNonces = {}
 window.__buildFrameDoc = (url) => {
   const m = /^local-file:\\/\\/([^?#]*)?(\\?[^#]*)?/.exec(url)
   const raw = m && m[1] ? decodeURIComponent(m[1]) : '/'
   const query = (m && m[2]) || ''
   const preview = query.includes('pmPreview=1')
-  const nonceMatch = /[?&]pmNonce=([^&#]+)/.exec(query)
-  const nonce = nonceMatch ? decodeURIComponent(nonceMatch[1]) : undefined
+  // M10: the per-mount nonce arrives through the main-process registry (the
+  // renderer's registerPreviewNonce stub fills this map) — never the URL.
+  const nonce = window.__previewNonces[raw]
   const text = window.__files[raw]
   if (text === undefined) return '<body><p style="color:red">404 ' + raw + '</p></body>'
   return preview ? buildPreviewCopy(text, PICKER_SCRIPT, nonce) : text
@@ -250,6 +252,10 @@ await page.addScriptTag({
     : key === 'onApiStreamError' ? (cb) => { window.__streamSubs.error.push(cb); return () => {} }
     : key === 'onApiStreamDone' ? (cb) => { window.__streamSubs.done.push(cb); return () => {} }
     : key === 'getFileStat' ? () => Promise.resolve({ size: 10, mtime: '2026-09-16T00:00:00Z' })
+    : key === 'registerPreviewNonce' ? ({ filePath, nonce }) => {
+        window.__previewNonces[filePath] = nonce
+        return Promise.resolve()
+      }
     : key === 'openFolder' ? () => Promise.resolve()
     : key === 'showSaveDialog' ? () => Promise.resolve({ canceled: true })
     : key === 'copyFile' ? () => Promise.resolve()

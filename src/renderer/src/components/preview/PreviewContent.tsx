@@ -48,7 +48,9 @@ function isEditableKind(kind: FileKind): boolean {
 }
 
 /** Read a text file through the util bridge. Images skip the read — the
- *  <img> streams bytes straight from local-file://. */
+ *  <img> streams bytes straight from local-file://. Office kinds skip too:
+ *  their rich renderers re-read the bytes themselves (readFileBinary), so a
+ *  utf-8 read here was a guaranteed-mangled full copy nobody consumed (M11). */
 function usePreviewFile(
   path: string,
   kind: FileKind,
@@ -57,7 +59,7 @@ function usePreviewFile(
   const [state, setState] = useState<LoadState>({ status: 'loading' })
 
   const load = useCallback(() => {
-    if (kind === 'image') {
+    if (kind === 'image' || kind === 'office') {
       setState({ status: 'ready', text: '' })
       return
     }

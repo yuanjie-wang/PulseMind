@@ -22,6 +22,7 @@ import { svcExportDocument } from '../services/office-export'
 import { svcEditDocx } from '../services/docx-ops'
 import { svcEditXlsx } from '../services/xlsx-ops'
 import { svcInspectOffice } from '../services/office-inspect'
+import { registerPreviewNonce } from '../preview/nonce-registry'
 import type {
   EditFileInput,
   EditFileResult,
@@ -80,10 +81,16 @@ export function registerFileOpsHandlers(): void {
   // ── Convert file to markdown via markitdown (cached in tmp/read-cache) ──
   ipcMain.handle(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, (_event, filePath: string) => svcConvertToMarkdown(filePath))
 
+  // ── Element-edit preview nonce (M10): per-mount secret for the served
+  //    picker copy — kept in a main-process registry, never in the frame URL ──
+  ipcMain.handle(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, (_event, input: { filePath: string; nonce: string }) => {
+    registerPreviewNonce(input.filePath, input.nonce)
+  })
+
   // ── Write file (direct IPC, bypasses shell heredoc) ──────────────
   ipcMain.handle(IPC_CHANNELS.UTIL_WRITE_FILE, (_event, input: WriteFileInput): Promise<WriteFileResult> => svcWriteFile(input))
-  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_DOCX, withRawResponse(async (input: { filePath: string; ops: unknown[] }) => svcEditDocx(input as { filePath: string; ops: never[] })))
-  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_XLSX, withRawResponse(async (input: { filePath: string; ops: unknown[] }) => svcEditXlsx(input as { filePath: string; ops: never[] })))
+  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_DOCX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditDocx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
+  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_XLSX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditXlsx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
   ipcMain.handle(IPC_CHANNELS.UTIL_INSPECT_OFFICE, withRawResponse(async (input: { filePath: string }) => svcInspectOffice(input)))
   ipcMain.handle(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, withRawResponse(async (input: import('../services/office-export').ExportDocumentInput) => svcExportDocument(input)))
 }

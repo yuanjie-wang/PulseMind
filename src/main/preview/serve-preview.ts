@@ -19,6 +19,7 @@ import { extname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { buildPreviewCopy, isPreviewUrl } from '../../shared/preview/html-inject'
 import { PICKER_SCRIPT } from './picker-source.generated'
+import { takePreviewNonce } from './nonce-registry'
 
 export { stripCspMeta, injectPickerScript, isPreviewUrl } from '../../shared/preview/html-inject'
 
@@ -76,15 +77,10 @@ export async function serveLocalFile(request: Request): Promise<Response> {
   try {
     if (previewCopy) {
       const text = await readFile(filePath, 'utf8')
-      // The pmNonce query param rides the src URL the renderer built (M9):
-      // it is stamped into the picker so the parent can tell picker messages
-      // from the page's own scripts posting with the same event.source.
-      let nonce: string | undefined
-      try {
-        nonce = new URL(request.url).searchParams.get('pmNonce') ?? undefined
-      } catch {
-        nonce = undefined
-      }
+      // The nonce comes from the per-mount registry the renderer filled over
+      // IPC (M10) — never from the query string, which the served page's own
+      // scripts read trivially via location.search.
+      const nonce = takePreviewNonce(filePath)
       return new Response(buildPreviewCopy(text, PICKER_SCRIPT, nonce), {
         status: 200,
         headers: { 'Content-Type': MIME[ext] },

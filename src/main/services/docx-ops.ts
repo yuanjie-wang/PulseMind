@@ -32,7 +32,7 @@ export interface DocxEditResult {
   changeSummary?: string
 }
 
-export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[] }): Promise<DocxEditResult> {
+export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[]; workspaceDir?: string }): Promise<DocxEditResult> {
   try {
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, error: guard.reason }
@@ -51,9 +51,12 @@ export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[] }
         }
       }
       const { backup, warning } = await backupOfficeOriginal(safePath)
-      // P2.5: snapshot to conversation workspace .versions/
+      // P2.5: snapshot to conversation workspace .versions/. A renderer-driven
+      // session (the desktop chat) has no AsyncLocalStorage context, so the
+      // caller's workspaceDir rides the IPC payload as the fallback (M7) —
+      // without it the snapshot silently never happened on the main battlefield.
       const sandbox = currentSessionSandbox()
-      await snapshotToWorkspace(safePath, sandbox?.workspaceDir)
+      await snapshotToWorkspace(safePath, sandbox?.workspaceDir ?? input.workspaceDir)
       let outcome: EditDocxResult
       try {
         outcome = editDocx(original, input.ops)

@@ -139,6 +139,10 @@ export const IPC_CHANNELS = {
   UTIL_COPY_FILE_TO_TMP: 'util:copy-file-to-tmp',
   UTIL_COPY_FILE: 'util:copy-file',
   UTIL_CONVERT_TO_MARKDOWN: 'util:convert-to-markdown',
+  // Element-edit preview nonce (M10): the per-mount secret travels through a
+  // main-process registry, never the frame URL (the edited page can read
+  // location.search).
+  UTIL_REGISTER_PREVIEW_NONCE: 'util:register-preview-nonce',
   FILE_STAT: 'file:stat',
 
   // ── Canvas ──
