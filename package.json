@@ -18,17 +18,22 @@
     "test": "vitest run",
     "browsers:install": "playwright-core install chromium",
     "browsers:ensure": "node scripts/ensure-chromium.js",
-    "build:picker": "node scripts/build-preview-picker.mjs"
+    "build:picker": "node scripts/build-preview-picker.mjs",
+    "deps:check": "node scripts/check-deps.mjs"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "adm-zip": "^0.5.17",
     "better-sqlite3": "^12.9.0",
     "cron-parser": "^4.9.0",
+    "docx": "^9.7.1",
+    "docx-preview": "^0.4.0",
     "exceljs": "^4.4.0",
     "jsdom": "^26.1.0",
+    "marked": "^18.0.13",
     "markitdown-js": "^0.0.14",
     "parse5": "^7.3.0",
+    "pdfjs-dist": "^4.10.38",
     "playwright-core": "^1.63.0",
     "react-syntax-highlighter": "^16.1.1",
     "sharp": "^0.35.3",

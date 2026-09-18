@@ -4,7 +4,9 @@ const pkg = require('../package.json')
 /** Dependencies that must remain in node_modules at runtime (native modules, electron, etc.) */
 const EXTERNAL = [
   'electron',
-  ...Object.keys(pkg.dependencies || {})
+  // ESM-only deps: the main bundle is CJS and require() of an ES module throws
+  // ERR_REQUIRE_ESM at launch — bundle them instead so esbuild converts them.
+  ...Object.keys(pkg.dependencies || {}).filter((name) => name !== 'marked')
 ]
 
 /** Shared esbuild options for all Node-side targets (main, worker, preload) */
