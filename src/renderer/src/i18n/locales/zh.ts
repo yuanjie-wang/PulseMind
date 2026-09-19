@@ -274,11 +274,9 @@ const zh = {
   },
 
   deliverables: {
-    title: '产物',
+    turnTitle: '本轮产物',
     preview: '预览',
     from: '来自：{{name}}',
-    total: '共 {{n}} 个文件',
-    openWorkspace: '打开工作区',
     honestBoundary: '仅统计直接写入/编辑的文件；命令行间接产物不在此列',
   },
 

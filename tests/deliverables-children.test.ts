@@ -47,14 +47,30 @@ function stubHydrate(db: Map<string, Conversation>, gate?: (id: string) => Promi
   })
 }
 
-/** Mounts the real hook and renders its Deliverable as probeable JSON. */
+/** Mounts the real hook and renders its result as probeable JSON. The hook
+ *  returns the per-child map only (the workbench aggregate that consumed a
+ *  merge is gone), so `rows`/`sources` here are the parts flattened — every
+ *  assertion below is over distinct children, for which flatten == merge. */
 function HookProbe(props: { conversationId: string; messages: AgentMessage[]; agentStatus?: AgentStatus }): React.ReactElement {
-  const deliverable = useDeliverables(props.conversationId, props.messages, props.agentStatus)
-  return React.createElement('div', { 'data-probe': JSON.stringify(deliverable) })
+  const childParts = useDeliverables(props.conversationId, props.messages, props.agentStatus)
+  const parts = Array.from(childParts, ([convId, part]) => ({ convId, rows: part.rows, sources: part.sources }))
+  const rows = parts.flatMap((p) => p.rows)
+  const sources = parts.flatMap((p) => p.sources)
+  return React.createElement('div', { 'data-probe': JSON.stringify({ childParts: parts, rows, sources }) })
+}
+
+interface ChildPart {
+  convId: string
+  rows: Array<{ path: string }>
+  sources: Array<{ convId: string; title?: string }>
 }
 
 interface Mount {
-  probe: () => { rows: Array<{ path: string; fromConvIds: string[] }>; sources: Array<{ convId: string; title?: string }> }
+  probe: () => {
+    childParts: ChildPart[]
+    rows: Array<{ path: string; fromConvIds: string[] }>
+    sources: Array<{ convId: string; title?: string }>
+  }
   rerender: (props: { conversationId?: string; messages?: AgentMessage[]; agentStatus?: AgentStatus }) => Promise<void>
   unmount: () => Promise<void>
 }
@@ -109,6 +125,15 @@ describe('useDeliverables — sub-conversation aggregation', () => {
       expect(probe.rows.map(r => r.path)).toEqual(['/ws/kid.md'])
       expect(probe.rows[0].fromConvIds).toEqual(['d1_sub'])
       expect(probe.sources).toEqual([{ convId: 'd1_sub', title: '调研专家' }])
+      // The per-turn attribution view rides the same scan: one settled child
+      // part, keyed by subConvId, carrying the same rows.
+      expect(probe.childParts).toEqual([
+        {
+          convId: 'd1_sub',
+          rows: [{ path: '/ws/kid.md', ops: [{ tool: 'write', at: AT, ok: true }], lastAt: AT, fromConvIds: ['d1_sub'] }],
+          sources: [{ convId: 'd1_sub', title: '调研专家' }]
+        }
+      ])
     } finally {
       await mounted.unmount()
     }

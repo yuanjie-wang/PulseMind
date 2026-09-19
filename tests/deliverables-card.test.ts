@@ -1,17 +1,27 @@
 // @vitest-environment jsdom
-// PLAN-deliverables M3: the card and its ChatView wiring. The non-negotiable
-// link — row click → the REAL previewPaneStore.openFile → the workbench tab
-// flips to 'files' — is a store-level fact, assertable here without a layout
-// engine; the pixel-side facts belong to probe-chat-deliverables.mjs (M4).
+// The deliverables surface (2026-09-19): the per-turn inline card. The
+// workbench 产物 aggregate tab was removed the same day — the turn cards are
+// the only surface. The non-negotiable links are store-level facts, assertable
+// here without a layout engine:
+//   - a row click → the REAL previewPaneStore.openFile → the workbench flips
+//     to 'files' with the file's tab registered;
+//   - when a turn ends on assistant text, the card mounts INSIDE the message
+//     ABOVE its action toolbar (MessageGroup's aboveActions slot) — DOM order
+//     card-before-toolbar is pinned here;
+//   - the workbench pane has no deliverables tab/panel any more.
+// The pixel-side facts (spacing to the next turn's bubble, scroll-following)
+// belong to probe-chat-deliverables.mjs. createElement, not JSX — vitest here
+// runs plain .ts through esbuild (see the include glob), so JSX does not parse.
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DeliverablesCard } from '../src/renderer/src/components/chat/DeliverablesCard'
+import { TurnDeliverablesCard } from '../src/renderer/src/components/chat/TurnDeliverablesCard'
+import { SegmentBlock } from '../src/renderer/src/components/chat/SegmentView'
 import { collectDeliverables } from '../src/renderer/src/components/chat/deliverables'
 import { usePreviewPaneStore } from '../src/renderer/src/stores/previewPaneStore'
 import { useWorkbenchStore } from '../src/renderer/src/stores/workbenchStore'
 import { TranslationProvider } from '../src/renderer/src/i18n/useTranslation'
-import type { AgentMessage } from '../src/renderer/src/types/agent'
+import type { AgentMessage, AgentStatus } from '../src/renderer/src/types/agent'
 
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
 const AT = '2026-09-18T10:00:00.000Z'
@@ -41,16 +51,17 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   vi.stubGlobal('matchMedia', vi.fn().mockImplementation(() => ({ matches: false,
     addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} })))
+  useWorkbenchStore.setState({ activeTab: 'files', openByConversation: {} })
+  usePreviewPaneStore.setState({ tabsByConversation: {}, activeByConversation: {} })
 })
 afterEach(() => { vi.unstubAllGlobals() })
 
-async function mount(deliverable: ReturnType<typeof collectDeliverables>, props?: { conversationId?: string; workspaceDir?: string }) {
+async function mount(node: React.ReactElement): Promise<{ container: HTMLElement; unmount: () => Promise<void> }> {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
   await act(async () => {
-    root.render(React.createElement(TranslationProvider, { initialLocale: 'zh' },
-      React.createElement(DeliverablesCard, { deliverable, conversationId: props?.conversationId, workspaceDir: props?.workspaceDir })))
+    root.render(React.createElement(TranslationProvider, { initialLocale: 'zh' }, node))
     await flush()
   })
   return {
@@ -62,13 +73,17 @@ async function mount(deliverable: ReturnType<typeof collectDeliverables>, props?
   }
 }
 
-describe('DeliverablesCard', () => {
-  it('renders nothing when the derivation is empty — no card, no tail space', async () => {
-    const empty = await mount(collectDeliverables([]))
+const noop = () => {}
+
+describe('TurnDeliverablesCard', () => {
+  it('renders nothing when the derivation is empty', async () => {
+    const mounted = await mount(
+      React.createElement(TurnDeliverablesCard, { deliverable: collectDeliverables([]), conversationId: 'conv_1' })
+    )
     try {
-      expect(empty.container.querySelector('.pm-deliverables-card')).toBeNull()
+      expect(mounted.container.querySelector('[data-testid="turn-deliverables"]')).toBeNull()
     } finally {
-      await empty.unmount()
+      await mounted.unmount()
     }
   })
 
@@ -77,40 +92,39 @@ describe('DeliverablesCard', () => {
     const withChild = {
       rows: [
         ...base.rows,
-        {
-          path: '/ws/child-only.md',
-          ops: [{ tool: 'write', at: AT, ok: true }],
-          lastAt: AT,
-          fromConvIds: ['sub_9']
-        }
+        { path: '/ws/child-only.md', ops: [{ tool: 'write', at: AT, ok: true }], lastAt: AT, fromConvIds: ['sub_9'] }
       ],
       sources: [...base.sources, { convId: 'sub_9', title: '调研专家' }]
     }
-    const mounted = await mount(withChild, { conversationId: 'conv_1', workspaceDir: '/ws' })
+    const mounted = await mount(
+      React.createElement(TurnDeliverablesCard, { deliverable: withChild, conversationId: 'conv_1', workspaceDir: '/ws' })
+    )
     try {
-      const rows = mounted.container.querySelectorAll('[data-testid="deliverables-row"]')
+      const rows = mounted.container.querySelectorAll('[data-testid="turn-deliverables-row"]')
       expect(rows).toHaveLength(3)
-      // workspace-relative display
       expect(rows[0].textContent).toContain('report.md')
-      // 写入 ×2 · 编辑 ×1 — the toolLabel verbs, reused
       expect(rows[0].textContent).toContain('写入文件 ×2')
       expect(rows[0].textContent).toContain('编辑文件 ×1')
-      // office badge
       expect(rows[1].textContent).toContain('Word')
-      // child attribution via the source title
       expect(rows[2].textContent).toContain('来自：调研专家')
-      // the honesty footnote is on the card, not buried in a tooltip
-      expect(mounted.container.textContent).toContain('命令行间接产物不在此列')
-      expect(mounted.container.textContent).toContain('共 3 个文件')
+      expect(mounted.container.textContent).toContain('本轮产物')
+      // the honesty boundary rides the head's tooltip — the footnote itself
+      // went away with the aggregate panel
+      expect(mounted.container.querySelector('[data-testid="turn-deliverables"]')!.getAttribute('title'))
+        .toContain('命令行间接产物不在此列')
     } finally {
       await mounted.unmount()
     }
   })
 
   it('row click calls the REAL openFile — tab registered, workbench flips to files', async () => {
-    const mounted = await mount(collectDeliverables(msgs), { conversationId: 'conv_1', workspaceDir: '/ws' })
+    const mounted = await mount(
+      React.createElement(TurnDeliverablesCard, {
+        deliverable: collectDeliverables(msgs), conversationId: 'conv_1', workspaceDir: '/ws'
+      })
+    )
     try {
-      const row = mounted.container.querySelector('[data-testid="deliverables-row"]')!
+      const row = mounted.container.querySelector('[data-testid="turn-deliverables-row"]')!
       await act(async () => { ; (row as HTMLElement).click(); await flush() })
       const store = usePreviewPaneStore.getState()
       const tabs = store.tabsByConversation['conv_1'] ?? []
@@ -121,45 +135,71 @@ describe('DeliverablesCard', () => {
       await mounted.unmount()
     }
   })
+})
 
-  it('collapses on head click and re-expands; conversation switch resets the fold', async () => {
-    const mounted = await mount(collectDeliverables(msgs), { conversationId: 'conv_1', workspaceDir: '/ws' })
-    try {
-      const head = mounted.container.querySelector('[data-testid="deliverables-head"]')!
-      await act(async () => { ; (head as HTMLElement).click(); await flush() })
-      expect(mounted.container.querySelector('[data-testid="deliverables-rows"]')).toBeNull()
-      await act(async () => { ; (head as HTMLElement).click(); await flush() })
-      expect(mounted.container.querySelector('[data-testid="deliverables-rows"]')).not.toBeNull()
-    } finally {
-      await mounted.unmount()
+describe('Placement — the card mounts above the action toolbar', () => {
+  it('a turn-ending assistant text carries the card between its bubble and its 对话工具条', async () => {
+    const textSeg: AgentMessage = {
+      id: 'm-text', role: 'assistant', createdAt: AT,
+      contentBlocks: [{ type: 'text', text: '两份报告已经生成完毕。' }]
     }
-  })
-
-  it('opens the workspace tab from the footer', async () => {
-    const mounted = await mount(collectDeliverables(msgs), { conversationId: 'conv_1', workspaceDir: '/ws' })
+    const card = React.createElement(TurnDeliverablesCard, {
+      deliverable: collectDeliverables(msgs), conversationId: 'conv_1', workspaceDir: '/ws'
+    })
+    const mounted = await mount(
+      React.createElement(SegmentBlock, {
+        seg: { type: 'single', msg: textSeg },
+        isLastSegment: true,
+        actions: 'full',
+        onApproveTool: noop,
+        onRejectTool: noop,
+        onKillTool: noop,
+        aboveActions: card
+      })
+    )
     try {
-      const footer = mounted.container.querySelector('[data-testid="deliverables-open-workspace"]')!
-      await act(async () => { ; (footer as HTMLElement).click(); await flush() })
-      expect(useWorkbenchStore.getState().activeTab).toBe('files')
+      const cardEl = mounted.container.querySelector('[data-testid="turn-deliverables"]')!
+      const toolbar = mounted.container.querySelector('[data-testid="knowledge-save"]')!
+      // card strictly BEFORE the toolbar in document order (the toolbar's
+      // compareDocumentPosition reports PRECEDING for a node before it)
+      expect((toolbar.compareDocumentPosition(cardEl) & Node.DOCUMENT_POSITION_PRECEDING) !== 0).toBe(true)
+      // …and both live inside the same segment block — the card did not fall
+      // out to a sibling slot
+      const segment = toolbar.closest('div[id^="chat-msg-"]')
+      expect(segment).not.toBeNull()
+      expect(segment!.contains(cardEl)).toBe(true)
     } finally {
       await mounted.unmount()
     }
   })
 })
 
-describe('ChatView wiring (source scan — the hook mount itself is probe territory)', () => {
+describe('Wiring (source scans — the mount itself is probe territory)', () => {
   const read = (p: string) => require('node:fs').readFileSync(p, 'utf-8')
   const CHAT_VIEW = 'src/renderer/src/components/layout/ChatView.tsx'
+  const WORKBENCH_PANE = 'src/renderer/src/components/workbench/WorkbenchPane.tsx'
 
-  it('feeds the hook the FULL messages and renders the card in the tail', () => {
+  it('ChatView: the derivation eats the FULL messages; the slot and the sibling path both exist', () => {
     const src = read(CHAT_VIEW)
     expect(src).toContain('useDeliverables(conversationId, messages, agentStatus)')
-    // the card sits in the scroll tail, not the render window
-    expect(src).toContain('<DeliverablesCard')
-    expect(src.indexOf('useDeliverables(conversationId, messages, agentStatus)')).toBeGreaterThan(-1)
-    // non-vacuity of the windowing red line: ChatView has a render window, and
-    // the card must never receive it
-    expect(src).not.toContain('useDeliverables(conversationId, renderedSegments')
-    expect(src).not.toContain('deliverable={collectDeliverables(renderedSegments')
+    // per-turn derivation keyed on the FULL message identity — never the
+    // render window (head truncation would drop old turns' cards)
+    expect(src).toContain('collectTurnDeliverables(messages, childDeliverables)')
+    expect(src).not.toContain('collectTurnDeliverables(renderedSegments')
+    expect(src).toContain('<TurnDeliverablesCard')
+    // the two mount points: the aboveActions slot for text-ending turns, the
+    // sibling column wrapper for everything else
+    expect(src).toContain('renderSegment(seg, abs, cardInMessage ? card : undefined)')
+    expect(src).toContain('{!cardInMessage && card && (')
+    // the workbench aggregate is gone — no data flows to the pane
+    expect(src).not.toContain('deliverable={deliverables')
+  })
+
+  it('WorkbenchPane: the deliverables tab/panel is gone', () => {
+    const src = read(WORKBENCH_PANE)
+    expect(src).not.toContain('DeliverablesPanel')
+    expect(src).not.toContain("'deliverables'")
+    // a persisted activeTab naming the removed tab must not blank the pane
+    expect(src).toContain('WORKBENCH_TAB_IDS.has(s.activeTab)')
   })
 })

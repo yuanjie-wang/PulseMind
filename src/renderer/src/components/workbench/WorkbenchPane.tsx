@@ -10,7 +10,7 @@
 import React, { useRef } from 'react'
 import { X } from 'lucide-react'
 import { clampPaneWidth, PANE_DRAG_HANDLE_WIDTH, type BrowserPaneAction, type BrowserPaneUpdate } from '../../../../shared/browser/pane'
-import { useWorkbenchStore, type WorkbenchTab } from '../../stores/workbenchStore'
+import { useWorkbenchStore, WORKBENCH_TAB_IDS, type WorkbenchTab } from '../../stores/workbenchStore'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { PreviewPane } from '../preview/PreviewPane'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
@@ -40,7 +40,9 @@ interface Props {
 
 export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump = () => {}, onOpenPlanNode, canOpenNode, browserPane, onBrowserAction, onBrowserWidth }: Props): React.ReactElement {
   const width = useWorkbenchStore((s) => s.width)
-  const activeTab = useWorkbenchStore((s) => s.activeTab)
+  // A persisted activeTab naming a removed tab (the one-day deliverables
+  // aggregate) would otherwise render a pane body with no view.
+  const activeTab = useWorkbenchStore((s) => (WORKBENCH_TAB_IDS.has(s.activeTab) ? s.activeTab : 'files'))
   const setWidth = useWorkbenchStore((s) => s.setWidth)
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab)
   const setOpen = useWorkbenchStore((s) => s.setOpen)

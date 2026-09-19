@@ -1,21 +1,27 @@
 /**
  * Chat deliverables probe (real Chromium).
  *
- * The deliverables card (PLAN-deliverables) is a DERIVED view: what files a
- * turn actually wrote, read off the session mirror, plus what the spawn tree
- * wrote (hydrated from the DB at terminal status). Its facts are layout and
- * timing facts no jsdom test can see:
+ * The deliverables surfaces (2026-09-19 rework) are DERIVED views: what files
+ * each turn actually wrote, read off the session mirror, plus what the spawn
+ * tree wrote (hydrated from the DB at terminal status). Their facts are layout
+ * and timing facts no jsdom test can see:
  *
- *   - the card is fed the FULL messages, never ChatView's render window — a
- *     head-truncated feed makes delivered files vanish as the history grows,
- *     which is why this fixture's first files live at the HEAD of a list long
- *     enough (> 50 segments) to truncate;
+ *   - the per-turn card is an IN-FLOW card after each turn's last segment — it
+ *     exists for turns with rows only (here: the head turn and the last turn,
+ *     65 filler turns in between get nothing), and the LAST turn's card trails
+ *     the live tail while the turn is still working;
+ *   - the whole-conversation aggregate moved into the workbench's 产物 tab;
+ *     the full-list feed red line lives THERE now: the panel is derived from
+ *     the FULL messages, never ChatView's render window — which is why this
+ *     fixture's first files sit at the HEAD of a list long enough (> 50
+ *     segments) to truncate;
+ *   - turn-card attribution is DIRECT-child only: the spawned 调研专家's rows
+ *     join the turn that launched it, the grandchild's rows stay
+ *     aggregate-only;
  *   - an op appears the moment its tool_result lands (streaming, mid-turn),
  *     while a still-pending write shows nothing;
  *   - a row click opens the workbench's file tab through the REAL
- *     previewPaneStore.openFile;
- *   - child conversations hydrate through the real hook and merge with
- *     attribution (来自：…).
+ *     previewPaneStore.openFile.
  *
  * No Electron, no LLM calls, no extension: electronAPI is stubbed (hydrate
  * serves the two-layer spawn fixture), so this cannot touch a real session.
@@ -106,15 +112,21 @@ const writePair = (id, path) => ([
 ])
 const text = (id, role, s) => ({ id, role, contentBlocks: [{ type: 'text', text: s }], createdAt: AT })
 
-// The head files live in the FIRST messages of a list long enough to truncate
-// the render window (>50 segments): if the card were ever fed the window
-// instead of the full list, these two vanish and every count below breaks.
+// The head files live in the FIRST turn of a list long enough to truncate the
+// render window (>50 segments): if the aggregate panel were ever fed the
+// window instead of the full list, these two vanish and every count below
+// breaks. u0 / uL make the two producing turns explicit user turns.
+const U0 = text('u0', 'user', '第一轮：整理头部文件')
 const HEAD = [...writePair('h1', WS + '/head-a.md'), ...writePair('h2', WS + '/head-b.md')]
 const FILLER = Array.from({ length: 130 }, (_, i) => text('f' + i, i % 2 ? 'assistant' : 'user', '填充 ' + i))
+const UL = text('uL', 'user', '最后一轮：产出报告与调研')
 const TAIL = [
   ...writePair('t1', WS + '/tail-report.md'),
   { id: 'spa', role: 'assistant', contentBlocks: [{ type: 'tool_use', id: 'spu', name: 'spawn_agent', input: { task: '调研' }, subConvId: 'sub_probe_1' }], createdAt: AT },
-  { id: 'spr', role: 'user', contentBlocks: [{ type: 'tool_result', tool_use_id: 'spu', content: 'spawned' }], createdAt: AT }
+  { id: 'spr', role: 'user', contentBlocks: [{ type: 'tool_result', tool_use_id: 'spu', content: 'spawned' }], createdAt: AT },
+  // The closing text: it makes the last turn end on assistant TEXT, which is
+  // the case where the card must mount INSIDE the message, above its 对话工具条.
+  text('end', 'assistant', '两份报告已经生成完毕：tail-report.md 与调研专家产出的 child-report.md。')
 ]
 
 // ONE mounted tree, state-driven updates — the real chat never unmounts
@@ -125,13 +137,27 @@ function Harness() {
   const [messages, setMessages] = useState([])
   const [status, setStatus] = useState({ status: 'idle' })
   window.__mountWelcome = () => { setMessages([]); setStatus({ status: 'idle' }); return true }
+  // A conversation that never wrote a file: the chat branch renders (so the
+  // workbench exists — the welcome branch returns before it), and the 产物
+  // tab must honestly say empty.
+  window.__mountTextOnly = () => {
+    setMessages([
+      text('w0', 'user', '讲个笑话'),
+      text('w1', 'assistant', '好的：为什么程序员分不清万圣节和圣诞节？因为 OCT 31 == DEC 25。'),
+      text('w2', 'user', '再来一个'),
+      text('w3', 'assistant', '世界上有 10 种人：懂二进制的，和不懂的。')
+    ])
+    setStatus({ status: 'idle' })
+    return true
+  }
   window.__mountConversation = () => {
-    setMessages([...HEAD, ...FILLER, ...TAIL])
+    setMessages([U0, ...HEAD, ...FILLER, UL, ...TAIL])
     setStatus({ status: 'idle' })
     return true
   }
   // A mid-turn op: the pending write adds a row for NOTHING; its paired result
-  // (still executing) adds one immediately — D5's live follow.
+  // (still executing) adds one immediately — D5's live follow, on the last
+  // turn's card.
   window.__startOp = () => {
     setMessages((m) => [...m, { id: 's1a', role: 'assistant', contentBlocks: [{ type: 'tool_use', id: 's1u', name: 'write', input: { file_path: WS + '/streaming.md' }, status: 'running' }], createdAt: AT }])
     setStatus({ status: 'executing', toolUseId: 's1u' })
@@ -175,12 +201,48 @@ function Harness() {
 mount(<Harness />)
 
 
-window.__rowCount = () => document.querySelectorAll('[data-testid="deliverables-row"]').length
-window.__cardPresent = () => !!document.querySelector('.pm-deliverables-card')
-window.__rowPaths = () => [...document.querySelectorAll('[data-testid="deliverables-row"]')].map((el) => el.getAttribute('data-dl-path'))
-window.__workbench = () => ({ tab: useWorkbenchStore.getState().activeTab, open: useWorkbenchStore.getState().openByConversation && true })
+window.__turnCards = () => [...document.querySelectorAll('[data-testid="turn-deliverables"]')]
+window.__turnCardPaths = (i) => [...(window.__turnCards()[i]?.querySelectorAll('[data-testid="turn-deliverables-row"]') ?? [])].map((el) => el.getAttribute('data-dl-path'))
+window.__turnCardText = (i) => window.__turnCards()[i]?.textContent ?? ''
+// The LAST turn's card — the one that survives a window collapse to the tail
+// (a click near the bottom auto-scrolls, near-bottom collapses extraTop, and
+// the head turn's card unmounts with its segments; that is the design, not a
+// bug, so sections below the widening read the last card).
+window.__lastCardPaths = () => {
+  const cards = window.__turnCards()
+  return window.__turnCardPaths(cards.length - 1)
+}
+window.__rect = (el) => {
+  const r = el.getBoundingClientRect()
+  return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }
+}
+// Geometry facts: (1) the last card sits ABOVE the turn's action toolbar with
+// a real gap; (2) a card never overlaps the next turn's user bubble — the
+// card's 12px bottom margin is the only spacing there (assistant messages and
+// execution segments carry no bottom margin of their own).
+window.__placement = () => {
+  const cards = window.__turnCards()
+  const last = cards[cards.length - 1]
+  if (!last) return null
+  const toolbarBtn = last.parentElement?.parentElement?.querySelector('[data-testid="knowledge-save"]')
+  const head = cards[0]
+  const nextUserMsg = head ? document.getElementById('chat-msg-f0') : null
+  return {
+    cardAboveToolbar: toolbarBtn
+      ? window.__rect(last).bottom <= window.__rect(toolbarBtn).top
+      : null,
+    toolbarGap: toolbarBtn ? Math.round(window.__rect(toolbarBtn).top - window.__rect(last).bottom) : null,
+    nextMsgGap: nextUserMsg && head ? Math.round(window.__rect(nextUserMsg).top - window.__rect(head).bottom) : null
+  }
+}
+window.__pageText = () => document.body.textContent
+window.__workbench = () => {
+  const s = useWorkbenchStore.getState()
+  return { tab: s.activeTab, open: !!s.openByConversation[CONV_KEY] }
+}
 window.__previewTabs = () => usePreviewPaneStore.getState().tabsByConversation[CONV_KEY]?.map((t) => t.path) ?? []
-window.__collapse = () => { document.querySelector('[data-testid="deliverables-head"]').click(); return true }
+window.__scrollContainer = () =>
+  [...document.querySelectorAll('div')].find((d) => d.style.overflow === 'auto' && d.scrollHeight > d.clientHeight) ?? null
 window.__ready = true
 `
 
@@ -235,38 +297,75 @@ await page.addScriptTag({ path: OUT })
 await page.waitForFunction(() => window.__ready)
 await page.waitForTimeout(300)
 
-// ── 1. Welcome: no messages, no card ──
+// ── 1. Welcome: no turn cards (the welcome branch returns before the
+//        workbench even mounts — the empty tab is checked in §1b) ──
 {
   console.log('== 欢迎页 ==')
   await page.evaluate(() => window.__mountWelcome())
   await page.waitForTimeout(200)
-  check('无消息时零卡片', !(await page.evaluate(() => window.__cardPresent())))
-  await page.screenshot({ path: join(SHOTS, 'welcome.png') })
+  check('无消息时零轮卡', (await page.evaluate(() => window.__turnCards())).length === 0)
 }
 
-// ── 2. Conversation at terminal: head files still counted (full-list feed) ──
+// ── 1b. A conversation that wrote nothing: zero cards, nothing else ──
+{
+  console.log('== 无产物会话 ==')
+  await page.evaluate(() => window.__mountTextOnly())
+  await page.waitForTimeout(250)
+  check('纯文本会话零轮卡', (await page.evaluate(() => window.__turnCards())).length === 0)
+}
+
+// ── 2. Conversation at terminal: per-turn cards, in-flow and placed ──
 {
   console.log('== 回合终态 ==')
   await page.evaluate(() => window.__mountConversation())
-  await page.waitForFunction(() => window.__rowCount() > 0, null, { timeout: 5000 }).catch(() => {})
-  await page.waitForTimeout(400)
-  const paths = await page.evaluate(() => window.__rowPaths())
-  // head-a + head-b + tail-report + child-report + grand = 5. If the card were
-  // fed the RENDER WINDOW, the two head files fall off (3) — the red this
-  // probe must show for the windowing red line.
-  check('头部分组后的文件仍在列（吃完整 messages）', paths.includes('/pm-probe-ws/head-a.md') && paths.includes('/pm-probe-ws/head-b.md'), JSON.stringify(paths))
-  check('五份产物齐全（主会话 3 + 子链 2）', paths.length === 5, `rows=${paths.length}`)
-  check('子代理署名：child-report 来自 调研专家', await page.getByText('来自：调研专家').count() === 1)
-  check('孙辈署名：grand 来自 汇总专家', await page.getByText('来自：汇总专家').count() === 1)
-  check('诚实边界脚注在场', await page.getByText('命令行间接产物不在此列').count() === 1)
-  check('数量徽标 = 5', await page.locator('.pm-deliverables-card').textContent().then((s) => s.includes('5')), '')
-  await page.screenshot({ path: join(SHOTS, 'terminal.png') })
+  await page.waitForFunction(() => window.__turnCards().length > 0, null, { timeout: 5000 }).catch(() => {})
+  // The head turn lives OUTSIDE the 50-segment render window — like its
+  // segments, its card comes back when the user scrolls up and the window
+  // widens. Drive the real lazy-load path (nudge down, then to the top;
+  // scrollTop=0 while already 0 fires no scroll event) until every segment
+  // — and with it both turn cards — is rendered.
+  for (let i = 0; i < 8; i++) {
+    if ((await page.evaluate(() => window.__turnCards().length)) >= 2) break
+    await page.evaluate(() => { const el = window.__scrollContainer(); if (el) el.scrollTop = 600 })
+    await page.waitForTimeout(120)
+    await page.evaluate(() => { const el = window.__scrollContainer(); if (el) el.scrollTop = 0 })
+    await page.waitForTimeout(400)
+  }
+  await page.waitForFunction(
+    () => window.__turnCardPaths(1)?.includes('/pm-probe-ws/child-report.md'),
+    null, { timeout: 5000 },
+  ).catch(() => {})
+  await page.waitForTimeout(300)
+  const cardCount = await page.evaluate(() => window.__turnCards().length)
+  // Turn 0 (head writes) and the last turn (tail + spawn) produce cards; the
+  // 65 filler turns in between produce none.
+  check('只有两个有产出的轮次出卡（0 + 最后一轮）', cardCount === 2, `cards=${cardCount}`)
+  const headPaths = await page.evaluate(() => window.__turnCardPaths(0))
+  check('第一轮卡 = 头部两份文件（滚回顶部后出现）', headPaths.length === 2 && headPaths.includes('/pm-probe-ws/head-a.md') && headPaths.includes('/pm-probe-ws/head-b.md'), JSON.stringify(headPaths))
+  const lastPaths = await page.evaluate(() => window.__turnCardPaths(1))
+  check('最后一轮卡 = 报告 + 直接子代理产物', lastPaths.length === 2 && lastPaths.includes('/pm-probe-ws/tail-report.md') && lastPaths.includes('/pm-probe-ws/child-report.md'), JSON.stringify(lastPaths))
+  const lastText = await page.evaluate(() => window.__turnCardText(1))
+  check('轮卡署名：child-report 来自 调研专家', lastText.includes('来自：调研专家'))
+  check('轮卡无孙辈（无汇总面板，孙辈产物不展示）', !lastText.includes('grand.md') && !lastText.includes('来自：汇总专家'))
+
+  // Geometry: the last card mounts INSIDE the closing message, above its
+  // 对话工具条; the head card keeps a real gap to the next turn's user bubble.
+  const placement = await page.evaluate(() => window.__placement())
+  check('轮卡在对话工具条上方', placement.cardAboveToolbar === true && placement.toolbarGap >= 4, JSON.stringify(placement))
+  check('轮卡与下一轮用户消息有间距不重叠', placement.nextMsgGap >= 8, `gap=${placement.nextMsgGap}px`)
+  // Screenshot at the last turn's card, not wherever the widening left us.
+  await page.evaluate(() => {
+    const cards = window.__turnCards()
+    cards[cards.length - 1]?.scrollIntoView({ block: 'center' })
+  })
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: join(SHOTS, 'turn-cards.png') })
 }
 
-// ── 3. Real click on a row → preview tab + workbench flips to files ──
+// ── 3. Real click on a turn-card row → preview tab + workbench flips to files ──
 {
-  console.log('== 点击产物行 ==')
-  await page.locator('[data-dl-path="/pm-probe-ws/tail-report.md"]').click()
+  console.log('== 点击轮卡产物行 ==')
+  await page.locator('[data-testid="turn-deliverables-row"][data-dl-path="/pm-probe-ws/tail-report.md"]').click()
   await page.waitForTimeout(250)
   const tabs = await page.evaluate(() => window.__previewTabs())
   const wb = await page.evaluate(() => window.__workbench())
@@ -279,29 +378,14 @@ await page.waitForTimeout(300)
   console.log('== 流式推进 ==')
   await page.evaluate(() => window.__startOp())
   await page.waitForTimeout(250)
-  const during = await page.evaluate(() => window.__rowCount())
-  check('pending 的 write 不入列', during === 5, `rows=${during}`)
+  const during = await page.evaluate(() => window.__lastCardPaths().length)
+  check('pending 的 write 不入列', during === 2, `rows=${during}`)
   await page.evaluate(() => window.__completeOp())
   await page.waitForTimeout(250)
-  const after = await page.evaluate(() => window.__rowCount())
-  check('tool_result 落地即入列', after === 6, `rows=${after}`)
+  const afterPaths = await page.evaluate(() => window.__lastCardPaths())
+  check('tool_result 落地即入列（最后一轮 3 行）', afterPaths.length === 3 && afterPaths.includes('/pm-probe-ws/streaming.md'), JSON.stringify(afterPaths))
   await page.evaluate(() => window.__finishTurn())
   await page.waitForTimeout(200)
-}
-
-// ── 5. Collapse / expand ──
-{
-  console.log('== 收起与展开 ==')
-  await page.evaluate(() => window.__collapse())
-  await page.waitForTimeout(150)
-  const collapsed = await page.evaluate(() => window.__rowCount())
-  check('收起后行隐藏', collapsed === 0, `rows=${collapsed}`)
-  check('收起后卡片仍在', await page.evaluate(() => window.__cardPresent()))
-  await page.evaluate(() => window.__collapse())
-  await page.waitForTimeout(150)
-  const expanded = await page.evaluate(() => window.__rowCount())
-  const after = await page.evaluate(() => window.__rowPaths())
-  check('再点展开，行回来', expanded === 6, `rows=${expanded} paths=${JSON.stringify(after)}`)
   await page.screenshot({ path: join(SHOTS, 'expanded.png') })
 }
 

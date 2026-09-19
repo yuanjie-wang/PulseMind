@@ -10,8 +10,9 @@ import { buildSegments, getSegmentAnchorId, getSegmentKey, type Segment } from '
 import { StreamingCursor } from '../chat/StreamingCursor'
 import { ErrorDisplay } from '../chat/ErrorDisplay'
 import { ExtensionPrompt, SubAgentStopPrompt } from '../chat/ExtensionPrompt'
-import { DeliverablesCard } from '../chat/DeliverablesCard'
+import { TurnDeliverablesCard } from '../chat/TurnDeliverablesCard'
 import { useDeliverables } from '../../hooks/useDeliverables'
+import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverables'
 import { InputArea } from '../chat/InputArea'
 import { estimateContextUsed } from '../chat/ContextRing'
 import { WelcomeContent } from '../chat/WelcomeContent'
@@ -155,9 +156,9 @@ function ChatView({
   // Context usage for the input area's ring: real input tokens from the API when
   // available, otherwise estimated from the message contents.
   const contextUsed = useMemo(() => estimateContextUsed(messages), [messages])
-  // The turn's delivered files (main session derived live; spawn-tree children
-  // hydrated at terminal status — see useDeliverables).
-  const deliverable = useDeliverables(conversationId, messages, agentStatus)
+  // The spawn tree's delivered files (hydrated at terminal status — see
+  // useDeliverables): the per-child map the per-turn cards attribute with.
+  const childDeliverables = useDeliverables(conversationId, messages, agentStatus)
   const animName = `ecg-scroll-${uid.replace(/[:.]/g, '')}`
   const scrollRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
@@ -429,6 +430,19 @@ function ChatView({
   const windowTop = Math.max(0, allSegments.length - PAGE_SIZE - extraTop)
   const renderedSegments = allSegments.slice(windowTop)
 
+  // Per-turn deliverables (2026-09-19): rows derived from the FULL message
+  // list, keyed on its identity — deliberately NOT on allSegments, which is
+  // rebuilt per streamed token, so the per-turn derivation is not re-paid per
+  // token. Placement comes from the segments instead (cheap index math), and
+  // the card mounts at the turn's end: INSIDE the last message (above its
+  // 对话工具条, via MessageGroup's aboveActions slot) when the turn closes on
+  // assistant text, or as a sibling block after the last segment otherwise.
+  const turnRows = useMemo(
+    () => collectTurnDeliverables(messages, childDeliverables),
+    [messages, childDeliverables],
+  )
+  const turnPlacement = useMemo(() => segmentTurnPlacement(allSegments), [allSegments])
+
   // Lazy-load one more page of older segments on scroll-up. The segment that was
   // topmost is used as a scroll anchor: after React prepends the older segments,
   // scrollTop is restored so the content doesn't visibly jump.
@@ -551,7 +565,7 @@ function ChatView({
   // ── Render helpers ──
 
   const renderSegment = useCallback(
-    (seg: Segment, index: number) => (
+    (seg: Segment, index: number, aboveActions?: React.ReactNode) => (
       <SegmentBlock
         seg={seg}
         nextSeg={allSegments[index + 1]}
@@ -566,6 +580,7 @@ function ChatView({
         conversationId={conversationId}
         conversationTitle={conversationTitle}
         onOpenSubAgent={onOpenSubAgent}
+        aboveActions={aboveActions}
       />
     ),
     [highlightedMsgId, allSegments, isRequesting, agentStatus.status, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, onOpenSubAgent],
@@ -685,9 +700,33 @@ function ChatView({
       >
         <div style={{ height: 24 }} />
 
-        {renderedSegments.map((seg, i) => (
-          <React.Fragment key={getSegmentKey(seg)}>{renderSegment(seg, windowTop + i)}</React.Fragment>
-        ))}
+        {renderedSegments.map((seg, i) => {
+          const abs = windowTop + i
+          const turn = turnPlacement.turnOf[abs]
+          const turnDeliverable =
+            turn !== undefined && turnPlacement.lastSegmentOfTurn[turn] === abs ? turnRows[turn] : undefined
+          const card =
+            turnDeliverable && turnDeliverable.rows.length > 0 ? (
+              <TurnDeliverablesCard
+                deliverable={turnDeliverable}
+                conversationId={conversationId}
+                workspaceDir={workspaceDir}
+              />
+            ) : null
+          // A turn closing on assistant text mounts the card INSIDE the message
+          // (above its 对话工具条); otherwise the card is a sibling block after
+          // the turn's last segment — the column wrapper keeps the sibling's
+          // footprint aligned with the slotted one (24px inset + 16px margin).
+          const cardInMessage = seg.type === 'single' && seg.msg.role === 'assistant'
+          return (
+            <React.Fragment key={getSegmentKey(seg)}>
+              {renderSegment(seg, abs, cardInMessage ? card : undefined)}
+              {!cardInMessage && card && (
+                <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>{card}</div>
+              )}
+            </React.Fragment>
+          )
+        })}
 
         <div style={{ minHeight: 1, paddingBottom: 160 }}>
           {/* Single blinking cursor — always present during active request */}
@@ -750,17 +789,6 @@ function ChatView({
               />
             </div>
           )}
-
-          {/* Deliverables (PLAN-deliverables): the turn's written files. Fed the
-              FULL messages, never the render window — head truncation would make
-              delivered files vanish when the user scrolls. Empty → nothing. */}
-          <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
-            <DeliverablesCard
-              deliverable={deliverable}
-              conversationId={conversationId}
-              workspaceDir={workspaceDir}
-            />
-          </div>
         </div>
       </div>
 

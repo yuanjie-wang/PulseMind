@@ -277,11 +277,9 @@ const en: TranslationDict = {
   },
 
   deliverables: {
-    title: 'Deliverables',
+    turnTitle: 'Delivered this turn',
     preview: 'Preview',
     from: 'From: {{name}}',
-    total: '{{n}} file(s)',
-    openWorkspace: 'Open workspace',
     honestBoundary: 'Only direct writes/edits are listed; files produced indirectly by commands are not',
   },
 

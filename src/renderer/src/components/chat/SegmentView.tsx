@@ -32,6 +32,10 @@ export interface SegmentViewProps {
    *  nothing renders the spawn card without its 查看子代理会话 icon. */
   onOpenSubAgent?: (subConvId: string, title: string) => void
   isRequesting?: boolean
+  /** A node mounted between a settled message's bubble and its action
+   *  toolbar (the turn deliverables card). Only meaningful for 'single'
+   *  segments; execution segments have no toolbar and ignore it. */
+  aboveActions?: React.ReactNode
   /** The engine is parked awaiting approval (`agentStatus: 'awaiting_approval'`).
    *  A held call opens its way out of both collapsed layers — the execution
    *  segment and the tool card — so 运行/跳过 never need expanding. Optional and
@@ -67,6 +71,7 @@ export function SegmentView({
   seg,
   isLastSegment,
   actions,
+  aboveActions,
   conversationId,
   conversationTitle,
   onOpenSubAgent,
@@ -102,6 +107,7 @@ export function SegmentView({
     <MessageGroup
       msg={seg.msg}
       actions={actions}
+      aboveActions={aboveActions}
       onApproveTool={onApproveTool}
       onRejectTool={onRejectTool}
       onRespondToTool={onRespondToTool}

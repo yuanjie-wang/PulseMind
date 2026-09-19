@@ -6,7 +6,11 @@
 // funnel through openTab: create_plan → 'plan', a fresh browser tab →
 // 'browser', a file preview → 'files', each tagged with the conversation it
 // belongs to. Width is persisted; open state is deliberately not (a restart
-// has no live plan or browser session to show).
+// has no live plan or browser session to show). The deliverables aggregate
+// tab that existed here for one day (2026-09-19) is gone — the per-turn cards
+// in the transcript are the only deliverables surface; a persisted
+// activeTab naming it must not render an empty pane body, hence the ID set
+// below.
 //
 // Conversation keys come from callers (previewPaneStore's DRAFT key covers
 // new tasks with no row yet) — this store stays key-format-agnostic so it
@@ -16,6 +20,16 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 export type WorkbenchTab = 'files' | 'workspace' | 'browser' | 'plan'
+
+/** The renderable tabs. A persisted `activeTab` outside this set (a tab that
+ *  was since removed) falls back to 'files' in WorkbenchPane instead of
+ *  rendering a pane body with no view. */
+export const WORKBENCH_TAB_IDS: ReadonlySet<WorkbenchTab> = new Set<WorkbenchTab>([
+  'files',
+  'workspace',
+  'browser',
+  'plan',
+])
 
 export const WORKBENCH_DEFAULT_WIDTH = 420
 

@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   FILE_WRITER_TOOLS,
   collectDeliverables,
-  mergeDeliverables
+  collectTurnDeliverables,
+  mergeDeliverables,
+  segmentTurnPlacement
 } from '../src/renderer/src/components/chat/deliverables'
+import { groupMessages } from '../src/renderer/src/components/chat/message-segments'
 import type { AgentMessage, ContentBlock } from '../src/renderer/src/types/agent'
 
 const T0 = '2026-09-18T10:00:00.000Z'
@@ -16,6 +19,8 @@ const use = (id: string, name: string, input: Record<string, unknown>): ContentB
 const result = (toolUseId: string, isError = false): ContentBlock =>
   ({ type: 'tool_result', tool_use_id: toolUseId, content: 'ok', ...(isError ? { is_error: true } : {}) })
 
+const text = (s: string): ContentBlock => ({ type: 'text', text: s })
+
 const msg = (id: string, role: 'user' | 'assistant', createdAt: string, blocks: ContentBlock[]): AgentMessage =>
   ({ id, role, contentBlocks: blocks, createdAt })
 
@@ -25,8 +30,9 @@ describe('FILE_WRITER_TOOLS', () => {
   // export_document joins here as one line (PLAN-office-export §五).
   it('is exactly the path-naming writer tools, exec excluded', () => {
     // export_document joined when PLAN-office-export landed (its tool result
-    // names the path it wrote, just like write/edit do).
-    expect([...FILE_WRITER_TOOLS].sort()).toEqual(['docx_edit', 'edit', 'export_document', 'write', 'xlsx_edit'])
+    // names the path it wrote, just like write/edit do); pptx_edit likewise
+    // (PLAN-pptx-editing).
+    expect([...FILE_WRITER_TOOLS].sort()).toEqual(['docx_edit', 'edit', 'export_document', 'pptx_edit', 'write', 'xlsx_edit'])
     expect(FILE_WRITER_TOOLS.has('exec')).toBe(false)
     expect(FILE_WRITER_TOOLS.has('read')).toBe(false)
   })
@@ -221,5 +227,130 @@ describe('mergeDeliverables', () => {
     expect(merged.sources).toEqual([{ convId: 'sub_1' }])
     expect(merged.rows.find((r) => r.path === '/ws/a.md')!.fromConvIds).toEqual([])
     expect(merged.rows.find((r) => r.path === '/ws/b.md')!.fromConvIds).toEqual(['sub_1'])
+  })
+})
+
+describe('collectTurnDeliverables', () => {
+  it('slices turns at user messages WITHOUT tool_result; result-carrier user messages stay in-turn', () => {
+    // The engine folds a whole round's results into one user message — that
+    // message must never read as a turn boundary, or the slice would split a
+    // tool_use/tool_result pair and the per-turn pairing would lose the row.
+    const messages = [
+      msg('u0', 'user', T0, [text('第一轮')]),
+      msg('a1', 'assistant', T0, [use('u1', 'write', { file_path: '/ws/a.md' })]),
+      msg('r1', 'user', T1, [result('u1')]),
+      msg('u1b', 'user', T1, [text('第二轮')]),
+      msg('a2', 'assistant', T2, [use('u2', 'write', { file_path: '/ws/b.md' })]),
+      msg('r2', 'user', T2, [result('u2')])
+    ]
+    const turns = collectTurnDeliverables(messages)
+    expect(turns).toHaveLength(2)
+    expect(turns[0].rows.map((r) => r.path)).toEqual(['/ws/a.md'])
+    expect(turns[1].rows.map((r) => r.path)).toEqual(['/ws/b.md'])
+  })
+
+  it('leading messages before the first user message form turn 0', () => {
+    const messages = [
+      msg('g', 'assistant', T0, [text('你好')]),
+      msg('u0', 'user', T1, [text('写文件')]),
+      msg('a1', 'assistant', T1, [use('u1', 'write', { file_path: '/ws/a.md' })]),
+      msg('r1', 'user', T2, [result('u1')])
+    ]
+    const turns = collectTurnDeliverables(messages)
+    expect(turns).toHaveLength(2)
+    expect(turns[0].rows).toEqual([])
+    expect(turns[1].rows.map((r) => r.path)).toEqual(['/ws/a.md'])
+  })
+
+  it('merges the settled child parts of THAT turn\'s spawns — grandchildren stay aggregate-only', () => {
+    // The turn spawns sub_1; childParts carries sub_1 AND a grandchild the
+    // MAIN messages never spawned. Only the looked-up id joins the turn card;
+    // the grandchild's rows ride the workbench aggregate alone.
+    const messages = [
+      msg('u0', 'user', T0, [text('调研')]),
+      msg('a1', 'assistant', T0, [
+        use('u1', 'write', { file_path: '/ws/main.md' }),
+        { type: 'tool_use', id: 's1', name: 'spawn_agent', input: {}, subConvId: 'sub_1' }
+      ]),
+      msg('r1', 'user', T1, [result('u1'), result('s1')])
+    ]
+    const childParts = new Map([
+      ['sub_1', {
+        rows: [{ path: '/ws/kid.md', ops: [{ tool: 'write', at: T1, ok: true }], lastAt: T1, fromConvIds: ['sub_1'] }],
+        sources: [{ convId: 'sub_1', title: '调研专家' }]
+      }],
+      ['sub_grand', {
+        rows: [{ path: '/ws/grand.md', ops: [{ tool: 'write', at: T1, ok: true }], lastAt: T1, fromConvIds: ['sub_grand'] }],
+        sources: [{ convId: 'sub_grand', title: '汇总专家' }]
+      }]
+    ])
+    const turns = collectTurnDeliverables(messages, childParts)
+    expect(turns[0].rows.map((r) => r.path).sort()).toEqual(['/ws/kid.md', '/ws/main.md'])
+    expect(turns[0].rows.find((r) => r.path === '/ws/kid.md')!.fromConvIds).toEqual(['sub_1'])
+    expect(turns[0].sources).toEqual([{ convId: 'sub_1', title: '调研专家' }])
+    expect(turns[0].rows.some((r) => r.path === '/ws/grand.md')).toBe(false)
+  })
+
+  it('a turn with only failed / pending writes has no rows', () => {
+    const messages = [
+      msg('u0', 'user', T0, [text('写')]),
+      msg('a1', 'assistant', T0, [
+        use('u1', 'write', { file_path: '/ws/failed.md' }),
+        { type: 'tool_use', id: 'u2', name: 'write', input: { file_path: '/ws/pending.md' }, status: 'running' }
+      ]),
+      msg('r1', 'user', T1, [result('u1', true)])
+    ]
+    expect(collectTurnDeliverables(messages)[0].rows).toEqual([])
+  })
+
+  it('the same path written in two turns is two per-turn rows (the aggregate merges them)', () => {
+    const messages = [
+      msg('u0', 'user', T0, [text('一')]),
+      msg('a1', 'assistant', T0, [use('u1', 'write', { file_path: '/ws/x.md' })]),
+      msg('r1', 'user', T1, [result('u1')]),
+      msg('u1b', 'user', T1, [text('二')]),
+      msg('a2', 'assistant', T2, [use('u2', 'edit', { file_path: '/ws/x.md' })]),
+      msg('r2', 'user', T2, [result('u2')])
+    ]
+    const turns = collectTurnDeliverables(messages)
+    expect(turns[0].rows.map((r) => r.path)).toEqual(['/ws/x.md'])
+    expect(turns[1].rows.map((r) => r.path)).toEqual(['/ws/x.md'])
+    // …while the whole-conversation derivation (the workbench panel's feed)
+    // keeps them as ONE row with both ops.
+    const all = collectDeliverables(messages)
+    expect(all.rows).toHaveLength(1)
+    expect(all.rows[0].ops.map((o) => o.tool)).toEqual(['write', 'edit'])
+  })
+})
+
+describe('segmentTurnPlacement', () => {
+  it('numbering agrees with collectTurnDeliverables; each card renders after its turn\'s last segment', () => {
+    const messages = [
+      msg('u0', 'user', T0, [text('第一轮')]),
+      msg('a1', 'assistant', T0, [use('u1', 'write', { file_path: '/ws/a.md' })]),
+      msg('r1', 'user', T1, [result('u1')]),
+      msg('a2', 'assistant', T1, [text('第一轮完成')]),
+      msg('u1b', 'user', T2, [text('第二轮')]),
+      msg('a3', 'assistant', T2, [use('u2', 'write', { file_path: '/ws/b.md' })]),
+      msg('r2', 'user', T2, [result('u2')])
+    ]
+    const segments = groupMessages(messages)
+    const placement = segmentTurnPlacement(segments)
+    const turns = collectTurnDeliverables(messages)
+    // One turn index per segment, and the turn count matches the message-side
+    // derivation — the boundary rule is the same, so the two can never drift.
+    expect(placement.turnOf).toHaveLength(segments.length)
+    expect(new Set(placement.turnOf).size).toBe(turns.length)
+    expect(turns).toHaveLength(2)
+    // Turn 0 = [u0 single, exec(a1+r1), a2 text single] → card after index 2.
+    expect(placement.lastSegmentOfTurn[0]).toBe(2)
+    // Turn 1 ends at the list's last segment (the exec holding a3+r2).
+    expect(placement.lastSegmentOfTurn[1]).toBe(segments.length - 1)
+    expect(placement.turnOf[0]).toBe(0)
+    expect(placement.turnOf[3]).toBe(1)
+  })
+
+  it('empty input yields empty placement', () => {
+    expect(segmentTurnPlacement([])).toEqual({ turnOf: [], lastSegmentOfTurn: [] })
   })
 })

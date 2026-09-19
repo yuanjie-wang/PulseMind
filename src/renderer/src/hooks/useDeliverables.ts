@@ -1,25 +1,23 @@
 /**
- * Sub-conversation aggregation for the deliverables card (PLAN-deliverables
- * M2). The main session's rows come straight from the mirror (pure, always
- * fresh); this hook adds what the spawn tree wrote: at a TERMINAL turn status
- * it walks the spawn blocks' subConvIds breadth-first, hydrates each child
- * through the existing CONVERSATION_HYDRATE channel (SubAgentSessionView's
- * channel — no new IPC), derives the child's rows with the same pure
- * collector, and merges.
+ * Sub-conversation deliverables (PLAN-deliverables M2, reshaped 2026-09-19):
+ * what the spawn tree wrote. At a TERMINAL turn status the hook walks the
+ * spawn blocks' subConvIds breadth-first, hydrates each child through the
+ * existing CONVERSATION_HYDRATE channel (SubAgentSessionView's channel — no
+ * new IPC), derives the child's rows with the same pure collector, and returns
+ * them as a per-child map — the turn cards' attribution input
+ * (collectTurnDeliverables merges the parts of the spawns each turn launched).
+ * There is deliberately no whole-conversation merge here any more: the
+ * workbench aggregate panel that consumed it was removed on 2026-09-19, and
+ * the per-turn derivation owns the main session's rows.
  *
  * Why only terminal: spawn_batch settles the parent turn only after every
  * child settles, so at `completed`/`error` the children are final — one
  * hydration each is enough, and a child still streaming contributes nothing
  * that would not be re-scanned at the next terminal anyway.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentStatus } from '../types/agent'
-import {
-  collectDeliverables,
-  mergeDeliverables,
-  type Deliverable,
-  type DeliverableRow
-} from '../components/chat/deliverables'
+import { collectDeliverables, spawnTargets, type Deliverable } from '../components/chat/deliverables'
 
 /** spawn depth cap — main → child → grand → great-grand. A defense line, not
  *  a semantic (spawn chains deeper than this are not a thing the product has). */
@@ -46,33 +44,16 @@ interface ChildCacheEntry {
  *  remount should not re-read the DB for an already-final child). */
 const childCache = new Map<string, ChildCacheEntry>()
 
-/** Every spawn block's subConvId in one message list (any depth of nesting is
- *  flattened here — the BFS below caps the levels). */
-function spawnTargets(messages: AgentMessage[]): string[] {
-  const ids: string[] = []
-  for (const message of messages) {
-    for (const block of message.contentBlocks ?? []) {
-      if (block.type !== 'tool_use') continue
-      if (block.name !== 'spawn_agent') continue
-      const subConvId = (block as { subConvId?: unknown }).subConvId
-      if (typeof subConvId === 'string' && subConvId.trim() !== '') ids.push(subConvId)
-    }
-  }
-  return ids
-}
-
 const isTerminal = (status: AgentStatus['status'] | undefined): boolean =>
   status === 'completed' || status === 'error' || status === 'idle'
 
-const EMPTY_DELIVERABLE: Deliverable = { rows: [], sources: [] }
+const EMPTY_CHILD_PARTS: ReadonlyMap<string, Deliverable> = new Map()
 
 export function useDeliverables(
   conversationId: string | null | undefined,
   messages: AgentMessage[],
   agentStatus?: AgentStatus
-): Deliverable {
-  const main = useMemo(() => collectDeliverables(messages), [messages])
-
+): ReadonlyMap<string, Deliverable> {
   const status = agentStatus?.status
   const terminal = isTerminal(status)
   const convKey = conversationId ?? ''
@@ -82,12 +63,12 @@ export function useDeliverables(
   // effect clearing after the scan effect would race the fully-cached scan —
   // a scan with zero hydrates completes synchronously inside its effect, so a
   // later reset effect in the same commit would wipe its result.
-  const [childState, setChildState] = useState<{ convKey: string; part: Deliverable }>({
+  const [childState, setChildState] = useState<{ convKey: string; childParts: ReadonlyMap<string, Deliverable> }>({
     convKey,
-    part: EMPTY_DELIVERABLE
+    childParts: EMPTY_CHILD_PARTS
   })
-  if (childState.convKey !== convKey) setChildState({ convKey, part: EMPTY_DELIVERABLE })
-  const childPart = childState.convKey === convKey ? childState.part : EMPTY_DELIVERABLE
+  if (childState.convKey !== convKey) setChildState({ convKey, childParts: EMPTY_CHILD_PARTS })
+  const childParts = childState.convKey === convKey ? childState.childParts : EMPTY_CHILD_PARTS
 
   // One scan per (conversation × entry-into-scan-worthiness): terminal turns
   // rescan on transition, and cache hits make a rescan cheap — the guard only
@@ -149,15 +130,15 @@ export function useDeliverables(
       }
 
       if (cancelled) return
-      const rows: DeliverableRow[] = []
-      const sources: Deliverable['sources'] = []
+      const childParts = new Map<string, Deliverable>()
       for (const id of visited) {
         const entry = childCache.get(id)
         if (!entry) continue
-        rows.push(...entry.rows)
-        if (entry.rows.length > 0) sources.push({ convId: id, title: entry.title })
+        if (entry.rows.length > 0) {
+          childParts.set(id, { rows: entry.rows, sources: [{ convId: id, title: entry.title }] })
+        }
       }
-      setChildState({ convKey, part: { rows, sources } })
+      setChildState({ convKey, childParts })
     }
     void scan()
     return () => {
@@ -165,5 +146,5 @@ export function useDeliverables(
     }
   }, [convKey, messages, terminal])
 
-  return useMemo(() => mergeDeliverables([main, childPart]), [main, childPart])
+  return childParts
 }

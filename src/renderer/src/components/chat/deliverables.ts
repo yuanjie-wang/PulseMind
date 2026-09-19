@@ -14,6 +14,7 @@
  */
 
 import type { AgentMessage, ToolResultBlock, ToolUseBlock } from '../../types/agent'
+import type { Segment } from './message-segments'
 
 /** Tools whose success writes/edits a file at an input path we can name.
  *  Deliberately NOT `exec` — shell redirections and scripts leave no
@@ -169,4 +170,89 @@ export function mergeDeliverables(parts: Deliverable[]): Deliverable {
     rows: [...byPath.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt)),
     sources
   }
+}
+
+// ── Turn scoping (每轮产物, 2026-09-19) ──
+// The chat shows a per-turn sub-summary after each turn's last segment, while
+// the whole-conversation aggregate moved to the workbench's 产物 tab. A turn
+// starts at a user message that carries NO tool_result — the engine folds a
+// whole round's results into user messages that DO carry them, and those stay
+// in-turn, so a slice boundary can never split a tool_use/tool_result pair and
+// the per-turn pairing derivation stays exact. The same rule over the SEGMENT
+// list places the card: groupMessages always promotes such a message to a
+// 'single' segment, so the boundary sequences — and therefore the turn
+// indices — agree between the two derivations even though groupMessages skips
+// messages that render as nothing (the per-turn derivation slices the RAW
+// messages, which is also why it loses nothing to those skips).
+
+/** Every spawn block's subConvId in one message list. Shared by the hook's BFS
+ *  (whole spawn tree) and the per-turn attribution (which turns launched
+ *  which children) — one definition so the two cannot drift. */
+export function spawnTargets(messages: AgentMessage[]): string[] {
+  const ids: string[] = []
+  for (const message of messages) {
+    for (const block of message.contentBlocks ?? []) {
+      if (block.type !== 'tool_use') continue
+      if (block.name !== 'spawn_agent') continue
+      const subConvId = (block as { subConvId?: unknown }).subConvId
+      if (typeof subConvId === 'string' && subConvId.trim() !== '') ids.push(subConvId)
+    }
+  }
+  return ids
+}
+
+const isTurnStart = (message: AgentMessage): boolean =>
+  message.role === 'user' && !(message.contentBlocks ?? []).some((b) => b.type === 'tool_result')
+
+/** Rows per turn, indexed by turn number (turn 0 = everything before the first
+ *  user message). Each turn's rows are its own main-session writes MERGED with
+ *  the settled child conversations its spawns launched — the caller supplies
+ *  those as `childParts` (the hydration hook's per-child map). Only ids this
+ *  turn actually spawned are looked up, so a grandchild's rows land in the
+ *  workbench aggregate only, never on a user-facing turn card.
+ *
+ *  Runs on every message append — keyed on `messages` identity, NOT the
+ *  streaming segment list, so it is not re-paid per streamed token. */
+export function collectTurnDeliverables(
+  messages: AgentMessage[],
+  childParts?: ReadonlyMap<string, Deliverable>
+): Deliverable[] {
+  const slices: AgentMessage[][] = []
+  for (const message of messages) {
+    if (slices.length === 0 || isTurnStart(message)) slices.push([message])
+    else slices[slices.length - 1].push(message)
+  }
+  return slices.map((slice) => {
+    const parts: Deliverable[] = [collectDeliverables(slice)]
+    const seen = new Set<string>()
+    for (const subConvId of spawnTargets(slice)) {
+      if (seen.has(subConvId)) continue
+      seen.add(subConvId)
+      const part = childParts?.get(subConvId)
+      if (part) parts.push(part)
+    }
+    return mergeDeliverables(parts)
+  })
+}
+
+/** Segment-index placement for the turn cards: which turn each segment belongs
+ *  to, and the absolute segment index each turn's card renders after. Cheap —
+ *  no deliverable work, safe to re-run per streamed token. Turn numbering
+ *  matches `collectTurnDeliverables` by construction (same boundary rule). */
+export function segmentTurnPlacement(segments: Segment[]): {
+  turnOf: number[]
+  lastSegmentOfTurn: number[]
+} {
+  const turnOf: number[] = []
+  const lastSegmentOfTurn: number[] = []
+  let current = -1
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]
+    const boundary = seg.type === 'single' && isTurnStart(seg.msg)
+    if (current < 0) current = 0
+    else if (boundary) current++
+    turnOf[i] = current
+    lastSegmentOfTurn[current] = i
+  }
+  return { turnOf, lastSegmentOfTurn }
 }

@@ -269,6 +269,7 @@ export type MessageActions = 'full' | 'viewOnly' | 'none'
 export const MessageGroup = React.memo(function MessageGroup({
   msg,
   actions = 'full',
+  aboveActions,
   onApproveTool,
   onRejectTool,
   onRespondToTool,
@@ -280,6 +281,11 @@ export const MessageGroup = React.memo(function MessageGroup({
 }: {
   msg: AgentMessage
   actions?: MessageActions
+  /** A node rendered between the bubble and the action toolbar — the turn
+   *  deliverables card mounts here (2026-09-19), so a turn that ends with text
+   *  shows 「本轮产物」 ABOVE its 对话工具条. Optional; a host passing nothing
+   *  renders exactly as before. */
+  aboveActions?: React.ReactNode
   onApproveTool: (toolUseId: string) => void
   onRejectTool: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
@@ -492,6 +498,7 @@ export const MessageGroup = React.memo(function MessageGroup({
       </div>
 
       {/* Action buttons — only on the last assistant message of each loop, hidden for ask_user-only messages */}
+      {aboveActions}
       {!isUser && actions !== 'none' && !msg.contentBlocks.every(b => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user') && (
         <div
           style={{
