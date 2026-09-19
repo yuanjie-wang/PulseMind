@@ -86,15 +86,15 @@ function PageCanvas({
         canvas.height = Math.max(1, Math.floor(viewport.height))
         const ctx = canvas.getContext('2d')
         if (!ctx) return
-        // pdf.js leaves a transparent-background PDF transparent; fill here
-        // so a page narrower than its box never shows the grey backdrop
-        // through.
-        ctx.fillStyle = '#fff'
-        ctx.fillRect(0, 0, canvas.width, canvas.height)
         task = page.render({ canvasContext: ctx, viewport })
-        return task.promise.catch(() => {})
+        return task.promise
       })
-      .catch(() => {})
+      .catch((err) => {
+        // pdf.js paints the page white itself; a render that dies here leaves
+        // the grey backdrop visible through the transparent canvas — never
+        // re-hide that behind a silent catch (the blank-page bug hid here).
+        if (!cancelled) console.warn('[PdfPreview] page render failed', err)
+      })
     return () => {
       cancelled = true
       task?.cancel()
@@ -204,6 +204,7 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
         setRenderZoom(fit)
       } catch (err) {
         if (stale) return
+        if (!isPdfPasswordError(err)) console.warn('[PdfPreview] failed to load', path, err)
         setStatus(isPdfPasswordError(err) ? 'encrypted' : 'error')
       }
     })()
@@ -236,7 +237,14 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
 
   useEffect(
     () => () => {
-      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current)
+      // Null the handle after cancelling: StrictMode's simulated unmount runs
+      // this between the two mount passes, and a stale non-null handle here
+      // would block scheduleSync forever (pages parse fine, canvases never
+      // mount — the blank-pages-with-correct-count report).
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current)
+        scrollRafRef.current = null
+      }
     },
     []
   )
@@ -252,6 +260,18 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
       container.scrollTop = pending.top
     }
     scheduleSync()
+  }, [scheduleSync])
+
+  // The pane can mount at zero size (opening while its container is still
+  // laying out) — the one-shot sync above would then compute an empty render
+  // window and every page would stay a white placeholder forever. The
+  // observer re-syncs when the box becomes real, and on pane resizes.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => scheduleSync())
+    observer.observe(container)
+    return () => observer.disconnect()
   }, [scheduleSync])
 
   const zoomTo = useCallback((to: number, anchor?: ZoomAnchor) => {

@@ -17,7 +17,11 @@ const CELL: React.CSSProperties = {
   textOverflow: 'ellipsis',
 }
 
-export function CsvPreview({ text, path }: { text: string; path: string }): React.ReactElement {
+// Memoized: both props are stable strings across the pane-width drag's
+// re-renders — without it every 40ms tick re-runs parseCsv and rebuilds the
+// whole table (same jank class as the python highlighter —
+// probe-preview-drag.mjs).
+export const CsvPreview = React.memo(function CsvPreview({ text, path }: { text: string; path: string }): React.ReactElement {
   const { t } = useTranslation()
   const delimiter = extensionOf(path) === 'tsv' ? '\t' : ','
   const { rows, truncated } = parseCsv(text, { delimiter })
@@ -67,4 +71,4 @@ export function CsvPreview({ text, path }: { text: string; path: string }): Reac
       )}
     </div>
   )
-}
+})

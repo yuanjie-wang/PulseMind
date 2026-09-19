@@ -113,24 +113,39 @@ interface CodeHighlightProps {
 
 /** Prism-highlighted code. `PreTag="div"` keeps it valid inside x-markdown's
  *  own `<pre>` (no nested pre); there the theme CSS overrides background/radius,
- *  standalone callers get the light-gray card look from the inline styles. */
-export function CodeHighlight({ code, lang, fontSize = 12 }: CodeHighlightProps): React.ReactElement {
+ *  standalone callers get the light-gray card look from the inline styles.
+ *
+ *  Memoized with the object props built in a useMemo — this component used to
+ *  hand SyntaxHighlighter fresh `customStyle`/`codeTagProps` literals every
+ *  render, defeating its PureComponent guard, so a drag of the workbench pane
+ *  re-tokenized the WHOLE file per 40ms width tick (probe-preview-drag.mjs
+ *  measured a 1350ms frame gap on a ~1500-line python file; the memo drops it
+ *  to the re-wrap floor). */
+export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fontSize = 12 }: CodeHighlightProps): React.ReactElement {
+  const customStyle = React.useMemo(
+    () => ({ margin: 0, padding: 12, background: 'rgba(0, 0, 0, 0.04)', borderRadius: 8, fontSize }),
+    [fontSize],
+  )
+  const codeTagProps = React.useMemo(
+    () => ({ style: { fontFamily: FONT_STACK, fontSize, lineHeight: 1.6 } }),
+    [fontSize],
+  )
   return (
     <SyntaxHighlighter
       language={lang}
       style={oneLight}
       PreTag="div"
       wrapLongLines
-      customStyle={{ margin: 0, padding: 12, background: 'rgba(0, 0, 0, 0.04)', borderRadius: 8, fontSize }}
-      codeTagProps={{ style: { fontFamily: FONT_STACK, fontSize, lineHeight: 1.6 } }}
+      customStyle={customStyle}
+      codeTagProps={codeTagProps}
     >
       {code}
     </SyntaxHighlighter>
   )
-}
+})
 
 /** Plain-text fallback for languages outside LANG_LOOKUP. */
-export function PlainCode({ code, fontSize = 12 }: { code: string; fontSize?: number }): React.ReactElement {
+export const PlainCode = React.memo(function PlainCode({ code, fontSize = 12 }: { code: string; fontSize?: number }): React.ReactElement {
   return (
     <pre
       style={{
@@ -149,4 +164,4 @@ export function PlainCode({ code, fontSize = 12 }: { code: string; fontSize?: nu
       {code}
     </pre>
   )
-}
+})

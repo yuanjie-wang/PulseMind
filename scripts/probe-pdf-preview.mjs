@@ -66,7 +66,11 @@ function rc4(key, data) {
 function buildPdf({ pages, userPw }) {
   const idHex = '9a1f2e3c4d5b6a7980f1e2d3c4b5a697'
   const ascii = (s) => Buffer.from(s, 'latin1')
-  const streamObj = (dict, data) => Buffer.concat([ascii(`${dict} /Length ${data.length}\nstream\n`), data, ascii('\nendstream')])
+  // /Length must live INSIDE the stream dictionary: `<< >> /Length N` leaves
+  // the dict empty and pdf.js decodes the stream as nothing — a file whose
+  // pages all exist with correct sizes but render blank (this cost a
+  // debugging round: the ink check below is what catches it).
+  const streamObj = (extra, data) => Buffer.concat([ascii(`<< ${extra} /Length ${data.length} >>\nstream\n`), data, ascii('\nendstream')])
   const objects = []
   objects.push(ascii('<< /Type /Catalog /Pages 2 0 R >>'))
   objects.push(ascii(`<< /Type /Pages /Kids [${pages.map((_, i) => `${4 + i * 2} 0 R`).join(' ')}] /Count ${pages.length} >>`))
@@ -95,7 +99,7 @@ function buildPdf({ pages, userPw }) {
     let content = ascii(`BT /F1 ${p.size ?? 40} Tf 72 ${p.h - 140} Td (${p.text}) Tj ET`)
     if (enc) content = rc4(objKey(contentObj, 0), content)
     objects.push(ascii(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${p.w} ${p.h}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObj} 0 R >>`))
-    objects.push(streamObj('<< >>', content))
+    objects.push(streamObj('', content))
   })
   if (enc) {
     // The /Encrypt dict is pushed last, so its object number is only known
@@ -153,6 +157,7 @@ await (await import('node:fs/promises')).writeFile(
 )
 const HARNESS = `
 import { createRoot } from 'react-dom/client'
+import { StrictMode } from 'react'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import { usePreviewPaneStore } from './src/renderer/src/stores/previewPaneStore'
@@ -162,12 +167,18 @@ let root = null
 window.__mount = () => {
   if (root) root.unmount()
   root = createRoot(document.getElementById('root'))
+  // StrictMode, because the app's main.tsx renders <React.StrictMode> — the
+  // first draft of PdfPreview mounted canvases everywhere EXCEPT under it
+  // (a cleanup left a stale rAF handle that blocked every later schedule),
+  // which is exactly the user's blank-pages-with-correct-page-count report.
   root.render(
-    <ConfigProvider>
-      <TranslationProvider initialLocale="zh">
-        <PreviewPane conversationId={undefined} />
-      </TranslationProvider>
-    </ConfigProvider>
+    <StrictMode>
+      <ConfigProvider>
+        <TranslationProvider initialLocale="zh">
+          <PreviewPane conversationId={undefined} />
+        </TranslationProvider>
+      </ConfigProvider>
+    </StrictMode>
   )
   return true
 }
@@ -193,6 +204,9 @@ function check(name, pass, detail) {
 const browser = await chromium.launch({ headless: !process.argv.includes('--headed') })
 const page = await browser.newPage({ viewport: { width: 900, height: 700 } })
 page.on('pageerror', (err) => console.log('  [page error]', err.message))
+page.on('console', (msg) => {
+  if (msg.type() === 'warning' || msg.type() === 'error') console.log(`  [console.${msg.type()}]`, msg.text())
+})
 const PAGE = '<!doctype html><html><body style="margin:0"><div id="root" style="height:700px"></div></body></html>'
 await page.route('http://pm-probe.local/**', (route) => route.fulfill({ contentType: 'text/html', body: PAGE }))
 // The real worker file, served same-origin so pdf.js runs it as a module
@@ -236,6 +250,19 @@ const canvasCount = () => page.locator('[data-pdf-page] canvas').count()
 const pageInput = () => page.locator('[data-pdf-page-input]')
 const zoomLabel = () => page.locator('[data-zoom-label]')
 const waitCanvas = (n, timeout = 15000) => page.locator(`[data-pdf-page="${n}"] canvas`).waitFor({ timeout })
+/** Non-white pixel share of one page's canvas — a page the renderer drew
+ *  carries text ink; an all-white canvas is a render that failed silently
+ *  (the exact "blank page, correct page count" report this probe must never
+ *  bless again). */
+const inkShare = (n) => page.locator(`[data-pdf-page="${n}"] canvas`).evaluate((canvas) => {
+  const ctx = canvas.getContext('2d')
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  let inked = 0
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] !== 0 && (data[i] < 200 || data[i + 1] < 200 || data[i + 2] < 200)) inked++
+  }
+  return inked / (data.length / 4)
+})
 
 await page.evaluate(() => window.__mount())
 
@@ -243,12 +270,17 @@ await page.evaluate(() => window.__mount())
 await openFile('/w/三页.pdf')
 await waitCanvas(1)
 check('.pdf never reaches markitdown (the dispatcher routes it)', (await page.evaluate(() => window.__mdCalls)).length === 0)
-check('read went through readFileBinary exactly once', (await page.evaluate(() => window.__binaryCalls)).length === 1)
+const binCalls = await page.evaluate(() => window.__binaryCalls)
+// StrictMode double-mounts the loader, so the count is 2 per open — what the
+// check pins is that pdf reads ride readFileBinary and nothing else does.
+check('pdf reads ride readFileBinary (StrictMode double-mount tolerated)', binCalls.length >= 1 && binCalls.every((p) => typeof p === 'string' && p.endsWith('.pdf')), JSON.stringify(binCalls))
 check('all three pages have placeholders (scrollbar honest from the start)', (await pageCount()) === 3, String(await pageCount()))
 const box1 = await page.locator('[data-pdf-page="1"]').evaluate((el) => ({ w: el.clientWidth, h: el.clientHeight }))
 const cv1 = await page.locator('[data-pdf-page="1"] canvas').evaluate((el) => ({ w: el.width, h: el.height, cssW: el.clientWidth }))
 check('page 1 canvas backs its box 1:1 (dpr 1, ±1px rounding)',
   Math.abs(cv1.w - box1.w) <= 1 && Math.abs(cv1.h - box1.h) <= 1 && cv1.cssW === box1.w, JSON.stringify({ box1, cv1 }))
+const ink1 = await inkShare(1)
+check('page 1 actually carries ink (the blank-page regression gate)', ink1 > 0.001, `inked ${(ink1 * 100).toFixed(2)}%`)
 check('only the visible band ± buffer renders — pages 2-3 may hold canvases here', [2, 3].includes(await canvasCount()), String(await canvasCount()))
 
 /* ── 2. Fit: the landscape first page drives the scale below 100%. ── */

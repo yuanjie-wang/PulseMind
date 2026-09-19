@@ -19,10 +19,13 @@ const COMPONENTS: Record<string, React.ComponentType<any>> = {
 
 const CONFIG = { extensions: Latex() }
 
-export function MarkdownPreview({ text }: { text: string }): React.ReactElement {
+// `text` is a stable string across the pane-width drag's re-renders; without
+// the memo every 40ms tick re-runs preprocessText and re-parses the whole
+// document (same jank class as the python highlighter — probe-preview-drag.mjs).
+export const MarkdownPreview = React.memo(function MarkdownPreview({ text }: { text: string }): React.ReactElement {
   return (
     <div className="x-markdown-light" style={{ padding: '12px 16px', fontSize: 13, lineHeight: 1.7 }}>
       <XMarkdown content={preprocessText(text)} components={COMPONENTS} config={CONFIG} />
     </div>
   )
-}
+})
