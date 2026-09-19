@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Layout, Button, theme, Tooltip, Dropdown } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import {
@@ -14,15 +14,18 @@ import ProjectSidebarList from './ProjectSidebarList'
 import SidebarNav from './SidebarNav'
 import { ViewHost } from './ViewHost'
 import { ProjectModal } from '../project/ProjectModal'
+import CommandPalette from './CommandPalette'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
+import { useCommandPaletteStore } from '../../stores/commandPaletteStore'
+import { buildCommandItems } from '../../navigation/command-palette-items'
 import { DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { conversationKeyOf } from '../../../../shared/conversation-key'
-import { FONT_SIZE, FONT_WEIGHT, INK, SURFACE, TEXT, TEXT_MUTED, BORDER_HAIRLINE } from '../../theme/tokens'
+import { FONT_SIZE, FONT_WEIGHT, INK, TEXT, TEXT_MUTED, BORDER_HAIRLINE } from '../../theme/tokens'
 import type { Project, ProjectSortMode } from '../../../../shared/types/project'
 import { useSettings } from '../../hooks/SettingsContext'
 import type { ConversationListItem } from '../../types/conversation'
@@ -78,6 +81,11 @@ const SIDEBAR_TOP_BAND_HEIGHT = CONTROLS_ON_LEFT ? 50 : 0
 // room; where the sidebar starts at the window's top edge it is the title's only gap from
 // the edge, so it needs the larger value.
 const SIDEBAR_TITLE_PADDING_TOP = SIDEBAR_TOP_BAND_HEIGHT > 0 ? 10 : 30
+
+// The sidebar's wash: cool grey at the top easing to neutral grey at the bottom,
+// painted on the Sider itself. `.ant-layout-sider-children` below must stay
+// transparent — it spans the full Sider, so a fill there would flatten the gradient.
+const SIDEBAR_BACKGROUND = 'linear-gradient(180deg, #f5f7fa 0%, #f0f0f0 100%)'
 
 // With the sidebar collapsed the header starts at the window's left edge, where the
 // window controls sit, so its content has to clear them.
@@ -159,6 +167,7 @@ function AppLayout({
   // while either trigger is set, and `editing` switches the modal's mode.
   const [projectEditTarget, setProjectEditTarget] = useState<Project | null>(null)
   const reloadProjects = useProjectStore((s) => s.reload)
+  const projects = useProjectStore((s) => s.projects)
 
   // The 项目 list's group order. A global preference (settings.projectSortMode),
   // written through the shared save path like the theme is — the guard keeps a
@@ -225,6 +234,122 @@ function AppLayout({
     if (canCreateNew) onCreateNew()
   }
 
+  // ── Native menu / accelerator actions ──
+  // macOS: the real application menu's accelerators; Windows/Linux: the
+  // before-input fallback (menu.ts). Both push a MenuActionId over
+  // MENU_ACTION. Subscribed ONCE; the dispatch table is refreshed after every
+  // commit through a ref (assignment lives in an effect — render-period ref
+  // writes are forbidden), so menu activations always see the current
+  // closures without re-subscribing on every streamed-token render.
+  const startPlainNewTask = (): void => {
+    // Same semantics as the sidebar's 新建任务: a plain conversation, any
+    // project pick cleared, nothing created until the first message.
+    useNewTaskStore.getState().setMode('chat')
+    useNewTaskStore.getState().setProjectId(null)
+    navigate({ kind: 'chat' })
+    if (canCreateNew) onCreateNew()
+  }
+  const menuActionRef = useRef<(action: string) => void>(() => {})
+  useEffect(() => {
+    menuActionRef.current = (action: string): void => {
+      switch (action) {
+        case 'new-task':
+          startPlainNewTask()
+          break
+        case 'new-project':
+          setProjectEditTarget(null)
+          setProjectModalOpen(true)
+          break
+        case 'command-palette':
+          useCommandPaletteStore.getState().setOpen(true)
+          break
+        case 'toggle-sidebar':
+          setCollapsed((c) => !c)
+          break
+        case 'toggle-workbench':
+          if (workbenchOpen) useWorkbenchStore.getState().setOpen(wbKey, false)
+          else useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+          break
+        case 'open-search':
+          navigate({ kind: 'search' })
+          break
+        case 'open-settings':
+          navigateKind('settings')
+          break
+        case 'open-usage':
+          navigateKind('usage')
+          break
+      }
+    }
+  })
+  useEffect(() => {
+    const unsub = window.electronAPI?.onMenuAction((action) => menuActionRef.current(action))
+    return unsub
+  }, [])
+
+  // ── Command palette items ──
+  // Rebuilt per render on purpose: the run closures capture live state
+  // (listTab-adjacent stores, workbenchOpen), and AppLayout re-renders on
+  // every streamed token anyway — memoizing would trade correctness for
+  // nothing. ~30 items, built only to be filtered on demand.
+  const isMac = /mac/i.test(navigator.platform)
+  const paletteItems = buildCommandItems({
+    labels: {
+      groupActions: t('palette.groupActions'),
+      groupViews: t('palette.groupViews'),
+      groupConversations: t('palette.groupConversations'),
+      groupProjects: t('palette.groupProjects'),
+      groupSettings: t('palette.groupSettings'),
+      newTask: t('palette.newTask'),
+      newProject: t('palette.newProject'),
+      toggleSidebar: t('palette.toggleSidebar'),
+      toggleWorkbench: t('palette.toggleWorkbench'),
+      openSearch: t('palette.openSearch'),
+      openUsage: t('palette.openUsage'),
+      openSettings: t('palette.openSettings'),
+      openConversation: t('palette.openConversation'),
+      newTaskInProject: t('palette.newTaskInProject'),
+      settingsSection: t('palette.settingsSection'),
+    },
+    hints: {
+      newTask: isMac ? '⌘N' : 'Ctrl+N',
+      newProject: isMac ? '⇧⌘N' : 'Ctrl+Shift+N',
+      toggleSidebar: isMac ? '⌘B' : 'Ctrl+B',
+      toggleWorkbench: isMac ? '⌘J' : 'Ctrl+J',
+      openSearch: isMac ? '⌘F' : 'Ctrl+F',
+      openUsage: isMac ? '⌥⌘U' : 'Ctrl+Alt+U',
+      openSettings: isMac ? '⌘,' : 'Ctrl+,',
+    },
+    conversations: conversations.map((c) => ({ key: String(c.key), label: c.label })),
+    projects: projects.map((p) => ({ id: p.id, name: p.name })),
+    settingsSections: [
+      { key: 'environment', label: t('palette.sectionEnvironment') },
+      { key: 'settings', label: t('palette.sectionModel') },
+      { key: 'assistant', label: t('palette.sectionAssistant') },
+      { key: 'memory', label: t('palette.sectionMemory') },
+      { key: 'experiences', label: t('palette.sectionExperiences') },
+      { key: 'data', label: t('palette.sectionData') },
+      { key: 'about', label: t('palette.sectionAbout') },
+    ],
+    run: {
+      newTask: startPlainNewTask,
+      newProject: () => { setProjectEditTarget(null); setProjectModalOpen(true) },
+      toggleSidebar: () => setCollapsed((c) => !c),
+      toggleWorkbench: () => {
+        // Items rebuild every render, so this closes over the current pane
+        // state directly — no ref indirection needed.
+        if (workbenchOpen) useWorkbenchStore.getState().setOpen(wbKey, false)
+        else useWorkbenchStore.getState().openTab(wbKey, 'workspace')
+      },
+      openSearch: () => navigate({ kind: 'search' }),
+      openUsage: () => navigateKind('usage'),
+      openSettings: () => navigateKind('settings'),
+      openSettingsSection: (tab) => navigate({ kind: 'settings', settingsTab: tab as 'environment' }),
+      openConversation: (key) => { navigate({ kind: 'chat' }); onSelectConversation(key) },
+      newTaskInProject: handleProjectNewTask,
+    },
+  })
+
   // Sidebar highlight key: only while a chat view is open. Both history tabs
   // (对话 and 项目) take it, so the open conversation reads as active in either.
   const activeChatKey = view.kind === 'chat' ? activeConvKey : undefined
@@ -286,7 +411,7 @@ function AppLayout({
         onCollapse={setCollapsed}
         theme="light"
         trigger={null}
-        style={{ borderRight: `1px solid ${token.colorBorderSecondary}`, background: SURFACE }}>
+        style={{ borderRight: `1px solid ${token.colorBorderSecondary}`, background: SIDEBAR_BACKGROUND }}>
         {/* Space for the macOS traffic lights; the sidebar title deliberately sits below
             them. Not rendered elsewhere, where the sidebar starts at the top. */}
         {SIDEBAR_TOP_BAND_HEIGHT > 0 && (
@@ -549,6 +674,10 @@ function AppLayout({
         }}
       />
 
+      {/* Cmd/Ctrl+K palette: mounted like ProjectModal, always present so the
+          accelerator works from any view; a closed Modal renders nothing. */}
+      <CommandPalette items={paletteItems} />
+
       {/* Force antd's sider-children wrapper to be a flex column so our flex:1 on the conversation list works */}
       <style>{`
         .ant-layout-sider-children {
@@ -558,12 +687,21 @@ function AppLayout({
           min-height: 0;
         }
 
-        .ant-switch:focus-visible {
+        /* 键盘可达性：Tab 焦点导航是开启的（浏览器只在 :focus-visible，即键盘
+           焦点时画环）；鼠标点击留下的焦点环/描边在这里统一压掉。此前全应用
+           在捕获阶段 preventDefault 一切 Tab（App.tsx），等于没有键盘导航 ——
+           那条全局禁用已删除，这条规则是它的替代品，而不是又一处遮挡。 */
+        :focus:not(:focus-visible) {
           outline: none;
         }
+        .ant-switch:focus:not(:focus-visible) {
+          box-shadow: none;
+        }
 
+        /* The Sider paints SIDEBAR_BACKGROUND; this wrapper covers the whole Sider,
+           so it must stay transparent or its own fill would hide the gradient. */
         .ant-layout-sider-children {
-          background: ${SURFACE};
+          background: transparent;
         }
 
         /* Primary buttons, checked switches, active tabs and the like take the
@@ -588,10 +726,10 @@ function AppLayout({
           padding-left: 8px !important;
         }
         .new-chat-btn:hover {
-          background: rgba(0, 0, 0, 0.06) !important;
+          background: rgba(0, 5, 10, 0.06) !important;
         }
         .new-chat-btn.active-mode-btn {
-          background: rgba(0, 0, 0, 0.08) !important;
+          background: rgba(0, 5, 10, 0.08) !important;
         }
         .new-chat-btn .ant-btn-icon {
           margin-inline-end: 4px !important;
@@ -609,11 +747,11 @@ function AppLayout({
           border-radius: 6px !important;
         }
         .sidebar-icon-btn:hover {
-          background: rgba(0, 0, 0, 0.06) !important;
+          background: rgba(0, 5, 10, 0.06) !important;
         }
         /* The open view (settings/usage/about) keeps its entry highlighted. */
         .sidebar-icon-btn.active-mode-btn {
-          background: rgba(0, 0, 0, 0.08) !important;
+          background: rgba(0, 5, 10, 0.08) !important;
         }
 
         /* History area switcher: a shared light-gray pill track, sized to the

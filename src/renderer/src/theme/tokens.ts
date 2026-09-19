@@ -73,7 +73,20 @@ export function buildAntdTheme(mode: ThemeMode): ThemeConfig {
       fontSize: FONT_SIZE.base,
       fontSizeSM: FONT_SIZE.sm,
       fontSizeLG: FONT_SIZE.lg,
-      colorBgLayout: dark ? undefined : SURFACE
-    }
+      colorBgLayout: dark ? undefined : SURFACE,
+      // Focus must read like hover: the ink primary derives controlOutline
+      // rgba(0,0,0,0.75), which Input/Select/DatePicker/Radio draw as a 2px
+      // halo — a border visually tripled in weight. Transparent leaves the
+      // border-colour change as the only focus signal.
+      controlOutline: 'transparent',
+    },
+    components: {
+      Select: {
+        // The ink primary derives controlItemBgActive #404040, so the selected
+        // dropdown option is dark grey under dark text. Neutral greys per mode:
+        // the classic antd item grey in light, a step above the dark hover fill.
+        optionSelectedBg: dark ? '#333333' : '#f5f5f5',
+      },
+    },
   }
 }

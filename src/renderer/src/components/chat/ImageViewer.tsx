@@ -8,6 +8,7 @@ import {
   RotateRightOutlined,
   DownloadOutlined
 } from '@ant-design/icons'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 const btnStyle: React.CSSProperties = {
   background: 'rgba(255,255,255,0.15)',
@@ -43,6 +44,14 @@ export function ImageViewer({
 
   // Keep offsetRef in sync with offset state
   useEffect(() => { offsetRef.current = offset }, [offset])
+
+  // Focus semantics: focus enters the layer (first focusable = the close
+  // button), Tab cycles inside it instead of reaching the page behind the
+  // mask, and closing hands focus back to whatever opened the viewer. The
+  // viewer's own Esc/+/-/r window listener stays; the trap deliberately gets
+  // no onEscape, so one Esc closes once. maskClickClose is what the mask
+  // never had: clicking the dark area (not the image, not the toolbar) closes.
+  useFocusTrap<HTMLDivElement>({ active: true, ref: containerRef })
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -91,6 +100,13 @@ export function ImageViewer({
 
   const handleMouseUp = () => { draggingRef.current = false }
 
+  // Click the dark area around the image to close. The image and toolbar
+  // buttons are children, so the exact-target check is what keeps a click on
+  // them (or a drag release over the mask) from closing the viewer.
+  const handleMaskClick = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) onClose()
+  }
+
   const handleDownload = async () => {
     try {
       const ext = (src.match(/\.(\w{3,4})(?:\?|$)/) || [])[1] || 'png'
@@ -118,6 +134,7 @@ export function ImageViewer({
         userSelect: 'none'
       }}
       ref={containerRef}
+      onClick={handleMaskClick}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}

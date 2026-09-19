@@ -15,6 +15,7 @@ import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { runLaunchHooks } from './hooks-runner'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
+import { installApplicationMenu, attachShortcutFallback } from './menu'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
 import { createTray, applyLaunchAtLogin } from './tray'
 import { routineScheduler } from './routine/routine-scheduler'
@@ -365,6 +366,11 @@ function createWindow(): void {
     }
   })
   appViewDock.attach(mainWindow)
+  // Action accelerators on Windows/Linux ride before-input-event (no visible
+  // menu bar exists under the hidden title bar); macOS uses the real menu's
+  // accelerators instead. Attached per window — createWindow also runs on the
+  // tray relaunch path after the previous window was destroyed.
+  attachShortcutFallback(mainWindow)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -466,6 +472,11 @@ if (gotTheLock) {
 
   registerIpcHandlers()
   writeLog('INFO', 'startup: ipc handlers registered')
+
+  // Application menu + action accelerators (mac: a real menu with native
+  // accelerators; see menu.ts for the Windows/Linux fallback split).
+  await installApplicationMenu(() => mainWindow)
+  writeLog('INFO', 'startup: application menu installed')
 
   // Calibrate skill preferences against actual files on disk
   skillStore.calibrate().catch((err) => writeLog('WARN', `startup: skillStore.calibrate failed: ${err}`))

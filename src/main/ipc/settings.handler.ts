@@ -4,6 +4,7 @@ import { settingsStore } from '../storage/settings-store'
 import { agentSessionManager } from '../agent/session-manager'
 import { cleanupExpiredConversations } from '../services/conversation-retention'
 import { setTitleBarTheme } from '../window-chrome'
+import { rebuildApplicationMenu } from '../menu'
 import { applyLaunchAtLogin } from '../tray'
 import type { AppSettings } from '../../shared/types/settings'
 
@@ -23,6 +24,10 @@ export function registerSettingsHandlers(): void {
     // away — engines and hooks read them through the shared manager instances.
     void agentSessionManager.applyFeatureToggles(settings).catch((err: unknown) =>
       console.warn('[settings] Failed to apply feature toggles:', err))
+    // The application menu's labels follow the locale; this save may have just
+    // changed it. Cheap rebuild from the stored getter.
+    void rebuildApplicationMenu().catch((err: unknown) =>
+      console.warn('[settings] Failed to rebuild application menu:', err))
     // 对话管理 · 最长保留时长：the policy takes effect on save, not on the next
     // restart. Awaiting it means the save resolves AFTER the expiries landed,
     // so the caller's list reload sees the pruned DB. Bounded work (≤500 rows).

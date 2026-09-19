@@ -23,6 +23,8 @@ import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
 import { conversationKeyOf } from '../../shared/conversation-key'
+import { NotifyBridge } from './utils/notify'
+import { reportSilentFailure } from './utils/notify-core'
 import { buildAntdTheme } from './theme/tokens'
 
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
@@ -58,14 +60,11 @@ function AppContent(): React.ReactElement {
     }
   }, [settings.locale, locale, setLocale])
 
-  // Disable Tab key focus navigation across the app
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Tab') e.preventDefault()
-    }
-    window.addEventListener('keydown', handler, { capture: true })
-    return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, [])
+  // Tab-focus navigation is ON: the browser only paints a focus ring for
+  // :focus-visible (keyboard focus), so mouse clicks stay clean without the
+  // old capture-phase Tab preventDefault that disabled keyboard navigation
+  // app-wide. The mouse-click ring suppression lives in AppLayout's style
+  // block (:focus:not(:focus-visible)).
 
   // ── Hooks completed: reload settings ──
   useEffect(() => {
@@ -88,7 +87,7 @@ function AppContent(): React.ReactElement {
         baseURL: activeProfile!.baseURL || '',
         model: activeProfile!.model || '',
         locale: settings.locale,
-      }).catch(() => {})
+      }).catch((err: unknown) => reportSilentFailure('mcp-summary', err))
     }
     // Try immediately (cache may not be populated yet at mount time)
     tryGenerate()
@@ -320,7 +319,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
           console.log(`[App] Memory compression will retry in ${delay}ms (attempt ${attempts}/3)`)
           timer = setTimeout(attempt, delay)
         }
-      }).catch(() => {})
+      }).catch((err: unknown) => reportSilentFailure('memory-compress', err))
     }
     attempt()
     return () => clearTimeout(timer)
@@ -329,7 +328,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // One-time migration: existing type='experience' memories → knowledge base raw/
   useEffect(() => {
     if (!apiKey) return
-    memoryManager.migrateExperienceMemoriesToKnowledge().catch(() => {})
+    memoryManager.migrateExperienceMemoriesToKnowledge().catch((err: unknown) => reportSilentFailure('memory-migrate', err))
   }, [apiKey])
 
   // Startup compensation: compile any un-compiled knowledge files
@@ -462,6 +461,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
       <XProvider>
         <ConfigProvider locale={locale === 'zh' ? zhCN : enUS} theme={antdTheme}>
           <AntdApp>
+            <NotifyBridge />
             <AppLayout
             conversations={conversations.map((c: any) => ({
                 key: c.key,
