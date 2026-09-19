@@ -80,7 +80,9 @@ describe('the 数据与运行 section is wired end to end', () => {
   })
 
   it('fails visibly when a save errors instead of dying silently', () => {
-    expect(COMPONENT).toContain('messageApi.error')
+    // 2026-09-19: toasts consolidated onto the shared notify outlet —
+    // the visible-failure contract itself is unchanged.
+    expect(COMPONENT).toContain('notify.error')
   })
 
   it('warns before the save that deletes conversations immediately', () => {

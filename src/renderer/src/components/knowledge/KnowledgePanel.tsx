@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { Button, Typography, Space, Input, Modal, Tooltip, App, Table, Segmented, Dropdown, Select } from 'antd'
+import { Button, Typography, Space, Input, Modal, Tooltip, Table, Segmented, Dropdown, Select } from 'antd'
 import {
   LinkOutlined,
   DeleteOutlined,
@@ -18,6 +18,7 @@ import {
 } from '@ant-design/icons'
 import { XMarkdown } from '@ant-design/x-markdown'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeImportResult } from '../../../../shared/types/knowledge'
 import { DEFAULT_BASE_ID } from '../../../../shared/types/knowledge'
@@ -194,7 +195,7 @@ function CompiledPreview({ content }: { content: string }): React.ReactElement {
 
 const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProps>(function KnowledgePanel({ knowledgeManager, baseId, onStateChange }, ref): React.ReactElement {
   const { t } = useTranslation()
-  const { message } = App.useApp()
+  
   // One resolved scope for the whole component: the selection IS the scope.
   const scopedBaseId = baseId ?? DEFAULT_BASE_ID
   const [files, setFiles] = useState<KnowledgeFile[]>([])
@@ -388,7 +389,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     const { fileCount, filePaths } = await knowledgeManager.scanFolder(folderPath)
 
     if (fileCount === 0) {
-      message.info('文件夹中没有可导入的文件')
+      notify.info('文件夹中没有可导入的文件')
       return
     }
 
@@ -409,7 +410,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     const url = urlInput.trim()
     if (!url) return
     if (!/^https?:\/\/.+/.test(url)) {
-      message.error('不支持的链接格式，仅支持 http/https 链接')
+      notify.error('不支持的链接格式，仅支持 http/https 链接')
       return
     }
 
@@ -535,7 +536,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     const { existing, new: newFiles } = await knowledgeManager.prepareImport(filePaths, importBaseId ?? scopedBaseId)
 
     if (newFiles.length === 0) {
-      if (existing.length > 0) message.info('所有文件均已导入')
+      if (existing.length > 0) notify.info('所有文件均已导入')
       return
     }
 
@@ -570,11 +571,11 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   const enqueueCompileAll = useCallback(async () => {
     const { items } = await knowledgeManager.listFilesAdvanced({ status: 'raw', baseId: scopedBaseId })
     if (items.length === 0) {
-      message.info(t('knowledgePanel.nothingToCompile'))
+      notify.info(t('knowledgePanel.nothingToCompile'))
       return
     }
     for (const f of items) enqueueCompileOne(f.id)
-  }, [knowledgeManager, enqueueCompileOne, scopedBaseId, message, t])
+  }, [knowledgeManager, enqueueCompileOne, scopedBaseId, notify, t])
 
   /** R4 (PLAN-knowledge-groups): wipe every compiled page in the CURRENT base
    *  and recompile its sources from scratch — the one-shot repair for
@@ -583,7 +584,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
    *  knowledge.autoCompile — that gate is for imports, not for this. */
   const handleRebuildWiki = useCallback(async (): Promise<void> => {
     if (!knowledgeManager.canCompile) {
-      message.warning(t('knowledgePanel.llmNotConfigured'))
+      notify.warning(t('knowledgePanel.llmNotConfigured'))
       return
     }
     Modal.confirm({
@@ -595,17 +596,17 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       onOk: async () => {
         try {
           const { clearedPages, resetSources } = await knowledgeManager.rebuildWiki(scopedBaseId)
-          message.success(`已清空 ${clearedPages} 个 Wiki 页面，${resetSources} 个源待重编`)
+          notify.success(`已清空 ${clearedPages} 个 Wiki 页面，${resetSources} 个源待重编`)
           await loadFilesRef.current()
           const { items } = await knowledgeManager.listFilesAdvanced({ status: 'raw', baseId: scopedBaseId })
           for (const f of items) enqueueCompileOne(f.id)
         } catch (err) {
           console.error('[KnowledgePanel] Rebuild failed:', err)
-          message.error('重建失败')
+          notify.error('重建失败')
         }
       },
     })
-  }, [knowledgeManager, enqueueCompileOne, message, scopedBaseId, t])
+  }, [knowledgeManager, enqueueCompileOne, notify, scopedBaseId, t])
 
   // ── Independent queue processors ──
   //
@@ -762,10 +763,10 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
           _importTotal = 0
           _compileRunning = false
           _compilingFileId = null
-          message.success(`已清空 ${deletedRaw} 个源文件、${deletedWiki} 个编译文件`)
+          notify.success(`已清空 ${deletedRaw} 个源文件、${deletedWiki} 个编译文件`)
         } catch (err) {
           console.error('[KnowledgePanel] Reset failed:', err)
-          message.error('重置失败')
+          notify.error('重置失败')
         }
       }
     })
@@ -898,12 +899,12 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
             onChange={async (baseId) => {
               try {
                 await knowledgeManager.setFilesBase(Array.from(selectedIds), baseId)
-                message.success('已移动到知识库')
+                notify.success('已移动到知识库')
                 setSelectedIds(new Set())
                 loadFiles()
               } catch (err) {
                 console.error('[KnowledgePanel] Batch assign failed:', err)
-                message.error('分配失败')
+                notify.error('分配失败')
               }
             }}
             options={bases.map((b) => ({ value: b.id, label: b.name }))}
@@ -1096,7 +1097,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
                         loadFiles()
                       } catch (err) {
                         console.error('[KnowledgePanel] Assign failed:', err)
-                        message.error('分配失败')
+                        notify.error('分配失败')
                       }
                     },
                   }}

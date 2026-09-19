@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
-import { Alert, Button, Drawer, message, Modal, Select, Space, Switch, Typography } from 'antd'
+import {Alert, Button, Drawer, Modal, Select, Space, Switch, Typography } from 'antd'
 import { FolderOpenOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import type { DataPaths } from '../../types/electron'
 import type { AppSettings } from '../../types/settings'
 import { retentionOptions } from './retention-options'
@@ -25,7 +26,6 @@ interface DataRuntimeSettingsProps {
 function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: DataRuntimeSettingsProps): React.ReactElement {
   const { settings, loading, saving, saveSettings } = useSettings()
   const { t } = useTranslation()
-  const [messageApi, messageHolder] = message.useMessage()
   const [modal, modalHolder] = Modal.useModal()
   const [paths, setPaths] = useState<DataPaths | null>(null)
   const [busy, setBusy] = useState(false)
@@ -37,10 +37,10 @@ function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: D
     void window.electronAPI.getDataPaths().then((value) => {
       if (!disposed) setPaths(value)
     }).catch((err: unknown) => {
-      if (!disposed) messageApi.error(err instanceof Error ? err.message : String(err))
+      if (!disposed) notify.error(err instanceof Error ? err.message : String(err))
     })
     return () => { disposed = true }
-  }, [open, settings.workspaceDir, messageApi])
+  }, [open, settings.workspaceDir])
 
   const save = async (patch: Partial<AppSettings>): Promise<void> => {
     if (disabled) return
@@ -62,7 +62,7 @@ function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: D
       // success branch only (a failed save deleted nothing).
       onReloadConversations?.()
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : String(err))
+      notify.error(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -72,7 +72,7 @@ function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: D
     try {
       await window.electronAPI.openFolder(path)
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : String(err))
+      notify.error(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -160,7 +160,6 @@ function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: D
   )
   return (
     <>
-      {messageHolder}
       {modalHolder}
       {inline ? body : <Drawer title={t('dataRuntime.title')} open={open} onClose={onClose} size={440}>{body}</Drawer>}
     </>

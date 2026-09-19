@@ -16,6 +16,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { App as AntdApp, Button, Tooltip } from 'antd'
 import { DeleteOutlined, EditOutlined, FolderOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import { useProjectStore } from '../../stores/projectStore'
 import ConversationRows from './ConversationRows'
 import { sortProjectGroups } from './project-sort'
@@ -58,7 +59,7 @@ function ProjectSidebarList({
   onTogglePin
 }: ProjectSidebarListProps): React.ReactElement {
   const { t } = useTranslation()
-  const { modal, message } = AntdApp.useApp()
+  const { modal } = AntdApp.useApp()
   const projects = useProjectStore((s) => s.projects)
   const reload = useProjectStore((s) => s.reload)
   // Collapsed group headers — a Set so toggling is O(1) and unknown ids read
@@ -114,7 +115,7 @@ function ProjectSidebarList({
       onManualOrder?.()
       await reload()
     } catch (err) {
-      message.error(err instanceof Error ? err.message : String(err))
+      notify.error(err instanceof Error ? err.message : String(err))
     }
   }
   const handleDragOver = (e: React.DragEvent, projectId: string): void => {

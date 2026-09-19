@@ -23,6 +23,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { App as AntdApp, Button, Switch, Tag, Tooltip } from 'antd'
 import { ClockCircleOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { checkCron } from '../../../../shared/schedule/cron'
 import { describeCron } from '../../utils/schedule-text'
@@ -107,7 +108,7 @@ function SectionHead({ title, note, action }: { title: string; note?: string; ac
 
 function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement {
   const { t, locale } = useTranslation()
-  const { modal, message } = AntdApp.useApp()
+  const { modal } = AntdApp.useApp()
   const navigate = useNavigationStore((s) => s.navigate)
   const [routines, setRoutines] = useState<Routine[]>([])
   const [recentRuns, setRecentRuns] = useState<RoutineRun[]>([])
@@ -173,7 +174,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
     const params: Record<string, string> = {}
     for (const p of routine.params ?? []) params[p.key] = p.default ?? ''
     await window.electronAPI.routineRun(routine.id, params)
-    message.success(`已开始执行「${routine.name}」，完成后会通知你`)
+    notify.success(`已开始执行「${routine.name}」，完成后会通知你`)
     // 跳到三栏运行历史：默认选中刚发起的这次运行，右侧实时展示执行过程。
     setHistoryOfId(routine.id)
     setRunNonce((n) => n + 1)

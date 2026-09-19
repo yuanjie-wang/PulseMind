@@ -26,6 +26,7 @@ import {
   type ElementSelection,
 } from '../../stores/htmlEditStore'
 import { usePreviewPaneStore } from '../../stores/previewPaneStore'
+import { notify } from '../../utils/notify'
 
 /** A per-mount secret the served picker echoes on every pm:* message (M9):
  *  the frame's page scripts share the picker's realm and event.source, so
@@ -133,7 +134,7 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
           void store.commitInPlaceText(path, data.pmPath, data.html).then((ok) => {
             if (!ok) {
               const reason = consumeFailure()
-              void toastFailure(reason)
+              notify.error(reason)
               // Only a STALE refusal reloads (disk moved — D8's re-read takes
               // over). A plain refusal (unresolvable element) must NOT: the
               // remount would drop the selection the user just made, and an
@@ -146,7 +147,7 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
           // D7 double-click: the store decides whether the element resolves
           // against the disk; enable-edit comes back only when it does.
           void store.requestInPlaceEdit(path, data.pmPath).then((ok) => {
-            if (!ok) void toastFailure(consumeFailure())
+            if (!ok) notify.error(consumeFailure())
           })
           break
         case 'pm:scroll':
@@ -177,11 +178,4 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
   )
 }
 
-async function toastFailure(reason: string): Promise<void> {
-  // Lazy import avoided on purpose: the panel toasts action failures too;
-  // commits arriving from the frame need the same surface here.
-  if (!reason) return
-  void import('antd').then(({ message }) => {
-    void message.error(reason)
-  })
-}
+

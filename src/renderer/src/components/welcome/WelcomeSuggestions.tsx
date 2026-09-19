@@ -7,7 +7,7 @@
 // prompts stay underneath, prefilling the composer in one click.
 
 import React, { useEffect, useState } from 'react'
-import { App as AntdApp, Button, Tooltip } from 'antd'
+import { Button, Tooltip } from 'antd'
 import {
   ArrowRightOutlined,
   ClockCircleOutlined,
@@ -17,6 +17,7 @@ import {
   PlayCircleOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import { StarterPrompts } from './StarterPrompts'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
@@ -175,7 +176,7 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
   onOpenConversation: (key: string) => void
 }): React.ReactElement {
   const { t } = useTranslation()
-  const { message } = AntdApp.useApp()
+  
   const [now, setNow] = useState(() => Date.now())
   // undefined = still loading, null = nothing to suggest; the two render differently.
   const [chat, setChat] = useState<ChatSlice | null | undefined>(undefined)
@@ -231,8 +232,8 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
 
   const runNow = (routine: Routine): void => {
     window.electronAPI.routineRun(routine.id)
-      .then(() => message.success(t('welcome.routineStarted')))
-      .catch((err) => message.error(err instanceof Error ? err.message : String(err)))
+      .then(() => notify.success(t('welcome.routineStarted')))
+      .catch((err) => notify.error(err instanceof Error ? err.message : String(err)))
   }
 
   const starters = [t('welcome.starter1'), t('welcome.starter2'), t('welcome.starter3')]

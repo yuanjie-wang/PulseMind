@@ -3,10 +3,11 @@
 // runtime environment fields. Drawer-capable but rendered inline in the
 // settings page.
 import React, { useState, useEffect } from 'react'
-import { Drawer, Input, Button, Typography, Space, message, Select, Switch, InputNumber } from 'antd'
+import {Drawer, Input, Button, Typography, Space, Select, Switch, InputNumber } from 'antd'
 import { SaveOutlined, DesktopOutlined, ClockCircleOutlined, FolderOutlined, FolderOpenOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import type { PlatformInfo, DataPaths, ServiceStatus } from '../../types/electron'
 
 const { Text } = Typography
@@ -30,7 +31,6 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   const [dataPaths, setDataPaths] = useState<DataPaths | null>(null)
   const [localWorkspaceDir, setLocalWorkspaceDir] = useState(settings.workspaceDir || '')
   const [currentTime, setCurrentTime] = useState(formatCurrentTime())
-  const [messageApi, contextHolder] = message.useMessage()
   const [service, setService] = useState<ServiceStatus | null>(null)
   const [serviceBusy, setServiceBusy] = useState(false)
   // Browser runtime (A-M4) — saved immediately on change; synced from settings here.
@@ -82,9 +82,9 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   const handleSave = async () => {
     try {
       await saveSettings({ ...settings, workspaceDir: localWorkspaceDir })
-      messageApi.success(t('environmentDrawer.saved'))
+      notify.success(t('environmentDrawer.saved'))
     } catch {
-      messageApi.error(t('environmentDrawer.saveFailed'))
+      notify.error(t('environmentDrawer.saveFailed'))
     }
   }
 
@@ -224,10 +224,10 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
                 setServiceBusy(true)
                 try {
                   const r = await window.electronAPI.serviceSetEnabled(checked)
-                  messageApi.success(checked ? `服务已启动 :${r.port}` : '服务已停止')
+                  notify.success(checked ? `服务已启动 :${r.port}` : '服务已停止')
                   refreshService()
                 } catch {
-                  messageApi.error('操作失败')
+                  notify.error('操作失败')
                 } finally {
                   setServiceBusy(false)
                 }
@@ -258,7 +258,7 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
                   size="small"
                   onClick={() => {
                     navigator.clipboard?.writeText(service?.token || '')
-                    messageApi.success('Token 已复制')
+                    notify.success('Token 已复制')
                   }}
                 >
                   复制
@@ -271,10 +271,10 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
                     setServiceBusy(true)
                     try {
                       const r = await window.electronAPI.serviceResetToken()
-                      messageApi.success('Token 已重置,请更新扩展配置')
+                      notify.success('Token 已重置,请更新扩展配置')
                       setService((prev) => (prev ? { ...prev, token: r.token } : prev))
                     } catch {
-                      messageApi.error('重置失败')
+                      notify.error('重置失败')
                     } finally {
                       setServiceBusy(false)
                     }
@@ -325,7 +325,7 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
                   size="small"
                   onClick={() => {
                     navigator.clipboard?.writeText(service.wsUrl)
-                    messageApi.success('连接地址已复制')
+                    notify.success('连接地址已复制')
                   }}
                 >
                   复制
@@ -424,7 +424,6 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   if (inline) {
     return (
       <div style={{ height: '100%', overflow: 'auto' }}>
-        {contextHolder}
         {body}
       </div>
     )
@@ -432,7 +431,6 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
 
   return (
     <>
-      {contextHolder}
       <Drawer title={t('environmentDrawer.title')} open={open} onClose={onClose} size={400}>
         {body}
       </Drawer>

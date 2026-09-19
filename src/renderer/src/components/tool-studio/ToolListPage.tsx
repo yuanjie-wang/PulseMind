@@ -8,12 +8,13 @@ import { App as AntdApp, Button, Input, Modal, theme } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { studioConversationId } from '../../tool-studio/tool-prompt'
+import { notify } from '../../utils/notify'
 import type { UserTool } from '../../../../shared/types/user-tool'
 import { ToolList } from './ToolList'
 import { ToolRunner } from './ToolRunner'
 
 export function ToolListPage({ selectedId }: { selectedId: string | null }): React.ReactElement {
-  const { modal, message } = AntdApp.useApp()
+  const { modal } = AntdApp.useApp()
   const { token } = theme.useToken()
   const navigate = useNavigationStore((s) => s.navigate)
   const [tools, setTools] = useState<UserTool[]>([])
@@ -55,7 +56,7 @@ export function ToolListPage({ selectedId }: { selectedId: string | null }): Rea
   const confirmCreate = useCallback(async () => {
     const name = newName.trim()
     if (!name) {
-      message.warning('请输入工具名')
+      notify.warning('请输入工具名')
       return
     }
     setCreating(true)
@@ -65,24 +66,24 @@ export function ToolListPage({ selectedId }: { selectedId: string | null }): Rea
       await load()
       navigate({ kind: 'tools', toolId: tool.id, toolEditing: true })
     } catch (err) {
-      message.error(`创建失败：${err instanceof Error ? err.message : String(err)}`)
+      notify.error(`创建失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setCreating(false)
     }
-  }, [newName, message, load, navigate])
+  }, [newName, notify, load, navigate])
 
   const duplicateTool = useCallback(async (tool: UserTool) => {
     try {
       const copy = await window.electronAPI.toolDuplicate(tool.id)
       await load()
       if (copy) {
-        message.success(`已创建副本「${copy.name}」`)
+        notify.success(`已创建副本「${copy.name}」`)
         openTool(copy.id)
       }
     } catch (err) {
-      message.error(`复制失败：${err instanceof Error ? err.message : String(err)}`)
+      notify.error(`复制失败：${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [message, openTool, load])
+  }, [notify, openTool, load])
 
   const removeTool = useCallback((tool: UserTool) => {
     modal.confirm({
@@ -110,11 +111,11 @@ export function ToolListPage({ selectedId }: { selectedId: string | null }): Rea
     try {
       const restored = await window.electronAPI.toolRestorePresets()
       await load()
-      message.success(restored.length > 0 ? `已恢复 ${restored.length} 个预置工具` : '预置工具已是最新，没有需要恢复的')
+      notify.success(restored.length > 0 ? `已恢复 ${restored.length} 个预置工具` : '预置工具已是最新，没有需要恢复的')
     } catch (err) {
-      message.error(`恢复失败：${err instanceof Error ? err.message : String(err)}`)
+      notify.error(`恢复失败：${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [message, load])
+  }, [notify, load])
 
   const selected = tools.find((t) => t.id === selectedId) ?? null
 

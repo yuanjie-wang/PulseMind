@@ -2,10 +2,11 @@
 // Edits the persona fields of settings.json via SettingsContext; supports
 // drawer and inline (settings page section) mounting.
 import React, { useState, useEffect } from 'react'
-import { Drawer, Input, Button, Typography, Space, message } from 'antd'
+import {Drawer, Input, Button, Typography, Space } from 'antd'
 import { SaveOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 
 const { TextArea } = Input
 const { Text } = Typography
@@ -20,7 +21,6 @@ function AgentSettings({ open, onClose, inline }: AgentSettingsProps): React.Rea
   const { settings, saving, saveSettings } = useSettings()
   const { t } = useTranslation()
   const [localSettings, setLocalSettings] = useState(settings)
-  const [messageApi, contextHolder] = message.useMessage()
 
   useEffect(() => {
     if (open) {
@@ -31,9 +31,9 @@ function AgentSettings({ open, onClose, inline }: AgentSettingsProps): React.Rea
   const handleSave = async () => {
     try {
       await saveSettings(localSettings)
-      messageApi.success(t('agentDrawer.saved'))
+      notify.success(t('agentDrawer.saved'))
     } catch {
-      messageApi.error(t('agentDrawer.saveFailed'))
+      notify.error(t('agentDrawer.saveFailed'))
     }
   }
 
@@ -102,12 +102,11 @@ function AgentSettings({ open, onClose, inline }: AgentSettingsProps): React.Rea
   )
 
   if (inline) {
-    return <div style={{ height: '100%', overflow: 'auto' }}>{contextHolder}{formContent}</div>
+    return <div style={{ height: '100%', overflow: 'auto' }}>{formContent}</div>
   }
 
   return (
     <>
-      {contextHolder}
       <Drawer title={t('agentDrawer.title')} open={open} onClose={onClose} size={400}>
         {formContent}
       </Drawer>

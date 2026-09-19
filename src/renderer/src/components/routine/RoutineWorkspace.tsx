@@ -21,6 +21,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import { useSettings } from '../../hooks/SettingsContext'
 import { retentionOptions } from '../settings/retention-options'
 import { useHostedAgentSession } from '../../hooks/useHostedAgentSession'
@@ -82,7 +83,7 @@ export interface RoutineWorkspaceProps {
 
 export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, activeRunNonce, onBack, onEdit, onRunNow }: RoutineWorkspaceProps): React.ReactElement {
   const { t } = useTranslation()
-  const { modal, message } = AntdApp.useApp()
+  const { modal } = AntdApp.useApp()
   const { settings, saveSettings } = useSettings()
   const [routineId, setRoutineId] = useState(initialRoutineId)
   const [runs, setRuns] = useState<RoutineRun[]>([])
@@ -172,7 +173,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
       cancelText: '取消',
       onOk: async () => {
         const removed = await window.electronAPI.routineRunsClear(routineId)
-        message.success(`已清理 ${removed} 条运行记录`)
+        notify.success(`已清理 ${removed} 条运行记录`)
         await openRuns(routineId)
       },
     })
@@ -184,15 +185,15 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
     if (days === retentionDays) return
     try {
       await saveSettings({ ...settings, routineRunRetentionDays: days })
-      message.success(days === 0 ? '已改为永久保留运行记录' : `启动时自动清理 ${days} 天前的运行记录`)
+      notify.success(days === 0 ? '已改为永久保留运行记录' : `启动时自动清理 ${days} 天前的运行记录`)
     } catch (err) {
-      message.error(err instanceof Error ? err.message : String(err))
+      notify.error(err instanceof Error ? err.message : String(err))
     }
   }
 
   const pruneNow = async (): Promise<void> => {
     const removed = await window.electronAPI.routineRunsPrune().catch(() => 0)
-    message.success(removed > 0 ? `已清理 ${removed} 条过期记录` : '没有需要清理的过期记录')
+    notify.success(removed > 0 ? `已清理 ${removed} 条过期记录` : '没有需要清理的过期记录')
     await refreshKeeping()
   }
 

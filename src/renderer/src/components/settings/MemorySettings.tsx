@@ -3,9 +3,10 @@
 // shared MemoryManager by App.tsx / settings.handler) plus manual memory CRUD
 // and search against the live MemoryManager instance.
 import React, { useState, useEffect, useCallback } from 'react'
-import { Drawer, Typography, Space, Button, Tag, Empty, Popconfirm, Input, message, Spin, Card } from 'antd'
+import {Drawer, Typography, Space, Button, Tag, Empty, Popconfirm, Input, Spin, Card } from 'antd'
 import { BookOutlined, ClearOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify, notifyFailure } from '../../utils/notify'
 import { useSettings } from '../../hooks/SettingsContext'
 import { MemoryManager } from '../../memory/MemoryManager'
 import type { MemoryEntry } from '../../memory/types'
@@ -34,7 +35,6 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [mdContent, setMdContent] = useState('')
-  const [messageApi, contextHolder] = message.useMessage()
   const { t } = useTranslation()
   const { settings, saveSettings } = useSettings()
   // 设置 → 记忆 master switch: gates auto extraction + prompt injection.
@@ -66,7 +66,7 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
       console.log(`[MemoryPanel] loadMemories round-trip: ${(performance.now() - t0).toFixed(1)}ms, ${all.length} items`)
       setMemories(all.filter((m) => m.type !== 'experience'))
     } catch (err) {
-      console.error('[MemorySettings] Failed to load memories:', err)
+      notifyFailure('memory.load', err, t('memoryDrawer.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -79,7 +79,7 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
       console.log(`[MemoryPanel] loadMd round-trip: ${(performance.now() - t0).toFixed(1)}ms`)
       setMdContent(content)
     } catch (err) {
-      console.error('[MemorySettings] Failed to load Manual Memories:', err)
+      notifyFailure('memory.loadMd', err, t('memoryDrawer.loadFailed'))
     }
   }, [memoryManager])
 
@@ -102,7 +102,7 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
       const results = await memoryManager.searchMemories({ query, limit: 50 })
       setMemories(results)
     } catch (err) {
-      console.error('[MemorySettings] Search failed:', err)
+      notifyFailure('memory.search', err, t('memoryDrawer.searchFailed'))
     } finally {
       setLoading(false)
     }
@@ -112,9 +112,9 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
     try {
       await memoryManager.deleteMemory(id)
       setMemories((prev) => prev.filter((m) => m.id !== id))
-      messageApi.success(t('memoryDrawer.memoryDeleted'))
+      notify.success(t('memoryDrawer.memoryDeleted'))
     } catch {
-      messageApi.error(t('memoryDrawer.memoryDeleteFailed'))
+      notify.error(t('memoryDrawer.memoryDeleteFailed'))
     }
   }
 
@@ -125,18 +125,16 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
       deleted++
     }
     setMemories([])
-    messageApi.success(t('memoryDrawer.clearDeleted', { count: deleted }))
+    notify.success(t('memoryDrawer.clearDeleted', { count: deleted }))
   }
 
   const handleSaveMd = async () => {
     await memoryManager.saveMemoryMd(mdContent)
-    messageApi.success(t('memoryDrawer.manualMemoriesSaved'))
+    notify.success(t('memoryDrawer.manualMemoriesSaved'))
   }
 
   const body = (
     <>
-      {contextHolder}
-
       <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>{t('memoryDrawer.title')}</Text>
 
       {/* ── Master switch (设置 → 记忆) ── */}
@@ -243,7 +241,7 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
                 <Space size={0} style={{ flexShrink: 0 }}>
                   <Button type="text" size="small" icon={<CopyOutlined style={{ color: '#bbb' }} />} onClick={() => {
                     navigator.clipboard.writeText(item.content)
-                    messageApi.success(t('common.copy'))
+                    notify.success(t('common.copy'))
                   }} />
                   <Popconfirm
                     title={t('memoryDrawer.deleteTitle')}

@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Input, Spin } from 'antd'
 import { SearchOutlined, DatabaseOutlined, MessageOutlined, CommentOutlined, BulbOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { reportSilentFailure } from '../../utils/notify-core'
 import { useNavigationStore } from '../../stores/navigationStore'
 import type { MemoryEntry } from '../../memory/types'
 
@@ -113,11 +114,23 @@ export function SearchView({ onOpenConversation }: SearchViewProps): React.React
 
     const timer = setTimeout(async () => {
       // A store that throws reports null: the group is dropped, the rest still show.
+      // A failing group reports null: it's dropped, the rest still show. Only
+      // when ALL four fail does the view render its 搜索失败 state, so partial
+      // failures used to be invisible — they now leave a tagged trace while
+      // staying non-blocking (the search is still useful with 3/4 groups).
+      async function group<T>(p: Promise<T>, name: string): Promise<T | null> {
+        try {
+          return await p
+        } catch (err) {
+          reportSilentFailure(`search.${name}`, err)
+          return null
+        }
+      }
       const [conversations, messages, memories, knowledge] = await Promise.all([
-        window.electronAPI.searchConversationsByKeyword(keyword, RESULT_LIMIT).catch(() => null),
-        window.electronAPI.searchMessagesByKeyword(keyword, RESULT_LIMIT).catch(() => null),
-        window.electronAPI.searchMemories({ query: keyword, limit: RESULT_LIMIT }).catch(() => null),
-        window.electronAPI.knowledgeSearchContent(keyword).catch(() => null),
+        group(window.electronAPI.searchConversationsByKeyword(keyword, RESULT_LIMIT), 'conversations'),
+        group(window.electronAPI.searchMessagesByKeyword(keyword, RESULT_LIMIT), 'messages'),
+        group(window.electronAPI.searchMemories({ query: keyword, limit: RESULT_LIMIT }), 'memories'),
+        group(window.electronAPI.knowledgeSearchContent(keyword), 'knowledge'),
       ])
       if (runIdRef.current !== runId) return
 

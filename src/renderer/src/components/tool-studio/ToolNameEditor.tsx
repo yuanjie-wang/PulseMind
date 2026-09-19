@@ -6,9 +6,10 @@
 // undiscoverable (2026-09-13).
 
 import React, { useRef, useState } from 'react'
-import { App as AntdApp, Button, Input, Tooltip } from 'antd'
+import { Button, Input, Tooltip } from 'antd'
 import { EditOutlined } from '@ant-design/icons'
 import type { UserTool } from '../../../../shared/types/user-tool'
+import { notify } from '../../utils/notify'
 
 export interface ToolNameEditorProps {
   tool: UserTool
@@ -21,7 +22,7 @@ export interface ToolNameEditorProps {
 }
 
 export function ToolNameEditor({ tool, onRenamed, nameStyle, nameSuffix }: ToolNameEditorProps): React.ReactElement {
-  const { message } = AntdApp.useApp()
+  
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   // Enter commits and the unmount-triggered blur would commit again; Esc must
@@ -52,7 +53,7 @@ export function ToolNameEditor({ tool, onRenamed, nameStyle, nameSuffix }: ToolN
       const updated = await window.electronAPI.toolUpdate(tool.id, { name })
       if (updated) onRenamed(updated)
     } catch (err) {
-      message.error(`改名失败：${err instanceof Error ? err.message : String(err)}`)
+      notify.error(`改名失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       busyRef.current = false
     }

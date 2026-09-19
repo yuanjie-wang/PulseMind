@@ -14,7 +14,8 @@
 // + workspace top-level names) is gathered fresh per click.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { App as AntdApp, Button, Input, Modal, Space } from 'antd'
+import { Button, Input, Modal, Space } from 'antd'
+import { notify } from '../../utils/notify'
 import { FolderOpenOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from '../../../../shared/types/project'
 import { PROJECT_OVERVIEW_MAX_LENGTH } from '../../../../shared/types/project'
@@ -39,7 +40,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
   /** Called after a successful save with the created/updated project (create only). */
   onSaved: (project?: Project) => void
 }): React.ReactElement {
-  const { message } = AntdApp.useApp()
+  
   const { settings, activeProfile } = useSettings()
   const [name, setName] = useState('')
   const [overview, setOverview] = useState('')
@@ -111,7 +112,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
   const summarize = async (): Promise<void> => {
     if (!editing || summarizing) return
     if (!activeProfile?.baseURL || !activeProfile.model) {
-      message.warning('请先在 设置 → LLM 设置 中配置模型')
+      notify.warning('请先在 设置 → LLM 设置 中配置模型')
       return
     }
     setSummarizing(true)
@@ -149,10 +150,10 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
       )
       if (token !== summarizeTokenRef.current) return // modal closed/reopened mid-flight
       if (text) setOverview(text)
-      else message.warning('自动总结没有生成结果，请手动填写')
+      else notify.warning('自动总结没有生成结果，请手动填写')
     } catch (err) {
       if (token === summarizeTokenRef.current) {
-        message.warning(`自动总结失败：${err instanceof Error ? err.message : String(err)}`)
+        notify.warning(`自动总结失败：${err instanceof Error ? err.message : String(err)}`)
       }
     } finally {
       if (token === summarizeTokenRef.current) setSummarizing(false)
@@ -177,7 +178,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
         const projects = await window.electronAPI.projectList()
         const existing = projects.find((p) => p.id !== 'default' && p.workspaceDir === workspaceDir)
         if (existing) {
-          message.info(`该目录已被项目「${existing.name}」使用，已为你选中它。`)
+          notify.info(`该目录已被项目「${existing.name}」使用，已为你选中它。`)
           onSaved(existing)
           onClose()
           return
@@ -189,7 +190,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
       onClose()
     } catch (err) {
       // Duplicate names / unusable workspace dirs surface from the main process.
-      message.error(err instanceof Error ? err.message : String(err))
+      notify.error(err instanceof Error ? err.message : String(err))
     } finally {
       setSaving(false)
     }

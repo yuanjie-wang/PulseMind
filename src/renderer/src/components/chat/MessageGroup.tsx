@@ -1,5 +1,4 @@
 import React, { useState, useRef } from 'react'
-import { App as AntdApp, message as antdMessage } from 'antd'
 import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
 import {
@@ -22,6 +21,7 @@ import {
   EyeOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
 import CommandCard from '../terminal/CommandCard'
 import { ApprovalArea } from './ApprovalArea'
@@ -33,9 +33,6 @@ import { FileRefChip } from './FileRefChip'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { enqueueCompileForFile } from '../knowledge/KnowledgePanel'
 import { createKnowledgeSaveAction } from './knowledge-save'
-
-// Fallback toast host for renders outside an antd <App> (probes, previews).
-const antdMessageStatic = antdMessage
 
 // --- Bubble styles ---
 
@@ -309,9 +306,6 @@ export const MessageGroup = React.memo(function MessageGroup({
   const [savingFavorite, setSavingFavorite] = useState(false)
   const favoriteLatch = useRef({ pending: false, saved: false })
   const { t } = useTranslation()
-  // antd static message APIs can't see ConfigProvider's context; prefer the
-  // App-scoped instance when one exists so the toasts honor the app's theme.
-  const antdMessage = AntdApp.useApp()?.message ?? antdMessageStatic
 
   if (!hasDisplayableContent(msg)) return null
 
@@ -355,19 +349,18 @@ export const MessageGroup = React.memo(function MessageGroup({
   }
 
   // ── Star = one-way entry into the knowledge base ────────────────────────
-  // The toasts ride antd's App.useApp() context when one is mounted (the app
-  // root provides it) and fall back to the static methods otherwise — the
-  // component must also render in hosts without an antd App ancestor
-  // (sub-agent previews, probes).
+  // Toasts go through the shared notify outlet: inside the app root it is the
+  // App-scoped antd instance; in hosts without an antd App ancestor
+  // (sub-agent previews, probes) it falls back to antd's static methods.
   const handleSaveToKnowledge = createKnowledgeSaveAction({
     save: (input) => window.electronAPI.knowledgeWriteFavorite(input),
     // Backend owns the marker; always enqueue even before the panel mounts.
     enqueue: (file) => { if (file.status === 'raw') enqueueCompileForFile(file.id) },
     pending: setSavingFavorite,
-    success: () => { setFavorited(true); antdMessage.success(t('chatView.favorited')) },
+    success: () => { setFavorited(true); notify.success(t('chatView.favorited')) },
     error: (err) => {
       console.warn('[MessageGroup] Knowledge save failed:', err)
-      antdMessage.error(`${t('chatView.error')}: ${err instanceof Error ? err.message : String(err)}`)
+      notify.error(`${t('chatView.error')}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }, favoriteLatch.current)
 
