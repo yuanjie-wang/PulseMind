@@ -1,6 +1,8 @@
 // ── Sidebar conversation list ──
-// The sidebar's history area: every conversation, rendered flat — no grouping.
-// Rows come from the shared ConversationRows.
+// The sidebar's history area for the 对话 tab (loose conversations only — the
+// project tab has its own list): grouped 置顶 / 今天 / 昨天 / 更早 by the LOCAL
+// calendar day of each conversation's last update. Rows come from the shared
+// ConversationRows with `groupByDate` on.
 
 import React from 'react'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -45,6 +47,7 @@ function ConversationSidebar({
         activeKey={activeKey}
         activeLoopConvIds={activeLoopConvIds}
         retryingConvIds={retryingConvIds}
+        groupByDate
         onSelect={onSelect}
         onDelete={onDelete}
         onRename={onRename}

@@ -5,7 +5,10 @@
 // hover/active that hides the time and reveals the row menu (pin / rename /
 // delete) with its rename modal. Tabs slice their slice of
 // conversations and hand them here; rows sort pinned-first, then by recency,
-// so the two tabs can never drift apart again.
+// so the two tabs can never drift apart again. The 对话 tab additionally passes
+// `groupByDate`, which wraps the rows in 置顶 / 今天 / 昨天 / 更早 sections
+// (groupConversationsByDate below); the project tab keeps the flat order
+// inside each project group.
 
 import React, { useEffect, useState } from 'react'
 import { Dropdown, Input, Modal } from 'antd'
@@ -17,7 +20,7 @@ import {
   PushpinOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
-import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
+import { CLOCK_TICK_MS, bucketDayByDate, describeRelativeTimeText, type DayBucket } from '../../utils/relative-time'
 import type { ConversationListItem } from '../../types/conversation'
 
 /** Gutter reserved for the task-status light, so titles line up whether or not one is lit. */
@@ -27,11 +30,29 @@ const STATUS_GUTTER_WIDTH = 10
  *  pin plus the longest common relative time ("N分钟前"). */
 const ACTION_SLOT_WIDTH = 72
 
+/** Section header of a time group — the routine center's bucket-label recipe
+ *  (11px grey small caps), so the app's two grouping surfaces read alike. */
+const GROUP_HEADER_STYLE: React.CSSProperties = {
+  fontSize: 11, color: '#999', fontWeight: 600,
+  padding: '9px 8px 4px', textTransform: 'uppercase', letterSpacing: 0.3,
+  userSelect: 'none'
+}
+
+const GROUP_LABEL_KEY: Record<ConversationDateGroup['bucket'], string> = {
+  pinned: 'conversationSidebar.groupPinned',
+  today: 'conversationSidebar.groupToday',
+  yesterday: 'conversationSidebar.groupYesterday',
+  earlier: 'conversationSidebar.groupEarlier'
+}
+
 interface ConversationRowsProps {
   conversations: ConversationListItem[]
   activeKey: string | undefined
   activeLoopConvIds?: string[]
   retryingConvIds?: string[]
+  /** Wrap the rows in 置顶 / 今天 / 昨天 / 更早 sections instead of one flat
+   *  list. The 对话 tab turns this on; the project tab keeps the flat order. */
+  groupByDate?: boolean
   onSelect: (key: string) => void
   onDelete: (key: string) => void
   onRename: (key: string, newLabel: string) => void
@@ -46,7 +67,43 @@ export function byPinnedThenRecency(a: ConversationListItem, b: ConversationList
   return (b.updatedAt || '').localeCompare(a.updatedAt || '')
 }
 
+/** One rendered section: the 置顶 pin pool or a calendar-day bucket of the
+ *  unpinned conversations. */
+export interface ConversationDateGroup {
+  bucket: 'pinned' | DayBucket
+  items: ConversationListItem[]
+}
+
+/** Split the chats-tab list into the sections it renders. Pinning floats a
+ *  conversation above every time bucket (its own leading group, or the pin's
+ *  whole point is lost), the rest bucket by LOCAL calendar day of `updatedAt`
+ *  — yesterday 23:59 stays 昨天 even one minute before midnight rolls it over.
+ *  Within a group the shared pinned-then-recency order survives (recency, once
+ *  the pins are pulled out); empty groups are omitted, so a quiet yesterday
+ *  never paints a header with nothing under it. */
+export function groupConversationsByDate(
+  conversations: ConversationListItem[],
+  now: number
+): ConversationDateGroup[] {
+  const byRecency = [...conversations].sort(byPinnedThenRecency)
+  const pinned = byRecency.filter((c) => c.pinned)
+  const buckets: Record<DayBucket, ConversationListItem[]> = { today: [], yesterday: [], earlier: [] }
+  for (const conv of byRecency) {
+    if (!conv.pinned) buckets[bucketDayByDate(conv.updatedAt, now)].push(conv)
+  }
+  const groups: ConversationDateGroup[] = []
+  if (pinned.length > 0) groups.push({ bucket: 'pinned', items: pinned })
+  // Object.keys iterates string keys in insertion order: today, yesterday, earlier.
+  for (const bucket of Object.keys(buckets) as DayBucket[]) {
+    if (buckets[bucket].length > 0) groups.push({ bucket, items: buckets[bucket] })
+  }
+  return groups
+}
+
 interface ConversationRowProps {
+  /** The conversation's list key, re-declared so the row root can carry it as
+   *  the `data-conv-row` probe hook (`key` is React's own, never a prop). */
+  convKey: string
   label: string
   timeText: string | null
   active: boolean
@@ -66,6 +123,7 @@ interface ConversationRowProps {
 /** One conversation row: status gutter, single-line label with the relative
  *  time at its right, and a hover swap to the row menu. Pure presentation. */
 function ConversationRow({
+  convKey,
   label,
   timeText,
   active,
@@ -83,6 +141,7 @@ function ConversationRow({
   const revealMenu = hovered || menuOpen || active
   return (
     <div
+      data-conv-row={convKey}
       onClick={onSelect}
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
@@ -142,6 +201,7 @@ function ConversationRows({
   activeKey,
   activeLoopConvIds = [],
   retryingConvIds = [],
+  groupByDate = false,
   onSelect,
   onDelete,
   onRename,
@@ -199,6 +259,33 @@ function ConversationRows({
     setRenameValue('')
   }
 
+  const renderRow = (conv: ConversationListItem): React.ReactElement => (
+    <ConversationRow
+      key={conv.key}
+      convKey={conv.key}
+      label={conv.label}
+      timeText={describeRelativeTimeText(conv.updatedAt, now, t)}
+      active={conv.key === activeKey}
+      light={
+        activeLoopConvIds.includes(conv.key)
+          ? 'running'
+          : retryingConvIds.includes(conv.key) ? 'retrying' : null
+      }
+      pinned={!!conv.pinned}
+      hovered={hoveredKey === conv.key}
+      menuOpen={openMenuKey === conv.key}
+      menu={menuFor(conv)}
+      onSelect={() => onSelect(conv.key)}
+      onHover={(on) => setHoveredKey(on ? conv.key : null)}
+      onMenuOpenChange={(open) => setOpenMenuKey(open ? conv.key : null)}
+    />
+  )
+
+  // The chats tab renders sections (置顶 → 今天 → 昨天 → 更早, empties dropped);
+  // the project tab keeps the one flat pinned-first list. Both read the same
+  // ticking `now`, so a conversation re-buckets within a minute of midnight.
+  const groups = groupByDate ? groupConversationsByDate(conversations, now) : null
+
   return (
     <>
       <style>{`
@@ -207,26 +294,16 @@ function ConversationRows({
           100% { transform: scale(2.4); opacity: 0; }
         }
       `}</style>
-      {sorted.map((conv) => (
-        <ConversationRow
-          key={conv.key}
-          label={conv.label}
-          timeText={describeRelativeTimeText(conv.updatedAt, now, t)}
-          active={conv.key === activeKey}
-          light={
-            activeLoopConvIds.includes(conv.key)
-              ? 'running'
-              : retryingConvIds.includes(conv.key) ? 'retrying' : null
-          }
-          pinned={!!conv.pinned}
-          hovered={hoveredKey === conv.key}
-          menuOpen={openMenuKey === conv.key}
-          menu={menuFor(conv)}
-          onSelect={() => onSelect(conv.key)}
-          onHover={(on) => setHoveredKey(on ? conv.key : null)}
-          onMenuOpenChange={(open) => setOpenMenuKey(open ? conv.key : null)}
-        />
-      ))}
+      {groups
+        ? groups.map((group) => (
+          <div key={group.bucket}>
+            <div data-conv-group={group.bucket} style={GROUP_HEADER_STYLE}>
+              {t(GROUP_LABEL_KEY[group.bucket])}
+            </div>
+            {group.items.map(renderRow)}
+          </div>
+        ))
+        : sorted.map(renderRow)}
       <Modal
         title={t('conversationSidebar.renameTitle')}
         open={renamingKey !== null}

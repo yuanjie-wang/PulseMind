@@ -55,8 +55,6 @@ export function bucketRunByDate(timestamp: string | number | Date | null | undef
   const nowYear = nowDate.getFullYear()
   const nowMonth = nowDate.getMonth() + 1
   const nowDay = nowDate.getDate()
-  // Same calendar day.
-  if (rel.year === nowYear && rel.month === nowMonth && rel.day === nowDay) return 'today'
   // Compute calendar-day ordinal for both dates (ordinal date within the year).
   const ordinal = (y: number, m: number, d: number): number => {
     // Days before the start of month `m` in a non-leap year, plus leap day if applicable.
@@ -68,17 +66,29 @@ export function bucketRunByDate(timestamp: string | number | Date | null | undef
   // Day count across years — cheap full-day delta.
   const dayOrdinal = (y: number, m: number, d: number): number =>
     y * 365 + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) + ordinal(y, m, d)
-  const delta = dayOrdinal(nowYear, nowMonth, nowDay) - dayOrdinal(rel.year, rel.month, rel.day)
-  if (delta === 1) return 'yesterday'
+  const nowOrd = dayOrdinal(nowYear, nowMonth, nowDay)
+  const runOrd = dayOrdinal(rel.year, rel.month, rel.day)
+  // Same calendar day.
+  if (runOrd === nowOrd) return 'today'
+  if (nowOrd - runOrd === 1) return 'yesterday'
   // Same ISO week (Monday-based) and within the current week.
   // getDay: 0=Sun..6=Sat. ISO week starts Monday → shift so Monday=0.
   const isoWeekday = (d: Date): number => (d.getDay() + 6) % 7
-  const nowMonday = nowDate
-  const runDate = new Date(rel.year, rel.month - 1, rel.day)
-  const nowWeekStart = dayOrdinal(nowYear, nowMonth, nowDay) - isoWeekday(nowMonday)
-  const runOrd = dayOrdinal(rel.year, rel.month, rel.day)
+  const nowWeekStart = nowOrd - isoWeekday(nowDate)
   if (runOrd >= nowWeekStart && runOrd <= nowWeekStart + 6) return 'thisWeek'
   return 'earlier'
+}
+
+/** The conversation sidebar's three buckets (今天 / 昨天 / 更早) — the same
+ *  calendar-day arithmetic as bucketRunByDate with 本周 folded into 更早.
+ *  Calendar-day, not elapsed-24h: yesterday 23:59 stays 昨天 even when it is
+ *  only minutes behind us, and a 今天 00:01 stops being 今天 the moment the
+ *  clock crosses midnight. */
+export type DayBucket = 'today' | 'yesterday' | 'earlier'
+
+export function bucketDayByDate(timestamp: string | number | Date | null | undefined, now: number = Date.now()): DayBucket {
+  const bucket = bucketRunByDate(timestamp, now)
+  return bucket === 'thisWeek' ? 'earlier' : bucket
 }
 
 /** Minimal structural type of the i18n translator, so this util stays decoupled
