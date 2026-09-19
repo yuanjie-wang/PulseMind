@@ -14,6 +14,12 @@ export const IPC_CHANNELS = {
   APP_SYSTEM_RESUMED: 'app:system-resumed',
   APP_SYSTEM_RESUMED_ACK: 'app:system-resumed-ack',
   APP_HOOKS_COMPLETED: 'app:hooks-completed',
+  // 原生菜单/加速键 → 渲染层动作（菜单点击或 before-input fallback 命中后推送）
+  MENU_ACTION: 'app:menu-action',
+
+  // ── LLM ──
+  // 设置页「测试连接」：main 侧对 provider 发一次最小非流式请求
+  LLM_TEST_CONNECTION: 'llm:test-connection',
 
   // ── Conversation ──
   CONVERSATION_LIST: 'conversation:list',

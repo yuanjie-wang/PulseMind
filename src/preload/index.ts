@@ -262,6 +262,16 @@ const electronAPI = {
     ipcRenderer.on(IPC_CHANNELS.SKILLS_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.SKILLS_CHANGED, handler)
   },
+  // 原生菜单 / 加速键动作（AppLayout 消费；payload 是 MenuActionId 字符串）
+  onMenuAction: (callback: (action: string) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, action: string) => callback(action)
+    ipcRenderer.on(IPC_CHANNELS.MENU_ACTION, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.MENU_ACTION, handler)
+  },
+
+  // 设置页「测试连接」：main 侧对 provider 发一次最小非流式探测
+  testLlmConnection: (input: { provider?: 'anthropic' | 'openai'; baseURL?: string; apiKey?: string; model?: string; headers?: Record<string, string>; profileId?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.LLM_TEST_CONNECTION, input),
 
   // Non-streaming fetch via main process (avoids CORS)
   apiFetch: (
