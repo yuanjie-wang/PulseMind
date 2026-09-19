@@ -104,6 +104,7 @@ const HOST_METHOD_KEYS = [
   'knowledgeSetFilesBase',
   'knowledgeReextract',
   'editDocx',
+  'editPptx',
   'editXlsx',
   'inspectOffice',
   'exportDocument',

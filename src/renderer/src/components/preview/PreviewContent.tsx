@@ -20,6 +20,7 @@ import { ElementEditPanel } from './ElementEditPanel'
 import { DocxPreview } from './DocxPreview'
 import { XlsxPreview } from './XlsxPreview'
 import { PdfPreview } from './PdfPreview'
+import { PptxPreview } from './PptxPreview'
 import { FallbackCard } from './FallbackCard'
 import { FileInfoBar } from './FileInfoBar'
 import { ImagePreview } from './ImagePreview'
@@ -223,13 +224,15 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   if (kind === 'image') return <ImagePreview path={path} />
   if (kind === 'office') {
     // DOCX renders itself (layout / styles / images) via docx-preview, XLSX
-    // renders its grid via the same exceljs build the edit engine uses, and
-    // PDF rasterises its pages via pdfjs-dist; the remaining office formats
-    // (doc / xls / ppt / pptx) keep the markitdown → raw-text path.
+    // renders its grid via the same exceljs build the edit engine uses, PDF
+    // rasterises its pages via pdfjs-dist, and PPTX renders slide pages from
+    // its own OOXML model (PLAN-pptx-preview); the remaining office formats
+    // (doc / xls / ppt) keep the markitdown → raw-text path.
     const ext = extensionOf(path)
     if (ext === 'docx') return <DocxPreview path={path} kind={kind} reloadTick={reloadTick} />
     if (ext === 'xlsx') return <XlsxPreview path={path} kind={kind} reloadTick={reloadTick} />
     if (ext === 'pdf') return <PdfPreview path={path} kind={kind} reloadTick={reloadTick} />
+    if (ext === 'pptx') return <PptxPreview path={path} kind={kind} reloadTick={reloadTick} />
     return <OfficePreview path={path} kind={kind} />
   }
   if (!isPreviewable(kind)) return <FallbackCard path={path} kind={kind} />

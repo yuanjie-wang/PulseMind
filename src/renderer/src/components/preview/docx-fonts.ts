@@ -108,3 +108,9 @@ function defaultFontCss(className: string): string {
 export function docxFontCss(className: string): string {
   return `${fontFaceCss(LATIN_ALIASES)}\n${fontFaceCss(CJK_ALIASES)}\n${defaultFontCss(className)}`
 }
+
+/** Just the alias @font-face table, without the docx wrapper default —
+ *  shared with the PPTX preview, whose pages name the same Office faces. */
+export function officeFontFaceCss(): string {
+  return `${fontFaceCss(LATIN_ALIASES)}\n${fontFaceCss(CJK_ALIASES)}`
+}

@@ -280,16 +280,29 @@ export class ToolExecutor implements ToolExecContext {
         t.output = result.success ? `Written ${content.length} bytes to ${fp}${append ? ' (appended)' : ''}` : `Error: ${result.error || 'Write failed'}`
         this.addToolResult(t.id, result.success ? `Written ${content.length} bytes to ${fp}${append ? ' (appended)' : ''}` : `Error: ${result.error || 'Write failed'}`, !result.success)
         t.exitCode = result.success ? 0 : 1
-      } else if (t.name === 'docx_edit' || t.name === 'xlsx_edit') {
+      } else if (t.name === 'docx_edit' || t.name === 'xlsx_edit' || t.name === 'pptx_edit') {
         let fp = String(t.input.file_path || '')
         if (!fp) throw new Error('file_path is required')
         fp = this.resolveWorkspacePath(fp)
         const ops = Array.isArray(t.input.ops) ? t.input.ops : []
         if (ops.length === 0) throw new Error('ops is required (至少一个操作；先 outline 了解文档)')
         t.output = `Editing ${fp} (${ops.length} op)...`; this.notify()
-        const result = t.name === 'docx_edit'
+        // The three office editors share one result shape; the bridge unions
+        // them, so the consumer reads through this common view.
+        const result = (t.name === 'docx_edit'
           ? await getHost().editDocx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })
-          : await getHost().editXlsx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })
+          : t.name === 'pptx_edit'
+            ? await getHost().editPptx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })
+            : await getHost().editXlsx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })) as {
+          success: boolean
+          error?: string
+          results?: Array<{ index: number; op: string; ok: boolean; detail: string }>
+          outline?: Array<Record<string, unknown>>
+          warnings?: string[]
+          backup?: string
+          diff?: string
+          changeSummary?: string
+        }
         if (result.success) {
           const allResults = (result.results ?? []) as Array<{ index: number; op: string; ok: boolean; detail: string }>
           const outlineOnly = allResults.length === 1 && allResults[0]?.op === 'outline'
@@ -306,10 +319,13 @@ export class ToolExecutor implements ToolExecContext {
           const outline = (result.outline ?? []) as Array<Record<string, unknown>>
           if (outline.length > 0) {
             const isDocx = t.name === 'docx_edit'
+            const isPptx = t.name === 'pptx_edit'
             const lines = outline.map((o) =>
               isDocx
                 ? `[${o.index}] ${o.style ?? '-'}: ${String(o.text ?? '').slice(0, 80)}`
-                : `${o.sheet}: ${o.usedRange}`,
+                : isPptx
+                  ? `slide ${o.slide}: ${(o.shapes as Array<Record<string, unknown>> ?? []).map((s) => `[${s.shapeId}]${s.phType ? `(${s.phType})` : ''} ${String(s.text ?? '').slice(0, 40)}`).join(' | ').slice(0, 200)}`
+                  : `${o.sheet}: ${o.usedRange}`,
             )
             const shown = lines.length > 120
               ? [...lines.slice(0, 120), `…（共 ${lines.length} 项，截断）`]
@@ -350,7 +366,7 @@ export class ToolExecutor implements ToolExecContext {
         }
       } else if (t.name === 'export_document') {
         const format = String(t.input.format || '')
-        if (!['docx', 'xlsx', 'csv'].includes(format)) throw new Error(`format 必须是 docx / xlsx / csv 之一`)
+        if (!['docx', 'xlsx', 'csv', 'pptx'].includes(format)) throw new Error(`format 必须是 docx / xlsx / csv / pptx 之一`)
         const content = typeof t.input.content === 'string' && t.input.content.trim() !== '' ? t.input.content : undefined
         const sourcePath = typeof t.input.sourcePath === 'string' && t.input.sourcePath.trim() !== '' ? t.input.sourcePath : undefined
         if (!content && !sourcePath) throw new Error('content 与 sourcePath 二选一')
@@ -358,7 +374,7 @@ export class ToolExecutor implements ToolExecContext {
         const rawPath = String(t.input.file_path || '') || `export-${stamp}.${format}`
         const fp = this.resolveWorkspacePath(rawPath)
         t.output = `Exporting ${format.toUpperCase()} → ${fp}...`; this.notify()
-        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv', content, sourcePath, filePath: fp })
+        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx', content, sourcePath, filePath: fp })
         if (result.success) {
           const summary = `Exported ${result.path} (${Math.round((result.bytes ?? 0) / 1024)} KB)`
           t.output = summary

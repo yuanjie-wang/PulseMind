@@ -18,7 +18,7 @@ import { PAGE_READ_TOOL_NAMES, isPageTool } from '../../../../shared/agent-proto
 /** Built-in tools that only look — the file-read family. */
 export const READ_TIER_TOOLS = new Set(['read', 'list_dir', 'find', 'search', 'git_status', 'git_diff', 'git_log', 'office_inspect'])
 /** Built-in tools that change the workspace on disk. */
-export const WRITE_TIER_TOOLS = new Set(['write', 'edit', 'git_commit', 'git_restore', 'docx_edit', 'xlsx_edit', 'export_document'])
+export const WRITE_TIER_TOOLS = new Set(['write', 'edit', 'git_commit', 'git_restore', 'docx_edit', 'xlsx_edit', 'pptx_edit', 'export_document'])
 
 /** Tier of a page tool, or null when the name is not one. `page_execute_js`
  *  runs arbitrary code in the page, so it sits on the exec rung (held from

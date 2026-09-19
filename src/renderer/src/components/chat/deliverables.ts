@@ -24,6 +24,7 @@ export const FILE_WRITER_TOOLS: ReadonlySet<string> = new Set([
   'edit',
   'docx_edit',
   'xlsx_edit',
+  'pptx_edit',
   'export_document',
 ])
 

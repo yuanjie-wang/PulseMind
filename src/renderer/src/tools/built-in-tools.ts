@@ -544,6 +544,37 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     availability: 'always',
   },
   {
+    name: 'pptx_edit',
+    description: 'Edit a .pptx PowerPoint file through structured operations: replace visible text (crosses runs automatically), rewrite a whole shape\'s text by shape id. Byte-faithful — masters, layouts, media and theme are preserved exactly. Always run `{"op":"outline"}` first to see slides and shape ids, then send edits.',
+    category: 'file',
+    triggers: ['edit pptx', 'edit ppt', '修改 ppt', '编辑幻灯片'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Path to the .pptx file (absolute or workspace-relative).' },
+        ops: {
+          type: 'array',
+          description: 'Operations applied in order. Run `{"op":"outline"}` first. replace_text matches the VISIBLE text across runs; set_shape_text rewrites all paragraphs of one shape.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['outline', 'replace_text', 'set_shape_text'] },
+              find: { type: 'string' }, replace: { type: 'string' },
+              expected_count: { type: 'number', description: 'How many hits the op must see (default 1) — a mismatch refuses the batch.' },
+              slide: { type: 'number', description: '1-based slide number in presentation order (default 1 for text ops).' },
+              shape_id: { type: 'string', description: 'The p:cNvPr id from outline (table cells use cell:r:c).' },
+              text: { type: 'string', description: 'set_shape_text: the full new text, one paragraph per line.' },
+            },
+          },
+        },
+      },
+      required: ['file_path', 'ops'],
+    },
+    instructions: toolInstructions.pptx_edit,
+    builtIn: true,
+    availability: 'always',
+  },
+  {
     name: 'xlsx_edit',
     description: 'Edit a .xlsx workbook: set cell values/formulas/number formats, find-replace over values (formulas untouched unless explicitly included), inspect the used range. Refuses workbooks with charts/pivot tables/VBA.',
     category: 'file',
@@ -595,14 +626,14 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── export_document (PLAN-office-export) ───────────────────────────
   {
     name: 'export_document',
-    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading) or .csv. Give inline markdown/CSV `content` OR a workspace `sourcePath`, never both. The file lands in the conversation workspace and opens in the preview pane.',
+    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading), .csv, or .pptx (PowerPoint slides, one page per `#`/`## ` heading). Give inline markdown/CSV `content` OR a workspace `sourcePath`, never both. The file lands in the conversation workspace and opens in the preview pane.',
     category: 'file',
-    triggers: ['export', '导出', '生成 excel', '生成 word', '转成表格', '转成文档'],
+    triggers: ['export', '导出', '生成 excel', '生成 word', '生成 ppt', '转成表格', '转成文档'],
     input_schema: {
       type: 'object',
       properties: {
-        format: { type: 'string', enum: ['docx', 'xlsx', 'csv'], description: 'Target format.' },
-        content: { type: 'string', description: 'Inline source: full markdown for docx; a markdown table (or `## Sheet` sections) or CSV data for xlsx/csv. Soft cap 100KB — larger sources go through sourcePath.' },
+        format: { type: 'string', enum: ['docx', 'xlsx', 'csv', 'pptx'], description: 'Target format.' },
+        content: { type: 'string', description: 'Inline source: full markdown for docx/pptx; a markdown table (or `## Sheet` sections) or CSV data for xlsx/csv. Soft cap 100KB — larger sources go through sourcePath.' },
         sourcePath: { type: 'string', description: 'Path to an existing workspace .md/.csv file to convert instead of inline content.' },
         file_path: { type: 'string', description: 'Relative target path (default: export-<timestamp>.<format> in the workspace root). Existing files are never overwritten — a -2 suffix is added.' },
       },

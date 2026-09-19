@@ -6,7 +6,7 @@
 export const toolInstructions: Record<string, string> = {
   export_document: `## export_document
 
-Produce a REAL deliverable file (docx / xlsx / csv) the user can take away — use it when the user wants a file, not a table pasted in chat.
+Produce a REAL deliverable file (docx / xlsx / csv / pptx) the user can take away — use it when the user wants a file, not a table pasted in chat.
 
 ### Inputs (D3 — exactly one)
 - content: inline source. docx takes the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet (D4).
@@ -21,6 +21,24 @@ Produce a REAL deliverable file (docx / xlsx / csv) the user can take away — u
 - docx: images / math / footnotes degrade to raw text with a closing note; no cover pages, headers or footers.
 - xlsx: NO formulas are generated, dates stay text, numbers convert only when the exact round-trip is safe (leading zeros like 工号 007 stay text on purpose).
 - csv: exports the FIRST table/sheet only.
+- pptx: images / inline HTML degrade to text with a closing 备注 page; one table per page; NO charts, NO template/master customization, fixed 16:9 layout.
+`,
+
+  pptx_edit: `## pptx_edit
+
+Edit a .pptx with byte-faithful operations. Masters/layouts/media/theme are preserved exactly; only slide text changes.
+
+### Ops (run in order; a failed op refuses the WHOLE batch — nothing is written)
+- {"op":"outline"} — slides with shape ids/names/placeholder types/text. Run this FIRST.
+- {"op":"replace_text","slide":N,"find":"旧文本","replace":"新文本","expected_count":1} — visible-text replace across runs. slide is 1-based presentation order (default 1). expected_count must match the hit count exactly or the batch refuses.
+- {"op":"set_shape_text","slide":N,"shape_id":"2","text":"第一段\n第二段"} — rewrite ALL paragraphs of one shape (from outline ids; table cells are cell:r:c). Paragraph styling comes from the layout/master — template-safe.
+
+### Rules
+- Slide numbers are PRESENTATION order, not filename order.
+- Text lives across runs arbitrarily — find uses the concatenated visible text, so match what a reader sees, not the XML.
+- Cached autofit scales are left as-is (PowerPoint recomputes when the user edits the box).
+- Slide-number/date fields (a:fld) are never matched — PowerPoint recomputes them.
+- Backups: the first edit of a file saves the original automatically (backup path in the result).
 `,
 
   read: `## read
