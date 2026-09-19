@@ -20,6 +20,7 @@ import {
 } from '../services/file-ops'
 import { svcExportDocument } from '../services/office-export'
 import { svcEditDocx } from '../services/docx-ops'
+import { svcEditPptx } from '../services/pptx-ops'
 import { svcEditXlsx } from '../services/xlsx-ops'
 import { svcInspectOffice } from '../services/office-inspect'
 import { registerPreviewNonce } from '../preview/nonce-registry'
@@ -90,6 +91,7 @@ export function registerFileOpsHandlers(): void {
   // ── Write file (direct IPC, bypasses shell heredoc) ──────────────
   ipcMain.handle(IPC_CHANNELS.UTIL_WRITE_FILE, (_event, input: WriteFileInput): Promise<WriteFileResult> => svcWriteFile(input))
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_DOCX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditDocx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
+  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_PPTX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditPptx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_XLSX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditXlsx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
   ipcMain.handle(IPC_CHANNELS.UTIL_INSPECT_OFFICE, withRawResponse(async (input: { filePath: string }) => svcInspectOffice(input)))
   ipcMain.handle(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, withRawResponse(async (input: import('../services/office-export').ExportDocumentInput) => svcExportDocument(input)))

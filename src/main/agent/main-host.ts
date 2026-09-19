@@ -29,6 +29,7 @@ import { experienceStore } from '../storage/experience-store'
 import { saveMemory, listMemories, deleteMemory, searchMemories, updateMemory, countMemoriesByType, type MemoryRow } from '../storage/memory.db'
 import { MEMORY_MD_PATH } from '../storage'
 import * as svcDocx from '../services/docx-ops'
+import * as svcPptx from '../services/pptx-ops'
 import * as svcXlsx from '../services/xlsx-ops'
 import * as svcExport from '../services/office-export'
 import { invokeGitAction } from '../git/git.service'
@@ -262,9 +263,10 @@ export const mainHost: PulseHost = {
   knowledgeSetFilesBase: async (ids: string[], baseId: string) => kq.svcSetFilesBase(ids, baseId),
   knowledgeReextract: (id: string) => kq.svcReextract(id),
   editDocx: async (input: { filePath: string; ops: any[] }) => svcDocx.svcEditDocx(input as { filePath: string; ops: never[] }),
+  editPptx: async (input: { filePath: string; ops: any[] }) => svcPptx.svcEditPptx(input as { filePath: string; ops: never[] }),
   editXlsx: async (input: { filePath: string; ops: any[] }) => svcXlsx.svcEditXlsx(input as { filePath: string; ops: never[] }),
   inspectOffice: async (input: { filePath: string }) => (await import('../services/office-inspect')).svcInspectOffice(input),
-  exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv'; content?: string; sourcePath?: string; filePath: string }) =>
+  exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx'; content?: string; sourcePath?: string; filePath: string }) =>
     svcExport.svcExportDocument(input),
   knowledgeWriteExperience: (data) => Promise.resolve(kq.svcWriteExperience(data)),
 

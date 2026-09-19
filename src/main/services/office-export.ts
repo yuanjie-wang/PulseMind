@@ -15,6 +15,7 @@ import { guardFsTarget } from '../sandbox/guard'
 import { withPathLock } from '../sandbox/write-lock'
 import { resolveWritablePath } from './file-ops'
 import { markdownToDocxBuffer } from '../office-export/md-to-docx'
+import { markdownToPptxBuffer } from '../office-export/md-to-pptx'
 import { markdownToSheets, sheetsToXlsxBuffer, type SheetModel } from '../office-export/md-tables'
 import { csvFromSheet, csvToSheet } from '../office-export/csv-io'
 
@@ -24,7 +25,7 @@ const pRename = promisify(rename)
 const pReaddir = promisify(readdir)
 const pMkdir = promisify(mkdir)
 
-export const EXPORT_FORMATS = ['docx', 'xlsx', 'csv'] as const
+export const EXPORT_FORMATS = ['docx', 'xlsx', 'csv', 'pptx'] as const
 export type ExportFormat = (typeof EXPORT_FORMATS)[number]
 
 /** D7: inline content soft cap — beyond this the model is told to write the
@@ -119,6 +120,10 @@ async function buildBuffer(
   if (format === 'docx') {
     return markdownToDocxBuffer(source.md ?? source.csv ?? '')
   }
+  if (format === 'pptx') {
+    if (source.md === undefined) throw new Error('pptx 需要 markdown 内容；CSV 数据请导出 xlsx 或 csv')
+    return markdownToPptxBuffer(source.md)
+  }
   const sheets = source.csv !== undefined ? [await csvToSheet(source.csv)] : markdownToSheets(source.md ?? '')
   if (format === 'xlsx') return sheetsToXlsxBuffer(sheets)
   // csv: CSV carries exactly one grid — the first sheet exports.
@@ -148,6 +153,15 @@ async function readBackGate(format: ExportFormat, buffer: Buffer): Promise<{ ok:
       return { ok: true }
     } catch (err) {
       return { ok: false, reason: `xlsx 回读失败：${err instanceof Error ? err.message : String(err)}` }
+    }
+  }
+  if (format === 'pptx') {
+    try {
+      const xml = new AdmZip(buffer).readAsText('ppt/presentation.xml')
+      if (!xml || xml.length < 60) return { ok: false, reason: 'ppt/presentation.xml 缺失或为空' }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, reason: `pptx 解包失败：${err instanceof Error ? err.message : String(err)}` }
     }
   }
   return { ok: true }

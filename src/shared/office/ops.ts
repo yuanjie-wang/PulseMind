@@ -16,7 +16,12 @@ export type XlsxToolOp =
   | { op: 'find_replace'; find: string; replace: string; sheet?: string; include_formulas?: boolean; expected_count?: number }
   | { op: 'add_row'; sheet?: string; after_row: number; values?: Array<string | number | boolean | null> }
 
-export type OfficeToolOp = DocxToolOp | XlsxToolOp
+export type PptxToolOp =
+  | { op: 'outline' }
+  | { op: 'replace_text'; find: string; replace: string; expected_count?: number; slide?: number }
+  | { op: 'set_shape_text'; slide: number; shape_id: string; text: string }
+
+export type OfficeToolOp = DocxToolOp | XlsxToolOp | PptxToolOp
 
 export interface OfficeOpResult {
   index: number
@@ -29,6 +34,12 @@ export interface OfficeOpResult {
 export interface DocxEditOutcome {
   results: OfficeOpResult[]
   outline: Array<{ index: number; style: string | null; text: string }>
+  warnings: string[]
+}
+
+export interface PptxEditOutcome {
+  results: OfficeOpResult[]
+  outline: Array<{ slide: number; shapes: Array<{ shapeId: string; name: string; phType?: string; text: string }> }>
   warnings: string[]
 }
 

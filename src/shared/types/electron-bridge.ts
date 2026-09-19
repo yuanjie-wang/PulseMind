@@ -357,9 +357,10 @@ export interface ElectronAPI {
   patchFile: (input: { filePath: string; diff: string }) => Promise<{ success: boolean; replacements: number; error?: string }>
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }) => Promise<{ success: boolean; error?: string }>
   editDocx: (input: { filePath: string; ops: import('../office/ops').DocxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').DocxEditOutcome & { success: boolean; error?: string; backup?: string }>
+  editPptx: (input: { filePath: string; ops: import('../office/ops').PptxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').PptxEditOutcome & { success: boolean; error?: string; backup?: string }>
   editXlsx: (input: { filePath: string; ops: import('../office/ops').XlsxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>
   inspectOffice: (input: { filePath: string }) => Promise<import('../office/ops').OfficeInspectResult>
-  exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv'; content?: string; sourcePath?: string; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number }>
+  exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx'; content?: string; sourcePath?: string; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
   /** M10: register the per-mount element-edit nonce in the main process —
    *  the served picker copy reads it there, never the frame URL. */

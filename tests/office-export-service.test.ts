@@ -22,7 +22,7 @@ const { markdownToDocxBuffer } = await import('../src/main/office-export/md-to-d
 
 import AdmZip from 'adm-zip'
 import ExcelJS from 'exceljs'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -90,8 +90,36 @@ describe('svcExportDocument', () => {
     expect(huge.success).toBe(false)
     expect(huge.error).toContain('sourcePath')
 
-    const badFormat = await svcExportDocument({ format: 'pptx' as never, content: 'x', filePath: join(dir, 'd.pptx') })
+    const badFormat = await svcExportDocument({ format: 'doc' as never, content: 'x', filePath: join(dir, 'd.doc') })
     expect(badFormat.success).toBe(false)
+  })
+
+  it('pptx: markdown becomes a real deck through the full guard chain', async () => {
+    const dir = tempDir()
+    const result = await svcExportDocument({
+      format: 'pptx',
+      content: '# 季度汇报\n\n2026 Q3\n\n## 要点\n\n- 甲\n- 乙',
+      filePath: join(dir, '汇报.pptx'),
+    })
+    expect(result.success).toBe(true)
+    const stat = statSync(result.path!)
+    expect(stat.size).toBeGreaterThan(1000)
+    // the read-back gate's own criterion: the bytes must unzip to a deck
+    const xml = new AdmZip(readFileSync(result.path!)).readAsText('ppt/presentation.xml')
+    expect(xml).toContain('sldSz')
+    // conflict suffix: exporting again never overwrites
+    const again = await svcExportDocument({ format: 'pptx', content: '# 另一份', filePath: join(dir, '汇报.pptx') })
+    expect(again.success).toBe(true)
+    expect(again.path).not.toBe(result.path)
+    expect(again.path).toContain('汇报-2.pptx')
+  })
+
+  it('pptx: csv input refuses with a pointer to the right format', async () => {
+    const dir = tempDir()
+    writeFileSync(join(dir, 't.csv'), 'a,b\n1,2')
+    const retried = await svcExportDocument({ format: 'pptx', sourcePath: join(dir, 't.csv'), filePath: join(dir, 'x.pptx') })
+    expect(retried.success).toBe(false)
+    expect(retried.error).toContain('xlsx')
   })
 
   it('a guard denial surfaces the readable reason, nothing written', async () => {

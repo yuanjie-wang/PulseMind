@@ -312,6 +312,8 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_WRITE_FILE, input),
   editDocx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_DOCX, input),
+  editPptx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_PPTX, input),
   editXlsx: (input: { filePath: string; ops: unknown; workspaceDir?: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_XLSX, input),
   inspectOffice: (input: { filePath: string }): Promise<unknown> =>

@@ -132,6 +132,7 @@ export const IPC_CHANNELS = {
   UTIL_PATCH_FILE: 'util:patch-file',
   UTIL_WRITE_FILE: 'util:write-file',
   UTIL_EDIT_DOCX: 'util:edit-docx',
+  UTIL_EDIT_PPTX: 'util:edit-pptx',
   UTIL_EDIT_XLSX: 'util:edit-xlsx',
   UTIL_INSPECT_OFFICE: 'util:inspect-office',
   UTIL_EXPORT_DOCUMENT: 'util:export-document',
