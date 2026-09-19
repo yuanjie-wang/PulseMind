@@ -36,7 +36,7 @@ interface ApplyProfileHeadersOptions {
  * Merging is case-insensitive: a custom `authorization` replaces an existing
  * `Authorization` instead of sending both headers.
  */
-async function applyProfileHeaders(headers?: Record<string, string>, opts: ApplyProfileHeadersOptions = {}): Promise<Record<string, string> | undefined> {
+export async function applyProfileHeaders(headers?: Record<string, string>, opts: ApplyProfileHeadersOptions = {}): Promise<Record<string, string> | undefined> {
   const base: Record<string, string> = headers
     ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, resolveEnvVarsInString(v)]))
     : {}
@@ -105,7 +105,7 @@ async function isPrivateHost(hostname: string): Promise<boolean> {
 }
 
 /** Verify the request URL is not an SSRF attempt against the user's configured API host. */
-async function validateRequestUrl(requestUrl: string): Promise<void> {
+export async function validateRequestUrl(requestUrl: string): Promise<void> {
   let parsed: URL
   try { parsed = new URL(requestUrl) } catch { throw new Error(`无效 URL: ${requestUrl.slice(0, 100)}`) }
 

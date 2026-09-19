@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react'
-import { Drawer, Input, InputNumber, Select, Button, Typography, Space, message, Modal, Popconfirm, Tag } from 'antd'
-import { PlusOutlined, DeleteOutlined, SaveOutlined, CheckCircleOutlined, ExclamationCircleFilled } from '@ant-design/icons'
+import { Drawer, Input, InputNumber, Select, Button, Typography, Space, Modal, Popconfirm, Tag } from 'antd'
+import { PlusOutlined, DeleteOutlined, SaveOutlined, CheckCircleOutlined, ExclamationCircleFilled, ApiOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
+import { notify, notifyFailure } from '../../utils/notify'
+import { probeMissingFields, type LlmProbeOutcome } from '../../../../shared/llm/probe'
 import type { LlmProfile } from '../../types/settings'
 
 const { Text, Title } = Typography
@@ -21,8 +23,38 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
 
   const [editingProfileId, setEditingProfileId] = useState<string>('')
   const [localProfile, setLocalProfile] = useState<LlmProfile | null>(null)
-  const [messageApi, contextHolder] = message.useMessage()
   const { t } = useTranslation()
+
+  // ── Connectivity test ──
+  // Tests the profile AS EDITED (inline fields, not the saved row), so the
+  // user can validate before saving. The human words live main-side
+  // (shared/llm/probe.ts); here we only render outcome message + hint.
+  const [probing, setProbing] = useState(false)
+  const [probeOutcome, setProbeOutcome] = useState<LlmProbeOutcome | null>(null)
+  const handleTestConnection = async (): Promise<void> => {
+    if (!localProfile) return
+    const missing = probeMissingFields(localProfile)
+    if (missing) {
+      notify.warning(t('settingsDrawer.probeIncomplete', { field: missing }))
+      return
+    }
+    setProbing(true)
+    try {
+      const outcome = await window.electronAPI.testLlmConnection({
+        provider: localProfile.provider,
+        baseURL: localProfile.baseURL,
+        apiKey: localProfile.apiKey,
+        model: localProfile.model,
+        headers: localProfile.headers,
+      })
+      setProbeOutcome(outcome)
+    } catch (err) {
+      notifyFailure('llm-probe', err, t('settingsDrawer.probeCallFailed'))
+      setProbeOutcome(null)
+    } finally {
+      setProbing(false)
+    }
+  }
 
   // Custom headers editor: local rows synced to localProfile.headers
   const [headerRows, setHeaderRows] = useState<{ key: string; value: string }[]>([])
@@ -83,19 +115,19 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     if (!localProfile) return false
     // Validate required fields
     if (!localProfile.baseURL.trim()) {
-      messageApi.warning(t('settingsDrawer.enterBaseURL'))
+      notify.warning(t('settingsDrawer.enterBaseURL'))
       return false
     }
     if (!localProfile.model.trim()) {
-      messageApi.warning(t('settingsDrawer.enterModel'))
+      notify.warning(t('settingsDrawer.enterModel'))
       return false
     }
     try {
       await saveProfile(localProfile.id, localProfile)
-      messageApi.success(t('settingsDrawer.profileSaved'))
+      notify.success(t('settingsDrawer.profileSaved'))
       return true
     } catch {
-      messageApi.error(t('settingsDrawer.profileSaveFailed'))
+      notify.error(t('settingsDrawer.profileSaveFailed'))
       return false
     }
   }
@@ -119,23 +151,23 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
       setLocalProfile(profile)
       setNewProfileOpen(false)
       setNewProfileName('')
-      messageApi.success(t('settingsDrawer.profileCreated', { name }))
+      notify.success(t('settingsDrawer.profileCreated', { name }))
     } catch {
-      messageApi.error(t('settingsDrawer.profileCreateFailed'))
+      notify.error(t('settingsDrawer.profileCreateFailed'))
     }
   }
 
   const handleDeleteProfile = async () => {
     if (!localProfile) return
     if (settings.profiles.length <= 1) {
-      messageApi.warning(t('settingsDrawer.deleteLast'))
+      notify.warning(t('settingsDrawer.deleteLast'))
       return
     }
     try {
       await deleteProfile(localProfile.id)
-      messageApi.success(t('settingsDrawer.profileDeleted', { name: localProfile.name }))
+      notify.success(t('settingsDrawer.profileDeleted', { name: localProfile.name }))
     } catch {
-      messageApi.error(t('settingsDrawer.profileDeleteFailed'))
+      notify.error(t('settingsDrawer.profileDeleteFailed'))
     }
   }
 
@@ -169,7 +201,7 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
       try {
         await saveAndSwitchProfile(localProfile.id, localProfile)
       } catch {
-        messageApi.error(t('settingsDrawer.profileSwitchFailed'))
+        notify.error(t('settingsDrawer.profileSwitchFailed'))
         return
       }
     } else if (editingProfileId !== settings.activeProfileId) {
@@ -385,6 +417,32 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
             />
           </div>
 
+          {/* Connectivity test — validates the AS-EDITED fields without saving;
+              the human words (401/404/timeout) come from main (shared/llm/probe.ts). */}
+          <div>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>
+              {t('settingsDrawer.probeTitle')}
+            </Text>
+            <Button block icon={<ApiOutlined />} loading={probing} onClick={handleTestConnection}>
+              {t('settingsDrawer.testConnection')}
+            </Button>
+            {probeOutcome && (
+              <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: probeOutcome.ok ? '#f6ffed' : '#fff2f0', border: `1px solid ${probeOutcome.ok ? '#b7eb8f' : '#ffccc7'}` }}>
+                <div style={{ color: probeOutcome.ok ? '#389e0d' : '#cf1322', fontSize: 12, fontWeight: 600 }}>
+                  {probeOutcome.ok ? '✓ ' : '✕ '}{probeOutcome.message}
+                </div>
+                {probeOutcome.hint && (
+                  <div style={{ color: '#666', fontSize: 12, marginTop: 2 }}>{probeOutcome.hint}</div>
+                )}
+                {probeOutcome.detail && (
+                  <div title={probeOutcome.detail} style={{ color: '#aaa', fontSize: 11, marginTop: 2, wordBreak: 'break-all' }}>
+                    {probeOutcome.detail.slice(0, 90)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Custom Headers */}
           <div>
             <Text strong style={{ display: 'block', marginBottom: 8 }}>
@@ -461,7 +519,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
   if (inline) {
     return (
       <>
-        {contextHolder}
         <div style={{ height: '100%', overflow: 'auto' }}>
           {bodyContent}
         </div>
@@ -472,7 +529,6 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
 
   return (
     <>
-      {contextHolder}
       <Drawer title={t('settingsDrawer.title')} open={open} onClose={onClose} size={400}>
         {bodyContent}
       </Drawer>
