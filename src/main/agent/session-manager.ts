@@ -31,7 +31,7 @@ import { serverManager } from '../mcp/MCPServerManager'
 import { getKnowledgeFilesByIds } from '../storage/knowledge.db'
 import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalogs, type ExpertRefCatalogs } from '../../shared/expert-context'
 import type { SummonedExpert } from '../../shared/expert-context'
-import type { ExpertRuntimeContext } from '../../shared/types/expert'
+import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
 import { agentClientRegistry } from './client-registry'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
@@ -67,6 +67,9 @@ interface SessionEntry {
   pinned: {
     systemPromptOverride?: string
     allowedTools?: string[]
+    /** Create-time internal expert pack (the assistants): owns this session's
+     *  expert identity for its whole life — DB-bound experts never apply. */
+    expertProfile?: ExpertProfile
     /** Approval mode the session's creator demanded (derived sessions run
      *  unattended). Set = nothing else can change it, ever. */
     approvalOverride?: SandboxApprovalMode
@@ -500,6 +503,19 @@ export class AgentSessionManagerImpl {
     // default for a conversation that never chose (按需确认).
     const approvalMode = pickApprovalMode(opts.approvalMode, getConversationApprovalMode(sessionId))
 
+    // D16: compose the create-time internal pack ONCE. The whitelists go to
+    // the mirror fields verbatim — an EMPTY array must stay empty (「一个都不
+    // 许用」绝不能塌成 undefined 的「不限制」), matching applyExpertContext.
+    const pinnedExpert: ExpertRuntimeContext | null = opts.expertProfile
+      ? {
+          id: opts.expertProfile.id,
+          name: opts.expertProfile.name,
+          instructions: composeExpertInstructions(opts.expertProfile, this.resolveExpertRefCatalogs()),
+          allowedSkills: opts.expertProfile.skillNames ?? [],
+          allowedMcpServers: opts.expertProfile.mcpServerIds ?? [],
+        }
+      : null
+
     const engineOptions: AgentEngineOptions = {
       apiKey: profile.apiKey ?? null,
       baseURL: profile.baseURL,
@@ -529,6 +545,17 @@ export class AgentSessionManagerImpl {
       conversationId: sessionId,
       systemPromptOverride: opts.systemPromptOverride,
       allowedTools: opts.allowedTools,
+      // D16: an explicitly pinned internal pack (the assistants) rides on top
+      // of the pinned override — identity over mechanics. Composed once here;
+      // refreshOptions re-attaches the whole set (the mirror fields included,
+      // since updateOptions replaces the bag wholesale).
+      ...(pinnedExpert
+        ? {
+            expert: pinnedExpert,
+            allowedSkills: pinnedExpert.allowedSkills,
+            allowedMcpServers: pinnedExpert.allowedMcpServers,
+          }
+        : {}),
     }
     const engine = new AgentEngine(engineOptions, this.makeCallbacks(sessionId))
     this.lastSentLen.set(sessionId, 0)
@@ -541,6 +568,7 @@ export class AgentSessionManagerImpl {
       pinned: {
         systemPromptOverride: opts.systemPromptOverride,
         allowedTools: opts.allowedTools,
+        expertProfile: opts.expertProfile,
         // Only an explicit request pins the approval mode; an ordinary session
         // keeps following its conversation's own choice — see
         // refreshConversationApproval.
@@ -558,6 +586,9 @@ export class AgentSessionManagerImpl {
     // The renderer binds the @-summoned expert before the first message lands —
     // resolve it now so the very first loop already runs as the expert.
     const entry = this.sessions.get(sessionId)
+    // D16: the pinned pack's runtime context is entry state — refreshOptions
+    // re-attaches it (with its mirror fields) on every option rebuild.
+    if (entry && pinnedExpert) entry.expertState = pinnedExpert
     if (entry) await this.refreshExpertContext(sessionId, entry)
   }
 
@@ -579,9 +610,16 @@ export class AgentSessionManagerImpl {
    *  unbinds take effect immediately; a deleted/disabled expert falls back to
    *  an ordinary session. engine.applyExpertContext invalidates the
    *  system-prompt cache when the expert changed. Derived prompt sessions
-   *  (tool studio etc.) keep their pinned override — an expert never applies
-   *  to them. */
+   *  (tool studio etc.) and create-time expertProfile pins (D16, the
+   *  assistants) keep their pinned identity — a DB-bound expert never
+   *  applies to them. */
   private async refreshExpertContext(sessionId: string, entry: SessionEntry): Promise<void> {
+    if (entry.pinned.expertProfile) {
+      // The pinned pack owns this session's expert identity for its whole
+      // life. Nothing to re-resolve: refreshOptions re-attaches the ctx and
+      // its mirror fields wholesale on every rebuild.
+      return
+    }
     if (entry.pinned.systemPromptOverride) return
     try {
       const expertId = getConversationExpertId(sessionId)
@@ -711,7 +749,6 @@ export class AgentSessionManagerImpl {
   /** Whitelisted engine method calls from the renderer (approvals, loop control…). */
   async engineCall(sessionId: string, method: string, args: unknown[]): Promise<unknown> {
     const entry = await this.ensureEntry(sessionId)
-    const engine = entry.engine as unknown as Record<string, (...a: unknown[]) => unknown>
     const sandboxCtx = this.sandboxContexts.get(sessionId)
     const dispatch = () => this.dispatchEngineCall(sessionId, entry, method, args)
     return sandboxCtx ? sessionSandbox.run(sandboxCtx, dispatch) : dispatch()
@@ -797,6 +834,13 @@ export class AgentSessionManagerImpl {
       systemPromptOverride: entry.pinned.systemPromptOverride,
       allowedTools: entry.pinned.allowedTools,
       expert: entry.expertState ?? undefined,
+      // The pack's mirror fields ride with the expert ctx: updateOptions
+      // replaces the bag wholesale, so re-deriving them HERE (not inside the
+      // engine) is what keeps a pinned pack's whitelists across refreshes —
+      // allowedSkills is read live from the bag, allowedMcpServersSet is
+      // rebuilt by updateOptions when the key is present.
+      allowedSkills: entry.expertState?.allowedSkills,
+      allowedMcpServers: entry.expertState?.allowedMcpServers,
       // Re-bound here too: a client can disconnect and reconnect between two
       // refreshes, and updateOptions replaces the bag wholesale.
       hostedAvailable: agentClientRegistry.isHostedCapable(sessionId),

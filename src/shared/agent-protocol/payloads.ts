@@ -3,6 +3,7 @@
  *  the same shapes over ipcRenderer. */
 import type { SandboxApprovalMode } from '../sandbox/policy'
 import type { Plan } from '../types/plan'
+import type { ExpertProfile } from '../types/expert'
 
 // ── hello ────────────────────────────────────────────────────────────
 
@@ -53,6 +54,11 @@ export interface AgentSessionCreateOptions {
   systemPromptOverride?: string
   /** Tool allowlist for the session; omitted = every enabled tool. */
   allowedTools?: string[]
+  /** Internal expert config pack pinned at creation (the assistants): composed
+   *  into an ExpertRuntimeContext ONCE by session-manager, rides on top of the
+   *  systemPromptOverride (identity over mechanics), and survives refreshes —
+   *  DB-bound experts never apply to a session that carries one. */
+  expertProfile?: ExpertProfile
   /** Per-session approval override for a session whose conversation cannot speak
    *  for itself (unattended runs); omitted = the conversation's own stored level
    *  (`conversations.approval_mode`), then the shared DEFAULT_APPROVAL_MODE. */

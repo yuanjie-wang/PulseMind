@@ -435,6 +435,13 @@ export class AgentEngine implements EngineCore {
       provider: opts.adapter.constructor.name
     })
     this.opts = opts
+    // The expert pack rides the bag wholesale (refreshOptions re-attaches it
+    // WITH its mirror fields), so the one derived piece living outside opts
+    // must be re-derived here when the key is present — the same rule
+    // applyExpertContext applies, minus its change-detection no-op.
+    if (opts.allowedMcpServers !== undefined) {
+      this.allowedMcpServersSet = new Set(opts.allowedMcpServers)
+    }
     this.toolExecutor.updateOptions(opts)
   }
 

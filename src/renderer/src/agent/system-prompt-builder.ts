@@ -50,9 +50,16 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
   const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols } = params
 
   if (spawnSystemPrompt) {
-    const systemPrompt = spawnSystemPromptAppendix
+    const base = spawnSystemPromptAppendix
       ? spawnSystemPrompt + '\n\n' + spawnSystemPromptAppendix
       : spawnSystemPrompt
+    // D16: an explicitly pinned expert pack (the assistants) rides ON TOP of a
+    // pinned override — the override carries the mechanics (protocol/tool
+    // contract), the pack the identity. One assembly site, byte-stable per
+    // (override, pack, catalogs): no clock, no DB, no per-turn value.
+    const systemPrompt = opts.expert?.instructions
+      ? `${base}\n\n${opts.expert.instructions}`
+      : base
     return { systemPrompt, stateBlock: null }
   }
 
