@@ -82,3 +82,19 @@ describe('tool protocols: enabled tools carry their manuals into the system prom
     expect(pass).toBeGreaterThan(build)
   })
 })
+
+// PLAN-pptx-export follow-up: the user report 「模型总想用 python-pptx 生成 PPT」
+// was a tool-SELECTION failure. The export manual's decision tree must ride
+// the assembled request — an edit to the manual file alone proves nothing.
+describe('export_document manual rides the assembled protocols', () => {
+  it('buildToolProtocols output contains the pptx decision tree', async () => {
+    const { buildToolProtocols } = await import('../src/renderer/src/agent/engine/tool-collection')
+    const { BUILT_IN_TOOLS } = await import('../src/renderer/src/tools/built-in-tools')
+    const protocols = buildToolProtocols(BUILT_IN_TOOLS.filter((t) => allEnabled.has(t.name)))
+    expect(protocols).toContain('python-pptx')
+    expect(protocols).toContain('format pptx')
+    expect(protocols).toContain('pptx_edit')
+  })
+})
+
+const allEnabled = new Set(['export_document', 'pptx_edit'])

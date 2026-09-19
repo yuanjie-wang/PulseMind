@@ -232,3 +232,90 @@ describe('gates (D6)', () => {
     expect(() => openPptxPackage(Buffer.from('D0CF11E0A1B11AE1', 'hex'))).toThrow(/另存为/)
   })
 })
+
+// ── styling ops (PLAN-pptx-editing D11) ──
+describe('styling ops', () => {
+  it('format_text on a whole run rewrites a:rPr in place (attrs + fill child)', () => {
+    const { xml, results } = applySlideOps(SLIDE1, [
+      { op: 'format_text', find: '季度经营汇报', color: 'FF0000', font_size: 28, bold: false },
+    ])
+    expect(results[0].ok).toBe(true)
+    expect(xml).toContain('<a:rPr lang="zh-CN" sz="2800" b="0"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:rPr>')
+    // text graph untouched
+    expect(buildSlideModel(xml).shapes.find((s) => s.id === '2')!.paragraphs[0].text).toBe('季度经营汇报')
+  })
+
+  it('format_text creates a:rPr when the run has none', () => {
+    const { xml } = applySlideOps(SLIDE1, [
+      { op: 'format_text', find: '单元甲', italic: true, color: '112233' },
+    ])
+    expect(xml).toContain('<a:rPr i="1"><a:solidFill><a:srgbClr val="112233"/></a:solidFill></a:rPr>')
+  })
+
+  it('format_text splits a partially covered run (pre keeps the original style)', () => {
+    const { xml } = applySlideOps(SLIDE1, [
+      { op: 'format_text', find: '长', color: '00FF00', bold: true },
+    ])
+    const model = buildSlideModel(xml)
+    const content = model.shapes.find((s) => s.id === '3')!
+    expect(content.paragraphs[0].text).toBe('营收增长达到23%') // untouched paragraph
+    // some run somewhere now carries the green fill AND the text is intact overall
+    expect(xml).toContain('srgbClr val="00FF00"')
+    const allText = model.shapes.flatMap((s) => s.paragraphs.map((p) => p.text)).join('')
+    expect(allText).toContain('营收增长达到23%')
+  })
+
+  it('format_text refuses bad colours and no-op style sets', () => {
+    const bad = applySlideOps(SLIDE1, [{ op: 'format_text', find: '季度', color: 'red' }])
+    expect(bad.results[0].ok).toBe(false)
+    expect(bad.results[0].detail).toContain('RRGGBB')
+    const none = applySlideOps(SLIDE1, [{ op: 'format_text', find: '季度' }])
+    expect(none.results[0].ok).toBe(false)
+    expect(none.results[0].detail).toContain('没有给出任何样式属性')
+  })
+
+  it('format_text with shape_id scopes the match', () => {
+    // 「1」 exists only in the slide-number FIELD (unmatchable) — but 「23%」
+    // lives in the content shape; scoping to the title shape refuses.
+    const scoped = applySlideOps(SLIDE1, [{ op: 'format_text', find: '23%', color: '000000', shape_id: '2' }])
+    expect(scoped.results[0].ok).toBe(false)
+    expect(scoped.results[0].detail).toContain('命中 0 处')
+  })
+
+  it('set_shape_fill replaces an existing fill and inserts when absent', () => {
+    const s1 = SLIDE1.replace(
+      '<a:prstGeom', '<a:solidFill><a:srgbClr val="4472C4"/></a:solidFill><a:prstGeom'
+    )
+    const { xml } = applySlideOps(s1, [{ op: 'set_shape_fill', slide: 1, shape_id: '3', color: 'FF8800' }])
+    expect(xml).toContain('srgbClr val="FF8800"')
+    expect(xml).not.toContain('srgbClr val="4472C4"')
+    const inserted = applySlideOps(SLIDE1, [{ op: 'set_shape_fill', slide: 1, shape_id: '3', color: 'none' }])
+    expect(inserted.xml).toContain('<a:noFill/>')
+  })
+
+  it('set_slide_background inserts p:bg as the first cSld child; replaces an existing one', () => {
+    const { xml } = applySlideOps(SLIDE2, [{ op: 'set_slide_background', slide: 1, color: 'F5F1E8' }])
+    expect(xml).toContain('<p:bg><p:bgPr><a:solidFill><a:srgbClr val="F5F1E8"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>')
+    const cSldOpen = xml.indexOf('<p:cSld>')
+    const bgAt = xml.indexOf('<p:bg>')
+    const spTreeAt = xml.indexOf('<p:spTree>')
+    expect(bgAt).toBeGreaterThan(cSldOpen)
+    expect(bgAt).toBeLessThan(spTreeAt)
+    const again = applySlideOps(xml, [{ op: 'set_slide_background', slide: 1, color: 'FFFFFF' }])
+    expect(again.xml).toContain('val="FFFFFF"')
+    expect(again.xml.match(/<p:bg>/g)).toHaveLength(1)
+  })
+
+  it('set_shape_geometry splices off/ext attribute values; inches in, EMU out', () => {
+    const { xml } = applySlideOps(SLIDE2, [{ op: 'set_shape_geometry', slide: 1, shape_id: '2', x: 1.5, y: 0.5, w: 8, h: 1 }])
+    expect(xml).toContain('<a:off x="1371600" y="457200"/><a:ext cx="7315200" cy="914400"/>')
+  })
+
+  it('gate ③: a styling op that somehow changes text refuses the batch', () => {
+    // simulate a tampered engine by verifying the gate directly
+    const before = buildSlideModel(SLIDE1)
+    const after = buildSlideModel(SLIDE1.replace('季度经营汇报', '季度经营汇报!'))
+    expect(() => verifySemantic(before, after, [{ op: 'set_shape_fill', slide: 1, shape_id: '2', color: 'FF0000' }]))
+      .toThrow(/样式操作必须只动样式/)
+  })
+})

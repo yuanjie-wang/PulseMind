@@ -134,6 +134,36 @@ async function phaseMain() {
   check('an ambiguous replace refuses (expected_count unset)', refused.success === false, refused.error?.slice(0, 60))
   check('…and the file is byte-identical after the refusal', readFileSync(deckPath).equals(afterEditBytes))
 
+  // ⑥b styling ops through the real service, closed loop via the PREVIEW model
+  const styled = await svcEditPptx({
+    filePath: deckPath,
+    ops: [
+      { op: 'set_slide_background', slide: 1, color: 'F5F1E8' },
+      { op: 'format_text', slide: 1, find: phrase.slice(0, 2), color: 'C0392B', font_size: 44 },
+      { op: 'set_shape_fill', slide: 1, shape_id: '2', color: 'FFFFFF' },
+      { op: 'set_shape_geometry', slide: 1, shape_id: '2', x: 0.8, y: 0.4 },
+    ],
+  })
+  check('styling ops through the real service succeed', styled.success, styled.error)
+  try {
+    const { parsePptxDeck } = await import('../src/shared/preview/pptx')
+    const AdmZip2 = (await import('adm-zip')).default
+    const entries2 = new AdmZip2(readFileSync(deckPath)).getEntries()
+    const files2 = {}
+    for (const e of entries2) if (!e.isDirectory) files2[e.entryName] = e.getData()
+    const deck2 = parsePptxDeck({
+      entryText: (n) => (files2[n] ? new TextDecoder().decode(files2[n]) : undefined),
+      entryBytes: (n) => files2[n],
+      names: () => Object.keys(files2),
+    })
+    check('preview model reads the new slide background', deck2 !== null && deck2.slides[0].background === '#F5F1E8', deck2?.slides[0].background)
+    const runColored = deck2.slides[0].shapes.some((sh) => sh.text?.paragraphs.some((p) => p.runs.some((r) => r.color === '#C0392B' && r.sizePt === 44)))
+    check('preview model reads the styled run colour and size', runColored)
+    check('the styled text graph is untouched (gate ③ held)', deck2.slides[0].shapes.every((sh) => sh.text === undefined || sh.text.paragraphs.every((p) => p.runs.every((r) => !r.text.includes('X')))))
+  } catch (err) {
+    check('styling closed loop', false, err.message)
+  }
+
   // ⑦ text write tool refuses the .pptx and points at pptx_edit
   const writeResult = await svcWriteFile({ filePath: deckPath, content: 'text into a binary' })
   check('text write tool refuses the .pptx (points at pptx_edit)',

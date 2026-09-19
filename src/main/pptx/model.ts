@@ -131,7 +131,7 @@ function collectShapes(container: XmlElementNode, into: ShapeInfo[], syntheticId
     if (child.name === 'p:graphicFrame') {
       // Table cells: each a:tc's txBody becomes a synthetic shape whose id is
       // "cell:<r>:<c>" — set_shape_text can address it, replace_text just works.
-      const tbl = findDescendantEl(child, 'a:tbl')
+      const tbl = findElement(child, 'a:tbl')
       if (!tbl) continue
       const rows = tbl.children.filter((c) => isElement(c) && c.name === 'a:tr') as XmlElementNode[]
       rows.forEach((tr, r) => {
@@ -151,11 +151,12 @@ function collectShapes(container: XmlElementNode, into: ShapeInfo[], syntheticId
   }
 }
 
-function findDescendantEl(node: XmlElementNode, name: string): XmlElementNode | undefined {
+/** First descendant element with the local (prefixed) tag name. */
+export function findElement(node: XmlElementNode, name: string): XmlElementNode | undefined {
   for (const child of node.children) {
     if (!isElement(child)) continue
     if (child.name === name) return child
-    const hit = findDescendantEl(child, name)
+    const hit = findElement(child, name)
     if (hit) return hit
   }
   return undefined
@@ -166,8 +167,8 @@ export function buildSlideModel(xml: string): SlideModel {
   const parsed = parseXml(xml)
   const shapes: ShapeInfo[] = []
   const syntheticIdBase = { n: 0 }
-  const spTree = findDescendantEl(parsed.root, 'p:cSld')
-  const tree = spTree ? findDescendantEl(spTree, 'p:spTree') : undefined
+  const spTree = findElement(parsed.root, 'p:cSld')
+  const tree = spTree ? findElement(spTree, 'p:spTree') : undefined
   if (tree) collectShapes(tree, shapes, syntheticIdBase)
   return { parsed, shapes }
 }

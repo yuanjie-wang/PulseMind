@@ -175,7 +175,18 @@ export function verifySemantic(before: ReturnType<typeof buildSlideModel>, after
   const beforeTexts = textsOf(before)
   const afterTexts = textsOf(after)
 
+  // Styling ops must NEVER touch the text graph — that is their whole
+  // contract (D11): colours, fills, backgrounds and geometry ride a:rPr /
+  // spPr / cSld spans, and the visible text comes out byte-equal.
+  const STYLING_OPS = new Set(['format_text', 'set_shape_fill', 'set_slide_background', 'set_shape_geometry'])
   for (const op of ops) {
+    if (STYLING_OPS.has(op.op)) {
+      const sig = (texts: string[]): string => texts.join('\u0001')
+      if (sig(beforeTexts) !== sig(afterTexts)) {
+        throw new Error(`门禁③未通过：${op.op} 改变了可见文本（样式操作必须只动样式）`)
+      }
+      continue
+    }
     if (op.op === 'replace_text') {
       const beforeCount = beforeTexts.reduce((acc, t) => acc + countOf(t, op.find), 0)
       if (beforeCount !== (op.expected_count ?? 1)) {
@@ -192,6 +203,7 @@ export function verifySemantic(before: ReturnType<typeof buildSlideModel>, after
     // set_shape_text: the target shape's concatenated text equals the new
     // text (with GAP normalization); every other shape's paragraph count is
     // untouched.
+    if (op.op !== 'set_shape_text') continue
     const shapeAfter = after.shapes.find((s) => s.id === op.shape_id)
     if (!shapeAfter) throw new Error(`门禁③未通过：set_shape_text 后形状 ${op.shape_id} 消失了`)
     const got = shapeAfter.paragraphs.map((p) => p.text.replace(new RegExp(GAP_CHAR, 'g'), '')).join('\n')

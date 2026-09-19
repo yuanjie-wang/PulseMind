@@ -8,8 +8,13 @@ export const toolInstructions: Record<string, string> = {
 
 Produce a REAL deliverable file (docx / xlsx / csv / pptx) the user can take away — use it when the user wants a file, not a table pasted in chat.
 
+### Decision tree — read this FIRST
+- 用户要 PPT / 幻灯片 / slides → **本工具 format pptx**。从零创建一律走这里；要精修/填充一个已有 .pptx 模板才用 pptx_edit。
+- 用户要 Word 文档 → format docx；表格交付 → format xlsx / csv。
+- **永远不要**用 exec 跑 python-pptx / python-docx / office 脚本之类来生成 Office 文件——那绕开了沙箱护栏、备份与回读门禁，且没有预览联动。本工具就是原生路径，直接用它。
+
 ### Inputs (D3 — exactly one)
-- content: inline source. docx takes the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet (D4).
+- content: inline source. docx/pptx take the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet (D4). For pptx the first \`# \` heading is the cover and every later \`# \`/\`## \` heading starts a new slide.
 - sourcePath: convert an existing workspace .md/.csv text file instead (large sources — avoids re-sending content).
 
 ### Rules
@@ -28,10 +33,17 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx) the user can take awa
 
 Edit a .pptx with byte-faithful operations. Masters/layouts/media/theme are preserved exactly; only slide text changes.
 
+分工：从零做一个新 PPT 用 export_document（format pptx）；本工具只负责修改已有文件——尤其是用户提供的公司模板（字节保真是它对生成器的全部优势）。
+
 ### Ops (run in order; a failed op refuses the WHOLE batch — nothing is written)
 - {"op":"outline"} — slides with shape ids/names/placeholder types/text. Run this FIRST.
 - {"op":"replace_text","slide":N,"find":"旧文本","replace":"新文本","expected_count":1} — visible-text replace across runs. slide is 1-based presentation order (default 1). expected_count must match the hit count exactly or the batch refuses.
 - {"op":"set_shape_text","slide":N,"shape_id":"2","text":"第一段\n第二段"} — rewrite ALL paragraphs of one shape (from outline ids; table cells are cell:r:c). Paragraph styling comes from the layout/master — template-safe.
+- {"op":"format_text","slide":N,"find":"旧文本","color":"FF0000","font_size":28,"bold":true} — style the matched runs (colour/size/bold/italic/underline/strike/font). Whole-run matches restyle in place; partial matches SPLIT the run. Optional shape_id scopes the match to one shape.
+- {"op":"set_shape_fill","slide":N,"shape_id":"3","color":"4472C4"} — shape fill (or "none"), optional line_color for the outline.
+- {"op":"set_slide_background","slide":N,"color":"F5F1E8"} — page background.
+- {"op":"set_shape_geometry","slide":N,"shape_id":"2","x":1.5,"y":0.5,"w":8,"h":1} — position/size in INCHES.
+Styling ops NEVER change visible text — the engine refuses the batch if they do. Colours are 6-hex RRGGBB.
 
 ### Rules
 - Slide numbers are PRESENTATION order, not filename order.

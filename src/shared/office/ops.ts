@@ -20,6 +20,10 @@ export type PptxToolOp =
   | { op: 'outline' }
   | { op: 'replace_text'; find: string; replace: string; expected_count?: number; slide?: number }
   | { op: 'set_shape_text'; slide: number; shape_id: string; text: string }
+  | { op: 'format_text'; find: string; slide?: number; shape_id?: string; expected_count?: number; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; color?: string; font_size?: number; font?: string }
+  | { op: 'set_shape_fill'; slide: number; shape_id: string; color: string; line_color?: string }
+  | { op: 'set_slide_background'; slide: number; color: string }
+  | { op: 'set_shape_geometry'; slide: number; shape_id: string; x?: number; y?: number; w?: number; h?: number }
 
 export type OfficeToolOp = DocxToolOp | XlsxToolOp | PptxToolOp
 

@@ -154,6 +154,19 @@ describe('pptx buffer', () => {
     expect(deck!.skipped.badImages).toBe(0)
   })
 
+  it('wiring: the tool manual carries the anti-shell decision tree (prompt layer)', () => {
+    // The user report 「模型总想用 python-pptx 生成 PPT」 was a TOOL-SELECTION
+    // failure, not an engine one — the manual is what reaches the model every
+    // request (buildToolProtocols), so the prohibition must live there.
+    const manual = readFileSync(join(__dirname, '../src/renderer/src/tools/tool-instructions.ts'), 'utf8')
+    expect(manual).toContain('docx/pptx take the FULL markdown document')
+    expect(manual).toContain('python-pptx')
+    expect(manual).toContain('format pptx')
+    const defs = readFileSync(join(__dirname, '../src/renderer/src/tools/built-in-tools.ts'), 'utf8')
+    expect(defs).toContain('never shell out to python-pptx')
+    expect(defs).toContain("enum: ['docx', 'xlsx', 'csv', 'pptx']")
+  })
+
   it('readme path check: mapper lives next to its md-to-docx sibling', () => {
     const src = readFileSync(join(__dirname, '../src/main/office-export/md-to-pptx.ts'), 'utf8')
     expect(src).toContain("import { marked } from 'marked'")

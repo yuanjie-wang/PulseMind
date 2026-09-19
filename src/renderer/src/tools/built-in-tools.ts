@@ -558,12 +558,18 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['outline', 'replace_text', 'set_shape_text'] },
+              op: { type: 'string', enum: ['outline', 'replace_text', 'set_shape_text', 'format_text', 'set_shape_fill', 'set_slide_background', 'set_shape_geometry'] },
               find: { type: 'string' }, replace: { type: 'string' },
               expected_count: { type: 'number', description: 'How many hits the op must see (default 1) — a mismatch refuses the batch.' },
               slide: { type: 'number', description: '1-based slide number in presentation order (default 1 for text ops).' },
               shape_id: { type: 'string', description: 'The p:cNvPr id from outline (table cells use cell:r:c).' },
               text: { type: 'string', description: 'set_shape_text: the full new text, one paragraph per line.' },
+              bold: { type: 'boolean' }, italic: { type: 'boolean' }, underline: { type: 'boolean' }, strike: { type: 'boolean' },
+              color: { type: 'string', description: 'format_text: run colour; set_shape_fill: shape fill. 6-hex RRGGBB, or the literal none.' },
+              font_size: { type: 'number', description: 'format_text only: size in points.' },
+              font: { type: 'string', description: 'format_text only: font family name (applied to Latin and East-Asian faces).' },
+              line_color: { type: 'string', description: 'set_shape_fill only: outline colour (6-hex RRGGBB).' },
+              x: { type: 'number', description: 'set_shape_geometry only: INCHES from the left edge.' }, y: { type: 'number', description: 'set_shape_geometry: inches from the top.' }, w: { type: 'number', description: 'set_shape_geometry: width in inches.' }, h: { type: 'number', description: 'set_shape_geometry: height in inches.' },
             },
           },
         },
@@ -626,7 +632,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── export_document (PLAN-office-export) ───────────────────────────
   {
     name: 'export_document',
-    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading), .csv, or .pptx (PowerPoint slides, one page per `#`/`## ` heading). Give inline markdown/CSV `content` OR a workspace `sourcePath`, never both. The file lands in the conversation workspace and opens in the preview pane.',
+    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading), .csv, or .pptx (PowerPoint slides, one page per `#`/`## ` heading). For ANY make-a-PPT request use format pptx — never shell out to python-pptx. Give inline markdown/CSV `content` OR a workspace `sourcePath`, never both. The file lands in the conversation workspace and opens in the preview pane.',
     category: 'file',
     triggers: ['export', '导出', '生成 excel', '生成 word', '生成 ppt', '转成表格', '转成文档'],
     input_schema: {

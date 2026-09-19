@@ -263,7 +263,8 @@ export const mainHost: PulseHost = {
   knowledgeSetFilesBase: async (ids: string[], baseId: string) => kq.svcSetFilesBase(ids, baseId),
   knowledgeReextract: (id: string) => kq.svcReextract(id),
   editDocx: async (input: { filePath: string; ops: any[] }) => svcDocx.svcEditDocx(input as { filePath: string; ops: never[] }),
-  editPptx: async (input: { filePath: string; ops: any[] }) => svcPptx.svcEditPptx(input as { filePath: string; ops: never[] }),
+  editPptx: async (input: { filePath: string; ops: any[] }) =>
+    svcPptx.svcEditPptx(input as { filePath: string; ops: never[] }) as Promise<import('../../shared/office/ops').PptxEditOutcome & { success: boolean; error?: string; backup?: string; diff?: string; changeSummary?: string }>,
   editXlsx: async (input: { filePath: string; ops: any[] }) => svcXlsx.svcEditXlsx(input as { filePath: string; ops: never[] }),
   inspectOffice: async (input: { filePath: string }) => (await import('../services/office-inspect')).svcInspectOffice(input),
   exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx'; content?: string; sourcePath?: string; filePath: string }) =>

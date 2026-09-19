@@ -7,12 +7,16 @@
 //  failed op throws → the whole batch refuses to write (D5).
 
 import { splice, escapeXmlText, type SpliceReplacement, type XmlElementNode } from '../docx/xml-splice'
-import { buildSlideModel, GAP_CHAR, type SlideModel, type ParagraphInfo, type RunInfo } from './model'
+import { buildSlideModel, findElement, GAP_CHAR, type SlideModel, type ParagraphInfo, type RunInfo } from './model'
 
 export type PptxOp =
   | { op: 'outline' }
   | { op: 'replace_text'; find: string; replace: string; expected_count?: number; slide?: number }
   | { op: 'set_shape_text'; slide: number; shape_id: string; text: string }
+  | { op: 'format_text'; find: string; slide?: number; shape_id?: string; expected_count?: number; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; color?: string; font_size?: number; font?: string }
+  | { op: 'set_shape_fill'; slide: number; shape_id: string; color: string; line_color?: string }
+  | { op: 'set_slide_background'; slide: number; color: string }
+  | { op: 'set_shape_geometry'; slide: number; shape_id: string; x?: number; y?: number; w?: number; h?: number }
 
 export type PptxSlideOp = Exclude<PptxOp, { op: 'outline' }>
 
@@ -140,6 +144,260 @@ function applySetShapeText(xml: string, model: SlideModel, op: Extract<PptxOp, {
 
 const isEl = (n: { kind: string; name?: string }, name: string): n is XmlElementNode => n.kind === 'element' && n.name === name
 
+function requireHex(color: string, what: string): string {
+  if (!/^[0-9A-Fa-f]{6}$/.test(color)) throw new Error(`${what}: 颜色必须是 6 位十六进制 RRGGBB（收到「${color}」）`)
+  return color.toUpperCase()
+}
+
+// ── a:rPr surgery (format_text) ──
+
+/** a:rPr child order per the DrawingML schema — fill inserts before the first
+ *  of these, latin/ea before the first of the script faces. */
+const AFTER_FILL = ['a:effectLst', 'a:effectDag', 'a:highlight', 'a:uLnTx', 'a:uLn', 'a:uFillTx', 'a:uFill', 'a:latin', 'a:ea', 'a:cs', 'a:sym', 'a:hlinkClick', 'a:hlinkMouseOver', 'a:rtl', 'a:extLst']
+const AFTER_LATIN = ['a:ea', 'a:cs', 'a:sym', 'a:hlinkClick', 'a:hlinkMouseOver', 'a:rtl', 'a:extLst']
+const FILL_TAGS = ['a:noFill', 'a:solidFill', 'a:gradFill', 'a:blipFill', 'a:pattFill', 'a:grpFill']
+
+interface RprWant {
+  attrs: Record<string, string>
+  /** 'none' → noFill; else solidFill with the hex */
+  fill?: string
+  latin?: string
+}
+
+function rprWantsOf(op: Extract<PptxOp, { op: 'format_text' }>): RprWant {
+  const attrs: Record<string, string> = {}
+  if (op.bold !== undefined) attrs['b'] = op.bold ? '1' : '0'
+  if (op.italic !== undefined) attrs['i'] = op.italic ? '1' : '0'
+  if (op.underline !== undefined) attrs['u'] = op.underline ? 'sng' : 'none'
+  if (op.strike !== undefined) attrs['strike'] = op.strike ? 'sngStrike' : 'noStrike'
+  if (op.font_size !== undefined) {
+    if (!(op.font_size >= 1 && op.font_size <= 4000)) throw new Error('format_text: font_size 需在 1–4000pt 之间')
+    attrs['sz'] = String(Math.round(op.font_size * 100))
+  }
+  return {
+    attrs,
+    fill: op.color !== undefined ? (op.color === 'none' ? 'none' : requireHex(op.color, 'format_text')) : undefined,
+    latin: op.font,
+  }
+}
+
+/** Rebuild ONE a:rPr from its original span: original attrs kept then
+ *  overridden, original children kept except the fill/latin being rewritten.
+ *  Insertion positions follow the schema order above. */
+function rebuildRpr(rPr: XmlElementNode | undefined, xml: string, want: RprWant): string {
+  const attrs: string[] = []
+  const seen = new Set<string>()
+  if (rPr) {
+    for (const [name, attr] of rPr.attrs) {
+      const v = want.attrs[name] ?? attr.rawValue
+      attrs.push(` ${name}="${escapeXmlText(v)}"`)
+      seen.add(name)
+    }
+  }
+  for (const [name, v] of Object.entries(want.attrs)) {
+    if (!seen.has(name)) attrs.push(` ${name}="${escapeXmlText(v)}"`)
+  }
+  // children: keep everything except what we are rewriting
+  const kids: string[] = []
+  if (rPr) {
+    for (const child of rPr.children) {
+      if (child.kind !== 'element') { kids.push(xml.slice(child.start, child.end)); continue }
+      if (want.fill !== undefined && FILL_TAGS.includes(child.name)) continue
+      if (want.latin !== undefined && (child.name === 'a:latin' || child.name === 'a:ea')) continue
+      kids.push(xml.slice(child.start, child.end))
+    }
+  }
+  // Insert fill / latin relative to the ORIGINAL child order: the first
+  // original child whose tag is in the AFTER list marks the slot.
+  const orig = rPr?.children.filter((c) => c.kind === 'element') as XmlElementNode[] | undefined
+  const insertAt = (tags: string[]): number => {
+    if (!orig) return kids.length
+    for (let i = 0; i < orig.length; i++) {
+      if (tags.includes(orig[i].name)) {
+        // map to the kept-kids index: same position counts skipped kids —
+        // kept kids were built in order, so the insertion index is the count
+        // of kept kids that came from original children at index >= i … simpler:
+        return Math.min(kids.length, kidsIndexFor(orig, i))
+      }
+    }
+    return kids.length
+  }
+  const kidsIndexFor = (list: XmlElementNode[], target: number): number => {
+    // number of kept kids originating from original children BEFORE target
+    let n = 0
+    for (let i = 0; i < target && i < list.length; i++) {
+      const c = list[i]
+      const skipped = (want.fill !== undefined && FILL_TAGS.includes(c.name)) || (want.latin !== undefined && (c.name === 'a:latin' || c.name === 'a:ea'))
+      if (!skipped) n++
+    }
+    return n
+  }
+  const children = [...kids]
+  const fillXml = want.fill === 'none' ? '<a:noFill/>' : `<a:solidFill><a:srgbClr val="${want.fill}"/></a:solidFill>`
+  if (want.fill !== undefined) children.splice(insertAt(AFTER_FILL), 0, fillXml)
+  if (want.latin !== undefined) {
+    const face = escapeXmlText(want.latin)
+    children.splice(insertAt(AFTER_LATIN), 0, `<a:latin typeface="${face}"/><a:ea typeface="${face}"/>`)
+  }
+  const inner = children.join('')
+  return inner === '' ? `<a:rPr${attrs.join('')}/>` : `<a:rPr${attrs.join('')}>${inner}</a:rPr>`
+}
+
+/** format_text: style the runs covered by `find` — whole runs restyle in
+ *  place, partial coverage SPLITs the run so only the matched slice carries
+ *  the new rPr (docx H7's twin: rebuilt runs keep their original spans). */
+function applyFormatText(xml: string, model: SlideModel, op: Extract<PptxOp, { op: 'format_text' }>): { xml: string; message: string } {
+  const want = rprWantsOf(op)
+  if (Object.keys(want.attrs).length === 0 && want.fill === undefined && want.latin === undefined) {
+    throw new Error('format_text: 没有给出任何样式属性（bold/italic/underline/strike/color/font_size/font）')
+  }
+  const shapes = op.shape_id !== undefined ? model.shapes.filter((s) => s.id === op.shape_id) : model.shapes
+  if (op.shape_id !== undefined && shapes.length === 0) {
+    throw new Error(`format_text: 形状 id「${op.shape_id}」不存在 — 先 outline`)
+  }
+  const matches: Array<{ paragraph: ParagraphInfo; start: number; end: number }> = []
+  for (const shape of shapes) {
+    for (const paragraph of shape.paragraphs) {
+      let from = 0
+      for (;;) {
+        const at = paragraph.text.indexOf(op.find, from)
+        if (at < 0) break
+        matches.push({ paragraph, start: at, end: at + op.find.length })
+        from = at + op.find.length
+      }
+    }
+  }
+  const expected = op.expected_count ?? 1
+  if (matches.length !== expected) {
+    throw new Error(`format_text: 「${op.find.slice(0, 40)}」命中 ${matches.length} 处（expected_count=${expected}）— 用 shape_id/slide 或 expected_count 明确范围`)
+  }
+  const replacements: SpliceReplacement[] = []
+  for (const match of matches) {
+    const segments = segmentsFor(match.paragraph, match.start, match.end)
+    for (const seg of segments) {
+      const runEl = seg.run.element
+      const rPr = runEl.children.find((c) => c.kind === 'element' && c.name === 'a:rPr') as XmlElementNode | undefined
+      const inner = innerSpanOf(seg.run)
+      const openTag = xml.slice(runEl.startTagStart, runEl.startTagEnd)
+      const rPrOriginal = rPr ? xml.slice(rPr.start, rPr.end) : ''
+      const coversAll = seg.from === 0 && seg.to >= seg.run.text.length
+      if (coversAll) {
+        const rebuilt = rebuildRpr(rPr, xml, want)
+        if (rPr) replacements.push({ start: rPr.start, end: rPr.end, text: rebuilt })
+        else replacements.push({ start: runEl.startTagEnd, end: runEl.startTagEnd, text: rebuilt })
+        continue
+      }
+      // split: pre(orig rPr) + covered(new rPr) + post(orig rPr)
+      const rawStart = seg.run.charMap[seg.from]
+      const rawEnd = seg.to < seg.run.text.length ? seg.run.charMap[seg.to] : inner.end
+      const pre = inner.raw.slice(0, rawStart - inner.start)
+      const covered = inner.raw.slice(rawStart - inner.start, rawEnd - inner.start)
+      const post = inner.raw.slice(rawEnd - inner.start)
+      const parts: string[] = []
+      if (pre) parts.push(`${openTag}${rPrOriginal}<a:t xml:space="preserve">${pre}</a:t></a:r>`)
+      parts.push(`${openTag}${rebuildRpr(rPr, xml, want)}<a:t xml:space="preserve">${covered}</a:t></a:r>`)
+      if (post) parts.push(`${openTag}${rPrOriginal}<a:t xml:space="preserve">${post}</a:t></a:r>`)
+      replacements.push({ start: runEl.start, end: runEl.end, text: parts.join('') })
+    }
+  }
+  return { xml: splice(xml, replacements), message: `样式化 ${matches.length} 处` }
+}
+
+/** set_shape_fill: replace/insert the shape's spPr fill (and optionally the
+ *  line colour). spPr child order: xfrm, geometry, fill, ln, … */
+function applySetShapeFill(xml: string, model: SlideModel, op: Extract<PptxOp, { op: 'set_shape_fill' }>): { xml: string; message: string } {
+  const shape = requireShape(model, op.shape_id)
+  const spPr = shape.element.children.find((c) => isEl(c, 'p:spPr'))
+  if (!spPr) throw new Error(`set_shape_fill: 形状「${op.shape_id}」没有 spPr`)
+  const color = op.color === 'none' ? 'none' : requireHex(op.color, 'set_shape_fill')
+  const fillXml = color === 'none' ? '<a:noFill/>' : `<a:solidFill><a:srgbClr val="${color}"/></a:solidFill>`
+  const replacements: SpliceReplacement[] = []
+  const fillEl = spPr.children.find((c) => c.kind === 'element' && FILL_TAGS.includes(c.name))
+  if (fillEl) {
+    replacements.push({ start: fillEl.start, end: fillEl.end, text: fillXml })
+  } else {
+    const geom = spPr.children.find((c) => c.kind === 'element' && (c.name === 'a:prstGeom' || c.name === 'a:custGeom'))
+    const xfrm = spPr.children.find((c) => c.kind === 'element' && c.name === 'a:xfrm')
+    const at = geom ? geom.end : xfrm ? xfrm.end : spPr.startTagEnd
+    replacements.push({ start: at, end: at, text: fillXml })
+  }
+  if (op.line_color !== undefined) {
+    const lineColor = requireHex(op.line_color, 'set_shape_fill.line_color')
+    const ln = spPr.children.find((c) => isEl(c, 'a:ln'))
+    const lnFill = `<a:solidFill><a:srgbClr val="${lineColor}"/></a:solidFill>`
+    if (ln) {
+      const lnFillEl = ln.children.find((c) => c.kind === 'element' && FILL_TAGS.includes(c.name))
+      if (lnFillEl) replacements.push({ start: lnFillEl.start, end: lnFillEl.end, text: lnFill })
+      else replacements.push({ start: ln.startTagEnd, end: ln.startTagEnd, text: lnFill })
+    } else {
+      // insert a full a:ln right after the (possibly just-spliced) fill —
+      // against the ORIGINAL string the position is the same anchor logic.
+      const geom = spPr.children.find((c) => c.kind === 'element' && (c.name === 'a:prstGeom' || c.name === 'a:custGeom'))
+      const xfrm = spPr.children.find((c) => c.kind === 'element' && c.name === 'a:xfrm')
+      const at = geom ? geom.end : xfrm ? xfrm.end : spPr.startTagEnd
+      replacements.push({ start: at, end: at, text: `<a:ln>${lnFill}</a:ln>` })
+    }
+  }
+  return { xml: splice(xml, replacements), message: `形状 ${op.shape_id} 填充 → ${op.color}` }
+}
+
+/** set_slide_background: p:bg is the FIRST child of p:cSld (before spTree). */
+function applySetSlideBackground(xml: string, model: SlideModel, op: Extract<PptxOp, { op: 'set_slide_background' }>): { xml: string; message: string } {
+  const color = requireHex(op.color, 'set_slide_background')
+  const cSld = findElement(model.parsed.root, 'p:cSld')
+  if (!cSld) throw new Error('set_slide_background: 找不到 p:cSld — 不是有效的幻灯片部件')
+  const bgXml = `<p:bg><p:bgPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>`
+  const bg = cSld.children.find((c) => isEl(c, 'p:bg'))
+  if (bg) {
+    return { xml: splice(xml, [{ start: bg.start, end: bg.end, text: bgXml }]), message: `页面 ${op.slide} 背景 → ${color}` }
+  }
+  return { xml: splice(xml, [{ start: cSld.startTagEnd, end: cSld.startTagEnd, text: bgXml }]), message: `页面 ${op.slide} 背景 → ${color}` }
+}
+
+const EMU = (inches: number): number => Math.round(inches * 914400)
+
+/** set_shape_geometry: inches in, EMU in the XML. xfrm sits FIRST in spPr;
+ *  off/ext attribute values splice in place. */
+function applySetShapeGeometry(xml: string, model: SlideModel, op: Extract<PptxOp, { op: 'set_shape_geometry' }>): { xml: string; message: string } {
+  const shape = requireShape(model, op.shape_id)
+  const spPr = shape.element.children.find((c) => isEl(c, 'p:spPr'))
+  if (!spPr) throw new Error(`set_shape_geometry: 形状「${op.shape_id}」没有 spPr`)
+  const xfrm = spPr.children.find((c) => isEl(c, 'a:xfrm'))
+  const setAttr = (el: XmlElementNode, name: string, value: string): SpliceReplacement | null => {
+    const attr = el.attrs.get(name)
+    if (attr) return { start: attr.valueStart, end: attr.valueEnd, text: value }
+    // insert before the tag close ('/>' or '>')
+    const at = el.startTagEnd - (xml.slice(el.startTagStart, el.startTagEnd).endsWith('/>') ? 2 : 1)
+    return { start: at, end: at, text: ` ${name}="${value}"` }
+  }
+  if (!xfrm) {
+    const off = `<a:off x="${EMU(op.x ?? 0)}" y="${EMU(op.y ?? 0)}"/>`
+    const ext = `<a:ext cx="${EMU(op.w ?? 0)}" cy="${EMU(op.h ?? 0)}"/>`
+    return { xml: splice(xml, [{ start: spPr.startTagEnd, end: spPr.startTagEnd, text: `<a:xfrm>${off}${ext}</a:xfrm>` }]), message: `形状 ${op.shape_id} 已定位` }
+  }
+  const replacements: SpliceReplacement[] = []
+  const off = xfrm.children.find((c) => isEl(c, 'a:off'))
+  const ext = xfrm.children.find((c) => isEl(c, 'a:ext'))
+  const parts: Array<[XmlElementNode | undefined, string, number | undefined]> = [
+    [off, 'x', op.x], [off, 'y', op.y], [ext, 'cx', op.w], [ext, 'cy', op.h],
+  ]
+  let changed = 0
+  for (const [el, name, value] of parts) {
+    if (value === undefined) continue
+    if (!el) continue
+    const rep = setAttr(el, name, String(EMU(value)))
+    if (rep) { replacements.push(rep); changed++ }
+  }
+  if (changed === 0) return { xml, message: `形状 ${op.shape_id} 未指定任何几何变更` }
+  return { xml: splice(xml, replacements), message: `形状 ${op.shape_id} 几何已更新` }
+}
+
+function requireShape(model: SlideModel, shapeId: string) {
+  const shape = model.shapes.find((s) => s.id === shapeId)
+  if (!shape) throw new Error(`形状 id「${shapeId}」不存在（本页可用: ${model.shapes.map((s) => s.id).join('、') || '无'}）— 先 outline`)
+  return shape
+}
+
 /** Apply a batch of slide-scoped ops to ONE slide part. Every op re-parses
  *  the current string; a failed op marks the batch failed and stops. */
 export function applySlideOps(xml: string, ops: PptxSlideOp[]): { xml: string; results: OpResult[] } {
@@ -149,7 +407,13 @@ export function applySlideOps(xml: string, ops: PptxSlideOp[]): { xml: string; r
     const op = ops[index]
     try {
       const model = buildSlideModel(current)
-      const detail = op.op === 'replace_text' ? applyReplaceText(current, model, op) : applySetShapeText(current, model, op)
+      const detail =
+        op.op === 'replace_text' ? applyReplaceText(current, model, op)
+        : op.op === 'set_shape_text' ? applySetShapeText(current, model, op)
+        : op.op === 'format_text' ? applyFormatText(current, model, op)
+        : op.op === 'set_shape_fill' ? applySetShapeFill(current, model, op)
+        : op.op === 'set_slide_background' ? applySetSlideBackground(current, model, op)
+        : applySetShapeGeometry(current, model, op)
       current = detail.xml
       results.push({ index, op: op.op, ok: true, detail: detail.message })
     } catch (err) {
