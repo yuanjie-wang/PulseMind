@@ -30,7 +30,7 @@ export interface FormAssistSpec<P extends object> {
   /** Conversation-id prefix: `<conversationPrefix>_assist_*` maps to a
    *  dedicated type in conversation.db.ts's deriveConvType, keeping the
    *  transcripts out of every 'normal'-filtered surface (sidebar list,
-  *  title/message search, memory pipeline). */
+   *  title/message search, memory pipeline). */
   conversationPrefix: string
   /** agentSessionCreate clientId tag, e.g. 'routine-assist'. */
   clientId: string
@@ -60,9 +60,22 @@ export function formAssistConversationId(conversationPrefix: string, entityId: s
 }
 
 /** Trailing context appended to each ask so the assistant always argues from
- *  the form's live state (the system prompt tells it not to echo this). */
+ *  the form's live state (the system prompt tells it not to echo this). The
+ *  marker constant is shared with stripFormAnnotation — one definition, so the
+ *  wire format and the render-side strip can never drift. */
+export const FORM_ANNOTATION_MARK = '\n\n[当前表单]\n'
+
 export function buildFormAnnotation(payload: Record<string, unknown>): string {
-  return `\n\n[当前表单]\n${JSON.stringify(payload)}`
+  return `${FORM_ANNOTATION_MARK}${JSON.stringify(payload)}`
+}
+
+/** User-bubble copy with the trailing [当前表单] annotation removed (D1: the
+ *  annotation still rides the wire and persists — only the RENDER drops it).
+ *  Cuts from the LAST marker to the end, so a user quoting an earlier
+ *  assistant mention of the marker keeps everything before their real one. */
+export function stripFormAnnotation(text: string): string {
+  const idx = text.lastIndexOf(FORM_ANNOTATION_MARK)
+  return idx === -1 ? text : text.slice(0, idx)
 }
 
 /** System prompt pinning a hosted session to the form-assistant role. Static
@@ -86,7 +99,7 @@ export function buildFormAssistSystemPrompt(spec: FormAssistSpec<object>, locale
       '{"field": "value"}',
       '```',
       '- Emit no block when there is nothing new; keep ordinary discussion, follow-up questions and suggestions to one to three short sentences.',
-      '- The user message may end with a [当前表单] JSON block — that is the form\'s live state, for your reference as the base you are patching; never echo it back.',
+      "- The user message may end with a [当前表单] JSON block — that is the form's live state, for your reference as the base you are patching; never echo it back.",
     ].join('\n')
   }
   return [
@@ -120,21 +133,47 @@ function lastFenceBody(text: string, fence: string): string | null {
  *  replies persisted under the old protocol still propose. Returns null when
  *  the reply carries no usable patch. */
 export function parseFormPatch<P extends object>(text: string, spec: FormAssistSpec<P>): P | null {
-  const body = lastFenceBody(text, FORM_PATCH_FENCE)
-    ?? (spec.legacyFence ? lastFenceBody(text, spec.legacyFence) : null)
+  const body = lastFenceBody(text, FORM_PATCH_FENCE) ?? (spec.legacyFence ? lastFenceBody(text, spec.legacyFence) : null)
   if (body == null) return null
   return spec.sanitizePatch(extractJson<Record<string, unknown>>(body))
 }
 
 /** Remove proposal fences from bubble text — the proposal surfaces in the
- *  form's review banner, not as raw JSON in the transcript. Falls back to the
- *  original text when nothing survives, so a fence-only reply never renders
- *  as an empty bubble. */
-export function stripProposalFences(text: string, legacyFences: string[] = []): string {
+ *  form's review card, not as raw JSON in the transcript. `emptyPlaceholder`
+ *  (D7) is returned when the whole reply was fences: a pure-proposal reply
+ *  renders as a localized hint line instead of an empty bubble (the old
+ *  fall-back-to-original leaked the JSON it was meant to hide). */
+export function stripProposalFences(text: string, legacyFences: string[] = [], emptyPlaceholder?: string): string {
   let stripped = text
   for (const fence of [FORM_PATCH_FENCE, ...legacyFences]) {
     stripped = stripped.replace(new RegExp('```' + fence + '[ \\t]*\\r?\\n?[\\s\\S]*?```', 'g'), '')
   }
   const cleaned = stripped.replace(/\n{3,}/g, '\n\n').trim()
-  return cleaned || text
+  return cleaned || emptyPlaceholder || text
+}
+
+/** Streaming-cut counterpart of stripProposalFences (D2). While the reply is
+ *  still streaming, a fence is BY CONSTRUCTION incomplete — the complete-fence
+ *  regex above never matches — so the raw JSON would run bare in the bubble.
+ *  Cut from the earliest fence-start marker to the end instead. (The earliest,
+ *  not the last: with both a legacy and a form-patch marker present, cutting
+ *  at the last would leave the first one's JSON on screen.) */
+export function stripStreamingFences(text: string, legacyFences: string[] = []): string {
+  let cut = -1
+  for (const fence of [FORM_PATCH_FENCE, ...legacyFences]) {
+    const idx = text.lastIndexOf('```' + fence)
+    if (idx !== -1 && (cut === -1 || idx < cut)) cut = idx
+  }
+  return cut === -1 ? text : text.slice(0, cut).trimEnd()
+}
+
+/** One field-level line of the review card (D3): `before` is computed from the
+ *  CURRENT form by the host's summarize function on every render — never a
+ *  snapshot taken when the proposal arrived — so the diff is what applying
+ *  would actually write right now. Empty `before` renders as 未填. */
+export interface ProposalDiffRow {
+  key: string
+  label: string
+  before: string
+  after: string
 }

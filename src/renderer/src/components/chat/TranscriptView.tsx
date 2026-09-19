@@ -23,6 +23,9 @@ export interface TranscriptViewProps {
   /** Rich empty state — replaces the text hint when the caller needs more than
    *  one line (e.g. the expert editor's starter chips). */
   emptyContent?: React.ReactNode
+  /** Rendered while `restoring` with no messages yet (D10): the restore window
+   *  used to be a three-way blank — no hint, no composer disable, nothing. */
+  restoringHint?: React.ReactNode
   /** Assistant action row (copy / download / like / favorite + token stats).
    *  Pass 'viewOnly' for transcripts that are not a stored conversation: the row
    *  stays, minus the two buttons that write message metadata, because their
@@ -48,6 +51,7 @@ export function TranscriptView({
   restoring,
   emptyHint,
   emptyContent,
+  restoringHint,
   actions = 'full',
   contentInset = MESSAGE_COLUMN_INSET,
   onApproveTool,
@@ -96,6 +100,7 @@ export function TranscriptView({
 
   return (
     <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', padding: '12px 0 8px' }}>
+      {!hasMessages && restoring && restoringHint}
       {!hasMessages && !restoring && (emptyContent ?? (
         <div style={{ padding: '0 14px', color: '#999', fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
           {emptyHint}

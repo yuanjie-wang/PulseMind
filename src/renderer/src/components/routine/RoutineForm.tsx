@@ -14,7 +14,9 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { checkCron, nextRun } from '../../../../shared/schedule/cron'
 import { configToCron, WEEKDAY_LABELS } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
-import { AssistantDraftBanner } from '../form-assist/AssistantDraftBanner'
+import { useTranslation } from '../../i18n/useTranslation'
+import { ProposalReviewCard, ProposalRestoreChip } from '../form-assist/ProposalReviewCard'
+import { summarizeRoutinePatch } from './routine-assist'
 import { SCHED_DEFAULTS } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import type { RoutineAssistantPatch } from './routine-assist'
@@ -172,32 +174,56 @@ function ScheduleSection({ draft, onChange }: { draft: RoutineDraftState; onChan
   )
 }
 
-/** Review bar for a patch parsed out of the assistant conversation — the
- *  shared banner; nothing writes into the form until the user applies it. */
-function RoutineDraftBanner({ pending, onApply, onDismiss }: { pending: RoutineAssistantPatch; onApply: () => void; onDismiss: () => void }): React.ReactElement {
-  return (
-    <AssistantDraftBanner
-      text={`对话生成了任务草稿${pending.name ? `：「${pending.name}」` : ''}`}
-      onApply={onApply}
-      onDismiss={onDismiss}
-    />
-  )
+/** Review surface for a patch parsed out of the assistant conversation: the
+ *  shared ProposalReviewCard (field diff + checkboxes + sticky) at the top of
+ *  this column's scroll container, or the restore chip for a dismissed
+ *  identical draft — never both (the hook derives them as alternatives). */
+function RoutineDraftReview({ pending, restoreable, draft, onApply, onDismiss, onRestore }: {
+  pending: RoutineAssistantPatch | null
+  restoreable: RoutineAssistantPatch | null
+  draft: RoutineDraftState
+  onApply: (selectedKeys: string[]) => void
+  onDismiss: () => void
+  onRestore: () => void
+}): React.ReactElement | null {
+  const { t } = useTranslation()
+  if (pending) {
+    // Rows recompute from the LIVE draft on every render — the card's before
+    // column is always what applying would write right now (D3).
+    const rows = summarizeRoutinePatch(pending, draft)
+    const header = `${t('formAssist.routineDraftReady')}${pending.name ? `：「${pending.name}」` : ''}`
+    return <ProposalReviewCard header={header} rows={rows} fingerprint={JSON.stringify(pending)} onApply={onApply} onDismiss={onDismiss} />
+  }
+  if (restoreable) return <ProposalRestoreChip onRestore={onRestore} />
+  return null
 }
 
 export interface RoutineFormProps {
   draft: RoutineDraftState
   onChange: (draft: RoutineDraftState) => void
-  /** Non-null = the assistant proposed a patch; the review bar shows. */
+  /** Non-null = the assistant proposed a patch; the review card shows. */
   pendingAssistantDraft: RoutineAssistantPatch | null
-  onApplyAssistantDraft: () => void
+  /** Non-null (and pending null) = an identical draft was dismissed; the chip
+   *  offers the way back (D5). */
+  restoreableAssistantDraft: RoutineAssistantPatch | null
+  /** Apply receives the CHECKED row keys (D4); the page filters the patch. */
+  onApplyAssistantDraft: (selectedKeys: string[]) => void
   onDismissAssistantDraft: () => void
+  onRestoreAssistantDraft: () => void
 }
 
-export function RoutineForm({ draft, onChange, pendingAssistantDraft, onApplyAssistantDraft, onDismissAssistantDraft }: RoutineFormProps): React.ReactElement {
+export function RoutineForm({ draft, onChange, pendingAssistantDraft, restoreableAssistantDraft, onApplyAssistantDraft, onDismissAssistantDraft, onRestoreAssistantDraft }: RoutineFormProps): React.ReactElement {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {pendingAssistantDraft && (
-        <RoutineDraftBanner pending={pendingAssistantDraft} onApply={onApplyAssistantDraft} onDismiss={onDismissAssistantDraft} />
+      {(pendingAssistantDraft || restoreableAssistantDraft) && (
+        <RoutineDraftReview
+          pending={pendingAssistantDraft}
+          restoreable={restoreableAssistantDraft}
+          draft={draft}
+          onApply={onApplyAssistantDraft}
+          onDismiss={onDismissAssistantDraft}
+          onRestore={onRestoreAssistantDraft}
+        />
       )}
       <div>
         <FieldLabel text="任务名称" />

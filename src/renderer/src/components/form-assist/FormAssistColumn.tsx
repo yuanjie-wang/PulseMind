@@ -14,6 +14,7 @@ import { RobotOutlined } from '@ant-design/icons'
 import { TranscriptView } from '../chat/TranscriptView'
 import { InputArea } from '../chat/InputArea'
 import { PromptChip } from '../chat/PromptChip'
+import { useTranslation } from '../../i18n/useTranslation'
 import { EDITOR_CHAT_CARD, EDITOR_COLUMN_HEADER } from '../layout/editor-layout'
 import type { LlmProfile } from '../../../../shared/types/settings'
 import type { FormAssistSession } from './useFormAssistSession'
@@ -47,6 +48,7 @@ export function FormAssistColumn<P extends object>({
   onSelectProfile,
   onSendMessage,
 }: FormAssistColumnProps<P>): React.ReactElement {
+  const { t } = useTranslation()
   const emptyContent =
     emptyIntro || emptyExamples?.length ? (
       <div style={{ padding: '0 14px' }}>
@@ -75,6 +77,9 @@ export function FormAssistColumn<P extends object>({
         streamingBlocks={session.streamingBlocks}
         isRequesting={session.isBusy}
         restoring={session.restoring}
+        restoringHint={
+          <div style={{ padding: '0 14px', color: '#999', fontSize: 13 }}>{t('formAssist.restoring')}</div>
+        }
         emptyContent={emptyContent}
         contentInset={0}
         onApproveTool={(id) => session.engineCall('approveTool', id)}
@@ -84,6 +89,12 @@ export function FormAssistColumn<P extends object>({
         onClearError={() => session.engineCall('clearError')}
         onRetry={() => session.engineCall('retryLastTurn')}
       />
+      {/* D14 (user ruling 2026-09-19): the assistants deliberately expose
+          ONLY model picker + 授权. @-summon stays off (startPlanningLoop /
+          identity binding would fight the pinned persona) and attachments
+          stay off (they drag form-snapshot and persistence semantics in).
+          features === undefined means "everything" — that shape is the main
+          chat's, never an assistant column's. */}
       <InputArea
         layout="inline"
         isRequesting={session.isBusy}

@@ -3,13 +3,14 @@ import { Button, Form, Modal } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, UserOutlined, SaveOutlined, FormOutlined } from '@ant-design/icons'
 import type { ExpertProfile } from '../../../../../shared/types/expert'
 import type { ExpertFormDraft } from './expert-assist'
-import { EXPERT_ASSIST_SPEC, pickDraftFields } from './expert-assist'
-import { AssistantDraftBanner } from '../../form-assist/AssistantDraftBanner'
+import { EXPERT_ASSIST_SPEC, EXPERT_ASSIST_ALLOWED_TOOLS, EXPERT_ASSISTANT_PROFILE, filterExpertPatch, pickDraftFields, summarizeExpertPatch } from './expert-assist'
+import { ProposalReviewCard, ProposalRestoreChip } from '../../form-assist/ProposalReviewCard'
 import { FormAssistColumn } from '../../form-assist/FormAssistColumn'
 import { buildFormAssistSystemPrompt, formAssistConversationId } from '../../form-assist/form-assist'
 import { useFormAssistSession } from '../../form-assist/useFormAssistSession'
 import { useSettings } from '../../../hooks/SettingsContext'
 import { useTranslation } from '../../../i18n/useTranslation'
+import { notify } from '../../../utils/notify'
 import { EDITOR_COLUMN_HEADER as COLUMN_HEADER, EDITOR_LIST_WIDTH, EDITOR_SURFACE } from '../../layout/editor-layout'
 import ExpertFormFields, { type ExpertRefOption } from './ExpertFormFields'
 
@@ -73,6 +74,9 @@ export default function ExpertEditor({
     title: `[${t('expertCenter.chatTitle')}] ${editing?.name ?? ''}`.trim(),
     spec: EXPERT_ASSIST_SPEC,
     systemPrompt: buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC, locale),
+    // D15/D16: the internal expert pack (identity) + host-side tool pin (D17).
+    allowedTools: EXPERT_ASSIST_ALLOWED_TOOLS,
+    expertProfile: EXPERT_ASSISTANT_PROFILE,
   })
 
   // Load the selected expert into the form on every switch. The dirty flag needs
@@ -113,15 +117,25 @@ export default function ExpertEditor({
   )
 
   const proposedPatch = assist.proposedPatch
-  const draftBanner = proposedPatch ? (
-    <AssistantDraftBanner
-      text={`${t('expertCenter.chatDraftReady')}${proposedPatch.name ? `：「${proposedPatch.name}」` : ''}`}
-      onApply={() => {
-        applyDraft(proposedPatch)
+  // D3: `before` re-reads the LIVE form values on every render (onValuesChange
+  // → setDirty re-renders on each edit), so the diff always shows what
+  // applying would write right now. A dismissed identical draft shows the
+  // weak restore chip instead (D5).
+  const draftReview = proposedPatch ? (
+    <ProposalReviewCard
+      header={`${t('expertCenter.chatDraftReady')}${proposedPatch.name ? `：「${proposedPatch.name}」` : ''}`}
+      rows={summarizeExpertPatch(proposedPatch, pickDraftFields(form.getFieldsValue()))}
+      fingerprint={JSON.stringify(proposedPatch)}
+      onApply={(selectedKeys) => {
+        // D4: only the checked rows land in the form.
+        applyDraft(filterExpertPatch(proposedPatch, selectedKeys))
         assist.clearProposedPatch()
+        notify.success(t('formAssist.applied'))
       }}
-      onDismiss={assist.clearProposedPatch}
+      onDismiss={assist.dismissProposal}
     />
+  ) : assist.restoreablePatch ? (
+    <ProposalRestoreChip onRestore={assist.restoreProposal} />
   ) : null
 
   /** Both leaving the editor and switching experts drop the form — ask first when it is dirty. */
@@ -268,7 +282,7 @@ export default function ExpertEditor({
           </div>
           {/* paddingRight keeps the (auto-hiding) gutter clear of the form edge. */}
           <div className="auto-hide-scroll" style={{ flex: 1, overflowY: 'auto', paddingRight: 8 }}>
-            {draftBanner && <div style={{ marginBottom: 14 }}>{draftBanner}</div>}
+            {draftReview && <div style={{ marginBottom: 14 }}>{draftReview}</div>}
             <ExpertFormFields
               form={form}
               isNew={!editing}

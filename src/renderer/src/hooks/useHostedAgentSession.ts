@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentStatus, ContentBlock } from '../types/agent'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
+import type { ExpertProfile } from '../../../shared/types/expert'
 import type { AgentEventData } from '../../../shared/agent-protocol'
 import type { SessionState } from '../../../shared/agent-session/mirror'
 import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../../../shared/agent-session/mirror'
@@ -27,6 +28,11 @@ export interface HostedSessionCreateOptions {
   clientId?: string
   /** Full system-prompt replacement for derived sessions. */
   systemPromptOverride?: string
+  /** Built-in tool allowlist (D17: a host-side pin, alongside the pack). */
+  allowedTools?: string[]
+  /** Internal expert config pack pinned at creation (D16: the assistants'
+   *  identity — composed main-side, rides on top of the override). */
+  expertProfile?: ExpertProfile
 }
 
 export interface HostedAgentSessionOptions {

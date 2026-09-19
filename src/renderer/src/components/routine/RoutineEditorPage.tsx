@@ -14,6 +14,8 @@ import { App as AntdApp, Button, Modal, Tooltip } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, FormOutlined, ImportOutlined, LoadingOutlined, PlusOutlined, SaveOutlined, ScheduleOutlined } from '@ant-design/icons'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { useSettings } from '../../hooks/SettingsContext'
+import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import { createLlmAdapter } from '../../llm'
 import { RoutineExtractionAgent } from '../../agent/one-shot-agent'
 import { FormAssistColumn } from '../form-assist/FormAssistColumn'
@@ -24,7 +26,7 @@ import { configToCron } from '../../utils/schedule-builder'
 import { describeCron } from '../../utils/schedule-text'
 import { RoutineForm } from './RoutineForm'
 import { PANE_ROW_STYLES } from './pane-styles'
-import { ROUTINE_ASSIST_SPEC } from './routine-assist'
+import { ROUTINE_ASSIST_SPEC, ROUTINE_ASSIST_ALLOWED_TOOLS, ROUTINE_ASSISTANT_PROFILE, filterRoutinePatch } from './routine-assist'
 import { applyAssistantPatch, draftToRoutineInput, EMPTY_DRAFT, routineToDraft, validateDraft, draftScheduleFromCron } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import { draftFromTemplate, routineTemplateById } from './routine-templates'
@@ -40,7 +42,8 @@ export interface RoutineEditorPageProps {
 }
 
 function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEditorPageProps): React.ReactElement {
-  const { modal, message } = AntdApp.useApp()
+  const { modal } = AntdApp.useApp()
+  const { t } = useTranslation()
   const navigate = useNavigationStore((s) => s.navigate)
   const { settings, switchProfile, loading: settingsLoading } = useSettings()
   const [routines, setRoutines] = useState<Routine[]>([])
@@ -85,7 +88,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
           // form: saving would target a routine that is gone.
           setUpdateId(null)
           setBoundId(null)
-          message.warning('该任务已不存在，已切换到新建')
+          notify.warning('该任务已不存在，已切换到新建')
           return
         }
         setDraft(routineToDraft(routine))
@@ -97,7 +100,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
       }
     })()
     return () => { alive = false }
-  }, [routineIdProp, message])
+  }, [routineIdProp])
 
   // Template prefill (the landing page's 推荐模板 cards): fills the create-new
   // form so the user reviews and saves instead of typing from scratch — nothing
@@ -123,7 +126,12 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
     convId: formAssistConversationId(ROUTINE_ASSIST_SPEC.conversationPrefix, boundId),
     title: `[日常助手] ${draft.name.trim() || '新建任务'}`,
     spec: ROUTINE_ASSIST_SPEC,
-    systemPrompt: buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC),
+    // D8: the prompt follows the settings locale — with the spec's labelEn /
+    // rulesEn now present, an en locale gets the English system prompt.
+    systemPrompt: buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC, settings.locale === 'en' ? 'en' : 'zh'),
+    // D15/D16: the internal expert pack (identity) + host-side tool pin (D17).
+    allowedTools: ROUTINE_ASSIST_ALLOWED_TOOLS,
+    expertProfile: ROUTINE_ASSISTANT_PROFILE,
   })
 
   /** Every user edit goes through here so the unsaved marker stays honest. */
@@ -182,26 +190,26 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
 
   const save = async (): Promise<void> => {
     const error = validateDraft(draft)
-    if (error) { message.error(error); return }
+    if (error) { notify.error(error); return }
     setSaving(true)
     try {
       const input = draftToRoutineInput(draft)
       const updated = updateId ? await window.electronAPI.routineUpdate(updateId, input) : null
       if (updateId && updated) {
-        message.success('已保存')
+        notify.success('已保存')
       } else {
         // No target yet, or the target was deleted from under us — create it
         // rather than report a save that did not happen.
         const created = await window.electronAPI.routineCreate(input)
         setUpdateId(created.id)
-        if (updateId) message.warning('原任务已不存在，已另存为新任务')
-        else message.success('已创建')
+        if (updateId) notify.warning('原任务已不存在，已另存为新任务')
+        else notify.success('已创建')
       }
       setDirty(false)
       void reload()
     } catch (err) {
       console.warn('[RoutineEditor] save failed:', err)
-      message.error('保存失败')
+      notify.error('保存失败')
     } finally {
       setSaving(false)
     }
@@ -221,11 +229,16 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
 
   const askAssistant = (text: string): void => assist.send(text, formSnapshot())
 
-  const applyProposal = (): void => {
+  /** Apply only the CHECKED rows (D4): filter the patch to the selected keys,
+   *  then merge — applyAssistantPatch is already per-field, so an unchecked
+   *  field simply keeps its current value. */
+  const applyProposal = (selectedKeys: string[]): void => {
     if (!assist.proposedPatch) return
-    editDraft(applyAssistantPatch(assist.proposedPatch, draft))
+    const patch = filterRoutinePatch(assist.proposedPatch, selectedKeys)
+    if (Object.keys(patch).length === 0) return
+    editDraft(applyAssistantPatch(patch, draft))
     assist.clearProposedPatch()
-    message.success('已应用助手草稿')
+    notify.success(t('formAssist.applied'))
   }
 
   const openExtract = (): void => {
@@ -251,7 +264,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
       }
       const profile = settings.profiles.find((p) => p.id === settings.activeProfileId)
       if (!profile?.apiKey) {
-        message.error('请先在设置中配置 API Key')
+        notify.error('请先在设置中配置 API Key')
         return
       }
       const agent = new RoutineExtractionAgent()
@@ -267,7 +280,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
         },
       )
       if (!draftResult) {
-        message.warning('未能从该对话中提取出任务，试试另一个对话')
+        notify.warning('未能从该对话中提取出任务，试试另一个对话')
         return
       }
       setExtractOpen(false)
@@ -284,7 +297,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
       setUpdateId(null)
     } catch (err) {
       console.error('[RoutineEditor] extract failed:', err)
-      message.error('提取失败')
+      notify.error('提取失败')
     } finally {
       setExtracting(false)
     }
@@ -297,11 +310,9 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
 
   // Starter prompts for the assistant's empty state — the column renders them
   // as the app's shared starter-prompt pill (chat/PromptChip); a click sends.
-  const assistExamples = [
-    '每天早上九点检查 GitHub 通知，汇总成一份摘要',
-    '每周五下午整理本周的工作记录，生成周报',
-  ]
-  const assistIntro = '描述你想自动化的工作，助手会帮你填写左侧表单；生成的草稿点「应用」才会写入。'
+  // D8: column copy rides i18n keys, same as the expert editor's.
+  const assistExamples = [t('formAssist.routineExample1'), t('formAssist.routineExample2')]
+  const assistIntro = t('formAssist.routineIntro')
 
   const canSave = draft.name.trim() !== '' && draft.prompt.trim() !== ''
 
@@ -403,8 +414,10 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
               draft={draft}
               onChange={editDraft}
               pendingAssistantDraft={assist.proposedPatch}
+              restoreableAssistantDraft={assist.restoreablePatch}
               onApplyAssistantDraft={applyProposal}
-              onDismissAssistantDraft={assist.clearProposedPatch}
+              onDismissAssistantDraft={assist.dismissProposal}
+              onRestoreAssistantDraft={assist.restoreProposal}
             />
           </div>
         </div>
@@ -413,8 +426,8 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
             column (editor-layout white card + chat transcript + composer) ── */}
         <FormAssistColumn
           session={assist}
-          title="任务助手"
-          placeholder="描述你想自动化的工作…"
+          title={t('formAssist.routineColumnTitle')}
+          placeholder={t('formAssist.routinePlaceholder')}
           emptyIntro={assistIntro}
           emptyExamples={assistExamples}
           profiles={settings.profiles}

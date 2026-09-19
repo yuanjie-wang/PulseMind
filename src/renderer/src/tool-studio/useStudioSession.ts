@@ -16,7 +16,7 @@ import type { SessionState } from '../../../shared/agent-session/mirror'
 import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../../../shared/agent-session/mirror'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
 import { useConversationApprovalMode } from '../hooks/useConversationApprovalMode'
-import { TOOL_STUDIO_ALLOWED_TOOLS, TOOL_SYSTEM_PROMPT, studioConversationId } from './tool-prompt'
+import { TOOL_STUDIO_ALLOWED_TOOLS, TOOL_STUDIO_PROFILE, TOOL_SYSTEM_PROMPT, studioConversationId } from './tool-prompt'
 
 export interface StudioSession {
   messages: AgentMessage[]
@@ -132,6 +132,9 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
         workspaceDir: toolDir,
         systemPromptOverride: TOOL_SYSTEM_PROMPT,
         allowedTools: TOOL_STUDIO_ALLOWED_TOOLS,
+        // D15/D16: the internal expert pack pins the builder's identity on
+        // top of the override — same shape as the two form-assist columns.
+        expertProfile: TOOL_STUDIO_PROFILE,
       }))
       .then(() => undefined).catch((err) => {
         console.warn('[ToolStudio] session create failed:', err)
