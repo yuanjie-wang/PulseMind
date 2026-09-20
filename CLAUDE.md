@@ -444,7 +444,7 @@ ESLint applies `no-require-imports: off` for main/preload (CommonJS). Renderer g
 | `tools/built-in-tools.ts` | ~597 | 25 built-in tool definitions with JSON schemas |
 | `llm/OpenAIAdapter.ts` | ~486 | OpenAI-compatible provider SSE parser |
 | `components/terminal/CommandCard.tsx` | ~472 | Tool_use block with ask_user choices |
-| `settings/LlmSettings.tsx` | ~441 | LLM profile CRUD + model config UI |
+| `settings/LlmSettings.tsx` | ~630 | LLM profile CRUD, grouped IA (配置/连接/高级折叠), footer action bar + dirty-leave guard |
 | `hooks/useConversationPersistence.ts` | ~431 | Conversation save/hydrate orchestration |
 | `components/canvas/RectFrame.tsx` | ~431 | Per-rect iframe + annotation canvas overlay |
 | `main/storage/conversation.db.ts` | ~419 | Conversation + message CRUD, tool_result separation |
