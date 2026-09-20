@@ -305,6 +305,57 @@ describe('M0.3 origin policy + token pairing', () => {
   })
 })
 
+// ── handle.clients() — the settings panel's 已连接的客户端 ────────────────
+// serviceGetStatus reads exactly this method, so a handle without it made
+// every status fetch throw while the service ran: the toggle "never changed"
+// and the client list stayed empty even with the extension connected.
+
+describe('handle.clients() — the connected-client list', () => {
+  it('lists helloed clients with their session count and hides pre-hello sockets', async () => {
+    const { handle } = await start()
+    try {
+      // Connected but hello not sent: not a client worth listing.
+      const silent = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await silent.open()
+      expect(handle.clients()).toEqual([])
+
+      const { client } = await openWithSession(handle)
+      expect(handle.clients()).toEqual([{ clientId: 'pulsemind-extension', sessions: 1 }])
+
+      await client.request('session.create', {})
+      expect(handle.clients()).toEqual([{ clientId: 'pulsemind-extension', sessions: 2 }])
+
+      client.close()
+      silent.close()
+      await waitUntil(() => handle.clients().length === 0)
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('a replaced connection (same clientId) is listed once', async () => {
+    const { handle } = await start()
+    try {
+      const first = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await first.open()
+      await first.hello('pulsemind-extension')
+
+      const second = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await second.open()
+      await second.hello('pulsemind-extension')
+
+      await waitUntil(() => handle.clients().length === 1)
+      expect(handle.clients()).toEqual([{ clientId: 'pulsemind-extension', sessions: 0 }])
+
+      first.close()
+      second.close()
+      await waitUntil(() => handle.clients().length === 0)
+    } finally {
+      await handle.close()
+    }
+  })
+})
+
 // ── M0.4: session resume / list / delete / rename + pageContext ─────────
 
 describe('M0.4 session surface', () => {
