@@ -239,34 +239,47 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       <style>{`
         .ant-sender-actions-btn { display: none !important; }
         .ant-sender {
-          background: ${isWin ? '#fff' : 'rgba(255,255,255,0.85)'} !important;
+          background: ${isWin ? 'var(--pm-elevated)' : 'var(--pm-elevated-glass)'} !important;
           ${isWin ? '' : 'backdrop-filter: blur(12px);'}
           ${isWin ? '' : '-webkit-backdrop-filter: blur(12px);'}
-          border: 1px solid rgba(0,0,0,0.08);
+          border: 1px solid var(--pm-border-veil);
           border-radius: 20px !important;
           /* One content column everywhere: as wide as the chat message column
              (maxWidth 1000 minus its 24px paddings) and the welcome cards. */
           max-width: ${COMPOSER_MAX_WIDTH}px;
           margin: 0 auto;
-          box-shadow: 0 5px 20px 2px rgb(80 100 200 / 20%) !important;
+          box-shadow: var(--pm-shadow-glass) !important;
         }
-        /* The send button's fills. The base circle is black from the antd theme
-           (colorPrimary); pm-send lands only on that plain circle, so its
-           disabled rule cannot leak onto the accent one. The accent rules exist
-           so the project hue can beat antd's own primary states — !important
-           outranks the plain cascade, including antd's :disabled, which is how
-           the hue survives a blocked send. The disabled case is pinned to the
-           enabled fill on purpose: the dim language here is the solid fill at
-           reduced opacity, not antd's washed-grey disabled paint, so a project
-           task with an empty box reads as its own color, dimmed. */
+        /* The send button's fills. The base circle is the antd theme's primary,
+           i.e. the ink — black in light, light in dark; pm-send lands only on
+           that plain circle, so its rules cannot leak onto the accent one.
+           The arrow's ink is pinned in EVERY state (enabled, hover, active,
+           disabled, the loading spinner): the fill may change — black → project
+           hue, solid → dimmed — but the arrow may not follow antd's per-state
+           colours, so light mode always reads a white arrow. --pm-ink-contrast
+           is the same value antd itself paints on an enabled primary
+           (colorTextLightSolid: white in light, black in dark), so the pin
+           changes no enabled pixel; it only removes the states where antd would
+           pick another ink — the accent circle's disabled arrow used to fall to
+           antd's washed disabled grey, because the accent rules only covered
+           the fill. The accent rules exist so the project hue can beat antd's
+           own primary states — !important outranks the plain cascade, including
+           antd's :disabled, which is how the hue survives a blocked send. The
+           disabled case is pinned to the enabled fill on purpose: the dim
+           language here is the solid fill at reduced opacity, not antd's
+           washed-grey disabled paint, so a project task with an empty box reads
+           as its own color, dimmed. */
+        .ant-btn-primary.pm-send {
+          color: var(--pm-ink-contrast) !important;
+        }
         .ant-btn-primary.pm-send:disabled {
-          background: #000 !important;
-          border-color: #000 !important;
-          color: #fff !important;
+          background: var(--pm-ink) !important;
+          border-color: var(--pm-ink) !important;
         }
         .ant-btn-primary.pm-accent-send {
           background: var(--pm-send-accent) !important;
           border-color: var(--pm-send-accent) !important;
+          color: var(--pm-ink-contrast) !important;
         }
         .ant-btn-primary.pm-accent-send:not(:disabled):hover {
           background: var(--pm-send-accent-hover) !important;

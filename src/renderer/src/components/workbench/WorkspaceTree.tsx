@@ -44,7 +44,9 @@ const TREE_CSS = `
   background: transparent; color: #8c8c8c; font-size: 11px; cursor: pointer;
 }
 .pm-ws-btn:hover { background: rgba(0, 0, 0, 0.06); color: #595959; }
-.pm-ws-btn-danger:hover { background: rgba(255, 77, 79, 0.12); color: #ff4d4f; }
+/* The delete button deliberately keeps .pm-ws-btn's grey on hover — destructive
+   actions are not painted red anywhere (buildAntdTheme scopes Button.colorError
+   to the same grey). */
 `
 
 interface Props {

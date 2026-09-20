@@ -22,6 +22,9 @@ import { getCachedExpertProfiles, subscribeCache } from '../../agent/mcp-cache'
 // reader has to find at a glance: the completed disc and the failure cross.
 // Text follows importance: 编号 (what it is) darker than 执行者 (who), and
 // 任务内容 darkest only while the node is the one being worked on (就绪).
+// The two status hues stay literals on purpose: they are the glyphs a reader
+// finds at a glance, and both carry enough contrast on a dark ground as-is —
+// the migration moved the NEUTRAL ladder onto the sheet, not the status hues.
 const DONE_GREEN = '#34a853'
 const FAILED_RED = '#b4453c'
 
@@ -38,23 +41,23 @@ interface CardStyle {
 
 const CARD: Record<PlanNodeStatus, CardStyle> = {
   // Live work: content legible (7:1 on white).
-  pending: { border: '#e0e0e0', num: '#595959', desc: '#595959', icon: 'circle', iconColor: '#bfbfbf' },
+  pending: { border: 'var(--pm-frame)', num: 'var(--pm-graph-ink)', desc: 'var(--pm-graph-ink)', icon: 'circle', iconColor: 'var(--pm-graph-ink-faint)' },
   // Settled: readable but visibly behind the live ones.
-  completed: { border: '#e8e8e8', num: '#595959', desc: '#8c8c8c', icon: 'check', iconColor: '#8c8c8c' },
-  failed: { border: '#e8e8e8', num: '#262626', desc: '#595959', icon: 'cross', iconColor: FAILED_RED },
-  skipped: { border: '#ececec', dash: '5 3', num: '#a6a6a6', desc: '#a6a6a6', icon: 'minus', iconColor: '#bfbfbf' },
+  completed: { border: 'var(--pm-border-soft)', num: 'var(--pm-graph-ink)', desc: 'var(--pm-graph-ink-dim)', icon: 'check', iconColor: 'var(--pm-graph-ink-dim)' },
+  failed: { border: 'var(--pm-border-soft)', num: 'var(--pm-text)', desc: 'var(--pm-graph-ink)', icon: 'cross', iconColor: FAILED_RED },
+  skipped: { border: 'var(--pm-graph-border-skip)', dash: '5 3', num: 'var(--pm-graph-ink-hollow)', desc: 'var(--pm-graph-ink-hollow)', icon: 'minus', iconColor: 'var(--pm-graph-ink-faint)' },
 }
 /** The node in flight: darkest border and darkest words in the graph, and the
  *  only moving thing — the spinner carries it, the card border stays still. */
-const READY_CARD: CardStyle = { border: '#8c8c8c', num: '#141414', desc: '#262626', icon: 'spinner', iconColor: '#141414' }
+const READY_CARD: CardStyle = { border: 'var(--pm-graph-ink-dim)', num: 'var(--pm-graph-ink-live)', desc: 'var(--pm-text)', icon: 'spinner', iconColor: 'var(--pm-graph-ink-live)' }
 /** Waiting on an upstream failure — readable, but visibly out of play. */
-const BLOCKED_CARD: CardStyle = { border: '#e0e0e0', dash: '5 3', num: '#737373', desc: '#737373', icon: 'ban', iconColor: '#8c8c8c' }
+const BLOCKED_CARD: CardStyle = { border: 'var(--pm-frame)', dash: '5 3', num: 'var(--pm-graph-ink-blocked)', desc: 'var(--pm-graph-ink-blocked)', icon: 'ban', iconColor: 'var(--pm-graph-ink-dim)' }
 
 const EDGE: Record<PlanNodeStatus, { stroke: string; dash?: string; width: number }> = {
-  completed: { stroke: '#c8c8c8', width: 1.5 },
-  failed: { stroke: '#d9d9d9', dash: '5 3', width: 1.3 },
-  skipped: { stroke: '#e0e0e0', dash: '5 3', width: 1.3 },
-  pending: { stroke: '#d9d9d9', width: 1.2 },
+  completed: { stroke: 'var(--pm-text-ghost)', width: 1.5 },
+  failed: { stroke: 'var(--pm-border)', dash: '5 3', width: 1.3 },
+  skipped: { stroke: 'var(--pm-frame)', dash: '5 3', width: 1.3 },
+  pending: { stroke: 'var(--pm-border)', width: 1.2 },
 }
 
 type IconKind = 'spinner' | 'check' | 'cross' | 'minus' | 'circle' | 'ban'
@@ -240,10 +243,10 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
 
   if (!plan || plan.nodes.length === 0) {
     return (
-      <div style={{ padding: 24, fontSize: 12, color: '#999', textAlign: 'center' }}>
-        <AimOutlined style={{ fontSize: 20, display: 'block', marginBottom: 8, color: '#d9d9d9' }} />
+      <div style={{ padding: 24, fontSize: 12, color: 'var(--pm-text-muted)', textAlign: 'center' }}>
+        <AimOutlined style={{ fontSize: 20, display: 'block', marginBottom: 8, color: 'var(--pm-border)' }} />
         暂无进行中的计划
-        <div style={{ marginTop: 4, fontSize: 11, color: '#bbb' }}>让 AI 用 create_plan 拆解任务后，依赖图会显示在这里</div>
+        <div style={{ marginTop: 4, fontSize: 11, color: 'var(--pm-text-faint)' }}>让 AI 用 create_plan 拆解任务后，依赖图会显示在这里</div>
       </div>
     )
   }
@@ -266,8 +269,8 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
       const done = n.terminal === 'start' ? settled > 0 : plan.completed
       return (
         <g key={n.id} data-node={n.id}>
-          <rect x={n.x} y={n.y} width={n.w} height={n.h} rx={13} fill={done ? '#f5f5f5' : '#ffffff'} stroke={done ? '#8c8c8c' : '#d9d9d9'} strokeWidth={1.2} />
-          <text x={n.x + n.w / 2} y={n.y + n.h / 2 + 3.5} fontSize={10.5} fontWeight={600} fill={done ? '#262626' : '#8c8c8c'} textAnchor="middle">
+          <rect x={n.x} y={n.y} width={n.w} height={n.h} rx={13} fill={done ? 'var(--pm-fill)' : 'var(--pm-elevated)'} stroke={done ? 'var(--pm-graph-ink-dim)' : 'var(--pm-border)'} strokeWidth={1.2} />
+          <text x={n.x + n.w / 2} y={n.y + n.h / 2 + 3.5} fontSize={10.5} fontWeight={600} fill={done ? 'var(--pm-text)' : 'var(--pm-graph-ink-dim)'} textAnchor="middle">
             {n.description}
           </text>
         </g>
@@ -306,7 +309,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
         <title>{title}</title>
         <rect
           x={n.x} y={n.y} width={n.w} height={n.h} rx={9}
-          fill="#ffffff"
+          fill="var(--pm-elevated)"
           stroke={card.border}
           strokeDasharray={card.dash}
           strokeWidth={isReady ? 1.6 : 1.2}
@@ -325,7 +328,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
         {/* Row 2: 执行者 — who runs it, lighter than the 编号 that names it. */}
         <text
           x={n.x + 10} y={n.y + ROW_ASSIGNEE} fontSize={10}
-          fill={n.assignee ? '#737373' : '#a6a6a6'}
+          fill={n.assignee ? 'var(--pm-graph-ink-blocked)' : 'var(--pm-graph-ink-hollow)'}
         >
           {clip(n.assignee ? `@${who}` : who, 15)}
         </text>
@@ -350,7 +353,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Header: objective (two lines, expandable) + progress bar */}
-      <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
+      <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid var(--pm-border-hairline)', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
           <div
             ref={objectiveRef}
@@ -358,7 +361,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
             title={plan.objective}
             style={{
               flex: 1, minWidth: 0,
-              fontSize: 12.5, color: '#262626', fontWeight: 600, lineHeight: `${OBJECTIVE_LINE_H}px`,
+              fontSize: 12.5, color: 'var(--pm-text)', fontWeight: 600, lineHeight: `${OBJECTIVE_LINE_H}px`,
               overflow: 'hidden',
               display: objectiveExpanded ? 'block' : '-webkit-box',
               WebkitLineClamp: objectiveExpanded ? undefined : OBJECTIVE_LINES,
@@ -374,7 +377,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
               onClick={() => setObjectiveExpanded((v) => !v)}
               style={{
                 flexShrink: 0, background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                fontSize: 11, lineHeight: `${OBJECTIVE_LINE_H}px`, color: '#595959',
+                fontSize: 11, lineHeight: `${OBJECTIVE_LINE_H}px`, color: 'var(--pm-graph-ink)',
               }}
             >
               {objectiveExpanded ? '收起' : '展开'}
@@ -382,10 +385,10 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-          <div style={{ flex: 1, height: 4, borderRadius: 2, background: '#f0f0f0', overflow: 'hidden' }}>
-            <div style={{ width: `${pct}%`, height: '100%', borderRadius: 2, background: '#262626', transition: 'width 0.3s' }} />
+          <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--pm-border-hairline)', overflow: 'hidden' }}>
+            <div style={{ width: `${pct}%`, height: '100%', borderRadius: 2, background: 'var(--pm-text)', transition: 'width 0.3s' }} />
           </div>
-          <span style={{ fontSize: 11, color: '#8c8c8c', flexShrink: 0 }}>
+          <span style={{ fontSize: 11, color: 'var(--pm-graph-ink-dim)', flexShrink: 0 }}>
             {plan.completed ? '已完成' : `${settled}/${plan.nodes.length}`}
           </span>
         </div>
@@ -394,7 +397,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
       {/* Graph — an infinite-canvas-style viewport (PLAN-plan-graph-canvas):
           the graph renders at 100%+ and PANS; drag anywhere scrolls (D2),
           a >3px drag swallows the click that would follow it (D3). */}
-      <div style={{ flex: 1, minHeight: 0, position: 'relative', background: '#fafafa' }}>
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', background: 'var(--pm-graph-canvas)' }}>
         <div
           ref={viewportRefCb}
           data-graph-viewport
@@ -502,14 +505,14 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
               position: 'absolute',
               right: 12,
               bottom: 12,
-              border: '1px solid #d9d9d9',
+              border: '1px solid var(--pm-border)',
               borderRadius: 6,
-              background: '#ffffff',
-              color: '#595959',
+              background: 'var(--pm-elevated)',
+              color: 'var(--pm-graph-ink)',
               fontSize: 11,
               padding: '3px 10px',
               cursor: 'pointer',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+              boxShadow: 'var(--pm-graph-shadow)',
             }}
           >
             复位

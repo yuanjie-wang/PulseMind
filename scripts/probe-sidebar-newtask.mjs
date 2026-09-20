@@ -54,6 +54,18 @@ import { useNewTaskStore } from './src/renderer/src/stores/newTaskStore'
 import { projectHue } from './src/renderer/src/stores/projectStore'
 import { sendAccent } from './src/renderer/src/components/chat/Composer'
 import { buildAntdTheme } from './src/renderer/src/theme/tokens'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
+
+// main.tsx's boot, in order: the variable sheet, then the attribute. The send
+// circle this probe measures is a migrated surface — Composer's disabled pin
+// paints var(--pm-ink) — and an unset variable resolves to nothing, so without
+// the sheet the blocked circle reads rgba(0, 0, 0, 0) rather than the app black:
+// the two states would still "paint differently", but only because one of them
+// painted NOTHING (measured: rgb(0, 0, 0) with this line, transparent without).
+// That is PLAN-dark-mode D7's rule — the helper ships with the migration, not
+// after it.
+installThemeVars()
+applyThemeAttr('light')
 
 
 /** The conversation the chat-state mount opens — matches the projectId the
@@ -354,7 +366,12 @@ const settledLook = async (expectedDisabled) => {
   return page.evaluate((t) => {
     const b = window.__findSend()
     const cs = getComputedStyle(b)
-    return { opacity: cs.opacity, background: cs.backgroundColor, disabled: b.disabled, transition: t }
+    // The arrow's ink (user ruling 2026-09-20: the arrow never follows the
+    // button's state — light mode always reads white). Read off the icon span,
+    // not the button: color inherits, but the icon is what the user sees, and
+    // an antd rule that targeted .anticon directly would slip past the button.
+    const icon = b.querySelector('.anticon')
+    return { opacity: cs.opacity, background: cs.backgroundColor, arrow: icon ? getComputedStyle(icon).color : null, disabled: b.disabled, transition: t }
   }, transition)
 }
 const composerText = () => page.locator('.ant-sender textarea')
@@ -368,6 +385,7 @@ await composerText().fill('帮我看看这个仓库')
 const enabledLook = await settledLook(false)
 check('chat mode: send button enabled with text', !enabledLook.disabled)
 check('enabled send button paints solid', enabledLook.opacity === '1' && enabledLook.background === 'rgb(0, 0, 0)', JSON.stringify(enabledLook))
+check('enabled arrow is white', enabledLook.arrow === 'rgb(255, 255, 255)', enabledLook.arrow)
 await capsule('项目').click()
 check('capsule switch reaches project mode', (await settledLook(true)).disabled && (await page.evaluate(() => window.__newTaskState())).mode === 'project')
 check('project mode, nothing picked: send button greyed', (await settledLook(true)).disabled)
@@ -381,6 +399,15 @@ check('blocked send button is visibly dimmed', blockedLook.opacity !== '1' && pa
 // attribute, or a pair of identical pixels would satisfy this.
 const paint = ({ opacity, background }) => JSON.stringify({ opacity, background })
 check('blocked and enabled states paint differently', paint(blockedLook) !== paint(enabledLook), `${paint(blockedLook)} vs ${paint(enabledLook)}`)
+// ...and the difference is the dim ALONE: the disabled pin keeps the same solid
+// fill, so "they differ" cannot be satisfied by a fill that failed to resolve
+// (a missing variable sheet paints the blocked circle transparent — measured —
+// which reads as a difference while the user sees no black circle at all).
+check('blocked keeps the same solid fill, only dimmed', blockedLook.background === enabledLook.background, `${blockedLook.background} vs ${enabledLook.background}`)
+// The dim is the FILL (opacity), never the ink: the arrow stays white in the
+// blocked state too (user ruling 2026-09-20), or the empty box would read as a
+// different button rather than a dimmed one.
+check('blocked arrow stays white — the dim is the fill, not the ink', blockedLook.arrow === 'rgb(255, 255, 255)', blockedLook.arrow)
 check('the textarea stays usable while blocked', !(await composerText().isDisabled()))
 await composerText().press('Enter')
 check('Enter cannot send while blocked', (await page.evaluate(() => window.__sentCount())) === 0)
@@ -409,6 +436,7 @@ check('picked: dimming is gone', pickedLook.opacity === '1', JSON.stringify(pick
 const alpha = await page.evaluate(() => window.__sendAccent(window.__projectHue(window.__PROJECTS[0])))
 check('picked: send button wears the project color', pickedLook.background === alpha.fill, `${pickedLook.background} vs ${alpha.fill}`)
 check('picked: it is no longer the app black', pickedLook.background !== 'rgb(0, 0, 0)', pickedLook.background)
+check('picked: the arrow is white on the hue', pickedLook.arrow === 'rgb(255, 255, 255)', pickedLook.arrow)
 // The ink is the white arrow, so the fill has to keep it readable. Compared as
 // a ratio rather than against a color: this is the requirement, and it survives
 // a palette tweak that a hard-coded expected rgb would not.
@@ -422,6 +450,7 @@ await sendButton().hover()
 const hoveredLook = await settledLook(false)
 check('hover keeps the project color, not the app #333', hoveredLook.background === alpha.hover, `${hoveredLook.background} vs ${alpha.hover} (app hover is rgb(51, 51, 51))`)
 check('hover also keeps the arrow legible', contrastVsWhite(alpha.hover) >= 3, `${contrastVsWhite(alpha.hover).toFixed(2)}:1`)
+check('hover keeps the arrow white', hoveredLook.arrow === 'rgb(255, 255, 255)', hoveredLook.arrow)
 await page.mouse.move(0, 0)
 
 // The color follows the pick, rather than being one fixed "project color".
@@ -454,6 +483,11 @@ check(
 await composerText().fill('')
 const emptyLook = await settledLook(true)
 check('empty box keeps the project color, dimmed', emptyLook.background === beta.fill && parseFloat(emptyLook.opacity) <= 0.5, JSON.stringify(emptyLook))
+// The report this section pins: the accent rules used to cover only the FILL,
+// so the disabled arrow fell through to antd's washed disabled grey
+// (rgba(0,0,0,0.25)) while the enabled arrow was white — the ink changed with
+// the button's state. The pin makes the hue's disabled arrow the same white.
+check('empty box: the accent arrow stays white, not antd disabled grey', emptyLook.arrow === 'rgb(255, 255, 255)', emptyLook.arrow)
 
 // And the palette rule itself, over the whole wheel: hashing a project name can
 // land on any hue, so "legible for the ones we happened to stub" is not a
