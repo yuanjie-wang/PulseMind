@@ -66,6 +66,10 @@ export class SpawnManager {
 
     // Set spawn state (consumed by continueLoop)
     engine.spawnSystemPrompt = config.systemPrompt
+    // The one true spawn discriminator (see the field's comment on AgentEngine):
+    // the assistants share spawnSystemPrompt via their pinned override, but only
+    // a spawned agent lacks a user channel for ask_user to park on.
+    engine.isSpawnedSubAgent = true
     engine.spawnTitle = config.title
     engine.onSpawnProgress = config.onProgress
     engine.completionPromise = new Promise<SubAgentResult>((resolve) => {

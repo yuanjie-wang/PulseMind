@@ -433,7 +433,11 @@ export class ExecutionFlow {
     // draining asynchronously (a running command's exit closes the loop).
     if (heldTools.length === 0) {
       if (askUserTools.length > 0) {
-        if (this.engine.spawnSystemPrompt) {
+        // Sub-agents only (isSpawnedSubAgent, NOT spawnSystemPrompt — the
+        // assistants' pinned override lands in the same field and their
+        // transcript has a live user to answer): a spawned agent has no user
+        // channel, so ask_user must fail fast instead of parking forever.
+        if (this.engine.isSpawnedSubAgent) {
           for (const t of askUserTools) {
             this.engine.addToolResult(t.id, 'ask_user is not available in sub-agent mode.', true)
             t.status = 'completed'
@@ -460,7 +464,19 @@ export class ExecutionFlow {
 
   /** @internal */
   async handleMaxTokensResponse(toolUses: ToolUseBlock[]): Promise<void> {
-    if (toolUses.length > 0) { addTruncatedResults(this.engine.messages, toolUses); this.engine.notify() }
+    // A max_tokens cut with NO tool calls is a finished-in-spite-of-truncation
+    // text answer: the turn must close here. Continuing would re-issue a
+    // request with nothing new on the wire — and a reasoning model that burns
+    // its hidden thinking budget (finish_reason=length on a short visible
+    // reply) then re-issues itself content-less rounds forever, improvising
+    // 「你发了空消息」 at each wake-up (user report 2026-09-20, ws_1789878852687).
+    // Only truncated tool_use params need the loop: their synthetic error
+    // results must reach the model so it can retry the calls.
+    if (toolUses.length === 0) {
+      this.engine.handleEndTurnResponse('max_tokens')
+      return
+    }
+    addTruncatedResults(this.engine.messages, toolUses); this.engine.notify()
     safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'max_tokens', status: { status: 'streaming' } }, 'afterLlmCall')
     this.engine.continueLoop()
   }

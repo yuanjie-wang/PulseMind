@@ -279,6 +279,13 @@ export class AgentEngine implements EngineCore {
   completionPromise?: Promise<SubAgentResult>
   /** @internal */
   spawnSystemPrompt?: string
+  /** True ONLY for engines running inside a spawn dispatch (spawn-manager sets
+   *  it alongside spawnSystemPrompt). spawnSystemPrompt itself is NOT a spawn
+   *  discriminator: every derived/pinned session — the three assistants —
+   *  stores its override there too, and a spawned agent is exactly the one
+   *  runtime with no user channel (respondToTool can never reach it), which is
+   *  what the ask_user park gate must actually test. */
+  isSpawnedSubAgent = false
   /** @internal Conversation-list title of a spawned sub-agent. */
   spawnTitle?: string
   private spawnSystemPromptAppendix?: string
@@ -1038,8 +1045,13 @@ export class AgentEngine implements EngineCore {
       if (msg.role !== 'user') continue
       if (msg.contentBlocks.some(b => b.type === 'tool_result' && b.tool_use_id === toolUseId)) {
         console.warn(`[AgentEngine] Duplicate tool_result skipped for ${toolUseId}`)
-        this.pendingToolIds.delete(toolUseId)
-        if (this.pendingToolIds.size === 0 && !this.isAutoExecuting) this.continueLoop()
+        // A duplicate of an ALREADY-settled result must not re-drive the loop:
+        // the first delivery already continued it, and a second continue issued
+        // mid-stream races the running round on this engine's shared stream
+        // state — the doubled garbled assistant message (ask_user chip answered
+        // twice, user report 2026-09-20). Only a duplicate that was STILL
+        // pending — the batch is genuinely waiting on it — may close the loop.
+        if (this.pendingToolIds.delete(toolUseId) && this.pendingToolIds.size === 0 && !this.isAutoExecuting) this.continueLoop()
         return
       }
     }

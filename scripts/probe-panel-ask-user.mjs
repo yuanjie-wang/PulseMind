@@ -184,6 +184,34 @@ const sent = (page, type) => page.evaluate((t) => window.__sent.filter((m) => m.
   await page.close()
 }
 
+// ── 4b. 答案闩锁:双击只发一条 ──────────────────────────────────────────
+// 用户报告 2026-09-20:插件会话里 ask_user 的回答被投递两次(「点了没反应所以再点
+// 一下」),引擎的旧重复守卫把第二次变成了幽灵并发轮。面板侧的闩锁:第一次点击后
+// 选项立即让位给「已选择」,同一次会话里再点不出第二条 panel/answer。真实鼠标双击
+// ——两条 click 都必须到达按钮,少一条就不是在测双击。
+{
+  console.log('== ask_user 双击闩锁 ==')
+  const { page, root } = await open(fixture({ choices: ['北京', '上海'] }))
+  const chip = root.locator('.pm-chip-choice').first()
+  await chip.dblclick()
+  await page.waitForTimeout(300)
+
+  const answers = await sent(page, 'panel/answer')
+  check('双击芯片只发出一条 panel/answer', answers.length === 1, JSON.stringify(answers))
+  check('发出的那条带着芯片的答案', answers[0]?.response === '北京', String(answers[0]?.response))
+  check('点击后选项立即让位给已选回显', (await root.locator('.pm-chip-choice').count()) === 0)
+  check('回显是提交的那个答案', (await root.locator('.pm-ask-note').textContent()) === '已选择：北京')
+
+  // The latch also holds across a re-render that has not flipped `done` yet
+  // (the mirror patch is still in flight): no chip to click — the note is the
+  // only surface left, and clicking it sends nothing.
+  await root.locator('.pm-ask-note').click({ force: true })
+  await page.waitForTimeout(200)
+  check('点回显本身不再发送任何东西', (await sent(page, 'panel/answer')).length === 1)
+  await page.close()
+}
+
+
 // ── 5. Held tool call: the approval strip below the header ────────────
 {
   console.log('== held page tool (approval) ==')

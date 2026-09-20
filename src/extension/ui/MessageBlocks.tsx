@@ -15,7 +15,7 @@
  *  renderer's own (i18n/locales/zh.ts) — the panel has no i18n layer, so they
  *  are written out here. */
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { ThinkingBlock as ThinkingBlockType, ToolUseBlock } from '../../shared/types/agent'
 import { Icon } from './icons'
 import { formatDuration, formatTokenCount, thinkingPreview, toolBlockSummary, toolDisplayName, toolObjectSummary } from './format'
@@ -231,6 +231,19 @@ export function AskUserBlock({ block, onAnswer }: {
   const [selected, setSelected] = useState<string[]>([])
   const [custom, setCustom] = useState('')
   const done = block.status === 'completed' || block.status === 'rejected'
+  // Latch on submit: until the engine's status patch lands the mirror, the
+  // choices stayed live, and a second click (nothing seemed to happen) sent a
+  // duplicate answer — which the engine's old duplicate guard turned into a
+  // phantom concurrent round. The ref catches a same-tick double-fire the
+  // state read cannot.
+  const answeredRef = useRef<string | null>(null)
+  const [answered, setAnswered] = useState<string | null>(null)
+  const answer = (response: string): void => {
+    if (answeredRef.current !== null) return
+    answeredRef.current = response
+    setAnswered(response)
+    onAnswer?.(block.id, response)
+  }
 
   return (
     <div className="pm-ask">
@@ -247,6 +260,11 @@ export function AskUserBlock({ block, onAnswer }: {
             已由用户跳过
           </div>
         )
+      ) : answered !== null ? (
+        <div className="pm-ask-note">
+          <Icon name="checkCircle" style={{ marginRight: 6 }} />
+          已选择：{answered}
+        </div>
       ) : (
         <>
           <div className="pm-ask-choices">
@@ -262,14 +280,14 @@ export function AskUserBlock({ block, onAnswer }: {
                   {choice}
                 </button>
               ) : (
-                <button key={choice} className="pm-chip-choice" onClick={() => onAnswer?.(block.id, choice)}>
+                <button key={choice} className="pm-chip-choice" onClick={() => answer(choice)}>
                   {choice}
                 </button>
               ),
             )}
           </div>
           {multi && selected.length > 0 && (
-            <button className="pm-cmd-btn pm-cmd-btn-primary" onClick={() => onAnswer?.(block.id, selected.join(', '))}>
+            <button className="pm-cmd-btn pm-cmd-btn-primary" onClick={() => answer(selected.join(', '))}>
               <Icon name="checkCircle" style={{ marginRight: 4 }} />
               确认（{selected.length} 项已选）
             </button>
@@ -281,13 +299,13 @@ export function AskUserBlock({ block, onAnswer }: {
               value={custom}
               onChange={(e) => setCustom(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && custom.trim()) onAnswer?.(block.id, custom.trim())
+                if (e.key === 'Enter' && custom.trim()) answer(custom.trim())
               }}
             />
             <button
               className="pm-cmd-btn"
               disabled={!custom.trim()}
-              onClick={() => onAnswer?.(block.id, custom.trim())}
+              onClick={() => answer(custom.trim())}
             >
               <Icon name="arrowUp" />
             </button>
