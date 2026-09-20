@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <!-- The converter page is loaded from file:// by the hidden conversion
+       window (docx-to-pdf.ts). The document bytes arrive via an
+       executeJavaScript injection (window.__pmDocxSource), never over the
+       network, and the only scripts are the one bundled bundle below. -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'" />
+  <title>docx→pdf</title>
+  <style>
+    /* Print reset: the page itself contributes zero chrome — every margin
+       belongs to the docx layout docx-preview renders. */
+    html, body { margin: 0; padding: 0; }
+    /* docx-preview's screen chrome (grey backdrop, sheet padding, drop
+       shadow) is display dressing, not document content. */
+    .docx-wrapper { padding: 0 !important; background: none !important; }
+    section.docx {
+      page-break-after: always;
+      box-shadow: none !important;
+      margin: 0 !important;
+    }
+    /* The always on the LAST page would print a trailing blank sheet. */
+    section.docx:last-of-type { page-break-after: auto; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="./index.js"></script>
+</body>
+</html>

@@ -6,16 +6,17 @@
 export const toolInstructions: Record<string, string> = {
   export_document: `## export_document
 
-Produce a REAL deliverable file (docx / xlsx / csv / pptx) the user can take away — use it when the user wants a file, not a table pasted in chat.
+Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can take away — use it when the user wants a file, not a table pasted in chat.
 
 ### Decision tree — read this FIRST
 - 用户要 PPT / 幻灯片 / slides → **本工具 format pptx**。从零创建一律走这里；要精修/填充一个已有 .pptx 模板才用 pptx_edit。
 - 用户要 Word 文档 → format docx；表格交付 → format xlsx / csv。
-- **永远不要**用 exec 跑 python-pptx / python-docx / office 脚本之类来生成 Office 文件——那绕开了沙箱护栏、备份与回读门禁，且没有预览联动。本工具就是原生路径，直接用它。
+- 用户要 PDF（合同/公文/不可改版交付）→ **本工具 format pdf**：工作区已有 .docx 就给 sourcePath 指向它（docx→PDF 转换，保真最好）；否则给 markdown content（先按 docx 排版再转 PDF）。修改已有 PDF 的内容不在本工具能力内。
+- **永远不要**用 exec 跑 python-pptx / python-docx / libreoffice / office 脚本之类来生成 Office 文件——那绕开了沙箱护栏、备份与回读门禁，且没有预览联动。本工具就是原生路径，直接用它。
 
 ### Inputs (D3 — exactly one)
-- content: inline source. docx/pptx take the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet (D4). For pptx the first \`# \` heading is the cover and every later \`# \`/\`## \` heading starts a new slide.
-- sourcePath: convert an existing workspace .md/.csv text file instead (large sources — avoids re-sending content).
+- content: inline source. docx/pptx/pdf take the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet (D4). For pptx the first \`# \` heading is the cover and every later \`# \`/\`## \` heading starts a new slide.
+- sourcePath: convert an existing workspace file instead — .md/.csv for the generators, **.docx for format pdf**. Large sources avoid re-sending content.
 
 ### Rules
 - file_path is workspace-relative; omit it to land \`export-<timestamp>.<format>\` in the workspace root. Existing files are NEVER overwritten — \`报告.xlsx\` taken → \`报告-2.xlsx\`.
@@ -24,6 +25,7 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx) the user can take awa
 
 ### Honest capability limits
 - docx: images / math / footnotes degrade to raw text with a closing note; no cover pages, headers or footers.
+- pdf: 由 docx 渲染而来（无原生 markdown 排版引擎）——docx 的降级边界在这里同样适用；文本框、页眉页脚、SmartArt 等渲染器不支持的元素会缺失；分页尺寸按文档首页；转换失败整批拒绝，不写半成品。
 - xlsx: NO formulas are generated, dates stay text, numbers convert only when the exact round-trip is safe (leading zeros like 工号 007 stay text on purpose).
 - csv: exports the FIRST table/sheet only.
 - pptx: images / inline HTML degrade to text with a closing 备注 page; one table per page; NO charts, NO template/master customization, fixed 16:9 layout.

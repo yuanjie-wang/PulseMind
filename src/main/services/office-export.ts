@@ -16,6 +16,7 @@ import { withPathLock } from '../sandbox/write-lock'
 import { resolveWritablePath } from './file-ops'
 import { markdownToDocxBuffer } from '../office-export/md-to-docx'
 import { markdownToPptxBuffer } from '../office-export/md-to-pptx'
+import { docxToPdfBuffer } from '../office-export/docx-to-pdf'
 import { markdownToSheets, sheetsToXlsxBuffer, type SheetModel } from '../office-export/md-tables'
 import { csvFromSheet, csvToSheet } from '../office-export/csv-io'
 
@@ -25,7 +26,7 @@ const pRename = promisify(rename)
 const pReaddir = promisify(readdir)
 const pMkdir = promisify(mkdir)
 
-export const EXPORT_FORMATS = ['docx', 'xlsx', 'csv', 'pptx'] as const
+export const EXPORT_FORMATS = ['docx', 'xlsx', 'csv', 'pptx', 'pdf'] as const
 export type ExportFormat = (typeof EXPORT_FORMATS)[number]
 
 /** D7: inline content soft cap — beyond this the model is told to write the
@@ -68,20 +69,31 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
     const safePath = await resolveWritablePath(input.filePath)
 
     return await withPathLock(safePath, async (): Promise<ExportDocumentResult> => {
-      // Source input (D3): read the workspace file's text, md/csv only.
+      // Source input (D3): md/csv text for the generators; a real .docx when
+      // the target is pdf (conversion, not generation).
       let md: string | undefined
       let csv: string | undefined
+      let docxBytes: Buffer | undefined
       if (hasSource) {
         const rawSource = String(input.sourcePath)
         const ext = extname(rawSource).toLowerCase()
-        if (!SOURCE_TEXT_EXTS.includes(ext)) {
-          return { success: false, error: `sourcePath 仅支持文本族（${SOURCE_TEXT_EXTS.join(' / ')}），收到「${ext || '无扩展名'}」——二进制格式请直接用 read 工具转 markdown 后给 content` }
+        if (input.format === 'pdf') {
+          if (ext !== '.docx') {
+            return { success: false, error: `format pdf 的 sourcePath 目前只支持 .docx（docx→PDF 转换），收到「${ext || '无扩展名'}」——markdown 内容请直接给 content` }
+          }
+          const docxGuard = await guardFsTarget(rawSource, 'read')
+          if (!docxGuard.ok) return { success: false, error: docxGuard.reason }
+          docxBytes = await pReadFile(await resolveWritablePath(rawSource))
+        } else {
+          if (!SOURCE_TEXT_EXTS.includes(ext)) {
+            return { success: false, error: `sourcePath 仅支持文本族（${SOURCE_TEXT_EXTS.join(' / ')}），收到「${ext || '无扩展名'}」——二进制格式请直接用 read 工具转 markdown 后给 content` }
+          }
+          const sourceGuard = await guardFsTarget(rawSource, 'read')
+          if (!sourceGuard.ok) return { success: false, error: sourceGuard.reason }
+          const text = await pReadFile(await resolveWritablePath(rawSource), 'utf8')
+          if (ext === '.csv' || ext === '.tsv') csv = text
+          else md = text
         }
-        const sourceGuard = await guardFsTarget(rawSource, 'read')
-        if (!sourceGuard.ok) return { success: false, error: sourceGuard.reason }
-        const text = await pReadFile(await resolveWritablePath(rawSource), 'utf8')
-        if (ext === '.csv' || ext === '.tsv') csv = text
-        else md = text
       } else {
         md = input.content
       }
@@ -89,7 +101,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
       // Build entirely in memory — a failure here has written nothing.
       let buffer: Buffer
       try {
-        buffer = await buildBuffer(input.format, { md, csv })
+        buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes })
       } catch (err) {
         return { success: false, error: `导出内容构建失败：${err instanceof Error ? err.message : String(err)}` }
       }
@@ -115,8 +127,15 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
 
 async function buildBuffer(
   format: ExportFormat,
-  source: { md?: string; csv?: string }
+  source: { md?: string; csv?: string; docx?: Buffer }
 ): Promise<Buffer> {
+  if (format === 'pdf') {
+    // pdf is a CONVERSION, not a native layout: an existing docx, or markdown
+    // through the docx generator first. Everything the docx format degrades
+    // (images, math, footnotes) degrades identically on this path.
+    const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? ''))
+    return docxToPdfBuffer(docx)
+  }
   if (format === 'docx') {
     return markdownToDocxBuffer(source.md ?? source.csv ?? '')
   }
@@ -163,6 +182,15 @@ async function readBackGate(format: ExportFormat, buffer: Buffer): Promise<{ ok:
     } catch (err) {
       return { ok: false, reason: `pptx 解包失败：${err instanceof Error ? err.message : String(err)}` }
     }
+  }
+  if (format === 'pdf') {
+    // printToPDF's product is structurally trustworthy; the gate's job here is
+    // to refuse a truncated/empty stream with a readable reason.
+    const head = buffer.subarray(0, 5).toString('latin1')
+    if (!head.startsWith('%PDF-')) return { ok: false, reason: `PDF 头缺失（读到「${head}」）` }
+    const tail = buffer.subarray(Math.max(0, buffer.length - 1024)).toString('latin1')
+    if (!tail.includes('%%EOF')) return { ok: false, reason: 'PDF 结尾缺少 %%EOF——产物不完整' }
+    return { ok: true }
   }
   return { ok: true }
 }

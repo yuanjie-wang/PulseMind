@@ -366,7 +366,7 @@ export class ToolExecutor implements ToolExecContext {
         }
       } else if (t.name === 'export_document') {
         const format = String(t.input.format || '')
-        if (!['docx', 'xlsx', 'csv', 'pptx'].includes(format)) throw new Error(`format 必须是 docx / xlsx / csv / pptx 之一`)
+        if (!['docx', 'xlsx', 'csv', 'pptx', 'pdf'].includes(format)) throw new Error(`format 必须是 docx / xlsx / csv / pptx / pdf 之一`)
         const content = typeof t.input.content === 'string' && t.input.content.trim() !== '' ? t.input.content : undefined
         const sourcePath = typeof t.input.sourcePath === 'string' && t.input.sourcePath.trim() !== '' ? t.input.sourcePath : undefined
         if (!content && !sourcePath) throw new Error('content 与 sourcePath 二选一')
@@ -374,7 +374,7 @@ export class ToolExecutor implements ToolExecContext {
         const rawPath = String(t.input.file_path || '') || `export-${stamp}.${format}`
         const fp = this.resolveWorkspacePath(rawPath)
         t.output = `Exporting ${format.toUpperCase()} → ${fp}...`; this.notify()
-        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx', content, sourcePath, filePath: fp })
+        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf', content, sourcePath, filePath: fp })
         if (result.success) {
           const summary = `Exported ${result.path} (${Math.round((result.bytes ?? 0) / 1024)} KB)`
           t.output = summary

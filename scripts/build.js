@@ -1,4 +1,5 @@
 const { build } = require('esbuild')
+const { copyFileSync } = require('node:fs')
 const pkg = require('../package.json')
 
 /** Dependencies that must remain in node_modules at runtime (native modules, electron, etc.) */
@@ -46,6 +47,24 @@ async function main() {
     ...nodeTarget(['electron'])
   })
   console.log('✓ Preload built        → out/preload/index.js')
+
+  // docx→PDF conversion page — loaded by the hidden conversion window
+  // (src/main/office-export/docx-to-pdf.ts) via file:// out/docx2pdf/index.html.
+  // Browser target, IIFE: docx-preview is bundled INTO the page, so the main
+  // process keeps no runtime docx-preview dependency and the page needs no
+  // node_modules at all (it runs sandboxed from inside app.asar when packaged).
+  await build({
+    entryPoints: ['src/renderer/docx2pdf/index.ts'],
+    outdir: 'out/docx2pdf',
+    bundle: true,
+    minify: true,
+    platform: 'browser',
+    target: 'chrome120',
+    format: 'iife'
+  })
+  // The HTML is not an esbuild entry — copy it next to the bundle it names.
+  copyFileSync('src/renderer/docx2pdf/index.html', 'out/docx2pdf/index.html')
+  console.log('✓ docx2pdf page built  → out/docx2pdf/index.html')
 }
 
 main().catch((err) => {

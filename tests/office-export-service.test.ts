@@ -17,8 +17,17 @@ vi.mock('../src/main/office-export/md-to-docx', async (importOriginal) => {
   return { ...actual, markdownToDocxBuffer: vi.fn(actual.markdownToDocxBuffer) }
 })
 
+// The pdf converter needs a real BrowserWindow (printToPDF) — replaced here so
+// the vitest half pins the SERVICE contract (byte flow, refusals, gate,
+// suffix); the real conversion is the probe's job (scripts/probe-docx-pdf.mjs).
+vi.mock('../src/main/office-export/docx-to-pdf', () => ({
+  docxToPdfBuffer: vi.fn(async (docx: Buffer) =>
+    Buffer.from(`%PDF-1.4\nmock-of-${docx.length}-bytes\n%%EOF\n`)),
+}))
+
 const { svcExportDocument } = await import('../src/main/services/office-export')
 const { markdownToDocxBuffer } = await import('../src/main/office-export/md-to-docx')
+const { docxToPdfBuffer } = await import('../src/main/office-export/docx-to-pdf')
 
 import AdmZip from 'adm-zip'
 import ExcelJS from 'exceljs'
@@ -154,6 +163,60 @@ describe('svcExportDocument', () => {
   })
 })
 
+describe('svcExportDocument pdf target (converter mocked; real conversion in the probe)', () => {
+  it('content → markdown rides the real docx generator into the converter', async () => {
+    const dir = tempDir()
+    const result = await svcExportDocument({ format: 'pdf', content: '# 合同\n\n甲方：某公司。', filePath: join(dir, '合同.pdf') })
+    expect(result.success).toBe(true, result.error)
+    // the bytes on disk are exactly what the converter returned, gate-checked
+    expect(readFileSync(result.path!).toString('latin1')).toContain('%PDF-1.4')
+    // and what the converter RECEIVED was a real docx carrying the markdown
+    const received = vi.mocked(docxToPdfBuffer).mock.calls.at(-1)![0] as Buffer
+    const xml = new AdmZip(received).readAsText('word/document.xml')
+    expect(xml).toContain('合同')
+    expect(xml).toContain('甲方：某公司。')
+  })
+
+  it('sourcePath → an existing .docx converts byte-for-byte, not re-generated', async () => {
+    const dir = tempDir()
+    const docx = await svcExportDocument({ format: 'docx', content: '# 协议\n\n条款正文。', filePath: join(dir, '协议.docx') })
+    expect(docx.success).toBe(true)
+    vi.mocked(docxToPdfBuffer).mockClear()
+    const result = await svcExportDocument({ format: 'pdf', sourcePath: docx.path!, filePath: join(dir, '协议.pdf') })
+    expect(result.success).toBe(true, result.error)
+    const received = vi.mocked(docxToPdfBuffer).mock.calls[0][0] as Buffer
+    expect(received.equals(readFileSync(docx.path!))).toBe(true)
+  })
+
+  it('sourcePath refuses non-docx binaries with a pointer, not a corrupt attempt', async () => {
+    const dir = tempDir()
+    vi.mocked(docxToPdfBuffer).mockClear()
+    const bad = await svcExportDocument({ format: 'pdf', sourcePath: join(dir, '表.xlsx'), filePath: join(dir, 'x.pdf') })
+    expect(bad.success).toBe(false)
+    expect(bad.error).toContain('.docx')
+    expect(vi.mocked(docxToPdfBuffer)).not.toHaveBeenCalled()
+  })
+
+  it('read-back gate: converter garbage refuses with zero disk writes', async () => {
+    const dir = tempDir()
+    vi.mocked(docxToPdfBuffer).mockResolvedValueOnce(Buffer.from('not a pdf at all'))
+    const result = await svcExportDocument({ format: 'pdf', content: '# x', filePath: join(dir, '坏.pdf') })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('读回门')
+    expect(existsSync(join(dir, '坏.pdf'))).toBe(false)
+  })
+
+  it('D6 applies to pdf too: a second export lands on 合同-2.pdf', async () => {
+    const dir = tempDir()
+    const first = await svcExportDocument({ format: 'pdf', content: '# 一', filePath: join(dir, '合同.pdf') })
+    const second = await svcExportDocument({ format: 'pdf', content: '# 二', filePath: join(dir, '合同.pdf') })
+    expect(first.success).toBe(true)
+    expect(second.success).toBe(true)
+    expect(second.path).toBe(join(dir, '合同-2.pdf'))
+    expect(readdirSync(dir).some((f) => f.includes('.pm-tmp'))).toBe(false)
+  })
+})
+
 describe('export_document wiring (source scans; the unit halves live in their own files)', () => {
   it('usage lives in the tool manual, NEVER in the invariant system prompt core (cache contract)', () => {
     const fs = require('node:fs') as typeof import('node:fs')
@@ -177,5 +240,36 @@ describe('export_document wiring (source scans; the unit halves live in their ow
     expect(read('src/main/agent/main-host.ts')).toContain('exportDocument: async')
     // the text-write tools point at the dedicated tool for generation too
     expect(read('src/main/services/file-ops.ts')).toContain('export_document')
+  })
+
+  it('the pdf target is wired end to end: enum, executor, bridge, manual, converter page', () => {
+    const fs = require('node:fs') as typeof import('node:fs')
+    const read = (p: string) => fs.readFileSync(p, 'utf8')
+    expect(read('src/renderer/src/tools/built-in-tools.ts')).toMatch(/enum: \['docx', 'xlsx', 'csv', 'pptx', 'pdf'\]/)
+    expect(read('src/renderer/src/agent/tool-executors.ts')).toMatch(/\['docx', 'xlsx', 'csv', 'pptx', 'pdf'\]/)
+    expect(read('src/shared/types/electron-bridge.ts')).toMatch(/'docx' \| 'xlsx' \| 'csv' \| 'pptx' \| 'pdf'/)
+    expect(read('src/main/services/office-export.ts')).toMatch(/\['docx', 'xlsx', 'csv', 'pptx', 'pdf'\]/)
+    const manual = read('src/renderer/src/tools/tool-instructions.ts')
+    expect(manual).toContain('format pdf')
+    expect(manual).toContain('libreoffice')
+    // the text-write refusal points .pdf at the export tool (L11)
+    expect(read('src/main/services/file-ops.ts')).toContain("'.pdf'")
+  })
+
+  it('the docx2pdf converter page is built and its handshake matches the main converter', () => {
+    const fs = require('node:fs') as typeof import('node:fs')
+    const read = (p: string) => fs.readFileSync(p, 'utf8')
+    // build pipeline: the page is a build target and its html is copied
+    const buildScript = read('scripts/build.js')
+    expect(buildScript).toContain("'src/renderer/docx2pdf/index.ts'")
+    expect(buildScript).toContain("copyFileSync('src/renderer/docx2pdf/index.html'")
+    expect(fs.existsSync('src/renderer/docx2pdf/index.html')).toBe(true)
+    expect(read('src/renderer/docx2pdf/index.html')).toContain('./index.js')
+    // the handshake keys must exist on BOTH ends — a rename on one side only
+    // would leave the main process polling a global the page never writes
+    for (const key of ['__pmDocxSource', '__pmDocx2Pdf']) {
+      expect(read('src/renderer/docx2pdf/index.ts')).toContain(key)
+      expect(read('src/main/office-export/docx-to-pdf.ts')).toContain(key)
+    }
   })
 })
