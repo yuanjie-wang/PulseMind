@@ -8,7 +8,16 @@
 // environments force: `electron`'s named `app` export does not exist outside a
 // real Electron main process (vitest aliases a stub whose app is not the real
 // one; ELECTRON_RUN_AS_NODE gets a path string), so "dev" there is decided by
-// `PM_PERF=1` instead of `app.isPackaged`. Off stays zero-cost: one boolean.
+// `PM_PERF=1` instead of `app.isPackaged`. All three exits live at the top of
+// perfTime — the packaged branch must be a SIBLING of the dev check, not a
+// step after it: the 2026-09-21 review caught an earlier shape whose first
+// line early-returned on `!realElectronDev()`, which made the packaged branch
+// unreachable and `debugPerfLogs` dead in every packaged build (a broken gate
+// looks exactly like the flag is off). The setting is never awaited on the hot
+// path: refreshPackagedGate reads it in the background (one read / 5s) and the
+// packaged branch consults only the cache, so a cold cache stays silent for
+// that one call and every later call honours the flag. Off stays zero-cost: a
+// few booleans. Truth table pinned by tests/perf-log-gate.test.ts.
 import { app } from 'electron'
 import { settingsStore } from '../storage/settings-store'
 
@@ -24,6 +33,17 @@ function realElectronDev(): boolean {
   }
 }
 
+/** True only in a real packaged Electron main process; the optional chain
+ *  keeps the path-string/undefined `app` of non-Electron runtimes (vitest,
+ *  ELECTRON_RUN_AS_NODE) from throwing. */
+function packagedBuild(): boolean {
+  try {
+    return (app as { isPackaged?: boolean } | undefined)?.isPackaged === true
+  } catch {
+    return false
+  }
+}
+
 function refreshPackagedGate(): void {
   const now = Date.now()
   if (now - lastCheck < 5000) return
@@ -34,21 +54,24 @@ function refreshPackagedGate(): void {
     .catch(() => { cachedPackaged = false })
 }
 
-/** Time `fn` and print `[perf] <label> <ms>ms` when the gate is on. Sync on
- *  purpose — the whole point is the length of a synchronous main-process
- *  stretch, which an async wrapper would hide from itself. */
-export function perfTime<T>(label: string, fn: () => T): T {
-  if (process.env.PM_PERF !== '1' && !realElectronDev()) return fn()
-  if (process.env.PM_PERF !== '1' && app.isPackaged) {
-    if (cachedPackaged !== true) {
-      refreshPackagedGate()
-      return fn()
-    }
-  }
+function timed<T>(label: string, fn: () => T): T {
   const t0 = performance.now()
   try {
     return fn()
   } finally {
     console.log(`[perf] ${label} ${(performance.now() - t0).toFixed(1)}ms`)
   }
+}
+
+/** Time `fn` and print `[perf] <label> <ms>ms` when the gate is on. Sync on
+ *  purpose — the whole point is the length of a synchronous main-process
+ *  stretch, which an async wrapper would hide from itself. */
+export function perfTime<T>(label: string, fn: () => T): T {
+  if (process.env.PM_PERF === '1' || realElectronDev()) return timed(label, fn)
+  if (!packagedBuild()) return fn()
+  if (cachedPackaged !== true) {
+    refreshPackagedGate()
+    return fn()
+  }
+  return timed(label, fn)
 }
