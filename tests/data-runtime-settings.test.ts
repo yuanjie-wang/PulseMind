@@ -95,11 +95,18 @@ describe('the 数据与运行 section is wired end to end', () => {
     expect(COMPONENT).toContain('okButtonProps: { danger: true }')
   })
 
-  it('shows exactly one workspace directory row and it is read-only', () => {
-    // D6: workspace stays editable in 环境设置; here it is read-only with an
-    // open button. Non-vacuous: adding an Input/编辑 box for workspace fails
-    // the first scan.
-    expect(COMPONENT.match(/\{directory\('workspaceDir'\)\}/g)).toHaveLength(1)
+  it('carries no directory rows — 环境设置 is the single directory surface', () => {
+    // 2026-09-20 settings cleanup: the 数据 section repeated 配置/技能/工作目录
+    // rows the environment panel already renders (and it now also owns 知识库目录).
+    // Non-vacuous: reintroducing a directory row or the helper fails the first
+    // two scans; dropping the environment panel's rows fails the third.
+    expect(COMPONENT).not.toContain("directory('")
+    expect(COMPONENT).not.toContain('data-directory')
+    const environment = read('src', 'renderer', 'src', 'components', 'settings', 'EnvironmentSettings.tsx')
+    for (const key of ['configDirectory', 'skillsDirectory', 'knowledgeDirectory', 'workspace']) {
+      expect(environment).toContain(`environmentDrawer.${key}`)
+    }
+    expect(environment).toContain('openFolder(')
     expect(COMPONENT).not.toContain('<Input')
   })
 

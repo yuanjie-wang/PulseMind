@@ -25,7 +25,9 @@ import { useCommandPaletteStore } from '../../stores/commandPaletteStore'
 import { buildCommandItems } from '../../navigation/command-palette-items'
 import { DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { conversationKeyOf } from '../../../../shared/conversation-key'
-import { FONT_SIZE, FONT_WEIGHT, INK, TEXT, TEXT_MUTED, BORDER_HAIRLINE } from '../../theme/tokens'
+import { effectiveAccelerators, formatAccelerator, type ShortcutActionId } from '../../../../shared/shortcuts'
+import { FONT_SIZE, FONT_WEIGHT } from '../../theme/tokens'
+import { useThemeMode } from '../../theme/mode'
 import type { Project, ProjectSortMode } from '../../../../shared/types/project'
 import { useSettings } from '../../hooks/SettingsContext'
 import type { ConversationListItem } from '../../types/conversation'
@@ -345,20 +347,29 @@ function AppLayout({
       newTaskInProject: t('palette.newTaskInProject'),
       settingsSection: t('palette.settingsSection'),
     },
-    hints: {
-      newTask: isMac ? '⌘N' : 'Ctrl+N',
-      newProject: isMac ? '⇧⌘N' : 'Ctrl+Shift+N',
-      toggleSidebar: isMac ? '⌘B' : 'Ctrl+B',
-      toggleWorkbench: isMac ? '⌘J' : 'Ctrl+J',
-      openSearch: isMac ? '⌘F' : 'Ctrl+F',
-      openUsage: isMac ? '⌥⌘U' : 'Ctrl+Alt+U',
-      openSettings: isMac ? '⌘,' : 'Ctrl+,',
-    },
+    hints: (() => {
+      // Derived from the shared table + the user's overrides, so a rebind made
+      // in 设置 → 快捷键 updates these the moment the setting lands — the
+      // palette never advertises a key the menu no longer owns.
+      const acc = effectiveAccelerators(settings.shortcuts)
+      const hint = (action: ShortcutActionId): string => formatAccelerator(acc[action], isMac)
+      return {
+        newTask: hint('new-task'),
+        newProject: hint('new-project'),
+        toggleSidebar: hint('toggle-sidebar'),
+        toggleWorkbench: hint('toggle-workbench'),
+        openSearch: hint('open-search'),
+        openUsage: hint('open-usage'),
+        openSettings: hint('open-settings'),
+      }
+    })(),
     conversations: conversations.map((c) => ({ key: String(c.key), label: c.label })),
     projects: projects.map((p) => ({ id: p.id, name: p.name })),
     settingsSections: [
       { key: 'environment', label: t('palette.sectionEnvironment') },
       { key: 'settings', label: t('palette.sectionModel') },
+      { key: 'extension', label: t('palette.sectionExtension') },
+      { key: 'shortcuts', label: t('palette.sectionShortcuts') },
       { key: 'assistant', label: t('palette.sectionAssistant') },
       { key: 'memory', label: t('palette.sectionMemory') },
       { key: 'experiences', label: t('palette.sectionExperiences') },

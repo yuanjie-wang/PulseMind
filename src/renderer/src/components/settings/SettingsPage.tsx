@@ -4,7 +4,17 @@
 // onClose) — `inline` renders the bare body, which is what a page wants.
 
 import React from 'react'
-import { BookOutlined, DesktopOutlined, ExperimentOutlined, SettingOutlined, DatabaseOutlined, UserOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import {
+  BookOutlined,
+  DesktopOutlined,
+  ExperimentOutlined,
+  SettingOutlined,
+  DatabaseOutlined,
+  UserOutlined,
+  InfoCircleOutlined,
+  ApiOutlined,
+  KeyOutlined,
+} from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { PAGE_COLUMN_MAX_WIDTH } from '../layout/CenteredPage'
@@ -14,15 +24,20 @@ import AgentSettings from './AgentSettings'
 import EnvironmentSettings from './EnvironmentSettings'
 import ExperiencePanel from './ExperiencePanel'
 import DataRuntimeSettings from './DataRuntimeSettings'
+import ExtensionSettings from './ExtensionSettings'
+import ShortcutsSettings from './ShortcutsSettings'
 import LlmSettings from './LlmSettings'
 import MemorySettings from './MemorySettings'
 import AboutPage from './AboutPage'
+import { runSettingsLeaveGuard } from './settings-leave-guard'
 
 type SettingsTab = NonNullable<AppView['settingsTab']>
 
 const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] = [
   { key: 'environment', icon: <DesktopOutlined />, labelKey: 'appLayout.environment' },
   { key: 'settings', icon: <SettingOutlined />, labelKey: 'appLayout.settings' },
+  { key: 'extension', icon: <ApiOutlined />, labelKey: 'appLayout.extension' },
+  { key: 'shortcuts', icon: <KeyOutlined />, labelKey: 'appLayout.shortcuts' },
   { key: 'assistant', icon: <UserOutlined />, labelKey: 'appLayout.assistant' },
   { key: 'memory', icon: <BookOutlined />, labelKey: 'appLayout.memory' },
   { key: 'experiences', icon: <ExperimentOutlined />, labelKey: 'appLayout.experiences' },
@@ -46,8 +61,12 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
   // store so the two never disagree. Absent param = default section.
   const paramTab = view.kind === 'settings' ? view.settingsTab : undefined
   const tab: SettingsTab = paramTab ?? 'environment'
+  // A section holding unsaved edits (e.g. LlmSettings) registers a leave
+  // guard; switching away runs it first and stops on a discarded navigation.
   const selectTab = (next: SettingsTab): void => {
-    navigate({ kind: 'settings', settingsTab: next })
+    void runSettingsLeaveGuard().then((leave) => {
+      if (leave) navigate({ kind: 'settings', settingsTab: next })
+    })
   }
 
   const renderSection = (): React.ReactNode => {
@@ -63,6 +82,10 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
         return <AgentSettings inline open onClose={() => {}} />
       case 'settings':
         return <LlmSettings inline open onClose={() => {}} />
+      case 'extension':
+        return <ExtensionSettings inline open onClose={() => {}} />
+      case 'shortcuts':
+        return <ShortcutsSettings inline open onClose={() => {}} />
       case 'environment':
         return <EnvironmentSettings inline open onClose={() => {}} />
       case 'about':
@@ -78,14 +101,14 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
     // windows grow margins. The panes keep their independent scrolling, which
     // is why this page composes around PAGE_COLUMN_MAX_WIDTH rather than
     // reusing the CenteredPage shell.
-    <div style={{ display: 'flex', justifyContent: 'center', height: '100%', overflow: 'hidden', background: '#fff' }}>
+    <div style={{ display: 'flex', justifyContent: 'center', height: '100%', overflow: 'hidden', background: 'var(--pm-bg)' }}>
       <div style={{ width: '100%', maxWidth: 160 + PAGE_COLUMN_MAX_WIDTH, minWidth: 0, display: 'flex' }}>
         {/* Left menu */}
         <div
           style={{
             width: 160,
             flexShrink: 0,
-            borderRight: '1px solid #f0f0f0',
+            borderRight: '1px solid var(--pm-border-hairline)',
             display: 'flex',
             flexDirection: 'column',
             padding: '16px 8px',
@@ -105,12 +128,12 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
                   borderRadius: 6,
                   cursor: 'pointer',
                   fontSize: 13,
-                  color: '#333',
+                  color: 'var(--pm-text-strong)',
                   transition: 'background 0.15s',
-                  background: tab === item.key ? '#f0f0f0' : 'transparent',
+                  background: tab === item.key ? 'var(--pm-border-hairline)' : 'transparent',
                 }}
                 onMouseEnter={(e) => {
-                  if (tab !== item.key) e.currentTarget.style.background = '#f5f5f5'
+                  if (tab !== item.key) e.currentTarget.style.background = 'var(--pm-fill)'
                 }}
                 onMouseLeave={(e) => {
                   if (tab !== item.key) e.currentTarget.style.background = 'transparent'

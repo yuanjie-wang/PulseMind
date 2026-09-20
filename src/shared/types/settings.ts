@@ -1,6 +1,7 @@
 export type LLMProvider = 'anthropic' | 'openai'
 
 import type { ProjectSortMode } from './project'
+import type { ShortcutActionId } from '../shortcuts'
 
 export interface LlmProfile {
   id: string
@@ -65,4 +66,8 @@ export interface AppSettings {
     /** In-app pane width in px (A-M5) — remembered globally across sessions. */
     paneWidth?: number
   }
+  /** Rebound app-level shortcuts: action id → Electron accelerator. Only the
+   *  overrides live here; defaults come from shared/shortcuts.ts, and both
+   *  the native menu and the before-input fallback re-derive on save. */
+  shortcuts?: Partial<Record<ShortcutActionId, string>>
 }

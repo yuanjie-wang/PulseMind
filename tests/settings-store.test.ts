@@ -75,6 +75,18 @@ describe('SettingsStore.get', () => {
     expect(s.theme).toBe('dark')
   })
 
+  // 深色默认 (2026-09-20): a file with NO theme key — a brand-new install or a
+  // pre-theme-era write — reads as dark; an explicit `system` still wins.
+  it('defaults the theme to dark when the file carries none', async () => {
+    const noTheme = await freshStore()
+    writeRaw({ profiles: RAW_BASE.profiles, activeProfileId: RAW_BASE.activeProfileId })
+    expect((await noTheme.get()).theme).toBe('dark')
+
+    const explicitSystem = await freshStore()
+    writeRaw({ ...RAW_BASE, theme: 'system' })
+    expect((await explicitSystem.get()).theme).toBe('system')
+  })
+
   it('serves a cached copy until the file mtime changes', async () => {
     const store = await freshStore()
     const first = await store.get()

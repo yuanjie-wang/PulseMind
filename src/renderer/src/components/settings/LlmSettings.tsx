@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react'
-import { Drawer, Input, InputNumber, Select, Button, Typography, Space, Modal, Popconfirm, Tag } from 'antd'
+import { Collapse, Drawer, Input, InputNumber, Select, Button, Typography, Space, Modal, Popconfirm, Tag } from 'antd'
 import { PlusOutlined, DeleteOutlined, SaveOutlined, CheckCircleOutlined, ExclamationCircleFilled, ApiOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
 import { notify, notifyFailure } from '../../utils/notify'
 import { probeMissingFields, type LlmProbeOutcome } from '../../../../shared/llm/probe'
+import { registerSettingsLeaveGuard } from './settings-leave-guard'
 import type { LlmProfile } from '../../types/settings'
 
 const { Text, Title } = Typography
@@ -13,6 +14,27 @@ interface LlmSettingsProps {
   open: boolean
   onClose: () => void
   inline?: boolean
+}
+
+/** Section caption — one visual rank below the page title, above field labels. */
+function SectionLabel({ children }: { children: React.ReactNode }): React.ReactElement {
+  return (
+    <Text type="secondary" style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 10 }}>
+      {children}
+    </Text>
+  )
+}
+
+/** Label + control row, shared by every field so spacing cannot drift. */
+function Field({ label, children }: { label: string; children: React.ReactNode }): React.ReactElement {
+  return (
+    <div>
+      <Text strong style={{ display: 'block', marginBottom: 8 }}>
+        {label}
+      </Text>
+      {children}
+    </div>
+  )
 }
 
 function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactElement {
@@ -68,12 +90,9 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     localProfile.model !== savedProfile.model ||
     localProfile.maxTokens !== savedProfile.maxTokens ||
     localProfile.contextLength !== savedProfile.contextLength ||
-    localProfile.apiKey !== (savedProfile.apiKey || '') ||
+    (localProfile.apiKey || '') !== (savedProfile.apiKey || '') ||
     JSON.stringify(localProfile.headers ?? {}) !== JSON.stringify(savedProfile.headers ?? {})
   )
-
-  // Disable "Use This Profile" when editing the already-active profile
-  const useProfileDisabled = editingProfileId === settings.activeProfileId
 
   // "New profile" modal
   const [newProfileOpen, setNewProfileOpen] = useState(false)
@@ -234,6 +253,39 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     updateLocalHeaders([...headerRows, { key: '', value: '' }])
   }
 
+  // ── Leaving with unsaved edits ──
+  // One discard confirm shared by every exit path: drawer close, and (inline)
+  // the settings page's tab switch via the leave guard. Resolves true = leave.
+  const confirmDiscard = (): Promise<boolean> => new Promise((resolve) => {
+    if (!localProfile) {
+      resolve(true)
+      return
+    }
+    Modal.confirm({
+      title: t('settingsDrawer.discardChanges'),
+      icon: <ExclamationCircleFilled />,
+      content: t('settingsDrawer.discardChangesContent', { name: localProfile.name }),
+      okText: t('settingsDrawer.discard'),
+      okButtonProps: { danger: true },
+      cancelText: t('common.cancel'),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+
+  const handleCloseAttempt = (): void => {
+    void confirmDiscard().then((leave) => {
+      if (leave) onClose()
+    })
+  }
+
+  // Re-registered on every render so the guard always sees the live dirty
+  // state and profile name (no stale closure, no ref bookkeeping).
+  useEffect(() => {
+    registerSettingsLeaveGuard(confirmDiscard)
+    return () => registerSettingsLeaveGuard(null)
+  })
+
   // ── Shared body consts ──
 
   const emptyBody = (
@@ -252,257 +304,243 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     </div>
   )
 
+  // Active profile is named by a Tag inside the selector itself (both in the
+  // closed control and in the option list) — there is no separate fake button.
+  const profileOptions = settings.profiles.map(p => ({
+    value: p.id,
+    label: (
+      <>
+        {p.name}
+        {p.id === settings.activeProfileId && (
+          <Tag style={{ marginLeft: 8, marginRight: 0 }}>{t('common.active')}</Tag>
+        )}
+      </>
+    ),
+  }))
+
   const normalBody = loading ? (
     <Text type="secondary" style={{ fontSize: 12 }}>{t('common.loading')}</Text>
   ) : (
     <>
-      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>{t('settingsDrawer.title')}</Text>
-      <Space orientation="vertical" size="large" style={{ width: '100%' }}>
-      {/* ── Profile Selector ── */}
-      <div>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>
-          {t('settingsDrawer.profile')}
-        </Text>
-        <Space.Compact style={{ width: '100%' }}>
-          <Select
-            value={editingProfileId}
-            onChange={handleEditingProfileChange}
-            style={{ flex: 1, minWidth: 0 }}
-            options={settings.profiles.map(p => ({
-              value: p.id,
-              label: p.name
-            }))}
-            optionRender={(option) => (
-              <Space>
-                {option.data.label}
-                {option.data.value === settings.activeProfileId && (
-                  <Tag style={{ marginLeft: 8 }}>{t('common.active')}</Tag>
-                )}
-              </Space>
-            )}
-          />
-          <Button
-            icon={<PlusOutlined />}
-            onClick={() => setNewProfileOpen(true)}
-            aria-label="Add profile"
-          />
-          <Popconfirm
-            title={t('settingsDrawer.deleteConfirm')}
-            description={settings.profiles.length <= 1 ? t('settingsDrawer.deleteLast') : undefined}
-            onConfirm={handleDeleteProfile}
-            okText={t('common.delete')}
-            okButtonProps={{ danger: true, disabled: settings.profiles.length <= 1 }}
-          >
-            <Button
-              icon={<DeleteOutlined />}
-              danger
-              aria-label="Delete profile"
-            />
-          </Popconfirm>
-        </Space.Compact>
-      </div>
-
-      {/* ── Use Profile Button ── */}
-      {useProfileDisabled ? (
-        <Button
-          block
-          type="default"
-          icon={<CheckCircleOutlined />}
-          style={{ color: '#333', borderColor: '#d9d9d9' }}
-          disabled={false}
-        >
-          {t('settingsDrawer.activeProfile')}
-        </Button>
-      ) : (
-        <Button
-          block
-          type="primary"
-          ghost
-          icon={<SaveOutlined />}
-          onClick={handleUseProfile}
-        >
-          {t('settingsDrawer.useThisProfile')}
-        </Button>
-      )}
-
-      {/* ── Profile-specific fields ── */}
-      {localProfile && (
-        <>
-
-          {/* Profile Name */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>
-              {t('settingsDrawer.profileName')}
-            </Text>
-            <Input
-              placeholder="e.g. My Claude Profile"
-              value={localProfile.name}
-              onChange={(e) => setLocalProfile({ ...localProfile, name: e.target.value })}
-            />
-          </div>
-
-          {/* Provider */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>
-              {t('settingsDrawer.provider')}
-            </Text>
+      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>{t('settingsDrawer.title')}</Text>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        {/* ── 配置：切换 / 新建 / 删除 / 名称 ── */}
+        <section>
+          <SectionLabel>{t('settingsDrawer.sectionConfig')}</SectionLabel>
+          <Space.Compact style={{ width: '100%' }}>
             <Select
-              value={localProfile.provider ?? 'anthropic'}
-              onChange={(val) => setLocalProfile({ ...localProfile, provider: val as 'anthropic' | 'openai' })}
-              style={{ width: '100%' }}
-              options={[
-                { value: 'anthropic', label: 'Anthropic' },
-                { value: 'openai', label: 'OpenAI Compatible' }
-              ]}
+              value={editingProfileId}
+              onChange={handleEditingProfileChange}
+              style={{ flex: 1, minWidth: 0 }}
+              options={profileOptions}
             />
-          </div>
-
-          {/* Base URL */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>
-              {t('settingsDrawer.baseURL')}
-            </Text>
-            <Input
-              placeholder={(localProfile.provider ?? 'anthropic') === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com'}
-              value={localProfile.baseURL}
-              onChange={(e) => setLocalProfile({ ...localProfile, baseURL: e.target.value })}
+            <Button
+              icon={<PlusOutlined />}
+              onClick={() => setNewProfileOpen(true)}
+              aria-label="Add profile"
             />
-          </div>
+            <Popconfirm
+              title={t('settingsDrawer.deleteConfirm')}
+              description={settings.profiles.length <= 1 ? t('settingsDrawer.deleteLast') : undefined}
+              onConfirm={handleDeleteProfile}
+              okText={t('common.delete')}
+              okButtonProps={{ danger: true, disabled: settings.profiles.length <= 1 }}
+            >
+              <Button
+                icon={<DeleteOutlined />}
+                danger
+                aria-label="Delete profile"
+              />
+            </Popconfirm>
+          </Space.Compact>
+          {localProfile && (
+            <div style={{ marginTop: 12 }}>
+              <Text strong style={{ display: 'block', marginBottom: 8 }}>
+                {t('settingsDrawer.profileName')}
+              </Text>
+              <Input
+                placeholder="e.g. My Claude Profile"
+                aria-label={t('settingsDrawer.profileName')}
+                value={localProfile.name}
+                onChange={(e) => setLocalProfile({ ...localProfile, name: e.target.value })}
+              />
+            </div>
+          )}
+        </section>
 
-          {/* Model */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('settingsDrawer.model')}</Text>
-            <Input
-              placeholder={(localProfile.provider ?? 'anthropic') === 'anthropic' ? 'e.g. claude-sonnet-4-20250514' : 'e.g. gpt-4o'}
-              value={localProfile.model}
-              onChange={(e) => setLocalProfile({ ...localProfile, model: e.target.value })}
-            />
-          </div>
+        {/* ── 连接：提供商 / URL / 密钥 / 模型 + 测试，按配置顺序 ── */}
+        {localProfile && (
+          <section>
+            <SectionLabel>{t('settingsDrawer.sectionConnection')}</SectionLabel>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <Field label={t('settingsDrawer.provider')}>
+                <Select
+                  value={localProfile.provider ?? 'anthropic'}
+                  onChange={(val) => setLocalProfile({ ...localProfile, provider: val as 'anthropic' | 'openai' })}
+                  style={{ width: '100%' }}
+                  options={[
+                    { value: 'anthropic', label: 'Anthropic' },
+                    { value: 'openai', label: 'OpenAI Compatible' }
+                  ]}
+                />
+              </Field>
 
-          {/* Max Tokens */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('settingsDrawer.maxTokens')}</Text>
-            <InputNumber
-              min={1024}
-              max={131072}
-              step={1024}
-              value={localProfile.maxTokens}
-              onChange={(val) => setLocalProfile({ ...localProfile, maxTokens: val ?? 32768 })}
-              style={{ width: '100%' }}
-            />
-          </div>
+              <Field label={t('settingsDrawer.baseURL')}>
+                <Input
+                  placeholder={(localProfile.provider ?? 'anthropic') === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com'}
+                  value={localProfile.baseURL}
+                  onChange={(e) => setLocalProfile({ ...localProfile, baseURL: e.target.value })}
+                />
+              </Field>
 
-          {/* Context Length */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('settingsDrawer.contextLength')}</Text>
-            <InputNumber
-              min={4096}
-              max={10000000}
-              step={4096}
-              value={localProfile.contextLength}
-              onChange={(val) => setLocalProfile({ ...localProfile, contextLength: val ?? undefined })}
-              style={{ width: '100%' }}
-            />
-          </div>
+              <Field label={t('settingsDrawer.apiKey')}>
+                <Input.Password
+                  placeholder={t('settingsDrawer.apiKeyPlaceholder')}
+                  aria-label={t('settingsDrawer.apiKey')}
+                  value={localProfile.apiKey || ''}
+                  onChange={(e) => setLocalProfile({ ...localProfile, apiKey: e.target.value })}
+                />
+              </Field>
 
-          {/* API Key */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>
-              {t('settingsDrawer.apiKey')}
-            </Text>
-            <Input.Password
-              placeholder={t('settingsDrawer.apiKeyPlaceholder')}
-              value={localProfile.apiKey || ''}
-              onChange={(e) => setLocalProfile({ ...localProfile, apiKey: e.target.value })}
-            />
-          </div>
+              <Field label={t('settingsDrawer.model')}>
+                <Input
+                  placeholder={(localProfile.provider ?? 'anthropic') === 'anthropic' ? 'e.g. claude-sonnet-4-20250514' : 'e.g. gpt-4o'}
+                  aria-label={t('settingsDrawer.model')}
+                  value={localProfile.model}
+                  onChange={(e) => setLocalProfile({ ...localProfile, model: e.target.value })}
+                />
+              </Field>
 
-          {/* Connectivity test — validates the AS-EDITED fields without saving;
-              the human words (401/404/timeout) come from main (shared/llm/probe.ts). */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>
-              {t('settingsDrawer.probeTitle')}
-            </Text>
-            <Button block icon={<ApiOutlined />} loading={probing} onClick={handleTestConnection}>
-              {t('settingsDrawer.testConnection')}
-            </Button>
-            {probeOutcome && (
-              <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: probeOutcome.ok ? '#f6ffed' : '#fff2f0', border: `1px solid ${probeOutcome.ok ? '#b7eb8f' : '#ffccc7'}` }}>
-                <div style={{ color: probeOutcome.ok ? '#389e0d' : '#cf1322', fontSize: 12, fontWeight: 600 }}>
-                  {probeOutcome.ok ? '✓ ' : '✕ '}{probeOutcome.message}
-                </div>
-                {probeOutcome.hint && (
-                  <div style={{ color: '#666', fontSize: 12, marginTop: 2 }}>{probeOutcome.hint}</div>
-                )}
-                {probeOutcome.detail && (
-                  <div title={probeOutcome.detail} style={{ color: '#aaa', fontSize: 11, marginTop: 2, wordBreak: 'break-all' }}>
-                    {probeOutcome.detail.slice(0, 90)}
+              {/* Connectivity test — validates the AS-EDITED fields without saving;
+                  the human words (401/404/timeout) come from main (shared/llm/probe.ts).
+                  Sits at the end of the connection group so it sees all four values. */}
+              <div>
+                <Button icon={<ApiOutlined />} loading={probing} onClick={handleTestConnection}>
+                  {t('settingsDrawer.testConnection')}
+                </Button>
+                {probeOutcome && (
+                  <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: probeOutcome.ok ? 'var(--pm-success-bg)' : 'var(--pm-error-bg)', border: `1px solid ${probeOutcome.ok ? 'var(--pm-success-border)' : 'var(--pm-error-border)'}` }}>
+                    <div style={{ color: probeOutcome.ok ? 'var(--pm-success)' : 'var(--pm-error)', fontSize: 12, fontWeight: 600 }}>
+                      {probeOutcome.ok ? '✓ ' : '✕ '}{probeOutcome.message}
+                    </div>
+                    {probeOutcome.hint && (
+                      <div style={{ color: 'var(--pm-text-secondary)', fontSize: 12, marginTop: 2 }}>{probeOutcome.hint}</div>
+                    )}
+                    {probeOutcome.detail && (
+                      <div title={probeOutcome.detail} style={{ color: 'var(--pm-text-soft)', fontSize: 11, marginTop: 2, wordBreak: 'break-all' }}>
+                        {probeOutcome.detail.slice(0, 90)}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
+            </div>
+          </section>
+        )}
 
-          {/* Custom Headers */}
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>
-              {t('settingsDrawer.customHeaders')}
-            </Text>
-            <Space orientation="vertical" size="small" style={{ width: '100%' }}>
-              {headerRows.map((row, idx) => (
-                <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <Input
-                    placeholder={t('settingsDrawer.headerKey')}
-                    value={row.key}
-                    onChange={(e) => updateHeaderRow(idx, 'key', e.target.value)}
-                    style={{ flex: 1 }}
-                  />
-                  <Input
-                    placeholder={t('settingsDrawer.headerValue')}
-                    value={row.value}
-                    onChange={(e) => updateHeaderRow(idx, 'value', e.target.value)}
-                    style={{ flex: 1 }}
-                  />
-                  <Button
-                    size="small"
-                    icon={<DeleteOutlined />}
-                    danger
-                    onClick={() => removeHeaderRow(idx)}
-                    aria-label={t('settingsDrawer.removeHeader')}
-                  />
+        {/* ── 高级：调参项默认收起，不与必填项竞争 ── */}
+        {localProfile && (
+          <Collapse
+            ghost
+            items={[{
+              key: 'advanced',
+              label: t('settingsDrawer.sectionAdvanced'),
+              children: (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <Field label={t('settingsDrawer.maxTokens')}>
+                    <InputNumber
+                      min={1024}
+                      max={131072}
+                      step={1024}
+                      value={localProfile.maxTokens}
+                      onChange={(val) => setLocalProfile({ ...localProfile, maxTokens: val ?? 32768 })}
+                      style={{ width: '100%' }}
+                    />
+                  </Field>
+
+                  <Field label={t('settingsDrawer.contextLength')}>
+                    <InputNumber
+                      min={4096}
+                      max={10000000}
+                      step={4096}
+                      value={localProfile.contextLength}
+                      onChange={(val) => setLocalProfile({ ...localProfile, contextLength: val ?? undefined })}
+                      style={{ width: '100%' }}
+                    />
+                  </Field>
+
+                  <Field label={t('settingsDrawer.customHeaders')}>
+                    <Space orientation="vertical" size="small" style={{ width: '100%' }}>
+                      {headerRows.map((row, idx) => (
+                        <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <Input
+                            placeholder={t('settingsDrawer.headerKey')}
+                            value={row.key}
+                            onChange={(e) => updateHeaderRow(idx, 'key', e.target.value)}
+                            style={{ flex: 1 }}
+                          />
+                          <Input
+                            placeholder={t('settingsDrawer.headerValue')}
+                            value={row.value}
+                            onChange={(e) => updateHeaderRow(idx, 'value', e.target.value)}
+                            style={{ flex: 1 }}
+                          />
+                          <Button
+                            size="small"
+                            icon={<DeleteOutlined />}
+                            danger
+                            onClick={() => removeHeaderRow(idx)}
+                            aria-label={t('settingsDrawer.removeHeader')}
+                          />
+                        </div>
+                      ))}
+                      <Button
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={addHeaderRow}
+                      >
+                        {t('settingsDrawer.addHeader')}
+                      </Button>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {t('settingsDrawer.headersHint')}
+                      </Text>
+                    </Space>
+                  </Field>
                 </div>
-              ))}
-              <Button
-                size="small"
-                icon={<PlusOutlined />}
-                onClick={addHeaderRow}
-              >
-                {t('settingsDrawer.addHeader')}
-              </Button>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('settingsDrawer.headersHint')}
-              </Text>
-            </Space>
-          </div>
-
-          {/* Save Profile Button */}
-          <Button
-            type="primary"
-            block
-            icon={<SaveOutlined />}
-            loading={saving}
-            disabled={!isDirty}
-            onClick={handleSaveProfile}
-          >
-            {isDirty ? t('settingsDrawer.saveProfile') : t('settingsDrawer.saved')}
-          </Button>
-
-        </>
-      )}
-
-    </Space>
+              ),
+            }]}
+          />
+        )}
+      </div>
     </>
   )
+
+  // ── Footer action bar: the page's only commit area ──
+  // Left: dirty hint; right: 使用此配置 (only when editing a non-active
+  // profile) + 保存配置 (primary, enabled while dirty). When the editing
+  // target IS the active profile the footer is save-only.
+  const showUseButton = localProfile !== null && editingProfileId !== settings.activeProfileId
+  const footer = localProfile ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <Text type="secondary" style={{ fontSize: 12, flex: 1, visibility: isDirty ? 'visible' : 'hidden' }}>
+        {t('settingsDrawer.unsavedHint')}
+      </Text>
+      {showUseButton && (
+        <Button icon={<CheckCircleOutlined />} onClick={handleUseProfile}>
+          {t('settingsDrawer.useThisProfile')}
+        </Button>
+      )}
+      <Button
+        type="primary"
+        icon={<SaveOutlined />}
+        loading={saving}
+        disabled={!isDirty}
+        onClick={handleSaveProfile}
+      >
+        {isDirty ? t('settingsDrawer.saveProfile') : t('settingsDrawer.saved')}
+      </Button>
+    </div>
+  ) : null
 
   const bodyContent = (!loading && settings.profiles.length === 0) ? emptyBody : normalBody
 
@@ -519,8 +557,25 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
   if (inline) {
     return (
       <>
-        <div style={{ height: '100%', overflow: 'auto' }}>
+        {/* marginBottom cancels the pane wrapper's bottom padding so the bar
+            lands flush at scroll end; sticky keeps it visible mid-scroll. */}
+        <div style={{ marginBottom: -24 }}>
           {bodyContent}
+          {footer && (
+            <div
+              style={{
+                position: 'sticky',
+                bottom: 0,
+                zIndex: 1,
+                margin: '16px -24px 0',
+                padding: '12px 24px 16px',
+                borderTop: '1px solid var(--pm-border-hairline)',
+                background: 'var(--pm-bg)',
+              }}
+            >
+              {footer}
+            </div>
+          )}
         </div>
         {newProfileModal}
       </>
@@ -529,7 +584,7 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
 
   return (
     <>
-      <Drawer title={t('settingsDrawer.title')} open={open} onClose={onClose} size={400}>
+      <Drawer title={t('settingsDrawer.title')} open={open} onClose={handleCloseAttempt} size={400} footer={footer}>
         {bodyContent}
       </Drawer>
       {newProfileModal}

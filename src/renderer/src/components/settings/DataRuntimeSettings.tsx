@@ -89,28 +89,10 @@ function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: D
     </div>
   )
   const options = retentionOptions(t).map(({ days, label }) => ({ value: days, label }))
-  const directory = (key: 'dataDir' | 'knowledgeDir' | 'workspaceDir') => {
-    const path = paths?.[key]
-    return (
-      <div style={{ marginBottom: 12 }}>
-        <Text strong style={{ display: 'block', fontSize: 13 }}>{t(`dataRuntime.${key}`)}</Text>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Text data-directory={key} style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 12 }}>
-            {path || '—'}
-          </Text>
-          <Button size="small" icon={<FolderOpenOutlined />} disabled={!path}
-            aria-label={`${t('dataRuntime.open')} ${t(`dataRuntime.${key}`)}`}
-            onClick={() => { if (path) void openFolder(path) }}>
-            {t('dataRuntime.open')}
-          </Button>
-        </div>
-      </div>
-    )
-  }
 
   const body = (
     <>
-      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>
         {t('dataRuntime.title')}
       </Text>
       <Space orientation="vertical" size="large" style={{ width: '100%' }}>
@@ -132,14 +114,11 @@ function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: D
             onChange={(days: number) => { void save({ routineRunRetentionDays: days }) }} />
           <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 8 }}>{t('dataRuntime.runRetentionHelp')}</Text>
         </section>
+        {/* 高级 — the power-user toggles that used to be scattered across
+            「知识库」and「调试」groups; the directory rows moved to 环境设置,
+            which is the single directory surface now. */}
         <section>
-          {heading('knowledge')}
-          {toggle('autoCompile', settings.knowledge?.autoCompile ?? false, (value) => {
-            void save({ knowledge: { ...settings.knowledge, autoCompile: value } })
-          })}
-        </section>
-        <section>
-          {heading('debug')}
+          {heading('advanced')}
           {toggle('debugLlmRequests', settings.debugLlmRequests ?? false, (value) => { void save({ debugLlmRequests: value }) })}
           <Button icon={<FolderOpenOutlined />} disabled={!paths?.dataDir} style={{ marginBottom: 16 }}
             onClick={() => { if (paths) void openFolder(`${paths.dataDir}/logs/llm-requests`) }}>
@@ -148,12 +127,9 @@ function DataRuntimeSettings({ open, onClose, inline, onReloadConversations }: D
           {toggle('gitContextInjection', settings.git?.contextInjection ?? true, (value) => {
             void save({ git: { ...settings.git, contextInjection: value } })
           })}
-        </section>
-        <section>
-          {heading('data')}
-          {directory('dataDir')}
-          {directory('knowledgeDir')}
-          {directory('workspaceDir')}
+          {toggle('autoCompile', settings.knowledge?.autoCompile ?? false, (value) => {
+            void save({ knowledge: { ...settings.knowledge, autoCompile: value } })
+          })}
         </section>
       </Space>
     </>

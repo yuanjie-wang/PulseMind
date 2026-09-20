@@ -43,10 +43,12 @@ describe('main 菜单（src/main/menu.ts）', () => {
     const fallback = src.slice(src.indexOf('export function attachShortcutFallback'))
     expect(fallback).toContain('before-input-event')
     expect(fallback).toContain("process.platform === 'darwin'")
-    // fallback 里的组合键与菜单加速器一一对应（Ctrl twins）
-    expect(fallback).toContain("'ctrl+k'")
-    expect(fallback).toContain("'ctrl+,'")
-    expect(fallback).toContain("'ctrl+shift+n'")
+    // fallback 的组合键不再硬编码 —— 由生效加速器表派生（默认 + 设置覆盖），
+    // 设置 → 快捷键 改键后在 Win/Linux 同样立即生效。
+    // 非空验证：删掉 refreshFallbackCombos 的调用或改回硬编码表都会红。
+    expect(src).toContain('refreshFallbackCombos(accelerators)')
+    expect(src).toContain('effectiveAccelerators(stored?.shortcuts)')
+    expect(src).not.toContain("'ctrl+k'")
   })
 
   it('菜单标签本地 zh/en 各一份，经 settingsStore 的 locale 选择', () => {

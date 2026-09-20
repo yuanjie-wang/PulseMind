@@ -1,14 +1,16 @@
 // ── Environment settings section ──
-// 设置 → 环境: workspace directory, data paths, proxy/env vars and other
-// runtime environment fields. Drawer-capable but rendered inline in the
-// settings page.
+// 设置 → 环境: language, appearance, OS info and the runtime data
+// directories. The local-agent-service / browser-extension / browser-kernel
+// blocks used to live here; the extension panel owns the service toggle now
+// and the browser kernel runs on its stored defaults. Drawer-capable but
+// rendered inline in the settings page.
 import React, { useState, useEffect } from 'react'
-import {Drawer, Input, Button, Typography, Space, Select, Switch, InputNumber } from 'antd'
-import { SaveOutlined, DesktopOutlined, ClockCircleOutlined, FolderOutlined, FolderOpenOutlined, GlobalOutlined } from '@ant-design/icons'
+import {Drawer, Input, Button, Typography, Space, Select } from 'antd'
+import { SaveOutlined, DesktopOutlined, ClockCircleOutlined, FolderOutlined, FolderOpenOutlined, GlobalOutlined, BgColorsOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
-import type { PlatformInfo, DataPaths, ServiceStatus } from '../../types/electron'
+import type { PlatformInfo, DataPaths } from '../../types/electron'
 
 const { Text } = Typography
 
@@ -31,27 +33,11 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
   const [dataPaths, setDataPaths] = useState<DataPaths | null>(null)
   const [localWorkspaceDir, setLocalWorkspaceDir] = useState(settings.workspaceDir || '')
   const [currentTime, setCurrentTime] = useState(formatCurrentTime())
-  const [service, setService] = useState<ServiceStatus | null>(null)
-  const [serviceBusy, setServiceBusy] = useState(false)
-  // Browser runtime (A-M4) — saved immediately on change; synced from settings here.
-  const [localBrowserBackend, setLocalBrowserBackend] = useState<'managed' | 'app-view'>(settings.browser?.backend ?? 'app-view')
-  const [localBrowserHeadless, setLocalBrowserHeadless] = useState<boolean>(settings.browser?.headless ?? true)
-  const [localBrowserTimeoutSec, setLocalBrowserTimeoutSec] = useState<number>(Math.round((settings.browser?.timeoutMs ?? 60_000) / 1000))
-
-  const refreshService = () => {
-    window.electronAPI
-      .serviceGetStatus()
-      .then(setService)
-      .catch(() => {})
-  }
 
   // Load platform info and data paths on open
   useEffect(() => {
     if (open) {
       setLocalWorkspaceDir(settings.workspaceDir || '')
-      setLocalBrowserBackend(settings.browser?.backend ?? 'app-view')
-      setLocalBrowserHeadless(settings.browser?.headless ?? true)
-      setLocalBrowserTimeoutSec(Math.round((settings.browser?.timeoutMs ?? 60_000) / 1000))
       setCurrentTime(formatCurrentTime())
       window.electronAPI
         .getPlatformInfo()
@@ -60,17 +46,13 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
           setPlatformInfo({ platform: 'Unknown', platformName: '', release: '', arch: '', ripgrepPath: null })
         })
       window.electronAPI
-        .serviceGetStatus()
-        .then(setService)
-        .catch(() => {})
-      window.electronAPI
         .getDataPaths()
         .then(setDataPaths)
         .catch(() => {
           setDataPaths(null)
         })
     }
-  }, [open, settings.workspaceDir, settings.browser])
+  }, [open, settings.workspaceDir])
 
   // Update clock every second while drawer is open
   useEffect(() => {
@@ -93,11 +75,19 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
     saveSettings({ ...settings, locale: newLocale })
   }
 
+  // PLAN-dark-mode M1: the theme preference saves immediately, like the
+  // language above. App.tsx resolves 'system' against prefers-color-scheme and
+  // flips html[data-theme]; main re-resolves it for the title-bar overlay on
+  // the SETTINGS_SET this triggers.
+  const handleThemeChange = (next: 'light' | 'dark' | 'system') => {
+    void saveSettings({ ...settings, theme: next })
+  }
+
   const platformLabel = platformInfo ? `${platformInfo.platformName} ${platformInfo.release} (${platformInfo.arch})` : t('environmentDrawer.loading')
 
   const body = (
     <>
-      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>
         {t('environmentDrawer.title')}
       </Text>
       <Space orientation="vertical" size="large" style={{ width: '100%' }}>
@@ -114,6 +104,24 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
             options={[
               { value: 'zh', label: '中文' },
               { value: 'en', label: 'English' },
+            ]}
+          />
+        </div>
+
+        {/* Appearance (PLAN-dark-mode M1) — three-way, saved immediately. */}
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            <BgColorsOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.appearance')}
+          </Text>
+          <Select
+            value={settings.theme ?? 'light'}
+            onChange={handleThemeChange}
+            style={{ width: '100%' }}
+            options={[
+              { value: 'light', label: t('environmentDrawer.appearanceLight') },
+              { value: 'dark', label: t('environmentDrawer.appearanceDark') },
+              { value: 'system', label: t('environmentDrawer.appearanceSystem') },
             ]}
           />
         </div>
@@ -180,6 +188,29 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
           </Space.Compact>
         </div>
 
+        {/* Knowledge Directory — consolidated here from 数据与运行 (the one
+            directory surface; DataRuntimeSettings no longer repeats it) */}
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            <FolderOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.knowledgeDirectory')}
+          </Text>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input
+              value={dataPaths?.knowledgeDir || (platformInfo?.platform === 'win32' ? '%USERPROFILE%\\.pulsemind\\knowledge' : '~/.pulsemind/knowledge')}
+              readOnly
+              variant="filled"
+            />
+            <Button
+              type="text"
+              size="small"
+              icon={<FolderOpenOutlined />}
+              style={{ marginLeft: 8, marginTop: 4 }}
+              onClick={() => dataPaths?.knowledgeDir && window.electronAPI.openFolder(dataPaths.knowledgeDir)}
+            />
+          </Space.Compact>
+        </div>
+
         {/* Workspace Directory */}
         <div>
           <Text strong style={{ display: 'block', marginBottom: 8 }}>
@@ -203,214 +234,6 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
               }}
             />
           </Space.Compact>
-        </div>
-
-        {/* ── Local agent service (PLAN-0.3.5 M2.4) ── */}
-        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
-          <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
-            本地 Agent 服务
-          </Text>
-          <div style={{ marginBottom: 12 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              在本地回环地址开放 Agent 服务,供浏览器扩展等客户端连接。
-            </Text>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <Text>启用服务</Text>
-            <Switch
-              checked={service?.enabled ?? false}
-              loading={serviceBusy}
-              onChange={async (checked) => {
-                setServiceBusy(true)
-                try {
-                  const r = await window.electronAPI.serviceSetEnabled(checked)
-                  notify.success(checked ? `服务已启动 :${r.port}` : '服务已停止')
-                  refreshService()
-                } catch {
-                  notify.error('操作失败')
-                } finally {
-                  setServiceBusy(false)
-                }
-              }}
-            />
-          </div>
-          {service?.running && (
-            <div style={{ marginBottom: 12 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                运行端口
-              </Text>
-              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                <Input value={String(service.port)} readOnly size="small" />
-                <Button size="small" onClick={refreshService}>
-                  刷新
-                </Button>
-              </div>
-            </div>
-          )}
-          {service?.enabled && (
-            <div style={{ marginBottom: 8 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                连接 Token(扩展配置用)
-              </Text>
-              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                <Input.Password value={service?.token || ''} readOnly size="small" />
-                <Button
-                  size="small"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(service?.token || '')
-                    notify.success('Token 已复制')
-                  }}
-                >
-                  复制
-                </Button>
-                <Button
-                  size="small"
-                  danger
-                  loading={serviceBusy}
-                  onClick={async () => {
-                    setServiceBusy(true)
-                    try {
-                      const r = await window.electronAPI.serviceResetToken()
-                      notify.success('Token 已重置,请更新扩展配置')
-                      setService((prev) => (prev ? { ...prev, token: r.token } : prev))
-                    } catch {
-                      notify.error('重置失败')
-                    } finally {
-                      setServiceBusy(false)
-                    }
-                  }}
-                >
-                  重置
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ── Browser extension (PLAN-browser-extension M1.5) ── */}
-        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
-          <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
-            浏览器插件
-          </Text>
-          <div style={{ marginBottom: 12 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              插件连接本机服务后,可在任意网页右下角唤起面板对话。它的会话不会出现在桌面的会话列表里。
-            </Text>
-          </div>
-          <div style={{ marginBottom: 12 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              已连接的客户端
-            </Text>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
-              {service?.clients?.length ? (
-                <Text>
-                  {service.clients.map((c) => `${c.clientId}${c.sessions > 0 ? `（${c.sessions} 个会话）` : ''}`).join('、')}
-                </Text>
-              ) : (
-                <Text type="secondary">未检测到已连接的插件</Text>
-              )}
-              <Button size="small" onClick={refreshService}>
-                刷新
-              </Button>
-            </div>
-          </div>
-          {service?.running && (
-            <div style={{ marginBottom: 12 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                连接地址(插件设置页可手动填写)
-              </Text>
-              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                <Input value={service.wsUrl} readOnly size="small" />
-                <Button
-                  size="small"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(service.wsUrl)
-                    notify.success('连接地址已复制')
-                  }}
-                >
-                  复制
-                </Button>
-              </div>
-            </div>
-          )}
-          <div>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              加载方式
-            </Text>
-            <div style={{ marginTop: 4 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                先执行 <Text code>npm run build:extension</Text>,再到 <Text code>chrome://extensions</Text> 开启开发者模式,
-                选择「加载已解压的扩展程序」。
-              </Text>
-              {service?.extensionDir ? (
-                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                  <Input value={service.extensionDir} readOnly size="small" />
-                  <Button size="small" onClick={() => window.electronAPI.openFolder(service.extensionDir!)}>
-                    打开目录
-                  </Button>
-                </div>
-              ) : (
-                <div style={{ marginTop: 6 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    还没有构建产物(out/extension 不存在)。
-                  </Text>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* ── Browser runtime (A-M4) ── */}
-        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
-          <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
-            浏览器内核
-          </Text>
-          <div style={{ marginBottom: 12 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              浏览器工具使用的内核与启动方式。默认应用内嵌窗格（页面停靠在主窗口右侧，操作全程可见）；托管内核为无头 Chromium，在后台执行。
-            </Text>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <Text>默认后端</Text>
-            <Select
-              size="small"
-              style={{ minWidth: 150 }}
-              value={localBrowserBackend}
-              onChange={(v) => {
-                setLocalBrowserBackend(v)
-                void saveSettings({ ...settings, browser: { ...settings.browser, backend: v } })
-              }}
-              options={[
-                { value: 'app-view', label: '应用内嵌窗格（推荐）' },
-                { value: 'managed', label: '托管内核（无头）' },
-              ]}
-            />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <Text>无头模式（不显示窗口）</Text>
-            <Switch
-              checked={localBrowserHeadless}
-              onChange={(checked) => {
-                setLocalBrowserHeadless(checked)
-                void saveSettings({ ...settings, browser: { ...settings.browser, headless: checked } })
-              }}
-            />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <Text>单次调用上限（秒）</Text>
-            <InputNumber
-              size="small"
-              min={10}
-              max={300}
-              value={localBrowserTimeoutSec}
-              onChange={(v) => {
-                const sec = typeof v === 'number' ? v : 60
-                setLocalBrowserTimeoutSec(sec)
-                void saveSettings({ ...settings, browser: { ...settings.browser, timeoutMs: Math.round(sec * 1000) } })
-              }}
-              style={{ width: 90 }}
-            />
-          </div>
         </div>
 
         {/* Save Button */}

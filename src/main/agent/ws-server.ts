@@ -81,6 +81,10 @@ const storageConversations: AgentServiceConversations = {
 export interface AgentServiceHandle {
   port: number
   token: string
+  /** Connections that completed `hello` (clientId + session count) — the
+   *  settings panel's 已连接的客户端. A socket that has not said hello yet
+   *  (`clientId === 'unknown'`, sub-second) is not a client worth listing. */
+  clients(): Array<{ clientId: string; sessions: number }>
   close(): Promise<void>
 }
 
@@ -531,6 +535,10 @@ export async function startAgentService(
   return {
     port: finalPort,
     token,
+    clients: () =>
+      [...conns.values()]
+        .filter((conn) => conn.clientId !== 'unknown')
+        .map((conn) => ({ clientId: conn.clientId, sessions: conn.sessions.size })),
     close: async () => {
       clearInterval(heartbeat)
       unsubEvents()

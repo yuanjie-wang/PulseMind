@@ -96,7 +96,7 @@ const electronAPI = {
   // Conversations
   listConversations: (): Promise<ConversationIndexEntry[]> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_LIST),
   getConversation: (id: string): Promise<Conversation | null> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_GET, id),
-  hydrateConversation: (id: string): Promise<Conversation | null> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_HYDRATE, id),
+  hydrateConversation: (id: string, maxContentLength?: number): Promise<Conversation | null> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_HYDRATE, id, maxContentLength),
   saveConversation: (conv: Conversation): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SAVE, conv),
   saveConversationSync: (conv: Conversation): void => {
     ipcRenderer.sendSync(IPC_CHANNELS.CONVERSATION_SAVE_SYNC, conv)
@@ -449,6 +449,8 @@ const electronAPI = {
   serviceSetEnabled: (enabled: boolean): Promise<{ running: boolean; port: number | null }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_SET_ENABLED, enabled),
   serviceSetPort: (port: number): Promise<{ running: boolean; port: number | null }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_SET_PORT, port),
   serviceResetToken: (): Promise<{ token: string }> => ipcRenderer.invoke(IPC_CHANNELS.SERVICE_RESET_TOKEN),
+  extensionExportZip: (): Promise<{ ok: boolean; path?: string; canceled?: boolean; message?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_EXPORT_ZIP),
   onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void): (() => void) => {
     const listener = (_e: unknown, event: { sessionId: string; data: unknown }): void => callback(event)
     ipcRenderer.on(IPC_CHANNELS.AGENT_SESSION_EVENT, listener)

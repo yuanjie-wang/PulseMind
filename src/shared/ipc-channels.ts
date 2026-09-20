@@ -166,6 +166,8 @@ export const IPC_CHANNELS = {
   SERVICE_SET_ENABLED: 'service:set-enabled',
   SERVICE_SET_PORT: 'service:set-port',
   SERVICE_RESET_TOKEN: 'service:reset-token',
+  /** Zip the built browser extension and hand it to the user as a download. */
+  EXTENSION_EXPORT_ZIP: 'extension:export-zip',
   AGENT_SESSION_HYDRATE: 'agent-session:hydrate',
   AGENT_SESSION_SNAPSHOT: 'agent-session:snapshot',
   AGENT_SESSION_ENGINE_CALL: 'agent-session:engine-call',

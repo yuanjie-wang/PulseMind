@@ -459,6 +459,8 @@ export interface ElectronAPI {
   serviceSetEnabled: (enabled: boolean) => Promise<{ running: boolean; port: number | null }>
   serviceSetPort: (port: number) => Promise<{ running: boolean; port: number | null }>
   serviceResetToken: () => Promise<{ token: string }>
+  /** Zip the built browser extension and save it through a file dialog. */
+  extensionExportZip: () => Promise<{ ok: boolean; path?: string; canceled?: boolean; message?: string }>
   onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void) => () => void
   canvasExportImage: (
     rectId: string,

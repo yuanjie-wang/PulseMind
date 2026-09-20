@@ -7,7 +7,7 @@
     "dev": "node scripts/build.js && concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "node scripts/dev-renderer.js",
     "dev:electron": "wait-on http://localhost:5173 && cross-env ELECTRON_RENDERER_URL=http://localhost:5173 electron .",
-    "build": "node scripts/build.js && vite build && node scripts/ensure-chromium.js",
+    "build": "node scripts/build.js && vite build && node scripts/ensure-chromium.js && node scripts/build-extension.js",
     "build:extension": "node scripts/build-extension.js",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
@@ -145,6 +145,13 @@
       {
         "from": "resources/chromium",
         "to": "chromium",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "out/extension",
+        "to": "extension",
         "filter": [
           "**/*"
         ]
