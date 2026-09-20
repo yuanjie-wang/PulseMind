@@ -3,7 +3,7 @@
  * file-ops.handler.ts closures, extracted so both the IPC handlers and the
  * main-process agent host call the same functions.
  */
-import { readFile, writeFile, appendFile, stat, mkdir, readdir } from 'node:fs/promises'
+import { readFile, writeFile, appendFile, stat, mkdir, readdir, type Dirent } from 'node:fs/promises'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { patchContent } from '../utils/patch-utils'
@@ -161,6 +161,9 @@ export async function svcCopyFile(input: { sourceUrl?: string; destination: stri
       sourcePath = sourcePath.slice(process.platform === 'win32' ? 8 : 7)
     }
     const safeDest = await resolveWritablePath(input.destination)
+    // Copy is a write: create the destination's parents (the conversation
+    // workspace itself is minted, not created, until the first write lands).
+    await mkdir(path.dirname(safeDest), { recursive: true })
     await cf(sourcePath, safeDest)
     return { success: true }
   } catch (err) {
@@ -326,6 +329,9 @@ export async function svcWriteFile(input: WriteFileInput): Promise<WriteFileResu
           return { success: false, error: `${STALE_FILE_ERROR}（文件已被外部修改，请刷新后重试）` }
         }
       }
+      // A write materializes the conversation's lazily-minted workspace (and
+      // any nested subdir — writeFile alone fails ENOENT on a missing parent).
+      await mkdir(path.dirname(safePath), { recursive: true })
       if (append) {
         await appendFile(safePath, content, 'utf-8')
       } else {
@@ -415,14 +421,23 @@ export interface DirEntry {
 }
 
 /** One directory level for the workbench's 工作区 file tree: read-only, so the
- *  path jail's free-read policy applies and only existence/permission can fail
- *  (all reported as null and surfaced as an empty state by the tree). */
+ *  path jail's free-read policy applies. A MISSING directory reads as empty —
+ *  the conversation workspace is minted (named, persisted) at first session and
+ *  only materializes at the first write, and the tree must show 工作目录为空
+ *  rather than 无法读取该目录 for that normal state. Other failures (permission,
+ *  EIO) are null and surface as the tree's failure hint. */
 export async function svcListDir(dirPath: string): Promise<{ entries: DirEntry[] } | null> {
   try {
     const guard = await checkFsTarget(dirPath, 'read')
     if (!guard.ok) return null
     const safePath = resolvePath(dirPath)
-    const dirents = await readdir(safePath, { withFileTypes: true })
+    let dirents: Dirent[]
+    try {
+      dirents = await readdir(safePath, { withFileTypes: true })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { entries: [] }
+      throw err
+    }
     const entries: DirEntry[] = dirents.map((d) => ({
       name: d.name,
       path: path.join(safePath, d.name),

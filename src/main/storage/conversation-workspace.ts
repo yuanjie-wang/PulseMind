@@ -4,7 +4,10 @@
 //   1. already stored → returned as-is (idempotent across restarts);
 //   2. bound to a (non-default) project → the project's fixed workspace;
 //   3. otherwise → a fresh `yyyyMMddHHmmss` folder under the global workspace,
-//      created lazily on the conversation's first session.
+//      minted (named + persisted) here but NOT created: the directory is
+//      materialized on first genuine use — a file write into it (file-ops
+//      creates parent dirs) or a shell cwd inside it (terminal ensures the
+//      cwd). Idle chats therefore leave no empty folders behind.
 // Callers: the agent-session IPC handler (local UI conversations). Routines,
 // ws extension clients and spawn sub-agents pass their own workspaceDir and
 // never go through here, so their behavior is unchanged.
@@ -53,14 +56,19 @@ async function globalWorkspaceDir(): Promise<string> {
   return settings.workspaceDir || WORKSPACE_DIR
 }
 
-/** Create `<global workspace>/yyyyMMddHHmmss` (collision-safe: `-2`, `-3`…). */
+/** Mint `<global workspace>/yyyyMMddHHmmss` (collision-safe: `-2`, `-3`…) —
+ *  the NAME only: no mkdir. The path is persisted immediately so it is stable
+ *  for the conversation's life, while the directory itself materializes at the
+ *  first write/exec that needs it (user report 2026-09-20: idle chats were
+ *  leaving an empty timestamped folder per conversation). The readdir is what
+ *  keeps a mint from claiming a name already taken on disk; a same-second race
+ *  between two first resolutions can still share a name — it could before the
+ *  change too (recursive mkdir never failed), so behavior is unchanged. */
 async function createTimestampedWorkspaceDir(convId: string): Promise<string> {
   const base = await globalWorkspaceDir()
   const preferred = conversationDirNameFor(convId) ?? formatConversationDirName(new Date())
   const existing = existsSync(base) ? await readdir(base) : []
-  const dir = join(base, nextConversationDirName(existing, preferred))
-  await mkdir(dir, { recursive: true })
-  return dir
+  return join(base, nextConversationDirName(existing, preferred))
 }
 
 /** Resolve (and persist) the conversation's working directory. */

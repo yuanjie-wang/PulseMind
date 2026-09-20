@@ -72,7 +72,9 @@ function normalize(p: string): string {
   return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r
 }
 
-function isSubpath(root: string, target: string): boolean {
+/** True when `target` is `root` itself or lives underneath it (case-folded on
+ *  darwin/win32). Shared by the guard and by the terminal's cwd materialization. */
+export function isSubpath(root: string, target: string): boolean {
   const r = normalize(root)
   const t = normalize(target)
   if (r === t) return true

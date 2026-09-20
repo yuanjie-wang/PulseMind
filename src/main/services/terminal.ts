@@ -6,8 +6,10 @@
  */
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync } from 'node:fs'
 import { getHookEnv } from '../hooks-runner'
 import { currentSessionSandbox } from '../sandbox/session-context'
+import { isSubpath } from '../../shared/sandbox/path-jail'
 import { auditStore } from '../storage/audit-store'
 import { DATA_DIR } from '../storage'
 
@@ -57,6 +59,25 @@ function getHomeDir(): string | undefined {
   return process.env.HOME || process.env.USERPROFILE || undefined
 }
 
+/** Materialize a spawn cwd that lives inside the session's workspace and does
+ *  not exist yet. The conversation workspace is minted (named, persisted) at
+ *  first session and only created at the first write — a shell command aimed
+ *  into it is the other first use, and spawning with a missing cwd fails with
+ *  a misleading "spawn <shell> ENOENT". Deliberately scoped to the workspace:
+ *  a cwd outside it that does not exist keeps today's spawn error, because
+ *  creating arbitrary model-named paths is not this service's call. */
+function ensureWorkspaceCwd(cwd: string | undefined): void {
+  if (!cwd) return
+  const ctx = currentSessionSandbox()
+  if (!ctx?.workspaceDir || !isSubpath(ctx.workspaceDir, cwd)) return
+  if (existsSync(cwd)) return
+  try {
+    mkdirSync(cwd, { recursive: true })
+  } catch {
+    /* leave it to spawn to report the real failure */
+  }
+}
+
 export interface TerminalEmitSink {
   output(processId: string, type: 'stdout' | 'stderr', data: string): void
   exit(processId: string, code: number | null, signal: string | null): void
@@ -83,6 +104,7 @@ export function svcExecuteCommand(
   // are the controls (the former OS-level hard isolation is gone with projects).
   const sandboxCtx = currentSessionSandbox()
   const effectiveCwd = cwd || sandboxCtx?.workspaceDir || getHomeDir()
+  ensureWorkspaceCwd(effectiveCwd)
   if (sandboxCtx) {
     auditStore.record({ scope: 'project', actor: sandboxCtx.sessionId, action: 'exec', target: command.slice(0, 160), decision: 'allowed' })
   }
@@ -192,6 +214,7 @@ export function svcExecSync(command: string, cwd?: string, timeoutMs?: number): 
     : [process.env.SHELL || '/bin/bash', ['-c', command]]
 
   return new Promise((resolve) => {
+    ensureWorkspaceCwd(cwd)
     const child = spawn(shell, shellArgs, {
       cwd: cwd || getHomeDir(),
       stdio: ['pipe', 'pipe', 'pipe'],
