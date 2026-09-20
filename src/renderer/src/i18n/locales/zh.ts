@@ -681,6 +681,7 @@ const zh = {
       conflict: '与「{{action}}」的快捷键冲突，请换一个组合键',
       reserved: '该组合键被系统菜单占用（关闭窗口 / 刷新 / 开发者工具），请换一个',
       'no-modifier': '需要搭配 Cmd/Ctrl 或 Alt 等修饰键，单独按键不能作为快捷键',
+      'platform-modifier': 'Cmd/Super 修饰键在 Windows/Linux 上无法生效，请使用 Ctrl 或 CmdOrCtrl',
       invalid: '无法识别该按键组合',
     },
     action: {

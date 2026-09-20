@@ -12,6 +12,7 @@ import {
   DEFAULT_ACCELERATORS,
   SHORTCUT_ACTION_IDS,
   effectiveAccelerators,
+  fallbackComboFor,
   formatAccelerator,
   normalizeAccelerator,
   validateBinding,
@@ -83,6 +84,55 @@ describe('shared shortcuts table', () => {
       const result = validateBinding('new-task', chord, effectiveAccelerators())
       expect(result.ok, chord).toBe(false)
       expect(result.problem, chord).toBe('no-modifier')
+    }
+  })
+
+  it('validateBinding rejects Cmd/Super modifiers (2026-09-21 review M2)', () => {
+    // Cmd/Super name a mac-only chord: on win/linux the fallback table drops
+    // the modifier and a Super-only binding lands as a BARE key — every plain
+    // press of that letter would preventDefault into the action. normalizeAccelerator
+    // collapses cmd/super into `mod`, so the guard must read the raw parts.
+    for (const chord of ['Cmd+N', 'Super+N', 'super+shift+p', 'CMD+K']) {
+      const result = validateBinding('new-task', chord, effectiveAccelerators())
+      expect(result.ok, chord).toBe(false)
+      expect(result.problem, chord).toBe('platform-modifier')
+    }
+    // CmdOrCtrl stays legal — the portable spelling and the recorder's output.
+    expect(validateBinding('new-task', 'CmdOrCtrl+P', effectiveAccelerators())).toEqual({ ok: true })
+  })
+
+  it('fallbackComboFor maps the modifiers that fire on a PC keyboard, in input order', () => {
+    expect(fallbackComboFor('CmdOrCtrl+N')).toBe('ctrl+n')
+    expect(fallbackComboFor('Ctrl+Alt+U')).toBe('ctrl+alt+u')
+    // A hand-edited 'Shift+Alt+P' must collide with the input's 'alt+shift+p'.
+    expect(fallbackComboFor('Shift+Alt+P')).toBe('alt+shift+p')
+  })
+
+  it('fallbackComboFor never produces a bare or capitals-only key — the typing-hijack guard', () => {
+    // Super/Cmd drop on a PC keyboard, and shift alone is how capital letters
+    // get typed; an entry without ctrl/alt left must not be tabled at all.
+    // Non-vacuous: weakening the guard to `combo.length` turns 'Super+Shift+N'
+    // into 'shift+n' (hijacking capitals), deleting it turns 'Super+N' into 'n'.
+    expect(fallbackComboFor('Super+N')).toBeNull()
+    expect(fallbackComboFor('Cmd+N')).toBeNull()
+    expect(fallbackComboFor('N')).toBeNull()
+    expect(fallbackComboFor('Super+Shift+N')).toBeNull()
+    expect(fallbackComboFor('Shift+N')).toBeNull()
+    // Shift may still RIDE a real modifier.
+    expect(fallbackComboFor('Ctrl+Shift+N')).toBe('ctrl+shift+n')
+  })
+
+  it('menu.ts builds the fallback table through the shared guard', () => {
+    // The guard lives inside fallbackComboFor, so the runtime table is safe
+    // exactly while menu.ts routes through it. Non-vacuous: reverting menu.ts
+    // to its own inline mapping (the pre-M2 shape) fails this scan.
+    expect(MENU).toContain('fallbackComboFor(')
+  })
+
+  it('both locales explain the platform-modifier rejection', () => {
+    for (const locale of ['zh', 'en']) {
+      const dict = read('src', 'renderer', 'src', 'i18n', 'locales', `${locale}.ts`)
+      expect(dict, locale).toContain("'platform-modifier':")
     }
   })
 

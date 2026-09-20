@@ -26,7 +26,7 @@
 import { Menu, type BrowserWindow, type MenuItemConstructorOptions } from 'electron'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { settingsStore } from './storage/settings-store'
-import { effectiveAccelerators, type ShortcutActionId } from '../shared/shortcuts'
+import { effectiveAccelerators, fallbackComboFor, type ShortcutActionId } from '../shared/shortcuts'
 
 export type MenuActionId = ShortcutActionId
 
@@ -185,28 +185,14 @@ export async function installApplicationMenu(getWin: () => BrowserWindow | null)
 let fallbackCombos: Record<string, MenuActionId> = {}
 
 function refreshFallbackCombos(accelerators: Record<MenuActionId, string>): void {
-  // Electron accelerator → the before-input-event key notation: CmdOrCtrl
-  // resolves to ctrl on these platforms, cmd/super never fire on a PC keyboard
-  // so they are dropped, and the modifiers are emitted in the SAME fixed order
-  // the input side below uses (ctrl→alt→shift) — a hand-edited 'Shift+Alt+P'
-  // in settings.json must collide with the input's 'alt+shift+p', not miss it.
+  // The notation mapping lives in shared/shortcuts.ts (fallbackComboFor) so
+  // the bare-key guard it carries is testable and cannot drift from the input
+  // side's modifier order. A null combo (no ctrl/alt left — a hand-edited
+  // Super-only or Shift-only binding) is simply not tabled.
   const combos: Record<string, MenuActionId> = {}
   for (const [action, accelerator] of Object.entries(accelerators) as [MenuActionId, string][]) {
-    const parts = accelerator.split('+').map((p) => p.trim()).filter(Boolean)
-    const key = parts.filter((p) => !['cmdorctrl', 'cmd', 'ctrl', 'alt', 'altgr', 'shift', 'super'].includes(p.toLowerCase()))[0]
-    const mods = parts.filter((p) => ['cmdorctrl', 'cmd', 'ctrl', 'alt', 'altgr', 'shift', 'super'].includes(p.toLowerCase()))
-    const flags = new Set(
-      mods.flatMap((m) => {
-        const lower = m.toLowerCase()
-        if (lower === 'cmdorctrl' || lower === 'ctrl') return ['ctrl']
-        if (lower === 'alt' || lower === 'altgr') return ['alt']
-        if (lower === 'shift') return ['shift']
-        return []
-      }),
-    )
-    if (!key) continue
-    const combo = ['ctrl', 'alt', 'shift'].filter((f) => flags.has(f))
-    combos[[...combo, key.toLowerCase()].join('+')] = action
+    const combo = fallbackComboFor(accelerator)
+    if (combo) combos[combo] = action
   }
   fallbackCombos = combos
 }

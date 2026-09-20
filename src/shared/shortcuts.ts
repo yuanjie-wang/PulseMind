@@ -74,7 +74,7 @@ export function effectiveAccelerators(overrides?: ShortcutOverrides): Record<Sho
   return { ...DEFAULT_ACCELERATORS, ...(overrides ?? {}) }
 }
 
-export type BindingProblem = 'conflict' | 'reserved' | 'no-modifier' | 'invalid'
+export type BindingProblem = 'conflict' | 'reserved' | 'no-modifier' | 'platform-modifier' | 'invalid'
 
 export interface BindingValidation {
   ok: boolean
@@ -95,6 +95,16 @@ export function validateBinding(
 ): BindingValidation {
   const norm = normalizeAccelerator(accelerator)
   if (!norm) return { ok: false, problem: 'invalid' }
+  // Cmd/Super name a mac-only chord: on win/linux the fallback table drops
+  // them (fallbackComboFor), so a Super-only binding degrades to a BARE key —
+  // a global typing hijack. CmdOrCtrl is the portable spelling and what the
+  // recorder emits, so a hand-edited Cmd/Super form is rejected everywhere
+  // (checked on the RAW parts: normalizeAccelerator has already collapsed
+  // cmd/super into `mod`, indistinguishable from Ctrl).
+  const rawMods = accelerator.split('+').map((p) => p.trim().toLowerCase())
+  if (rawMods.includes('cmd') || rawMods.includes('super')) {
+    return { ok: false, problem: 'platform-modifier' }
+  }
   const mods = norm.split('+').slice(0, -1)
   // Shift alone would fire while the user types capital letters — a real
   // modifier (the collapsed Cmd/Ctrl family, or Alt) is required.
@@ -110,6 +120,35 @@ export function validateBinding(
     }
   }
   return { ok: true }
+}
+
+/** Electron accelerator → the before-input-event key notation the non-darwin
+ *  fallback table (menu.ts) is keyed on: CmdOrCtrl/Ctrl resolve to ctrl,
+ *  alt/altgr → alt, shift stays, and the modifiers are emitted in the SAME
+ *  fixed order (ctrl→alt→shift) the input side reads them, so a hand-edited
+ *  'Shift+Alt+P' collides with the input's 'alt+shift+p' instead of missing
+ *  it. Returns null when no table-worthy combo remains: cmd/super drop (they
+ *  never fire on a PC keyboard) and shift alone is how capital letters get
+ *  typed — an entry without ctrl/alt left would preventDefault every plain
+ *  press of its key (typing "n" would fire 新建任务), which is the load-path
+ *  backstop for a hand-edited settings.json and mirrors validateBinding's own
+ *  modifier rule. */
+export function fallbackComboFor(accelerator: string): string | null {
+  const parts = accelerator.split('+').map((p) => p.trim()).filter(Boolean)
+  const key = parts.filter((p) => !MODIFIER_NAMES.has(p.toLowerCase()))[0]
+  if (key === undefined) return null
+  const flags = new Set(
+    parts.flatMap((p) => {
+      const lower = p.toLowerCase()
+      if (lower === 'cmdorctrl' || lower === 'ctrl') return ['ctrl']
+      if (lower === 'alt' || lower === 'altgr') return ['alt']
+      if (lower === 'shift') return ['shift']
+      return []
+    }),
+  )
+  const combo = ['ctrl', 'alt', 'shift'].filter((f) => flags.has(f))
+  if (!combo.includes('ctrl') && !combo.includes('alt')) return null
+  return [...combo, key.toLowerCase()].join('+')
 }
 
 const MAC_KEY_LABELS: Record<string, string> = {

@@ -688,6 +688,7 @@ const en: TranslationDict = {
       conflict: 'Conflicts with "{{action}}" — pick another chord',
       reserved: 'That chord belongs to the system menu (close / reload / devtools) — pick another',
       'no-modifier': 'A modifier (Cmd/Ctrl or Alt) is required — single keys cannot be shortcuts',
+      'platform-modifier': 'Cmd/Super modifiers have no effect on Windows/Linux — use Ctrl or CmdOrCtrl',
       invalid: 'Unrecognized key combination',
     },
     action: {
