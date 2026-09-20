@@ -956,13 +956,58 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     availability: 'gated',
   },
 
-  // ── page_* (browser extension, PLAN-browser-extension M2.2) ─────────
-  // These act on the tab the user is LOOKING AT — real login state, real
-  // session — through the extension's content script. Deliberately a separate
-  // family from `browser` (decision D2): that one drives its own Playwright
-  // browser with no user session, and the two answer different questions.
-  // Availability is gated by "extension online", not by keyword (see
-  // tool-collection.ts), so they carry no `triggers` and no `availability`.
+  // The page_* family used to live in this array; it is extension-only now
+  // (user ruling 2026-09-20: 「页面系列工具是仅给插件用的，不用在这里管理」) and
+  // is exported separately as PAGE_BUILT_IN_TOOLS at the foot of this file —
+  // the desktop registry neither lists it in the capability center nor carries
+  // it in a desktop toolset.
+
+  // ── browser (Browser Use A-M1) ─────────────────────────────────────
+  // One tool for the whole browser capability: `code` runs against the
+  // host-side facade (agent.browsers). The full calling convention lives in
+  // the returned documentation() and in this tool's own `instructions` manual
+  // (tool-instructions.ts, shipped in every request via buildToolProtocols) —
+  // the model bootstraps by reading them, never by guessing member names.
+  // Always in the tool list — no `triggers` and no `availability` (the
+  // settings toggle is what turns it off).
+  {
+    name: 'browser',
+    description:
+      'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts.',
+    category: 'browser',
+    input_schema: {
+      type: 'object',
+      properties: {
+        code: {
+          type: 'string',
+          description:
+            'JS to run against `agent.browsers` (tabs, domSnapshot, playwright ops, screenshots via emitImage). Fresh scope per call — rebind tabs every call.',
+        },
+        timeoutMs: {
+          type: 'integer',
+          description: 'Wall-clock budget for this call (default 60000, max 300000).',
+        },
+      },
+      required: ['code'],
+    },
+    instructions: toolInstructions.browser,
+    builtIn: true,
+  },
+]
+
+// ── page_* (browser extension, PLAN-browser-extension M2.2) ───────────
+// These act on the tab the user is LOOKING AT — real login state, real
+// session — through the extension's content script. Deliberately a separate
+// family from `browser` (decision D2): that one drives its own Playwright
+// browser with no user session, and the two answer different questions.
+//
+// NOT registered in the desktop tool registry (2026-09-20 ruling): the
+// capability center has nothing to toggle and a desktop session never carries
+// them. `collectEnabledTools` (tool-collection.ts) is the ONE door they enter
+// a toolset through, and it opens only while the session's browser-extension
+// client is bound (`opts.hostedAvailable`) — "the model must not see browser
+// tools while the extension is offline".
+export const PAGE_BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'page_get_content',
     description:
@@ -1087,39 +1132,6 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['script'],
     },
     instructions: toolInstructions.page_execute_js,
-    builtIn: true,
-  },
-
-  // ── browser (Browser Use A-M1) ─────────────────────────────────────
-  // One tool for the whole browser capability: `code` runs against the
-  // host-side facade (agent.browsers). The full calling convention lives in
-  // the returned documentation() and in this tool's own `instructions` manual
-  // (tool-instructions.ts, shipped in every request via buildToolProtocols) —
-  // the model bootstraps by reading them, never by guessing member names.
-  // Always in the tool list —
-  // no `triggers` and no `availability`, like the page_* family above (the
-  // settings toggle is what turns it off).
-  {
-    name: 'browser',
-    description:
-      'Drive a real web browser: open pages, read AI/ARIA snapshots, click/type/fill via locators, take screenshots and run page JS. Everything happens inside one `code` param (JS): observe → decide → act within a single call. Locate elements ONLY from domSnapshot() facts.',
-    category: 'browser',
-    input_schema: {
-      type: 'object',
-      properties: {
-        code: {
-          type: 'string',
-          description:
-            'JS to run against `agent.browsers` (tabs, domSnapshot, playwright ops, screenshots via emitImage). Fresh scope per call — rebind tabs every call.',
-        },
-        timeoutMs: {
-          type: 'integer',
-          description: 'Wall-clock budget for this call (default 60000, max 300000).',
-        },
-      },
-      required: ['code'],
-    },
-    instructions: toolInstructions.browser,
     builtIn: true,
   },
 ]

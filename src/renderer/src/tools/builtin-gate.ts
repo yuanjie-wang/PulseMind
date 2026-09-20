@@ -6,10 +6,11 @@
  * so pick_tool's intent mode treats built-ins exactly like MCP servers.
  *
  * A category needs an entry only when it can appear in pick_tool's activation
- * list — i.e. when it has gated members. `page` and `browser` have none (page's
- * availability is the extension's connection; browser is always in the tool
- * list), so their summaries are here for the category to be readable wherever
- * categories are listed.
+ * list — i.e. when it has gated members. `browser` has none (it is always in
+ * the tool list), so its summary is here for the category to be readable
+ * wherever categories are listed. The extension-only page_* family is not a
+ * desktop category at all — it is not in the registry, so pick_tool can neither
+ * list nor activate it.
  */
 
 export const BUILTIN_CATEGORY_SUMMARIES: Record<string, string> = {
@@ -17,7 +18,6 @@ export const BUILTIN_CATEGORY_SUMMARIES: Record<string, string> = {
   memory: 'Long-term memory: search/save memories, search past conversations and tool results',
   knowledge: 'Knowledge base: search and read compiled wiki documents',
   browser: 'Real browser automation: open URLs, AI/ARIA snapshots, click/type via locators, screenshots — one JS-code tool (agent.browsers)',
-  page: 'The page the user is looking at right now, in their own browser tab: read it as indexed text, scroll, click, type, select — real login state',
 }
 
 export const builtinCategoryServerId = (category: string): string => `builtin:${category}`

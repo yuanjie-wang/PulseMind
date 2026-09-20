@@ -6,6 +6,7 @@ import type { AgentMessage, TextBlock } from '../../types/agent'
 import type { ToolManager } from '../../tools/ToolManager'
 import type { ToolInputSchema } from '../../tools/types'
 import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId } from '../../tools/builtin-gate'
+import { PAGE_BUILT_IN_TOOLS } from '../../tools/built-in-tools'
 import { sanitizeSchema } from '../agent-utils'
 import type { AgentEngineOptions } from '../AgentEngine'
 import { ensureCache, getCachedExpertProfiles, getCachedMcpServers, refreshMcpServers } from '../mcp-cache'
@@ -30,11 +31,16 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   let enabledTools = toolManager.getEnabledTools().map((t) => t.definition)
 
   // ── Hosted page tools: only while a browser client is bound (M2.4) ──
-  // The tool list is what makes the model reach for these; hiding them when
-  // nothing can execute them is the whole gate (Anywhere's rule: "the model
-  // must not see browser tools while the extension is offline").
-  if (!deps.opts.hostedAvailable) {
-    enabledTools = enabledTools.filter((t) => t.category !== 'page')
+  // The page_* family is extension-only and NOT in the tool registry at all
+  // (2026-09-20: 「页面系列工具是仅给插件用的，不用在这里管理」— the capability
+  // center has nothing to toggle, a desktop session never carries them), so
+  // this merge is the ONE door it enters a toolset through. The tool list is
+  // what makes the model reach for these; hiding them when nothing can execute
+  // them is the whole gate (Anywhere's rule: "the model must not see browser
+  // tools while the extension is offline").
+  if (deps.opts.hostedAvailable) {
+    const known = new Set(enabledTools.map((t) => t.name))
+    enabledTools = [...enabledTools, ...PAGE_BUILT_IN_TOOLS.filter((t) => !known.has(t.name))]
   }
 
   // ── Gated built-in tools: keyword auto-trigger + session activation ──

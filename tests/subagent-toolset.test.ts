@@ -14,6 +14,10 @@ import { collectEnabledTools } from '../src/renderer/src/agent/engine/tool-colle
  * 「当前会话没有连接的浏览器客户端」。v1 的定案是把入口关掉，而不是留着必然
  * 失败的出口。这里证明派发链路的另一端：父引擎（hostedAvailable: true）派生的
  * 专家，工具集里没有 page_*，父引擎仍有。
+ *
+ * 2026-09-20 起 page_* 不在 ToolManager 注册表里（插件专用），父会话的
+ * page 工具来自 collectEnabledTools 按 hostedAvailable 的合并，enabledTools
+ * 只负责普通内建工具。
  */
 
 function makeMockHost(): PulseHost {
@@ -44,9 +48,9 @@ beforeEach(() => {
 describe('sub-agent toolset excludes page_* (T9)', () => {
   it('a spawned engine of a hosted parent carries hostedAvailable=false and no page_* tools; the parent keeps them', async () => {
     // 全新 ToolManager 默认全禁（生产里从 tool_preferences 表载入）——这里显式
-    // 启用 page 家族 + 一个普通工具，作为两个引擎共享的工具底座。
+    // 启用一个普通工具作底座；page 家族由 hostedAvailable 的合并提供，不走注册表。
     const toolManager = new ToolManager() as ToolManagerType
-    toolManager.applyPreferences({ enabledTools: ['page_get_content', 'page_click', 'read'] })
+    toolManager.applyPreferences({ enabledTools: ['read'] })
     const parent = new AgentEngine({
       apiKey: 'test-key', // 子引擎继承：空 key 会撞 no-key 守卫，而那条路径不结算 completion
       baseURL: 'https://example.invalid',

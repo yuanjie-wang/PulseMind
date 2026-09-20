@@ -11,16 +11,23 @@
  * (1) and (2) are structural — the routing is private engine state that would
  * take a full engine + host + LLM stub to exercise — so they are asserted
  * against the source with the ordering that actually matters. (3) is a plain
- * function call and is tested for real. */
+ * function call and is tested for real.
+ *
+ * Since 2026-09-20 (「页面系列工具是仅给插件用的，不用在这里管理」) the family
+ * is additionally NOT registered in the desktop tool registry at all: the
+ * capability center has nothing to toggle, a desktop toolset never carries it,
+ * and `collectEnabledTools` merges `PAGE_BUILT_IN_TOOLS` in only for a hosted
+ * session — that merge is the family's only door. */
 
 import { describe, expect, it, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PAGE_SESSION_ALLOWED_TOOLS, PAGE_TOOL_NAMES, isPageTool } from '../src/shared/agent-protocol/page-tools'
+import { BUILT_IN_TOOLS, PAGE_BUILT_IN_TOOLS } from '../src/renderer/src/tools/built-in-tools'
+import { ToolManager } from '../src/renderer/src/tools/ToolManager'
 import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, pageToolTier, tierOfTool } from '../src/renderer/src/agent/engine/tool-tiers'
 import { collectEnabledTools, type ToolCollectionDeps } from '../src/renderer/src/agent/engine/tool-collection'
 import { setHost } from '../src/renderer/src/agent/host'
-import type { ToolManager } from '../src/renderer/src/tools/ToolManager'
 import type { AgentEngineOptions } from '../src/renderer/src/agent/AgentEngine'
 
 const source = (rel: string): string => readFileSync(join(process.cwd(), rel), 'utf-8')
@@ -92,6 +99,21 @@ describe('page tool routing sites', () => {
   })
 })
 
+// ── Registry membership (extension-only, 2026-09-20) ─────────────────
+
+describe('page tool registry membership', () => {
+  it('the desktop registry neither defines nor registers the page family', () => {
+    expect(BUILT_IN_TOOLS.filter((t) => isPageTool(t.name)).map((t) => t.name)).toEqual([])
+    // The standalone list is exactly the eight protocol names — a new page tool
+    // must extend PAGE_TOOL_NAMES and this array together, never BUILT_IN_TOOLS.
+    expect(PAGE_BUILT_IN_TOOLS.map((t) => t.name).sort()).toEqual([...PAGE_TOOL_NAMES].sort())
+    const tm = new ToolManager()
+    expect(tm.getAllTools().filter((s) => isPageTool(s.definition.name)).map((s) => s.definition.name)).toEqual([])
+    // Nothing to manage: no preference row either.
+    expect(tm.getPreferences().knownTools.filter((n) => isPageTool(n))).toEqual([])
+  })
+})
+
 // ── Online gate + session whitelist (§3.4.4 / M2.5) ──────────────────
 
 function fakeToolManager(names: string[]): ToolManager {
@@ -101,7 +123,7 @@ function fakeToolManager(names: string[]): ToolManager {
         enabled: true,
         definition: {
           name,
-          category: isPageTool(name) ? 'page' : 'system',
+          category: 'system',
           description: '',
           instructions: '',
           input_schema: { type: 'object', properties: {}, required: [] },
@@ -110,7 +132,9 @@ function fakeToolManager(names: string[]): ToolManager {
   } as unknown as ToolManager
 }
 
-const TOOLSET = ['exec', 'read', 'write', 'browser', 'ask_user', ...PAGE_TOOL_NAMES]
+// The fake registry models the DESKTOP world: no page tools in it. The merge
+// under test injects the real PAGE_BUILT_IN_TOOLS when a client is bound.
+const TOOLSET = ['exec', 'read', 'write', 'browser', 'ask_user']
 
 async function collect(opts: Partial<AgentEngineOptions>, deps: Partial<ToolCollectionDeps> = {}): Promise<string[]> {
   const defs = deps.allowedToolsSet ? [...TOOLSET] : TOOLSET
