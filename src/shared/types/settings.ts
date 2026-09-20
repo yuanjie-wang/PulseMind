@@ -51,6 +51,9 @@ export interface AppSettings {
    * 开发版默认开启；打包版需显式设为 true（读取按文件 mtime 缓存，改完下一次请求即生效）。
    */
   debugLlmRequests?: boolean
+  /** 调试用：主线程关键路径计时（src/main/perf/perf-log.ts 的 [perf] 行，
+   *  现覆盖 emitMessages 与 saveConversation）。开关语义与 debugLlmRequests 相同。 */
+  debugPerfLogs?: boolean
   /** Browser runtime (A-M4). */
   browser?: {
     /** Default backend for conversations that never chose one ('managed'). */

@@ -5,6 +5,7 @@ import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { extractSnippet } from '../../shared/search/snippet'
 import { conversationKeyOf } from '../../shared/conversation-key'
 import { getDb } from './database'
+import { perfTime } from '../perf/perf-log'
 
 /** Guard for the setters below.
  *
@@ -233,6 +234,12 @@ export function getConversation(id: string): Conversation | null {
 }
 
 export function saveConversation(conversation: Conversation): void {
+  // PLAN-long-task-perf M0-T2: the synchronous full-conversation SQLite write
+  // is the other perf-gate suspect (B6) — the wrapper keeps the body untouched.
+  perfTime(`saveConversation conv=${conversation.id} msgs=${conversation.messages?.length ?? 0} bytes≈${(conversation.messages ?? []).reduce((n, m) => n + JSON.stringify(m.contentBlocks ?? []).length, 0)}`, () => saveConversationInner(conversation))
+}
+
+function saveConversationInner(conversation: Conversation): void {
   const database = getDb()
   const now = new Date().toISOString()
   // updated_at is the newest message time — but monotonic (PLAN T11): a full
@@ -562,8 +569,15 @@ export function getConversationPlan(id: string): string | null {
 /**
  * Load a conversation with full tool_result content filled from tool_results table.
  * Called when continuing a conversation (AgentEngine needs full content).
+ *
+ * `maxContentLength` caps each restored tool_result's content — the deliverables
+ * BFS hydrates child sessions only to derive rows (pairing, is_error, paths) and
+ * never reads the bodies, so it passes a cap instead of pulling every 200KB
+ * output across the IPC into the renderer heap (PLAN-long-task-perf M3-T3).
+ * Callers that need the full text (continuing a conversation) omit the param
+ * and get byte-identical behaviour.
  */
-export function hydrateConversation(id: string): Conversation | null {
+export function hydrateConversation(id: string, maxContentLength?: number): Conversation | null {
   const conv = getConversation(id)
   if (!conv) return null
 
@@ -581,7 +595,9 @@ export function hydrateConversation(id: string): Conversation | null {
       if (block.type === 'tool_result' && block.tool_result_id) {
         const data = resultMap.get(block.tool_result_id)
         if (data) {
-          block.content = data.content
+          block.content = maxContentLength != null && data.content.length > maxContentLength
+            ? data.content.slice(0, maxContentLength)
+            : data.content
           block.is_error = data.isError === 1
         }
       }

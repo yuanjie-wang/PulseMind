@@ -2,12 +2,14 @@
  * One transcript segment's body, shared by the main chat and the tool studio so
  * both render messages, execution segments and streaming text identically.
  */
-import React from 'react'
+import React, { useRef } from 'react'
 import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
 import { MessageGroup, type MessageActions } from './MessageGroup'
 import { ExecutionSegment } from './ExecutionSegment'
 import { CodeBlock } from './CodeBlock'
+import { useMarkdownThemeClass } from '../../theme/mode'
+import { createTextThrottle, STREAM_PARSE_MIN_INTERVAL } from './stream-throttle'
 import type { ContentBlock } from '../../types/agent'
 import type { Segment } from './message-segments'
 
@@ -53,16 +55,37 @@ export interface SegmentViewProps {
 }
 
 /** Streaming text is markdown, rendered with the same components as a settled
- *  message so nothing reflows when the stream lands. */
+ *  message so nothing reflows when the stream lands.
+ *
+ *  The parse is throttled (PLAN-long-task-perf M1-T3, measured in
+ *  probe-chat-stream-perf): each tick used to re-parse the WHOLE accumulated
+ *  text, a cost that grows with the answer (9.4→15.7ms/tick over a 20KB
+ *  answer, ~half the sampled renderer CPU in the markdown pipeline). The
+ *  snapshot XMarkdown sees now advances at most every
+ *  STREAM_PARSE_MIN_INTERVAL — the same component on both sides of the
+ *  streaming/settled boundary is the anti-reflow design and is untouched; only
+ *  the snapshot's freshness is quantized, and the settled message always
+ *  carries the complete text. */
 function StreamingText({ blocks }: { blocks: ContentBlock[] }): React.ReactElement {
+  const mdClass = useMarkdownThemeClass()
+  // Per-block throttles (streaming usually carries one text block; a Map keeps
+  // several stable). feed() is O(1) and idempotent for the shown text, so
+  // running it here every tick is nothing — what it gates is the parse below.
+  const throttlesRef = useRef<Map<number, ReturnType<typeof createTextThrottle>>>(new Map())
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12 }}>
       <div style={{ paddingLeft: 12, width: '100%', fontSize: 14, lineHeight: 1.6 }}>
         {blocks.map((block, i) => {
           if (block.type !== 'text') return null
+          let throttle = throttlesRef.current.get(i)
+          if (!throttle) {
+            throttle = createTextThrottle(STREAM_PARSE_MIN_INTERVAL)
+            throttlesRef.current.set(i, throttle)
+          }
+          const shown = throttle.feed(block.text, performance.now())
           return (
-            <div key={i} className="x-markdown-light" style={{ color: '#333' }}>
-              <XMarkdown content={block.text} components={{ code: CodeBlock }} config={{ extensions: Latex() }} />
+            <div key={i} className={mdClass} style={{ color: 'var(--pm-text-strong)' }}>
+              <StreamingMarkdown shown={shown} />
             </div>
           )
         })}
@@ -70,6 +93,18 @@ function StreamingText({ blocks }: { blocks: ContentBlock[] }): React.ReactEleme
     </div>
   )
 }
+
+/** The parse boundary. Memoized on the FROZEN snapshot: the live text changes
+ *  every tick, but `shown` only advances at STREAM_PARSE_MIN_INTERVAL, so
+ *  between advances this skips the render entirely — and XMarkdown's parse
+ *  with it. That skip is where the throttle's saving lives (a same-content
+ *  re-render would re-parse anyway). */
+const StreamingMarkdown = React.memo(
+  function StreamingMarkdown({ shown }: { shown: string }): React.ReactElement {
+    return <XMarkdown content={shown} components={{ code: CodeBlock }} config={{ extensions: Latex() }} />
+  },
+  (a, b) => a.shown === b.shown,
+)
 
 export function SegmentView({
   seg,

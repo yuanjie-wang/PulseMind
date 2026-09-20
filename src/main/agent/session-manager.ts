@@ -41,6 +41,7 @@ import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
+import { perfTime } from '../perf/perf-log'
 import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, ModelState } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 
@@ -145,6 +146,13 @@ export class AgentSessionManagerImpl {
   }
 
   private emitMessages(sessionId: string, messages: AgentMessage[]): void {
+    // PLAN-long-task-perf M0-T2: the every-notify full-history diff is one of
+    // the two suspects the perf gate watches (B1). The wrapper keeps the body
+    // byte-identical and prints one [perf] line per call when the gate is on.
+    perfTime(`emitMessages conv=${sessionId} msgs=${messages.length}`, () => this.emitMessagesInner(sessionId, messages))
+  }
+
+  private emitMessagesInner(sessionId: string, messages: AgentMessage[]): void {
     const lastLen = this.lastSentLen.get(sessionId) ?? 0
     const previous = this.messageContentRegistry.get(sessionId) ?? new Map<string, string>()
     const content = new Map(messages.map(message => [message.id, messageContentSignature(message)]))

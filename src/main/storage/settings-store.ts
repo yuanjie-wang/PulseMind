@@ -89,7 +89,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   experienceEnabled: true,
   routineRunRetentionDays: 0,
   conversationRetentionDays: 0,
-  debugLlmRequests: false
+  debugLlmRequests: false,
+  debugPerfLogs: false
 }
 
 /**
@@ -153,6 +154,7 @@ export class SettingsStore {
           routineRunRetentionDays: readRetentionDays(parsed.routineRunRetentionDays),
           conversationRetentionDays: readRetentionDays(parsed.conversationRetentionDays),
           debugLlmRequests: parsed.debugLlmRequests === true,
+          debugPerfLogs: parsed.debugPerfLogs === true,
           projectSortMode: readProjectSortMode(parsed.projectSortMode),
           git: readGroup(parsed.git, readGitSettings),
           knowledge: readGroup(parsed.knowledge, readKnowledgeSettings),
@@ -198,7 +200,8 @@ export class SettingsStore {
       memoryEnabled: true,
       experienceEnabled: true,
       routineRunRetentionDays: 0,
-      debugLlmRequests: false
+      debugLlmRequests: false,
+      debugPerfLogs: false
     }
   }
 

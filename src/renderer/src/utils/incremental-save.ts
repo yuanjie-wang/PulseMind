@@ -6,10 +6,12 @@
  * now plans by CONTENT through `ConversationSaveQueue` below.
  *
  * The queue's model:
- * - Every save captures a deep snapshot at dispatch and fingerprints each
- *   message by ID + full JSON signature, so a same-ID in-place edit (a late
- *   tool_result, an exitCode landing after the fact) is dirty like a new
- *   message — no tail heuristic, no `hasNew` gate, works for any index.
+ * - Every save fingerprints each live message by ID + full JSON signature at
+ *   dispatch, so a same-ID in-place edit (a late tool_result, an exitCode
+ *   landing after the fact) is dirty like a new message — no tail heuristic,
+ *   no `hasNew` gate, works for any index. The payload handed to the write is
+ *   the live snapshot itself (the IPC bridge clones synchronously at invoke),
+ *   not a pre-made deep copy (M3-T1).
  * - A save acknowledges ONLY the bytes it wrote: on success the captured
  *   baseline is stored, never a later live array. Changes that arrived while
  *   the write was in flight stay dirty and drain from FRESH live data on the
@@ -80,8 +82,13 @@ function contentPlan(current: Baseline, saved?: Baseline): ContentSavePlan {
 
 /** Content acknowledgements and a single write lane per conversation.
  *
- * Capture at dispatch, not when queued; clone the payload before awaiting IPC.
- * An acknowledgement describes ONLY those captured bytes, never a live array.
+ * Capture at dispatch, not when queued. The payload handed to `write` is the
+ * live snapshot: the IPC bridge serializes its arguments synchronously at
+ * invoke time, so the bytes an ack describes are exactly the bytes handed to
+ * the bridge. The old eager JSON round-trip (deep clone + re-stringify)
+ * copied the WHOLE session on every dispatch — before the dirty check could
+ * answer 'none' — which is the C1 hotspot PLAN-long-task-perf M3-T1 removes:
+ * the stringify that dirty detection needs stays; only the copy is gone.
  * After a successful write, recheck live data: late results (even in an inactive
  * conversation) remain dirty and drain without needing another React render.
  * Failures keep the baseline unchanged and release the lane for the next retry.
@@ -93,11 +100,6 @@ export class ConversationSaveQueue<S extends PersistableSnapshot> {
 
   seed(id: string, snapshot: S): void {
     this.baselines.set(id, fingerprint(snapshot))
-  }
-
-  private capture(snapshot: S): { snapshot: S; baseline: Baseline } {
-    const copy = JSON.parse(JSON.stringify(snapshot)) as S
-    return { snapshot: copy, baseline: fingerprint(copy) }
   }
 
   save(
@@ -112,12 +114,15 @@ export class ConversationSaveQueue<S extends PersistableSnapshot> {
       while ((this.epochs.get(id) ?? 0) === epoch) {
         const live = read()
         if (!live) return
-        const { snapshot, baseline } = this.capture(live)
+        // Dirty detection reads the live data directly — no clone (M3-T1).
+        // The per-message stringify remains the honest full-JSON check it was
+        // (it is what sees a same-ID in-place edit); only the copy moved.
+        const baseline = fingerprint(live)
         const plan = contentPlan(baseline, this.baselines.get(id))
         if (plan.mode === 'none') return
         const operation = forceFull ? { mode: 'full' as const } : plan
         forceFull = false
-        await write(snapshot, operation)
+        await write(live, operation)
         if ((this.epochs.get(id) ?? 0) !== epoch) return
         this.baselines.set(id, baseline)
       }
@@ -138,12 +143,12 @@ export class ConversationSaveQueue<S extends PersistableSnapshot> {
    * replace this newer baseline or send a stale retry after the sync flush. */
   saveSync(id: string, snapshot: S, write: (snapshot: S) => void): void {
     this.epochs.set(id, (this.epochs.get(id) ?? 0) + 1)
-    const captured = this.capture(snapshot)
+    const baseline = fingerprint(snapshot)
     // A live value may have reverted to the baseline while a DIFFERENT value
     // is in flight. It still needs the final sync write to supersede that IPC.
-    if (!this.lanes.has(id) && contentPlan(captured.baseline, this.baselines.get(id)).mode === 'none') return
-    write(captured.snapshot)
-    this.baselines.set(id, captured.baseline)
+    if (!this.lanes.has(id) && contentPlan(baseline, this.baselines.get(id)).mode === 'none') return
+    write(snapshot)
+    this.baselines.set(id, baseline)
   }
 
   /** Cancel queued work before deletion. Await the already-dispatched write

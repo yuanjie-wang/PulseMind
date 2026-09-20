@@ -149,7 +149,7 @@ export interface ElectronAPI {
   // Conversations
   listConversations: () => Promise<ConversationIndexEntry[]>
   getConversation: (id: string) => Promise<Conversation | null>
-  hydrateConversation: (id: string) => Promise<Conversation | null>
+  hydrateConversation: (id: string, maxContentLength?: number) => Promise<Conversation | null>
   saveConversation: (conv: Conversation) => Promise<void>
   saveConversationSync: (conv: Conversation) => void
   appendConversationMessages: (convId: string, title: string, messages: Message[]) => Promise<void>
