@@ -35,7 +35,7 @@ export interface ConversationApprovalMode {
   mirrorApprovalMode: (mode: SandboxApprovalMode) => void
 }
 
-export function useConversationApprovalMode(convId: string | null | undefined): ConversationApprovalMode {
+export function useConversationApprovalMode(convId: string | null | undefined, reloadKey?: number): ConversationApprovalMode {
   // The state carries its convId and the read is derived — switching entities
   // (same mount, new convId) must not show the previous thread's level while
   // the next fetch is in flight; a mismatch reads as "never chosen". Truthiness
@@ -64,7 +64,7 @@ export function useConversationApprovalMode(convId: string | null | undefined): 
     return () => {
       alive = false
     }
-  }, [convId])
+  }, [convId, reloadKey])
 
   const publish = useCallback((mode: SandboxApprovalMode): void => {
     dirtyRef.current = true

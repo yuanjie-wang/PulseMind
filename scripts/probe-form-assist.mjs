@@ -1,18 +1,28 @@
 /**
- * Real-browser render of the form-assist 提案 pipeline (PLAN-form-assist-proposals):
- * the routine editor's REAL form column + REAL assistant column wired through the
+ * Real-browser render of the form-assist 自动填入 pipeline (user ruling
+ * 2026-09-20: 「不要草稿模式，生成结论后直接填入表单，给撤销按钮」) — the
+ * routine editor's REAL form column + REAL assistant column wired through the
  * REAL useFormAssistSession, with the hosted session stubbed at the electronAPI
  * seam so the probe drives the same events the main process emits.
  *
- * It exists because the 2026-09-19 review found four P0 breaks here that no
- * source read could catch end to end: the [当前表单] JSON leaking into user
- * bubbles, streaming fence JSON painting raw, a proposal the user could not
- * review before it landed, and a dismiss that was silently unrecoverable.
+ * The 2026-09-19 probe guarded the review card (diff rows, checkboxes,
+ * dismiss/restore). That card is GONE by ruling; what must hold now:
  *
- * Non-vacuity: each assertion reads an observable outcome (bubble text, card
- * rows, applied draft state, chip visibility), so deleting any one of — the
- * user-annotation strip, the streaming-fence cut, the placeholder, the
- * key-filtered apply, or the convId reset — turns exactly its check red.
+ *   · a completed reply's patch lands in the form by itself (no apply click),
+ *     the undo bar names it, and no checkbox/review card resurfaces;
+ *   · 撤销 restores the form to the state captured at that apply — including
+ *     manual edits made between applies;
+ *   · the trigger is fire-once per message change: a same-message mutation
+ *     (message_stats / a re-delivered identical list) never re-applies, and a
+ *     prose reply retires the undo bar without touching the form;
+ *   · hydrated history RECORDS WITHOUT FIRING — a restored conversation must
+ *     not pour its old conclusions over a freshly loaded form;
+ *   · the render strips stay honest (user-bubble annotation, streaming fence,
+ *     fence-only placeholder) and the wire still carries the annotation.
+ *
+ * Non-vacuity: each assertion reads an observable outcome (input values, bar
+ * visibility), so deleting the auto-apply trigger, the undo frame capture, or
+ * a strip turns exactly its checks red.
  *
  * Usage: node scripts/probe-form-assist.mjs [--headed]
  */
@@ -40,7 +50,7 @@ import { RoutineForm } from './src/renderer/src/components/routine/RoutineForm'
 import { FormAssistColumn } from './src/renderer/src/components/form-assist/FormAssistColumn'
 import { useFormAssistSession } from './src/renderer/src/components/form-assist/useFormAssistSession'
 import { buildFormAssistSystemPrompt } from './src/renderer/src/components/form-assist/form-assist'
-import { ROUTINE_ASSIST_SPEC, filterRoutinePatch } from './src/renderer/src/components/routine/routine-assist'
+import { ROUTINE_ASSIST_SPEC } from './src/renderer/src/components/routine/routine-assist'
 import { applyAssistantPatch, EMPTY_DRAFT } from './src/renderer/src/components/routine/routine-form-model'
 import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
@@ -48,15 +58,29 @@ import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 // ── Hosted-session stubs at the electronAPI seam ──
 const listeners = new Set()
 const state = { convId: 'routine_assist_A', sent: [], draft: EMPTY_DRAFT }
+// Conversation B's STORED history — served through hydrateConversation, the
+// same channel production restores from (events only ever carry NEW turns).
+const B_STORED = [
+  {
+    id: 'b1',
+    role: 'assistant',
+    content: 'B 的旧提案。',
+    // \\n so the HARNESS string (this file is a template literal) carries the
+    // escape, not a raw newline; \x60 becomes a real backtick — legal inside
+    // the harness's single-quoted string.
+    contentBlocks: [{ type: 'text', text: 'B 的旧提案。\\n\x60\x60\x60form-patch\\n{"name":"B的旧草稿"}\\n\x60\x60\x60' }],
+    createdAt: new Date().toISOString(),
+  },
+]
 const FIXTURES = {
   getSettings: () => ({ activeProfileId: '', profiles: [], theme: 'light', locale: 'zh', workspaceDir: '' }),
   onAgentSessionEvent: (cb) => {
     listeners.add(cb)
-    window.__subGen = (window.__subGen ?? 0) + 1 // re-subscribe generation (D6's reset runs with it)
+    window.__subGen = (window.__subGen ?? 0) + 1 // re-subscribe generation (conv-switch waits on it)
     return () => listeners.delete(cb)
   },
   agentSessionSnapshot: () => Promise.resolve(null),
-  hydrateConversation: () => Promise.resolve({ messages: [] }),
+  hydrateConversation: (id) => Promise.resolve(id === 'routine_assist_B' ? { messages: B_STORED } : { messages: [] }),
   agentSessionCreate: () => Promise.resolve({ sessionId: '', agentId: '' }),
   agentSessionAsk: (id, content) => { state.sent.push({ id, content }); return Promise.resolve() },
   agentSessionEngineCall: () => Promise.resolve(),
@@ -84,19 +108,31 @@ function ProbeHost() {
   const draftRef = useRef(draft)
   useEffect(() => { draftRef.current = draft; state.draft = draft }, [draft])
   useEffect(() => { window.__setConvId = setConvId }, [])
+  useEffect(() => {
+    // Section-scoped rewind for the probe only: the placeholder message STAYS
+    // in the transcript, its patch is simply wound out of the form so the
+    // next section starts from the empty state.
+    window.__reset = () => { undoRef.current = []; setDraft(EMPTY_DRAFT) }
+  }, [])
+  // The page's real shape: every apply captures the PRE-patch draft; 撤销
+  // pops it back and clears the bar.
+  const undoRef = useRef([])
   const assist = useFormAssistSession({
     convId,
     title: 'probe',
     spec: ROUTINE_ASSIST_SPEC,
     systemPrompt: buildFormAssistSystemPrompt(ROUTINE_ASSIST_SPEC),
+    onPatch: (patch) => {
+      undoRef.current.push(draftRef.current)
+      setDraft(applyAssistantPatch(patch, draftRef.current))
+    },
   })
-  const apply = (keys) => {
-    if (!assist.proposedPatch) return
-    // The page's real apply shape: filter to the checked rows, then merge.
-    const patch = filterRoutinePatch(assist.proposedPatch, keys)
-    if (Object.keys(patch).length === 0) return
-    setDraft(applyAssistantPatch(patch, draftRef.current))
-    assist.clearProposedPatch()
+  const undo = () => {
+    const frame = undoRef.current[undoRef.current.length - 1]
+    if (!frame) return
+    undoRef.current = undoRef.current.slice(0, -1)
+    setDraft(frame)
+    assist.clearAppliedPatch()
   }
   return (
     <div style={{ display: 'flex', gap: 24, padding: 24, alignItems: 'flex-start' }}>
@@ -105,11 +141,8 @@ function ProbeHost() {
           <RoutineForm
             draft={draft}
             onChange={setDraft}
-            pendingAssistantDraft={assist.proposedPatch}
-            restoreableAssistantDraft={assist.restoreablePatch}
-            onApplyAssistantDraft={apply}
-            onDismissAssistantDraft={assist.dismissProposal}
-            onRestoreAssistantDraft={assist.restoreProposal}
+            appliedAssistantPatch={assist.appliedPatch}
+            onUndoAssistantPatch={undo}
           />
         </div>
       </div>
@@ -169,13 +202,15 @@ await page.addScriptTag({ path: OUT })
 await page.waitForFunction(() => document.querySelector('[data-panel="chat"] textarea'), null, { timeout: 15000 })
 
 const chatText = () => page.evaluate(() => document.querySelector('[data-panel="chat"]').textContent)
-const formText = () => page.evaluate(() => document.querySelector('[data-panel="form"]').textContent)
 const emit = (events, convId) => page.evaluate(([e, c]) => window.__emit(e, c), [events, convId])
+const formState = () => page.evaluate(() => window.__state.draft)
 const iso = () => new Date().toISOString()
 const userMsg = (text, id) => ({ id, role: 'user', contentBlocks: [{ type: 'text', text }], createdAt: iso() })
 const assistantMsg = (text, id) => ({ id, role: 'assistant', contentBlocks: [{ type: 'text', text }], createdAt: iso() })
+const bar = page.locator('[data-panel="form"] [role="status"]')
+const undoButton = bar.getByRole('button', { name: /撤\s*销/ })
 
-// ── 1. user 气泡：[当前表单] JSON 只走 wire，不进渲染（D1）──
+// ── 1. user 气泡：[当前表单] JSON 只走 wire，不进渲染 ──
 await emit([
   { type: 'messages', messages: [userMsg('帮我做个巡检任务\n\n[当前表单]\n{"name":"","prompt":""}', 'u1')] },
   { type: 'status', status: 'completed' },
@@ -186,7 +221,7 @@ check('user 气泡渲染了消息文本', t1.includes('帮我做个巡检任务'
 check('user 气泡不渲染 [当前表单] 注记', !t1.includes('[当前表单]'), t1.includes('[当前表单]') ? 'leaked' : 'clean')
 check('user 气泡不渲染注记里的 JSON', !t1.includes('"prompt"'))
 
-// ── 2. 流式：不完整的围栏被截断，JSON 不裸奔（D2）──
+// ── 2. 流式：不完整的围栏被截断，JSON 不裸奔 ──
 await emit([
   { type: 'status', status: 'streaming' },
   { type: 'streaming_blocks', blocks: [{ type: 'text', text: '好的，我来填\n```form-patch\n{"name":"每日巡' }] },
@@ -197,107 +232,137 @@ check('流式正文渲染', t2.includes('好的，我来填'))
 check('流式不渲染围栏起始标记', !t2.includes('form-patch'))
 check('流式不渲染半截 JSON', !t2.includes('"name":"每日巡'))
 
-// ── 3. 纯围栏回复 → 占位文案（D7）──
+// ── 3. 纯围栏回复 → 占位文案（流式中途替换成完整回复）──
 await emit([
   { type: 'streaming_blocks', blocks: [] },
   { type: 'status', status: 'completed' },
   { type: 'messages', messages: [userMsg('帮我做个巡检任务\n\n[当前表单]\n{"name":""}', 'u1'), assistantMsg('```form-patch\n{"name":"占位测试"}\n```', 'a0')] },
 ])
-await page.waitForFunction(() => document.querySelector('[data-panel="chat"]').textContent.includes('（已生成表单草稿'), null, { timeout: 10000 })
+await page.waitForFunction(() => document.querySelector('[data-panel="chat"]').textContent.includes('（已生成表单内容'), null, { timeout: 10000 })
 const t3 = await chatText()
-check('纯围栏回复渲染占位文案', t3.includes('（已生成表单草稿'))
+check('纯围栏回复渲染占位文案', t3.includes('（已生成表单内容'))
 check('占位路径不泄漏 JSON 原文', !t3.includes('{"name":"占位测试"}'))
+// 2026-09-20 裁定的另一面：占位回复里的补丁也是结论，同样直接填入表单。
+check('纯围栏回复的补丁同样直接填入表单', await page.evaluate(() => window.__state.draft.name === '占位测试'))
+await page.evaluate(() => window.__reset())
+await page.waitForFunction(() => (window.__state.draft.name === ''), null, { timeout: 10000 })
 
-// ── 4. 评审卡：字段级 diff，before 按当前表单实时计算（D3）──
+// ── 4. 自动填入：回复一落地，表单就有值；撤销条就位；没有评审卡 ──
 await emit([
   {
     type: 'messages',
     messages: [
       userMsg('帮我做个巡检任务\n\n[当前表单]\n{"name":""}', 'u1'),
-      assistantMsg('这是说明。\n```form-patch\n{"name":"每日巡检","params":[{"key":"repo","label":"仓库","required":true}]}\n```', 'a1'),
+      assistantMsg('帮你设计了任务：每天巡检一次。\n```form-patch\n{"name":"每日巡检","prompt":"检查 {{repo}} 的漏洞","cron":"30 9 * * *"}\n```', 'a1'),
     ],
   },
   { type: 'status', status: 'completed' },
 ])
-await page.waitForSelector('[data-panel="form"] [role="status"]', { timeout: 10000 })
-const card = page.locator('[data-panel="form"] [role="status"]')
-const cardText = await card.textContent()
-check('卡片头保留一行摘要', cardText.includes('对话生成了任务草稿'), cardText.slice(0, 60))
-check('diff 行数 = 补丁携带的字段数（2）', (await card.locator('.ant-checkbox-input').count()) === 2)
-check('任务名称行 before=（未填）after=每日巡检', cardText.includes('（未填）') && cardText.includes('每日巡检'))
-check('参数行折叠为「N 个参数（keys）」摘要', cardText.includes('无参数') && cardText.includes('1 个参数（repo）'))
-await page.screenshot({ path: join(SHOTS, 'form-assist-review-card.png'), clip: { x: 0, y: 0, width: 1400, height: 1000 } })
+await page.waitForFunction(() => (window.__state.draft.name === '每日巡检'), null, { timeout: 10000 })
+const d4 = await formState()
+check('补丁未经确认直接写进表单', d4.name === '每日巡检' && d4.prompt === '检查 {{repo}} 的漏洞', JSON.stringify(d4))
+check('cron 走友好定时字段（scheduleEnabled + 09:30）', d4.scheduleEnabled === true && d4.sched?.time === '09:30')
+check('撤销条出现并点名词补丁', (await bar.count()) === 1 && (await bar.textContent()).includes('助手已将结论填入表单') && (await bar.textContent()).includes('「每日巡检」'))
+check('草稿模式不复活：表单列没有勾选框', (await page.locator('[data-panel="form"] .ant-checkbox-input').count()) === 0)
+const t4 = await chatText()
+check('气泡只留说明文字，不露围栏与 JSON', t4.includes('帮你设计了任务') && !t4.includes('form-patch') && !t4.includes('"name":"每日巡检"'))
+await page.screenshot({ path: join(SHOTS, 'form-assist-auto-apply.png'), clip: { x: 0, y: 0, width: 1400, height: 1000 } })
 
-// ── 5. 部分应用：只写勾选行（D4）──
-await card.locator('.ant-checkbox-input').first().uncheck()
-await card.getByRole('button', { name: /应\s*用/ }).click()
-await page.waitForFunction(() => JSON.stringify(window.__state.draft), null, { timeout: 10000 })
-const d5 = await page.evaluate(() => window.__state.draft)
-check('未勾选的 name 保持现值', d5.name === '', d5.name)
-check('勾选的 params 写入表单', d5.params?.[0]?.key === 'repo', JSON.stringify(d5.params))
-check('应用后卡片消失', (await page.locator('[data-panel="form"] [role="status"]').count()) === 0)
+// ── 5. 撤销：一键回到填入前的表单 ──
+await undoButton.click()
+await page.waitForFunction(() => (window.__state.draft.name === ''), null, { timeout: 10000 })
+const d5 = await formState()
+check('撤销后表单恢复原值', d5.name === '' && d5.prompt === '' && d5.scheduleEnabled === false, JSON.stringify(d5))
+check('撤销后撤销条消失', (await bar.count()) === 0)
 
-// ── 6. 忽略 → 同内容再现 → 恢复 chip（D5）──
-const REPLY2 = '改成每周的。\n```form-patch\n{"name":"每周备份"}\n```'
+// ── 6. 同一条消息的后续变异不重发 ──
+await emit([{ type: 'message_stats', updates: [{ messageId: 'a1', processingMs: 456 }] }])
+await page.waitForTimeout(300)
+const d6 = await formState()
+check('message_stats 触及原消息 → 不重新填入', d6.name === '' && d6.name !== '每日巡检')
+check('不重新出现撤销条', (await bar.count()) === 0)
+// Full-list re-delivery of the identical content must also be inert.
 await emit([
   {
     type: 'messages',
     messages: [
       userMsg('帮我做个巡检任务\n\n[当前表单]\n{"name":""}', 'u1'),
-      assistantMsg('这是说明。\n```form-patch\n{"name":"每日巡检","params":[{"key":"repo","label":"仓库","required":true}]}\n```', 'a1'),
-      assistantMsg(REPLY2, 'a2'),
+      assistantMsg('帮你设计了任务：每天巡检一次。\n```form-patch\n{"name":"每日巡检","prompt":"检查 {{repo}} 的漏洞","cron":"30 9 * * *"}\n```', 'a1'),
     ],
   },
 ])
-await page.waitForFunction(() => document.querySelector('[data-panel="form"]').textContent.includes('每周备份'), null, { timeout: 10000 })
-await page
-  .locator('[data-panel="form"] [role="status"]')
-  .getByRole('button', { name: /忽\s*略/ })
-  .click()
-await page.waitForFunction(() => !document.querySelector('[data-panel="form"] [role="status"]'), null, { timeout: 10000 })
-check('忽略后卡片隐藏', true)
-// Same content arrives again (model re-emits the identical patch).
+await page.waitForTimeout(300)
+check('同内容整表重发 → 仍不重新填入', (await formState()).name === '')
+
+// ── 7. 新回合的新补丁照常填入；撤销回到「上一次填入后」的中间态 ──
 await emit([
   {
     type: 'messages',
     messages: [
       userMsg('帮我做个巡检任务\n\n[当前表单]\n{"name":""}', 'u1'),
-      assistantMsg('这是说明。\n```form-patch\n{"name":"每日巡检","params":[{"key":"repo","label":"仓库","required":true}]}\n```', 'a1'),
-      assistantMsg(REPLY2, 'a2'),
-      assistantMsg('再给一次。\n```form-patch\n{"name":"每周备份"}\n```', 'a3'),
+      assistantMsg('帮你设计了任务：每天巡检一次。\n```form-patch\n{"name":"每日巡检","prompt":"检查 {{repo}} 的漏洞","cron":"30 9 * * *"}\n```', 'a1'),
+      userMsg('改成每周的吧', 'u2'),
+      assistantMsg('改好了。\n```form-patch\n{"name":"每周备份"}\n```', 'a2'),
     ],
   },
 ])
-await page.waitForFunction(() => document.querySelector('[data-panel="form"]').textContent.includes('已忽略同内容草稿'), null, { timeout: 10000 })
-check('同内容提案再现 → 弱化恢复 chip（而非无声消失）', (await page.locator('[data-panel="form"] [role="status"]').count()) === 0)
-await page.screenshot({ path: join(SHOTS, 'form-assist-restore-chip.png'), clip: { x: 0, y: 0, width: 1400, height: 1000 } })
-await page.locator('[data-panel="form"]').getByText('恢复').click()
-await page.waitForSelector('[data-panel="form"] [role="status"]', { timeout: 10000 })
-check('点击恢复 → 卡片重新出现', (await page.locator('[data-panel="form"] [role="status"]').textContent()).includes('每周备份'))
+await page.waitForFunction(() => (window.__state.draft.name === '每周备份'), null, { timeout: 10000 })
+check('新回复的新补丁再次自动填入', (await formState()).name === '每周备份')
+check('撤销条更新为最新补丁', (await bar.textContent()).includes('「每周备份」'))
+// messages_append: one more turn appended to the same conversation.
+await emit([
+  { type: 'messages_append', fromIndex: 4, items: [assistantMsg('再改一版。\n```form-patch\n{"name":"第三版","prompt":"v3"}\n```', 'a3')] },
+])
+await page.waitForFunction(() => (window.__state.draft.name === '第三版'), null, { timeout: 10000 })
+check('messages_append 的新补丁也自动填入', (await formState()).prompt === 'v3')
+await undoButton.click()
+await page.waitForFunction(() => (window.__state.draft.name === '每周备份'), null, { timeout: 10000 })
+check('撤销回到本次填入前的中间态（每周备份）', (await formState()).name === '每周备份' && (await formState()).prompt === '')
+check('撤销后撤销条消失', (await bar.count()) === 0)
 
-// ── 7. convId 切换重置 dismissed/恢复状态（D6）──
-await page
-  .locator('[data-panel="form"] [role="status"]')
-  .getByRole('button', { name: /忽\s*略/ })
-  .click()
-await page.waitForFunction(() => !document.querySelector('[data-panel="form"] [role="status"]'), null, { timeout: 10000 })
+// ── 8. 填入后的手动编辑属于「当前状态」，随下一次撤销一起回退 ──
+await page.fill('[data-panel="form"] input', '手动改过')
+await emit([
+  { type: 'messages_append', fromIndex: 5, items: [assistantMsg('第四版。\n```form-patch\n{"name":"第四版"}\n```', 'a4')] },
+])
+await page.waitForFunction(() => (window.__state.draft.name === '第四版'), null, { timeout: 10000 })
+await undoButton.click()
+await page.waitForFunction(() => (window.__state.draft.name === '手动改过'), null, { timeout: 10000 })
+check('撤销连手动编辑一起恢复（帧在填入时捕获）', (await formState()).name === '手动改过')
+
+// ── 9. 纯文字回复让撤销条退役，表单不动 ──
+await emit([
+  { type: 'messages_append', fromIndex: 6, items: [assistantMsg('还需要你确认巡检哪些仓库？', 'a5')] },
+])
+await page.waitForFunction(() => document.querySelector('[data-panel="chat"]').textContent.includes('还需要你确认巡检哪些仓库'), null, { timeout: 10000 })
+await page.waitForTimeout(200)
+check('纯文字回复后撤销条退役', (await bar.count()) === 0)
+check('纯文字回复不改表单', (await formState()).name === '手动改过')
+
+// ── 10. hydration 守卫：切到一条带历史围栏的会话，不得重放进表单 ──
 const genBefore = await page.evaluate(() => window.__subGen)
 await page.evaluate(() => window.__setConvId('routine_assist_B'))
 // The hook re-subscribes asynchronously; emitting into the stale closure would
 // be silently filtered by its captured convId. Wait for the new generation.
 await page.waitForFunction((g) => window.__subGen > g, genBefore, { timeout: 10000 })
+// B's history arrives through hydrateConversation (the production restore
+// channel); its OLD fence reply must render in the transcript but never land
+// in the form.
+await page.waitForFunction(() => document.querySelector('[data-panel="chat"]').textContent.includes('B 的旧提案'), null, { timeout: 10000 })
+await page.waitForTimeout(300)
+check('恢复的历史不重放进表单', (await formState()).name === '手动改过')
+check('恢复的历史不出现撤销条', (await bar.count()) === 0)
+// But a genuinely NEW reply in the new conversation applies as usual.
 await emit(
-  [
-    { type: 'messages', messages: [assistantMsg('B 的提案。\n```form-patch\n{"name":"每周备份"}\n```', 'b1')] },
-    { type: 'status', status: 'completed' },
-  ],
+  [{ type: 'messages_append', fromIndex: 1, items: [assistantMsg('B 的新填。\n```form-patch\n{"name":"B的新填"}\n```', 'b2')] }],
   'routine_assist_B',
 )
-await page.waitForSelector('[data-panel="form"] [role="status"]', { timeout: 10000 })
-const chipVisible = await page.evaluate(() => document.querySelector('[data-panel="form"]').textContent.includes('已忽略同内容草稿'))
-check('convId 切换后 dismissed 状态重置：B 的同内容提案直接出卡、无恢复 chip', !chipVisible)
+await page.waitForFunction(() => (window.__state.draft.name === 'B的新填'), null, { timeout: 10000 })
+check('新会话里的新回复照常填入', (await formState()).name === 'B的新填')
+check('新会话的撤销条就位', (await bar.count()) === 1 && (await bar.textContent()).includes('「B的新填」'))
+await page.screenshot({ path: join(SHOTS, 'form-assist-conv-switch.png'), clip: { x: 0, y: 0, width: 1400, height: 1000 } })
 
-// ── 8. wire 留痕：发送仍带 [当前表单]（D1 的另一面：渲染剥离 ≠ 协议剥离）──
+// ── 11. wire 留痕：发送仍带 [当前表单]（渲染剥离 ≠ 协议剥离）──
 await page.fill('[data-panel="chat"] textarea', '再帮我改一版')
 await page.keyboard.press('Enter')
 await page.waitForFunction(() => window.__state.sent.length > 0, null, { timeout: 10000 })

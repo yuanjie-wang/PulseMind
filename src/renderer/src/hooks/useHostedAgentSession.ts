@@ -43,6 +43,10 @@ export interface HostedAgentSessionOptions {
   title: string
   /** Handed to agentSessionCreate on the first send. */
   createOptions?: HostedSessionCreateOptions
+  /** Bump to discard the mirror and re-restore (新会话: the caller disposed
+   *  the main-side session and deleted the row, so the re-restore lands on an
+   *  empty thread under the SAME convId — the single slot per entity). */
+  resetKey?: number
 }
 
 export interface HostedAgentSession {
@@ -69,8 +73,8 @@ export interface HostedAgentSession {
   setApprovalMode: (mode: SandboxApprovalMode) => void
 }
 
-export function useHostedAgentSession({ convId, title, createOptions }: HostedAgentSessionOptions): HostedAgentSession {
-  const approval = useConversationApprovalMode(convId)
+export function useHostedAgentSession({ convId, title, createOptions, resetKey }: HostedAgentSessionOptions): HostedAgentSession {
+  const approval = useConversationApprovalMode(convId, resetKey)
   const stateRef = useRef<SessionState>(freshSessionState())
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
@@ -92,6 +96,13 @@ export function useHostedAgentSession({ convId, title, createOptions }: HostedAg
     let alive = true
     const state = freshSessionState()
     stateRef.current = state
+
+    // A re-subscription IS a restore cycle (convId switched live): the mirror
+    // was just wiped and is about to be reseeded from snapshot or DB. Downstream
+    // consumers (the form-assist auto-apply ledger, the restoring hints) must
+    // see restoring again, not only on first mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting the restore gate when the subscription itself is rebuilt
+    setRestoring(true)
 
     const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
       if (sessionId !== convId) return
@@ -122,7 +133,7 @@ export function useHostedAgentSession({ convId, title, createOptions }: HostedAg
       alive = false
       unsub()
     }
-  }, [convId, sync])
+  }, [convId, sync, resetKey])
 
   // Keep the persisted conversation in sync once an exchange settles — the
   // user's continuation (and the automated run's tail, idempotently) must

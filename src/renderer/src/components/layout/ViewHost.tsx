@@ -78,7 +78,7 @@ export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool,
     case 'routines':
       // routineEditing routes to the dedicated create/edit page (list · form ·
       // assistant); without it the kind renders the card grid / run workspace.
-      if (view.routineEditing) return <RoutineEditorPage routineId={view.routineId} templateId={view.routineTemplateId} />
+      if (view.routineEditing) return <RoutineEditorPage routineId={view.routineId} templateId={view.routineTemplateId} routineDraft={view.routineDraft} />
       return <RoutineCenter runHistoryOf={view.runHistoryOf} />
     case 'capability':
     case 'knowledge':

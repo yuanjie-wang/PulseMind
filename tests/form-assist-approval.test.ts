@@ -69,7 +69,9 @@ describe('useConversationApprovalMode (the shared state)', () => {
 
 describe('the four composers draw the button from their session', () => {
   it('the hosted session (form-assist, run transcript) exposes the shared state', () => {
-    expect(HOSTED).toContain('useConversationApprovalMode(convId)')
+    // The second arg is the 新会话 resetKey: a discarded thread re-reads the
+    // (deleted) row instead of keeping the old level on the fresh one.
+    expect(HOSTED).toContain('useConversationApprovalMode(convId, resetKey)')
     expect(HOSTED).toContain('approvalMode: approval.approvalMode')
     expect(HOSTED).toContain('setApprovalMode: approval.setApprovalMode')
     // Non-vacuity: the interface this test talks about is really there.

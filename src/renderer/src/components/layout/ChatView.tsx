@@ -7,6 +7,7 @@ import { useProjectHue } from '../../stores/projectStore'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { SegmentBlock } from '../chat/SegmentView'
 import { buildSegments, getSegmentAnchorId, getSegmentKey, type Segment } from '../chat/message-segments'
+import { routineEntryAllowed, routineEntryTargetIndex } from '../chat/routine-entry'
 import { StreamingCursor } from '../chat/StreamingCursor'
 import { ErrorDisplay } from '../chat/ErrorDisplay'
 import { ExtensionPrompt, SubAgentStopPrompt } from '../chat/ExtensionPrompt'
@@ -76,6 +77,11 @@ interface ChatViewProps {
    *  the other entry point: a spawn with no plan node (a plain loop, or a single
    *  @expert summon) has no node to click, so the card is the only way in. */
   onOpenSubAgent?: (subConvId: string, title: string) => void
+  /** 存为日常任务: distill the whole conversation into a routine draft and jump
+   *  to the routine editor (see useChatController.extractRoutine). Main-chat
+   *  only — every other host renders the transcript without this, so the
+   *  toolbar button exists exactly where this prop arrives. */
+  onExtractRoutine?: () => void | Promise<void>
   contextLength?: number
   /** Resolved working directory of the active conversation (M8.5); shown above
    *  the message list once the main-side session creation reports back. */
@@ -140,6 +146,7 @@ function ChatView({
   onPlanJump,
   onOpenPlanNode,
   onOpenSubAgent,
+  onExtractRoutine,
   canOpenNode,
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
@@ -443,6 +450,15 @@ function ChatView({
   )
   const turnPlacement = useMemo(() => segmentTurnPlacement(allSegments), [allSegments])
 
+  // 存为日常任务 rides exactly one action row — the conversation's last settled
+  // assistant message, and only while a turn is settled (routine-entry.ts).
+  // `null` takes the prop away from every segment, so streaming/execution tails
+  // and parked states simply render the rows they always did.
+  const routineEntryIndex = useMemo(() => {
+    if (!onExtractRoutine || !routineEntryAllowed(agentStatus.status)) return null
+    return routineEntryTargetIndex(allSegments)
+  }, [onExtractRoutine, agentStatus.status, allSegments])
+
   // Lazy-load one more page of older segments on scroll-up. The segment that was
   // topmost is used as a scroll anchor: after React prepends the older segments,
   // scrollTop is restored so the content doesn't visibly jump.
@@ -580,10 +596,11 @@ function ChatView({
         conversationId={conversationId}
         conversationTitle={conversationTitle}
         onOpenSubAgent={onOpenSubAgent}
+        onExtractRoutine={routineEntryIndex === index ? onExtractRoutine : undefined}
         aboveActions={aboveActions}
       />
     ),
-    [highlightedMsgId, allSegments, isRequesting, agentStatus.status, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, onOpenSubAgent],
+    [highlightedMsgId, allSegments, isRequesting, agentStatus.status, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, routineEntryIndex, onExtractRoutine, onOpenSubAgent],
   )
 
   // ── Render ──

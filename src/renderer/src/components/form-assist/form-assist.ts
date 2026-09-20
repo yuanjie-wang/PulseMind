@@ -5,9 +5,11 @@
 //   · every ask carries the form's live state as a trailing [当前表单] JSON
 //     annotation — the system prompt itself stays byte-stable (cache
 //     contract: no clock, no form values, no per-entity bytes);
-//   · a reply that proposes form content ends with a ```form-patch fenced
-//     JSON block containing ONLY the fields it adds or changes;
-//   · nothing writes into the form until the user applies the proposal.
+//   · a reply that carries form content ends with a ```form-patch fenced JSON
+//     block containing ONLY the fields it adds or changes;
+//   · the parsed patch is written into the form the moment the reply lands —
+//     no review card (user ruling 2026-09-20: 「不要草稿模式」) — and the form
+//     exposes an undo for it.
 // A domain supplies a FormAssistSpec (field dictionary, 口径 rules, patch
 // sanitizer, conversation prefix); this module owns the mechanics. Pure logic
 // — no React, no DOM, no IPC — so tests can drive it directly.
@@ -85,7 +87,7 @@ export function buildFormAssistSystemPrompt(spec: FormAssistSpec<object>, locale
   const bilingual = locale === 'en' && spec.rulesEn && spec.fields.every((f) => f.labelEn)
   if (bilingual) {
     return [
-      `You are PulseMind's ${spec.domainEn} form assistant. The user describes in prose what they want; you design the content and fill the form beside the chat by proposing form patches.`,
+      `You are PulseMind's ${spec.domainEn} form assistant. The user describes in prose what they want; you design the content and it fills the form beside the chat directly — the user can undo, so no confirmation step is needed.`,
       '',
       'Form fields:',
       ...spec.fields.map((f) => `- ${f.key}: ${f.labelEn}`),
@@ -103,7 +105,7 @@ export function buildFormAssistSystemPrompt(spec: FormAssistSpec<object>, locale
     ].join('\n')
   }
   return [
-    `你是「${spec.domain}」编辑器的表单助手。用户会用自然语言描述想要的内容，你帮他设计并填写表单。`,
+    `你是「${spec.domain}」编辑器的表单助手。用户会用自然语言描述想要的内容，你帮他设计并把结论直接填入表单（填入后用户可以撤销，无需先征求确认）。`,
     '',
     '表单字段：',
     ...spec.fields.map((f) => `- ${f.key}：${f.label}`),
@@ -138,8 +140,8 @@ export function parseFormPatch<P extends object>(text: string, spec: FormAssistS
   return spec.sanitizePatch(extractJson<Record<string, unknown>>(body))
 }
 
-/** Remove proposal fences from bubble text — the proposal surfaces in the
- *  form's review card, not as raw JSON in the transcript. `emptyPlaceholder`
+/** Remove proposal fences from bubble text — the proposal already landed in
+ *  the form, so raw JSON must not also paint in the transcript. `emptyPlaceholder`
  *  (D7) is returned when the whole reply was fences: a pure-proposal reply
  *  renders as a localized hint line instead of an empty bubble (the old
  *  fall-back-to-original leaked the JSON it was meant to hide). */
@@ -167,13 +169,54 @@ export function stripStreamingFences(text: string, legacyFences: string[] = []):
   return cut === -1 ? text : text.slice(0, cut).trimEnd()
 }
 
-/** One field-level line of the review card (D3): `before` is computed from the
- *  CURRENT form by the host's summarize function on every render — never a
- *  snapshot taken when the proposal arrived — so the diff is what applying
- *  would actually write right now. Empty `before` renders as 未填. */
-export interface ProposalDiffRow {
-  key: string
-  label: string
-  before: string
-  after: string
+/** What the latest assistant reply's patch landed as (user ruling 2026-09-20:
+ *  「不要草稿模式，生成结论后直接填入表单，给撤销按钮」 — there is no review
+ *  card; the host writes every parsed patch straight into the form and exposes
+ *  an undo). The record is the fire-once bookkeeping: which assistant message,
+ *  under which conversation, with which raw text, has already been handed to
+ *  the host. Kept in the hook's state, reset per conversation. */
+export interface AutoApplyRecord {
+  convId: string
+  /** null when the conversation carried no assistant message at all. */
+  messageId: string | null
+  /** The RAW text (fences intact) the decision was made from — a later
+   *  message_stats / messages_update on the same message must not re-fire. */
+  text: string
+}
+
+export interface AutoApplyDecision<P extends object> {
+  /** Non-null = hand it to the host's apply now (exactly once per change). */
+  patch: P | null
+  record: AutoApplyRecord | null
+}
+
+/** Decide whether the latest assistant message's patch should fill the form
+ *  now. Pure so the trigger is unit-testable; the hook calls it whenever the
+ *  message list changes and applies the returned decision. Rules, each
+ *  load-bearing:
+ *  - A conversation freshly mounted or switched to (record null, or convId
+ *    changed) RECORDS WITHOUT FIRING — hydrated history must not re-land in
+ *    the form: the form was just (re)loaded from the entity, and the
+ *    assistant's older conclusions predate it. Record the message, wait for
+ *    the next genuinely new reply.
+ *  - Same message id AND same raw text = already handled, no re-fire — this is
+ *    what keeps a late message_stats/messages_update on the same message from
+ *    re-applying. Text in the record is also why a message whose text GROWS
+ *    re-decides: partial-append → completed fence fires when it completes.
+ *  - A message with no usable patch still updates the record, so a plain
+ *    prose reply stops being re-parsed on every later render. */
+export function planAutoApply<P extends object>(
+  prev: AutoApplyRecord | null,
+  convId: string,
+  messageId: string | null,
+  rawText: string,
+  spec: FormAssistSpec<P>,
+): AutoApplyDecision<P> {
+  if (!prev || prev.convId !== convId) {
+    return { patch: null, record: { convId, messageId, text: rawText } }
+  }
+  if (messageId === null || (messageId === prev.messageId && rawText === prev.text)) {
+    return { patch: null, record: prev }
+  }
+  return { patch: parseFormPatch(rawText, spec), record: { convId, messageId, text: rawText } }
 }

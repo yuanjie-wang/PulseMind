@@ -3,10 +3,11 @@ import { Button, Form, Modal } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, UserOutlined, SaveOutlined, FormOutlined } from '@ant-design/icons'
 import type { ExpertProfile } from '../../../../../shared/types/expert'
 import type { ExpertFormDraft } from './expert-assist'
-import { EXPERT_ASSIST_SPEC, EXPERT_ASSIST_ALLOWED_TOOLS, EXPERT_ASSISTANT_PROFILE, filterExpertPatch, pickDraftFields, summarizeExpertPatch } from './expert-assist'
-import { ProposalReviewCard, ProposalRestoreChip } from '../../form-assist/ProposalReviewCard'
+import { EXPERT_ASSIST_SPEC, EXPERT_ASSIST_ALLOWED_TOOLS, EXPERT_ASSISTANT_PROFILE, captureExpertFormValues, nextDerivedExpertId, pickDraftFields } from './expert-assist'
+import { AppliedPatchBar } from '../../form-assist/AppliedPatchBar'
 import { FormAssistColumn } from '../../form-assist/FormAssistColumn'
 import { buildFormAssistSystemPrompt, formAssistConversationId } from '../../form-assist/form-assist'
+import { discardAssistConversation, promoteAssistDraftToEntity } from '../../form-assist/session-lifecycle'
 import { useFormAssistSession } from '../../form-assist/useFormAssistSession'
 import { useSettings } from '../../../hooks/SettingsContext'
 import { useTranslation } from '../../../i18n/useTranslation'
@@ -60,28 +61,81 @@ export default function ExpertEditor({
   const { t } = useTranslation()
   const { settings, switchProfile } = useSettings()
   const [form] = Form.useForm()
+  // Last id derived from the name — shared with ExpertFormFields' typing path
+  // so the「id follows the name」rule has one mark of "still derived" across
+  // both writers (typing and assistant patches).
+  const derivedIdRef = React.useRef('')
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
-  /** Which expert the assistant conversation is bound to. Deliberately NOT
-   *  bumped by a first save (the just-had context keeps its conversation —
-   *  same ruling as the routine editor's boundId); the parent's key={session}
-   *  remount on a user switch re-initializes it. */
+  /** Undo frames for the assistant's auto-applied patches (user ruling
+   *  2026-09-20): each apply captures ALL chat-fillable fields — empties
+   *  included, see captureExpertFormValues — plus the dirty flag, so 撤销
+   *  puts the form back exactly as it was. */
+  const [undoStack, setUndoStack] = useState<Array<{ values: ExpertFormDraft; dirty: boolean }>>([])
+  /** Which expert the assistant conversation is bound to; null = the create-
+   *  flow's draft slot. The first save PROMOTES the draft thread into the new
+   *  expert's slot and re-binds (用户裁定 2026-09-20：每个专家最多关联一个会
+   *  话), so the just-had context follows the expert instead of stranding in
+   *  the draft bucket. The parent's key={session} remount on a user switch
+   *  re-initializes it. */
   const [boundId, setBoundId] = useState<string | null>(editingId)
+  /** Bumped whenever the bound thread is discarded (新会话 / a fresh create
+   *  entry): the session hook re-restores empty under the same convId. */
+  const [sessionReset, setSessionReset] = useState(0)
   const editing = editingId ? profiles.find((p) => p.id === editingId) || null : null
 
+  const assistConvId = formAssistConversationId(EXPERT_ASSIST_SPEC.conversationPrefix, boundId)
+
+  /** 丢弃一个槽位的线程并重置会话视图 — the shared core of 新会话 and every
+   *  entry into the create flow (新建即新会话；每个专家最多关联一个会话，旧
+   *  线程直接丢弃). Undo frames belong to the discarded thread and die too.
+   *  The target defaults to the currently bound slot; entering create mode
+   *  from the list column's + passes the DRAFT slot explicitly — it runs
+   *  before the re-bind, when assistConvId still points at the old expert. */
+  const discardBoundSession = useCallback((targetConvId?: string): void => {
+    setUndoStack([])
+    void discardAssistConversation(targetConvId ?? assistConvId).then(() => setSessionReset((n) => n + 1))
+  }, [assistConvId])
+
   const assist = useFormAssistSession({
-    convId: formAssistConversationId(EXPERT_ASSIST_SPEC.conversationPrefix, boundId),
+    convId: assistConvId,
     title: `[${t('expertCenter.chatTitle')}] ${editing?.name ?? ''}`.trim(),
     spec: EXPERT_ASSIST_SPEC,
     systemPrompt: buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC, locale),
     // D15/D16: the internal expert pack (identity) + host-side tool pin (D17).
     allowedTools: EXPERT_ASSIST_ALLOWED_TOOLS,
     expertProfile: EXPERT_ASSISTANT_PROFILE,
+    resetKey: sessionReset,
+    // 自动填入 (user ruling 2026-09-20): every newly parsed patch lands in
+    // the form the moment its reply lands; the undo bar binds to
+    // assist.appliedPatch. Unstable identity is safe — the hook's fire-once
+    // ledger makes its effect's re-runs no-ops, and this closure reads the
+    // live form when a real patch fires.
+    onPatch: (patch) => {
+      setUndoStack((stack) => [...stack, { values: captureExpertFormValues(form.getFieldsValue()), dirty }])
+      form.setFieldsValue(patch)
+      // The id follows a patch's name exactly as it follows typing: the name
+      // input's onChange never fires for setFieldsValue, so the derive rule
+      // runs here too. Only while creating — an existing expert keeps its id
+      // (the field is not even mounted), and nextDerivedExpertId still refuses
+      // when the user hand-typed an id or the patch brought its own.
+      if (!editing && patch.name) {
+        const derived = nextDerivedExpertId(form.getFieldValue('id'), derivedIdRef.current, patch.name)
+        if (derived !== null) {
+          derivedIdRef.current = derived
+          form.setFieldsValue({ id: derived })
+        }
+      }
+      setDirty(true)
+    },
   })
 
   // Load the selected expert into the form on every switch. The dirty flag needs
   // no reset here: the parent remounts this editor per editing session.
   useEffect(() => {
+    // The derive mark is per form load: an existing expert's id is its own
+    // (and never derives — the field is hidden), a fresh form starts over.
+    derivedIdRef.current = editing ? editing.id : ''
     if (editing) {
       form.setFieldsValue({
         id: editing.id,
@@ -100,14 +154,19 @@ export default function ExpertEditor({
     }
   }, [editing, editingId, form])
 
-  /** Merge an assistant patch into the form — only the keys it proposed. */
-  const applyDraft = useCallback(
-    (draft: ExpertFormDraft) => {
-      form.setFieldsValue(draft)
-      setDirty(true)
-    },
-    [form],
-  )
+  // 新建专家即新会话 (user ruling 2026-09-20): the draft slot keeps no history
+  // across create flows — mounting straight into create mode (every 能力中心
+  // 新建 entry remounts this editor) discards whatever thread the previous
+  // create flow left there. Switching to create via the list column's + goes
+  // through handleSelect below; both entries share discardBoundSession.
+  const mountedCreateRef = React.useRef(editingId === null)
+  useEffect(() => {
+    if (!mountedCreateRef.current) return
+    mountedCreateRef.current = false
+    discardBoundSession()
+    // Create-entry only — mount-time state, never a re-run on unrelated renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /** Every ask carries the live form (annotation) so hand edits reach the
    *  model too — same contract as the routine editor's assistant. */
@@ -116,26 +175,25 @@ export default function ExpertEditor({
     [assist, form],
   )
 
-  const proposedPatch = assist.proposedPatch
-  // D3: `before` re-reads the LIVE form values on every render (onValuesChange
-  // → setDirty re-renders on each edit), so the diff always shows what
-  // applying would write right now. A dismissed identical draft shows the
-  // weak restore chip instead (D5).
-  const draftReview = proposedPatch ? (
-    <ProposalReviewCard
-      header={`${t('expertCenter.chatDraftReady')}${proposedPatch.name ? `：「${proposedPatch.name}」` : ''}`}
-      rows={summarizeExpertPatch(proposedPatch, pickDraftFields(form.getFieldsValue()))}
-      fingerprint={JSON.stringify(proposedPatch)}
-      onApply={(selectedKeys) => {
-        // D4: only the checked rows land in the form.
-        applyDraft(filterExpertPatch(proposedPatch, selectedKeys))
-        assist.clearProposedPatch()
-        notify.success(t('formAssist.applied'))
-      }}
-      onDismiss={assist.dismissProposal}
+  /** 撤销 the assistant's last auto-applied patch: restore the captured
+   *  pre-apply values wholesale. Manual edits made AFTER the apply go back
+   *  with it — one click answers 「把刚填的撤掉」, and redo lives in the
+   *  transcript (the content is still there verbatim). */
+  const undoAssistantPatch = (): void => {
+    const frame = undoStack[undoStack.length - 1]
+    if (!frame) return
+    setUndoStack((stack) => stack.slice(0, -1))
+    form.setFieldsValue(frame.values)
+    setDirty(frame.dirty)
+    assist.clearAppliedPatch()
+    notify.success(t('formAssist.undone'))
+  }
+
+  const appliedBar = assist.appliedPatch ? (
+    <AppliedPatchBar
+      summary={`${t('formAssist.autoFilled')}${assist.appliedPatch.name ? `：「${assist.appliedPatch.name}」` : ''}`}
+      onUndo={undoAssistantPatch}
     />
-  ) : assist.restoreablePatch ? (
-    <ProposalRestoreChip onRestore={assist.restoreProposal} />
   ) : null
 
   /** Both leaving the editor and switching experts drop the form — ask first when it is dirty. */
@@ -157,6 +215,10 @@ export default function ExpertEditor({
   const handleSelect = (id: string | null): void => {
     if (id === editingId) return
     confirmDiscard(() => {
+      // Entering create mode from the list column's + is a fresh create flow:
+      // the draft slot's previous thread is discarded, a new one starts. The
+      // draft slot is named explicitly — the re-bind has not happened yet.
+      if (id === null) discardBoundSession(formAssistConversationId(EXPERT_ASSIST_SPEC.conversationPrefix, null))
       setBoundId(id)
       onSelect(id)
     })
@@ -182,6 +244,21 @@ export default function ExpertEditor({
         enabled: editing?.enabled ?? true,
       }
       const updated = editing ? await window.electronAPI.expertUpdate(profile) : await window.electronAPI.expertCreate(profile)
+      if (!editing) {
+        // 升格 (user ruling 2026-09-20): the thread the assistant is currently
+        // bound to (the draft slot on this path) becomes this expert's own
+        // conversation — re-persisted under the expert's slot, the old slot
+        // discarded, then re-bind so the convId switch re-restores from the
+        // new slot. The just-had context follows the expert, and the
+        // one-conversation-per-expert invariant holds from birth.
+        await promoteAssistDraftToEntity(
+          assist.messages,
+          assistConvId,
+          profile.id,
+          `[${t('expertCenter.chatTitle')}] ${profile.name}`.trim(),
+        )
+        setBoundId(profile.id)
+      }
       setDirty(false)
       onSaved(updated, profile.id)
     } catch (err) {
@@ -204,11 +281,9 @@ export default function ExpertEditor({
       okButtonProps: { danger: true },
       onOk: async () => {
         const updated = await window.electronAPI.expertDelete(profile.id)
-        // The assistant thread dies with its expert — same cleanup the chat
-        // list does for conversations.
-        void window.electronAPI
-          .deleteConversation(formAssistConversationId(EXPERT_ASSIST_SPEC.conversationPrefix, profile.id))
-          .catch(() => {})
+        // The assistant thread dies with its expert — dispose the live
+        // main-side session first or a stale engine would hold the context.
+        await discardAssistConversation(formAssistConversationId(EXPERT_ASSIST_SPEC.conversationPrefix, profile.id))
         if (profile.id === editingId) setDirty(false)
         onDeleted(updated, profile.id)
       },
@@ -274,7 +349,6 @@ export default function ExpertEditor({
                 icon={<SaveOutlined />}
                 loading={saving}
                 onClick={() => void handleSave()}
-                style={{ background: '#000', borderColor: '#000' }}
               >
                 {t('common.save')}
               </Button>
@@ -282,10 +356,11 @@ export default function ExpertEditor({
           </div>
           {/* paddingRight keeps the (auto-hiding) gutter clear of the form edge. */}
           <div className="auto-hide-scroll" style={{ flex: 1, overflowY: 'auto', paddingRight: 8 }}>
-            {draftReview && <div style={{ marginBottom: 14 }}>{draftReview}</div>}
+            {appliedBar && <div style={{ marginBottom: 14 }}>{appliedBar}</div>}
             <ExpertFormFields
               form={form}
               isNew={!editing}
+              derivedIdRef={derivedIdRef}
               skillOptions={skillOptions}
               connectorOptions={connectorOptions}
               onValuesChange={() => setDirty(true)}
@@ -309,6 +384,7 @@ export default function ExpertEditor({
           activeProfileId={settings.activeProfileId}
           onSelectProfile={(profileId) => void switchProfile(profileId)}
           onSendMessage={askAssistant}
+          onNewSession={discardBoundSession}
         />
       </div>
     </div>

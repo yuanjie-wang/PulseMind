@@ -10,7 +10,8 @@
 // the session (useFormAssistSession), not on the page.
 
 import React from 'react'
-import { RobotOutlined } from '@ant-design/icons'
+import { Button, Modal } from 'antd'
+import { PlusOutlined, RobotOutlined } from '@ant-design/icons'
 import { TranscriptView } from '../chat/TranscriptView'
 import { InputArea } from '../chat/InputArea'
 import { PromptChip } from '../chat/PromptChip'
@@ -35,6 +36,11 @@ export interface FormAssistColumnProps<P extends object> {
   onSelectProfile?: (profileId: string) => void
   /** Every user message (composer and chips) funnels through here. */
   onSendMessage: (text: string) => void
+  /** 新会话 (user ruling 2026-09-20, both form assistants): discard the
+   *  entity's current thread and start fresh — one slot per entity, the old
+   *  history does not come back. The confirm lives HERE so both hosts get
+   *  the identical dialog; the handler does the dispose/delete + reset. */
+  onNewSession?: () => void
 }
 
 export function FormAssistColumn<P extends object>({
@@ -47,13 +53,31 @@ export function FormAssistColumn<P extends object>({
   activeProfileId,
   onSelectProfile,
   onSendMessage,
+  onNewSession,
 }: FormAssistColumnProps<P>): React.ReactElement {
   const { t } = useTranslation()
+
+  const askNewSession = (): void => {
+    if (!onNewSession) return
+    if (session.messages.length === 0) {
+      onNewSession()
+      return
+    }
+    Modal.confirm({
+      title: t('formAssist.newSessionConfirmTitle'),
+      content: t('formAssist.newSessionConfirmContent'),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: onNewSession,
+    })
+  }
+
   const emptyContent =
     emptyIntro || emptyExamples?.length ? (
       <div style={{ padding: '0 14px' }}>
         {emptyIntro && (
-          <div style={{ color: '#999', fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>{emptyIntro}</div>
+          <div style={{ color: 'var(--pm-text-muted)', fontSize: 13, lineHeight: 1.7, marginBottom: 12 }}>{emptyIntro}</div>
         )}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {(emptyExamples ?? []).map((example) => (
@@ -70,6 +94,11 @@ export function FormAssistColumn<P extends object>({
           <RobotOutlined />
           {title}
         </span>
+        {onNewSession && (
+          <Button size="small" type="text" icon={<PlusOutlined />} onClick={askNewSession}>
+            {t('formAssist.newSession')}
+          </Button>
+        )}
       </div>
       <TranscriptView
         messages={session.messages}
@@ -78,7 +107,7 @@ export function FormAssistColumn<P extends object>({
         isRequesting={session.isBusy}
         restoring={session.restoring}
         restoringHint={
-          <div style={{ padding: '0 14px', color: '#999', fontSize: 13 }}>{t('formAssist.restoring')}</div>
+          <div style={{ padding: '0 14px', color: 'var(--pm-text-muted)', fontSize: 13 }}>{t('formAssist.restoring')}</div>
         }
         emptyContent={emptyContent}
         contentInset={0}

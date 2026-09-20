@@ -48,11 +48,15 @@ export const RUN_STATUS_TAG: Record<RoutineRun['status'], { color?: string; text
  *  text tags; the wording survives in the tooltip. Exported so the routines
  *  landing page's "recent runs" sidebar can reuse the same column of glyphs
  *  without duplicating the colour/shape vocabulary. */
+// The success/failure glyph hues stay literals on purpose (the same judgment
+// as the plan graph's): antd's green-6/red-5 carry enough contrast on a dark
+// ground as-is, and the run list's status column must not shift hue with the
+// theme — only the neutral ink around it does.
 export const RUN_STATUS_ICONS: Record<RoutineRun['status'], React.ReactNode> = {
-  running: <LoadingOutlined spin style={{ color: '#1677ff' }} />,
+  running: <LoadingOutlined spin style={{ color: 'var(--pm-link)' }} />,
   success: <CheckCircleFilled style={{ color: '#52c41a' }} />,
   failed: <CloseCircleFilled style={{ color: '#ff4d4f' }} />,
-  skipped: <MinusCircleOutlined style={{ color: '#bbb' }} />,
+  skipped: <MinusCircleOutlined style={{ color: 'var(--pm-text-faint)' }} />,
 }
 
 export function RunStatusIcon({ status }: { status: RoutineRun['status'] }): React.ReactElement {
@@ -223,10 +227,10 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
     r.enabled ? (r.schedule ? '定时' : '手动') : '已停用'
 
   return (
-    <div style={{ height: '100%', display: 'flex', background: '#fff', overflow: 'hidden' }}>
+    <div style={{ height: '100%', display: 'flex', background: 'var(--pm-bg)', overflow: 'hidden' }}>
       <style>{PANE_ROW_STYLES}</style>
       {/* Left — task list */}
-      <div style={{ width: 232, borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+      <div style={{ width: 232, borderRight: '1px solid var(--pm-border-hairline)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '12px 12px 8px' }}>
           <Tooltip title="返回任务卡片">
             <Button type="text" size="small" icon={<ArrowLeftOutlined />} onClick={onBack} />
@@ -255,7 +259,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
                 }}>
                   {r.name}
                 </div>
-                <div style={{ fontSize: 11, color: '#aaa', marginTop: 2 }}>{scheduleText(r)}</div>
+                <div style={{ fontSize: 11, color: 'var(--pm-text-soft)', marginTop: 2 }}>{scheduleText(r)}</div>
               </div>
             )
           })}
@@ -263,7 +267,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
       </div>
 
       {/* Middle — run history of the selected task */}
-      <div style={{ width: 300, borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+      <div style={{ width: 300, borderRight: '1px solid var(--pm-border-hairline)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '12px 14px 8px' }}>
           <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>运行历史</span>
           <Tooltip title="刷新运行记录">
@@ -274,7 +278,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
           </Dropdown>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '0 10px 12px' }}>
-          {runs.length === 0 && <div style={{ color: '#999', fontSize: 12, padding: '8px 4px' }}>还没有运行记录。</div>}
+          {runs.length === 0 && <div style={{ color: 'var(--pm-text-muted)', fontSize: 12, padding: '8px 4px' }}>还没有运行记录。</div>}
           {runs.map((run) => {
             const active = run.id === selectedRunId
             return (
@@ -286,8 +290,8 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <RunStatusIcon status={run.status} />
-                  <span style={{ fontSize: 13, color: '#000' }}>{run.trigger === 'schedule' ? '定时' : '手动'}</span>
-                  <span style={{ fontSize: 11, color: '#bbb', marginInlineStart: 'auto' }}>
+                  <span style={{ fontSize: 13, color: 'var(--pm-ink)' }}>{run.trigger === 'schedule' ? '定时' : '手动'}</span>
+                  <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', marginInlineStart: 'auto' }}>
                     {describeRelativeTimeText(run.startedAt, runsFetchedAt, t) ?? new Date(run.startedAt).toLocaleString()}
                   </span>
                   <Tooltip title={run.status === 'running' ? '运行中，结束后可删除' : '删除这条记录'}>
@@ -304,7 +308,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
                 </div>
                 {run.error && (
                   <div style={{
-                    fontSize: 11, color: '#cf1322', marginTop: 4,
+                    fontSize: 11, color: 'var(--pm-error)', marginTop: 4,
                     display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
                   }}>
                     {run.error}
@@ -319,15 +323,15 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
       {/* Right — the selected run's conversation (live while running, and the
           user can continue it once the automated prompt is done) */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', borderBottom: '1px solid #f0f0f0' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', borderBottom: '1px solid var(--pm-border-hairline)' }}>
           {selectedRun ? (
             <>
               <RunStatusIcon status={selectedRun.status} />
-              <span style={{ fontSize: 12, color: '#888' }}>{selectedRun.trigger === 'schedule' ? '定时触发' : '手动触发'}</span>
-              <span style={{ fontSize: 12, color: '#bbb' }}>{new Date(selectedRun.startedAt).toLocaleString()}</span>
+              <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }}>{selectedRun.trigger === 'schedule' ? '定时触发' : '手动触发'}</span>
+              <span style={{ fontSize: 12, color: 'var(--pm-text-faint)' }}>{new Date(selectedRun.startedAt).toLocaleString()}</span>
             </>
           ) : (
-            <span style={{ fontSize: 12, color: '#999' }}>选择一次运行记录查看对话</span>
+            <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>选择一次运行记录查看对话</span>
           )}
         </div>
         <RunTranscript
@@ -390,7 +394,7 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
       />
       {convId && (
         unattended ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 24px 20px', fontSize: 12, color: '#999' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 24px 20px', fontSize: 12, color: 'var(--pm-text-muted)' }}>
             <Spin size="small" />
             任务执行中，结束后可以继续追问
           </div>

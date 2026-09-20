@@ -9,14 +9,13 @@
 // their own, and the explanatory text lives in the placeholders.
 
 import React from 'react'
-import { Button, Input, InputNumber, Select, Space, Switch } from 'antd'
+import { Button, Checkbox, Input, InputNumber, Select, Space, Switch } from 'antd'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { checkCron, nextRun } from '../../../../shared/schedule/cron'
 import { configToCron, WEEKDAY_LABELS } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
 import { useTranslation } from '../../i18n/useTranslation'
-import { ProposalReviewCard, ProposalRestoreChip } from '../form-assist/ProposalReviewCard'
-import { summarizeRoutinePatch } from './routine-assist'
+import { AppliedPatchBar } from '../form-assist/AppliedPatchBar'
 import { SCHED_DEFAULTS } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import type { RoutineAssistantPatch } from './routine-assist'
@@ -174,57 +173,30 @@ function ScheduleSection({ draft, onChange }: { draft: RoutineDraftState; onChan
   )
 }
 
-/** Review surface for a patch parsed out of the assistant conversation: the
- *  shared ProposalReviewCard (field diff + checkboxes + sticky) at the top of
- *  this column's scroll container, or the restore chip for a dismissed
- *  identical draft — never both (the hook derives them as alternatives). */
-function RoutineDraftReview({ pending, restoreable, draft, onApply, onDismiss, onRestore }: {
-  pending: RoutineAssistantPatch | null
-  restoreable: RoutineAssistantPatch | null
-  draft: RoutineDraftState
-  onApply: (selectedKeys: string[]) => void
-  onDismiss: () => void
-  onRestore: () => void
-}): React.ReactElement | null {
+/** Undo bar for the assistant's auto-applied patch (user ruling 2026-09-20:
+ *  no review card — the patch lands in the form directly and this bar is the
+ *  way back). Sits at the top of the form column, where the review card used
+ *  to be. */
+function RoutineAppliedBar({ applied, onUndo }: { applied: RoutineAssistantPatch; onUndo: () => void }): React.ReactElement {
   const { t } = useTranslation()
-  if (pending) {
-    // Rows recompute from the LIVE draft on every render — the card's before
-    // column is always what applying would write right now (D3).
-    const rows = summarizeRoutinePatch(pending, draft)
-    const header = `${t('formAssist.routineDraftReady')}${pending.name ? `：「${pending.name}」` : ''}`
-    return <ProposalReviewCard header={header} rows={rows} fingerprint={JSON.stringify(pending)} onApply={onApply} onDismiss={onDismiss} />
-  }
-  if (restoreable) return <ProposalRestoreChip onRestore={onRestore} />
-  return null
+  const summary = `${t('formAssist.autoFilled')}${applied.name ? `：「${applied.name}」` : ''}`
+  return <AppliedPatchBar summary={summary} onUndo={onUndo} />
 }
 
 export interface RoutineFormProps {
   draft: RoutineDraftState
   onChange: (draft: RoutineDraftState) => void
-  /** Non-null = the assistant proposed a patch; the review card shows. */
-  pendingAssistantDraft: RoutineAssistantPatch | null
-  /** Non-null (and pending null) = an identical draft was dismissed; the chip
-   *  offers the way back (D5). */
-  restoreableAssistantDraft: RoutineAssistantPatch | null
-  /** Apply receives the CHECKED row keys (D4); the page filters the patch. */
-  onApplyAssistantDraft: (selectedKeys: string[]) => void
-  onDismissAssistantDraft: () => void
-  onRestoreAssistantDraft: () => void
+  /** Non-null = the assistant's latest patch is in this form; the undo bar
+   *  offers the way back (a newer patch replaces it, a prose reply or the
+   *  undo itself retires it). */
+  appliedAssistantPatch: RoutineAssistantPatch | null
+  onUndoAssistantPatch: () => void
 }
 
-export function RoutineForm({ draft, onChange, pendingAssistantDraft, restoreableAssistantDraft, onApplyAssistantDraft, onDismissAssistantDraft, onRestoreAssistantDraft }: RoutineFormProps): React.ReactElement {
+export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssistantPatch }: RoutineFormProps): React.ReactElement {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {(pendingAssistantDraft || restoreableAssistantDraft) && (
-        <RoutineDraftReview
-          pending={pendingAssistantDraft}
-          restoreable={restoreableAssistantDraft}
-          draft={draft}
-          onApply={onApplyAssistantDraft}
-          onDismiss={onDismissAssistantDraft}
-          onRestore={onRestoreAssistantDraft}
-        />
-      )}
+      {appliedAssistantPatch && <RoutineAppliedBar applied={appliedAssistantPatch} onUndo={onUndoAssistantPatch} />}
       <div>
         <FieldLabel text="任务名称" />
         <Input value={draft.name} onChange={(e) => onChange({ ...draft, name: e.target.value })} placeholder="例如：每日依赖巡检" autoFocus />
@@ -255,6 +227,17 @@ export function RoutineForm({ draft, onChange, pendingAssistantDraft, restoreabl
             <Input style={{ width: 140 }} value={p.default} placeholder="默认值" onChange={(e) => {
               const params = [...draft.params]; params[i] = { ...p, default: e.target.value }; onChange({ ...draft, params })
             }} />
+            {/* 必填 completes the params loop on the authoring side: a required
+                param without a value refuses to run (RoutineRunModal enforces
+                it on 立即运行, the runner gates every trigger). */}
+            <Checkbox
+              checked={!!p.required}
+              onChange={(e) => {
+                const params = [...draft.params]; params[i] = { ...p, required: e.target.checked }; onChange({ ...draft, params })
+              }}
+            >
+              必填
+            </Checkbox>
             <Button type="text" danger icon={<DeleteOutlined />} onClick={() => onChange({ ...draft, params: draft.params.filter((_, j) => j !== i) })} />
           </Space>
         ))}

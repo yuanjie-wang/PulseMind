@@ -18,7 +18,9 @@ import {
   SettingOutlined,
   LockOutlined,
   AimOutlined,
-  EyeOutlined
+  EyeOutlined,
+  ScheduleOutlined,
+  LoadingOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
@@ -33,12 +35,13 @@ import { FileRefChip } from './FileRefChip'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { enqueueCompileForFile } from '../knowledge/KnowledgePanel'
 import { createKnowledgeSaveAction } from './knowledge-save'
+import { useMarkdownThemeClass } from '../../theme/mode'
 
 // --- Bubble styles ---
 
 const userBubbleStyle: React.CSSProperties = {
-  background: '#f0f2f4',
-  color: '#000',
+  background: 'var(--pm-sunk)',
+  color: 'var(--pm-ink)',
   borderRadius: 12,
   padding: '8px 14px',
   maxWidth: '70%',
@@ -142,28 +145,31 @@ function CollapsibleToolBlock({
           alignItems: 'center',
           gap: 6,
           padding: '5px 10px',
-          background: needsAction ? '#fff7e6' : '#f5f5f5',
+          background: needsAction ? 'var(--pm-warn-bg)' : 'var(--pm-fill)',
           borderRadius: 6,
           cursor: 'pointer',
           fontSize: 13,
-          color: '#555',
+          color: 'var(--pm-text-body)',
           userSelect: 'none',
-          border: needsAction ? '1px solid #ffd591' : '1px solid transparent',
+          border: needsAction ? '1px solid var(--pm-warn-border)' : '1px solid transparent',
           transition: 'background 0.15s'
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = needsAction ? '#ffe7ba' : '#ebebeb' }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = needsAction ? '#fff7e6' : '#f5f5f5' }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = needsAction ? 'var(--pm-warn-bg-hover)' : 'var(--pm-fill-hover)' }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = needsAction ? 'var(--pm-warn-bg)' : 'var(--pm-fill)' }}
       >
-        {/* Status indicator */}
+        {/* Status indicator. The pair is the terminal family's own status
+            palette (#4ec9b0 / #f44747, CommandCard's skin) and stays literal on
+            purpose — that family is dark in both modes and is not part of the
+            theme migration; both values already read on a light or dark fill. */}
         <span style={{ fontSize: 14, flexShrink: 0, width: 18, textAlign: 'center' }}>
-          {block.status === undefined && completedFromResult ? <CheckOutlined style={{color:'#4ec9b0'}} /> : block.status === undefined ? <ArrowDownOutlined style={{color:'#999'}} /> : block.status === 'running' ? <HourglassOutlined /> : block.status === 'completed' ? (block.exitCode === 0 ? <CheckOutlined style={{color:'#4ec9b0'}} /> : <CloseOutlined style={{color:'#f44747'}} />) : block.status === 'rejected' ? <CloseOutlined style={{color:'#f44747'}} /> : <SettingOutlined />}
+          {block.status === undefined && completedFromResult ? <CheckOutlined style={{color:'#4ec9b0'}} /> : block.status === undefined ? <ArrowDownOutlined style={{color:'var(--pm-text-muted)'}} /> : block.status === 'running' ? <HourglassOutlined /> : block.status === 'completed' ? (block.exitCode === 0 ? <CheckOutlined style={{color:'#4ec9b0'}} /> : <CloseOutlined style={{color:'#f44747'}} />) : block.status === 'rejected' ? <CloseOutlined style={{color:'#f44747'}} /> : <SettingOutlined />}
         </span>
         {/* Tool name — the human verb (PLAN-tool-ux T1); the object stays in the summary */}
-        <span style={{ fontWeight: 600, color: '#333', flexShrink: 0, fontSize: 12 }}>{toolDisplayName(block.name, t)}</span>
+        <span style={{ fontWeight: 600, color: 'var(--pm-text-strong)', flexShrink: 0, fontSize: 12 }}>{toolDisplayName(block.name, t)}</span>
         {/* Summary */}
         {summary && (
           <span style={{
-            color: '#999',
+            color: 'var(--pm-text-muted)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -175,13 +181,13 @@ function CollapsibleToolBlock({
         )}
         {/* Action hint for pending tools */}
         {needsAction && (
-          <span style={{ color: '#d46b08', fontSize: 11, flexShrink: 0, fontWeight: 500 }}>
+          <span style={{ color: 'var(--pm-warn)', fontSize: 11, flexShrink: 0, fontWeight: 500 }}>
             {t('commandCard.awaitingApproval')}
           </span>
         )}
         {/* Receiving hint for streaming tool blocks */}
         {block.status === undefined && !completedFromResult && (
-          <span style={{ color: '#999', fontSize: 11, flexShrink: 0, fontWeight: 500 }}>
+          <span style={{ color: 'var(--pm-text-muted)', fontSize: 11, flexShrink: 0, fontWeight: 500 }}>
             {receiving ? '指令生成中...' : '执行状态未知'}
           </span>
         )}
@@ -194,7 +200,7 @@ function CollapsibleToolBlock({
             }}
             style={{ flexShrink: 0, lineHeight: 1, cursor: 'pointer' }}
           >
-            <EyeOutlined style={{ color: '#888', fontSize: 14 }} title="预览文件" />
+            <EyeOutlined style={{ color: 'var(--pm-text-quiet)', fontSize: 14 }} title="预览文件" />
           </span>
         )}
         {/* Sub-agent session link — hands the ID to the host, which opens the
@@ -208,11 +214,11 @@ function CollapsibleToolBlock({
             }}
             style={{ flexShrink: 0, lineHeight: 1, cursor: 'pointer' }}
           >
-            <EyeOutlined style={{ color: '#888', fontSize: 14 }} title="查看子代理会话" />
+            <EyeOutlined style={{ color: 'var(--pm-text-quiet)', fontSize: 14 }} title="查看子代理会话" />
           </span>
         )}
         {/* Expand/collapse icon */}
-        <span style={{ color: '#bbb', fontSize: 11, flexShrink: 0 }}>
+        <span style={{ color: 'var(--pm-text-faint)', fontSize: 11, flexShrink: 0 }}>
           {collapsed ? <RightOutlined /> : <DownOutlined />}
         </span>
       </div>
@@ -274,6 +280,7 @@ export const MessageGroup = React.memo(function MessageGroup({
   conversationId,
   conversationTitle,
   onOpenSubAgent,
+  onExtractRoutine,
   awaitingApproval = true
 }: {
   msg: AgentMessage
@@ -293,6 +300,12 @@ export const MessageGroup = React.memo(function MessageGroup({
    *  (`components/subagent/SubAgentSessionView`). Optional: a host with no
    *  drill-in renders the card without the icon, exactly as before. */
   onOpenSubAgent?: (subConvId: string, title: string) => void
+  /** 存为日常任务: distill this conversation into a routine draft and open the
+   *  routine editor with it. Conversation-scoped, so only the chat's LAST
+   *  action row carries it (ChatView's routine-entry gating). Optional: hosts
+   *  without the entry — the sub-agent preview, the extension panel's mirror —
+   *  render the row without the button, exactly as before. */
+  onExtractRoutine?: () => void | Promise<void>
   /** The engine is parked awaiting approval (see CollapsibleToolBlock). */
   awaitingApproval?: boolean
 }): React.ReactElement | null {
@@ -305,7 +318,13 @@ export const MessageGroup = React.memo(function MessageGroup({
   // backend resolves (an in-flight save is latched against double clicks).
   const [savingFavorite, setSavingFavorite] = useState(false)
   const favoriteLatch = useRef({ pending: false, saved: false })
+  // 存为日常任务's latch — up with the other hooks, above the early return:
+  // a streaming message can gain displayable content mid-flight, and a hook
+  // below that gate would change the hook count between renders.
+  const [extractingRoutine, setExtractingRoutine] = useState(false)
   const { t } = useTranslation()
+  // The markdown theme family is a class, not a variable (theme/mode.ts).
+  const mdClass = useMarkdownThemeClass()
 
   if (!hasDisplayableContent(msg)) return null
 
@@ -364,6 +383,20 @@ export const MessageGroup = React.memo(function MessageGroup({
     }
   }, favoriteLatch.current)
 
+  // 存为日常任务 runs once per click: while the await is in flight the latch
+  // keeps the button inert (same contract as the knowledge save above), the
+  // spinner standing in for the LLM round-trip. The routine editor is the
+  // review surface — this button only distills and jumps.
+  const handleExtractRoutine = async (): Promise<void> => {
+    if (!onExtractRoutine || extractingRoutine) return
+    setExtractingRoutine(true)
+    try {
+      await onExtractRoutine()
+    } finally {
+      setExtractingRoutine(false)
+    }
+  }
+
   const btnBase: React.CSSProperties = {
     background: 'transparent',
     border: 'none',
@@ -396,9 +429,9 @@ export const MessageGroup = React.memo(function MessageGroup({
             // the ~22px gap without changing content or breaking markdown
             const flexCol = { display: 'flex' as const, flexDirection: 'column' as const }
             return (
-              <div key={i} className="x-markdown-light" style={{ padding: 0 }}>
+              <div key={i} className={mdClass} style={{ padding: 0 }}>
                 {msg.autoSummary && (
-                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4, fontWeight: 500 }}>
+                  <div style={{ fontSize: 11, color: 'var(--pm-text-quiet)', marginBottom: 4, fontWeight: 500 }}>
                     {t('autoSummary.label') || 'Auto Summary'}
                   </div>
                 )}
@@ -414,7 +447,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                   <img
                     src={`data:image/png;base64,${tr.imageData}`}
                     alt="Screenshot"
-                    style={{ maxWidth: '100%', borderRadius: 8, border: '1px solid #e8e8e8' }}
+                    style={{ maxWidth: '100%', borderRadius: 8, border: '1px solid var(--pm-border-soft)' }}
                   />
                 </div>
               )
@@ -424,9 +457,9 @@ export const MessageGroup = React.memo(function MessageGroup({
                 <div key={i} style={{
                   margin: '8px 0',
                   padding: '8px 10px',
-                  background: '#f6f8fa',
+                  background: 'var(--pm-well)',
                   borderRadius: 6,
-                  border: '1px solid #e8e8e8',
+                  border: '1px solid var(--pm-border-soft)',
                   fontSize: 12,
                   lineHeight: 1.6,
                   whiteSpace: 'pre-wrap',
@@ -442,7 +475,7 @@ export const MessageGroup = React.memo(function MessageGroup({
           if (!isUser) {
             if (block.type === 'text') {
               return (
-                <div key={i} className="x-markdown-light" style={{ paddingLeft: 12 }}>
+                <div key={i} className={mdClass} style={{ paddingLeft: 12 }}>
                   <FileRefChip
                     text={block.text}
                     textRenderer={(t) => <XMarkdown content={t} components={{ code: CodeBlock, img: LocalImage }} config={{ extensions: Latex() }} />}
@@ -478,8 +511,8 @@ export const MessageGroup = React.memo(function MessageGroup({
             }
             if (block.type === 'redacted_thinking') {
               return (
-                <div key={i} style={{ margin: '6px 0', borderLeft: '2px solid #d0d0d0', paddingLeft: 10 }}>
-                  <div style={{ color: '#888', fontSize: 13, lineHeight: 1.6 }}>
+                <div key={i} style={{ margin: '6px 0', borderLeft: '2px solid var(--pm-border-strong)', paddingLeft: 10 }}>
+                  <div style={{ color: 'var(--pm-text-quiet)', fontSize: 13, lineHeight: 1.6 }}>
                     <LockOutlined style={{marginRight:4,fontSize:11}} />Thinking redacted
                   </div>
                 </div>
@@ -503,19 +536,19 @@ export const MessageGroup = React.memo(function MessageGroup({
           }}
         >
           <button
-            style={{ ...btnBase, color: copied ? '#bbb' : '#bbb' }}
+            style={{ ...btnBase, color: 'var(--pm-text-faint)' }}
             onClick={handleCopy}
             title={t('chatView.copy')}
-            onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
           >
             {copied ? <CheckOutlined /> : <CopyOutlined />}
           </button>
           <button
-            style={{ ...btnBase, color: '#bbb' }}
+            style={{ ...btnBase, color: 'var(--pm-text-faint)' }}
             onClick={handleDownload}
             title={t('chatView.download')}
-            onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
           >
             <DownloadOutlined />
@@ -523,14 +556,14 @@ export const MessageGroup = React.memo(function MessageGroup({
           {actions === 'full' && (
             <>
               <button
-                style={{ ...btnBase, color: liked ? '#aaa' : '#bbb' }}
+                style={{ ...btnBase, color: liked ? 'var(--pm-text-soft)' : 'var(--pm-text-faint)' }}
                 onClick={() => {
                   const next = !liked
                   setLiked(next)
                   window.electronAPI.updateMessageMetadata(msg.id, { liked: next })
                 }}
                 title={t('chatView.like')}
-                onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
               >
                 {liked ? <LikeFilled /> : <LikeOutlined />}
@@ -538,7 +571,7 @@ export const MessageGroup = React.memo(function MessageGroup({
               <button
                 data-testid="knowledge-save"
                 aria-label={favorited ? t('chatView.favorited') : t('chatView.favorite')}
-                style={{ ...btnBase, color: favorited ? '#aaa' : '#bbb', cursor: savingFavorite ? 'wait' : 'pointer', opacity: savingFavorite ? 0.6 : 1 }}
+                style={{ ...btnBase, color: favorited ? 'var(--pm-text-soft)' : 'var(--pm-text-faint)', cursor: savingFavorite ? 'wait' : 'pointer', opacity: savingFavorite ? 0.6 : 1 }}
                 onClick={() => {
                   // One-way: already saved → nothing to do. While a save is in
                   // flight the action is latched (no double click can issue a
@@ -554,11 +587,24 @@ export const MessageGroup = React.memo(function MessageGroup({
                   })
                 }}
                 title={favorited ? t('chatView.favorited') : t('chatView.favorite')}
-                onMouseEnter={(e) => { e.currentTarget.style.background = '#f0f0f0' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
               >
                 {favorited ? <BookFilled /> : <BookOutlined />}
               </button>
+              {onExtractRoutine && (
+                <button
+                  data-testid="routine-extract"
+                  aria-label={extractingRoutine ? t('chatView.routineExtracting') : t('chatView.saveAsRoutine')}
+                  style={{ ...btnBase, color: 'var(--pm-text-faint)', cursor: extractingRoutine ? 'wait' : 'pointer', opacity: extractingRoutine ? 0.6 : 1 }}
+                  onClick={() => { void handleExtractRoutine() }}
+                  title={extractingRoutine ? t('chatView.routineExtracting') : t('chatView.saveAsRoutine')}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+                >
+                  {extractingRoutine ? <LoadingOutlined /> : <ScheduleOutlined />}
+                </button>
+              )}
             </>
           )}
 
@@ -569,7 +615,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                 alignItems: 'center',
                 gap: 12,
                 marginLeft: 6,
-                color: '#bbb',
+                color: 'var(--pm-text-faint)',
                 fontSize: 12,
                 lineHeight: 1,
                 // Durations and token counts align their digit columns across
@@ -577,7 +623,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                 fontVariantNumeric: 'tabular-nums'
               }}
             >
-              <span style={{ color: '#ddd' }}>|</span>
+              <span style={{ color: 'var(--pm-separator)' }}>|</span>
               {msg.processingMs != null && (
                 <span title={t('chatView.processingTime')}>{formatDuration(msg.processingMs)}</span>
               )}

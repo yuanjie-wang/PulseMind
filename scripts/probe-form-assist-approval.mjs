@@ -67,7 +67,7 @@ function AssistCase({ name, initial, width }) {
   const session = {
     messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [],
     isBusy: false, restoring: false,
-    proposedPatch: null, clearProposedPatch: noop,
+    appliedPatch: null, clearAppliedPatch: noop,
     send: noop, cancel: noop, engineCall: noop, refreshOptions: noop,
     approvalMode: mode,
     setApprovalMode: (next) => {

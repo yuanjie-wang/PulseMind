@@ -16,21 +16,13 @@ import { routineStore } from '../storage/routine-store'
 import { auditStore } from '../storage/audit-store'
 import { saveConversation } from '../storage/conversation.db'
 import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
+import { assertRunnableParams, renderRoutinePrompt } from '../../shared/routine/params'
 import type { AgentEventData } from '../../shared/agent-protocol'
 import type { AgentMessage } from '../../renderer/src/types/agent'
 import type { Routine, RoutineRun } from '../../shared/types/routine'
 
 /** Hard ceiling for one routine run (a hung run must not hold the slot forever). */
 const RUN_TIMEOUT_MS = 15 * 60_000
-
-export function renderRoutinePrompt(routine: Routine, params?: Record<string, string>): string {
-  let prompt = routine.prompt
-  for (const p of routine.params ?? []) {
-    const value = params?.[p.key] ?? p.default ?? ''
-    prompt = prompt.replaceAll(`{{${p.key}}}`, value)
-  }
-  return prompt
-}
 
 /** Last pending tool_use id in the session mirror — the thing awaiting approval. */
 async function findPendingToolUseId(sessionId: string): Promise<string | null> {
@@ -81,6 +73,19 @@ export const routineRunner = {
    *  The conversation id is generated here so it lands in the run row from the
    *  start — run-history can attach to the live session mid-run. */
   start(routine: Routine, trigger: RoutineRun['trigger'], params?: Record<string, string>): RoutineRun {
+    // A run whose required params resolved blank would execute a mangled prompt
+    // (「检查  仓库的漏洞」) with nothing warning — refuse here instead. A manual
+    // run throws so the click surfaces the reason; a scheduled fire has nobody
+    // to tell, so it lands in run history as a failed run carrying it.
+    try {
+      assertRunnableParams(routine, params)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (trigger === 'manual') throw err
+      const run = routineStore.startRun(routine.id, trigger, '')
+      routineStore.finishRun(run.id, { status: 'failed', error: message })
+      return run
+    }
     const convId = `routine_${Date.now()}_${shortUuid(6)}`
     const run = routineStore.startRun(routine.id, trigger, convId)
     void this.execute(run, routine, convId, params)

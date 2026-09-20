@@ -17,16 +17,17 @@ import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import { createLlmAdapter } from '../../llm'
-import { RoutineExtractionAgent } from '../../agent/one-shot-agent'
+import { extractRoutineFromConversation, type ExtractedRoutineDraft } from './routine-extract'
 import { FormAssistColumn } from '../form-assist/FormAssistColumn'
 import { buildFormAssistSystemPrompt, formAssistConversationId } from '../form-assist/form-assist'
+import { discardAssistConversation, promoteAssistDraftToEntity } from '../form-assist/session-lifecycle'
 import { useFormAssistSession } from '../form-assist/useFormAssistSession'
 import { EDITOR_COLUMN_HEADER, EDITOR_LIST_WIDTH, EDITOR_SURFACE } from '../layout/editor-layout'
 import { configToCron } from '../../utils/schedule-builder'
 import { describeCron } from '../../utils/schedule-text'
 import { RoutineForm } from './RoutineForm'
 import { PANE_ROW_STYLES } from './pane-styles'
-import { ROUTINE_ASSIST_SPEC, ROUTINE_ASSIST_ALLOWED_TOOLS, ROUTINE_ASSISTANT_PROFILE, filterRoutinePatch } from './routine-assist'
+import { ROUTINE_ASSIST_SPEC, ROUTINE_ASSIST_ALLOWED_TOOLS, ROUTINE_ASSISTANT_PROFILE } from './routine-assist'
 import { applyAssistantPatch, draftToRoutineInput, EMPTY_DRAFT, routineToDraft, validateDraft, draftScheduleFromCron } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import { draftFromTemplate, routineTemplateById } from './routine-templates'
@@ -39,24 +40,38 @@ export interface RoutineEditorPageProps {
    *  form with — the 推荐模板 half of the landing page links here this way.
    *  Ignored when `routineId` is set. */
   templateId?: string
+  /** A draft distilled from a conversation (the chat toolbar's 存为日常任务,
+   *  handed over as the `routineDraft` view param). Fills the create-new form
+   *  once on mount; the user reviews — the schedule above all — and saves.
+   *  Ignored when `routineId` is set. */
+  routineDraft?: ExtractedRoutineDraft
 }
 
-function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEditorPageProps): React.ReactElement {
+function RoutineEditorPage({ routineId: routineIdProp, templateId, routineDraft }: RoutineEditorPageProps): React.ReactElement {
   const { modal } = AntdApp.useApp()
   const { t } = useTranslation()
   const navigate = useNavigationStore((s) => s.navigate)
   const { settings, switchProfile, loading: settingsLoading } = useSettings()
   const [routines, setRoutines] = useState<Routine[]>([])
   /** Which stored routine the assistant conversation is bound to; null = the
-   *  shared create-new draft bucket. Deliberately NOT bumped by a first save
-   *  so the just-had conversation keeps its context. */
+   *  create-flow's draft slot. The first save PROMOTES the draft thread into
+   *  the new routine's slot and re-binds (用户裁定 2026-09-20：每个任务最多
+   *  关联一个会话), so the just-had context follows the routine. */
   const [boundId, setBoundId] = useState<string | null>(routineIdProp ?? null)
+  /** Bumped whenever the bound thread is discarded (新会话 / a fresh create
+   *  entry): the session hook re-restores empty under the same convId. */
+  const [sessionReset, setSessionReset] = useState(0)
   /** IPC target: null = next save creates, otherwise updates. */
   const [updateId, setUpdateId] = useState<string | null>(routineIdProp ?? null)
   const [draft, setDraft] = useState<RoutineDraftState>(EMPTY_DRAFT)
   /** Unsaved-changes flag — drives the header's 未保存 marker and the
    *  discard confirmation (same contract as the expert editor). */
   const [dirty, setDirty] = useState(false)
+  /** Undo frames for the assistant's auto-applied patches (user ruling
+   *  2026-09-20): each apply captures the whole PRE-patch draft plus the
+   *  dirty flag, so 撤销 restores the form byte-for-byte — no field-wise
+   *  inverse of the cron/params merge is needed. */
+  const [undoStack, setUndoStack] = useState<Array<{ draft: RoutineDraftState; dirty: boolean }>>([])
   const [saving, setSaving] = useState(false)
   const [extracting, setExtracting] = useState(false)
   const [extractOpen, setExtractOpen] = useState(false)
@@ -122,8 +137,49 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
     setUpdateId(null)
   }, [templateId, routineIdProp, settingsLoading, settings.locale])
 
+  /** Both extraction entries land here — the editor's own 从对话提取 picker and
+   *  the chat toolbar's 存为日常任务 (via the `routineDraft` view param): fill
+   *  the create-new form, create mode. The schedule rides the same
+   *  cron→friendly-fields path as a stored routine, so what the user reviews is
+   *  the regular schedule editor, not a raw cron string. */
+  const applyExtractedDraft = useCallback((result: ExtractedRoutineDraft): void => {
+    setDraft({
+      ...EMPTY_DRAFT,
+      name: result.name,
+      description: result.description,
+      prompt: result.prompt,
+      ...draftScheduleFromCron(result.cron),
+      sourceConversationId: result.sourceConversationId,
+    })
+    setDirty(false)
+    setBoundId(null)
+    setUpdateId(null)
+  }, [])
+
+  // Draft handoff from the chat toolbar: same shape as the template prefill,
+  // consumed once per mount. No settings wait — the draft's copy was written in
+  // the extraction locale and never re-translated under the user's feet.
+  const chatDraftAppliedRef = useRef(false)
+  useEffect(() => {
+    if (routineIdProp || chatDraftAppliedRef.current) return
+    if (!routineDraft) return
+    chatDraftAppliedRef.current = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- consuming a one-shot navigation param, not derived state
+    applyExtractedDraft(routineDraft)
+  }, [routineDraft, routineIdProp, applyExtractedDraft])
+
+  const assistConvId = formAssistConversationId(ROUTINE_ASSIST_SPEC.conversationPrefix, boundId)
+
+  /** 丢弃当前绑定的线程并重置会话视图 — the 新会话 core, shared with the
+   *  expert editor (same ruling: one conversation per task, the old thread is
+   *  discardable). Undo frames belong to the discarded thread and die too. */
+  const discardBoundSession = useCallback((): void => {
+    setUndoStack([])
+    void discardAssistConversation(assistConvId).then(() => setSessionReset((n) => n + 1))
+  }, [assistConvId])
+
   const assist = useFormAssistSession({
-    convId: formAssistConversationId(ROUTINE_ASSIST_SPEC.conversationPrefix, boundId),
+    convId: assistConvId,
     title: `[日常助手] ${draft.name.trim() || '新建任务'}`,
     spec: ROUTINE_ASSIST_SPEC,
     // D8: the prompt follows the settings locale — with the spec's labelEn /
@@ -132,7 +188,28 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
     // D15/D16: the internal expert pack (identity) + host-side tool pin (D17).
     allowedTools: ROUTINE_ASSIST_ALLOWED_TOOLS,
     expertProfile: ROUTINE_ASSISTANT_PROFILE,
+    resetKey: sessionReset,
+    // 自动填入：every newly parsed patch lands in the form the moment its
+    // reply lands. Unstable identity is safe — the hook's fire-once ledger
+    // makes its effect's re-runs no-ops, and this closure always reads the
+    // latest `draft`/`dirty` when a real patch fires.
+    onPatch: (patch) => {
+      setUndoStack((stack) => [...stack, { draft, dirty }])
+      setDraft(applyAssistantPatch(patch, draft))
+      setDirty(true)
+    },
   })
+
+  // 新建任务即新会话 (user ruling 2026-09-20): every entry into the create
+  // flow lands on boundId null (startNew / 模板预填 / 从对话提取 / 失效回退),
+  // and mounting straight into create mode is a create entry too — the draft
+  // slot keeps no history across create flows. Unlike the expert editor this
+  // page is not remounted per switch, so the transition itself is the trigger.
+  useEffect(() => {
+    if (boundId !== null) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the reset empties the undo stack (bails out when already empty) as part of one user-visible discard
+    discardBoundSession()
+  }, [boundId, discardBoundSession])
 
   /** Every user edit goes through here so the unsaved marker stays honest. */
   const editDraft = (next: RoutineDraftState): void => {
@@ -178,10 +255,10 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
       cancelText: '取消',
       onOk: async () => {
         await window.electronAPI.routineDelete(routine.id)
-        // The assistant thread dies with its routine (expert editor does the same).
-        void window.electronAPI
-          .deleteConversation(formAssistConversationId(ROUTINE_ASSIST_SPEC.conversationPrefix, routine.id))
-          .catch(() => {})
+        // The assistant thread dies with its routine — dispose the live
+        // main-side session first or a stale engine would hold the context
+        // (the expert editor does the same).
+        await discardAssistConversation(formAssistConversationId(ROUTINE_ASSIST_SPEC.conversationPrefix, routine.id))
         if (updateId === routine.id) startNew()
         void reload()
       },
@@ -202,6 +279,20 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
         // rather than report a save that did not happen.
         const created = await window.electronAPI.routineCreate(input)
         setUpdateId(created.id)
+        // 升格 (user ruling 2026-09-20): the thread the assistant is currently
+        // bound to becomes this routine's own conversation — re-persisted
+        // under the routine's slot, the old slot discarded, then re-bind so
+        // the convId switch re-restores from the new slot. Normal creates
+        // promote the draft slot; the 另存为 rescue promotes the deleted
+        // routine's slot. Either way the context follows the routine and the
+        // one-conversation-per-routine invariant holds from birth.
+        await promoteAssistDraftToEntity(
+          assist.messages,
+          assistConvId,
+          created.id,
+          `[日常助手] ${draft.name.trim() || '新建任务'}`,
+        )
+        setBoundId(created.id)
         if (updateId) notify.warning('原任务已不存在，已另存为新任务')
         else notify.success('已创建')
       }
@@ -229,16 +320,18 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
 
   const askAssistant = (text: string): void => assist.send(text, formSnapshot())
 
-  /** Apply only the CHECKED rows (D4): filter the patch to the selected keys,
-   *  then merge — applyAssistantPatch is already per-field, so an unchecked
-   *  field simply keeps its current value. */
-  const applyProposal = (selectedKeys: string[]): void => {
-    if (!assist.proposedPatch) return
-    const patch = filterRoutinePatch(assist.proposedPatch, selectedKeys)
-    if (Object.keys(patch).length === 0) return
-    editDraft(applyAssistantPatch(patch, draft))
-    assist.clearProposedPatch()
-    notify.success(t('formAssist.applied'))
+  /** 撤销 the assistant's last auto-applied patch: restore the captured
+   *  pre-patch frame. Manual edits made AFTER the apply are part of the
+   *  applied state and go back with it — one click answers 「把刚填的撤掉」,
+   *  and redo lives in the transcript (the content is still there verbatim). */
+  const undoAssistantPatch = (): void => {
+    const frame = undoStack[undoStack.length - 1]
+    if (!frame) return
+    setUndoStack((stack) => stack.slice(0, -1))
+    setDraft(frame.draft)
+    setDirty(frame.dirty)
+    assist.clearAppliedPatch()
+    notify.success(t('formAssist.undone'))
   }
 
   const openExtract = (): void => {
@@ -253,48 +346,27 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
     if (!extractTarget) return
     setExtracting(true)
     try {
-      const conv = await window.electronAPI.getConversation(extractTarget)
-      const lines: string[] = []
-      for (const msg of conv?.messages ?? []) {
-        const text = (msg.contentBlocks ?? [])
-          .filter((b) => b.type === 'text')
-          .map((b) => (b as { text?: string }).text ?? '')
-          .join('\n')
-        if (text) lines.push(`${msg.role === 'user' ? '用户' : '助手'}：${text}`)
-      }
       const profile = settings.profiles.find((p) => p.id === settings.activeProfileId)
       if (!profile?.apiKey) {
         notify.error('请先在设置中配置 API Key')
         return
       }
-      const agent = new RoutineExtractionAgent()
-      const draftResult = await agent.execute(
-        { conversationText: lines.join('\n\n'), locale: settings.locale === 'en' ? 'en' : 'zh' },
+      const result = await extractRoutineFromConversation(
+        extractTarget,
         {
-          llmConfig: {
-            apiKey: profile.apiKey,
-            baseURL: profile.baseURL || '',
-            model: profile.model || '',
-            adapter: createLlmAdapter(profile.provider ?? 'anthropic'),
-          },
+          adapter: createLlmAdapter(profile.provider ?? 'anthropic'),
+          apiKey: profile.apiKey,
+          baseURL: profile.baseURL || '',
+          model: profile.model || '',
         },
+        settings.locale === 'en' ? 'en' : 'zh',
       )
-      if (!draftResult) {
+      if (!result) {
         notify.warning('未能从该对话中提取出任务，试试另一个对话')
         return
       }
       setExtractOpen(false)
-      setDraft({
-        ...EMPTY_DRAFT,
-        name: draftResult.name,
-        description: draftResult.description,
-        prompt: draftResult.prompt,
-        ...draftScheduleFromCron(draftResult.cron),
-        sourceConversationId: extractTarget,
-      })
-      setDirty(false)
-      setBoundId(null)
-      setUpdateId(null)
+      applyExtractedDraft(result)
     } catch (err) {
       console.error('[RoutineEditor] extract failed:', err)
       notify.error('提取失败')
@@ -317,7 +389,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
   const canSave = draft.name.trim() !== '' && draft.prompt.trim() !== ''
 
   return (
-    <div style={{ height: '100%', minHeight: 0, display: 'flex', gap: 12, padding: '0 24px 24px', boxSizing: 'border-box', background: '#fff' }}>
+    <div style={{ height: '100%', minHeight: 0, display: 'flex', gap: 12, padding: '0 24px 24px', boxSizing: 'border-box', background: 'var(--pm-bg)' }}>
       <style>{PANE_ROW_STYLES}</style>
 
       {/* ── Left: routine list (also the switcher) ── */}
@@ -358,7 +430,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
                   </span>
                   <span style={{
                     flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    fontSize: 13, fontWeight: active ? 600 : 400, color: routine.enabled ? '#333' : '#bbb',
+                    fontSize: 13, fontWeight: active ? 600 : 400, color: routine.enabled ? 'var(--pm-text-strong)' : 'var(--pm-text-faint)',
                   }}>
                     {routine.name}
                   </span>
@@ -403,7 +475,6 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
               loading={saving}
               disabled={!canSave}
               onClick={() => void save()}
-              style={{ background: '#000', borderColor: '#000' }}
             >
               保存
             </Button>
@@ -413,11 +484,8 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
             <RoutineForm
               draft={draft}
               onChange={editDraft}
-              pendingAssistantDraft={assist.proposedPatch}
-              restoreableAssistantDraft={assist.restoreablePatch}
-              onApplyAssistantDraft={applyProposal}
-              onDismissAssistantDraft={assist.dismissProposal}
-              onRestoreAssistantDraft={assist.restoreProposal}
+              appliedAssistantPatch={assist.appliedPatch}
+              onUndoAssistantPatch={undoAssistantPatch}
             />
           </div>
         </div>
@@ -434,6 +502,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
           activeProfileId={settings.activeProfileId}
           onSelectProfile={(profileId) => void switchProfile(profileId)}
           onSendMessage={askAssistant}
+          onNewSession={discardBoundSession}
         />
       </div>
 
@@ -455,7 +524,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId }: RoutineEdit
               onClick={() => setExtractTarget(conv.id)}
               style={{
                 padding: '8px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 13,
-                border: extractTarget === conv.id ? '1px solid #333' : '1px solid #f0f0f0',
+                border: extractTarget === conv.id ? '1px solid var(--pm-text-strong)' : '1px solid var(--pm-border-hairline)',
                 background: extractTarget === conv.id ? 'rgba(0,0,0,0.04)' : 'transparent',
               }}
             >

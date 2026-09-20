@@ -1,23 +1,29 @@
 // ── Shared assistant session behind a conversational form-filler column ──
-// Wraps useHostedAgentSession with the form-assist protocol (form-assist.ts):
-// the proposal is derived — not accumulated — by parsing the latest assistant
-// reply on every render, a fingerprint fence keeps it hidden after a dismiss
-// until a NEW proposal shows up, and the render pipeline strips what the user
-// must never see as raw text: the proposal fences in assistant bubbles, the
-// trailing [当前表单] JSON in user bubbles (D1: it still rides the wire and
-// persists — only the render drops it), and incomplete fences in streaming
-// text (D2: a streaming fence is incomplete by construction, so it is cut,
-// not parsed). The session itself is a main-process hosted agent session
-// pinned by the spec's system-prompt override: persisted, resumable across
-// restarts, cancellable, and excluded from the memory / experience pipeline
-// by session-manager's derived-session rule.
+// Wraps useHostedAgentSession with the form-assist protocol (form-assist.ts).
+// The session is a main-process hosted agent session pinned by the spec's
+// system-prompt override: persisted, resumable across restarts, cancellable,
+// and excluded from the memory / experience pipeline by session-manager's
+// derived-session rule.
+//
+// 自动填入 (user ruling 2026-09-20, 「不要草稿模式，生成结论后直接填入表单，
+// 给撤销按钮」): there is no review card and no apply/dismiss step. Whenever
+// the latest assistant reply changes, planAutoApply decides whether its patch
+// is new (form-assist.ts owns the fire-once rules: hydrated history only
+// records, a same-message mutation never re-fires, a text growth re-decides)
+// and this hook hands it to the host's onPatch — the host writes it into the
+// form and shows an undo bar bound to `appliedPatch`. The render pipeline
+// still strips what the user must never see as raw text: the proposal fences
+// in assistant bubbles, the trailing [当前表单] JSON in user bubbles (D1: it
+// still rides the wire and persists — only the render drops it), and
+// incomplete fences in streaming text (D2: a streaming fence is incomplete by
+// construction, so it is cut, not parsed).
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AgentMessage, AgentStatus, ContentBlock } from '../../types/agent'
 import { useHostedAgentSession } from '../../hooks/useHostedAgentSession'
 import { useTranslation } from '../../i18n/useTranslation'
-import { buildFormAnnotation, parseFormPatch, stripFormAnnotation, stripProposalFences, stripStreamingFences } from './form-assist'
-import type { FormAssistSpec } from './form-assist'
+import { buildFormAnnotation, planAutoApply, stripFormAnnotation, stripProposalFences, stripStreamingFences } from './form-assist'
+import type { AutoApplyRecord, FormAssistSpec } from './form-assist'
 import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 
@@ -28,19 +34,15 @@ export interface FormAssistSession<P extends object> {
   streamingBlocks: ContentBlock[]
   isBusy: boolean
   restoring: boolean
-  /** Patch parsed from the latest assistant reply, awaiting apply/dismiss. */
-  proposedPatch: P | null
-  /** Apply-flavored hide: records the fingerprint only — the patch is already
-   *  written into the form, so a restore chip would be meaningless (D5). */
-  clearProposedPatch: () => void
-  /** 忽略: records fingerprint AND patch — the fence stays hidden, and when
-   *  the same content shows up again the host renders a restore chip (D5). */
-  dismissProposal: () => void
-  /** The patch hidden by the last 忽略, while an identical proposal is the
-   *  latest one; null otherwise. Hosts render the restore chip for it. */
-  restoreablePatch: P | null
-  /** Un-ignore: the derived proposal reappears from the same message. */
-  restoreProposal: () => void
+  /** The patch the latest assistant reply auto-applied — the undo bar binds
+   *  to this. It clears when a NEWER assistant reply carries no patch (a
+   *  prose answer retires the undo), the conversation switches, or the host
+   *  calls clearAppliedPatch. */
+  appliedPatch: P | null
+  /** Manual clear (撤销 clicked): drops the undo bar only — the fire-once
+   *  ledger is untouched, so a later mutation of the same message still will
+   *  not re-apply. */
+  clearAppliedPatch: () => void
   /** Send a user message; `snapshot` (the form's live state) rides along as
    *  the trailing [当前表单] annotation. */
   send: (text: string, snapshot?: Record<string, unknown>) => void
@@ -73,6 +75,15 @@ export interface FormAssistSessionOptions<P extends object> {
   /** The internal expert pack pinning this assistant's identity (D15/D16) —
    *  the domain's `*_ASSISTANT_PROFILE` constant. */
   expertProfile?: ExpertProfile
+  /** Bump after discarding the conversation (新会话 / a fresh create-flow):
+   *  the mirror re-restores empty under the SAME convId — one slot per entity
+   *  — and the auto-apply ledger + undo bar die with the old thread. */
+  resetKey?: number
+  /** Receives every newly auto-applied patch. Keep it stable (a useCallback
+   *  / instance method): it fires from an effect keyed on the message list.
+   *  The patch is ALSO readable as `appliedPatch` for the undo bar, so the
+   *  callback never needs to store it. */
+  onPatch: (patch: P) => void
 }
 
 function assistantText(msg: AgentMessage): string {
@@ -102,11 +113,12 @@ function renderMessage(msg: AgentMessage, legacyFences: string[], fenceOnlyPlace
   return changed ? { ...msg, contentBlocks: blocks } : msg
 }
 
-export function useFormAssistSession<P extends object>({ convId, title, spec, systemPrompt, allowedTools, expertProfile }: FormAssistSessionOptions<P>): FormAssistSession<P> {
+export function useFormAssistSession<P extends object>({ convId, title, spec, systemPrompt, allowedTools, expertProfile, resetKey, onPatch }: FormAssistSessionOptions<P>): FormAssistSession<P> {
   const session = useHostedAgentSession({
     convId,
     title,
     createOptions: { clientId: spec.clientId, systemPromptOverride: systemPrompt, allowedTools, expertProfile },
+    resetKey,
   })
   const { t } = useTranslation()
   // D7: a fence-only reply renders as this placeholder instead of the raw
@@ -137,46 +149,52 @@ export function useFormAssistSession<P extends object>({ convId, title, spec, sy
     // eslint-disable-next-line react-hooks/exhaustive-deps -- legacyFences derives from the stable module-level spec
   }, [session.streamingBlocks, spec])
 
-  // The proposal is derived, not accumulated: parse the latest assistant
-  // reply's RAW text (fences intact) on every render — one message, cheap —
-  // and hide it while its fingerprint is dismissed. Apply/dismiss keeps a
-  // fence hidden until a NEW one shows up, and the hide survives switching
-  // conversations away and back.
-  const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(null)
-  const [lastDismissed, setLastDismissed] = useState<{ fingerprint: string; patch: P } | null>(null)
+  // ── 自动填入：latest-reply trigger, exactly once per change ──
+  // The trigger reads the RAW assistant text (fences intact) — parseFormPatch
+  // needs the fence. planAutoApply's ledger lives in state so the effect can
+  // compare runs; `appliedPatch` mirrors the last handed-over patch for the
+  // host's undo bar. The empty-bubble window between the optimistic user
+  // message and the engine's reply is a no-op by construction (messageId
+  // null), which is exactly what keeps the previous turn's fence from
+  // re-firing when the message list shifts underneath it.
+  const [appliedRecord, setAppliedRecord] = useState<AutoApplyRecord | null>(null)
+  const [appliedPatch, setAppliedPatch] = useState<P | null>(null)
+  // 新会话/reset: the ledger and the undo bar belong to the discarded thread —
+  // they die with it, or a reply from the fresh thread could be compared
+  // against the old record (or an old applied patch would keep its bar up).
+  // Mount runs this too; both states start null, so React bails out.
+  /* eslint-disable react-hooks/set-state-in-effect -- same subscription-fold shape as the effect below */
+  useEffect(() => {
+    setAppliedRecord(null)
+    setAppliedPatch(null)
+  }, [resetKey])
+  /* eslint-enable react-hooks/set-state-in-effect */
   const lastAssistant = [...session.messages].reverse().find((m) => m.role === 'assistant')
-  const parsed = lastAssistant ? parseFormPatch(assistantText(lastAssistant), spec) : null
-  const fingerprint = parsed ? JSON.stringify(parsed) : null
-  const dismissedMatch = parsed != null && fingerprint === dismissedFingerprint
-  const proposedPatch = dismissedMatch ? null : parsed
-  // D5: the restore chip exists only for a 忽略 (apply never stores the
-  // patch), and only while the latest proposal is the very content that was
-  // dismissed — any different newer patch supersedes it.
-  const restoreablePatch = dismissedMatch && lastDismissed?.fingerprint === fingerprint ? lastDismissed.patch : null
-  const clearProposedPatch = useCallback((): void => {
-    setDismissedFingerprint(fingerprint)
-  }, [fingerprint])
-  const dismissProposal = useCallback((): void => {
-    if (parsed && fingerprint) setLastDismissed({ fingerprint, patch: parsed })
-    setDismissedFingerprint(fingerprint)
-  }, [fingerprint, parsed])
-  const restoreProposal = useCallback((): void => {
-    setDismissedFingerprint(null)
-    setLastDismissed(null)
-  }, [])
-
-  // D6: 忽略/恢复 state is per conversation. Hosted messages already rebuild
-  // with the convId mirror; this useState was the one piece that survived a
-  // switch — a dismissed proposal from routine A must not gate routine B's
-  // editor (and the host's key={session} remount stays as a second belt).
-  // Reset during render (the documented adjust-state-on-prop-change pattern):
-  // an effect would fire after a paint of A's gated state under B's form.
-  const [prevConvId, setPrevConvId] = useState(convId)
-  if (prevConvId !== convId) {
-    setPrevConvId(convId)
-    setDismissedFingerprint(null)
-    setLastDismissed(null)
-  }
+  const lastAssistantId = lastAssistant?.id ?? null
+  const lastAssistantRaw = lastAssistant ? assistantText(lastAssistant) : ''
+  /* eslint-disable react-hooks/set-state-in-effect -- folding a subscription-driven event stream into state: the mirror's sync() is the external system, and each setState runs at most once per genuine message change (planAutoApply's ledger) */
+  useEffect(() => {
+    if (appliedRecord && appliedRecord.convId !== convId) {
+      // Conversation switched live (no remount): the undo belongs to the
+      // previous form, and the new conversation starts as a fresh mount does.
+      setAppliedRecord(null)
+      setAppliedPatch(null)
+      return
+    }
+    // Hydration in flight: the mirror is being wiped and reseeded, so whatever
+    // message is momentarily "latest" is not a reply. The ledger waits for the
+    // restored baseline; when restoring flips false, planAutoApply sees
+    // prev === null and RECORDS that baseline without firing — history never
+    // replays into the form.
+    if (session.restoring) return
+    const decision = planAutoApply(appliedRecord, convId ?? '', lastAssistantId, lastAssistantRaw, spec)
+    if (decision.record !== appliedRecord) setAppliedRecord(decision.record)
+    if (decision.patch) {
+      setAppliedPatch(decision.patch)
+      onPatch(decision.patch)
+    }
+  }, [appliedRecord, convId, lastAssistantId, lastAssistantRaw, spec, onPatch, session.restoring])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const send = useCallback(
     (text: string, snapshot?: Record<string, unknown>): void => {
@@ -184,6 +202,8 @@ export function useFormAssistSession<P extends object>({ convId, title, spec, sy
     },
     [session],
   )
+
+  const clearAppliedPatch = useCallback((): void => setAppliedPatch(null), [])
 
   // ── 授权 (per-conversation tool-approval level) ──
   // Delegated to the shared hosted-session state (useHostedAgentSession →
@@ -196,11 +216,8 @@ export function useFormAssistSession<P extends object>({ convId, title, spec, sy
     streamingBlocks,
     isBusy: session.isBusy,
     restoring: session.restoring,
-    proposedPatch,
-    clearProposedPatch,
-    dismissProposal,
-    restoreablePatch,
-    restoreProposal,
+    appliedPatch,
+    clearAppliedPatch,
     send,
     cancel: session.cancel,
     engineCall: session.engineCall,

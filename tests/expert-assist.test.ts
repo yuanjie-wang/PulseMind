@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { buildFormAssistSystemPrompt, parseFormPatch } from '../src/renderer/src/components/form-assist/form-assist'
 import {
   EXPERT_ASSIST_SPEC,
   generateExpertId,
+  nextDerivedExpertId,
   pickDraftFields,
   sanitizeExpertPatch,
 } from '../src/renderer/src/components/settings/expert/expert-assist'
@@ -19,6 +22,12 @@ describe('sanitizeExpertPatch', () => {
   it('ignores capability keys the assistant is not allowed to fill', () => {
     // 可用能力要精确命中目录里的名字，交给表单多选；模型不该在对话里编造。
     expect(sanitizeExpertPatch({ name: '甲', skillNames: ['code-review'], mcpServerIds: ['x'] })).toEqual({ name: '甲' })
+  })
+
+  it('accepts the id field (用户报告 2026-09-20：专家创建助手无法填写 ID 栏位)', () => {
+    expect(sanitizeExpertPatch({ id: ' review-agent ', name: '审查专家' })).toEqual({ id: 'review-agent', name: '审查专家' })
+    // Uniform treatment: a blank id is dropped like any other blank field.
+    expect(sanitizeExpertPatch({ id: '  ' })).toBeNull()
   })
 
   it('is null when nothing usable survives', () => {
@@ -65,10 +74,15 @@ describe('parseFormPatch with EXPERT_ASSIST_SPEC', () => {
 
 describe('buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC)', () => {
   it('lists every fillable field in both locales', () => {
-    for (const key of ['name', 'description', 'basePrompt', 'methodology', 'outputSpec', 'constraints']) {
+    for (const key of ['name', 'id', 'description', 'basePrompt', 'methodology', 'outputSpec', 'constraints']) {
       expect(buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC, 'zh')).toContain(key)
       expect(buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC, 'en')).toContain(key)
     }
+  })
+
+  it('tells the assistant the id derives from the name and is new-expert only', () => {
+    expect(buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC, 'zh')).toContain('自动推导')
+    expect(buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC, 'en')).toContain('derived from its name')
   })
 
   it('does not offer the capability fields to the assistant', () => {
@@ -87,7 +101,8 @@ describe('buildFormAssistSystemPrompt(EXPERT_ASSIST_SPEC)', () => {
 
 describe('pickDraftFields', () => {
   it('copies only non-empty string fields', () => {
-    expect(pickDraftFields({ name: '甲', description: '', basePrompt: '人设' })).toEqual({
+    expect(pickDraftFields({ id: '甲-expert', name: '甲', description: '', basePrompt: '人设' })).toEqual({
+      id: '甲-expert',
       name: '甲',
       basePrompt: '人设',
     })
@@ -106,5 +121,70 @@ describe('generateExpertId', () => {
 
   it('falls back to a timestamped id for symbol-only names', () => {
     expect(generateExpertId('!!!')).toMatch(/^expert-\d+$/)
+  })
+})
+
+describe('nextDerivedExpertId', () => {
+  it('derives from the name while the field is empty or still derived', () => {
+    expect(nextDerivedExpertId('', '', 'Code Review Expert')).toBe('code-review-expert')
+    // A rename re-derives as long as the field still holds the derived value.
+    expect(nextDerivedExpertId('code-review', 'code-review', '翻译专家')).toBe('翻译专家')
+  })
+
+  it('leaves a hand-typed id alone (it takes over for good)', () => {
+    expect(nextDerivedExpertId('my-own-id', 'code-review', 'New Name')).toBeNull()
+    expect(nextDerivedExpertId('my-own-id', '', 'New Name')).toBeNull()
+  })
+
+  it('never mints an id from an empty or blank name', () => {
+    expect(nextDerivedExpertId('', '', '')).toBeNull()
+    expect(nextDerivedExpertId('code-review', 'code-review', '  ')).toBeNull()
+  })
+
+  it('treats a non-string current id as empty', () => {
+    expect(nextDerivedExpertId(undefined, '', '翻译专家')).toBe('翻译专家')
+  })
+})
+
+// ── id derive wiring (source scan) ──
+// vitest here is node-env — the editor cannot be mounted — but the report
+// (「专家创建助手无法填写表单中的ID栏位」) was about exactly this wiring: a
+// patch lands via form.setFieldsValue, which is silent, so unless onPatch
+// runs the derive rule itself the required id field stays empty even though
+// the assistant filled the name. The anchors below fail if either path stops
+// going through nextDerivedExpertId, or if the undo frame is captured after
+// the derive (撤销 would restore the derived id, not the pre-apply one).
+
+describe('id derive wiring (source scan)', () => {
+  const editorSrc = readFileSync(
+    join(process.cwd(), 'src', 'renderer', 'src', 'components', 'settings', 'expert', 'ExpertEditor.tsx'),
+    'utf-8',
+  )
+  const fieldsSrc = readFileSync(
+    join(process.cwd(), 'src', 'renderer', 'src', 'components', 'settings', 'expert', 'ExpertFormFields.tsx'),
+    'utf-8',
+  )
+
+  it('onPatch derives the id after applying the patch, before the undo frame is captured', () => {
+    const capture = editorSrc.indexOf('captureExpertFormValues(form.getFieldsValue())')
+    const apply = editorSrc.indexOf('form.setFieldsValue(patch)')
+    const derive = editorSrc.indexOf('nextDerivedExpertId(form.getFieldValue(\'id\')')
+    expect(capture).toBeGreaterThan(-1)
+    expect(apply).toBeGreaterThan(capture)
+    expect(derive).toBeGreaterThan(apply)
+    expect(editorSrc).toContain('form.setFieldsValue({ id: derived })')
+  })
+
+  it('derives only while creating — an existing expert keeps its id', () => {
+    // The guard must read the live `editing` (null = new expert), not isNew-at-mount.
+    expect(editorSrc).toMatch(/if \(!editing && patch\.name\)/)
+  })
+
+  it('both writers share one derived mark', () => {
+    expect(fieldsSrc).toContain('derivedIdRef: React.MutableRefObject<string>')
+    expect(editorSrc).toContain('derivedIdRef={derivedIdRef}')
+    // Per form load: an existing expert's id is its own, a fresh form starts over.
+    expect(editorSrc).toContain('derivedIdRef.current = editing ? editing.id : \'\'')
+    expect(fieldsSrc).toContain('nextDerivedExpertId(form.getFieldValue(\'id\'), derivedIdRef.current, name)')
   })
 })

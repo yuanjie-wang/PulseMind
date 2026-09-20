@@ -5,8 +5,10 @@ import { useConversationEngine } from './useConversationEngine'
 import { useConversationPersistence } from './useConversationPersistence'
 import { takePendingApprovalMode } from '../stores/pendingApprovalStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
+import { useNavigationStore } from '../stores/navigationStore'
 import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
+import { extractRoutineFromConversation } from '../components/routine/routine-extract'
 import { parseExpertMentions, parseKnowledgeBaseMention, type SummonedExpert } from '../../../shared/expert-context'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
@@ -140,6 +142,36 @@ export function useChatController(options: UseChatControllerOptions) {
   }, [apiKey, baseURL, options.adapter, options.model, options.locale, persistence])
 
   generateTitleRef.current = generateTitle as any
+
+  // ── 存为日常任务 (the chat toolbar's routine entry) ──────────────────
+  // Distills the active conversation into a routine draft with the same agent
+  // the editor's own 从对话提取 picker runs, then jumps straight to the editor
+  // with it: the editor is the review surface (the schedule above all), so the
+  // button only distills. The draft rides the one-shot `routineDraft` view
+  // param; nothing is created until the user saves there.
+  const extractRoutine = useCallback(async (): Promise<void> => {
+    const convId = persistence.activeConversationKey ? String(persistence.activeConversationKey) : ''
+    if (!convId) return
+    if (!apiKey) {
+      message.warning(t('chatView.routineExtractNoKey'))
+      return
+    }
+    try {
+      const draft = await extractRoutineFromConversation(
+        convId,
+        { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model },
+        options.locale === 'en' ? 'en' : 'zh',
+      )
+      if (!draft) {
+        message.warning(t('chatView.routineExtractEmpty'))
+        return
+      }
+      useNavigationStore.getState().navigate({ kind: 'routines', routineEditing: true, routineDraft: draft })
+    } catch (err) {
+      console.warn('[ChatController] routine extraction failed:', err)
+      message.error(t('chatView.routineExtractFailed'))
+    }
+  }, [apiKey, options.adapter, options.baseURL, options.model, options.locale, persistence.activeConversationKey, message, t])
 
   // ── 5. Experience auto-extraction (from conversations with 5+ rounds) ──
   const summarizerRunningRef = useRef(false)
@@ -417,6 +449,7 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     rejectTool: engine.rejectTool,
     killTool: engine.killTool,
     respondToTool: engine.respondToTool,
+    extractRoutine,
     clearError: engine.clearError,
     retryLast: engine.retryLast,
     extendLoop: engine.extendLoop,

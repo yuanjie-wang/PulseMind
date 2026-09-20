@@ -1,19 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   FORM_PATCH_FENCE,
   buildFormAnnotation,
   buildFormAssistSystemPrompt,
   formAssistConversationId,
   parseFormPatch,
+  planAutoApply,
   stripFormAnnotation,
   stripProposalFences,
   stripStreamingFences,
 } from '../src/renderer/src/components/form-assist/form-assist'
 import type { FormAssistSpec } from '../src/renderer/src/components/form-assist/form-assist'
-import { filterRoutinePatch, summarizeRoutinePatch } from '../src/renderer/src/components/routine/routine-assist'
-import { filterExpertPatch, summarizeExpertPatch } from '../src/renderer/src/components/settings/expert/expert-assist'
-import { EMPTY_DRAFT } from '../src/renderer/src/components/routine/routine-form-model'
-import type { RoutineDraftState } from '../src/renderer/src/components/routine/routine-form-model'
 
 // ── The shared form-assist protocol mechanics, driven through a minimal spec.
 // Domain specs (routine / expert) have their own files.
@@ -62,6 +61,8 @@ describe('buildFormAssistSystemPrompt', () => {
     expect(prompt).toContain('[当前表单]')
     // 缓存契约：提示词里不能出现具体表单值。
     expect(prompt).not.toContain('你好')
+    // 2026-09-20 裁定：结论直接填入，不需要确认步骤——合同句要说清这一点。
+    expect(prompt).toContain('直接填入表单')
   })
 
   it('switches to English while keeping the English key names and the fence', () => {
@@ -127,7 +128,7 @@ describe('stripProposalFences', () => {
     // leaked exactly the JSON the strip exists to hide — the placeholder is
     // the replacement, and the original text must NOT resurface.
     const text = '```form-patch\n{"word":"x"}\n```'
-    expect(stripProposalFences(text, [], '（已生成表单草稿）')).toBe('（已生成表单草稿）')
+    expect(stripProposalFences(text, [], '（已生成表单内容）')).toBe('（已生成表单内容）')
     expect(stripProposalFences(text, ['old-draft'], '占位')).toBe('占位')
     // 不传占位（防御路径）保持旧行为，避免其他调用点突然空泡。
     expect(stripProposalFences(text)).toBe(text)
@@ -177,69 +178,108 @@ describe('stripStreamingFences (D2)', () => {
   })
 })
 
-describe('summarizeRoutinePatch (D3)', () => {
-  const current: RoutineDraftState = {
-    ...EMPTY_DRAFT,
-    name: '旧名称',
-    prompt: '旧提示词',
-    params: [
-      { key: 'a', label: 'A' },
-      { key: 'b', label: 'B' },
-    ],
-  }
+// ── 自动填入 trigger (user ruling 2026-09-20: no draft mode — the patch
+// lands in the form directly, with an undo). planAutoApply is the fire-once
+// ledger behind it; the real-browser behaviors live in probe-form-assist.mjs.
 
-  it('rows only for keys the patch carries; before from the live draft', () => {
-    const rows = summarizeRoutinePatch({ name: '新名称', prompt: '新提示词' }, current)
-    expect(rows.map((r) => r.key)).toEqual(['name', 'prompt'])
-    expect(rows[0]).toEqual({ key: 'name', label: '任务名称', before: '旧名称', after: '新名称' })
+describe('planAutoApply', () => {
+  const REPLY = '帮你填。\n```form-patch\n{"word":"新"}\n```'
+
+  it('records hydrated history WITHOUT firing (no replay into the form)', () => {
+    // A freshly mounted / rehydrated conversation must not pour its old
+    // conclusions back over a form that was just loaded from the entity.
+    const d = planAutoApply(null, 'demo_assist_e1', 'a1', REPLY, SPEC)
+    expect(d.patch).toBeNull()
+    expect(d.record).toEqual({ convId: 'demo_assist_e1', messageId: 'a1', text: REPLY })
   })
 
-  it('params row collapses to the 「N 个参数（keys）」 summary', () => {
-    const rows = summarizeRoutinePatch(
-      {
-        params: [
-          { key: 'x', label: '' },
-          { key: 'y', label: '' },
-          { key: 'z', label: '' },
-        ],
-      },
-      current,
-    )
-    expect(rows).toHaveLength(1)
-    expect(rows[0].key).toBe('params')
-    expect(rows[0].before).toBe('2 个参数（a, b）')
-    expect(rows[0].after).toBe('3 个参数（x, y, z）')
-    expect(summarizeRoutinePatch({ params: [] as never[] }, { ...current, params: [] }).length).toBe(0)
+  it('records a conversation switch without firing', () => {
+    const prev = { convId: 'demo_assist_e1', messageId: 'a1', text: REPLY }
+    const d = planAutoApply(prev, 'demo_assist_e2', 'a1', REPLY, SPEC)
+    expect(d.patch).toBeNull()
+    expect(d.record?.convId).toBe('demo_assist_e2')
   })
 
-  it('invalid cron reads as-is through describeCron (deterministic)', () => {
-    const rows = summarizeRoutinePatch({ cron: 'not-a-cron' }, { ...current, scheduleEnabled: false })
-    expect(rows[0].label).toBe('定时执行')
-    expect(rows[0].before).toBe('手动执行')
-    expect(rows[0].after).toContain('无效表达式')
+  it('fires once for a NEW message; the same message+text never re-fires', () => {
+    const first = planAutoApply({ convId: 'demo_assist_e1', messageId: 'a1', text: '旧回复' }, 'demo_assist_e1', 'a2', REPLY, SPEC)
+    expect(first.patch).toEqual({ word: '新' })
+    // A later message_stats / messages_update re-runs the decision with the
+    // same inputs — the ledger answers "already handed over".
+    const again = planAutoApply(first.record!, 'demo_assist_e1', 'a2', REPLY, SPEC)
+    expect(again.patch).toBeNull()
+    expect(again.record).toBe(first.record)
+  })
+
+  it('a same-message TEXT GROWTH re-decides (partial append → completed fence)', () => {
+    const prev = { convId: 'c', messageId: 'a1', text: '帮你填。\n```form-patch\n{"word":"新' }
+    const d = planAutoApply(prev, 'c', 'a1', REPLY, SPEC)
+    expect(d.patch).toEqual({ word: '新' })
+  })
+
+  it('a plain prose reply still advances the ledger (stops re-parsing)', () => {
+    const d = planAutoApply({ convId: 'c', messageId: 'a1', text: REPLY }, 'c', 'a2', '只是说明，没有补丁。', SPEC)
+    expect(d.patch).toBeNull()
+    expect(d.record).toEqual({ convId: 'c', messageId: 'a2', text: '只是说明，没有补丁。' })
+  })
+
+  it('the empty-bubble window (no assistant message yet) is inert and keeps the ledger', () => {
+    // Between the optimistic user bubble and the engine's reply the list
+    // carries no assistant message; this must not clear the record (which
+    // would make the arriving reply look like a fresh mount... it would not,
+    // but it must not re-fire either) and must not fire.
+    const prev = { convId: 'c', messageId: 'a1', text: REPLY }
+    const d = planAutoApply(prev, 'c', null, '', SPEC)
+    expect(d.patch).toBeNull()
+    expect(d.record).toBe(prev)
   })
 })
 
-describe('filterRoutinePatch (D4)', () => {
-  it('keeps only the checked keys; unchecked fields drop out entirely', () => {
-    const patch = { name: '新', prompt: '新提示词', cron: '0 9 * * *' }
-    expect(filterRoutinePatch(patch, ['name'])).toEqual({ name: '新' })
-    expect(filterRoutinePatch(patch, ['prompt', 'cron'])).toEqual({ prompt: '新提示词', cron: '0 9 * * *' })
-    expect(filterRoutinePatch(patch, [])).toEqual({})
-  })
-})
+// ── Host wiring (vitest here is node-env: the React hosts cannot mount, so
+// the load-bearing ordering is pinned as source, the pending-approval /
+// teardown-lifecycle pattern).
 
-describe('summarizeExpertPatch / filterExpertPatch (D3/D4)', () => {
-  it('rows for carried keys only, before from the live form, empty before = ""', () => {
-    const rows = summarizeExpertPatch({ name: '代码审查专家', constraints: '不改代码' }, { name: '旧专家' })
-    expect(rows).toEqual([
-      { key: 'name', label: '名称', before: '旧专家', after: '代码审查专家' },
-      { key: 'constraints', label: '边界约束', before: '', after: '不改代码' },
-    ])
+const ROOT = join(import.meta.dirname, '..', 'src', 'renderer', 'src')
+const readSrc = (...p: string[]): string => readFileSync(join(ROOT, ...p), 'utf8')
+
+describe('auto-apply wiring (source scans)', () => {
+  it('the hook drives the trigger through planAutoApply and only fires on a decision patch', () => {
+    const hook = readSrc('components', 'form-assist', 'useFormAssistSession.ts')
+    expect(hook).toContain('planAutoApply(')
+    expect(hook).toContain('if (decision.patch) {')
+    expect(hook).toContain('onPatch(decision.patch)')
+    // The undo bar's data source and its manual clear exist.
+    expect(hook).toContain('clearAppliedPatch')
+    expect(hook).not.toContain('proposedPatch')
   })
 
-  it('filter keeps whitelisted checked keys only', () => {
-    const patch = { name: '新名', basePrompt: '人设', methodology: '方法论' }
-    expect(filterExpertPatch(patch, ['basePrompt'])).toEqual({ basePrompt: '人设' })
+  it('the routine host captures the PRE-patch frame BEFORE writing the patch', () => {
+    const page = readSrc('components', 'routine', 'RoutineEditorPage.tsx')
+    const push = page.indexOf('setUndoStack')
+    const apply = page.indexOf('applyAssistantPatch(patch, draft)')
+    expect(push).toBeGreaterThan(-1)
+    expect(apply).toBeGreaterThan(push)
+    // The frame carries the dirty flag too — 撤销 restores the 未保存 marker's honesty.
+    expect(page).toContain('{ draft, dirty }')
+  })
+
+  it('the expert host captures all six fields (empties included) BEFORE writing the patch', () => {
+    const editor = readSrc('components', 'settings', 'expert', 'ExpertEditor.tsx')
+    const push = editor.indexOf('setUndoStack')
+    const apply = editor.indexOf('form.setFieldsValue(patch)')
+    expect(push).toBeGreaterThan(-1)
+    expect(apply).toBeGreaterThan(push)
+    expect(editor).toContain('captureExpertFormValues(form.getFieldsValue())')
+  })
+
+  it('both forms render the undo bar; the review card is gone everywhere', () => {
+    expect(readSrc('components', 'routine', 'RoutineForm.tsx')).toContain('AppliedPatchBar')
+    expect(readSrc('components', 'settings', 'expert', 'ExpertEditor.tsx')).toContain('AppliedPatchBar')
+    expect(existsSync(join(ROOT, 'components', 'form-assist', 'ProposalReviewCard.tsx'))).toBe(false)
+  })
+
+  it('captureExpertFormValues keeps empty fields (the undo of a fill-into-blank must blank it back)', () => {
+    const assist = readSrc('components', 'settings', 'expert', 'expert-assist.ts')
+    expect(assist).toContain('empties included')
+    expect(assist).toContain('draft[key] = typeof values?.[key]')
   })
 })

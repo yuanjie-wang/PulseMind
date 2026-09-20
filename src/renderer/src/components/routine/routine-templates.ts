@@ -37,7 +37,7 @@ export interface RoutineTemplate {
   name: Record<Locale, string>
   description: Record<Locale, string>
   /** The routine's body; `{{param}}` placeholders are filled at run time
-   *  (renderRoutinePrompt in main/routine/routine-runner.ts). */
+   *  (renderRoutinePrompt in shared/routine/params.ts). */
   prompt: Record<Locale, string>
   /** 5-field cron. Absent = a manual template (no schedule). */
   cron?: string

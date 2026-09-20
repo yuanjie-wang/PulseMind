@@ -102,7 +102,7 @@ export function TranscriptView({
     <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', padding: '12px 0 8px' }}>
       {!hasMessages && restoring && restoringHint}
       {!hasMessages && !restoring && (emptyContent ?? (
-        <div style={{ padding: '0 14px', color: '#999', fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+        <div style={{ padding: '0 14px', color: 'var(--pm-text-muted)', fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
           {emptyHint}
         </div>
       ))}
@@ -122,7 +122,7 @@ export function TranscriptView({
           onRespondToTool={onRespondToTool}
         />
       ))}
-      <StreamingCursor show={isRequesting} />
+      <StreamingCursor show={isRequesting} contentInset={contentInset} />
       {agentStatus.status === 'error' && (
         <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
           <ErrorDisplay

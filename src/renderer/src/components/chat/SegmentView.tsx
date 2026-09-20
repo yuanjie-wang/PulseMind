@@ -42,6 +42,10 @@ export interface SegmentViewProps {
    *  defaulting to off: a host that doesn't report the status renders exactly as
    *  it did before (its pending calls simply stay collapsed). */
   awaitingApproval?: boolean
+  /** 存为日常任务, onto the segment's action row (see MessageGroup). Optional:
+   *  ChatView passes it for the conversation's last settled assistant message
+   *  only; every other host leaves it off and renders as before. */
+  onExtractRoutine?: () => void | Promise<void>
   onApproveTool: (toolUseId: string) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool?: (toolUseId: string) => void
@@ -77,6 +81,7 @@ export function SegmentView({
   onOpenSubAgent,
   isRequesting,
   awaitingApproval,
+  onExtractRoutine,
   onApproveTool,
   onRejectTool,
   onKillTool,
@@ -115,6 +120,7 @@ export function SegmentView({
       conversationId={conversationId}
       conversationTitle={conversationTitle}
       onOpenSubAgent={onOpenSubAgent}
+      onExtractRoutine={onExtractRoutine}
       awaitingApproval={awaitingApproval}
     />
   )

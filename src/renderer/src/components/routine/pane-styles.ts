@@ -6,9 +6,9 @@
 
 export const PANE_ROW_STYLES = `
   .pane-row { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s, border-color 0.15s; }
-  .pane-row:hover { background: rgba(0,0,0,0.03); }
-  .pane-row--active { background: rgba(0,0,0,0.06); border-color: #d9d9d9; }
-  .pane-row--active:hover { background: rgba(0,0,0,0.09); }
+  .pane-row:hover { background: var(--pm-hover-faint); }
+  .pane-row--active { background: var(--pm-hover); border-color: var(--pm-border); }
+  .pane-row--active:hover { background: var(--pm-hover-stronger); }
   /* Row actions stay out of the way until the row is under the pointer
      (or keyboard focus is inside it). */
   .pane-row-action { opacity: 0; pointer-events: none; transition: opacity 0.15s; }

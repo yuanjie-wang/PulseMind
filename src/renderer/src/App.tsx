@@ -233,6 +233,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     rejectTool,
     killTool,
     respondToTool,
+    extractRoutine,
     clearError,
     retryLast,
     extendLoop,
@@ -564,6 +565,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               contextLength={contextLength}
               onOpenPlanNode={onOpenPlanNode}
               onOpenSubAgent={onOpenSubAgent}
+              onExtractRoutine={extractRoutine}
               canOpenNode={canOpenNode}
               onSendMessage={handleRequest}
               onCancel={abort}

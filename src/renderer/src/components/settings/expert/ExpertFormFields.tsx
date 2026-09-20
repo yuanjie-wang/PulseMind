@@ -1,6 +1,6 @@
 import React from 'react'
 import { Form, Input, Select, type FormInstance } from 'antd'
-import { generateExpertId } from './expert-assist'
+import { nextDerivedExpertId } from './expert-assist'
 import { useTranslation } from '../../../i18n/useTranslation'
 
 /** A catalog entry the capability selects pick from. */
@@ -13,6 +13,10 @@ export interface ExpertFormFieldsProps {
   form: FormInstance
   /** New expert: the id field is editable and derived from the name. */
   isNew: boolean
+  /** Last id derived from the name — owned by ExpertEditor so its patch path
+   *  (onPatch) shares the same「still derived」mark: the id keeps following
+   *  the name until a hand-typed id takes over, whichever path wrote it. */
+  derivedIdRef: React.MutableRefObject<string>
   /** 可用技能候选（名称即标识）。 */
   skillOptions: ExpertRefOption[]
   /** 可用连接器候选（MCP 服务 id）。 */
@@ -36,21 +40,22 @@ function boldLabel(text: string): React.ReactNode {
 export default function ExpertFormFields({
   form,
   isNew,
+  derivedIdRef,
   skillOptions,
   connectorOptions,
   onValuesChange,
 }: ExpertFormFieldsProps): React.ReactElement {
   const { t } = useTranslation()
-  // Last id we derived from the name: while the field still holds it, the id
-  // keeps following the name. A hand-typed id takes over for good.
-  const derivedId = React.useRef('')
 
+  // Typing is one of the two writers of the「id follows the name」rule (the
+  // other is ExpertEditor's onPatch, which runs nextDerivedExpertId too —
+  // setFieldsValue never fires this onChange).
   const handleNameChange = (name: string): void => {
     if (!isNew) return
-    const current = String(form.getFieldValue('id') || '')
-    if (current && current !== derivedId.current) return
-    derivedId.current = generateExpertId(name)
-    form.setFieldsValue({ id: derivedId.current })
+    const derived = nextDerivedExpertId(form.getFieldValue('id'), derivedIdRef.current, name)
+    if (derived === null) return
+    derivedIdRef.current = derived
+    form.setFieldsValue({ id: derived })
   }
 
   return (

@@ -23,12 +23,12 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { App as AntdApp, Button, Switch, Tag, Tooltip } from 'antd'
 import { ClockCircleOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
-import { notify } from '../../utils/notify'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { checkCron } from '../../../../shared/schedule/cron'
 import { describeCron } from '../../utils/schedule-text'
 import { describeRelativeTimeText, bucketRunByDate, type DateBucket } from '../../utils/relative-time'
 import { RoutineWorkspace, RUN_STATUS_TAG, RunStatusIcon } from './RoutineWorkspace'
+import { useRoutineRunNow } from './RoutineRunModal'
 import { ROUTINE_TEMPLATES, routineScheduleLabel } from './routine-templates'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
 
@@ -58,20 +58,20 @@ const RUNS_COLUMN_WIDTH = 300
  *  computed border/label colours are what a probe can read. */
 const CENTER_STYLES = `
   .routine-card { transition: box-shadow 0.2s, border-color 0.2s; cursor: pointer; }
-  .routine-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-color: #d9d9d9; }
-  .routine-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; background: #f5f5f5; color: #666; font-size: 11px; line-height: 18px; white-space: nowrap; }
+  .routine-card:hover { box-shadow: var(--pm-shadow-soft); border-color: var(--pm-border); }
+  .routine-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; background: var(--pm-fill); color: var(--pm-text-secondary); font-size: 11px; line-height: 18px; white-space: nowrap; }
   .routine-run-row { transition: background 0.15s; cursor: pointer; }
-  .routine-run-row:hover { background: #f5f5f5; }
+  .routine-run-row:hover { background: var(--pm-fill); }
   .routine-template { display: flex; flex-direction: column; align-items: stretch; gap: 4px;
-    text-align: left; font: inherit; color: inherit; background: #fff; cursor: pointer;
-    border: 1px solid #f0f0f0; border-radius: 12px; padding: 12px 14px;
+    text-align: left; font: inherit; color: inherit; background: var(--pm-elevated); cursor: pointer;
+    border: 1px solid var(--pm-border-hairline); border-radius: 12px; padding: 12px 14px;
     transition: box-shadow 0.2s, border-color 0.2s; }
-  .routine-template:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-color: #d9d9d9; }
+  .routine-template:hover { box-shadow: var(--pm-shadow-soft); border-color: var(--pm-border); }
   .routine-new-card { display: flex; align-items: center; justify-content: center; gap: 8px;
-    min-height: 72px; font: inherit; font-size: 14px; color: #888; background: transparent; cursor: pointer;
-    border: 1px dashed #c8c8cc; border-radius: 12px; padding: 14px 16px;
+    min-height: 72px; font: inherit; font-size: 14px; color: var(--pm-text-quiet); background: transparent; cursor: pointer;
+    border: 1px dashed var(--pm-dash-border); border-radius: 12px; padding: 14px 16px;
     transition: border-color 0.2s, color 0.2s; }
-  .routine-new-card:hover { border-color: #666; color: #444; }
+  .routine-new-card:hover { border-color: var(--pm-text-secondary); color: var(--pm-row-ink); }
 `
 
 /** The template grid: the task grid's rhythm one notch narrower, and it reflows
@@ -98,8 +98,8 @@ const TEMPLATE_GRID: React.CSSProperties = {
 function SectionHead({ title, note, action }: { title: string; note?: string; action?: React.ReactNode }): React.ReactElement {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 32, flexShrink: 0 }}>
-      <span style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>{title}</span>
-      {note && <span style={{ fontSize: 12, color: '#999' }}>{note}</span>}
+      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--pm-text-strong)' }}>{title}</span>
+      {note && <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>{note}</span>}
       <span style={{ flex: 1 }} />
       {action}
     </div>
@@ -170,16 +170,14 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
     setHistoryOfId(routineId)
   }
 
-  const runNow = async (routine: Routine): Promise<void> => {
-    const params: Record<string, string> = {}
-    for (const p of routine.params ?? []) params[p.key] = p.default ?? ''
-    await window.electronAPI.routineRun(routine.id, params)
-    notify.success(`已开始执行「${routine.name}」，完成后会通知你`)
-    // 跳到三栏运行历史：默认选中刚发起的这次运行，右侧实时展示执行过程。
-    setHistoryOfId(routine.id)
+  /** Shared 立即运行: params → fill-in dialog first, none → straight away
+   *  (RoutineRunModal). A started run jumps into the three-pane workspace with
+   *  the fresh run preselected for live viewing. */
+  const { runNow, modal: runModal } = useRoutineRunNow((started) => {
+    setHistoryOfId(started.id)
     setRunNonce((n) => n + 1)
     void reload()
-  }
+  })
 
   const removeRoutine = (routine: Routine): void => {
     modal.confirm({
@@ -223,7 +221,8 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
   }
 
   return (
-    <div style={{ height: '100%', background: '#fff', overflow: 'hidden' }}>
+    <div style={{ height: '100%', background: 'var(--pm-bg)', overflow: 'hidden' }}>
+      {runModal}
       {historyOfId != null ? (
         <RoutineWorkspace
           routines={routines}
@@ -232,7 +231,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
           activeRunNonce={runNonce}
           onBack={() => { setHistoryOfId(null); setInitialRunIdForWorkspace(undefined); void reload() }}
           onEdit={(r) => openEditor(r)}
-          onRunNow={(r) => void runNow(r)}
+          onRunNow={runNow}
         />
       ) : (
         <div style={{ height: '100%', display: 'flex', minHeight: 0 }}>
@@ -265,7 +264,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                     the gap to a section head that no longer has a button in it;
                     16px below is what keeps it off the first card. */}
                 {routines.length === 0 && (
-                  <div style={{ color: '#999', padding: '0 0 16px', fontSize: 13 }}>
+                  <div style={{ color: 'var(--pm-text-muted)', padding: '0 0 16px', fontSize: 13 }}>
                     {t('routine.emptyHint')}
                   </div>
                 )}
@@ -283,7 +282,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                       <div
                         key={routine.id}
                         className="routine-card"
-                        style={{ display: 'flex', flexDirection: 'column', borderRadius: 12, border: '1px solid #f0f0f0', padding: '14px 16px' }}
+                        style={{ display: 'flex', flexDirection: 'column', borderRadius: 12, border: '1px solid var(--pm-border-hairline)', padding: '14px 16px' }}
                         onClick={() => openHistory(routine.id)}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -295,7 +294,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                         <div
                           title={description}
                           style={{
-                            fontSize: 12, color: '#888', marginTop: 6, minHeight: 36,
+                            fontSize: 12, color: 'var(--pm-text-quiet)', marginTop: 6, minHeight: 36,
                             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
                           }}
                         >
@@ -312,7 +311,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                             toggling / running / editing / deleting does not also
                             open the run-history workspace like a card click does. */}
                         <div
-                          style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 10, paddingTop: 10, borderTop: '1px solid #f5f5f5' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--pm-border-faint)' }}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <Switch
@@ -322,7 +321,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                           />
                           <span style={{ flex: 1 }} />
                           <Tooltip title="立即运行">
-                            <Button type="text" icon={<PlayCircleOutlined style={{ fontSize: 17 }} />} onClick={() => void runNow(routine)} />
+                            <Button type="text" icon={<PlayCircleOutlined style={{ fontSize: 17 }} />} onClick={() => runNow(routine)} />
                           </Tooltip>
                           <Tooltip title="编辑">
                             <Button type="text" icon={<EditOutlined style={{ fontSize: 15 }} />} onClick={() => openEditor(routine)} />
@@ -391,7 +390,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                       onClick={() => openTemplate(template.id)}
                     >
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: '#333' }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--pm-text-strong)' }}>
                           {template.name[locale] || template.name.zh}
                         </span>
                         {template.cron && (
@@ -400,7 +399,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                           </span>
                         )}
                       </span>
-                      <span style={{ fontSize: 12, color: '#888', lineHeight: '18px' }}>
+                      <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)', lineHeight: '18px' }}>
                         {template.description[locale] || template.description.zh}
                       </span>
                     </button>
@@ -416,13 +415,13 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
             data-section="runs"
             style={{
               width: RUNS_COLUMN_WIDTH, flexShrink: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
-              borderLeft: '1px solid #f0f0f0', padding: '24px 16px',
+              borderLeft: '1px solid var(--pm-border-hairline)', padding: '24px 16px',
             }}
           >
             <SectionHead title={t('routine.recentRuns')} />
             <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
               {recentRuns.length === 0 ? (
-                <div style={{ color: '#bbb', fontSize: 12, padding: '12px 0' }}>
+                <div style={{ color: 'var(--pm-text-faint)', fontSize: 12, padding: '12px 0' }}>
                   {t('routine.recentRunsEmpty')}
                 </div>
               ) : (
@@ -432,7 +431,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                     if (runs.length === 0) return null
                     return (
                       <div key={bucket}>
-                        <div style={{ fontSize: 11, color: '#999', fontWeight: 600, padding: '10px 4px 6px', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                        <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', fontWeight: 600, padding: '10px 4px 6px', textTransform: 'uppercase', letterSpacing: 0.3 }}>
                           {bucketLabel[bucket]}
                         </div>
                         {runs.map((run) => {
@@ -453,13 +452,13 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                               <RunStatusIcon status={run.status} />
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{
-                                  fontSize: 12.5, color: isRunning ? '#1677ff' : '#333',
+                                  fontSize: 12.5, color: isRunning ? 'var(--pm-link)' : 'var(--pm-text-strong)',
                                   fontWeight: isRunning ? 600 : 500,
                                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                                 }}>
                                   {name}
                                 </div>
-                                <div style={{ fontSize: 11, color: '#999', display: 'flex', gap: 6, alignItems: 'center' }}>
+                                <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', display: 'flex', gap: 6, alignItems: 'center' }}>
                                   <span>{triggerText}</span>
                                   {timeText && <span>· {timeText}</span>}
                                 </div>
