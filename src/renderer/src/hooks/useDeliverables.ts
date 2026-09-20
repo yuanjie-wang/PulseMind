@@ -106,7 +106,9 @@ export function useDeliverables(
           if (hydrates >= MAX_HYDRATES) continue
           hydrates++
           try {
-            const conv = await window.electronAPI.hydrateConversation(id)
+            // Rows need pairing + is_error + paths, never the bodies: cap each restored
+// tool_result so a child full of 200KB outputs costs KBs, not MBs (M3-T3).
+            const conv = await window.electronAPI.hydrateConversation(id, 2000)
             if (cancelled) return
             const childMessages = (conv?.messages ?? []) as unknown as AgentMessage[]
             const derived = collectDeliverables(childMessages, { convId: id })

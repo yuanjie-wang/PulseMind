@@ -9,8 +9,12 @@ import { getDb } from './database'
  * This is layer 1 only — the capability-center `enabled` switch. It does NOT
  * mean every tool reaches the model: `availability: 'gated'` (layer 2, see
  * tool-collection.ts) still keeps a gated tool out of the tool list until a
- * trigger keyword or `pick_tool` activates it, and the page_* family is only
- * reachable for a session the browser extension is driving (`hostedAvailable`).
+ * trigger keyword or `pick_tool` activates it. The extension-only page_* family
+ * is not in BUILT_IN_TOOLS at all (2026-09-20: 「页面系列工具是仅给插件用的」),
+ * so it has no preference row and no default — tool-collection.ts merges it
+ * into the toolset only for a session the browser extension is driving
+ * (`hostedAvailable`). Preference rows naming page_* left by older versions
+ * are simply ignored: applyPreferences only touches registered names.
  *
  * Derived from the registry rather than enumerated, so a tool added in a later
  * version is on by default for new AND upgrading installs — which is exactly
