@@ -65,7 +65,7 @@ function ExpertCard({ profile, connectorOptions, onToggle, onEdit, onDelete }: E
       {/* Curated one-liner; fall back to the persona snippet. */}
       {(profile.description || profile.basePrompt) && (
         <Paragraph
-          style={{ fontSize: 12, marginBottom: 8, color: '#888' }}
+          style={{ fontSize: 12, marginBottom: 8, color: 'var(--pm-text-quiet)' }}
           ellipsis={{ rows: 3, expandable: false }}
         >
           {profile.description || profile.basePrompt}
@@ -75,17 +75,17 @@ function ExpertCard({ profile, connectorOptions, onToggle, onEdit, onDelete }: E
       {/* 可用能力白名单（不是提示）——只显示数量，明细在编辑表单里。 */}
       {!!profile.skillNames?.length && (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4 }}>
-          <ThunderboltOutlined style={{ color: '#999', marginTop: 3, fontSize: 12 }} />
-          <span style={{ fontSize: 11, color: '#888' }} title={profile.skillNames.join('、')}>
+          <ThunderboltOutlined style={{ color: 'var(--pm-text-muted)', marginTop: 3, fontSize: 12 }} />
+          <span style={{ fontSize: 11, color: 'var(--pm-text-quiet)' }} title={profile.skillNames.join('、')}>
             {t('expertCenter.skillNames')} × {profile.skillNames.length}
           </span>
         </div>
       )}
       {!!profile.mcpServerIds?.length && (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4 }}>
-          <ApiOutlined style={{ color: '#999', marginTop: 3, fontSize: 12 }} />
+          <ApiOutlined style={{ color: 'var(--pm-text-muted)', marginTop: 3, fontSize: 12 }} />
           <span
-            style={{ fontSize: 11, color: '#888' }}
+            style={{ fontSize: 11, color: 'var(--pm-text-quiet)' }}
             title={profile.mcpServerIds.map((id) => connectorOptions.find((c) => c.value === id)?.label || id).join('、')}
           >
             {t('expertCenter.mcpServerIds')} × {profile.mcpServerIds.length}
@@ -248,7 +248,7 @@ const ExpertSettings = React.forwardRef<ExpertSettingsHandle, ExpertSettingsProp
           <Button
             type="primary"
             icon={<PlusOutlined />}
-            style={{ marginTop: 16, background: '#000', borderColor: '#000' }}
+            style={{ marginTop: 16, background: 'var(--pm-ink)', borderColor: 'var(--pm-ink)' }}
             onClick={() => enterEdit(null)}
           >
             {t('expertCenter.newExpert')}

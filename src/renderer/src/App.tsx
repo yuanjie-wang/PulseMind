@@ -1,6 +1,26 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { XProvider } from '@ant-design/x'
 import { ConfigProvider, App as AntdApp } from 'antd'
+// The base layer first, explicitly: it is `@ant-design/x-markdown`'s own
+// `es/XMarkdown/index.css`, which reaches the bundle as a side effect of
+// importing `XMarkdown` — and the theme sheets below must land AFTER it.
+// Both layers declare `li { margin: … }` at the same specificity (0,1,1), so
+// source order decides it, and the theme's `margin: var(--margin-block)` is the
+// one the app has always rendered: measured, `li` margin-bottom 14px with the
+// base first, 3.5px with the theme first (probe-theme-dark.mjs brackets the two
+// orders). Naming the base here is what pins that — before dark mode the order
+// came out of the module graph by accident (the base via the chat's `XMarkdown`
+// import, light.css via the settings pages), so hoisting the themes into this
+// file silently flipped it.
+import '@ant-design/x-markdown/es/XMarkdown/index.css'
+// Both theme families are loaded once, here: they are disjoint selector sets
+// (`.x-markdown-light` / `.x-markdown-dark`) that only define CSS variables, so
+// exactly one applies per message — chosen by the container's class
+// (theme/mode.ts). They used to arrive as a side effect of the settings pages
+// importing light.css, which left the chat's own markdown style dependent on an
+// unrelated component being in the bundle (PLAN-dark-mode B4).
+import '@ant-design/x-markdown/themes/light.css'
+import '@ant-design/x-markdown/themes/dark.css'
 import zhCN from 'antd/locale/zh_CN'
 import enUS from 'antd/locale/en_US'
 import AppLayout from './components/layout/AppLayout'
@@ -26,6 +46,9 @@ import { conversationKeyOf } from '../../shared/conversation-key'
 import { NotifyBridge } from './utils/notify'
 import { reportSilentFailure } from './utils/notify-core'
 import { buildAntdTheme } from './theme/tokens'
+import { resolveThemePreference, type ThemePreference } from './theme/palette'
+import { applyThemeAttr, readThemeMirror, writeThemeMirror } from './theme/dom'
+import { setThemeMode } from './theme/mode'
 
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
@@ -50,7 +73,7 @@ type SubAgentViewTarget =
   | { kind: 'spawn'; subConvId: string; title: string }
 
 function AppContent(): React.ReactElement {
-  const { settings, hasApiKey, activeProfile, saveSettings, reloadSettings } = useSettings()
+  const { settings, loading, hasApiKey, activeProfile, saveSettings, reloadSettings } = useSettings()
   const { locale, setLocale } = useTranslation()
 
   // Sync settings.locale -> TranslationProvider on load and when settings change
@@ -449,11 +472,42 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     hadPlanRef.current = { convKey: key, has }
   }, [plan, activeConvKey])
 
-  // The theme is a pure function of one setting; memoizing keeps antd's token
-  // recomputation (and the cssinjs style churn that follows it) off every render.
+  // ── Theme (PLAN-dark-mode M1) ──
+  // The preference is `light | dark | system`; `system` resolves against
+  // prefers-color-scheme HERE, in the renderer — the main process resolves the
+  // same setting independently for the window background and the title-bar
+  // overlay, so neither side waits on the other. The theme mirror carries the
+  // previous session's choice while `loading` is true (main.tsx already applied
+  // it before React mounted; this keeps the antd theme dark through the load
+  // too). applyThemeAttr flips every var(--pm-*) surface via html[data-theme].
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = (e: MediaQueryListEvent): void => setSystemDark(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  const [bootThemePref] = useState<ThemePreference | null>(() => readThemeMirror())
+  const themePref: ThemePreference = loading && bootThemePref !== null ? bootThemePref : settings.theme
+  const resolvedTheme = resolveThemePreference(themePref, systemDark)
+  // Layout effect, not effect: the mode store feeds the markdown class name and
+  // the Prism style object, and a dark session must not paint one frame of
+  // light-mode markdown. Layout effects run before the browser paints.
+  useLayoutEffect(() => {
+    setThemeMode(resolvedTheme)
+    applyThemeAttr(resolvedTheme)
+  }, [resolvedTheme])
+  useEffect(() => {
+    writeThemeMirror(themePref)
+  }, [themePref])
+
+  // The theme is a pure function of the resolved mode; memoizing keeps antd's
+  // token recomputation (and the cssinjs style churn that follows it) off every
+  // render — and the same-value short-circuit keeps an OS flip while a concrete
+  // preference is selected from recomputing anything.
   const antdTheme = useMemo(
-    () => buildAntdTheme(settings.theme === 'dark' ? 'dark' : 'light'),
-    [settings.theme]
+    () => buildAntdTheme(resolvedTheme),
+    [resolvedTheme]
   )
 
   return (

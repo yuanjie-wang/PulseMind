@@ -17,8 +17,8 @@ import {
   PlayCircleOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
-import { notify } from '../../utils/notify'
 import { StarterPrompts } from './StarterPrompts'
+import { useRoutineRunNow } from '../routine/RoutineRunModal'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import { describeCron } from '../../utils/schedule-text'
@@ -35,8 +35,9 @@ import type { KnowledgeFile } from '../../../../shared/types/knowledge'
 /** Recent runs to inspect — only the newest matters, the rest is slack for filtering. */
 const RUN_FETCH_LIMIT = 5
 
-const CARD_BG = '#f7f7f8'
-const CARD_BG_HOVER = '#efeff1'
+// The values ride the theme sheet (PLAN-dark-mode M3/T1), light byte-identical.
+const CARD_BG = 'var(--pm-card-soft)'
+const CARD_BG_HOVER = 'var(--pm-card-soft-hover)'
 const LINE_CLAMP: React.CSSProperties = {
   display: '-webkit-box',
   WebkitLineClamp: 2,
@@ -61,10 +62,10 @@ function nextRunText(nextRunAt: string | undefined, t: (path: string, values?: R
 }
 
 const RUN_STATUS_COLOR: Record<RoutineRunStatus, string> = {
-  success: '#389e0d',
-  failed: '#cf1322',
-  running: '#1677ff',
-  skipped: '#999',
+  success: 'var(--pm-success)',
+  failed: 'var(--pm-error)',
+  running: 'var(--pm-link)',
+  skipped: 'var(--pm-text-muted)',
 }
 
 // ── Card frame ──
@@ -102,7 +103,7 @@ function CardShell({ icon, label, onClick, badge, children }: {
         transition: 'background 0.15s',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, fontWeight: 600, color: '#999' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, fontWeight: 600, color: 'var(--pm-text-muted)' }}>
         <span style={{ fontSize: 13, display: 'inline-flex' }}>{icon}</span>
         <span>{label}</span>
         <span style={{ flex: 1 }} />
@@ -123,16 +124,16 @@ function CardBody({ headline, detail, meta, muted = false }: {
   return (
     <>
       <div style={{
-        fontSize: 16, fontWeight: 600, lineHeight: '22px', color: muted ? '#999' : '#333',
+        fontSize: 16, fontWeight: 600, lineHeight: '22px', color: muted ? 'var(--pm-text-muted)' : 'var(--pm-text-strong)',
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>
         {headline}
       </div>
-      <div style={{ ...LINE_CLAMP, flex: 1, fontSize: 13, lineHeight: '19px', color: muted ? '#b3b3b3' : '#888', minHeight: 38 }}>
+      <div style={{ ...LINE_CLAMP, flex: 1, fontSize: 13, lineHeight: '19px', color: muted ? 'var(--pm-text-haze)' : 'var(--pm-text-quiet)', minHeight: 38 }}>
         {detail}
       </div>
       {meta && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#aaa' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--pm-text-soft)' }}>
           <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meta}</span>
           {!muted && <ArrowRightOutlined style={{ fontSize: 11, flexShrink: 0 }} />}
         </div>
@@ -144,7 +145,7 @@ function CardBody({ headline, detail, meta, muted = false }: {
 /** Loading placeholder shaped like a card, so the band doesn't jump when data lands. */
 function SkeletonCard(): React.ReactElement {
   const bar = (width: number | string, height: number): React.CSSProperties => ({
-    width, height, borderRadius: 5, background: '#e9e9ec',
+    width, height, borderRadius: 5, background: 'var(--pm-skeleton)',
   })
   return (
     <div style={{
@@ -230,16 +231,15 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
     return () => { cancelled = true }
   }, [])
 
-  const runNow = (routine: Routine): void => {
-    window.electronAPI.routineRun(routine.id)
-      .then(() => notify.success(t('welcome.routineStarted')))
-      .catch((err) => notify.error(err instanceof Error ? err.message : String(err)))
-  }
+  // 立即运行 via the shared entry (RoutineRunModal): params → fill-in dialog,
+  // none → straight away. No history jump here — the card's own slice refreshes.
+  const { runNow, modal: runModal } = useRoutineRunNow()
 
   const starters = [t('welcome.starter1'), t('welcome.starter2'), t('welcome.starter3')]
 
   return (
     <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {runModal}
       <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', minHeight: 158 }}>
         <ChatCard chat={chat} now={now} activeLoopConvIds={activeLoopConvIds} onOpenConversation={onOpenConversation} />
         <RoutineCard routines={routines} runs={runs} now={now} onRunNow={runNow} />
@@ -276,7 +276,7 @@ function ChatCard({ chat, now, activeLoopConvIds, onOpenConversation }: {
       onClick={() => onOpenConversation(chat.key)}
       badge={running ? (
         <span style={{
-          width: 6, height: 6, borderRadius: '50%', background: '#1677ff',
+          width: 6, height: 6, borderRadius: '50%', background: 'var(--pm-link)',
           animation: 'ant-status-processing 1.2s infinite ease-in-out',
         }} />
       ) : undefined}
@@ -400,7 +400,7 @@ function RunNowButton({ routine, onRunNow }: {
         size="small"
         aria-label={label}
         icon={<PlayCircleOutlined />}
-        style={{ width: 22, height: 22, minWidth: 22, padding: 0, color: '#999', fontSize: 13 }}
+        style={{ width: 22, height: 22, minWidth: 22, padding: 0, color: 'var(--pm-text-muted)', fontSize: 13 }}
         onClick={(e) => { e.stopPropagation(); onRunNow(routine) }}
       />
     </Tooltip>

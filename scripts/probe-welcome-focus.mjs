@@ -45,6 +45,7 @@ import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider, App as AntdApp } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import ChatView from './src/renderer/src/components/layout/ChatView'
 import { InputArea } from './src/renderer/src/components/chat/InputArea'
@@ -69,6 +70,14 @@ const TABLE = {
   // blank the whole settings object and throw on settings.profiles.
   getSettings: { activeProfileId: '', profiles: [], theme: 'light', myName: '', soul: '', yourName: '', workspaceDir: '', autoCleanup: false, locale: 'zh' },
 }
+// main.tsx's boot, in order: the variable sheet, then the attribute. The chat's
+// migrated surfaces read var(--pm-*), and an unset variable resolves to nothing
+// (transparent / inherited) — so a probe that measures them without the sheet is
+// measuring a page the app never renders (PLAN-dark-mode D7: the helper ships in
+// the same change as the migration, not after it).
+installThemeVars()
+applyThemeAttr('light')
+
 window.electronAPI = new Proxy({}, {
   get: (_t, key) => (...args) => {
     // Subscribe-style APIs are handed back as an effect cleanup

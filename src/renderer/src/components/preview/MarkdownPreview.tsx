@@ -9,6 +9,7 @@ import Latex from '@ant-design/x-markdown/plugins/Latex'
 import { CodeBlock } from '../chat/CodeBlock'
 import { LocalImage } from '../chat/LocalImage'
 import { FileChipComponent, preprocessText } from '../chat/FileRefChip'
+import { useMarkdownThemeClass } from '../../theme/mode'
 
 const COMPONENTS: Record<string, React.ComponentType<any>> = {
   code: CodeBlock,
@@ -23,8 +24,9 @@ const CONFIG = { extensions: Latex() }
 // the memo every 40ms tick re-runs preprocessText and re-parses the whole
 // document (same jank class as the python highlighter — probe-preview-drag.mjs).
 export const MarkdownPreview = React.memo(function MarkdownPreview({ text }: { text: string }): React.ReactElement {
+  const mdClass = useMarkdownThemeClass()
   return (
-    <div className="x-markdown-light" style={{ padding: '12px 16px', fontSize: 13, lineHeight: 1.7 }}>
+    <div className={mdClass} style={{ padding: '12px 16px', fontSize: 13, lineHeight: 1.7 }}>
       <XMarkdown content={preprocessText(text)} components={COMPONENTS} config={CONFIG} />
     </div>
   )

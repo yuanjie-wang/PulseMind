@@ -76,6 +76,8 @@ export function ToolRunner({ tool, onEdit, onDuplicate, onDelete, onRenamed }: T
             ref={iframeRef}
             title={tool.name}
             sandbox="allow-scripts"
+            // The iframe's white is the tool app's own paper (app.html is user-authored
+          // and theme-self-decided), not a chrome surface — it stays literal.
             style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
           />
         ) : (

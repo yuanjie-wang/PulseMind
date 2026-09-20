@@ -20,6 +20,10 @@
         text-rendering: optimizeLegibility;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+        /* Theme ground (PLAN-dark-mode M1). The variable sheet is injected by
+           theme/dom.ts installThemeVars() before React mounts; the literal is
+           the fallback for the frames before that (light is the default). */
+        background-color: var(--pm-bg, #ffffff);
       }
 
       /* Windows: disable expensive backdrop-filter blur effects.

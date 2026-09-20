@@ -11,7 +11,7 @@ import type React from 'react'
 export const EDITOR_COLUMN_HEADER: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 600,
-  color: '#999',
+  color: 'var(--pm-text-muted)',
   padding: '0 0 8px 2px',
   display: 'flex',
   alignItems: 'center',
@@ -26,7 +26,7 @@ export const EDITOR_LIST_WIDTH = 216
 export const EDITOR_SURFACE: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
-  background: '#f5f5f5',
+  background: 'var(--pm-fill)',
   borderRadius: 12,
   padding: 12,
   display: 'flex',
@@ -41,7 +41,7 @@ export const EDITOR_CHAT_CARD: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   minHeight: 0,
-  background: '#fff',
+  background: 'var(--pm-card)',
   borderRadius: 10,
   padding: '6px 12px 12px',
 }

@@ -77,7 +77,7 @@ function KnowledgePane({ knowledgeManager }: { knowledgeManager: KnowledgeManage
   }
 
   return (
-    <div style={{ height: '100%', display: 'flex', overflow: 'hidden', background: '#fff' }}>
+    <div style={{ height: '100%', display: 'flex', overflow: 'hidden', background: 'var(--pm-bg)' }}>
       <KnowledgeBaseList
         knowledgeManager={knowledgeManager}
         selectedBaseId={selectedBaseId}

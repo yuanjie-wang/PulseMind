@@ -17,7 +17,7 @@ export function StarterPrompts({ labels }: { labels: string[] }): React.ReactEle
 
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'center' }}>
-      <span style={{ fontSize: 12, color: '#999' }}>{t('welcome.tryThese')}</span>
+      <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>{t('welcome.tryThese')}</span>
       {labels.map((label) => (
         <PromptChip key={label} label={label} onClick={() => setDraft(label)} />
       ))}

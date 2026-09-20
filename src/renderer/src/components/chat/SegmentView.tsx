@@ -159,7 +159,7 @@ export function SegmentBlock({
         margin: '0 auto',
         padding: `0 ${contentInset}px`,
         transition: 'background 0.5s',
-        background: highlighted ? 'rgba(22, 119, 255, 0.08)' : undefined,
+        background: highlighted ? 'var(--pm-link-bg)' : undefined,
       }}
     >
       <SegmentView

@@ -24,12 +24,11 @@ const APPROVAL_LEVELS: Array<{ mode: SandboxApprovalMode; icon: React.ReactNode 
 
 /** 全部允许 (the 'auto' level) drops the approval ladder entirely: tool calls
  *  run unannounced, which is the one setting here that cannot be undone after
- *  the fact. So its icon and its wording are tinted amber — the same value the
- *  extension panel copies into `--pm-warn` and the same role the 待批准 tint
- *  plays in the transcript: this is the state to notice, not a neutral choice.
- *  Exported because the panel's stylesheet names it in a comment (it cannot
- *  import a TS value) — keep both in step. */
-export const UNRESTRICTED_COLOR = '#d46b08'
+ *  the fact. So its icon and its wording are tinted amber — the same role the
+ *  待批准 tint plays in the transcript: this is the state to notice, not a
+ *  neutral choice. The value is the sheet's `--pm-warn`, which the extension
+ *  panel mirrors by hand (it cannot import a TS value) — keep both in step. */
+export const UNRESTRICTED_COLOR = 'var(--pm-warn)'
 
 /** The 授权 button's colour: only the unrestricted level is tinted; the rest keep
  *  the muted grey every other text button in the footer uses (which also beats
@@ -37,7 +36,7 @@ export const UNRESTRICTED_COLOR = '#d46b08'
  *  own 全部允许 item the same way and leaves the other items on antd's menu colour
  *  — a footer control's grey is not a menu's. */
 function approvalButtonColor(mode: SandboxApprovalMode): string {
-  return mode === 'auto' ? UNRESTRICTED_COLOR : '#666'
+  return mode === 'auto' ? UNRESTRICTED_COLOR : 'var(--pm-text-secondary)'
 }
 
 export function InputArea({
@@ -426,14 +425,14 @@ export function InputArea({
                     margin: '0 auto',
                     maxHeight: 264,
                     overflow: 'auto',
-                    background: '#fff',
-                    border: '1px solid rgba(0,0,0,0.08)',
+                    background: 'var(--pm-elevated)',
+                    border: '1px solid var(--pm-border-veil)',
                     borderRadius: 10,
-                    boxShadow: '0 6px 24px rgba(0,0,0,0.12)',
+                    boxShadow: 'var(--pm-shadow-pop)',
                     padding: 4,
                   }}
                 >
-                  <div style={{ fontSize: 11, color: '#999', padding: '4px 8px 2px' }}>{t('chatView.expert.summonTitle')}</div>
+                  <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', padding: '4px 8px 2px' }}>{t('chatView.expert.summonTitle')}</div>
                   {/* What a summon will DO, because the two shapes differ: one
                       expert answers in their own words, several become a plan.
                       Without it a second name reads as a second answer rather
@@ -441,7 +440,7 @@ export function InputArea({
                       is the scroll container (maxHeight + overflow), so a
                       footnote below eight rows is only reachable by scrolling —
                       the legend has to be there the moment `@` opens it. */}
-                  <div style={{ padding: '2px 8px 4px', fontSize: 11, color: '#999', lineHeight: 1.6 }}>
+                  <div style={{ padding: '2px 8px 4px', fontSize: 11, color: 'var(--pm-text-muted)', lineHeight: 1.6 }}>
                     <div>{t('chatView.expert.summonHintOne')}</div>
                     <div>{t('chatView.expert.summonHintMany')}</div>
                     <div>{t('chatView.knowledgeBase.hint')}</div>
@@ -462,17 +461,17 @@ export function InputArea({
                         padding: '6px 8px',
                         borderRadius: 6,
                         cursor: 'pointer',
-                        background: i === mentionNavIdx ? 'rgba(0,0,0,0.05)' : 'transparent',
+                        background: i === mentionNavIdx ? 'var(--pm-hover-weak)' : 'transparent',
                       }}
                     >
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</div>
                         {!isBase && item.expert.description && (
-                          <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.expert.description}</div>
+                          <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.expert.description}</div>
                         )}
                       </div>
                       {isBase && (
-                        <span style={{ flexShrink: 0, fontSize: 10, color: '#999', border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, padding: '0 6px' }}>
+                        <span style={{ flexShrink: 0, fontSize: 10, color: 'var(--pm-text-muted)', border: '1px solid var(--pm-border-veil)', borderRadius: 8, padding: '0 6px' }}>
                           {t('chatView.knowledgeBase.tag')}
                         </span>
                       )}
@@ -494,8 +493,8 @@ export function InputArea({
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: 4,
-                    background: '#f0f0f0',
-                    border: '1px solid rgba(0,0,0,0.06)',
+                    background: 'var(--pm-pill)',
+                    border: '1px solid var(--pm-border-veil-weak)',
                     borderRadius: 12,
                     padding: '2px 6px',
                     fontSize: 12,
@@ -504,12 +503,12 @@ export function InputArea({
                   title={boundExpert.description || boundExpert.name}
                 >
                   <span style={{ fontSize: 13, lineHeight: 1 }}>
-                    <UserOutlined style={{ fontSize: 11, color: '#666' }} />
+                    <UserOutlined style={{ fontSize: 11, color: 'var(--pm-text-secondary)' }} />
                   </span>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{boundExpert.name}</span>
                   <span
                     onClick={onUnbindExpert}
-                    style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                    style={{ cursor: 'pointer', color: 'var(--pm-text-muted)', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
                     title={t('chatView.expert.unbind')}
                   >
                     <CloseOutlined style={{ fontSize: 12 }} />
@@ -523,19 +522,19 @@ export function InputArea({
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: 3,
-                    background: '#e8e8e8',
+                    background: 'var(--pm-pill-strong)',
                     borderRadius: 12,
                     padding: '2px 6px',
                     fontSize: 12,
                   }}
                 >
-                  <FolderOutlined style={{ fontSize: 12, color: '#666' }} />
+                  <FolderOutlined style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }} />
                   <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
                     {getFileName(fp)}
                   </span>
                   <span
                     onClick={() => removeFolder(i)}
-                    style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                    style={{ cursor: 'pointer', color: 'var(--pm-text-muted)', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
                   >
                     <CloseOutlined style={{ fontSize: 12 }} />
                   </span>
@@ -548,19 +547,19 @@ export function InputArea({
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: 3,
-                    background: '#e8e8e8',
+                    background: 'var(--pm-pill-strong)',
                     borderRadius: 12,
                     padding: '2px 6px',
                     fontSize: 12,
                   }}
                 >
-                  <FileOutlined style={{ fontSize: 12, color: '#666' }} />
+                  <FileOutlined style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }} />
                   <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
                     {getFileName(fp)}
                   </span>
                   <span
                     onClick={() => removeFile(i)}
-                    style={{ cursor: 'pointer', color: '#999', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
+                    style={{ cursor: 'pointer', color: 'var(--pm-text-muted)', padding: '0 2px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}
                   >
                     <CloseOutlined style={{ fontSize: 12 }} />
                   </span>
@@ -578,14 +577,14 @@ export function InputArea({
                   type="text"
                   icon={<PlusOutlined style={{ fontSize: 14 }} />}
                   onClick={handlePickFile}
-                  style={{ fontSize: 12, color: '#666' }}
+                  style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
                 />
                 <Button
                   size="small"
                   type="text"
                   icon={<FolderOutlined style={{ fontSize: 14 }} />}
                   onClick={handlePickFolder}
-                  style={{ fontSize: 12, color: '#666' }}
+                  style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
                 />
               </>
             )}
@@ -596,7 +595,7 @@ export function InputArea({
                 icon={<span style={{ fontSize: 14, fontWeight: 600 }}>@</span>}
                 onClick={insertMention}
                 title={t('chatView.expert.summonTitle')}
-                style={{ fontSize: 12, color: '#666' }}
+                style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
               />
             )}
             {showAuthorization && (
@@ -629,7 +628,7 @@ export function InputArea({
                   style={{ fontSize: 12, color: approvalButtonColor(approvalLabel) }}
                 >
                   {t(`chatView.approval.${approvalLabel}`)}
-                  <DownOutlined style={{ fontSize: 10, color: '#bbb', marginLeft: 4 }} />
+                  <DownOutlined style={{ fontSize: 10, color: 'var(--pm-text-faint)', marginLeft: 4 }} />
                 </Button>
               </Dropdown>
             )}
@@ -650,7 +649,7 @@ export function InputArea({
                   type="text"
                   icon={<DownOutlined />}
                   iconPlacement="end"
-                  style={{ fontSize: 12, color: '#666' }}
+                  style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
                 >
                   {activeModelLabel}
                 </Button>

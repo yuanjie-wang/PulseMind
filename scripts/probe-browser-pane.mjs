@@ -40,6 +40,13 @@ const TITLE_BAR_HEIGHT = 56
 const PANE_CHROME_HEIGHT = 100
 
 const HARNESS = `
+// The browser pane chrome is migrated onto the theme sheet (PLAN-dark-mode
+// M3/T5), so the page needs the variable table injected before it renders.
+// Light is pinned explicitly; the dark column belongs to probe-theme-dark.
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
+
+installThemeVars()
+applyThemeAttr('light')
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'

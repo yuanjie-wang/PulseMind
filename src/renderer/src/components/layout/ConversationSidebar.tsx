@@ -34,7 +34,7 @@ function ConversationSidebar({
 
   if (conversations.length === 0) {
     return (
-      <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>
+      <div style={{ padding: '16px 0', color: 'var(--pm-text-muted)', fontSize: 12, textAlign: 'center' }}>
         {t('appLayout.noConversations')}
       </div>
     )

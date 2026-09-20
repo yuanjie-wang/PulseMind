@@ -40,12 +40,21 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 import { FormAssistColumn } from './src/renderer/src/components/form-assist/FormAssistColumn'
 
 // The transcript inside the column reads electronAPI on render/click; nothing
 // here presses those, so every call just resolves to undefined. expertList is
 // the exception: InputArea maps over what it answers, so undefined would throw
 // before anything renders.
+// main.tsx's boot, in order: the variable sheet, then the attribute. The chat's
+// migrated surfaces read var(--pm-*), and an unset variable resolves to nothing
+// (transparent / inherited) — so a probe that measures them without the sheet is
+// measuring a page the app never renders (PLAN-dark-mode D7: the helper ships in
+// the same change as the migration, not after it).
+installThemeVars()
+applyThemeAttr('light')
+
 window.electronAPI = new Proxy({}, { get: (_t, key) => () => Promise.resolve(key === 'expertList' ? [] : undefined) })
 
 const noop = () => {}

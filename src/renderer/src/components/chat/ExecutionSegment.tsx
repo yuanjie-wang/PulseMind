@@ -182,8 +182,8 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
           <div style={{
             width: 14,
             height: 14,
-            border: '2px solid #e8e8e8',
-            borderTopColor: '#000',
+            border: '2px solid var(--pm-border-soft)',
+            borderTopColor: 'var(--pm-ink)',
             borderRadius: '50%',
             animation: 'pulsemind-spin 1s linear infinite',
             flexShrink: 0,
@@ -201,7 +201,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
               minWidth: 0,
               flexShrink: 1,
               fontSize: 13,
-              color: anyHeld ? '#d46b08' : '#999',
+              color: anyHeld ? 'var(--pm-warn)' : 'var(--pm-text-muted)',
               fontWeight: anyHeld ? 500 : undefined,
               lineHeight: '22px',
               animation: 'pulsemind-fade-in 0.25s ease-out'
@@ -211,7 +211,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
           </div>
           <RightOutlined
             style={{
-              color: '#bbb',
+              color: 'var(--pm-text-faint)',
               fontSize: 11,
               flexShrink: 0,
               marginLeft: 4,
@@ -239,7 +239,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
 
       {/* Expanded body */}
       {expanded && (
-        <div style={{ padding: '8px 12px 4px', border: '1px solid #e8e8e8', borderRadius: 8 }}>
+        <div style={{ padding: '8px 12px 4px', border: '1px solid var(--pm-border-soft)', borderRadius: 8 }}>
           {props.messages.map((msg) => (
             <MessageGroup
               key={msg.id}

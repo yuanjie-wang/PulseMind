@@ -88,7 +88,7 @@ function CommandPalette({ items }: { items: CommandItem[] }): React.ReactElement
       />
       <div ref={listRef} className="auto-hide-scroll" style={{ maxHeight: 340, overflow: 'auto', marginTop: 4 }}>
         {results.length === 0 ? (
-          <div style={{ padding: '20px 12px 16px', color: '#999', fontSize: 13, textAlign: 'center' }}>{t('palette.empty')}</div>
+          <div style={{ padding: '20px 12px 16px', color: 'var(--pm-text-muted)', fontSize: 13, textAlign: 'center' }}>{t('palette.empty')}</div>
         ) : (
           results.map((item, idx) => {
             const showGroup = item.group !== lastGroup
@@ -100,7 +100,7 @@ function CommandPalette({ items }: { items: CommandItem[] }): React.ReactElement
                     style={{
                       padding: '8px 12px 2px',
                       fontSize: 11,
-                      color: '#999',
+                      color: 'var(--pm-text-muted)',
                       fontWeight: 600,
                       letterSpacing: 0.3,
                     }}
@@ -119,13 +119,13 @@ function CommandPalette({ items }: { items: CommandItem[] }): React.ReactElement
                     padding: '7px 12px',
                     borderRadius: 8,
                     cursor: 'pointer',
-                    background: idx === activeIdx ? 'rgba(0, 0, 0, 0.06)' : 'transparent',
+                    background: idx === activeIdx ? 'var(--pm-hover)' : 'transparent',
                   }}
                 >
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13.5, color: '#222' }}>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13.5, color: 'var(--pm-text-title)' }}>
                     {item.label}
                   </span>
-                  {item.hint && <span style={{ fontSize: 11, color: '#999', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{item.hint}</span>}
+                  {item.hint && <span style={{ fontSize: 11, color: 'var(--pm-text-muted)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{item.hint}</span>}
                 </div>
               </div>
             )

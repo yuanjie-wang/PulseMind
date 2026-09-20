@@ -82,6 +82,7 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import AppLayout from './src/renderer/src/components/layout/AppLayout'
 import ChatView from './src/renderer/src/components/layout/ChatView'
@@ -91,6 +92,15 @@ import { useWorkbenchStore } from './src/renderer/src/stores/workbenchStore'
 const CONV_KEY = '${CONV_KEY}'
 const WS = '${WS}'
 const AT = '${AT}'
+
+// main.tsx's boot, in order: the variable sheet, then the attribute. The chat's
+// migrated surfaces read var(--pm-*), and an unset variable resolves to nothing
+// (transparent / inherited) — so a probe that measures them without the sheet is
+// measuring a page the app never renders (PLAN-dark-mode D7: the helper ships in
+// the same change as the migration, not after it). It lives here rather than in
+// the page's own script above, which is a plain page script with no imports.
+installThemeVars()
+applyThemeAttr('light')
 
 
 let root = null
@@ -269,7 +279,7 @@ page.on('pageerror', (err) => console.log('  [page error]', err.message))
 await page.route('http://pm-probe.local/**', (route) => route.fulfill({
   contentType: 'text/html',
   body: `<!doctype html><html><head><script>
-    window.electronAPI = new Proxy({
+window.electronAPI = new Proxy({
       hydrateConversation: (id) => Promise.resolve(window.__CHILD_CONVS[id] ?? null),
       // The preview pane reads the clicked file; an undefined body crashes its
       // markdown preview (unwrapRef) and unmounts the whole tree.

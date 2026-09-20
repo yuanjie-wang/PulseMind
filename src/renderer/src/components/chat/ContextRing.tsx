@@ -35,18 +35,21 @@ export function ContextRing({ used, total, diameter }: { used: number; total: nu
           and attaches its own hover props, which a plain `:hover` rule can't be clobbered by. */}
       <style>{`
         .pm-context-ring { display: inline-flex; border-radius: 50%; }
-        .pm-context-ring:hover { background-color: rgba(0, 0, 0, 0.03); }
+        .pm-context-ring:hover { background-color: var(--pm-hover-faint); }
       `}</style>
       <Tooltip title={t('chatView.contextRing.tooltip', { percent, used: inK(used), total: inK(total) })}>
         <span className="pm-context-ring">
           <svg width={RING_BOX} height={RING_BOX} viewBox={`0 0 ${RING_BOX} ${RING_BOX}`} style={{ display: 'block' }}>
-            <circle cx={RING_CENTER} cy={RING_CENTER} r={r} fill="none" stroke="#d9d9d9" strokeWidth={RING_STROKE} />
+            {/* The two strokes ride `style` rather than the presentation attributes:
+                a `stroke="var(--x)"` attribute is not a CSS declaration everywhere,
+                a `style` value always is. */}
+            <circle cx={RING_CENTER} cy={RING_CENTER} r={r} fill="none" strokeWidth={RING_STROKE} style={{ stroke: 'var(--pm-border)' }} />
             <circle
               cx={RING_CENTER} cy={RING_CENTER} r={r} fill="none"
-              stroke="#666" strokeWidth={RING_STROKE} strokeLinecap="round"
+              strokeWidth={RING_STROKE} strokeLinecap="round"
               strokeDasharray={circ} strokeDashoffset={offset}
               transform={`rotate(-90 ${RING_CENTER} ${RING_CENTER})`}
-              style={{ transition: 'stroke-dashoffset 0.3s ease' }}
+              style={{ transition: 'stroke-dashoffset 0.3s ease', stroke: 'var(--pm-text-secondary)' }}
             />
           </svg>
         </span>

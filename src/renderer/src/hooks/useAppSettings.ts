@@ -4,7 +4,10 @@ import type { AppSettings, LlmProfile } from '../types/settings'
 const DEFAULT_SETTINGS: AppSettings = {
   activeProfileId: '',
   profiles: [],
-  theme: 'light',
+  // Renderer-side default shown only while settings load over IPC (the real
+  // default lives in main's settings-store, also 'dark'; the theme mirror in
+  // theme/dom.ts carries the previous session's choice across this window).
+  theme: 'dark',
   myName: '',
   soul: '',
   yourName: '',

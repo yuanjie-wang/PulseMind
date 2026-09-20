@@ -25,8 +25,8 @@ import { toolBlockSummary, toolDisplayName } from './tool-summary'
 const areaStyle: React.CSSProperties = {
   margin: '4px 0',
   padding: '8px 10px',
-  background: '#fff7e6',
-  border: '1px solid #ffd591',
+  background: 'var(--pm-warn-bg)',
+  border: '1px solid var(--pm-warn-border)',
   borderRadius: 6
 }
 
@@ -40,13 +40,13 @@ const rowStyle: React.CSSProperties = {
 const nameStyle: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 600,
-  color: '#333',
+  color: 'var(--pm-text-strong)',
   flexShrink: 0
 }
 
 const summaryStyle: React.CSSProperties = {
   fontSize: 12,
-  color: '#999',
+  color: 'var(--pm-text-muted)',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',

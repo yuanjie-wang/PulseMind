@@ -107,9 +107,9 @@ const PAGE_NOTE_STYLE: React.CSSProperties = {
   flexShrink: 0,
   padding: '4px 12px',
   fontSize: 11,
-  color: '#d46b08',
-  background: '#fff7e6',
-  borderBottom: '1px solid #ffd591',
+  color: 'var(--pm-warn)',
+  background: 'var(--pm-warn-bg)',
+  borderBottom: '1px solid var(--pm-warn-border)',
 }
 
 export function PdfPreview({
@@ -327,7 +327,7 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
           ref={containerRef}
           data-pdf-scroll
           onScroll={onScroll}
-          style={{ position: 'absolute', inset: 0, overflow: 'auto', background: '#e9eaee' }}
+          style={{ position: 'absolute', inset: 0, overflow: 'auto', background: 'var(--pm-desk)' }}
         >
           {pages && doc && (
             <div data-pdf-doc style={{ width: 'fit-content', margin: '0 auto', padding: PDF_PAGE_GAP }}>
@@ -341,8 +341,12 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
                       width: box.width,
                       height: box.height,
                       marginBottom: PDF_PAGE_GAP,
+                      // The page itself is paper (the document's face): white
+                      // in both modes. What follows it is the edge — the desk
+                      // darkens and the shadow deepens so the white sheet
+                      // still reads as a sheet (M4/T1).
                       background: '#fff',
-                      boxShadow: '0 1px 4px rgba(0,0,0,0.18)',
+                      boxShadow: 'var(--pm-shadow-page)',
                       position: 'relative',
                     }}
                   >
@@ -354,7 +358,7 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
           )}
         </div>
         {status === 'loading' && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 12, background: '#fff' }}>…</div>
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--pm-text-faint)', fontSize: 12, background: 'var(--pm-bg)' }}>…</div>
         )}
       </div>
       {pages && pages.length > 0 && (
@@ -367,7 +371,7 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
             justifyContent: 'center',
             gap: 6,
             padding: '3px 8px',
-            borderTop: '1px solid #ececf0',
+            borderTop: '1px solid var(--pm-separator-faint)',
           }}
         >
           <div style={ZOOM_BUTTON} title={t('previewPane.pdfPrevPage')} onClick={() => goToPage(current - 1)}>
@@ -389,21 +393,21 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
               width: 36,
               textAlign: 'center',
               fontSize: 11,
-              color: '#333',
-              border: '1px solid #e0e0e6',
+              color: 'var(--pm-text-strong)',
+              border: '1px solid var(--pm-input-border)',
               borderRadius: 4,
               padding: '1px 2px',
               outline: 'none',
               fontVariantNumeric: 'tabular-nums',
             }}
           />
-          <span style={{ fontSize: 11, color: '#666', fontVariantNumeric: 'tabular-nums' }}>/ {totalPages}</span>
+          <span style={{ fontSize: 11, color: 'var(--pm-text-secondary)', fontVariantNumeric: 'tabular-nums' }}>/ {totalPages}</span>
           <div style={ZOOM_BUTTON} title={t('previewPane.pdfNextPage')} onClick={() => goToPage(current + 1)}>
             <ChevronRight size={12} />
           </div>
         </div>
       )}
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
         <span style={{ flex: 1 }} />
         <ZoomControls zoom={zoom} fitKey="fitWidth" onFit={fitZoom} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />

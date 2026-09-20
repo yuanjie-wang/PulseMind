@@ -46,26 +46,26 @@ export function TurnDeliverablesCard({
       // width 100%: the slot mount sits in MessageGroup's flex column with
       // alignItems flex-start, which would shrink the card to its content —
       // both mounts must leave the same full-column footprint.
-      style={{ width: '100%', margin: '8px 16px 12px', border: '1px solid #eceef2', borderRadius: 10, background: '#fafbfc' }}
+      style={{ width: '100%', margin: '8px 16px 12px', border: '1px solid var(--pm-tile-border)', borderRadius: 10, background: 'var(--pm-tile-bg)' }}
     >
       <div
         style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', userSelect: 'none' }}
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, stroke: 'var(--pm-text-secondary)' }}>
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
           <polyline points="14 2 14 8 20 8" />
           <path d="M12 18v-6" />
           <path d="m9 15 3 3 3-3" />
         </svg>
-        <span style={{ fontSize: 12, fontWeight: 600, color: '#333' }}>{t('deliverables.turnTitle')}</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--pm-text-strong)' }}>{t('deliverables.turnTitle')}</span>
         <span
           style={{
             minWidth: 18,
             height: 18,
             padding: '0 5px',
             borderRadius: 9,
-            background: '#f0f1f4',
-            color: '#555',
+            background: 'var(--pm-tile-soft)',
+            color: 'var(--pm-text-body)',
             fontSize: 10,
             fontWeight: 600,
             display: 'inline-flex',

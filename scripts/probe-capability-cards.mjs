@@ -31,6 +31,15 @@ function check(name, pass, detail) {
 /** Inline harness (esbuild stdin) so this stays one file. It imports the production
  *  panels — a copy here would prove nothing about what ships. */
 const HARNESS = `
+// The capability family is migrated onto the theme sheet (PLAN-dark-mode
+// M3/T3), so the page needs the variable table injected before the panels
+// render — without it every var() resolves to nothing and the computed
+// colours below fall back to the UA. Light is pinned explicitly; the dark
+// column belongs to probe-theme-dark.mjs.
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
+
+installThemeVars()
+applyThemeAttr('light')
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider, App as AntdApp } from 'antd'
 import CapabilityCenter from './src/renderer/src/components/capability/CapabilityCenter'
@@ -187,7 +196,17 @@ const tabState = await page.evaluate(() => {
     const buttons = [...panel.querySelectorAll('button')].filter((b) => b.style.borderRadius === '999px')
     return buttons.map((b) => ({
       label: b.textContent.trim(),
-      active: getComputedStyle(b).background !== 'rgba(0, 0, 0, 0)' && b.style.background.includes('0.08'),
+      // The active pill's wash rides --pm-hover-strong (M3/T3), so "active" is
+      // the computed background EQUALING that role's resolved value — a string
+      // sniff for the old 0.08 literal would report every pill inactive.
+      active: getComputedStyle(b).backgroundColor === (() => {
+        const d = document.createElement('div')
+        d.style.background = 'var(--pm-hover-strong)'
+        document.body.appendChild(d)
+        const v = getComputedStyle(d).backgroundColor
+        d.remove()
+        return v
+      })(),
     }))
   }
   return { pinned: read('mcp'), defaultTab: read('default') }

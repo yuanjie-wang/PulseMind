@@ -130,7 +130,7 @@ function SkillCard({ skill, onToggle, onDeleteSkill, onOpen }: SkillCardProps): 
           fontSize: 12,
           margin: 0,
           lineHeight: '1.4',
-          color: '#888'
+          color: 'var(--pm-text-quiet)'
         }}
         ellipsis={{ rows: 4 }}
       >

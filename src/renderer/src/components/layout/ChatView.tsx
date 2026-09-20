@@ -26,7 +26,7 @@ import { usePreviewPaneSync } from '../../hooks/usePreviewPaneSync'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ConversationListItem } from '../../types/conversation'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
-import { LINK, TABULAR_NUMS } from '../../theme/tokens'
+import { TABULAR_NUMS } from '../../theme/tokens'
 
 // --- Props ---
 
@@ -262,14 +262,14 @@ function ChatView({
       onClick={() => useWorkbenchStore.getState().openTab(wbKey, 'plan')}
       style={{
         display: 'flex', alignItems: 'center', gap: 6, height: 26, padding: '0 12px',
-        borderRadius: 13, background: '#fff', border: '1px solid #e5e6eb',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: 11, color: '#555', cursor: 'pointer',
+        borderRadius: 13, background: 'var(--pm-elevated)', border: '1px solid var(--pm-pop-border)',
+        boxShadow: 'var(--pm-shadow-soft)', fontSize: 11, color: 'var(--pm-text-body)', cursor: 'pointer',
         ...TABULAR_NUMS,
       }}
     >
-      <span style={{ width: 6, height: 6, borderRadius: 3, background: LINK, flexShrink: 0 }} />
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--pm-link)', flexShrink: 0 }} />
       <span>计划进行中 · {planSettled}/{planTotal}</span>
-      <span style={{ color: LINK }}>查看</span>
+      <span style={{ color: 'var(--pm-link)' }}>查看</span>
     </div>
   ) : null
   const pendingScrollRef = useRef(false)
@@ -597,7 +597,7 @@ function ChatView({
       <div
         style={{
           height: '100%',
-          background: '#fff',
+          background: 'var(--pm-bg)',
           display: 'flex',
           flexDirection: 'column',
         }}
@@ -681,7 +681,7 @@ function ChatView({
       style={{
         position: 'relative',
         height: '100%',
-        background: '#fff',
+        background: 'var(--pm-bg)',
         // Reserve the workbench strip so chat content never flows under the
         // docked pane (PLAN-workbench W1: one width, one reserve — the old
         // browser+preview additive stack is gone). Transitions off — the
@@ -750,22 +750,22 @@ function ChatView({
                   gap: 8,
                   padding: '8px 16px',
                   margin: '0 16px',
-                  background: 'rgba(255,149,0,0.08)',
-                  border: '1px solid rgba(255,149,0,0.25)',
+                  background: 'var(--pm-retry-bg)',
+                  border: '1px solid var(--pm-retry-border)',
                   borderRadius: 8,
                   fontSize: 12,
-                  color: '#b84d00',
+                  color: 'var(--pm-retry-ink)',
                 }}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ff9500" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0 }}>
-                  <circle cx="12" cy="12" r="10" stroke="rgba(255,149,0,0.25)" strokeWidth="2.5" />
+                  <circle cx="12" cy="12" r="10" stroke="var(--pm-retry-border)" strokeWidth="2.5" />
                   <path d="M12 2a10 10 0 0 1 10 10" strokeDasharray="31.4 31.4" strokeDashoffset="0">
                     <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.7s" repeatCount="indefinite" />
                   </path>
                 </svg>
                 <span>
                   网络波动，正在重试 ({agentStatus.attempt}/{agentStatus.maxRetries})
-                  {retryCountdown > 0 && <span style={{ marginLeft: 8, color: '#999' }}>{retryCountdown}s</span>}
+                  {retryCountdown > 0 && <span style={{ marginLeft: 8, color: 'var(--pm-text-muted)' }}>{retryCountdown}s</span>}
                 </span>
               </div>
             </div>

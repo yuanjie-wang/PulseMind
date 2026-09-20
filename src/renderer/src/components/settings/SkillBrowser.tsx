@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Button, Segmented, Spin, Tag, Tree, Typography } from 'antd'
 import { ArrowLeftOutlined, FileOutlined, FolderOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { XMarkdown } from '@ant-design/x-markdown'
-import '@ant-design/x-markdown/themes/light.css'
 import { CodeHighlight, PlainCode, resolveCodeLang } from '../common/CodeHighlight'
 import { useTranslation } from '../../i18n/useTranslation'
+import { useMarkdownThemeClass } from '../../theme/mode'
 import type { SkillState } from '../../skills/types'
 
 const { Text } = Typography
@@ -71,6 +71,7 @@ interface SkillBrowserProps {
  *  active skill's directory tree in the middle, file preview on the right. */
 function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProps): React.ReactElement {
   const { t } = useTranslation()
+  const mdClass = useMarkdownThemeClass()
   const [files, setFiles] = useState<string[]>([])
   /** Which skill `files` belongs to — lets "loading" be derived, so no state
    *  is ever set synchronously inside an effect. */
@@ -145,7 +146,7 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
       return <Text type="secondary" style={{ fontSize: 12 }}>{t('skills.browser.binary')}</Text>
     }
     const truncatedNote = truncated ? (
-      <div style={{ fontSize: 11, color: '#bbb', marginBottom: 6 }}>{t('skills.browser.truncated')}</div>
+      <div style={{ fontSize: 11, color: 'var(--pm-text-faint)', marginBottom: 6 }}>{t('skills.browser.truncated')}</div>
     ) : null
 
     // Markdown renders; the toggle falls back to highlighted source.
@@ -153,7 +154,7 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
       return (
         <>
           {truncatedNote}
-          <div className="x-markdown-light" style={{ fontSize: 13, lineHeight: 1.7 }}>
+          <div className={mdClass} style={{ fontSize: 13, lineHeight: 1.7 }}>
             <XMarkdown content={previewText ?? ''} />
           </div>
         </>
@@ -190,7 +191,7 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
           flex: 1,
           minHeight: 0,
           display: 'flex',
-          border: '1px solid #eee',
+          border: '1px solid var(--pm-wash-border)',
           borderRadius: 10,
           overflow: 'hidden'
         }}
@@ -200,7 +201,7 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
           style={{
             width: 200,
             flexShrink: 0,
-            borderRight: '1px solid #f0f0f0',
+            borderRight: '1px solid var(--pm-border-hairline)',
             overflowY: 'auto',
             padding: 8,
             boxSizing: 'border-box'
@@ -221,12 +222,12 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
                   borderRadius: 8,
                   cursor: 'pointer',
                   fontSize: 12.5,
-                  background: isActive ? 'rgba(0, 0, 0, 0.06)' : undefined,
+                  background: isActive ? 'var(--pm-hover)' : undefined,
                   fontWeight: isActive ? 600 : undefined,
-                  color: isActive ? '#000' : '#555'
+                  color: isActive ? 'var(--pm-ink)' : 'var(--pm-text-body)'
                 }}
               >
-                <ThunderboltOutlined style={{ flexShrink: 0, fontSize: 11, color: '#999' }} />
+                <ThunderboltOutlined style={{ flexShrink: 0, fontSize: 11, color: 'var(--pm-text-muted)' }} />
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {skill.definition.name}
                 </span>
@@ -245,7 +246,7 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
           style={{
             width: 230,
             flexShrink: 0,
-            borderRight: '1px solid #f0f0f0',
+            borderRight: '1px solid var(--pm-border-hairline)',
             overflowY: 'auto',
             padding: '10px 6px',
             boxSizing: 'border-box'
@@ -286,13 +287,13 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
                 gap: 8,
                 marginBottom: 8,
                 paddingBottom: 6,
-                borderBottom: '1px solid #f2f2f2'
+                borderBottom: '1px solid var(--pm-card-divider)'
               }}
             >
               <span
                 style={{
                   fontSize: 11,
-                  color: '#999',
+                  color: 'var(--pm-text-muted)',
                   fontFamily: 'Menlo, Consolas, monospace',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',

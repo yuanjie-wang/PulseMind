@@ -93,10 +93,10 @@ export function ImagePreview({ path }: { path: string }): React.ReactElement {
   if (failed) {
     return (
       <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13 }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--pm-text-muted)', fontSize: 13 }}>
           {t('previewPane.loadError')}
         </div>
-        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
           <FileInfoBar path={path} />
         </div>
       </div>
@@ -135,12 +135,12 @@ export function ImagePreview({ path }: { path: string }): React.ReactElement {
             display: 'block',
             flexShrink: 0,
             maxWidth: 'none',
-            border: '1px solid #e0e0e0',
+            border: '1px solid var(--pm-frame)',
             borderRadius: 4,
           }}
         />
       </div>
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
         <ZoomControls
           zoom={appliedZoom}

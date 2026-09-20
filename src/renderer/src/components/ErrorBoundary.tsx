@@ -5,12 +5,18 @@ function ErrorBoundaryFallback({ error }: { error: Error | null }): React.ReactE
   const { t } = useTranslation()
 
   return (
-    <div style={{ padding: 24, fontFamily: 'monospace' }}>
+    // The fallback replaces the whole app (AppLayout included), so its ground is
+    // the page's own --pm-bg and its ink has to say so: the UA's canvastext stays
+    // black in dark mode, which would paint the heading black on near-black. The
+    // reload <button> deliberately keeps its UA face — buttonface/buttontext is a
+    // pair the browser guarantees, and --pm-ink (#e6e6e6) on a light button plate
+    // would not be legible.
+    <div style={{ padding: 24, fontFamily: 'monospace', color: 'var(--pm-ink)' }}>
       <h2>{t('errorBoundary.title')}</h2>
-      <pre style={{ whiteSpace: 'pre-wrap', color: 'red', background: '#f5f5f5', padding: 12, borderRadius: 6 }}>
+      <pre style={{ whiteSpace: 'pre-wrap', color: 'var(--pm-error-bright)', background: 'var(--pm-fill)', padding: 12, borderRadius: 6 }}>
         {error?.message}
       </pre>
-      <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#666', background: '#f5f5f5', padding: 12, borderRadius: 6 }}>
+      <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--pm-text-secondary)', background: 'var(--pm-fill)', padding: 12, borderRadius: 6 }}>
         {error?.stack}
       </pre>
       <button onClick={() => window.location.reload()} style={{ marginTop: 12, padding: '8px 16px' }}>

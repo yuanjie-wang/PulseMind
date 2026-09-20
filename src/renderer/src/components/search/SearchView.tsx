@@ -62,11 +62,11 @@ function Group({ title, count, children }: { title: string; count: number; child
   if (count === 0) return null
   return (
     <section style={{ marginBottom: 22 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, margin: '0 0 6px', fontSize: 12, color: '#999' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, margin: '0 0 6px', fontSize: 12, color: 'var(--pm-text-muted)' }}>
         <span>{title}</span>
-        <span style={{ color: '#c8c8c8' }}>{count}</span>
+        <span style={{ color: 'var(--pm-text-ghost)' }}>{count}</span>
       </div>
-      <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>{children}</div>
+      <div style={{ border: '1px solid var(--pm-border-hairline)', borderRadius: 8, overflow: 'hidden' }}>{children}</div>
     </section>
   )
 }
@@ -88,13 +88,13 @@ function Row({
   return (
     <div className="search-row" onClick={onClick}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: '#222', flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <span style={{ color: '#999', marginRight: 6 }}>{icon}</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--pm-text-title)', flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span style={{ color: 'var(--pm-text-muted)', marginRight: 6 }}>{icon}</span>
           {title}
         </span>
-        {meta && <span style={{ fontSize: 11, color: '#aaa', flexShrink: 0 }}>{meta}</span>}
+        {meta && <span style={{ fontSize: 11, color: 'var(--pm-text-soft)', flexShrink: 0 }}>{meta}</span>}
       </div>
-      {body && <div style={{ fontSize: 12, color: '#666', marginTop: 3, lineHeight: 1.6, wordBreak: 'break-word' }}>{body}</div>}
+      {body && <div style={{ fontSize: 12, color: 'var(--pm-text-secondary)', marginTop: 3, lineHeight: 1.6, wordBreak: 'break-word' }}>{body}</div>}
     </div>
   )
 }
@@ -160,7 +160,7 @@ export function SearchView({ onOpenConversation }: SearchViewProps): React.React
   const total = results ? results.conversations.length + results.messages.length + results.memories.length + results.knowledge.length : 0
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fff' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--pm-bg)' }}>
       <div style={{ padding: '18px 24px 12px' }}>
         <Input
           autoFocus
@@ -169,21 +169,21 @@ export function SearchView({ onOpenConversation }: SearchViewProps): React.React
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t('search.placeholder')}
-          prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+          prefix={<SearchOutlined style={{ color: 'var(--pm-text-faint)' }} />}
         />
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: '0 24px 24px' }}>
         {!keyword ? (
-          <div style={{ color: '#bbb', fontSize: 13, padding: '40px 0', textAlign: 'center' }}>{t('search.hint')}</div>
+          <div style={{ color: 'var(--pm-text-faint)', fontSize: 13, padding: '40px 0', textAlign: 'center' }}>{t('search.hint')}</div>
         ) : !settled ? (
           <div style={{ padding: '40px 0', textAlign: 'center' }}>
             <Spin />
           </div>
         ) : settled.failed ? (
-          <div style={{ color: '#bbb', fontSize: 13, padding: '40px 0', textAlign: 'center' }}>{t('search.failed')}</div>
+          <div style={{ color: 'var(--pm-text-faint)', fontSize: 13, padding: '40px 0', textAlign: 'center' }}>{t('search.failed')}</div>
         ) : total === 0 ? (
-          <div style={{ color: '#bbb', fontSize: 13, padding: '40px 0', textAlign: 'center' }}>{t('search.noResults', { q: keyword })}</div>
+          <div style={{ color: 'var(--pm-text-faint)', fontSize: 13, padding: '40px 0', textAlign: 'center' }}>{t('search.noResults', { q: keyword })}</div>
         ) : (
           <>
             <Group title={t('search.groups.conversations')} count={results!.conversations.length}>
@@ -236,11 +236,11 @@ export function SearchView({ onOpenConversation }: SearchViewProps): React.React
         .search-row {
           padding: 10px 14px;
           cursor: pointer;
-          border-bottom: 1px solid #f5f5f5;
+          border-bottom: 1px solid var(--pm-border-faint);
           transition: background 0.15s;
         }
         .search-row:last-child { border-bottom: none; }
-        .search-row:hover { background: #f7f7f7; }
+        .search-row:hover { background: var(--pm-row-hover); }
       `}</style>
     </div>
   )

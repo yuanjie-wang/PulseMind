@@ -32,7 +32,7 @@ export const ZOOM_BUTTON: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   borderRadius: 6,
-  color: '#666',
+  color: 'var(--pm-text-secondary)',
   flexShrink: 0,
   cursor: 'pointer',
 }
@@ -69,7 +69,7 @@ export function ZoomControls({
       <div style={ZOOM_BUTTON} onClick={onZoomOut} title={t('previewPane.zoomOut')}>
         <Minus size={12} />
       </div>
-      <div data-zoom-label style={{ minWidth: 40, textAlign: 'center', fontSize: 11, color: '#666', fontVariantNumeric: 'tabular-nums' }}>
+      <div data-zoom-label style={{ minWidth: 40, textAlign: 'center', fontSize: 11, color: 'var(--pm-text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
         {Math.round(zoom * 100)}%
       </div>
       <div style={ZOOM_BUTTON} onClick={onZoomIn} title={t('previewPane.zoomIn')}>

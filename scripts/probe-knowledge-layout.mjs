@@ -40,6 +40,14 @@ const OUT = join(mkdtempSync(join(tmpdir(), 'pm-knowledge-rail-')), 'harness.js'
 const SHOTS = join(tmpdir(), 'pm-knowledge-rail-shots')
 
 const HARNESS = `
+// The knowledge center is migrated onto the theme sheet (PLAN-dark-mode
+// M3/T4), so the page needs the variable table injected before it renders —
+// without it every var() computes to nothing and the readings fall back to
+// the UA. Light is pinned explicitly here; dark belongs to probe-theme-dark.
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
+
+installThemeVars()
+applyThemeAttr('light')
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider, App as AntdApp } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'

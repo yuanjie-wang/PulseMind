@@ -57,6 +57,14 @@ import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import RoutineCenter from './src/renderer/src/components/routine/RoutineCenter'
 import RoutineEditorPage from './src/renderer/src/components/routine/RoutineEditorPage'
 import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
+// The routine center is migrated onto the theme sheet (PLAN-dark-mode M3/T2),
+// so the page needs the variable table injected before the components render —
+// without it a var() resolves to nothing and the dashed card's computed
+// border/label colours fall back to the UA. Light is pinned explicitly.
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
+
+installThemeVars()
+applyThemeAttr('light')
 import { bucketRunByDate } from './src/renderer/src/utils/relative-time'
 import { useNavigationStore } from './src/renderer/src/stores/navigationStore'
 

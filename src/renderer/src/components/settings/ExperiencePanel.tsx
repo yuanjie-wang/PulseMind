@@ -72,7 +72,7 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
   const content = (
     <>
       {/* Section title + refresh — matches the 记忆 section's title row. */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>
         <Text strong style={{ fontSize: 16 }}>经验</Text>
         <Tooltip title="重新加载经验列表">
           <Button size="small" icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>
@@ -121,12 +121,12 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
               }
             >
               <Paragraph
-                style={{ margin: 0, fontSize: 12, color: '#888' }}
+                style={{ margin: 0, fontSize: 12, color: 'var(--pm-text-quiet)' }}
                 ellipsis={{ rows: 2 }}
               >
                 {exp.description}
               </Paragraph>
-              <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#aaa', marginTop: 6 }}>
+              <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--pm-text-soft)', marginTop: 6 }}>
                 <span>创建 {exp.createdAt}</span>
                 <span>{exp.lastUsedAt ? `最近触发 ${exp.lastUsedAt}` : '从未触发'}</span>
                 <span>触发 {exp.useCount} 次</span>
@@ -134,7 +134,7 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
               {exp.triggers && exp.triggers.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
                   {exp.triggers.map((kw) => (
-                    <span key={kw} style={{ fontSize: 11, color: '#1677ff', background: 'rgba(22,119,255,0.08)', borderRadius: 4, padding: '1px 6px' }}>{kw}</span>
+                    <span key={kw} style={{ fontSize: 11, color: 'var(--pm-link)', background: 'var(--pm-link-bg)', borderRadius: 4, padding: '1px 6px' }}>{kw}</span>
                   ))}
                 </div>
               )}
@@ -155,7 +155,7 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
         footer={null}
         width={640}
       >
-        <pre style={{ maxHeight: 480, overflow: 'auto', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#fafafa', padding: 12, borderRadius: 8 }}>
+        <pre style={{ maxHeight: 480, overflow: 'auto', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--pm-wash)', padding: 12, borderRadius: 8 }}>
           {viewContent}
         </pre>
       </Modal>

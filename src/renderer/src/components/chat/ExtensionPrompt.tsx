@@ -26,7 +26,7 @@ export function ExtensionPrompt({
       <div style={{ display: 'flex', gap: 8 }}>
         <Button
           size="small"
-          style={{ background: '#d48806', borderColor: '#d48806', color: '#fff' }}
+          style={{ background: 'var(--pm-gold-solid)', borderColor: 'var(--pm-gold-solid)', color: 'var(--pm-ink-contrast)' }}
           onClick={() => onExtend?.()}
         >
           {t('chatView.extensionPrompt.continue')}
@@ -46,10 +46,10 @@ function PromptBox({ children }: { children: React.ReactNode }): React.ReactElem
       style={{
         margin: '16px 0',
         padding: 12,
-        background: '#fffbe6',
-        border: '1px solid #ffe58f',
+        background: 'var(--pm-gold-bg)',
+        border: '1px solid var(--pm-gold-border)',
         borderRadius: 6,
-        color: '#ad6f00',
+        color: 'var(--pm-gold-ink)',
         fontSize: 13
       }}
     >
@@ -68,20 +68,20 @@ export function SubAgentStopPrompt({
 }): React.ReactElement {
   const { t } = useTranslation()
   return (
-    <div style={{ margin: '12px 0 12px 10px', padding: '8px 12px', display: 'inline-block', background: '#f5f5f5', borderRadius: 8, color: '#888', fontSize: 13 }}>
+    <div style={{ margin: '12px 0 12px 10px', padding: '8px 12px', display: 'inline-block', background: 'var(--pm-fill)', borderRadius: 8, color: 'var(--pm-text-quiet)', fontSize: 13 }}>
       &gt; {t('chatView.subAgentStopPrompt.title')}
       {' '}
       <a
         href="#"
-        style={{ color: '#666', textDecoration: 'underline' }}
+        style={{ color: 'var(--pm-text-secondary)', textDecoration: 'underline' }}
         onClick={(e) => { e.preventDefault(); onResume?.() }}
       >
         {t('chatView.subAgentStopPrompt.resume')}
       </a>
-      <span style={{ margin: '0 6px', color: '#ccc' }}>/</span>
+      <span style={{ margin: '0 6px', color: 'var(--pm-text-disabled)' }}>/</span>
       <a
         href="#"
-        style={{ color: '#999', textDecoration: 'underline' }}
+        style={{ color: 'var(--pm-text-muted)', textDecoration: 'underline' }}
         onClick={(e) => { e.preventDefault(); onConfirm?.() }}
       >
         {t('chatView.subAgentStopPrompt.stop')}

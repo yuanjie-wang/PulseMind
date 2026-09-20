@@ -17,7 +17,10 @@ export interface LlmProfile {
 export interface AppSettings {
   activeProfileId: string
   profiles: LlmProfile[]
-  theme: 'light' | 'dark'
+  /** PLAN-dark-mode M1: 'system' follows the OS — the renderer resolves it via
+   *  prefers-color-scheme, main via nativeTheme. Existing settings.json files
+   *  carry an explicit 'light' and are untouched. */
+  theme: 'light' | 'dark' | 'system'
   myName: string
   soul: string
   yourName: string

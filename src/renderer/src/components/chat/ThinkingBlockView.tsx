@@ -17,18 +17,18 @@ export function ThinkingBlockView({
     <div
       style={{
         margin: '6px 0',
-        borderLeft: '2px solid #d0d0d0',
+        borderLeft: '2px solid var(--pm-border-strong)',
         paddingLeft: 10,
         cursor: 'pointer',
         userSelect: 'none'
       }}
       onClick={() => setExpanded(!expanded)}
     >
-      <div style={{ color: '#888', fontSize: 13, lineHeight: 1.6 }}>
+      <div style={{ color: 'var(--pm-text-quiet)', fontSize: 13, lineHeight: 1.6 }}>
         <span style={{ marginRight: 6, fontSize: 11 }}>{expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}</span>
         <span style={{ fontWeight: 500 }}>Thinking</span>
         {!expanded && (
-          <span style={{ marginLeft: 8, color: '#aaa', fontSize: 12 }}>{preview}</span>
+          <span style={{ marginLeft: 8, color: 'var(--pm-text-soft)', fontSize: 12 }}>{preview}</span>
         )}
       </div>
       {expanded && (
@@ -36,11 +36,11 @@ export function ThinkingBlockView({
           style={{
             margin: '6px 0 0 0',
             padding: 8,
-            background: '#f6f6f6',
+            background: 'var(--pm-fill-soft)',
             borderRadius: 4,
             fontSize: 12,
             lineHeight: 1.5,
-            color: '#555',
+            color: 'var(--pm-text-body)',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-all',
             maxHeight: 400,

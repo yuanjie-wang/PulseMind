@@ -62,6 +62,15 @@ import { ProjectCards } from './src/renderer/src/components/welcome/ProjectCards
 import { useProjectStore } from './src/renderer/src/stores/projectStore'
 import { useNewTaskStore } from './src/renderer/src/stores/newTaskStore'
 import { useComposerDraftStore } from './src/renderer/src/stores/composerDraftStore'
+// The welcome band is migrated onto the theme sheet (PLAN-dark-mode M3/T1), so
+// the page needs the variable table injected before the components render —
+// a var() with no sheet paints nothing, and the ink assertions below would
+// pass on transparent. Light is pinned explicitly: this probe freezes the
+// light values; the dark column is probe-theme-dark.mjs's territory.
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
+
+installThemeVars()
+applyThemeAttr('light')
 
 // 30h back reads as 1天前 for the whole life of a probe run.
 const LAST_TOUCH = new Date(Date.now() - 30 * 3600 * 1000).toISOString()
@@ -426,6 +435,15 @@ check(
 // columns) beside the dashed create card (the third), both saying the same
 // thing. Now they are a single full-row card: transparent, grey dashed, titled
 // 立即创建项目 (user request 2026-09-18).
+//
+// Park the pointer first. Section 4 left the real mouse on a play button, and
+// this card spans the whole row — its box covers exactly that spot — so whether
+// the card's own onMouseEnter has fired by the time the dashed recipe is read is
+// a race (the card paints #666 on hover, and a run that read it measured 44/45;
+// reproduced at HEAD too, so it predates dark mode). The hover is a real
+// behaviour and is tested with a real mouse further down; this line only makes
+// the resting-state read deterministic.
+await page.mouse.move(0, 0)
 await page.evaluate(() => { window.__calls = []; window.__mount({ projects: [] }) })
 // No waitForSelector: the card's absence IS one of the things under test, so it
 // has to come back as a FAIL line rather than a 30s timeout that kills the run.

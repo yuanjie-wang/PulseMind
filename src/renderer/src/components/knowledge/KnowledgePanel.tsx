@@ -105,6 +105,9 @@ interface KnowledgePanelProps {
 }
 
 const SOURCE_TAGS: Record<string, { color: string; icon: React.ReactNode }> = {
+// Source-type and entity-tag hues are DATA LEGEND colours (they distinguish
+// content types inside wiki output), not theme surfaces — they stay literals
+// on both grounds, like the chip hue and the status dots.
   file: { color: '#858585', icon: <FileTextOutlined /> },
   url: { color: '#84b9ea', icon: <GlobalOutlined /> },
   experience: { color: 'orange', icon: <BulbOutlined /> },
@@ -162,11 +165,11 @@ function CompiledPreview({ content }: { content: string }): React.ReactElement {
   return (
     <div style={{ maxHeight: '70vh', overflow: 'auto' }}>
       {Object.keys(meta).length > 0 && (
-        <div style={{ marginBottom: 16, padding: '12px 16px', background: '#f9f9f9', borderRadius: 8, fontSize: 13 }}>
+        <div style={{ marginBottom: 16, padding: '12px 16px', background: 'var(--pm-row-hover)', borderRadius: 8, fontSize: 13 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {Object.entries(meta).map(([key, val]) => (
               <span key={key}>
-                <span style={{ color: '#999', marginRight: 4, whiteSpace: 'nowrap' }}>{FRONTMATTER_LABELS[key] || key}:</span>
+                <span style={{ color: 'var(--pm-text-muted)', marginRight: 4, whiteSpace: 'nowrap' }}>{FRONTMATTER_LABELS[key] || key}:</span>
                 {key === 'type' || key === 'source_type' ? (
                   <span style={{
                     display: 'inline-block',
@@ -174,8 +177,8 @@ function CompiledPreview({ content }: { content: string }): React.ReactElement {
                     borderRadius: 4,
                     fontSize: 12,
                     fontWeight: 500,
-                    color: '#fff',
-                    background: FRONTMATTER_COLORS[val] || '#666',
+                    color: 'var(--pm-ink-contrast)',
+                    background: FRONTMATTER_COLORS[val] || 'var(--pm-text-secondary)',
                     whiteSpace: 'nowrap',
                   }}>{val}</span>
                 ) : key === 'source_url' || key === 'source_path' ? (
@@ -880,8 +883,8 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
 
       {/* ── Batch action bar ── */}
       {selectedIds.size > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '4px 12px', background: '#fafafa', borderRadius: 4 }}>
-          <Text style={{ fontSize: 12, color: '#666' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '4px 12px', background: 'var(--pm-wash)', borderRadius: 4 }}>
+          <Text style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}>
             {t('knowledgePanel.selectedCount', { n: selectedIds.size })}
           </Text>
           <Button size="small" type="primary" ghost onClick={handleBatchCompile} disabled={!files.some(f => selectedIds.has(f.id) && f.status === 'raw')}>
@@ -924,11 +927,11 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       </Modal>
       <style>{`
         .knowledge-table .ant-table-thead th { text-align: center !important; }
-        .knowledge-table .ant-pagination .ant-pagination-item a { color: #000 !important; }
-        .knowledge-table .ant-pagination .ant-pagination-item-active { border-color: #000 !important; }
-        .knowledge-table .ant-pagination .ant-pagination-item-active a { color: #000 !important; font-weight: 700 !important; }
+        .knowledge-table .ant-pagination .ant-pagination-item a { color: var(--pm-ink) !important; }
+        .knowledge-table .ant-pagination .ant-pagination-item-active { border-color: var(--pm-ink) !important; }
+        .knowledge-table .ant-pagination .ant-pagination-item-active a { color: var(--pm-ink) !important; font-weight: 700 !important; }
         .knowledge-table .ant-pagination .ant-pagination-prev button,
-        .knowledge-table .ant-pagination .ant-pagination-next button { color: #000 !important; }
+        .knowledge-table .ant-pagination .ant-pagination-next button { color: var(--pm-ink) !important; }
       `}</style>
       <Table
         className="knowledge-table"
@@ -1006,7 +1009,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
               </div>
             ),
             filterIcon: (filtered: boolean) => (
-              <SearchOutlined style={{ fontSize: 14, color: filtered ? '#1677ff' : undefined }} />
+              <SearchOutlined style={{ fontSize: 14, color: filtered ? 'var(--pm-link)' : undefined }} />
             ),
             filteredValue: searchQuery ? [searchQuery] : [],
             render: (_, record) => (
@@ -1051,28 +1054,28 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
               if (compilingFileIds.has(record.id)) {
                 return (
                   <Tooltip title="正在编译">
-                    <LoadingOutlined style={{ fontSize: 15, color: '#52c41a' }} />
+                    <LoadingOutlined style={{ fontSize: 15, color: 'var(--pm-success-status)' }} />
                   </Tooltip>
                 )
               }
               if (queuedFileIds.has(record.id)) {
                 return (
                   <Tooltip title="等待编译">
-                    <ClockCircleOutlined style={{ fontSize: 15, color: '#faad14' }} />
+                    <ClockCircleOutlined style={{ fontSize: 15, color: 'var(--pm-gold-accent)' }} />
                   </Tooltip>
                 )
               }
               if (record.status === 'compiled') {
                 return (
                   <Tooltip title="完成编译">
-                    <CheckCircleOutlined style={{ fontSize: 15, color: '#aaa' }} />
+                    <CheckCircleOutlined style={{ fontSize: 15, color: 'var(--pm-text-soft)' }} />
                   </Tooltip>
                 )
               }
               return (
                 <Tooltip title="开始编译">
                   <PlayCircleOutlined
-                    style={{ fontSize: 15, color: '#52c41a', cursor: 'pointer' }}
+                    style={{ fontSize: 15, color: 'var(--pm-success-status)', cursor: 'pointer' }}
                     onClick={() => enqueueCompileOne(record.id)}
                   />
                 </Tooltip>
@@ -1104,11 +1107,11 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
                   trigger={['click']}
                 >
                   <Tooltip title="移动到知识库">
-                    <Button type="text" size="small" icon={<GroupOutlined />} style={{ color: '#aaa' }} />
+                    <Button type="text" size="small" icon={<GroupOutlined />} style={{ color: 'var(--pm-text-soft)' }} />
                   </Tooltip>
                 </Dropdown>
                 <Tooltip title="预览">
-                  <Button type="text" size="small" icon={<FileSearchOutlined />} style={{ color: '#aaa' }} onClick={() => handleOpenRaw(record)} />
+                  <Button type="text" size="small" icon={<FileSearchOutlined />} style={{ color: 'var(--pm-text-soft)' }} onClick={() => handleOpenRaw(record)} />
                 </Tooltip>
                 {record.wikiOutputs && record.wikiOutputs.length > 0 && (
                   <Tooltip title="查看编译结果">
@@ -1116,7 +1119,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
                       type="text"
                       size="small"
                       icon={<ReadOutlined />}
-                      style={{ color: '#aaa' }}
+                      style={{ color: 'var(--pm-text-soft)' }}
                       onClick={() => void (async () => {
                         try {
                           // wikiOutputs are relative to the file's OWN base's
@@ -1130,11 +1133,11 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
                 )}
                 {(record.sourcePath || record.sourceUrl) && (
                   <Tooltip title={record.sourceType === 'url' ? '在浏览器中打开' : '打开原始文件'}>
-                    <Button type="text" size="small" icon={<LinkOutlined />} style={{ color: '#aaa' }} onClick={() => handleOpenSource(record)} />
+                    <Button type="text" size="small" icon={<LinkOutlined />} style={{ color: 'var(--pm-text-soft)' }} onClick={() => handleOpenSource(record)} />
                   </Tooltip>
                 )}
                 <Tooltip title="删除">
-                  <Button type="text" size="small" icon={<DeleteOutlined />} style={{ color: '#aaa' }} onClick={() => handleDelete(record)} />
+                  <Button type="text" size="small" icon={<DeleteOutlined />} style={{ color: 'var(--pm-text-soft)' }} onClick={() => handleDelete(record)} />
                 </Tooltip>
               </Space>
             ),

@@ -140,12 +140,12 @@ export default function CapabilityCenter({
   }
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fff' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--pm-bg)' }}>
       {/* The non-active pill's hover wash. antd's text-button hover is rgba(0,0,0,0.02)
           — invisible in practice. A class-scoped rule gives a visible wash that still
           yields to the active pill's 0.08 fill (the active pill sets `background`
           inline, which outranks this by specificity). */}
-      <style>{`.pm-cap-pill:not(.pm-cap-pill-active):not(:disabled):hover { background: rgba(0, 0, 0, 0.06) !important; }`}</style>
+      <style>{`.pm-cap-pill:not(.pm-cap-pill-active):not(:disabled):hover { background: var(--pm-hover) !important; }`}</style>
       <div
         style={{
           display: 'flex',
@@ -173,8 +173,8 @@ export default function CapabilityCenter({
                 // leave `background` unset so the `.pm-cap-pill:hover` rule above
                 // can show. Setting `transparent` inline outranks it by specificity
                 // and silently kills the hover (the reported "hover 没了").
-                background: tab === key ? 'rgba(0, 0, 0, 0.08)' : undefined,
-                color: tab === key ? '#000' : '#333'
+                background: tab === key ? 'var(--pm-hover-strong)' : undefined,
+                color: tab === key ? 'var(--pm-ink)' : 'var(--pm-text-strong)'
               }}
             >
               {label}

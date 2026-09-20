@@ -2,25 +2,72 @@
 // Formerly StatisticsDrawer, a standard view since PLAN-0.4.0. Fetches on mount
 // (the page unmounts when the user leaves the view, so every visit re-fetches)
 // and renders the hourly/daily/monthly stacked token charts.
+//
+// The charts wear ZCode's usage palette (its `--color-usage-chart` tokens: sky
+// leads, teal second, and the dark column swaps in the brighter rungs —
+// sky-600→500, teal-600→400 — exactly like its `.dark` overrides). The built-in
+// echarts 'dark' theme is deliberately NOT used: it paints its own #100c2a
+// background, which showed as three navy blocks on the page's #141414 ground
+// while the old near-black/grey series vanished into it. Every colour is set
+// explicitly per mode instead, and setOption runs with notMerge on each mode
+// change, so a theme toggled with the page open just re-skins the same instance.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { Typography, Spin, Empty, theme } from 'antd'
+import { Typography, Spin, Empty } from 'antd'
 import * as echarts from 'echarts'
 import { useTranslation } from '../../i18n/useTranslation'
+import { useThemeMode } from '../../theme/mode'
 import CenteredPage from './CenteredPage'
 import type { TokenStats } from '../../types/conversation'
 
 const { Text, Title } = Typography
 
-const OUTPUT_COLOR = '#1d1d1f'
-const INPUT_COLOR = '#d4d4d4'
+/** ZCode usage-chart-1/2 (sky/teal). Output is the page's lead series. */
+const OUTPUT_COLOR = { light: '#0284c7', dark: '#0ea5e9' }
+const INPUT_COLOR = { light: '#0d9488', dark: '#2dd4bf' }
+
+/** Chart chrome per mode, resolved to literals — echarts cannot read CSS vars. */
+function chartChrome(isDark: boolean) {
+  return isDark
+    ? {
+        axisLabel: '#8c8c8c',
+        legend: '#a6a6a6',
+        axisLine: 'rgba(255, 255, 255, 0.14)',
+        splitLine: 'rgba(255, 255, 255, 0.08)',
+        tooltipBg: '#1f1f1f',
+        tooltipBorder: 'rgba(255, 255, 255, 0.14)',
+        tooltipText: '#f0f0f0',
+      }
+    : {
+        axisLabel: '#999999',
+        legend: '#666666',
+        axisLine: '#e8e8e8',
+        splitLine: '#f0f0f0',
+        tooltipBg: '#ffffff',
+        tooltipBorder: '#e8e8e8',
+        tooltipText: '#262626',
+      }
+}
+
+/** Headline numbers: 万/亿 for zh, K/M/B otherwise. One decimal, no trailing .0. */
+function formatCompact(n: number, locale: string): string {
+  const trim = (v: number) => String(Math.round(v * 10) / 10)
+  if (locale === 'zh') {
+    if (n >= 1e8) return `${trim(n / 1e8)}亿`
+    if (n >= 1e4) return `${trim(n / 1e4)}万`
+  } else {
+    if (n >= 1e9) return `${trim(n / 1e9)}B`
+    if (n >= 1e6) return `${trim(n / 1e6)}M`
+    if (n >= 1e3) return `${trim(n / 1e3)}K`
+  }
+  return String(n)
+}
 
 function StatisticsPage(): React.ReactElement {
-  const { t } = useTranslation()
-  const { token } = theme.useToken()
+  const { t, locale } = useTranslation()
+  const isDark = useThemeMode() === 'dark'
   const [loading, setLoading] = useState(true)
   const [stats, setStats] = useState<TokenStats | null>(null)
-  const isDark = token.colorBgElevated === '#1c1c1e'
 
   useEffect(() => {
     let cancelled = false
@@ -43,6 +90,11 @@ function StatisticsPage(): React.ReactElement {
       return false
     })()
 
+  const totalInput = stats ? stats.monthly.reduce((s, m) => s + m.inputTokens, 0) : 0
+  const totalOutput = stats ? stats.monthly.reduce((s, m) => s + m.outputTokens, 0) : 0
+  const outputColor = isDark ? OUTPUT_COLOR.dark : OUTPUT_COLOR.light
+  const inputColor = isDark ? INPUT_COLOR.dark : INPUT_COLOR.light
+
   return (
     <CenteredPage>
       {loading ? (
@@ -57,9 +109,16 @@ function StatisticsPage(): React.ReactElement {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 40, paddingBottom: 24 }}>
           {/* 累计口径说明（PLAN-parallel-experts L14）：token_usage 不随会话删除，
               否则「删了会话数字没变」会一直被当 bug 报回来。 */}
-          <Text type="secondary" style={{ fontSize: 12, marginTop: -24 }}>
-            {t('statisticsDrawer.cumulativeNote')}
-          </Text>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 48 }}>
+              <StatBlock label={t('statisticsDrawer.outputLabel')} value={formatCompact(totalOutput, locale)} dot={outputColor} />
+              <StatBlock label={t('statisticsDrawer.inputLabel')} value={formatCompact(totalInput, locale)} dot={inputColor} />
+              <StatBlock label={t('statisticsDrawer.totalLabel')} value={formatCompact(totalOutput + totalInput, locale)} dot={null} />
+            </div>
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 16 }}>
+              {t('statisticsDrawer.cumulativeNote')}
+            </Text>
+          </div>
           <ChartSection
             title={t('statisticsDrawer.hourlyTitle')}
             data={stats!.hourly.map((d) => ({
@@ -99,6 +158,20 @@ function StatisticsPage(): React.ReactElement {
   )
 }
 
+/** ZCode's headline style: a small dot-labelled caption over a big baseline
+ *  number. `dot: null` is the untyped total (no swatch). */
+function StatBlock({ label, value, dot }: { label: string; value: string; dot: string | null }): React.ReactElement {
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--pm-text-muted)', marginBottom: 6 }}>
+        {dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: dot, flexShrink: 0 }} />}
+        <span>{label}</span>
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 600, lineHeight: 1.25, color: 'var(--pm-text)', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+    </div>
+  )
+}
+
 // --- Chart Section Sub-component (echarts) ---
 
 interface ChartSectionProps {
@@ -115,42 +188,51 @@ function ChartSection({ title, data, inputLabel, outputLabel, isDark }: ChartSec
 
   useEffect(() => {
     if (!chartRef.current) return
+    // No theme argument: the instance stays themeless for its whole life and
+    // every colour below re-applies through setOption on a mode flip.
     if (!instanceRef.current) {
-      instanceRef.current = echarts.init(chartRef.current, isDark ? 'dark' : undefined)
+      instanceRef.current = echarts.init(chartRef.current)
     }
+    const chrome = chartChrome(isDark)
     const labels = data.map((d) => d.label)
     const inputData = data.map((d) => d.input)
     const outputData = data.map((d) => d.output)
 
     instanceRef.current.setOption(
       {
+        backgroundColor: 'transparent',
         tooltip: {
           trigger: 'axis',
           axisPointer: { type: 'shadow' },
           valueFormatter: (v: number) => v.toLocaleString(),
-          backgroundColor: isDark ? '#2c2c2e' : '#fff',
-          borderColor: isDark ? '#3a3a3c' : '#e8e8e8',
+          backgroundColor: chrome.tooltipBg,
+          borderColor: chrome.tooltipBorder,
           borderWidth: 1,
-          textStyle: { color: isDark ? '#f5f5f5' : '#1d1d1f', fontSize: 12 },
+          textStyle: { color: chrome.tooltipText, fontSize: 12 },
         },
         legend: {
           data: [outputLabel, inputLabel],
           selectedMode: false,
-          textStyle: { color: isDark ? '#aeaeb2' : '#6e6e73', fontSize: 12 },
-          top: 4,
+          icon: 'circle',
+          itemWidth: 8,
+          itemHeight: 8,
+          itemGap: 16,
+          textStyle: { color: chrome.legend, fontSize: 12 },
+          right: 0,
+          top: 0,
         },
-        grid: { left: 48, right: 16, top: 40, bottom: 24 },
+        grid: { left: 48, right: 8, top: 36, bottom: 24 },
         xAxis: {
           type: 'category',
           data: labels,
-          axisLabel: { fontSize: 11, color: isDark ? '#8e8e93' : '#6e6e73' },
-          axisLine: { lineStyle: { color: isDark ? '#3a3a3c' : '#e8e8e8' } },
+          axisLabel: { fontSize: 11, color: chrome.axisLabel },
+          axisLine: { lineStyle: { color: chrome.axisLine } },
           axisTick: { alignWithLabel: true },
         },
         yAxis: {
           type: 'value',
-          axisLabel: { fontSize: 11, color: isDark ? '#8e8e93' : '#6e6e73' },
-          splitLine: { lineStyle: { color: isDark ? '#3a3a3c' : '#f0f0f0' } },
+          axisLabel: { fontSize: 11, color: chrome.axisLabel },
+          splitLine: { lineStyle: { color: chrome.splitLine } },
         },
         series: [
           {
@@ -158,7 +240,7 @@ function ChartSection({ title, data, inputLabel, outputLabel, isDark }: ChartSec
             type: 'bar',
             stack: 'tokens',
             data: outputData,
-            itemStyle: { color: OUTPUT_COLOR, borderRadius: [0, 0, 0, 0] },
+            itemStyle: { color: isDark ? OUTPUT_COLOR.dark : OUTPUT_COLOR.light, borderRadius: 0 },
             barCategoryGap: '20%',
           },
           {
@@ -166,7 +248,7 @@ function ChartSection({ title, data, inputLabel, outputLabel, isDark }: ChartSec
             type: 'bar',
             stack: 'tokens',
             data: inputData,
-            itemStyle: { color: INPUT_COLOR, borderRadius: [2, 2, 0, 0] },
+            itemStyle: { color: isDark ? INPUT_COLOR.dark : INPUT_COLOR.light, borderRadius: [3, 3, 0, 0] },
             barCategoryGap: '20%',
           },
         ],

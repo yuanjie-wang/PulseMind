@@ -33,9 +33,9 @@ export function FileInfoBar({ path }: { path: string }): React.ReactElement {
   return (
     <div
       title={path}
-      style={{ flex: 1, minWidth: 0, fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      style={{ flex: 1, minWidth: 0, fontSize: 11, color: 'var(--pm-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
     >
-      <span style={{ color: '#666' }}>
+      <span style={{ color: 'var(--pm-text-secondary)' }}>
         {[sizeText, info.mtime ? new Date(info.mtime).toLocaleString() : ''].filter(Boolean).join(' · ')}
       </span>
     </div>

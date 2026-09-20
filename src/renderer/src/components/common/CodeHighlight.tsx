@@ -1,6 +1,6 @@
 import React from 'react'
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
 import c from 'react-syntax-highlighter/dist/esm/languages/prism/c'
 import cpp from 'react-syntax-highlighter/dist/esm/languages/prism/cpp'
@@ -21,6 +21,7 @@ import toml from 'react-syntax-highlighter/dist/esm/languages/prism/toml'
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx'
 import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript'
 import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
+import { useThemeMode } from '../../theme/mode'
 
 // Tree-shaken highlighter: PrismLight starts empty, so every language below
 // must be registered here.
@@ -113,7 +114,16 @@ interface CodeHighlightProps {
 
 /** Prism-highlighted code. `PreTag="div"` keeps it valid inside x-markdown's
  *  own `<pre>` (no nested pre); there the theme CSS overrides background/radius,
- *  standalone callers get the light-gray card look from the inline styles.
+ *  standalone callers get the mode-correct card look from the inline styles.
+ *
+ *  The two halves of a code block flip by different means, and that split is the
+ *  reason this file subscribes to the theme mode at all: the card (background,
+ *  padding, radius) is CSS and rides `--pm-code-bg` like every other migrated
+ *  surface, while the TOKENS are a JS object — Prism's theme is `{ '.token.keyword':
+ *  { color } }`, unreachable from a custom property — so `oneDark`/`oneLight` must
+ *  be chosen in JS. `useThemeMode` is the module store for exactly this shape of
+ *  consumer (see `theme/mode.ts`); the subscription costs one re-render of the
+ *  blocks on screen, and the new `style` object is also what re-tokenizes them.
  *
  *  Memoized with the object props built in a useMemo — this component used to
  *  hand SyntaxHighlighter fresh `customStyle`/`codeTagProps` literals every
@@ -122,8 +132,9 @@ interface CodeHighlightProps {
  *  measured a 1350ms frame gap on a ~1500-line python file; the memo drops it
  *  to the re-wrap floor). */
 export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fontSize = 12 }: CodeHighlightProps): React.ReactElement {
+  const mode = useThemeMode()
   const customStyle = React.useMemo(
-    () => ({ margin: 0, padding: 12, background: 'rgba(0, 0, 0, 0.04)', borderRadius: 8, fontSize }),
+    () => ({ margin: 0, padding: 12, background: 'var(--pm-code-bg)', borderRadius: 8, fontSize }),
     [fontSize],
   )
   const codeTagProps = React.useMemo(
@@ -133,7 +144,7 @@ export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fon
   return (
     <SyntaxHighlighter
       language={lang}
-      style={oneLight}
+      style={mode === 'dark' ? oneDark : oneLight}
       PreTag="div"
       wrapLongLines
       customStyle={customStyle}
@@ -144,21 +155,22 @@ export const CodeHighlight = React.memo(function CodeHighlight({ code, lang, fon
   )
 })
 
-/** Plain-text fallback for languages outside LANG_LOOKUP. */
+/** Plain-text fallback for languages outside LANG_LOOKUP. Its card and its ink
+ *  are both CSS, so it needs no mode subscription at all. */
 export const PlainCode = React.memo(function PlainCode({ code, fontSize = 12 }: { code: string; fontSize?: number }): React.ReactElement {
   return (
     <pre
       style={{
         margin: 0,
         padding: 12,
-        background: 'rgba(0, 0, 0, 0.04)',
+        background: 'var(--pm-code-bg)',
         borderRadius: 8,
         fontSize,
         lineHeight: 1.6,
         fontFamily: FONT_STACK,
         whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
-        color: '#333'
+        color: 'var(--pm-text-strong)'
       }}
     >
       {code}

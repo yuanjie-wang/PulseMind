@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, ipcMain, nativeTheme } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { agentSessionManager } from '../agent/session-manager'
@@ -6,6 +6,7 @@ import { cleanupExpiredConversations } from '../services/conversation-retention'
 import { setTitleBarTheme } from '../window-chrome'
 import { rebuildApplicationMenu } from '../menu'
 import { applyLaunchAtLogin } from '../tray'
+import { resolveThemePreference } from '../../shared/theme'
 import type { AppSettings } from '../../shared/types/settings'
 
 export function registerSettingsHandlers(): void {
@@ -16,7 +17,12 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async (event, settings: AppSettings) => {
     await settingsStore.set(settings)
     // The window chrome follows the theme, which this save may have just changed.
-    setTitleBarTheme(settings.theme, BrowserWindow.fromWebContents(event.sender))
+    // 'system' resolves against nativeTheme here; the renderer resolves the same
+    // preference against prefers-color-scheme for its own surfaces.
+    setTitleBarTheme(
+      resolveThemePreference(settings.theme, nativeTheme.shouldUseDarkColors),
+      BrowserWindow.fromWebContents(event.sender)
+    )
     // 开机自启 was tray-only; the settings UI now writes the same preference.
     // Idempotent, and the tray's 30s rebuild() picks the checkbox up on its own.
     applyLaunchAtLogin(!!settings.launchAtLogin)

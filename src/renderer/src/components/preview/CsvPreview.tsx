@@ -9,7 +9,7 @@ import { useTranslation } from '../../i18n/useTranslation'
 
 const CELL: React.CSSProperties = {
   padding: '4px 10px',
-  borderBottom: '1px solid #f0f0f0',
+  borderBottom: '1px solid var(--pm-border-hairline)',
   fontSize: 12,
   whiteSpace: 'nowrap',
   maxWidth: 320,
@@ -27,7 +27,7 @@ export const CsvPreview = React.memo(function CsvPreview({ text, path }: { text:
   const { rows, truncated } = parseCsv(text, { delimiter })
   const [header, ...body] = rows
 
-  if (!header) return <div style={{ padding: 24, textAlign: 'center', color: '#bbb', fontSize: 12 }}>—</div>
+  if (!header) return <div style={{ padding: 24, textAlign: 'center', color: 'var(--pm-text-faint)', fontSize: 12 }}>—</div>
 
   return (
     <div style={{ padding: 12 }}>
@@ -41,9 +41,9 @@ export const CsvPreview = React.memo(function CsvPreview({ text, path }: { text:
                   ...CELL,
                   position: 'sticky',
                   top: 0,
-                  background: '#f7f8fa',
+                  background: 'var(--pm-wash-cool)',
                   fontWeight: 600,
-                  color: '#333',
+                  color: 'var(--pm-text-strong)',
                   textAlign: 'left',
                 }}
               >
@@ -56,7 +56,7 @@ export const CsvPreview = React.memo(function CsvPreview({ text, path }: { text:
           {body.map((row, r) => (
             <tr key={r}>
               {row.map((cell, c) => (
-                <td key={c} style={{ ...CELL, color: '#555' }}>
+                <td key={c} style={{ ...CELL, color: 'var(--pm-text-body)' }}>
                   {cell}
                 </td>
               ))}
@@ -65,7 +65,7 @@ export const CsvPreview = React.memo(function CsvPreview({ text, path }: { text:
         </tbody>
       </table>
       {truncated && (
-        <div style={{ padding: '10px 4px', fontSize: 11, color: '#999' }}>
+        <div style={{ padding: '10px 4px', fontSize: 11, color: 'var(--pm-text-muted)' }}>
           {t('previewPane.truncatedRows', { count: CSV_PREVIEW_ROW_LIMIT })}
         </div>
       )}

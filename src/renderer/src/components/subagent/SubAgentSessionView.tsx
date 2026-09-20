@@ -108,7 +108,7 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
   }, [subConvId, live])
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff', position: 'relative' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--pm-bg)', position: 'relative' }}>
       {/* Header — 返回主对话 at the top-left, run state at the right. */}
       <div
         style={{
@@ -118,8 +118,8 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
           padding: '0 16px',
           height: 44,
           flexShrink: 0,
-          borderBottom: '1px solid #ececf0',
-          background: '#fff',
+          borderBottom: '1px solid var(--pm-separator-faint)',
+          background: 'var(--pm-bg)',
         }}
       >
         <div
@@ -132,19 +132,19 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
             padding: '4px 10px',
             borderRadius: 6,
             fontSize: 12,
-            color: '#555',
+            color: 'var(--pm-text-body)',
             cursor: 'pointer',
             flexShrink: 0,
           }}
-          onMouseEnter={e => { e.currentTarget.style.background = '#f0f1f4' }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--pm-tile-soft)' }}
           onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
         >
           <ArrowLeftOutlined style={{ fontSize: 12 }} />
           <span>返回主对话</span>
         </div>
-        <div style={{ width: 1, height: 16, background: '#e5e6eb', flexShrink: 0 }} />
+        <div style={{ width: 1, height: 16, background: 'var(--pm-pop-border)', flexShrink: 0 }} />
         <div
-          style={{ fontSize: 13, fontWeight: 600, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          style={{ fontSize: 13, fontWeight: 600, color: 'var(--pm-text-strong)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
           title={title}
         >
           {title}
@@ -156,8 +156,8 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
             padding: '2px 8px',
             borderRadius: 9,
             flexShrink: 0,
-            color: live ? '#1677ff' : '#8c8c8c',
-            background: live ? '#f0f7ff' : '#f5f5f5',
+            color: live ? 'var(--pm-link)' : 'var(--pm-text-muted)',
+            background: live ? 'var(--pm-link-bg)' : 'var(--pm-fill)',
           }}
         >
           {live ? '子代理运行中' : '已结束'}
@@ -174,10 +174,10 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
             textAlign: 'center',
             padding: '6px 0',
             fontSize: 12,
-            color: '#1677ff',
+            color: 'var(--pm-link)',
             cursor: 'pointer',
-            borderBottom: '1px solid #f0f0f0',
-            background: '#fafafa',
+            borderBottom: '1px solid var(--pm-border-hairline)',
+            background: 'var(--pm-wash)',
           }}
         >
           加载更早的消息（还有 {messages.length - visibleLimit} 条）

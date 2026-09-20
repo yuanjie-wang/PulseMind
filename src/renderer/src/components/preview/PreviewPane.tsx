@@ -25,7 +25,7 @@ const ICON_BUTTON: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   borderRadius: 6,
-  color: '#666',
+  color: 'var(--pm-text-secondary)',
   flexShrink: 0,
   cursor: 'pointer',
 }
@@ -133,10 +133,12 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
 
   if (!tabs || tabs.length === 0) {
     return (
-      <div style={{ padding: 24, fontSize: 12, color: '#999', textAlign: 'center' }}>
+      <div style={{ padding: 24, fontSize: 12, color: 'var(--pm-text-muted)', textAlign: 'center' }}>
+        {/* The decorative icon keeps its literal grey: a hue-neutral ink that
+            reads on both grounds, like the status dots below. */}
         <FileText size={20} style={{ display: 'block', margin: '0 auto 8px', color: '#d9d9d9' }} />
         暂无打开的文件
-        <div style={{ marginTop: 4, fontSize: 11, color: '#bbb' }}>AI 写入的文件会在这里实时预览</div>
+        <div style={{ marginTop: 4, fontSize: 11, color: 'var(--pm-text-faint)' }}>AI 写入的文件会在这里实时预览</div>
       </div>
     )
   }
@@ -186,14 +188,15 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
   }
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--pm-bg)' }}>
       {/* Tab hover is a stylesheet rule, so it cannot ride the tab's inline
           style (inline declarations win). The scrollbar is hidden the same way
           — a pseudo-element cannot be written inline (Composer precedent).
           The selected tab wears the same light grey as its hover state (the
           in-app browser pane does the same); the shadow is what still tells
-          the two apart at rest. */}
-      <style>{`.pm-preview-tabstrip { scrollbar-width: none; } .pm-preview-tabstrip::-webkit-scrollbar { display: none; } .pm-preview-tab { background: transparent; } .pm-preview-tab[data-active='true'] { background: #f0f1f4; box-shadow: 0 1px 2px rgba(0,0,0,0.08); } .pm-preview-tab:hover { background: #f0f1f4; }`}</style>
+          the two apart at rest. The dirty dot keeps its literal orange: it is
+          a status hue (antd orange-6), not a theme surface. */}
+      <style>{`.pm-preview-tabstrip { scrollbar-width: none; } .pm-preview-tabstrip::-webkit-scrollbar { display: none; } .pm-preview-tab { background: transparent; } .pm-preview-tab[data-active='true'] { background: var(--pm-tile-soft); box-shadow: var(--pm-shadow-chip); } .pm-preview-tab:hover { background: var(--pm-tile-soft); }`}</style>
       {/* File tab strip (32px) */}
       <div
         style={{
@@ -203,8 +206,8 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
           alignItems: 'center',
           gap: 4,
           padding: '0 6px 0 12px',
-          borderBottom: '1px solid #ececf0',
-          background: '#fff',
+          borderBottom: '1px solid var(--pm-separator-faint)',
+          background: 'var(--pm-bg)',
           overflow: 'hidden',
         }}
       >
@@ -233,7 +236,7 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
                   borderRadius: 6,
                   fontSize: 11,
                   cursor: 'pointer',
-                  color: tab.path === active.path ? '#333' : '#888',
+                  color: tab.path === active.path ? 'var(--pm-text-strong)' : 'var(--pm-text-quiet)',
                   flexShrink: 1,
                   flexBasis: 'auto',
                   overflow: 'hidden',
@@ -269,8 +272,8 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
           alignItems: 'center',
           gap: 4,
           padding: '0 8px',
-          borderBottom: '1px solid #ececf0',
-          background: '#fff',
+          borderBottom: '1px solid var(--pm-separator-faint)',
+          background: 'var(--pm-bg)',
         }}
       >
         {/* Element-edit toggle (html only): the PRIMARY entry per the
@@ -280,8 +283,8 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
             style={{
               ...ICON_BUTTON,
               opacity: oversizedActive && !elementOn ? 0.35 : 1,
-              background: elementOn ? '#fff7e6' : 'transparent',
-              color: elementOn ? '#d46b08' : '#666',
+              background: elementOn ? 'var(--pm-warn-bg)' : 'transparent',
+              color: elementOn ? 'var(--pm-warn)' : 'var(--pm-text-secondary)',
             }}
             onClick={toggleElement}
             title={oversizedActive && !elementOn ? t('previewPane.tooLarge') : t('htmlEdit.modeToggle')}
@@ -293,8 +296,8 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
           style={{
             ...ICON_BUTTON,
             opacity: editDisabled ? 0.35 : 1,
-            background: editOn ? '#e6f4ff' : 'transparent',
-            color: editOn ? '#1677ff' : '#666',
+            background: editOn ? 'var(--pm-link-bg-solid)' : 'transparent',
+            color: editOn ? 'var(--pm-link)' : 'var(--pm-text-secondary)',
           }}
           onClick={toggleSource}
           title={editDisabled ? t('previewPane.editNotAvailable') : editOn ? t('previewPane.view') : t('previewPane.edit')}
@@ -302,7 +305,7 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
           {editOn ? <Eye size={13} /> : <PenLine size={12} />}
         </div>
         <div
-          style={{ ...ICON_BUTTON, opacity: dirty ? 1 : 0.35, color: dirty ? '#1677ff' : '#666' }}
+          style={{ ...ICON_BUTTON, opacity: dirty ? 1 : 0.35, color: dirty ? 'var(--pm-link)' : 'var(--pm-text-secondary)' }}
           onClick={() => void saveDraft(active.path)}
           title={t('previewPane.save')}
         >
@@ -316,7 +319,7 @@ export function PreviewPane({ conversationId }: Props): React.ReactElement {
             flex: 1,
             minWidth: 0,
             fontSize: 11,
-            color: '#999',
+            color: 'var(--pm-text-muted)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',

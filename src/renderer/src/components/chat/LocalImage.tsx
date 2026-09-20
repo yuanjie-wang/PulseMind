@@ -45,7 +45,7 @@ export function LocalImage(props: React.ImgHTMLAttributes<HTMLImageElement> & Re
           ...(rest.style || {}),
           maxWidth: '100%',
           maxHeight: '50vh',
-          border: '1px solid #e0e0e0',
+          border: '1px solid var(--pm-frame)',
           borderRadius: '4px',
           cursor: 'pointer',
           transition: 'opacity 0.15s'

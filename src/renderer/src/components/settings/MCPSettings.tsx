@@ -23,9 +23,12 @@ import CapabilityCard, {
 /** A dot, not a filled Tag: on a ~260px card a colored status pill competes with
  *  the server name for the eye, which is exactly the crowding we're removing. */
 const STATUS: Record<MCPManagedServer['status'], { color: string; label: string; pulse?: boolean }> = {
+// The connected/error dot hues stay literals on purpose (the same judgment as
+// the run-status icons): antd's green-6/red-5 carry enough contrast on a dark
+// ground as-is, and a connection state must not shift hue with the theme.
   connected: { color: '#52c41a', label: '已连接' },
-  connecting: { color: '#1677ff', label: '连接中', pulse: true },
-  stopped: { color: '#d9d9d9', label: '已停止' },
+  connecting: { color: 'var(--pm-link)', label: '连接中', pulse: true },
+  stopped: { color: 'var(--pm-border)', label: '已停止' },
   error: { color: '#ff4d4f', label: '错误' },
 }
 
@@ -146,7 +149,7 @@ function McpServerCard({
             padding: '0 4px',
             marginLeft: -4,
             fontSize: 12,
-            color: server.tools.length > 0 ? '#666' : '#c8c8c8'
+            color: server.tools.length > 0 ? 'var(--pm-text-secondary)' : 'var(--pm-text-ghost)'
           }}
         >
           <ToolOutlined style={{ fontSize: 12 }} />
@@ -162,12 +165,12 @@ function McpServerCard({
           columnGap: 6,
           rowGap: 2,
           fontSize: 12,
-          color: '#888',
+          color: 'var(--pm-text-quiet)',
           minWidth: 0
         }}
       >
         <ServerStatusLine status={server.status} />
-        <span style={{ color: '#e0e0e0' }}>·</span>
+        <span style={{ color: 'var(--pm-frame)' }}>·</span>
         <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {meta.join(' · ')}
         </span>
@@ -183,17 +186,17 @@ function McpServerCard({
             marginTop: 10,
             padding: '5px 8px',
             borderRadius: 6,
-            background: '#f7f7f7',
+            background: 'var(--pm-row-hover)',
             minWidth: 0
           }}
         >
           {isRemote ? (
-            <LinkOutlined style={{ fontSize: 11, color: '#c0c0c0', flexShrink: 0 }} />
+            <LinkOutlined style={{ fontSize: 11, color: 'var(--pm-wash-ink)', flexShrink: 0 }} />
           ) : (
-            <span style={{ fontSize: 11, color: '#c0c0c0', flexShrink: 0, fontFamily: 'monospace' }}>$</span>
+            <span style={{ fontSize: 11, color: 'var(--pm-wash-ink)', flexShrink: 0, fontFamily: 'monospace' }}>$</span>
           )}
           <Tooltip title={endpoint}>
-            <code style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <code style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: 'var(--pm-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {endpoint}
             </code>
           </Tooltip>
@@ -210,10 +213,10 @@ function McpServerCard({
               marginTop: 8,
               padding: '6px 8px',
               borderRadius: 6,
-              background: 'rgba(255, 77, 79, 0.06)',
+              background: 'var(--pm-error-bg)',
               fontSize: 11.5,
               lineHeight: 1.5,
-              color: '#cf1322'
+              color: 'var(--pm-error)'
             }}
           >
             <CloseCircleOutlined style={{ marginTop: 2, flexShrink: 0 }} />
@@ -421,7 +424,7 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
           <Button key="cancel" onClick={() => setFormOpen(false)}>
             取消
           </Button>,
-          <Button key="submit" type="primary" onClick={handleSubmit} style={{ background: '#000', borderColor: '#000' }}>
+          <Button key="submit" type="primary" onClick={handleSubmit} style={{ background: 'var(--pm-ink)', borderColor: 'var(--pm-ink)' }}>
             {editingServer ? '保存' : '添加'}
           </Button>
         ]}
@@ -431,7 +434,7 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
             <Input placeholder="例如: My MCP Server" />
           </Form.Item>
           <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 14, color: '#333', marginBottom: 8, fontWeight: 500 }}>传输方式</div>
+            <div style={{ fontSize: 14, color: 'var(--pm-text-strong)', marginBottom: 8, fontWeight: 500 }}>传输方式</div>
             <Segmented
               block
               value={transportCategory}
@@ -447,7 +450,7 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
           </div>
 
           {transportCategory === 'local' && (
-            <div style={{ border: '1px solid #e8e8e8', borderRadius: 8, padding: '16px 16px 0', marginBottom: 8, background: '#fafafa' }}>
+            <div style={{ border: '1px solid var(--pm-border-soft)', borderRadius: 8, padding: '16px 16px 0', marginBottom: 8, background: 'var(--pm-wash)' }}>
               <Form.Item name="command" label="命令" rules={[{ required: true, message: '请输入启动命令' }]}>
                 <Input placeholder="例如: npx" />
               </Form.Item>
@@ -458,7 +461,7 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
           )}
 
           {transportCategory === 'http' && (
-            <div style={{ border: '1px solid #e8e8e8', borderRadius: 8, padding: '16px 16px 0', marginBottom: 8, background: '#fafafa' }}>
+            <div style={{ border: '1px solid var(--pm-border-soft)', borderRadius: 8, padding: '16px 16px 0', marginBottom: 8, background: 'var(--pm-wash)' }}>
               <Form.Item label="协议类型" name="transportType">
                 <Radio.Group>
                   <Radio value="sse">SSE（传统流式）</Radio>

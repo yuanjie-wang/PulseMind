@@ -106,7 +106,7 @@ function CapabilityCard({
       }}
       title={
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-          <span style={{ flexShrink: 0, display: 'inline-flex', color: '#666' }}>{icon}</span>
+          <span style={{ flexShrink: 0, display: 'inline-flex', color: 'var(--pm-text-secondary)' }}>{icon}</span>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
           {badge}
         </span>
@@ -128,7 +128,7 @@ function CapabilityCard({
           {/* Spacer pins the band to the bottom so a stretched grid row keeps its
               footers aligned. */}
           <div style={{ flex: 1, minHeight: 10 }} />
-          <div style={{ paddingTop: 8, borderTop: '1px solid #f2f2f2' }}>{footer}</div>
+          <div style={{ paddingTop: 8, borderTop: '1px solid var(--pm-card-divider)' }}>{footer}</div>
         </>
       )}
     </Card>
@@ -193,9 +193,9 @@ export function CapabilityEmpty({
       image={Empty.PRESENTED_IMAGE_SIMPLE}
       style={{ marginTop: 48 }}
       description={
-        <span style={{ fontSize: 13, color: '#666' }}>
+        <span style={{ fontSize: 13, color: 'var(--pm-text-secondary)' }}>
           {title}
-          {hint && <span style={{ display: 'block', fontSize: 12, color: '#bbb', marginTop: 4 }}>{hint}</span>}
+          {hint && <span style={{ display: 'block', fontSize: 12, color: 'var(--pm-text-faint)', marginTop: 4 }}>{hint}</span>}
         </span>
       }
     >

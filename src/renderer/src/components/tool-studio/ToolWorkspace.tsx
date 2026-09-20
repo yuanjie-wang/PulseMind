@@ -113,13 +113,13 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
             />
           ) : (
             <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ color: '#bbb', fontSize: 13 }}>描述需求，工具会出现在这里</div>
+              <div style={{ color: 'var(--pm-text-faint)', fontSize: 13 }}>描述需求，工具会出现在这里</div>
             </div>
           )}
         </div>
 
         {/* Right: the build conversation */}
-        <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--pm-border-hairline)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <TranscriptView
             messages={session.messages}
             agentStatus={session.agentStatus}

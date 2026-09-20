@@ -36,8 +36,22 @@ function extToHue(ext: string): number {
   return stringToHue(ext.slice(0, 2))
 }
 
+/** The chip's watermark letter: the extension's hue, muted. Lightness and alpha
+ *  ride the sheet (`--pm-chip-letter-*`) so the same hue reads as a watermark on
+ *  white and on a dark card; the hue itself is data and stays here. */
 function extToColor(ext: string): string {
-  return `hsla(${extToHue(ext)}, 30%, 85%, 0.5)`
+  return `hsla(${extToHue(ext)}, 30%, var(--pm-chip-letter-l), var(--pm-chip-letter-a))`
+}
+
+/** The chip's paper, tinted by the extension's hue: white → the hue at 95% in
+ *  light, the card grey → the hue at 16% in dark. Only the hue and the two
+ *  saturations live here — everything a mode flip moves is in the sheet, which
+ *  is why neither chip needs to subscribe to the mode. */
+function chipGradients(hue: number): { bg: string; hover: string } {
+  return {
+    bg: `linear-gradient(to right, var(--pm-chip-from), hsl(${hue}, 30%, var(--pm-chip-tint-l)))`,
+    hover: `linear-gradient(to right, var(--pm-chip-from-hover), hsl(${hue}, 25%, var(--pm-chip-tint-l-hover)))`,
+  }
 }
 
 function openInOs(path: string): void {
@@ -140,9 +154,7 @@ export function FileChipComponent(attrs: Record<string, any>): React.ReactElemen
   }, [path])
 
   const letterColor = extToColor(ext)
-  const hue = extToHue(ext)
-  const bgGradient = `linear-gradient(to right, #ffffff, hsl(${hue}, 30%, 95%))`
-  const hoverBgGradient = `linear-gradient(to right, #fafafa, hsl(${hue}, 25%, 92%))`
+  const { bg: bgGradient, hover: hoverBgGradient } = chipGradients(extToHue(ext))
   const name = getBaseName(path)
   const timeText = birthtime || dataTime
 
@@ -168,7 +180,7 @@ export function FileChipComponent(attrs: Record<string, any>): React.ReactElemen
           userSelect: 'none',
           verticalAlign: 'middle',
           transition: 'background 0.15s',
-          border: '1px solid #E6E6E6'
+          border: '1px solid var(--pm-chip-border)'
         }}
         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = hoverBgGradient }}
         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = bgGradient }}
@@ -191,14 +203,14 @@ export function FileChipComponent(attrs: Record<string, any>): React.ReactElemen
             whiteSpace: 'nowrap',
             fontSize: 13,
             fontWeight: 900,
-            color: '#000000'
+            color: 'var(--pm-ink)'
           }}>
             {name}
           </span>
           {timeText && (
             <span style={{
               fontSize: 11,
-              color: '#999',
+              color: 'var(--pm-text-muted)',
               marginTop: 2
             }}>
               {timeText}
@@ -233,9 +245,7 @@ function WebChip(attrs: Record<string, any>): React.ReactElement {
   const label = (attrs.dataLabel || attrs['data-label'] || '') as string
   const letter = 'W'
   const letterColor = extToColor('web')
-  const hue = extToHue('web')
-  const bgGradient = `linear-gradient(to right, #ffffff, hsl(${hue}, 30%, 95%))`
-  const hoverBgGradient = `linear-gradient(to right, #fafafa, hsl(${hue}, 25%, 92%))`
+  const { bg: bgGradient, hover: hoverBgGradient } = chipGradients(extToHue('web'))
 
   return (
     <Tooltip title={url}>
@@ -254,7 +264,7 @@ function WebChip(attrs: Record<string, any>): React.ReactElement {
           userSelect: 'none',
           verticalAlign: 'middle',
           transition: 'background 0.15s',
-          border: '1px solid #E6E6E6'
+          border: '1px solid var(--pm-chip-border)'
         }}
         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = hoverBgGradient }}
         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = bgGradient }}
@@ -276,14 +286,14 @@ function WebChip(attrs: Record<string, any>): React.ReactElement {
             whiteSpace: 'nowrap',
             fontSize: 13,
             fontWeight: 900,
-            color: '#000000'
+            color: 'var(--pm-ink)'
           }}>
             {domain}
           </span>
           {label && label !== domain && (
             <span style={{
               fontSize: 11,
-              color: '#999',
+              color: 'var(--pm-text-muted)',
               marginTop: 2,
               overflow: 'hidden',
               textOverflow: 'ellipsis',

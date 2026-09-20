@@ -112,7 +112,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
   const summarize = async (): Promise<void> => {
     if (!editing || summarizing) return
     if (!activeProfile?.baseURL || !activeProfile.model) {
-      notify.warning('请先在 设置 → LLM 设置 中配置模型')
+      notify.warning('请先在 设置 → 模型设置 中配置模型')
       return
     }
     setSummarizing(true)
@@ -223,7 +223,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
           <div style={{ marginBottom: 6, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span>
               项目概述
-              <span style={{ color: '#999', marginLeft: 4 }}>（选填，{PROJECT_OVERVIEW_MAX_LENGTH} 字以内）</span>
+              <span style={{ color: 'var(--pm-text-muted)', marginLeft: 4 }}>（选填，{PROJECT_OVERVIEW_MAX_LENGTH} 字以内）</span>
             </span>
             {editing && (
               <Button
@@ -250,7 +250,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
         {editing ? (
           <div>
             <div style={{ marginBottom: 6, fontSize: 13 }}>工作区（创建后不可修改）</div>
-            <code style={{ fontSize: 12, color: '#666', wordBreak: 'break-all' }}>{editing.workspaceDir}</code>
+            <code style={{ fontSize: 12, color: 'var(--pm-text-secondary)', wordBreak: 'break-all' }}>{editing.workspaceDir}</code>
           </div>
         ) : (
           <div>
@@ -264,7 +264,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
               />
               <Button icon={<FolderOpenOutlined />} onClick={pickDir} />
             </Space.Compact>
-            {dirError && <div style={{ marginTop: 6, fontSize: 12, color: '#ff4d4f' }}>{dirError}</div>}
+            {dirError && <div style={{ marginTop: 6, fontSize: 12, color: 'var(--pm-error-status)' }}>{dirError}</div>}
           </div>
         )}
       </div>

@@ -29,6 +29,9 @@ interface ToolTint {
 }
 
 const PRESET_LOOK: Record<string, { icon: IconComponent; tint: ToolTint }> = {
+// The tool-category tints are IDENTITY colors (like the file chip's hue): a
+// 0.14-alpha wash of the tool's own hue reads on both grounds, so they stay
+// literals rather than joining the theme sheet.
   calculator: { icon: CalculatorOutlined, tint: { fg: '#1677ff', bg: 'rgba(22,119,255,0.14)' } },
   'color-picker': { icon: BgColorsOutlined, tint: { fg: '#722ed1', bg: 'rgba(114,46,209,0.14)' } },
   'http-client': { icon: ApiOutlined, tint: { fg: '#08979c', bg: 'rgba(8,151,156,0.14)' } },

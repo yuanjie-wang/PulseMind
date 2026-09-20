@@ -81,7 +81,7 @@ function usePreviewFile(
 function ErrorCard({ missing, onRetry }: { missing: boolean; onRetry: () => void }): React.ReactElement {
   const { t } = useTranslation()
   return (
-    <div style={{ padding: 24, textAlign: 'center', color: '#999', fontSize: 13 }}>
+    <div style={{ padding: 24, textAlign: 'center', color: 'var(--pm-text-muted)', fontSize: 13 }}>
       <div style={{ marginBottom: 12 }}>{missing ? t('previewPane.notFound') : t('previewPane.loadError')}</div>
       <Button size="small" icon={<RefreshCw size={12} />} onClick={onRetry}>
         {t('previewPane.retry')}
@@ -103,10 +103,10 @@ function ConflictBanner({ path }: { path: string }): React.ReactElement {
         alignItems: 'center',
         gap: 8,
         padding: '6px 12px',
-        background: '#fff7e6',
-        borderBottom: '1px solid #ffd591',
+        background: 'var(--pm-warn-bg)',
+        borderBottom: '1px solid var(--pm-warn-border)',
         fontSize: 12,
-        color: '#d46b08',
+        color: 'var(--pm-warn)',
         flexShrink: 0,
       }}
     >
@@ -153,14 +153,14 @@ function OfficePreview({ path, kind }: { path: string; kind: FileKind }): React.
     return () => { alive = false }
   }, [path])
 
-  if (state === 'loading') return <div style={{ padding: 24, textAlign: 'center', color: '#bbb', fontSize: 12 }}>…</div>
+  if (state === 'loading') return <div style={{ padding: 24, textAlign: 'center', color: 'var(--pm-text-faint)', fontSize: 12 }}>…</div>
   if (state === 'error') return <FallbackCard path={path} kind={kind} />
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 16px' }}>
-        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12.5, lineHeight: 1.7, color: '#333', fontFamily: 'inherit' }}>{markdown}</pre>
+        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12.5, lineHeight: 1.7, color: 'var(--pm-text-strong)', fontFamily: 'inherit' }}>{markdown}</pre>
       </div>
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
       </div>
     </div>
@@ -238,7 +238,7 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
   if (!isPreviewable(kind)) return <FallbackCard path={path} kind={kind} />
 
   if (state.status === 'loading') {
-    return <div style={{ padding: 24, textAlign: 'center', color: '#bbb', fontSize: 12 }}>…</div>
+    return <div style={{ padding: 24, textAlign: 'center', color: 'var(--pm-text-faint)', fontSize: 12 }}>…</div>
   }
   if (state.status === 'missing' || state.status === 'error') {
     return <ErrorCard missing={state.status === 'missing'} onRetry={reload} />
@@ -265,7 +265,7 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
     const bytes = new TextEncoder().encode(state.text).length
     if (!isEditableSize(bytes)) {
       return (
-        <div style={{ padding: 24, textAlign: 'center', color: '#999', fontSize: 13 }}>
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--pm-text-muted)', fontSize: 13 }}>
           {t('previewPane.tooLarge')}
         </div>
       )

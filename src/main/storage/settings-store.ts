@@ -73,7 +73,10 @@ function readBrowserSettings(group: Record<string, unknown>): AppSettings['brows
 const FALLBACK_SETTINGS: AppSettings = {
   activeProfileId: '',
   profiles: [],
-  theme: 'light',
+  // Dark is the app's default look: only a brand-new install or a corrupt file
+  // lands here — existing settings.json files carry an explicit theme and keep
+  // it (PLAN-dark-mode M1; sidebar toggle default 2026-09-20).
+  theme: 'dark',
   myName: '',
   soul: '',
   yourName: '',
@@ -135,7 +138,7 @@ export class SettingsStore {
             ? (parsed.activeProfileId || profiles[0].id)
             : '',
           profiles,
-          theme: parsed.theme ?? 'light',
+          theme: parsed.theme ?? 'dark',
           myName: parsed.myName ?? '',
           soul: parsed.soul ?? '',
           yourName: parsed.yourName ?? '',

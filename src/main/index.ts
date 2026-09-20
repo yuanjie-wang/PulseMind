@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, nativeImage, protocol, powerMonitor, screen } from 'electron'
+import { app, BrowserWindow, shell, nativeImage, nativeTheme, protocol, powerMonitor, screen } from 'electron'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
@@ -15,6 +15,7 @@ import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { runLaunchHooks } from './hooks-runner'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
+import { resolveThemePreference } from '../shared/theme'
 import { installApplicationMenu, attachShortcutFallback } from './menu'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
 import { createTray, applyLaunchAtLogin } from './tray'
@@ -33,6 +34,29 @@ import { settingsStore } from './storage/settings-store'
 import { notifyResume } from './ipc/app.handler'
 
 let mainWindow: BrowserWindow | null = null
+
+// The resolved mode at window-creation time (PLAN-dark-mode M1). The window
+// background must match the theme the renderer will paint, or the first frames
+// flash the wrong ground; it is seeded from settings before createWindow and
+// re-set by the nativeTheme 'updated' listener when 'system' follows the OS.
+// Same values as palette's --pm-bg light/dark.
+let bootThemeMode: 'light' | 'dark' = 'light'
+const WINDOW_BACKGROUND = { light: '#ffffff', dark: '#141414' } as const
+
+/** Re-resolve the 'system' preference against the OS and repaint native chrome. */
+function applyNativeThemeChange(): void {
+  void settingsStore
+    .get()
+    .then((stored) => {
+      if (stored.theme !== 'system') return
+      bootThemeMode = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+      setTitleBarTheme(bootThemeMode, mainWindow)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setBackgroundColor(WINDOW_BACKGROUND[bootThemeMode])
+      }
+    })
+    .catch(() => {})
+}
 let splashWindow: BrowserWindow | null = null
 // Pending unresponsive-renderer recovery timer (see createWindow); module-level
 // so a re-created window's handler can clear a stale one.
@@ -354,7 +378,7 @@ function createWindow(): void {
     ...resolveWindowBounds(),
     ...resolveTitleBarOptions(),
     show: false,
-    backgroundColor: '#fff',
+    backgroundColor: WINDOW_BACKGROUND[bootThemeMode],
     icon: getResourcePath(process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -488,8 +512,16 @@ if (gotTheLock) {
   }
 
   // The caption button overlay colour follows the theme, and it has to be right at
-  // window creation — bootSettings below is read too late for that.
-  setTitleBarTheme((await settingsStore.get()).theme, null)
+  // window creation — bootSettings below is read too late for that. 'system'
+  // resolves against nativeTheme here; the renderer resolves the same preference
+  // against prefers-color-scheme for its own surfaces (PLAN-dark-mode M1).
+  bootThemeMode = resolveThemePreference(
+    (await settingsStore.get()).theme,
+    nativeTheme.shouldUseDarkColors
+  )
+  setTitleBarTheme(bootThemeMode, null)
+  // OS light/dark flips while running: only the 'system' preference reacts.
+  nativeTheme.on('updated', applyNativeThemeChange)
 
   createWindow()
   writeLog('INFO', 'startup: main window created')

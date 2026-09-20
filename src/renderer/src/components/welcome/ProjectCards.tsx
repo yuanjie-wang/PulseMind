@@ -34,17 +34,21 @@ import { DEFAULT_PROJECT_ID } from '../../../../shared/types/project'
 import type { Project } from '../../../../shared/types/project'
 import type { ConversationListItem } from '../../types/conversation'
 
-/** Soft surface shared with the chat-mode cards. */
-const CARD_BG = '#f7f7f8'
-const CARD_BG_HOVER = '#efeff1'
+/** Soft surface shared with the chat-mode cards. The values ride the theme
+ *  sheet (PLAN-dark-mode M3/T1): light is byte-identical to the old literals,
+ *  dark lifts the card above the ground instead of below it. */
+const CARD_BG = 'var(--pm-card-soft)'
+const CARD_BG_HOVER = 'var(--pm-card-soft-hover)'
 /** The meta row's action ink — the play button — and the ink of 立即开始, the
  *  prompt that stands in the row's text slot: label and button must read as one
  *  control, so they are one constant rather than two literals that happen to
  *  agree. A quote is darker (QUOTE_INK): it is the user's own words, not a
  *  prompt, and the button is the action on it. */
-const ACTION_INK = '#999'
-const ACTION_INK_HOVER = '#666'
-const QUOTE_INK = '#888'
+const ACTION_INK = 'var(--pm-text-muted)'
+const ACTION_INK_HOVER = 'var(--pm-text-secondary)'
+const QUOTE_INK = 'var(--pm-text-quiet)'
+/** The dashed create/empty card's recipe. */
+const DASH_BORDER = 'var(--pm-dash-border)'
 /** Selection wears the project's identity color (the stored `colorHue`, see
  *  `projectHue`) as a diagonal wash, chip-style: near-white at one corner
  *  deepening into the hue at the other — livelier than a flat fill. Hover
@@ -132,7 +136,7 @@ function MetaLine({
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
     >
-      {time && <span style={{ flexShrink: 0, color: '#bbb' }}>{time}：</span>}
+      {time && <span style={{ flexShrink: 0, color: 'var(--pm-text-faint)' }}>{time}：</span>}
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{text}</span>
       <Tooltip title={playHint}>
         <Button
@@ -226,11 +230,11 @@ export function ProjectCards({
             padding: '8px 0 10px',
             fontSize: 15,
             fontWeight: 600,
-            color: '#333',
+            color: 'var(--pm-text-strong)',
           }}
         >
           {t('welcome.pickProjectTitle')}
-          <ArrowRightOutlined style={{ fontSize: 13, color: '#999' }} />
+          <ArrowRightOutlined style={{ fontSize: 13, color: 'var(--pm-text-muted)' }} />
           {/* Trailing action of the row: the column's right edge is the flex
             content edge, so the pill lines up with the cards below it. */}
           <button
@@ -251,16 +255,16 @@ export function ProjectCards({
               borderRadius: 999,
               fontSize: 13,
               fontWeight: 500,
-              color: '#888',
+              color: 'var(--pm-text-quiet)',
               transition: 'background 0.15s, color 0.15s',
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = CARD_BG
-              e.currentTarget.style.color = '#333'
+              e.currentTarget.style.color = 'var(--pm-text-strong)'
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = 'transparent'
-              e.currentTarget.style.color = '#888'
+              e.currentTarget.style.color = 'var(--pm-text-quiet)'
             }}
           >
             <PlusOutlined style={{ fontSize: 12 }} />
@@ -302,7 +306,7 @@ export function ProjectCards({
                 onClick={() => setModalOpen(true)}
                 style={{
                   gridColumn: 'span 3',
-                  border: '1px dashed #c8c8cc',
+                  border: `1px dashed ${DASH_BORDER}`,
                   borderRadius: 16,
                   padding: '18px 20px 16px',
                   boxSizing: 'border-box',
@@ -317,19 +321,19 @@ export function ProjectCards({
                   justifyContent: 'center',
                   alignItems: 'center',
                   gap: 6,
-                  color: '#666',
+                  color: 'var(--pm-text-secondary)',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = '#666'
-                  e.currentTarget.style.color = '#444'
+                  e.currentTarget.style.borderColor = 'var(--pm-text-secondary)'
+                  e.currentTarget.style.color = 'var(--pm-row-ink)'
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = '#c8c8cc'
-                  e.currentTarget.style.color = '#666'
+                  e.currentTarget.style.borderColor = DASH_BORDER
+                  e.currentTarget.style.color = 'var(--pm-text-secondary)'
                 }}
               >
                 <div style={{ fontSize: 16, fontWeight: 600 }}>{t('welcome.createProjectNow')}</div>
-                <div style={{ fontSize: 13, lineHeight: '19px', color: '#999' }}>{t('welcome.noProjectsHint')}</div>
+                <div style={{ fontSize: 13, lineHeight: '19px', color: 'var(--pm-text-muted)' }}>{t('welcome.noProjectsHint')}</div>
               </button>
             ) : (
               /* The create card — the last cell whenever projects are listed.
@@ -344,7 +348,7 @@ export function ProjectCards({
                 data-action="create-project"
                 onClick={() => setModalOpen(true)}
                 style={{
-                  border: '1px dashed #c8c8cc',
+                  border: `1px dashed ${DASH_BORDER}`,
                   borderRadius: 16,
                   padding: CARD_PADDING,
                   boxSizing: 'border-box',
@@ -358,15 +362,15 @@ export function ProjectCards({
                   justifyContent: 'center',
                   gap: 8,
                   fontSize: 14,
-                  color: '#888',
+                  color: 'var(--pm-text-quiet)',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = '#666'
-                  e.currentTarget.style.color = '#444'
+                  e.currentTarget.style.borderColor = 'var(--pm-text-secondary)'
+                  e.currentTarget.style.color = 'var(--pm-row-ink)'
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = '#c8c8cc'
-                  e.currentTarget.style.color = '#888'
+                  e.currentTarget.style.borderColor = DASH_BORDER
+                  e.currentTarget.style.color = 'var(--pm-text-quiet)'
                 }}
               >
                 <PlusOutlined />
@@ -525,7 +529,7 @@ function ProjectCard({
               minWidth: 0,
               fontSize: 16,
               fontWeight: 600,
-              color: '#333',
+              color: 'var(--pm-text-strong)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -557,11 +561,11 @@ function ProjectCard({
                 background: 'transparent',
                 borderRadius: 4,
                 cursor: 'pointer',
-                color: '#999',
+                color: 'var(--pm-text-muted)',
                 padding: 0,
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = '#333'; e.currentTarget.style.background = 'rgba(0,0,0,0.06)' }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = '#999'; e.currentTarget.style.background = 'transparent' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--pm-text-strong)'; e.currentTarget.style.background = 'var(--pm-hover)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--pm-text-muted)'; e.currentTarget.style.background = 'transparent' }}
             >
               <EditOutlined style={{ fontSize: 13 }} />
             </button>

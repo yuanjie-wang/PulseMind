@@ -3,7 +3,9 @@
 // 专家 / 技能 / 连接器 so the grid rhythm, hover, head/divider and action order
 // cannot drift — the previous Collapse-list shape was the one skeleton the
 // center's unification pass (P1) missed. Category section headers survive, since
-// 38 tools across 9 categories are more navigable grouped than as one flat grid.
+// dozens of tools across 8 categories are more navigable grouped than as one
+// flat grid. (The extension-only page_* family is not a category here — it is
+// not registered in the desktop registry at all, so there is nothing to manage.)
 
 import React, { useState } from 'react'
 import { Tag, Typography } from 'antd'
@@ -36,11 +38,10 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   memory: <DatabaseOutlined />,
   knowledge: <ReadOutlined />,
   git: <BranchesOutlined />,
-  page: <GlobalOutlined />,
   experience: <TrophyOutlined />
 }
 
-const CATEGORY_ORDER = ['file', 'system', 'browser', 'page', 'interaction', 'memory', 'knowledge', 'experience', 'git']
+const CATEGORY_ORDER = ['file', 'system', 'browser', 'interaction', 'memory', 'knowledge', 'experience', 'git']
 
 interface ToolsPanelProps {
   tools: ToolState[]
@@ -57,7 +58,6 @@ function ToolsPanel({
     file: t('tools.categories.file'),
     system: t('tools.categories.system'),
     browser: t('tools.categories.browser'),
-    page: t('tools.categories.page'),
     interaction: t('tools.categories.interaction'),
     memory: t('tools.categories.memory'),
     knowledge: t('tools.categories.knowledge'),
@@ -163,7 +163,7 @@ function BuiltInToolCard({ tool, onToggle }: ToolCardProps): React.ReactElement 
           fontSize: 12,
           margin: 0,
           lineHeight: '1.4',
-          color: '#888'
+          color: 'var(--pm-text-quiet)'
         }}
         ellipsis={!expanded ? { rows: 2, expandable: false } : false}
       >
@@ -175,7 +175,7 @@ function BuiltInToolCard({ tool, onToggle }: ToolCardProps): React.ReactElement 
           style={{
             marginTop: 8,
             padding: 8,
-            background: '#fafafa',
+            background: 'var(--pm-wash)',
             borderRadius: 6,
             fontSize: 12,
             maxHeight: 200,

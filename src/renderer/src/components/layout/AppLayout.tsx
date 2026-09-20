@@ -61,6 +61,28 @@ function PanelRightIcon({ size = 16, filled = false }: { size?: number; filled?:
   )
 }
 
+// Theme-toggle glyphs, hand-drawn in the same stroke idiom as PanelRightIcon
+// above (@ant-design/icons has a moon but no sun, and one borrowed filled
+// glyph beside one drawn outline would read as two different families).
+// The button shows the mode the click LEADS TO: sun while dark, moon while
+// light — the toggle advertises the state it switches into.
+function SunIcon({ size = 16 }: { size?: number }): React.ReactElement {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+    </svg>
+  )
+}
+
+function MoonIcon({ size = 16 }: { size?: number }): React.ReactElement {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  )
+}
+
 // The OS draws the window controls over the app's own top bar — macOS traffic lights
 // at its left, Windows/Linux caption buttons at its right — because the window is
 // created with titleBarStyle 'hidden'. The top bar reserves the room those controls
@@ -84,8 +106,9 @@ const SIDEBAR_TITLE_PADDING_TOP = SIDEBAR_TOP_BAND_HEIGHT > 0 ? 10 : 30
 
 // The sidebar's wash: cool grey at the top easing to neutral grey at the bottom,
 // painted on the Sider itself. `.ant-layout-sider-children` below must stay
-// transparent — it spans the full Sider, so a fill there would flatten the gradient.
-const SIDEBAR_BACKGROUND = 'linear-gradient(180deg, #f5f7fa 0%, #f0f0f0 100%)'
+// transparent — it spans the full Sider, so a fill there would flatten the
+// gradient. The gradient itself lives in palette.ts (--pm-sidebar, both modes).
+const SIDEBAR_BACKGROUND = 'var(--pm-sidebar)'
 
 // With the sidebar collapsed the header starts at the window's left edge, where the
 // window controls sit, so its content has to clear them.
@@ -178,6 +201,17 @@ function AppLayout({
   const changeProjectSort = (mode: ProjectSortMode): void => {
     if (mode === projectSortMode || settingsLoading) return
     void saveSettings({ ...settings, projectSortMode: mode })
+  }
+
+  // The sidebar's 浅色/深色 toggle acts on the RESOLVED mode (`useThemeMode`
+  // follows a `system` preference too) and writes the opposite concrete
+  // preference — same field the environment settings' 外观 radio edits, so the
+  // two surfaces cannot disagree. The settingsLoading guard is changeProjectSort's:
+  // a click that races the initial load must not persist DEFAULT_SETTINGS.
+  const themeMode = useThemeMode()
+  const toggleTheme = (): void => {
+    if (settingsLoading) return
+    void saveSettings({ ...settings, theme: themeMode === 'dark' ? 'light' : 'dark' })
   }
 
   const canCreateNew = autoCleanup || totalSessions < MAX_SESSIONS
@@ -426,9 +460,9 @@ function AppLayout({
           WebkitAppRegion: 'drag'
         } as React.CSSProperties}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigate({ kind: 'settings', settingsTab: 'about' })}>
-            <span style={{ fontSize: FONT_SIZE.xl, fontWeight: FONT_WEIGHT.semibold, color: INK }}>{t('appLayout.title')}</span>
+            <span style={{ fontSize: FONT_SIZE.xl, fontWeight: FONT_WEIGHT.semibold, color: 'var(--pm-ink)' }}>{t('appLayout.title')}</span>
             {/* Version rides the Vite `define` global (package.json's version). */}
-            <span style={{ fontSize: FONT_SIZE.sm, fontWeight: FONT_WEIGHT.medium, color: TEXT_MUTED, lineHeight: 1 }}>v{__APP_VERSION__}</span>
+            <span style={{ fontSize: FONT_SIZE.sm, fontWeight: FONT_WEIGHT.medium, color: 'var(--pm-text-muted)', lineHeight: 1 }}>v{__APP_VERSION__}</span>
           </div>
         </div>
         <SidebarNav canCreateNew={canCreateNew} onCreateNew={handleNewTask} />
@@ -490,7 +524,7 @@ function AppLayout({
           <div className="auto-hide-scroll" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
             {listTab === 'chats' ? (
               looseConversations.length === 0 ? (
-                <div style={{ padding: '16px 0', color: TEXT_MUTED, fontSize: FONT_SIZE.sm, textAlign: 'center' }}>
+                <div style={{ padding: '16px 0', color: 'var(--pm-text-muted)', fontSize: FONT_SIZE.sm, textAlign: 'center' }}>
                   {t('appLayout.noConversations')}
                 </div>
               ) : (
@@ -523,12 +557,22 @@ function AppLayout({
             )}
           </div>
         </div>
-        <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 4, borderTop: `1px solid ${BORDER_HAIRLINE}` }}>
-          {/* Bottom entries navigate to standard views (the former modal/drawers).
-              用量/关于 stay left, 设置 pins right via the auto margin. */}
+        <div style={{ padding: '4px 8px 8px', display: 'flex', gap: 4, borderTop: '1px solid var(--pm-border-hairline)' }}>
+          {/* Bottom entries: the theme toggle owns the left edge; the standard
+              views (用量 / 设置) pin right via the auto margin on the first of them. */}
+          <Tooltip title={themeMode === 'dark' ? t('appLayout.themeToLight') : t('appLayout.themeToDark')}>
+            <Button
+              type="text"
+              className="sidebar-icon-btn"
+              aria-label={themeMode === 'dark' ? t('appLayout.themeToLight') : t('appLayout.themeToDark')}
+              icon={themeMode === 'dark' ? <SunIcon size={16} /> : <MoonIcon size={16} />}
+              onClick={toggleTheme}
+            />
+          </Tooltip>
           <Tooltip title={t('sessionManager.statsTooltip')}>
             <Button
               type="text"
+              style={{ marginLeft: 'auto' }}
               className={`sidebar-icon-btn${view.kind === 'usage' ? ' active-mode-btn' : ''}`}
               aria-label={t('sessionManager.statsTooltip')}
               icon={<BarChartOutlined style={{ fontSize: 16 }} />}
@@ -538,7 +582,6 @@ function AppLayout({
           <Tooltip title={t('menu.settings')}>
             <Button
               type="text"
-              style={{ marginLeft: 'auto' }}
               className={`sidebar-icon-btn${view.kind === 'settings' ? ' active-mode-btn' : ''}`}
               aria-label={t('menu.settings')}
               icon={<SettingOutlined style={{ fontSize: 16 }} />}
@@ -581,7 +624,7 @@ function AppLayout({
                 style={{
                   fontSize: FONT_SIZE.lg,
                   fontWeight: FONT_WEIGHT.semibold,
-                  color: TEXT,
+                  color: 'var(--pm-text)',
                   minWidth: 0,
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
@@ -716,7 +759,7 @@ function AppLayout({
           background: transparent !important;
           border: none !important;
           box-shadow: none !important;
-          color: #000 !important;
+          color: var(--pm-ink) !important;
           display: flex !important;
           justify-content: flex-start !important;
           align-items: center !important;
@@ -726,10 +769,10 @@ function AppLayout({
           padding-left: 8px !important;
         }
         .new-chat-btn:hover {
-          background: rgba(0, 5, 10, 0.06) !important;
+          background: var(--pm-veil) !important;
         }
         .new-chat-btn.active-mode-btn {
-          background: rgba(0, 5, 10, 0.08) !important;
+          background: var(--pm-veil-strong) !important;
         }
         .new-chat-btn .ant-btn-icon {
           margin-inline-end: 4px !important;
@@ -740,18 +783,18 @@ function AppLayout({
           background: transparent !important;
           border: none !important;
           box-shadow: none !important;
-          color: #000 !important;
+          color: var(--pm-ink) !important;
           width: 32px !important;
           height: 32px !important;
           padding: 0 !important;
           border-radius: 6px !important;
         }
         .sidebar-icon-btn:hover {
-          background: rgba(0, 5, 10, 0.06) !important;
+          background: var(--pm-veil) !important;
         }
         /* The open view (settings/usage/about) keeps its entry highlighted. */
         .sidebar-icon-btn.active-mode-btn {
-          background: rgba(0, 5, 10, 0.08) !important;
+          background: var(--pm-veil-strong) !important;
         }
 
         /* History area switcher: a shared light-gray pill track, sized to the
@@ -761,14 +804,14 @@ function AppLayout({
           align-items: center;
           margin: 10px 12px 6px;
           padding: 2px;
-          background: rgba(0, 0, 0, 0.06);
+          background: var(--pm-hover);
           border-radius: 999px;
         }
         .sidebar-list-tab {
           background: transparent !important;
           border: none !important;
           box-shadow: none !important;
-          color: #666 !important;
+          color: var(--pm-text-secondary) !important;
           font-weight: 600 !important;
           font-size: 13px !important;
           height: 24px !important;
@@ -777,12 +820,12 @@ function AppLayout({
         }
         .sidebar-list-tab:hover {
           background: transparent !important;
-          color: #000 !important;
+          color: var(--pm-ink) !important;
         }
         .sidebar-list-tab.on,
         .sidebar-list-tab.on:hover {
-          color: #fff !important;
-          background: #000 !important;
+          color: var(--pm-ink-contrast) !important;
+          background: var(--pm-ink) !important;
         }
 
         /* Switcher-row actions (管理 / 新增): quiet icon buttons that match the
@@ -791,7 +834,7 @@ function AppLayout({
           background: transparent !important;
           border: none !important;
           box-shadow: none !important;
-          color: #666 !important;
+          color: var(--pm-text-secondary) !important;
           width: 26px !important;
           height: 26px !important;
           padding: 0 !important;
@@ -801,11 +844,11 @@ function AppLayout({
           margin-inline-end: 0 !important;
         }
         .sidebar-list-action:hover {
-          background: rgba(0, 0, 0, 0.06) !important;
-          color: #000 !important;
+          background: var(--pm-hover) !important;
+          color: var(--pm-ink) !important;
         }
         .sidebar-list-action:disabled {
-          color: #ccc !important;
+          color: var(--pm-text-disabled) !important;
         }
 
         /* Title bar's side-window toggle: a borderless icon right of the title.
@@ -815,7 +858,7 @@ function AppLayout({
           background: transparent !important;
           border: none !important;
           box-shadow: none !important;
-          color: #999 !important;
+          color: var(--pm-text-muted) !important;
           width: 28px !important;
           height: 28px !important;
           padding: 0 !important;
@@ -826,23 +869,23 @@ function AppLayout({
         }
         .header-pane-btn:hover {
           background: transparent !important;
-          color: #000 !important;
+          color: var(--pm-ink) !important;
         }
         .header-pane-btn.on,
         .header-pane-btn.on:hover {
           background: transparent !important;
-          color: #000 !important;
+          color: var(--pm-ink) !important;
         }
 
         .settings-scroll::-webkit-scrollbar {
           width: 6px;
         }
         .settings-scroll::-webkit-scrollbar-thumb {
-          background: #d0d0d0;
+          background: var(--pm-scrollbar);
           border-radius: 3px;
         }
         .settings-scroll::-webkit-scrollbar-thumb:hover {
-          background: #b0b0b0;
+          background: var(--pm-scrollbar-active);
         }
 
         .knowledge-header-tabs {
@@ -852,13 +895,13 @@ function AppLayout({
           margin-bottom: 0 !important;
         }
         .knowledge-header-tabs > .ant-tabs-nav .ant-tabs-tab-active .ant-tabs-tab-btn {
-          color: #000 !important;
+          color: var(--pm-ink) !important;
         }
         .knowledge-header-tabs > .ant-tabs-nav .ant-tabs-tab:hover .ant-tabs-tab-btn {
-          color: #000 !important;
+          color: var(--pm-ink) !important;
         }
         .knowledge-header-tabs > .ant-tabs-nav .ant-tabs-ink-bar {
-          background: #000 !important;
+          background: var(--pm-ink) !important;
         }
 
         /* Centers switcher: plain text buttons, the active one black with white
@@ -867,18 +910,18 @@ function AppLayout({
           background: transparent !important;
           border: none !important;
           box-shadow: none !important;
-          color: #333 !important;
+          color: var(--pm-text-strong) !important;
           font-weight: 600 !important;
           height: 30px !important;
           padding: 0 12px !important;
         }
         .centers-switch-btn:hover {
-          background: rgba(0, 0, 0, 0.06) !important;
-          color: #000 !important;
+          background: var(--pm-hover) !important;
+          color: var(--pm-ink) !important;
         }
         .centers-switch-btn.active-mode-btn {
-          background: #000 !important;
-          color: #fff !important;
+          background: var(--pm-ink) !important;
+          color: var(--pm-ink-contrast) !important;
         }
       `}</style>
     </Layout>

@@ -13,20 +13,20 @@ export function PromptChip({ label, onClick }: { label: string; onClick: () => v
       style={{
         padding: '6px 16px',
         borderRadius: 999,
-        border: '1px solid #e5e5e7',
+        border: '1px solid var(--pm-prompt-pill-border)',
         fontSize: 13,
-        color: '#555',
+        color: 'var(--pm-text-body)',
         cursor: 'pointer',
         userSelect: 'none',
         transition: 'border-color 0.15s, color 0.15s',
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = '#000'
-        e.currentTarget.style.color = '#000'
+        e.currentTarget.style.borderColor = 'var(--pm-ink)'
+        e.currentTarget.style.color = 'var(--pm-ink)'
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = '#e5e5e7'
-        e.currentTarget.style.color = '#555'
+        e.currentTarget.style.borderColor = 'var(--pm-prompt-pill-border)'
+        e.currentTarget.style.color = 'var(--pm-text-body)'
       }}
     >
       {label}

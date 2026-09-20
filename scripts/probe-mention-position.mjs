@@ -56,11 +56,20 @@ const EXPERTS = [
 const HARNESS = `
 import { createRoot } from 'react-dom/client'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 import { InputArea } from './src/renderer/src/components/chat/InputArea'
 
 // knowledgeListBases must answer an array: the @-popup's knowledge-base
 // section setKnowledgeBases(es) the answer verbatim, and the fallback
 // undefined would blank the list and throw on .slice.
+// main.tsx's boot, in order: the variable sheet, then the attribute. The chat's
+// migrated surfaces read var(--pm-*), and an unset variable resolves to nothing
+// (transparent / inherited) — so a probe that measures them without the sheet is
+// measuring a page the app never renders (PLAN-dark-mode D7: the helper ships in
+// the same change as the migration, not after it).
+installThemeVars()
+applyThemeAttr('light')
+
 window.electronAPI = new Proxy({}, { get: (_t, key) => () => Promise.resolve(key === 'expertList' ? ${JSON.stringify(EXPERTS)} : key === 'knowledgeListBases' ? [] : undefined) })
 
 function Case({ id, layout, topSlot }) {

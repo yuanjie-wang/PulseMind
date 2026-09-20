@@ -39,7 +39,7 @@ function AgentSettings({ open, onClose, inline }: AgentSettingsProps): React.Rea
 
   const formContent = (
     <>
-      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>{t('agentDrawer.title')}</Text>
+      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>{t('agentDrawer.title')}</Text>
       <Space orientation="vertical" size="large" style={{ width: '100%' }}>
       {/* My Name */}
       <div>

@@ -33,7 +33,7 @@ const ACTION_SLOT_WIDTH = 72
 /** Section header of a time group — the routine center's bucket-label recipe
  *  (11px grey small caps), so the app's two grouping surfaces read alike. */
 const GROUP_HEADER_STYLE: React.CSSProperties = {
-  fontSize: 11, color: '#999', fontWeight: 600,
+  fontSize: 11, color: 'var(--pm-text-muted)', fontWeight: 600,
   padding: '9px 8px 4px', textTransform: 'uppercase', letterSpacing: 0.3,
   userSelect: 'none'
 }
@@ -150,7 +150,7 @@ function ConversationRow({
         display: 'flex', alignItems: 'center', gap: 6,
         padding: '5px 8px', marginBottom: 2, borderRadius: 6, cursor: 'pointer', userSelect: 'none',
         transition: 'background 0.2s',
-        background: active ? 'rgba(0, 0, 0, 0.08)' : hovered ? 'rgba(0, 0, 0, 0.06)' : 'transparent'
+        background: active ? 'var(--pm-hover-strong)' : hovered ? 'var(--pm-hover)' : 'transparent'
       }}
     >
       {/* The light sits in a reserved gutter rather than in the flow, so a running task
@@ -159,12 +159,12 @@ function ConversationRow({
         {light && (
           <span style={{
             width: 6, height: 6, borderRadius: '50%',
-            background: light === 'retrying' ? '#faad14' : '#1677ff',
+            background: light === 'retrying' ? 'var(--pm-gold-accent)' : 'var(--pm-link)',
             animation: light === 'retrying' ? 'none' : 'ant-status-processing 1.2s infinite ease-in-out'
           }} />
         )}
       </span>
-      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#444', fontSize: 14, lineHeight: '20px' }}>
+      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--pm-row-ink)', fontSize: 14, lineHeight: '20px' }}>
         {label}
       </span>
       {/* Idle: the relative time (plus the pin for pinned rows) at the row's right.
@@ -176,16 +176,16 @@ function ConversationRow({
           <Dropdown open={menuOpen} onOpenChange={onMenuOpenChange} menu={menu} trigger={['hover']}>
             <span
               onClick={(e) => e.stopPropagation()}
-              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, borderRadius: 4, color: '#999', fontSize: 14, cursor: 'pointer' }}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, borderRadius: 4, color: 'var(--pm-text-muted)', fontSize: 14, cursor: 'pointer' }}
             >
               <EllipsisOutlined />
             </span>
           </Dropdown>
         ) : (
           <>
-            {pinned && <PushpinOutlined style={{ fontSize: 13, color: '#bbb', flexShrink: 0 }} />}
+            {pinned && <PushpinOutlined style={{ fontSize: 13, color: 'var(--pm-text-faint)', flexShrink: 0 }} />}
             {timeText && (
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#999', fontSize: 11, lineHeight: '15px' }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--pm-text-muted)', fontSize: 11, lineHeight: '15px' }}>
                 {timeText}
               </span>
             )}

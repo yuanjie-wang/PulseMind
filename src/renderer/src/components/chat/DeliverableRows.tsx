@@ -86,7 +86,7 @@ export function DeliverableRows({
         ...(fill ? { flex: 1, minHeight: 0 } : { maxHeight: ROW_HEIGHT * visibleRows }),
         overflowY: 'auto',
         padding: '0 6px 4px',
-        borderTop: '1px solid #f0f1f4'
+        borderTop: '1px solid var(--pm-tile-soft)'
       }}
     >
       {deliverable.rows.map((row) => {
@@ -112,7 +112,7 @@ export function DeliverableRows({
               borderRadius: 6,
               cursor: 'pointer',
               fontSize: 12,
-              color: '#444'
+              color: 'var(--pm-row-ink)'
             }}
           >
             <span
@@ -121,8 +121,8 @@ export function DeliverableRows({
                 width: 30,
                 height: 16,
                 borderRadius: 4,
-                background: '#f0f1f4',
-                color: '#777',
+                background: 'var(--pm-tile-soft)',
+                color: 'var(--pm-text-dim)',
                 fontSize: 9,
                 fontWeight: 600,
                 display: 'inline-flex',
@@ -140,8 +140,8 @@ export function DeliverableRows({
                   flexShrink: 0,
                   padding: '1px 6px',
                   borderRadius: 4,
-                  background: '#e8f0e8',
-                  color: '#2e7d32',
+                  background: 'var(--pm-tag-success-bg)',
+                  color: 'var(--pm-tag-success-ink)',
                   fontSize: 10,
                   fontWeight: 600
                 }}
@@ -149,7 +149,7 @@ export function DeliverableRows({
                 {badge}
               </span>
             )}
-            <span style={{ flexShrink: 0, color: '#999', fontSize: 11, display: 'inline-flex', gap: 6 }}>
+            <span style={{ flexShrink: 0, color: 'var(--pm-text-muted)', fontSize: 11, display: 'inline-flex', gap: 6 }}>
               {[...opCounts].map(([tool, count]) => (
                 <span key={tool}>
                   {toolDisplayName(tool, t)} ×{count}
@@ -158,20 +158,20 @@ export function DeliverableRows({
             </span>
             <span style={{ flex: 1 }} />
             {fromChild && (
-              <span style={{ flexShrink: 0, color: '#999', fontSize: 11 }}>
+              <span style={{ flexShrink: 0, color: 'var(--pm-text-muted)', fontSize: 11 }}>
                 {t('deliverables.from', {
                   name: titleByConv.get(row.fromConvIds[0]) ?? row.fromConvIds[0]
                 })}
               </span>
             )}
-            <span className="pm-dl-preview" style={{ flexShrink: 0, color: '#1a73e8', fontSize: 11, visibility: 'hidden' }}>
+            <span className="pm-dl-preview" style={{ flexShrink: 0, color: 'var(--pm-link-preview)', fontSize: 11, visibility: 'hidden' }}>
               {t('deliverables.preview')}
             </span>
           </div>
         )
       })}
       <style>{`
-        .pm-dl-row:hover { background: #f5f6f8; }
+        .pm-dl-row:hover { background: var(--pm-tile-hover); }
         .pm-dl-row:hover .pm-dl-preview { visibility: visible !important; }
       `}</style>
     </div>

@@ -135,7 +135,7 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
 
   const body = (
     <>
-      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>{t('memoryDrawer.title')}</Text>
+      <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>{t('memoryDrawer.title')}</Text>
 
       {/* ── Master switch (设置 → 记忆) ── */}
       <FeatureSwitch
@@ -239,7 +239,7 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
                   <Tag style={{ marginInlineEnd: 0 }}>{TYPE_LABELS[item.type] || item.type}</Tag>
                 </Space>
                 <Space size={0} style={{ flexShrink: 0 }}>
-                  <Button type="text" size="small" icon={<CopyOutlined style={{ color: '#bbb' }} />} onClick={() => {
+                  <Button type="text" size="small" icon={<CopyOutlined style={{ color: 'var(--pm-text-faint)' }} />} onClick={() => {
                     navigator.clipboard.writeText(item.content)
                     notify.success(t('common.copy'))
                   }} />
@@ -250,7 +250,7 @@ function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettings
                     okButtonProps={{ danger: true }}
                     cancelText={t('memoryDrawer.deleteCancel')}
                   >
-                    <Button type="text" size="small" icon={<DeleteOutlined style={{ color: '#bbb' }} />} />
+                    <Button type="text" size="small" icon={<DeleteOutlined style={{ color: 'var(--pm-text-faint)' }} />} />
                   </Popconfirm>
                 </Space>
               </div>

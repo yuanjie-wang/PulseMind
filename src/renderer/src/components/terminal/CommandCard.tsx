@@ -104,11 +104,11 @@ function AskUserChoices({
     return (
       <>
         {/* Prompt */}
-        <div style={{ color: '#000', marginBottom: 10, fontSize: 14, lineHeight: 1.6 }}>
+        <div style={{ color: 'var(--pm-ink)', marginBottom: 10, fontSize: 14, lineHeight: 1.6 }}>
           {prompt}
         </div>
         {block.output && (
-          <div style={{ color: '#999', marginBottom: 4, fontSize: 13 }}>
+          <div style={{ color: 'var(--pm-text-muted)', marginBottom: 4, fontSize: 13 }}>
             <CheckCircleOutlined style={{ marginRight: 6 }} />
             {t('commandCard.selected', { value: block.output })}
           </div>
@@ -120,7 +120,7 @@ function AskUserChoices({
   if (block.status === 'rejected') {
     return (
       <>
-        <div style={{ color: '#000', marginBottom: 10, fontSize: 14, lineHeight: 1.6 }}>
+        <div style={{ color: 'var(--pm-ink)', marginBottom: 10, fontSize: 14, lineHeight: 1.6 }}>
           {prompt}
         </div>
         <Text style={{ color: '#f44747', fontSize: 12 }}><CloseOutlined style={{marginRight:4,fontSize:12}} />{t('commandCard.skippedByUser')}</Text>
@@ -132,7 +132,7 @@ function AskUserChoices({
   return (
     <>
       {/* Prompt */}
-      <div style={{ color: '#000', marginBottom: 12, fontSize: 14, lineHeight: 1.6 }}>
+      <div style={{ color: 'var(--pm-ink)', marginBottom: 12, fontSize: 14, lineHeight: 1.6 }}>
         {prompt}
       </div>
 
@@ -156,10 +156,10 @@ function AskUserChoices({
                 padding: '4px 16px',
                 fontSize: 13,
                 borderRadius: 4,
-                border: '1px solid #d9d9d9',
+                border: '1px solid var(--pm-border)',
                 cursor: 'pointer',
-                color: selected.has(choice) ? '#fff' : '#000',
-                background: selected.has(choice) ? '#1677ff' : '#fff'
+                color: selected.has(choice) ? 'var(--pm-ink-contrast)' : 'var(--pm-ink)',
+                background: selected.has(choice) ? 'var(--pm-link)' : 'var(--pm-elevated)'
               }}
             >
               {choice}
@@ -169,9 +169,9 @@ function AskUserChoices({
               key={choice}
               size="small"
               style={{
-                color: '#000',
-                borderColor: '#d9d9d9',
-                background: '#fff'
+                color: 'var(--pm-ink)',
+                borderColor: 'var(--pm-border)',
+                background: 'var(--pm-elevated)'
               }}
               onClick={() => onToolResponse?.(block.id, choice)}
             >
@@ -363,7 +363,11 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
   }, [block.output])
 
   return (
-    <div style={isAskUser ? { ...cardStyle, background: '#f5f5f5', color: '#000' } : cardStyle}>
+    // ask_user is not a terminal card: it asks a question in the chat's own
+    // voice, so it takes the message layer's surfaces while every other tool
+    // keeps the terminal skin (PLAN-dark-mode M2/T2 — the terminal body does
+    // not follow the theme).
+    <div style={isAskUser ? { ...cardStyle, background: 'var(--pm-fill)', color: 'var(--pm-ink)' } : cardStyle}>
 
       {/* Header */}
       <div style={headerStyle}>
@@ -373,12 +377,12 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
           ) : block.status === 'running' && !isAskUser ? (
             <Spin indicator={<LoadingOutlined style={{ fontSize: 16, color: '#1677ff' }} />} />
           ) : isAskUser ? (
-            <CommentOutlined style={{color:'#666'}} />
+            <CommentOutlined style={{color:'var(--pm-text-secondary)'}} />
           ) : (
             <SettingOutlined style={{color:'#999'}} />
           )}
         </span>
-        <Text strong style={{ color: isAskUser ? '#000' : '#e0e0e0', fontSize: 13 }}>
+        <Text strong style={{ color: isAskUser ? 'var(--pm-ink)' : '#e0e0e0', fontSize: 13 }}>
           {isStreaming
             ? t('commandCard.generating')
             : block.status === 'running' && !isAskUser

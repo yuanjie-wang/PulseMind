@@ -32,7 +32,7 @@ const ICON_BUTTON: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   borderRadius: 6,
-  color: '#666',
+  color: 'var(--pm-text-secondary)',
   flexShrink: 0,
   cursor: 'pointer',
 }
@@ -228,13 +228,13 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
         height: '100%',
         // 面板底色统一为白（用户裁定 2026-09-17）：两条 chrome 行本就 #fff，
         // 这里原来是 #f7f8fa，只在折叠态（空态/无页面）露出来。
-        background: '#fff',
+        background: 'var(--pm-bg)',
         display: 'flex',
         flexDirection: 'column',
       }}
     >
       {/* 滚动条隐藏写不了内联伪元素——组件自带一小段 style（Composer 先例）。 */}
-      <style>{`.pm-pane-tabstrip { scrollbar-width: none; } .pm-pane-tabstrip::-webkit-scrollbar { display: none; } .pm-pane-empty-item:hover { background: #ececf0; }`}</style>
+      <style>{`.pm-pane-tabstrip { scrollbar-width: none; } .pm-pane-tabstrip::-webkit-scrollbar { display: none; } .pm-pane-empty-item:hover { background: var(--pm-separator-faint); }`}</style>
       {/* Tab strip (32px) */}
       <div
         style={{
@@ -244,8 +244,8 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
           alignItems: 'center',
           gap: 4,
           padding: '0 6px 0 12px',
-          borderBottom: '1px solid #ececf0',
-          background: '#fff',
+          borderBottom: '1px solid var(--pm-separator-faint)',
+          background: 'var(--pm-bg)',
           overflow: 'hidden',
         }}
       >
@@ -275,9 +275,9 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                 fontSize: 11,
                 fontWeight: tab.id === activeId ? 600 : 400,
                 cursor: 'pointer',
-                background: tab.id === activeId ? '#f0f1f4' : 'transparent',
-                boxShadow: tab.id === activeId ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                color: tab.id === activeId ? '#333' : '#888',
+                background: tab.id === activeId ? 'var(--pm-tile-soft)' : 'transparent',
+                boxShadow: tab.id === activeId ? 'var(--pm-shadow-chip)' : 'none',
+                color: tab.id === activeId ? 'var(--pm-text-strong)' : 'var(--pm-text-quiet)',
                 flexShrink: 1,
                 flexBasis: 'auto',
                 overflow: 'hidden',
@@ -310,8 +310,8 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
           alignItems: 'center',
           gap: 4,
           padding: '0 8px',
-          borderBottom: '1px solid #ececf0',
-          background: '#fff',
+          borderBottom: '1px solid var(--pm-separator-faint)',
+          background: 'var(--pm-bg)',
         }}
       >
         <div style={{ ...ICON_BUTTON, opacity: activeTab ? 1 : 0.35 }} onClick={() => activeTab && onAction({ op: 'back', tabId: activeTab.id })} title="后退">
@@ -376,10 +376,10 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
               fontSize: 12,
               padding: '0 8px',
               borderRadius: 12,
-              border: '1px solid #e5e6eb',
+              border: '1px solid var(--pm-pop-border)',
               outline: 'none',
-              color: '#333',
-              background: '#f7f8fa',
+              color: 'var(--pm-text-strong)',
+              background: 'var(--pm-wash-cool)',
             }}
           />
           {dropdownOpen && (
@@ -390,10 +390,10 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                 top: 'calc(100% + 4px)',
                 left: 0,
                 right: 0,
-                background: '#fff',
-                border: '1px solid #e5e6eb',
+                background: 'var(--pm-elevated)',
+                border: '1px solid var(--pm-pop-border)',
                 borderRadius: 10,
-                boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                boxShadow: 'var(--pm-shadow-dropdown)',
                 overflow: 'hidden',
                 zIndex: 40,
               }}
@@ -411,13 +411,13 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                       gap: 8,
                       padding: '6px 10px',
                       cursor: 'pointer',
-                      background: i === selectedIdx ? '#f0f1f4' : 'transparent',
+                      background: i === selectedIdx ? 'var(--pm-tile-soft)' : 'transparent',
                     }}
                   >
-                    <Clock size={12} style={{ flexShrink: 0, color: '#999' }} />
+                    <Clock size={12} style={{ flexShrink: 0, color: 'var(--pm-text-muted)' }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
-                      <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.url}</div>
+                      <div style={{ fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
+                      <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.url}</div>
                     </div>
                   </div>
                 ))}
@@ -429,11 +429,11 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                   alignItems: 'center',
                   gap: 6,
                   padding: '6px 10px',
-                  borderTop: '1px solid #ececf0',
+                  borderTop: '1px solid var(--pm-separator-faint)',
                   fontSize: 11,
-                  color: confirmingClear ? '#b4453c' : '#888',
+                  color: confirmingClear ? 'var(--pm-graph-ink-live)' : 'var(--pm-text-quiet)',
                   cursor: 'pointer',
-                  background: '#fafafa',
+                  background: 'var(--pm-wash)',
                 }}
               >
                 <Trash2 size={12} />
@@ -473,18 +473,18 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                 width: 48,
                 height: 48,
                 borderRadius: '50%',
-                background: '#ececf0',
+                background: 'var(--pm-separator-faint)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 flexShrink: 0,
               }}
             >
-              <Globe size={20} color="#999" />
+              <Globe size={20} color="var(--pm-text-muted)" />
             </div>
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#333' }}>打开一个网页，或让 AI 帮你查资料</div>
-              <div style={{ fontSize: 11, color: '#999', marginTop: 4 }}>在上方输入网址回车，也可以在对话里直接吩咐</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--pm-text-strong)' }}>打开一个网页，或让 AI 帮你查资料</div>
+              <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', marginTop: 4 }}>在上方输入网址回车，也可以在对话里直接吩咐</div>
             </div>
             {recents.length > 0 && (
               <div
@@ -496,13 +496,13 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                   boxSizing: 'border-box',
                   // 近白浅灰（沿用面板转白前那档底色）：白底上刚好读出一层卡，
                   // 再深就成了灰块——用户裁定 2026-09-17「再浅一些」。
-                  background: '#f7f8fa',
+                  background: 'var(--pm-wash-cool)',
                   borderRadius: 10,
                   padding: 6,
                 }}
               >
                 {/* 11px + 10px 缩进 = 行内文字左沿（6 + 10），标签与列表共一条左边线。 */}
-                <div style={{ fontSize: 11, color: '#999', margin: '2px 0 6px 10px' }}>最近访问</div>
+                <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', margin: '2px 0 6px 10px' }}>最近访问</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {recents.slice(0, 6).map((r) => (
                     <div
@@ -512,10 +512,10 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                       onClick={() => navigateTo(r.url)}
                       style={{ padding: '5px 10px', borderRadius: 6, cursor: 'pointer', minWidth: 0 }}
                     >
-                      <div style={{ fontSize: 12, color: '#333', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <div style={{ fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {r.title || hostLabel(r.url)}
                       </div>
-                      <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {hostLabel(r.url)}
                       </div>
                     </div>

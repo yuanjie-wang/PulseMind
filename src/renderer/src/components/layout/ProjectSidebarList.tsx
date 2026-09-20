@@ -159,7 +159,7 @@ function ProjectSidebarList({
 
   if (sorted.length === 0) {
     return (
-      <div style={{ padding: '16px 0', color: '#999', fontSize: 12, textAlign: 'center' }}>
+      <div style={{ padding: '16px 0', color: 'var(--pm-text-muted)', fontSize: 12, textAlign: 'center' }}>
         {t('appLayout.noProjects')}
       </div>
     )
@@ -196,24 +196,24 @@ function ProjectSidebarList({
               style={{
                 display: 'flex', alignItems: 'center', gap: 8,
                 padding: '5px 8px', marginBottom: 2, borderRadius: 6, cursor: 'pointer',
-                fontSize: 14, fontWeight: 600, color: '#444', userSelect: 'none',
+                fontSize: 14, fontWeight: 600, color: 'var(--pm-row-ink)', userSelect: 'none',
                 lineHeight: '20px',
                 opacity: dragId === project.id ? 0.4 : undefined,
                 boxShadow: dropAt?.id === project.id
-                  ? `inset 0 ${dropAt.after ? '-' : ''}2px 0 #1677ff`
+                  ? `inset 0 ${dropAt.after ? '-' : ''}2px 0 var(--pm-link)`
                   : undefined
               }}
-              onMouseEnter={(e) => { setHoveredId(project.id); e.currentTarget.style.background = 'rgba(0, 0, 0, 0.05)' }}
+              onMouseEnter={(e) => { setHoveredId(project.id); e.currentTarget.style.background = 'var(--pm-hover-weak)' }}
               onMouseLeave={(e) => { setHoveredId(null); e.currentTarget.style.background = 'transparent' }}
             >
               <RightOutlined
                 style={{
-                  fontSize: 10, color: '#bbb', flexShrink: 0,
+                  fontSize: 10, color: 'var(--pm-text-faint)', flexShrink: 0,
                   transition: 'transform 0.15s',
                   transform: collapsed ? 'rotate(0deg)' : 'rotate(90deg)'
                 }}
               />
-              <FolderOutlined style={{ fontSize: 13, color: '#999', flexShrink: 0 }} />
+              <FolderOutlined style={{ fontSize: 13, color: 'var(--pm-text-muted)', flexShrink: 0 }} />
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {project.name}
               </span>
@@ -253,7 +253,7 @@ function ProjectSidebarList({
               )}
             </div>
             {!collapsed && (convs.length === 0 ? (
-              <div style={{ padding: '2px 8px 6px 24px', color: '#bbb', fontSize: 12 }}>
+              <div style={{ padding: '2px 8px 6px 24px', color: 'var(--pm-text-faint)', fontSize: 12 }}>
                 {t('appLayout.noProjectConversations')}
               </div>
             ) : (
@@ -284,17 +284,19 @@ function ProjectSidebarList({
           display: inline-flex !important;
           align-items: center !important;
           justify-content: center !important;
-          color: #999 !important;
+          color: var(--pm-text-muted) !important;
         }
         .project-row-action:hover {
-          color: #000 !important;
-          background: rgba(0, 0, 0, 0.06) !important;
+          color: var(--pm-ink) !important;
+          background: var(--pm-hover) !important;
         }
         .project-row-action:disabled {
-          color: #ccc !important;
+          color: var(--pm-text-disabled) !important;
         }
         .project-row-action-danger:hover {
-          color: #cf1322 !important;
+          /* Grey, not red: destructive actions stay neutral (matches the
+             Button.colorError grey in buildAntdTheme). */
+          color: var(--pm-text-secondary) !important;
         }
       `}</style>
     </div>

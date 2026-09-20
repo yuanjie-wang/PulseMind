@@ -32,11 +32,15 @@ import { ZoomControls, MIN_ZOOM, ZOOM_STEP_FACTOR, zoomByFactor } from './ZoomCo
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
 import { useTranslation } from '../../i18n/useTranslation'
 
-/** Width of the row-number gutter column, in px (fits "888"). */
+/** Width of the row-number gutter column, in px (fits "888").
+ *  The grid face follows the theme (M4/T1): header/lines/ink ride the sheet —
+ *  while every value that comes from the WORKBOOK (cell.bg, cell.color, the
+ *  kind tints for formula/error below) stays a literal, because it is the
+ *  file's own content, not UI. probe-xlsx-preview pins those data colors. */
 const GUTTER_WIDTH = 36
-const GRID_LINE = '#e8e8e8'
-const HEADER_BG = '#f7f8fa'
-const HEADER_INK = '#999'
+const GRID_LINE = 'var(--pm-border-soft)'
+const HEADER_BG = 'var(--pm-wash-cool)'
+const HEADER_INK = 'var(--pm-text-muted)'
 
 /** Adapt an exceljs worksheet to the pure grid builder's input. Only the
  *  capped window is materialised — getCell/getRow on a huge sheet never
@@ -224,7 +228,7 @@ export function XlsxPreview({
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {notes.length > 0 && (
-        <div style={{ flexShrink: 0, padding: '4px 12px', fontSize: 11, color: '#d46b08', background: '#fff7e6', borderBottom: '1px solid #ffd591' }}>
+        <div style={{ flexShrink: 0, padding: '4px 12px', fontSize: 11, color: 'var(--pm-warn)', background: 'var(--pm-warn-bg)', borderBottom: '1px solid var(--pm-warn-border)' }}>
           {notes.join('，')}
         </div>
       )}
@@ -235,7 +239,7 @@ export function XlsxPreview({
           style={{ position: 'absolute', inset: 0, overflow: 'auto' }}
         >
           {sheet && (
-            <div className="pm-xlsx-zoom" style={{ zoom: appliedZoom }}>
+            <div className="pm-xlsx-zoom" style={{ zoom: appliedZoom, color: 'var(--pm-sheet-ink)' }}>
               <table
                 data-xlsx-grid
                 style={{
@@ -290,7 +294,7 @@ export function XlsxPreview({
                                   : cell.kind === 'formula'
                                     ? '#722ed1'
                                     : cell.kind === 'link'
-                                      ? '#1677ff'
+                                      ? 'var(--pm-link)'
                                       : cell.color,
                               background: cell.bg,
                               fontWeight: cell.bold ? 600 : undefined,
@@ -326,11 +330,11 @@ export function XlsxPreview({
             </div>
           )}
           {!sheet && state === 'ready' && sheets.length === 0 && (
-            <div style={{ padding: 24, textAlign: 'center', color: '#bbb', fontSize: 12 }}>—</div>
+            <div style={{ padding: 24, textAlign: 'center', color: 'var(--pm-text-faint)', fontSize: 12 }}>—</div>
           )}
         </div>
         {state === 'loading' && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 12, background: '#fff' }}>…</div>
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--pm-text-faint)', fontSize: 12, background: 'var(--pm-bg)' }}>…</div>
         )}
       </div>
       {/* Sheet tab strip (Excel keeps these at the bottom; so do we). */}
@@ -343,7 +347,7 @@ export function XlsxPreview({
             alignItems: 'center',
             gap: 2,
             padding: '3px 8px',
-            borderTop: '1px solid #ececf0',
+            borderTop: '1px solid var(--pm-separator-faint)',
             overflowX: 'auto',
             scrollbarWidth: 'thin',
           }}
@@ -359,8 +363,8 @@ export function XlsxPreview({
                 borderRadius: 6,
                 fontSize: 11,
                 cursor: 'pointer',
-                color: i === sheetIndex ? '#1677ff' : '#666',
-                background: i === sheetIndex ? '#e6f4ff' : 'transparent',
+                color: i === sheetIndex ? 'var(--pm-link)' : 'var(--pm-text-secondary)',
+                background: i === sheetIndex ? 'var(--pm-link-bg-solid)' : 'transparent',
                 whiteSpace: 'nowrap',
               }}
             >
@@ -369,7 +373,7 @@ export function XlsxPreview({
           ))}
         </div>
       )}
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
         <ZoomControls zoom={appliedZoom} fitKey="fitWidth" onFit={resetZoom} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />
       </div>

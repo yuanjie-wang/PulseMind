@@ -23,9 +23,9 @@ function FeatureSwitch({ label, help, checked, onChange }: FeatureSwitchProps): 
       justifyContent: 'space-between',
       gap: 16,
       padding: '10px 12px',
-      border: '1px solid #f0f0f0',
+      border: '1px solid var(--pm-border-hairline)',
       borderRadius: 8,
-      background: '#fafafa',
+      background: 'var(--pm-wash)',
       marginBottom: 12
     }}>
       <div style={{ minWidth: 0 }}>

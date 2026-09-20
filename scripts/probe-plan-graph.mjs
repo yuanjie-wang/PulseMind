@@ -38,7 +38,15 @@ import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { PlanGraphView } from './src/renderer/src/components/workbench/PlanGraphView'
 import { ensureCache } from './src/renderer/src/agent/mcp-cache'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 import { createPlanDag } from './src/shared/plan/graph'
+
+// The graph is migrated onto the theme sheet (PLAN-dark-mode M3/T2): the SVG
+// strokes and fills now read var(--pm-*), so the page needs the variable table
+// injected before the component renders. Light is pinned explicitly — this
+// probe freezes the light graph; the dark column is probe-theme-dark's.
+installThemeVars()
+applyThemeAttr('light')
 import { blockedNodes, readyNodes } from './src/shared/plan/graph'
 import { layoutPlanGraph } from './src/shared/plan/layout'
 
@@ -400,15 +408,22 @@ check('[mid] start/end anchor pills render (开始 / 结束)',
 // 第一行：编号（左）+ 执行状态 icon（右）；第二行：执行者；第三行起：任务内容。
 // 卡片白底、灰边框，状态只靠「字形 + 灰度对比」表达；文字按重要性分黑灰阶。
 // 全图唯一的色相是失败的那个叉。
+// Colours arrive in two forms: the status hues as hex literals and the sheet
+// roles as resolved rgb() strings (the harness resolves var() before shipping
+// them over), so both parsers accept either.
+const parseCol = (v) => {
+  const h = /^#([0-9a-f]{6})$/i.exec((v ?? '').trim())
+  if (h) { const n = parseInt(h[1], 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255] }
+  const m = /^rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)/.exec(v ?? '')
+  return m ? [+m[1], +m[2], +m[3]] : null
+}
 const isGrey = (v) => {
-  const m = /^#([0-9a-f]{6})$/i.exec((v ?? '').trim())
-  if (!m) return false
-  const n = parseInt(m[1], 16)
-  return ((n >> 16) & 255) === ((n >> 8) & 255) && ((n >> 8) & 255) === (n & 255)
+  const c = parseCol(v)
+  return !!c && c[0] === c[1] && c[1] === c[2]
 }
 const lum = (v) => {
-  const n = parseInt(v.slice(1), 16)
-  return 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)
+  const c = parseCol(v)
+  return c ? 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] : NaN
 }
 const ICON_OF = { ready: 'spinner', blocked: 'ban', completed: 'check', failed: 'cross', skipped: 'minus', pending: 'circle' }
 /** The only two hues in the view, and they may ride glyphs only (user ruling:
@@ -430,15 +445,28 @@ const anatomy = await page.evaluate(() => {
       const at = /translate\(([-\d.]+) ([-\d.]+)\)/.exec(icon?.getAttribute('transform') ?? '')
       const box = icon && at ? { x: +at[1], y: +at[2] } : null
       const bb = icon ? icon.getBBox() : null
+      // The graph's inks ride the theme sheet (PLAN-dark-mode M3/T2): the
+      // attributes carry var(--pm-*) strings, so every colour read resolves
+      // through a throwaway box BEFORE the node side parses it. Status hues
+      // (#34a853/#b4453c) stay literals and pass through untouched.
+      const res = (raw) => {
+        if (!raw || raw.indexOf('var(') < 0) return raw
+        const d = document.createElement('div')
+        d.style.color = raw
+        document.body.appendChild(d)
+        const v = getComputedStyle(d).color
+        d.remove()
+        return v
+      }
       cards.push({
         container: id, node: g.dataset.node, terminal: g.dataset.node.startsWith('__'),
-        fill: rect.getAttribute('fill'), border: rect.getAttribute('stroke'),
+        fill: res(rect.getAttribute('fill')), border: res(rect.getAttribute('stroke')),
         dash: rect.getAttribute('stroke-dasharray'),
         cardX: +rect.getAttribute('x'), cardY: +rect.getAttribute('y'), cardW: +rect.getAttribute('width'),
         icon: icon?.dataset.icon ?? null,
         // Stroke-drawn glyphs need their stroke, filled ones their fill.
         iconInk: icon
-          ? [...icon.querySelectorAll('circle,path,line,polyline,rect')].map(c => (c.getAttribute('fill') === 'none' ? c.getAttribute('stroke') : c.getAttribute('fill')))
+          ? [...icon.querySelectorAll('circle,path,line,polyline,rect')].map(c => res(c.getAttribute('fill') === 'none' ? c.getAttribute('stroke') : c.getAttribute('fill')))
           : [],
         iconBox: box && bb
           ? { left: box.x + bb.x, right: box.x + bb.x + bb.width, centerY: box.y + bb.y + bb.height / 2 }
@@ -447,7 +475,7 @@ const anatomy = await page.evaluate(() => {
         texts: [...g.querySelectorAll('text')].map(t => {
           const b = t.getBBox()
           return {
-            text: t.textContent, x: +t.getAttribute('x'), y: +t.getAttribute('y'), fill: t.getAttribute('fill'),
+            text: t.textContent, x: +t.getAttribute('x'), y: +t.getAttribute('y'), fill: res(t.getAttribute('fill')),
             box: { x: b.x, y: b.y, w: b.width, h: b.height },
           }
         }),
@@ -458,7 +486,8 @@ const anatomy = await page.evaluate(() => {
 })
 const taskCards = anatomy.filter(c => !c.terminal)
 
-const notWhite = taskCards.filter(c => c.fill !== '#ffffff' || !isGrey(c.border))
+const WHITE = 'rgb(255, 255, 255)'
+const notWhite = taskCards.filter(c => c.fill !== '#ffffff' && c.fill !== WHITE || !isGrey(c.border))
 check('every task card is a white card with a grey border', notWhite.length === 0,
   notWhite.map(c => `${c.node}:${c.fill}/${c.border}`).join('; '))
 
@@ -515,10 +544,10 @@ check('ink follows importance: 编号 darker than 执行者, all titles greyscal
 
 // Contrast, not vibes: 任务内容 has to clear AA (4.5:1 on white) while the node
 // is in play, and may recede once it has settled — but never into the paper.
-const contrast = (hex) => {
-  const n = parseInt(hex.slice(1), 16)
+const contrast = (col) => {
+  const c = parseCol(col)
   const lin = (v) => { const s = v / 255; return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4 }
-  const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255)
+  const L = 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
   return 1.05 / (L + 0.05)
 }
 const byState = {}

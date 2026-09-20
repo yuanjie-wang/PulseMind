@@ -35,13 +35,13 @@ export function FallbackCard({ path, kind, hint }: { path: string; kind: FileKin
 
   return (
     <div style={{ padding: 24, textAlign: 'center' }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: '#333', marginBottom: 4, wordBreak: 'break-all' }}>{baseName(path)}</div>
-      <div style={{ fontSize: 11, color: '#999', marginBottom: 2 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--pm-text-strong)', marginBottom: 4, wordBreak: 'break-all' }}>{baseName(path)}</div>
+      <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', marginBottom: 2 }}>
         {kind === 'office' ? 'Office' : 'Binary'}
         {sizeText ? ` · ${sizeText}` : ''}
         {info.mtime ? ` · ${new Date(info.mtime).toLocaleString()}` : ''}
       </div>
-      <div style={{ fontSize: 12, color: '#999', margin: '12px 0 16px' }}>{hint ?? t('previewPane.binaryHint')}</div>
+      <div style={{ fontSize: 12, color: 'var(--pm-text-muted)', margin: '12px 0 16px' }}>{hint ?? t('previewPane.binaryHint')}</div>
       <Button size="small" icon={<ExternalLink size={12} />} onClick={() => void window.electronAPI.openFolder(path).catch(() => {})}>
         {t('previewPane.openInOs')}
       </Button>

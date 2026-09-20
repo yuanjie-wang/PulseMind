@@ -45,7 +45,7 @@ const LIST_BULLETS = ['disc', 'circle', 'square', 'decimal', 'lower-alpha', 'upp
 
 // ── Control primitives ──
 
-const LABEL: React.CSSProperties = { fontSize: 11, color: '#888', flexShrink: 0 }
+const LABEL: React.CSSProperties = { fontSize: 11, color: 'var(--pm-text-quiet)', flexShrink: 0 }
 const SMALL_INPUT_STYLE: React.CSSProperties = { fontSize: 12 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }): React.ReactElement {
@@ -124,7 +124,7 @@ function ColorField(props: {
         type="color"
         value={value || '#000000'}
         onChange={(e) => commit(e.target.value)}
-        style={{ width: 22, height: 22, padding: 0, border: '1px solid #d9d9d9', borderRadius: 4, background: 'none', cursor: 'pointer' }}
+        style={{ width: 22, height: 22, padding: 0, border: '1px solid var(--pm-border)', borderRadius: 4, background: 'none', cursor: 'pointer' }}
         title={props.label}
       />
       <Input
@@ -179,10 +179,10 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
         style={{
           flexShrink: 0,
           padding: '7px 12px',
-          borderTop: '1px solid #ececf0',
-          background: '#f7f8fa',
+          borderTop: '1px solid var(--pm-separator-faint)',
+          background: 'var(--pm-wash-cool)',
           fontSize: 12,
-          color: '#999',
+          color: 'var(--pm-text-muted)',
           textAlign: 'center',
         }}
       >
@@ -311,19 +311,19 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
 
   const crumbs = selection.ancestors.slice(-6)
   return (
-    <div style={{ flexShrink: 0, borderTop: '1px solid #ececf0', background: '#f7f8fa', fontSize: 12 }}>
+    <div style={{ flexShrink: 0, borderTop: '1px solid var(--pm-separator-faint)', background: 'var(--pm-wash-cool)', fontSize: 12 }}>
       {/* Row 1: breadcrumb + session actions */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 8px 0', minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 2, overflow: 'hidden', flex: 1, minWidth: 0 }}>
           {crumbs.map((crumb, i) => (
             <React.Fragment key={crumb.pmPath}>
-              {i > 0 && <ChevronRight size={10} style={{ color: '#bbb', flexShrink: 0 }} />}
+              {i > 0 && <ChevronRight size={10} style={{ color: 'var(--pm-text-faint)', flexShrink: 0 }} />}
               <span
                 onClick={() => sendToFrame(path, { type: 'pm:reselect', pmPath: crumb.pmPath })}
                 title={crumb.pmPath}
                 style={{
                   cursor: 'pointer',
-                  color: i === crumbs.length - 1 ? '#333' : '#666',
+                  color: i === crumbs.length - 1 ? 'var(--pm-text-strong)' : 'var(--pm-text-secondary)',
                   fontWeight: i === crumbs.length - 1 ? 600 : 400,
                   whiteSpace: 'nowrap',
                   flexShrink: 0,
@@ -352,7 +352,7 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
         <Input
           size="small"
           style={{ fontSize: 12, flex: 1 }}
-          prefix={<Sparkles size={12} style={{ color: '#999' }} />}
+          prefix={<Sparkles size={12} style={{ color: 'var(--pm-text-muted)' }} />}
           placeholder={t('htmlEdit.aiPlaceholder')}
           value={aiText}
           disabled={session.aiBusy}
@@ -369,15 +369,15 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
             padding: '4px 12px',
             fontSize: 12,
             cursor: session.aiBusy || !aiText.trim() ? 'default' : 'pointer',
-            background: session.aiBusy || !aiText.trim() ? '#d9d9d9' : '#1677ff',
-            color: '#fff',
+            background: session.aiBusy || !aiText.trim() ? 'var(--pm-btn-disabled)' : 'var(--pm-link)',
+            color: 'var(--pm-ink-contrast)',
           }}
         >
           {session.aiBusy ? t('htmlEdit.aiRunning') : t('htmlEdit.aiRun')}
         </button>
       </div>
       {session.aiError && (
-        <div style={{ padding: '0 8px 5px', color: '#d46b08', fontSize: 11 }}>{session.aiError}</div>
+        <div style={{ padding: '0 8px 5px', color: 'var(--pm-warn)', fontSize: 11 }}>{session.aiError}</div>
       )}
 
       {/* Row 3: typed controls, reset per selection */}
@@ -399,7 +399,7 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
                     if (!ok) toastFail()
                   })
                 }
-                style={{ border: '1px solid #d9d9d9', borderRadius: 6, background: '#fff', fontSize: 11, padding: '1px 8px', cursor: 'pointer', color: '#555', flexShrink: 0 }}
+                style={{ border: '1px solid var(--pm-border)', borderRadius: 6, background: 'var(--pm-elevated)', fontSize: 11, padding: '1px 8px', cursor: 'pointer', color: 'var(--pm-text-body)', flexShrink: 0 }}
               >
                 {t('htmlEdit.editInPlace')}
               </button>
@@ -506,9 +506,11 @@ function ActionIcon(props: {
         borderRadius: 4,
         flexShrink: 0,
         cursor: props.disabled ? 'default' : 'pointer',
-        color: props.disabled ? '#ccc' : props.danger ? '#ff4d4f' : '#666',
-        background: props.danger ? '#fff1f0' : 'transparent',
-        border: '1px solid #e8e8e8',
+        // The danger ink keeps its literal mid-grey: it reads on both grounds,
+        // and the wash + border below are the parts that carry the theme.
+        color: props.disabled ? 'var(--pm-text-disabled)' : props.danger ? '#8c8c8c' : 'var(--pm-text-secondary)',
+        background: props.danger ? 'var(--pm-danger-wash)' : 'transparent',
+        border: '1px solid var(--pm-border-soft)',
       }}
     >
       {props.children}

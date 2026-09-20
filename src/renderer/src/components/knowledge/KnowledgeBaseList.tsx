@@ -90,7 +90,7 @@ export function KnowledgeBaseList({ knowledgeManager, selectedBaseId, onSelectBa
       style={{
         width: 200,
         flexShrink: 0,
-        borderRight: '1px solid #f0f0f0',
+        borderRight: '1px solid var(--pm-border-hairline)',
         display: 'flex',
         flexDirection: 'column',
         padding: '12px 8px 12px',
@@ -98,7 +98,7 @@ export function KnowledgeBaseList({ knowledgeManager, selectedBaseId, onSelectBa
       }}
       data-knowledge-base-list
     >
-      <div style={{ padding: '0 12px 8px', fontSize: 13, fontWeight: 600, color: '#333' }}>
+      <div style={{ padding: '0 12px 8px', fontSize: 13, fontWeight: 600, color: 'var(--pm-text-strong)' }}>
         {t('knowledgePanel.title')}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -119,14 +119,14 @@ export function KnowledgeBaseList({ knowledgeManager, selectedBaseId, onSelectBa
                 borderRadius: 6,
                 cursor: 'pointer',
                 fontSize: 13,
-                color: '#333',
+                color: 'var(--pm-text-strong)',
                 transition: 'background 0.15s',
-                background: selected ? '#f0f0f0' : 'transparent',
+                background: selected ? 'var(--pm-border-hairline)' : 'transparent',
               }}
               onMouseEnter={(e) => {
                 const dot = e.currentTarget.querySelector<HTMLDivElement>('[data-base-actions]')
                 if (dot) dot.style.opacity = '1'
-                if (!selected) e.currentTarget.style.background = '#f5f5f5'
+                if (!selected) e.currentTarget.style.background = 'var(--pm-fill)'
               }}
               onMouseLeave={(e) => {
                 const dot = e.currentTarget.querySelector<HTMLDivElement>('[data-base-actions]')
@@ -151,8 +151,8 @@ export function KnowledgeBaseList({ knowledgeManager, selectedBaseId, onSelectBa
                       borderRadius: 4,
                       fontSize: 10,
                       lineHeight: '16px',
-                      color: '#999',
-                      background: '#f5f5f5',
+                      color: 'var(--pm-text-muted)',
+                      background: 'var(--pm-fill)',
                       verticalAlign: 'middle',
                     }}
                   >
@@ -160,7 +160,7 @@ export function KnowledgeBaseList({ knowledgeManager, selectedBaseId, onSelectBa
                   </span>
                 )}
               </Text>
-              <span style={{ fontSize: 11, color: '#bbb', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
                 {b.fileCount ?? 0}
               </span>
               {deletable && (
@@ -187,7 +187,7 @@ export function KnowledgeBaseList({ knowledgeManager, selectedBaseId, onSelectBa
                     <span
                       data-base-menu={b.id}
                       onClick={(e) => e.stopPropagation()}
-                      style={{ display: 'inline-flex', padding: '0 2px', color: '#999', cursor: 'pointer', lineHeight: 1 }}
+                      style={{ display: 'inline-flex', padding: '0 2px', color: 'var(--pm-text-muted)', cursor: 'pointer', lineHeight: 1 }}
                     >
                       <MoreOutlined style={{ fontSize: 14 }} />
                     </span>
@@ -216,21 +216,21 @@ export function KnowledgeBaseList({ knowledgeManager, selectedBaseId, onSelectBa
           gap: 6,
           width: '100%',
           padding: '9px 0',
-          border: '1px dashed #c8c8cc',
+          border: '1px dashed var(--pm-dash-border)',
           borderRadius: 6,
           background: 'transparent',
-          color: '#999',
+          color: 'var(--pm-text-muted)',
           fontSize: 13,
           cursor: 'pointer',
           font: 'inherit',
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.borderColor = '#666'
-          e.currentTarget.style.color = '#666'
+          e.currentTarget.style.borderColor = 'var(--pm-text-secondary)'
+          e.currentTarget.style.color = 'var(--pm-row-ink)'
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.borderColor = '#c8c8cc'
-          e.currentTarget.style.color = '#999'
+          e.currentTarget.style.borderColor = 'var(--pm-dash-border)'
+          e.currentTarget.style.color = 'var(--pm-text-muted)'
         }}
       >
         <PlusOutlined style={{ fontSize: 12 }} />

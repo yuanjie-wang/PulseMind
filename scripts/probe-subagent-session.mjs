@@ -41,6 +41,7 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 import { SubAgentSessionView } from './src/renderer/src/components/subagent/SubAgentSessionView'
 import { SegmentView } from './src/renderer/src/components/chat/SegmentView'
 
@@ -49,6 +50,14 @@ import { SegmentView } from './src/renderer/src/components/chat/SegmentView'
 const calls = []
 window.__calls = calls
 window.__failNext = 0
+// main.tsx's boot, in order: the variable sheet, then the attribute. The chat's
+// migrated surfaces read var(--pm-*), and an unset variable resolves to nothing
+// (transparent / inherited) — so a probe that measures them without the sheet is
+// measuring a page the app never renders (PLAN-dark-mode D7: the helper ships in
+// the same change as the migration, not after it).
+installThemeVars()
+applyThemeAttr('light')
+
 window.electronAPI = new Proxy({}, {
   get: (_t, key) => (...args) => {
     if (key === 'hydrateConversation') {
@@ -208,7 +217,10 @@ check('[view] a real click on 返回主对话 leaves the session for the main co
 await page.locator('#reopen').click()
 await page.waitForTimeout(200)
 const liveCalls = await page.evaluate(() => window.__calls.length)
-await page.waitForTimeout(2400) // one 2000ms poll must land
+// POLL_MS is 5000 (review 2026-09-18 M12 slowed it from 2000 — polling faster only
+// re-read the same bytes), so the wait has to cover the *current* interval: at
+// 2400ms this check had been failing since that commit, on a correct component.
+await page.waitForTimeout(5400) // one poll must land
 const liveCalls2 = await page.evaluate(() => window.__calls.length)
 const calledIds = await page.evaluate(() => [...new Set(window.__calls)])
 check('[view] an open node keeps polling the stored transcript',
@@ -226,7 +238,7 @@ await page.evaluate(() => {
     }],
   }
 })
-await page.waitForTimeout(2400)
+await page.waitForTimeout(5400)
 const grew = await page.locator('#view').innerText()
 check('[view] new turns appear on their own while the run is open',
   grew.includes('第二轮：新增了一段文案'), '')

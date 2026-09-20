@@ -16,10 +16,10 @@ export function ErrorDisplay({
       style={{
         margin: '16px 0',
         padding: 12,
-        background: '#fff2f0',
-        border: '1px solid #ffccc7',
+        background: 'var(--pm-error-bg)',
+        border: '1px solid var(--pm-error-border)',
         borderRadius: 6,
-        color: '#cf1322',
+        color: 'var(--pm-error)',
         fontSize: 13
       }}
     >
@@ -30,8 +30,8 @@ export function ErrorDisplay({
           onClick={onDismiss}
           style={{
             padding: '4px 12px',
-            background: '#cf1322',
-            color: '#fff',
+            background: 'var(--pm-error)',
+            color: 'var(--pm-ink-contrast)',
             border: 'none',
             borderRadius: 4,
             cursor: 'pointer',
@@ -45,9 +45,9 @@ export function ErrorDisplay({
             onClick={onRetry}
             style={{
               padding: '4px 12px',
-              background: '#fff',
-              color: '#cf1322',
-              border: '1px solid #cf1322',
+              background: 'var(--pm-elevated)',
+              color: 'var(--pm-error)',
+              border: '1px solid var(--pm-error)',
               borderRadius: 4,
               cursor: 'pointer',
               fontSize: 12

@@ -38,7 +38,10 @@ const DOCX_CLASS = 'pm-docx'
  *  apply — see `zoomSuspendedRef` for why it must not apply before it. */
 const TAB_STOP_DELAY = 650
 /** The grey docx-preview paints behind the page (its wrapper's `background:
- *  gray`), reused for the container so the two never disagree. */
+ *  gray`), reused for the container so the two never disagree. It stays a
+ *  literal on purpose (M4/T3): a mid-grey reads as neutral on both grounds,
+ *  and the wrapper half is painted by docx-preview itself — overriding it for
+ *  dark would fork our desk from the library's. */
 const BACKDROP = '#808080'
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -283,12 +286,12 @@ export function DocxPreview({
           style={{ position: 'absolute', inset: 0, overflow: 'auto', background: BACKDROP }}
         />
         {state === 'loading' && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 12 }}>
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--pm-text-faint)', fontSize: 12 }}>
             …
           </div>
         )}
       </div>
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
         <ZoomControls
           zoom={appliedZoom}

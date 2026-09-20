@@ -60,7 +60,7 @@ function SidebarNav({ canCreateNew, onCreateNew }: SidebarNavProps): React.React
             {item.submenu?.length ? (
               <span className="nav-split">
                 {t(item.labelKey)}
-                <RightOutlined style={{ fontSize: 10, color: 'rgba(0, 0, 0, 0.45)' }} />
+                <RightOutlined style={{ fontSize: 10, color: 'var(--pm-text-tertiary)' }} />
               </span>
             ) : (
               t(item.labelKey)

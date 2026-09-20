@@ -76,7 +76,7 @@ export function WelcomeContent({
           }}
         >
           {Array.from({ length: COPIES }).map((_, i) => (
-            <img key={i} src={pulsemindLogo} alt="" style={{ width: LOGO_SIZE_WIDTH, height: LOGO_SIZE_HEIGHT, flexShrink: 0, objectFit: 'cover' }} />
+            <img key={i} src={pulsemindLogo} alt="" style={{ width: LOGO_SIZE_WIDTH, height: LOGO_SIZE_HEIGHT, flexShrink: 0, objectFit: 'cover', filter: 'var(--pm-logo-filter)' }} />
           ))}
         </div>
       </div>
@@ -87,7 +87,7 @@ export function WelcomeContent({
           </Typography.Title>
         </div>
         <Tooltip title="此内容由AI生成">
-          <InfoCircleOutlined style={{ fontSize: 12, color: '#bbb', cursor: 'help', marginTop: 4 }} />
+          <InfoCircleOutlined style={{ fontSize: 12, color: 'var(--pm-text-faint)', cursor: 'help', marginTop: 4 }} />
         </Tooltip>
       </div>
       <Typography.Text type="secondary" style={{ fontSize: 16, maxWidth: 400, display: 'block', margin: '0 auto', marginBottom: 24, marginTop: 20 }}>
@@ -125,8 +125,8 @@ export function WelcomeContent({
       {!hasApiKey && (
         <div
           style={{
-            background: '#fff7e6',
-            border: '1px solid #ffd591',
+            background: 'var(--pm-warn-bg)',
+            border: '1px solid var(--pm-warn-border)',
             borderRadius: 8,
             padding: '16px 24px',
             marginBottom: 24,
@@ -136,7 +136,7 @@ export function WelcomeContent({
             alignSelf: 'center',
           }}
         >
-          <p style={{ margin: '0 0 12px', color: '#d46b08' }}>
+          <p style={{ margin: '0 0 12px', color: 'var(--pm-warn)' }}>
             <KeyOutlined /> {t('welcome.noApiKey')}
           </p>
           <Button type="primary" onClick={() => navigate({ kind: 'settings', settingsTab: 'settings' })} icon={<KeyOutlined />}>

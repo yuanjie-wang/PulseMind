@@ -24,6 +24,11 @@ import { useTranslation } from '../../i18n/useTranslation'
 
 /** The grey page backdrop — the same paint DocxPreview uses, so the two
  *  office panes read as one family. */
+/** docx-preview paints `background: gray` behind its own pages; this is the
+ *  pptx desk's matching value. It stays a literal on purpose (M4/T3): a
+ *  mid-grey reads as neutral on both grounds, the white slide already carries
+ *  its own edge, and the docx desk must stay in lockstep with the wrapper
+ *  docx-preview paints itself. */
 const BACKDROP = '#808080'
 /** Gap between slide pages, px. */
 const PAGE_GAP = 16
@@ -147,8 +152,8 @@ function ShapeView({ shape, idx }: { shape: PptxShapeVM; idx: number }): React.R
         data-ph={label}
         style={{
           ...boxStyle,
-          border: '1.5px dashed #bbb',
-          background: 'rgba(0, 0, 0, 0.03)',
+          border: '1.5px dashed var(--pm-text-faint)',
+          background: 'var(--pm-hover-faint)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -319,6 +324,9 @@ function SlideView({ slide, deck }: { slide: PptxSlideVM; deck: PptxDeck }): Rea
         position: 'relative',
         width: deck.widthPx,
         height: deck.heightPx,
+        // The slide is paper (its own background from the file, white by
+        // default) and its shadow is the edge that paper carries on the grey
+        // desk — both stay mode-independent (M4/T3).
         background: slide.background ?? '#FFFFFF',
         overflow: 'hidden', // the slideshow clips at the slide bounds
         marginBottom: PAGE_GAP,
@@ -496,9 +504,9 @@ export function PptxPreview({
             flexShrink: 0,
             padding: '4px 12px',
             fontSize: 11,
-            color: '#d46b08',
-            background: '#fff7e6',
-            borderBottom: '1px solid #ffd591',
+            color: 'var(--pm-warn)',
+            background: 'var(--pm-warn-bg)',
+            borderBottom: '1px solid var(--pm-warn-border)',
           }}
         >
           {notes.join('；')}
@@ -527,7 +535,7 @@ export function PptxPreview({
           </div>
         )}
       </div>
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid #f0f0f0' }}>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
         <ZoomControls zoom={appliedZoom} fitKey="fitWidth" onFit={resetZoom} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />
       </div>
@@ -547,5 +555,5 @@ function PlaceholderLabel({ kind }: { kind: NonNullable<PptxShapeVM['phLabel']> 
           : kind === 'ole'
             ? 'previewPane.pptxOleLabel'
             : 'previewPane.pptxImageLabel'
-  return <span style={{ fontSize: 12, color: '#999' }}>{t(key)}</span>
+  return <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>{t(key)}</span>
 }

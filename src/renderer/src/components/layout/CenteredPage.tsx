@@ -17,7 +17,7 @@ interface CenteredPageProps {
 
 function CenteredPage({ maxWidth = PAGE_COLUMN_MAX_WIDTH, children }: CenteredPageProps): React.ReactElement {
   return (
-    <div style={{ height: '100%', overflow: 'auto', background: '#fff' }} className="settings-scroll">
+    <div style={{ height: '100%', overflow: 'auto', background: 'var(--pm-bg)' }} className="settings-scroll">
       <div style={{ maxWidth, margin: '0 auto', padding: '8px 24px 24px' }}>{children}</div>
     </div>
   )
