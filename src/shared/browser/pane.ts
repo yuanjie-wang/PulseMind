@@ -117,16 +117,22 @@ export function normalizeAddressBarInput(raw: string): string {
 }
 
 /** WebView box for a pane: strict 16:9, vertically centered in the space
- *  below the chrome, inset past the pane's 1px left border so the divider
- *  stays visible. `x` is relative to the pane's left edge — the dock adds
- *  the pane origin. When the window is too short for the box, it hugs the
- *  chrome (top-aligned) instead of overflowing. */
+ *  below the chrome. The box is inset one px on EACH side (user ruling
+ *  2026-09-21, 「左右各缩进去1px，高度同比缩小」): the pane's 1px left border
+ *  is renderer DOM and a native WebContentsView paints above all DOM, so a
+ *  view flush against it read as covering the chat scrollbar's last pixel —
+ *  the view now starts a full px past the divider and stops a px short of the
+ *  window's right edge, and the height follows the width's 16:9. `x` is
+ *  relative to the pane's left edge — the dock adds the pane origin. When the
+ *  window is too short for the box, it hugs the chrome (top-aligned) instead
+ *  of overflowing. */
 export function webviewBox(paneWidth: number, paneTop: number, paneHeight: number, chromeHeight: number = PANE_CHROME_HEIGHT): PaneBox {
-  const width = Math.max(0, Math.round(paneWidth) - PANE_BORDER_WIDTH)
+  // 1px divider + 1px clear on each side of the view: width = pane − 3.
+  const width = Math.max(0, Math.round(paneWidth) - PANE_BORDER_WIDTH * 3)
   const height = Math.round((width * 9) / 16)
   const available = Math.max(0, paneHeight - chromeHeight)
   const top = paneTop + chromeHeight + Math.max(0, Math.floor((available - height) / 2))
-  return { x: PANE_BORDER_WIDTH, y: Math.max(paneTop + chromeHeight, top), width, height: Math.min(height, available) }
+  return { x: PANE_BORDER_WIDTH * 2, y: Math.max(paneTop + chromeHeight, top), width, height: Math.min(height, available) }
 }
 
 /** True while a tab has nothing the user navigated to: '' (no URL reported

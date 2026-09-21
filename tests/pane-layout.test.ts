@@ -25,15 +25,19 @@ describe('pane width clamp', () => {
 })
 
 describe('webview 16:9 box', () => {
-  it('fills the pane width minus the border inset, derives height, centers below the chrome', () => {
+  it('insets one px past the divider AND one px off each edge, derives height, centers below the chrome', () => {
     const box = webviewBox(520, 48, 852)
     // The pane's 1px left border (the chat/pane divider) is renderer DOM and a
-    // native WebView paints over it — the box must start past the border.
-    expect(box.x).toBe(PANE_BORDER_WIDTH)
-    expect(box.width).toBe(519) // 520 - 1px border inset
-    expect(box.height).toBe(292) // 519 * 9/16
+    // native WebView paints over it — a view flush against it read as covering
+    // the chat scrollbar's last pixel (user ruling 2026-09-21), so the box
+    // starts a full px past the divider and stops a px short of the right
+    // edge: width = pane − 3 (divider + one clear px per side), height 16:9.
+    expect(box.x).toBe(PANE_BORDER_WIDTH * 2)
+    expect(box.width).toBe(517) // 520 - 1px divider - 1px inset per side
+    expect(box.height).toBe(291) // 517 * 9/16
+    expect(box.x + box.width).toBe(519) // right edge inset from the pane's right
     const available = 852 - PANE_CHROME_HEIGHT
-    expect(box.y).toBe(48 + PANE_CHROME_HEIGHT + Math.floor((available - 292) / 2))
+    expect(box.y).toBe(48 + PANE_CHROME_HEIGHT + Math.floor((available - 291) / 2))
   })
   it('never lets the border inset widen a zero-width pane', () => {
     const box = webviewBox(0, 48, 852)
