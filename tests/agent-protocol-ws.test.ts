@@ -97,6 +97,10 @@ interface FakeSessions extends AgentServiceSessions {
   switched: string[]
   /** 授权 writes that reached the manager (the remote 授权 button). */
   approvalModes: Array<{ sessionId: string; mode: SandboxApprovalMode }>
+  /** Per-session 模型 writes that reached the manager (remote 模型下拉). */
+  sessionModels: Array<{ sessionId: string; profileId: string | null }>
+  /** Session ids the model.list was asked for (undefined = global default). */
+  modelStateCalls: Array<string | undefined>
   emit: (sessionId: string, data: AgentEventData) => void
   setAskHandler: (fn: (sessionId: string, content: string, pageContext: any) => Promise<void>) => void
 }
@@ -117,6 +121,8 @@ function makeFakeSessions(): FakeSessions {
     },
     switched: [] as string[],
     approvalModes: [] as Array<{ sessionId: string; mode: SandboxApprovalMode }>,
+    sessionModels: [] as Array<{ sessionId: string; profileId: string | null }>,
+    modelStateCalls: [] as Array<string | undefined>,
   }
   const live = new Set<string>()
   return {
@@ -126,6 +132,8 @@ function makeFakeSessions(): FakeSessions {
     get model() { return state.model },
     get switched() { return state.switched },
     get approvalModes() { return state.approvalModes },
+    get sessionModels() { return state.sessionModels },
+    get modelStateCalls() { return state.modelStateCalls },
     // The real manager writes the conversation column and re-resolves the live
     // engine; the fake records the write and echoes the level back, which is
     // what the caller reconciles against.
@@ -135,12 +143,29 @@ function makeFakeSessions(): FakeSessions {
     },
     // The real manager validates against settings.profiles; the fake refuses an
     // unknown id the same way, so the error path is exercised end to end.
-    modelState: async () => ({ profiles: state.model.profiles, activeId: state.model.activeId }),
+    modelState: async (sessionId?: string) => {
+      state.modelStateCalls.push(sessionId)
+      const activeId = sessionId
+        // Mirror the real scoping: the session's own pin when it has one,
+        // the global default otherwise.
+        ? (state.sessionModels.find((m) => m.sessionId === sessionId && m.profileId)?.profileId ?? state.model.activeId)
+        : state.model.activeId
+      return { profiles: state.model.profiles, activeId }
+    },
     setActiveProfile: async (profileId: string) => {
       if (!state.model.profiles.some((p) => p.id === profileId)) throw new Error(`unknown profile: ${profileId}`)
       state.model.activeId = profileId
       state.switched.push(profileId)
       return { profiles: state.model.profiles, activeId: state.model.activeId }
+    },
+    // The real manager writes conversations.profile_id and answers with the
+    // model in force for THAT session; the fake records the write and scopes
+    // the answer to the session, which is what the panel reconciles against.
+    setSessionProfile: async (sessionId: string, profileId: string | null) => {
+      if (profileId && !state.model.profiles.some((p) => p.id === profileId)) throw new Error(`unknown profile: ${profileId}`)
+      state.sessionModels.push({ sessionId, profileId })
+      const activeId = profileId ?? state.model.activeId
+      return { profiles: state.model.profiles, activeId }
     },
     emit: (sessionId, data) => { for (const s of sinks) s(sessionId, data) },
     setAskHandler: (fn) => { state.askHandler = fn },
@@ -676,6 +701,50 @@ describe('M4.5 模型切换', () => {
       // Neither reached the manager, so the active profile never moved.
       expect(sessions.switched).toEqual([])
       expect((sessions.model as { activeId: string }).activeId).toBe('p1')
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('model.setActive with a sessionId pins THAT conversation, not the default', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      const res = await client.request('model.setActive', { profileId: 'p2', sessionId: 'conv_per_session' })
+      expect(res.result).toMatchObject({ ok: true, model: { activeId: 'p2' } })
+      // The write reached the manager as a per-session pin and the GLOBAL
+      // default stayed where it was — that is the whole point of the split.
+      expect(sessions.sessionModels).toEqual([{ sessionId: 'conv_per_session', profileId: 'p2' }])
+      expect(sessions.switched).toEqual([])
+      expect((sessions.model as { activeId: string }).activeId).toBe('p1')
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('model.list with a sessionId answers the session-scoped active model', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+
+      // The session id must ride through to the manager — that is the routing
+      // this file owns; the scoping itself is the manager's contract.
+      await client.request('model.setActive', { profileId: 'p2', sessionId: 'conv_per_session' })
+      const res = await client.request('model.list', { sessionId: 'conv_per_session' })
+      expect(res.result).toMatchObject({ activeId: 'p2' })
+      expect(sessions.modelStateCalls).toContain('conv_per_session')
+
+      const global = await client.request('model.list', {})
+      expect(global.result).toMatchObject({ activeId: 'p1' })
 
       client.close()
     } finally {

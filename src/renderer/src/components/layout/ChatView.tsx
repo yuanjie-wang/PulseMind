@@ -50,7 +50,11 @@ interface ChatViewProps {
   onRetryLast?: () => void
   profiles?: LlmProfile[]
   activeProfileId?: string
+  /** The active conversation carries its own model choice (`profile_id`
+   *  column) — the picker then offers 跟随默认模型 to drop the pin. */
+  profilePinned?: boolean
   onSelectProfile?: (profileId: string) => void
+  onResetProfile?: () => void
   onExtendLoop?: () => void
   onResumeExecution?: () => void
   onStopExecution?: () => void
@@ -129,7 +133,9 @@ function ChatView({
   conversationTitle,
   profiles,
   activeProfileId,
+  profilePinned,
   onSelectProfile,
+  onResetProfile,
   greeting,
   planScrollToMsgId,
   onPlanScrollHandled,
@@ -672,7 +678,9 @@ function ChatView({
             onCancel={onCancel}
             profiles={profiles}
             activeProfileId={activeProfileId}
+            profilePinned={profilePinned}
             onSelectProfile={onSelectProfile}
+            onResetProfile={onResetProfile}
             contextUsed={contextUsed}
             contextLength={contextLength}
             approvalMode={approvalMode}
@@ -839,7 +847,9 @@ function ChatView({
         onCancel={onCancel}
         profiles={profiles}
         activeProfileId={activeProfileId}
+        profilePinned={profilePinned}
         onSelectProfile={onSelectProfile}
+        onResetProfile={onResetProfile}
         contextUsed={contextUsed}
         contextLength={contextLength}
         boundExpertId={activeExpertId}

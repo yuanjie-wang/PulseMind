@@ -20,6 +20,10 @@ export interface ConversationIndexEntry {
   /** How this conversation gates tool calls; absent = never chosen ('auto').
    *  Approval is per conversation — a project policy has no say in it. */
   approvalMode?: SandboxApprovalMode
+  /** The LLM profile this conversation pinned itself to (composer's 模型下拉);
+   *  absent = never chosen — the conversation follows the global default
+   *  (`settings.activeProfileId`) and moves when the default moves. */
+  profileId?: string
 }
 
 export interface Message {
@@ -52,6 +56,10 @@ export interface Conversation {
    *  shared default 按需确认). Read-only here — writes go through
    *  setConversationApprovalMode, and upserts never touch the column. */
   approvalMode?: SandboxApprovalMode
+  /** The LLM profile this conversation pinned itself to; absent = follows the
+   *  global default. Read-only here — writes go through
+   *  setConversationProfile, and upserts never touch the column. */
+  profileId?: string
 }
 
 export interface ToolResultBatchEntry {

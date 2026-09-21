@@ -12,6 +12,7 @@ const KEY_TAB_SESSIONS = 'tabSessions'
 const KEY_SESSION_TABS = 'sessionTabs'
 const KEY_OPEN_PANELS = 'openPanels'
 const KEY_APPROVAL_MODES = 'approvalModes'
+const KEY_MODEL_IDS = 'modelIds'
 
 type IdMap = Record<string, string>
 type TabMap = Record<string, number>
@@ -111,4 +112,19 @@ export async function setTabApprovalMode(tabId: number, mode: SandboxApprovalMod
   const map = await read<ModeMap>(KEY_APPROVAL_MODES, {})
   map[String(tabId)] = mode
   await write(KEY_APPROVAL_MODES, map)
+}
+
+/** The tab's pre-session 模型 choice, same contract as the 授权 one above: a
+ *  panel can pick a model before its session exists, so the choice waits here
+ *  and ensureSession applies it to the conversation the first message creates.
+ *  The conversation's `profile_id` column is then the authority. */
+export async function getTabModelId(tabId: number): Promise<string | null> {
+  const map = await read<ModeMap>(KEY_MODEL_IDS, {})
+  return map[String(tabId)] ?? null
+}
+
+export async function setTabModelId(tabId: number, profileId: string): Promise<void> {
+  const map = await read<ModeMap>(KEY_MODEL_IDS, {})
+  map[String(tabId)] = profileId
+  await write(KEY_MODEL_IDS, map)
 }

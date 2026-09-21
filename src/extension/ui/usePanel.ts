@@ -121,11 +121,9 @@ export function usePanel(): PanelApi {
         case 'panel/sessions':
           setSessions(msg.payload)
           break
-        case 'panel/model':
-          // Broadcast, not an answer to this tab's click: the switch is global,
-          // so the other panels (and the desktop's own 模型下拉) moved too.
-          setModelState(msg.payload)
-          break
+        // No 'panel/model' branch: the 模型 switch is per conversation now,
+        // so only the clicking tab's model moved and its own request answer
+        // (snapshot.model, session-scoped service-side) carries the truth.
       }
     })
   }, [seed, sessionId])
@@ -193,8 +191,9 @@ export function usePanel(): PanelApi {
     }
   }, [approvalMode])
 
-  /** 模型下拉：与桌面端写同一处（settings.activeProfileId），本地先回显、失败回退。
-   *  服务端返回写后的权威状态，用它覆盖乐观值，避免两边不一致。 */
+  /** 模型下拉：把本会话的会话固定到所选模型（conversations.profile_id），
+   *  本地先回显、失败回退。服务端返回写后的权威状态（按会话解析的
+   *  activeId），用它覆盖乐观值，避免两边不一致。 */
   const setModel = useCallback(
     async (profileId: string) => {
       const previous = model

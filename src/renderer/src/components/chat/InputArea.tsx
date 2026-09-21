@@ -63,6 +63,8 @@ export function InputArea({
   onUnbindExpert,
   approvalMode,
   onChangeApprovalMode,
+  profilePinned,
+  onResetProfile,
   features,
 }: {
   isRequesting: boolean
@@ -112,6 +114,11 @@ export function InputArea({
   approvalMode?: SandboxApprovalMode
   /** Pick a different level. */
   onChangeApprovalMode?: (mode: SandboxApprovalMode) => void
+  /** The active conversation carries its own model choice — the picker then
+   *  also offers 跟随默认模型, so the pin is reversible. */
+  profilePinned?: boolean
+  /** Drop the conversation's own model choice (follow the global default). */
+  onResetProfile?: () => void
   /** Feature chrome subset for reuse outside the main chat (e.g. the routine
    *  run workspace). Omit for the full chat; a partial object exposes only the
    *  listed features. */
@@ -311,6 +318,16 @@ export function InputArea({
       label: modelLabel(p),
       onClick: () => onSelectProfile?.(p.id),
     })) ?? []
+  // A pinned conversation can drop its own choice and follow the global
+  // default again. Only shown while pinned, or the item would offer to undo
+  // nothing (and read as a second, confusing "default" entry).
+  if (profilePinned && onResetProfile) {
+    modelItems.push({
+      key: '__follow_default__',
+      label: t('chatView.model.followDefault'),
+      onClick: onResetProfile,
+    })
+  }
 
   const hasAttachments = selectedFiles.length + selectedFolders.length > 0
 

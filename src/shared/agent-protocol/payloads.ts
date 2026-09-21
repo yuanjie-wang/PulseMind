@@ -63,6 +63,10 @@ export interface AgentSessionCreateOptions {
    *  for itself (unattended runs); omitted = the conversation's own stored level
    *  (`conversations.approval_mode`), then the shared DEFAULT_APPROVAL_MODE. */
   approvalMode?: SandboxApprovalMode
+  /** Per-session model override (a routine pinned to one profile); omitted =
+   *  the active profile. Pinned for the session's life: a global model switch
+   *  does not move it, and a deleted profile falls back to the active one. */
+  profileId?: string
 }
 
 export interface SessionListResult {
@@ -102,8 +106,10 @@ export interface ModelOption {
   model: string
 }
 
-/** The selectable models + the active one. Global rather than per session:
- *  `settings.activeProfileId` is what the desktop's model picker switches. */
+/** The selectable models + the active one. `activeId` is the *effective* model
+ *  for the requested scope: a session's own choice (`conversations.profile_id`,
+ *  under its create-time pin) when a `sessionId` is in play, else the global
+ *  default (`settings.activeProfileId`) that new/unpinned conversations follow. */
 export interface ModelState {
   profiles: ModelOption[]
   activeId: string
@@ -121,6 +127,10 @@ export type ModelListResult = ModelState
 
 export interface ModelSetActiveParams {
   profileId: string
+  /** Present = set THIS session's model (the conversation's own `profile_id`
+   *  column, under its create-time pin); absent = the global default
+   *  (`settings.activeProfileId`) that unpinned conversations follow. */
+  sessionId?: string
 }
 
 /** model.setActive result: the state *after* the write, so a caller reconciles

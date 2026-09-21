@@ -42,6 +42,7 @@ import { useGreeting } from './hooks/useGreeting'
 import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
+import { usePendingProfileStore } from './stores/pendingProfileStore'
 import { conversationKeyOf } from '../../shared/conversation-key'
 import { NotifyBridge } from './utils/notify'
 import { reportSilentFailure } from './utils/notify-core'
@@ -254,6 +255,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     reloadConversations,
     updateConversationExpert,
     updateConversationApproval,
+    updateConversationProfile,
     plan,
     stopExecution,
     resumeExecution
@@ -320,6 +322,32 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     // the one the first message will create (useChatController consumes it).
     if (activeConvKey) updateConversationApproval(activeConvKey, mode)
     else usePendingApprovalStore.getState().setMode(mode)
+  }
+
+  // ── 模型 (composer's model picker) ──
+  // The same per-conversation shape as the 授权 block above: a conversation
+  // that picked a model carries its own profileId; one that never chose
+  // follows the global default (`settings.activeProfileId`, the settings
+  // panel's 默认模型). The picker resolves the fallback exactly as the engine
+  // does — pin > column > default — so the label never shows a model the next
+  // message will not use. A welcome-picked model rides pendingProfileStore to
+  // the conversation the first message creates.
+  const pendingProfileId = usePendingProfileStore((s) => s.profileId)
+  const activeConvProfileId = activeConvKey
+    ? conversations.find((c: any) => c.key === activeConvKey)?.profileId
+    : undefined
+  // undefined column = following the default; null pending = none picked yet.
+  const effectiveProfileId: string | undefined = activeConvKey
+    ? (activeConvProfileId ?? settings.activeProfileId)
+    : (pendingProfileId ?? settings.activeProfileId)
+  const profilePinned = activeConvKey ? activeConvProfileId != null : false
+  const changeProfile = (profileId: string): void => {
+    if (activeConvKey) updateConversationProfile(activeConvKey, profileId)
+    else usePendingProfileStore.getState().setProfileId(profileId)
+  }
+  const resetProfile = (): void => {
+    if (activeConvKey) updateConversationProfile(activeConvKey, null)
+    else usePendingProfileStore.getState().clearProfileId()
   }
 
   // Set MemoryManager and KnowledgeManager config so background tasks can call the API
@@ -582,8 +610,10 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               conversationId={activeConvKey}
               conversationTitle={activeConvTitle}
               profiles={settings.profiles}
-              activeProfileId={settings.activeProfileId}
-              onSelectProfile={(profileId: string) => saveSettings({ ...settings, activeProfileId: profileId })}
+              activeProfileId={effectiveProfileId}
+              profilePinned={profilePinned}
+              onSelectProfile={changeProfile}
+              onResetProfile={resetProfile}
               greeting={greeting}
               planScrollToMsgId={planScrollToMsgId}
               onPlanScrollHandled={() => setPlanScrollToMsgId(null)}

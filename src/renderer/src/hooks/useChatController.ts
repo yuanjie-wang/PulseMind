@@ -4,6 +4,7 @@ import { useChatManagers } from './useChatManagers'
 import { useConversationEngine } from './useConversationEngine'
 import { useConversationPersistence } from './useConversationPersistence'
 import { takePendingApprovalMode } from '../stores/pendingApprovalStore'
+import { takePendingProfileId } from '../stores/pendingProfileStore'
 import { useNewTaskStore } from '../stores/newTaskStore'
 import { useNavigationStore } from '../stores/navigationStore'
 import { useTranslation } from '../i18n/useTranslation'
@@ -377,6 +378,11 @@ export function useChatController(options: UseChatControllerOptions) {
         // at that level (main reads the column in doCreateSession).
         const pendingApproval = takePendingApprovalMode()
         if (pendingApproval) persistence.updateConversationApproval(convId, pendingApproval)
+        // Same carry for a 模型 picked on the welcome composer: the write is
+        // issued before startLoop, so the first ask already resolves the
+        // conversation's own profile instead of the global default.
+        const pendingProfile = takePendingProfileId()
+        if (pendingProfile) persistence.updateConversationProfile(convId, pendingProfile)
         engine.activateEngine(convId)
         persistence.activateConversation(convId)
       } else {
@@ -406,7 +412,7 @@ export function useChatController(options: UseChatControllerOptions) {
     },
     [apiKey, persistence.activeConversationKey, persistence.addConversation,
      persistence.setActiveConversationKey, persistence.updateConversationTitleInList,
-     persistence.updateConversationApproval,
+     persistence.updateConversationApproval, persistence.updateConversationProfile,
      persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, options, t, message]
   )
 
@@ -471,6 +477,7 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     togglePin: persistence.togglePin,
     bumpConversation: persistence.bumpConversation,
     updateConversationExpert: persistence.updateConversationExpert,
-    updateConversationApproval: persistence.updateConversationApproval
+    updateConversationApproval: persistence.updateConversationApproval,
+    updateConversationProfile: persistence.updateConversationProfile
   }
 }

@@ -174,7 +174,7 @@ export function listConversations(): ConversationIndexEntry[] {
   const rows = database
     .prepare(
       `SELECT
-        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id, c.workspace_dir, c.expert_id, c.approval_mode,
+        c.id, c.title, c.summary, c.keywords, c.pinned, c.created_at, c.updated_at, c.project_id, c.workspace_dir, c.expert_id, c.approval_mode, c.profile_id,
         (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) AS message_count
       FROM conversations c
@@ -187,6 +187,7 @@ export function listConversations(): ConversationIndexEntry[] {
       pinned: number; created_at: string; updated_at: string
       last_message: string | null; message_count: number; project_id: string | null
       workspace_dir: string | null; expert_id: string | null; approval_mode: string | null
+      profile_id: string | null
     }>
 
   return rows.map((r) => ({
@@ -197,6 +198,7 @@ export function listConversations(): ConversationIndexEntry[] {
     workspaceDir: r.workspace_dir || undefined,
     expertId: r.expert_id || undefined,
     approvalMode: toSandboxApprovalMode(r.approval_mode),
+    profileId: r.profile_id || undefined,
     messageCount: r.message_count, createdAt: r.created_at, updatedAt: r.updated_at
   }))
 }
@@ -204,8 +206,8 @@ export function listConversations(): ConversationIndexEntry[] {
 export function getConversation(id: string): Conversation | null {
   const database = getDb()
   const conv = database
-    .prepare('SELECT id, title, summary, keywords, history_summary, history_summary_frontier, approval_mode, created_at, updated_at FROM conversations WHERE id = ?')
-    .get(id) as { id: string; title: string; summary: string | null; keywords: string | null; history_summary: string | null; history_summary_frontier: string | null; approval_mode: string | null; created_at: string; updated_at: string } | undefined
+    .prepare('SELECT id, title, summary, keywords, history_summary, history_summary_frontier, approval_mode, profile_id, created_at, updated_at FROM conversations WHERE id = ?')
+    .get(id) as { id: string; title: string; summary: string | null; keywords: string | null; history_summary: string | null; history_summary_frontier: string | null; approval_mode: string | null; profile_id: string | null; created_at: string; updated_at: string } | undefined
   if (!conv) return null
 
   const messages = database
@@ -219,6 +221,7 @@ export function getConversation(id: string): Conversation | null {
     historySummary: conv.history_summary || undefined,
     historySummaryFrontier: conv.history_summary_frontier || undefined,
     approvalMode: toSandboxApprovalMode(conv.approval_mode),
+    profileId: conv.profile_id || undefined,
     messages: messages.map((m) => ({
       id: m.id, role: m.role as 'user' | 'assistant',
       content: m.content,
@@ -434,6 +437,25 @@ export function setConversationApprovalMode(id: string, mode: SandboxApprovalMod
 export function getConversationApprovalMode(id: string): SandboxApprovalMode | undefined {
   const row = getDb().prepare('SELECT approval_mode FROM conversations WHERE id = ?').get(id) as { approval_mode: string | null } | undefined
   return toSandboxApprovalMode(row?.approval_mode)
+}
+
+/** Pin the conversation to an LLM profile (null = unpin → follow the global
+ *  default again). Same stub-insert contract as setConversationApprovalMode:
+ *  may run before the row exists (the welcome composer's model picker), and
+ *  later upserts never touch profile_id, so the choice survives. */
+export function setConversationProfile(id: string, profileId: string | null): void {
+  if (!isRealConversationId(id)) return
+  const r = getDb().prepare('UPDATE conversations SET profile_id = ? WHERE id = ?').run(profileId, id)
+  if (r.changes === 0 && profileId) {
+    stubInsertConversation(id, { profile_id: profileId })
+  }
+}
+
+/** Resolve a conversation's own model choice (undefined = never chosen — the
+ *  conversation follows the global default). */
+export function getConversationProfileId(id: string): string | undefined {
+  const row = getDb().prepare('SELECT profile_id FROM conversations WHERE id = ?').get(id) as { profile_id: string | null } | undefined
+  return row?.profile_id || undefined
 }
 
 /** The conversation's resolved working directory (M8), or null before the

@@ -23,12 +23,15 @@ export const Methods = {
    *  `conversations.approval_mode`, so it takes effect on the next message. */
   sessionSetApprovalMode: 'session.setApprovalMode',
   /** client → service: the selectable LLM profiles and which one is active.
-   *  **Global, not per session** — the desktop's 模型下拉 writes the same
-   *  setting, so the two surfaces are one control in two places. */
+   *  `activeId` is the effective model for the requested scope: with a
+   *  `sessionId`, the session's own choice (`conversations.profile_id` under
+   *  its create-time pin); without it, the global default
+   *  (`settings.activeProfileId`) that unpinned conversations follow. */
   modelList: 'model.list',
-  /** client → service: switch the active profile. Same field the desktop picker
-   *  writes (`settings.activeProfileId`); the service hot-swaps live sessions
-   *  with it, so the choice lands on every session's next message. */
+  /** client → service: switch a model. With a `sessionId` this pins THAT
+   *  session's conversation to the profile (the remote equivalent of the
+   *  desktop composer's per-conversation 模型下拉); without one it moves the
+   *  global default, hot-swapping only the sessions that follow it. */
   modelSetActive: 'model.setActive',
   agentAsk: 'agent.ask',
   agentCancel: 'agent.cancel',

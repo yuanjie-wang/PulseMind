@@ -281,6 +281,9 @@ export interface ElectronAPI {
   setConversationProject: (id: string, projectId: string) => Promise<void>
   setConversationExpert: (id: string, expertId: string | null) => Promise<void>
   setConversationApprovalMode: (id: string, mode: SandboxApprovalMode) => Promise<void>
+  /** Pin (profileId) or unpin (null → follow the global default) the
+   *  conversation's own model. The session re-resolves it on refreshOptions. */
+  setConversationProfile: (id: string, profileId: string | null) => Promise<void>
   routineList: () => Promise<Routine[]>
   routineGet: (id: string) => Promise<Routine | null>
   routineCreate: (input: Partial<Routine>) => Promise<Routine>

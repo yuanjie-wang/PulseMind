@@ -15,10 +15,18 @@ export interface AgentServiceSessions {
   hydrate(sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null): Promise<void>
   engineCall(sessionId: string, method: string, args?: unknown[]): Promise<unknown>
   onEvent(sink: (sessionId: string, data: AgentEventData) => void): () => void
-  /** model.list: the selectable LLM profiles + the active one (global). */
-  modelState(): Promise<ModelState>
-  /** model.setActive: switch the active profile (hot-swaps live sessions). */
+  /** model.list: the selectable LLM profiles + the active one — the session's
+   *  own model when `sessionId` is given, the global default otherwise. */
+  modelState(sessionId?: string): Promise<ModelState>
+  /** model.setActive without a session: switch the DEFAULT profile
+   *  (hot-swaps the live sessions that follow it). */
   setActiveProfile(profileId: string): Promise<ModelState>
+  /** model.setActive with a session: pin (profileId) or unpin (null → the
+   *  conversation follows the global default again) THAT conversation's model
+   *  and hot-apply it. Answers with the model actually in force for the
+   *  session afterwards — a create-time pin (a routine's model) outranks the
+   *  column, so the caller reconciles against this answer. */
+  setSessionProfile(sessionId: string, profileId: string | null): Promise<ModelState>
   /** session.setApprovalMode: write the conversation's 授权 level (the remote
    *  授权 button) and hot-apply it to the live session. Answers with the level
    *  actually in force for the session afterwards — a pinned unattended run

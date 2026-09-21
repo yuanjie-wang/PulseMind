@@ -310,23 +310,31 @@ export async function startAgentService(
             break
           }
           case Methods.modelList: {
+            // With a sessionId the active id is THAT session's effective model
+            // (its conversation's own choice under the create-time pin);
+            // without one, the global default.
+            const sessionId = typeof params.sessionId === 'string' && params.sessionId ? params.sessionId : undefined
             void sessions
-              .modelState()
+              .modelState(sessionId)
               .then((model) => send(makeResult(msg.id ?? null, model)))
               .catch((err) => send(makeError(msg.id ?? null, ErrorCodes.internal, errorMessage(err))))
             break
           }
           case Methods.modelSetActive: {
-            // 模型切换 is global (the desktop's own picker writes the same
-            // setting), so unlike rename/delete this one is not scoped to the
-            // caller's origins — any paired client may switch it.
+            // With a sessionId this pins THAT conversation's model (its own
+            // `conversations.profile_id`); without one it moves the global
+            // default. Either way the request is not scoped to the caller's
+            // origins — any paired client may switch, like 授权.
             const profileId = String(params.profileId ?? '')
             if (!profileId) {
               send(makeError(msg.id ?? null, ErrorCodes.invalidParams, 'profileId is required'))
               break
             }
-            void sessions
-              .setActiveProfile(profileId)
+            const sessionId = typeof params.sessionId === 'string' && params.sessionId ? params.sessionId : undefined
+            const applied = sessionId
+              ? sessions.setSessionProfile(sessionId, profileId)
+              : sessions.setActiveProfile(profileId)
+            void applied
               .then((model) => send(makeResult(msg.id ?? null, { ok: true, model })))
               .catch((err) => send(makeError(msg.id ?? null, ErrorCodes.invalidParams, errorMessage(err))))
             break

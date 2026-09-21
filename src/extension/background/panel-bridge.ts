@@ -16,7 +16,6 @@ import type {
   PageContext,
   SessionCreateResult,
   SessionListResult,
-  ModelSetActiveResult,
 } from '../../shared/agent-protocol'
 import type { WsClient } from './ws-client'
 import type { ConnectionState, PanelRequest, PanelResponse, PanelSnapshot, SessionSummary } from '../bridge'
@@ -27,9 +26,11 @@ import {
   getSessionForTab,
   getTabApprovalMode,
   getTabForSession,
+  getTabModelId,
   isPanelOpen,
   setPanelOpen,
   setTabApprovalMode,
+  setTabModelId,
 } from './state'
 
 /** An ask can run for minutes; the client's default request timeout is 30s, so
@@ -134,14 +135,19 @@ export class PanelBridge {
         }
 
         case 'panel/set-model': {
-          // Global, unlike 授权: the service writes `settings.activeProfileId` and
-          // hot-swaps every live session itself, so this tab waits for the
-          // service's answer instead of writing anything locally. The panel that
-          // did *not* click still has to learn about it, hence the broadcast.
-          const res = (await this.requireClient().request(Methods.modelSetActive, {
-            profileId: msg.profileId,
-          })) as ModelSetActiveResult
-          this.broadcast('panel/model', res.model)
+          // Per conversation now, like 授权: the request pins THIS tab's
+          // session's conversation (`conversations.profile_id`). With no
+          // session yet the choice waits in the tab's session storage and
+          // ensureSession applies it to the one the first message creates —
+          // the click is never lost. The answer's snapshot carries the model
+          // in force afterwards; no cross-tab broadcast, other tabs'
+          // conversations did not move.
+          const sessionId = await getSessionForTab(tabId)
+          if (sessionId) {
+            await this.requireClient().request(Methods.modelSetActive, { profileId: msg.profileId, sessionId })
+          } else {
+            await setTabModelId(tabId, msg.profileId)
+          }
           return { ok: true, snapshot: await this.snapshot(tabId) }
         }
 
@@ -221,6 +227,7 @@ export class PanelBridge {
       if (!this.mirrors.has(created.sessionId)) this.mirrors.set(created.sessionId, freshSessionState())
       await bindTabSession(tabId, created.sessionId)
       await this.applyTabApprovalMode(tabId, created.sessionId)
+      await this.applyTabModelId(tabId, created.sessionId)
       this.broadcast('panel/sessions', await this.listSessions(this.requireClient()).catch(() => []))
     }
     return created.sessionId
@@ -234,6 +241,19 @@ export class PanelBridge {
       .request(Methods.sessionSetApprovalMode, { sessionId, mode })
       .catch(() => {
         /* the next message re-reads the stored mode anyway */
+      })
+  }
+
+  /** Carry a pre-session 模型 choice onto the session that just appeared —
+   *  same contract as the 授权 carry above: the column becomes the authority
+   *  once it exists, and the tab value only bridges the gap before it. */
+  private async applyTabModelId(tabId: number, sessionId: string): Promise<void> {
+    const profileId = await getTabModelId(tabId)
+    if (!profileId) return
+    await this.requireClient()
+      .request(Methods.modelSetActive, { sessionId, profileId })
+      .catch(() => {
+        /* the label re-reads the stored model on the next snapshot anyway */
       })
   }
 
@@ -253,11 +273,16 @@ export class PanelBridge {
     let sessionId = await getSessionForTab(tabId)
     const connection = this.deps.getConnection()
     const panelOpen = await isPanelOpen(tabId)
+    const client = this.deps.getClient()!
     const inventory = connection.connected
-      ? await this.inventory(this.deps.getClient()!).catch(() => ({ sessions: [] as SessionSummary[], model: undefined }))
+      ? await this.inventory(client).catch(() => ({ sessions: [] as SessionSummary[], model: undefined }))
       : { sessions: [] as SessionSummary[], model: undefined }
     const sessions = inventory.sessions
     if (!sessionId) {
+      // No session yet: the picker shows the global default, overridden by a
+      // pre-session 模型 choice still waiting to be carried onto the
+      // conversation the first message creates (same shape as the 授权 line).
+      const pendingModelId = await getTabModelId(tabId)
       return {
         sessionId: null,
         connection,
@@ -266,7 +291,9 @@ export class PanelBridge {
         streamingBlocks: [],
         status: 'idle',
         sessions,
-        model: inventory.model,
+        model: pendingModelId && inventory.model
+          ? { ...inventory.model, activeId: pendingModelId }
+          : inventory.model,
         approvalMode: (await getTabApprovalMode(tabId)) ?? undefined,
       }
     }
@@ -293,6 +320,12 @@ export class PanelBridge {
         }
       }
     }
+    // The picker renders the session's OWN model (its conversation's choice,
+    // under the create-time pin); the global default is only the fallback for
+    // a service that does not know the session yet.
+    const model = connection.connected && sessionId
+      ? ((await client.request(Methods.modelList, { sessionId }).catch(() => undefined)) as ModelState | undefined) ?? inventory.model
+      : inventory.model
     return {
       sessionId,
       connection,
@@ -305,7 +338,7 @@ export class PanelBridge {
       // carrier for the reason and would show 未知错误.
       statusError: 'error' in state.agentStatus ? state.agentStatus.error : undefined,
       sessions,
-      model: inventory.model,
+      model,
       // The desktop's stored mode wins (the tab value is only a pre-session
       // carry-over, and applyTabApprovalMode pushed it into the same column).
       approvalMode: sessions.find((s) => s.sessionId === sessionId)?.approvalMode ?? (await getTabApprovalMode(tabId)) ?? undefined,
@@ -329,7 +362,7 @@ export class PanelBridge {
     }
   }
 
-  private broadcast(type: 'panel/connection' | 'panel/sessions' | 'panel/model', payload: unknown): void {
+  private broadcast(type: 'panel/connection' | 'panel/sessions', payload: unknown): void {
     void chrome.tabs.query({}).then(async (tabs) => {
       for (const tab of tabs) {
         if (tab.id === undefined || !(await isPanelOpen(tab.id))) continue

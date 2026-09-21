@@ -23,7 +23,7 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, deriveConvType } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, getConversationProfileId, setConversationProfile, deriveConvType } from '../storage/conversation.db'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { projectStore } from '../storage/project-store'
 import { expertStore } from '../storage/expert-store'
@@ -76,6 +76,10 @@ interface SessionEntry {
     /** Approval mode the session's creator demanded (derived sessions run
      *  unattended). Set = nothing else can change it, ever. */
     approvalOverride?: SandboxApprovalMode
+    /** LLM profile the session's creator demanded (a routine pinned to one
+     *  model). Set = refreshOptions re-resolves THIS profile, so a global
+     *  model switch cannot move the session off its chosen model. */
+    profileId?: string
   }
   /** Last expert context resolved by refreshExpertContext. refreshOptions
    *  replaces the option bag wholesale, so the expert pack must be re-attached
@@ -145,6 +149,14 @@ export class AgentSessionManagerImpl {
    *  next message. */
   private effectiveApprovalMode(sessionId: string, entry: SessionEntry): SandboxApprovalMode {
     return pickApprovalMode(entry.pinned.approvalOverride, getConversationApprovalMode(sessionId))
+  }
+
+  /** Model precedence, in one place (mirrors effectiveApprovalMode): the
+   *  create-time pin (a routine's model choice) > the conversation's own stored
+   *  choice (the composer's 模型下拉 writes it, as does the panel's) >
+   *  undefined, which resolveProfile resolves to the global default. */
+  private effectiveProfileId(sessionId: string, entry: SessionEntry): string | undefined {
+    return entry.pinned.profileId ?? getConversationProfileId(sessionId)
   }
 
   private emitMessages(sessionId: string, messages: AgentMessage[]): void {
@@ -382,30 +394,44 @@ export class AgentSessionManagerImpl {
     this.syncRunLimits(settings)
   }
 
-  /** Resolve the active LLM profile from settings (falls back to first profile). */
-  private async resolveProfile(): Promise<LlmProfile> {
+  /** Resolve the LLM profile to run a session with: `preferredId` (a
+   *  create-time pin, e.g. a routine's model choice) when it still resolves,
+   *  otherwise the active profile. Falls back to first profile. */
+  private async resolveProfile(preferredId?: string): Promise<LlmProfile> {
     const settings = await settingsStore.get()
-    const profile = settings.profiles.find((p) => p.id === settings.activeProfileId) ?? settings.profiles[0]
+    const profile = (preferredId ? settings.profiles.find((p) => p.id === preferredId) : undefined)
+      ?? settings.profiles.find((p) => p.id === settings.activeProfileId)
+      ?? settings.profiles[0]
     if (!profile) throw new Error('未配置 LLM Profile,请先在设置中添加')
     return profile
   }
 
-  /** The selectable models for the remote 模型下拉. Deliberately narrowed to
-   *  what a client needs to render the list: the profile's credentials and
-   *  endpoint never go on the wire. */
-  async modelState(): Promise<ModelState> {
+  /** The selectable models for a 模型下拉. Deliberately narrowed to what a
+   *  client needs to render the list: the profile's credentials and endpoint
+   *  never go on the wire. With `sessionId` the active id is that session's
+   *  effective model (its own choice under the create-time pin); without one
+   *  it is the global default the unpinned conversations follow. */
+  async modelState(sessionId?: string): Promise<ModelState> {
     const settings = await settingsStore.get()
-    const active = settings.profiles.find((p) => p.id === settings.activeProfileId) ?? settings.profiles[0]
+    const ownId = sessionId
+      ? (this.sessions.get(sessionId)?.pinned.profileId ?? getConversationProfileId(sessionId))
+      : undefined
+    const active = (ownId ? settings.profiles.find((p) => p.id === ownId) : undefined)
+      ?? settings.profiles.find((p) => p.id === settings.activeProfileId)
+      ?? settings.profiles[0]
     return {
       profiles: settings.profiles.map((p) => ({ id: p.id, name: p.name, provider: p.provider, model: p.model })),
       activeId: active?.id ?? '',
     }
   }
 
-  /** Switch the active model. Global, like the desktop's own picker (`settings.activeProfileId`),
-   *  so after writing it the live sessions are hot-swapped here: the desktop
-   *  renderer only refreshes when *it* changed the setting, and without this
-   *  sweep a panel-side switch would not reach a session's next message. */
+  /** Switch the DEFAULT model (`settings.activeProfileId`) — what the settings
+   *  panel's picker sets. Sessions that carry a model of their own (create-time
+   *  pin or the conversation's `profile_id` column) are deliberately NOT
+   *  swept — that is what "default" means. The following sessions are
+   *  hot-swapped here because the desktop renderer only refreshes when *it*
+   *  changed the setting, and a panel-side default switch must still reach
+   *  them. */
   async setActiveProfile(profileId: string): Promise<ModelState> {
     const settings = await settingsStore.get()
     const profile = settings.profiles.find((p) => p.id === profileId)
@@ -413,12 +439,33 @@ export class AgentSessionManagerImpl {
     if (settings.activeProfileId !== profile.id) {
       await settingsStore.update(s => ({ ...s, activeProfileId: profile.id }))
     }
-    for (const sessionId of this.sessions.keys()) {
+    for (const [sessionId, entry] of this.sessions) {
+      if (this.effectiveProfileId(sessionId, entry)) continue // the session owns its model
       await this.refreshOptions(sessionId).catch((err) => {
         console.warn('[AgentSession] model switch: refresh failed', sessionId, err)
       })
     }
     return this.modelState()
+  }
+
+  /** Per-conversation 模型 — the remote equivalent of the desktop composer's
+   *  model picker (`setConversationProfile` + `agentSessionRefreshOptions`,
+   *  moved here so a ws client cannot fork the semantics). `profileId = null`
+   *  unpins: the conversation follows the global default again. Precedence
+   *  mirrors setApprovalMode: a create-time pin (a routine's model) outranks
+   *  the column, so the answer is the model in force afterwards — for a pinned
+   *  session those differ, and the caller must not be told its click took when
+   *  the session kept its own model. */
+  async setSessionProfile(sessionId: string, profileId: string | null): Promise<ModelState> {
+    if (profileId) {
+      const settings = await settingsStore.get()
+      if (!settings.profiles.some((p) => p.id === profileId)) throw new Error(`unknown profile: ${profileId}`)
+    }
+    setConversationProfile(sessionId, profileId)
+    await this.refreshOptions(sessionId).catch((err) => {
+      console.warn('[AgentSession] model switch: refresh failed', sessionId, err)
+    })
+    return this.modelState(sessionId)
   }
 
   /** session.setApprovalMode — the remote 授权 button (PLAN-browser-extension
@@ -490,7 +537,11 @@ export class AgentSessionManagerImpl {
   private async doCreateSession(sessionId: string, opts: AgentSessionCreateOptions): Promise<void> {
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
-    const profile = await this.resolveProfile()
+    // A create-time profile pin (a routine's model choice) wins when it still
+    // resolves; otherwise the conversation's own choice — the model picked on
+    // the composer lands on the column before this session exists — and the
+    // global default only for a conversation that never chose.
+    const profile = await this.resolveProfile(opts.profileId ?? getConversationProfileId(sessionId))
     // Local UI conversations resolve their working directory here (PLAN-0.4.0
     // M8): project-bound ones use the project's fixed workspace, plain ones get
     // a lazily-created timestamped folder under the global workspace. Canvas /
@@ -601,6 +652,10 @@ export class AgentSessionManagerImpl {
         // keeps following its conversation's own choice — see
         // refreshConversationApproval.
         approvalOverride: opts.approvalMode,
+        // Same pin shape for the model: refreshOptions re-resolves THIS id
+        // (falling back to active when deleted), so a global 模型 switch
+        // never moves a pinned session off its chosen model.
+        profileId: opts.profileId,
       },
     })
     // Per-session sandbox context: wrapped around every tool-executing entry
@@ -815,15 +870,21 @@ export class AgentSessionManagerImpl {
   }
 
   /** Rebuild engine options from current settings/profile and hot-swap them.
-   *  Per-session pins (workspace, approval mode, prompt/tool overrides) survive:
-   *  a settings change must not move a session off its working directory, flip
-   *  its approval mode, or widen a derived session's toolset mid-run. */
+   *  Per-session pins (workspace, approval mode, model, prompt/tool overrides)
+   *  survive: a settings change must not move a session off its working
+   *  directory, flip its approval mode, swap its model, or widen a derived
+   *  session's toolset mid-run. */
   async refreshOptions(sessionId: string): Promise<void> {
     const entry = await this.ensureEntry(sessionId).catch(() => null)
     if (!entry) return
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
-    const profile = await this.resolveProfile()
+    // The session's OWN model re-resolves here — the create-time pin (a
+    // routine's model choice) and, beneath it, the conversation's stored
+    // choice (`getConversationProfileId`); undefined falls through to the
+    // global default inside resolveProfile. This is what makes
+    // setActiveProfile's default sweep a no-op for sessions that own a model.
+    const profile = await this.resolveProfile(this.effectiveProfileId(sessionId, entry))
     // 项目概述 is re-read here (NOT a session pin, unlike workspaceDir): a
     // project edit mid-conversation lands on the session's next request via
     // the refreshProjectSessions sweep below.

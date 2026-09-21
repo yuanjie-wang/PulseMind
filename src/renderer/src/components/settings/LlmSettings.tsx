@@ -191,24 +191,12 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
   }
 
   const handleEditingProfileChange = (profileId: string) => {
-    // Warn about unsaved changes before switching editing target
-    if (isDirty && localProfile) {
-      Modal.confirm({
-        title: t('settingsDrawer.discardChanges'),
-        icon: <ExclamationCircleFilled />,
-        content: t('settingsDrawer.discardChangesContent', { name: localProfile.name }),
-        okText: t('settingsDrawer.discard'),
-        okButtonProps: { danger: true },
-        cancelText: t('common.cancel'),
-        onOk: () => {
-          setEditingProfileId(profileId)
-          setLocalProfile(settings.profiles.find(p => p.id === profileId) ?? null)
-        }
-      })
-    } else {
+    // Same discard confirm as every other exit path — asks only when dirty.
+    void confirmDiscard().then((leave) => {
+      if (!leave) return
       setEditingProfileId(profileId)
       setLocalProfile(settings.profiles.find(p => p.id === profileId) ?? null)
-    }
+    })
   }
 
   const handleUseProfile = async () => {
@@ -254,10 +242,12 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
   }
 
   // ── Leaving with unsaved edits ──
-  // One discard confirm shared by every exit path: drawer close, and (inline)
-  // the settings page's tab switch via the leave guard. Resolves true = leave.
+  // One discard confirm shared by every exit path: drawer close, (inline)
+  // the settings page's tab switch via the leave guard, and the editing
+  // target switch. Resolves true = leave. A clean profile (nothing edited)
+  // leaves without asking — the dialog is about discarding EDITS.
   const confirmDiscard = (): Promise<boolean> => new Promise((resolve) => {
-    if (!localProfile) {
+    if (!localProfile || !isDirty) {
       resolve(true)
       return
     }
@@ -327,6 +317,14 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
         {/* ── 配置：切换 / 新建 / 删除 / 名称 ── */}
         <section>
           <SectionLabel>{t('settingsDrawer.sectionConfig')}</SectionLabel>
+          {/* 默认模型 semantics (2026-09-21): the drawer's active profile is the
+              DEFAULT — new conversations and conversations without their own
+              choice run on it; a conversation can pin its own model from the
+              composer's picker. The hint says so, or "active" reads as if
+              switching here would move every existing conversation. */}
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>
+            {t('settingsDrawer.defaultModelHint')}
+          </Text>
           <Space.Compact style={{ width: '100%' }}>
             <Select
               value={editingProfileId}

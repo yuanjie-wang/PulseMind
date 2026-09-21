@@ -103,25 +103,37 @@ const userMessage = (id: string, text: string): unknown => ({
 describe('extension panel bridge', () => {
   let client: FakeClient
   let sent: SentMessage[]
-  let tabs: unknown[]
   /** One settings store behind both RPCs, the way the real service has one: the
-   *  switch is written to it, and the next read reports the new active profile. */
+   *  DEFAULT switch is written to it, and the next read reports the new value. */
   let modelStore: ReturnType<typeof makeModelStore>
+  /** Per-session pins behind model.setActive/model.list, the way the real
+   *  service keeps conversations.profile_id. */
+  let sessionModels: Map<string, string>
 
   beforeEach(() => {
     const stub = installChromeStub()
     sent = stub.sent
-    tabs = stub.tabs
     modelStore = makeModelStore()
+    sessionModels = new Map()
     client = new FakeClient()
     client.handlers['session.create'] = () => ({ sessionId: 'ws_1', agentId: 'default', resumed: false })
     client.handlers['session.list'] = () => ({ sessions: [{ sessionId: 'ws_1', title: 'X' }], model: modelStore })
     client.handlers['model.setActive'] = (params) => {
       const id = String(params.profileId)
       if (!modelStore.profiles.some((p) => p.id === id)) throw new Error(`unknown profile: ${id}`)
-      modelStore = { ...modelStore, activeId: id }
-      return { ok: true, model: modelStore }
+      const sessionId = typeof params.sessionId === 'string' ? params.sessionId : undefined
+      if (sessionId) sessionModels.set(sessionId, id)
+      else modelStore = { ...modelStore, activeId: id }
+      return { ok: true, model: modelStateFor(sessionId) }
     }
+    client.handlers['model.list'] = (params) => modelStateFor(typeof params.sessionId === 'string' ? params.sessionId : undefined)
+  })
+
+  /** The service's scoping contract: a session's own pin when it has one, the
+   *  global default otherwise. */
+  const modelStateFor = (sessionId?: string) => ({
+    profiles: modelStore.profiles,
+    activeId: (sessionId ? sessionModels.get(sessionId) : undefined) ?? modelStore.activeId,
   })
 
   const panelEvents = (): SentMessage[] => sent.filter((s) => s.msg.type === 'panel/event')
@@ -363,50 +375,65 @@ describe('extension panel bridge', () => {
     expect(client.notifications).toHaveLength(0)
   })
 
-  // ── 模型 (global, unlike 授权) ──────────────────────────────────────
+  // ── 模型 (per conversation, like 授权) ──────────────────────────────
 
-  it('switches the model through the service and broadcasts it to every open panel', async () => {
+  it('keeps a pre-session model choice on the tab and replays it onto the session', async () => {
+    const bridge = makeBridge(client)
+    // No session yet: there is no conversation row to store the model on, so
+    // the choice has to survive in the tab binding.
+    const set = await bridge.handleRequest({ type: 'panel/set-model', profileId: 'p2' }, TAB)
+    expect(set.ok).toBe(true)
+    expect(set.snapshot?.model).toMatchObject({ activeId: 'p2' })
+    expect(client.callsTo('model.setActive')).toHaveLength(0)
+
+    // The session appears with the first ask — the choice rides along, and
+    // the picker then reads the session-scoped state back.
+    const asked = await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    expect(client.callsTo('model.setActive')[0]).toMatchObject({ sessionId: 'ws_1', profileId: 'p2' })
+    expect(asked.snapshot?.model).toMatchObject({ activeId: 'p2' })
+    // The DEFAULT never moved: only this conversation pinned itself.
+    expect(modelStore.activeId).toBe('p1')
+  })
+
+  it('sends the model straight through once a session exists, without touching the default', async () => {
     const bridge = makeBridge(client)
     await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
-    tabs.push({ id: TAB })
-    await bridge.handleRequest({ type: 'panel/set-open', open: true }, TAB)
 
     const res = await bridge.handleRequest({ type: 'panel/set-model', profileId: 'p2' }, TAB)
     expect(res.ok).toBe(true)
-    // Nothing is written tab-locally: the service owns the setting (it is the
-    // same one the desktop's picker writes) and answers with the state after it.
-    expect(client.callsTo('model.setActive')).toEqual([{ profileId: 'p2' }])
+    expect(client.callsTo('model.setActive')).toEqual([{ profileId: 'p2', sessionId: 'ws_1' }])
     expect(res.snapshot?.model).toMatchObject({ activeId: 'p2' })
+    expect(modelStore.activeId).toBe('p1')
 
-    // The switch is global, so the panels that did not click have to hear about
-    // it — otherwise every other tab keeps showing the previous model.
+    // Per conversation now: no cross-tab broadcast — other tabs'
+    // conversations did not move.
     await settle()
-    const pushed = sent.filter((s) => s.msg.type === 'panel/model')
-    expect(pushed).toHaveLength(1)
-    expect(pushed[0].msg.payload).toMatchObject({ activeId: 'p2' })
+    expect(sent.filter((s) => s.msg.type === 'panel/model')).toHaveLength(0)
   })
 
-  it('reports a refused model switch and pushes nothing', async () => {
+  it('reports a refused model switch and answers with the unchanged state', async () => {
     const bridge = makeBridge(client)
-    tabs.push({ id: TAB })
-    await bridge.handleRequest({ type: 'panel/set-open', open: true }, TAB)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
 
     const res = await bridge.handleRequest({ type: 'panel/set-model', profileId: 'nope' }, TAB)
     expect(res.ok).toBe(false)
     expect(res.error).toContain('unknown profile')
     expect(modelStore.activeId).toBe('p1')
-
-    await settle()
-    expect(sent.filter((s) => s.msg.type === 'panel/model')).toHaveLength(0)
   })
 
-  it('refuses a model switch while the service is disconnected', async () => {
-    client.connected = false
-    const bridge = makeBridge(client, { state: 'closed', connected: false, reason: '未发现桌面端服务' })
+  it('refuses a session-scoped model switch while the service is disconnected', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    expect(client.callsTo('session.create')).toHaveLength(1)
 
-    const res = await bridge.handleRequest({ type: 'panel/set-model', profileId: 'p2' }, TAB)
+    // The session exists, so the click must reach the service — a disconnect
+    // refuses it instead of silently holding it (unlike the pre-session case,
+    // which never touches the service and is kept on the tab).
+    client.connected = false
+    const down = makeBridge(client, { state: 'closed', connected: false, reason: '未发现桌面端服务' })
+    const res = await down.handleRequest({ type: 'panel/set-model', profileId: 'p2' }, TAB)
     expect(res.ok).toBe(false)
     expect(res.error).toContain('未连接')
-    expect(client.calls).toHaveLength(0)
+    expect(client.callsTo('model.setActive')).toHaveLength(0)
   })
 })

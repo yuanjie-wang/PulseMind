@@ -204,7 +204,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   }, [agentStatus, saveCurrentConversation])
 
   // ── Load conversations from disk on mount (and re-list on demand) ──
-  // reloadConversations re-reads the DB — used after the 数据与运行 tab's
+  // reloadConversations re-reads the DB — used after the settings page's 数据清理
   // retention save (SETTINGS_SET awaits cleanupExpiredConversations main-side;
   // the callback rides onReloadConversations → DataRuntimeSettings, review
   // 2026-09-18 M4), so the sidebar drops pruned rows immediately.
@@ -223,7 +223,10 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
         // The @-summoned expert binding (drives the input-area chip).
         expertId: c.expertId || undefined,
         // And the conversation's own approval level (composer's 授权 control).
-        approvalMode: c.approvalMode
+        approvalMode: c.approvalMode,
+        // And the conversation's own model (composer's 模型下拉); absent =
+        // follows the global default.
+        profileId: c.profileId
       }))
     ))
   }, [setConversations])
@@ -515,6 +518,31 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     })()
   }, [setConversation])
 
+  // ── Model binding (模型, per conversation) ──
+  // Same optimistic pattern as the approval binding above: the list item
+  // carries the model the composer shows, and the DB column (stub-inserting
+  // the row when needed) is the durable copy the main-side session manager
+  // re-resolves on refreshOptions. `profileId = null` unpins — the
+  // conversation follows the global default again.
+  const updateConversationProfile = useCallback((convId: string, profileId: string | null) => {
+    const id = conversationKeyOf(convId)
+    if (!id) {
+      console.warn('[Persistence] profile update ignored: no conversation open')
+      return
+    }
+    // Store-live per-item setter, never a map over conversationsRef — the
+    // same-tick-as-addConversation trap documented on updateConversationApproval.
+    setConversation(id, { profileId: profileId ?? undefined })
+    void (async () => {
+      try {
+        await window.electronAPI.setConversationProfile?.(id, profileId)
+        await window.electronAPI.agentSessionRefreshOptions?.(id)
+      } catch (err) {
+        console.warn('[Persistence] profile update failed:', err)
+      }
+    })()
+  }, [setConversation])
+
   // ── Activate a conversation (state + ref kept in sync) ──
   const activateConversation = useCallback((key: string) => {
     setActiveConversationKey(key)
@@ -551,6 +579,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     bumpConversation,
     updateConversationExpert,
     updateConversationApproval,
+    updateConversationProfile,
     activateConversation
   }
 }

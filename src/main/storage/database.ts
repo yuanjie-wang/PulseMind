@@ -358,6 +358,8 @@ function createTables(): void {
   try { database.exec('ALTER TABLE conversations ADD COLUMN expert_id TEXT') } catch (e) {}
   // 授权档位按会话存储；缺失 = 从未选择（按 'auto' 处理）。
   try { database.exec('ALTER TABLE conversations ADD COLUMN approval_mode TEXT') } catch (e) {}
+  // 会话级模型按会话存储；缺失 = 从未选择（跟随全局默认 activeProfileId）。
+  try { database.exec('ALTER TABLE conversations ADD COLUMN profile_id TEXT') } catch (e) {}
   // ── 专家去内置化：能力收敛交给全局，专家只描述身份 + 私有知识 ──
   // 两个内置基础设施子代理（通用/画布）连同「内置锁定工具」概念一起退场：
   // 画布有自己的硬编码人设与工具白名单，spawn 无档案时走通用子代理人设。

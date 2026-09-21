@@ -65,7 +65,8 @@ export type PanelRequest =
   | { type: 'panel/set-open'; open: boolean }
   /** 授权按钮: set the conversation's tool-approval level. */
   | { type: 'panel/set-approval'; mode: SandboxApprovalMode }
-  /** 模型: switch the active LLM profile (global, like the desktop's picker). */
+  /** 模型: pin the tab session's conversation to a profile (per conversation,
+   *  like 授权 — with no session yet the choice is carried once one exists). */
   | { type: 'panel/set-model'; profileId: string }
   /** Answer a held tool call. `callId` is the tool_use id the prompt carried. */
   | { type: 'panel/approval-response'; callId: string; approved: boolean }
@@ -78,10 +79,6 @@ export type PanelNotification =
   | { type: 'panel/event'; sessionId: string; data: AgentEventData }
   | { type: 'panel/connection'; payload: ConnectionState }
   | { type: 'panel/sessions'; payload: SessionSummary[] }
-  /** The active model changed (any tab's picker, or the desktop's own). The
-   *  switch is global, so every open panel is told, not just the one that
-   *  clicked — otherwise the other tabs keep showing the previous model. */
-  | { type: 'panel/model'; payload: ModelState }
 
 /** service worker → content script: run one `page_*` tool in this tab
  *  (PLAN-browser-extension M2.3). Sent with chrome.tabs.sendMessage, whose

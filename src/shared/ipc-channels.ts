@@ -230,6 +230,7 @@ export const IPC_CHANNELS = {
   CONVERSATION_SET_PROJECT: 'conversation:set-project',
   CONVERSATION_SET_EXPERT: 'conversation:set-expert',
   CONVERSATION_SET_APPROVAL_MODE: 'conversation:set-approval-mode',
+  CONVERSATION_SET_PROFILE: 'conversation:set-profile',
 
   // ── PLAN-0.4.0 M4: routines ──
   ROUTINE_LIST: 'routine:list',

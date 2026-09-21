@@ -49,6 +49,7 @@ const electronAPI = {
   setConversationProject: (id: string, projectId: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROJECT, id, projectId),
   setConversationExpert: (id: string, expertId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_EXPERT, id, expertId),
   setConversationApprovalMode: (id: string, mode: unknown) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, id, mode),
+  setConversationProfile: (id: string, profileId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_SET_PROFILE, id, profileId),
   routineList: () => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_LIST),
   routineGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_GET, id),
   routineCreate: (input: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_CREATE, input),
