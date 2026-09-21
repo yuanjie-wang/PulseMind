@@ -180,6 +180,31 @@ describe('extension panel bridge', () => {
     expect(res.snapshot?.status).toBe('streaming')
   })
 
+  it('carries the failure reason into a snapshot, not just the status word', async () => {
+    // A panel that attaches AFTER the failure (panel re-opened, worker restart)
+    // never saw the `status` event, so the snapshot is its only carrier — without
+    // `statusError` it renders its own 未知错误 instead of what main said.
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    bridge.onAgentEvent('ws_1', { type: 'status', status: 'error', error: 'API 请求失败 (400)' })
+    await settle()
+
+    const res = await bridge.handleRequest({ type: 'panel/attach' }, TAB)
+    expect(res.snapshot?.status).toBe('error')
+    expect(res.snapshot?.statusError).toBe('API 请求失败 (400)')
+  })
+
+  it('leaves statusError unset on a healthy snapshot', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    bridge.onAgentEvent('ws_1', { type: 'status', status: 'streaming' })
+    await settle()
+
+    const res = await bridge.handleRequest({ type: 'panel/attach' }, TAB)
+    expect(res.snapshot?.status).toBe('streaming')
+    expect(res.snapshot?.statusError).toBeUndefined()
+  })
+
   it('does not push to a tab whose panel is closed', async () => {
     const bridge = makeBridge(client)
     await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)

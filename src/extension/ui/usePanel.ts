@@ -7,7 +7,7 @@
  * reconnects, and the command surface. */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../../shared/agent-session/mirror'
+import { applySessionEvent, freshSessionState, isActiveStatus, mirroredStatus, type SessionState } from '../../shared/agent-session/mirror'
 import type { AgentMessage } from '../../renderer/src/types/agent'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import type { ModelState } from '../../shared/agent-protocol'
@@ -65,7 +65,7 @@ export function usePanel(): PanelApi {
     const next = mirror.current
     next.messages = snapshot.messages as AgentMessage[]
     next.streamingBlocks = snapshot.streamingBlocks as SessionState['streamingBlocks']
-    next.agentStatus = { status: snapshot.status } as SessionState['agentStatus']
+    next.agentStatus = mirroredStatus(snapshot.status, snapshot.statusError)
     setSession({ ...next })
     setSessionId(snapshot.sessionId)
     setConnection(snapshot.connection)

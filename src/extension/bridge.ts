@@ -37,11 +37,18 @@ export interface PanelSnapshot {
   messages: unknown[]
   streamingBlocks: unknown[]
   status: string
+  /** The failing turn's reason, when `status` is 'error' and the worker still
+   *  holds it — the same pair the event stream carries. A panel that attaches
+   *  after the failure (worker restart, panel re-opened) has no other carrier
+   *  and would show 未知错误 instead of the reason. */
+  statusError?: string
   sessions: SessionSummary[]
   /** The bound session's tool-approval level (授权), straight from the desktop. */
   approvalMode?: SandboxApprovalMode
-  /** The selectable models + the active one (模型). Global: the desktop's own
-   *  picker switches the same setting, so this is not per session. */
+  /** The selectable models + the active one (模型). `activeId` is the bound
+   *  session's own model once a session exists (the conversation's
+   *  `profile_id` choice, under its create-time pin); before that, the global
+   *  default, overridden by a pre-session choice still waiting to be carried. */
   model?: ModelState
 }
 

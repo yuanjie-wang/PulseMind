@@ -761,14 +761,19 @@ export class AgentSessionManagerImpl {
 
   /** UI snapshot for (re)activating a session. */
   async snapshot(sessionId: string): Promise<{
-    messages: AgentMessage[]; status: { status: string }; streamingBlocks: unknown[]; plan: PlanSnapshot | null
+    messages: AgentMessage[]; status: { status: string; error?: string }; streamingBlocks: unknown[]; plan: PlanSnapshot | null
   } | null> {
     if (!this.sessions.has(sessionId) && !this.pendingCreates.has(sessionId)) return null
     const entry = await this.ensureEntry(sessionId).catch(() => null)
     if (!entry) return null
+    const status = entry.engine.agentStatus
     return {
       messages: entry.engine.messages,
-      status: { status: entry.engine.agentStatus.status },
+      // The reason rides with the status word here exactly as it does on the
+      // event stream (onStatusChanged): a client that re-attaches to a session
+      // parked in `error` — renderer reload, conversation re-open, panel re-open
+      // — has no other carrier for it and can only show its own fallback.
+      status: { status: status.status, ...(status.status === 'error' ? { error: status.error } : {}) },
       streamingBlocks: entry.engine.streamingBlocks as unknown[],
       plan: entry.engine.plan ?? null,
     }

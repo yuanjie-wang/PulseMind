@@ -300,6 +300,10 @@ export class PanelBridge {
       messages: state.messages,
       streamingBlocks: state.streamingBlocks,
       status: state.agentStatus.status,
+      // The same pair the event stream carries: a panel that attaches while the
+      // session sits in `error` (worker restart, panel re-opened) has no other
+      // carrier for the reason and would show 未知错误.
+      statusError: 'error' in state.agentStatus ? state.agentStatus.error : undefined,
       sessions,
       model: inventory.model,
       // The desktop's stored mode wins (the tab value is only a pre-session

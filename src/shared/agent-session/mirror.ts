@@ -28,6 +28,24 @@ export function freshSessionState(): SessionState {
   return { messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [], plan: null, historySummary: null }
 }
 
+/** Fold the wire's (status, error) pair into a mirrored status.
+ *
+ *  The error text IS the payload of a failed status: main's `onStatusChanged`
+ *  carries it deliberately (session-manager.ts — "Loop failures carry their
+ *  reason") so a client can say why the turn died, and every client renders it
+ *  (`agentStatus.error` — ChatView / TranscriptView, the panel's ErrorCard).
+ *  A fold that keeps only the status word leaves all of them falling back to
+ *  their own copy (Unknown error / 未知错误), which is what turned every engine
+ *  failure into a mystery. One place interprets the pair: the event fold, the
+ *  desktop snapshot seed and the panel's snapshot seed all call this.
+ *
+ *  `error` is left OFF when the wire did not carry one (a status emitted
+ *  without it, an older main) — the clients' fallback is then honest. */
+export function mirroredStatus(status: string, error?: string): AgentStatus {
+  if (status === 'error' && error !== undefined) return { status: 'error', error }
+  return { status } as AgentStatus
+}
+
 export function isActiveStatus(status: AgentStatus): boolean {
   return status.status === 'streaming'
     || status.status === 'awaiting_approval'
@@ -110,7 +128,7 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
       return true
     }
     case 'status': {
-      state.agentStatus = { status: data.status } as AgentStatus
+      state.agentStatus = mirroredStatus(data.status, data.error)
       return true
     }
     case 'plan_update': {
@@ -163,12 +181,12 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
 /** Seed a mirror from a main-side snapshot (reactivating a live session). */
 export function seedSessionState(state: SessionState, snapshot: {
   messages: unknown[]
-  status: { status: string }
+  status: { status: string; error?: string }
   streamingBlocks: unknown[]
   plan: unknown
 }): void {
   state.messages = snapshot.messages as AgentMessage[]
-  state.agentStatus = { status: snapshot.status.status } as AgentStatus
+  state.agentStatus = mirroredStatus(snapshot.status.status, snapshot.status.error)
   state.streamingBlocks = snapshot.streamingBlocks as ContentBlock[]
   state.plan = (snapshot.plan as Plan | null) ?? null
 }

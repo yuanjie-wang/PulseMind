@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applySessionEvent, freshSessionState, type SessionState } from '../src/shared/agent-session/mirror'
+import { applySessionEvent, freshSessionState, seedSessionState, type SessionState } from '../src/shared/agent-session/mirror'
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../src/renderer/src/types/agent'
 
 const NOW = '2026-09-16T10:00:00.000Z'
@@ -121,5 +121,70 @@ describe('applySessionEvent → tool_status', () => {
       updates: [{ messageId: 'a1', toolUseId: 't1', status: 'completed', exitCode: 0 }],
     })
     expect(blockOf(state, 0, 0)).toMatchObject({ status: 'completed', subConvId: 'sub_123', planNodeId: 'n2' })
+  })
+})
+
+describe('status folding — the reason rides with the status word', () => {
+  it('carries the error text the wire sent', () => {
+    // The regression this pins: the fold kept only `status`, so every client fell
+    // back to its own copy and a failed turn read "Unknown error" / 未知错误 in the
+    // chat no matter what main had said. Main has always shipped the reason
+    // (`onStatusChanged`) — the reducer dereferenced it away.
+    const state = freshSessionState()
+    applySessionEvent(state, {
+      type: 'status',
+      status: 'error',
+      error: 'API 请求失败 (400): model not found',
+    })
+    expect(state.agentStatus).toEqual({ status: 'error', error: 'API 请求失败 (400): model not found' })
+  })
+
+  it('leaves the key ABSENT when the wire carried none, so the fallback stays honest', () => {
+    // `error: ''`/`error: undefined` must not become a blank reason: the clients
+    // render `'error' in status ? status.error : <their own copy>`, and a present
+    // empty string would draw an empty banner instead of the fallback.
+    const state = freshSessionState()
+    applySessionEvent(state, { type: 'status', status: 'error' })
+    expect(state.agentStatus).toEqual({ status: 'error' })
+    expect('error' in state.agentStatus).toBe(false)
+  })
+
+  it('folds a non-error status to the bare word', () => {
+    const state = freshSessionState()
+    applySessionEvent(state, { type: 'status', status: 'streaming' })
+    expect(state.agentStatus).toEqual({ status: 'streaming' })
+  })
+
+  it('replaces the status object, like every other fold', () => {
+    const state = freshSessionState()
+    const before = state.agentStatus
+    applySessionEvent(state, { type: 'status', status: 'streaming' })
+    expect(state.agentStatus).not.toBe(before)
+  })
+})
+
+describe('seedSessionState — the reason survives a re-attach', () => {
+  const snapshot = (status: { status: string; error?: string }): Parameters<typeof seedSessionState>[1] =>
+    ({ messages: [], status, streamingBlocks: [], plan: null })
+
+  it('seeds the reason from the snapshot, not just the status word', () => {
+    // A client that re-attaches to a session parked in `error` (renderer reload,
+    // conversation re-open, panel re-open after a worker restart) has no other
+    // carrier: the failing status event was delivered while it was away.
+    const state = freshSessionState()
+    seedSessionState(state, snapshot({ status: 'error', error: '连接中断' }))
+    expect(state.agentStatus).toEqual({ status: 'error', error: '连接中断' })
+  })
+
+  it('leaves the key absent when the snapshot has no reason', () => {
+    const state = freshSessionState()
+    seedSessionState(state, snapshot({ status: 'error' }))
+    expect('error' in state.agentStatus).toBe(false)
+  })
+
+  it('seeds a healthy status bare', () => {
+    const state = freshSessionState()
+    seedSessionState(state, snapshot({ status: 'executing' }))
+    expect(state.agentStatus).toEqual({ status: 'executing' })
   })
 })
