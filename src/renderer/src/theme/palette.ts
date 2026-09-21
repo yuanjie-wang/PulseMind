@@ -345,6 +345,9 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     /** The danger action's wash behind its icon (the element panel's delete) —
      *  one step stronger than `--pm-hover-faint`, hence its own role. */
     '--pm-danger-wash': 'rgba(0, 0, 0, 0.04)',
+    /** The workbench tab strip's muted count badge — a solid cool-grey fill
+     *  carrying white ink (the plan badge takes `--pm-link` instead). */
+    '--pm-badge-muted': '#b9bdc7',
   },
   dark: {
     '--pm-bg': '#141414',
@@ -473,6 +476,7 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-input-border': '#424242',
     '--pm-btn-disabled': '#4d4d4d',
     '--pm-danger-wash': 'rgba(255, 255, 255, 0.06)',
+    '--pm-badge-muted': '#595959',
   },
 }
 

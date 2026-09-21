@@ -93,8 +93,8 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
         right: 0,
         bottom: 0,
         width,
-        background: '#fff',
-        borderLeft: '1px solid #e5e6eb',
+        background: 'var(--pm-bg)',
+        borderLeft: '1px solid var(--pm-pop-border)',
         display: 'flex',
         flexDirection: 'column',
         zIndex: 30,
@@ -126,8 +126,8 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
           alignItems: 'center',
           gap: 4,
           padding: '0 6px 0 12px',
-          borderBottom: '1px solid #ececf0',
-          background: '#fff',
+          borderBottom: '1px solid var(--pm-separator-faint)',
+          background: 'var(--pm-bg)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, overflow: 'hidden' }}>
@@ -146,9 +146,9 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
                   fontSize: 12,
                   fontWeight: active ? 600 : 400,
                   cursor: 'pointer',
-                  background: active ? '#f0f1f4' : 'transparent',
-                  boxShadow: active ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                  color: active ? '#333' : '#888',
+                  background: active ? 'var(--pm-tile-soft)' : 'transparent',
+                  boxShadow: active ? 'var(--pm-shadow-chip)' : 'none',
+                  color: active ? 'var(--pm-text-strong)' : 'var(--pm-text-quiet)',
                   flexShrink: 0,
                 }}
               >
@@ -161,7 +161,7 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
                       padding: '0 5px',
                       borderRadius: 7,
                       color: '#fff',
-                      background: tab.id === 'plan' ? '#1677ff' : '#b9bdc7',
+                      background: tab.id === 'plan' ? 'var(--pm-link)' : 'var(--pm-badge-muted)',
                     }}
                   >
                     {tab.badge}
@@ -174,7 +174,7 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
         <div
           onClick={() => setOpen(key, false)}
           title="收起工作台"
-          style={{ width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, color: '#888', cursor: 'pointer', flexShrink: 0 }}
+          style={{ width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, color: 'var(--pm-text-quiet)', cursor: 'pointer', flexShrink: 0 }}
         >
           <X size={13} />
         </div>

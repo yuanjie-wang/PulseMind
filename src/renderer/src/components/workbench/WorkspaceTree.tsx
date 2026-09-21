@@ -41,9 +41,11 @@ const TREE_CSS = `
 .pm-ws-btn {
   width: 18px; height: 18px; padding: 0; border: none; border-radius: 4px;
   display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; color: #8c8c8c; font-size: 11px; cursor: pointer;
+  background: transparent; color: var(--pm-graph-ink-dim); font-size: 11px; cursor: pointer;
 }
-.pm-ws-btn:hover { background: rgba(0, 0, 0, 0.06); color: #595959; }
+/* The inks reuse the graph ladder's exact hexes (#8c8c8c/#595959): one role per
+   value, and the dark column's counterparts come with them. */
+.pm-ws-btn:hover { background: var(--pm-hover); color: var(--pm-graph-ink); }
 /* The delete button deliberately keeps .pm-ws-btn's grey on hover — destructive
    actions are not painted red anywhere (buildAntdTheme scopes Button.colorError
    to the same grey). */
@@ -93,7 +95,7 @@ function keepSubtrees(prev: WorkspaceNode[] | undefined, next: WorkspaceNode[]):
 /** Centered one-line hint for the no-workspace / unreadable / empty states. */
 function Hint({ text }: { text: string }): React.ReactElement {
   return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 16px', color: '#999', fontSize: 12, textAlign: 'center' }}>
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 16px', color: 'var(--pm-text-muted)', fontSize: 12, textAlign: 'center' }}>
       {text}
     </div>
   )
@@ -272,12 +274,12 @@ export function WorkspaceTree({ conversationId }: Props): React.ReactElement {
           alignItems: 'center',
           gap: 6,
           padding: '6px 8px 6px 12px',
-          borderBottom: '1px solid #ececf0',
+          borderBottom: '1px solid var(--pm-separator-faint)',
         }}
       >
         <span
           title={workspaceDir ?? undefined}
-          style={{ flex: 1, fontSize: 12, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          style={{ flex: 1, fontSize: 12, color: 'var(--pm-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
         >
           {workspaceDir ?? '当前会话暂无工作目录'}
         </span>
@@ -286,7 +288,7 @@ export function WorkspaceTree({ conversationId }: Props): React.ReactElement {
             type="text"
             size="small"
             aria-label="刷新"
-            icon={<ReloadOutlined style={{ fontSize: 12, color: '#888' }} />}
+            icon={<ReloadOutlined style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }} />}
             disabled={!workspaceDir}
             onClick={() => setTick((n) => n + 1)}
             style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}

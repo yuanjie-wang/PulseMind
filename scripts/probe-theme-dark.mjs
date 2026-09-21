@@ -83,6 +83,11 @@
  *      own algorithm rather than with the sheet, and are required to *not* follow
  *      it when the sheet's dark section is cut — the half of the boundary §9
  *      cannot see
+ *  15. the workbench shell (post-M4 fix): WorkbenchPane's frame and tool-tab
+ *      strip — the side window the user reported as still light in dark mode —
+ *      plus the workspace tree's path bar/row buttons and the text editor's
+ *      ground, the two literals in the same window. §14's discipline: role
+ *      readings in both passes, the flip check, and the cut control.
  *
  * Build note: unlike every other probe in this repo, this one compiles CSS
  * (`loader: {'.css': 'css'}`) and loads the emitted stylesheet into the page.
@@ -277,6 +282,9 @@ window.electronAPI = new Proxy({}, {
     if (window.__pmHangLists && key === 'listConversations') return () => new Promise(() => {})
     if (key === 'readFileBinary') return (p) => Promise.resolve((window.__pmBinaries || {})[p] ?? null)
     if (key === 'readFile') return (p) => Promise.resolve((window.__pmFiles || {})[p] ?? null)
+    // §15's workspace tree: the dir comes from the preview store, the rows from
+    // this table (empty table → an empty listing, still a rendered path bar).
+    if (key === 'listDir') return (dir) => Promise.resolve((window.__pmListDir || {})[dir] ?? { entries: [] })
     if (key === 'getFileStat') return () => Promise.resolve({ size: 1234, mtime: '2026-09-20T08:00:00.000Z' })
     return (arg) => Promise.resolve(
       key === 'expertList' ? PM_EXPERTS
@@ -390,6 +398,14 @@ import { FallbackCard } from './src/renderer/src/components/preview/FallbackCard
 import { ElementEditPanel } from './src/renderer/src/components/preview/ElementEditPanel'
 import { usePreviewPaneStore } from './src/renderer/src/stores/previewPaneStore'
 import { useHtmlEditStore } from './src/renderer/src/stores/htmlEditStore'
+// §15 — the workbench shell: WorkbenchPane's own frame and tool-tab strip (the
+// surface the preview wave's siblings left behind — the user report that
+// started this section), plus the workspace tree's path bar / row buttons and
+// the text editor's ground, the two literals in the same window.
+import { WorkbenchPane } from './src/renderer/src/components/workbench/WorkbenchPane'
+import { WorkspaceTree } from './src/renderer/src/components/workbench/WorkspaceTree'
+import { useWorkbenchStore } from './src/renderer/src/stores/workbenchStore'
+import { FileEditor } from './src/renderer/src/components/preview/FileEditor'
 
 // main.tsx's boot, in order: the variable sheet, then the attribute.
 installThemeVars()
@@ -2289,6 +2305,90 @@ window.__t4Vector = () => {
 
   const hintRoot = appRoot('t4-element-hint')
   v.hintBar = pick(hintRoot, ['backgroundColor', 'color', 'borderTopColor'])
+  return v
+}
+
+// ── §15 — the workbench shell ─────────────────────────────────────────────────
+// Three mounts, one host each: the pane (its frame + tool-tab strip), the
+// workspace tree (path bar + one row's buttons), the text editor. Tabs and the
+// path bar are found structurally/by label, not by index — the strip is the
+// pane root's SECOND child (the drag handle is the first), which is a fact of
+// the JSX, not a contract.
+window.__mountWB = () => {
+  const WBMode = ({ children }) => {
+    const mode = useThemeMode()
+    return (
+      <ConfigProvider locale={zhCN} theme={buildAntdTheme(mode)}>
+        <AntdApp>
+          <SettingsProvider>
+            <TranslationProvider initialLocale="zh">{children}</TranslationProvider>
+          </SettingsProvider>
+        </AntdApp>
+      </ConfigProvider>
+    )
+  }
+  const mk = (id, h) => {
+    const el = document.createElement('div')
+    el.id = id
+    el.style.cssText = 'position: relative; height: ' + h + 'px; width: 420px; margin-bottom: 16px;'
+    document.body.appendChild(el)
+    return el
+  }
+  // The pane needs one conversation open (persisted store — forced here), a
+  // plan with two nodes (工作计划's link-blue progress badge) and a browser tab
+  // (浏览器's muted count badge) so both badge roles have an element to ride.
+  useWorkbenchStore.setState({ openByConversation: { 'wb-conv': true }, activeTab: 'files', width: 420 })
+  createRoot(mk('wb-shell', 300)).render(
+    <WBMode>
+      <WorkbenchPane
+        conversationId="wb-conv"
+        chatAreaWidth={800}
+        plan={{ nodes: [{ status: 'completed' }, { status: 'pending' }] }}
+        browserPane={{ visible: false, width: 420, conversationId: null, tabs: [{ id: 'bt1', title: '示例页', url: 'about:blank' }] }}
+        onPlanJump={() => {}}
+        onOpenPlanNode={() => {}}
+        canOpenNode={() => false}
+        onBrowserAction={() => {}}
+        onBrowserWidth={() => {}}
+      />
+    </WBMode>
+  )
+  // The tree's root dir comes from the preview store; its rows from the
+  // listDir stub the INIT script installed.
+  usePreviewPaneStore.setState({ workspaceDir: '/w/工作区' })
+  createRoot(mk('wb-tree', 200)).render(<WBMode><WorkspaceTree conversationId="wb-conv" /></WBMode>)
+  createRoot(mk('wb-editor', 120)).render(<WBMode><FileEditor value="hello" onChange={() => {}} onSave={() => {}} /></WBMode>)
+}
+
+window.__wbVector = () => {
+  const pick = (el, props) => {
+    if (!el) return null
+    const s = getComputedStyle(el)
+    const o = {}
+    for (const p of props) o[p] = s[p]
+    return o
+  }
+  const v = {}
+  const pane = document.querySelector('#wb-shell .ant-app > div')
+  v.paneGround = pick(pane, ['backgroundColor', 'borderLeftColor'])
+  const strip = pane && pane.children[1]
+  v.stripGround = pick(strip, ['backgroundColor', 'borderBottomColor'])
+  const tabsRow = strip && strip.children[0]
+  const tabByLabel = (label) => tabsRow && [...tabsRow.children].find((d) => d.textContent && d.textContent.indexOf(label) >= 0)
+  v.tabActive = pick(tabByLabel('文件预览'), ['backgroundColor', 'boxShadow', 'color'])
+  v.tabIdle = pick(tabByLabel('工作区'), ['color'])
+  const badgeOf = (tab) => (tab && tab.children.length > 1 ? tab.children[1] : null)
+  v.badgeCount = pick(badgeOf(tabByLabel('浏览器')), ['backgroundColor'])
+  v.badgePlan = pick(badgeOf(tabByLabel('工作计划')), ['backgroundColor'])
+  v.closeInk = pick(strip && strip.children[1], ['color'])
+
+  const treeHost = document.getElementById('wb-tree')
+  const pathBar = treeHost && [...treeHost.querySelectorAll('div')].find((d) => (d.getAttribute('style') || '').indexOf('--pm-separator-faint') >= 0)
+  v.wsPathBar = pick(pathBar, ['borderBottomColor'])
+  v.wsPathText = pick(pathBar && [...pathBar.children].find((d) => d.tagName === 'SPAN'), ['color'])
+  v.wsBtnInk = pick(treeHost && treeHost.querySelector('.pm-ws-btn'), ['color'])
+
+  v.editorInk = pick(document.querySelector('#wb-editor textarea'), ['color', 'backgroundColor'])
   return v
 }
 
@@ -4564,6 +4664,121 @@ await page.waitForTimeout(50)
   const vec = await page.evaluate(() => window.__t4Vector())
   const want = expT4Light.expectOf(T4_TABLE.paneGround.backgroundColor, 'backgroundColor')
   check('装回真表、回到浅色：取值复原', !!vec.paneGround && vec.paneGround.backgroundColor === want, `期望 ${want} 实得 ${vec.paneGround && vec.paneGround.backgroundColor}`)
+}
+
+// ── 15. the workbench shell (the chrome the preview wave's siblings left
+// behind — the user report: in dark mode the side window's top tab strip was
+// still light). Same discipline as §14: role readings in both passes, the
+// flip check, then the sheet cut — with the dark section gone and the
+// attribute still dark, every reading must fall back to its light value.
+console.log('\n=== 15. 工作台外壳 ===')
+const WB_TABLE = {
+  paneGround: { backgroundColor: '--pm-bg', borderLeftColor: '--pm-pop-border' },
+  stripGround: { backgroundColor: '--pm-bg', borderBottomColor: '--pm-separator-faint' },
+  tabActive: { backgroundColor: '--pm-tile-soft', boxShadow: '--pm-shadow-chip', color: '--pm-text-strong' },
+  tabIdle: { color: '--pm-text-quiet' },
+  badgeCount: { backgroundColor: '--pm-badge-muted' },
+  badgePlan: { backgroundColor: '--pm-link' },
+  closeInk: { color: '--pm-text-quiet' },
+  wsPathBar: { borderBottomColor: '--pm-separator-faint' },
+  wsPathText: { color: '--pm-text-secondary' },
+  wsBtnInk: { color: '--pm-graph-ink-dim' },
+  editorInk: { color: '--pm-text-strong', backgroundColor: '--pm-bg' },
+}
+
+await page.evaluate(() => {
+  window.__pmListDir = { '/w/工作区': { entries: [{ name: '报.md', path: '/w/工作区/报.md', isDir: false }] } }
+  window.__mountWB()
+})
+await page.waitForFunction(() => {
+  const strip = document.querySelector('#wb-shell .ant-app > div')
+  const tabs = strip && strip.children[1] && strip.children[1].children[0]
+  return !!tabs && tabs.children.length >= 4
+    && !!document.querySelector('#wb-tree .pm-ws-btn')
+    && !!document.querySelector('#wb-editor textarea')
+}, { timeout: 20000 })
+await page.waitForTimeout(150)
+
+async function wbExpectations() {
+  const roles = new Set()
+  for (const map of Object.values(WB_TABLE)) {
+    for (const v of Object.values(map)) if (v.startsWith('--pm-')) roles.add(v)
+  }
+  const normed = await page.evaluate((roleList) => {
+    const out = {}
+    for (const role of roleList) {
+      for (const prop of ['color', 'backgroundColor', 'borderLeftColor', 'borderBottomColor', 'boxShadow']) {
+        const d = document.createElement('div')
+        d.style[prop] = `var(${role})`
+        document.body.appendChild(d)
+        out[`${role}|${prop}`] = getComputedStyle(d)[prop]
+        d.remove()
+      }
+    }
+    return out
+  }, [...roles])
+  return { expectOf: (spec, prop) => (spec.startsWith('--pm-') ? normed[`${spec}|${prop}`] ?? null : spec) }
+}
+
+async function checkWB(label, expect) {
+  const vec = await page.evaluate(() => window.__wbVector())
+  const got = {}
+  for (const [key, map] of Object.entries(WB_TABLE)) {
+    const row = vec[key]
+    if (!row) { check(`${label} wb ${key} 存在`, false, '没有渲染出来'); continue }
+    for (const [prop, spec] of Object.entries(map)) {
+      const want = expect.expectOf(spec, prop)
+      got[`${key}.${prop}`] = row[prop]
+      check(`${label} wb ${key}.${prop} = ${spec}`, row[prop] === want, `期望 ${want} 实得 ${row[prop]}`)
+    }
+  }
+  return { vec, got }
+}
+
+const expWB = await wbExpectations()
+const wbLight = await checkWB('浅色', expWB)
+await page.evaluate(() => window.__setMode('dark'))
+const expWBDark = await wbExpectations()
+const wbDark = await checkWB('深色', expWBDark)
+
+// Flip discipline: every entry in the table is role-borne, so every reading
+// must move; a missing element counts against the check by name.
+const wbKeys = Object.keys(WB_TABLE)
+const wbMissing = []
+const wbNotFlipped = wbKeys.filter((key) => {
+  const l = wbLight.vec[key]
+  const d = wbDark.vec[key]
+  if (!l || !d) { wbMissing.push(key); return true }
+  return Object.keys(WB_TABLE[key]).every((prop) => l[prop] === d[prop])
+})
+check('翻转：工作台外壳全部读数都随模式变化', wbNotFlipped.length === 0 && wbMissing.length === 0, [...wbNotFlipped, ...wbMissing].join(' | ') || `${wbKeys.length} 个角色的读数全部不同`)
+
+// The cut control: dark attribute, no dark section — every reading falls back.
+await page.evaluate(() => window.__setMode('dark'))
+await page.evaluate(() => window.__removeSheet('pm-theme-vars'))
+await page.evaluate(() => window.__installVarsNoDark())
+await page.waitForTimeout(50)
+{
+  const vec = await page.evaluate(() => window.__wbVector())
+  const bad = []
+  for (const key of wbKeys) {
+    const row = vec[key]
+    if (!row) { bad.push(`${key}: 缺失`); continue }
+    for (const [prop, spec] of Object.entries(WB_TABLE[key])) {
+      const want = expWB.expectOf(spec, prop)
+      if (row[prop] !== want) bad.push(`${key}.${prop}: ${row[prop]} ≠ 浅色 ${want}`)
+    }
+  }
+  check('删掉 dark 段：工作台外壳角色全部落回浅色值', bad.length === 0, bad.slice(0, 6).join(' | ') || `${wbKeys.length} 个角色全部回落`)
+}
+await page.evaluate(() => window.__removeSheet('pm-theme-vars'))
+await page.evaluate(() => window.__installVars())
+await page.evaluate(() => window.__setMode('light'))
+await page.waitForTimeout(50)
+{
+  const vec = await page.evaluate(() => window.__wbVector())
+  const want = expWB.expectOf(WB_TABLE.stripGround.backgroundColor, 'backgroundColor')
+  check('装回真表、回到浅色：工作台取值复原', !!vec.stripGround && vec.stripGround.backgroundColor === want, `期望 ${want} 实得 ${vec.stripGround && vec.stripGround.backgroundColor}`)
 }
 
 /** Flat compare of two vectors; `keys` limits it to a subset of properties. */
