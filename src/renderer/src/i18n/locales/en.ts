@@ -71,6 +71,7 @@ const en: TranslationDict = {
       failed: 'Failed',
       running: 'Running',
       skipped: 'Skipped',
+      partial: 'Partly succeeded',
     },
     runResultOk: 'Ran successfully — open to see the result',
     runResultFail: 'Failed: {{error}}',

@@ -3,6 +3,8 @@
 // cron schedule (D3: separate from skills — skills are prompt-injection
 // capabilities the model picks; routines are tasks the USER triggers).
 
+import type { SandboxApprovalMode } from '../sandbox/policy'
+
 export interface RoutineParam {
   key: string
   label: string
@@ -18,6 +20,18 @@ export interface RoutineSchedule {
   catchUp?: 'once' | 'skip'
 }
 
+/** Batch mode (PLAN-routine-batch): a CSV whose headers match the routine's
+ *  param keys; one run per row, each row an independent conversation. Present
+ *  csvPath = configured. `applyToSchedule` defaults false — configuring a CSV
+ *  does not silently change what a cron fire does. */
+export interface RoutineBatchConfig {
+  csvPath: string
+  /** Rows executed at once, 1–5; absent = the default (3). */
+  concurrency?: number
+  /** Cron fires run the batch too, not just manual starts. */
+  applyToSchedule?: boolean
+}
+
 export interface Routine {
   id: string
   name: string
@@ -30,16 +44,44 @@ export interface Routine {
   /** Bound skills are injected at run time (without touching the skill
    *  manager's global enabled state — M4.8). */
   skills?: string[]
+  /** Run working directory; absent = a session folder under the global
+   *  workspace, minted per run exactly like a normal conversation. */
+  workspaceDir?: string
+  /** Approval level for the unattended run; absent = the unattended default
+   *  ('outside-ask') — needs-approval calls are auto-skipped either way. */
+  approvalMode?: SandboxApprovalMode
+  /** LLM profile to run with; absent = the active profile at run time. A
+   *  deleted profile falls back to the active one when the run fires. */
+  profileId?: string
   /** Where this routine came from ("extract from conversation"). */
   sourceConversationId?: string
+  /** Batch mode over a CSV; absent = single-run routine. */
+  batch?: RoutineBatchConfig
   /** Persisted by the scheduler for catch-up decisions across restarts. */
   nextRunAt?: string
   createdAt: string
   updatedAt: string
 }
 
-export type RoutineRunStatus = 'running' | 'success' | 'failed' | 'skipped'
+export type RoutineRunStatus = 'running' | 'success' | 'failed' | 'skipped' | 'partial'
 export type RoutineRunTrigger = 'manual' | 'schedule'
+
+/** Progress of a batch parent run, derived from its child rows at read time
+ *  (never stored — a stored copy would always be stale). */
+export interface RoutineBatchProgress {
+  total: number
+  success: number
+  failed: number
+  skipped: number
+  running: number
+}
+
+/** What a batch PARENT row records about the run (batch_json column). */
+export interface RoutineBatchMeta {
+  csvName: string
+  totalRows: number
+  concurrency: number
+}
 
 export interface RoutineRun {
   id: string
@@ -51,4 +93,17 @@ export interface RoutineRun {
   startedAt: string
   finishedAt?: string
   error?: string
+  // ── Batch mode (PLAN-routine-batch) ──
+  /** Set on CHILD rows: the parent batch run they belong to. Parent rows and
+   *  single runs leave it unset; the flat run history filters children out. */
+  parentRunId?: string
+  /** Child rows: 0-based CSV data row this run executed. */
+  rowIndex?: number
+  /** Child rows: the provided values this row ran with — the retry path uses
+   *  the snapshot, not the CSV, because the file may have changed since. */
+  paramsSnapshot?: Record<string, string>
+  /** Parent rows only: what the batch was launched with. */
+  batch?: RoutineBatchMeta
+  /** Parent rows only, computed at read: live progress over the child rows. */
+  batchProgress?: RoutineBatchProgress
 }

@@ -23,7 +23,7 @@
  *     section and no inner divider element at the seam (user ruling
  *     2026-09-18: 「不用硬分隔…直接接壤」) — while the vertical rule against the
  *     runs column is untouched
- *   - the missing title row: the view title 日常 • 自动化 appears nowhere on
+ *   - the missing title row: the view title 日常任务 appears nowhere on
  *     the page, and 新建任务 appears exactly once — as the card that closes the
  *     task grid, in every state including the empty one, wearing the dashed
  *     recipe (and a real mouse proves its hover)
@@ -162,11 +162,20 @@ window.electronAPI = new Proxy({}, {
     if (typeof key === 'string' && /^on[A-Z]/.test(key)) return () => {}
     window.__calls.push({ method: String(key), args })
     if (key === 'routineList') return Promise.resolve(window.__routines ?? ROUTINES)
+    if (key === 'routineGet') return Promise.resolve((window.__routines ?? ROUTINES).find((r) => r.id === args[0]) ?? null)
     if (key === 'routineRuns') return Promise.resolve(window.__runs ?? RUNS)
+    // A save must round-trip: the editor reads created.id to promote the
+    // assist thread, so answer with the stored shape instead of undefined.
+    if (key === 'routineCreate' || key === 'routineUpdate') {
+      const input = args[key === 'routineCreate' ? 0 : 1] ?? {}
+      return Promise.resolve({ id: 'r_stub', ...input, createdAt: '', updatedAt: '' })
+    }
     if (EMPTY_LISTS.includes(String(key))) return Promise.resolve([])
     // The editor mounts the real SettingsProvider, which loads settings.json.
+    // window.__profiles/__activeProfileId let a section pin the model list the
+    // 模型 select reads.
     if (key === 'getSettings') {
-      return Promise.resolve({ activeProfileId: '', profiles: [], theme: 'light', myName: '', soul: '',
+      return Promise.resolve({ activeProfileId: window.__activeProfileId ?? '', profiles: window.__profiles ?? [], theme: 'light', myName: '', soul: '',
         yourName: '', workspaceDir: '', autoCleanup: false, locale: window.__locale ?? 'zh' })
     }
     return Promise.resolve(undefined)
@@ -196,10 +205,10 @@ window.__mount = ({ locale = 'zh', routines = null, runs = null } = {}) => {
   return true
 }
 
-/** Mount the real editor with a template id — the hop the landing page's
- *  template cards hand over to (nothing about the prefill is visible from the
- *  landing page itself). */
-window.__mountEditor = ({ templateId, locale = 'zh' } = {}) => {
+/** Mount the real editor with a template id (the landing page's hand-off) or a
+ *  stored routine id (the 编辑 hop — the run-context fields are only visible
+ *  on a routine that carries them). */
+window.__mountEditor = ({ templateId, routineId, locale = 'zh' } = {}) => {
   window.__locale = locale
   if (root) root.unmount()
   root = createRoot(document.getElementById('root'))
@@ -209,7 +218,7 @@ window.__mountEditor = ({ templateId, locale = 'zh' } = {}) => {
         <SettingsProvider>
           <TranslationProvider initialLocale={locale}>
             <div id="view" style={{ height: '100vh' }}>
-              <RoutineEditorPage templateId={templateId} />
+              <RoutineEditorPage templateId={templateId} routineId={routineId} />
             </div>
           </TranslationProvider>
         </SettingsProvider>
@@ -390,7 +399,7 @@ await page.waitForSelector('.routine-template')
 
 // ── 1 · the title row is gone, and 新建任务 is a card in the task grid ──
 const body = await texts()
-check('the view title is gone from the page (the window bar carries it)', !body.includes('日常 • 自动化'), body.split('\n')[0])
+check('the view title is gone from the page (the window bar carries it)', !body.includes('日常任务'), body.split('\n')[0])
 const createButtons = await createButton().count()
 check('新建任务 appears exactly once', createButtons === 1, `${createButtons} button(s)`)
 const card = await page.evaluate(() => window.__newCard())
@@ -751,6 +760,130 @@ await page.waitForSelector('textarea')
 await page.waitForTimeout(250)
 const enForm = await formOf()
 check('editor EN: the template arrives translated', nameValue(enForm) === 'Weekly report' && enForm.textareas.some((t) => t.includes('this week’s report')), String(nameValue(enForm)))
+
+// ── 12 · the run context: workspace / approval / model + prompt variables ──
+// The three optional pickers state the conversation-default behavior in their
+// placeholders; 插入变量 really inserts into the textarea; a save carries the
+// whole run context through routineCreate; an edited routine's stored values
+// come back as stored, a deleted model included (marked, not the bare id).
+//
+// Only one menu is open at a time, but the PREVIOUS dropdown spends ~200ms in
+// its close motion before it earns `ant-select-dropdown-hidden` (measured: a
+// count taken immediately after the click saw 5+3 options). The wait is what
+// scopes options to THIS menu — exactly one open dropdown with real options.
+const openListSelector = async (field) => {
+  await page.locator(`[data-routine-field="${field}"] .ant-select`).click()
+  await page.waitForFunction(() => {
+    const open = document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')
+    return open.length === 1 && open[0].querySelectorAll('.ant-select-item-option').length > 0
+  })
+  return '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option'
+}
+// A select trigger shows EITHER the selected label (as the .ant-select-content
+// box's title attribute, or the value element for styled options) OR the
+// placeholder element — never both.
+const readSelect = (root) => {
+  if (!root) return { value: null, placeholder: null }
+  const titled = root.querySelector('.ant-select-content[title]')
+  if (titled) return { value: titled.getAttribute('title'), placeholder: null }
+  const valued = root.querySelector('.ant-select-content-value')
+  if (valued) return { value: valued.textContent, placeholder: null }
+  const ph = root.querySelector('.ant-select-placeholder')
+  return { value: null, placeholder: ph ? ph.textContent : null }
+}
+const runContextForm = () => page.evaluate(() => {
+  const readSelect = (root) => {
+    if (!root) return { value: null, placeholder: null }
+    const titled = root.querySelector('.ant-select-content[title]')
+    if (titled) return { value: titled.getAttribute('title'), placeholder: null }
+    const valued = root.querySelector('.ant-select-content-value')
+    if (valued) return { value: valued.textContent, placeholder: null }
+    const ph = root.querySelector('.ant-select-placeholder')
+    return { value: null, placeholder: ph ? ph.textContent : null }
+  }
+  return {
+    workspace: document.querySelector('[data-routine-field="workspace"] input')?.value ?? null,
+    approval: readSelect(document.querySelector('[data-routine-field="approval"] .ant-select')),
+    model: readSelect(document.querySelector('[data-routine-field="model"] .ant-select')),
+  }
+})
+
+await page.evaluate(() => {
+  window.__profiles = [{ id: 'prof_a', name: 'GLM' }, { id: 'prof_b', name: 'DeepSeek' }]
+  window.__activeProfileId = 'prof_a'
+  window.__routines = null
+  window.__runs = []
+})
+await page.evaluate(() => window.__mountEditor({}))
+await page.waitForSelector('[data-routine-field="model"] .ant-select')
+await page.waitForTimeout(300)
+const fresh = await runContextForm()
+check(
+  'run context: a fresh form states the defaults in the placeholders',
+  fresh.workspace !== null && fresh.approval.placeholder?.includes('按需确认') && fresh.model.placeholder?.includes('使用当前模型（GLM）'),
+  JSON.stringify(fresh),
+)
+await page.screenshot({ path: join(SHOTS, 'editor-run-context.png') })
+
+// 插入变量: a real click on the small select and then on the 日期 option.
+const varSelector = await openListSelector('prompt-head')
+check('run context: the variable menu offers exactly the five built-ins', (await page.locator(varSelector).count()) === 5, String(await page.locator(varSelector).count()))
+await page.locator(varSelector, { hasText: '日期 {{date}}' }).click()
+const promptAfterInsert = await page.evaluate(() => document.querySelectorAll('textarea')[0]?.value ?? '')
+check('run context: picking a variable inserts its token into the prompt', promptAfterInsert.includes('{{date}}'), promptAfterInsert)
+
+// 授权方式: exactly the three levels, and a pick lands in the trigger.
+const approvalSelector = await openListSelector('approval')
+const approvalLabels = await page.locator(approvalSelector).allTextContents()
+check('run context: 授权方式 offers exactly the three levels', approvalLabels.length === 3 && approvalLabels.some((l) => l.includes('全部允许')), approvalLabels.join(' | '))
+await page.locator(approvalSelector, { hasText: '全部允许' }).click()
+
+// 模型: the profile list, the active one marked.
+const modelSelector = await openListSelector('model')
+const modelLabels = await page.locator(modelSelector).allTextContents()
+check('run context: 模型 offers the profile list with the active marker', modelLabels.length === 2 && modelLabels[0].includes('（当前）'), modelLabels.join(' | '))
+await page.locator(modelSelector, { hasText: 'DeepSeek' }).click()
+
+// End to end: a save must carry the whole run context through routineCreate.
+await page.locator('[data-routine-field="workspace"] input').fill('/tmp/pulse-runs')
+await page.locator('input[placeholder^="例如"]').fill('上下文任务')
+await page.getByRole('button', { name: '保存' }).click()
+await page.waitForTimeout(400)
+const createCalls = await page.evaluate(() => window.__calls.filter((c) => c.method === 'routineCreate'))
+const payload = createCalls.at(-1)?.args?.[0] ?? null
+check(
+  'run context: 保存 sends workspace + approval + model through routineCreate',
+  createCalls.length === 1 && payload?.workspaceDir === '/tmp/pulse-runs' && payload?.approvalMode === 'auto' && payload?.profileId === 'prof_b',
+  JSON.stringify(payload),
+)
+
+// The edit hop: stored values come back as stored — and a profile deleted
+// after the save stays visible (marked), never as a bare id.
+await page.evaluate(() => {
+  window.__routines = [{
+    id: 'r_ctx', name: '上下文任务', description: '', prompt: '检查 {{date}}', enabled: true,
+    workspaceDir: '/tmp/pulse-runs', approvalMode: 'always-ask', profileId: 'prof_gone', params: [],
+    createdAt: '2026-09-21T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z',
+  }]
+})
+await page.evaluate(() => window.__mountEditor({ routineId: 'r_ctx' }))
+await page.waitForSelector('[data-routine-field="model"] .ant-select')
+await page.waitForTimeout(300)
+const stored = await runContextForm()
+check('run context: editing shows the stored workspace path', stored.workspace === '/tmp/pulse-runs', String(stored.workspace))
+check('run context: editing shows the stored approval level', stored.approval.value === '始终询问', JSON.stringify(stored.approval))
+check(
+  'run context: a deleted model stays visible and marked, not the bare id',
+  stored.model.value?.includes('prof_gone') === true && stored.model.value.includes('已删除'),
+  JSON.stringify(stored.model),
+)
+check('run context: it is the edit flow, not a second create', (await texts()).includes('编辑任务'))
+
+await page.evaluate(() => {
+  window.__profiles = []
+  window.__activeProfileId = ''
+  window.__routines = null
+})
 
 await browser.close()
 

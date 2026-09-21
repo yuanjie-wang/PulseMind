@@ -1,0 +1,130 @@
+/** CSV↔param mapping + batch constants (PLAN-routine-batch M1).
+ *
+ * The mapping contract (L2): headers match param keys exactly (after header
+ * trim); unmatched columns are surfaced but ignored; a required param without
+ * a column refuses the batch; row cells feed resolveParamValues, so a blank
+ * optional cell still falls back to the stored default. Also pins {{row}}:
+ * injected by batch runs, absent (token stays visible) in single runs. */
+
+import { describe, expect, it } from 'vitest'
+import { analyzeCsvBatch, rowParamsAt, normalizeBatchConcurrency, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY } from '../src/shared/routine/batch'
+import { builtinRoutineVars, renderRoutinePrompt, resolveParamValues, assertRunnableParams as assertRunnableParamsRow } from '../src/shared/routine/params'
+import { parseCsv } from '../src/shared/routine/csv'
+import type { Routine, RoutineParam } from '../src/shared/types/routine'
+
+const PARAMS: RoutineParam[] = [
+  { key: 'repo', label: '仓库', required: true },
+  { key: 'branch', label: '分支' },
+  { key: 'owner', label: '负责人', default: 'me' },
+]
+
+const headers = ['repo', 'branch', 'extra']
+
+function routine(overrides?: Partial<Routine>): Routine {
+  return {
+    id: 'routine_x', name: 't', description: '', prompt: '检查 {{repo}}@{{branch}} 由 {{owner}} 负责 第{{row}}行',
+    params: PARAMS, enabled: true, createdAt: '', updatedAt: '', ...overrides,
+  }
+}
+
+describe('analyzeCsvBatch', () => {
+  it('classifies matched / unmatched / missing-required', () => {
+    const a = analyzeCsvBatch(headers, [[], []], PARAMS)
+    expect(a.matchedParams).toEqual(['repo', 'branch'])
+    expect(a.unmatchedHeaders).toEqual(['extra'])
+    expect(a.missingRequiredHeaders).toEqual([])
+    expect(a.totalRows).toBe(2)
+  })
+
+  it('reports a required param with no column', () => {
+    const a = analyzeCsvBatch(['branch'], [[]], PARAMS)
+    expect(a.missingRequiredHeaders).toEqual(['repo'])
+    expect(a.matchedParams).toEqual(['branch'])
+  })
+
+  it('requires an exact key match (no case folding)', () => {
+    const a = analyzeCsvBatch(['Repo'], [[]], PARAMS)
+    expect(a.matchedParams).toEqual([])
+    expect(a.missingRequiredHeaders).toEqual(['repo'])
+    expect(a.unmatchedHeaders).toEqual(['Repo'])
+  })
+
+  it('duplicate headers resolve to the first occurrence', () => {
+    const t = parseCsv('repo,repo\nfirst,second\n')
+    expect(rowParamsAt(t.headers, t.rows, PARAMS, 0)).toEqual({ repo: 'first' })
+  })
+})
+
+describe('rowParamsAt + resolution', () => {
+  it('trims cells and provides only mapped keys', () => {
+    const values = rowParamsAt(headers, [[' a ', ' b ', ' noise ']], PARAMS, 0)
+    expect(values).toEqual({ repo: 'a', branch: 'b' })
+    // Blank optional cell falls back to the default; the unmatched column's
+    // value never leaks into the prompt.
+    const resolved = resolveParamValues(routine(), values)
+    expect(resolved.owner).toBe('me')
+  })
+
+  it('a short row reads missing cells as empty (blank = default fallback)', () => {
+    const values = rowParamsAt(headers, [['only-repo']], PARAMS, 0)
+    expect(values).toEqual({ repo: 'only-repo', branch: '' })
+    // The empty branch cell resolves through the default chain like any blank.
+    expect(resolveParamValues(routine(), values).branch).toBe('')
+    expect(() => assertRunnableParamsRow(routine(), values)).not.toThrow()
+  })
+
+  it('feeds assertRunnableParams per row (blank required cell = row failure)', async () => {
+    const { assertRunnableParams } = await import('../src/shared/routine/params')
+    expect(() => assertRunnableParams(routine(), rowParamsAt(headers, [[' ', 'dev']], PARAMS, 0))).toThrow(/repo/)
+    expect(() => assertRunnableParams(routine(), rowParamsAt(headers, [['r', 'dev']], PARAMS, 0))).not.toThrow()
+  })
+})
+
+describe('batch concurrency validation', () => {
+  it('absent/blank → undefined (default applies)', () => {
+    expect(normalizeBatchConcurrency(undefined)).toBeUndefined()
+    expect(normalizeBatchConcurrency(null)).toBeUndefined()
+    expect(normalizeBatchConcurrency('')).toBeUndefined()
+  })
+
+  it('accepts integers within [1, MAX]', () => {
+    expect(normalizeBatchConcurrency(1)).toBe(1)
+    expect(normalizeBatchConcurrency(MAX_BATCH_CONCURRENCY)).toBe(MAX_BATCH_CONCURRENCY)
+  })
+
+  it('rejects out-of-range / non-integer / non-number values', () => {
+    expect(() => normalizeBatchConcurrency(0)).toThrow()
+    expect(() => normalizeBatchConcurrency(MAX_BATCH_CONCURRENCY + 1)).toThrow()
+    expect(() => normalizeBatchConcurrency(2.5)).toThrow()
+    expect(() => normalizeBatchConcurrency('3')).toThrow()
+  })
+
+  it('the default stays within the ceiling (both constants pinned)', () => {
+    expect(DEFAULT_BATCH_CONCURRENCY).toBe(3)
+    expect(MAX_BATCH_CONCURRENCY).toBe(5)
+  })
+})
+
+describe('{{row}} variable', () => {
+  it('substitutes the 1-based row number when a batch provides it', () => {
+    const prompt = renderRoutinePrompt(routine(), { repo: 'r', branch: 'b', owner: 'o' }, { workspaceDir: '/w', row: '7' })
+    expect(prompt).toContain('由 o 负责 第7行')
+    expect(prompt).not.toContain('{{row}}')
+  })
+
+  it('stays visible in a single run (no row in context)', () => {
+    const prompt = renderRoutinePrompt(routine(), { repo: 'r', branch: 'b', owner: 'o' }, { workspaceDir: '/w' })
+    expect(prompt).toContain('第{{row}}行')
+  })
+
+  it('builtinRoutineVars only carries row when provided', () => {
+    expect('row' in builtinRoutineVars({})).toBe(false)
+    expect(builtinRoutineVars({ row: '2' }).row).toBe('2')
+  })
+
+  it('a declared param named row wins over the built-in', () => {
+    const p: RoutineParam = { key: 'row', label: '行' }
+    const prompt = renderRoutinePrompt(routine({ params: [...PARAMS, p] }), { repo: 'r', branch: 'b', owner: 'o', row: 'DECLARED' }, { row: '7' })
+    expect(prompt).toContain('第DECLARED行')
+  })
+})

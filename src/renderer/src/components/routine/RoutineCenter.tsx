@@ -15,13 +15,13 @@
 // closing the task grid — it was a button in the section head until the
 // follow-up ruling of the same day) above 推荐模板 (the five workplace starters
 // from routine-templates.ts). The page's own title row is GONE — the window
-// title bar already names the view, so a second 日常 • 自动化 above the content
+// title bar already names the view, so a second 日常任务 above the content
 // was pure chrome. Right is the recent-runs list: unchanged in content, now a
 // bordered column of its own.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { App as AntdApp, Button, Switch, Tag, Tooltip } from 'antd'
-import { ClockCircleOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { checkCron } from '../../../../shared/schedule/cron'
@@ -29,6 +29,7 @@ import { describeCron } from '../../utils/schedule-text'
 import { describeRelativeTimeText, bucketRunByDate, type DateBucket } from '../../utils/relative-time'
 import { RoutineWorkspace, RUN_STATUS_TAG, RunStatusIcon } from './RoutineWorkspace'
 import { useRoutineRunNow } from './RoutineRunModal'
+import { useRoutineBatchRun } from './BatchRunModal'
 import { ROUTINE_TEMPLATES, routineScheduleLabel } from './routine-templates'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
 
@@ -179,6 +180,14 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
     void reload()
   })
 
+  /** Shared 批量运行: the CSV preview dialog first (BatchRunModal); a started
+   *  batch lands in the workspace the same way a single run does. */
+  const { runBatch, modal: batchModal } = useRoutineBatchRun((started) => {
+    setHistoryOfId(started.id)
+    setRunNonce((n) => n + 1)
+    void reload()
+  })
+
   const removeRoutine = (routine: Routine): void => {
     modal.confirm({
       title: `删除「${routine.name}」？`,
@@ -223,6 +232,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
   return (
     <div style={{ height: '100%', background: 'var(--pm-bg)', overflow: 'hidden' }}>
       {runModal}
+      {batchModal}
       {historyOfId != null ? (
         <RoutineWorkspace
           routines={routines}
@@ -232,6 +242,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
           onBack={() => { setHistoryOfId(null); setInitialRunIdForWorkspace(undefined); void reload() }}
           onEdit={(r) => openEditor(r)}
           onRunNow={runNow}
+          onRunBatch={runBatch}
         />
       ) : (
         <div style={{ height: '100%', display: 'flex', minHeight: 0 }}>
@@ -291,21 +302,29 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                           </span>
                           {routine.schedule?.cron && checkCron(routine.schedule.cron).valid && <Tag color="black">定时</Tag>}
                         </div>
-                        <div
-                          title={description}
-                          style={{
-                            fontSize: 12, color: 'var(--pm-text-quiet)', marginTop: 6, minHeight: 36,
-                            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-                          }}
-                        >
-                          {description}
-                        </div>
+                        {/* antd Tooltip, not a native `title` attribute: the native
+                            tooltip is drawn by the OS and stays light in dark mode
+                            (the user report this replaces). antd rides the
+                            ConfigProvider palette, and an empty description shows
+                            nothing (noTitle guard). */}
+                        <Tooltip title={description} styles={{ root: { maxWidth: 420 } }}>
+                          <div
+                            data-routine-desc
+                            style={{
+                              fontSize: 12, color: 'var(--pm-text-quiet)', marginTop: 6, minHeight: 36,
+                              display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                            }}
+                          >
+                            {description}
+                          </div>
+                        </Tooltip>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
                           <span className="routine-pill"><ClockCircleOutlined />{scheduleText}</span>
                           {lastRunText && <span className="routine-pill">{lastRunText}</span>}
                           {(routine.params?.length ?? 0) > 0 && (
                             <span className="routine-pill">参数 {routine.params!.map((p) => p.key).join(' · ')}</span>
                           )}
+                          {routine.batch?.csvPath && <span className="routine-pill"><DatabaseOutlined />批量 CSV</span>}
                         </div>
                         {/* Action row isolates its own clicks (stopPropagation) so
                             toggling / running / editing / deleting does not also
@@ -323,6 +342,11 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                           <Tooltip title="立即运行">
                             <Button type="text" icon={<PlayCircleOutlined style={{ fontSize: 17 }} />} onClick={() => runNow(routine)} />
                           </Tooltip>
+                          {routine.batch?.csvPath && (
+                            <Tooltip title="批量运行（按 CSV 逐行执行）">
+                              <Button type="text" icon={<DatabaseOutlined style={{ fontSize: 16 }} />} data-action="batch-run" onClick={() => runBatch(routine)} />
+                            </Tooltip>
+                          )}
                           <Tooltip title="编辑">
                             <Button type="text" icon={<EditOutlined style={{ fontSize: 15 }} />} onClick={() => openEditor(routine)} />
                           </Tooltip>
@@ -436,7 +460,9 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                         </div>
                         {runs.map((run) => {
                           const name = routineNameById.get(run.routineId) ?? run.routineId
-                          const triggerText = run.trigger === 'schedule' ? t('routine.triggerSchedule') : t('routine.triggerManual')
+                          const triggerText = run.batch
+                            ? `批量 · 成功 ${run.batchProgress?.success ?? 0}/${run.batch.totalRows}`
+                            : run.trigger === 'schedule' ? t('routine.triggerSchedule') : t('routine.triggerManual')
                           const timeText = describeRelativeTimeText(run.startedAt, runsFetchedAt, t) ?? ''
                           const isRunning = run.status === 'running'
                           return (

@@ -5,10 +5,12 @@
 // tests. The view lives in RoutineForm.tsx.
 
 import { checkCron } from '../../../../shared/schedule/cron'
+import { checkWorkspacePathFormat } from '../../../../shared/workspace-path'
 import { configToCron, parseCronToConfig } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
 import type { RoutineAssistantPatch } from './routine-assist'
-import type { Routine } from '../../../../shared/types/routine'
+import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
+import type { Routine, RoutineBatchConfig } from '../../../../shared/types/routine'
 
 export interface RoutineDraftState {
   id?: string
@@ -21,6 +23,17 @@ export interface RoutineDraftState {
   enabled: boolean
   sourceConversationId?: string
   params: Array<{ key: string; label: string; required?: boolean; default?: string }>
+  /** Run context (user 2026-09-21): absent = the conversation-default behavior
+   *  (a minted session folder / the unattended approval level / the active
+   *  profile at run time). The assistant never fills these — paths and models
+   *  are the user's to pick — but its patches must not blank them either. */
+  workspaceDir?: string
+  approvalMode?: SandboxApprovalMode
+  profileId?: string
+  /** Batch mode over a CSV (PLAN-routine-batch); absent = a single-run task.
+   *  Like the run context, the assistant never touches it, and its patches
+   *  never blank it (applyAssistantPatch spreads the current draft). */
+  batch?: RoutineBatchConfig
 }
 
 const DEFAULT_TIME = '09:00'
@@ -55,11 +68,20 @@ export function routineToDraft(routine: Routine): RoutineDraftState {
     enabled: routine.enabled,
     sourceConversationId: routine.sourceConversationId,
     params: routine.params ?? [],
+    workspaceDir: routine.workspaceDir,
+    approvalMode: routine.approvalMode,
+    profileId: routine.profileId,
+    batch: routine.batch,
   }
 }
 
 /** First validation error, or null when the draft is saveable. */
 export function validateDraft(draft: RoutineDraftState): string | null {
+  const dir = draft.workspaceDir?.trim()
+  if (dir) {
+    const pathError = checkWorkspacePathFormat(dir)
+    if (pathError) return pathError
+  }
   if (!draft.scheduleEnabled) return null
   if (draft.sched.kind === 'custom' && !checkCron(draft.sched.cron).valid) return 'cron 表达式无效'
   if (draft.sched.kind === 'weekly' && draft.sched.weekdays.length === 0) return '请至少选择一个星期'
@@ -77,6 +99,12 @@ export function draftToRoutineInput(draft: RoutineDraftState): Partial<Routine> 
     sourceConversationId: draft.sourceConversationId,
     params: draft.params.filter((p) => p.key.trim()),
     schedule: cron ? { cron, catchUp: draft.catchUp } : undefined,
+    workspaceDir: draft.workspaceDir?.trim() || undefined,
+    approvalMode: draft.approvalMode,
+    profileId: draft.profileId?.trim() || undefined,
+    // csvPath is trimmed/blank-dropped main-side (normalizeBatchConfig); an
+    // empty path here simply saves as "not configured".
+    batch: draft.batch?.csvPath?.trim() ? draft.batch : undefined,
   }
 }
 

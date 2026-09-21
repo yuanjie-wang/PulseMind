@@ -39,10 +39,51 @@ export function assertRunnableParams(routine: Routine, provided?: Record<string,
 
 /** Substitute {{key}} placeholders with the resolved values. Undeclared
  *  placeholders stay as written — a typo should stay visible, not vanish. */
-export function renderRoutinePrompt(routine: Routine, provided?: Record<string, string>): string {
+export function renderRoutinePrompt(
+  routine: Routine,
+  provided?: Record<string, string>,
+  ctx?: RoutinePromptContext,
+): string {
   let prompt = routine.prompt
   for (const p of routine.params ?? []) {
     prompt = prompt.replaceAll(`{{${p.key}}}`, resolveParamValue(p, provided))
   }
+  // Built-ins run AFTER the declared params, so a param named `date` wins over
+  // the built-in of the same name (its token is already gone by this pass).
+  for (const [key, value] of Object.entries(builtinRoutineVars(ctx))) {
+    prompt = prompt.replaceAll(`{{${key}}}`, value)
+  }
   return prompt
+}
+
+/** Run-scoped values a caller may hand the renderer: the workspace actually
+ *  resolved for this run, and a fixed clock for tests. `row` is the batch
+ *  mode's 1-based data row number — absent (single runs) the `{{row}}` token
+ *  stays visible, per the same rule that keeps a typo'd placeholder visible. */
+export interface RoutinePromptContext {
+  now?: Date
+  workspaceDir?: string
+  row?: string
+}
+
+/** Built-in variables every run can use without declaring anything. Fixed
+ *  formats, local time (the same clock the cron schedule runs on); the weekday
+ *  is a fixed Chinese name — it lands in an LLM prompt, not in the UI, so it
+ *  does not follow the locale. */
+export function builtinRoutineVars(ctx?: RoutinePromptContext): Record<string, string> {
+  const now = ctx?.now ?? new Date()
+  const hh = String(now.getHours()).padStart(2, '0')
+  const mm = String(now.getMinutes()).padStart(2, '0')
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const vars: Record<string, string> = {
+    date,
+    time: `${hh}:${mm}`,
+    datetime: `${date} ${hh}:${mm}`,
+    weekday: `周${'日一二三四五六'[now.getDay()]}`,
+    workspace: ctx?.workspaceDir ?? '',
+  }
+  // Batch-only: not in the fixed object above, so a single run never
+  // substitutes {{row}} with anything (the token stays visible instead).
+  if (ctx?.row != null) vars.row = ctx.row
+  return vars
 }

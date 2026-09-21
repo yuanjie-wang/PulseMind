@@ -61,6 +61,12 @@ const electronAPI = {
   routineRunDelete: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUN_DELETE, runId),
   routineRunsClear: (routineId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUNS_CLEAR, routineId),
   routineRunsPrune: (days?: number) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUNS_PRUNE, days),
+  // Batch mode (PLAN-routine-batch)
+  routineBatchRun: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_RUN, id),
+  routineBatchStop: (parentRunId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_STOP, parentRunId),
+  routineBatchItems: (parentRunId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_ITEMS, parentRunId),
+  routineCsvPreview: (filePath: string, params?: Array<{ key: string; label: string; required?: boolean; default?: string }>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_CSV_PREVIEW, filePath, params),
   toolList: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_LIST),
   toolGet: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.TOOL_GET, id),
   toolCreate: (input: { name: string; description?: string; category?: string; capabilities?: string[] }) =>

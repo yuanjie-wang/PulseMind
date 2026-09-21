@@ -245,6 +245,11 @@ export const IPC_CHANNELS = {
   ROUTINE_RUN_DELETE: 'routine:run-delete',
   ROUTINE_RUNS_CLEAR: 'routine:runs-clear',
   ROUTINE_RUNS_PRUNE: 'routine:runs-prune',
+  // ── PLAN-routine-batch: CSV 批量模式 ──
+  ROUTINE_BATCH_RUN: 'routine:batch-run',
+  ROUTINE_BATCH_STOP: 'routine:batch-stop',
+  ROUTINE_BATCH_ITEMS: 'routine:batch-items',
+  ROUTINE_CSV_PREVIEW: 'routine:csv-preview',
 
   // ── PLAN-0.4.0 M5: user tools (tool studio; presets per M5R) ──
   TOOL_LIST: 'tool:list',

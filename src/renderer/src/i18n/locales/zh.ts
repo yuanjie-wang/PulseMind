@@ -68,6 +68,7 @@ const zh = {
       failed: '失败',
       running: '运行中',
       skipped: '已跳过',
+      partial: '部分成功',
     },
     runResultOk: '执行成功，点开查看结果',
     runResultFail: '执行失败：{{error}}',

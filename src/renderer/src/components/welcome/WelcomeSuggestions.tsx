@@ -66,6 +66,8 @@ const RUN_STATUS_COLOR: Record<RoutineRunStatus, string> = {
   failed: 'var(--pm-error)',
   running: 'var(--pm-link)',
   skipped: 'var(--pm-text-muted)',
+  // Batch parents only — amber, matching the workspace's 部分成功 glyph.
+  partial: '#faad14',
 }
 
 // ── Card frame ──

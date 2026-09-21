@@ -9,11 +9,14 @@
 // their own, and the explanatory text lives in the placeholders.
 
 import React from 'react'
-import { Button, Checkbox, Input, InputNumber, Select, Space, Switch } from 'antd'
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { Button, Checkbox, Input, InputNumber, Select, Space, Switch, Tag } from 'antd'
+import { DeleteOutlined, FileTextOutlined, PlusOutlined } from '@ant-design/icons'
 import { checkCron, nextRun } from '../../../../shared/schedule/cron'
 import { configToCron, WEEKDAY_LABELS } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
+import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
+import { analyzeCsvBatch, DEFAULT_BATCH_CONCURRENCY, MAX_BATCH_ROWS, MAX_BATCH_CONCURRENCY } from '../../../../shared/routine/batch'
+import type { CsvPreview } from '../../../../shared/routine/batch'
 import { useTranslation } from '../../i18n/useTranslation'
 import { AppliedPatchBar } from '../form-assist/AppliedPatchBar'
 import { SCHED_DEFAULTS } from './routine-form-model'
@@ -35,6 +38,24 @@ const WEEKDAY_OPTIONS = [1, 2, 3, 4, 5, 6, 0].map((d) => ({ value: d, label: WEE
 const DEFAULT_TIME = '09:00'
 const ROW_LABEL = { fontSize: 12, color: '#666' } as const
 const CAPTION = { fontSize: 11, color: '#999', marginTop: 4 } as const
+
+/** Built-in prompt variables (shared/routine/params builtinRoutineVars) — the
+ *  runtime half the runner substitutes after the declared params. */
+const BUILTIN_VAR_OPTIONS = [
+  { value: 'date', label: '日期 {{date}}' },
+  { value: 'time', label: '时间 {{time}}' },
+  { value: 'datetime', label: '日期时间 {{datetime}}' },
+  { value: 'weekday', label: '星期 {{weekday}}' },
+  { value: 'workspace', label: '工作区路径 {{workspace}}' },
+]
+
+/** Approval ladder — same three levels and order as the composer's 授权
+ *  button (chatView.approval.*); undefined = the unattended default. */
+const APPROVAL_OPTIONS = [
+  { value: 'always-ask', label: '始终询问' },
+  { value: 'outside-ask', label: '按需确认' },
+  { value: 'auto', label: '全部允许' },
+]
 
 /** Labels carry the structure on their own (the section headings are gone),
  *  so they are set a weight above the inputs — same as the expert form. */
@@ -183,6 +204,217 @@ function RoutineAppliedBar({ applied, onUndo }: { applied: RoutineAssistantPatch
   return <AppliedPatchBar summary={summary} onUndo={onUndo} />
 }
 
+/** The 批量数据 block (PLAN-routine-batch M5): an optional CSV whose headers
+ *  map to the params above. The file itself is read main-side (preview IPC) —
+ *  the section only shows its verdict: mapping badges on the header row, the
+ *  first rows, and why a run would refuse (missing required column / over the
+ *  row cap). The read carries no params: the mapping is recomputed on every
+ *  render from the cached headers (analyzeCsvBatch), so a param keystroke
+ *  never re-reads the file. */
+function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
+  /** The read result tagged with the path it came from — a mismatch (file
+   *  switched, read still in flight) renders as "nothing yet" instead of the
+   *  previous file's verdict, which is what lets the effect stay async-only. */
+  const [entry, setEntry] = React.useState<{ path: string; preview: CsvPreview | null; error: string | null } | null>(null)
+  const csvPath = draft.batch?.csvPath ?? ''
+
+  React.useEffect(() => {
+    if (!csvPath) return
+    let cancelled = false
+    void window.electronAPI.routineCsvPreview(csvPath, undefined)
+      .then((res) => {
+        if (cancelled) return
+        setEntry({
+          path: csvPath,
+          preview: res.ok && res.preview ? res.preview : null,
+          error: res.ok ? null : (res.error ?? '读取批量数据文件失败'),
+        })
+      })
+      .catch(() => { if (!cancelled) setEntry({ path: csvPath, preview: null, error: '读取批量数据文件失败' }) })
+    return () => { cancelled = true }
+  }, [csvPath])
+
+  const current = entry?.path === csvPath ? entry : null
+  const preview = current?.preview ?? null
+  const error = current?.error ?? null
+  // Live mapping over the cached headers; empty rows are fine — only the
+  // header verdict is recomputed, the row count already lives on the preview.
+  const liveAnalysis = preview ? analyzeCsvBatch(preview.headers, [], draft.params) : null
+
+  const pick = async (): Promise<void> => {
+    try {
+      const res = await window.electronAPI.showOpenDialog({
+        properties: ['openFile'],
+        filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }],
+      })
+      const p = res.filePaths[0]
+      if (!res.canceled && p) onChange({ ...draft, batch: { ...(draft.batch ?? {}), csvPath: p } })
+    } catch { /* dialog is best-effort; the section stays as it was */ }
+  }
+
+  const shownHeaders = preview?.headers.slice(0, 8) ?? []
+  return (
+    <div data-routine-field="batch">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <FieldLabel text="批量数据（CSV）" />
+        {draft.batch && (
+          <Button size="small" type="text" icon={<DeleteOutlined />} onClick={() => onChange({ ...draft, batch: undefined })}>
+            清除
+          </Button>
+        )}
+      </div>
+      {!draft.batch ? (
+        <>
+          <Button type="dashed" block icon={<FileTextOutlined />} onClick={() => void pick()}>选择 CSV 文件</Button>
+          <div style={CAPTION}>选配后可批量执行：表头对应上面的参数名，每一行数据都会用独立会话跑一次任务。</div>
+        </>
+      ) : (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} data-routine-field="batch-file">
+            <Tag style={{ marginInlineEnd: 0, maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} icon={<FileTextOutlined />}>
+              {draft.batch.csvPath}
+            </Tag>
+            <Button size="small" onClick={() => void pick()}>更换…</Button>
+          </div>
+          {error && <div style={{ ...CAPTION, color: '#cf1322', marginTop: 8 }}>{error}</div>}
+          {preview && (
+            <>
+              <div style={{ border: '1px solid var(--pm-border-hairline)', borderRadius: 8, overflow: 'hidden', marginTop: 10 }} data-routine-batch-preview>
+                <div style={{ display: 'flex', background: 'var(--pm-fill)' }}>
+                  {shownHeaders.map((h) => {
+                    const param = draft.params.find((p) => p.key === h)
+                    return (
+                      <div key={h} style={{ flex: 1, minWidth: 0, padding: '6px 8px', fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {param ? <span style={{ color: '#389e0d' }}>{h} · {param.label || param.key}</span> : <span style={{ color: '#999' }}>{h} · 未使用</span>}
+                      </div>
+                    )
+                  })}
+                  {(preview.headers.length ?? 0) > shownHeaders.length && (
+                    <div style={{ padding: '6px 8px', fontSize: 11, color: '#999', flexShrink: 0 }}>+{preview.headers.length - shownHeaders.length} 列</div>
+                  )}
+                </div>
+                {preview.previewRows.map((row, i) => (
+                  <div key={i} style={{ display: 'flex', borderTop: '1px solid var(--pm-border-faint)' }}>
+                    {shownHeaders.map((_h, j) => (
+                      <div key={j} style={{ flex: 1, minWidth: 0, padding: '5px 8px', fontSize: 12, color: 'var(--pm-text-quiet)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {row[j] ?? ''}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <div style={CAPTION}>共 {preview.totalRows} 行数据，预览前 {preview.previewRows.length} 行。</div>
+              {liveAnalysis && liveAnalysis.missingRequiredHeaders.length > 0 && (
+                <div style={{ ...CAPTION, color: '#cf1322' }}>缺少必填参数的列：{liveAnalysis.missingRequiredHeaders.join('、')} —— 运行会被拒绝</div>
+              )}
+              {liveAnalysis && liveAnalysis.unmatchedHeaders.length > 0 && (
+                <div style={CAPTION}>未匹配参数的列（将忽略）：{liveAnalysis.unmatchedHeaders.join('、')}</div>
+              )}
+              {preview.overRowLimit && (
+                <div style={{ ...CAPTION, color: '#cf1322' }}>共 {preview.totalRows} 行，超过单批 {MAX_BATCH_ROWS} 行上限，运行会被拒绝，请拆分文件</div>
+              )}
+            </>
+          )}
+          <div style={{ marginTop: 12 }}>
+            <FieldLabel text="并发执行" />
+            <Select
+              style={{ width: 200 }}
+              value={draft.batch.concurrency ?? DEFAULT_BATCH_CONCURRENCY}
+              onChange={(concurrency) => onChange({ ...draft, batch: { ...draft.batch!, concurrency } })}
+              options={Array.from({ length: MAX_BATCH_CONCURRENCY }, (_, i) => ({ value: i + 1, label: `同时执行 ${i + 1} 行` }))}
+            />
+            <div style={CAPTION}>每一行都是独立会话；并发越大完成越快，也越占模型额度。</div>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Switch
+                size="small"
+                checked={!!draft.batch.applyToSchedule}
+                onChange={(applyToSchedule) => onChange({ ...draft, batch: { ...draft.batch!, applyToSchedule } })}
+              />
+              <span style={ROW_LABEL}>定时触发时也执行批量</span>
+            </div>
+            <div style={CAPTION}>关闭时定时触发仍按默认参数单次执行，批量只能手动启动。</div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** The 运行环境 block: where the run executes, how freely, and on which model.
+ *  Every field is optional — absent = the conversation-default behavior (a
+ *  minted session folder under the global workspace / the unattended approval
+ *  level / the active profile at run time), stated in the captions so an
+ *  untouched form is never a mystery. */
+function RunContextSection({ draft, onChange, models, activeModelId }: {
+  draft: RoutineDraftState
+  onChange: (draft: RoutineDraftState) => void
+  models: Array<{ id: string; name: string }>
+  activeModelId?: string
+}): React.ReactElement {
+  const pickWorkspaceDir = async (): Promise<void> => {
+    try {
+      const res = await window.electronAPI.showOpenDialog({ properties: ['openDirectory'] })
+      if (!res.canceled && res.filePaths[0]) onChange({ ...draft, workspaceDir: res.filePaths[0] })
+    } catch { /* dialog is best-effort; the input stays hand-editable */ }
+  }
+  // A stored routine can point at a since-deleted profile — keep the raw value
+  // visible (and clearable) instead of antd printing the bare id.
+  const modelValue = draft.profileId
+  const modelOptions = models.map((p) => ({
+    value: p.id,
+    label: p.id === activeModelId ? `${p.name}（当前）` : p.name,
+  }))
+  if (modelValue && !models.some((p) => p.id === modelValue)) {
+    modelOptions.unshift({ value: modelValue, label: `${modelValue}（已删除，将使用当前模型）` })
+  }
+  return (
+    <div>
+      <div>
+        <FieldLabel text="工作区" />
+        <div style={{ display: 'flex', gap: 8 }} data-routine-field="workspace">
+          <Input
+            style={{ flex: 1 }}
+            value={draft.workspaceDir ?? ''}
+            placeholder="默认：全局工作区下的会话专用目录"
+            onChange={(e) => onChange({ ...draft, workspaceDir: e.target.value })}
+            allowClear
+          />
+          <Button onClick={() => void pickWorkspaceDir()}>选择…</Button>
+        </div>
+        <div style={CAPTION}>不填则在全局工作区下新建本次运行的专用目录，与普通对话一致。</div>
+      </div>
+      <div style={{ marginTop: 14 }} data-routine-field="approval">
+        <FieldLabel text="授权方式" />
+        <Select
+          style={{ width: 220 }}
+          value={draft.approvalMode}
+          placeholder="按需确认（默认）"
+          allowClear
+          onChange={(approvalMode) => onChange({ ...draft, approvalMode: approvalMode as SandboxApprovalMode | undefined })}
+          options={APPROVAL_OPTIONS}
+        />
+        <div style={CAPTION}>无人值守运行时，该等级不允许的操作会被自动跳过，不会卡住等待。</div>
+      </div>
+      <div style={{ marginTop: 14 }} data-routine-field="model">
+        <FieldLabel text="模型" />
+        <Select
+          style={{ width: '100%' }}
+          value={modelValue}
+          placeholder={models.find((p) => p.id === activeModelId)?.name
+            ? `使用当前模型（${models.find((p) => p.id === activeModelId)?.name}）`
+            : '使用当前模型'}
+          allowClear
+          onChange={(profileId) => onChange({ ...draft, profileId: profileId ?? undefined })}
+          options={modelOptions}
+        />
+        <div style={CAPTION}>不选则使用运行时的当前模型；所选模型被删除后同样回落到当前模型。</div>
+      </div>
+    </div>
+  )
+}
+
 export interface RoutineFormProps {
   draft: RoutineDraftState
   onChange: (draft: RoutineDraftState) => void
@@ -191,9 +423,31 @@ export interface RoutineFormProps {
    *  undo itself retires it). */
   appliedAssistantPatch: RoutineAssistantPatch | null
   onUndoAssistantPatch: () => void
+  /** Model profiles for the 模型 select, narrowed to what a picker needs
+   *  (id + display name) — the credentials never belong in a form component. */
+  models: Array<{ id: string; name: string }>
+  activeModelId?: string
 }
 
-export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssistantPatch }: RoutineFormProps): React.ReactElement {
+export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssistantPatch, models, activeModelId }: RoutineFormProps): React.ReactElement {
+  // The native <textarea> under antd's TextArea — insertion at the caret needs
+  // the real element's selectionStart/selectionEnd.
+  const promptAreaRef = React.useRef<{ resizableTextArea?: { textArea?: HTMLTextAreaElement } } | null>(null)
+  const declaredVars = draft.params
+    .filter((p) => p.key.trim())
+    .map((p) => ({ value: p.key, label: `${p.label || p.key} {{${p.key}}}` }))
+  const insertVar = (key: string): void => {
+    const token = `{{${key}}}`
+    const area = promptAreaRef.current?.resizableTextArea?.textArea
+    const start = area?.selectionStart ?? draft.prompt.length
+    const end = area?.selectionEnd ?? start
+    onChange({ ...draft, prompt: draft.prompt.slice(0, start) + token + draft.prompt.slice(end) })
+    const caret = start + token.length
+    requestAnimationFrame(() => {
+      area?.focus()
+      area?.setSelectionRange(caret, caret)
+    })
+  }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {appliedAssistantPatch && <RoutineAppliedBar applied={appliedAssistantPatch} onUndo={onUndoAssistantPatch} />}
@@ -206,8 +460,24 @@ export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssi
         <Input value={draft.description} onChange={(e) => onChange({ ...draft, description: e.target.value })} placeholder="可选，一句话说明这个任务做什么" />
       </div>
       <div>
-        <FieldLabel text="提示词" />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} data-routine-field="prompt-head">
+          <FieldLabel text="提示词" />
+          {/* An action, not a state: the value stays unset so the control
+              reads 插入变量 again after every pick. */}
+          <Select
+            size="small"
+            style={{ minWidth: 110 }}
+            value={null}
+            placeholder="插入变量"
+            onChange={insertVar}
+            options={[
+              { label: '内置变量', options: BUILTIN_VAR_OPTIONS },
+              ...(declaredVars.length > 0 ? [{ label: '任务参数', options: declaredVars }] : []),
+            ]}
+          />
+        </div>
         <Input.TextArea
+          ref={promptAreaRef}
           value={draft.prompt}
           onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
           rows={8}
@@ -245,6 +515,8 @@ export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssi
           添加参数
         </Button>
       </div>
+      <BatchSection draft={draft} onChange={onChange} />
+      <RunContextSection draft={draft} onChange={onChange} models={models} activeModelId={activeModelId} />
       <ScheduleSection draft={draft} onChange={onChange} />
     </div>
   )

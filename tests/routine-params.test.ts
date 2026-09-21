@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { resolveParamValue, resolveParamValues, missingRequiredParamKeys, assertRunnableParams, renderRoutinePrompt } from '../src/shared/routine/params'
+import { resolveParamValue, resolveParamValues, missingRequiredParamKeys, assertRunnableParams, renderRoutinePrompt, builtinRoutineVars } from '../src/shared/routine/params'
 import type { Routine, RoutineParam } from '../src/shared/types/routine'
 
 const ROOT = join(__dirname, '..')
@@ -113,6 +113,68 @@ describe('renderRoutinePrompt', () => {
   it('leaves undeclared placeholders visible instead of blanking them', () => {
     const r = routineWith([{ key: 'repo', label: '仓库', default: 'vue' }], '检查 {{repo}} 和 {{typo}}')
     expect(renderRoutinePrompt(r)).toBe('检查 vue 和 {{typo}}')
+  })
+})
+
+// ── Built-in prompt variables (user 2026-09-21) ──
+// The runner always renders through renderRoutinePrompt, so the built-ins ride
+// the same function; a fixed `now` makes the clock assertions deterministic.
+
+const FIXED_NOW = new Date(2026, 8, 21, 9, 5) // 2026-09-21 09:05 local — a Monday
+
+describe('builtinRoutineVars', () => {
+  it('formats the clock in fixed local-time shapes', () => {
+    const vars = builtinRoutineVars({ now: FIXED_NOW })
+    expect(vars.date).toBe('2026-09-21')
+    expect(vars.time).toBe('09:05')
+    expect(vars.datetime).toBe('2026-09-21 09:05')
+    expect(vars.weekday).toBe('周一')
+  })
+
+  it('pads single-digit months, days, hours and minutes', () => {
+    const vars = builtinRoutineVars({ now: new Date(2026, 0, 3, 7, 2) })
+    expect(vars.date).toBe('2026-01-03')
+    expect(vars.time).toBe('07:02')
+    expect(vars.datetime).toBe('2026-01-03 07:02')
+    expect(vars.weekday).toBe('周六')
+  })
+
+  it('maps every weekday onto 周日..周六 by getDay()', () => {
+    for (let day = 0; day < 7; day++) {
+      const vars = builtinRoutineVars({ now: new Date(2026, 8, 20 + day, 12, 0) })
+      expect(vars.weekday).toBe(`周${'日一二三四五六'[day]}`)
+    }
+  })
+
+  it('leaves the workspace empty unless the run context carries one', () => {
+    expect(builtinRoutineVars({ now: FIXED_NOW }).workspace).toBe('')
+    expect(builtinRoutineVars({ now: FIXED_NOW, workspaceDir: '/tmp/w' }).workspace).toBe('/tmp/w')
+  })
+})
+
+describe('renderRoutinePrompt: built-in variables', () => {
+  it('substitutes the built-ins with no declared params at all', () => {
+    const r = routineWith([], '今天是 {{date}} {{weekday}}，工作区 {{workspace}}')
+    expect(renderRoutinePrompt(r, undefined, { now: FIXED_NOW, workspaceDir: '/tmp/w' }))
+      .toBe('今天是 2026-09-21 周一，工作区 /tmp/w')
+  })
+
+  it('gives a declared param precedence over the same-named built-in', () => {
+    // Params run first: by the time the built-in pass runs, the token is gone.
+    const r = routineWith([{ key: 'date', label: '日期', default: '2026-01-01' }], '{{date}}')
+    expect(renderRoutinePrompt(r, undefined, { now: FIXED_NOW })).toBe('2026-01-01')
+  })
+
+  it('blanks {{workspace}} when no context was handed in (still resolved)', () => {
+    const r = routineWith([], '工作区={{workspace}}')
+    expect(renderRoutinePrompt(r)).toBe('工作区=')
+  })
+
+  it('keeps the third parameter optional — old two-arg calls still render params', () => {
+    const r = routineWith([{ key: 'repo', label: '仓库', default: 'vue' }], '检查 {{repo}} 于 {{date}}')
+    // {{date}} without ctx resolves to today's real clock — assert the shape
+    // instead of a fixed day.
+    expect(renderRoutinePrompt(r)).toMatch(/^检查 vue 于 \d{4}-\d{2}-\d{2}$/)
   })
 })
 

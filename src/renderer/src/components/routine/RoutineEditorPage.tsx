@@ -285,9 +285,12 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId, routineDraft 
         // the convId switch re-restores from the new slot. Normal creates
         // promote the draft slot; the 另存为 rescue promotes the deleted
         // routine's slot. Either way the context follows the routine and the
-        // one-conversation-per-routine invariant holds from birth.
+        // one-conversation-per-routine invariant holds from birth. The prefix
+        // (not `created.id`) names the target: the *slot* is what makes the row
+        // the routine's assistant thread rather than a loose conversation.
         await promoteAssistDraftToEntity(
           assist.messages,
+          ROUTINE_ASSIST_SPEC.conversationPrefix,
           assistConvId,
           created.id,
           `[日常助手] ${draft.name.trim() || '新建任务'}`,
@@ -306,7 +309,9 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId, routineDraft 
     }
   }
 
-  /** Live-form context appended to every assistant ask. */
+  /** Live-form context appended to every assistant ask. The run-context fields
+   *  ride along read-only: the assistant sees them (so its prose doesn't talk
+   *  past the form) but the patch sanitizer never lets it set them. */
   const formSnapshot = (): Record<string, unknown> => ({
     name: draft.name,
     description: draft.description,
@@ -316,6 +321,9 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId, routineDraft 
     catchUp: draft.catchUp,
     enabled: draft.enabled,
     params: draft.params,
+    workspaceDir: draft.workspaceDir,
+    approvalMode: draft.approvalMode,
+    profileId: draft.profileId,
   })
 
   const askAssistant = (text: string): void => assist.send(text, formSnapshot())
@@ -486,6 +494,8 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId, routineDraft 
               onChange={editDraft}
               appliedAssistantPatch={assist.appliedPatch}
               onUndoAssistantPatch={undoAssistantPatch}
+              models={settings.profiles.map((p) => ({ id: p.id, name: p.name }))}
+              activeModelId={settings.activeProfileId}
             />
           </div>
         </div>

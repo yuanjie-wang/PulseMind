@@ -173,14 +173,19 @@ describe('main-side support', () => {
   })
 
   it('the routine runner releases the pin when the run settles', () => {
-    // Non-vacuity: the runner really pins its unattended runs.
-    expect(RUNNER).toContain("approvalMode: 'outside-ask'")
-    const finish = RUNNER.indexOf('const finish = (status: RoutineRun[\'status\'], error?: string): void =>')
+    // Non-vacuity: the runner really pins its unattended runs. The level is
+    // user-selectable per routine now (2026-09-21), but a routine that never
+    // chose one must still pin the unattended default — as a literal, never
+    // DEFAULT_APPROVAL_MODE, so a UI default move cannot widen a watched run.
+    // (The finish shape is the batch-shared primitive's: 'success' | 'failed',
+    // with releaseApprovalPin inside, ahead of the transcript announce.)
+    expect(RUNNER).toContain("approvalMode: routine.approvalMode ?? 'outside-ask'")
+    const finish = RUNNER.indexOf("const finish = (status: 'success' | 'failed', error?: string): void =>")
     expect(finish).toBeGreaterThan(-1)
     const release = RUNNER.indexOf('agentSessionManager.releaseApprovalPin(convId)', finish)
     expect(release).toBeGreaterThan(finish)
     // Inside finish's body, before the transcript persist announces the run.
-    const persist = RUNNER.indexOf('persistTranscript(convId, routine)', finish)
+    const persist = RUNNER.indexOf('void persistTranscript(convId, opts.transcriptLabel', finish)
     expect(persist).toBeGreaterThan(release)
   })
 })

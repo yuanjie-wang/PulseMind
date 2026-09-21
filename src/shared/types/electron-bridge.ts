@@ -19,7 +19,8 @@ import type { ExperienceRecord, ExperienceDraft } from './experience-types'
 import type { WindowControlsLayout } from '../window-chrome'
 import type { Project, ProjectCreateInput, ProjectUpdateInput } from './project'
 import type { SandboxApprovalMode } from '../sandbox/policy'
-import type { Routine, RoutineRun } from './routine'
+import type { Routine, RoutineParam, RoutineRun } from './routine'
+import type { CsvPreviewResult } from '../routine/batch'
 import type { UserTool } from './user-tool'
 import type { AgentSessionCreateOptions } from '../agent-protocol'
 
@@ -298,6 +299,16 @@ export interface ElectronAPI {
   routineRunsClear: (routineId: string) => Promise<number>
   /** 按保留策略清理已结束的运行记录；days 省略时用设置里的策略。返回删除条数。 */
   routineRunsPrune: (days?: number) => Promise<number>
+  // ── Batch mode (PLAN-routine-batch) ──
+  /** 手动启动一次批量运行，返回 parent 运行记录。拒绝情形（已有批量进行中、
+   *  文件不可读、缺必填列、超行数上限）抛错给调用方展示。 */
+  routineBatchRun: (id: string) => Promise<RoutineRun>
+  /** 停止一次批量运行（未知/已结束的 parent 是 no-op）。 */
+  routineBatchStop: (parentRunId: string) => Promise<void>
+  /** 一次批量运行的逐行 child 运行记录（按行号排序）。 */
+  routineBatchItems: (parentRunId: string) => Promise<RoutineRun[]>
+  /** CSV 映射预览。解析失败不抛错，返回 { ok: false, error } 由界面就地展示。 */
+  routineCsvPreview: (filePath: string, params?: RoutineParam[]) => Promise<CsvPreviewResult>
   toolList: () => Promise<UserTool[]>
   toolGet: (id: string) => Promise<UserTool | null>
   toolCreate: (input: { name: string; description?: string; category?: string; capabilities?: string[] }) => Promise<UserTool>

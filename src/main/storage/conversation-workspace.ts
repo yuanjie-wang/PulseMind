@@ -14,7 +14,7 @@
 
 import { existsSync } from 'node:fs'
 import { mkdir, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { getDb } from './database'
 import { WORKSPACE_DIR } from './index'
 import { settingsStore } from './settings-store'
@@ -60,15 +60,25 @@ async function globalWorkspaceDir(): Promise<string> {
  *  the NAME only: no mkdir. The path is persisted immediately so it is stable
  *  for the conversation's life, while the directory itself materializes at the
  *  first write/exec that needs it (user report 2026-09-20: idle chats were
- *  leaving an empty timestamped folder per conversation). The readdir is what
- *  keeps a mint from claiming a name already taken on disk; a same-second race
- *  between two first resolutions can still share a name — it could before the
- *  change too (recursive mkdir never failed), so behavior is unchanged. */
+ *  leaving an empty timestamped folder per conversation). "Taken" is therefore
+ *  the DISK listing plus every persisted mint under this base — a mint that
+ *  has not materialized yet is invisible to the readdir, so batch rows
+ *  dispatched in the same second (routine batch, PLAN-routine-batch) would
+ *  otherwise all claim one name and share a workspace. Two resolutions racing
+ *  inside the same tick can still interleave read-then-persist; the batch
+ *  runner serializes its mints for exactly that reason. */
 async function createTimestampedWorkspaceDir(convId: string): Promise<string> {
   const base = await globalWorkspaceDir()
   const preferred = conversationDirNameFor(convId) ?? formatConversationDirName(new Date())
-  const existing = existsSync(base) ? await readdir(base) : []
-  return join(base, nextConversationDirName(existing, preferred))
+  const onDisk = existsSync(base) ? await readdir(base) : []
+  const persisted = getDb()
+    .prepare('SELECT workspace_dir FROM conversations WHERE workspace_dir IS NOT NULL')
+    .all() as Array<{ workspace_dir: string }>
+  const existing = new Set(onDisk)
+  for (const row of persisted) {
+    if (dirname(row.workspace_dir) === base) existing.add(basename(row.workspace_dir))
+  }
+  return join(base, nextConversationDirName([...existing], preferred))
 }
 
 /** Resolve (and persist) the conversation's working directory. */

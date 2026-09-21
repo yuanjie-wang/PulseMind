@@ -7,16 +7,19 @@
 // the automated prompt — same transcript/composer components as the main chat.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { App as AntdApp, Button, Dropdown, Spin, Tooltip } from 'antd'
+import { App as AntdApp, Button, Dropdown, Progress, Spin, Tooltip } from 'antd'
 import {
   ArrowLeftOutlined,
   CheckCircleFilled,
   ClearOutlined,
   CloseCircleFilled,
+  DatabaseOutlined,
   DeleteOutlined,
   EditOutlined,
+  ExclamationCircleFilled,
   LoadingOutlined,
   MinusCircleOutlined,
+  PauseCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
@@ -35,13 +38,16 @@ import type { MenuProps } from 'antd'
 /** How often run rows (statuses, newly fired scheduled runs) are refreshed. */
 const RUNS_POLL_MS = 3000
 
-// Retention choices are shared with conversation management and Data & Runtime.
+// Retention choices are shared with conversation management and the settings page's 数据清理.
 
 export const RUN_STATUS_TAG: Record<RoutineRun['status'], { color?: string; text: string }> = {
   running: { color: 'processing', text: '运行中' },
   success: { color: 'success', text: '成功' },
   failed: { color: 'error', text: '失败' },
   skipped: { text: '已跳过' },
+  // Batch parents only: some rows succeeded, some failed — neither 全绿 nor
+  // 全红 is honest about that.
+  partial: { color: 'warning', text: '部分成功' },
 }
 
 /** Status as a glyph — a run list scans better as a column of icons than as
@@ -57,6 +63,7 @@ export const RUN_STATUS_ICONS: Record<RoutineRun['status'], React.ReactNode> = {
   success: <CheckCircleFilled style={{ color: '#52c41a' }} />,
   failed: <CloseCircleFilled style={{ color: '#ff4d4f' }} />,
   skipped: <MinusCircleOutlined style={{ color: 'var(--pm-text-faint)' }} />,
+  partial: <ExclamationCircleFilled style={{ color: '#faad14' }} />,
 }
 
 export function RunStatusIcon({ status }: { status: RoutineRun['status'] }): React.ReactElement {
@@ -83,9 +90,12 @@ export interface RoutineWorkspaceProps {
   onBack: () => void
   onEdit: (routine: Routine) => void
   onRunNow: (routine: Routine) => void
+  /** Opens the batch start dialog (BatchRunModal) — the workspace only hosts
+   *  the entry; the dialog and the IPC live with the landing page's hook. */
+  onRunBatch: (routine: Routine) => void
 }
 
-export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, activeRunNonce, onBack, onEdit, onRunNow }: RoutineWorkspaceProps): React.ReactElement {
+export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, activeRunNonce, onBack, onEdit, onRunNow, onRunBatch }: RoutineWorkspaceProps): React.ReactElement {
   const { t } = useTranslation()
   const { modal } = AntdApp.useApp()
   const { settings, saveSettings } = useSettings()
@@ -239,6 +249,11 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
           <Tooltip title="立即运行当前任务">
             <Button type="text" size="small" icon={<PlayCircleOutlined />} disabled={!routine} onClick={() => routine && onRunNow(routine)} />
           </Tooltip>
+          {!!routine?.batch?.csvPath && (
+            <Tooltip title="批量运行当前任务（按 CSV 逐行执行）">
+              <Button type="text" size="small" icon={<DatabaseOutlined />} onClick={() => routine && onRunBatch(routine)} />
+            </Tooltip>
+          )}
           <Tooltip title="编辑当前任务">
             <Button type="text" size="small" icon={<EditOutlined />} disabled={!routine} onClick={() => routine && onEdit(routine)} />
           </Tooltip>
@@ -290,7 +305,9 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <RunStatusIcon status={run.status} />
-                  <span style={{ fontSize: 13, color: 'var(--pm-ink)' }}>{run.trigger === 'schedule' ? '定时' : '手动'}</span>
+                  <span style={{ fontSize: 13, color: 'var(--pm-ink)' }}>
+                    {run.batch ? `批量 · ${run.batch.totalRows} 行` : run.trigger === 'schedule' ? '定时' : '手动'}
+                  </span>
                   <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', marginInlineStart: 'auto' }}>
                     {describeRelativeTimeText(run.startedAt, runsFetchedAt, t) ?? new Date(run.startedAt).toLocaleString()}
                   </span>
@@ -320,26 +337,34 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
         </div>
       </div>
 
-      {/* Right — the selected run's conversation (live while running, and the
-          user can continue it once the automated prompt is done) */}
+      {/* Right — the selected run: a batch parent shows its per-row table
+          (clicking a row drills into that row's conversation); a single run
+          goes straight to the conversation (live while running, and the user
+          can continue it once the automated prompt is done). */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', borderBottom: '1px solid var(--pm-border-hairline)' }}>
-          {selectedRun ? (
-            <>
-              <RunStatusIcon status={selectedRun.status} />
-              <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }}>{selectedRun.trigger === 'schedule' ? '定时触发' : '手动触发'}</span>
-              <span style={{ fontSize: 12, color: 'var(--pm-text-faint)' }}>{new Date(selectedRun.startedAt).toLocaleString()}</span>
-            </>
-          ) : (
-            <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>选择一次运行记录查看对话</span>
-          )}
-        </div>
-        <RunTranscript
-          key={selectedConvId ?? 'none'}
-          convId={selectedConvId}
-          routine={routine}
-          unattended={unattended}
-        />
+        {selectedRun?.batch ? (
+          <BatchRunView key={selectedRun.id} run={selectedRun} routine={routine} />
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', borderBottom: '1px solid var(--pm-border-hairline)' }}>
+              {selectedRun ? (
+                <>
+                  <RunStatusIcon status={selectedRun.status} />
+                  <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }}>{selectedRun.trigger === 'schedule' ? '定时触发' : '手动触发'}</span>
+                  <span style={{ fontSize: 12, color: 'var(--pm-text-faint)' }}>{new Date(selectedRun.startedAt).toLocaleString()}</span>
+                </>
+              ) : (
+                <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>选择一次运行记录查看对话</span>
+              )}
+            </div>
+            <RunTranscript
+              key={selectedConvId ?? 'none'}
+              convId={selectedConvId}
+              routine={routine}
+              unattended={unattended}
+            />
+          </>
+        )}
       </div>
     </div>
   )
@@ -424,5 +449,184 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
         )
       )}
     </>
+  )
+}
+
+// ── Batch run view (PLAN-routine-batch M6) ──
+// A batch PARENT run's pane: live progress over the per-row table, stop while
+// running, and a drill-in — clicking a row swaps the table for that row's
+// conversation (the same RunTranscript a single run gets, so a streaming row
+// is live here too). Items refresh on the same 3s poll as the runs list; the
+// parent row in the middle pane carries `batchProgress` computed main-side.
+
+function BatchRunView({ run, routine }: { run: RoutineRun; routine: Routine | null }): React.ReactElement {
+  const { t } = useTranslation()
+  const { modal } = AntdApp.useApp()
+  const [items, setItems] = useState<RoutineRun[]>([])
+  const [itemsFetchedAt, setItemsFetchedAt] = useState(0)
+  /** The drilled-in row, tagged with the run it belongs to — a run switch
+   *  therefore resets the view by derivation, without an effect writing state. */
+  const [selection, setSelection] = useState<{ runId: string; itemId: string } | null>(null)
+
+  const openItems = useCallback(async (parentId: string): Promise<void> => {
+    const list = await window.electronAPI.routineBatchItems(parentId).catch(() => [] as RoutineRun[])
+    setItems(list)
+    setItemsFetchedAt(Date.now())
+  }, [])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async item load, setState lands after the IPC await
+    void openItems(run.id)
+  }, [run.id, openItems])
+
+  const running = run.status === 'running'
+  useEffect(() => {
+    if (!running) return
+    const timer = setInterval(() => { void openItems(run.id) }, RUNS_POLL_MS)
+    return () => clearInterval(timer)
+  }, [running, run.id, openItems])
+
+  const selectedChild = selection?.runId === run.id
+    ? items.find((i) => i.id === selection.itemId) ?? null
+    : null
+  const progress = run.batchProgress
+  const total = progress?.total ?? run.batch?.totalRows ?? 0
+  const settledCount = total - (progress?.running ?? 0)
+  const percent = total > 0 ? Math.round((settledCount / total) * 100) : 0
+
+  const stop = (): void => {
+    modal.confirm({
+      title: '停止这次批量运行？',
+      content: '未开始的行将标记为已跳过，正在运行的行会被中止。',
+      okText: '停止',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await window.electronAPI.routineBatchStop(run.id)
+        await openItems(run.id)
+      },
+    })
+  }
+
+  /** Re-run one failed row with the values it originally ran with (the
+   *  snapshot, not the CSV — the file may have changed). It comes back as an
+   *  ordinary single run in the history, not a member of this batch. */
+  const retryRow = (item: RoutineRun): void => {
+    if (!routine) return
+    void window.electronAPI.routineRun(routine.id, item.paramsSnapshot)
+      .then(() => notify.success(`已重新运行第 ${(item.rowIndex ?? 0) + 1} 行，可在运行历史中查看`))
+      .catch((err) => notify.error(err instanceof Error ? err.message : String(err)))
+  }
+
+  const durationText = (item: RoutineRun): string => {
+    if (!item.finishedAt) return '—'
+    const seconds = Math.round((Date.parse(item.finishedAt) - Date.parse(item.startedAt)) / 1000)
+    return seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`
+  }
+
+  const summaryOf = (item: RoutineRun): string => {
+    const params = routine?.params ?? []
+    const pairs: string[] = []
+    for (const p of params) {
+      const value = item.paramsSnapshot?.[p.key]
+      if (value) pairs.push(value)
+      if (pairs.length >= 2) break
+    }
+    return pairs.join(' · ')
+  }
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* Header — status, batch meta, live progress, and 停止 while running */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px', borderBottom: '1px solid var(--pm-border-hairline)' }} data-batch-header>
+        {selectedChild ? (
+          <Tooltip title="返回行列表">
+            <Button type="text" size="small" icon={<ArrowLeftOutlined />} onClick={() => setSelection(null)} />
+          </Tooltip>
+        ) : (
+          <RunStatusIcon status={run.status} />
+        )}
+        <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }}>
+          {selectedChild
+            ? `第 ${(selectedChild.rowIndex ?? 0) + 1} 行 · ${run.batch?.csvName ?? ''}`
+            : `批量运行 · ${run.batch?.csvName ?? ''} · 并发 ${run.batch?.concurrency ?? '—'}`}
+        </span>
+        {!selectedChild && total > 0 && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }} data-batch-progress>
+            <Progress percent={percent} size="small" showInfo={false} style={{ width: 140, margin: 0 }} />
+            <span style={{ fontSize: 12, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap' }}>
+              成功 {progress?.success ?? 0} / 失败 {progress?.failed ?? 0}
+              {(progress?.skipped ?? 0) > 0 ? ` / 跳过 ${progress!.skipped}` : ''}
+              {running ? ` · 共 ${total} 行` : ` · 共 ${total} 行`}
+            </span>
+          </span>
+        )}
+        {!selectedChild && <span style={{ flex: 1 }} />}
+        {selectedChild && <span style={{ flex: 1 }} />}
+        {!selectedChild && running && (
+          <Button size="small" icon={<PauseCircleOutlined />} onClick={stop}>停止批量</Button>
+        )}
+      </div>
+
+      {selectedChild ? (
+        <RunTranscript
+          key={selectedChild.conversationId ?? 'none'}
+          convId={selectedChild.conversationId}
+          routine={routine}
+          unattended={selectedChild.status === 'running'}
+        />
+      ) : (
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '10px 20px 16px' }} data-batch-items>
+          {items.length === 0 && (
+            <div style={{ color: 'var(--pm-text-muted)', fontSize: 12, padding: '8px 4px' }}>
+              {running ? '正在派发…' : '没有行记录。'}
+            </div>
+          )}
+          {items.map((item) => {
+            const rowNo = (item.rowIndex ?? 0) + 1
+            return (
+              <div
+                key={item.id}
+                className="pane-row"
+                style={{ marginBottom: 4, padding: '7px 10px' }}
+                onClick={() => item.conversationId && setSelection({ runId: run.id, itemId: item.id })}
+                data-batch-row={rowNo}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <RunStatusIcon status={item.status} />
+                  <span style={{ fontSize: 13, color: 'var(--pm-ink)', flexShrink: 0 }}>第 {rowNo} 行</span>
+                  <span style={{ fontSize: 12, color: 'var(--pm-text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                    {summaryOf(item)}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', flexShrink: 0 }}>
+                    {describeRelativeTimeText(item.startedAt, itemsFetchedAt, t) ?? ''}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', flexShrink: 0 }}>{durationText(item)}</span>
+                  {item.status === 'failed' && (
+                    <Tooltip title="用该行参数重新运行（单次运行）">
+                      <Button
+                        className="pane-row-action"
+                        type="text"
+                        size="small"
+                        icon={<ReloadOutlined style={{ fontSize: 12 }} />}
+                        onClick={(e) => { e.stopPropagation(); retryRow(item) }}
+                      />
+                    </Tooltip>
+                  )}
+                </div>
+                {item.error && (
+                  <div style={{
+                    fontSize: 11, color: 'var(--pm-error)', marginTop: 4,
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                  }}>
+                    {item.error}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }

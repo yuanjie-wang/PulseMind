@@ -343,6 +343,19 @@ function createTables(): void {
   // Every conversation not explicitly bound to a project belongs to the
   // synthesized default project.
   try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch (e) {}
+  // ── PLAN-routine-batch: batch bookkeeping on routine_runs ──
+  // parent_run_id is what makes a row a batch CHILD (parents and single runs
+  // leave it NULL — the flat run history filters on that); row_index locates
+  // the CSV data row, params_json snapshots the values the row ran with (the
+  // retry path reads the snapshot, not the file — it may have changed), and
+  // batch_json on the PARENT row records what the batch launched with. The
+  // index must come after the ALTERs: on a database from before this version
+  // the column does not exist until the line above adds it.
+  try { database.exec('ALTER TABLE routine_runs ADD COLUMN parent_run_id TEXT') } catch { /* column may already exist */ }
+  try { database.exec('ALTER TABLE routine_runs ADD COLUMN row_index INTEGER') } catch { /* column may already exist */ }
+  try { database.exec('ALTER TABLE routine_runs ADD COLUMN params_json TEXT') } catch { /* column may already exist */ }
+  try { database.exec('ALTER TABLE routine_runs ADD COLUMN batch_json TEXT') } catch { /* column may already exist */ }
+  database.exec('CREATE INDEX IF NOT EXISTS idx_routine_runs_parent ON routine_runs(parent_run_id)')
   // ── 专家配置包 (expert config packs): extended subagent_profiles + per-conversation binding ──
   for (const col of ['description TEXT', 'methodology TEXT', 'output_spec TEXT', 'constraints TEXT', 'knowledge_file_ids TEXT']) {
     try { database.exec(`ALTER TABLE subagent_profiles ADD COLUMN ${col}`) } catch (e) {}
