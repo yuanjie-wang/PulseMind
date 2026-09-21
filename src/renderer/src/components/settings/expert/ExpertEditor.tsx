@@ -250,9 +250,12 @@ export default function ExpertEditor({
         // conversation — re-persisted under the expert's slot, the old slot
         // discarded, then re-bind so the convId switch re-restores from the
         // new slot. The just-had context follows the expert, and the
-        // one-conversation-per-expert invariant holds from birth.
+        // one-conversation-per-expert invariant holds from birth. The prefix
+        // (not `profile.id`) names the target: the *slot* is what keeps the row
+        // an 'expert' conversation rather than a chat in 历史对话.
         await promoteAssistDraftToEntity(
           assist.messages,
+          EXPERT_ASSIST_SPEC.conversationPrefix,
           assistConvId,
           profile.id,
           `[${t('expertCenter.chatTitle')}] ${profile.name}`.trim(),

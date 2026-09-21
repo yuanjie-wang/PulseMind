@@ -490,8 +490,22 @@ export function repairSwappedProjectBindings(): void {
   if (r.changes > 0) console.log(`[DB] repaired ${r.changes} conversation row(s) with a swapped project binding`)
 }
 
+/** Delete a conversation together with the content rows it owns.
+ *
+ * Every caller means「会话连同其内容」— the sidebar delete, the retention
+ * cleanup, a project's removal and the form-assist discard all say so in their
+ * own comments — and an orphaned row is not merely dead weight: `messages.id`
+ * is a global key whose OWNER is write-once (the message upsert never rewrites
+ * `conversation_id`, see saveConversationInner), so a surviving row swallows a
+ * later message that reuses its id. `token_usage` is deliberately left alone —
+ * those tokens were really spent, and the usage ledger is not per-conversation. */
 export function deleteConversation(id: string): void {
-  getDb().prepare('DELETE FROM conversations WHERE id = ?').run(id)
+  const database = getDb()
+  database.transaction(() => {
+    database.prepare('DELETE FROM tool_results WHERE conversation_id = ?').run(id)
+    database.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id)
+    database.prepare('DELETE FROM conversations WHERE id = ?').run(id)
+  })()
 }
 
 /** Ids of unpinned conversations last updated before the retention window —

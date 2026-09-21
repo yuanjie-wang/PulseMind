@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Conversation } from '../src/shared/types/conversation'
 import type { AgentMessage } from '../src/renderer/src/types/agent'
 
 type Call = { method: string; args: unknown[] }
@@ -35,8 +36,10 @@ function stubElectronAPI(): { calls: Call[]; failDispose: () => void } {
         calls.push({ method: 'deleteConversation', args: [id] })
         return Promise.resolve()
       },
-      saveConversation: (conv: { id: string; messages: unknown[] }) => {
-        calls.push({ method: 'saveConversation', args: [conv.id, conv.messages.length] })
+      // The whole payload is recorded, not just its id: the promoted thread's
+      // TARGET and its message keys are the two things this file must pin.
+      saveConversation: (conv: Conversation) => {
+        calls.push({ method: 'saveConversation', args: [conv] })
         return Promise.resolve()
       },
     },
@@ -68,21 +71,39 @@ describe('discardAssistConversation', async () => {
 describe('promoteAssistDraftToEntity', async () => {
   const { promoteAssistDraftToEntity } = await import('../src/renderer/src/components/form-assist/session-lifecycle')
 
-  it('persists the thread under the entity slot, then discards the draft slot', async () => {
+  it('persists the thread on the entity’s SLOT, then discards the draft slot', async () => {
     const { calls } = stubElectronAPI()
-    await promoteAssistDraftToEntity([msg('m1'), msg('m2')], 'routine_assist_draft', 'routine_new1', '[日常助手] 周报')
+    await promoteAssistDraftToEntity([msg('m1'), msg('m2')], 'routine', 'routine_assist_draft', 'routine_new1', '[日常助手] 周报')
     expect(calls.map((c) => c.method)).toEqual(['saveConversation', 'dispose', 'deleteConversation'])
-    // The thread lands on the ENTITY id with every message — the row is
-    // upserted with the id-derived assist type, so it stays out of 'normal'.
-    expect(calls[0].args[0]).toBe('routine_new1')
-    expect(calls[0].args[1]).toBe(2)
+    // formAssistConversationId('routine', 'routine_new1') — the slot the editor
+    // re-binds to, and the ONLY id whose derived type keeps the thread out of
+    // the chat list. A bare 'routine_new1' derives 'normal' (the report
+    // 「用助手创建专家的对话出现在了历史对话列表中」).
+    const conv = calls[0].args[0] as Conversation
+    expect(conv.id).toBe('routine_assist_routine_new1')
+    expect(conv.messages).toHaveLength(2)
+    expect(conv.title).toBe('[日常助手] 周报')
     expect(calls[1].args[0]).toBe('routine_assist_draft')
     expect(calls[2].args[0]).toBe('routine_assist_draft')
   })
 
+  it('re-keys every message for its new owner', async () => {
+    const { calls } = stubElectronAPI()
+    await promoteAssistDraftToEntity([msg('m1'), msg('m2')], 'expert', 'expert_assist_draft', 'expert_a', '[专家创建助手] 甲')
+    const conv = calls[0].args[0] as Conversation
+    const ids = conv.messages.map((m) => m.id)
+    // messages.id is a global key whose owner is write-once (the upsert never
+    // rewrites conversation_id), so re-saving m1/m2 would leave both owned by
+    // the draft slot: the promoted conversation would insert with zero messages
+    // and read back「内容不可见」. Fresh keys, one per message, scoped to the slot.
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+    for (const id of ids) expect(id.startsWith('msg_expert_assist_expert_a_')).toBe(true)
+  })
+
   it('an empty mirror promotes nothing but still discards the draft slot', async () => {
     const { calls } = stubElectronAPI()
-    await promoteAssistDraftToEntity([], 'expert_assist_draft', 'expert_new1', '[专家创建助手] 甲')
+    await promoteAssistDraftToEntity([], 'expert', 'expert_assist_draft', 'expert_new1', '[专家创建助手] 甲')
     expect(calls.map((c) => c.method)).toEqual(['dispose', 'deleteConversation'])
     expect(calls.every((c) => c.args[0] === 'expert_assist_draft')).toBe(true)
   })
@@ -117,6 +138,8 @@ describe('session lifecycle wiring (source scan)', () => {
     // Save promotes the bound thread into the expert's slot, then re-binds —
     // the convId switch is what makes the hook re-restore from the new slot.
     expect(expertSrc).toMatch(/await promoteAssistDraftToEntity\(/)
+    // …and the target is the SPEC's slot prefix, never the raw profile.id.
+    expect(expertSrc).toMatch(/promoteAssistDraftToEntity\(\s*assist\.messages,\s*EXPERT_ASSIST_SPEC\.conversationPrefix,/)
     const promote = expertSrc.indexOf('promoteAssistDraftToEntity(')
     const rebind = expertSrc.indexOf('setBoundId(profile.id)')
     expect(promote).toBeGreaterThan(-1)
@@ -133,6 +156,7 @@ describe('session lifecycle wiring (source scan)', () => {
   it('RoutineEditorPage wires the same four points', () => {
     expect(routineSrc).toContain('onNewSession={discardBoundSession}')
     expect(routineSrc).toMatch(/await promoteAssistDraftToEntity\(/)
+    expect(routineSrc).toMatch(/promoteAssistDraftToEntity\(\s*assist\.messages,\s*ROUTINE_ASSIST_SPEC\.conversationPrefix,/)
     const promote = routineSrc.indexOf('promoteAssistDraftToEntity(')
     const rebind = routineSrc.indexOf('setBoundId(created.id)')
     expect(promote).toBeGreaterThan(-1)
