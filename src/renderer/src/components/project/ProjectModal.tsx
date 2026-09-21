@@ -33,6 +33,9 @@ const SUMMARIZE_CONVERSATIONS = 8
 const SUMMARIZE_WORKSPACE_ENTRIES = 30
 const SUMMARIZE_MESSAGE_TAIL = 80
 
+/** antd Form 的必填星号，手写版——本弹窗的标签是普通 div，不走 Form.Item。 */
+const REQUIRED_MARK = <span style={{ color: 'var(--pm-error-status)', marginRight: 4 }}>*</span>
+
 export function ProjectModal({ open, editing, onClose, onSaved }: {
   open: boolean
   editing: Project | null
@@ -214,12 +217,32 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
       // after the close animation.
       focusTriggerAfterClose={false}
     >
+      {/* 创建时工作区排最前：填目录即可从路径尾段自动带出项目名，流程从这里开始。 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14, paddingTop: 4 }}>
+        {!editing && (
+          <div>
+            <div style={{ marginBottom: 6, fontSize: 13 }}>{REQUIRED_MARK}工作区</div>
+            <Space.Compact style={{ width: '100%' }}>
+              <Input
+                value={workspaceDir}
+                onChange={(e) => updateWorkspaceDir(e.target.value)}
+                placeholder="/path/to/workspace"
+                status={dirError ? 'error' : undefined}
+                autoFocus
+              />
+              <Button icon={<FolderOpenOutlined />} onClick={pickDir} />
+            </Space.Compact>
+            {dirError && <div style={{ marginTop: 6, fontSize: 12, color: 'var(--pm-error-status)' }}>{dirError}</div>}
+          </div>
+        )}
         <div>
-          <div style={{ marginBottom: 6, fontSize: 13 }}>项目名称</div>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：my-app" autoFocus />
+          <div style={{ marginBottom: 6, fontSize: 13 }}>{REQUIRED_MARK}项目名称</div>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：my-app" />
         </div>
-        <div>
+        {/* antd 的 showCount 计数是 position:absolute、bottom:-22px，悬在输入框
+            下缘之外而容器不为它留位——右对齐的计数会压到下方右对齐的按钮上
+            （创建/保存），这里在字段内预留它的整行高度。 */}
+        <div style={{ paddingBottom: 22 }}>
           <div style={{ marginBottom: 6, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span>
               项目概述
@@ -247,24 +270,10 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
             placeholder="一句话说明这个项目是做什么的，会随对话告知 AI"
           />
         </div>
-        {editing ? (
+        {editing && (
           <div>
             <div style={{ marginBottom: 6, fontSize: 13 }}>工作区（创建后不可修改）</div>
             <code style={{ fontSize: 12, color: 'var(--pm-text-secondary)', wordBreak: 'break-all' }}>{editing.workspaceDir}</code>
-          </div>
-        ) : (
-          <div>
-            <div style={{ marginBottom: 6, fontSize: 13 }}>工作区</div>
-            <Space.Compact style={{ width: '100%' }}>
-              <Input
-                value={workspaceDir}
-                onChange={(e) => updateWorkspaceDir(e.target.value)}
-                placeholder="/path/to/workspace"
-                status={dirError ? 'error' : undefined}
-              />
-              <Button icon={<FolderOpenOutlined />} onClick={pickDir} />
-            </Space.Compact>
-            {dirError && <div style={{ marginTop: 6, fontSize: 12, color: 'var(--pm-error-status)' }}>{dirError}</div>}
           </div>
         )}
       </div>

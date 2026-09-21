@@ -338,12 +338,13 @@ const modalFocus = await page.evaluate(() => ({
   inModal: !!document.activeElement?.closest?.('.ant-modal'),
   tag: document.activeElement?.tagName ?? null,
 }))
-check('弹窗打开时焦点在弹窗里（名称输入框）', modalFocus.inModal && modalFocus.tag === 'INPUT', JSON.stringify(modalFocus))
+check('弹窗打开时焦点在弹窗里（首字段：工作区输入框）', modalFocus.inModal && modalFocus.tag === 'INPUT', JSON.stringify(modalFocus))
 
-// 名称 + 工作区：工作区的输入会触发 500ms 防抖的主进程校验，通过后 创建 才可点。
+// 创建态字段顺序是 工作区 → 名称 → 概述：工作区的输入会触发 500ms 防抖的主进程
+// 校验，通过后 创建 才可点（填路径还会把尾段自动带进空名称，这里随后显式覆写）。
 const inputs = page.locator('.ant-modal input')
-await inputs.nth(0).fill('pm-probe-project')
-await inputs.nth(1).fill('/tmp/pm-probe-project')
+await inputs.nth(0).fill('/tmp/pm-probe-project')
+await inputs.nth(1).fill('pm-probe-project')
 await page.waitForTimeout(900)
 const okEnabled = await page.locator('.ant-modal .ant-btn-primary').isEnabled()
 check('校验通过后 创建 可点', okEnabled)

@@ -577,6 +577,28 @@ const overviewBox = page.locator('.ant-modal textarea')
 check('the edit modal carries the overview box', (await overviewBox.count()) === 1)
 check('the overview box caps at 50 chars', (await overviewBox.getAttribute('maxlength')) === '50')
 check('the count reads 0/50', /0\s*\/\s*50/.test(await page.locator('.ant-modal .ant-input-data-count').textContent()))
+// antd 的 showCount 计数挂在输入框下缘之外（bottom:-22px、右对齐）而容器不为其
+// 留位——概述是最后一个字段时计数正好压到右下角的 主按钮 上；字段现在预留了
+// 它的整行。这里量矩形：计数与主按钮在任何模式下都不得相交。
+const countClearOfFooter = async () =>
+  page.evaluate(() => {
+    const count = document.querySelector('.ant-modal .ant-input-data-count')
+    const btn = document.querySelector('.ant-modal .ant-btn-primary')
+    if (!count || !btn) return null
+    const a = count.getBoundingClientRect()
+    const b = btn.getBoundingClientRect()
+    const overlapX = Math.min(a.right, b.right) - Math.max(a.left, b.left)
+    const overlapY = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top)
+    return { countBottom: a.bottom, buttonTop: b.top, overlap: overlapX > 0 && overlapY > 0 }
+  })
+const editClear = await countClearOfFooter()
+check('the count clears the footer button (edit)', editClear !== null && !editClear.overlap, JSON.stringify(editClear))
+// 必填星号：'*' 就是标签文本的一部分，按整块文本断言（'*项目名称' 不会误配
+// 无星号的变体，反之亦然；概述标签的选填后缀也是文本的一部分）。
+const modalHasLabel = (t) =>
+  page.evaluate((txt) => [...document.querySelectorAll('.ant-modal div')].some((d) => d.textContent === txt), t)
+check('edit marks 项目名称 required', await modalHasLabel('*项目名称'))
+check('edit leaves the read-only workspace unmarked', await modalHasLabel('工作区（创建后不可修改）'))
 check('edit mode offers 自动总结', (await page.locator('.ant-modal button', { hasText: '自动总结' }).count()) === 1)
 await overviewBox.fill('给设计师用的组件库')
 await page.locator('.ant-modal .ant-btn-primary').click()
@@ -598,6 +620,11 @@ await page.waitForTimeout(500) // same afterOpenChange race as above
 check('the create modal opens as 新建项目', (await page.locator('.ant-modal-title').textContent()) === '新建项目')
 check('create carries the same overview box', (await page.locator('.ant-modal textarea').count()) === 1)
 check('create has no 自动总结', (await page.locator('.ant-modal button', { hasText: '自动总结' }).count()) === 0)
+const createClear = await countClearOfFooter()
+check('the count clears the footer button (create)', createClear !== null && !createClear.overlap, JSON.stringify(createClear))
+check('create marks 工作区 required', await modalHasLabel('*工作区'))
+check('create marks 项目名称 required', await modalHasLabel('*项目名称'))
+check('create leaves 项目概述 optional', await modalHasLabel('项目概述（选填，50 字以内）'))
 await page.locator('.ant-modal .ant-btn').filter({ hasText: /取\s*消/ }).click() // antd auto-inserts a space: 取 消
 await page.waitForFunction(modalGone)
 
