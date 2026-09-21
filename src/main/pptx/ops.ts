@@ -124,7 +124,12 @@ function applySetShapeText(xml: string, model: SlideModel, op: Extract<PptxOp, {
     const ids = model.shapes.map((s) => s.id).join('、')
     throw new Error(`set_shape_text: 形状 id「${op.shape_id}」不存在（本页可用: ${ids || '无'}）— 先 outline`)
   }
-  const txBody = shape.element.children.find((c) => isEl(c, 'p:txBody'))
+  // Ordinary shapes carry p:txBody; synthetic table-cell shapes wrap an
+  // a:tc whose text body is a:txBody — both must resolve, or every manual-
+  // guided set_shape_text on a cell dies with 「没有文本框」 (review0920-H3;
+  // replace_text on the same cell works, which makes the refusal look
+  // arbitrary to the model).
+  const txBody = shape.element.children.find((c) => isEl(c, 'p:txBody') || isEl(c, 'a:txBody'))
   if (!txBody) throw new Error(`set_shape_text: 形状「${op.shape_id}」没有文本框`)
   const paragraphs = txBody.children.filter((c) => isEl(c, 'a:p'))
   if (paragraphs.length === 0) throw new Error(`set_shape_text: 形状「${op.shape_id}」的 txBody 没有 a:p 段落——模板占位符形状异常，拒绝编辑`)
@@ -247,6 +252,12 @@ function rebuildRpr(rPr: XmlElementNode | undefined, xml: string, want: RprWant)
  *  place, partial coverage SPLITs the run so only the matched slice carries
  *  the new rPr (docx H7's twin: rebuilt runs keep their original spans). */
 function applyFormatText(xml: string, model: SlideModel, op: Extract<PptxOp, { op: 'format_text' }>): { xml: string; message: string } {
+  // An empty find makes `indexOf(find, from)` return `from` forever — the
+  // loop below never advances and the matches array grows until the MAIN
+  // process OOMs (review0920-H1, measured at 4.9GB in ~20s). Guarded here
+  // and in applyReplaceText; validateOpsPayload doesn't reach into per-op
+  // fields, so the entry guards are the only line of defence.
+  if (!op.find) throw new Error('format_text: find 不能为空')
   const want = rprWantsOf(op)
   if (Object.keys(want.attrs).length === 0 && want.fill === undefined && want.latin === undefined) {
     throw new Error('format_text: 没有给出任何样式属性（bold/italic/underline/strike/color/font_size/font）')

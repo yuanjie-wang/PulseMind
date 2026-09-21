@@ -311,6 +311,8 @@ function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
     case 'format_text': {
       const wants = rprWants(op)
       if (wants.length === 0) throw new Error('format_text: 没有给出任何格式属性')
+      // Twin of the pptx H1 guard: an empty find loops findMatches forever.
+      if (!op.find) throw new Error('format_text: find 不能为空')
       const matches = findMatches(model, op.find, op.paragraph)
       const expected = op.expected_count ?? 1
       if (matches.length !== expected) {

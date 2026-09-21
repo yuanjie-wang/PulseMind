@@ -163,7 +163,14 @@ describe('the main-side pinning path exists (D16 — source scans)', () => {
   it('session-manager: compose once, pin, exempt from DB-bound experts, survive refresh', () => {
     expectAnchor(sessionManager, 'composeExpertInstructions(opts.expertProfile', 'create-time composition')
     expectAnchor(sessionManager, 'expertProfile: opts.expertProfile', 'pin recorded')
-    expectAnchor(sessionManager, 'allowedSkills: opts.expertProfile.skillNames ?? []', 'empty stays empty (不是 undefined)')
+    // The whitelists pass through VERBATIM — all three states survive the
+    // pin. `?? []` collapsed the studio's deliberate undefined into 「全部
+    // 禁止」 (review0920-H2: pick_skill failed on every named skill), so the
+    // passthrough shape is anchored AND the collapsing spelling is banned.
+    expectAnchor(sessionManager, 'allowedSkills: opts.expertProfile.skillNames,', 'undefined stays undefined（透传，不 ?? 压扁）')
+    expectAnchor(sessionManager, 'allowedMcpServers: opts.expertProfile.mcpServerIds,', 'undefined stays undefined（透传，不 ?? 压扁）')
+    expect(sessionManager.includes('skillNames ?? []') || sessionManager.includes('mcpServerIds ?? []'),
+      'pinned-pack whitelists must not collapse states with ?? (review0920-H2)').toBe(false)
     expectAnchor(sessionManager, 'if (entry.pinned.expertProfile)', 'refresh exemption BEFORE the DB lookup')
     expectAnchor(sessionManager, 'allowedSkills: entry.expertState?.allowedSkills', 'refresh re-attaches mirror fields')
     expectAnchor(sessionManager, 'allowedMcpServers: entry.expertState?.allowedMcpServers', 'refresh re-attaches mirror fields')

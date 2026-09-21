@@ -43,8 +43,10 @@ export interface ExpertRuntimeContext {
   name: string
   /** composeExpertInstructions 的产出（人设 / 方法论 / 输出规范 / 约束 / 可用能力）。 */
   instructions: string
-  /** 可用技能白名单（SkillDefinition.name）：空数组 = 一个都不许用。 */
-  allowedSkills: string[]
-  /** 可用连接器白名单（MCP 服务 id）：空数组 = 一个都不许用。 */
-  allowedMcpServers: string[]
+  /** 可用技能白名单（SkillDefinition.name）——三态，逐字保留：undefined =
+   *  不限制（工具创建助手的显式选择，pick_skill 是它的正当能力）；空数组 =
+   *  一个都不许用。`?? []` 会把前者塌成后者（review0920-H2 的回归）。 */
+  allowedSkills?: string[]
+  /** 可用连接器白名单（MCP 服务 id）——三态同 allowedSkills。 */
+  allowedMcpServers?: string[]
 }

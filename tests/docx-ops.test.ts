@@ -132,6 +132,12 @@ describe('format_text', () => {
     // The model still reads the same visible text.
     expect(paragraphsOf(xml).join('\n')).toContain('Hello world of tomorrow')
   })
+
+  it('an empty find refuses the batch instead of looping to OOM (pptx H1 twin)', () => {
+    expect(() =>
+      editDocx(CORPUS['simple.docx'](), [{ op: 'format_text', find: '', bold: true }]),
+    ).toThrow(/find 不能为空/)
+  })
 })
 
 describe('gates (L5): any failure means nothing is written', () => {

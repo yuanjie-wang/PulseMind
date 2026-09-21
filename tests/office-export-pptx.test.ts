@@ -133,6 +133,22 @@ describe('pptx buffer', () => {
     expect(notes).toContain('图片')
   })
 
+  it('a table on the COVER degrades with a named placeholder, never silently (review0920-H4)', async () => {
+    // 「标题 + 汇总表」 is the most common LLM markdown shape; the cover path
+    // used to render blocks through textRunsOf, which skips tables — the deck
+    // exported "successfully" with the table gone and no note at all.
+    const files = unzip(await markdownToPptxBuffer('# 季度汇报\n\n| 指标 | 数值 |\n|---|---|\n| 营收 | 100 |'))
+    const slideNames = Object.keys(files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort()
+    const slide1 = strFromU8(files['ppt/slides/slide1.xml'])
+    // the placeholder line names the loss on the slide itself…
+    expect(slide1).toContain('[表格: 指标 / 数值')
+    // …and the 备注 page exists to carry it
+    expect(slideNames).toHaveLength(2)
+    const notes = strFromU8(files['ppt/slides/slide2.xml'])
+    expect(notes).toContain('导出说明')
+    expect(notes).toContain('表格')
+  })
+
   it('throws on an empty document (the service refuses before writing)', async () => {
     await expect(markdownToPptxBuffer('   \n\n')).rejects.toThrow('没有可导出的内容')
   })

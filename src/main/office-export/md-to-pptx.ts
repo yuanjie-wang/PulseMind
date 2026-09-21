@@ -332,12 +332,22 @@ function addSlideChrome(pptx: PptxGenJS, spec: SlideSpec): string[] {
     if (spec.subtitle) {
       slide.addText(spec.subtitle, { x: 0.8, y: 3.15, w: 8.4, h: 0.9, fontSize: 15, color: MUTED_INK, fit: 'shrink' })
     }
-    if (spec.blocks.length > 0) {
-      slide.addText(textRunsOf(spec.blocks, { fontSize: 14, color: BODY_INK }), {
-        x: BODY_X, y: 4.1, w: BODY_W, h: BODY_BOTTOM - 4.1, fontSize: 14, color: BODY_INK, valign: 'top', fit: 'shrink',
-      })
-    }
-    return []
+    if (spec.blocks.length === 0) return []
+    // A cover renders its body as one styled text box, and textRunsOf skips
+    // tables — which silently dropped the table on 「# 季度汇报」+ 汇总表, the
+    // most common LLM markdown shape (review0920-H4). Each cover table takes
+    // renderBody's degradation shape: a named placeholder line on the slide
+    // plus a loss the closing 备注 page carries.
+    const losses: string[] = []
+    const blocks: PptxBlockSpec[] = spec.blocks.map((block) => {
+      if (block.kind !== 'table') return block
+      losses.push('表格')
+      return { kind: 'para', runs: [{ text: `[表格: ${block.header.join(' / ')}…]` }] }
+    })
+    slide.addText(textRunsOf(blocks, { fontSize: 14, color: BODY_INK }), {
+      x: BODY_X, y: 4.1, w: BODY_W, h: BODY_BOTTOM - 4.1, fontSize: 14, color: BODY_INK, valign: 'top', fit: 'shrink',
+    })
+    return losses
   }
   slide.addText(spec.title, {
     x: BODY_X, y: 0.38, w: BODY_W, h: 0.85, fontSize: 22, bold: true, color: BODY_INK, align: 'left', fit: 'shrink',

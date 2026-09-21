@@ -512,15 +512,18 @@ export class AgentSessionManagerImpl {
     const approvalMode = pickApprovalMode(opts.approvalMode, getConversationApprovalMode(sessionId))
 
     // D16: compose the create-time internal pack ONCE. The whitelists go to
-    // the mirror fields verbatim — an EMPTY array must stay empty (「一个都不
-    // 许用」绝不能塌成 undefined 的「不限制」), matching applyExpertContext.
+    // the mirror fields VERBATIM — all three states survive: an EMPTY array
+    // stays empty (「一个都不许用」绝不能塌成 undefined 的「不限制」), and
+    // undefined stays undefined (工具创建助手的显式不限制——`?? []` 把它反向
+    // 塌成「全禁止」，pick_skill 必败，review0920-H2). Anchored by
+    // tests/internal-expert-pack.test.ts.
     const pinnedExpert: ExpertRuntimeContext | null = opts.expertProfile
       ? {
           id: opts.expertProfile.id,
           name: opts.expertProfile.name,
           instructions: composeExpertInstructions(opts.expertProfile, this.resolveExpertRefCatalogs()),
-          allowedSkills: opts.expertProfile.skillNames ?? [],
-          allowedMcpServers: opts.expertProfile.mcpServerIds ?? [],
+          allowedSkills: opts.expertProfile.skillNames,
+          allowedMcpServers: opts.expertProfile.mcpServerIds,
         }
       : null
 

@@ -167,6 +167,24 @@ describe('op semantics (D4)', () => {
     expect(results[0].detail).toContain('先 outline')
   })
 
+  it('set_shape_text addresses a table cell through its a:txBody (review0920-H3)', () => {
+    // The manual tells the model cells are `cell:r:c`; the cell's text body
+    // is a:txBody (inside a:tc), not p:txBody — the single-label lookup used
+    // to refuse with 「没有文本框」 while replace_text on the same cell worked.
+    const { xml, results } = applySlideOps(SLIDE1, [
+      { op: 'set_shape_text', slide: 1, shape_id: 'cell:1:1', text: '已更新单元格' },
+    ])
+    expect(results[0].ok).toBe(true)
+    const cell = buildSlideModel(xml).shapes.find((s) => s.id === 'cell:1:1')!
+    expect(cell.paragraphs.map((p) => p.text)).toEqual(['已更新单元格'])
+    // the manual-guided path is complete only when the semantic gate accepts it
+    expect(() =>
+      verifySemantic(buildSlideModel(SLIDE1), buildSlideModel(xml), [
+        { op: 'set_shape_text', slide: 1, shape_id: 'cell:1:1', text: '已更新单元格' },
+      ]),
+    ).not.toThrow()
+  })
+
   it('identity contract: the batch result re-splices to the original', () => {
     void validateOpsPayload
     // any successful single op's XML re-parsed and re-spliced with no
@@ -280,6 +298,18 @@ describe('styling ops', () => {
     const scoped = applySlideOps(SLIDE1, [{ op: 'format_text', find: '23%', color: '000000', shape_id: '2' }])
     expect(scoped.results[0].ok).toBe(false)
     expect(scoped.results[0].detail).toContain('命中 0 处')
+  })
+
+  it('an empty find refuses instead of looping to OOM (review0920-H1)', () => {
+    // `indexOf('', from)` returns `from` — an unguarded loop never advances
+    // and grows the matches array in the MAIN process. Both ops that take a
+    // find must refuse at the entry.
+    const fmt = applySlideOps(SLIDE1, [{ op: 'format_text', find: '', bold: true }])
+    expect(fmt.results[0].ok).toBe(false)
+    expect(fmt.results[0].detail).toContain('find 不能为空')
+    const rep = applySlideOps(SLIDE1, [{ op: 'replace_text', find: '', replace: 'x' }])
+    expect(rep.results[0].ok).toBe(false)
+    expect(rep.results[0].detail).toContain('find 不能为空')
   })
 
   it('set_shape_fill replaces an existing fill and inserts when absent', () => {
