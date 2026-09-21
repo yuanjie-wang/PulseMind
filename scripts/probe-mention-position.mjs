@@ -59,9 +59,9 @@ import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 import { InputArea } from './src/renderer/src/components/chat/InputArea'
 
-// knowledgeListBases must answer an array: the @-popup's knowledge-base
-// section setKnowledgeBases(es) the answer verbatim, and the fallback
-// undefined would blank the list and throw on .slice.
+// The expert roster is the @-popup's only data source (its knowledge-base
+// section was removed 2026-09-21); every other bridge call resolves undefined,
+// which nothing mounted here asks for.
 // main.tsx's boot, in order: the variable sheet, then the attribute. The chat's
 // migrated surfaces read var(--pm-*), and an unset variable resolves to nothing
 // (transparent / inherited) — so a probe that measures them without the sheet is
@@ -70,7 +70,7 @@ import { InputArea } from './src/renderer/src/components/chat/InputArea'
 installThemeVars()
 applyThemeAttr('light')
 
-window.electronAPI = new Proxy({}, { get: (_t, key) => () => Promise.resolve(key === 'expertList' ? ${JSON.stringify(EXPERTS)} : key === 'knowledgeListBases' ? [] : undefined) })
+window.electronAPI = new Proxy({}, { get: (_t, key) => () => Promise.resolve(key === 'expertList' ? ${JSON.stringify(EXPERTS)} : undefined) })
 
 function Case({ id, layout, topSlot }) {
   return (

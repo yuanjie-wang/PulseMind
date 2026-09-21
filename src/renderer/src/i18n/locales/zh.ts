@@ -233,7 +233,6 @@ const zh = {
       unbind: '解除专家',
       needTaskWithSummon: '召唤专家后请附上要处理的任务',
     },
-    knowledgeBase: { hint: '@ 知识库：本轮检索只在该库内进行', tag: '知识库' },
   },
   autoSummary: {
     label: '自动摘要',

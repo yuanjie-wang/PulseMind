@@ -85,3 +85,27 @@ describe('scope lifecycle wiring (source-scanned; node-env cannot mount the engi
     expect(controller).toContain('engineHandle.startSummonedLoop(content, mentioned, knowledgeBase)')
   })
 })
+
+// The scope is reachable by hand-typing only, and that is the ruling (user
+// 2026-09-21: 去掉@框中的知识库相关的内容，去掉消息输入框中的@按钮). The parse
+// chain above stays exactly as pinned — what is gone is the UI surface: the
+// list itself and the composer button that opened the popup.
+describe('the @-composer surface is experts-only (user ruling 2026-09-21)', () => {
+  const inputArea = readFileSync(join(ROOT, 'src/renderer/src/components/chat/InputArea.tsx'), 'utf-8')
+
+  it('non-vacuity: the scan reads the real composer', () => {
+    expect(inputArea).toContain('data-mention-idx')
+  })
+
+  it('the popup neither loads nor lists knowledge bases', () => {
+    expect(inputArea).not.toContain('knowledgeListBases')
+    expect(inputArea).not.toContain('chatView.knowledgeBase')
+  })
+
+  it('the footer has no @ button — the popup still arms on a typed @', () => {
+    // The glyph span was the button's whole icon; the popup's own arming rule
+    // (typed text, not a click) is what remains, so it must still be there.
+    expect(inputArea).not.toContain('>@</span>')
+    expect(inputArea).toContain('const mentionActive')
+  })
+})

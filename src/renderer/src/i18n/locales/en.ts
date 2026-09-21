@@ -236,7 +236,6 @@ const en: TranslationDict = {
       unbind: 'Unbind expert',
       needTaskWithSummon: 'Please include a task along with the expert summon',
     },
-    knowledgeBase: { hint: 'Knowledge base: this turn searches only inside it', tag: 'Knowledge' },
   },
   autoSummary: {
     label: 'Auto Summary',
