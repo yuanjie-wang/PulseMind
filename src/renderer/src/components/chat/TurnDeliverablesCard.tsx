@@ -43,10 +43,17 @@ export function TurnDeliverablesCard({
     <div
       data-testid="turn-deliverables"
       title={t('deliverables.honestBoundary')}
-      // width 100%: the slot mount sits in MessageGroup's flex column with
-      // alignItems flex-start, which would shrink the card to its content —
-      // both mounts must leave the same full-column footprint.
-      style={{ width: '100%', margin: '8px 16px 12px', border: '1px solid var(--pm-tile-border)', borderRadius: 10, background: 'var(--pm-tile-bg)' }}
+      // calc(100% - 32px), never '100%': the 16px side margins ride OUTSIDE a
+      // percentage width in BOTH mounts (the slot's flex column with
+      // alignItems flex-start, and the sibling block wrapper), so width:100%
+      // + margins rendered the card full-column but pushed 16px right — left
+      // edge inset 16 from the bubble while the right edge stuck 16px past
+      // it, off the composer's centerline (user report: 产物框和消息输入框
+      // 没有垂直居中对齐). Subtracting the margins keeps the documented 16px
+      // inset and both mounts on one centered footprint. align-items
+      // flex-start still rules out plain 'auto': it would shrink the slotted
+      // card to its content.
+      style={{ width: 'calc(100% - 32px)', margin: '8px 16px 12px', border: '1px solid var(--pm-tile-border)', borderRadius: 10, background: 'var(--pm-tile-bg)' }}
     >
       <div
         style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', userSelect: 'none' }}

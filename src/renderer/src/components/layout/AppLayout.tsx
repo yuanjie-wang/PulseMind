@@ -129,7 +129,7 @@ interface AppLayoutProps {
   onSelectConversation: (key: string) => void
   onTogglePinConversation: (key: string, pinned: boolean) => void
   /** M4 (review 2026-09-18): SETTINGS_SET prunes expired conversations main-side;
-   *  the 数据与运行 tab calls this afterwards so the sidebar drops them. */
+   *  the settings page's 数据清理 (常规 tab) calls this afterwards so the sidebar drops them. */
   onReloadConversations?: () => void
   skills?: SkillState[]
   onToggleSkill?: (name: string) => void
@@ -185,7 +185,7 @@ function AppLayout({
   // and follows the selected tab — the former project center is gone, so the
   // 项目 tab's own action is 新增 (the same ProjectModal the welcome picker
   // uses). Conversation-management (清理策略) moved to the settings page's
-  // 数据与运行 section.
+  // 常规 section.
   const [projectModalOpen, setProjectModalOpen] = useState(false)
   // The project being edited (sidebar row's 编辑 / welcome card's edit entry
   // land here). Same ProjectModal instance serves both modes: open is true
@@ -837,6 +837,16 @@ function AppLayout({
         .sidebar-list-tab.on:hover {
           color: var(--pm-ink-contrast) !important;
           background: var(--pm-ink) !important;
+        }
+        /* Windows: antd centers the label's *line box*, but where the glyphs sit
+           inside that box is decided by the font — Microsoft YaHei's
+           ascent/descent asymmetry parks CJK faces ~1px below the optical
+           center (PingFang on macOS reads centered), so the 对话/项目 labels
+           sat low in the pill. Lift the label 1px under Windows only; the hook
+           is the data-platform attribute index.html stamps before React mounts. */
+        html[data-platform='win32'] .sidebar-list-tab > span {
+          position: relative;
+          top: -1px;
         }
 
         /* Switcher-row actions (管理 / 新增): quiet icon buttons that match the

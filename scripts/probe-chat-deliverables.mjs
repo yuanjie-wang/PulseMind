@@ -246,6 +246,28 @@ window.__placement = () => {
   }
 }
 window.__pageText = () => document.body.textContent
+// Horizontal alignment (user report 2026-09-21: 产物框和消息输入框没有垂直
+// 居中对齐): width:100% + the card's 16px side margins pushed both mounts'
+// cards 16px RIGHT of the column — left edge inset from the bubble while the
+// right edge stuck out past it, off the composer's centerline. Margins ride
+// outside a percentage width in a flex-start column just as in a block.
+window.__hAlign = () => {
+  const rect = (el) => {
+    const r = el.getBoundingClientRect()
+    return { left: Math.round(r.left * 10) / 10, right: Math.round(r.right * 10) / 10, width: Math.round(r.width * 10) / 10, cx: Math.round((r.left + r.right) / 2 * 10) / 10 }
+  }
+  const sender = document.querySelector('.ant-sender')
+  const cards = [...document.querySelectorAll('[data-testid="turn-deliverables"]')]
+  // The in-message card's bubble: first child of MessageGroup's flex column
+  // (the card itself is a later child via the aboveActions slot).
+  const inMsgCard = cards[cards.length - 1]
+  const bubble = inMsgCard?.parentElement?.children[0]
+  return {
+    sender: sender ? rect(sender) : null,
+    cards: cards.map(rect),
+    inMsgBubble: bubble ? rect(bubble) : null
+  }
+}
 window.__workbench = () => {
   const s = useWorkbenchStore.getState()
   return { tab: s.activeTab, open: !!s.openByConversation[CONV_KEY] }
@@ -363,6 +385,11 @@ await page.waitForTimeout(300)
   const placement = await page.evaluate(() => window.__placement())
   check('轮卡在对话工具条上方', placement.cardAboveToolbar === true && placement.toolbarGap >= 4, JSON.stringify(placement))
   check('轮卡与下一轮用户消息有间距不重叠', placement.nextMsgGap >= 8, `gap=${placement.nextMsgGap}px`)
+  // Horizontal alignment: the card must sit on the composer's centerline —
+  // 16px inset per side (the documented spacing contract), never pushed right.
+  const ha = await page.evaluate(() => window.__hAlign())
+  check('轮卡与输入框同轴（中心差 ≤ 1px）', !!ha.sender && ha.cards.every((c) => Math.abs(c.cx - ha.sender.cx) <= 1), JSON.stringify(ha.cards.map((c) => Math.round((c.cx - ha.sender.cx) * 10) / 10)))
+  check('轮卡两侧各内缩 16px 不越过气泡', !!ha.inMsgBubble && ha.cards.every((c) => Math.abs(c.width - (ha.sender.width - 32)) <= 1) && Math.abs(ha.cards[0].right - ha.inMsgBubble.right + 16) <= 1 && Math.abs(ha.cards[0].left - ha.inMsgBubble.left - 16) <= 1, `cardW=${ha.cards[0].width} senderW=${ha.sender.width} inMsgΔL=${Math.round((ha.cards[ha.cards.length - 1].left - ha.inMsgBubble.left) * 10) / 10} inMsgΔR=${Math.round((ha.cards[ha.cards.length - 1].right - ha.inMsgBubble.right) * 10) / 10}`)
   // Screenshot at the last turn's card, not wherever the widening left us.
   await page.evaluate(() => {
     const cards = window.__turnCards()
