@@ -31,6 +31,25 @@
 /** 同一会话内并行工作的专家上限（用户裁定 2026-09-16，2026-09-17 由 3 上调为 5）。 */
 export const MAX_PARALLEL_SUBAGENTS = 5
 
+/** The cap's effective value: MAX_PARALLEL_SUBAGENTS until 设置 → 助手设置
+ *  applies a saved `maxParallelSubAgents` (session-manager at startup/save for
+ *  the main-process-hosted engines, useAppSettings for the renderer's canvas
+ *  engine). Module state like the budget map itself — the limiter counts
+ *  across engines of a session, so the cap cannot be per-engine. Read on every
+ *  acquire, so a saved change lands on the next dispatch without touching
+ *  experts already running. `null`/invalid falls back to the constant. */
+let parallelSubAgentLimit: number | null = null
+
+export function getSubAgentParallelLimit(): number {
+  return parallelSubAgentLimit ?? MAX_PARALLEL_SUBAGENTS
+}
+
+export function setSubAgentParallelLimit(value: number | null | undefined): void {
+  parallelSubAgentLimit = typeof value === 'number' && Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : null
+}
+
 /** Release a held slot. Idempotent — safe to call from a `finally`. */
 export type ReleaseSubAgentSlot = () => void
 
@@ -67,7 +86,7 @@ export function subAgentBudgetKey(opts: { sessionRootId?: string; conversationId
  */
 export function acquireSubAgentSlot(key: string): Promise<ReleaseSubAgentSlot | null> {
   const budget = budgetOf(key)
-  if (budget.running < MAX_PARALLEL_SUBAGENTS) {
+  if (budget.running < getSubAgentParallelLimit()) {
     budget.running += 1
     return Promise.resolve(makeRelease(key, budget))
   }

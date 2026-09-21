@@ -16,7 +16,7 @@ import type { KnowledgeManager } from '../knowledge/KnowledgeManager'
 import type { PlatformInfo } from '../types/electron'
 import type { LlmAdapter } from '../llm/adapter'
 import { SkillKeywordAgent, SkillSelectionAgent, HistorySummaryAgent } from './one-shot-agent'
-import { safeInvoke, safeInvokeObserver, MAX_LOOP_ITERATIONS, generateMsgId, type SubAgentResult, type SpawnSubAgentConfig, type SubAgentHandle } from './agent-utils'
+import { safeInvoke, safeInvokeObserver, getLoopIterationLimit, generateMsgId, type SubAgentResult, type SpawnSubAgentConfig, type SubAgentHandle } from './agent-utils'
 import { buildSystemPrompt } from './system-prompt-builder'
 import type { ExpertRuntimeContext } from '../../../shared/types/expert'
 import { normalizeSummonedExperts, type SummonState, type SummonedExpert } from '../../../shared/expert-context'
@@ -237,7 +237,7 @@ export class AgentEngine implements EngineCore {
   /** @internal */
   loopCount = 0
   /** @internal */
-  maxLoopCount = MAX_LOOP_ITERATIONS
+  maxLoopCount = getLoopIterationLimit()
   /** @internal */
   terminalCleanups: (() => void)[] = []
   /** @internal */
@@ -511,7 +511,7 @@ export class AgentEngine implements EngineCore {
     if (!userMessage.trim()) return null
 
     this.loopCount = 0
-    this.maxLoopCount = MAX_LOOP_ITERATIONS
+    this.maxLoopCount = getLoopIterationLimit()
     this.isCancelled = false
     this.pendingToolIds = new Set()
     // Per-turn @-summon state belongs to the turn that opened it: a new send
@@ -951,7 +951,7 @@ export class AgentEngine implements EngineCore {
     this.stopExecution()
     this.messages = []
     this.loopCount = 0
-    this.maxLoopCount = MAX_LOOP_ITERATIONS
+    this.maxLoopCount = getLoopIterationLimit()
     this.isCancelled = false
     this.pendingToolIds = new Set()
     this.historySummary = null
@@ -963,13 +963,15 @@ export class AgentEngine implements EngineCore {
     this.stopExecution()
     this.messages = msgs
     this.loopCount = 0
-    this.maxLoopCount = MAX_LOOP_ITERATIONS
+    this.maxLoopCount = getLoopIterationLimit()
     this.streamingBlocks = []
     this.notify()
   }
 
   extendLoop = (): void => {
-    this.maxLoopCount += MAX_LOOP_ITERATIONS
+    // 续期一次加的是配置的 base（默认 50），不是写死的常量——用户改了上限后，
+    // 「继续」给出的增量与第一次配额一致。
+    this.maxLoopCount += getLoopIterationLimit()
     this.loopCount = 0
     this.agentStatus = { status: 'idle' }
     this.notify()

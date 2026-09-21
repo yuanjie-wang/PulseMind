@@ -47,8 +47,8 @@ const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] =
 
 interface SettingsPageProps {
   memoryManager?: MemoryManager
-  /** M4 (review 2026-09-18): 数据与运行's save prunes expired conversations
-   *  main-side; the caller refreshes the list so ghosts never linger. */
+  /** 常规's 数据清理 save prunes expired conversations main-side; the caller
+   *  refreshes the list so ghosts never linger. */
   onReloadConversations?: () => void
 }
 
@@ -73,7 +73,7 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
     // onClose is drawer-era: inline sections never render the close affordance.
     switch (tab) {
       case 'data':
-        return <DataRuntimeSettings inline open onClose={() => {}} onReloadConversations={onReloadConversations} />
+        return <DataRuntimeSettings inline open onClose={() => {}} />
       case 'memory':
         return memoryManager ? <MemorySettings inline open onClose={() => {}} memoryManager={memoryManager} /> : null
       case 'experiences':
@@ -87,7 +87,7 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
       case 'shortcuts':
         return <ShortcutsSettings inline open onClose={() => {}} />
       case 'environment':
-        return <EnvironmentSettings inline open onClose={() => {}} />
+        return <EnvironmentSettings inline open onClose={() => {}} onReloadConversations={onReloadConversations} />
       case 'about':
         return <AboutPage />
       default:

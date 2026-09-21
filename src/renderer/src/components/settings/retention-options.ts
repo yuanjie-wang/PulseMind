@@ -1,5 +1,5 @@
 /** Shared retention presets; 0 = keep forever. Single home for the choices —
- *  对话管理 / 日常任务 / 数据与运行 all render from this one list (the two old
+ *  对话管理 / 日常任务 / 常规·数据清理 all render from this one list (the two old
  *  copies had already drifted: 「7 天」 vs 「保留 7 天」). */
 export const RETENTION_OPTIONS: Array<{ days: number; label: string }> = [
   { days: 0, label: '永久保留' },

@@ -46,8 +46,8 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 ## 全新的信息架构
 
 - **欢迎页** — 「试试」快捷提示词一键开聊；对话 / 项目两个视角；项目、日常、知识三类卡片把下一步放在眼前
-- **侧栏** — 新建任务 / 搜索 / 日常 • 自动化 / 能力 • 知识 • 创作
-- **设置页** — 环境设置 / 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 经验 / 数据与运行（开机自启、保留期限、Git 状态注入）/ 关于；界面浅色 / 深色 / 跟随系统
+- **侧栏** — 新建任务 / 搜索 / 日常任务 / 能力 • 知识 • 创作
+- **设置页** — 常规（语言、外观、开机自启、数据清理、运行上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 经验 / 高级（调试、Git 状态注入）/ 关于；界面浅色 / 深色 / 跟随系统
 - **⌘K 命令面板与原生菜单** — 常用动作键入即达，快捷键可自定义
 - **全局搜索** — 会话、消息、记忆、知识，一处直达
 - **会话列表** — 置顶 / 今天 / 昨天 / 更早 自动分组
@@ -61,7 +61,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 - **欢迎页卡片** — 继续上次对话，或立即开始新任务
 - **排序** — 拖拽最顺手，也支持按创建时间 / 名称 / 最近活动
 
-## 日常 • 自动化
+## 日常任务
 
 把重复的事交给日程，到点自动执行。
 
@@ -184,7 +184,7 @@ Then hit Test Connection: one click, and it tells you in plain words whether the
 
 - **Welcome page** — one-click starters under Try these; a chats view and a projects view; project, routine, and knowledge cards keep the next step within reach
 - **Sidebar** — New Task / Search / Routines / Capability · Knowledge · Studio
-- **Settings** — Environment / Models / Extension / Shortcuts / Assistant / Memory / Experiences / Data & Runtime (launch at login, retention, Git injection) / About; light / dark / system appearance
+- **Settings** — General (language, appearance, launch at login, data cleanup, run limits, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Experiences / Advanced (debugging, Git injection) / About; light / dark / system appearance
 - **⌘K command palette & native menu** — type to reach any common action, with rebindable shortcuts
 - **Global search** — conversations, messages, memories, knowledge: one place
 - **Conversation list** — auto-grouped into Pinned / Today / Yesterday / Earlier

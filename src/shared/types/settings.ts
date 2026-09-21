@@ -47,6 +47,12 @@ export interface AppSettings {
   conversationRetentionDays?: number
   /** 侧边栏项目列表的排序方式（未设 = 'created'，即创建时间倒序）。 */
   projectSortMode?: ProjectSortMode
+  /** 单次任务内 agent loop 的循环次数上限（每次 LLM 请求计一轮；达到上限会询问
+   *  用户是否继续）。保存后从下一个回合生效。默认 50。 */
+  maxLoopIterations?: number
+  /** 同一会话内并行运行的子代理（专家）数量上限，超出的排队等待。保存后对
+   *  下一次 spawn 生效。默认 5。 */
+  maxParallelSubAgents?: number
   /**
    * 调试用：把每次 LLM 请求的完整报文原样写到 ~/.pulsemind/logs/llm-requests/。
    * 开发版默认开启；打包版需显式设为 true（读取按文件 mtime 缓存，改完下一次请求即生效）。

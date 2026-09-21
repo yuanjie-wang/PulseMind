@@ -46,23 +46,25 @@ async function openTab(container: HTMLElement, label: string): Promise<void> {
 }
 
 describe('SettingsPage data and runtime integration', () => {
-  it('navigates to data settings and persists only the auto-start change', async () => {
+  it('navigates to the advanced tab and persists only the debug-toggle change', async () => {
+    // 2026-09-21 split: 启动/数据清理 moved to 常规 (whose body this harness
+    // mocks away); the advanced tab keeps its own live toggles.
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
     const save = vi.fn().mockResolvedValue(undefined)
     const container = document.createElement('div')
     document.body.appendChild(container)
     const root = await mountSettingsPage(container, save)
     try {
-      await openTab(container, '数据与运行')
-      const toggle = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="开机自启"]')
+      await openTab(container, '高级')
+      const toggle = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="记录 LLM 请求报文"]')
       expect(toggle).not.toBeNull()
       expect(toggle!.disabled).toBe(false)
       expect(toggle!.getAttribute('aria-checked')).toBe('false')
       await act(async () => { toggle!.click(); await flush() })
       expect(save).toHaveBeenCalledTimes(1)
-      expect(save).toHaveBeenCalledWith({ ...initial, launchAtLogin: true })
+      expect(save).toHaveBeenCalledWith({ ...initial, debugLlmRequests: true })
       expect(toggle!.getAttribute('aria-checked')).toBe('true')
-      // The directory rows moved to 环境设置 — the data tab renders none.
+      // The removed read-only directory rows render nowhere on this tab.
       expect(container.querySelector('[data-directory="workspaceDir"]')).toBeNull()
     } finally {
       await act(async () => root.unmount())

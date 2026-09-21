@@ -29,6 +29,15 @@ function readRetentionDays(raw: unknown): number {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
 }
 
+/** 有界正整数字段（agent 运行上限）：缺失 / 非法 / 越界一律回落默认值——
+ *  这些数字直接喂给循环与并发的边界判断，宁可回落也不放行坏值。 */
+function readIntInRange(raw: unknown, fallback: number, min: number, max: number): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback
+  const floored = Math.floor(raw)
+  if (floored < min || floored > max) return fallback
+  return floored
+}
+
 const PROJECT_SORT_MODES: readonly ProjectSortMode[] = ['created', 'name', 'activity', 'manual']
 
 function readProjectSortMode(raw: unknown): ProjectSortMode | undefined {
@@ -49,7 +58,8 @@ function readGroup<T extends object>(raw: unknown, normalize: (group: Record<str
 }
 
 function readGitSettings(group: Record<string, unknown>): { contextInjection: boolean } {
-  return { ...group, contextInjection: group.contextInjection !== false } as { contextInjection: boolean }
+  // 默认关闭（2026-09-21 用户裁定）：只有显式 true 才注入，缺失/非布尔一律回落关闭。
+  return { ...group, contextInjection: group.contextInjection === true } as { contextInjection: boolean }
 }
 
 function readKnowledgeSettings(group: Record<string, unknown>): { autoCompile: boolean } {
@@ -89,6 +99,8 @@ const FALLBACK_SETTINGS: AppSettings = {
   experienceEnabled: true,
   routineRunRetentionDays: 0,
   conversationRetentionDays: 0,
+  maxLoopIterations: 50,
+  maxParallelSubAgents: 5,
   debugLlmRequests: false,
   debugPerfLogs: false
 }
@@ -153,6 +165,8 @@ export class SettingsStore {
           experienceEnabled: parsed.experienceEnabled ?? true,
           routineRunRetentionDays: readRetentionDays(parsed.routineRunRetentionDays),
           conversationRetentionDays: readRetentionDays(parsed.conversationRetentionDays),
+          maxLoopIterations: readIntInRange(parsed.maxLoopIterations, 50, 1, 500),
+          maxParallelSubAgents: readIntInRange(parsed.maxParallelSubAgents, 5, 1, 10),
           debugLlmRequests: parsed.debugLlmRequests === true,
           debugPerfLogs: parsed.debugPerfLogs === true,
           projectSortMode: readProjectSortMode(parsed.projectSortMode),
@@ -200,6 +214,8 @@ export class SettingsStore {
       memoryEnabled: true,
       experienceEnabled: true,
       routineRunRetentionDays: 0,
+      maxLoopIterations: 50,
+      maxParallelSubAgents: 5,
       debugLlmRequests: false,
       debugPerfLogs: false
     }

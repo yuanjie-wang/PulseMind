@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { AppSettings, LlmProfile } from '../types/settings'
+import { setLoopIterationLimit } from '../agent/agent-utils'
+import { setSubAgentParallelLimit } from '../agent/engine/subagent-limiter'
 
 const DEFAULT_SETTINGS: AppSettings = {
   activeProfileId: '',
@@ -13,7 +15,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   yourName: '',
   workspaceDir: '',
   autoCleanup: false,
-  locale: 'zh'
+  locale: 'zh',
+  maxLoopIterations: 50,
+  maxParallelSubAgents: 5
 }
 
 export interface UseAppSettingsReturn {
@@ -53,6 +57,16 @@ export function useAppSettings(): UseAppSettingsReturn {
     }
     load()
   }, [])
+
+  // The renderer hosts its own engines (canvas) next to the main-process
+  // hosts, and the loop/sub-agent limits are module state in the engine
+  // layer — mirror them here so a settings load or save lands on this
+  // process's module instance too. Main applies the same two values in
+  // session-manager (startup + settings.handler save).
+  useEffect(() => {
+    setLoopIterationLimit(settings.maxLoopIterations)
+    setSubAgentParallelLimit(settings.maxParallelSubAgents)
+  }, [settings.maxLoopIterations, settings.maxParallelSubAgents])
 
   const activeProfile = settings.profiles.find(
     (p) => p.id === settings.activeProfileId

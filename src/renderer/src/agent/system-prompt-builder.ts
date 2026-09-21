@@ -176,12 +176,12 @@ async function buildStateBlock(params: {
     if (memoryContext) sections.push(memoryContext)
   }
 
-  // Git status — skipped silently outside a repo, and when the user turned the
-  // injection off in settings.
+  // Git status — OFF unless the user turned the injection on in settings, and
+  // skipped silently outside a repo.
   if (opts.workspaceDir) {
     // A stale preload can leave getSettings undefined, and getHost() throws
     // synchronously when no host is installed (tests) — neither may take the
-    // prompt down, so fall through to injecting git context.
+    // prompt down, so fall through to the default (off).
     const gitEnabled = await readGitInjectionEnabled()
     if (gitEnabled) {
       const gitCtx = await buildGitContext(opts.workspaceDir)
@@ -250,13 +250,22 @@ function buildProjectSection(name?: string, overview?: string): string | null {
   return lines.join('\n')
 }
 
-/** Whether the user left git-context injection on (default true, missing settings = on). */
+/**
+ * Whether git-context injection is on. OPT-IN: only an explicit `true` enables
+ * it, and a missing or unreadable settings value falls back to OFF
+ * (fail-closed) — a stale preload must not silently start shipping the user's
+ * repo state to the model.
+ *
+ * Default-off is the 2026-09-21 ruling. The same field is normalized by
+ * `readGitSettings` in src/main/storage/settings-store.ts (the source of truth,
+ * written by the toggle in DataRuntimeSettings); keep the three in step.
+ */
 async function readGitInjectionEnabled(): Promise<boolean> {
   try {
     const settings = await getHost().getSettings()
-    return settings?.git?.contextInjection !== false
+    return settings?.git?.contextInjection === true
   } catch {
-    return true
+    return false
   }
 }
 
@@ -346,11 +355,24 @@ async function matchExperiences(
   }
 }
 
-/** Snapshot a git status summary for the given cwd. Returns null when not a repo (silent skip). */
+/**
+ * Snapshot a git status summary for the given cwd. Returns null when not a repo
+ * (silent skip).
+ *
+ * ONE git call, deliberately. This runs on EVERY tool-loop iteration of a turn
+ * (AgentEngine.prepareLoopRequest → buildSystemPrompt → buildStateBlock), so
+ * each call here is multiplied by the iteration count, not the turn count —
+ * measured at ~10ms/iteration on this machine. A `rev-parse
+ * --is-inside-work-tree` precheck used to guard the `status` call, but it was
+ * pure waste: `status` already reports `isRepo`, and the main-process
+ * `gitStatus` returns `{ isRepo: false }` (not an error) for a non-repo cwd, so
+ * both the non-repo and the failure paths land on the same `return null` below.
+ *
+ * Do NOT reintroduce a probe call before this one. tests/git-context.test.ts
+ * pins the call count.
+ */
 async function buildGitContext(cwd: string): Promise<string | null> {
   try {
-    const isRepo = await getHost().gitInvoke({ action: 'is_repo', cwd })
-    if (!isRepo.ok || !(isRepo.data as { isRepo?: boolean } | undefined)?.isRepo) return null
     const status = await getHost().gitInvoke({ action: 'status', cwd })
     if (!status.ok) return null
     const d = status.data as GitStatusInfo

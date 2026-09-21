@@ -36,6 +36,8 @@ import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-c
 import { agentClientRegistry } from './client-registry'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
 import { messageContentSignature } from '../../shared/agent-session/message-content'
+import { setLoopIterationLimit } from '../../renderer/src/agent/agent-utils'
+import { setSubAgentParallelLimit } from '../../renderer/src/agent/engine/subagent-limiter'
 import { pickApprovalMode } from '../../shared/sandbox/policy'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
@@ -343,7 +345,9 @@ export class AgentSessionManagerImpl {
           skillKeywordAgent: new SkillKeywordAgent(),
           platformInfo: sessionPlatformInfo(),
         }
-        await this.syncFeatureToggles(this.managers, await settingsStore.get())
+        const startupSettings = await settingsStore.get()
+        await this.syncFeatureToggles(this.managers, startupSettings)
+        this.syncRunLimits(startupSettings)
         return this.managers
       })()
     }
@@ -359,10 +363,23 @@ export class AgentSessionManagerImpl {
     managers.experienceManager.setEnabled(settings.experienceEnabled ?? true)
   }
 
-  /** Re-apply the master switches after a settings save (settings.handler). */
+  /** Mirror the 设置 → 助手设置 run limits onto the engine-side module state:
+   *  the loop iteration base and the parallel sub-agent cap. Both engines and
+   *  the limiter read module-level values, and every engine this manager
+   *  hosts lives in THIS process, so applying at startup and on each settings
+   *  save keeps every session on the saved numbers from its next turn /
+   *  next dispatch on. */
+  private syncRunLimits(settings: AppSettings): void {
+    setLoopIterationLimit(settings.maxLoopIterations)
+    setSubAgentParallelLimit(settings.maxParallelSubAgents)
+  }
+
+  /** Re-apply the master switches and run limits after a settings save
+   *  (settings.handler). */
   async applyFeatureToggles(settings: AppSettings): Promise<void> {
     const managers = await this.ensureManagers()
     this.syncFeatureToggles(managers, settings)
+    this.syncRunLimits(settings)
   }
 
   /** Resolve the active LLM profile from settings (falls back to first profile). */

@@ -1,50 +1,50 @@
-// ── Environment settings section ──
-// 设置 → 环境: language, appearance, OS info and the runtime data
-// directories. The local-agent-service / browser-extension / browser-kernel
-// blocks used to live here; the extension panel owns the service toggle now
-// and the browser kernel runs on its stored defaults. Drawer-capable but
+// ── General settings section (常规，原「环境设置」) ──
+// 设置 → 常规: language, appearance, the launch/data-cleanup preferences
+// (moved here out of 数据与运行, 2026-09-21), the agent run limits (loop
+// iterations / parallel sub-agents) and the default workspace directory.
+// The read-only OS/time/directory rows lived here once and are gone — the
+// workspace picker is the only path surface left. Drawer-capable but
 // rendered inline in the settings page.
 import React, { useState, useEffect } from 'react'
-import {Drawer, Input, Button, Typography, Space, Select } from 'antd'
-import { SaveOutlined, DesktopOutlined, ClockCircleOutlined, FolderOutlined, FolderOpenOutlined, GlobalOutlined, BgColorsOutlined } from '@ant-design/icons'
+import { Alert, Drawer, Input, InputNumber, Button, Typography, Space, Select, Switch, Modal } from 'antd'
+import { SaveOutlined, GlobalOutlined, BgColorsOutlined, ThunderboltOutlined, TeamOutlined, FolderOutlined, FolderOpenOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
-import type { PlatformInfo, DataPaths } from '../../types/electron'
+import type { DataPaths } from '../../types/electron'
+import type { AppSettings } from '../../types/settings'
+import { retentionOptions } from './retention-options'
 
 const { Text } = Typography
-
-function formatCurrentTime(): string {
-  const now = new Date()
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
-}
 
 interface EnvironmentSettingsProps {
   open: boolean
   onClose: () => void
   inline?: boolean
+  /** 数据清理's retention save prunes expired conversations main-side
+   *  (SETTINGS_SET awaits cleanupExpiredConversations); the caller refreshes
+   *  the conversation list so pruned sessions never linger as clickable
+   *  ghosts that a later open resurrects (saveConversation is an UPSERT). */
+  onReloadConversations?: () => void
 }
 
-function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps): React.ReactElement {
-  const { settings, saving, saveSettings } = useSettings()
+function EnvironmentSettings({ open, onClose, inline, onReloadConversations }: EnvironmentSettingsProps): React.ReactElement {
+  const { settings, loading, saving, saveSettings } = useSettings()
   const { locale, setLocale, t } = useTranslation()
-  const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null)
+  const [modal, modalHolder] = Modal.useModal()
   const [dataPaths, setDataPaths] = useState<DataPaths | null>(null)
   const [localWorkspaceDir, setLocalWorkspaceDir] = useState(settings.workspaceDir || '')
-  const [currentTime, setCurrentTime] = useState(formatCurrentTime())
+  const [localLoopLimit, setLocalLoopLimit] = useState(settings.maxLoopIterations ?? 50)
+  const [localParallelLimit, setLocalParallelLimit] = useState(settings.maxParallelSubAgents ?? 5)
+  const [busy, setBusy] = useState(false)
+  const disabled = loading || saving || busy
 
-  // Load platform info and data paths on open
+  // Sync the draft fields and load the data paths on open
   useEffect(() => {
     if (open) {
       setLocalWorkspaceDir(settings.workspaceDir || '')
-      setCurrentTime(formatCurrentTime())
-      window.electronAPI
-        .getPlatformInfo()
-        .then(setPlatformInfo)
-        .catch(() => {
-          setPlatformInfo({ platform: 'Unknown', platformName: '', release: '', arch: '', ripgrepPath: null })
-        })
+      setLocalLoopLimit(settings.maxLoopIterations ?? 50)
+      setLocalParallelLimit(settings.maxParallelSubAgents ?? 5)
       window.electronAPI
         .getDataPaths()
         .then(setDataPaths)
@@ -54,16 +54,44 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
     }
   }, [open, settings.workspaceDir])
 
-  // Update clock every second while drawer is open
-  useEffect(() => {
-    if (!open) return
-    const timer = setInterval(() => setCurrentTime(formatCurrentTime()), 1000)
-    return () => clearInterval(timer)
-  }, [open])
+  // The launch/cleanup toggles are LIVE settings — each writes exactly its own
+  // field over the current object (the contract 数据与运行's group had before
+  // moving here), while the workspace dir and the run limits stay behind the
+  // 保存 button at the bottom.
+  const save = async (patch: Partial<AppSettings>): Promise<void> => {
+    if (disabled) return
+    setBusy(true)
+    try {
+      const days = patch.conversationRetentionDays
+      if (days !== undefined && days > 0) {
+        const confirmed = await modal.confirm({
+          title: t('dataRuntime.retentionConfirmTitle'),
+          content: t('dataRuntime.retentionConfirmContent', { n: days }),
+          okText: t('common.confirm'),
+          cancelText: t('common.cancel'),
+          okButtonProps: { danger: true },
+        })
+        if (!confirmed) return
+      }
+      await saveSettings({ ...settings, ...patch })
+      // The main-side handler already awaited the prune — refresh now, in the
+      // success branch only (a failed save deleted nothing).
+      onReloadConversations?.()
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const handleSave = async () => {
     try {
-      await saveSettings({ ...settings, workspaceDir: localWorkspaceDir })
+      await saveSettings({
+        ...settings,
+        workspaceDir: localWorkspaceDir,
+        maxLoopIterations: localLoopLimit,
+        maxParallelSubAgents: localParallelLimit,
+      })
       notify.success(t('environmentDrawer.saved'))
     } catch {
       notify.error(t('environmentDrawer.saveFailed'))
@@ -83,7 +111,19 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
     void saveSettings({ ...settings, theme: next })
   }
 
-  const platformLabel = platformInfo ? `${platformInfo.platformName} ${platformInfo.release} (${platformInfo.arch})` : t('environmentDrawer.loading')
+  const heading = (key: string) => (
+    <Text strong style={{ display: 'block', fontSize: 14, marginBottom: 12 }}>{t(`dataRuntime.${key}`)}</Text>
+  )
+  const toggle = (key: string, checked: boolean, onChange: (checked: boolean) => void) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
+      <div>
+        <Text strong style={{ display: 'block', fontSize: 13 }}>{t(`dataRuntime.${key}`)}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>{t(`dataRuntime.${key}Help`)}</Text>
+      </div>
+      <Switch aria-label={t(`dataRuntime.${key}`)} checked={checked} disabled={disabled} onChange={onChange} />
+    </div>
+  )
+  const options = retentionOptions(t).map(({ days, label }) => ({ value: days, label }))
 
   const body = (
     <>
@@ -126,92 +166,65 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
           />
         </div>
 
-        {/* OS Info */}
+        {/* 启动 / 数据清理 — moved here out of 数据与运行 (2026-09-21).
+            Live writes through save() above; the retention confirm lives
+            there too, because the main-side handler awaits the prune. */}
+        <section>
+          {heading('launch')}
+          {toggle('launchAtLogin', settings.launchAtLogin ?? false, (value) => { void save({ launchAtLogin: value }) })}
+        </section>
+        <section>
+          {heading('cleanup')}
+          {toggle('autoCleanup', settings.autoCleanup ?? false, (value) => { void save({ autoCleanup: value }) })}
+          <Text strong style={{ display: 'block', fontSize: 13, marginBottom: 8 }}>{t('dataRuntime.conversationRetention')}</Text>
+          <Select aria-label={t('dataRuntime.conversationRetention')} style={{ width: '100%' }} disabled={disabled}
+            value={settings.conversationRetentionDays ?? 0} options={options}
+            onChange={(days: number) => { void save({ conversationRetentionDays: days }) }} />
+          <Alert type="warning" showIcon style={{ marginTop: 8, marginBottom: 16 }} title={t('dataRuntime.conversationRetentionHelp')} />
+          <Text strong style={{ display: 'block', fontSize: 13, marginBottom: 8 }}>{t('dataRuntime.runRetention')}</Text>
+          <Select aria-label={t('dataRuntime.runRetention')} style={{ width: '100%' }} disabled={disabled}
+            value={settings.routineRunRetentionDays ?? 0} options={options}
+            onChange={(days: number) => { void save({ routineRunRetentionDays: days }) }} />
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 8 }}>{t('dataRuntime.runRetentionHelp')}</Text>
+        </section>
+
+        {/* Agent run limits — editable like the fields above. */}
         <div>
-          <Text strong style={{ display: 'block', marginBottom: 8 }}>
-            <DesktopOutlined style={{ marginRight: 6 }} />
-            {t('environmentDrawer.operatingSystem')}
+          <Text strong style={{ display: 'block', marginBottom: 4 }}>
+            <ThunderboltOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.maxLoopIterations')}
           </Text>
-          <Input value={platformLabel} readOnly variant="filled" />
+          <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
+            {t('environmentDrawer.maxLoopIterationsHelp')}
+          </Text>
+          <InputNumber
+            min={1}
+            max={500}
+            step={10}
+            value={localLoopLimit}
+            onChange={(val) => setLocalLoopLimit(val ?? 50)}
+            style={{ width: '100%' }}
+          />
         </div>
 
-        {/* Current Time */}
         <div>
-          <Text strong style={{ display: 'block', marginBottom: 8 }}>
-            <ClockCircleOutlined style={{ marginRight: 6 }} />
-            {t('environmentDrawer.currentTime')}
+          <Text strong style={{ display: 'block', marginBottom: 4 }}>
+            <TeamOutlined style={{ marginRight: 6 }} />
+            {t('environmentDrawer.maxParallelSubAgents')}
           </Text>
-          <Input value={currentTime} readOnly variant="filled" />
+          <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
+            {t('environmentDrawer.maxParallelSubAgentsHelp')}
+          </Text>
+          <InputNumber
+            min={1}
+            max={10}
+            value={localParallelLimit}
+            onChange={(val) => setLocalParallelLimit(val ?? 5)}
+            style={{ width: '100%' }}
+          />
         </div>
 
-        {/* Config Directory */}
-        <div>
-          <Text strong style={{ display: 'block', marginBottom: 8 }}>
-            <FolderOutlined style={{ marginRight: 6 }} />
-            {t('environmentDrawer.configDirectory')}
-          </Text>
-          <Space.Compact style={{ width: '100%' }}>
-            <Input
-              value={dataPaths?.dataDir || (platformInfo?.platform === 'win32' ? '%USERPROFILE%\\.pulsemind' : '~/.pulsemind')}
-              readOnly
-              variant="filled"
-            />
-            <Button
-              type="text"
-              size="small"
-              icon={<FolderOpenOutlined />}
-              style={{ marginLeft: 8, marginTop: 4 }}
-              onClick={() => dataPaths?.dataDir && window.electronAPI.openFolder(dataPaths.dataDir)}
-            />
-          </Space.Compact>
-        </div>
-
-        {/* Skills Directory */}
-        <div>
-          <Text strong style={{ display: 'block', marginBottom: 8 }}>
-            <FolderOutlined style={{ marginRight: 6 }} />
-            {t('environmentDrawer.skillsDirectory')}
-          </Text>
-          <Space.Compact style={{ width: '100%' }}>
-            <Input
-              value={dataPaths?.skillsDir || (platformInfo?.platform === 'win32' ? '%USERPROFILE%\\.pulsemind\\skills' : '~/.pulsemind/skills')}
-              readOnly
-              variant="filled"
-            />
-            <Button
-              type="text"
-              size="small"
-              icon={<FolderOpenOutlined />}
-              style={{ marginLeft: 8, marginTop: 4 }}
-              onClick={() => dataPaths?.skillsDir && window.electronAPI.openFolder(dataPaths.skillsDir)}
-            />
-          </Space.Compact>
-        </div>
-
-        {/* Knowledge Directory — consolidated here from 数据与运行 (the one
-            directory surface; DataRuntimeSettings no longer repeats it) */}
-        <div>
-          <Text strong style={{ display: 'block', marginBottom: 8 }}>
-            <FolderOutlined style={{ marginRight: 6 }} />
-            {t('environmentDrawer.knowledgeDirectory')}
-          </Text>
-          <Space.Compact style={{ width: '100%' }}>
-            <Input
-              value={dataPaths?.knowledgeDir || (platformInfo?.platform === 'win32' ? '%USERPROFILE%\\.pulsemind\\knowledge' : '~/.pulsemind/knowledge')}
-              readOnly
-              variant="filled"
-            />
-            <Button
-              type="text"
-              size="small"
-              icon={<FolderOpenOutlined />}
-              style={{ marginLeft: 8, marginTop: 4 }}
-              onClick={() => dataPaths?.knowledgeDir && window.electronAPI.openFolder(dataPaths.knowledgeDir)}
-            />
-          </Space.Compact>
-        </div>
-
-        {/* Workspace Directory */}
+        {/* Default workspace — the one path surface left on this pane. */}
         <div>
           <Text strong style={{ display: 'block', marginBottom: 8 }}>
             <FolderOutlined style={{ marginRight: 6 }} />
@@ -241,6 +254,7 @@ function EnvironmentSettings({ open, onClose, inline }: EnvironmentSettingsProps
           {t('environmentDrawer.save')}
         </Button>
       </Space>
+      {modalHolder}
     </>
   )
 

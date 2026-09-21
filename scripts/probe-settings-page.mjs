@@ -2,8 +2,8 @@
  * Settings page acceptance probe (PLAN-settings-restructure; LLM section
  * reworked 2026-09-21 for the grouped IA).
  *
- * The page's visible surface is the MENU — 环境设置 / 模型设置 / 浏览器插件 /
- * 快捷键 / 助手设置 / 记忆 / 经验 / 数据与运行 / 关于 — and none of it is
+ * The page's visible surface is the MENU — 常规 / 模型设置 / 浏览器插件 /
+ * 快捷键 / 助手设置 / 记忆 / 经验 / 高级 / 关于 — and none of it is
  * reviewable from source: jsdom has no layout or focus model, and "the tab
  * switched" only exists once a click lands. So this mounts the *real*
  * SettingsPage under the real ConfigProvider with a stubbed electronAPI,
@@ -95,7 +95,7 @@ const browser = await chromium.launch({ headless: !HEADED })
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
 await page.goto(url)
 await page.waitForSelector('[data-settings-menu="environment"]')
-// The default section (环境设置) renders before SettingsProvider has its settings,
+// The default section (常规) renders before SettingsProvider has its settings,
 // and every control is disabled until it does — the state a click must not be
 // judged in. The switches themselves only exist on the 数据与运行 tab, so the gate
 // has to be the pane plus a settings-derived value, not a switch that is not there.
@@ -111,23 +111,23 @@ const menu = await page.evaluate(() => [...document.querySelectorAll('[data-sett
 check('菜单九个分区（插件 / 快捷键 / 关于都在设置页里）',
   JSON.stringify(menu.map((m) => m.key)) === JSON.stringify(['environment', 'settings', 'extension', 'shortcuts', 'assistant', 'memory', 'experiences', 'data', 'about']),
   JSON.stringify(menu.map((m) => m.key)))
-check('菜单文案与顺序：环境设置 / 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 经验 / 数据与运行 / 关于',
-  JSON.stringify(menu.map((m) => m.label)) === JSON.stringify(['环境设置', '模型设置', '浏览器插件', '快捷键', '助手设置', '记忆', '经验', '数据与运行', '关于']),
+check('菜单文案与顺序：常规 / 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 经验 / 高级 / 关于',
+  JSON.stringify(menu.map((m) => m.label)) === JSON.stringify(['常规', '模型设置', '浏览器插件', '快捷键', '助手设置', '记忆', '经验', '高级', '关于']),
   JSON.stringify(menu.map((m) => m.label)))
 const stale = menu.filter((m) => ['收藏', '内置工具', '工具中心'].includes(m.label))
 check('没有残留的「收藏」「内置工具」「工具中心」入口', stale.length === 0, stale.map((m) => m.label).join(','))
 
-// ── 2. Default landing is 环境设置 (D8); 数据与运行 comes after a click ──
+// ── 2. Default landing is 常规 (D8); the other tabs come after a click ──
 const wash = (key) => page.evaluate((k) => getComputedStyle(document.querySelector(`[data-settings-menu="${k}"]`)).backgroundColor, key)
 const paneText = () => page.evaluate(() => document.querySelector('.settings-scroll').textContent)
-check('默认落在环境设置（选中态在环境设置上）', (await wash('environment')) === 'rgb(240, 240, 240)', await wash('environment'))
-check('未点开时页面里没有数据与运行的内容', !(await paneText()).includes('数据与运行'))
+check('默认落在常规（选中态在常规上）', (await wash('environment')) === 'rgb(240, 240, 240)', await wash('environment'))
+check('未点开时页面里没有高级分区的内容', !(await paneText()).includes('记录 LLM 请求报文'))
 await page.screenshot({ path: join(SHOTS, 'settings-default.png') })
 
-// ── 3. 环境设置 is the ONE directory surface: values from main, 打开 hands them to openFolder ──
-// (The directory rows moved here out of 数据与运行; DataRuntimeSettings no longer repeats them.)
+// ── 3. 默认工作区 is the ONE path surface on 常规: the read-only OS/time and
+// config/skills/knowledge directory rows are gone (2026-09-21) ──
 await page.waitForFunction(() => [...document.querySelectorAll('.settings-scroll input')]
-  .some((el) => el.value === '/fixture/data'))
+  .some((el) => el.value === '/fixture/workspace'))
 // A row is the deepest div that carries the label AND an input (ancestors match
 // hasText too, and they precede it in document order — hence .last()).
 const envRow = (label) => page.locator('.settings-scroll div')
@@ -135,45 +135,41 @@ const envRow = (label) => page.locator('.settings-scroll div')
   .filter({ has: page.locator('input') })
   .last()
 const rowValue = async (label) => envRow(label).locator('input').inputValue()
-check('目录行渲染的是主进程给的值（配置 / 技能 / 知识库 / 工作目录）',
-  (await rowValue('配置目录')) === '/fixture/data' &&
-  (await rowValue('技能目录')) === '/fixture/data/skills' &&
-  (await rowValue('知识库目录')) === '/fixture/data/knowledge' &&
-  (await rowValue('工作目录')) === '/fixture/workspace',
-  JSON.stringify({ config: await rowValue('配置目录'), skills: await rowValue('技能目录'), knowledge: await rowValue('知识库目录'), workspace: await rowValue('工作目录') }))
-check('操作系统行渲染主进程给的平台信息', (await envRow('操作系统').locator('input').inputValue()).includes('macOS'))
-check('目录行的「打开」按钮都落在正文列内（没被裁掉）', await page.evaluate(() => {
-  const pane = document.querySelector('.settings-scroll').getBoundingClientRect()
-  return ['配置目录', '技能目录', '知识库目录', '工作目录'].every((label) => {
-    const row = [...document.querySelectorAll('.settings-scroll div')]
-      .find((d) => d.childElementCount === 2 && d.firstElementChild?.textContent === label)
-    if (!row) return false
-    const r = row.querySelector('button').getBoundingClientRect()
-    return r.width > 0 && r.right <= pane.right + 1 && r.left >= pane.left - 1
-  })
-}))
-await envRow('知识库目录').locator('button').click()
+check('默认工作区行渲染当前工作区，读-only 目录行不再渲染',
+  (await rowValue('默认工作区')) === '/fixture/workspace' &&
+  (await envRow('配置目录').count()) === 0 && (await envRow('技能目录').count()) === 0 &&
+  (await envRow('知识库目录').count()) === 0 && (await envRow('操作系统').count()) === 0 &&
+  (await envRow('当前时间').count()) === 0)
+await envRow('默认工作区').locator('button').click()
 await page.waitForFunction(() => window.openedFolders.length > 0)
-check('点「打开」把该目录交给 openFolder', await page.evaluate(() => window.openedFolders[0]) === '/fixture/data/knowledge',
+check('默认工作区的「打开」打开的是当前工作区', await page.evaluate(() => window.openedFolders[0]) === '/fixture/workspace',
   JSON.stringify(await page.evaluate(() => window.openedFolders)))
-await envRow('工作目录').locator('button').click()
-await page.waitForFunction(() => window.openedFolders.length > 1)
-check('工作目录行的「打开」打开的是当前工作区', await page.evaluate(() => window.openedFolders[1]) === '/fixture/workspace',
-  await page.evaluate(() => window.openedFolders[1]))
 
-// ── 4. 数据与运行: every switch writes exactly its own preference over the live settings ──
-await page.locator('[data-settings-menu="data"]').click()
-await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('会话最长保留'))
-await page.waitForFunction(() => {
-  const t = document.querySelector('[role="switch"][aria-label="开机自启"]')
-  return t !== null && !t.disabled
-})
-await page.waitForTimeout(200)
-check('选中态从环境设置移到了数据与运行',
-  (await wash('data')) === 'rgb(240, 240, 240)' && (await wash('environment')) === 'rgba(0, 0, 0, 0)',
-  `${await wash('data')} / ${await wash('environment')}`)
-await page.screenshot({ path: join(SHOTS, 'settings-data.png') })
-check('这一页正好五个开关（五个偏好）', await page.evaluate(() => document.querySelectorAll('button.ant-switch').length) === 5,
+// ── 3.5 Agent 运行上限（常规面板）: a settings.json from before the fields
+// shows the fallback defaults, and the pane's 保存 carries them without
+// disturbing the load-bearing fields ──
+const runLimitRow = (label) => page.locator('.settings-scroll div')
+  .filter({ hasText: label })
+  .filter({ has: page.locator('input') })
+  .last()
+check('两个运行上限字段在常规面板上（循环次数 / 并行专家）',
+  await runLimitRow('单次任务循环次数上限').locator('input').count() === 1 &&
+  await runLimitRow('并行专家数量上限').locator('input').count() === 1)
+check('字段未配置的旧 settings 显示回退默认（50 / 5）',
+  (await runLimitRow('单次任务循环次数上限').locator('input').inputValue()) === '50' &&
+  (await runLimitRow('并行专家数量上限').locator('input').inputValue()) === '5')
+await runLimitRow('单次任务循环次数上限').locator('input').fill('80')
+await page.getByRole('button', { name: '保存常规设置' }).click()
+await page.waitForFunction(() => window.settingsWrites.length > 0)
+const limitsWrite = await page.evaluate(() => window.settingsWrites[window.settingsWrites.length - 1])
+check('保存携带 maxLoopIterations=80 / maxParallelSubAgents=5，其他字段原样',
+  limitsWrite.maxLoopIterations === 80 && limitsWrite.maxParallelSubAgents === 5 &&
+  limitsWrite.workspaceDir === '/fixture/workspace' && JSON.stringify(limitsWrite.profiles) === JSON.stringify(FIXTURE_PROFILES),
+  JSON.stringify({ loop: limitsWrite.maxLoopIterations, parallel: limitsWrite.maxParallelSubAgents }))
+
+// ── 3.6 启动 / 数据清理 on 常规 (moved out of 数据与运行, 2026-09-21): every
+// switch writes exactly its own preference over the live settings ──
+check('常规面板正好两个开关（开机自启 / 自动清理会话）', await page.evaluate(() => document.querySelectorAll('button.ant-switch').length) === 2,
   String(await page.evaluate(() => document.querySelectorAll('button.ant-switch').length)))
 const PROBE_KEYS = ['launchAtLogin', 'autoCleanup', 'debugLlmRequests', 'git', 'conversationRetentionDays', 'routineRunRetentionDays', 'workspaceDir', 'profiles', 'activeProfileId', 'locale', 'theme']
 /** Which of the load-bearing fields the newest write moved relative to the write before it. */
@@ -196,13 +192,8 @@ const cleanup = await toggle('自动清理会话')
 check('「自动清理会话」只改动 autoCleanup', JSON.stringify(cleanup.diff) === '["autoCleanup"]', JSON.stringify(cleanup.diff))
 check('自动清理写入 true，profiles 原样带过（不被写路径搅动）',
   cleanup.write.autoCleanup === true && JSON.stringify(cleanup.write.profiles) === JSON.stringify(FIXTURE_PROFILES) && cleanup.write.locale === 'zh')
-const debug = await toggle('记录 LLM 请求报文')
-check('「记录 LLM 请求报文」只改动 debugLlmRequests', JSON.stringify(debug.diff) === '["debugLlmRequests"]', JSON.stringify(debug.diff))
-const git = await toggle('注入 Git 状态')
-check('「注入 Git 状态」只改动 git，且仍是对象（不是散字段）',
-  JSON.stringify(git.diff) === '["git"]' && git.write.git?.contextInjection === false, JSON.stringify(git.write.git))
 
-// ── 5. Both retention selects offer the SAME four choices (shared retention-options) ──
+// ── 3.7 Both retention selects offer the SAME four choices (shared retention-options) ──
 const selectIndex = (label) => page.evaluate((l) => [...document.querySelectorAll('.ant-select')]
   .findIndex((el) => el.previousElementSibling?.textContent?.trim() === l), label)
 const openSelect = async (label) => {
@@ -246,16 +237,37 @@ check('运行记录保留用的是同一份选项（两处不会漂移）',
   JSON.stringify(runOptions) === JSON.stringify(conversationOptions), JSON.stringify(runOptions))
 await page.keyboard.press('Escape')
 
-// ── 6. The copy that explains the toggles is on screen ──
-const text = await paneText()
-check('调试说明点名 logs/llm-requests（报文落盘位置）', text.includes('logs/llm-requests'))
-check('自动清理说明点名 100 条上限与关掉的后果', text.includes('100 条上限') && text.includes('无法新建'))
-check('开机自启说明点名与托盘菜单同步', text.includes('托盘菜单'))
+// ── 3.8 The copy that explains the moved toggles is on screen (常规) ──
+const generalText = await paneText()
+check('自动清理说明点名 100 条上限与关掉的后果', generalText.includes('100 条上限') && generalText.includes('无法新建'))
+check('开机自启说明点名与托盘菜单同步', generalText.includes('托盘菜单'))
+
+// ── 4. 高级 (原数据与运行): the power-user toggles stay live writers ──
+await page.locator('[data-settings-menu="data"]').click()
+await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('记录 LLM 请求报文'))
+await page.waitForFunction(() => {
+  const t = document.querySelector('[role="switch"][aria-label="注入 Git 状态"]')
+  return t !== null && !t.disabled
+})
+await page.waitForTimeout(200)
+check('选中态从常规移到了高级',
+  (await wash('data')) === 'rgb(240, 240, 240)' && (await wash('environment')) === 'rgba(0, 0, 0, 0)',
+  `${await wash('data')} / ${await wash('environment')}`)
+await page.screenshot({ path: join(SHOTS, 'settings-data.png') })
+check('高级面板正好三个开关（调试 / Git / 自动编译）', await page.evaluate(() => document.querySelectorAll('button.ant-switch').length) === 3,
+  String(await page.evaluate(() => document.querySelectorAll('button.ant-switch').length)))
+const debug = await toggle('记录 LLM 请求报文')
+check('「记录 LLM 请求报文」只改动 debugLlmRequests', JSON.stringify(debug.diff) === '["debugLlmRequests"]', JSON.stringify(debug.diff))
+const git = await toggle('注入 Git 状态')
+check('「注入 Git 状态」只改动 git，且仍是对象（不是散字段）',
+  JSON.stringify(git.diff) === '["git"]' && git.write.git?.contextInjection === false, JSON.stringify(git.write.git))
+const advancedText = await paneText()
+check('调试说明点名 logs/llm-requests（报文落盘位置）', advancedText.includes('logs/llm-requests'))
 await page.getByText('打开日志目录', { exact: true }).click()
-await page.waitForFunction(() => window.openedFolders.length > 2)
+await page.waitForFunction(() => window.openedFolders.length > 1)
 check('「打开日志目录」指向 logs/llm-requests',
-  await page.evaluate(() => window.openedFolders[2]) === '/fixture/data/logs/llm-requests',
-  await page.evaluate(() => window.openedFolders[2]))
+  await page.evaluate(() => window.openedFolders[1]) === '/fixture/data/logs/llm-requests',
+  await page.evaluate(() => window.openedFolders[1]))
 
 // ── 7. Geometry: 160px menu inside a capped, centered column ──
 const geometry = await page.evaluate(() => {
@@ -285,8 +297,8 @@ const llmVisibleText = () => page.evaluate(() => document.querySelector('.settin
 const profileSelect = page.locator('.ant-select').first()
 const profileSelectText = async () => (await profileSelect.innerText()).replace(/\n/g, ' ')
 
-check('选择器内联展示「当前使用」标记（收起态就可见）',
-  (await profileSelectText()).includes('DeepSeek 官方') && (await profileSelectText()).includes('当前使用'),
+check('选择器内联展示「默认模型」标记（收起态就可见）',
+  (await profileSelectText()).includes('DeepSeek 官方') && (await profileSelectText()).includes('默认模型'),
   await profileSelectText())
 check('没有「当前使用中」假按钮（状态并入选择器）', !(await llmText()).includes('当前使用中'))
 check('连接分组标题在页面上', (await llmText()).includes('连接'))
@@ -298,8 +310,8 @@ check('高级组是一个折叠头，默认收起（调参内容不可见）',
 const saveBtn = page.getByRole('button', { name: '已保存' })
 check('底部动作条：干净状态下只有置灰的「已保存」',
   await saveBtn.isVisible() && await saveBtn.isDisabled())
-check('底部动作条：激活配置不出现「使用此配置」',
-  (await page.getByRole('button', { name: '使用此配置' }).count()) === 0)
+check('底部动作条：激活配置不出现「设为默认模型」',
+  (await page.getByRole('button', { name: '设为默认模型' }).count()) === 0)
 check('脏提示在干净状态下不可见', await page.getByText('有未保存的更改').isHidden())
 await page.screenshot({ path: join(SHOTS, 'settings-llm.png') })
 
@@ -318,10 +330,10 @@ await page.screenshot({ path: join(SHOTS, 'settings-llm-expanded.png') })
 await profileSelect.click()
 await page.waitForSelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')
 await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', { hasText: 'Claude 官方' }).click()
-await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('使用此配置'))
-check('切到非激活配置：选择器不再挂「当前使用」，出现「使用此配置」，保存仍置灰',
-  !(await profileSelectText()).includes('当前使用') &&
-  await page.getByRole('button', { name: '使用此配置' }).isVisible() &&
+await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('设为默认模型'))
+check('切到非激活配置：选择器不再挂「默认模型」，出现「设为默认模型」，保存仍置灰',
+  !(await profileSelectText()).includes('默认模型') &&
+  await page.getByRole('button', { name: '设为默认模型' }).isVisible() &&
   await page.getByRole('button', { name: '已保存' }).isDisabled())
 
 // Dirty via a name edit: hint appears, save lights up.
@@ -343,9 +355,9 @@ check('取消后留在本分区，编辑未丢', (await page.getByLabel('配置�
 await page.locator('[data-settings-menu="environment"]').click()
 await page.waitForSelector('.ant-modal-confirm')
 await page.locator('.ant-modal-confirm-btns .ant-btn-primary').click()
-await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('操作系统'))
+await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('默认工作区'))
 await page.waitForTimeout(300) // the menu's selected background eases in over 0.15s — read it settled
-check('确认放弃后落到目标分区（环境设置）', (await wash('environment')) === 'rgb(240, 240, 240)', await wash('environment'))
+check('确认放弃后落到目标分区（常规）', (await wash('environment')) === 'rgb(240, 240, 240)', await wash('environment'))
 await page.locator('[data-settings-menu="settings"]').click()
 await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('配置名称'))
 // Navigating away unmounted the section: on return the editing target resets to

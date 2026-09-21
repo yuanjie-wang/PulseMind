@@ -114,6 +114,34 @@ describe('SettingsStore.get', () => {
     expect((await junk.get()).routineRunRetentionDays).toBe(0)
   })
 
+  // 助手设置的两项运行上限（循环次数 / 并行专家）直接喂给引擎的边界判断：
+  // 合法值原样通过，缺失 / 非法 / 越界一律回落默认（50 / 5），不放行坏值。
+  it('normalizes the agent run limits, falling back to 50 / 5', async () => {
+    const saved = await freshStore()
+    writeRaw({ ...RAW_BASE, maxLoopIterations: 80, maxParallelSubAgents: 3 })
+    const s = await saved.get()
+    expect(s.maxLoopIterations).toBe(80)
+    expect(s.maxParallelSubAgents).toBe(3)
+
+    const absent = await freshStore()
+    writeRaw({ ...RAW_BASE })
+    const s2 = await absent.get()
+    expect(s2.maxLoopIterations).toBe(50)
+    expect(s2.maxParallelSubAgents).toBe(5)
+
+    const junk = await freshStore()
+    writeRaw({ ...RAW_BASE, maxLoopIterations: 'lots', maxParallelSubAgents: 99 })
+    const s3 = await junk.get()
+    expect(s3.maxLoopIterations).toBe(50)
+    expect(s3.maxParallelSubAgents).toBe(5)
+
+    const bounds = await freshStore()
+    writeRaw({ ...RAW_BASE, maxLoopIterations: 501, maxParallelSubAgents: 2.9 })
+    const s4 = await bounds.get()
+    expect(s4.maxLoopIterations).toBe(50) // over the 500 ceiling → default
+    expect(s4.maxParallelSubAgents).toBe(2) // in range → floored
+  })
+
   // 授权档位 is per conversation now (conversations.approval_mode): settings must
   // not carry it any more, even for a file written by an older build.
   it('ignores approvalMode / yoloMode left over in settings.json', async () => {
@@ -152,7 +180,7 @@ describe('SettingsStore.get', () => {
     const store = await freshStore()
     const s = await store.get()
     expect(s.projectSortMode).toBeUndefined()
-    expect(s.git).toEqual({ contextInjection: true, futureSubKey: 1 }) // unknown sub-keys kept
+    expect(s.git).toEqual({ contextInjection: false, futureSubKey: 1 }) // non-true → default off; unknown sub-keys kept
     expect(s.browser).toEqual({}) // junk fields dropped, no crash
   })
 

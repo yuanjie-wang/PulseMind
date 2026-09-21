@@ -1,8 +1,11 @@
-// ── P3 of PLAN-settings-restructure: the 数据与运行 settings section ──
+// ── P3 of PLAN-settings-restructure: the settings page's 高级 section ──
 // Covers what can run in a node-env vitest: the shared retention constants and
 // the wiring that cannot be mounted here (vitest has no jsdom/@testing-library,
 // so SettingsPage and its sections cannot render). Every source scan names its
 // non-vacuity condition — how it fails when the line it guards is deleted.
+//
+// 2026-09-21 split: 启动/数据清理 moved from 数据与运行 (now 高级) into 常规
+// (EnvironmentSettings), so the retention/launch scans point there.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -15,6 +18,7 @@ const read = (...p: string[]): string => readFileSync(join(REPO, ...p), 'utf-8')
 const HANDLER = read('src', 'main', 'ipc', 'settings.handler.ts')
 const WORKSPACE = read('src', 'renderer', 'src', 'components', 'routine', 'RoutineWorkspace.tsx')
 const COMPONENT = read('src', 'renderer', 'src', 'components', 'settings', 'DataRuntimeSettings.tsx')
+const ENVIRONMENT = read('src', 'renderer', 'src', 'components', 'settings', 'EnvironmentSettings.tsx')
 const NAV_TYPES = read('src', 'renderer', 'src', 'navigation', 'types.ts')
 const SETTINGS_PAGE = read('src', 'renderer', 'src', 'components', 'settings', 'SettingsPage.tsx')
 const retentionOptionsSrc = read('src', 'renderer', 'src', 'components', 'settings', 'retention-options.ts')
@@ -43,7 +47,8 @@ describe('shared retention options', () => {
       expect(/RETENTION_OPTIONS\s*[:=]/.test(src), name).toBe(false)
       expect(src, name).toContain('retentionOptions(t)')
     }
-    expect(COMPONENT).toContain('retentionOptions(t)')
+    // The selects live on 常规 (数据清理) since the 2026-09-21 split.
+    expect(ENVIRONMENT).toContain('retentionOptions(t)')
   })
 })
 
@@ -56,7 +61,7 @@ describe('settings.handler applies launch-at-login', () => {
   })
 })
 
-describe('the 数据与运行 section is wired end to end', () => {
+describe('the settings sections are wired end to end', () => {
   it("settingsTab admits 'data'", () => {
     // Non-vacuous: dropping 'data' from the union fails both scans.
     expect(NAV_TYPES).toMatch(/settingsTab\?[^\n]*'data'/)
@@ -69,45 +74,57 @@ describe('the 数据与运行 section is wired end to end', () => {
     expect(SETTINGS_PAGE).toContain("key: 'data'")
     expect(SETTINGS_PAGE).toContain("case 'data':")
     expect(SETTINGS_PAGE).toContain('<DataRuntimeSettings')
+    // The moved groups ride the 常规 section's existing case.
+    expect(SETTINGS_PAGE).toContain('<EnvironmentSettings')
+    expect(SETTINGS_PAGE).toContain("case 'environment':")
   })
 
-  it('the section renders the live settings through the shared save path', () => {
+  it('both sections render the live settings through the shared save path', () => {
     // A cached local copy would let two surfaces (routine workspace, this
     // tab) overwrite each other's fields on save.
-    expect(COMPONENT).toContain('useSettings()')
-    expect(COMPONENT).toContain('saveSettings({ ...settings,')
-    expect(COMPONENT).not.toMatch(/useState<AppSettings>/)
+    for (const [name, src] of [['DataRuntimeSettings', COMPONENT], ['EnvironmentSettings', ENVIRONMENT]] as const) {
+      expect(src, name).toContain('useSettings()')
+      expect(src, name).toContain('saveSettings({ ...settings,')
+      expect(src, name).not.toMatch(/useState<AppSettings>/)
+    }
   })
 
   it('fails visibly when a save errors instead of dying silently', () => {
     // 2026-09-19: toasts consolidated onto the shared notify outlet —
     // the visible-failure contract itself is unchanged.
     expect(COMPONENT).toContain('notify.error')
+    expect(ENVIRONMENT).toContain('notify.error')
   })
 
   it('warns before the save that deletes conversations immediately', () => {
     // A tightened retention window takes effect on save (handler awaits
     // cleanupExpiredConversations), so the destructive consequence must be
-    // confirmed, not discovered.
-    expect(COMPONENT).toContain('retentionConfirmTitle')
-    expect(COMPONENT).toContain('retentionConfirmContent')
-    expect(COMPONENT).toContain('modal.confirm')
-    expect(COMPONENT).toContain('okButtonProps: { danger: true }')
+    // confirmed, not discovered. The 数据清理 group lives on 常规 now.
+    expect(ENVIRONMENT).toContain('retentionConfirmTitle')
+    expect(ENVIRONMENT).toContain('retentionConfirmContent')
+    expect(ENVIRONMENT).toContain('modal.confirm')
+    expect(ENVIRONMENT).toContain('okButtonProps: { danger: true }')
+    expect(COMPONENT).not.toContain('modal.confirm')
   })
 
-  it('carries no directory rows — 环境设置 is the single directory surface', () => {
-    // 2026-09-20 settings cleanup: the 数据 section repeated 配置/技能/工作目录
-    // rows the environment panel already renders (and it now also owns 知识库目录).
-    // Non-vacuous: reintroducing a directory row or the helper fails the first
-    // two scans; dropping the environment panel's rows fails the third.
-    expect(COMPONENT).not.toContain("directory('")
-    expect(COMPONENT).not.toContain('data-directory')
-    const environment = read('src', 'renderer', 'src', 'components', 'settings', 'EnvironmentSettings.tsx')
-    for (const key of ['configDirectory', 'skillsDirectory', 'knowledgeDirectory', 'workspace']) {
-      expect(environment).toContain(`environmentDrawer.${key}`)
+  it('常规 keeps the only workspace surface; the removed directory rows stay gone', () => {
+    // 2026-09-20 settings cleanup removed the duplicated rows; 2026-09-21
+    // dropped the read-only OS/time/directory rows entirely (默认工作区 is
+    // the one path surface). Non-vacuous: reintroducing any removed row in
+    // either file fails the not.toContain scans.
+    for (const key of ['configDirectory', 'skillsDirectory', 'knowledgeDirectory']) {
+      expect(ENVIRONMENT).not.toContain(`environmentDrawer.${key}`)
+      expect(COMPONENT).not.toContain(`environmentDrawer.${key}`)
     }
-    expect(environment).toContain('openFolder(')
+    expect(ENVIRONMENT).toContain('environmentDrawer.workspace')
+    expect(ENVIRONMENT).toContain('openFolder(')
     expect(COMPONENT).not.toContain('<Input')
+    // The dead i18n keys are gone from both locales too.
+    for (const locale of ['zh', 'en']) {
+      const table = read('src', 'renderer', 'src', 'i18n', 'locales', `${locale}.ts`)
+      expect(table).not.toContain('operatingSystem:')
+      expect(table).not.toContain('configDirectory:')
+    }
   })
 
   it('keeps the debug explanation honest about when the dump takes effect', () => {
@@ -118,17 +135,20 @@ describe('the 数据与运行 section is wired end to end', () => {
   })
 
   it('one Switch click writes exactly one field through the live object', () => {
-    expect(COMPONENT).toContain('launchAtLogin: value')
-    expect(COMPONENT).toContain('autoCleanup: value')
+    // 启动/数据清理 toggles write on 常规; the power-user toggles stay on 高级.
+    expect(ENVIRONMENT).toContain('launchAtLogin: value')
+    expect(ENVIRONMENT).toContain('autoCleanup: value')
+    expect(ENVIRONMENT).toContain('conversationRetentionDays: days')
+    expect(ENVIRONMENT).toContain('routineRunRetentionDays: days')
     expect(COMPONENT).toContain('debugLlmRequests: value')
     expect(COMPONENT).toContain("git: { ...settings.git, contextInjection: value }")
-    expect(COMPONENT).toContain('conversationRetentionDays: days')
-    expect(COMPONENT).toContain('routineRunRetentionDays: days')
   })
 
   it('reuses the existing bridge methods — no preload changes needed', () => {
-    expect(COMPONENT).toContain('getDataPaths()')
-    expect(COMPONENT).toContain('openFolder(')
+    for (const [name, src] of [['DataRuntimeSettings', COMPONENT], ['EnvironmentSettings', ENVIRONMENT]] as const) {
+      expect(src, name).toContain('getDataPaths()')
+      expect(src, name).toContain('openFolder(')
+    }
   })
 
   it('the new tab rides the existing navigation union, not a new kind', () => {
@@ -139,7 +159,7 @@ describe('the 数据与运行 section is wired end to end', () => {
     expect(SETTINGS_PAGE).toContain('appLayout.dataRuntime')
   })
 
-  it('default settings tab stays 环境设置 (D8)', () => {
+  it('default settings tab stays 常规 (D8)', () => {
     expect(SETTINGS_PAGE).toContain("paramTab ?? 'environment'")
   })
 })
@@ -147,8 +167,8 @@ describe('the 数据与运行 section is wired end to end', () => {
 describe('retention writers stay in sync', () => {
   it('all three surfaces write the same settings fields', () => {
     expect(WORKSPACE).toContain('routineRunRetentionDays: days')
-    expect(COMPONENT).toContain('conversationRetentionDays: days')
-    expect(COMPONENT).toContain('routineRunRetentionDays: days')
+    expect(ENVIRONMENT).toContain('conversationRetentionDays: days')
+    expect(ENVIRONMENT).toContain('routineRunRetentionDays: days')
   })
 
   it('RoutineWorkspace reports a failed retention save instead of throwing unhandled', () => {
@@ -174,20 +194,20 @@ describe('retention writers stay in sync', () => {
   })
 
   // M4 (review 2026-09-18): SETTINGS_SET prunes expired conversations
-  // main-side, and DataRuntimeSettings.save() was the only retention writer
-  // that never refreshed the list — pruned sessions lingered as clickable
-  // ghosts that a later open resurrected. The reload prop must therefore be
-  // wired App → AppLayout → ViewHost → SettingsPage → DataRuntimeSettings and
-  // fired in the save's SUCCESS branch.
+  // main-side, and the retention writer (常规's 数据清理 since the 2026-09-21
+  // split) was the only one that never refreshed the list — pruned sessions
+  // lingered as clickable ghosts that a later open resurrected. The reload
+  // prop must therefore be wired App → AppLayout → ViewHost → SettingsPage →
+  // EnvironmentSettings and fired in the save's SUCCESS branch.
   it('a retention save triggers the conversation-list reload (M4)', () => {
     const app = read('src', 'renderer', 'src', 'App.tsx')
     const appLayout = read('src', 'renderer', 'src', 'components', 'layout', 'AppLayout.tsx')
     const viewHost = read('src', 'renderer', 'src', 'components', 'layout', 'ViewHost.tsx')
     // Non-vacuous per hop: deleting the prop from any one interface/JSX hop fails its scan.
-    expect(COMPONENT).toContain('onReloadConversations?: () => void')
-    expect(COMPONENT).toContain('onReloadConversations?.()')
+    expect(ENVIRONMENT).toContain('onReloadConversations?: () => void')
+    expect(ENVIRONMENT).toContain('onReloadConversations?.()')
     // ...and it fires only after the save succeeded (inside try, before catch).
-    const saveBlock = /await saveSettings\(\{ \.\.\.settings, \.\.\.patch \}\)\n[\s\S]*?\} catch/.exec(COMPONENT)
+    const saveBlock = /await saveSettings\(\{ \.\.\.settings, \.\.\.patch \}\)\n[\s\S]*?\} catch/.exec(ENVIRONMENT)
     expect(saveBlock).not.toBeNull()
     expect(saveBlock![0]).toContain('onReloadConversations?.()')
     expect(SETTINGS_PAGE).toContain('onReloadConversations={onReloadConversations}')

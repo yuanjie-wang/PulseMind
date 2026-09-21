@@ -160,6 +160,26 @@ export async function safeInvokeObserver<T>(hook: ((ctx: T) => void | Promise<vo
 
 export const MAX_LOOP_ITERATIONS = 50
 
+/** The loop cap's effective base: MAX_LOOP_ITERATIONS until 设置 → 助手设置
+ *  applies a saved `maxLoopIterations` (session-manager at startup/save for
+ *  the main-process-hosted engines, useAppSettings for the renderer's canvas
+ *  engine). Module state like the sub-agent limiter's cap, because the resets
+ *  in startLoop/reset/loadConversation read it per turn — a settings change
+ *  lands from the next turn on without touching live engines mid-turn.
+ *  `null`/invalid falls back to the constant, so a settings object that
+ *  predates the field keeps today's 50. */
+let loopIterationLimit: number | null = null
+
+export function getLoopIterationLimit(): number {
+  return loopIterationLimit ?? MAX_LOOP_ITERATIONS
+}
+
+export function setLoopIterationLimit(value: number | null | undefined): void {
+  loopIterationLimit = typeof value === 'number' && Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : null
+}
+
 // ── Spawn Sub-Agent types ──────────────────────────────────────────────
 
 export interface SpawnSubAgentConfig {

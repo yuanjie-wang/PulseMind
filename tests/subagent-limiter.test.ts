@@ -3,9 +3,11 @@ import {
   MAX_PARALLEL_SUBAGENTS,
   acquireSubAgentSlot,
   activeSubAgentCount,
+  getSubAgentParallelLimit,
   queuedSubAgentCount,
   releaseQueuedSubAgents,
   resetSubAgentLimiter,
+  setSubAgentParallelLimit,
   subAgentBudgetKey,
   type ReleaseSubAgentSlot,
 } from '../src/renderer/src/agent/engine/subagent-limiter'
@@ -179,5 +181,49 @@ describe('expert budget key: the session, not the expert', () => {
     expect(nested.resolved).toBe(false)
     expect(queuedSubAgentCount(root)).toBe(1)
     for (const r of held) r()
+  })
+})
+
+describe('settings-configured cap (设置 → 助手设置 · 并行专家数量上限)', () => {
+  // 上限是模块级生效值：用例自己负责还原，否则泄漏到后面的文件/用例里。
+  it('applies a saved value to the next dispatch and queues past it', async () => {
+    try {
+      setSubAgentParallelLimit(2)
+      expect(getSubAgentParallelLimit()).toBe(2)
+
+      const key = 'conv_cfg'
+      const held = await takeSlots(key, 2)
+      const overflow = queueWaiter(key)
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(overflow.resolved).toBe(false)
+
+      // 槽位转交链在新上限下照常工作：一个收工，排队者立刻顶上。
+      held[0]()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(overflow.resolved).toBe(true)
+      expect(activeSubAgentCount(key)).toBe(2)
+      held[1]?.()
+      overflow.release?.()
+    } finally {
+      setSubAgentParallelLimit(null)
+    }
+    expect(getSubAgentParallelLimit()).toBe(MAX_PARALLEL_SUBAGENTS)
+  })
+
+  it('falls back to the pinned default on absent or invalid values', () => {
+    try {
+      setSubAgentParallelLimit(undefined)
+      expect(getSubAgentParallelLimit()).toBe(MAX_PARALLEL_SUBAGENTS)
+      setSubAgentParallelLimit(0)
+      expect(getSubAgentParallelLimit()).toBe(MAX_PARALLEL_SUBAGENTS)
+      setSubAgentParallelLimit(Number.NaN)
+      expect(getSubAgentParallelLimit()).toBe(MAX_PARALLEL_SUBAGENTS)
+      setSubAgentParallelLimit(2.9)
+      expect(getSubAgentParallelLimit()).toBe(2) // 整数化，不做四舍五入
+    } finally {
+      setSubAgentParallelLimit(null)
+    }
   })
 })

@@ -49,7 +49,9 @@ describe('P1 — built-in tools moved into the capability center', () => {
   })
 
   it('ViewHost passes tools/onToggleTool to CentersPage', () => {
-    const start = viewHost.indexOf('<CentersPage')
+    // The element is the lazy wrapper — every view branch is `lazy()`-ed so the
+    // entry chunk stops carrying eight pages — and the props still ride it.
+    const start = viewHost.indexOf('<LazyCentersPage')
     const end = viewHost.indexOf('/>', start)
     const call = viewHost.slice(start, end)
     expect(call).toContain('tools={tools}')
