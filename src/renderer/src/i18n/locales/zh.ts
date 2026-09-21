@@ -13,7 +13,7 @@ const zh = {
     all: '全部',
     builtIn: '内置',
     experience: '经验',
-    active: '当前使用',
+    active: '默认模型',
     warning: '警告',
     noData: '暂无数据',
   },
@@ -203,6 +203,9 @@ const zh = {
       retry: '重试',
     },
     selectModel: '选择模型',
+    model: {
+      followDefault: '跟随默认模型',
+    },
     contextRing: {
       tooltip: '{{percent}}% · {{used}} / {{total}} 上下文已使用',
     },
@@ -326,7 +329,8 @@ const zh = {
     createProfile: '创建配置',
     deleteConfirm: '删除此配置？',
     deleteLast: '无法删除最后一个配置',
-    useThisProfile: '使用此配置',
+    useThisProfile: '设为默认模型',
+    defaultModelHint: '此处设置的是默认模型：新会话以及未单独选择模型的会话使用它。每个会话也可以在输入框的模型下拉中单独选择模型。',
     profile: 'LLM 配置',
     profileName: '配置名称',
     provider: '提供商',
