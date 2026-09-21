@@ -13,7 +13,7 @@ import { nodeNumberOf, resolveNodeRef } from '../../../../shared/plan/graph'
 import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 import { getCachedMcpServers } from '../mcp-cache'
 import {
-  MAX_PARALLEL_SUBAGENTS,
+  getSubAgentParallelLimit,
   acquireSubAgentSlot,
   activeSubAgentCount,
   queuedSubAgentCount,
@@ -140,8 +140,9 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     const budgetKey = subAgentBudgetKey(ex.opts)
     const busy = activeSubAgentCount(budgetKey)
     const queued = queuedSubAgentCount(budgetKey)
-    if (busy >= MAX_PARALLEL_SUBAGENTS || queued > 0) {
-      t.output = `排队中：本会话已有 ${busy} 个专家在运行（上限 ${MAX_PARALLEL_SUBAGENTS} 个），前面还有 ${queued} 个等待空位…`
+    const parallelLimit = getSubAgentParallelLimit()
+    if (busy >= parallelLimit || queued > 0) {
+      t.output = `排队中：本会话已有 ${busy} 个专家在运行（上限 ${parallelLimit} 个），前面还有 ${queued} 个等待空位…`
       ex.notify()
     }
     const release = await acquireSubAgentSlot(budgetKey)
