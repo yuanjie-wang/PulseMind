@@ -353,7 +353,16 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-bg': '#141414',
     '--pm-elevated': '#1f1f1f',
     '--pm-surface': '#0f0f0f',
-    '--pm-sunk': '#262626',
+    // #333333, not the #262626 this was until 2026-09-21: the two built-in
+    // assistants (任务助手 / 专家创建助手) render the chat transcript inside
+    // `--pm-card` (#262626), so a bubble painted #262626 was invisible there —
+    // the user's own report, 「用户输入的消息的气泡，看不到背景色了」, and only in
+    // dark, because light's bubble (#f0f2f4) is 13 units off its card (#ffffff).
+    // #333333 is the rung that repeats that step on this ground (Δ13), and it is
+    // an existing one (`--pm-pill-strong`, `--pm-border-soft`) rather than a new
+    // grey. The role's reading survives: the bubble stays one step off the
+    // surface it sits on — darker in light, lighter in dark.
+    '--pm-sunk': '#333333',
     '--pm-ink': '#e6e6e6',
     '--pm-ink-hover': '#f5f5f5',
     '--pm-ink-contrast': '#000000',
@@ -366,7 +375,11 @@ export const PALETTE: { light: Record<string, string>; dark: Record<string, stri
     '--pm-border': '#424242',
     '--pm-border-hairline': '#2b2b2b',
     '--pm-fill': '#1f1f1f',
-    '--pm-fill-hover': '#262626',
+    // Moves with --pm-sunk and for the same reason: its single consumer is the
+    // tool block's header (MessageGroup), which the assistants draw on the same
+    // #262626 card — a hover fill equal to the card's own ground reads as no
+    // hover at all. #333333 keeps it one rung above the header's rest fill.
+    '--pm-fill-hover': '#333333',
     '--pm-fill-soft': '#101010',
     '--pm-text-body': '#c2c2c2',
     '--pm-text-quiet': '#999999',

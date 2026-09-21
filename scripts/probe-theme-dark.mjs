@@ -363,6 +363,8 @@ import { SearchView } from './src/renderer/src/components/search/SearchView'
 import ErrorBoundary from './src/renderer/src/components/ErrorBoundary'
 import { ProjectModal } from './src/renderer/src/components/project/ProjectModal'
 import { EDITOR_CHAT_CARD, EDITOR_COLUMN_HEADER, EDITOR_SURFACE } from './src/renderer/src/components/layout/editor-layout'
+// §16 — the assistant column the two form editors render (任务助手 / 专家创建助手).
+import { FormAssistColumn } from './src/renderer/src/components/form-assist/FormAssistColumn'
 // §11 — the welcome band (PLAN-dark-mode M3/T1). Both welcome components read
 // the four content stores directly on mount, so the fixtures arrive through the
 // INIT stub's __pmLists / __pmQuotes / __pmProjects overrides and the mounts
@@ -2392,6 +2394,148 @@ window.__wbVector = () => {
   return v
 }
 
+// ── §16 — the assistant column's chat card ───────────────────────────────────
+// The two form assistants (任务助手 in the routine editor, 专家创建助手 in the
+// expert editor) do NOT put the transcript on the ground the chat uses: the
+// shared FormAssistColumn renders the chat's own TranscriptView inside
+// EDITOR_CHAT_CARD, whose dark ground is --pm-card (#262626) — and the user
+// bubble is --pm-sunk, which in the dark column was ALSO #262626. The bubble
+// therefore had no visible fill at all (user report 2026-09-21: 「深色模式下，
+// 在各种助手中，用户输入的消息的气泡，看不到背景色了，是不是和对话区的背景色
+// 相同导致的」 — the hypothesis was right). Light was never affected: the card is
+// #ffffff there and the bubble #f0f2f4.
+// §10 already reads the editor trio, but as three bare boxes: a card with no
+// transcript in it cannot show this. This section mounts the real column, so the
+// reading is of the COMPOSITE the user sees — the bubble's fill against the
+// ground it is actually painted on (found by walking up to the first ancestor
+// that paints, not by trusting a nesting the JSX may change) — plus the tool
+// card header's two fills, which sit on the same ground and are the only other
+// pair in the transcript that could vanish into it (rest --pm-fill is below the
+// card's ground in dark, hover --pm-fill-hover was the same #262626).
+const ASSIST_MESSAGES = [
+  user('帮我建一个每天早上的采集任务'),
+  assistant('as1', [
+    { type: 'text', text: '好，先把这一步写进任务文件。' },
+    { type: 'tool_use', id: 'as-t1', name: 'write', status: 'completed', exitCode: 0, input: { file_path: 'routine.json', content: '{}', description: '写入任务文件' }, output: 'wrote routine.json' },
+  ]),
+]
+/** A FormAssistSession literal: the column's props are what this section is
+ *  about, and the real session hook would need a ws-hosted engine to mount. */
+const ASSIST_SESSION = {
+  messages: ASSIST_MESSAGES,
+  agentStatus: { status: 'completed' },
+  streamingBlocks: [],
+  isBusy: false,
+  restoring: false,
+  appliedPatch: null,
+  clearAppliedPatch: () => {},
+  send: () => {},
+  cancel: () => {},
+  engineCall: () => {},
+  refreshOptions: () => {},
+  approvalMode: 'outside-ask',
+  setApprovalMode: () => {},
+}
+function AssistHarness() {
+  const mode = useThemeMode()
+  return (
+    <ConfigProvider locale={zhCN} theme={buildAntdTheme(mode)}>
+      <AntdApp>
+        <SettingsProvider>
+          <TranslationProvider initialLocale="zh">
+            {/* The editors' own composition (RoutineEditorPage / ExpertEditor):
+                the grey EDITOR_SURFACE with the column's card inside it. The
+                explicit height is what gives the transcript a scrollport. */}
+            <div id="assist-case" style={{ padding: 24, background: 'var(--pm-bg)', height: 460 }}>
+              <div style={EDITOR_SURFACE}>
+                <FormAssistColumn
+                  session={ASSIST_SESSION}
+                  title="任务助手"
+                  placeholder="描述你要建的任务…"
+                  onSendMessage={() => {}}
+                />
+              </div>
+            </div>
+          </TranslationProvider>
+        </SettingsProvider>
+      </AntdApp>
+    </ConfigProvider>
+  )
+}
+window.__mountAssist = () => {
+  const host = document.createElement('div')
+  host.id = 'assist-host'
+  document.body.appendChild(host)
+  createRoot(host).render(<AssistHarness />)
+}
+
+window.__assistVector = () => {
+  const host = document.getElementById('assist-host')
+  const q = (sel) => (host ? host.querySelector(sel) : null)
+  const paint = (el) => {
+    if (!el) return null
+    const s = getComputedStyle(el)
+    return { backgroundColor: s.backgroundColor, color: s.color }
+  }
+  // The user row is the transcript's right-aligned flex row (§5's selector); its
+  // first element child is the bubble MessageGroup paints --pm-sunk on.
+  const row = q('div[style*="justify-content: flex-end"]')
+  const bubble = row ? row.firstElementChild : null
+  // The ground is whatever the bubble is actually painted ON: the nearest
+  // ancestor with a non-transparent fill. Walking up beats naming the card's own
+  // element, because this section's whole point is that the two are too close.
+  const groundOf = (el) => {
+    let p = el ? el.parentElement : null
+    while (p && p !== document.body) {
+      const bg = getComputedStyle(p).backgroundColor
+      if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') return p
+      p = p.parentElement
+    }
+    return null
+  }
+  const ground = groundOf(bubble)
+  const head = q('[data-tool-head="as-t1"]')
+  // Mean |ΔRGB| between two computed colours — the reading the eye makes. Kept in
+  // the page so the check table has one number per pair rather than six channels.
+  const rgb = (s) => {
+    const m = /rgba?\\((\\d+), (\\d+), (\\d+)/.exec(s || '')
+    return m ? [+m[1], +m[2], +m[3]] : null
+  }
+  const delta = (a, b) => {
+    const x = rgb(a)
+    const y = rgb(b)
+    if (!x || !y) return null
+    return Math.round((Math.abs(x[0] - y[0]) + Math.abs(x[1] - y[1]) + Math.abs(x[2] - y[2])) / 3)
+  }
+  const bubbleBg = bubble ? getComputedStyle(bubble).backgroundColor : null
+  const groundBg = ground ? getComputedStyle(ground).backgroundColor : null
+  const headBg = head ? getComputedStyle(head).backgroundColor : null
+  const lum = (s) => {
+    const x = rgb(s)
+    return x ? (x[0] + x[1] + x[2]) / 3 : null
+  }
+  return {
+    bubble: paint(bubble),
+    ground: paint(ground),
+    toolHead: paint(head),
+    bubbleVsGround: delta(bubbleBg, groundBg),
+    headVsGround: delta(headBg, groundBg),
+    // Which way the bubble sits off its ground: +1 means lighter (the dark
+    // column's "recessed one step", inverted), -1 darker (the light reading).
+    bubbleIsLighter: lum(bubbleBg) === null || lum(groundBg) === null ? null : (lum(bubbleBg) > lum(groundBg) ? 1 : -1),
+  }
+}
+
+/** The tool block's header, read live: the check hovers it with a REAL cursor
+ *  (Playwright) and then asks for this, because the header animates its fill
+ *  with transition: background 0.15s — a reading taken in the same tick as the
+ *  event is the OLD value, i.e. a reading of the tween, not of the hover. */
+window.__assistHead = () => {
+  const head = document.querySelector('#assist-host [data-tool-head="as-t1"]')
+  if (!head) return null
+  return { backgroundColor: getComputedStyle(head).backgroundColor }
+}
+
 window.__ready = true
 `
 await build({
@@ -2425,6 +2569,10 @@ function check(name, pass, detail) {
 const browser = await chromium.launch({ headless: !process.argv.includes('--headed') })
 const page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
 page.on('pageerror', (err) => console.log('  [page error]', err.message))
+// A React render that throws is logged, not re-thrown (production build), so the
+// console is the only place a failed mount shows up — §16's own first run died
+// here with a timeout and nothing else to go on.
+page.on('console', (msg) => { if (msg.type() === 'error') console.log('  [console error]', msg.text().slice(0, 300)) })
 // A real http origin rather than setContent: an opaque about:blank origin denies
 // the localStorage the theme mirror reaches for.
 const PAGE = '<!doctype html><html><body style="margin:0"><div id="root"></div></body></html>'
@@ -2725,7 +2873,7 @@ const DARK_LAYER = flat(await layerStates())
 if (dump) console.log('  [dump] layer dark =', JSON.stringify(DARK_LAYER, null, 1))
 const LAYER_DARK_EXPECT = {
   'collapsed.ground': { backgroundColor: 'rgb(20, 20, 20)' },
-  'collapsed.userBubble': { backgroundColor: 'rgb(38, 38, 38)' },
+  'collapsed.userBubble': { backgroundColor: 'rgb(51, 51, 51)' },
   'collapsed.approvalArea': { backgroundColor: 'rgb(43, 33, 17)', borderTopColor: 'rgb(124, 89, 20)' },
   'collapsed.heldHint': { color: 'rgb(216, 150, 20)' },
   'collapsed.askUserCard': { backgroundColor: 'rgb(31, 31, 31)', color: 'rgb(230, 230, 230)' },
@@ -4407,6 +4555,60 @@ await page.evaluate(() => window.__setMode('light'))
 const t2Flip = Object.keys(t2Light).filter((r) => t2Dark[r] === t2Light[r])
 check('翻转：计划图与例程面的读数都随模式变化', t2Flip.length === 0 && Object.keys(t2Light).length > 0, t2Flip.slice(0, 6).join(' | ') || `${Object.keys(t2Light).length} 项全部不同`)
 
+// ── 12b. the routine card's prompt hover ─────────────────────────────────────
+// The card's description used to carry a native `title`, and THAT tooltip is
+// drawn by the OS — always light, in every mode (the user report: 「展示任务
+// 提示词时，用的还是浅色模式」). The attribute must be gone (so the native
+// layer cannot appear at all), and the layer a hover draws must be antd's —
+// a dark surface in BOTH modes: antd's own spotlight ground is dark either
+// way, and tokens.ts pins the dark mode's ink at rgb(240,240,240). The
+// native tooltip is never in the DOM, so the hover reads below fail against
+// the old code on both counts.
+const DESC_SEL = '#t2-routine [data-routine-desc]'
+console.log('\n=== 12b. 日常卡片提示词悬浮层（antd Tooltip，非常生 title） ===')
+check('例程卡：描述渲染出来了（非空性 — 选择器钉得住）',
+  await page.evaluate((sel) => !!document.querySelector(sel) && document.querySelector(sel).textContent.length > 0, DESC_SEL))
+check('例程卡：描述不再携带原生 title（原生气泡永远是浅色、不受主题管）',
+  await page.evaluate((sel) => { const el = document.querySelector(sel); return !!el && !el.hasAttribute('title') }, DESC_SEL))
+// Only a VISIBLE container counts — earlier sections' tooltips stay mounted
+// but hidden, and this card's own action row (立即运行/编辑/删除) owns three
+// more of them. The try/catch is the non-vacuity exit: against the old code
+// no antd tooltip exists for this element at all (the native one is never in
+// the DOM), so the waits time out and the reads come back null — a clean
+// FAIL, not a crash.
+async function readPromptTooltip() {
+  try {
+    await page.hover(DESC_SEL)
+    await page.waitForFunction(() => [...document.querySelectorAll('.ant-tooltip-container')]
+      .some((el) => el.getBoundingClientRect().height > 0 && /汇总昨日数据并生成简报/.test(el.textContent)), undefined, { timeout: 5000 })
+    const out = await page.evaluate(() => {
+      const el = [...document.querySelectorAll('.ant-tooltip-container')]
+        .find((c) => c.getBoundingClientRect().height > 0)
+      const s = getComputedStyle(el)
+      const rgb = (s.backgroundColor.match(/\d+(\.\d+)?/g) || []).map(Number)
+      return { text: el.textContent.slice(0, 20), bg: s.backgroundColor, ink: s.color, darkGround: rgb.length >= 3 && (rgb[0] + rgb[1] + rgb[2]) < 384 }
+    })
+    await page.mouse.move(0, 0)
+    await page.waitForFunction(() => ![...document.querySelectorAll('.ant-tooltip-container')]
+      .some((el) => el.getBoundingClientRect().height > 0), undefined, { timeout: 5000 })
+    return out
+  } catch {
+    return null
+  }
+}
+const tipLight = await readPromptTooltip()
+check('例程卡：浅色下悬浮画出的是 antd 气泡，承载提示词全文',
+  !!tipLight && /汇总昨日数据并生成简报/.test(tipLight.text ?? ''), JSON.stringify(tipLight))
+check('例程卡：浅色下气泡面也是深底浅字（antd 气泡两种模式一个面）',
+  tipLight?.darkGround === true && tipLight.ink === 'rgb(255, 255, 255)', JSON.stringify(tipLight))
+await page.evaluate(() => window.__setMode('dark'))
+const tipDark = await readPromptTooltip()
+check('例程卡：深色下悬浮画出的仍是 antd 气泡（不再是系统浅色提示框）',
+  !!tipDark && /汇总昨日数据并生成简报/.test(tipDark.text ?? ''), JSON.stringify(tipDark))
+check('例程卡：深色下气泡深底，文字是主题钉定的 rgb(240, 240, 240)',
+  tipDark?.darkGround === true && tipDark.ink === 'rgb(240, 240, 240)', JSON.stringify(tipDark))
+await page.evaluate(() => window.__setMode('light'))
+
 // ── 13. capability / settings / browser chrome (M3/T3–T5) ────────────────────
 // One or two roles per surface: the pill wash, the settings sheet, the browser
 // tab and address wash. The light values are the frozen literals; the dark
@@ -4779,6 +4981,186 @@ await page.waitForTimeout(50)
   const vec = await page.evaluate(() => window.__wbVector())
   const want = expWB.expectOf(WB_TABLE.stripGround.backgroundColor, 'backgroundColor')
   check('装回真表、回到浅色：工作台取值复原', !!vec.stripGround && vec.stripGround.backgroundColor === want, `期望 ${want} 实得 ${vec.stripGround && vec.stripGround.backgroundColor}`)
+}
+
+// ── §16 — the assistant column's chat card: the bubble must clear its ground ──
+// One delta per pair, because "is the fill visible" is a comparison, not a
+// value: a role-borne expectation would pass on the bug (the bubble DID paint
+// --pm-sunk — it was the ground that happened to be the same colour).
+//
+// Two floors, because the two pairs are not the same design intent. The bubble
+// is a capsule the user must SEE, and light draws it 13 mean |ΔRGB| off its card
+// (card #ffffff, bubble #f0f2f4), so dark is held to 10. The tool head is a
+// recessed block whose dark rest step is only 7 (--pm-fill #1f1f1f on --pm-card
+// #262626) — the weakest step this sheet draws on purpose — so its floor is 6,
+// and what that floor really guards is the collision class: a fill painted in its
+// ground's exact colour, which is what this report was.
+const BUBBLE_FLOOR = 10
+const SURFACE_FLOOR = 6
+
+/** How long this section waits before every reading that follows a fill change.
+ *  Not politeness: the tool block's header carries `transition: background
+ *  0.15s`, so a reading taken in the same frame as the change reports the value
+ *  being animated FROM. That cost two green-then-red rounds here — the hover read
+ *  the resting fill, and after the mode flip the header still reported light's
+ *  --pm-fill (rgb(245, 245, 245)) for a frame. */
+const ASSIST_SETTLE = 250
+
+/** Mean |ΔRGB| between two computed colours; null if either is unreadable. */
+function delta(a, b) {
+  const rgb = (s) => { const m = /rgba?\((\d+), (\d+), (\d+)/.exec(s || ''); return m ? [+m[1], +m[2], +m[3]] : null }
+  const x = rgb(a)
+  const y = rgb(b)
+  if (!x || !y) return null
+  return Math.round((Math.abs(x[0] - y[0]) + Math.abs(x[1] - y[1]) + Math.abs(x[2] - y[2])) / 3)
+}
+
+await page.evaluate(() => window.__mountAssist())
+await page.waitForFunction(() => {
+  const b = document.querySelector('#assist-host div[style*="justify-content: flex-end"]')
+  return !!b && !!b.firstElementChild && !!document.querySelector('#assist-host [data-segment-head]')
+}, { timeout: 20000 })
+await page.waitForTimeout(150)
+// The tool block's header exists only once its execution segment is open — a
+// collapsed segment renders its own header instead (the same fact §5's two-state
+// read is built on), so the header's two fills are read with a real click first.
+await page.locator('#assist-host [data-segment-head]').first().click()
+await page.waitForFunction(() => !!document.querySelector('#assist-host [data-tool-head="as-t1"]'), { timeout: 20000 })
+await page.waitForTimeout(150)
+
+/** `--pm-*` roles normalized to computed values, so the table can say which role
+ *  each surface is supposed to carry on top of what it measures. */
+async function assistExpectations() {
+  const roles = ['--pm-card', '--pm-sunk', '--pm-fill']
+  const normed = await page.evaluate((roleList) => {
+    const out = {}
+    for (const role of roleList) {
+      const d = document.createElement('div')
+      d.style.backgroundColor = `var(${role})`
+      document.body.appendChild(d)
+      out[role] = getComputedStyle(d).backgroundColor
+      d.remove()
+    }
+    return out
+  }, roles)
+  return normed
+}
+
+const ASSIST_TABLE = {
+  ground: { backgroundColor: '--pm-card' },
+  bubble: { backgroundColor: '--pm-sunk' },
+  toolHead: { backgroundColor: '--pm-fill' },
+}
+
+async function assistReading(label, expect) {
+  const vec = await page.evaluate(() => window.__assistVector())
+  for (const [key, map] of Object.entries(ASSIST_TABLE)) {
+    const row = vec[key]
+    if (!row) { check(`${label} assist ${key} 存在`, false, '没有渲染出来'); continue }
+    for (const [prop, spec] of Object.entries(map)) {
+      check(`${label} assist ${key}.${prop} = ${spec}`, row[prop] === expect[spec], `期望 ${expect[spec]} 实得 ${row[prop]}`)
+    }
+  }
+  // The two composite readings. Direction is asserted per mode on purpose: the
+  // bubble is a recessed capsule in BOTH columns, so it is darker than its card
+  // in light and lighter in dark — a fix that made dark's bubble darker than the
+  // card would be a different design, not this one.
+  const wantDir = label === '深色' ? 1 : -1
+  check(
+    `${label} assist 气泡底色与助手卡底色不同（Δ≥${BUBBLE_FLOOR}）`,
+    vec.bubbleVsGround !== null && vec.bubbleVsGround >= BUBBLE_FLOOR,
+    `Δ = ${vec.bubbleVsGround}（气泡 ${vec.bubble && vec.bubble.backgroundColor} on 卡 ${vec.ground && vec.ground.backgroundColor}）`
+  )
+  check(
+    `${label} assist 气泡比卡底${wantDir === 1 ? '亮' : '暗'}`,
+    vec.bubbleIsLighter === wantDir,
+    `方向 ${vec.bubbleIsLighter}（期望 ${wantDir}）`
+  )
+  check(
+    `${label} assist 工具卡头部底色与卡底不同（Δ≥${SURFACE_FLOOR}）`,
+    vec.headVsGround !== null && vec.headVsGround >= SURFACE_FLOOR,
+    `Δ = ${vec.headVsGround}（头部 ${vec.toolHead && vec.toolHead.backgroundColor} on 卡 ${vec.ground && vec.ground.backgroundColor}）`
+  )
+  // The hover fill, with a real cursor and read after the tween: the header's own
+  // rest fill is one rung off the card's ground in dark (7 units), and its hover
+  // rung is the one that could collapse onto it.
+  await page.locator('#assist-host [data-tool-head="as-t1"]').hover()
+  await page.waitForTimeout(ASSIST_SETTLE)
+  const hover = await page.evaluate(() => window.__assistHead())
+  const hoverDelta = await delta(hover && hover.backgroundColor, vec.ground && vec.ground.backgroundColor)
+  check(
+    `${label} assist 工具卡头部 hover 底色与卡底不同（Δ≥${SURFACE_FLOOR}）`,
+    hover && hover.backgroundColor !== vec.toolHead.backgroundColor && hoverDelta !== null && hoverDelta >= SURFACE_FLOOR,
+    `hover Δ = ${hoverDelta}（hover ${hover && hover.backgroundColor}，静止 ${vec.toolHead && vec.toolHead.backgroundColor}）`
+  )
+  // Hand the resting fill back before the flip: the inline style survives the
+  // mode change, so a hover left on would make the next mode's rest reading a
+  // reading of the hover.
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(ASSIST_SETTLE)
+  return { vec, hover }
+}
+
+const expAssist = await assistExpectations()
+const assistLight = await assistReading('浅色', expAssist)
+await page.evaluate(() => window.__setMode('dark'))
+await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark')
+// Every mode change in this section settles first, and not only for symmetry with
+// the hover: the header animates its fill, so it is still painting the OLD mode's
+// colour in the frame the attribute lands — measured, the dark run read
+// rgb(245, 245, 245) (light's --pm-fill) until this wait was added, i.e. a reading
+// of the flip's first frame rather than of dark.
+await page.waitForTimeout(ASSIST_SETTLE)
+// Re-normalized, not reused: the §15 rule — a role's computed value is a fact
+// about the mode, so the dark run gets the dark column's own values.
+const expAssistDark = await assistExpectations()
+const assistDark = await assistReading('深色', expAssistDark)
+
+// Flip discipline (the §15 rule): every reading here is role-borne, so every one
+// of them must move across the flip — a hardcoded colour is exactly what made the
+// bubble invisible in one mode only.
+{
+  const moved = []
+  for (const key of Object.keys(ASSIST_TABLE)) {
+    const l = assistLight.vec[key]
+    const d = assistDark.vec[key]
+    if (!l || !d) { moved.push(`${key}: 缺失`); continue }
+    if (l.backgroundColor === d.backgroundColor) moved.push(`${key}.backgroundColor`)
+  }
+  if (assistLight.hover && assistDark.hover && assistLight.hover.backgroundColor === assistDark.hover.backgroundColor) moved.push('toolHeadHover.backgroundColor')
+  check('翻转：助手列的全部读数都随模式变化', moved.length === 0, moved.join(' | ') || '5 个读数全部不同')
+}
+
+// The cut control: dark attribute, no dark section — every reading falls back to
+// the light column, bubble included (the sheet is what fixes this, not a
+// component-local override).
+await page.evaluate(() => window.__removeSheet('pm-theme-vars'))
+await page.evaluate(() => window.__installVarsNoDark())
+await page.waitForTimeout(ASSIST_SETTLE)
+{
+  const vec = await page.evaluate(() => window.__assistVector())
+  const bad = []
+  for (const key of Object.keys(ASSIST_TABLE)) {
+    const row = vec[key]
+    if (!row) { bad.push(`${key}: 缺失`); continue }
+    for (const [prop, spec] of Object.entries(ASSIST_TABLE[key])) {
+      if (row[prop] !== expAssist[spec]) bad.push(`${key}.${prop}: ${row[prop]} ≠ 浅色 ${expAssist[spec]}`)
+    }
+  }
+  if (vec.bubbleVsGround !== null && vec.bubbleVsGround < BUBBLE_FLOOR) bad.push(`气泡 Δ = ${vec.bubbleVsGround}`)
+  check('删掉 dark 段：助手列角色落回浅色值且气泡仍可辨', bad.length === 0, bad.slice(0, 6).join(' | ') || '全部回落')
+}
+await page.evaluate(() => window.__removeSheet('pm-theme-vars'))
+await page.evaluate(() => window.__installVars())
+await page.evaluate(() => window.__setMode('light'))
+await page.waitForTimeout(ASSIST_SETTLE)
+{
+  const vec = await page.evaluate(() => window.__assistVector())
+  check(
+    '装回真表、回到浅色：助手列取值复原',
+    !!vec.bubble && vec.bubble.backgroundColor === expAssist['--pm-sunk'],
+    `期望 ${expAssist['--pm-sunk']} 实得 ${vec.bubble && vec.bubble.backgroundColor}`
+  )
 }
 
 /** Flat compare of two vectors; `keys` limits it to a subset of properties. */

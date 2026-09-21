@@ -126,6 +126,46 @@ describe('PALETTE', () => {
     }
   })
 
+  it('the user bubble clears every ground it can be painted on', () => {
+    // User report 2026-09-21: 「深色模式下，在各种助手中，用户输入的消息的气泡，看
+    // 不到背景色了」. The bubble is --pm-sunk and the two built-in assistants paint
+    // the chat transcript inside --pm-card, which in dark was the SAME #262626 —
+    // so the capsule vanished there and nowhere else (light's #f0f2f4 sits 13 off
+    // its #ffffff card). A relationship, not a hex: dark's values are free to
+    // move, but this one may not collapse onto a ground it is drawn on.
+    const delta = (a: string, b: string): number => {
+      const rgb = (hex: string): number[] => {
+        const m = /^#([0-9a-f]{6})$/.exec(hex)
+        if (!m) throw new Error(`not a hex colour: ${hex}`)
+        const n = parseInt(m[1], 16)
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+      }
+      const [x, y] = [rgb(a), rgb(b)]
+      return Math.round((Math.abs(x[0] - y[0]) + Math.abs(x[1] - y[1]) + Math.abs(x[2] - y[2])) / 3)
+    }
+    const mean = (hex: string): number => {
+      const n = parseInt(/^#([0-9a-f]{6})$/.exec(hex)![1], 16)
+      return (((n >> 16) & 255) + ((n >> 8) & 255) + (n & 255)) / 3
+    }
+    // The two grounds a transcript actually lands on: the assistant column's card
+    // (FormAssistColumn) and the chat/assistant-pane ground.
+    const FLOOR = 10
+    for (const mode of ['light', 'dark'] as const) {
+      const sunk = PALETTE[mode]['--pm-sunk']
+      for (const ground of ['--pm-card', '--pm-bg']) {
+        expect(delta(sunk, PALETTE[mode][ground]), `${mode} --pm-sunk on ${ground}`).toBeGreaterThanOrEqual(FLOOR)
+      }
+      // …and the direction is the inverted one the role documents: darker than its
+      // ground in light, lighter in dark. Same step, opposite sign.
+      const card = PALETTE[mode]['--pm-card']
+      expect(mode === 'dark' ? mean(sunk) > mean(card) : mean(sunk) < mean(card), `${mode} --pm-sunk direction`).toBe(true)
+    }
+    // The tool block's header hover is the same story on the same card — it is
+    // --pm-fill-hover's only consumer, and it must read as a change of fill.
+    expect(delta(PALETTE.dark['--pm-fill-hover'], PALETTE.dark['--pm-card'])).toBeGreaterThanOrEqual(6)
+    expect(delta(PALETTE.light['--pm-fill-hover'], PALETTE.light['--pm-card'])).toBeGreaterThanOrEqual(6)
+  })
+
   it('dark flips the alpha overlays to white ink, not black', () => {
     // Black alphas are invisible on a dark ground — the whole point of the
     // hover/veil variables.

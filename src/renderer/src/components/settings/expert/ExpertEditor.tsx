@@ -436,12 +436,12 @@ function ListRow({
         borderRadius: 8,
         cursor: 'pointer',
         fontSize: 13,
-        background: active ? 'rgba(0,0,0,0.06)' : hover ? 'rgba(0,0,0,0.03)' : 'transparent',
-        color: muted ? '#bbb' : '#333',
+        background: active ? 'var(--pm-hover)' : hover ? 'var(--pm-hover-faint)' : 'transparent',
+        color: muted ? 'var(--pm-text-faint)' : 'var(--pm-text-strong)',
         fontWeight: active ? 600 : 400,
       }}
     >
-      <span style={{ width: 16, textAlign: 'center', flexShrink: 0, color: muted ? '#ccc' : '#888' }}>
+      <span style={{ width: 16, textAlign: 'center', flexShrink: 0, color: muted ? 'var(--pm-text-disabled)' : 'var(--pm-text-quiet)' }}>
         <UserOutlined />
       </span>
       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
