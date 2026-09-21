@@ -23,12 +23,17 @@ import { openInPreviewPane } from '../../stores/previewPaneStore'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeImportResult } from '../../../../shared/types/knowledge'
 import { DEFAULT_BASE_ID } from '../../../../shared/types/knowledge'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
+import { compileQueue, enqueueCompileForFile } from './compile-queue'
 
 // ── Module-level dual queue engine ──
 //
 // Import and compile run on independent queues (not serialized). Module-level
 // state survives mount/unmount so running async loops can continue and notify
 // the remounted component via registered callbacks.
+//
+// The compile queue itself lives in ./compile-queue: two of its producers are
+// not the panel (App's startup compile, a chat card's 编译), so importing them
+// from here would drag this file's whole subtree into the first-paint chunk.
 
 // ── Import queue (supports both file paths and URLs) ──
 type ImportItem = { type: 'file'; path: string; baseId?: string } | { type: 'url'; url: string; baseId?: string }
@@ -37,42 +42,10 @@ let _importRunning = false
 let _importCurrent = 0
 let _importTotal = 0
 
-// ── Compile queue ──
-const _pendingCompileIds: string[] = []
-let _compileRunning = false
-let _compilingFileId: string | null = null
-let _startupCompileEnqueued = false
-let _wakeCompile: (() => void) | null = null
-
-/** All producers share the existing queue; preserve work until a panel mounts. */
-export function enqueueCompileForFile(fileId: string): void {
-  if (!fileId.trim()) return
-  if (_compilingFileId !== fileId && !_pendingCompileIds.includes(fileId)) {
-    _pendingCompileIds.push(fileId)
-    _onMarkQueued?.(fileId)
-  }
-  _onRefresh?.()
-  _wakeCompile?.()
-}
-
-// Enqueue uncompiled raw files on startup. A mounted panel wakes immediately;
-// otherwise the queue is retained until the panel registers its processor.
-export async function enqueueStartupCompile(): Promise<void> {
-  if (_startupCompileEnqueued) return
-  _startupCompileEnqueued = true
-  try {
-    const rawFiles = await window.electronAPI.knowledgeListFiles('raw') as Array<{ id: string }>
-    if (rawFiles.length === 0) return
-    for (const f of rawFiles) enqueueCompileForFile(f.id)
-  } catch { /* ignore */ }
-}
-
 // Callbacks — registered by the component on mount, cleared on unmount.
 let _onProgress: ((current: number, total: number) => void) | null = null
-let _onFileStatusChange: ((fileId: string, status: 'compiling' | 'compiled' | 'raw') => void) | null = null
 let _onRefresh: (() => void) | null = null
 let _onResetProgress: (() => void) | null = null
-let _onMarkQueued: ((fileId: string) => void) | null = null
 let _onStateChange: ((state: KnowledgePanelState) => void) | null = null
 
 const { Text } = Typography
@@ -316,7 +289,10 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
         })
       } catch { /* ignore */ }
     }
-    _onFileStatusChange = (fileId, status) => {
+    // The compile queue's three notifications. They carry React state, so they
+    // live for exactly as long as this mount does — the queue itself keeps its
+    // `pending` across unmounts and picks up where it left off.
+    compileQueue.sinks.onFileStatusChange = (fileId, status) => {
       if (status === 'compiling') {
         setCompilingFileIds(prev => new Set(prev).add(fileId))
       } else {
@@ -325,11 +301,13 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
         setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status } : f))
       }
     }
+    compileQueue.sinks.onMarkQueued = (fileId) => {
+      setQueuedFileIds(prev => new Set(prev).add(fileId))
+    }
+    // The same refresh the import loop calls — one list, one stats push.
+    compileQueue.sinks.onRefresh = _onRefresh
     _onResetProgress = () => {
       setImportProgress(null)
-    }
-    _onMarkQueued = (fileId) => {
-      setQueuedFileIds(prev => new Set(prev).add(fileId))
     }
 
     // Sync progress via _onProgress so parent gets correct values immediately
@@ -338,15 +316,15 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     }
 
     // Restore the currently-compiling file's loading state
-    if (_compileRunning && _compilingFileId) {
-      setCompilingFileIds(new Set([_compilingFileId]))
+    if (compileQueue.running && compileQueue.compilingFileId) {
+      setCompilingFileIds(new Set([compileQueue.compilingFileId]))
     }
 
     // On remount, repopulate queuedFileIds from module-level queues and
     // start the compile queue if there are pending items (e.g. startup compile).
-    if (_pendingCompileIds.length > 0) {
-      setQueuedFileIds(new Set(_pendingCompileIds))
-      if (!_compileRunning) {
+    if (compileQueue.pending.length > 0) {
+      setQueuedFileIds(new Set(compileQueue.pending))
+      if (!compileQueue.running) {
         runCompileQueueRef.current()
       }
     }
@@ -362,11 +340,12 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
 
     return () => {
       _onProgress = null
-      _onFileStatusChange = null
       _onRefresh = null
       _onResetProgress = null
-      _onMarkQueued = null
       _onStateChange = null
+      compileQueue.sinks.onFileStatusChange = null
+      compileQueue.sinks.onMarkQueued = null
+      compileQueue.sinks.onRefresh = null
     }
   }, [])
 
@@ -680,15 +659,15 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
 
   /** Process the compile queue — independent of import state. */
   const runCompileQueue = useCallback(async () => {
-    if (_compileRunning || !knowledgeManager.canCompile) return
-    if (_pendingCompileIds.length === 0) return
+    if (compileQueue.running || !knowledgeManager.canCompile) return
+    if (compileQueue.pending.length === 0) return
 
-    _compileRunning = true
+    compileQueue.running = true
 
-    while (_pendingCompileIds.length > 0) {
-      const fileId = _pendingCompileIds.shift()!
-      _compilingFileId = fileId
-      _onFileStatusChange?.(fileId, 'compiling')
+    while (compileQueue.pending.length > 0) {
+      const fileId = compileQueue.pending.shift()!
+      compileQueue.compilingFileId = fileId
+      compileQueue.sinks.onFileStatusChange?.(fileId, 'compiling')
       let lastError: unknown
       let compiled = false
       for (let attempt = 0; attempt <= 2; attempt++) {
@@ -697,7 +676,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
           const result = await knowledgeManager.compileFile(fileId)
           if (result.ok && result.written > 0) {
             compiled = true
-            _onFileStatusChange?.(fileId, 'compiled')
+            compileQueue.sinks.onFileStatusChange?.(fileId, 'compiled')
             lastError = undefined
             break
           }
@@ -712,15 +691,15 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       }
       if (lastError) console.error('[KnowledgePanel] Compile failed:', fileId, lastError)
       // Failure/no-key is raw and retryable, not an eternal loading spinner.
-      if (!compiled) _onFileStatusChange?.(fileId, 'raw')
-      _compilingFileId = null
-      _onRefresh?.()
+      if (!compiled) compileQueue.sinks.onFileStatusChange?.(fileId, 'raw')
+      compileQueue.compilingFileId = null
+      compileQueue.sinks.onRefresh?.()
     }
 
-    _compileRunning = false
+    compileQueue.running = false
 
     // If new items were added during processing, pick them up
-    if (_pendingCompileIds.length > 0) {
+    if (compileQueue.pending.length > 0) {
       runCompileQueueRef.current()
     }
   }, [knowledgeManager])
@@ -735,11 +714,11 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     runImportQueueRef.current = runImportQueue
     // eslint-disable-next-line react-hooks/immutability
     runCompileQueueRef.current = runCompileQueue
-    _wakeCompile = () => { void runCompileQueueRef.current() }
+    compileQueue.wake = () => { void runCompileQueueRef.current() }
     // This runs after the refs are wired; the earlier mount effect sees the
     // initial no-op ref. Also retry retained raw work when config becomes usable.
-    if (knowledgeManager.canCompile) _wakeCompile()
-    return () => { _wakeCompile = null }
+    if (knowledgeManager.canCompile) compileQueue.wake()
+    return () => { compileQueue.wake = null }
   })
 
   /** Reset all knowledge: show confirmation, then clear everything */
@@ -760,12 +739,12 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
           setImportProgress(null)
           // Reset module-level state
           _pendingImportItems.length = 0
-          _pendingCompileIds.length = 0
+          compileQueue.pending.length = 0
           _importRunning = false
           _importCurrent = 0
           _importTotal = 0
-          _compileRunning = false
-          _compilingFileId = null
+          compileQueue.running = false
+          compileQueue.compilingFileId = null
           notify.success(`已清空 ${deletedRaw} 个源文件、${deletedWiki} 个编译文件`)
         } catch (err) {
           console.error('[KnowledgePanel] Reset failed:', err)

@@ -27,7 +27,7 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -180,6 +180,12 @@ async function run(phase, home, entry, extraPlugin) {
     ],
     logLevel: 'warning',
   })
+  // Resolve bare specifiers the way the app's own bundle does — node_modules
+  // next to the bundle. NODE_PATH below only covers require(); a deferred
+  // engine loads through import(), which walks parent directories and ignores
+  // NODE_PATH, so the temp dir needs a real node_modules to walk into.
+  const link = join(work, 'node_modules')
+  if (!existsSync(link)) symlinkSync(join(REPO_ROOT, 'node_modules'), link, 'dir')
   const electronBin = fromRepo('electron')
   if (typeof electronBin !== 'string' || !existsSync(electronBin)) {
     throw new Error(`could not resolve the Electron binary (got ${JSON.stringify(electronBin)}) — run npm install`)
@@ -242,7 +248,14 @@ async function launcher() {
   if (gate.status !== 0) { failed++; console.log(`  ✗ phase gate exited with ${gate.status}`) }
 
   if (KEEP) console.log(`\nkept: ${home} ${gateHome}`)
-  else { rmSync(home, { recursive: true, force: true }); rmSync(gateHome, { recursive: true, force: true }) }
+  else {
+    for (const dir of [home, gateHome]) {
+      // Unlink the node_modules link itself before the recursive sweep: rmSync
+      // must never have the repo's node_modules in its path.
+      rmSync(join(dir, 'node_modules'), { force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
 
   console.log(`\n${total - failed}/${total} checks passed${failed === 0 ? ' — ALL GREEN' : ''}`)
   process.exit(failed === 0 ? 0 : 1)

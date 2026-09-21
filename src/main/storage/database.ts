@@ -11,9 +11,24 @@ let db: Database.Database
 function openDb(): Database.Database {
   console.log(`[DB] Opening database at ${DB_PATH}`)
   const conn = new Database(DB_PATH)
+  // journal_mode persists in the file; every setting below it is per-connection,
+  // which is why this function is the single choke point (reinitializeDb too).
   conn.pragma('journal_mode = WAL')
+  // WAL + FULL fsyncs on every commit, and a message save is one commit — the
+  // agent streams them by the dozen. NORMAL keeps WAL durability (a crash can
+  // lose the last commits, not corrupt the file) at a fraction of the writes.
+  conn.pragma('synchronous = NORMAL')
   conn.pragma('foreign_keys = ON')
   conn.pragma('busy_timeout = 5000')
+  // Page cache, negative = KiB. Default is 2 MiB — a conversation-list scan
+  // plus an FTS query already blows through it.
+  conn.pragma('cache_size = -32768')
+  // Read-only mmap: turns the hot scans (listConversations, FTS) into page-table
+  // lookups instead of read() syscalls.
+  conn.pragma('mmap_size = 268435456')
+  // Otherwise sorting/grouping spills to a temp file — the stats aggregates sort
+  // by an expression, so they always spill.
+  conn.pragma('temp_store = MEMORY')
   console.log('[DB] Database opened successfully')
   return conn
 }

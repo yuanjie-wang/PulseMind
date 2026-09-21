@@ -7,7 +7,7 @@
 // dirty draft alive across tab switches (the component remounts, the draft
 // lives in the store).
 
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { Suspense, useCallback, useEffect, useState } from 'react'
 import { Button, message } from 'antd'
 import { RefreshCw, AlertTriangle } from 'lucide-react'
 import { detectFileKind, isPreviewable, extensionOf, type FileKind } from '../../../../shared/preview/file-kind'
@@ -17,7 +17,6 @@ import { CsvPreview } from './CsvPreview'
 import { HtmlPreview } from './HtmlPreview'
 import { FileEditor } from './FileEditor'
 import { ElementEditPanel } from './ElementEditPanel'
-import { DocxPreview } from './DocxPreview'
 import { XlsxPreview } from './XlsxPreview'
 import { PdfPreview } from './PdfPreview'
 import { PptxPreview } from './PptxPreview'
@@ -34,6 +33,13 @@ import {
   isEditableSize,
   MAX_EDITABLE_BYTES,
 } from '../../stores/preview-edit'
+
+// The one preview whose engine is a STATIC import: DocxPreview pulls
+// docx-preview at module scope, while the other three `await import()` theirs
+// (pdfjs-dist / exceljs / fflate) inside the load effect. PreviewPane is
+// mounted by the always-open workbench shell, so without this the engine rides
+// the entry chunk of a launch that may never open a .docx.
+const LazyDocxPreview = React.lazy(async () => ({ default: (await import('./DocxPreview')).DocxPreview }))
 
 type LoadState =
   | { status: 'loading' }
@@ -229,7 +235,13 @@ export function PreviewContent({ path, reloadTick }: { path: string; reloadTick:
     // its own OOXML model (PLAN-pptx-preview); the remaining office formats
     // (doc / xls / ppt) keep the markitdown → raw-text path.
     const ext = extensionOf(path)
-    if (ext === 'docx') return <DocxPreview path={path} kind={kind} reloadTick={reloadTick} />
+    if (ext === 'docx') {
+      return (
+        <Suspense fallback={null}>
+          <LazyDocxPreview path={path} kind={kind} reloadTick={reloadTick} />
+        </Suspense>
+      )
+    }
     if (ext === 'xlsx') return <XlsxPreview path={path} kind={kind} reloadTick={reloadTick} />
     if (ext === 'pdf') return <PdfPreview path={path} kind={kind} reloadTick={reloadTick} />
     if (ext === 'pptx') return <PptxPreview path={path} kind={kind} reloadTick={reloadTick} />

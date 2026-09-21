@@ -33,7 +33,7 @@ import { LocalImage } from './LocalImage'
 import { ThinkingBlockView } from './ThinkingBlockView'
 import { FileRefChip } from './FileRefChip'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
-import { enqueueCompileForFile } from '../knowledge/KnowledgePanel'
+import { enqueueCompileForFile } from '../knowledge/compile-queue'
 import { createKnowledgeSaveAction } from './knowledge-save'
 import { useMarkdownThemeClass } from '../../theme/mode'
 

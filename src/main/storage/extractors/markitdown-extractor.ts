@@ -1,10 +1,17 @@
 import { basename } from 'node:path'
-import { MarkItDown } from 'markitdown-js'
+import type { MarkItDown } from 'markitdown-js'
 import type { ExtractionResult } from './index'
 
 let _md: MarkItDown | null = null
-function getConverter(): MarkItDown {
-  if (!_md) _md = new MarkItDown()
+// Deferred: markitdown-js is ~390ms of require() and this module sits on the
+// launch chain (main → ipc → file-ops → read-cache → here), so a static import
+// bills every start — including the ones that never open an office file. The
+// FIRST extraction pays it instead.
+async function getConverter(): Promise<MarkItDown> {
+  if (!_md) {
+    const { MarkItDown } = await import('markitdown-js')
+    _md = new MarkItDown()
+  }
   return _md
 }
 
@@ -19,7 +26,7 @@ function frontmatter(title: string, filePath: string, extra: Record<string, stri
 
 export async function extractWithMarkitdown(filePath: string, includeFrontmatter = true): Promise<ExtractionResult | null> {
   const title = basename(filePath).replace(/\.[^.]+$/, '')
-  const md = getConverter()
+  const md = await getConverter()
 
   const result = await md.convert(filePath)
   if (!result || !result.textContent) return null

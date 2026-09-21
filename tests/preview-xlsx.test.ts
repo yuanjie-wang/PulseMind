@@ -240,7 +240,14 @@ describe('wiring', () => {
   it('PreviewContent routes .xlsx to XlsxPreview (doc/xls/ppt keep markitdown; pdf has its own renderer)', () => {
     expect(previewContent).toContain("import { XlsxPreview } from './XlsxPreview'")
     expect(previewContent).toContain("if (ext === 'xlsx') return <XlsxPreview")
-    expect(previewContent).toContain("if (ext === 'docx') return <DocxPreview")
+    // DocxPreview is reached through React.lazy — the engine (docx-preview) is a
+    // static import in that module and PreviewPane sits in the always-mounted
+    // shell, so a static import here puts it in the entry chunk. Asserted as
+    // lazy (both halves) so the revert cannot pass.
+    expect(previewContent).toContain("(await import('./DocxPreview')).DocxPreview")
+    expect(previewContent).toContain("if (ext === 'docx') {")
+    expect(previewContent).toContain('<LazyDocxPreview path={path}')
+    expect(previewContent).not.toContain("import { DocxPreview } from './DocxPreview'")
     expect(previewContent).toContain("if (ext === 'pdf') return <PdfPreview")
     expect(previewContent).toContain('OfficePreview path={path}')
   })

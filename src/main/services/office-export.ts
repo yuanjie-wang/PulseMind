@@ -9,16 +9,15 @@
 import { readFile, writeFile, rename, readdir, mkdir } from 'node:fs'
 import { basename, dirname, join, extname } from 'node:path'
 import { promisify } from 'node:util'
-import AdmZip from 'adm-zip'
-import ExcelJS from 'exceljs'
 import { guardFsTarget } from '../sandbox/guard'
 import { withPathLock } from '../sandbox/write-lock'
 import { resolveWritablePath } from './file-ops'
-import { markdownToDocxBuffer } from '../office-export/md-to-docx'
-import { markdownToPptxBuffer } from '../office-export/md-to-pptx'
-import { docxToPdfBuffer } from '../office-export/docx-to-pdf'
-import { markdownToSheets, sheetsToXlsxBuffer, type SheetModel } from '../office-export/md-tables'
-import { csvFromSheet, csvToSheet } from '../office-export/csv-io'
+import type { SheetModel } from '../office-export/md-tables'
+
+// Every generator and read-back parser is loaded on demand: this module is
+// reached at launch (ipc → file-ops → here), while the engines behind it are the
+// heavy requires (exceljs ~187ms of the lot) and only a tool call needs them.
+// Loading inside each branch means one export pays for its own format, not five.
 
 const pReadFile = promisify(readFile)
 const pWriteFile = promisify(writeFile)
@@ -133,22 +132,30 @@ async function buildBuffer(
     // pdf is a CONVERSION, not a native layout: an existing docx, or markdown
     // through the docx generator first. Everything the docx format degrades
     // (images, math, footnotes) degrades identically on this path.
+    const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
+    const { docxToPdfBuffer } = await import('../office-export/docx-to-pdf')
     const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? ''))
     return docxToPdfBuffer(docx)
   }
   if (format === 'docx') {
+    const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
     return markdownToDocxBuffer(source.md ?? source.csv ?? '')
   }
   if (format === 'pptx') {
     if (source.md === undefined) throw new Error('pptx 需要 markdown 内容；CSV 数据请导出 xlsx 或 csv')
+    const { markdownToPptxBuffer } = await import('../office-export/md-to-pptx')
     return markdownToPptxBuffer(source.md)
   }
-  const sheets = source.csv !== undefined ? [await csvToSheet(source.csv)] : markdownToSheets(source.md ?? '')
+  const { markdownToSheets, sheetsToXlsxBuffer } = await import('../office-export/md-tables')
+  const sheets =
+    source.csv !== undefined
+      ? [await (await import('../office-export/csv-io')).csvToSheet(source.csv)]
+      : markdownToSheets(source.md ?? '')
   if (format === 'xlsx') return sheetsToXlsxBuffer(sheets)
   // csv: CSV carries exactly one grid — the first sheet exports.
   const first: SheetModel | undefined = sheets[0]
   if (!first || first.rows.length === 0) throw new Error('没有可导出的表格（markdown 里需要至少一个表格，或给 CSV 数据）')
-  return Buffer.from(csvFromSheet(first), 'utf8')
+  return Buffer.from((await import('../office-export/csv-io')).csvFromSheet(first), 'utf8')
 }
 
 /** The generation-side counterpart of editing's structural re-tokenize: the
@@ -157,6 +164,7 @@ async function readBackGate(format: ExportFormat, buffer: Buffer): Promise<{ ok:
   if (buffer.length === 0) return { ok: false, reason: '产物为空' }
   if (format === 'docx') {
     try {
+      const AdmZip = (await import('adm-zip')).default
       const xml = new AdmZip(buffer).readAsText('word/document.xml')
       if (!xml || xml.length < 60) return { ok: false, reason: 'word/document.xml 缺失或为空' }
       return { ok: true }
@@ -166,6 +174,7 @@ async function readBackGate(format: ExportFormat, buffer: Buffer): Promise<{ ok:
   }
   if (format === 'xlsx') {
     try {
+      const ExcelJS = (await import('exceljs')).default
       const wb = new ExcelJS.Workbook()
       await wb.xlsx.load(buffer as unknown as ArrayBuffer)
       if (wb.worksheets.length === 0) return { ok: false, reason: '工作簿没有任何 sheet' }
@@ -176,6 +185,7 @@ async function readBackGate(format: ExportFormat, buffer: Buffer): Promise<{ ok:
   }
   if (format === 'pptx') {
     try {
+      const AdmZip = (await import('adm-zip')).default
       const xml = new AdmZip(buffer).readAsText('ppt/presentation.xml')
       if (!xml || xml.length < 60) return { ok: false, reason: 'ppt/presentation.xml 缺失或为空' }
       return { ok: true }

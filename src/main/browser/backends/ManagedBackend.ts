@@ -6,11 +6,14 @@
 //   3. system Chrome channel → 4. system Edge channel
 // Headless by default (screenshots + snapshots work headless); the settings
 // toggle arrives with M4. One BrowserContext per tab keeps storage isolated.
+//
+// `chromium` is loaded on demand — a `start()` or a probe launch is the only
+// thing that needs it. The types stay static (they cost nothing at runtime).
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
-import { chromium, type Browser, type BrowserContext } from 'playwright-core'
+import type { Browser, BrowserContext } from 'playwright-core'
 import { settingsStore } from '../../storage/settings-store'
 import type { BackendAdapter, BackendTab } from './BackendAdapter'
 import type { BackendDescriptor } from '../../../shared/browser-client/protocol'
@@ -48,6 +51,7 @@ export class ManagedBackend implements BackendAdapter {
       /* default */
     }
     const launch = await resolveLaunchOptions(headless)
+    const { chromium } = await import('playwright-core')
     this.browser = await chromium.launch(launch)
   }
 
@@ -110,6 +114,7 @@ export async function resolveLaunchOptions(headless = true): Promise<LaunchOptio
   candidates.push({ channel: 'chrome', headless })
   candidates.push({ channel: 'msedge', headless })
 
+  const { chromium } = await import('playwright-core')
   for (const options of candidates) {
     try {
       const probe = await chromium.launch(options)

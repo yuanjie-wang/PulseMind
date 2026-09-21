@@ -35,7 +35,7 @@ import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
 import { ContextCompactor } from './engine/context-compactor'
 import type { EngineCore } from './engine/engine-core'
-import { stripImageData } from './image-utils'
+import { stripToolResultImages } from './strip-tool-results'
 
 // ── Tool-result guardrail ─────────────────────────────────────────────
 // Every tool result funnels through addToolResult; executors do NOT truncate
@@ -796,26 +796,10 @@ export class AgentEngine implements EngineCore {
     // ── Background memory extraction (fire-and-forget, doesn't block request) ──
     scheduleMemoryExtraction(this)
 
-    // Strip image data from tool_results before sending to LLM (keep originals for UI)
-    const stripToolResultImages = (msg: AgentMessage): AgentMessage => {
-      if (msg.role !== 'user') return msg
-      const blocks = msg.contentBlocks
-      if (!blocks || !blocks.some(b => b.type === 'tool_result')) return msg
-      const newBlocks = blocks.map(b => {
-        if (b.type !== 'tool_result') return b
-        const tb = b as ToolResultBlock
-        let content = tb.content || ''
-        try {
-          const parsed = JSON.parse(content)
-          content = JSON.stringify(stripImageData(parsed))
-        } catch {
-          content = stripImageData(content) as string
-        }
-        return { ...tb, content }
-      })
-      return { ...msg, contentBlocks: newBlocks }
-    }
-
+    // Strip image data from tool_results before sending to LLM (keep originals
+    // for UI). The transform itself lives in `./strip-tool-results` — extracted
+    // verbatim so this per-iteration O(tool_result bytes) cost is measurable on
+    // the real function (scripts/probe-loop-iteration-perf.mjs).
     const apiMessages = this.messages.map(stripToolResultImages)
 
     // ── Compaction pipeline (operates on API copy; this.messages untouched) ──

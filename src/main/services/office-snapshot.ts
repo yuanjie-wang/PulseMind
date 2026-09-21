@@ -8,7 +8,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { basename, join, extname } from 'node:path'
-import { MarkItDown } from 'markitdown-js'
+import type { MarkItDown } from 'markitdown-js'
 
 const VERSIONS_DIR = '.versions'
 const MAX_VERSIONS_PER_NAME = 5
@@ -57,8 +57,13 @@ export async function snapshotToWorkspace(
 }
 
 let _converter: MarkItDown | null = null
-function getConverter(): MarkItDown {
-  if (!_converter) _converter = new MarkItDown()
+// Deferred like the extractor's converter (same ~390ms require, same launch
+// chain: xlsx-ops / docx-ops / pptx-ops import this module at load).
+async function getConverter(): Promise<MarkItDown> {
+  if (!_converter) {
+    const { MarkItDown } = await import('markitdown-js')
+    _converter = new MarkItDown()
+  }
   return _converter
 }
 
@@ -72,7 +77,7 @@ export async function generateOfficeDiff(
   afterPath: string
 ): Promise<string | undefined> {
   try {
-    const md = getConverter()
+    const md = await getConverter()
     const [beforeResult, afterResult] = await Promise.all([
       md.convert(beforePath),
       md.convert(afterPath),

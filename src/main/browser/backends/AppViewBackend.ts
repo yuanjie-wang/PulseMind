@@ -15,8 +15,8 @@
 import { prefixedId } from '../../utils/id'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, session, WebContentsView } from 'electron'
-import { chromium, type Browser, type BrowserContext, type Page, type WebContents } from 'playwright-core'
+import { app, session, WebContentsView, type WebContents } from 'electron'
+import type { Browser, BrowserContext, Page } from 'playwright-core'
 import { appViewDock } from '../app-view-dock'
 import { readDevToolsPort } from '../cdp-port'
 import { WORKSPACE_DIR } from '../../storage'
@@ -63,6 +63,9 @@ export class AppViewBackend implements BackendAdapter {
     if (this.browser?.isConnected?.()) return
     const port = readDevToolsPort()
     if (!port) throw new Error('应用内嵌浏览器后端不可用：调试端口未就绪')
+    // Same deferral as ManagedBackend: playwright-core is ~170ms of require()
+    // and BrowserService imports this module at launch.
+    const { chromium } = await import('playwright-core')
     this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
   }
 
