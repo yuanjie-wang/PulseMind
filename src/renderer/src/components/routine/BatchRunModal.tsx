@@ -73,7 +73,7 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
       confirmLoading={starting}
       width={520}
       cancelText="取消"
-      okText={preview ? `开始（${preview.totalRows} 个会话）` : '开始'}
+      okText="开始"
       okButtonProps={{ disabled: !preview || blocked, danger: true }}
       focusTriggerAfterClose={false}
     >
@@ -89,7 +89,7 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
         {preview && analysis && (
           <>
             <div style={{ fontSize: 12, color: '#999' }}>
-              每一行数据都会用独立会话执行一次任务；共 {preview.totalRows} 行，预览前 {preview.previewRows.length} 行，并发 {routine?.batch?.concurrency ?? DEFAULT_BATCH_CONCURRENCY}。
+              CSV 的每一行都会用独立会话执行一次任务；并发 {routine?.batch?.concurrency ?? DEFAULT_BATCH_CONCURRENCY}。
             </div>
             <div style={{ border: '1px solid var(--pm-border-hairline)', borderRadius: 8, overflow: 'hidden' }} data-batch-run-preview>
               <div style={{ display: 'flex', background: 'var(--pm-fill)' }}>
@@ -115,6 +115,7 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
                 </div>
               ))}
             </div>
+            <div style={{ fontSize: 12, color: '#999' }}>共 {preview.totalRows} 行，预览前 {preview.previewRows.length} 行。</div>
             {analysis.missingRequiredHeaders.length > 0 && (
               <div style={{ fontSize: 12, color: '#cf1322' }}>缺少必填参数的列：{analysis.missingRequiredHeaders.join('、')}</div>
             )}
@@ -124,6 +125,15 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
             {preview.overRowLimit && (
               <div style={{ fontSize: 12, color: '#cf1322' }}>共 {preview.totalRows} 行，超过单批 {MAX_BATCH_ROWS} 行上限，请拆分文件</div>
             )}
+            {/* The cost note is the last line of the body — directly above the
+                footer's 开始, where the user signs it. The count deliberately
+                does NOT ride the ok button's label: a paired footer must stay
+                a matched pair (取消/开始 both 64px), and a parenthetical
+                sentence stretched the primary to 142px against the 64px
+                cancel — the size mismatch this replaced. */}
+            <div style={{ fontSize: 12, color: 'var(--pm-text-muted)', fontWeight: 500 }} data-batch-cost-note>
+              将创建 {preview.totalRows} 个独立会话
+            </div>
           </>
         )}
       </div>

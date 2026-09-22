@@ -228,6 +228,30 @@ window.__mountEditor = ({ templateId, routineId, locale = 'zh' } = {}) => {
   return true
 }
 
+/** Mount the run workspace (the three-pane RoutineWorkspace) through the
+ *  production entry: RoutineCenter with a runHistoryOf deep link. Wrapped in
+ *  SettingsProvider because the workspace reads the retention policy; with
+ *  an empty runs list the right pane stays hint-only (no hosted session). */
+window.__mountWorkspace = ({ routineId, locale = 'zh' } = {}) => {
+  window.__locale = locale
+  if (root) root.unmount()
+  root = createRoot(document.getElementById('root'))
+  root.render(
+    <ConfigProvider>
+      <AntdApp>
+        <SettingsProvider>
+          <TranslationProvider initialLocale={locale}>
+            <div id="view" style={{ height: '100vh' }}>
+              <RoutineCenter runHistoryOf={routineId} />
+            </div>
+          </TranslationProvider>
+        </SettingsProvider>
+      </AntdApp>
+    </ConfigProvider>
+  )
+  return true
+}
+
 /** What the editor's form holds — the values a prefilled template must have
  *  written (read from the DOM properties, not attributes: React sets those). */
 window.__form = () => ({
@@ -884,6 +908,109 @@ await page.evaluate(() => {
   window.__activeProfileId = ''
   window.__routines = null
 })
+
+// ── 13 · the run workspace: run/edit live IN each row, not in the list header ──
+// The header's 立即运行/批量运行/编辑 acted on "the currently selected task",
+// which read as acting on the whole list (user ruling 2026-09-22). They ride
+// each row now — hover-revealed exactly like the run rows' delete — so the
+// target is the row under the pointer, and running from a row also selects it
+// (the middle pane must show the history the fresh run lands in).
+await page.evaluate(() => {
+  window.__routines = [
+    { id: 'r_ws_batch', name: '工作台日报', description: '', prompt: 'p', enabled: true,
+      params: [], batch: { csvPath: '/tmp/rows.csv', concurrency: 2 },
+      createdAt: '2026-09-20T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z' },
+    { id: 'r_ws_week', name: '工作台周报', description: '', prompt: 'p', enabled: true, params: [],
+      createdAt: '2026-09-20T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z' },
+    { id: 'r_ws_manual', name: '工作台手动', description: '', prompt: 'p', enabled: false,
+      params: [{ key: 'notes', label: '记录', default: '' }],
+      createdAt: '2026-09-20T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z' },
+  ]
+  window.__runs = []
+  window.__calls = []
+})
+await page.evaluate(() => window.__mountWorkspace({ routineId: 'r_ws_week' }))
+await page.waitForSelector('.pane-row')
+await page.waitForTimeout(200)
+
+/** The left task column read from the live DOM: the header row, and each task
+ *  row's icon buttons (antd icons carry aria-label) with their hover opacity. */
+const wsState = () => page.evaluate(() => {
+  const row = [...document.querySelectorAll('.pane-row')].find((r) => r.textContent.includes('工作台'))
+  const col = row?.parentElement?.parentElement
+  const header = col?.firstElementChild
+  return {
+    headerText: header?.textContent ?? '',
+    headerIcons: header ? [...header.querySelectorAll('[aria-label]')].map((i) => i.getAttribute('aria-label')) : [],
+    headerButtons: header ? header.querySelectorAll('button').length : -1,
+    rows: col ? [...col.querySelectorAll('.pane-row')].map((r) => ({
+      text: r.textContent,
+      active: r.classList.contains('pane-row--active'),
+      icons: [...r.querySelectorAll('button [aria-label]')].map((i) => i.getAttribute('aria-label')),
+      opacity: getComputedStyle(r.querySelector('button') ?? r).opacity,
+    })) : [],
+  }
+})
+
+const ws = await wsState()
+check('workspace: three task rows render', ws.rows.length === 3 && ws.rows.every((r) => r.text.includes('工作台')), JSON.stringify(ws.rows.map((r) => r.text)))
+check('workspace: the list header carries only the back button', ws.headerButtons === 1 && ws.headerText.includes('日常任务') && ws.headerIcons.join(',') === 'arrow-left', `buttons=${ws.headerButtons}, icons=${ws.headerIcons.join(',')}`)
+check('workspace: every row carries its own run + edit actions', ws.rows.every((r) => r.icons.includes('play-circle') && r.icons.includes('edit')), JSON.stringify(ws.rows.map((r) => r.icons)))
+check('workspace: only the batch task row also carries 批量运行', ws.rows[0].icons.includes('database') && ws.rows.slice(1).every((r) => !r.icons.includes('database')), JSON.stringify(ws.rows.map((r) => r.icons)))
+check('workspace: row actions stay hidden until hover', ws.rows.every((r) => r.opacity === '0'), JSON.stringify(ws.rows.map((r) => r.opacity)))
+
+// A real mouse hover reveals them; leaving hides them again.
+const rowWeek = page.locator('.pane-row', { hasText: '工作台周报' })
+await rowWeek.hover()
+await page.waitForTimeout(200)
+const hoveredOpacity = await rowWeek.evaluate((r) => getComputedStyle(r.querySelector('button')).opacity)
+check('workspace: hover reveals the row actions', hoveredOpacity === '1', String(hoveredOpacity))
+const rowBatch = page.locator('.pane-row', { hasText: '工作台日报' })
+await rowBatch.hover()
+await page.waitForTimeout(200)
+check('workspace: the reveal follows the pointer to another row', (await wsState()).rows.find((r) => r.text.includes('工作台周报'))?.opacity === '0')
+await page.screenshot({ path: join(SHOTS, 'workspace-rows.png') })
+
+// The row body still selects without running anything.
+await rowBatch.click({ position: { x: 12, y: 10 } })
+await page.waitForTimeout(150)
+let after = await wsState()
+check('workspace: the row body selects its task', after.rows.find((r) => r.text.includes('工作台日报'))?.active === true && !after.rows.find((r) => r.text.includes('工作台周报'))?.active, JSON.stringify(after.rows.map((r) => ({ t: r.text.slice(0, 6), a: r.active }))))
+check('workspace: selecting ran nothing', (await page.evaluate(() => window.__calls.filter((c) => c.method === 'routineRun'))).length === 0)
+
+// The row's run button runs THAT row (the selected task beforehand was 日报).
+await rowWeek.hover()
+await rowWeek.locator('button').first().click()
+await page.waitForTimeout(200)
+const runCalls = await page.evaluate(() => window.__calls.filter((c) => c.method === 'routineRun'))
+after = await wsState()
+check('workspace: a row run button runs THAT row', runCalls.length === 1 && runCalls[0].args[0] === 'r_ws_week', JSON.stringify(runCalls.map((c) => c.args)))
+check('workspace: running from a row also selects it', after.rows.find((r) => r.text.includes('工作台周报'))?.active === true, JSON.stringify(after.rows.map((r) => ({ t: r.text.slice(0, 6), a: r.active }))))
+
+// The batch row's 批量运行 opens the batch dialog for that row. (.ant-modal-root
+// is permanently zero-box — mask and wrap are position:fixed — so visibility
+// is read on the wrap, the full-viewport layer that actually carries a box.)
+await rowBatch.hover()
+await rowBatch.locator('button').nth(1).click()
+await page.waitForSelector('.ant-modal-wrap', { state: 'visible' })
+const batchModalText = await page.evaluate(() => document.querySelector('.ant-modal')?.textContent ?? '')
+check('workspace: the batch row opens the batch dialog', batchModalText.includes('批量'), batchModalText.slice(0, 80))
+await page.keyboard.press('Escape')
+await page.waitForTimeout(300)
+
+// The row's edit button edits THAT row — the navigation names the routine.
+// (The harness renders RoutineCenter bare, so AppLayout's editor swap never
+// mounts here; the store view is the observable hand-off.)
+const rowManual = page.locator('.pane-row', { hasText: '工作台手动' })
+await rowManual.hover()
+await rowManual.locator('button').last().click()
+await page.waitForTimeout(300)
+const editView = await viewOf()
+check(
+  'workspace: a row edit button edits THAT row',
+  editView?.routineId === 'r_ws_manual' && editView?.routineEditing === true,
+  JSON.stringify(editView),
+)
 
 await browser.close()
 

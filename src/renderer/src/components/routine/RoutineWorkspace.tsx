@@ -181,7 +181,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
   const clearRuns = (): void => {
     modal.confirm({
       title: `清空「${routine?.name ?? '当前任务'}」的运行历史？`,
-      content: '已结束的运行记录和它们的对话都会被删除；正在运行的这一次会保留。',
+      content: '已结束的运行记录和它们的对话都会被删除；进行中的运行会保留（批量则连同其全部行）。',
       okText: '清空',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -246,18 +246,9 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
             <Button type="text" size="small" icon={<ArrowLeftOutlined />} onClick={onBack} />
           </Tooltip>
           <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>日常任务</span>
-          <Tooltip title="立即运行当前任务">
-            <Button type="text" size="small" icon={<PlayCircleOutlined />} disabled={!routine} onClick={() => routine && onRunNow(routine)} />
-          </Tooltip>
-          {!!routine?.batch?.csvPath && (
-            <Tooltip title="批量运行当前任务（按 CSV 逐行执行）">
-              <Button type="text" size="small" icon={<DatabaseOutlined />} onClick={() => routine && onRunBatch(routine)} />
-            </Tooltip>
-          )}
-          <Tooltip title="编辑当前任务">
-            <Button type="text" size="small" icon={<EditOutlined />} disabled={!routine} onClick={() => routine && onEdit(routine)} />
-          </Tooltip>
         </div>
+        {/* 运行/批量/编辑在每一行内（悬停显示），按钮作用于它所在的那一行，
+            不再放在列表头部作用于「当前选中」而引起误解。 */}
         <div style={{ flex: 1, overflow: 'auto', padding: '0 8px 12px' }}>
           {routines.map((r) => {
             const active = r.id === routineId
@@ -268,11 +259,43 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
                 style={{ marginBottom: 2 }}
                 onClick={() => setRoutineId(r.id)}
               >
-                <div style={{
-                  fontSize: 13, fontWeight: active ? 600 : 400,
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>
-                  {r.name}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <div style={{
+                    flex: 1, minWidth: 0,
+                    fontSize: 13, fontWeight: active ? 600 : 400,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {r.name}
+                  </div>
+                  <Tooltip title="立即运行">
+                    <Button
+                      className="pane-row-action"
+                      type="text"
+                      size="small"
+                      icon={<PlayCircleOutlined style={{ fontSize: 12 }} />}
+                      onClick={(e) => { e.stopPropagation(); setRoutineId(r.id); onRunNow(r) }}
+                    />
+                  </Tooltip>
+                  {!!r.batch?.csvPath && (
+                    <Tooltip title="批量运行（按 CSV 逐行执行）">
+                      <Button
+                        className="pane-row-action"
+                        type="text"
+                        size="small"
+                        icon={<DatabaseOutlined style={{ fontSize: 12 }} />}
+                        onClick={(e) => { e.stopPropagation(); setRoutineId(r.id); onRunBatch(r) }}
+                      />
+                    </Tooltip>
+                  )}
+                  <Tooltip title="编辑">
+                    <Button
+                      className="pane-row-action"
+                      type="text"
+                      size="small"
+                      icon={<EditOutlined style={{ fontSize: 12 }} />}
+                      onClick={(e) => { e.stopPropagation(); onEdit(r) }}
+                    />
+                  </Tooltip>
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--pm-text-soft)', marginTop: 2 }}>{scheduleText(r)}</div>
               </div>

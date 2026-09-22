@@ -344,7 +344,10 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                           </Tooltip>
                           {routine.batch?.csvPath && (
                             <Tooltip title="批量运行（按 CSV 逐行执行）">
-                              <Button type="text" icon={<DatabaseOutlined style={{ fontSize: 16 }} />} data-action="batch-run" onClick={() => runBatch(routine)} />
+                              {/* 15px = the secondary-action glyph size in this
+                                  row (编辑/删除); only 立即运行 carries the 17px
+                                  primary weight. */}
+                              <Button type="text" icon={<DatabaseOutlined style={{ fontSize: 15 }} />} data-action="batch-run" onClick={() => runBatch(routine)} />
                             </Tooltip>
                           )}
                           <Tooltip title="编辑">
