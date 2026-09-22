@@ -1,6 +1,6 @@
 {
   "name": "pulsemind",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "PulseMind Desktop AI Chat Application",
   "main": "./out/main/index.js",
   "scripts": {
