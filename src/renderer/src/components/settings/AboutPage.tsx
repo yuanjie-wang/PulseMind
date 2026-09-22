@@ -1,10 +1,11 @@
 // ── About page ──
 // Formerly AboutSettings (a drawer), a standard view since PLAN-0.4.0. Renders
 // the product intro markdown; the window header carries the page title, so the
-// drawer chrome is gone. Content rewritten for the 0.4.0 release — it describes
-// the product as 0.4.0 ships it (projects, routines, @-summon experts, office
-// editing/export, rich previews, browser extension), so re-feature it per
-// release rather than letting it drift back to the 0.3-era feature list.
+// drawer chrome is gone. Content re-featured per release rather than drifting
+// back to an era-stale feature list — the 0.4.1 pass carries the 0.4.0 rewrite
+// plus the 0921/0922 waves (routine CSV batch, per-conversation models,
+// run-time keep-awake), and the two intro paragraphs name the SHIPPING version
+// (the footer's __APP_VERSION__ already follows package.json on its own).
 // NOTE: the markdown lives in JS template literals — never emit a backtick or
 // an interpolation (a `${`) into the strings below.
 
@@ -22,7 +23,7 @@ const productIntroMdZh = `
 
 > 每一次脉动，皆是智能。
 
-PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.4.0 是一次全面重铸的大版本：全新的信息架构，项目工作区与日常任务自动化，@召唤专家并行协作，字节级保真的 Office 文档编辑与导出，富预览与预览即编辑，以及随身的浏览器扩展。所有数据都保存在你自己的电脑上。
+PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.4.1 是一次全面重铸的大版本：全新的信息架构，项目工作区与日常任务自动化，@召唤专家并行协作，字节级保真的 Office 文档编辑与导出，富预览与预览即编辑，以及随身的浏览器扩展。所有数据都保存在你自己的电脑上。
 
 ## 快速开始
 
@@ -47,7 +48,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 - **欢迎页** — 「试试」快捷提示词一键开聊；对话 / 项目两个视角；项目、日常、知识三类卡片把下一步放在眼前
 - **侧栏** — 新建任务 / 搜索 / 日常任务 / 能力 • 知识 • 创作
-- **设置页** — 常规（语言、外观、开机自启、数据清理、运行上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 经验 / 高级（调试、Git 状态注入）/ 关于；界面浅色 / 深色 / 跟随系统
+- **设置页** — 常规（语言、外观、开机自启、数据清理、运行上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 经验 / 高级（阻止休眠、调试、Git 状态注入、知识自动编译）/ 关于；界面浅色 / 深色 / 跟随系统
 - **⌘K 命令面板与原生菜单** — 常用动作键入即达，快捷键可自定义
 - **全局搜索** — 会话、消息、记忆、知识，一处直达
 - **会话列表** — 置顶 / 今天 / 昨天 / 更早 自动分组
@@ -66,6 +67,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 把重复的事交给日程，到点自动执行。
 
 - **例行任务** — 定时（cron）或手动触发，独立会话运行，完成后通知你
+- **CSV 批量运行** — 给任务挂一个 CSV，每行数据用独立会话执行一次任务；并发可调，运行历史按行展示，点击钻入该行的会话
 - **运行历史** — 按天分桶，可删除、清理、设置保留期限
 - **推荐模板** — 五个职场常用任务，点击带入编辑器，改改就能用
 - **对话式配置** — 用聊天的方式填表；先出提案卡片，确认后才落库
@@ -147,7 +149,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 ## 一直都在的核心能力
 
 - **Agent 引擎** — 自主循环、流式渲染、上下文自动压缩
-- **多模型** — Anthropic / OpenAI 双协议适配，多套配置自由切换
+- **多模型** — Anthropic / OpenAI 双协议适配，多套配置自由切换，单个会话还可单独指定模型
 - **记忆** — 手动编写 + 会话后自动提取 + 全文检索
 - **经验** — 对话结束自动萃取，最多 20 条、按最近使用淘汰，不重复交学费
 - **会话与统计** — 本地 SQLite 存储，自动标题、自动清理；Token 用量按小时 / 日 / 月统计
@@ -159,7 +161,7 @@ const productIntroMdEn = `
 
 > Live Intelligence, In Every Pulse.
 
-PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.4.0 is a ground-up release: a new information architecture, project workspaces and routine automation, parallel expert collaboration through @-summons, byte-faithful Office document editing and export, rich previews with in-place editing, and a browser extension that travels with you. All data stays on your own machine.
+PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.4.1 is a ground-up release: a new information architecture, project workspaces and routine automation, parallel expert collaboration through @-summons, byte-faithful Office document editing and export, rich previews with in-place editing, and a browser extension that travels with you. All data stays on your own machine.
 
 ## Quick Start
 
@@ -184,7 +186,7 @@ Then hit Test Connection: one click, and it tells you in plain words whether the
 
 - **Welcome page** — one-click starters under Try these; a chats view and a projects view; project, routine, and knowledge cards keep the next step within reach
 - **Sidebar** — New Task / Search / Routines / Capability · Knowledge · Studio
-- **Settings** — General (language, appearance, launch at login, data cleanup, run limits, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Experiences / Advanced (debugging, Git injection) / About; light / dark / system appearance
+- **Settings** — General (language, appearance, launch at login, data cleanup, run limits, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Experiences / Advanced (keep-awake, debugging, Git injection, knowledge auto-compile) / About; light / dark / system appearance
 - **⌘K command palette & native menu** — type to reach any common action, with rebindable shortcuts
 - **Global search** — conversations, messages, memories, knowledge: one place
 - **Conversation list** — auto-grouped into Pinned / Today / Yesterday / Earlier
@@ -203,6 +205,7 @@ Give the AI a folder of its own, and it can read, write, and keep pushing the wo
 Hand the repetitive work to a schedule and let it run itself.
 
 - **Routines** — cron-scheduled or manual, each run in its own session, with a notification when it finishes
+- **CSV batch runs** — point a routine at a CSV and each data row runs the task in its own session; concurrency is adjustable, and the run history lists every row, clickable into its session
 - **Run history** — bucketed by day; delete, clear, or set a retention window
 - **Starter templates** — five workplace templates, one click into the editor
 - **Conversational setup** — fill the form by chatting; a proposal card comes first, and nothing is saved until you confirm
@@ -284,7 +287,7 @@ Build your own tools from three pieces:
 ## The Core That Was Always Here
 
 - **Agent engine** — autonomous loop, streaming rendering, automatic context compaction
-- **Multi-model** — Anthropic and OpenAI protocols via adapters; switch profiles freely
+- **Multi-model** — Anthropic and OpenAI protocols via adapters; switch profiles freely, or pin a different model to a single conversation
 - **Memory** — hand-written + auto-extracted after sessions + full-text search
 - **Experiences** — distilled after conversations, 20 at most with LRU eviction, so lessons are never paid for twice
 - **Sessions & usage** — local SQLite storage, auto titles, auto cleanup; token usage charted by hour / day / month
