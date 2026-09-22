@@ -59,7 +59,13 @@ async function main() {
   const sinks = new Set()
   agentSessionManager.onEvent = (sink) => { sinks.add(sink); return () => sinks.delete(sink) }
   agentSessionManager.emit = (sessionId, data) => { for (const s of sinks) s(sessionId, data) }
-  agentSessionManager.createSession = async (id, opts) => { sessions.push({ id, opts, prompt: null }) }
+  // A deferred here parks createSession callers — the window where a 停止
+  // cannot reach the engine yet (section 9).
+  let createSessionGate = null
+  agentSessionManager.createSession = async (id, opts) => {
+    if (createSessionGate) await createSessionGate.promise
+    sessions.push({ id, opts, prompt: null })
+  }
   agentSessionManager.history = async () => ({ messages: [] })
   agentSessionManager.releaseApprovalPin = () => {}
   // Production semantics: stopExecution parks the engine at 'idle', and that
@@ -68,12 +74,22 @@ async function main() {
     if (method === 'stopExecution') agentSessionManager.emit(id, { type: 'status', status: 'idle' })
   }
   let askBehavior = 'complete' // 'complete' | 'hang'
+  let completeAsks = Infinity // first N asks complete; the rest park until releaseHungAsks
+  const hungAsks = []
+  let askCount = 0
   agentSessionManager.ask = async (id, prompt) => {
     const session = sessions.find((s) => s.id === id)
     if (session) session.prompt = prompt
     if (askBehavior === 'hang') return new Promise(() => {})
+    askCount++
+    if (askCount > completeAsks) {
+      return new Promise((resolve) => hungAsks.push({
+        release: () => { agentSessionManager.emit(id, { type: 'status', status: 'completed' }); resolve() },
+      }))
+    }
     agentSessionManager.emit(id, { type: 'status', status: 'completed' })
   }
+  const releaseHungAsks = () => { for (const h of hungAsks.splice(0)) h.release() }
 
   const writeCsv = (name, content) => {
     const p = join(${JSON.stringify(work)}, name)
@@ -237,6 +253,84 @@ async function main() {
   check('a cutoff in the future prunes every settled run, children included', () => {
     assert.ok(pruned.length >= 9, 'pruned ' + pruned.length)
     assert.equal(childrenOf(staleParent.id).length, 0)
+  })
+
+  // ── 8. Mid-batch 清空 keeps the live batch's settled rows (review0922 M1) ──
+  // The batch's substance is its children: while the parent is still running,
+  // even a SETTLED child must survive the workspace's 清空 — deleting it would
+  // make the finished row table and the parent's progress counts miss rows
+  // that really ran. Once the parent settles, the same clear takes everything.
+  const csvD = writeCsv('d.csv', 'repo\\nr1\\nr2\\nr3\\n')
+  const routineD = makeRoutine('巡检 D', csvD)
+  routineStore.update(routineD.id, { batch: { csvPath: csvD, concurrency: 1 } })
+  completeAsks = 1 // row 1 completes, later rows park — a settled child under a live batch
+  askCount = 0 // the counter is global across sections; this batch counts from its own first ask
+  const parentD = routineBatchRunner.start(routineStore.get(routineD.id), 'manual')
+  await until(() => {
+    const c = childrenOf(parentD.id)
+    return c.length === 2 && c[0].status === 'success'
+  }, 'row 1 settles while row 2 is in flight')
+  const childD0 = childrenOf(parentD.id)[0]
+  saveConversation(agentMessagesToConversation(
+    [{ id: childD0.conversationId + '_m1', role: 'user', createdAt: '2026-09-21T00:00:00Z', contentBlocks: [{ type: 'text', text: 'row 1 transcript' }] }],
+    childD0.conversationId, 'probe',
+  ))
+  const removedMid = routineRunHistory.clearRoutine(routineD.id)
+  check('mid-batch 清空 removes nothing of the live batch: settled child, running child, transcript', () => {
+    assert.equal(removedMid, 0)
+    const kept = childrenOf(parentD.id)
+    assert.deepEqual(kept.map((c) => c.status), ['success', 'running'])
+    assert.equal(getConversation(childD0.conversationId) !== null, true, 'row 1 transcript survives')
+    assert.equal(parentOf(routineD.id).status, 'running')
+  })
+  completeAsks = Infinity
+  releaseHungAsks()
+  await until(() => parentOf(routineD.id)?.status !== 'running', 'batch D settles')
+  check('the released batch runs to full success — progress counts still account for every row', () => {
+    const parent = parentOf(routineD.id)
+    assert.equal(parent.status, 'success')
+    assert.equal(parent.batchProgress.success, 3)
+  })
+  check('once the parent has settled, the same 清空 removes the whole batch and the transcript', () => {
+    const removed = routineRunHistory.clearRoutine(routineD.id)
+    assert.equal(removed, 4) // parent + 3 children
+    assert.equal(childrenOf(parentD.id).length, 0)
+    assert.equal(getConversation(childD0.conversationId), null)
+  })
+  const soloRun = routineStore.startRun(routineD.id, 'manual', 'routine_solo_conv')
+  routineStore.finishRun(soloRun.id, { status: 'success' })
+  check('a settled standalone run still clears — single-run semantics unchanged', () => {
+    assert.equal(routineRunHistory.clearRoutine(routineD.id), 1)
+  })
+
+  // ── 9. 停止 inside the createSession window never dispatches (review0922 M2) ──
+  // A stop pressed while the row's session is still being created cannot reach
+  // the engine (engineCall no-ops against a session that does not exist yet).
+  // The row must settle 用户停止 WITHOUT the prompt going out — otherwise the
+  // task runs to completion in a session the user already wrote off, with the
+  // gates torn down by the stop's own settlement.
+  const csvE = writeCsv('e.csv', 'repo\\nr1\\nr2\\n')
+  const routineE = makeRoutine('巡检 E', csvE)
+  routineStore.update(routineE.id, { batch: { csvPath: csvE, concurrency: 1 } })
+  createSessionGate = (() => { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } })()
+  const parentE = routineBatchRunner.start(routineStore.get(routineE.id), 'manual')
+  await until(() => childrenOf(parentE.id).length === 1, 'row 1 dispatched into the gate')
+  routineBatchRunner.stop(parentE.id)
+  check('stop with a row still creating its session: the queued row skips at once', () => {
+    assert.equal(childrenOf(parentE.id)[1].status, 'skipped')
+  })
+  createSessionGate.resolve()
+  createSessionGate = null
+  await until(() => parentOf(routineE.id)?.status !== 'running', 'row 1 settles and the parent closes')
+  check('the stopped-in-window row settles 用户停止 — and ask was never reached', () => {
+    const row = childrenOf(parentE.id)[0]
+    assert.match(row.error, /用户停止/)
+    const session = sessions.find((s) => s.id === row.conversationId)
+    assert.equal(session.prompt, null, 'the prompt must not dispatch after a stop')
+  })
+  check('the parent settles partial without waiting out the 10s net', () => {
+    assert.equal(parentOf(routineE.id).status, 'partial')
+    assert.equal(routineBatchRunner.isActive(parentE.id), false)
   })
 
   console.log('PASS: ' + checks + ' checks — batch runs row-by-row through the real store, runner and cleanup')

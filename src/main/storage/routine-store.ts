@@ -235,9 +235,17 @@ export const routineStore = {
 
   /** Delete a task's runs and return them. A run still in flight keeps its row
    *  unless `includeRunning` — task deletion drops everything, the workspace's
-   *  清空 leaves the live row so the run stays visible and settle-able. */
+   *  清空 leaves the live row so the run stays visible and settle-able. The
+   *  keep condition is the live BATCH, not just its live rows: a batch's
+   *  substance is its children, so a settled child whose parent row is still
+   *  running is kept too — a mid-batch 清空 that deleted it would make the
+   *  finished row table (and the parent's progress counts) miss rows that did
+   *  run (review_20260922 M1). Once the parent settles, its children clear as
+   *  before. */
   removeRunsOfRoutine(routineId: string, includeRunning = false): RoutineRun[] {
-    const where = includeRunning ? 'routine_id = ?' : "routine_id = ? AND status <> 'running'"
+    const where = includeRunning
+      ? 'routine_id = ?'
+      : "routine_id = ? AND status <> 'running' AND (parent_run_id IS NULL OR parent_run_id NOT IN (SELECT id FROM routine_runs WHERE status = 'running'))"
     const rows = getDb().prepare(`SELECT * FROM routine_runs WHERE ${where}`).all(routineId) as RoutineRunRow[]
     return deleteRowsWithChildren(rows)
   },
@@ -277,7 +285,17 @@ function selectChildrenOf(ids: string[]): RoutineRunRow[] {
 function deleteRowsWithChildren(rows: RoutineRunRow[]): RoutineRun[] {
   if (rows.length === 0) return []
   const children = selectChildrenOf(rows.map((r) => r.id))
-  const all = [...rows, ...children]
+  // removeRunsOfRoutine / removeRunsStartedBefore select children too (they
+  // carry routine_id / their own started_at), so the child set can overlap
+  // `rows` — dedupe by id or the returned delete count (the caller's 清理 N
+  // 条 toast) double-counts every batch row.
+  const seen = new Set<string>()
+  const all: RoutineRunRow[] = []
+  for (const row of [...rows, ...children]) {
+    if (seen.has(row.id)) continue
+    seen.add(row.id)
+    all.push(row)
+  }
   const db = getDb()
   const del = db.prepare('DELETE FROM routine_runs WHERE id = ?')
   db.transaction(() => { for (const row of all) del.run(row.id) })()

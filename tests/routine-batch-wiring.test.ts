@@ -58,3 +58,28 @@ describe('routine batch IPC wiring', () => {
     expect(src).toContain('没有配置批量数据文件')
   })
 })
+
+/** review_20260922 M1/M2. vitest cannot mount either fix (one is SQL against
+ *  better-sqlite3, the other lives in main-process code importing electron),
+ *  so the shape is pinned by source scan and the BEHAVIOUR by
+ *  scripts/probe-routine-batch.mjs sections 8–9 — reverting either fix fails
+ *  the probe there, and these scans catch a silent regression between runs. */
+describe('batch clear guard and stop-window guard', () => {
+  it('清空 keeps a child whose parent run is still going (review0922 M1)', () => {
+    const src = source('src/main/storage/routine-store.ts')
+    // The keep condition must look at the batch, not just the row's own status.
+    expect(src).toContain("parent_run_id NOT IN (SELECT id FROM routine_runs WHERE status = 'running')")
+  })
+
+  it('a stop landing in the createSession window never dispatches the prompt (review0922 M2)', () => {
+    const src = source('src/main/routine/routine-runner.ts')
+    const createIdx = src.indexOf('await agentSessionManager.createSession(')
+    const guardIdx = src.indexOf('if (stopRequested) {')
+    const askIdx = src.indexOf('await agentSessionManager.ask(')
+    // All three present AND in that order: the guard between session creation
+    // and the dispatch is the whole fix.
+    expect(createIdx).toBeGreaterThan(-1)
+    expect(guardIdx).toBeGreaterThan(createIdx)
+    expect(askIdx).toBeGreaterThan(guardIdx)
+  })
+})

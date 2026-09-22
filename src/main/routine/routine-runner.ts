@@ -232,6 +232,16 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
         // active one inside resolveProfile.
         profileId: routine.profileId?.trim() || undefined,
       })
+      // A stop requested while createSession was still in flight never reached
+      // the engine (the session did not exist yet, so the engineCall no-oped)
+      // — dispatching the prompt anyway would run the whole task with the
+      // gates about to be torn down by the stop's own settlement. Settle the
+      // row here instead; finish clears the stop net and releases the pin
+      // (review_20260922 M2).
+      if (stopRequested) {
+        finish('failed', '用户停止')
+        return
+      }
       await agentSessionManager.ask(convId, renderRoutinePrompt(routine, opts.params, { workspaceDir, row: opts.row }))
     } catch (err) {
       finish('failed', err instanceof Error ? err.message : String(err))

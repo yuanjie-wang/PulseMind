@@ -16,7 +16,7 @@ import { shortUuid } from '../utils/id'
 import { notify, executeUnattended } from './routine-runner'
 import { BatchQueue } from './batch-queue'
 import { loadBatchSource, type BatchSource } from './batch-source'
-import { rowParamsAt, DEFAULT_BATCH_CONCURRENCY, MAX_BATCH_CONCURRENCY } from '../../shared/routine/batch'
+import { rowParamsAt, DEFAULT_BATCH_CONCURRENCY, normalizeBatchConcurrency } from '../../shared/routine/batch'
 import { assertRunnableParams } from '../../shared/routine/params'
 import type { Routine, RoutineRun } from '../../shared/types/routine'
 
@@ -47,15 +47,23 @@ class BatchRunner {
    *  cases (another batch active, file unreadable, mapping broken) — a manual
    *  click surfaces the reason; the scheduler only calls this when
    *  applyToSchedule is set and never over a running routine (overlap guard),
-   *  and it is the one deciding whether a fire means batch or single (L10). */
-  start(routine: Routine, trigger: RoutineRun['trigger']): RoutineRun {
+   *  and it is the one deciding whether a fire means batch or single (L10).
+   *  `overrides.concurrency` is the start dialog's per-run choice (user
+   *  2026-09-22: the pool size must be adjustable where the run is started);
+   *  absent, the routine's configured value applies, then the default. */
+  start(routine: Routine, trigger: RoutineRun['trigger'], overrides?: { concurrency?: number }): RoutineRun {
     for (const state of this.active.values()) {
       if (state.routine.id === routine.id) {
         throw new Error(`「${routine.name}」已有批量运行在进行，请等待完成或先停止`)
       }
     }
     const source = loadBatchSource(routine)
-    const concurrency = Math.min(Math.max(1, routine.batch?.concurrency ?? DEFAULT_BATCH_CONCURRENCY), MAX_BATCH_CONCURRENCY)
+    // normalizeBatchConcurrency throws on present-but-invalid values, so a
+    // hand-crafted payload cannot widen the pool; a saved config was already
+    // validated at the save door — re-running it here is belt.
+    const concurrency = normalizeBatchConcurrency(overrides?.concurrency)
+      ?? normalizeBatchConcurrency(routine.batch?.concurrency)
+      ?? DEFAULT_BATCH_CONCURRENCY
     const parentRun = routineStore.startBatchRun(routine.id, trigger, {
       csvName: source.csvName,
       totalRows: source.rows.length,
