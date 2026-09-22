@@ -628,6 +628,8 @@ const zh = {
     retentionConfirmContent: "保存后立即删除超过 {{n}} 天的未置顶会话，此操作不可撤销。",
     keepForever: "永久保留",
     keepDays: "保留 {{n}} 天",
+    keepAwake: "运行期间阻止休眠",
+    keepAwakeHelp: "有任务在运行时（对话、专家、日常任务等）阻止电脑休眠，全部结束后自动恢复；屏幕仍会正常熄灭。默认关闭。",
     debugLlmRequests: "记录 LLM 请求报文",
     debugLlmRequestsHelp: "完整报文可能包含对话和敏感数据，将写入 logs/llm-requests/。开发版默认开启；打包版需显式打开，下一次请求生效。",
     openLogDir: "打开日志目录",

@@ -635,6 +635,8 @@ const en: TranslationDict = {
     retentionConfirmContent: "Saving immediately deletes unpinned conversations older than {{n}} days. This cannot be undone.",
     keepForever: "Keep forever",
     keepDays: "Keep {{n}} days",
+    keepAwake: "Prevent sleep while running",
+    keepAwakeHelp: "Keeps the computer awake while a task runs (chats, experts, routines) and releases when all runs settle. The display may still turn off. Off by default.",
     debugLlmRequests: "Log LLM request payloads",
     debugLlmRequestsHelp: "Full payloads may contain conversations and sensitive data and are written to logs/llm-requests/. Enabled in dev; packaged builds must enable it explicitly. Applies to the next request.",
     openLogDir: "Open log directory",

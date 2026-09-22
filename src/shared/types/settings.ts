@@ -38,6 +38,10 @@ export interface AppSettings {
   memoryEnabled?: boolean
   /** 经验系统总开关：会话后自动沉淀 + 经验索引注入系统提示。默认开。已有经验保留可查看。 */
   experienceEnabled?: boolean
+  /** 运行期间阻止系统休眠总开关：有会话在干活时持有 powerSaveBlocker，
+   *  全部结束/停止后自动恢复，屏幕仍可正常熄灭。默认关（高级面板的开关一律
+   *  默认关闭）。保存即生效。 */
+  keepAwakeEnabled?: boolean
   /** 运行历史自动清理策略：保留天数（未设 / 0 = 永久保留）。启动时按此清理已结束的运行记录。 */
   routineRunRetentionDays?: number
   /** PLAN-knowledge-base D7: 导入完成后自动把新源压入编译队列。默认关（手动编译为主）。 */

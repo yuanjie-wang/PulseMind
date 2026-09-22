@@ -14,6 +14,29 @@ export const app = {
   getAppPath: () => APP_ROOT,
 }
 
+// `powerSaveBlocker` is here for the keep-awake guard (src/main/system/keep-awake.ts):
+// a tiny in-process model — start() hands out ids, stop() retires them — so the
+// wiring can be driven for real under vitest. The live count is the assertion
+// surface: holding must mean exactly one OS-level blocker, never two.
+let blockerSeq = 0
+const liveBlockers = new Map<number, string>()
+export const powerSaveBlocker = {
+  start: (type: string): number => {
+    const id = ++blockerSeq
+    liveBlockers.set(id, type)
+    return id
+  },
+  stop: (id: number): void => {
+    liveBlockers.delete(id)
+  },
+  isStarted: (id: number): boolean => liveBlockers.has(id),
+}
+
+/** How many blockers this stub currently reports as started. */
+export function livePowerSaveBlockers(): number {
+  return liveBlockers.size
+}
+
 /** Where this stub's `shell.trashItem` parks what it "trashes". */
 export const TEST_TRASH_DIR = join(process.env.HOME || '/tmp', 'pulsemind-test-trash')
 

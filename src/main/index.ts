@@ -31,6 +31,7 @@ enableAppViewDebugPort()
 import { toolStore } from './storage/tool-store'
 import { serviceRuntime } from './service-runtime'
 import { settingsStore } from './storage/settings-store'
+import { keepAwake } from './system/keep-awake'
 import { notifyResume } from './ipc/app.handler'
 
 let mainWindow: BrowserWindow | null = null
@@ -533,6 +534,9 @@ if (gotTheLock) {
   try {
     const bootSettings = await settingsStore.get()
     applyLaunchAtLogin(!!bootSettings.launchAtLogin)
+    // Seed the keep-awake switch (defaults off like every 高级 toggle) before
+    // any session can start.
+    keepAwake.setEnabled(bootSettings.keepAwakeEnabled ?? false)
     // ── Local agent service (M2.1): loopback WS for browser extensions ──
     if (bootSettings.serviceEnabled !== false) {
       try {

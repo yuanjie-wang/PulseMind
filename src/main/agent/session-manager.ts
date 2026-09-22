@@ -44,6 +44,7 @@ import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import { perfTime } from '../perf/perf-log'
+import { keepAwake } from '../system/keep-awake'
 import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, ModelState } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 
@@ -775,6 +776,9 @@ export class AgentSessionManagerImpl {
     entry.engine.opts.hostedAvailable = agentClientRegistry.isHostedCapable(sessionId)
     if (this.runningLoops >= MAX_CONCURRENT_LOOPS) {
       this.emit(sessionId, { type: 'status', status: 'queued', attempt: this.waitingLoops.length + 1 })
+      // Queued counts as working: the turn gets a slot imminently, and the
+      // engine's own statuses only start once it runs (see system/keep-awake.ts).
+      keepAwake.update(sessionId, 'queued')
       await new Promise<void>((resolve) => this.waitingLoops.push(resolve))
     }
     this.runningLoops += 1
@@ -864,6 +868,10 @@ export class AgentSessionManagerImpl {
         this.toolStatusRegistry.delete(sessionId)
         this.messageStatsRegistry.delete(sessionId)
         this.sandboxContexts.delete(sessionId)
+        // The disposed engine's last status may still read executing (dispose
+        // itself can notify), and no further event will ever arrive for this
+        // id — forget it explicitly or the wake lock pins forever.
+        keepAwake.forgetSession(sessionId)
         return undefined
       default: throw new Error(`engine method not allowed: ${method}`)
     }
@@ -960,25 +968,30 @@ export class AgentSessionManagerImpl {
   private makeCallbacks(sessionId: string) {
     return {
       onMessagesChanged: (messages: AgentMessage[]) => this.emitMessages(sessionId, messages),
-      onStatusChanged: (status: AgentStatus) => this.emit(sessionId, {
-        type: 'status',
-        status: status.status,
-        // Loop failures carry their reason ({ status: 'error', error } —
-        // renderer types/agent.ts); unattended consumers settle on this.
-        ...(status.status === 'error' ? { error: status.error } : {}),
-        // Held tools ride along on the two "the user must decide" statuses so
-        // a remote client (browser extension) can render confirmation cards
-        // without holding engine internals. args ships in full only for the
-        // small interactive payloads (ask_user prompt/choices).
-        ...((status.status === 'awaiting_approval' || status.status === 'awaiting_user_input') && 'tools' in status
-          ? { tools: status.tools.map((t): StatusToolInfo => ({
-              toolUseId: t.id,
-              name: t.name,
-              detail: JSON.stringify(t.input ?? {}).slice(0, 200),
-              ...(t.name === 'ask_user' ? { args: t.input } : {}),
-            })) }
-          : {}),
-      }),
+      onStatusChanged: (status: AgentStatus) => {
+        // 运行期间阻止系统休眠：每个托管会话的状态变化都过这里，working 状态
+        // 持有 powerSaveBlocker，停靠/终态释放（见 system/keep-awake.ts）。
+        keepAwake.update(sessionId, status.status)
+        this.emit(sessionId, {
+          type: 'status',
+          status: status.status,
+          // Loop failures carry their reason ({ status: 'error', error } —
+          // renderer types/agent.ts); unattended consumers settle on this.
+          ...(status.status === 'error' ? { error: status.error } : {}),
+          // Held tools ride along on the two "the user must decide" statuses so
+          // a remote client (browser extension) can render confirmation cards
+          // without holding engine internals. args ships in full only for the
+          // small interactive payloads (ask_user prompt/choices).
+          ...((status.status === 'awaiting_approval' || status.status === 'awaiting_user_input') && 'tools' in status
+            ? { tools: status.tools.map((t): StatusToolInfo => ({
+                toolUseId: t.id,
+                name: t.name,
+                detail: JSON.stringify(t.input ?? {}).slice(0, 200),
+                ...(t.name === 'ask_user' ? { args: t.input } : {}),
+              })) }
+            : {}),
+        })
+      },
       onStreamingBlocksChanged: (blocks: ContentBlock[]) => this.emit(sessionId, { type: 'streaming_blocks', blocks: blocks as unknown[] }),
       onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan }),
     }

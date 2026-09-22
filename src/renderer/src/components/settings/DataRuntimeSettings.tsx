@@ -1,8 +1,8 @@
 // ── Advanced settings section (高级，原「数据与运行」) ──
-// The power-user toggles: LLM request dumping (+ its log directory), Git
-// status injection and knowledge auto-compile. 启动/数据清理 moved to 常规
-// (2026-09-21); the read-only directory rows are gone entirely — the
-// workspace picker on 常规 is the one path surface left.
+// The power-user toggles: run-time keep-awake, LLM request dumping (+ its log
+// directory), Git status injection and knowledge auto-compile. 启动/数据清理
+// moved to 常规 (2026-09-21); the read-only directory rows are gone entirely —
+// the workspace picker on 常规 is the one path surface left.
 import React, { useEffect, useState } from 'react'
 import {Button, Drawer, Space, Switch, Typography } from 'antd'
 import { FolderOpenOutlined } from '@ant-design/icons'
@@ -76,6 +76,9 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
         {t('dataRuntime.title')}
       </Text>
       <Space orientation="vertical" size="large" style={{ width: '100%' }}>
+        {toggle('keepAwake', settings.keepAwakeEnabled ?? false, (value) => {
+          void save({ keepAwakeEnabled: value })
+        })}
         {toggle('debugLlmRequests', settings.debugLlmRequests ?? false, (value) => { void save({ debugLlmRequests: value }) })}
         <Button icon={<FolderOpenOutlined />} disabled={!paths?.dataDir} style={{ marginBottom: 16 }}
           onClick={() => { if (paths) void openFolder(`${paths.dataDir}/logs/llm-requests`) }}>

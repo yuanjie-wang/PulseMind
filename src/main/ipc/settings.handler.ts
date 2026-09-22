@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain, nativeTheme } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { agentSessionManager } from '../agent/session-manager'
+import { keepAwake } from '../system/keep-awake'
 import { cleanupExpiredConversations } from '../services/conversation-retention'
 import { setTitleBarTheme } from '../window-chrome'
 import { rebuildApplicationMenu } from '../menu'
@@ -26,6 +27,11 @@ export function registerSettingsHandlers(): void {
     // 开机自启 was tray-only; the settings UI now writes the same preference.
     // Idempotent, and the tray's 30s rebuild() picks the checkbox up on its own.
     applyLaunchAtLogin(!!settings.launchAtLogin)
+    // 运行期间阻止休眠 takes effect on save, not on the next run: off releases
+    // immediately, on re-acquires if a session is still mid-run (the guard
+    // keeps tracking statuses while switched off). Defaults off — every toggle
+    // in the 高级 panel does.
+    keepAwake.setEnabled(settings.keepAwakeEnabled ?? false)
     // The 记忆/经验 master switches must reach the main-hosted managers right
     // away — engines and hooks read them through the shared manager instances.
     void agentSessionManager.applyFeatureToggles(settings).catch((err: unknown) =>
