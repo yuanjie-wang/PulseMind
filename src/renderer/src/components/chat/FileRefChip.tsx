@@ -342,9 +342,11 @@ interface FileRefChipProps {
   textRenderer?: (text: string) => ReactNode
   /** Extra style forwarded to the internal XMarkdown root div. */
   xmarkdownStyle?: React.CSSProperties
+  /** Marked config forwarded to the internal XMarkdown; defaults to XMD_CONFIG. */
+  config?: React.ComponentProps<typeof XMarkdown>['config']
 }
 
-export function FileRefChip({ text, textRenderer, xmarkdownStyle }: FileRefChipProps): React.ReactElement {
+export function FileRefChip({ text, textRenderer, xmarkdownStyle, config = XMD_CONFIG }: FileRefChipProps): React.ReactElement {
   // Check if text contains any file/folder references or ![](file://...) patterns.
   // Use match() instead of test(): with the global flag, test() carries lastIndex
   // state between calls, whereas match() always starts from index 0.
@@ -361,7 +363,7 @@ export function FileRefChip({ text, textRenderer, xmarkdownStyle }: FileRefChipP
     <XMarkdown
       content={html}
       components={XMD_COMPONENTS}
-      config={XMD_CONFIG}
+      config={config}
       style={xmarkdownStyle}
     />
   )

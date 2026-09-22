@@ -59,6 +59,15 @@ const assistantBubbleStyle: React.CSSProperties = {
   lineHeight: 1.6
 }
 
+/** User-bubble markdown config. The bubble's `whiteSpace: pre-wrap` inherits into
+ *  the markdown tree, and the x-markdown Parser emits \n between block elements
+ *  (inside <ul>, around <blockquote>…), which pre-wrap renders as a phantom blank
+ *  line each (a 3-item list measured 198px vs 110px under normal). The md wrapper
+ *  resets to `normal` and `breaks` re-encodes the newlines the user actually typed
+ *  as <br>, so soft breaks keep rendering as line breaks while the parser's own
+ *  block separators collapse away. */
+const USER_MD_CONFIG: React.ComponentProps<typeof XMarkdown>['config'] = { breaks: true, extensions: Latex() }
+
 // --- Helpers ---
 
 function hasDisplayableContent(msg: AgentMessage): boolean {
@@ -429,13 +438,13 @@ export const MessageGroup = React.memo(function MessageGroup({
             // the ~22px gap without changing content or breaking markdown
             const flexCol = { display: 'flex' as const, flexDirection: 'column' as const }
             return (
-              <div key={i} className={mdClass} style={{ padding: 0 }}>
+              <div key={i} className={mdClass} style={{ padding: 0, whiteSpace: 'normal' }}>
                 {msg.autoSummary && (
                   <div style={{ fontSize: 11, color: 'var(--pm-text-quiet)', marginBottom: 4, fontWeight: 500 }}>
                     {t('autoSummary.label') || 'Auto Summary'}
                   </div>
                 )}
-                <FileRefChip text={block.text} xmarkdownStyle={flexCol} textRenderer={(t) => <XMarkdown content={t} style={flexCol} components={{ code: CodeBlock, img: LocalImage }} config={{ extensions: Latex() }} />} />
+                <FileRefChip text={block.text} xmarkdownStyle={flexCol} config={USER_MD_CONFIG} textRenderer={(t) => <XMarkdown content={t} style={flexCol} components={{ code: CodeBlock, img: LocalImage }} config={USER_MD_CONFIG} />} />
               </div>
             )
           }
