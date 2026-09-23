@@ -1,13 +1,17 @@
-// ── Batch runner (PLAN-routine-batch M3) ──
+// ── Batch runner (PLAN-routine-batch M3; resume per PLAN-batch-resume) ──
 // Executes a routine once per CSV row, each row an independent conversation
 // through the SAME unattended primitive a single run uses (routine-runner's
 // executeUnattended) — the gates, timeout and settlement are not re-implemented
 // here, only the dispatch: per-row child run rows over a BatchQueue worker
 // pool, and the parent row's progress/settlement.
 //
-// State lives in memory (keyed by parent run id) exactly like the scheduler's
-// executingIds: a batch never resumes across a restart — failStaleRuns settles
-// the leftover rows at boot and the user re-fires.
+// Live state is in memory (keyed by parent run id), but the RECORD is all in
+// routine_runs — one parent row + one child row per attempt. That is what makes
+// 「继续运行」 possible: an interrupted batch (user stop, or the process dying —
+// failStaleRuns settles the leftovers at boot) is re-opened under the SAME
+// parent and only its unfinished rows are dispatched again, as a new wave of
+// child rows. Progress and settlement always read the store folded to each
+// row's LATEST attempt, so waves stack without double-counting.
 
 import { routineStore } from '../storage/routine-store'
 import { auditStore } from '../storage/audit-store'
@@ -15,19 +19,30 @@ import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { shortUuid } from '../utils/id'
 import { notify, executeUnattended } from './routine-runner'
 import { BatchQueue } from './batch-queue'
-import { loadBatchSource, type BatchSource } from './batch-source'
-import { rowParamsAt, DEFAULT_BATCH_CONCURRENCY, normalizeBatchConcurrency } from '../../shared/routine/batch'
+import { loadBatchSource } from './batch-source'
+import { rowParamsAt, planResumeRows, progressFromAttempts, DEFAULT_BATCH_CONCURRENCY, normalizeBatchConcurrency, DEFAULT_BATCH_TIMEOUT_MINUTES, normalizeBatchTimeoutMinutes } from '../../shared/routine/batch'
 import { assertRunnableParams } from '../../shared/routine/params'
 import type { Routine, RoutineRun } from '../../shared/types/routine'
 
 interface BatchState {
   parentRun: RoutineRun
   routine: Routine
-  source: BatchSource
+  /** The CSV rows this run executes (a fresh batch: all of them; a resume
+   *  wave: only the unfinished ones, under their real row numbers). */
+  indices: number[]
+  /** Values per row index — snapshots for rows that ran and failed, CSV-derived
+   *  for the rest. Complete over `indices`; the dispatch path never re-reads. */
+  paramsByIndex: Map<number, Record<string, string>>
+  /** The batch's declared row count — the settlement denominator (a wave's
+   *  settlement describes the whole batch, not just its own rows). */
   totalRows: number
   queue: BatchQueue
   stopped: boolean
   settled: { success: number; failed: number; skipped: number }
+  /** Per-row hard ceiling in minutes — every row of this run executes under
+   *  it (executeUnattended's timeoutMs). Frozen at start/resume so a config
+   *  edit mid-batch cannot move a running row's goalposts. */
+  timeoutMinutes: number
   /** In-flight rows by conversation id — what 停止 has to interrupt. */
   inFlightHandles: Map<string, { stop: () => void }>
   parentSettled: boolean
@@ -42,48 +57,126 @@ class BatchRunner {
    *  awaits, and different routines mint under the same global workspace. */
   private mintChain: Promise<unknown> = Promise.resolve()
 
-  /** Fire-and-forget; returns the parent run row (already 'running') so the
-   *  caller can jump into the workspace. Throws synchronously for the refusal
-   *  cases (another batch active, file unreadable, mapping broken) — a manual
-   *  click surfaces the reason; the scheduler only calls this when
-   *  applyToSchedule is set and never over a running routine (overlap guard),
-   *  and it is the one deciding whether a fire means batch or single (L10).
+  /** Fire-and-forget; resolves with the parent run row (already 'running') so
+   *  the caller can jump into the workspace. Async because the source read is
+   *  (xlsx has no sync load); the refusal cases (another batch active, file
+   *  unreadable, mapping broken) REJECT — a manual click surfaces the reason;
+   *  the scheduler only calls this when applyToSchedule is set and never over
+   *  a running routine (overlap guard), and it is the one deciding whether a
+   *  fire means batch or single (L10).
    *  `overrides.concurrency` is the start dialog's per-run choice (user
    *  2026-09-22: the pool size must be adjustable where the run is started);
-   *  absent, the routine's configured value applies, then the default. */
-  start(routine: Routine, trigger: RoutineRun['trigger'], overrides?: { concurrency?: number }): RoutineRun {
+   *  absent, the routine's configured value applies, then the default. Same
+   *  chain for `overrides.timeoutMinutes` — each row's 单次超时 (user
+   *  2026-09-23: a hung row must be stoppable at a configured bound). */
+  async start(routine: Routine, trigger: RoutineRun['trigger'], overrides?: { concurrency?: number; timeoutMinutes?: number }): Promise<RoutineRun> {
     for (const state of this.active.values()) {
       if (state.routine.id === routine.id) {
         throw new Error(`「${routine.name}」已有批量运行在进行，请等待完成或先停止`)
       }
     }
-    const source = loadBatchSource(routine)
+    const source = await loadBatchSource(routine)
+    // The guard above must hold at WRITE time, and the read yields to get here
+    // (xlsx: dynamic import + zip load), so another start/resume can pass ITS
+    // guard while we wait. Re-check now; from startBatchRun down everything is
+    // synchronous, so whichever caller resumes from the await first wins.
+    for (const state of this.active.values()) {
+      if (state.routine.id === routine.id) {
+        throw new Error(`「${routine.name}」已有批量运行在进行，请等待完成或先停止`)
+      }
+    }
     // normalizeBatchConcurrency throws on present-but-invalid values, so a
     // hand-crafted payload cannot widen the pool; a saved config was already
-    // validated at the save door — re-running it here is belt.
+    // validated at the save door — re-running it here is belt. The timeout
+    // chain mirrors it (a bad value must refuse the start, not fire late).
     const concurrency = normalizeBatchConcurrency(overrides?.concurrency)
       ?? normalizeBatchConcurrency(routine.batch?.concurrency)
       ?? DEFAULT_BATCH_CONCURRENCY
+    const timeoutMinutes = normalizeBatchTimeoutMinutes(overrides?.timeoutMinutes)
+      ?? normalizeBatchTimeoutMinutes(routine.batch?.timeoutMinutes)
+      ?? DEFAULT_BATCH_TIMEOUT_MINUTES
     const parentRun = routineStore.startBatchRun(routine.id, trigger, {
       csvName: source.csvName,
       totalRows: source.rows.length,
       concurrency,
+      timeoutMinutes,
     })
     auditStore.record({ scope: 'routine', actor: routine.id, action: 'batch.start', target: parentRun.id, decision: 'allowed' })
+    this.spawn(parentRun, routine, source.rows.length, (i) => rowParamsAt(source.headers, source.rows, routine.params, i), concurrency, timeoutMinutes)
+    return parentRun
+  }
+
+  /** Continue an interrupted batch under the SAME parent run: re-open the
+   *  parent and dispatch only the rows without a successful outcome, as a new
+   *  wave of child rows. Values follow the snapshot rule — a row that ran and
+   *  failed is frozen to its snapshot (the CSV may have changed under it);
+   *  rows that never reached the engine take their values from the live CSV.
+   *  Rejects for the refusal cases, like start. */
+  async resume(parentRunId: string): Promise<RoutineRun> {
+    const parent = routineStore.getRun(parentRunId)
+    if (!parent?.batch) throw new Error('未找到该批量运行记录')
+    if (parent.status === 'running') throw new Error('该批量运行仍在进行中，请等待完成或先停止')
+    for (const state of this.active.values()) {
+      if (state.routine.id === parent.routineId) {
+        throw new Error(`「${state.routine.name}」已有批量运行在进行，请等待完成或先停止`)
+      }
+    }
+    const routine = routineStore.get(parent.routineId)
+    if (!routine) throw new Error('原任务已被删除，无法继续该批量运行')
+    const total = parent.batch.totalRows
+    const plan = planResumeRows(total, routineStore.listBatchChildren(parentRunId))
+    if (plan.indices.length === 0) throw new Error('该批量的每一行都已成功，无需继续')
+    // The CSV is validated (readable, required columns, row cap) only when the
+    // wave needs it — and its row count must still match the parent's, or the
+    // indices no longer mean the rows they meant when the batch ran.
+    const paramsByIndex = new Map(plan.snapshotParams)
+    if (plan.csvIndices.length > 0) {
+      const source = await loadBatchSource(routine)
+      if (source.rows.length !== total) {
+        throw new Error(`批量数据行数已变化（${source.rows.length} 行 ≠ 原批量 ${total} 行），无法按原行号继续，请重新发起批量`)
+      }
+      for (const i of plan.csvIndices) {
+        paramsByIndex.set(i, rowParamsAt(source.headers, source.rows, routine.params, i))
+      }
+    }
+    // Same post-await re-check as start: a concurrent start/resume of this
+    // routine can have entered the pool while we read the file (a fresh CSV
+    // wave may not await at all — the re-check is then a harmless no-op).
+    for (const state of this.active.values()) {
+      if (state.routine.id === parent.routineId) {
+        throw new Error(`「${state.routine.name}」已有批量运行在进行，请等待完成或先停止`)
+      }
+    }
+    const concurrency = normalizeBatchConcurrency(routine.batch?.concurrency) ?? DEFAULT_BATCH_CONCURRENCY
+    const timeoutMinutes = normalizeBatchTimeoutMinutes(routine.batch?.timeoutMinutes) ?? DEFAULT_BATCH_TIMEOUT_MINUTES
+    routineStore.reopenBatchRun(parentRunId)
+    auditStore.record({ scope: 'routine', actor: routine.id, action: 'batch.resume', target: parentRunId, decision: 'allowed' })
+    this.spawn({ ...parent, status: 'running', finishedAt: undefined, error: undefined }, routine, total, (i) => paramsByIndex.get(i) ?? {}, concurrency, timeoutMinutes, plan.indices)
+    return routineStore.getRun(parentRunId) ?? parent
+  }
+
+  /** Wire a batch state over the given rows and start the pool. `rowsFor` maps
+   *  a row index to its values: computed from the CSV for a fresh batch, from
+   *  the resume plan for a wave. */
+  private spawn(parentRun: RoutineRun, routine: Routine, totalRows: number, rowsFor: (index: number) => Record<string, string>, concurrency: number, timeoutMinutes: number, indices?: number[]): BatchState {
+    const rows = indices ?? Array.from({ length: totalRows }, (_, i) => i)
+    const paramsByIndex = new Map<number, Record<string, string>>(rows.map((i) => [i, rowsFor(i)]))
     const state: BatchState = {
       parentRun,
       routine,
-      source,
-      totalRows: source.rows.length,
-      queue: new BatchQueue(source.rows.length, concurrency, (index) => this.executeRowAt(state, index)),
+      indices: rows,
+      paramsByIndex,
+      totalRows,
+      queue: new BatchQueue(rows, concurrency, (index) => this.executeRowAt(state, index)),
       stopped: false,
       settled: { success: 0, failed: 0, skipped: 0 },
+      timeoutMinutes,
       inFlightHandles: new Map(),
       parentSettled: false,
     }
     this.active.set(parentRun.id, state)
     state.queue.start()
-    return parentRun
+    return state
   }
 
   /** 停止: no new rows (queued ones settle as 已跳过), in-flight rows are
@@ -96,8 +189,7 @@ class BatchRunner {
     // Queued rows never got a session — record them so the item table shows
     // every row with its outcome.
     for (const rowIndex of state.queue.stop()) {
-      const provided = rowParamsAt(state.source.headers, state.source.rows, state.routine.params, rowIndex)
-      const child = routineStore.startBatchChildRun(state.parentRun, rowIndex, provided, null)
+      const child = routineStore.startBatchChildRun(state.parentRun, rowIndex, state.paramsByIndex.get(rowIndex) ?? {}, null)
       routineStore.finishRun(child.id, { status: 'skipped' })
       state.settled.skipped++
     }
@@ -106,7 +198,7 @@ class BatchRunner {
   }
 
   /** Whether the parent is still in the pool (a stopped/finished parent is
-   *  not — and after a restart nothing is: leftovers were settled as failed). */
+   *  not — and after a restart nothing is until the user resumes it). */
   isActive(parentRunId: string): boolean {
     return this.active.has(parentRunId)
   }
@@ -118,8 +210,8 @@ class BatchRunner {
    *  ceiling is only as real as this promise's honesty. */
   private executeRowAt(state: BatchState, rowIndex: number): Promise<void> {
     return new Promise<void>((resolve) => {
-      const { routine, source } = state
-      const provided = rowParamsAt(source.headers, source.rows, routine.params, rowIndex)
+      const { routine } = state
+      const provided = state.paramsByIndex.get(rowIndex) ?? {}
       // Parameter pre-check BEFORE anything expensive: a row whose required
       // values resolve blank would run a mangled prompt — it becomes a failed
       // child row with no engine call (and no conversation to click through).
@@ -139,7 +231,12 @@ class BatchRunner {
       }
       const convId = `routine_${Date.now()}_${shortUuid(6)}`
       const child = routineStore.startBatchChildRun(state.parentRun, rowIndex, provided, convId)
-      const entry: { stop: () => void } = { stop: () => undefined }
+      // The mint window's stop has no real handle yet — remember it and replay
+      // it the moment the handle exists (executeUnattended's own stopRequested
+      // guard then settles the row 「用户停止」 before any ask), or the row
+      // would run the whole task out after 停止 (review_20260923 M1).
+      let mintStopRequested = false
+      const entry: { stop: () => void } = { stop: () => { mintStopRequested = true } }
       state.inFlightHandles.set(convId, entry)
       // The mint rides the serial chain (a pinned routine dir skips it —
       // executeUnattended passes it through untouched).
@@ -160,6 +257,7 @@ class BatchRunner {
           row: String(rowIndex + 1),
           notifyOnFinish: false,
           workspaceDir: dir,
+          timeoutMs: state.timeoutMinutes * 60_000,
           onSettled: (status) => {
             state.inFlightHandles.delete(convId)
             state.settled[status]++
@@ -168,6 +266,7 @@ class BatchRunner {
           },
         })
         entry.stop = handle.stop
+        if (mintStopRequested) handle.stop()
       }, (err: unknown) => {
         // A failed mint must settle the row — otherwise it hangs 'running'
         // and holds the parent (and the overlap guard) open forever.
@@ -180,20 +279,26 @@ class BatchRunner {
     })
   }
 
-  /** The parent settles when every row has an outcome — never later than the
-   *  last row's settlement, so the overlap guard opens as soon as it can. */
+  /** The parent settles when every row of THIS run has an outcome — never
+   *  later than the last row's settlement, so the overlap guard opens as soon
+   *  as it can. The outcome itself is counted from the STORE, folded to each
+   *  CSV row's latest attempt: a resume wave's settlement must describe the
+   *  whole batch (the rows that succeeded before the interruption included),
+   *  not just its own rows. */
   private maybeSettleParent(state: BatchState): void {
     if (state.parentSettled) return
     const { success, failed, skipped } = state.settled
-    if (success + failed + skipped < state.totalRows) return
+    if (success + failed + skipped < state.indices.length) return
     state.parentSettled = true
     this.active.delete(state.parentRun.id)
+    const progress = progressFromAttempts(routineStore.listBatchChildren(state.parentRun.id), state.totalRows)
+    const { total } = progress
     let status: RoutineRun['status']
-    if (failed === 0 && skipped === 0) status = 'success'
-    else if (success === 0 && failed === state.totalRows) status = 'failed'
-    else if (success === 0 && failed === 0) status = 'skipped'
+    if (progress.failed === 0 && progress.skipped === 0 && progress.success === total) status = 'success'
+    else if (progress.success === 0 && progress.failed === total) status = 'failed'
+    else if (progress.success === 0 && progress.failed === 0) status = 'skipped'
     else status = 'partial'
-    const summary = `成功 ${success} / 失败 ${failed}` + (skipped > 0 ? ` / 跳过 ${skipped}` : '')
+    const summary = `成功 ${progress.success} / 失败 ${progress.failed}` + (progress.skipped > 0 ? ` / 跳过 ${progress.skipped}` : '')
     routineStore.finishRun(state.parentRun.id, { status, error: status === 'success' ? undefined : summary })
     // One notification per BATCH, never per row (a hundred rows would be a
     // hundred toasts); a batch stopped before it ran anything stays silent —
@@ -201,7 +306,7 @@ class BatchRunner {
     if (status !== 'skipped') {
       notify(
         status === 'success' ? `批量任务完成：${state.routine.name}` : status === 'failed' ? `批量任务失败：${state.routine.name}` : `批量任务部分完成：${state.routine.name}`,
-        status === 'success' ? `全部 ${state.totalRows} 行执行成功` : summary,
+        status === 'success' ? `全部 ${total} 行执行成功` : summary,
       )
     }
   }

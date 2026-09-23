@@ -9,7 +9,7 @@ import { previewCsv } from '../routine/batch-source'
 import { routineRunHistory } from '../routine/routine-run-history'
 import { checkCron } from '../../shared/schedule/cron'
 import { checkWorkspacePathFormat } from '../../shared/workspace-path'
-import { normalizeBatchConcurrency } from '../../shared/routine/batch'
+import { normalizeBatchConcurrency, normalizeBatchTimeoutMinutes } from '../../shared/routine/batch'
 import type { Routine, RoutineBatchConfig, RoutineParam } from '../../shared/types/routine'
 
 /** The three approval levels a routine may pin (same ladder as the composer's
@@ -68,18 +68,30 @@ export function registerRoutineHandlers(): void {
 
   // ── Batch mode (PLAN-routine-batch) ──
 
-  ipcMain.handle(IPC_CHANNELS.ROUTINE_BATCH_RUN, (_event, id: string) => {
+  // concurrency (optional) is the start dialog's PER-RUN override (L2: the
+  // routine's saved value is only the default); start() normalizes it, so a
+  // hand-crafted payload rejects instead of widening the pool. timeoutMinutes
+  // rides the same shape — each row's 单次超时 for THIS run only.
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_BATCH_RUN, (_event, id: string, concurrency?: number, timeoutMinutes?: number) => {
     const routine = routineStore.get(id)
     if (!routine) throw new Error(`routine not found: ${id}`)
     if (!routine.batch?.csvPath) throw new Error('该任务没有配置批量数据文件')
     // Refusals (another batch active, unreadable file, missing required
-    // column, over-limit rows) throw so the click surfaces the reason.
-    return routineBatchRunner.start(routine, 'manual')
+    // column, over-limit rows) reject so the click surfaces the reason.
+    return routineBatchRunner.start(routine, 'manual', { concurrency, timeoutMinutes })
   })
 
   // Unknown/already-settled parent: a no-op, the row carries its own outcome.
   ipcMain.handle(IPC_CHANNELS.ROUTINE_BATCH_STOP, (_event, parentRunId: string) => {
     routineBatchRunner.stop(parentRunId)
+  })
+
+  // Continue an interrupted batch (user stop or app exit) under the SAME
+  // parent: only the unfinished rows re-run. Refusals (no such batch, still
+  // running, another batch of the task active, routine deleted, nothing left
+  // to run, CSV reshaped) throw so the click surfaces the reason.
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_BATCH_RESUME, (_event, parentRunId: string) => {
+    return routineBatchRunner.resume(parentRunId)
   })
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_BATCH_ITEMS, (_event, parentRunId: string) => routineStore.listBatchChildren(parentRunId))
@@ -88,9 +100,10 @@ export function registerRoutineHandlers(): void {
   // saved yet (the draft's params are what the columns map to), so the
   // current param list rides along instead of an id. Parse failures return
   // { ok: false, error } — the UI shows them in place, it does not throw.
-  ipcMain.handle(IPC_CHANNELS.ROUTINE_CSV_PREVIEW, (_event, filePath: string, params: RoutineParam[] | undefined) => {
+  // Async: the read covers .xlsx through exceljs, which has no sync load.
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_CSV_PREVIEW, async (_event, filePath: string, params: RoutineParam[] | undefined) => {
     try {
-      return { ok: true as const, preview: previewCsv(filePath, params) }
+      return { ok: true as const, preview: await previewCsv(filePath, params) }
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
     }
@@ -124,15 +137,17 @@ function assertRunContext(input: Partial<Routine>): void {
 }
 
 /** The batch config passes through the same door: a garbage concurrency would
- *  widen the run pool at run time, and only the shape (non-empty csvPath,
- *  integer 1–5 concurrency, boolean applyToSchedule) is checked here — the
- *  file itself is validated when it is read (preview / batch start). */
+ *  widen the run pool at run time, and a garbage timeout would fire late or
+ *  never; only the shape (non-empty csvPath, integer 1–5 concurrency,
+ *  integer 1–120 timeoutMinutes, boolean applyToSchedule) is checked here —
+ *  the file itself is validated when it is read (preview / batch start). */
 function normalizeBatchConfig(input?: Partial<RoutineBatchConfig>): RoutineBatchConfig | undefined {
   const csvPath = input?.csvPath?.trim()
   if (!csvPath) return undefined
   return {
     csvPath,
     concurrency: normalizeBatchConcurrency(input?.concurrency),
+    timeoutMinutes: normalizeBatchTimeoutMinutes(input?.timeoutMinutes),
     applyToSchedule: input?.applyToSchedule === true,
   }
 }

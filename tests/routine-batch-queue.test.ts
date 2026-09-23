@@ -6,6 +6,12 @@
  * and lets in-flight ones finish, and a rejecting task releases its slot —
  * a bug must be able to stall, but never jam, the pool.
  *
+ * The queue drains an EXPLICIT index list (PLAN-batch-resume): a fresh batch
+ * passes 0..n-1, a resume wave passes only its unfinished indices while
+ * keeping their real CSV row numbers — so the values handed to executeRow,
+ * to stop()'s skip-settlement and to the item table are CSV rows, never wave
+ * positions. That shape is pinned by its own test below.
+ *
  * The deferred task helper is the whole harness: each row's promise resolves
  * only when the test releases it, mirroring the runner's contract that a slot
  * is held until the row truly settles (a dispatch-time resolve would let the
@@ -21,14 +27,15 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void; r
   return { promise, resolve, reject }
 }
 
-/** A queue over `total` rows whose execution is manual: tests release rows by
- *  index. Reports live in-flight state and the dispatch order. */
+/** A queue over `total` rows (indices 0..total-1, the fresh-batch shape)
+ *  whose execution is manual: tests release rows by index. Reports live
+ *  in-flight state and the dispatch order. */
 function harness(total: number, concurrency: number) {
   const gates = new Map<number, ReturnType<typeof deferred>>()
   const dispatchOrder: number[] = []
   let inFlight = 0
   let peak = 0
-  const queue = new BatchQueue(total, concurrency, (index) => {
+  const queue = new BatchQueue(Array.from({ length: total }, (_, i) => i), concurrency, (index) => {
     dispatchOrder.push(index)
     inFlight++
     peak = Math.max(peak, inFlight)
@@ -97,7 +104,7 @@ describe('BatchQueue', () => {
 
   it('a rejecting row releases its slot instead of stalling the pool', async () => {
     const executed: number[] = []
-    const queue = new BatchQueue(3, 1, async (index) => {
+    const queue = new BatchQueue([0, 1, 2], 1, async (index) => {
       executed.push(index)
       if (index === 0) await Promise.reject(new Error('row bug'))
       else await new Promise((r) => setTimeout(r, 1))
@@ -108,5 +115,35 @@ describe('BatchQueue', () => {
     // queue drained to idle.
     expect(executed).toEqual([0, 1, 2])
     expect(queue.busy).toBe(false)
+  })
+
+  it('drains an explicit sparse index list (a resume wave keeps CSV row numbers)', async () => {
+    // Rows 1 and 4 are the unfinished ones of a 5-row batch — the queue must
+    // dispatch exactly those values, not 0..1 wave positions, and stop must
+    // hand back the same real indices.
+    const gates = new Map<number, ReturnType<typeof deferred>>()
+    const dispatchOrder: number[] = []
+    const queue = new BatchQueue([1, 4], 2, (index) => {
+      dispatchOrder.push(index)
+      const d = deferred()
+      gates.set(index, d)
+      return d.promise
+    })
+    queue.start()
+    await tick()
+    expect(dispatchOrder).toEqual([1, 4])
+    // Both slots taken by real rows — a wave position bug (0, 1) fails here.
+    expect(queue.stop()).toEqual([])
+    gates.get(1)!.resolve()
+    gates.get(4)!.resolve()
+    await tick()
+    expect(queue.busy).toBe(false)
+    // A second wave over a single leftover row dispatches its real index too.
+    const ran: number[] = []
+    const q2 = new BatchQueue([3], 5, async (index) => { ran.push(index) })
+    q2.start()
+    await tick()
+    expect(ran).toEqual([3])
+    expect(q2.stop()).toEqual([])
   })
 })

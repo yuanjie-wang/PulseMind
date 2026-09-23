@@ -34,6 +34,7 @@ import { describeRelativeTimeText } from '../../utils/relative-time'
 import { PANE_ROW_STYLES } from './pane-styles'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
 import type { MenuProps } from 'antd'
+import { DEFAULT_BATCH_TIMEOUT_MINUTES } from '../../../../shared/routine/batch'
 
 /** How often run rows (statuses, newly fired scheduled runs) are refreshed. */
 const RUNS_POLL_MS = 3000
@@ -366,7 +367,12 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
           can continue it once the automated prompt is done). */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {selectedRun?.batch ? (
-          <BatchRunView key={selectedRun.id} run={selectedRun} routine={routine} />
+          <BatchRunView
+            key={selectedRun.id}
+            run={selectedRun}
+            routine={routine}
+            onResumed={() => { void openRuns(routineId, selectedRunId ?? undefined) }}
+          />
         ) : (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', borderBottom: '1px solid var(--pm-border-hairline)' }}>
@@ -442,7 +448,7 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
       />
       {convId && (
         unattended ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 24px 20px', fontSize: 12, color: 'var(--pm-text-muted)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '8px 24px 20px', fontSize: 12, color: 'var(--pm-text-muted)' }}>
             <Spin size="small" />
             任务执行中，结束后可以继续追问
           </div>
@@ -475,14 +481,17 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
   )
 }
 
-// ── Batch run view (PLAN-routine-batch M6) ──
+// ── Batch run view (PLAN-routine-batch M6, PLAN-batch-resume) ──
 // A batch PARENT run's pane: live progress over the per-row table, stop while
-// running, and a drill-in — clicking a row swaps the table for that row's
+// running, 继续 once settled with unfinished rows (same parent — failed /
+// skipped / never-attempted rows re-run as new attempts, successes stay),
+// and a drill-in — clicking a row swaps the table for that row's
 // conversation (the same RunTranscript a single run gets, so a streaming row
 // is live here too). Items refresh on the same 3s poll as the runs list; the
-// parent row in the middle pane carries `batchProgress` computed main-side.
+// parent row in the middle pane carries `batchProgress` computed main-side
+// (folded to each row's LATEST attempt, so a resumed row counts once).
 
-function BatchRunView({ run, routine }: { run: RoutineRun; routine: Routine | null }): React.ReactElement {
+function BatchRunView({ run, routine, onResumed }: { run: RoutineRun; routine: Routine | null; onResumed?: () => void }): React.ReactElement {
   const { t } = useTranslation()
   const { modal } = AntdApp.useApp()
   const [items, setItems] = useState<RoutineRun[]>([])
@@ -516,6 +525,14 @@ function BatchRunView({ run, routine }: { run: RoutineRun; routine: Routine | nu
   const total = progress?.total ?? run.batch?.totalRows ?? 0
   const settledCount = total - (progress?.running ?? 0)
   const percent = total > 0 ? Math.round((settledCount / total) * 100) : 0
+  // Rows resume would pick up: everything that is not a success and not
+  // running right now (= total − success − running). Split out only to choose
+  // the verb — pure failures read 重试, anything wider reads 续跑.
+  const neverRun = Math.max(0, total - (progress?.success ?? 0) - (progress?.failed ?? 0) - (progress?.skipped ?? 0) - (progress?.running ?? 0))
+  const unfinished = (progress?.failed ?? 0) + (progress?.skipped ?? 0) + neverRun
+  const resumeLabel = (progress?.skipped ?? 0) === 0 && neverRun === 0
+    ? `重试失败 ${progress?.failed ?? 0} 行`
+    : `续跑剩余 ${unfinished} 行`
 
   const stop = (): void => {
     modal.confirm({
@@ -527,6 +544,31 @@ function BatchRunView({ run, routine }: { run: RoutineRun; routine: Routine | nu
       onOk: async () => {
         await window.electronAPI.routineBatchStop(run.id)
         await openItems(run.id)
+      },
+    })
+  }
+
+  /** Continue this parent: unfinished rows re-run as NEW attempt rows under the
+   *  SAME batch (the six main-side refusals surface through the catch). The
+   *  confirm carries the cost — one fresh conversation per row — like the
+   *  start dialog does. */
+  const resumeBatch = (): void => {
+    if (running || unfinished === 0) return
+    modal.confirm({
+      title: '继续这次批量运行？',
+      content: `将为 ${unfinished} 行各创建一个新会话，只重跑未成功的行；已成功的行保持原状。`,
+      okText: '继续',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await window.electronAPI.routineBatchResume(run.id)
+          notify.success('批量运行已继续')
+          await openItems(run.id)
+          onResumed?.()
+        } catch (err) {
+          notify.error(err instanceof Error ? err.message : String(err))
+          throw err
+        }
       },
     })
   }
@@ -572,7 +614,7 @@ function BatchRunView({ run, routine }: { run: RoutineRun; routine: Routine | nu
         <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }}>
           {selectedChild
             ? `第 ${(selectedChild.rowIndex ?? 0) + 1} 行 · ${run.batch?.csvName ?? ''}`
-            : `批量运行 · ${run.batch?.csvName ?? ''} · 并发 ${run.batch?.concurrency ?? '—'}`}
+            : `批量运行 · ${run.batch?.csvName ?? ''} · 并发 ${run.batch?.concurrency ?? '—'} · 单次超时 ${run.batch?.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES} 分钟`}
         </span>
         {!selectedChild && total > 0 && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }} data-batch-progress>
@@ -580,7 +622,7 @@ function BatchRunView({ run, routine }: { run: RoutineRun; routine: Routine | nu
             <span style={{ fontSize: 12, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap' }}>
               成功 {progress?.success ?? 0} / 失败 {progress?.failed ?? 0}
               {(progress?.skipped ?? 0) > 0 ? ` / 跳过 ${progress!.skipped}` : ''}
-              {running ? ` · 共 ${total} 行` : ` · 共 ${total} 行`}
+              {' · 共 '}{total}{' 行'}
             </span>
           </span>
         )}
@@ -588,6 +630,15 @@ function BatchRunView({ run, routine }: { run: RoutineRun; routine: Routine | nu
         {selectedChild && <span style={{ flex: 1 }} />}
         {!selectedChild && running && (
           <Button size="small" icon={<PauseCircleOutlined />} onClick={stop}>停止批量</Button>
+        )}
+        {/* 继续 is the stop button's counterpart: same slot, opposite half of
+            the lifecycle — shown only once the batch has settled with rows
+            left to run (a fully-successful batch has none and shows nothing,
+            which is exactly the main-side 全部行已成功 refusal). */}
+        {!selectedChild && !running && total > 0 && unfinished > 0 && (
+          <Button size="small" icon={<ReloadOutlined />} onClick={resumeBatch} data-batch-resume>
+            {resumeLabel}
+          </Button>
         )}
       </div>
 
@@ -621,6 +672,13 @@ function BatchRunView({ run, routine }: { run: RoutineRun; routine: Routine | nu
                   <span style={{ fontSize: 12, color: 'var(--pm-text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                     {summaryOf(item)}
                   </span>
+                  {(item.attempts ?? 0) > 1 && (
+                    <Tooltip title="该行在本批量中的累计执行次数（续跑会追加尝试）">
+                      <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', flexShrink: 0 }} data-batch-attempts={item.attempts}>
+                        已执行 {item.attempts} 次
+                      </span>
+                    </Tooltip>
+                  )}
                   <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', flexShrink: 0 }}>
                     {describeRelativeTimeText(item.startedAt, itemsFetchedAt, t) ?? ''}
                   </span>

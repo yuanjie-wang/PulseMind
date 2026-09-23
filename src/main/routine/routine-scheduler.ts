@@ -9,7 +9,7 @@
 
 import { routineStore } from '../storage/routine-store'
 import { decideScheduleFire } from '../../shared/schedule/schedule-decision'
-import { routineRunner } from './routine-runner'
+import { routineRunner, notify } from './routine-runner'
 import { routineBatchRunner } from './batch-runner'
 import { routineRunHistory } from './routine-run-history'
 import { auditStore } from '../storage/audit-store'
@@ -99,11 +99,16 @@ class RoutineScheduler {
     auditStore.record({ scope: 'routine', actor: 'scheduler', action: 'routine.fire', target: routine.id, decision: 'allowed' })
     try {
       // Batch integration (L10): a routine that opted in (batch.applyToSchedule)
-      // runs its whole CSV on a fire; everything else stays the single default.
-      // Overlap is already guarded upstream — a batch's child rows are
-      // 'running' rows, so a long batch simply skips later fires.
-      if (routine.batch?.applyToSchedule) routineBatchRunner.start(routine, 'schedule')
-      else routineRunner.start(routine, 'schedule')
+      // runs its whole data file on a fire; everything else stays the single
+      // default. Overlap is already guarded upstream — a batch's child rows are
+      // 'running' rows, so a long batch simply skips later fires. The start is
+      // async now (xlsx read), so a refusal surfaces as a notification instead
+      // of an unhandled rejection inside the tick.
+      if (routine.batch?.applyToSchedule) {
+        void routineBatchRunner.start(routine, 'schedule').catch((err: unknown) => {
+          notify(`批量任务启动失败：${routine.name}`, err instanceof Error ? err.message : String(err))
+        })
+      } else routineRunner.start(routine, 'schedule')
     } finally {
       // Advance regardless of run outcome; the run itself reports separately.
       routineStore.update(routine.id, { nextRunAt: new Date(next).toISOString() })

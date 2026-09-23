@@ -28,6 +28,8 @@ export interface RoutineBatchConfig {
   csvPath: string
   /** Rows executed at once, 1–5; absent = the default (3). */
   concurrency?: number
+  /** Per-row hard ceiling in minutes, 1–120; absent = the default (15). */
+  timeoutMinutes?: number
   /** Cron fires run the batch too, not just manual starts. */
   applyToSchedule?: boolean
 }
@@ -81,6 +83,9 @@ export interface RoutineBatchMeta {
   csvName: string
   totalRows: number
   concurrency: number
+  /** What each row's ceiling was at start (undefined on parents recorded
+   *  before the field existed — they ran the default). */
+  timeoutMinutes?: number
 }
 
 export interface RoutineRun {
@@ -102,6 +107,9 @@ export interface RoutineRun {
   /** Child rows: the provided values this row ran with — the retry path uses
    *  the snapshot, not the CSV, because the file may have changed since. */
   paramsSnapshot?: Record<string, string>
+  /** Child rows, computed at read: how many attempts this CSV row has (a
+   *  resumed batch re-runs unfinished rows, appending new attempt rows). */
+  attempts?: number
   /** Parent rows only: what the batch was launched with. */
   batch?: RoutineBatchMeta
   /** Parent rows only, computed at read: live progress over the child rows. */

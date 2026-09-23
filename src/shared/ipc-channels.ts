@@ -249,6 +249,7 @@ export const IPC_CHANNELS = {
   // ── PLAN-routine-batch: CSV 批量模式 ──
   ROUTINE_BATCH_RUN: 'routine:batch-run',
   ROUTINE_BATCH_STOP: 'routine:batch-stop',
+  ROUTINE_BATCH_RESUME: 'routine:batch-resume',
   ROUTINE_BATCH_ITEMS: 'routine:batch-items',
   ROUTINE_CSV_PREVIEW: 'routine:csv-preview',
 

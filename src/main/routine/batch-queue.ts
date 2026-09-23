@@ -4,18 +4,23 @@
 // tasks and pin the semantics (concurrency ceiling, FIFO order, stop) without
 // a database or an engine.
 //
+// The queue drains an EXPLICIT list of CSV row indices, not a range: a fresh
+// batch passes every index, a resumed batch passes only the unfinished ones
+// while keeping their real row numbers (labels, skip-settlement and the item
+// table all speak in CSV rows, never in wave positions).
+//
 // The ONE load-bearing contract: `executeRow` resolves only when its row has
 // truly settled (engine finished / failed / stopped), not when it was merely
 // dispatched — the pool's in-flight count IS the concurrency guarantee, and a
 // row that resolved early would let the pump run away to unlimited parallelism.
 
 export class BatchQueue {
-  private nextIndex = 0
+  private next = 0
   private inFlight = 0
   private stopped = false
 
   constructor(
-    private readonly total: number,
+    private readonly indices: number[],
     private readonly concurrency: number,
     /** Runs one row to completion. Must never reject — a rejection is absorbed
      *  (and still releases its slot) so a bug cannot stall the whole batch. */
@@ -30,8 +35,8 @@ export class BatchQueue {
    *  caller can settle them (已跳过). In-flight rows keep running. */
   stop(): number[] {
     this.stopped = true
-    const rest: number[] = []
-    while (this.nextIndex < this.total) rest.push(this.nextIndex++)
+    const rest = this.indices.slice(this.next)
+    this.next = this.indices.length
     return rest
   }
 
@@ -41,8 +46,8 @@ export class BatchQueue {
   }
 
   private pump(): void {
-    while (!this.stopped && this.inFlight < this.concurrency && this.nextIndex < this.total) {
-      const index = this.nextIndex++
+    while (!this.stopped && this.inFlight < this.concurrency && this.next < this.indices.length) {
+      const index = this.indices[this.next++]
       this.inFlight++
       Promise.resolve()
         .then(() => this.executeRow(index))

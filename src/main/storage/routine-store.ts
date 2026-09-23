@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFile
 import { join } from 'node:path'
 import { getDb } from './database'
 import { DATA_DIR } from './index'
+import { latestAttemptsByIndex, progressFromAttempts } from '../../shared/routine/batch'
 import type { Routine, RoutineBatchProgress, RoutineRun } from '../../shared/types/routine'
 
 export const ROUTINES_DIR = join(DATA_DIR, 'routines')
@@ -135,7 +136,7 @@ export const routineStore = {
   // CSV row. Children are real run rows: hasRunningRun/overlap, failStaleRuns
   // crash recovery and run-history click-through all work on them unchanged.
 
-  startBatchRun(routineId: string, trigger: RoutineRun['trigger'], meta: { csvName: string; totalRows: number; concurrency: number }): RoutineRun {
+  startBatchRun(routineId: string, trigger: RoutineRun['trigger'], meta: { csvName: string; totalRows: number; concurrency: number; timeoutMinutes: number }): RoutineRun {
     const run: RoutineRun = {
       id: prefixedId('run', 12),
       routineId,
@@ -171,17 +172,38 @@ export const routineStore = {
   },
 
   listBatchChildren(parentRunId: string): RoutineRun[] {
-    const rows = getDb()
-      .prepare('SELECT * FROM routine_runs WHERE parent_run_id = ? ORDER BY row_index')
-      .all(parentRunId) as RoutineRunRow[]
-    return rows.map(rowToRun)
+    // A resumed batch carries several attempt rows per CSV row; the item table
+    // speaks in ROWS, not attempts — one entry per row_index carrying the
+    // latest attempt's outcome, plus how many attempts the row has had.
+    const perRow = new Map<number, { run: RoutineRun; count: number }>()
+    for (const row of childRows(parentRunId)) {
+      if (row.row_index == null) continue
+      const seen = perRow.get(row.row_index)
+      perRow.set(row.row_index, { run: rowToRun(row), count: (seen?.count ?? 0) + 1 })
+    }
+    return [...perRow.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, { run, count }]) => (count > 1 ? { ...run, attempts: count } : run))
+  },
+
+  getRun(id: string): RoutineRun | null {
+    const row = getDb().prepare('SELECT * FROM routine_runs WHERE id = ?').get(id) as RoutineRunRow | undefined
+    return row ? rowToRun(row) : null
+  },
+
+  /** Re-open a settled batch parent for a resume wave: back to 'running' with
+   *  the old outcome summary cleared — settlement overwrites it once every
+   *  row holds a terminal outcome again. */
+  reopenBatchRun(id: string): void {
+    getDb()
+      .prepare("UPDATE routine_runs SET status = 'running', finished_at = NULL, error = NULL WHERE id = ?")
+      .run(id)
   },
 
   batchProgress(parentRunId: string): RoutineBatchProgress {
-    const counts = getDb()
-      .prepare('SELECT status, COUNT(*) AS n FROM routine_runs WHERE parent_run_id = ? GROUP BY status')
-      .all(parentRunId) as Array<{ status: string; n: number }>
-    return progressFromCounts(counts)
+    const parent = this.getRun(parentRunId)
+    const children = childRows(parentRunId).map(rowToRun)
+    return progressFromAttempts(children, parent?.batch?.totalRows ?? latestAttemptsByIndex(children).size)
   },
 
   /** Whether the routine's previous run is still going (overlap guard). Child
@@ -213,9 +235,8 @@ export const routineStore = {
     const runs = rows.map(rowToRun)
     // A batch parent is one line in a flat list; live progress is what makes
     // the line readable (「批量 · 成功 8/10」). Children never appear here.
-    const countsStmt = getDb().prepare('SELECT status, COUNT(*) AS n FROM routine_runs WHERE parent_run_id = ? GROUP BY status')
     for (const run of runs) {
-      if (run.batch) run.batchProgress = progressFromCounts(countsStmt.all(run.id) as Array<{ status: string; n: number }>)
+      if (run.batch) run.batchProgress = batchProgressOf(run.id, run.batch)
     }
     return runs
   },
@@ -302,14 +323,21 @@ function deleteRowsWithChildren(rows: RoutineRunRow[]): RoutineRun[] {
   return all.map(rowToRun)
 }
 
-function progressFromCounts(counts: Array<{ status: string; n: number }>): RoutineBatchProgress {
-  const progress: RoutineBatchProgress = { total: 0, success: 0, failed: 0, skipped: 0, running: 0 }
-  for (const c of counts) {
-    progress.total += c.n
-    if (c.status === 'success') progress.success = c.n
-    else if (c.status === 'failed') progress.failed = c.n
-    else if (c.status === 'skipped') progress.skipped = c.n
-    else if (c.status === 'running') progress.running = c.n
-  }
-  return progress
+// ── Batch read helpers ──
+// Progress is folded to the LATEST attempt per CSV row (a resumed batch appends
+// new attempt rows for unfinished indices), against the row count the batch was
+// launched with — the honest denominator before every row is dispatched and the
+// stable one once resumed waves outnumber the rows.
+
+function childRows(parentRunId: string): RoutineRunRow[] {
+  // started_at then rowid: the later attempt of a row must come after its
+  // earlier ones so "last occurrence wins" folds correctly.
+  return getDb()
+    .prepare('SELECT * FROM routine_runs WHERE parent_run_id = ? ORDER BY started_at, rowid')
+    .all(parentRunId) as RoutineRunRow[]
+}
+
+function batchProgressOf(parentId: string, meta: RoutineRun['batch']): RoutineBatchProgress {
+  const children = childRows(parentId).map(rowToRun)
+  return progressFromAttempts(children, meta?.totalRows ?? latestAttemptsByIndex(children).size)
 }

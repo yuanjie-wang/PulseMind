@@ -7,7 +7,7 @@
  * injected by batch runs, absent (token stays visible) in single runs. */
 
 import { describe, expect, it } from 'vitest'
-import { analyzeCsvBatch, rowParamsAt, normalizeBatchConcurrency, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY } from '../src/shared/routine/batch'
+import { analyzeCsvBatch, rowParamsAt, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY, BATCH_TIMEOUT_MINUTE_OPTIONS, MAX_BATCH_TIMEOUT_MINUTES, DEFAULT_BATCH_TIMEOUT_MINUTES } from '../src/shared/routine/batch'
 import { builtinRoutineVars, renderRoutinePrompt, resolveParamValues, assertRunnableParams as assertRunnableParamsRow } from '../src/shared/routine/params'
 import { parseCsv } from '../src/shared/routine/csv'
 import type { Routine, RoutineParam } from '../src/shared/types/routine'
@@ -102,6 +102,38 @@ describe('batch concurrency validation', () => {
   it('the default stays within the ceiling (both constants pinned)', () => {
     expect(DEFAULT_BATCH_CONCURRENCY).toBe(3)
     expect(MAX_BATCH_CONCURRENCY).toBe(5)
+  })
+})
+
+describe('batch per-row timeout validation (单次超时)', () => {
+  it('absent/blank → undefined (default applies)', () => {
+    expect(normalizeBatchTimeoutMinutes(undefined)).toBeUndefined()
+    expect(normalizeBatchTimeoutMinutes(null)).toBeUndefined()
+    expect(normalizeBatchTimeoutMinutes('')).toBeUndefined()
+  })
+
+  it('accepts integers within [1, MAX]', () => {
+    expect(normalizeBatchTimeoutMinutes(1)).toBe(1)
+    expect(normalizeBatchTimeoutMinutes(MAX_BATCH_TIMEOUT_MINUTES)).toBe(MAX_BATCH_TIMEOUT_MINUTES)
+  })
+
+  it('rejects out-of-range / non-integer / non-number values', () => {
+    expect(() => normalizeBatchTimeoutMinutes(0)).toThrow()
+    expect(() => normalizeBatchTimeoutMinutes(MAX_BATCH_TIMEOUT_MINUTES + 1)).toThrow()
+    expect(() => normalizeBatchTimeoutMinutes(2.5)).toThrow()
+    expect(() => normalizeBatchTimeoutMinutes('30')).toThrow()
+  })
+
+  it('the pick list is exactly what the doors accept, default included', () => {
+    // The editor and the start dialog offer this fixed list; every entry must
+    // pass normalizeBatchTimeoutMinutes (a UI-only widening would start fine
+    // but the runner would refuse at the last step) and the default must be
+    // pickable — a default the list omits cannot be re-selected after change.
+    for (const m of BATCH_TIMEOUT_MINUTE_OPTIONS) expect(normalizeBatchTimeoutMinutes(m)).toBe(m)
+    expect(BATCH_TIMEOUT_MINUTE_OPTIONS).toContain(DEFAULT_BATCH_TIMEOUT_MINUTES)
+    // Both constants pinned — changing one is a user-visible ruling.
+    expect(DEFAULT_BATCH_TIMEOUT_MINUTES).toBe(15)
+    expect(MAX_BATCH_TIMEOUT_MINUTES).toBe(120)
   })
 })
 

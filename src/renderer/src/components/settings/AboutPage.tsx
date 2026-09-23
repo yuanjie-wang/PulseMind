@@ -67,7 +67,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 把重复的事交给日程，到点自动执行。
 
 - **例行任务** — 定时（cron）或手动触发，独立会话运行，完成后通知你
-- **CSV 批量运行** — 给任务挂一个 CSV，每行数据用独立会话执行一次任务；并发可调，运行历史按行展示，点击钻入该行的会话
+- **CSV 批量运行** — 给任务挂一个 CSV，每行数据用独立会话执行一次任务；并发与单次超时可调，运行历史按行展示，点击钻入该行的会话
 - **运行历史** — 按天分桶，可删除、清理、设置保留期限
 - **推荐模板** — 五个职场常用任务，点击带入编辑器，改改就能用
 - **对话式配置** — 用聊天的方式填表；先出提案卡片，确认后才落库
@@ -205,7 +205,7 @@ Give the AI a folder of its own, and it can read, write, and keep pushing the wo
 Hand the repetitive work to a schedule and let it run itself.
 
 - **Routines** — cron-scheduled or manual, each run in its own session, with a notification when it finishes
-- **CSV batch runs** — point a routine at a CSV and each data row runs the task in its own session; concurrency is adjustable, and the run history lists every row, clickable into its session
+- **CSV batch runs** — point a routine at a CSV and each data row runs the task in its own session; concurrency and the per-row timeout are adjustable, and the run history lists every row, clickable into its session
 - **Run history** — bucketed by day; delete, clear, or set a retention window
 - **Starter templates** — five workplace templates, one click into the editor
 - **Conversational setup** — fill the form by chatting; a proposal card comes first, and nothing is saved until you confirm

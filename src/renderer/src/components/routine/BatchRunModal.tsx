@@ -7,10 +7,10 @@
 // column, over the row cap, unreadable file) disable 开始 and say why.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { Modal, Tag } from 'antd'
+import { Modal, Select, Tag } from 'antd'
 import { FileTextOutlined } from '@ant-design/icons'
 import { notify } from '../../utils/notify'
-import { analyzeCsvBatch, DEFAULT_BATCH_CONCURRENCY, MAX_BATCH_ROWS } from '../../../../shared/routine/batch'
+import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, DEFAULT_BATCH_TIMEOUT_MINUTES, MAX_BATCH_CONCURRENCY, MAX_BATCH_ROWS } from '../../../../shared/routine/batch'
 import type { CsvPreview } from '../../../../shared/routine/batch'
 import type { Routine } from '../../../../shared/types/routine'
 
@@ -23,6 +23,12 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
   const [preview, setPreview] = useState<CsvPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
+  // Per-run overrides (L2): concurrency and the per-row 单次超时 default to
+  // the task's saved values on every open, ride the start click, and are
+  // never written back to the config — the saved values in the editor stay
+  // the default for next time.
+  const [concurrency, setConcurrency] = useState(DEFAULT_BATCH_CONCURRENCY)
+  const [timeoutMinutes, setTimeoutMinutes] = useState(DEFAULT_BATCH_TIMEOUT_MINUTES)
   const fetchNonceRef = useRef(0)
 
   // (Re)read when the dialog finishes opening for a routine — the same event
@@ -33,6 +39,8 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
     const nonce = ++fetchNonceRef.current
     setPreview(null)
     setError(null)
+    setConcurrency(routine.batch?.concurrency ?? DEFAULT_BATCH_CONCURRENCY)
+    setTimeoutMinutes(routine.batch?.timeoutMinutes ?? DEFAULT_BATCH_TIMEOUT_MINUTES)
     void window.electronAPI.routineCsvPreview(routine.batch!.csvPath, routine.params)
       .then((res) => {
         if (fetchNonceRef.current !== nonce) return
@@ -53,7 +61,7 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
   const start = (): void => {
     if (!routine || blocked) return
     setStarting(true)
-    void window.electronAPI.routineBatchRun(routine.id)
+    void window.electronAPI.routineBatchRun(routine.id, concurrency, timeoutMinutes)
       .then(() => {
         notify.success(`批量任务已启动：${routine.name}`)
         onStarted(routine)
@@ -88,8 +96,24 @@ export function BatchRunModal({ routine, open, onClose, onStarted }: {
         {error && <div style={{ fontSize: 12, color: '#cf1322' }}>{error}</div>}
         {preview && analysis && (
           <>
-            <div style={{ fontSize: 12, color: '#999' }}>
-              CSV 的每一行都会用独立会话执行一次任务；并发 {routine?.batch?.concurrency ?? DEFAULT_BATCH_CONCURRENCY}。
+            <div style={{ fontSize: 12, color: '#999' }}>数据文件的每一行都会用独立会话执行一次任务</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Select
+                size="small"
+                style={{ flex: 1, minWidth: 0 }}
+                value={concurrency}
+                onChange={setConcurrency}
+                options={Array.from({ length: MAX_BATCH_CONCURRENCY }, (_, i) => ({ value: i + 1, label: `同时执行 ${i + 1} 行` }))}
+                data-batch-concurrency
+              />
+              <Select
+                size="small"
+                style={{ flex: 1, minWidth: 0 }}
+                value={timeoutMinutes}
+                onChange={setTimeoutMinutes}
+                options={BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `单次超时 ${m} 分钟` }))}
+                data-batch-timeout
+              />
             </div>
             <div style={{ border: '1px solid var(--pm-border-hairline)', borderRadius: 8, overflow: 'hidden' }} data-batch-run-preview>
               <div style={{ display: 'flex', background: 'var(--pm-fill)' }}>

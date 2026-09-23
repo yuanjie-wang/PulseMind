@@ -28,12 +28,15 @@ import { saveConversation } from '../storage/conversation.db'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
 import { assertRunnableParams, renderRoutinePrompt } from '../../shared/routine/params'
+import { DEFAULT_BATCH_TIMEOUT_MINUTES } from '../../shared/routine/batch'
 import type { AgentEventData } from '../../shared/agent-protocol'
 import type { AgentMessage } from '../../renderer/src/types/agent'
 import type { Routine, RoutineRun } from '../../shared/types/routine'
 
-/** Hard ceiling for one routine run (a hung run must not hold the slot forever). */
-const RUN_TIMEOUT_MS = 15 * 60_000
+/** Hard ceiling for one routine run (a hung run must not hold the slot forever).
+ *  Derived from the shared batch default so the single-run ceiling and a batch
+ *  row's default cannot drift apart. */
+const RUN_TIMEOUT_MS = DEFAULT_BATCH_TIMEOUT_MINUTES * 60_000
 
 /** After a stop is requested: how long the engine gets to report its terminal
  *  status before the row is settled anyway. stopExecution parks the engine at
@@ -105,6 +108,10 @@ export interface UnattendedRunOptions {
   workspaceDir?: string
   /** Default true; batch children stay silent — the batch notifies once. */
   notifyOnFinish?: boolean
+  /** Hard ceiling for THIS run in ms; absent = RUN_TIMEOUT_MS. The batch
+   *  runner passes each row's configured 单次超时 (normalized to whole
+   *  minutes at the start/resume door); single runs take the default. */
+  timeoutMs?: number
   /** The batch pool's slot-release point: fires after the run row is finished
    *  AND the transcript is persisted (both halves of "this row is inspectable"). */
   onSettled?: (status: 'success' | 'failed', error?: string) => void
@@ -148,10 +155,14 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
       opts.onSettled?.(status, error)
     })
   }
+  // Production values are whole minutes (normalizeBatchTimeoutMinutes), so the
+  // message reads clean; a direct caller passing sub-minute ms just gets a
+  // fraction there — the ceiling itself is still exact.
+  const timeoutMs = opts.timeoutMs ?? RUN_TIMEOUT_MS
   const timeout = setTimeout(() => {
     void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
-    finish('failed', `运行超时（${RUN_TIMEOUT_MS / 60000} 分钟）`)
-  }, RUN_TIMEOUT_MS)
+    finish('failed', `运行超时（${timeoutMs / 60000} 分钟）`)
+  }, timeoutMs)
 
   // Unattended gates: reject approvals, answer ask_user, stop on loop limits.
   const onEvent = (sessionId: string, data: AgentEventData): void => {

@@ -4,7 +4,14 @@
 // per CSV row, a child that failed its parameter pre-check never reaches the
 // engine, a stopped batch settles queued rows as skipped and in-flight rows as
 // failed, and deleting a parent takes its children (and their transcripts) with
-// it. vitest covers the pure halves (CSV parsing, mapping, the worker queue) —
+// it. PLAN-batch-resume adds three claims on top: a stopped batch CONTINUES
+// under its same parent as a new attempt wave (six refusals, all before the
+// reopen), a workbook runs as the batch's table (xlsx → the same {headers,
+// rows} the CSV parser yields), and the start dialog's per-run concurrency
+// override reaches the pool without touching the saved config, and a row's
+// 单次超时 both fires (settling the row failed with 运行超时) and threads from
+// config/override to the parent's meta. vitest covers
+// the pure halves (CSV parsing, mapping, the worker queue, the resume folds) —
 // this probe drives the production pair (real routine-store + real
 // batch-runner over real SQLite) with the session manager stubbed at the
 // module boundary.
@@ -15,6 +22,12 @@
 // aliased to a stub — INCLUDING `src/main/agent/session-manager`, whose real
 // module graph drags the whole engine stack into the bundle for nothing, and
 // whose stub is a plain object the probe re-wires per section.
+//
+// The bundle lands INSIDE node_modules/, not in the temp dir: with
+// `packages: 'external'`, batch-source's `await import('exceljs')` stays a
+// native dynamic import, and the ESM loader takes no NODE_PATH fallback —
+// measured: from a tmpdir bundle it dies ERR_MODULE_NOT_FOUND, from
+// node_modules/.pm-routine-batch-probe.cjs it resolves. Cleaned in finally.
 import { build } from 'esbuild'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -48,7 +61,7 @@ async function main() {
   await initializeDatabase()
   const { routineStore } = await import('./src/main/storage/routine-store')
   const { routineBatchRunner } = await import('./src/main/routine/batch-runner')
-  const { decodeCsvBytes } = await import('./src/main/routine/batch-source')
+  const { decodeCsvBytes, previewCsv } = await import('./src/main/routine/batch-source')
   const { routineRunHistory } = await import('./src/main/routine/routine-run-history')
   const { saveConversation, getConversation } = await import('./src/main/storage/conversation.db')
   const { agentMessagesToConversation } = await import('./src/renderer/src/utils/message-utils')
@@ -116,7 +129,7 @@ async function main() {
   // ── 1. The happy batch: five rows, five independent conversations ──
   const csvA = writeCsv('a.csv', 'repo,branch\\nr1,b1\\nr2,b2\\nr3,b3\\nr4\\nr5,b5\\n')
   const routineA = makeRoutine('巡检 A', csvA)
-  let parent = routineBatchRunner.start(routineA, 'manual')
+  let parent = await routineBatchRunner.start(routineA, 'manual')
   check('start returns the parent row with the batch meta', () => {
     assert.equal(parent.status, 'running')
     assert.equal(parent.batch.totalRows, 5)
@@ -168,7 +181,7 @@ async function main() {
   const sessionsBefore = sessions.length
   const csvB = writeCsv('b.csv', 'repo,branch\\nr1,b1\\n,b2\\nr3,b3\\n')
   const routineB = makeRoutine('巡检 B', csvB)
-  routineBatchRunner.start(routineB, 'manual')
+  await routineBatchRunner.start(routineB, 'manual')
   await until(() => parentOf(routineB.id)?.status !== 'running', 'batch B settles')
   const parentB = parentOf(routineB.id)
   const childrenB = childrenOf(parentB.id)
@@ -192,11 +205,12 @@ async function main() {
   routineC.batch = { ...routineC.batch, concurrency: 1 }
   routineStore.update(routineC.id, { batch: { csvPath: csvC, concurrency: 1 } })
   askBehavior = 'hang'
-  const parentC = routineBatchRunner.start(routineStore.get(routineC.id), 'manual')
+  const parentC = await routineBatchRunner.start(routineStore.get(routineC.id), 'manual')
   await until(() => childrenOf(parentC.id).length === 1, 'first row dispatched')
-  check('a second batch for the same task is refused while one is active', () => {
-    assert.throws(() => routineBatchRunner.start(routineStore.get(routineC.id), 'manual'), /已有批量运行在进行/)
-  })
+  // start() is async now (the xlsx source has no sync load), so its refusals
+  // REJECT — asserted before check(), whose callback contract stays sync.
+  await assert.rejects(() => routineBatchRunner.start(routineStore.get(routineC.id), 'manual'), /已有批量运行在进行/)
+  check('a second batch for the same task is refused while one is active', () => {})
   routineBatchRunner.stop(parentC.id)
   await until(() => parentOf(routineC.id)?.status !== 'running', 'batch C settles')
   const childrenC = childrenOf(parentC.id)
@@ -211,7 +225,7 @@ async function main() {
     assert.equal(routineBatchRunner.isActive(parentC.id), false)
   })
   askBehavior = 'complete'
-  const again = routineBatchRunner.start(routineStore.get(routineC.id), 'manual')
+  const again = await routineBatchRunner.start(routineStore.get(routineC.id), 'manual')
   await until(() => parentOf(routineC.id)?.id === again.id && parentOf(routineC.id)?.status !== 'running', 'retry batch settles')
   check('after a stop a new batch can start and run to success', () => {
     assert.equal(parentOf(routineC.id).status, 'success')
@@ -265,7 +279,7 @@ async function main() {
   routineStore.update(routineD.id, { batch: { csvPath: csvD, concurrency: 1 } })
   completeAsks = 1 // row 1 completes, later rows park — a settled child under a live batch
   askCount = 0 // the counter is global across sections; this batch counts from its own first ask
-  const parentD = routineBatchRunner.start(routineStore.get(routineD.id), 'manual')
+  const parentD = await routineBatchRunner.start(routineStore.get(routineD.id), 'manual')
   await until(() => {
     const c = childrenOf(parentD.id)
     return c.length === 2 && c[0].status === 'success'
@@ -313,7 +327,7 @@ async function main() {
   const routineE = makeRoutine('巡检 E', csvE)
   routineStore.update(routineE.id, { batch: { csvPath: csvE, concurrency: 1 } })
   createSessionGate = (() => { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } })()
-  const parentE = routineBatchRunner.start(routineStore.get(routineE.id), 'manual')
+  const parentE = await routineBatchRunner.start(routineStore.get(routineE.id), 'manual')
   await until(() => childrenOf(parentE.id).length === 1, 'row 1 dispatched into the gate')
   routineBatchRunner.stop(parentE.id)
   check('stop with a row still creating its session: the queued row skips at once', () => {
@@ -333,12 +347,201 @@ async function main() {
     assert.equal(routineBatchRunner.isActive(parentE.id), false)
   })
 
-  console.log('PASS: ' + checks + ' checks — batch runs row-by-row through the real store, runner and cleanup')
+  // ── 10. 断点续跑: same parent, new attempt wave (PLAN-batch-resume) ──
+  // Shape: a stopped batch (1 in-flight row failed WITH a conversation +
+  // snapshot, 3 queued rows skipped) continues under its OWN parent. Every
+  // refusal must fire BEFORE the reopen — observable as the parent still
+  // reading 'partial' — and the happy path appends attempts while values
+  // follow the snapshot rule: a row that RAN freezes to its snapshot, a row
+  // that never ran reads the (edited) CSV.
+  const csvF = writeCsv('f.csv', 'repo,branch\\nr1,b1\\nr2,b2\\nr3,b3\\nr4,b4\\n')
+  const routineF = makeRoutine('巡检 F', csvF)
+  routineStore.update(routineF.id, { batch: { csvPath: csvF, concurrency: 1 } })
+  askBehavior = 'hang'
+  const parentF = await routineBatchRunner.start(routineStore.get(routineF.id), 'manual')
+  await until(() => childrenOf(parentF.id).length === 1, 'batch F row 1 dispatched')
+  routineBatchRunner.stop(parentF.id)
+  await until(() => routineStore.getRun(parentF.id)?.status !== 'running', 'batch F settles after stop')
+  askBehavior = 'complete'
+  check('stop leaves the parent partial: 1 failed (reached the engine), 3 skipped', () => {
+    const kids = childrenOf(parentF.id)
+    assert.equal(kids.length, 4)
+    assert.equal(kids[0].status, 'failed')
+    assert.match(kids[0].error, /用户停止/)
+    assert.ok(kids[0].conversationId, 'the failed row has a conversation')
+    assert.ok(kids[0].paramsSnapshot, 'and the values it ran with')
+    assert.deepEqual(kids.slice(1).map((c) => c.status), ['skipped', 'skipped', 'skipped'])
+    assert.equal(routineStore.getRun(parentF.id).status, 'partial')
+  })
+
+  await assert.rejects(() => routineBatchRunner.resume('run_does_not_exist'), /未找到该批量运行记录/)
+  check('refusal: no such batch record', () => {})
+
+  // A fresh ACTIVE batch of the same task, hung so it cannot settle early:
+  // resuming its OWN parent hits the status refusal, resuming the settled one
+  // hits the active-map refusal.
+  askBehavior = 'hang'
+  const freshF = await routineBatchRunner.start(routineStore.get(routineF.id), 'manual')
+  await until(() => childrenOf(freshF.id).length === 1, 'fresh F dispatched')
+  await assert.rejects(() => routineBatchRunner.resume(freshF.id), /该批量运行仍在进行中/)
+  check('refusal: a batch that is still running cannot be resumed', () => {})
+  await assert.rejects(() => routineBatchRunner.resume(parentF.id), /已有批量运行在进行/)
+  check('refusal: another batch of the task is active — and the settled parent stays partial (refused BEFORE the reopen)', () => {
+    assert.equal(routineStore.getRun(parentF.id).status, 'partial')
+  })
+  routineBatchRunner.stop(freshF.id)
+  await until(() => routineStore.getRun(freshF.id)?.status !== 'running', 'fresh F settles')
+  askBehavior = 'complete'
+
+  // All rows succeeded → nothing to continue; then the routine itself is
+  // deleted (remove() unlinks the JSON, run rows survive) → different refusal.
+  const csvG = writeCsv('g.csv', 'repo\\nrg\\n')
+  const routineG = makeRoutine('巡检 G', csvG)
+  const parentG = await routineBatchRunner.start(routineStore.get(routineG.id), 'manual')
+  await until(() => routineStore.getRun(parentG.id)?.status !== 'running', 'batch G settles')
+  await assert.rejects(() => routineBatchRunner.resume(parentG.id), /每一行都已成功/)
+  check('refusal: every row already succeeded', () => {})
+  routineStore.remove(routineG.id)
+  await assert.rejects(() => routineBatchRunner.resume(parentG.id), /原任务已被删除/)
+  check('refusal: the routine was deleted (its run rows survive the unlink)', () => {
+    assert.ok(routineStore.getRun(parentG.id), 'the orphaned parent still exists')
+  })
+
+  // Row-count guard: reshape the file → refuse; the parent must still read
+  // partial (the reopen happens after every refusal).
+  writeCsv('f.csv', 'repo,branch\\nr1,b1\\nr2,b2\\nr3,b3\\n') // 4 → 3 rows
+  await assert.rejects(() => routineBatchRunner.resume(parentF.id), /批量数据行数已变化/)
+  check('refusal: reshaped CSV — and the parent stays partial (reopen comes last)', () => {
+    assert.equal(routineStore.getRun(parentF.id).status, 'partial')
+  })
+
+  // The happy path, with BOTH halves of the snapshot rule made observable:
+  // row 0's CSV value now differs from what it ran with (freeze must win), row
+  // 1 never reached an engine (live CSV must win).
+  writeCsv('f.csv', 'repo,branch\\nr0edited,b1\\nCHANGED,b2\\nr3,b3\\nr4,b4\\n') // still 4 rows
+  const resumed = await routineBatchRunner.resume(parentF.id)
+  assert.equal(resumed.id, parentF.id, 'resume continues under the SAME parent')
+  await until(() => routineStore.getRun(parentF.id)?.status !== 'running', 'resumed batch F settles')
+  check('resume appends a second attempt wave under the same parent; progress folds to the rows', () => {
+    const kids = childrenOf(parentF.id)
+    assert.equal(kids.length, 4, 'folded: one entry per CSV row')
+    assert.deepEqual(kids.map((c) => c.rowIndex), [0, 1, 2, 3])
+    assert.ok(kids.every((c) => c.attempts === 2), 'every row ran exactly twice: ' + kids.map((c) => c.attempts).join(','))
+    assert.ok(kids.every((c) => c.status === 'success'), 'the second wave completed every row')
+    const parent = routineStore.getRun(parentF.id)
+    assert.equal(parent.status, 'success')
+    // getRun returns the raw row; batchProgress is a computed-at-read field
+    // (listRuns / this accessor both attach it — getRun deliberately does not).
+    const progress = routineStore.batchProgress(parentF.id)
+    assert.deepEqual(
+      { total: progress.total, success: progress.success, failed: progress.failed, skipped: progress.skipped },
+      { total: 4, success: 4, failed: 0, skipped: 0 },
+    )
+  })
+  check('the snapshot rule: the RAN row froze to its snapshot, the skipped row took the edited CSV', () => {
+    const kids = childrenOf(parentF.id)
+    assert.equal(kids[0].paramsSnapshot.repo, 'r1', 'row 0 ran and failed → frozen at its snapshot, not the edited r0edited')
+    assert.equal(kids[1].paramsSnapshot.repo, 'CHANGED', 'row 1 never reached an engine → live CSV wins')
+  })
+
+  // ── 11. xlsx data source end-to-end: a workbook IS the batch's table ──
+  const ExcelJS = (await import('exceljs')).default
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('data')
+  ws.getCell('A1').value = ' repo ' // header trim, like the CSV contract
+  ws.getCell('B1').value = 'branch'
+  ws.getCell('A2').value = 'X1'
+  ws.getCell('B2').value = 'bx'
+  ws.getRow(3).values = [null, '', ''] // blank sheet row drops like a blank CSV line
+  ws.getCell('A4').value = 'X2'
+  ws.getCell('B4').value = { text: 'b-link', hyperlink: 'https://example.test' } // → its display text
+  const xlsxPath = join(${JSON.stringify(work)}, 'book.xlsx')
+  writeFileSync(xlsxPath, Buffer.from(await wb.xlsx.writeBuffer()))
+  const routineH = makeRoutine('巡检 H', xlsxPath)
+  const parentH = await routineBatchRunner.start(routineStore.get(routineH.id), 'manual')
+  await until(() => routineStore.getRun(parentH.id)?.status !== 'running', 'xlsx batch settles')
+  check('an xlsx workbook runs as the table: name recorded, blank row dropped, all rows succeed', () => {
+    const parent = routineStore.getRun(parentH.id)
+    assert.equal(parent.batch.csvName, 'book.xlsx')
+    assert.equal(parent.batch.totalRows, 2)
+    assert.equal(routineStore.batchProgress(parentH.id).success, 2)
+  })
+  check('xlsx values reached the engine (typed cell flattened: hyperlink → display text)', () => {
+    const kids = childrenOf(parentH.id)
+    assert.deepEqual(kids.map((c) => c.paramsSnapshot.repo), ['X1', 'X2'])
+    assert.equal(kids[1].paramsSnapshot.branch, 'b-link')
+    for (const c of kids) {
+      const session = sessions.find((s) => s.id === c.conversationId)
+      assert.ok(session && session.prompt.includes(c.paramsSnapshot.repo), 'prompt carries the workbook value')
+    }
+  })
+  writeFileSync(join(${JSON.stringify(work)}, 'legacy.xls'), 'not really an ole file')
+  await assert.rejects(() => previewCsv(join(${JSON.stringify(work)}, 'legacy.xls')), /暂不支持 \\.xls 老格式/)
+  check('legacy .xls refuses with a save-as hint (before any parse)', () => {})
+
+  // ── 12. Per-run concurrency override (L2): the dialog's choice, not the config ──
+  const csvI = writeCsv('i.csv', 'repo\\nri1\\nri2\\ni3\\n')
+  const routineI = makeRoutine('巡检 I', csvI) // saved config: concurrency 2
+  await assert.rejects(() => routineBatchRunner.start(routineStore.get(routineI.id), 'manual', { concurrency: 99 }), /无效的批量并发数/)
+  check('an out-of-range override refuses before any row is written', () => {
+    assert.equal(routineStore.listRuns(routineI.id, 10).length, 0, 'no parent row was created')
+  })
+  const parentI = await routineBatchRunner.start(routineStore.get(routineI.id), 'manual', { concurrency: 1 })
+  assert.equal(parentI.batch.concurrency, 1, 'the override rides THIS run')
+  await until(() => routineStore.getRun(parentI.id)?.status !== 'running', 'override batch settles')
+  check('override 1 applies for this run only; the saved config keeps 2', () => {
+    assert.equal(routineStore.getRun(parentI.id).status, 'success')
+    assert.equal(routineStore.get(routineI.id).batch.concurrency, 2)
+  })
+
+  // ── 13. Per-row timeout (单次超时, user 2026-09-23): a hanging row settles
+  // failed with 运行超时 at the configured ceiling, and the config/override
+  // reach it. The FIRING half drives executeUnattended directly with a
+  // sub-minute timeoutMs — normalizeBatchTimeoutMinutes floors a start at one
+  // whole minute, and a 60s sleep is not a probe. The WIRING half runs the
+  // real start() and reads the parent's recorded meta. ──
+  const csvJ = writeCsv('j.csv', 'repo\\nrj1\\n')
+  const routineJ = makeRoutine('巡检 J', csvJ, { batch: { csvPath: csvJ, concurrency: 2, timeoutMinutes: 30 } })
+  const { executeUnattended } = await import('./src/main/routine/routine-runner')
+  askBehavior = 'hang'
+  const runJ = routineStore.startRun(routineJ.id, 'manual', 'routine_timeout_probe')
+  executeUnattended({ runId: runJ.id, routine: routineJ, convId: 'routine_timeout_probe', timeoutMs: 250 })
+  await until(() => routineStore.getRun(runJ.id)?.status === 'failed', 'timeout settle')
+  check('a row past its ceiling settles failed with 运行超时 (the timeout fired, the engine was stopped)', () => {
+    assert.match(routineStore.getRun(runJ.id).error, /运行超时/)
+  })
+  askBehavior = 'complete'
+
+  const csvK = writeCsv('k.csv', 'repo\\nrk1\\nrk2\\n')
+  const routineK = makeRoutine('巡检 K', csvK) // saved config: concurrency 2, no timeout → default at run time
+  await assert.rejects(() => routineBatchRunner.start(routineStore.get(routineK.id), 'manual', { concurrency: 1, timeoutMinutes: 0 }), /无效的单次超时/)
+  check('an out-of-range 单次超时 refuses before any row is written', () => {
+    assert.equal(routineStore.listRuns(routineK.id, 10).length, 0, 'no parent row was created')
+  })
+  const parentK = await routineBatchRunner.start(routineStore.get(routineK.id), 'manual', { timeoutMinutes: 45 })
+  assert.equal(parentK.batch.timeoutMinutes, 45, 'the override rides THIS run')
+  await until(() => routineStore.getRun(parentK.id)?.status !== 'running', 'override-timeout batch settles')
+  check('override 45 reaches the parent meta; the saved config stays unset', () => {
+    const parent = routineStore.getRun(parentK.id)
+    assert.equal(parent.status, 'success')
+    assert.equal(parent.batch.timeoutMinutes, 45)
+    assert.equal(routineStore.get(routineK.id).batch.timeoutMinutes, undefined)
+  })
+  const parentJ2 = await routineBatchRunner.start(routineStore.get(routineJ.id), 'manual')
+  assert.equal(parentJ2.batch.timeoutMinutes, 30, 'the saved config flows without an override')
+  await until(() => routineStore.getRun(parentJ2.id)?.status !== 'running', 'config-timeout batch settles')
+  check('a saved timeoutMinutes reaches the parent meta without an override', () => {
+    assert.equal(routineStore.getRun(parentJ2.id).batch.timeoutMinutes, 30)
+  })
+
+  console.log('PASS: ' + checks + ' checks — batch runs row-by-row through the real store, runner and cleanup, resume/xlsx/override/timeout included')
 }
 main().then(() => process.exit(0)).catch(error => { console.error(error); process.exit(1) })
 `
 try {
-  const bundle = join(work, 'probe.cjs')
+  // Inside node_modules — see the header: the native import('exceljs') in the
+  // bundle resolves only by walking up to a real node_modules.
+  const bundle = join(root, 'node_modules', '.pm-routine-batch-probe.cjs')
   await build({
     stdin: { contents: source, resolveDir: root, loader: 'ts' },
     outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external',
@@ -380,5 +583,6 @@ try {
   if (run.error) throw run.error
   process.exitCode = run.status === 0 ? 0 : 1
 } finally {
+  rmSync(join(root, 'node_modules', '.pm-routine-batch-probe.cjs'), { force: true })
   rmSync(work, { recursive: true, force: true })
 }
