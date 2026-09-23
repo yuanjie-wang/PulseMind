@@ -27,6 +27,7 @@ import { useTranslation } from '../../i18n/useTranslation'
 import { StarterPrompts } from './StarterPrompts'
 import { useProjectStore, projectHue } from '../../stores/projectStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
+import { useWelcomeShake } from '../../utils/welcome-shake'
 import { ProjectModal } from '../project/ProjectModal'
 import { CLOCK_TICK_MS, describeRelativeTimeText } from '../../utils/relative-time'
 import { hsvToCss } from '../../../../shared/hash-color'
@@ -185,6 +186,12 @@ export function ProjectCards({
   const reload = useProjectStore((s) => s.reload)
   const projectId = useNewTaskStore((s) => s.projectId)
   const setProjectId = useNewTaskStore((s) => s.setProjectId)
+  // The picker's half of the 新建任务 guidance shake: project mode with nothing
+  // picked owes a card choice, so the whole region — heading row AND cards,
+  // this root — wiggles once per click (user ruling 2026-09-23: option 2, the
+  // one-line heading alone is too quiet to steer the eye).
+  const pickerShakeRef = useRef<HTMLDivElement | null>(null)
+  useWelcomeShake('projectPicker', pickerShakeRef)
   const [modalOpen, setModalOpen] = useState(false)
   // The project being edited (a card's hover edit affordance). The same
   // ProjectModal serves create and edit via `editing`.
@@ -215,7 +222,7 @@ export function ProjectCards({
   const projectStarters = [t('welcome.projectStarter1'), t('welcome.projectStarter2'), t('welcome.projectStarter3')]
 
   return (
-    <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+    <div ref={pickerShakeRef} data-welcome-shake="projectPicker" style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       {/* Heading sits OUTSIDE the scroll region below, so the scrollbar starts
           at the cards instead of spanning this row. It follows the cards'
           952px column so the 新建项目 pill keeps lining up with their edge. */}

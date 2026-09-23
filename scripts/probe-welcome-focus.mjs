@@ -24,7 +24,11 @@
  *   2. the real `ChatView` in an AppLayout-shaped shell (the chat host flips to
  *      `display: none` on another view, exactly as AppLayout does), driven
  *      through the real `newTaskStore` / `navigationStore` — what AppLayout
- *      calls when it jumps into the new-task state after creating a project
+ *      calls when it jumps into the new-task state after creating a project.
+ *      §2.5 drives the same store the way `handleNewTask` does for the 新建任务
+ *      guidance shake: the composer in chat mode, the whole project picker in
+ *      project mode, retrigger per click, target routing, and the grace window
+ *      that lets a same-click mount shake while an old token never does
  *   3. the real `ProjectModal` in front of a stand-in composer, with the create
  *      path's focus hand-off reproduced in the same commit as the close
  *
@@ -329,6 +333,57 @@ await setState(['navigation', 'navigate'], { kind: 'settings' })
 await setState(['navigation', 'navigate'], { kind: 'chat' })
 await page.waitForTimeout(200)
 check('有消息的会话切回来时不抢焦点（只有新建态才聚焦）', !(await composerFocused('case-chat')), JSON.stringify(await focusNow()))
+
+console.log('\n§2.5 新建任务引导摇晃 — 对话摇输入框 / 项目摇整个选项目区域')
+// Back to a fresh welcome (chat mode), then drive the real store exactly the
+// way AppLayout's handleNewTask does. The animation is a DOM timing fact —
+// jsdom has no WAAPI, so this lives here; the decision logic (target routing,
+// grace window) is unit-tested in tests/welcome-shake.test.ts.
+await mount('chat')
+/** One welcome-shake surface's animation state, read off the real element:
+ *  'missing' (not mounted — e.g. the messages view), 'idle' (no live
+ *  animation; a finished fill:none animation is removed from getAnimations),
+ *  'running', or 'settling' (exists but already finished). */
+const shakeState = (target) =>
+  page.evaluate((t) => {
+    const el = document.querySelector(`[data-welcome-shake="${t}"]`)
+    if (!el) return 'missing'
+    const anims = el.getAnimations()
+    if (!anims.length) return 'idle'
+    return anims.some((a) => a.playState === 'running') ? 'running' : 'settling'
+  }, target)
+
+await setState(['newTask', 'requestShake'], 'composer')
+await page.waitForTimeout(120)
+check('对话模式：摇晃信号让输入框容器真的动起来（WAAPI 在播）', (await shakeState('composer')) === 'running')
+await page.waitForTimeout(600)
+check('摇晃自己停（一次性 500ms 动画，不常驻）', (await shakeState('composer')) === 'idle')
+
+await setState(['newTask', 'requestShake'], 'composer')
+await page.waitForTimeout(120)
+check('重复点击再次触发（每次新建任务都摇，不是只摇第一次）', (await shakeState('composer')) === 'running')
+await page.waitForTimeout(600)
+
+await setState(['newTask', 'setMode'], 'project')
+await page.waitForTimeout(200)
+check('项目形态挂载了选项目区域（data-welcome-shake 钩子存在）', (await shakeState('projectPicker')) !== 'missing')
+await setState(['newTask', 'requestShake'], 'projectPicker')
+await page.waitForTimeout(120)
+check('项目模式：整个选项目区域（标题行 + 卡片）摇晃', (await shakeState('projectPicker')) === 'running')
+check('projectPicker 信号不波及输入框（按 target 路由）', (await shakeState('composer')) === 'idle')
+await page.waitForTimeout(700)
+
+// 过了宽限窗再挂载（等价于从历史列表打开一个空会话）：旧 token 不得摇晃新挂载。
+await page.waitForTimeout(600)
+await mount('chat')
+check('旧 token 摇不起新挂载的选项目区域（宽限窗拒绝迟到请求）', (await shakeState('projectPicker')) === 'idle')
+
+// 新建任务的真实形状：bump 与挂载发生在同一次点击里。requestShake 后立刻重挂
+// 载，新挂载的区域必须自己摇起来 —— 旧元素已随卸载销毁，这里若在播只可能是
+// 挂载 effect 播的，断言不空转。
+await setState(['newTask', 'requestShake'], 'projectPicker')
+await mount('chat')
+check('同点击的 bump 摇晃刚挂载的区域（bump→mount 在同一 handler）', (await shakeState('projectPicker')) === 'running')
 
 console.log('\n§3 ProjectModal — 关闭后不把焦点从输入框抢回触发按钮')
 await mount('modal')

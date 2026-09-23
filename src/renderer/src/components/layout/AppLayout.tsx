@@ -18,7 +18,7 @@ import CommandPalette from './CommandPalette'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
-import { useNewTaskStore } from '../../stores/newTaskStore'
+import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
 import { useCommandPaletteStore } from '../../stores/commandPaletteStore'
@@ -240,9 +240,17 @@ function AppLayout({
   // is picked the welcome composer's send button stays grey — only the
   // project row's own 新建任务 (handleProjectNewTask) preselects, because there
   // the user has named the project by clicking it.
+  //
+  // Both named entries ride this handler — the sidebar's 新建任务 button and the
+  // history list's + (chats tab, via handleTabAdd) — so the guidance shake is
+  // raised exactly here, targeted at the surface the mode is about to ask
+  // about: the composer in chat mode, the whole project picker in project mode
+  // (user 2026-09-23: 「左右摇晃」). The no-guide entries below cancel instead.
   const handleNewTask = (): void => {
-    useNewTaskStore.getState().setMode(listTab === 'projects' ? 'project' : 'chat')
+    const mode: NewTaskMode = listTab === 'projects' ? 'project' : 'chat'
+    useNewTaskStore.getState().setMode(mode)
     useNewTaskStore.getState().setProjectId(null)
+    useNewTaskStore.getState().requestShake(mode === 'project' ? 'projectPicker' : 'composer')
     onCreateNew()
   }
 
@@ -262,10 +270,13 @@ function AppLayout({
   // 项目行's 新建任务 and the sidebar create modal's success path: land on the
   // welcome form with the project preselected — the same deferred flow as the
   // welcome picker (M8.4), where nothing is created until a message is
-  // actually sent.
+  // actually sent. No guidance shake here (the user named the project by
+  // clicking the row) — and a cancel, not silence: within the shake grace
+  // window this mount would otherwise replay a just-clicked picker shake.
   const handleProjectNewTask = (projectId: string): void => {
     useNewTaskStore.getState().setMode('project')
     useNewTaskStore.getState().setProjectId(projectId)
+    useNewTaskStore.getState().requestShake(null)
     navigate({ kind: 'chat' })
     if (canCreateNew) onCreateNew()
   }
@@ -279,9 +290,13 @@ function AppLayout({
   // closures without re-subscribing on every streamed-token render.
   const startPlainNewTask = (): void => {
     // Same semantics as the sidebar's 新建任务: a plain conversation, any
-    // project pick cleared, nothing created until the first message.
+    // project pick cleared, nothing created until the first message. Deliberately
+    // no guidance shake (the palette/accelerator path was not part of the
+    // 新建任务 ruling) — the cancel keeps a just-clicked shake from replaying
+    // onto this mount within the grace window.
     useNewTaskStore.getState().setMode('chat')
     useNewTaskStore.getState().setProjectId(null)
+    useNewTaskStore.getState().requestShake(null)
     navigate({ kind: 'chat' })
     if (canCreateNew) onCreateNew()
   }
