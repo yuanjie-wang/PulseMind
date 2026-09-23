@@ -197,6 +197,12 @@ const zh = {
       streaming: 'AI 正在生成...',
       default: '输入消息...',
     },
+    staged: {
+      hintBusy: '已暂存 {{count}} 条 · 本回合结束后自动发送',
+      hintSettled: '已暂存 {{count}} 条 · 回合未正常结束，不会自动发送',
+      sendNow: '立即发送',
+      remove: '移除',
+    },
     errorDisplay: {
       title: '错误',
       dismiss: '关闭',
@@ -297,6 +303,17 @@ const zh = {
     preview: '预览',
     from: '来自：{{name}}',
     honestBoundary: '仅统计直接写入/编辑的文件；命令行间接产物不在此列',
+  },
+
+  htmlCard: {
+    title: 'HTML 预览',
+    streaming: '生成中…',
+    preview: '预览',
+    code: '源码',
+    copy: '复制源码',
+    copied: '已复制',
+    openInBrowser: '在浏览器打开',
+    openInPreview: '在预览中打开',
   },
 
   commandCard: {

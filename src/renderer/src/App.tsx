@@ -226,6 +226,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     renameConversation,
     setActiveConversationKey,
     handleRequest,
+    sendStagedNow,
     abort,
     saveCurrentConversation,
     saveAllConversationsSync,
@@ -598,6 +599,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               onExtractRoutine={extractRoutine}
               canOpenNode={canOpenNode}
               onSendMessage={handleRequest}
+              onSendStaged={sendStagedNow}
               onCancel={abort}
               onApproveTool={approveTool}
               onRejectTool={rejectTool}

@@ -7,6 +7,7 @@ import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import { Composer, useInputHistory, COMPOSER_MAX_WIDTH } from './Composer'
 import type { ComposerHandle } from './Composer'
 import { useComposerDraftStore } from '../../stores/composerDraftStore'
+import { usePendingMessageStore, type StagedMessage } from '../../stores/pendingMessageStore'
 import type { LlmProfile } from '../../types/settings'
 import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
@@ -68,6 +69,7 @@ export function InputArea({
   onResetProfile,
   features,
   lastCompaction,
+  staging,
 }: {
   isRequesting: boolean
   isStreaming: boolean
@@ -133,6 +135,19 @@ export function InputArea({
     modelPicker?: boolean
     experts?: boolean
     authorization?: boolean
+  }
+  /** Staged-message queue (暂存区). Absent = feature off and the reuse sites
+   *  keep today's behavior: Enter mid-run does nothing (Sender's loading
+   *  suppresses the submit) and a send at rest goes straight out. With it,
+   *  Enter while a turn runs stages the text above the card instead — it is
+   *  auto-sent when the turn completes (controller's drain edge) or sent
+   *  immediately from the strip, which stops the running turn first. */
+  staging?: {
+    /** The conversation this queue is keyed by. */
+    convId: string
+    /** Stop the running turn (if any) and send this text as a new turn.
+     *  Resolves false when the send never left — the row restores in place. */
+    onSendNow: (text: string) => Promise<boolean>
   }
 }): React.ReactElement {
   // Everything on when the prop is absent (the chat); a reuse site lists only
@@ -239,6 +254,13 @@ export function InputArea({
   const { t } = useTranslation()
 
   const history = useInputHistory()
+
+  // ── Staged-message queue (暂存区) ──
+  // Subscribe only to THIS conversation's slice; the actions are read through
+  // getState() inside handlers, so they carry no stale closures and other
+  // conversations' queue traffic never re-renders this box.
+  const stagedQueue = usePendingMessageStore((s) => (staging ? s.queues[staging.convId] : undefined))
+  const stagedCount = staging && stagedQueue ? stagedQueue.length : 0
 
   const isInputDisabled = isAwaitingApproval || isAwaitingInput
 
@@ -361,6 +383,31 @@ export function InputArea({
           return false
       }
     }
+    // Enter while the loop runs = STAGE (user decision 2026-09-23): the box
+    // keeps accepting the next message while the turn owns the transport. The
+    // veto (return false) is what makes it fire at all — Sender's Enter path
+    // checks our result first, and without it the loading flag would just
+    // swallow the key (today's silent no-op). The footer button remains the
+    // pause affordance; an empty box falls through and the loading flag
+    // suppresses the submit — same no-op as before. IME-confirm Enter belongs
+    // to the composition, never to staging.
+    if (
+      staging &&
+      isRequesting &&
+      e.key === 'Enter' &&
+      !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey &&
+      !e.nativeEvent.isComposing &&
+      inputValue.trim()
+    ) {
+      e.preventDefault()
+      const outgoing = buildMessage(inputValue.trim())
+      history.push(outgoing)
+      usePendingMessageStore.getState().stage(staging.convId, outgoing)
+      setInputValue('')
+      setSelectedFiles([])
+      setSelectedFolders([])
+      return false
+    }
     history.onKeyDown(e, inputValue, setInputValue)
   }
 
@@ -373,15 +420,59 @@ export function InputArea({
     return parts.length > 0 ? parts.join('\n') + (text ? '\n' + text : '') : text
   }
 
+  /** Send one staged row now. The take IS the commit — the row leaves the
+   *  queue before the send — and a send that never left (all-@ text, no API
+   *  key) restores it at its original index rather than dropping the message. */
+  const sendStagedRow = (item: StagedMessage, index: number): void => {
+    if (!staging) return
+    const restore = (): void => usePendingMessageStore.getState().restore(staging.convId, item, index)
+    void staging.onSendNow(item.text).then(
+      (ok) => { if (!ok) restore() },
+      restore
+    )
+  }
+
+  const sendStagedRowById = (id: string): void => {
+    if (!staging) return
+    const taken = usePendingMessageStore.getState().takeById(staging.convId, id)
+    if (taken) sendStagedRow(taken.item, taken.index)
+  }
+
+  /** At rest with rows already staged: the HEAD goes now and the fresh text
+   *  joins the back of the queue. Sending the fresh text directly would jump
+   *  the queue — the older staged messages would then arrive after it. */
+  const sendStagedHead = (): void => {
+    if (!staging) return
+    const head = usePendingMessageStore.getState().takeHead(staging.convId)
+    if (head) sendStagedRow(head, 0)
+  }
+
   const submit = (raw: string): void => {
     const text = raw.trim()
     if (!text && !hasAttachments) return
     const outgoing = buildMessage(text)
     history.push(outgoing)
+    const clear = (): void => {
+      setInputValue('')
+      setSelectedFiles([])
+      setSelectedFolders([])
+    }
+    // Belt: the Sender routes submits through its loading flag, so this branch
+    // is unreachable in practice — but a submit during a run must stage, never
+    // race the in-flight turn.
+    if (staging && isRequesting) {
+      usePendingMessageStore.getState().stage(staging.convId, outgoing)
+      clear()
+      return
+    }
+    if (staging && stagedCount > 0) {
+      usePendingMessageStore.getState().stage(staging.convId, outgoing)
+      clear()
+      sendStagedHead()
+      return
+    }
     onSendMessage(outgoing)
-    setInputValue('')
-    setSelectedFiles([])
-    setSelectedFolders([])
+    clear()
   }
 
   return (
@@ -410,18 +501,84 @@ export function InputArea({
                 : t('chatView.sender.default'))
         }
         aboveCard={
-          // The @-mention selector and the caller's topSlot (plan strip) float
-          // just above the input card. The slot must anchor to the card's own
-          // box, not to this wrapper: in the floating layout the composer is
-          // absolute and out of flow, which collapses the wrapper to zero
-          // height — an anchor there landed on the pane bottom and painted
-          // both overlays on top of the input card. Composer.aboveCard owns
-          // the correct anchor (see its doc); here both children stack in
-          // document order, popup closest to the card.
-          (topSlot || (mentionActive && mentionMatches.length > 0)) && (
+          // The @-mention selector, the staged-message strip and the caller's
+          // topSlot (plan strip) float just above the input card. The slot must
+          // anchor to the card's own box, not to this wrapper: in the floating
+          // layout the composer is absolute and out of flow, which collapses
+          // the wrapper to zero height — an anchor there landed on the pane
+          // bottom and painted both overlays on top of the input card.
+          // Composer.aboveCard owns the correct anchor (see its doc); here the
+          // children stack in document order, popup closest to the card.
+          (topSlot || stagedCount > 0 || (mentionActive && mentionMatches.length > 0)) && (
             <>
               {topSlot && (
                 <div style={{ display: 'flex', justifyContent: 'center' }}>{topSlot}</div>
+              )}
+              {stagedCount > 0 && staging && (
+                <div
+                  data-staged-strip
+                  style={{
+                    // The popup's glass recipe — the above-card layer is one
+                    // surface family, and a second recipe would drift from it.
+                    maxWidth: COMPOSER_MAX_WIDTH,
+                    margin: '8px auto',
+                    maxHeight: 200,
+                    overflow: 'auto',
+                    background: 'var(--pm-elevated)',
+                    border: '1px solid var(--pm-border-veil)',
+                    borderRadius: 10,
+                    boxShadow: 'var(--pm-shadow-pop)',
+                    padding: '6px 8px 8px',
+                  }}
+                >
+                  {/* The hint is per-state on purpose: while a turn runs the
+                      queue drains itself; at a settled non-completed end (error,
+                      pause, loop-limit) it does NOT — saying "auto-send" there
+                      would be a promise the code keeps only sometimes. */}
+                  <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', padding: '0 4px 4px' }}>
+                    {t(isRequesting ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled', { count: stagedCount })}
+                  </div>
+                  {(stagedQueue ?? []).map((item) => (
+                    <div
+                      key={item.id}
+                      data-staged-item
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px' }}
+                    >
+                      <div
+                        title={item.text}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          fontSize: 12,
+                          color: 'var(--pm-text-secondary)',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {item.text}
+                      </div>
+                      <Button
+                        size="small"
+                        type="link"
+                        data-staged-sendnow
+                        onClick={() => sendStagedRowById(item.id)}
+                        style={{ fontSize: 12, height: 'auto', padding: 0, color: 'var(--pm-text-secondary)' }}
+                      >
+                        {t('chatView.staged.sendNow')}
+                      </Button>
+                      <Button
+                        size="small"
+                        type="text"
+                        data-staged-remove
+                        aria-label={t('chatView.staged.remove')}
+                        icon={<CloseOutlined style={{ fontSize: 12 }} />}
+                        onClick={() => usePendingMessageStore.getState().remove(staging.convId, item.id)}
+                        style={{ color: 'var(--pm-text-muted)' }}
+                      />
+                    </div>
+                  ))}
+                </div>
               )}
               {mentionActive && mentionMatches.length > 0 && (
                 <div

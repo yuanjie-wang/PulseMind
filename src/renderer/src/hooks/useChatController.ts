@@ -12,6 +12,8 @@ import { TitleAgent } from '../agent/one-shot-agent'
 import { extractRoutineFromConversation } from '../components/routine/routine-extract'
 import { parseExpertMentions, parseKnowledgeBaseMention, type SummonedExpert } from '../../../shared/expert-context'
 import { conversationKeyOf } from '../../../shared/conversation-key'
+import { takeStagedHead, restoreStaged, clearStagedMessages, clearAllStagedMessages } from '../stores/pendingMessageStore'
+import { shouldDrainOnStatusChange } from '../utils/staged-drain'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
@@ -368,7 +370,7 @@ export function useChatController(options: UseChatControllerOptions) {
         content = mentions.text
         if (!content.trim()) {
           message.warning(t('chatView.expert.needTaskWithSummon'))
-          return
+          return false
         }
       }
 
@@ -392,7 +394,7 @@ export function useChatController(options: UseChatControllerOptions) {
         const task = useNewTaskStore.getState()
         if (task.mode === 'project' && !task.projectId) {
           message.warning(t('welcome.selectProjectFirst'))
-          return
+          return false
         }
         const now = new Date()
         const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
@@ -439,11 +441,61 @@ export function useChatController(options: UseChatControllerOptions) {
       const engineHandle = engine.getOrCreateEngine(convId)
       if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned, knowledgeBase)
       else engineHandle.startLoop(content, knowledgeBase)
+      // true = the turn left. Every early `return false` above is a bail the
+      // caller (the staged-queue drain, the strip's 立即发送) must restore its
+      // message for — a silent drop there loses the message with only a toast
+      // for company.
+      return true
     },
     [apiKey, persistence.activeConversationKey, persistence.addConversation,
      persistence.setActiveConversationKey, persistence.updateConversationTitleInList,
      persistence.updateConversationApproval, persistence.updateConversationProfile,
-     persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, options, t, message]
+     persistence.convIdRef, engine.getOrCreateEngine, engine.activeEngineIdRef, engine.agentStatus, options, t, message]
+  )
+
+  // ── 7.5 Staged-message drain (暂存区) ──
+  // A message staged while the loop ran goes out on its OWN turn's completion
+  // edge. The rule — busy → completed of the same conversation; switch-into-
+  // completed catches a turn that ended while the view was elsewhere; error /
+  // pause / loop-limit ends never drain (user decision 2026-09-23) — lives in
+  // utils/staged-drain.ts as a pure function so its edge cases are unit tests;
+  // what this effect adds is the transition ref, because the effect runs on
+  // mount, on conversation switch and on every notify: a value check
+  // (`status === 'completed'`) would drain all of those, i.e. send a message
+  // whose turn ended long ago, twice, or into a conversation just opened. The
+  // take is atomic (takeStagedHead pops), so even a double-fired pass cannot
+  // deliver the same message twice.
+  const stagedStatusRef = useRef<{ convId: string | null; status: string } | null>(null)
+  useEffect(() => {
+    const convId = conversationKeyOf(persistence.activeConversationKey)
+    const status = engine.agentStatus.status
+    const prev = stagedStatusRef.current
+    stagedStatusRef.current = { convId, status }
+    if (!convId || !shouldDrainOnStatusChange(prev, { convId, status })) return
+    const item = takeStagedHead(convId)
+    if (!item) return
+    const restore = (): void => restoreStaged(convId, item, 0)
+    // A failed send (all-@ text, missing key, …) restores the head in place —
+    // the message stays visible in the strip instead of evaporating.
+    void handleRequest(item.text).then(
+      (ok) => { if (!ok) restore() },
+      restore
+    )
+  }, [engine.agentStatus, persistence.activeConversationKey, handleRequest])
+
+  /** 立即发送: stop-first is load-bearing — prepareTurn only aborts the
+   *  in-flight LLM stream; it does NOT settle in-flight tool promises or the
+   *  sub-agent tree, so a startLoop straight onto a running engine would leave
+   *  a late tool result re-entering continueLoop alongside the new turn (two
+   *  loops writing one transcript). stopExecution settles everything to idle
+   *  (killing processes, settling the sub-agent tree as aborted), prepareTurn
+   *  then clears isCancelled and the new turn opens clean. */
+  const sendStagedNow = useCallback(
+    async (text: string): Promise<boolean> => {
+      engine.stopExecution()
+      return handleRequest(text)
+    },
+    [engine, handleRequest]
   )
 
   // ── 8. Return ──
@@ -468,15 +520,20 @@ export function useChatController(options: UseChatControllerOptions) {
     getWorkspaceDir: engine.getWorkspaceDir,
     deleteConversation: async (key: string) => {
       titleGeneratedRef.current.delete(key)
+      // Staged rows are runtime-only state; a deleted conversation's queue
+      // must go with it, or the strip would resurrect on a id reuse.
+      clearStagedMessages(key)
       return persistence.deleteConversation(key)
     },
     clearAllConversations: async () => {
       titleGeneratedRef.current.clear()
+      clearAllStagedMessages()
       return persistence.clearAllConversations()
     },
     renameConversation: persistence.renameConversation,
     setActiveConversationKey: persistence.handleSelectConversation,
     handleRequest,
+    sendStagedNow,
     abort: engine.cancelLoop,
     saveCurrentConversation: persistence.saveCurrentConversation,
     saveConversationSync: persistence.saveConversationSync,

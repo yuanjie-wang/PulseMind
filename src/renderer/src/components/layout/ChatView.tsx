@@ -19,6 +19,7 @@ import { projectContextUsed } from '../chat/ContextRing'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import { WelcomeContent } from '../chat/WelcomeContent'
 import { startBottomPin } from '../../utils/bottom-pin'
+import { useWelcomeShake } from '../../utils/welcome-shake'
 import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
@@ -45,6 +46,10 @@ interface ChatViewProps {
   streamingBlocks: ContentBlock[]
   hasApiKey: boolean
   onSendMessage: (content: string) => void
+  /** 立即发送 (staged strip): stop the running turn and send this text as a new
+   *  turn; false = the send never left (the row restores itself). Absent (or
+   *  no conversationId) = the staged queue is off for this view. */
+  onSendStaged?: (text: string) => Promise<boolean>
   onCancel: () => void
   onApproveTool: (toolUseId: string) => void
   onRejectTool: (toolUseId: string) => void
@@ -122,6 +127,7 @@ function ChatView({
   agentStatus,
   streamingBlocks,
   onSendMessage,
+  onSendStaged,
   onCancel,
   onApproveTool,
   onRejectTool,
@@ -171,6 +177,12 @@ function ChatView({
   // Mount-time autoFocus alone misses a welcome surface that never unmounts
   // (the chat view stays mounted while other top-level views show).
   const welcomeFocusToken = `${viewKind}:${taskMode}:${newTaskProjectId ?? ''}`
+  // Staged-message queue wiring for both InputArea sites: keyed by the open
+  // conversation — absent with none (the first message IS the row's
+  // materialization, so nothing can be staged ahead of it) or when the
+  // controller didn't hand us the interrupt path (feature off).
+  const staging =
+    onSendStaged && conversationId ? { convId: conversationId, onSendNow: onSendStaged } : undefined
   // Context usage for the input area's ring: the projected size once a
   // compaction pass ran (the copy the model actually sees, plus everything
   // appended since), otherwise the same live estimate the compactor reads.
@@ -181,6 +193,11 @@ function ChatView({
   const animName = `ecg-scroll-${uid.replace(/[:.]/g, '')}`
   const scrollRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
+  // The welcome composer's half of the 新建任务 guidance shake (the picker's
+  // half lives in ProjectCards): the wrapper — not InputArea itself, so the
+  // component never remounts and the draft survives — wiggles once per click.
+  const composerShakeRef = useRef<HTMLDivElement | null>(null)
+  useWelcomeShake('composer', composerShakeRef)
 
   // ── Windowed rendering ──
   // Only the latest PAGE_SIZE segments render initially; older segments are
@@ -662,7 +679,11 @@ function ChatView({
           />
         </div>
 
-        <div style={{ flexShrink: 0, padding: '0 24px 16px', maxWidth: 1048, margin: '0 auto', width: '100%' }}>
+        <div
+          ref={composerShakeRef}
+          data-welcome-shake="composer"
+          style={{ flexShrink: 0, padding: '0 24px 16px', maxWidth: 1048, margin: '0 auto', width: '100%' }}
+        >
           <InputArea
             key={conversationId ?? 'new'}
             layout="inline"
@@ -672,6 +693,7 @@ function ChatView({
             // welcome page asks, rather than the send failing with a warning.
             sendBlocked={taskMode === 'project' && !newTaskProjectId}
             sendAccentHue={composerProjectHue}
+            staging={staging}
             isRequesting={isRequesting}
             isStreaming={isStreaming}
             isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
@@ -864,6 +886,7 @@ function ChatView({
         // The conversation's project keeps coloring the send button after the
         // first message — the color belongs to the task, not to the welcome form.
         sendAccentHue={composerProjectHue}
+        staging={staging}
         onUnbindExpert={() => conversationId && onUnbindExpert?.(conversationId)}
         approvalMode={approvalMode}
         onChangeApprovalMode={onChangeApprovalMode}

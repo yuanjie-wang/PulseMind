@@ -200,6 +200,12 @@ const en: TranslationDict = {
       streaming: 'AI is generating...',
       default: 'Type a message...',
     },
+    staged: {
+      hintBusy: '{{count}} staged · sends when this turn ends',
+      hintSettled: '{{count}} staged · turn ended abnormally, auto-send off',
+      sendNow: 'Send now',
+      remove: 'Remove',
+    },
     errorDisplay: {
       title: 'Error',
       dismiss: 'Dismiss',
@@ -300,6 +306,17 @@ const en: TranslationDict = {
     preview: 'Preview',
     from: 'From: {{name}}',
     honestBoundary: 'Only direct writes/edits are listed; files produced indirectly by commands are not',
+  },
+
+  htmlCard: {
+    title: 'HTML Preview',
+    streaming: 'Generating…',
+    preview: 'Preview',
+    code: 'Source',
+    copy: 'Copy source',
+    copied: 'Copied',
+    openInBrowser: 'Open in browser',
+    openInPreview: 'Open in preview pane',
   },
 
   commandCard: {
