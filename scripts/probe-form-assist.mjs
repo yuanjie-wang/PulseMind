@@ -143,6 +143,7 @@ function ProbeHost() {
             onChange={setDraft}
             appliedAssistantPatch={assist.appliedPatch}
             onUndoAssistantPatch={undo}
+            models={[]}
           />
         </div>
       </div>

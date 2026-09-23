@@ -11,10 +11,11 @@
 //
 // Landing-page layout (user ruling 2026-09-18): two columns split by a rule —
 // the LEFT is what the user owns and can start, the RIGHT is what has already
-// happened. Left is stacked: 我的任务 (whose 新建任务 affordance is a dashed card
-// closing the task grid — it was a button in the section head until the
-// follow-up ruling of the same day) above 推荐模板 (the five workplace starters
-// from routine-templates.ts). The page's own title row is GONE — the window
+// happened. Left is stacked: 我的任务 above 推荐模板 (the five workplace starters
+// from routine-templates.ts). The 新建任务 affordance follows the state (user
+// ruling 2026-09-23): tasks exist → a plain button pinned at the far right of
+// the 我的任务 head; none created yet → the dashed card closing the task grid
+// (the only cell of an otherwise empty half). The page's own title row is GONE — the window
 // title bar already names the view, so a second 日常任务 above the content
 // was pure chrome. Right is the recent-runs list: unchanged in content, now a
 // bordered column of its own.
@@ -56,7 +57,9 @@ const RUNS_COLUMN_WIDTH = 300
  *  page's 新建项目 card wears, in this page's card metrics (radius 12, so it sits
  *  in the task grid's rhythm rather than the project grid's). Hover lives in CSS
  *  here rather than in the inline handlers the project page uses, so the
- *  computed border/label colours are what a probe can read. */
+ *  computed border/label colours are what a probe can read. It renders only
+ *  while no routine exists — with tasks, the same action is a plain button in
+ *  the 我的任务 head (user ruling 2026-09-23). */
 const CENTER_STYLES = `
   .routine-card { transition: box-shadow 0.2s, border-color 0.2s; cursor: pointer; }
   .routine-card:hover { box-shadow: var(--pm-shadow-soft); border-color: var(--pm-border); }
@@ -91,10 +94,12 @@ const TEMPLATE_GRID: React.CSSProperties = {
  *  the title sit 17px above its own content (5px of centred slack inside the
  *  32px box + the 12px margin below it) and makes all three heads the same box,
  *  so the three titles sit identically. The 32px was originally reserved for the
- *  新建任务 button that used to live here; the button is now a card in the task
- *  grid (see the tasks section), and the height stayed because it *is* the
- *  spacing — dropping it measures 12px instead of the 17px the user signed off
- *  on (user request 2026-09-18: 「【我的任务】与【任务卡片】的间距要和【推荐模版】
+ *  新建任务 button that lived here; the button is back in this slot whenever tasks
+ *  exist (a default antd Button is exactly 32px, so the head measures the same
+ *  with it, without it, and on the two heads that never carry one), and is a
+ *  card in the grid only on the empty page — dropping the height would measure
+ *  12px instead of the 17px the user signed off on in either state (user request
+ *  2026-09-18: 「【我的任务】与【任务卡片】的间距要和【推荐模版】
  *  与【模版卡片】的间距保持一致」). */
 function SectionHead({ title, note, action }: { title: string; note?: string; action?: React.ReactNode }): React.ReactElement {
   return (
@@ -248,126 +253,141 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
         <div style={{ height: '100%', display: 'flex', minHeight: 0 }}>
           <style>{CENTER_STYLES}</style>
 
-          {/* ── Left: 我的任务 (upper) over 推荐模板 (lower) ── */}
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            {/* Upper — the tasks the user already has. It HUGS its content
-                (`flex: 0 1 auto`, not `flex: 1`): the lower half must sit
-                directly under the last card with no blank band between them
-                (user ruling 2026-09-18 — 「上下两部分间不用留白」), so any
-                leftover height goes below both halves, never between them.
-                It still shrinks (`minHeight: 0`) when the list is longer than
-                the column, and the scroller below takes the overflow. */}
-            <section
-              data-section="tasks"
-              style={{ flex: '0 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', padding: '24px 24px 0' }}
-            >
+          {/* ── Left: 我的任务 (upper) over 推荐模板 (lower). The COLUMN is
+              the scroll container (user ruling 2026-09-24: 我的任务 「不用设
+              最大高度，就展开」，接受把推荐模版挤到第二屏): both halves keep
+              their natural height and a page taller than the viewport spills
+              into the column's own scrollbar — the task list is never
+              compressed and the starters wait below the fold. The runs column
+              is a flex sibling with its own scroll, so it never moves. */}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto' }}>
+            {/* Upper — the tasks the user already has, at NATURAL height: it
+                neither shrinks nor scrolls internally any more (the ruling
+                above), so every card is on the page and a long list pushes
+                推荐模板 down instead of squeezing this half. The lower half
+                still sits directly under the last card (user ruling
+                2026-09-18 — 「上下两部分间不用留白」). */}
+            <section data-section="tasks" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', padding: '24px 24px 0' }}>
               <SectionHead
                 title={t('routine.myTasks')}
                 note={routines.length > 0 ? String(routines.length) : undefined}
+                /* With tasks the affordance is this button, pinned right in the
+                   head row (user ruling 2026-09-23: 「放到【我的任务】同一行的
+                   最右侧」); with none, the head carries no action and the card
+                   closing the empty grid is the affordance. */
+                action={routines.length > 0 ? (
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => openEditor()}>
+                    {t('routine.createTask')}
+                  </Button>
+                ) : undefined}
               />
-              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-                {/* The empty explanation stays a line of copy (it explains what
-                    a routine is and points at the templates) — the ACTION is the
-                    card at the end of the grid below, which every state shows
-                    (user request 2026-09-18: 「在【日常 自动化】页面中，也同样用
-                    卡片的方式呈现新建任务按钮」, i.e. the same shape the welcome
-                    page's 新建项目 card has). The 24px it used to carry above was
-                    the gap to a section head that no longer has a button in it;
-                    16px below is what keeps it off the first card. */}
-                {routines.length === 0 && (
-                  <div style={{ color: 'var(--pm-text-muted)', padding: '0 0 16px', fontSize: 13 }}>
-                    {t('routine.emptyHint')}
-                  </div>
-                )}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
-                  {routines.map((routine) => {
-                    const scheduleText = routine.enabled && routine.schedule
-                      ? `下次运行：${describeCron(routine.schedule.cron)}`
-                      : routine.enabled ? '手动执行' : '已停用'
-                    const lastRun = lastRunByRoutine.get(routine.id)
-                    const lastRunText = lastRun
-                      ? `${RUN_STATUS_TAG[lastRun.status].text} · ${describeRelativeTimeText(lastRun.startedAt, runsFetchedAt, t) ?? ''}`
-                      : null
-                    const description = routine.description || (routine.prompt ? `提示词：${routine.prompt}` : '')
-                    return (
-                      <div
-                        key={routine.id}
-                        className="routine-card"
-                        style={{ display: 'flex', flexDirection: 'column', borderRadius: 12, border: '1px solid var(--pm-border-hairline)', padding: '14px 16px' }}
-                        onClick={() => openHistory(routine.id)}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {routine.name}
-                          </span>
-                          {routine.schedule?.cron && checkCron(routine.schedule.cron).valid && <Tag color="black">定时</Tag>}
-                        </div>
-                        {/* antd Tooltip, not a native `title` attribute: the native
+              {/* The empty explanation stays a line of copy (it explains what
+                    a routine is and points at the templates) — the ACTION on an
+                    empty page is the card at the end of the grid below (user
+                    request 2026-09-18: 「在【日常 自动化】页面中，也同样用卡片的
+                    方式呈现新建任务按钮」, i.e. the same shape the welcome page's
+                    新建项目 card has); with tasks the action is the head's own
+                    button instead, so the card renders only while the list is
+                    empty (user ruling 2026-09-23). 16px below is what keeps the
+                    hint off the first card. */}
+              {routines.length === 0 && (
+                <div style={{ color: 'var(--pm-text-muted)', padding: '0 0 16px', fontSize: 13 }}>
+                  {t('routine.emptyHint')}
+                </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                {routines.map((routine) => {
+                  const scheduleText = routine.enabled && routine.schedule
+                    ? `下次运行：${describeCron(routine.schedule.cron)}`
+                    : routine.enabled ? '手动执行' : '已停用'
+                  const lastRun = lastRunByRoutine.get(routine.id)
+                  const lastRunText = lastRun
+                    ? `${RUN_STATUS_TAG[lastRun.status].text} · ${describeRelativeTimeText(lastRun.startedAt, runsFetchedAt, t) ?? ''}`
+                    : null
+                  const description = routine.description || (routine.prompt ? `提示词：${routine.prompt}` : '')
+                  return (
+                    <div
+                      key={routine.id}
+                      className="routine-card"
+                      style={{ display: 'flex', flexDirection: 'column', borderRadius: 12, border: '1px solid var(--pm-border-hairline)', padding: '14px 16px' }}
+                      onClick={() => openHistory(routine.id)}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {routine.name}
+                        </span>
+                        {routine.schedule?.cron && checkCron(routine.schedule.cron).valid && <Tag color="black">定时</Tag>}
+                      </div>
+                      {/* antd Tooltip, not a native `title` attribute: the native
                             tooltip is drawn by the OS and stays light in dark mode
                             (the user report this replaces). antd rides the
                             ConfigProvider palette, and an empty description shows
                             nothing (noTitle guard). */}
-                        <Tooltip title={description} styles={{ root: { maxWidth: 420 } }}>
-                          <div
-                            data-routine-desc
-                            style={{
-                              fontSize: 12, color: 'var(--pm-text-quiet)', marginTop: 6, minHeight: 36,
-                              display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-                            }}
-                          >
-                            {description}
-                          </div>
-                        </Tooltip>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-                          <span className="routine-pill"><ClockCircleOutlined />{scheduleText}</span>
-                          {lastRunText && <span className="routine-pill">{lastRunText}</span>}
-                          {(routine.params?.length ?? 0) > 0 && (
-                            <span className="routine-pill">参数 {routine.params!.map((p) => p.key).join(' · ')}</span>
-                          )}
-                          {routine.batch?.csvPath && <span className="routine-pill"><DatabaseOutlined />批量 CSV</span>}
+                      <Tooltip title={description} styles={{ root: { maxWidth: 420 } }}>
+                        <div
+                          data-routine-desc
+                          style={{
+                            fontSize: 12, color: 'var(--pm-text-quiet)', marginTop: 6, minHeight: 36,
+                            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                          }}
+                        >
+                          {description}
                         </div>
-                        {/* Action row isolates its own clicks (stopPropagation) so
+                      </Tooltip>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                        <span className="routine-pill"><ClockCircleOutlined />{scheduleText}</span>
+                        {lastRunText && <span className="routine-pill">{lastRunText}</span>}
+                        {(routine.params?.length ?? 0) > 0 && (
+                          <span className="routine-pill">参数 {routine.params!.map((p) => p.key).join(' · ')}</span>
+                        )}
+                        {routine.batch?.csvPath && <span className="routine-pill"><DatabaseOutlined />批量数据</span>}
+                      </div>
+                      {/* Action row isolates its own clicks (stopPropagation) so
                             toggling / running / editing / deleting does not also
                             open the run-history workspace like a card click does. */}
-                        <div
-                          style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--pm-border-faint)' }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <Switch
-                            size="small"
-                            checked={routine.enabled}
-                            onChange={(checked) => void window.electronAPI.routineToggle(routine.id, checked).then(reload)}
-                          />
-                          <span style={{ flex: 1 }} />
-                          <Tooltip title="立即运行">
-                            <Button type="text" icon={<PlayCircleOutlined style={{ fontSize: 17 }} />} onClick={() => runNow(routine)} />
-                          </Tooltip>
-                          {routine.batch?.csvPath && (
-                            <Tooltip title="批量运行（按 CSV 逐行执行）">
-                              {/* 15px = the secondary-action glyph size in this
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--pm-border-faint)' }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Switch
+                          size="small"
+                          checked={routine.enabled}
+                          onChange={(checked) => void window.electronAPI.routineToggle(routine.id, checked).then(reload)}
+                        />
+                        <span style={{ flex: 1 }} />
+                        <Tooltip title="立即运行">
+                          <Button type="text" icon={<PlayCircleOutlined style={{ fontSize: 17 }} />} onClick={() => runNow(routine)} />
+                        </Tooltip>
+                        {routine.batch?.csvPath && (
+                          <Tooltip title="批量运行（按 CSV 逐行执行）">
+                            {/* 15px = the secondary-action glyph size in this
                                   row (编辑/删除); only 立即运行 carries the 17px
                                   primary weight. */}
-                              <Button type="text" icon={<DatabaseOutlined style={{ fontSize: 15 }} />} data-action="batch-run" onClick={() => runBatch(routine)} />
-                            </Tooltip>
-                          )}
-                          <Tooltip title="编辑">
-                            <Button type="text" icon={<EditOutlined style={{ fontSize: 15 }} />} onClick={() => openEditor(routine)} />
+                            <Button type="text" icon={<DatabaseOutlined style={{ fontSize: 15 }} />} data-action="batch-run" onClick={() => runBatch(routine)} />
                           </Tooltip>
-                          <Tooltip title="删除">
-                            <Button type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeRoutine(routine)} />
-                          </Tooltip>
-                        </div>
+                        )}
+                        <Tooltip title="编辑">
+                          <Button type="text" icon={<EditOutlined style={{ fontSize: 15 }} />} onClick={() => openEditor(routine)} />
+                        </Tooltip>
+                        <Tooltip title="删除">
+                          <Button type="text" danger icon={<DeleteOutlined style={{ fontSize: 15 }} />} onClick={() => removeRoutine(routine)} />
+                        </Tooltip>
                       </div>
-                    )
-                  })}
+                    </div>
+                  )
+                })}
 
-                  {/* 新建任务 as a card, in the last cell of the grid — the same
+                {/* 新建任务 as a card, in the last cell of the grid — the same
                       affordance the welcome page gives 新建项目 (user request
-                      2026-09-18: 「也同样用卡片的方式呈现新建任务按钮」). A real
-                      <button> like the template cards, so it is keyboard-
-                      reachable and the whole card is one unambiguous target; the
-                      click creates nothing — it opens the editor, and 保存 is
-                      what writes. */}
+                      2026-09-18: 「也同样用卡片的方式呈现新建任务按钮」). It is
+                      the EMPTY page's affordance only (user ruling 2026-09-23:
+                      仅当未创建任何任务时才以卡片呈现) — with tasks the same
+                      action is the plain button in the head above, and here the
+                      card is the grid's whole content. A real <button> like the
+                      template cards, so it is keyboard-reachable and the whole
+                      card is one unambiguous target; the click creates nothing —
+                      it opens the editor, and 保存 is what writes. */}
+                {routines.length === 0 && (
                   <button
                     type="button"
                     data-action="create-task"
@@ -377,7 +397,7 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                     <PlusOutlined />
                     {t('routine.createTask')}
                   </button>
-                </div>
+                )}
               </div>
             </section>
 
@@ -387,51 +407,42 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                 leaves inside its own half, per 「略微增加两大块的间距」; the
                 user asked for more again on 2026-09-18 — 「略微增加…间距」 —
                 so it went 12 → 16 → 24, and 24 matches the page's own 24px
-                gutter on the tasks and runs columns), capped
-                at 52% so that on a narrow window, where the grid wraps, it
-                scrolls instead of pushing the task list off screen.
-                `boxSizing: border-box` is what makes the cap mean what it says —
-                antd only sets border-box on its own classes, so a content-box
-                slab would add its 36px of padding ON TOP of the 52% (measured
-                58% before the fix).
+                gutter on the tasks and runs columns). It has NO height cap any
+                more: the 2026-09-24 ruling expands 我的任务 without one and
+                accepts the starters landing on the second screen, so when the
+                tasks fill the viewport this half waits below the fold and the
+                column's own scrollbar reaches it — previously it capped at 52%
+                with an internal scroller, and both went with the ruling.
                 No rule at the seam either: the two halves abut directly (user
                 ruling, 2026-09-18 — 「不用硬分隔…直接接壤」); the section head
                 is what separates them. The vertical rule against the runs
                 column is a different thing and stays. */}
-            <section
-              data-section="templates"
-              style={{
-                flexShrink: 0, maxHeight: '52%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column',
-                padding: '24px 24px 20px',
-              }}
-            >
+            <section data-section="templates" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', padding: '24px 24px 20px' }}>
               <SectionHead title={t('routine.templates')} note={t('routine.templatesHint')} />
-              <div style={{ overflowY: 'auto' }}>
-                <div style={TEMPLATE_GRID}>
-                  {ROUTINE_TEMPLATES.map((template) => (
-                    <button
-                      key={template.id}
-                      type="button"
-                      data-template={template.id}
-                      className="routine-template"
-                      onClick={() => openTemplate(template.id)}
-                    >
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--pm-text-strong)' }}>
-                          {template.name[locale] || template.name.zh}
+              <div style={TEMPLATE_GRID}>
+                {ROUTINE_TEMPLATES.map((template) => (
+                  <button
+                    key={template.id}
+                    type="button"
+                    data-template={template.id}
+                    className="routine-template"
+                    onClick={() => openTemplate(template.id)}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--pm-text-strong)' }}>
+                        {template.name[locale] || template.name.zh}
+                      </span>
+                      {template.cron && (
+                        <span className="routine-pill">
+                          <ClockCircleOutlined />{routineScheduleLabel(template.cron, locale)}
                         </span>
-                        {template.cron && (
-                          <span className="routine-pill">
-                            <ClockCircleOutlined />{routineScheduleLabel(template.cron, locale)}
-                          </span>
-                        )}
-                      </span>
-                      <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)', lineHeight: '18px' }}>
-                        {template.description[locale] || template.description.zh}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+                      )}
+                    </span>
+                    <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)', lineHeight: '18px' }}>
+                      {template.description[locale] || template.description.zh}
+                    </span>
+                  </button>
+                ))}
               </div>
             </section>
           </div>

@@ -4,10 +4,11 @@
  * 日常 • 自动化 was reorganised into two columns split by a rule (user ruling
  * 2026-09-18): the LEFT holds what the user owns and can start — 我的任务 over
  * 推荐模板 — and the RIGHT is the recent-runs list. The page's own
- * 日常 • 自动化 + 新建任务 title row is gone; 新建任务 is a dashed card closing
- * the task grid (it was a button in the 我的任务 section head until the same
- * day's follow-up ruling: 「在【日常 自动化】页面中，也同样用卡片的方式呈现
- * 新建任务按钮」, i.e. the shape the welcome page's 新建项目 card already has).
+ * 日常 • 自动化 + 新建任务 title row is gone. 新建任务 follows the state (user
+ * ruling 2026-09-23: 「仅当未创建任何任务的时候，新建按钮以卡片形式呈现，如果有
+ * 任务，则变为普通按钮，放到【我的任务】同一行的最右侧」): a plain button pinned
+ * at the far right of the 我的任务 head once tasks exist, the dashed card
+ * closing the task grid when none do.
  *
  * Every one of those is a layout or interaction fact that no other layer can
  * see: vitest here is node-env (no layout engine, no mounting), and the source
@@ -18,21 +19,28 @@
  *     left border is the rule between them, and both columns run the same
  *     height (two halves, not two cards)
  *   - the stacking: 推荐模板 sits strictly BELOW 我的任务, inside the left
- *     column, and the template grid reflows rather than overflowing
+ *     column, and the template grid reflows rather than overflowing. The left
+ *     COLUMN is the scroll container (user ruling 2026-09-24: 我的任务 「不用设
+ *     最大高度，就展开」，接受把推荐模版挤到第二屏): neither half scrolls
+ *     internally any more, a long task list renders every card at natural
+ *     height and pushes the starters below the fold, and scrolling the column
+ *     reaches them
  *   - the seam: NOTHING rules the two left halves apart — no border on either
  *     section and no inner divider element at the seam (user ruling
  *     2026-09-18: 「不用硬分隔…直接接壤」) — while the vertical rule against the
  *     runs column is untouched
  *   - the missing title row: the view title 日常任务 appears nowhere on
- *     the page, and 新建任务 appears exactly once — as the card that closes the
- *     task grid, in every state including the empty one, wearing the dashed
- *     recipe (and a real mouse proves its hover)
+ *     the page, and 新建任务 appears exactly once — as a plain primary button
+ *     pinned at the far right of the 我的任务 head while tasks exist, and as
+ *     the dashed card closing the task grid once none do (wearing the recipe,
+ *     with a real mouse proving its hover — asserted in §8, the only state
+ *     that renders it)
  *   - the starters: five templates, each a real <button> whose click reaches
  *     the navigation store as `routineEditing + routineTemplateId` and creates
  *     NOTHING (the whole point of a template is that it is not a routine yet)
- *   - 新建任务 from that card lands on the plain create-new form (no stale
- *     templateId) and creates nothing either, and the empty state keeps the
- *     card and the starters on screen
+ *   - 新建任务 from either affordance lands on the plain create-new form (no
+ *     stale templateId) and creates nothing either, and the empty state keeps
+ *     the card and the starters on screen
  *
  * What it mounts is the production `RoutineCenter` behind a stubbed
  * `window.electronAPI` and the real i18n — never a copy of the component.
@@ -136,9 +144,10 @@ for (let i = 0; i < 60; i++) {
   })
 }
 
-// A task list that does NOT fit its half - the lower half must still sit
-// directly under it (nothing may be pushed off screen, and the task half takes
-// the overflow by scrolling on its own).
+// A task list that does NOT fit the screen - 我的任务 must still render every
+// card at natural height (the 2026-09-24 ruling: the area expands, it never
+// compresses), pushing 推荐模板 below the fold; the column's own scrollbar is
+// what reaches them.
 window.__manyRoutines = []
 for (let i = 0; i < 12; i++) {
   window.__manyRoutines.push({
@@ -314,11 +323,18 @@ window.__layout = () => {
     tasks: box(tasks),
     templates: box(templates),
     runs: box(runs),
+    // The left column itself — the scroll container since the 2026-09-24
+    // ruling. It is the sections' common parent.
+    leftCol: box(tasks ? tasks.parentElement : null),
     seamRules: seamRules(tasks, templates),
+    // Both inner scrollers are GONE (the sections flow at natural height);
+    // these read null now and the checks below pin that absence — a reinstated
+    // 52% cap or squeeze would bring a div[overflow-y] back inside a section.
     tasksScroller: tasks ? box(tasks.querySelector('div[style*="overflow-y"]')) : null,
     templatesScroller: templates ? box(templates.querySelector('div[style*="overflow-y"]')) : null,
     runsScroller: box(runsScroller),
     grid: box(grid),
+    gridChildCount: cards[0] ? cards[0].parentElement.children.length : null,
     cardCount: cards.length,
     cardBox: cards[0] ? box(cards[0]) : null,
     cardTops: cards.map((c) => c.getBoundingClientRect().top),
@@ -348,14 +364,16 @@ window.__newCard = () => {
   const b = document.querySelector('.routine-new-card')
   if (!b) return null
   const cs = getComputedStyle(b)
-  const firstCard = document.querySelector('.routine-card')
   return {
     tag: b.tagName,
     type: b.getAttribute('type'),
     text: b.textContent.trim(),
     box: box(b),
-    // Same parent as the cards = inside the grid, and last in it.
-    inGrid: !!firstCard && b.parentElement === firstCard.parentElement,
+    // Its parent IS the task grid — read as display:grid rather than "same
+    // parent as the task cards", because the empty state (the only state that
+    // renders the card since the 2026-09-23 ruling) has no task card to
+    // compare against.
+    inGrid: !!b.parentElement && getComputedStyle(b.parentElement).display === 'grid',
     last: b.parentElement.lastElementChild === b,
     inTasks: !!b.closest('[data-section="tasks"]'),
     siblingCount: b.parentElement.children.length,
@@ -376,6 +394,28 @@ window.__newCard = () => {
       gap: cs.gap,
       transition: cs.transitionProperty,
     },
+  }
+}
+
+/** The 我的任务 head action's own facts — the plain 新建任务 button that takes
+ *  over once tasks exist (null on the empty page, whose affordance is the
+ *  grid's card). rightGap is head-right minus button-right: the ruling is
+ *  同一行的最右侧, so it must be ~0; inHeadRow says the button really rides
+ *  that row rather than sitting near it. */
+window.__createBtn = () => {
+  const head = document.querySelector('[data-section="tasks"]')?.firstElementChild
+  const b = head ? head.querySelector('button') : null
+  if (!b) return null
+  const r = b.getBoundingClientRect()
+  const hr = head.getBoundingClientRect()
+  return {
+    tag: b.tagName,
+    text: b.textContent.trim(),
+    classes: b.className,
+    rightGap: hr.right - r.right,
+    inHeadRow: r.top >= hr.top - 0.5 && r.bottom <= hr.bottom + 0.5,
+    box: box(b),
+    cardCount: document.querySelectorAll('.routine-new-card').length,
   }
 }
 
@@ -419,52 +459,29 @@ const texts = () => page.evaluate(() => document.body.innerText)
 const createButton = () => page.getByRole('button', { name: '新建任务' })
 
 await page.evaluate(() => window.__mount({}))
-await page.waitForSelector('.routine-template')
+await page.waitForSelector('.routine-card')
 
-// ── 1 · the title row is gone, and 新建任务 is a card in the task grid ──
+// ── 1 · the title row is gone, and 新建任务 is a plain button in the head ──
+// With tasks on the page the affordance is NOT the card (user ruling
+// 2026-09-23): it is a normal button at the far right of the 我的任务 row, and
+// the grid closes with task cards alone. The card's own recipe/hover/type facts
+// are asserted in §8 — the empty state is the only state that renders it.
 const body = await texts()
 check('the view title is gone from the page (the window bar carries it)', !body.includes('日常任务'), body.split('\n')[0])
 const createButtons = await createButton().count()
 check('新建任务 appears exactly once', createButtons === 1, `${createButtons} button(s)`)
-const card = await page.evaluate(() => window.__newCard())
+const btn = await page.evaluate(() => window.__createBtn())
+const populatedCard = await page.evaluate(() => window.__newCard())
 check(
-  '…as a card that closes the task grid',
-  !!card && card.tag === 'BUTTON' && card.type === 'button' && card.inGrid && card.last && card.inTasks,
-  card ? `${card.tag}:${card.type} inGrid=${card.inGrid} last=${card.last} inTasks=${card.inTasks}` : 'no card'
+  '…with tasks: a button in the 我的任务 head, and NO card in the grid',
+  !!btn && btn.tag === 'BUTTON' && btn.classes.includes('ant-btn-primary') && populatedCard === null,
+  btn ? `${btn.tag} "${btn.text}" ant-btn-primary=${btn.classes.includes('ant-btn-primary')} card=${populatedCard ? 'present' : 'absent'}` : 'no head button'
 )
 check(
-  '…wearing the dashed create recipe (radius 12, 72px floor, centred plus + label)',
-  !!card &&
-    card.paint.borderStyle === 'dashed' && card.paint.borderWidth === '1px' && card.paint.borderColor === 'rgb(200, 200, 204)' &&
-    card.paint.radius === '12px' && card.paint.minHeight === '72px' &&
-    card.paint.display === 'flex' && card.paint.alignItems === 'center' && card.paint.justifyContent === 'center' &&
-    card.paint.gap === '8px' && card.paint.transition.includes('border-color') && card.paint.transition.includes('color'),
-  card ? `${card.paint.borderStyle} ${card.paint.borderColor} r${card.paint.radius} min${card.paint.minHeight} ${card.paint.display}/${card.paint.alignItems}/${card.paint.justifyContent}/${card.paint.gap}` : 'no card'
+  '…pinned at the far right of that row, inside the head box',
+  !!btn && Math.abs(btn.rightGap) <= 0.5 && btn.inHeadRow,
+  btn ? `right gap ${btn.rightGap.toFixed(1)}px, inRow=${btn.inHeadRow}` : 'no head button'
 )
-check(
-  '…on the page’s own type scale, not the UA button face',
-  !!card && card.text === '新建任务' && card.paint.fontSize === '14px' &&
-    card.paint.color === 'rgb(136, 136, 136)' && card.paint.background === 'rgba(0, 0, 0, 0)' && card.paint.cursor === 'pointer',
-  card ? `"${card.text}" ${card.paint.fontSize} ${card.paint.color} on ${card.paint.background}` : 'no card'
-)
-// A real mouse: the dashed recipe darkens on hover (CSS :hover, so this is the
-// only layer that can see it — jsdom runs no cascade for a hovered box).
-if (card) {
-  await page.mouse.move(card.box.left + card.box.width / 2, card.box.top + card.box.height / 2)
-  await page.waitForTimeout(260)
-}
-const hovered = await page.evaluate(() => {
-  const b = document.querySelector('.routine-new-card')
-  const cs = getComputedStyle(b)
-  return { borderColor: cs.borderTopColor, color: cs.color }
-})
-check(
-  '…and answers the pointer (border and label darken)',
-  hovered.borderColor === 'rgb(102, 102, 102)' && hovered.color === 'rgb(68, 68, 68)',
-  `${hovered.borderColor} / ${hovered.color}`
-)
-await page.mouse.move(0, 0)
-await page.waitForTimeout(260)
 
 // ── 2 · two columns, split by a rule ──
 const L = await layout()
@@ -473,7 +490,11 @@ check('the rule between them is the runs column’s left border', L.runs.borderL
 check('no rule on the left column’s own left edge (the rule belongs to the split)', L.tasks.borderLeftWidth === '0px', L.tasks.borderLeftWidth)
 check('both columns start at the top of the view', Math.abs(L.tasks.top - L.runs.top) < 0.5 && Math.abs(L.runs.top - L.view.top) < 0.5, `tasks ${L.tasks.top.toFixed(1)}, runs ${L.runs.top.toFixed(1)}, view ${L.view.top.toFixed(1)}`)
 check('the runs column runs to the bottom of the view', Math.abs(L.runs.bottom - L.view.bottom) < 0.5, `runs ${L.runs.bottom.toFixed(1)}, view ${L.view.bottom.toFixed(1)}`)
-check('the lower half stays inside the view (the slab never overflows the column)', L.templates.bottom <= L.view.bottom + 0.5, `templates end ${L.templates.bottom.toFixed(1)}, view ends ${L.view.bottom.toFixed(1)}`)
+check(
+  'the left column is the scroll container (the halves flow at natural height; the column takes any overflow)',
+  L.leftCol.overflowY === 'auto' && L.tasksScroller === null && L.templatesScroller === null,
+  `leftCol overflow-y ${L.leftCol.overflowY}, inner scrollers: tasks=${L.tasksScroller ? 'present' : 'none'}, templates=${L.templatesScroller ? 'present' : 'none'}`
+)
 check('the columns share the width (no third column, no gap left over)', Math.abs((L.runs.left - L.view.left) + L.runs.width - L.view.width) < 0.5, `${(L.runs.left - L.view.left).toFixed(1)} + ${L.runs.width} vs ${L.view.width}`)
 
 // ── 3 · the left column is stacked: tasks above templates, no rule, no band ──
@@ -515,22 +536,17 @@ check(
   `${(L.titleBoxes[1].top - L.lastCardBottom).toFixed(1)}px from the last card to the 推荐模板 title (vs ${tasksGap.toFixed(1)}px inside a half)`
 )
 check(
-  '…and the leftover height sits BELOW both halves, never inside the lower one',
-  L.templates.bottom - L.grid.bottom <= 24 && L.templates.bottom <= L.view.bottom + 0.5,
-  `templates end ${L.templates.bottom.toFixed(1)}, grid ends ${L.grid.bottom.toFixed(1)}, view ends ${L.view.bottom.toFixed(1)}`
+  '…and the lower half ends at its own bottom padding (nothing stretches it — natural height, no leftover distributed inside it)',
+  L.templates.bottom - L.grid.bottom >= 18 && L.templates.bottom - L.grid.bottom <= 24,
+  `templates end ${L.templates.bottom.toFixed(1)}, grid ends ${L.grid.bottom.toFixed(1)} (Δ ${(L.templates.bottom - L.grid.bottom).toFixed(1)} = the 20px bottom padding)`
 )
 check('…inside the left column (never under the runs column)', L.templates.right <= L.runs.left + 0.5, `${L.templates.right.toFixed(1)} <= ${L.runs.left.toFixed(1)}`)
 check('the task cards render in that upper half', L.cardCount === 3 && L.cardBox.top >= L.tasks.top && L.cardBox.bottom <= L.templates.top, `${L.cardCount} cards, first ${L.cardBox.top.toFixed(1)}..${L.cardBox.bottom.toFixed(1)}`)
 const gridCard = await page.evaluate(() => window.__newCard())
 check(
-  'the 新建任务 card takes a task card’s own cell (same column width, same height)',
-  !!gridCard && Math.abs(gridCard.box.width - L.cardBox.width) < 0.5 && Math.abs(gridCard.box.height - L.cardBox.height) < 0.5,
-  gridCard ? `${gridCard.box.width.toFixed(1)}x${gridCard.box.height.toFixed(1)} vs task card ${L.cardBox.width.toFixed(1)}x${L.cardBox.height.toFixed(1)}` : 'no card'
-)
-check(
-  '…and it is the grid’s last cell (4th child of the 3 task cards’ grid)',
-  !!gridCard && gridCard.siblingCount === 4 && gridCard.last && gridCard.box.right <= L.tasks.right + 0.5,
-  gridCard ? `${gridCard.siblingCount} children, last=${gridCard.last}, right ${gridCard.box.right.toFixed(1)} <= ${L.tasks.right.toFixed(1)}` : 'no card'
+  'the grid’s cells are all task cards — with tasks, the create affordance is the head button, not a 4th cell',
+  gridCard === null && L.gridChildCount === 3 && L.cardCount === 3,
+  `card=${gridCard ? 'present' : 'absent'}, grid children=${L.gridChildCount}, task cards=${L.cardCount}`
 )
 
 // ── 4 · five starters, each a button whose click is the whole card ──
@@ -557,9 +573,9 @@ check(
   L.templateBoxes.every((b) => b.left >= L.tasks.left - 0.5 && b.right <= L.runs.left + 0.5)
 )
 check(
-  'the template slab is capped, so the task half always keeps the larger share',
-  L.templates.height <= L.view.height * 0.52 + 1,
-  `${L.templates.height.toFixed(1)}px of ${L.view.height}`
+  'the template slab is uncapped (no 52% limit, no inner scroller — the 2026-09-24 ruling)',
+  L.templatesScroller === null && Math.abs(L.templates.bottom - L.grid.bottom - 20) < 1,
+  `grid ends ${L.grid.bottom.toFixed(1)}, slab ends ${L.templates.bottom.toFixed(1)}, inner scroller ${L.templatesScroller ? 'present' : 'none'}`
 )
 await page.screenshot({ path: join(SHOTS, 'zh.png') })
 
@@ -601,7 +617,7 @@ check('the template’s own routine is not opened for editing', afterTemplate.ro
 // ── 7 · 新建任务 lands on the plain create-new form, and creates nothing ──
 await page.evaluate(() => { window.__calls = [] })
 await page.evaluate(() => window.__mount({}))
-await page.waitForSelector('.routine-template')
+await page.waitForSelector('.routine-card')
 const createClickable = (await createButton().count()) > 0
 if (createClickable) {
   await createButton().click()
@@ -622,7 +638,7 @@ check('…and creates nothing (the editor’s 保存 is what writes)', !callsAft
 // offered only a sentence), so this section clicks it too.
 await page.evaluate(() => { window.__calls = [] })
 await page.evaluate(() => window.__mount({ routines: [], runs: [] }))
-await page.waitForSelector('.routine-template')
+await page.waitForSelector('.routine-new-card')
 const empty = await layout()
 const emptyCard = await page.evaluate(() => window.__newCard())
 const emptyText = await texts()
@@ -638,6 +654,54 @@ check(
   !!emptyCard && emptyCard.siblingCount === 1,
   emptyCard ? `${emptyCard.siblingCount} child(ren)` : 'no card'
 )
+// …and this state wears the facts §1 gave up: the head carries NO action (the
+// card is the affordance), the card closes the grid, and the dashed recipe +
+// type scale + CSS :hover are read HERE — the empty page is the only state that
+// renders it (user ruling 2026-09-23).
+check(
+  'empty state: the 我的任务 head carries no button (the card is the affordance)',
+  (await page.evaluate(() => window.__createBtn())) === null,
+  'head action absent'
+)
+check(
+  'empty state: …the card closes the task grid (a real button, in the grid, last)',
+  !!emptyCard && emptyCard.tag === 'BUTTON' && emptyCard.type === 'button' && emptyCard.inGrid && emptyCard.last && emptyCard.inTasks,
+  emptyCard ? `${emptyCard.tag}:${emptyCard.type} inGrid=${emptyCard.inGrid} last=${emptyCard.last} inTasks=${emptyCard.inTasks}` : 'no card'
+)
+check(
+  'empty state: …wearing the dashed create recipe (radius 12, 72px floor, centred plus + label)',
+  !!emptyCard &&
+    emptyCard.paint.borderStyle === 'dashed' && emptyCard.paint.borderWidth === '1px' && emptyCard.paint.borderColor === 'rgb(200, 200, 204)' &&
+    emptyCard.paint.radius === '12px' && emptyCard.paint.minHeight === '72px' &&
+    emptyCard.paint.display === 'flex' && emptyCard.paint.alignItems === 'center' && emptyCard.paint.justifyContent === 'center' &&
+    emptyCard.paint.gap === '8px' && emptyCard.paint.transition.includes('border-color') && emptyCard.paint.transition.includes('color'),
+  emptyCard ? `${emptyCard.paint.borderStyle} ${emptyCard.paint.borderColor} r${emptyCard.paint.radius} min${emptyCard.paint.minHeight} ${emptyCard.paint.display}/${emptyCard.paint.alignItems}/${emptyCard.paint.justifyContent}/${emptyCard.paint.gap}` : 'no card'
+)
+check(
+  'empty state: …on the page’s own type scale, not the UA button face',
+  !!emptyCard && emptyCard.text === '新建任务' && emptyCard.paint.fontSize === '14px' &&
+    emptyCard.paint.color === 'rgb(136, 136, 136)' && emptyCard.paint.background === 'rgba(0, 0, 0, 0)' && emptyCard.paint.cursor === 'pointer',
+  emptyCard ? `"${emptyCard.text}" ${emptyCard.paint.fontSize} ${emptyCard.paint.color} on ${emptyCard.paint.background}` : 'no card'
+)
+// A real mouse: the dashed recipe darkens on hover (CSS :hover, so this is the
+// only layer that can see it — jsdom runs no cascade for a hovered box).
+if (emptyCard) {
+  await page.mouse.move(emptyCard.box.left + emptyCard.box.width / 2, emptyCard.box.top + emptyCard.box.height / 2)
+  await page.waitForTimeout(260)
+}
+const emptyHovered = await page.evaluate(() => {
+  const b = document.querySelector('.routine-new-card')
+  if (!b) return null
+  const cs = getComputedStyle(b)
+  return { borderColor: cs.borderTopColor, color: cs.color }
+})
+check(
+  'empty state: …and answers the pointer (border and label darken)',
+  !!emptyHovered && emptyHovered.borderColor === 'rgb(102, 102, 102)' && emptyHovered.color === 'rgb(68, 68, 68)',
+  emptyHovered ? `${emptyHovered.borderColor} / ${emptyHovered.color}` : 'no card'
+)
+await page.mouse.move(0, 0)
+await page.waitForTimeout(260)
 check('empty state: the five templates stay on screen', empty.templateIds.length === 5 && empty.templates.height > 0, `${empty.templateIds.length} templates, ${empty.templates.height.toFixed(1)}px`)
 check('empty state: the runs column still renders its own empty line', emptyText.includes('暂无运行记录'))
 check('empty state: the layout still holds (rule + stacking)', empty.runs.borderLeftWidth === '1px' && Math.abs(empty.templates.top - empty.tasks.bottom) < 0.5 && empty.seamRules.length === 0, `runs rule ${empty.runs.borderLeftWidth}, seam rules ${empty.seamRules.length}, seam gap ${(empty.templates.top - empty.tasks.bottom).toFixed(1)}px`)
@@ -662,18 +726,25 @@ check('empty state: …and writes nothing', !emptyCalls.includes('routineCreate'
 // ── 9 · a half-screen window: the slab scrolls instead of pushing the tasks out ──
 await page.setViewportSize({ width: 900, height: 620 })
 await page.evaluate(() => window.__mount({}))
-await page.waitForSelector('.routine-template')
+await page.waitForSelector('.routine-card')
 const narrow = await layout()
 check('narrow: both columns still split the width', Math.abs(narrow.runs.left - narrow.templates.right) < 0.5 && Math.abs(narrow.runs.left - narrow.tasks.right) < 0.5, `left ends ${narrow.tasks.right.toFixed(1)}, runs starts ${narrow.runs.left.toFixed(1)}`)
 check(
-  'narrow: the slab stays capped, so the task half keeps its share',
-  narrow.templates.height <= narrow.view.height * 0.52 + 1,
-  `${narrow.templates.height.toFixed(1)}px of ${narrow.view.height}`
+  'narrow: the left column takes the overflow (the halves scroll as one page, no inner scroller)',
+  narrow.leftCol.overflowY === 'auto' && narrow.leftCol.scrollHeight > narrow.leftCol.clientHeight + 1 &&
+    narrow.tasksScroller === null && narrow.templatesScroller === null,
+  `${narrow.leftCol.scrollHeight} > ${narrow.leftCol.clientHeight}, inner scrollers ${narrow.tasksScroller || narrow.templatesScroller ? 'present' : 'none'}`
 )
+await page.evaluate(() => {
+  const col = document.querySelector('[data-section="tasks"]').parentElement
+  col.scrollTop = col.scrollHeight
+})
+await page.waitForTimeout(50)
+const narrowScrolled = await layout()
 check(
-  'narrow: the wrapped starter grid scrolls inside the slab (nothing is clipped away)',
-  narrow.templatesScroller.overflowY === 'auto' && narrow.templatesScroller.scrollHeight > narrow.templatesScroller.clientHeight,
-  `${narrow.templatesScroller.scrollHeight} > ${narrow.templatesScroller.clientHeight}`
+  'narrow: scrolling the column brings every starter into view (below the fold, not gone)',
+  narrowScrolled.templateBoxes.length === 5 && narrowScrolled.templateBoxes[4].bottom <= narrowScrolled.view.bottom + 0.5,
+  `last starter ends ${narrowScrolled.templateBoxes[4].bottom.toFixed(1)}, view ends ${narrowScrolled.view.bottom.toFixed(1)}`
 )
 check(
   'narrow: the five starters are still all in the DOM and inside the left column',
@@ -684,15 +755,18 @@ check(
   narrow.cardTops.length === 3 && narrow.cardBox.right <= narrow.runs.left + 0.5,
   `card right ${narrow.cardBox.right.toFixed(1)} <= ${narrow.runs.left.toFixed(1)}`
 )
+const narrowBtn = await page.evaluate(() => window.__createBtn())
 check(
-  'narrow: the create card reflows with them (inside the left column)',
-  (await page.evaluate(() => window.__newCard()))?.box.right <= narrow.runs.left + 0.5,
-  `card right ${(await page.evaluate(() => window.__newCard()))?.box.right.toFixed(1)} <= ${narrow.runs.left.toFixed(1)}`
+  'narrow: the create button stays pinned inside the left column’s head',
+  !!narrowBtn && narrowBtn.box.right <= narrow.runs.left + 0.5 && Math.abs(narrowBtn.rightGap) <= 0.5,
+  narrowBtn ? `right ${narrowBtn.box.right.toFixed(1)} <= runs.left ${narrow.runs.left.toFixed(1)}, gap ${narrowBtn.rightGap.toFixed(1)}` : 'no head button'
 )
+await page.evaluate(() => { document.querySelector('[data-section="tasks"]').parentElement.scrollTop = 0 })
+await page.waitForTimeout(50)
 await page.screenshot({ path: join(SHOTS, 'narrow.png') })
 await page.setViewportSize({ width: 1280, height: 800 })
 
-// ── 9b · a list longer than its half: packing must not push the starters off ──
+// ── 9b · a list taller than the screen: 我的任务 expands, the starters wait below ──
 await page.evaluate(() => window.__mount({ routines: window.__manyRoutines }))
 await page.waitForSelector('.routine-card')
 const many = await layout()
@@ -703,35 +777,43 @@ check(
   `tasks end ${many.tasks.bottom.toFixed(1)}, templates start ${many.templates.top.toFixed(1)}`
 )
 check(
-  'long list: the task half takes the overflow and scrolls on its own',
-  many.tasksScroller.overflowY === 'auto' && many.tasksScroller.scrollHeight > many.tasksScroller.clientHeight + 1,
-  `${many.tasksScroller.scrollHeight} > ${many.tasksScroller.clientHeight}`
+  'long list: the task half fully expands — every card at natural height, none clipped or squeezed',
+  many.tasksScroller === null && many.cardTops.length === 12 && many.lastCardBottom <= many.tasks.bottom + 0.5,
+  `12 cards, last ends ${many.lastCardBottom.toFixed(1)}, section ends ${many.tasks.bottom.toFixed(1)}, inner scroller ${many.tasksScroller ? 'present' : 'none'}`
 )
 check(
-  'long list: the starters stay on screen (the overflowing list is clipped, not pushed)',
-  many.templates.bottom <= many.view.bottom + 0.5 && many.templates.height > 100 && many.templates.top > many.view.top,
-  `templates ${many.templates.top.toFixed(1)}..${many.templates.bottom.toFixed(1)} of ${many.view.bottom}`
+  'long list: the starters are pushed past the fold (the accepted cost of the 2026-09-24 ruling)',
+  many.templates.bottom > many.view.bottom && many.templateBoxes.length === 5,
+  `templates end ${many.templates.bottom.toFixed(1)}, view ends ${many.view.bottom.toFixed(1)}`
 )
 check(
-  'long list: the slab is still capped at 52%',
-  many.templates.height <= many.view.height * 0.52 + 1,
-  `${many.templates.height.toFixed(1)}px of ${many.view.height}`
+  'long list: the column scrolls, and its end reaches the starters',
+  many.leftCol.overflowY === 'auto' && many.leftCol.scrollHeight > many.leftCol.clientHeight,
+  `${many.leftCol.scrollHeight} > ${many.leftCol.clientHeight}`
 )
+await page.evaluate(() => {
+  const col = document.querySelector('[data-section="tasks"]').parentElement
+  col.scrollTop = col.scrollHeight
+})
+await page.waitForTimeout(50)
+const manyScrolled = await layout()
 check(
-  'long list: the clipped cards stay inside the upper half (nothing painted over the starters)',
-  many.cardTops.filter((top) => top < many.templates.top).length > 0 && many.lastCardBottom > many.templates.top,
-  `${many.cardTops.filter((t) => t < many.templates.top).length} cards above the seam, last card ends ${many.lastCardBottom.toFixed(1)} (scrolled out of view)`
+  'long list: scrolled to the end, the whole template slab is in view',
+  manyScrolled.templates.bottom <= manyScrolled.view.bottom + 0.5 && manyScrolled.templates.top >= manyScrolled.view.top - 0.5,
+  `templates ${manyScrolled.templates.top.toFixed(1)}..${manyScrolled.templates.bottom.toFixed(1)} of view ${manyScrolled.view.top.toFixed(1)}..${manyScrolled.view.bottom.toFixed(1)}`
 )
 check(
   'long list: the runs column is untouched by a long task list',
   many.runs.borderLeftWidth === '1px' && many.runs.height === many.view.height,
   `runs ${many.runs.height.toFixed(1)} / view ${many.view.height.toFixed(1)}`
 )
+await page.evaluate(() => { document.querySelector('[data-section="tasks"]').parentElement.scrollTop = 0 })
+await page.waitForTimeout(50)
 await page.screenshot({ path: join(SHOTS, 'many-tasks.png') })
 
 // ── 10 · EN: the same page, translated ──
 await page.evaluate(() => window.__mount({ locale: 'en' }))
-await page.waitForSelector('.routine-template')
+await page.waitForSelector('.routine-card')
 const en = await layout()
 const enText = await texts()
 check('EN: the section heads read in English', enText.includes('My Tasks') && enText.includes('Templates') && enText.includes('Recent Runs'), enText.split('\n').slice(0, 4).join(' / '))
@@ -739,9 +821,9 @@ check('EN: the starters render with English names', en.templateNames[0] === 'Dai
 check('EN: the schedule pills follow the locale', en.templatePills[0] === 'Daily 18:00' && en.templatePills[1] === 'Weekly · Fri 17:30', en.templatePills.join(' | '))
 check('EN: no Chinese label leaks into the buttons', (await page.getByRole('button', { name: 'New Task' }).count()) === 1)
 check(
-  'EN: the create card is the same card, translated',
-  (await page.evaluate(() => window.__newCard()))?.text === 'New Task',
-  JSON.stringify((await page.evaluate(() => window.__newCard()))?.text)
+  'EN: the create button is the same action, translated',
+  (await page.evaluate(() => window.__createBtn()))?.text === 'New Task',
+  JSON.stringify((await page.evaluate(() => window.__createBtn()))?.text)
 )
 check('EN: the layout is identical (rule + stacking + five cards)', en.runs.borderLeftWidth === '1px' && en.templates.top >= en.tasks.bottom - 0.5 && en.templateIds.length === 5 && en.seamRules.length === 0, `runs rule ${en.runs.borderLeftWidth}, seam rules ${en.seamRules.length}`)
 await page.screenshot({ path: join(SHOTS, 'en.png') })
@@ -760,7 +842,10 @@ check('editor: the form mounted (so the checks below are not vacuous)', daily.in
 check('editor: the name is prefilled', nameValue(daily) === '每日工作日报', String(nameValue(daily)))
 check('editor: the description is prefilled', (descValue(daily) ?? '').includes('下班前'), String(descValue(daily)))
 check('editor: the prompt is prefilled', daily.textareas.some((t) => t.includes('生成今天的工作日报')), daily.textareas.map((t) => t.slice(0, 24)).join(' | '))
-check('editor: the schedule came with the template', daily.switchOn && daily.inputs.some((i) => i.type === 'time' && i.value === '18:00'), JSON.stringify(daily.inputs.filter((i) => i.type === 'time')))
+// The time field is antd's TimePicker since 2026-09-23 (the native input's
+// accent-blue segment highlight was unstyleable), so the pin is the VALUE,
+// not the input type — the picker's inner input is a text one.
+check('editor: the schedule came with the template', daily.switchOn && daily.inputs.some((i) => i.value === '18:00'), JSON.stringify(daily.inputs.filter((i) => i.value === '18:00')))
 check('editor: it is the create-new flow, not an edit', daily.text.includes('新建任务') && !daily.text.includes('编辑任务'), daily.text.split('\n').slice(0, 3).join(' / '))
 await page.screenshot({ path: join(SHOTS, 'editor-daily.png') })
 

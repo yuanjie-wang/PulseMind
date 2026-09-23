@@ -959,6 +959,17 @@ function AppLayout({
           background: var(--pm-ink) !important;
           color: var(--pm-ink-contrast) !important;
         }
+
+        /* 时间选择面板（TimePicker 的时/分列）滚到底不再露出大块空白：antd v6
+           给每列画一个 ::after 滚动余量（高度 = 列高 − 单元格高，date-picker
+           style/panel.js），为了让选中值能顶到列首 —— 代价是滚到底时露出近
+           一整列的空白（用户 2026-09-24）。压掉余量后，滚到底正好显示最后
+           几行；选中的值照常可见，只是不再强行顶对齐。作用域带
+           .ant-picker-dropdown 是实测出的取胜权重：不带前缀的裸列选择器
+           压不过 antd 自己的规则（实测对比过）。 */
+        .ant-picker-dropdown .ant-picker-time-panel-column::after {
+          height: 0;
+        }
       `}</style>
     </Layout>
   )
