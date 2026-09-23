@@ -35,3 +35,8 @@ scripts/.tmp/
 
 # Local agent workspace state
 .zcode/
+
+# Local test artifacts — a full project copy (32MB) and a generated PDF left
+# behind by manual export/deck testing; never part of the repo.
+/test/
+/test.pdf
