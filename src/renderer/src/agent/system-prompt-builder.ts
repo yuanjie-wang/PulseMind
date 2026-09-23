@@ -132,6 +132,7 @@ You have a local knowledge base (compiled wiki) of project documents and past co
   parts.push(TOOL_CALL_FORMAT)
   parts.push(COMPRESSED_TOOL_RESULTS)
   parts.push(RENDER_REFERENCE)
+  parts.push(HTML_VISUAL_AIDS)
 
   return parts.join('\n')
 }
@@ -422,3 +423,8 @@ const RENDER_REFERENCE = `\
 ## Render Reference
 
 The chat UI supports enhanced rendering for standard Markdown links and images: \`[](uri)\` renders as clickable cards; \`![](uri)\` renders inline images. The \`uri\` can be \`file://\` (local file) or \`http(s)://\` (web URL).`
+
+const HTML_VISUAL_AIDS = `\
+## Visual HTML Aids
+
+When a visual would explain better than prose — a multi-dimension comparison, a timeline or process flow, a data chart, an infographic, a small interactive demo — you may render it directly in the chat: emit a self-contained static HTML fragment in a \`\`\`html fenced block, and the chat UI renders it as a sandboxed preview card. Hard requirements: all CSS and JS inline in the fragment; no external network resources (no CDN scripts, fonts, or stylesheets); design for a WHITE background; keep the fragment under ~30KB. The card enhances the answer, never replaces it — keep the surrounding prose. When the user asks to visualize or compare something in the conversation, prefer the card over writing an HTML file; write an HTML file only when the user asks for a file deliverable.`
