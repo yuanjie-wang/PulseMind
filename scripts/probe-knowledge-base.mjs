@@ -29,14 +29,29 @@
  *      base's files, pages land under bases/<id>/wiki, unscoped sees all;
  *  10. reset: svcClearAll empties every base's raw+wiki dirs AND the legacy
  *      flat knowledge/raw + knowledge/wiki (the user-reported leftovers), and
- *      deletes every knowledge_files / knowledge_fts / knowledge_wiki_fts row.
+ *      deletes every knowledge_files / knowledge_fts / knowledge_wiki_fts row;
+ *  11. folder import: the REAL registered knowledge:scan-folder handler must
+ *      answer { fileCount, filePaths } (it once answered a bare string[] while
+ *      the preload bridge declared the object — the renderer destructured
+ *      undefined, prepareImport threw and 导入文件夹 did nothing at all), the
+ *      walk skips unsupported files / broken symlinks / directory-symlink
+ *      loops, and knowledge:add-folder lands every scanned file as a row in
+ *      the SELECTED base, reporting duplicates on a second run;
+ *  12. bulk import doesn't freeze the app (「导入大批量文件时会卡死」): the
+ *      folder walk AWAITS — a 3600-file scan keeps event-loop timers firing,
+ *      and the pre-fix synchronous walk over the same tree drives the counter
+ *      to ZERO (the beachball, measured as a local control), node_modules and
+ *      .git never enter the candidate list (they alone dwarf a code folder),
+ *      prepareImport keeps its order/duplicate/base-scoping semantics while
+ *      reading the DB in IN-batches (>1 chunk, boundary seeds included), and
+ *      one add-folder call over 32 files is exactly ONE extractor fork.
  *
  * Usage: node scripts/probe-knowledge-base.mjs
  */
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join, extname } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const REPO_ROOT = process.env.PM_REPO ?? process.cwd()
@@ -339,6 +354,201 @@ async function phaseMain() {
     db.prepare('SELECT COUNT(*) as c FROM knowledge_files').get().c === 0 &&
     db.prepare('SELECT COUNT(*) as c FROM knowledge_fts').get().c === 0 &&
     db.prepare('SELECT COUNT(*) as c FROM knowledge_wiki_fts').get().c === 0)
+
+  // ── ⑩ folder import: drive the REAL registered IPC handlers ──
+  // The user report 「知识中心导入文件夹无效」 was a shape mismatch: this
+  // handler answered `string[]` (svcScanFolder's old return) while the preload
+  // bridge declares `{ fileCount, filePaths }`, so the renderer destructured
+  // undefined, prepareImport(undefined) threw and handleAddFolder had no catch —
+  // pick a folder, nothing happens. Nothing in tests/ or scripts/ ever called
+  // the import path, which is how it shipped; these checks run the handler the
+  // renderer actually invokes.
+  const { registerKnowledgeHandlers } = await import('../src/main/ipc/knowledge.handler')
+  const { IPC_CHANNELS } = await import('../src/shared/ipc-channels')
+  registerKnowledgeHandlers()
+  const handlers = globalThis.__pmIpcHandlers ?? {}
+  const scanHandler = handlers[IPC_CHANNELS.KNOWLEDGE_SCAN_FOLDER]
+  check('knowledge:scan-folder is registered', typeof scanHandler === 'function')
+
+  const folder = join(DATA_DIR, 'import-src')
+  mkdirSync(join(folder, 'nested'), { recursive: true })
+  writeFileSync(join(folder, 'a.md'), '# A\n\nfolder import body', 'utf-8')
+  writeFileSync(join(folder, 'b.txt'), 'plain text body', 'utf-8')
+  writeFileSync(join(folder, 'c.bin'), 'unsupported bytes', 'utf-8')
+  writeFileSync(join(folder, 'nested', 'd.ts'), 'export const x = 1', 'utf-8')
+  let symlinksOk = true
+  try {
+    symlinkSync('/nonexistent/dead.md', join(folder, 'dead.md')) // broken link
+    symlinkSync(folder, join(folder, 'loop')) // dir link back to the root
+  } catch { symlinksOk = false }
+
+  const scan = await scanHandler({}, folder)
+  check('scan answers the OBJECT the bridge declares, not a bare string[] (the 无效 fix)',
+    !!scan && !Array.isArray(scan) && scan.fileCount === 3 && Array.isArray(scan.filePaths) &&
+    scan.filePaths.every(p => typeof p === 'string'),
+    Array.isArray(scan) ? `bare array of ${scan.length} — the pre-fix shape` : JSON.stringify({ fileCount: scan?.fileCount, n: scan?.filePaths?.length }))
+  check('…unsupported .bin excluded, nested subdir walked in',
+    Array.isArray(scan?.filePaths) && !scan.filePaths.some(p => p.endsWith('.bin')) &&
+    scan.filePaths.some(p => p.endsWith(join('nested', 'd.ts'))),
+    scan?.filePaths?.map(p => p.slice(folder.length + 1)).join(','))
+  if (symlinksOk) {
+    check('a broken symlink and a directory-symlink loop do not abort the scan',
+      scan?.fileCount === 3, `fileCount=${scan?.fileCount} (walk threw / looped)`)
+
+    const importBase = reextract.svcCreateBase('FolderImport')
+    const addHandler = handlers[IPC_CHANNELS.KNOWLEDGE_ADD_FOLDER]
+    check('knowledge:add-folder is registered', typeof addHandler === 'function')
+    const results = await addHandler({}, folder, importBase.id)
+    check('add-folder imports every scanned file as a success (real extraction worker)',
+      results.length === 3 && results.every(r => r.success === true),
+      JSON.stringify(results.map(r => r.success === true ? 'ok' : (r.error || 'failed'))))
+    const rows = db.prepare('SELECT COUNT(*) AS c FROM knowledge_files WHERE base_id = ?').get(importBase.id).c
+    check('…and every row lands in the SELECTED base, none in default',
+      rows === 3 && db.prepare("SELECT COUNT(*) AS c FROM knowledge_files WHERE base_id = 'default' AND source_path LIKE ?").get(`${folder}%`).c === 0,
+      `base=${rows}`)
+    const again = await addHandler({}, folder, importBase.id)
+    check('re-importing the same folder reports duplicates, not new rows',
+      again.length === 3 && again.every(r => r.success === false && r.duplicate === true) &&
+      db.prepare('SELECT COUNT(*) AS c FROM knowledge_files WHERE base_id = ?').get(importBase.id).c === 3,
+      JSON.stringify(again.map(r => r.duplicate ? 'dup' : (r.error || r.success))))
+  } else {
+    check('symlink fixtures created (skipped on this platform)', false, 'symlinkSync failed')
+  }
+
+  // ── ⑫ bulk import doesn't freeze the app (「导入大批量文件时会卡死」) ──
+  //
+  // The renderer's half (per-file refresh/fork/getSettings churn in the import
+  // queue) is pinned by tests/knowledge-batch-import.test.ts — a component can
+  // only be driven in a browser. What can only be MEASURED here is the main
+  // process half: does the walk YIELD (an event-loop tick counter — a
+  // synchronous walk leaves it at zero, which IS the beachball), do
+  // node_modules/.git stay out of the candidate list, does prepareImport keep
+  // its semantics across IN-batches, and is a 32-file import one fork.
+
+  const bulkTree = join(DATA_DIR, 'bulk-tree')
+  const GOOD = 3000 // supported files that SHOULD be found
+  const JUNK = 600 // node_modules/.git .md files that must NOT be
+  for (let i = 0; i < GOOD; i++) {
+    const dir = join(bulkTree, `d${i % 10}`)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `f${i}.md`), `# doc ${i}\n`, 'utf-8')
+  }
+  mkdirSync(join(bulkTree, 'node_modules', 'pkg', 'deep'), { recursive: true })
+  mkdirSync(join(bulkTree, '.git', 'objects'), { recursive: true })
+  for (let i = 0; i < 500; i++) writeFileSync(join(bulkTree, 'node_modules', 'pkg', 'deep', `m${i}.md`), 'x', 'utf-8')
+  for (let i = 0; i < 100; i++) writeFileSync(join(bulkTree, '.git', 'objects', `o${i}.md`), 'x', 'utf-8')
+
+  // Tick counter: a 0ms self-rearming timer. It cannot fire while the thread
+  // is blocked, so "ticks during the scan > 0" means the handler yielded, and
+  // the control below proves the metric can read zero.
+  let ticks = 0
+  let ticking = true
+  const tickLoop = () => { if (!ticking) return; ticks++; setTimeout(tickLoop, 0) }
+  setTimeout(tickLoop, 0)
+  const scanStart = Date.now()
+  const bulkScan = await scanHandler({}, bulkTree)
+  const scanMs = Date.now() - scanStart
+  const scanTicks = ticks
+  check('bulk scan keeps the event loop alive (ticks fired while yielding)',
+    scanTicks >= 1, `${scanTicks} ticks in ${scanMs}ms`)
+  check('bulk scan answers the bridge shape under load',
+    !!bulkScan && !Array.isArray(bulkScan) && Array.isArray(bulkScan.filePaths),
+    JSON.stringify(bulkScan && { fileCount: bulkScan.fileCount, n: bulkScan.filePaths?.length }))
+  check(`bulk scan finds exactly the ${GOOD} supported files`,
+    bulkScan?.fileCount === GOOD && bulkScan?.filePaths?.length === GOOD,
+    `fileCount=${bulkScan?.fileCount} (junk leaked / walk truncated)`)
+  check('node_modules and .git never enter the candidate list (SKIP_DIRS)',
+    Array.isArray(bulkScan?.filePaths) &&
+    !bulkScan.filePaths.some(p => p.includes('node_modules') || /(^|[\\/])\.git[\\/]/.test(p)),
+    bulkScan?.filePaths?.find(p => p.includes('node_modules') || p.includes('/.git/')) ?? '')
+  check('bulk scan duration within a generous bound', scanMs < 15000, `${scanMs}ms`)
+
+  // The control — the walk exactly as it shipped (synchronous fs, no skip
+  // list) over the SAME tree, run while the tick timer is still armed. The
+  // delta must be 0: during a synchronous run no timer can fire. That is the
+  // beachball, and it is what makes the check above non-vacuous.
+  const ctrlSupported = new Set(['.md', '.txt', '.ts']) // the tree's own contents
+  function oldSyncWalk(dir, out) {
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) { oldSyncWalk(full, out); continue }
+      if (entry.isFile() && ctrlSupported.has(extname(full).toLowerCase())) out.push(full)
+    }
+  }
+  const ctrl = []
+  const ctrlStart = ticks
+  oldSyncWalk(bulkTree, ctrl)
+  const ctrlTicks = ticks - ctrlStart
+  ticking = false
+  check('metric discriminates: the OLD sync walk blocks every timer (0 ticks)',
+    ctrlTicks === 0, `ctrlTicks=${ctrlTicks}`)
+  check('control: the old walk WOULD have imported the junk (why SKIP_DIRS exists)',
+    ctrl.length === GOOD + JUNK && ctrl.some(p => p.includes('node_modules')) && ctrl.some(p => p.includes('/.git/')),
+    `old walk counted ${ctrl.length} of ${GOOD + JUNK}`)
+
+  // prepareImport: semantics first (order, duplicate inputs, base scoping),
+  // then a >1-chunk list with seeds on both sides of the 500 boundary.
+  const prepHandler = handlers[IPC_CHANNELS.KNOWLEDGE_PREPARE_IMPORT]
+  check('knowledge:prepare-import is registered', typeof prepHandler === 'function')
+  const kdb = await import('../src/main/storage/knowledge.db')
+  const prepA = reextract.svcCreateBase('PrepA')
+  const seeds = ['/prep/a.md', '/prep/b.txt', '/prep/c.md']
+  seeds.forEach((sp, i) => kdb.insertKnowledgeFile({
+    id: `prep-seed-${i}`, filePath: `/prep/files/${i}.md`, title: `seed ${i}`,
+    sourceType: 'file', sourcePath: sp, baseId: prepA.id,
+  }))
+
+  const one = await prepHandler({}, ['/prep/new1.md', '/prep/a.md', '/prep/new2.md', '/prep/a.md'], prepA.id)
+  check('prepareImport: input order kept, duplicate inputs appear once each',
+    Array.isArray(one?.new) && one.new.join(',') === '/prep/new1.md,/prep/new2.md' &&
+    one.existing.length === 2 && one.existing.every(e => e.filePath === '/prep/a.md' && e.id === 'prep-seed-0'),
+    JSON.stringify(one))
+  const otherBase = await prepHandler({}, ['/prep/a.md'], 'default')
+  check('prepareImport: baseId still scopes the check (same path, other base → new)',
+    Array.isArray(otherBase?.new) && otherBase.new.length === 1 && otherBase.existing.length === 0,
+    JSON.stringify(otherBase))
+
+  const mixed = ['/prep/a.md'] // existing — chunk 1
+  for (let i = 0; i < 599; i++) mixed.push(`/prep/n${i}.md`)
+  mixed.push('/prep/b.txt') // existing — lands in chunk 2 (past PREPARE_IMPORT_CHUNK)
+  for (let i = 599; i < 1198; i++) mixed.push(`/prep/n${i}.md`)
+  mixed.push('/prep/c.md') // existing — chunk 3
+  const prepStart = Date.now()
+  const batch = await prepHandler({}, mixed, prepA.id)
+  const prepMs = Date.now() - prepStart
+  const seedSet = new Set(seeds)
+  const expectedNew = mixed.filter(p => !seedSet.has(p))
+  check('prepareImport over >1 chunk: exact counts, input order, seeds at their positions',
+    batch?.new.length === expectedNew.length && batch.new.join(' ') === expectedNew.join(' ') &&
+    batch.existing.map(e => e.filePath).join(',') === seeds.join(',') &&
+    batch.existing.every((e, i) => e.id === `prep-seed-${i}`),
+    `new=${batch?.new?.length}/${expectedNew.length} existing=${batch?.existing?.length}`)
+  check('prepareImport batch duration within a generous bound', prepMs < 5000, `${prepMs}ms for ${mixed.length} paths`)
+
+  // One folder import = ONE extractor fork, however many files. (The renderer
+  // used to call importFiles([one path]) per file — N forks; its chunking is
+  // the source-scan test's, this pins the batching primitive itself.)
+  const forkDir = join(DATA_DIR, 'bulk-import-src')
+  mkdirSync(forkDir, { recursive: true })
+  for (let i = 0; i < 32; i++) writeFileSync(join(forkDir, `k${i}.md`), `# k${i}\n\nbody`, 'utf-8')
+  const cp = fromRepo('node:child_process') // the SAME object the bundle's require() sees
+  const origFork = cp.fork
+  let forkCount = 0
+  cp.fork = (...args) => { forkCount++; return origFork(...args) }
+  let forkResults = null
+  try {
+    const bulkImportBase = reextract.svcCreateBase('BulkImport')
+    // section ⑩'s `addHandler` is block-scoped inside its symlink guard — refetch
+    forkResults = await handlers[IPC_CHANNELS.KNOWLEDGE_ADD_FOLDER]({}, forkDir, bulkImportBase.id)
+  } finally {
+    cp.fork = origFork
+  }
+  check('32 files through one add-folder call = exactly ONE extractor fork',
+    forkCount === 1 && Array.isArray(forkResults) && forkResults.length === 32 &&
+    forkResults.every(r => r.success === true),
+    `forks=${forkCount} results=${forkResults?.length} ok=${forkResults?.filter(r => r.success).length}`)
 }
 
 // ── runner (same recipe as probe-project-color-db.mjs) ─────────────────────
@@ -369,12 +579,33 @@ async function launcher() {
         setup(b) {
           b.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', namespace: 'pm-electron-stub' }))
           b.onLoad({ filter: /.*/, namespace: 'pm-electron-stub' }, () => ({
-            contents: `module.exports = { app: { isPackaged: false, getAppPath: () => ${JSON.stringify(REPO_ROOT)} } }`,
+            // ipcMain registrations are CAPTURED so section ⑩ can invoke the
+            // real handlers — there is no Electron window under
+            // ELECTRON_RUN_AS_NODE, but the handler bodies are plain functions.
+            contents: `module.exports = {
+  app: { isPackaged: false, getAppPath: () => ${JSON.stringify(REPO_ROOT)} },
+  ipcMain: {
+    handle: (ch, fn) => { (globalThis.__pmIpcHandlers ??= {})[ch] = fn },
+    on: (ch, fn) => { (globalThis.__pmIpcHandlersOn ??= {})[ch] = fn },
+  },
+}`,
             loader: 'js',
           }))
         },
       },
     ],
+    logLevel: 'warning',
+  })
+  // knowledge-store resolves its extraction worker as join(__dirname,
+  // 'extract-worker.js'), and this bundle's __dirname is `work` — build the
+  // real worker beside it so folder import runs through the actual fork.
+  await build({
+    entryPoints: [join(REPO_ROOT, 'src/main/storage/extractors/extract-worker.ts')],
+    outfile: join(work, 'extract-worker.js'),
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    packages: 'external',
     logLevel: 'warning',
   })
   console.log(`harness: ${bundle}\n`)

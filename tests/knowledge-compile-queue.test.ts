@@ -36,28 +36,42 @@ const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve()
 beforeEach(() => { vi.resetModules(); hooks.effects.length = 0 })
 describe('real KnowledgePanel compile queue', () => {
   it('retains pre-mount entries, deduplicates, and wakes on mounted saves', async () => {
-    const { queue, manager, render } = await mount()
-    queue.enqueueCompileForFile('before-mount')
-    queue.enqueueCompileForFile('before-mount')
-    expect(manager.compileFile).not.toHaveBeenCalled()
-    const cleanups = render()
-    await flush()
-    expect(manager.compileFile.mock.calls).toEqual([['before-mount']])
-    manager.listFilesAdvanced.mockClear()
-    let complete!: (value: unknown) => void
-    manager.compileFile.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
-    queue.enqueueCompileForFile('after-mount')
-    queue.enqueueCompileForFile('after-mount')
-    expect(manager.compileFile.mock.calls).toEqual([['before-mount'], ['after-mount']])
-    expect(manager.listFilesAdvanced).toHaveBeenCalled()
-    complete({ ok: true, written: 1 })
-    await flush()
-    cleanups.forEach(cleanup => cleanup())
-    queue.enqueueCompileForFile('after-unmount')
-    expect(manager.compileFile).toHaveBeenCalledTimes(2)
-    render()
-    await flush()
-    expect(manager.compileFile).toHaveBeenLastCalledWith('after-unmount')
+    // The panel's refresh sink rides throttleTrailing (fix C for
+    // 「导入大批量文件时会卡死」: enqueue → full list+stats reload per call was one
+    // of the churn sources), so this test owns a fake clock.
+    vi.useFakeTimers()
+    try {
+      const { queue, manager, render } = await mount()
+      queue.enqueueCompileForFile('before-mount')
+      queue.enqueueCompileForFile('before-mount')
+      expect(manager.compileFile).not.toHaveBeenCalled()
+      const cleanups = render()
+      await flush()
+      expect(manager.compileFile.mock.calls).toEqual([['before-mount']])
+      manager.listFilesAdvanced.mockClear()
+      let complete!: (value: unknown) => void
+      manager.compileFile.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+      queue.enqueueCompileForFile('after-mount')
+      queue.enqueueCompileForFile('after-mount')
+      expect(manager.compileFile.mock.calls).toEqual([['before-mount'], ['after-mount']])
+      // The NEW contract: two enqueues inside the throttle window coalesce —
+      // no synchronous reload per enqueue (that per-call reload was the bug)…
+      expect(manager.listFilesAdvanced).not.toHaveBeenCalled()
+      // …and the burst's last ask still lands one reload on the trailing edge.
+      await vi.advanceTimersByTimeAsync(500)
+      await flush()
+      expect(manager.listFilesAdvanced).toHaveBeenCalledTimes(1)
+      complete({ ok: true, written: 1 })
+      await flush()
+      cleanups.forEach(cleanup => cleanup())
+      queue.enqueueCompileForFile('after-unmount')
+      expect(manager.compileFile).toHaveBeenCalledTimes(2)
+      render()
+      await flush()
+      expect(manager.compileFile).toHaveBeenLastCalledWith('after-unmount')
+    } finally {
+      vi.useRealTimers()
+    }
   })
   it('keeps raw queued without a key and compiles after configuration becomes available', async () => {
     const { queue, manager, render } = await mount()

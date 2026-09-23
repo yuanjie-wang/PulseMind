@@ -650,15 +650,42 @@ export async function extractManyInWorker(filePaths: string[]): Promise<Array<{ 
 
 // ─── Prepare Import ──────────────────────────────────────────────────
 
+/** SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999 — chunk well under it so
+ *  a 10k-path scan stays a couple dozen statements, not 10k prepared queries. */
+const PREPARE_IMPORT_CHUNK = 500
+
 /** Check each file path against the DB; return paths sorted into existing and new.
- *  `baseId` scopes the check (M16) — the same file may legally live in two bases. */
+ *  `baseId` scopes the check (M16) — the same file may legally live in two bases.
+ *
+ *  One `WHERE source_path IN (…)` per 500-path chunk instead of one query per
+ *  path: preparing and running a statement per file is the second freeze source
+ *  in 「导入大批量文件时会卡死」 (every statement is synchronous main-process
+ *  work). Semantics are unchanged: output follows input order, a duplicate
+ *  input still appears once per occurrence, and the predicate is exactly the
+ *  per-path one (`source_path = ? [AND base_id = ?]`, no `source_url` — that
+ *  caller passed `undefined`), with the first row per path winning as `.get()`
+ *  would have. */
 export function prepareImport(filePaths: string[], baseId?: string): { existing: { id: string; filePath: string }[]; new: string[] } {
   const existing: { id: string; filePath: string }[] = []
   const newFiles: string[] = []
+  const found = new Map<string, string>()
+  const clause = baseId !== undefined ? ' AND base_id = ?' : ''
+  for (let i = 0; i < filePaths.length; i += PREPARE_IMPORT_CHUNK) {
+    const chunk = filePaths.slice(i, i + PREPARE_IMPORT_CHUNK)
+    const placeholders = chunk.map(() => '?').join(', ')
+    const params: unknown[] = [...chunk]
+    if (baseId !== undefined) params.push(baseId)
+    const rows = getDb()
+      .prepare(`SELECT id, source_path FROM knowledge_files WHERE source_path IN (${placeholders})${clause}`)
+      .all(...params) as { id: string; source_path: string | null }[]
+    for (const row of rows) {
+      if (row.source_path !== null && !found.has(row.source_path)) found.set(row.source_path, row.id)
+    }
+  }
   for (const fp of filePaths) {
-    const row = getKnowledgeFileBySource(fp, undefined, baseId)
-    if (row) {
-      existing.push({ id: row.id, filePath: fp })
+    const id = found.get(fp)
+    if (id !== undefined) {
+      existing.push({ id, filePath: fp })
     } else {
       newFiles.push(fp)
     }

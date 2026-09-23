@@ -3,7 +3,8 @@
  * in knowledge.handler.ts closures, extracted so the IPC handlers and the
  * main-process agent host share one implementation.
  */
-import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { readdir as readdirAsync, stat as statAsync } from 'node:fs/promises'
 import { resolve, sep, extname, join, relative, basename } from 'node:path'
 import { execFile } from 'node:child_process'
 import { getBaseRawDir, getBaseWikiDir } from '../storage'
@@ -75,19 +76,53 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.patch', '.diff'
 ])
 
-function collectSupportedFiles(folderPath: string): string[] {
+/** Directory names that are never knowledge: dependency and VCS trees are the
+ *  bulk of a code folder (node_modules alone routinely exceeds 100k files), so
+ *  walking them cost seconds of blocked main process AND would import the
+ *  world. Skip them by name at every depth. */
+const SKIP_DIRS = new Set(['node_modules', '.git'])
+
+/** Unreadable entries (permission, broken symlink, dead mount) are skipped —
+ *  one bad entry must not abort the whole folder import, which reads to the
+ *  user as 「导入文件夹无效」. Directory symlinks are NOT followed: a link back
+ *  to an ancestor recurses forever.
+ *
+ *  AWAITS, never the sync fs API: this walk runs inside an ipcMain handler on
+ *  the MAIN process, so `readdirSync` over a 50k-file tree beachballs the whole
+ *  app (「导入大批量文件时会卡死」) — every await yields the event loop and the
+ *  UI keeps scrolling. Measured in `probe-knowledge-base.mjs` section ⑫, where
+ *  a synchronous control walk drives the tick counter to zero. */
+async function collectSupportedFiles(folderPath: string): Promise<string[]> {
   const files: string[] = []
-  function walk(dir: string) {
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry)
-      if (statSync(full).isDirectory()) {
-        walk(full)
-      } else if (SUPPORTED_EXTENSIONS.has(extname(full).toLowerCase())) {
+  async function walk(dir: string): Promise<void> {
+    let entries
+    try {
+      entries = await readdirAsync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isSymbolicLink()) {
+        // File symlinks are followed (stat), directory ones are not: a link
+        // back to an ancestor would recurse forever.
+        try {
+          if ((await statAsync(full)).isDirectory()) continue
+        } catch {
+          continue // broken link
+        }
+      } else if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) await walk(full)
+        continue
+      } else if (!entry.isFile()) {
+        continue
+      }
+      if (SUPPORTED_EXTENSIONS.has(extname(full).toLowerCase())) {
         files.push(full)
       }
     }
   }
-  walk(folderPath)
+  await walk(folderPath)
   return files
 }
 
@@ -111,12 +146,18 @@ export async function svcAddFile(filePaths: string[], baseId?: string) {
   return importLocalFiles(filePaths, baseId)
 }
 
-export async function svcScanFolder(folderPath: string): Promise<string[]> {
-  return collectSupportedFiles(folderPath)
+/** The shape the preload bridge declares (`ElectronAPI['knowledgeScanFolder']`)
+ *  and the renderer destructure (`const { fileCount, filePaths } = …`).
+ *  Returning the bare array here made every desktop folder import throw in
+ *  `prepareImport(undefined)` and die silently — the agent host wrapped it,
+ *  the IPC handler did not, so only the UI path was broken. */
+export async function svcScanFolder(folderPath: string): Promise<{ fileCount: number; filePaths: string[] }> {
+  const filePaths = await collectSupportedFiles(folderPath)
+  return { fileCount: filePaths.length, filePaths }
 }
 
 export async function svcAddFolder(folderPath: string, baseId?: string) {
-  return importLocalFiles(collectSupportedFiles(folderPath), baseId)
+  return importLocalFiles(await collectSupportedFiles(folderPath), baseId)
 }
 
 export function svcAddUrl(url: string, baseId?: string) {

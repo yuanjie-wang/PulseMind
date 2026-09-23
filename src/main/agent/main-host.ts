@@ -246,10 +246,10 @@ export const mainHost: PulseHost = {
   knowledgePrepareImport: async (filePaths) => kq.svcPrepareImport(filePaths) as { existing: { id: string; filePath: string }[]; new: string[] },
   knowledgeReadWiki: async (relativePath) => kq.svcReadWiki(relativePath) as { content: string | null; files: string[] | null },
   knowledgeRebuildIndex: async () => { kq.svcRebuildIndex() },
-  knowledgeScanFolder: async (folderPath) => {
-    const filePaths = await kq.svcScanFolder(folderPath)
-    return { fileCount: filePaths.length, filePaths }
-  },
+  // svcScanFolder owns the { fileCount, filePaths } shape the bridge declares —
+  // wrapping it here while the IPC handler passed the bare array through is
+  // what let the desktop folder import break unnoticed.
+  knowledgeScanFolder: async (folderPath) => kq.svcScanFolder(folderPath),
   knowledgeSearchContent: async (query, baseId) => kq.svcSearchContent(query, baseId),
   knowledgeSearchWiki: (query, baseId) => kq.svcSearchWiki(query, baseId) as Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>>,
   knowledgeGetSchema: async () => kq.svcGetSchema(),

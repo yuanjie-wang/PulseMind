@@ -19,6 +19,7 @@ import {
 import { XMarkdown } from '@ant-design/x-markdown'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
+import { throttleTrailing } from '../../utils/throttle'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeImportResult } from '../../../../shared/types/knowledge'
 import { DEFAULT_BASE_ID } from '../../../../shared/types/knowledge'
@@ -42,11 +43,36 @@ let _importRunning = false
 let _importCurrent = 0
 let _importTotal = 0
 
+/** One worker fork per N files: importFiles → importLocalFiles →
+ *  extractManyInWorker batches extraction into ONE extractor fork, so per-file
+ *  calls paid a whole child_process.fork per path — thousands of forks for a
+ *  folder import (「导入大批量文件时会卡死」). Chunking restores the batch
+ *  primitive's intent; a base change or a URL breaks the run naturally. */
+const IMPORT_CHUNK = 16
+
+/** `push(...paths)` with an apply-spread: ~100k paths would blow the call
+ *  argument stack (RangeError) before a single import runs. Push in slices. */
+const ENQUEUE_CHUNK = 10_000
+
+/** Coalesce list+stats reloads during a run — see utils/throttle. The import
+ *  and compile queues used to fire a full reload after EVERY file. */
+const REFRESH_THROTTLE_MS = 500
+
 // Callbacks — registered by the component on mount, cleared on unmount.
 let _onProgress: ((current: number, total: number) => void) | null = null
 let _onRefresh: (() => void) | null = null
 let _onResetProgress: (() => void) | null = null
 let _onStateChange: ((state: KnowledgePanelState) => void) | null = null
+
+/** The ONE refresh the import and compile queues call: leading edge, then at
+ *  most one per REFRESH_THROTTLE_MS with a guaranteed trailing run, so a burst
+ *  of 10k imports produces a handful of reloads and still lands the final
+ *  state. Reading `_onRefresh` at fire time means an unmounted (nulled)
+ *  callback is a no-op even if a timer survived. */
+const _refreshThrottled = throttleTrailing(() => _onRefresh?.(), REFRESH_THROTTLE_MS)
+
+/** Last path segment for failure messages — the renderer has no node:path. */
+const nameOf = (p: string): string => p.split(/[\\/]/).pop() ?? p
 
 const { Text } = Typography
 
@@ -245,11 +271,6 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   const loadFilesRef = useRef(loadFiles)
   loadFilesRef.current = loadFiles
 
-  // The mount-assigned callbacks below (e.g. _onRefresh) must read the CURRENT
-  // base, not the one from their capture — same pattern as loadFilesRef.
-  const baseIdRef = useRef(scopedBaseId)
-  baseIdRef.current = scopedBaseId
-
   useEffect(() => {
     setLoading(true)
     loadFilesRef.current().finally(() => setLoading(false))
@@ -274,20 +295,12 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
         canCompile: knowledgeManager.canCompile,
       })
     }
+    // One loadFiles per refresh: it already fetches getStats (Promise.all'd
+    // with the list) and the reportState effect pushes stats to the parent —
+    // the second getStats + manual push that used to live here doubled every
+    // refresh's work (and getStats readdirs the base's wiki dir recursively).
     _onRefresh = async () => {
       await loadFilesRef.current()
-      // Push latest stats to parent so header stats stay in sync (scoped to
-      // the current base — read through the ref, this closure never re-runs).
-      try {
-        const currentStats = await knowledgeManager.getStats(baseIdRef.current)
-        setStats(currentStats)
-        _onStateChange?.({
-          importProgress: _importRunning ? { current: _importCurrent, total: _importTotal } : null,
-          stats: currentStats,
-          isImporting: _importRunning,
-          canCompile: knowledgeManager.canCompile,
-        })
-      } catch { /* ignore */ }
     }
     // The compile queue's three notifications. They carry React state, so they
     // live for exactly as long as this mount does — the queue itself keeps its
@@ -304,8 +317,9 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     compileQueue.sinks.onMarkQueued = (fileId) => {
       setQueuedFileIds(prev => new Set(prev).add(fileId))
     }
-    // The same refresh the import loop calls — one list, one stats push.
-    compileQueue.sinks.onRefresh = _onRefresh
+    // The same throttled refresh the import loop calls — one list, one stats
+    // push, coalesced to REFRESH_THROTTLE_MS.
+    compileQueue.sinks.onRefresh = () => _refreshThrottled.schedule()
     _onResetProgress = () => {
       setImportProgress(null)
     }
@@ -343,6 +357,9 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       _onRefresh = null
       _onResetProgress = null
       _onStateChange = null
+      // A pending trailing refresh belongs to this mount — drop it with the
+      // callbacks instead of letting the timer outlive the component.
+      _refreshThrottled.cancel()
       compileQueue.sinks.onFileStatusChange = null
       compileQueue.sinks.onMarkQueued = null
       compileQueue.sinks.onRefresh = null
@@ -368,24 +385,32 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     if (dialogResult.canceled || dialogResult.filePaths.length === 0) return
 
     const folderPath = dialogResult.filePaths[0]
-    const { fileCount, filePaths } = await knowledgeManager.scanFolder(folderPath)
-
-    if (fileCount === 0) {
-      notify.info('文件夹中没有可导入的文件')
-      return
-    }
-
-    const { existing, new: newFiles } = await knowledgeManager.prepareImport(filePaths, scopedBaseId)
-
-    Modal.confirm({
-      title: '导入文件夹',
-      content: `找到 ${filePaths.length} 个文件（${newFiles.length} 个新文件${existing.length > 0 ? `，${existing.length} 个已存在` : ''}），是否开始导入？`,
-      okText: '开始导入',
-      cancelText: t('common.cancel'),
-      onOk: () => {
-        if (newFiles.length > 0) enqueueImport(newFiles, importBaseId ?? scopedBaseId)
+    // This whole path used to be unguarded: the scan result arrived as a bare
+    // array (the IPC returned `string[]` while the bridge declares the object),
+    // the destructure produced undefined, prepareImport threw — and with no
+    // catch the user just saw 「选完文件夹没反应」.
+    try {
+      const { fileCount, filePaths } = await knowledgeManager.scanFolder(folderPath)
+      if (fileCount === 0) {
+        notify.info('文件夹中没有可导入的文件')
+        return
       }
-    })
+
+      const { existing, new: newFiles } = await knowledgeManager.prepareImport(filePaths, scopedBaseId)
+
+      Modal.confirm({
+        title: '导入文件夹',
+        content: `找到 ${filePaths.length} 个文件（${newFiles.length} 个新文件${existing.length > 0 ? `，${existing.length} 个已存在` : ''}），是否开始导入？`,
+        okText: '开始导入',
+        cancelText: t('common.cancel'),
+        onOk: () => {
+          if (newFiles.length > 0) enqueueImport(newFiles, importBaseId ?? scopedBaseId)
+        }
+      })
+    } catch (err) {
+      console.error('[KnowledgePanel] Folder import failed:', err)
+      notify.error(`导入文件夹失败：${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   const handleAddUrl = async () => {
@@ -525,7 +550,14 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     // G4: the toolbar's target base rides each item — a batch never mixes
     // bases, because the pick was made once for the whole import. The fallback
     // is the panel's own scope (the rail's selection), not a global default.
-    _pendingImportItems.push(...newFiles.map(p => ({ type: 'file' as const, path: p, baseId: importBaseId ?? scopedBaseId })))
+    // Sliced pushes: one `push(...all)` is an apply-spread over the argument
+    // list and overflows the stack on a big enough folder.
+    const targetBase = importBaseId ?? scopedBaseId
+    for (let i = 0; i < newFiles.length; i += ENQUEUE_CHUNK) {
+      _pendingImportItems.push(
+        ...newFiles.slice(i, i + ENQUEUE_CHUNK).map(p => ({ type: 'file' as const, path: p, baseId: targetBase }))
+      )
+    }
     // Update progress immediately if queue is already running
     if (_importRunning) {
       _importTotal += newFiles.length
@@ -599,7 +631,13 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   const runImportQueueRef = useRef<() => Promise<void>>(async () => {})
   const runCompileQueueRef = useRef<() => Promise<void>>(async () => {})
 
-  /** Process the import queue — supports both file paths and URLs. */
+  /** Process the import queue — supports both file paths and URLs.
+   *  Files ride in IMPORT_CHUNK batches (ONE knowledgeManager.importFiles call,
+   *  hence ONE extractor fork per batch instead of one per file); the D7
+   *  autoCompile gate is read once per run, not once per file; refreshes and
+   *  progress go through the coalesced paths above. Failures are counted and
+   *  reported once at the end — the old per-item swallow-everything catch
+   *  showed a full green bar for a run where every file had died. */
   const runImportQueue = useCallback(async () => {
     if (_importRunning) return
     if (_pendingImportItems.length === 0) return
@@ -611,32 +649,80 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
     _onResetProgress?.()
     _onProgress?.(0, _importTotal)
 
-    while (_pendingImportItems.length > 0) {
-      const item = _pendingImportItems.shift()!
-      try {
-        let result: KnowledgeImportResult
-        if (item.type === 'file') {
-          const [r] = await knowledgeManager.importFiles([item.path], item.baseId)
-          result = r
-        } else {
-          result = await knowledgeManager.importUrl(item.url, item.baseId)
-        }
-        if (result.success && result.file) {
-          // D7: imports only auto-compile when the setting is on — the default
-          // is manual (编译按钮 / 编译全部). The old unconditional enqueue made
-          // every import silently fire LLM calls.
-          try {
-            const appSettings = await window.electronAPI.getSettings()
-            if (appSettings?.knowledge?.autoCompile) enqueueCompileForFile(result.file.id)
-          } catch { /* setting unreadable — stay manual */ }
-        }
-      } catch {
-        // Import failed — skip
-      }
-      _importCurrent++
-      _importTotal = _importCurrent + _pendingImportItems.length  // Dynamic total handles mid-batch additions
+    // D7: imports only auto-compile when the setting is on — the default is
+    // manual (编译按钮 / 编译全部). Read once for the whole run.
+    let autoCompile = false
+    try {
+      const appSettings = await window.electronAPI.getSettings()
+      autoCompile = !!appSettings?.knowledge?.autoCompile
+    } catch { /* setting unreadable — stay manual */ }
+
+    let failed = 0
+    let firstError: string | null = null
+    const noteFailure = (msg: string): void => {
+      failed++
+      if (firstError === null) firstError = msg
+    }
+    const settle = (count: number): void => {
+      // Dynamic total handles mid-batch additions (a URL enqueued mid-run).
+      _importCurrent += count
+      _importTotal = _importCurrent + _pendingImportItems.length
       _onProgress?.(_importCurrent, _importTotal)
-      _onRefresh?.()
+      _refreshThrottled.schedule()
+    }
+
+    while (_pendingImportItems.length > 0) {
+      const head = _pendingImportItems[0]!
+
+      if (head.type === 'url') {
+        _pendingImportItems.shift()
+        try {
+          const result = await knowledgeManager.importUrl(head.url, head.baseId)
+          if (result.success && result.file) {
+            if (autoCompile) enqueueCompileForFile(result.file.id)
+          } else {
+            noteFailure(`${head.url}: ${result.error ?? '导入失败'}`)
+          }
+        } catch (err) {
+          noteFailure(`${head.url}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        settle(1)
+        continue
+      }
+
+      // Take a run of consecutive same-base file items → one importFiles call.
+      const chunkBase = head.baseId
+      const chunk: string[] = []
+      while (chunk.length < IMPORT_CHUNK && _pendingImportItems.length > 0) {
+        const next = _pendingImportItems[0]
+        if (!next || next.type !== 'file' || next.baseId !== chunkBase) break
+        _pendingImportItems.shift()
+        chunk.push(next.path)
+      }
+
+      let results: KnowledgeImportResult[]
+      try {
+        results = await knowledgeManager.importFiles(chunk, chunkBase)
+      } catch (err) {
+        // The whole chunk was already shifted off the queue — account for every
+        // path in it or the progress bar never reaches 100%.
+        noteFailure(`${chunk.length} 个文件批量导入失败：${err instanceof Error ? err.message : String(err)}`)
+        settle(chunk.length)
+        continue
+      }
+      for (let i = 0; i < chunk.length; i++) {
+        const result = results[i]
+        if (result?.success && result.file) {
+          if (autoCompile) enqueueCompileForFile(result.file.id)
+        } else {
+          noteFailure(`${nameOf(chunk[i])}: ${result?.error ?? '导入失败'}`)
+        }
+      }
+      settle(chunk.length)
+    }
+
+    if (failed > 0) {
+      notify.warning(`导入结束：${failed} 个文件失败${firstError ? `（${firstError}）` : ''}`)
     }
 
     // Import queue empty — keep progress bar at 100% for 1s, then fade
