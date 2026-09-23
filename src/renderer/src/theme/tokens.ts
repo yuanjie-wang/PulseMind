@@ -76,6 +76,21 @@ export function buildAntdTheme(mode: ThemeMode): ThemeConfig {
       // halo — a border visually tripled in weight. Transparent leaves the
       // border-colour change as the only focus signal.
       controlOutline: 'transparent',
+      // The root of the #404040 family the component fixes below keep working
+      // around: controlItemBgActive derives from colorPrimaryBg, and under the
+      // ink primary the "tint" is a DARK grey — while every consumer paints
+      // dark ink on it in light mode. The visible breakage was the Dropdown's
+      // own selected row (its sheet reads this alias directly, so no Menu
+      // component token reaches it): the 项目 sort popup's current mode, the
+      // composer's 授权 and the Table filter dropdown rendered black on
+      // #404040, hovering the row black on #333. The same alias is the default
+      // behind Menu's itemSelectedBg/itemActiveBg, Tree's nodeSelectedBg,
+      // Transfer's selected rows, Calendar's itemActiveBg and Steps' finish
+      // icon fill — one neutral pair heals all of them. The two values are the
+      // pair Select's optionSelectedBg fix picked; hover is one step past the
+      // selected grey per mode (light #ebebeb = --pm-fill-hover's literal).
+      controlItemBgActive: dark ? '#333333' : '#f5f5f5',
+      controlItemBgActiveHover: dark ? '#404040' : '#ebebeb',
     },
     components: {
       Select: {
@@ -84,6 +99,22 @@ export function buildAntdTheme(mode: ThemeMode): ThemeConfig {
         // the classic antd item grey in light, a step above the dark hover fill.
         optionSelectedBg: dark ? '#333333' : '#f5f5f5',
       },
+      // The Table's selected row paints controlItemBgActive — the same derived
+      // #404040 the Select fix above avoids, but across a WHOLE row: selecting
+      // knowledge rows drew a charcoal stripe under dark text (light), and
+      // dark mode's #535353 glows against the #141414 ground. The app's own
+      // selected-row wash (--pm-hover-strong) per mode; hover one step past
+      // it, above the plain rowHoverBg ladder.
+      Table: {
+        rowSelectedBg: dark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
+        rowSelectedHoverBg: dark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.12)',
+      },
+      // A checked Checkbox is the primary with a colorWhite tick, and in dark
+      // the primary is the near-white #e6e6e6 — the tick vanished (white on
+      // white). Scoped colorWhite flips just the tick (the only colorWhite use
+      // in the checkbox sheet) to ink, the same inversion solid primary
+      // surfaces already take via colorTextLightSolid.
+      Checkbox: dark ? { colorWhite: INK } : {},
       // Destructive buttons are neutral, not red: every shade a danger Button
       // draws (text, solid fill, border, hover/active) derives from this one
       // seed under the active algorithm. Grey in light; in dark the seed is the

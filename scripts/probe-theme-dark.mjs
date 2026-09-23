@@ -82,12 +82,22 @@
  *      fill, the modal's paper, the palette's active row) must move with antd's
  *      own algorithm rather than with the sheet, and are required to *not* follow
  *      it when the sheet's dark section is cut — the half of the boundary §9
- *      cannot see
+ *      cannot see. §10.6 pins the one surface the ALIAS tokens paint directly —
+ *      the Dropdown's selected row (the 项目 sort popup; the composer's 授权 and
+ *      the Table filter dropdown share the sheet), which the ink primary used to
+ *      render black-on-#404040 in light — value pins per mode plus a var-follow
+ *      control proving the binding.
  *  15. the workbench shell (post-M4 fix): WorkbenchPane's frame and tool-tab
  *      strip — the side window the user reported as still light in dark mode —
  *      plus the workspace tree's path bar/row buttons and the text editor's
  *      ground, the two literals in the same window. §14's discipline: role
  *      readings in both passes, the flip check, and the cut control.
+ *  17. the knowledge table's selection paints: the two antd paints that derive
+ *      from the ink primary and break on it — the Table's selected row
+ *      (controlItemBgActive, a charcoal stripe in light) and the checkbox's
+ *      colorWhite tick (white on the near-white dark primary) — read off the
+ *      real KnowledgePanel with a real click, plus the batch bar the selection
+ *      summons. Token-borne, so exact values and no cut control.
  *
  * Build note: unlike every other probe in this repo, this one compiles CSS
  * (`loader: {'.css': 'css'}`) and loads the emitted stylesheet into the page.
@@ -294,9 +304,11 @@ window.electronAPI = new Proxy({}, {
               : key === 'projectList' ? (window.__pmProjects || [])
                 : key === 'projectValidateDir' ? (window.__pmDirResult || { ok: true })
                   : key === 'getConversationLastUserMessage' ? ((window.__pmQuotes || {})[arg] ?? null)
-                    : key === 'showOpenDialog'
-                      ? { canceled: false, filePaths: [arg && arg.properties && arg.properties.indexOf('openDirectory') >= 0 ? '/tmp/pm-fixtures/docs' : '/tmp/pm-fixtures/notes.md'] }
-                      : Object.prototype.hasOwnProperty.call(PM_SEARCH, key) ? PM_SEARCH[key]
+      : key === 'showOpenDialog'
+        ? { canceled: false, filePaths: [arg && arg.properties && arg.properties.indexOf('openDirectory') >= 0 ? '/tmp/pm-fixtures/docs' : '/tmp/pm-fixtures/notes.md'] }
+        : key === 'knowledgeListAdvanced' ? (() => { const items = window.__pmKnowledgeFiles || []; return { items, total: items.length, page: 1, pageSize: 50 } })()
+          : key === 'knowledgeGetStats' ? (() => { const items = window.__pmKnowledgeFiles || []; return { total: items.length, raw: items.filter((f) => f.status === 'raw').length, compiled: items.filter((f) => f.status === 'compiled').length, wikiFileCount: 0 } })()
+            : Object.prototype.hasOwnProperty.call(PM_SEARCH, key) ? PM_SEARCH[key]
                         : window.__pmLists && window.__pmLists[key] != null ? window.__pmLists[key]
                           : PM_EMPTY_LISTS.indexOf(key) >= 0 ? []
                             : undefined
@@ -372,6 +384,9 @@ import { FormAssistColumn } from './src/renderer/src/components/form-assist/Form
 // after the stub switches to empty + a hung listConversations (its skeleton).
 import { WelcomeSuggestions } from './src/renderer/src/components/welcome/WelcomeSuggestions'
 import { ProjectCards } from './src/renderer/src/components/welcome/ProjectCards'
+// §17 — the knowledge table (the ink-primary selection paints).
+import KnowledgePanel from './src/renderer/src/components/knowledge/KnowledgePanel'
+import { KnowledgeManager } from './src/renderer/src/knowledge/KnowledgeManager'
 // §12 — the workbench + routine surfaces (PLAN-dark-mode M3/T2).
 import { PlanGraphView } from './src/renderer/src/components/workbench/PlanGraphView'
 import RoutineCenter from './src/renderer/src/components/routine/RoutineCenter'
@@ -1964,6 +1979,44 @@ window.__welcomeVector = () => {
   return rows
 }
 
+// ── §17's mount — the real knowledge table. WelcomeMode is the same wrapper
+// the §11 mounts use: the theme must flip with __setMode, and SettingsProvider
+// is what the panel's i18n/settings readers expect. The stub electronAPI
+// answers the three loads (list/stats/bases) from window.__pmKnowledgeFiles.
+window.__mountKnowledge = () => {
+  const host = document.createElement('div')
+  host.id = 'knowledge-host'
+  document.body.appendChild(host)
+  createRoot(host).render(
+    <WelcomeMode>
+      <KnowledgePanel knowledgeManager={new KnowledgeManager()} />
+    </WelcomeMode>
+  )
+}
+/** §17's reader. The tick is the checkbox's ::after pseudo and its VISIBLE edges
+ *  are right/bottom (top/inline-start are 0-width) — borderTop carries a colour
+ *  too, but reading it instead sent me chasing a black tick never painted. */
+window.__knowledgeVector = () => {
+  const host = document.getElementById('knowledge-host')
+  if (!host) return null
+  const row = host.querySelector('.ant-table-tbody tr.ant-table-row-selected')
+  const td = row ? row.querySelector('td') : null
+  const tds = row ? row.querySelectorAll('td') : []
+  const lastTd = tds.length ? tds[tds.length - 1] : null
+  const box = host.querySelector('.ant-table-tbody .ant-checkbox-checked')
+  const after = box ? getComputedStyle(box, ':after') : null
+  const bar = [...host.querySelectorAll('div')].find((d) => d.style.background === 'var(--pm-wash)') || null
+  return {
+    rowSelected: !!row,
+    selRowBg: td ? getComputedStyle(td).backgroundColor : null,
+    hoverTdBg: lastTd ? getComputedStyle(lastTd).backgroundColor : null,
+    boxBg: box ? getComputedStyle(box).backgroundColor : null,
+    tick: after ? after.borderRightColor : null,
+    tickBottom: after ? after.borderBottomColor : null,
+    batchBarBg: bar ? getComputedStyle(bar).backgroundColor : null,
+  }
+}
+
 // ── §12 — plan graph / routine center / sub-agent header (M3/T2) ──
 window.__mountT2 = () => {
   window.__pmLists = {
@@ -2009,6 +2062,19 @@ window.__mountT2 = () => {
   roots[0].render(<T2Mode><div style={{ width: 420, height: '100%' }}><PlanGraphView plan={plan} onJumpToStep={() => {}} /></div></T2Mode>)
   roots[1].render(<T2Mode><RoutineCenter /></T2Mode>)
   roots[2].render(<T2Mode><SubAgentSessionView subConvId="sub-t2" title="调研子任务" live={false} onBack={() => {}} /></T2Mode>)
+
+  // The 新建任务 dashed card is the EMPTY page's affordance only (user ruling
+  // 2026-09-23: 有任务时它变成【我的任务】行里的普通按钮), so it needs its own
+  // host — the stub answers routineList with whatever list is set when the
+  // call lands, and roots mounted in the same tick would all read the populated
+  // one. The outer probe calls this AFTER the populated hosts have rendered
+  // (it waits for their .routine-card first), which is what makes the list flip
+  // to [] safe.
+  window.__mountT2Empty = () => {
+    window.__pmLists = { ...window.__pmLists, routineList: [], routineRuns: [] }
+    const el = mk('t2-routine-empty', '320px')
+    createRoot(el).render(<T2Mode><RoutineCenter /></T2Mode>)
+  }
 }
 
 /** §12's reader. The plan graph is SVG: its fills/strokes are computed reads
@@ -2042,7 +2108,11 @@ window.__t2Vector = () => {
   rows.pageBg = paint(routineRoot)
   rows.cardBorder = paint(routine && routine.querySelector('.routine-card'))
   rows.pill = paint(routine && routine.querySelector('.routine-pill'))
-  const newCard = routine && routine.querySelector('[data-action="create-task"]')
+  // The dashed create card rides the EMPTY-state host — since the 2026-09-23
+  // ruling it renders only while no routine exists, so the populated t2-routine
+  // host no longer has one to paint.
+  const emptyHost = document.getElementById('t2-routine-empty')
+  const newCard = emptyHost && emptyHost.querySelector('[data-action="create-task"]')
   rows.newCard = paint(newCard)
   const tasksSection = routine && routine.querySelector('[data-section="tasks"]')
   rows.headInk = paint(tasksSection && tasksSection.querySelector('span'))
@@ -4070,6 +4140,95 @@ const SHELL_SPEC_OF = (reading) => {
   return rows && rows[key] ? rows[key][prop] ?? null : null
 }
 
+// ── 10.6 the Dropdown's own selected row (the 项目 sort popup) ────────────────
+// The sort popup's menu is antd's Dropdown, and the Dropdown's stylesheet
+// paints its selected row straight from the ALIAS tokens — no Menu component
+// token reaches it, so the ink primary used to derive `colorPrimaryBg` #404040
+// there and the current mode read as black ink on dark grey (light; hovering
+// the row was black on #333, the Hover twin). tokens.ts now pins the alias
+// pair; these checks pin the visible result in both modes, and the var-follow
+// control proves the rule really reads --ant-control-item-bg-active — so a
+// future antd that hardens the value or reroutes the derivation fails here
+// instead of silently repainting the popup.
+async function driveSortDropdown(label) {
+  await page.mouse.move(0, 0)
+  // The shell's tab is whatever driveShellPhases left (phase 4 put 项目 on and
+  // later phases only navigate the content pane) — but be idempotent rather
+  // than trust it: switch only when the sort button is not there.
+  const hasSort = await page.locator('button[aria-label="项目排序"]').count()
+  if (!hasSort) await page.click('.sidebar-list-tab:not(.on)')
+  await page.waitForFunction(() => document.querySelector('button[aria-label="项目排序"]'))
+  await page.click('button[aria-label="项目排序"]')
+  await page.waitForFunction(() => {
+    const dd = document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden)')
+    return dd && dd.querySelector('.ant-dropdown-menu-item-selected')
+  })
+  const readSel = () => page.evaluate(() => {
+    const el = document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item-selected')
+    if (!el) return null
+    const s = getComputedStyle(el)
+    return { bg: s.backgroundColor, color: s.color }
+  })
+  const sel = await readSel()
+  check(
+    `${label} 排序弹窗：选中行背景（controlItemBgActive 钉值）`,
+    !!sel && sel.bg === (label === '浅色' ? 'rgb(245, 245, 245)' : 'rgb(51, 51, 51)'),
+    sel && JSON.stringify(sel)
+  )
+  check(
+    `${label} 排序弹窗：选中行墨水可读`,
+    !!sel && sel.color === (label === '浅色' ? 'rgb(0, 0, 0)' : 'rgb(199, 199, 199)'),
+    sel && sel.color
+  )
+  // Hover the selected row with a REAL cursor — its :hover is the second token
+  // of the pair (controlItemBgActiveHover, the worse half pre-fix in light:
+  // black on #333). The item tweens background-color, so wait the tween out.
+  const box = await page.locator('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item-selected').first().boundingBox()
+  if (box) {
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.waitForTimeout(250)
+    const hov = await readSel()
+    check(
+      `${label} 排序弹窗：选中行 hover 背景（controlItemBgActiveHover 钉值）`,
+      !!hov && hov.bg === (label === '浅色' ? 'rgb(235, 235, 235)' : 'rgb(64, 64, 64)'),
+      hov && JSON.stringify(hov)
+    )
+  }
+  // The var-follow control: set the alias variable on the popup's menu and the
+  // selected row must follow — the pin above judges a value, this one judges
+  // the BINDING that makes the value reach the screen. Two timing facts shape
+  // the code: the pointer leaves FIRST (the hover above left the row on the
+  // Hover twin's rule, and the non-hover variable would read as a no-op against
+  // it), and the read WAITS for the move — menu items tween background-color,
+  // and a synchronous read lands on the interpolated start value (measured: an
+  // inline background-color set and read in one tick still reported the old
+  // colour).
+  await page.mouse.move(0, 0)
+  await page.evaluate(() => {
+    const menu = document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu')
+    menu.style.setProperty('--ant-control-item-bg-active', 'rgb(9, 8, 7)')
+  })
+  const movedToVar = await page.waitForFunction(() => {
+    const el = document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item-selected')
+    return el && getComputedStyle(el).backgroundColor === 'rgb(9, 8, 7)'
+  }, null, { timeout: 2000 }).then(() => true).catch(() => false)
+  check(`${label} 排序弹窗：选中行跟随 --ant-control-item-bg-active`, movedToVar, movedToVar ? 'rgb(9, 8, 7)' : `仍为 ${(await readSel() || {}).bg}`)
+  await page.evaluate(() => {
+    const menu = document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu')
+    if (menu) menu.style.removeProperty('--ant-control-item-bg-active')
+  })
+  // Close: Escape first (antd closes the click-triggered dropdown on it); if a
+  // popup is still open, the trigger toggles it shut.
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  const still = await page.locator('.ant-dropdown:not(.ant-dropdown-hidden)').count()
+  if (still) {
+    await page.click('button[aria-label="项目排序"]')
+    await page.waitForFunction(() => !document.querySelector('.ant-dropdown:not(.ant-dropdown-hidden)'), null, { timeout: 5000 }).catch(() => {})
+  }
+  await page.mouse.move(0, 0)
+}
+
 /** Assert every role row of every phase against one pass's vector. Returns the
  *  readings { 'phase.key.prop': value } so the flip/cut checks can compare.
  *  The cut-sheet pass opts out of two things that are meaningless there: the
@@ -4158,6 +4317,7 @@ async function checkShellComposites(P, label) {
   }
 }
 await checkShellComposites(shellLight, '浅色')
+await driveSortDropdown('浅色')
 
 // ── 10.2 the dark pass ───────────────────────────────────────────────────────
 await page.evaluate(() => window.__setMode('dark'))
@@ -4165,6 +4325,7 @@ const shellDark = await driveShellPhases()
 const expDark = await shellExpectations()
 const darkReadings = await checkShellRoles(shellDark, '深色', expDark)
 await checkShellComposites(shellDark, '深色')
+await driveSortDropdown('深色')
 
 // The flip: every ROLE-named reading (and every token binding — the algorithm
 // changed underneath it) moved; the registered inerts did not. Geometry too —
@@ -4492,6 +4653,10 @@ await page.waitForFunction(() => {
   const r = document.getElementById('t2-routine')
   return !!g && !!g.querySelector('[data-objective]') && !!r && !!r.querySelector('.routine-card')
 })
+// …then the empty-state routine host, whose dashed 新建任务 card is the only
+// create affordance that exists without tasks (see __mountT2Empty above).
+await page.evaluate(() => window.__mountT2Empty())
+await page.waitForFunction(() => !!document.querySelector('#t2-routine-empty .routine-new-card'))
 await page.waitForTimeout(100)
 
 async function t2Expectations() {
@@ -4549,6 +4714,13 @@ if (dump) {
 const expT2Light = await t2Expectations()
 const t2Light = await checkT2Roles('浅色', expT2Light)
 await page.evaluate(() => window.__setMode('dark'))
+// The dashed 新建任务 card carries `transition: border-color 0.2s, color 0.2s`
+// (CENTER_STYLES — the layout probe reads its hover off those computed
+// colours), so a read taken inside the 200ms theme flip catches the tween
+// rather than either end of it (measured: 期望 rgb(77,77,77) 实得 rgb(191,191,195)
+// without the wait — mid-flight toward the dark value, and flaky at that,
+// since the flip check only needs the reading to differ from the light one).
+await page.waitForTimeout(300)
 const expT2Dark = await t2Expectations()
 const t2Dark = await checkT2Roles('深色', expT2Dark)
 await page.evaluate(() => window.__setMode('light'))
@@ -5162,6 +5334,93 @@ await page.waitForTimeout(ASSIST_SETTLE)
     `期望 ${expAssist['--pm-sunk']} 实得 ${vec.bubble && vec.bubble.backgroundColor}`
   )
 }
+
+// ── §17 — the knowledge table's selection paints ──
+// Two of antd's selection paints derive from colorPrimary, and the ink primary
+// breaks both (KnowledgePanel owns the app's only rowSelection; the user saw
+// both halves): the Table's selected row paints controlItemBgActive — #404040
+// in light, a charcoal stripe under dark text — and the checkbox's tick is
+// colorWhite over the near-white dark primary, a white tick on a white box.
+// buildAntdTheme scopes both: Table.rowSelectedBg/rowSelectedHoverBg take the
+// app's selected-row wash (--pm-hover-strong) per mode, and Checkbox takes a
+// scoped colorWhite = ink in dark. The batch bar that the selection summons is
+// role-borne (--pm-wash) and rides along. Exact values, no cut control: these
+// paints come from the antd tokens, not the sheet — the pre-fix code fails
+// every value here (rgb(64,64,64) rows, white ticks), which is the non-vacuity.
+const KB_FILES = [
+  { id: 'kb-t1', title: '入职手册', filePath: 'bases/default/raw/入职手册.md', sourceType: 'file', status: 'compiled', createdAt: new Date(Date.now() - 600 * 1000).toISOString(), baseId: 'default', wikiOutputs: null, sourceUrl: null, sourcePath: null, convId: null, contentHash: null, compiledAt: null },
+  { id: 'kb-t2', title: '面试题库', filePath: 'bases/default/raw/面试题库.md', sourceType: 'file', status: 'raw', createdAt: new Date(Date.now() - 1200 * 1000).toISOString(), baseId: 'default', wikiOutputs: null, sourceUrl: null, sourcePath: null, convId: null, contentHash: null, compiledAt: null },
+]
+/** Normalize a --pm-* role to the computed colour it holds in the live mode. */
+const kbNormVar = (role) => page.evaluate((r) => {
+  const d = document.createElement('div')
+  d.style.backgroundColor = `var(${r})`
+  document.body.appendChild(d)
+  const v = getComputedStyle(d).backgroundColor
+  d.remove()
+  return v
+}, role)
+
+await page.evaluate((files) => { window.__pmKnowledgeFiles = files; window.__mountKnowledge() }, KB_FILES)
+await page.waitForFunction(() => {
+  const host = document.getElementById('knowledge-host')
+  return !!host && host.querySelectorAll('.ant-table-tbody tr').length >= 2
+}, { timeout: 20000 })
+// A real click, then off the table: the selection must exist in the component's
+// state before any of the paints below exist to read.
+await page.click('#knowledge-host .ant-table-tbody .ant-checkbox-input')
+await page.mouse.move(2, 2)
+// The checked box tweens its background (antd's motion pair, ~0.3s with the
+// ease-out-back delay) — a fixed 200ms read landed mid-flight at rgb(13-19),
+// so wait for the settled ink instead of guessing the tween's length.
+await page.waitForFunction(() => {
+  const box = document.querySelector('#knowledge-host .ant-table-tbody .ant-checkbox-checked')
+  return !!box && getComputedStyle(box).backgroundColor === 'rgb(0, 0, 0)'
+}, null, { timeout: 3000 }).catch(() => {})
+
+const KB_TICK_SETTLE = 350
+{
+  const washLight = await kbNormVar('--pm-wash')
+  const kb = await page.evaluate(() => window.__knowledgeVector())
+  check('浅色 知识表格：真点击后行进入选中态', kb.rowSelected === true)
+  check('浅色 知识表格：选中行底色 = --pm-hover-strong 洗色（修复前是派生的 #404040 炭条）', kb.selRowBg === 'rgba(0, 0, 0, 0.08)', `实得 ${kb.selRowBg}`)
+  check('浅色 知识表格：勾选框盒底 = 墨色', kb.boxBg === 'rgb(0, 0, 0)', `实得 ${kb.boxBg}`)
+  check('浅色 知识表格：对勾两条可见边都是白色（墨盒白勾）', kb.tick === 'rgb(255, 255, 255)' && kb.tickBottom === 'rgb(255, 255, 255)', `实得 ${kb.tick} / ${kb.tickBottom}`)
+  check('浅色 知识表格：批量条出现且地面 = --pm-wash', kb.batchBarBg === washLight, `实得 ${kb.batchBarBg} 期望 ${washLight}`)
+  // Hover a non-checkbox cell of the selected row: the hover-on-selected paint
+  // is the second token (rowSelectedHoverBg), one step past the rest wash.
+  await page.hover('#knowledge-host .ant-table-tbody tr.ant-table-row-selected td:last-child')
+  await page.waitForTimeout(KB_TICK_SETTLE)
+  const kbHover = await page.evaluate(() => window.__knowledgeVector())
+  check('浅色 知识表格：选中行悬停底色 = 亮一档洗色（修复前是更深的 #333）', kbHover.hoverTdBg === 'rgba(0, 0, 0, 0.12)', `实得 ${kbHover.hoverTdBg}`)
+}
+
+await page.evaluate(() => window.__setMode('dark'))
+// Off the row first: the light hover step parked the cursor on the last cell,
+// and every td of the row carries the hover class — the resting read below
+// would report the hover-on-selected paint instead of the rest wash (measured:
+// rgba(255,255,255,0.16) — exactly the hover value — for the rest check).
+await page.mouse.move(2, 2)
+await page.waitForTimeout(KB_TICK_SETTLE)
+{
+  const washDark = await kbNormVar('--pm-wash')
+  const kb = await page.evaluate(() => window.__knowledgeVector())
+  check('深色 知识表格：选中行底色 = 深色洗色（修复前是派生的 #535353）', kb.selRowBg === 'rgba(255, 255, 255, 0.12)', `实得 ${kb.selRowBg}`)
+  check('深色 知识表格：对勾翻成墨色（修复前是 colorWhite 白勾没入近白盒）', kb.tick === 'rgb(0, 0, 0)' && kb.tickBottom === 'rgb(0, 0, 0)', `实得 ${kb.tick} / ${kb.tickBottom}`)
+  check('深色 知识表格：对勾与盒底可辨', kb.tick !== kb.boxBg && kb.boxBg !== 'rgba(0, 0, 0, 0)', `tick=${kb.tick} box=${kb.boxBg}`)
+  check('深色 知识表格：批量条地面 = 深色 --pm-wash', kb.batchBarBg === washDark, `实得 ${kb.batchBarBg} 期望 ${washDark}`)
+  // And back onto the row for the dark hover-on-selected paint.
+  await page.hover('#knowledge-host .ant-table-tbody tr.ant-table-row-selected td:last-child')
+  await page.waitForTimeout(KB_TICK_SETTLE)
+  const kbHover = await page.evaluate(() => window.__knowledgeVector())
+  check('深色 知识表格：选中行悬停底色 = 深色亮一档', kbHover.hoverTdBg === 'rgba(255, 255, 255, 0.16)', `实得 ${kbHover.hoverTdBg}`)
+  check(
+    '翻转：知识表格的选中面读数全部随模式变化',
+    kb.selRowBg !== 'rgba(0, 0, 0, 0.08)' && kb.tick !== 'rgb(255, 255, 255)' && kb.batchBarBg !== 'rgb(250, 250, 250)',
+    `row=${kb.selRowBg} tick=${kb.tick} bar=${kb.batchBarBg}`
+  )
+}
+await page.evaluate(() => window.__setMode('light'))
 
 /** Flat compare of two vectors; `keys` limits it to a subset of properties. */
 function diffVector(a, b, keys) {
