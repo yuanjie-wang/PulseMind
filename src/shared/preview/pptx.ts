@@ -99,6 +99,11 @@ export interface PptxGeometry {
   clipPath?: string
   /** line/straightConnector1 — an SVG corner-to-corner line */
   isLine?: boolean
+  /** pie only: adj1/adj2 in degrees, clockwise from 3 o'clock (OOXML angle
+   *  units are 60000ths). The renderer paints the [start, end) wedge with a
+   *  conic-gradient inside a round box. */
+  startAngleDeg?: number
+  endAngleDeg?: number
 }
 
 export interface PptxShapeVM {
@@ -495,6 +500,15 @@ function mergeStyle(...styles: Array<TextStyle | undefined>): TextStyle {
   return out
 }
 
+/** pptxgenjs writes bullet chars as numeric character references (&#x2022;)
+ *  and fast-xml-parser decodes only the named five — left alone, the preview
+ *  prints the raw entity as text. Real PowerPoint writes literal glyphs, so
+ *  this only ever fires on generated decks. */
+function decodeCharRef(s: string): string {
+  return s.replace(/&#(?:x([0-9A-Fa-f]+)|(\d+));/g, (_, hex: string | undefined, dec: string | undefined) =>
+    String.fromCodePoint(parseInt(hex ?? dec!, hex !== undefined ? 16 : 10)))
+}
+
 function bulletOf(pPr: XNode, ctx: ParseCtx): PptxBullet | null | undefined {
   if (kid(pPr, 'buNone')) return null
   const autoNum = kid(pPr, 'buAutoNum')
@@ -503,7 +517,7 @@ function bulletOf(pPr: XNode, ctx: ParseCtx): PptxBullet | null | undefined {
   if (buChar) {
     const clr = kid(pPr, 'buClr')
     const color = clr ? resolveColorNode(colorChildOf(clr), ctx) : undefined
-    return { kind: 'char', char: buChar.attrs.char ?? '•', color }
+    return { kind: 'char', char: decodeCharRef(buChar.attrs.char ?? '•'), color }
   }
   return undefined // nothing said at this level — inherit
 }
@@ -700,6 +714,11 @@ function geometryOf(spPr: XNode | undefined, skipped: PptxSkipped): PptxGeometry
   if (prst === 'ellipse') return { prst }
   if (prst === 'rect' || prst === 'flowChartProcess' || prst === 'textBox') return { prst: 'rect' }
   if (prst === 'line' || prst === 'straightConnector1') return { prst, isLine: true }
+  if (prst === 'pie') {
+    // OOXML defaults: 0°→270° (a three-quarter wedge); deck-to-pptx always
+    // writes both adj values, so the fallback only guards hand-made files.
+    return { prst, startAngleDeg: adjValue(prstGeom as XNode, 'adj1', 0) / 60000, endAngleDeg: adjValue(prstGeom as XNode, 'adj2', 16200000) / 60000 }
+  }
   const clip = CLIP_PATHS[prst]
   if (clip) return { prst, clipPath: clip }
   skipped.unknownGeoms++

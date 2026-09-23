@@ -13,6 +13,7 @@ import { guardFsTarget } from '../sandbox/guard'
 import { withPathLock } from '../sandbox/write-lock'
 import { resolveWritablePath } from './file-ops'
 import type { SheetModel } from '../office-export/md-tables'
+import { parseDeckSpec, deckImagePaths, DECK_IMAGE_EXTS, type DeckSpec } from '../../shared/deck/spec'
 
 // Every generator and read-back parser is loaded on demand: this module is
 // reached at launch (ipc → file-ops → here), while the engines behind it are the
@@ -38,6 +39,9 @@ export interface ExportDocumentInput {
   format: ExportFormat
   content?: string
   sourcePath?: string
+  /** format pptx alternative to content: a structured deck spec
+   *  (shared/deck/spec) — the model picks layouts, the engine draws. */
+  deck?: unknown
   filePath: string
 }
 
@@ -56,11 +60,50 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
     }
     const hasContent = typeof input.content === 'string' && input.content.trim() !== ''
     const hasSource = typeof input.sourcePath === 'string' && input.sourcePath.trim() !== ''
-    if (hasContent === hasSource) {
+    const hasDeck = input.deck !== undefined && input.deck !== null
+    if (hasDeck && input.format !== 'pptx') {
+      return { success: false, error: `deck 仅支持 format pptx，收到「${input.format}」——其他格式请给 content 或 sourcePath` }
+    }
+    if (hasContent && hasDeck) {
+      return { success: false, error: 'deck 与 content 二选一：结构化幻灯片给 deck，markdown 大纲给 content，不要同时给' }
+    }
+    if (hasSource && hasDeck) {
+      return { success: false, error: 'deck 与 sourcePath 二选一：结构化幻灯片直接内联给 deck，不要同时给文件路径' }
+    }
+    if (hasContent === hasSource && !hasDeck) {
       return { success: false, error: 'content 与 sourcePath 二选一：内联内容直接给 content；导出工作区已有文件给 sourcePath，不要同时给或都不给' }
     }
     if (hasContent && (input.content as string).length > CONTENT_LIMIT) {
       return { success: false, error: `内联 content 超过 100KB（${Math.round((input.content as string).length / 1024)}KB）——请先用 write 把内容写入工作区文件，再通过 sourcePath 导出` }
+    }
+    // Deck path: validate the spec and resolve every referenced image up
+    // front — a deck export either lands complete or refuses with the slide
+    // number that caused the refusal.
+    let deckSpec: DeckSpec | undefined
+    let deckImages: Map<string, Buffer> | undefined
+    if (hasDeck) {
+      const parsed = parseDeckSpec(input.deck)
+      if (!parsed.ok) return { success: false, error: parsed.error }
+      deckSpec = parsed.spec
+      const deckJson = JSON.stringify(input.deck)
+      if (deckJson.length > CONTENT_LIMIT) {
+        return { success: false, error: `deck 序列化后超过 100KB（${Math.round(deckJson.length / 1024)}KB）——slides 太多了，拆成多份导出` }
+      }
+      deckImages = new Map()
+      for (const { slide, path } of deckImagePaths(deckSpec)) {
+        if (deckImages.has(path)) continue
+        const ext = extname(path).toLowerCase()
+        if (!(DECK_IMAGE_EXTS as readonly string[]).includes(ext)) {
+          return { success: false, error: `deck.slides[${slide}].image：不支持的图片格式「${ext || '无扩展名'}」（支持 ${DECK_IMAGE_EXTS.join(' / ')}）` }
+        }
+        const imgGuard = await guardFsTarget(path, 'read')
+        if (!imgGuard.ok) return { success: false, error: `deck.slides[${slide}].image：${imgGuard.reason}` }
+        try {
+          deckImages.set(path, await pReadFile(await resolveWritablePath(path)))
+        } catch (err) {
+          return { success: false, error: `deck.slides[${slide}].image：读取失败（${err instanceof Error ? err.message : String(err)}）——先确认文件在工作区里` }
+        }
+      }
     }
 
     const guard = await guardFsTarget(input.filePath, 'write')
@@ -100,7 +143,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
       // Build entirely in memory — a failure here has written nothing.
       let buffer: Buffer
       try {
-        buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes })
+        buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, deck: deckSpec, deckImages })
       } catch (err) {
         return { success: false, error: `导出内容构建失败：${err instanceof Error ? err.message : String(err)}` }
       }
@@ -126,7 +169,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
 
 async function buildBuffer(
   format: ExportFormat,
-  source: { md?: string; csv?: string; docx?: Buffer }
+  source: { md?: string; csv?: string; docx?: Buffer; deck?: DeckSpec; deckImages?: Map<string, Buffer> }
 ): Promise<Buffer> {
   if (format === 'pdf') {
     // pdf is a CONVERSION, not a native layout: an existing docx, or markdown
@@ -142,7 +185,11 @@ async function buildBuffer(
     return markdownToDocxBuffer(source.md ?? source.csv ?? '')
   }
   if (format === 'pptx') {
-    if (source.md === undefined) throw new Error('pptx 需要 markdown 内容；CSV 数据请导出 xlsx 或 csv')
+    if (source.deck) {
+      const { deckToPptxBuffer } = await import('../office-export/deck-to-pptx')
+      return deckToPptxBuffer(source.deck, source.deckImages ?? new Map())
+    }
+    if (source.md === undefined) throw new Error('pptx 需要 deck 或 markdown 内容；CSV 数据请导出 xlsx 或 csv')
     const { markdownToPptxBuffer } = await import('../office-export/md-to-pptx')
     return markdownToPptxBuffer(source.md)
   }

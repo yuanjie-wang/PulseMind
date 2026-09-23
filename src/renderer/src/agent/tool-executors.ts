@@ -14,6 +14,7 @@ import type { ToolUseBlock } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import type { SpawnSubAgentConfig, SubAgentHandle } from './agent-utils'
 import type { Plan } from '../../../shared/types/plan'
+import { parseDeckSpec } from '../../../shared/deck/spec'
 import { writeFileChunked } from './agent-utils'
 import { buildCommandFromSkillInput } from './command-builder'
 import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
@@ -387,12 +388,20 @@ export class ToolExecutor implements ToolExecContext {
         if (!['docx', 'xlsx', 'csv', 'pptx', 'pdf'].includes(format)) throw new Error(`format 必须是 docx / xlsx / csv / pptx / pdf 之一`)
         const content = typeof t.input.content === 'string' && t.input.content.trim() !== '' ? t.input.content : undefined
         const sourcePath = typeof t.input.sourcePath === 'string' && t.input.sourcePath.trim() !== '' ? t.input.sourcePath : undefined
-        if (!content && !sourcePath) throw new Error('content 与 sourcePath 二选一')
+        const hasDeck = t.input.deck !== undefined && t.input.deck !== null
+        if (!content && !sourcePath && !hasDeck) throw new Error('content / sourcePath / deck 三选一')
+        if (hasDeck && format !== 'pptx') throw new Error('deck 仅支持 format pptx——其他格式请给 content 或 sourcePath')
+        // validate HERE, not just in main: a malformed spec fails before the
+        // IPC roundtrip with the same readable message the service would give
+        if (hasDeck) {
+          const parsed = parseDeckSpec(t.input.deck)
+          if (!parsed.ok) throw new Error(parsed.error)
+        }
         const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
         const rawPath = String(t.input.file_path || '') || `export-${stamp}.${format}`
         const fp = this.resolveWorkspacePath(rawPath)
         t.output = `Exporting ${format.toUpperCase()} → ${fp}...`; this.notify()
-        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf', content, sourcePath, filePath: fp })
+        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf', content, sourcePath, deck: hasDeck ? t.input.deck : undefined, filePath: fp })
         if (result.success) {
           const summary = `Exported ${result.path} (${Math.round((result.bytes ?? 0) / 1024)} KB)`
           t.output = summary

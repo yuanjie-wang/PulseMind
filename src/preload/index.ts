@@ -62,8 +62,10 @@ const electronAPI = {
   routineRunsClear: (routineId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUNS_CLEAR, routineId),
   routineRunsPrune: (days?: number) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUNS_PRUNE, days),
   // Batch mode (PLAN-routine-batch)
-  routineBatchRun: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_RUN, id),
+  routineBatchRun: (id: string, concurrency?: number, timeoutMinutes?: number) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_RUN, id, concurrency, timeoutMinutes),
   routineBatchStop: (parentRunId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_STOP, parentRunId),
+  routineBatchResume: (parentRunId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_RESUME, parentRunId),
   routineBatchItems: (parentRunId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_ITEMS, parentRunId),
   routineCsvPreview: (filePath: string, params?: Array<{ key: string; label: string; required?: boolean; default?: string }>) =>
     ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_CSV_PREVIEW, filePath, params),
@@ -336,7 +338,7 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_XLSX, input),
   inspectOffice: (input: { filePath: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_INSPECT_OFFICE, input),
-  exportDocument: (input: { format: string; content?: string; sourcePath?: string; filePath: string }): Promise<unknown> =>
+  exportDocument: (input: { format: string; content?: string; sourcePath?: string; deck?: unknown; filePath: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, input),
   convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),

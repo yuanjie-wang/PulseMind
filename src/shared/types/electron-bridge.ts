@@ -301,14 +301,22 @@ export interface ElectronAPI {
   /** 按保留策略清理已结束的运行记录；days 省略时用设置里的策略。返回删除条数。 */
   routineRunsPrune: (days?: number) => Promise<number>
   // ── Batch mode (PLAN-routine-batch) ──
-  /** 手动启动一次批量运行，返回 parent 运行记录。拒绝情形（已有批量进行中、
-   *  文件不可读、缺必填列、超行数上限）抛错给调用方展示。 */
-  routineBatchRun: (id: string) => Promise<RoutineRun>
+  /** 手动启动一次批量运行，返回 parent 运行记录。concurrency / timeoutMinutes
+   *  为本次运行的并发（1–5 整数）与单次超时（1–120 整数分钟）覆盖；缺省用任务
+   *  配置，只影响这一批、不回写配置。拒绝情形（已有批量进行中、文件不可读、
+   *  缺必填列、超行数上限、非法并发数/超时）抛错给调用方展示。 */
+  routineBatchRun: (id: string, concurrency?: number, timeoutMinutes?: number) => Promise<RoutineRun>
   /** 停止一次批量运行（未知/已结束的 parent 是 no-op）。 */
   routineBatchStop: (parentRunId: string) => Promise<void>
-  /** 一次批量运行的逐行 child 运行记录（按行号排序）。 */
+  /** 继续一次被中断的批量运行（用户停止或应用退出）：同一 parent 下只重跑未
+   *  成功的行。拒绝情形（记录不存在、仍在进行、任务已有批量在跑、任务已删、
+   *  全部行已成功、CSV 行数已变）抛错给调用方展示。 */
+  routineBatchResume: (parentRunId: string) => Promise<RoutineRun>
+  /** 一次批量运行的行记录：按 CSV 行折叠到最新一次尝试（续跑会为同一行追加
+   *  attempt 行），attempts>1 时携带该行的总尝试次数。 */
   routineBatchItems: (parentRunId: string) => Promise<RoutineRun[]>
-  /** CSV 映射预览。解析失败不抛错，返回 { ok: false, error } 由界面就地展示。 */
+  /** CSV/Excel 映射预览（.csv/.txt 走 GBK 回退解析，.xlsx 走首张工作表）。
+   *  解析失败不抛错，返回 { ok: false, error } 由界面就地展示。 */
   routineCsvPreview: (filePath: string, params?: RoutineParam[]) => Promise<CsvPreviewResult>
   toolList: () => Promise<UserTool[]>
   toolGet: (id: string) => Promise<UserTool | null>
@@ -382,7 +390,7 @@ export interface ElectronAPI {
   editPptx: (input: { filePath: string; ops: import('../office/ops').PptxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').PptxEditOutcome & { success: boolean; error?: string; backup?: string }>
   editXlsx: (input: { filePath: string; ops: import('../office/ops').XlsxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>
   inspectOffice: (input: { filePath: string }) => Promise<import('../office/ops').OfficeInspectResult>
-  exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number }>
+  exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; deck?: unknown; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
   /** M10: register the per-mount element-edit nonce in the main process —
    *  the served picker copy reads it there, never the frame URL. */

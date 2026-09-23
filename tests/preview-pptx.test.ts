@@ -331,6 +331,24 @@ describe('text', () => {
     expect(paragraphs[1].bullet).toBeUndefined()
   })
 
+  it('buChar numeric character references decode to the glyph (pptxgenjs decks)', () => {
+    // pptxgenjs entity-encodes bullet chars and fast-xml-parser leaves numeric
+    // refs raw — decoded, or the preview prints "&#x2022;" as text.
+    const paragraphs = slide1Shapes(
+      deckWith(
+        '<sld><cSld><spTree>' +
+          '<sp><nvSpPr><cNvPr id="2"/><nvPr/></nvSpPr><spPr><xfrm><off/><ext/></xfrm></spPr>' +
+          '<txBody><bodyPr/><lstStyle/>' +
+          '<p><pPr marL="228600" indent="-228600"><buChar char="&#x2022;"/></pPr><r><t>甲</t></r></p>' +
+          '<p><pPr><buChar char="&#8211;"/></pPr><r><t>乙</t></r></p>' +
+          '</txBody></sp>' +
+          '</spTree></cSld></sld>'
+      )
+    )[0].text!.paragraphs
+    expect(paragraphs[0].bullet).toMatchObject({ kind: 'char', char: '•' })
+    expect(paragraphs[1].bullet).toMatchObject({ kind: 'char', char: '–' })
+  })
+
   it('buAutoNum numbers consecutive paragraphs; startAt restarts the list', () => {
     const paragraphs = slide1Shapes(
       deckWith(
@@ -413,6 +431,19 @@ describe('shapes', () => {
     )
     expect(shapes[0].geometry).toMatchObject({ prst: 'roundRect', radiusRatio: 0.1 })
     expect(shapes[1].geometry).toMatchObject({ prst: 'ellipse' })
+  })
+
+  it("pie reads adj1/adj2 as degrees clockwise from 3 o'clock", () => {
+    const shapes = slide1Shapes(
+      deckWith(
+        '<sld><cSld><spTree>' +
+          '<sp><nvSpPr><cNvPr id="2"/><nvPr/></nvSpPr><spPr><xfrm><off/><ext/></xfrm>' +
+          '<prstGeom prst="pie"><avLst><gd name="adj1" fmla="val 16200000"/><gd name="adj2" fmla="val 0"/></avLst></prstGeom></spPr></sp>' +
+          '</spTree></cSld></sld>'
+      )
+    )
+    // 270°→0° = a 90° wedge wrapping past 12 o'clock (deck-to-pptx's start)
+    expect(shapes[0].geometry).toMatchObject({ prst: 'pie', startAngleDeg: 270, endAngleDeg: 0 })
   })
 
   it('unknown prstGeom degrades to rect and is counted', () => {

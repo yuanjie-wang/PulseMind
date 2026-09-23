@@ -14,8 +14,12 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 - 用户要 PDF（合同/公文/不可改版交付）→ **本工具 format pdf**：工作区已有 .docx 就给 sourcePath 指向它（docx→PDF 转换，保真最好）；否则给 markdown content（先按 docx 排版再转 PDF）。修改已有 PDF 的内容不在本工具能力内。
 - **永远不要**用 exec 跑 python-pptx / python-docx / libreoffice / office 脚本之类来生成 Office 文件——那绕开了沙箱护栏、备份与回读门禁，且没有预览联动。本工具就是原生路径，直接用它。
 
-### Inputs (D3 — exactly one)
+### Inputs (D3 — exactly one of content / deck / sourcePath)
 - content: inline source. docx/pptx/pdf take the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet (D4). For pptx the first \`# \` heading is the cover and every later \`# \`/\`## \` heading starts a new slide.
+- deck: (format pptx only, and the DEFAULT for PPT) 结构化幻灯片对象——每一页选一个版式，引擎负责排版、配色、图表绘制，产出有版式设计的 PPT 而不是文字堆。形状见 input schema 的 deck 描述。何时用：只要 PPT 里有图表、KPI 数字卡、双栏对比、引用页或图片，就用 deck；纯文字大纲用 content 也能出，但效果弱一档。
+  - 版式一览：cover / section / bullets / two-col / kpi / chart / table / quote / image（image 填工作区图片路径，png/jpg/gif）。
+  - 一页只讲一件事：bullets 3–8 条每条 ≤20 字；table ≤12 行超了拆页；chart 的 categories 2–12 个。
+  - 数据来源写在该页的 note 里；deck.theme.accent 可指定主题色（用户给了品牌色就用它）。
 - sourcePath: convert an existing workspace file instead — .md/.csv for the generators, **.docx for format pdf**. Large sources avoid re-sending content.
 
 ### Rules
@@ -28,7 +32,8 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 - pdf: 由 docx 渲染而来（无原生 markdown 排版引擎）——docx 的降级边界在这里同样适用；文本框、页眉页脚、SmartArt 等渲染器不支持的元素会缺失；分页尺寸按文档首页；转换失败整批拒绝，不写半成品。
 - xlsx: NO formulas are generated, dates stay text, numbers convert only when the exact round-trip is safe (leading zeros like 工号 007 stay text on purpose).
 - csv: exports the FIRST table/sheet only.
-- pptx: images / inline HTML degrade to text with a closing 备注 page; one table per page; NO charts, NO template/master customization, fixed 16:9 layout.
+- pptx (content/markdown): images / inline HTML degrade to text with a closing 备注 page; one table per page; NO charts, fixed 16:9 layout.
+- pptx (deck): 图表是矢量形状（在 PowerPoint 里可改色改字，改数据需重新导出）；图片真实嵌入（须已存在于工作区）；不指定中文字体（打开端替换）；无母版/动画——要母版请走 pptx_edit 套用户模板。 deck.slides 最多 200 页。
 `,
 
   pptx_edit: `## pptx_edit

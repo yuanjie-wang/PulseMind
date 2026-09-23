@@ -632,7 +632,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── export_document (PLAN-office-export) ───────────────────────────
   {
     name: 'export_document',
-    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading), .csv, .pptx (PowerPoint slides, one page per `#`/`## ` heading), or .pdf (converted from docx — inline markdown, or sourcePath pointing at an existing .docx). For ANY make-a-PPT request use format pptx — never shell out to python-pptx. Give inline markdown/CSV `content` OR a workspace `sourcePath`, never both. The file lands in the conversation workspace and opens in the preview pane.',
+    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading), .csv, .pptx (PowerPoint slides — structured `deck` with real layouts/charts/KPI cards, or markdown outline), or .pdf (converted from docx — inline markdown, or sourcePath pointing at an existing .docx). For ANY make-a-PPT request use format pptx — never shell out to python-pptx. Give inline `content`, a structured `deck` (pptx only), or a workspace `sourcePath` — exactly one. The file lands in the conversation workspace and opens in the preview pane.',
     category: 'file',
     triggers: ['export', '导出', '生成 excel', '生成 word', '生成 ppt', '生成 pdf', '转成表格', '转成文档', '转成 pdf'],
     input_schema: {
@@ -640,6 +640,16 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         format: { type: 'string', enum: ['docx', 'xlsx', 'csv', 'pptx', 'pdf'], description: 'Target format.' },
         content: { type: 'string', description: 'Inline source: full markdown for docx/pptx/pdf; a markdown table (or `## Sheet` sections) or CSV data for xlsx/csv. Soft cap 100KB — larger sources go through sourcePath.' },
+        deck: {
+          type: 'object',
+          description: '(pptx only) 结构化幻灯片，替代 markdown content——每一页选一个版式，引擎负责排版、配色与图表绘制：{ title: string, theme?: { accent: "RRGGBB" }, slides: [...] }。slides[].layout 取值：cover(封面: title+subtitle) / section(章节页: title+subtitle) / bullets(要点页: title+bullets, 每项为字符串或{text,sub}) / two-col(双栏: title+columns=[{heading,bullets},{heading,bullets}]) / kpi(大数字卡: title+items=[{value,label}] 2-4个) / chart(图表页: title+chart={type:"column"|"bar"|"line"|"pie", categories:[…], series:[{name, values:[…]}]}) / table(表格页: title+header+rows≤12行) / quote(引用页: quote+author) / image(图片页: image=工作区图片路径, caption?, bullets?)。任意页可加 note(页底来源行)。需要图表/数据卡片/双栏对比/配图的 PPT 一律用 deck。',
+          properties: {
+            title: { type: 'string', description: 'Deck 标题（写入文档元数据）。' },
+            theme: { type: 'object', properties: { accent: { type: 'string', description: '主题强调色，6 位 RRGGBB 不带 #（如 2F54EB）' } } },
+            slides: { type: 'array', description: '逐页的版式与内容。', items: { type: 'object' } },
+          },
+          required: ['title', 'slides'],
+        },
         sourcePath: { type: 'string', description: 'Path to an existing workspace file to convert instead of inline content: .md/.csv for the generators, .docx for format pdf.' },
         file_path: { type: 'string', description: 'Relative target path (default: export-<timestamp>.<format> in the workspace root). Existing files are never overwritten — a -2 suffix is added.' },
       },

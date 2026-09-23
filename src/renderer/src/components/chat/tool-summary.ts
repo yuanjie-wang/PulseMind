@@ -71,7 +71,9 @@ export function toolObjectSummary(block: ToolUseBlock): string {
       return `${input.file_path || ''} (${((input.content as string) || '').length > 0 ? `${((input.content as string).length / 1024).toFixed(1)} KB` : '0 KB'})`
     case 'export_document': {
       const target = (input.file_path as string) || ''
-      return target ? `${input.format || ''} → ${target}`.replace(' → ', ' · ') : (input.format as string) || ''
+      const deckSlides = (input.deck as { slides?: unknown[] } | undefined)?.slides
+      const fmt = `${input.format || ''}${Array.isArray(deckSlides) && deckSlides.length > 0 ? `(${deckSlides.length}页)` : ''}`
+      return target ? `${fmt} · ${target}` : fmt
     }
     case 'list_dir': return (input.dir_path as string) || ''
     case 'search':

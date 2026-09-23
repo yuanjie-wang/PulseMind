@@ -225,16 +225,27 @@ function ShapeView({ shape, idx }: { shape: PptxShapeVM; idx: number }): React.R
   const border = shape.line
     ? `${shape.line.widthPx}px ${shape.line.dash === 'dash' ? 'dashed' : shape.line.dash === 'dot' ? 'dotted' : 'solid'} ${shape.line.color}`
     : undefined
+  // pie: one wedge per shape — a conic-gradient inside a round box. OOXML
+  // angles run clockwise from 3 o'clock; CSS conic runs clockwise from 12,
+  // so the start shifts +90°. endAngle ≤ startAngle means the wedge wrapped
+  // past 12 o'clock, hence the modulo (a 0° sweep is a full circle).
+  const pieSlice =
+    geometry?.prst === 'pie' && shape.fill && geometry.startAngleDeg !== undefined && geometry.endAngleDeg !== undefined
+      ? (() => {
+          const sweep = (((geometry.endAngleDeg - geometry.startAngleDeg) % 360) + 360) % 360 || 360
+          return `conic-gradient(from ${(geometry.startAngleDeg + 90) % 360}deg, ${shape.fill} 0deg ${sweep}deg, transparent ${sweep}deg 360deg)`
+        })()
+      : undefined
   return (
     <div
       data-shape={idx}
       style={{
         ...boxStyle,
-        background: shape.fill,
-        border,
+        background: pieSlice ?? shape.fill,
+        border: pieSlice ? undefined : border,
         boxSizing: 'border-box',
         borderRadius:
-          geometry?.prst === 'ellipse'
+          geometry?.prst === 'ellipse' || pieSlice
             ? '50%'
             : geometry?.prst === 'roundRect' && geometry.radiusRatio !== undefined
               ? `${geometry.radiusRatio * Math.min(shape.w, shape.h)}px`
