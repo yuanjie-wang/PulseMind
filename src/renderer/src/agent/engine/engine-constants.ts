@@ -30,3 +30,22 @@ export const MAX_TOOL_INPUT_JSON_BYTES = 1_000_000 // 1 MB safety net for any to
 
 // ── Background memory extraction cooldown ────────────────────────────────
 export const MEM_EXTRACTION_COOLDOWN = 30_000
+
+// ── Tool-result / spawn-envelope context guardrails ─────────────────────
+// Per-tool-result token budget enforced by the engine's addToolResult (errors
+// pass whole; anything over is head+tail truncated with the full text offloaded
+// to ~/.pulsemind/tmp/trunc/ for the model to read back). Lives here — not on
+// AgentEngine — because spawn-tool sizes the batch-split envelope budget from
+// it, and importing AgentEngine from an executor would close a cycle
+// (AgentEngine → tool-executors → executors/spawn-tool → AgentEngine).
+export const MAX_TOOL_RESULT_TOKENS = 4_000
+
+// spawn_agent envelopes share ONE budget per assistant round: 11 parallel
+// experts each returning up to 4k tokens would append ~44k tokens in a single
+// collector message — which sits in every compaction layer's protection
+// window, so nothing can relieve it before the next request goes out. That
+// message is the shape behind the 0.4.1 "ring says 35%, model says overflow"
+// report. The round's envelope total is capped; each envelope gets
+// floor(BUDGET / N), floored so a wide batch still carries a usable gist.
+export const SPAWN_ROUND_ENVELOPE_BUDGET = 12_000
+export const MIN_SPAWN_ENVELOPE_BUDGET = 800

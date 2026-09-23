@@ -3,6 +3,9 @@ import { OneShotAgent } from './OneShotAgent'
 export interface HistorySummaryInput {
   /** Condensed text of the conversation region being dropped (built by AgentEngine). */
   regionText: string
+  /** Extra emphasis for the summary, from an explicit /compact 指示词. Rides
+   *  the user message so the strict system-prompt rules above stay intact. */
+  instruction?: string
   locale?: string
 }
 
@@ -35,7 +38,11 @@ Rules:
   }
 
   protected buildUserMessages(input: HistorySummaryInput): { role: string; content: string }[] {
-    return [{ role: 'user', content: input.regionText }]
+    const instruction = input.instruction?.trim()
+    return [{
+      role: 'user',
+      content: instruction ? `${input.regionText}\n\n[摘要额外要求] ${instruction}` : input.regionText,
+    }]
   }
 
   protected parseResponse(raw: string): string {

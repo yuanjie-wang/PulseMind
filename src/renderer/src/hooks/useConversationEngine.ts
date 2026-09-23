@@ -12,6 +12,7 @@ import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../../../shared/agent-session/mirror'
+import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { SummonedExpert } from '../../../shared/expert-context'
 
 // ── Client-side session state ────────────────────────────────────────
@@ -31,6 +32,9 @@ export interface SessionEngineHandle {
   readonly streamingBlocks: ContentBlock[]
   readonly plan: Plan | null
   getHistorySummary(): { firstKeptId: string; text: string } | null
+  /** Explicit /compact [指示词] — resolves with the compaction event for UI
+   *  feedback, or null when there was nothing to drop / a turn is in flight. */
+  compactNow(instruction?: string): Promise<CompactionEvent | null>
   reset(): void
   loadConversation(messages: AgentMessage[]): void
   seedHistorySummary(text?: string, firstKeptId?: string): void
@@ -92,6 +96,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
   const [plan, setPlan] = useState<Plan | null>(null)
+  const [lastCompaction, setLastCompaction] = useState<CompactionEvent | null>(null)
   const [activeLoopConvIds, setActiveLoopConvIds] = useState<string[]>([])
   const [retryingConvIds, setRetryingConvIds] = useState<string[]>([])
 
@@ -129,6 +134,10 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     get streamingBlocks() { return st.streamingBlocks },
     get plan() { return st.plan },
     getHistorySummary() { return st.historySummary },
+    compactNow(instruction?: string) {
+      return window.electronAPI.agentSessionEngineCall(convId, 'compactNow', [instruction ?? null])
+        .then((v) => (v ?? null) as CompactionEvent | null)
+    },
     reset() {
       st.messages = []
       st.agentStatus = { status: 'idle' }
@@ -223,6 +232,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
         setAgentStatus(st.agentStatus)
         setStreamingBlocks([...st.streamingBlocks])
         setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
+        if (data.type === 'compaction') setLastCompaction(data.event)
       }
     })
     return unsub
@@ -243,6 +253,12 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       setAgentStatus(st.agentStatus)
       setStreamingBlocks([...st.streamingBlocks])
       setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
+      setLastCompaction(st.lastCompaction)
+    } else {
+      // A conversation this app-run never touched has no mirror — every piece
+      // of active-conversation state must reset, or the previous
+      // conversation's compaction chip survives the switch.
+      setLastCompaction(null)
     }
   }, [])
 
@@ -327,6 +343,9 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     setStreamingBlocks,
     setPlan,
     setActiveLoopConvIds,
+    // Last compaction pass of the active conversation (composer chip + ring
+    // projection); null until the engine compacts something.
+    lastCompaction,
     // Engine proxies
     approveTool,
     rejectTool,

@@ -45,7 +45,7 @@ import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import { perfTime } from '../perf/perf-log'
 import { keepAwake } from '../system/keep-awake'
-import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, ModelState } from '../../shared/agent-protocol'
+import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, ModelState, CompactionEvent } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 
 interface Managers {
@@ -884,6 +884,7 @@ export class AgentSessionManagerImpl {
       case 'clearError': return engine.clearError()
       case 'retryLastTurn': return engine.retryLastTurn()
       case 'getHistorySummary': return engine.getHistorySummary()
+      case 'compactNow': return engine.compactNow(args[0] as string | undefined)
       case 'reset': entry.engine.reset(); return undefined
       case 'dispose':
         entry.engine.dispose()
@@ -1019,6 +1020,7 @@ export class AgentSessionManagerImpl {
       },
       onStreamingBlocksChanged: (blocks: ContentBlock[]) => this.emit(sessionId, { type: 'streaming_blocks', blocks: blocks as unknown[] }),
       onPlanChanged: (plan: Plan | null) => this.emit(sessionId, { type: 'plan_update', plan }),
+      onCompaction: (event: CompactionEvent) => this.emit(sessionId, { type: 'compaction', event }),
     }
   }
 }

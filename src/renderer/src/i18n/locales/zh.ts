@@ -209,6 +209,15 @@ const zh = {
     contextRing: {
       tooltip: '{{percent}}% · {{used}} / {{total}} 上下文已使用',
     },
+    compaction: {
+      chip: '已压缩 {{dropped}} 条 · 释放 ~{{freed}}',
+      chipPending: '已压缩 {{dropped}} 条 · 下次请求生效 (~{{freed}})',
+      tooltip: '压缩策略：{{strategies}}；其中 {{replayed}} 条用户消息原文保留，旧历史已摘要、全文可用工具取回。',
+      noConversation: '还没有会话，先发一条消息再压缩',
+      busy: '任务执行中，结束后再压缩',
+      done: '已压缩 {{dropped}} 条历史，释放约 {{freed}} tokens',
+      nothing: '当前上下文不多，暂无需压缩',
+    },
     approval: {
       label: '授权方式',
       tooltip: '{{level}} · 工具调用审批',

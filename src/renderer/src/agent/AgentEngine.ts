@@ -33,7 +33,10 @@ import { ExecutionFlow } from './engine/execution-flow'
 import { StreamRunner } from './engine/stream-runner'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
-import { ContextCompactor } from './engine/context-compactor'
+import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO } from './engine/context-compactor'
+import { MAX_TOOL_RESULT_TOKENS } from './engine/engine-constants'
+import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
+import type { CompactionEvent } from '../../../shared/agent-protocol/payloads'
 import type { EngineCore } from './engine/engine-core'
 import { stripToolResultImages } from './strip-tool-results'
 
@@ -48,13 +51,11 @@ import { stripToolResultImages } from './strip-tool-results'
 // lives in this.messages, so this also keeps oversized results out of the
 // tool_results table. The read tool is exempt (passes Infinity as maxTokens):
 // reading a file IS the task, so read results always land in full.
-const MAX_TOOL_RESULT_TOKENS = 4_000
-
-/** Rough token estimate: CJK chars ≈ 1 token, everything else ≈ 1 token per 4 chars. */
-function estimateTokens(text: string): number {
-  const cjk = text.match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g)?.length ?? 0
-  return cjk + Math.ceil((text.length - cjk) / 4)
-}
+// MAX_TOOL_RESULT_TOKENS lives in engine/engine-constants.ts — spawn-tool
+// sizes the batch-split envelope budget from it and must not import this
+// module (cycle: AgentEngine → tool-executors → executors/spawn-tool).
+// The token estimator is the shared CJK-aware one (engine/context-estimate.ts):
+// the compactor's trigger chain and the UI ring must read the same numbers.
 
 /**
  * Fingerprint of the cached prefix (system prompt + tool schemas). DeepSeek
@@ -161,6 +162,11 @@ export interface AgentEngineCallbacks {
   onStatusChanged?: (status: AgentStatus) => void
   onStreamingBlocksChanged?: (blocks: ContentBlock[]) => void
   onPlanChanged?: (plan: Plan | null) => void
+  /** A compaction pass ran (request-time drop, post-turn prewarm or explicit
+   *  /compact). Transport maps it onto the `compaction` session event so the
+   *  UI can show what happened instead of leaving the user to infer it from a
+   *  sudden quality drop. */
+  onCompaction?: (event: CompactionEvent) => void
 }
 
 // ── AgentEngine ───────────────────────────────────────────────────────
@@ -253,6 +259,27 @@ export class AgentEngine implements EngineCore {
   /** Consecutive idle-timeout retries for the current stream. Reset on success. */
   /** @internal */
   streamIdleRetries = 0
+  /** Provider context-overflow state (0.4.1 fix). The limit is parsed off the
+   *  provider's own rejection — the one ground truth the estimates answer to —
+   *  and prepareLoopRequest answers it with compactor.emergencyTruncate on the
+   *  API copy. Cleared when a request is accepted again; the companion counter
+   *  allows exactly one automatic truncated retry per failure streak (reset by
+   *  a successful request and by prepareTurn). */
+  contextOverflowLimit: number | null = null
+  /** @internal */
+  contextOverflowRetries = 0
+  /** Number of spawn_agent calls in the round's dispatching assistant message —
+   *  the denominator of the shared envelope budget (see executors/spawn-tool.ts
+   *  spawnEnvelopeBudget). Stable across the batch: every dispatch of the round
+   *  reads the same message. */
+  countRoundSpawnCalls = (): number => {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i]
+      if (msg.role !== 'assistant') continue
+      return msg.contentBlocks.filter(b => b.type === 'tool_use' && b.name === 'spawn_agent').length
+    }
+    return 1
+  }
   /** @internal */
   pendingToolIds = new Set<string>()
   /** @internal */
@@ -333,7 +360,7 @@ export class AgentEngine implements EngineCore {
   reportSpawnProgress = (msg: string, force = false): void => { this.spawnManager.reportProgress(msg, force) }
   /** @internal */
   compactor = new ContextCompactor({
-    runHistorySummary: (regionText) => this.runHistorySummary(regionText),
+    runHistorySummary: (regionText, instruction) => this.runHistorySummary(regionText, instruction),
     getMessages: () => this.messages,
   })
 
@@ -345,6 +372,58 @@ export class AgentEngine implements EngineCore {
   /** Restore the persisted history summary after rehydration. */
   seedHistorySummary(text?: string, frontierId?: string): void {
     this.compactor.seedHistorySummary(text, frontierId)
+  }
+
+  // ── Explicit compaction (PLAN context-management P0) ────────────────
+
+  /** Sticks after an explicit /compact until reset(): the trigger chain is
+   *  stateless per request — it re-reads the LIVE history every time — so a
+   *  one-request force would re-inflate the very next copy to the same
+   *  estimate. While set, lightCompact/hardTruncate bypass their thresholds
+   *  (hard targets 0.6× instead of 0.9×). Post-turn prewarm does NOT set it:
+   *  above the post-turn ratio the natural thresholds fire on their own. */
+  private manualCompactActive = false
+  private postTurnPrewarmInFlight = false
+
+  /** Explicit /compact [指示词]: force-compact from the next request on, and
+   *  prewarm the summary now (one LLM call at idle instead of blocking the
+   *  next turn). Resolves with the compaction event for UI feedback, or null
+   *  when there was nothing to drop (conversation below the keep-window
+   *  floor) or a turn is in flight — compacting mid-turn would race the loop
+   *  on the shared summary cache. */
+  compactNow = async (instruction?: string): Promise<CompactionEvent | null> => {
+    if (this.isCancelled) return null
+    const status = this.agentStatus.status
+    if (status === 'streaming' || status === 'executing' || status === 'retrying') return null
+    this.manualCompactActive = true
+    const event = await this.compactor.prewarm({
+      contextLength: this.opts.contextLength || 128_000,
+      source: 'manual',
+      instruction: instruction || undefined,
+    })
+    if (event) this.callbacks.onCompaction?.(event)
+    return event
+  }
+
+  /** Post-turn prewarm (Codex's PostTurn phase, adapted to the API-copy
+   *  design): at turn end, with usage at/above the ratio, warm the history
+   *  summary while the engine is idle so the next turn's first request hits
+   *  the cache instead of blocking on an LLM summarization call. Fire-and-
+   *  forget by contract — the turn is already closed when this runs, and a
+   *  failure costs nothing (the request path falls back to its own summary).
+   *  Spawned sub-agents are skipped: their engines die with the task, so the
+   *  warmed cache would never be read. */
+  schedulePostTurnCompaction = (): void => {
+    if (this.isSpawnedSubAgent || this.isCancelled) return
+    if (this.postTurnPrewarmInFlight || this.manualCompactActive) return
+    const contextLength = this.opts.contextLength
+    if (!contextLength) return
+    if (this.compactor.contextTokens() < contextLength * POST_TURN_COMPACT_USED_RATIO) return
+    this.postTurnPrewarmInFlight = true
+    void this.compactor.prewarm({ contextLength, source: 'post-turn' })
+      .then((event) => { if (event) this.callbacks.onCompaction?.(event) })
+      .catch((err) => console.warn('[AgentEngine] post-turn compaction prewarm failed:', err))
+      .finally(() => { this.postTurnPrewarmInFlight = false })
   }
 
   constructor(opts: AgentEngineOptions, callbacks?: AgentEngineCallbacks) {
@@ -403,6 +482,7 @@ export class AgentEngine implements EngineCore {
       (toolUseId, text) => this.deliverExpertConclusion(toolUseId, text),
       (ref, attemptId) => this.planManager.beginNodeExecution(ref, attemptId),
       (ref, attemptId, status, subConvId) => this.planManager.updateNodeExecution(ref, attemptId, status, subConvId),
+      () => this.countRoundSpawnCalls(),
     )
   }
 
@@ -514,6 +594,11 @@ export class AgentEngine implements EngineCore {
     this.maxLoopCount = getLoopIterationLimit()
     this.isCancelled = false
     this.pendingToolIds = new Set()
+    // A new send gets a fresh overflow rescue: if a PREVIOUS turn ended in the
+    // overflow error, this one's first oversized request is auto-retried too.
+    // The forced cut itself is still armed via contextOverflowLimit (cleared
+    // only by an accepted request).
+    this.contextOverflowRetries = 0
     // Per-turn @-summon state belongs to the turn that opened it: a new send
     // starts with no delegated call to close verbatim and no summons to honor.
     this.delegatedToolUseId = null
@@ -807,16 +892,66 @@ export class AgentEngine implements EngineCore {
     // Injected into the fallback estimate so compaction still fires at the right
     // pressure point before the first API token report arrives.
     const fixedOverhead = estimateTokens(systemPrompt) + estimateTokens(JSON.stringify(enabledTools)) + (spResult.stateBlock ? estimateTokens(spResult.stateBlock) : 0)
-    const nanoCompacted = this.compactor.nanoCompact(apiMessages)
-    const lightCompacted = this.compactor.lightCompact(nanoCompacted, opts.contextLength || 128000, fixedOverhead)
-    const truncatedMessages = this.compactor.hardTruncate(lightCompacted, opts.contextLength || 128000, fixedOverhead)
+    // A provider just rejected this conversation as context-overflow: the
+    // estimates missed it once (that is why the oversized request went out),
+    // so ignore their thresholds and force the API copy under the limit the
+    // provider named. Cleared when a request is accepted again (stream-runner).
+    let pipelineMessages = apiMessages
+    let emergencyChanged = false
+    if (this.contextOverflowLimit != null) {
+      const before = pipelineMessages
+      pipelineMessages = this.compactor.emergencyTruncate(pipelineMessages, this.contextOverflowLimit, fixedOverhead)
+      emergencyChanged = pipelineMessages.length !== before.length ||
+        pipelineMessages.some((m, i) => m !== before[i])
+      if (emergencyChanged) {
+        console.log(`[AgentEngine] emergencyTruncate (provider limit ${this.contextOverflowLimit}): ${before.length} → ${pipelineMessages.length} messages`)
+      }
+    }
+    const nanoCompacted = this.compactor.nanoCompact(pipelineMessages)
+    // `force` (explicit /compact): the passive thresholds stay bypassed until
+    // reset() — the user asked for a slim window, and the triggers are
+    // stateless per request, so an un-forced follow-up would re-inflate the
+    // copy to the same live-history estimate.
+    const lightCompacted = this.compactor.lightCompact(nanoCompacted, opts.contextLength || 128000, fixedOverhead, this.manualCompactActive)
+    const truncatedMessages = this.compactor.hardTruncate(lightCompacted, opts.contextLength || 128000, fixedOverhead, this.manualCompactActive)
     // After truncation, inject an LLM summary of the dropped region into the API
     // copy so the model keeps the gist. Synthetic message never leaves this scope.
     // Pass the PRE-compaction copy as the summarizer source: nanoCompact has
     // already replaced old tool_results with [tool_result_id:] placeholders, so
     // summarizing lightCompacted would hide what the tools actually returned
     // (incl. failures) and let the summary fabricate outcomes.
-    const finalMessages = await this.compactor.injectHistorySummary(apiMessages, lightCompacted, truncatedMessages)
+    const summaryBefore = this.compactor.getHistorySummary()
+    const finalMessages = await this.compactor.injectHistorySummary(pipelineMessages, lightCompacted, truncatedMessages)
+
+    // ── Compaction event: the pass is otherwise invisible ──
+    // Detect per layer by reference/length (nano is 1:1, so reference identity
+    // is its only footprint). The summary ships only when the cache changed,
+    // so the mirror's persisted copy stays fresh without re-sending the text
+    // on every request.
+    const compactStrategies: string[] = []
+    if (emergencyChanged) compactStrategies.push('emergency')
+    if (nanoCompacted.some((m, i) => m !== pipelineMessages[i])) compactStrategies.push('nano')
+    if (lightCompacted.length !== nanoCompacted.length) compactStrategies.push('light')
+    if (truncatedMessages.length !== lightCompacted.length) compactStrategies.push('hard')
+    if (finalMessages.length > truncatedMessages.length) compactStrategies.push('summary')
+    if (compactStrategies.length > 0) {
+      const summaryAfter = this.compactor.getHistorySummary()
+      const summaryChanged =
+        !!summaryAfter && (!summaryBefore ||
+          summaryAfter.firstKeptId !== summaryBefore.firstKeptId ||
+          summaryAfter.text !== summaryBefore.text)
+      const event: CompactionEvent = {
+        ts: Date.now(),
+        source: 'request',
+        strategies: compactStrategies,
+        droppedMessages: apiMessages.length - finalMessages.length,
+        replayedUserMessages: this.compactor.lastInjectReplayCount,
+        tokensBefore: contextTokensOf(apiMessages),
+        tokensAfter: contextTokensOf(finalMessages),
+        summary: summaryChanged ? summaryAfter : undefined,
+      }
+      this.callbacks.onCompaction?.(event)
+    }
 
     // The state block is appended AFTER compaction: it is per-turn context, not
     // history — it must never be summarized, truncated or moved off the end.
@@ -955,6 +1090,13 @@ export class AgentEngine implements EngineCore {
     this.isCancelled = false
     this.pendingToolIds = new Set()
     this.historySummary = null
+    // A fresh conversation also clears an explicit /compact: the force sticks
+    // until reset precisely so a live session stays slim, but it must not
+    // outlive the history it was compacting. The compactor's summary cache is
+    // cleared with it — a reset leaves nothing for the next conversation's
+    // inject to re-key against.
+    this.manualCompactActive = false
+    this.compactor.seedHistorySummary(undefined, undefined)
     this.notify()
   }
 
@@ -1108,24 +1250,23 @@ export class AgentEngine implements EngineCore {
     }
   }
 
-  // ── Compaction remaining-window floors ─────────────────────────────────
-  // Compaction triggers on remaining window (contextLength - used). On small
-  // model windows the percentage floor (10%/30%) collapses to tiny headroom,
-  private static readonly LIGHT_COMPACT_MIN_REMAINING = 30_000
-
   // ── Tool result persistence (for tool_result_search) ──────────────────
-
-  /**
-   * Persist all unsaved tool_results to the tool_results table.
-   * Saves original content before nanoCompact replaces it with placeholders in the API copy.
 
   // ── Compaction pipeline ──────────────────────────────────────────────
   //
-  // Two-layer strategy (all operate on API copies; this.messages untouched):
+  // Three-layer strategy (all operate on API copies; this.messages untouched),
+  // triggered per request build in prepareLoopRequest:
   //
   //   Layer 1: nanoCompact — tiered tool_result content replacement (API copy)
   //   Layer 2: lightCompact — structured removal of complete tool cycles (API copy)
   //   Layer 3: hardTruncate — drop oldest messages (API copy, last resort)
+  //
+  // followed by injectHistorySummary, which summarizes the dropped region
+  // into the copy. The remaining-window floors (30K light / 10K hard) live in
+  // engine/context-compactor.ts next to the thresholds they guard. Above the
+  // post-turn ratio, schedulePostTurnCompaction prewarms the summary at turn
+  // end so the request path hits the cache instead of an LLM round; an
+  // explicit /compact sets manualCompactActive and bypasses the thresholds.
   //
   // Background memory extraction replaces the old autoCompact mechanism —
   // saves memories from old tool pairs instead of modifying messages.
@@ -1137,11 +1278,11 @@ export class AgentEngine implements EngineCore {
   }
 
   /** Run the HistorySummaryAgent non-streaming. Returns '' on LLM failure/empty. */
-  private async runHistorySummary(regionText: string): Promise<string> {
+  private async runHistorySummary(regionText: string, instruction?: string): Promise<string> {
     const summaryAgent = new HistorySummaryAgent()
     try {
       return await summaryAgent.execute(
-        { regionText, locale: this.opts.locale },
+        { regionText, instruction, locale: this.opts.locale },
         {
           llmConfig: {
             adapter: this.opts.adapter,

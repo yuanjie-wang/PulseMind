@@ -212,6 +212,15 @@ const en: TranslationDict = {
     contextRing: {
       tooltip: '{{percent}}% · {{used}} / {{total}} context used',
     },
+    compaction: {
+      chip: 'Compacted {{dropped}} · ~{{freed}} freed',
+      chipPending: 'Compacted {{dropped}} · lands next request (~{{freed}})',
+      tooltip: 'Strategies: {{strategies}}; {{replayed}} user messages kept verbatim, older history summarized (full text remains retrievable via tools).',
+      noConversation: 'No conversation yet — send a message first',
+      busy: 'A task is running — compact after it finishes',
+      done: 'Compacted {{dropped}} messages, ~{{freed}} tokens freed',
+      nothing: 'Not enough context to justify compaction',
+    },
     approval: {
       label: 'Tool approval',
       tooltip: '{{level}} · tool call approval',

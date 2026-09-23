@@ -505,6 +505,12 @@ export class ExecutionFlow {
     safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'completed' } }, 'afterLlmCall')
     safeInvokeObserver(this.engine.opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'completed' } }, 'afterSession')
     this.engine.resolveCompletionIfSpawned('completed')
+    // Post-turn compaction prewarm (fire-and-forget): the turn is closed, the
+    // engine idle — if usage is high, the expensive history-summary LLM call
+    // runs NOW instead of blocking the next turn's first request. Compacting
+    // at this clean boundary is the whole point: mid-request the drop lands
+    // under a running task, at turn end the next round starts fresh.
+    this.engine.schedulePostTurnCompaction()
   }
 
 }

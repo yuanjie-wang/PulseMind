@@ -42,6 +42,14 @@ export interface EngineCore {
    *  time parked on the user) — see engine/turn-clock.ts. */
   turnClock: TurnClock
   streamIdleRetries: number
+  /** The token limit parsed off a provider context-overflow rejection (null
+   *  until one happens). prepareLoopRequest answers it with
+   *  compactor.emergencyTruncate on the API copy; a successful request clears
+   *  it. See stream-runner's catch and engine/context-estimate.ts. */
+  contextOverflowLimit: number | null
+  /** One-shot guard for the automatic truncated retry after an overflow —
+   *  reset by a successful request and by prepareTurn. */
+  contextOverflowRetries: number
   pendingToolIds: Set<string>
   executingProcessId: string | null
   terminalCleanups: (() => void)[]
@@ -79,6 +87,10 @@ export interface EngineCore {
   continueLoop: () => Promise<void>
   cancelLoop: () => void
   resumeExecution: () => void
+  /** Post-turn compaction prewarm (fire-and-forget): called from
+   *  handleEndTurnResponse once the turn is closed. Skips spawned sub-agents,
+   *  in-flight prewarms, and usage below the post-turn ratio. */
+  schedulePostTurnCompaction: () => void
   /** 多专家 @召唤：the turn ended without a plan — one corrective re-issue is
    *  owed. True means the caller must NOT close the turn (the engine is about
    *  to re-run it). See AgentEngine.nudgeSummonIfUnplanned. */

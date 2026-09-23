@@ -35,6 +35,10 @@ export interface ToolExecContext {
    *  means the conclusion travels as the assistant message, so the executor
    *  must keep its tool result short rather than repeat the text. */
   deliverExpertConclusion?: (toolUseId: string, text: string) => boolean
+  /** spawn_agent calls in the current round — the shared envelope budget's
+   *  denominator (see executors/spawn-tool.ts spawnEnvelopeBudget). Absent
+   *  reads as a single-dispatch round. */
+  spawnBatchTotal?: () => number
   /** Long-running exec tools report the spawned pid (terminal card wiring). */
   onProcessStart?: (pid: string) => void
   /** Format exec tool result with exit code and stdout/stderr separation. */

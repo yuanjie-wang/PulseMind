@@ -22,9 +22,24 @@ import {
 import type { ToolExecContext } from './context'
 import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { ToolUseBlock, TextBlock } from '../../types/agent'
+import { MAX_TOOL_RESULT_TOKENS, SPAWN_ROUND_ENVELOPE_BUDGET, MIN_SPAWN_ENVELOPE_BUDGET } from '../engine/engine-constants'
 
 /** spawn_agent: assistant text fed back to the parent. */
 const SUBAGENT_TEXT_MAX = 10_000
+
+/** Per-envelope token budget for a round that dispatched `batchTotal`
+ *  spawn_agent calls. A round's envelopes all land in ONE collector user
+ *  message (addToolResult's collector shape), and that message sits inside
+ *  every compaction layer's protection window — nanoCompact needs 20+ spawn
+ *  calls before it compresses one, light/hard truncate guard the newest
+ *  rounds — so the batch's total is what the next request must carry. The
+ *  round shares SPAWN_ROUND_ENVELOPE_BUDGET; each envelope gets its floor,
+ *  clamped to the single-result cap. Truncation keeps the envelope's tail
+ *  (the close-out) and offloads the full text for `read`/tool_result_search. */
+export function spawnEnvelopeBudget(batchTotal: number): number {
+  const n = Math.max(1, Math.floor(batchTotal) || 1)
+  return Math.max(MIN_SPAWN_ENVELOPE_BUDGET, Math.min(MAX_TOOL_RESULT_TOKENS, Math.floor(SPAWN_ROUND_ENVELOPE_BUDGET / n)))
+}
 
 /** 可用能力目录：技能取本会话的 SkillManager，连接器取同步的 MCP 缓存。
  *  都读不到时把字段留空 → 指令里按 profile 记的名字原样列出。 */
@@ -208,6 +223,9 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       const subText = subAssistantTexts.filter(b => b.type === 'text').map(b => (b as TextBlock).text).join('\n\n').slice(0, SUBAGENT_TEXT_MAX)
       const subTools = subAssistantTexts.filter(b => b.type === 'tool_use').map(b => `[tool_use: ${(b as ToolUseBlock).name}]`).join(', ')
       const expertName = profile?.name || subAgentId || '(general sub-agent)'
+      // Shared round budget: this batch's envelopes split one allowance so a
+      // wide parallel dispatch cannot append a window-busting collector message.
+      const envelopeBudget = spawnEnvelopeBudget(ex.spawnBatchTotal?.() ?? 1)
 
       // 单专家 @召唤的结论原文进对话（用户裁定 2026-09-17：「能不能在主对话中直接
       // 输出专家的结论」——主 Agent 转述一遍会丢信息）。The engine accepts the
@@ -224,7 +242,9 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         ex.addToolResult(
           t.id,
           `## Sub-Agent Result (completed)\n\nDelegated to **${expertName}**. The expert's conclusion is delivered to the user verbatim as the message that follows — do NOT restate or summarize it.`,
-          false
+          false,
+          undefined,
+          envelopeBudget
         )
         t.output = `子代理已完成. ${subText}`
       } else {
@@ -251,7 +271,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
 
         t.exitCode = result.status === 'completed' ? 0 : 1
         t.status = 'completed'
-        ex.addToolResult(t.id, summary, result.status === 'error')
+        ex.addToolResult(t.id, summary, result.status === 'error', undefined, envelopeBudget)
         t.output = `子代理已完成. ${subText}`
       }
     } finally {

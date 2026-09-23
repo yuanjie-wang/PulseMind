@@ -58,6 +58,9 @@ export class ToolExecutor implements ToolExecContext {
     deliverExpertConclusion?: (toolUseId: string, text: string) => boolean,
     beginPlanNodeExecution?: ToolExecContext['beginPlanNodeExecution'],
     updatePlanNodeExecution?: ToolExecContext['updatePlanNodeExecution'],
+    /** @internal spawn_agent calls in the current round — the shared envelope
+     *  budget's denominator (see executors/spawn-tool.ts spawnEnvelopeBudget) */
+    spawnBatchTotal?: () => number,
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
@@ -69,6 +72,7 @@ export class ToolExecutor implements ToolExecContext {
     this.deliverExpertConclusion = deliverExpertConclusion
     this.beginPlanNodeExecution = beginPlanNodeExecution
     this.updatePlanNodeExecution = updatePlanNodeExecution
+    this.spawnBatchTotal = spawnBatchTotal
   }
 
   opts: AgentEngineOptions
@@ -81,6 +85,7 @@ export class ToolExecutor implements ToolExecContext {
   deliverExpertConclusion?: (toolUseId: string, text: string) => boolean
   beginPlanNodeExecution?: ToolExecContext['beginPlanNodeExecution']
   updatePlanNodeExecution?: ToolExecContext['updatePlanNodeExecution']
+  spawnBatchTotal?: () => number
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts

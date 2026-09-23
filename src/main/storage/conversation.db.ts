@@ -610,17 +610,25 @@ export function getConversationPlan(id: string): string | null {
  * BFS hydrates child sessions only to derive rows (pairing, is_error, paths) and
  * never reads the bodies, so it passes a cap instead of pulling every 200KB
  * output across the IPC into the renderer heap (PLAN-long-task-perf M3-T3).
- * Callers that need the full text (continuing a conversation) omit the param
- * and get byte-identical behaviour.
+ * The cap is applied IN SQL (`substr`): the full content lives ONLY in this
+ * table (sanitizeToolResults blanks the inline copy on save), so a child full
+ * of whole-file `read` results must not cost the files — reading them in full
+ * and slicing after was the load freeze behind 11-wide spawn batches (0.4.1
+ * report). Callers that need the full text (continuing a conversation) omit
+ * the param and get byte-identical behaviour.
  */
 export function hydrateConversation(id: string, maxContentLength?: number): Conversation | null {
   const conv = getConversation(id)
   if (!conv) return null
 
   const database = getDb()
-  const rows = database.prepare(
-    'SELECT ref_id, content, is_error FROM tool_results WHERE conversation_id = ?'
-  ).all(id) as Array<{ ref_id: string; content: string; is_error: number }>
+  const rows = (maxContentLength != null
+    ? database.prepare(
+        'SELECT ref_id, substr(content, 1, ?) AS content, is_error FROM tool_results WHERE conversation_id = ?'
+      ).all(maxContentLength, id)
+    : database.prepare(
+        'SELECT ref_id, content, is_error FROM tool_results WHERE conversation_id = ?'
+      ).all(id)) as Array<{ ref_id: string; content: string; is_error: number }>
 
   const resultMap = new Map<string, { content: string; isError: number }>()
   for (const r of rows) resultMap.set(r.ref_id, { content: r.content, isError: r.is_error })

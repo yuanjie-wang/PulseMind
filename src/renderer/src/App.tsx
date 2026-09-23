@@ -218,6 +218,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     activeConversationKey,
     isLoadingConversation,
     messages,
+    lastCompaction,
     isRequesting,
     createNewConversation,
     getWorkspaceDir,
@@ -587,6 +588,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               messages={messages}
               isRequesting={isRequesting}
               isLoadingConversation={isLoadingConversation}
+              lastCompaction={lastCompaction}
               agentStatus={agentStatus}
               streamingBlocks={streamingBlocks}
               hasApiKey={hasApiKey}

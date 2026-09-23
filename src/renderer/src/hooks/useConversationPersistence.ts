@@ -271,7 +271,10 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
         loadingIdsRef.current.add(key)
         getOrCreateEngine(key).reset()
 
-        window.electronAPI.getConversation(key).then(async conv => {
+        // ONE hydration round-trip: hydrateConversation builds on the same
+        // rows getConversation returns, so the pre-pass below used to parse
+        // and IPC-serialize the whole conversation twice per open.
+        window.electronAPI.hydrateConversation(key).then(conv => {
           if (!conv || conv.messages.length === 0) {
             // A failed read yields no snapshot to seed, and the engine stays
             // empty; loadingId release happens in .finally below.
@@ -283,10 +286,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
           const engine = enginesRef.current.get(key)
           if (engine && engine.messages.length > 0) return
 
-          // Hydrate tool_results from separate table for engine use
-          let fullConv = conv
-          try { fullConv = await window.electronAPI.hydrateConversation(key) || conv } catch {}
-
+          const fullConv = conv
           // Hydration awaited IPC: re-check the engine before replacing live data.
           if (enginesRef.current.get(key) !== engine || (engine && engine.messages.length > 0)) return
           const agentMsgs = storedMessagesToAgentMessages(fullConv.messages)

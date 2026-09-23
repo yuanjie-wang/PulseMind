@@ -11,6 +11,7 @@ import { useTranslation } from '../i18n/useTranslation'
 import { TitleAgent } from '../agent/one-shot-agent'
 import { extractRoutineFromConversation } from '../components/routine/routine-extract'
 import { parseExpertMentions, parseKnowledgeBaseMention, type SummonedExpert } from '../../../shared/expert-context'
+import { conversationKeyOf } from '../../../shared/conversation-key'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentEngine } from '../agent/AgentEngine'
@@ -316,10 +317,39 @@ export function useChatController(options: UseChatControllerOptions) {
     async (content: string) => {
       if (!apiKey) {
         console.warn('[ChatController] handleRequest blocked: no API key')
-        return
+        return false
       }
 
       let convId = persistence.activeConversationKey ? String(persistence.activeConversationKey) : ''
+
+      // ── /compact [指示词]: explicit compaction, never a message ──
+      // Intercepted before materialization: it is a command against the CURRENT
+      // conversation (or a no-op with a visible warning when none is open), not
+      // the first message of a new one.
+      const trimmedContent = content.trim()
+      if (trimmedContent === '/compact' || trimmedContent.startsWith('/compact ')) {
+        const instruction = trimmedContent.slice('/compact'.length).trim() || undefined
+        const target = conversationKeyOf(convId)
+        if (!target) {
+          message.warning(t('chatView.compaction.noConversation'))
+          return false
+        }
+        const status = engine.agentStatus.status
+        if (status !== 'idle' && status !== 'completed' && status !== 'error' && status !== 'awaiting_user_input' && status !== 'awaiting_extension' && status !== 'awaiting_continue') {
+          message.warning(t('chatView.compaction.busy'))
+          return false
+        }
+        const event = await engine.getOrCreateEngine(target).compactNow(instruction)
+        if (event) {
+          const freed = Math.max(0, event.tokensBefore - event.tokensAfter)
+          message.success(t('chatView.compaction.done', { dropped: event.droppedMessages, freed: `${(freed / 1024).toFixed(1)}K` }))
+        } else {
+          message.info(t('chatView.compaction.nothing'))
+        }
+        // true = the command was consumed (nothing to restore): /compact is not
+        // a send, so no turn will end for the drain to re-deliver it.
+        return true
+      }
 
       // ── @-summon: resolve expert mentions before anything else ──
       // Summoning IS delegation (spawn_agent): the mentioned experts run their
@@ -422,6 +452,9 @@ export function useChatController(options: UseChatControllerOptions) {
     activeConversationKey: persistence.activeConversationKey,
     isLoadingConversation: persistence.isLoadingConversation,
     messages: engine.messages,
+    /** Last compaction pass of the active conversation — the composer's 已压缩
+     *  chip and the ring's post-compaction projection both read it. */
+    lastCompaction: engine.lastCompaction,
     isRequesting:
       engine.agentStatus.status !== 'idle' &&
       engine.agentStatus.status !== 'completed' &&

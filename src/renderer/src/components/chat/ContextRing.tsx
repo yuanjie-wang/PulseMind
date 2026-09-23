@@ -1,7 +1,9 @@
 import React from 'react'
 import { Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
-import type { AgentMessage, ToolUseBlock, ToolResultBlock } from '../../types/agent'
+import type { AgentMessage } from '../../types/agent'
+import type { CompactionEvent } from '../../../../shared/agent-protocol'
+import { contextTokensOf, estimateMessagesTokens } from '../../agent/engine/context-estimate'
 
 // ── Context usage ring ────────────────────────────────────────────────
 
@@ -59,28 +61,47 @@ export function ContextRing({ used, total, diameter }: { used: number; total: nu
 }
 
 /**
- * Estimate context usage for a message list: prefer the latest message's real
- * inputTokens (cumulative across the whole conversation), otherwise estimate
- * from character counts. Shared by the main header and sub-agent preview.
+ * Estimate context usage for a message list. Delegates to the shared
+ * engine/context-estimate contract — the SAME numbers the compactor's
+ * triggers read. The old inline version returned the last message's raw
+ * inputTokens and nothing else: a report only prices the context UP TO its
+ * request, so the 11 spawn reports appended after it (and every later turn)
+ * were invisible — the ring froze at 35% while the provider rejected the
+ * request for exceeding its window. The shared version estimates that tail
+ * (CJK-aware) and guards with a full-history estimate. Shared by the main
+ * header and sub-agent preview.
  */
 export function estimateContextUsed(messages: AgentMessage[]): number {
   if (!messages.length) return 0
-  const lastWithTokens = [...messages].reverse().find(m => m.inputTokens != null)
-  if (lastWithTokens && lastWithTokens.inputTokens != null) {
-    return lastWithTokens.inputTokens
-  }
-  let total = 0
-  const est = (text: string) => Math.ceil(text.length / 2)
+  return contextTokensOf(messages)
+}
+
+/**
+ * Context usage as the ring should show it AFTER a compaction pass. The live
+ * history never shrinks — compaction operates on the outgoing API copy — so
+ * the raw estimate would sit at 90% forever after the model is actually
+ * seeing 40%. The compaction event carries the copy's measured size
+ * (tokensAfter) at ts; everything appended after that moment is estimated on
+ * top, giving a ring that drops the instant the event lands and then tracks
+ * new turns from the compacted base. Any message without a timestamp (or no
+ * event) falls back to the raw estimate.
+ */
+export function projectContextUsed(messages: AgentMessage[], compaction: CompactionEvent | null | undefined): number {
+  const raw = estimateContextUsed(messages)
+  if (!compaction || !messages.length) return raw
+  // ts is the engine's Date.now() at the pass; message createdAt is ISO from
+  // the same main-process clock, so plain comparison orders them.
+  if (typeof compaction.ts !== 'number' || !Number.isFinite(compaction.ts)) return raw
+  const cutAt = compaction.ts
+  let tail = 0
   for (const msg of messages) {
-    for (const block of msg.contentBlocks) {
-      if (block.type === 'text') total += est(block.text)
-      else if (block.type === 'tool_use') total += est(JSON.stringify((block as ToolUseBlock).input || {}))
-      else if (block.type === 'tool_result') {
-        const tr = block as ToolResultBlock
-        if (tr.content) total += est(tr.content)
-        if (tr.imageData) total += 500
-      }
-    }
+    const at = msg.createdAt ? Date.parse(msg.createdAt) : NaN
+    if (!Number.isFinite(at)) return raw
+    if (at > cutAt) tail += estimateMessagesTokens([msg])
   }
-  return total
+  const projected = compaction.tokensAfter + tail
+  // Estimates drift upward as the tail grows; a projection above the raw
+  // number would mean the "compacted" copy is bigger than the history — fall
+  // back to the raw reading rather than show a ring that grew on compaction.
+  return projected < raw ? projected : raw
 }

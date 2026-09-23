@@ -3,6 +3,7 @@
  * pump, stream-done await and idle-retry, extracted from AgentEngine.
  */
 import { MAX_STREAM_IDLE_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS } from './engine-constants'
+import { isContextOverflowRejection, parseContextOverflowLimit } from './context-estimate'
 import { IncrementalJsonTracker } from '../json-stream'
 import { extractInvokeToolCalls } from './result-ingestion'
 import { summarizeToolCall } from './context-compactor'
@@ -185,6 +186,12 @@ export class StreamRunner {
       if (streamError) { cleanupListeners(); throw new Error(streamError) }
       cleanupListeners()
       this.engine.streamIdleRetries = 0 // a stream succeeded — reset consecutive-retry counter
+      // A request the provider ACCEPTED reprices the context: the overflow
+      // flag's forced cut did its job (or was never needed), so the regular
+      // trigger chain regains authority and the next overflow gets one more
+      // automatic retry.
+      this.engine.contextOverflowLimit = null
+      this.engine.contextOverflowRetries = 0
     } catch (err) {
       cleanupListeners?.()
       const message = err instanceof Error ? err.message : 'Unknown error'
@@ -208,6 +215,36 @@ export class StreamRunner {
         return
       }
       this.engine.streamIdleRetries = 0
+
+      // Context-overflow rescue (0.4.1: "ring says 35%, model says overflow").
+      // The provider's 400 is the ground truth the estimates answer to: park
+      // the parsed limit on the engine — prepareLoopRequest will force the API
+      // copy under it via compactor.emergencyTruncate — and re-issue the
+      // request once, exactly like the idle-timeout retry above. If the
+      // truncated request is ALSO rejected the turn errors out with the flag
+      // still set, so every later request (manual retry included) stays forced
+      // under the limit until one is accepted.
+      if (!isCancel && isContextOverflowRejection(message)) {
+        const limit = parseContextOverflowLimit(message) ?? Math.floor((this.engine.opts.contextLength || 128_000) / 2)
+        this.engine.contextOverflowLimit = limit
+        if (this.engine.opts.contextLength && limit < this.engine.opts.contextLength) {
+          // The profile's number is the denominator of the context ring AND
+          // the target of every compaction trigger — a wrong one disables both.
+          console.warn(`[AgentEngine] provider limit ${limit} < profile contextLength ${this.engine.opts.contextLength} — fix the profile's 上下文长度 setting`)
+        }
+        if (this.engine.contextOverflowRetries < 1) {
+          this.engine.contextOverflowRetries += 1
+          console.warn(`[AgentEngine] context overflow (${limit} tokens) — emergency truncation + one retry`)
+          this.engine.currentAssistantBlocks = []
+          this.engine.streamingBlocks = []
+          this.engine.jsonAccumulators = new Map()
+          this.engine.toolUseBlocks = []
+          this.engine.agentStatus = { status: 'retrying', message: '上下文超限，已按模型上限截断历史并重试…', attempt: 1, maxRetries: 1, delay: 0 }
+          this.engine.notify()
+          await this.engine.continueLoop()
+          return
+        }
+      }
 
       if (!isCancel) { this.engine.agentStatus = { status: 'error', error: message }; this.engine.notify() }
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: null, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterLlmCall')

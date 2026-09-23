@@ -10,7 +10,7 @@
  * DOM-free by construction: the extension runs this inside a content script.
  */
 import type { AgentMessage, AgentStatus, ContentBlock, Plan, ToolUseBlock } from '../../renderer/src/types/agent'
-import type { AgentEventData } from '../agent-protocol'
+import type { AgentEventData, CompactionEvent } from '../agent-protocol'
 import { applyMessagesAppend } from './messages'
 
 export interface SessionState {
@@ -20,12 +20,15 @@ export interface SessionState {
   plan: Plan | null
   /** Last known windowed-history summary (best-effort cache for sync saves). */
   historySummary: { firstKeptId: string; text: string } | null
+  /** Last compaction pass this session ran (drives the composer's 已压缩 chip
+   *  and the ring's post-compaction projection). */
+  lastCompaction: CompactionEvent | null
   /** Resolved working directory (PLAN-0.4.0 M8), reported back on session create. */
   workspaceDir?: string
 }
 
 export function freshSessionState(): SessionState {
-  return { messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [], plan: null, historySummary: null }
+  return { messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [], plan: null, historySummary: null, lastCompaction: null }
 }
 
 /** Fold the wire's (status, error) pair into a mirrored status.
@@ -171,6 +174,14 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
     }
     case 'error': {
       state.agentStatus = { status: 'error', error: data.message }
+      return true
+    }
+    case 'compaction': {
+      state.lastCompaction = data.event
+      // The summary rides the event so the mirror's persisted copy stays
+      // fresh even when the pass ran outside any message change (the
+      // post-turn prewarm appends nothing) — persistence reads it from here.
+      if (data.event.summary) state.historySummary = data.event.summary
       return true
     }
     default:

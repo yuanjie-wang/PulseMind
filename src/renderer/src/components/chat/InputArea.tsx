@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Dropdown } from 'antd'
+import { Button, Dropdown, Tooltip } from 'antd'
 import { PlusOutlined, FolderOutlined, FileOutlined, DownOutlined, CloseOutlined, UserOutlined, LockOutlined, SafetyOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
+import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import { Composer, useInputHistory, COMPOSER_MAX_WIDTH } from './Composer'
 import type { ComposerHandle } from './Composer'
 import { useComposerDraftStore } from '../../stores/composerDraftStore'
@@ -66,6 +67,7 @@ export function InputArea({
   profilePinned,
   onResetProfile,
   features,
+  lastCompaction,
 }: {
   isRequesting: boolean
   isStreaming: boolean
@@ -82,6 +84,10 @@ export function InputArea({
   onSelectProfile?: (profileId: string) => void
   contextUsed?: number
   contextLength?: number
+  /** The conversation's last compaction pass — renders the 已压缩 chip in the
+   *  footer. Compaction is otherwise invisible, which reads to the user as
+   *  "the model suddenly got worse and nothing told me why". */
+  lastCompaction?: CompactionEvent | null
   /** Composer layout: 'floating' (default) pins it to the bottom of the view;
    *  'inline' lays it out in place (welcome view's flex column). */
   layout?: 'floating' | 'inline'
@@ -250,6 +256,25 @@ export function InputArea({
   // unrestricted while its calls are actually held.
   const approvalLabel = approvalMode ?? DEFAULT_APPROVAL_MODE
   const approvalHint = t('chatView.approval.tooltip', { level: t(`chatView.approval.${approvalLabel}`) })
+
+  // 已压缩 chip: last compaction pass of this conversation. 已生效 (request)
+  // vs 下次请求生效 (post-turn prewarm / manual) — the drop rides the next
+  // request build in both non-request sources, so the ring's projected
+  // drop and the copy the model sees agree with what the label claims.
+  const compactionFreedK = lastCompaction
+    ? (Math.max(0, lastCompaction.tokensBefore - lastCompaction.tokensAfter) / 1024).toFixed(1)
+    : '0'
+  const compactionLabel = !lastCompaction
+    ? ''
+    : lastCompaction.source === 'request'
+      ? t('chatView.compaction.chip', { dropped: lastCompaction.droppedMessages, freed: compactionFreedK })
+      : t('chatView.compaction.chipPending', { dropped: lastCompaction.droppedMessages, freed: compactionFreedK })
+  const compactionHint = lastCompaction
+    ? t('chatView.compaction.tooltip', {
+        strategies: lastCompaction.strategies.join(' · '),
+        replayed: lastCompaction.replayedUserMessages,
+      })
+    : ''
 
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
   const [selectedFolders, setSelectedFolders] = useState<string[]>([])
@@ -604,7 +629,14 @@ export function InputArea({
         }
         trailing={
           <>
-            {/* Right cluster order: context ring, model picker, send button. */}
+            {/* Right cluster order: compaction chip, context ring, model picker, send button. */}
+            {hasMessages && !!lastCompaction && (
+              <Tooltip title={compactionHint}>
+                <span style={{ fontSize: 12, color: 'var(--pm-text-faint)', whiteSpace: 'nowrap' }}>
+                  {compactionLabel}
+                </span>
+              </Tooltip>
+            )}
             {hasMessages && contextLength != null && contextLength > 0 && (
               <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
                 <ContextRing used={contextUsed ?? 0} total={contextLength} diameter={16} />

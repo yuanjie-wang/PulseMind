@@ -15,7 +15,8 @@ import { TurnDeliverablesCard } from '../chat/TurnDeliverablesCard'
 import { useDeliverables } from '../../hooks/useDeliverables'
 import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverables'
 import { InputArea } from '../chat/InputArea'
-import { estimateContextUsed } from '../chat/ContextRing'
+import { projectContextUsed } from '../chat/ContextRing'
+import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import { WelcomeContent } from '../chat/WelcomeContent'
 import { startBottomPin } from '../../utils/bottom-pin'
 import { useBrowserPaneBinding } from '../../hooks/useBrowserPane'
@@ -34,6 +35,9 @@ import { TABULAR_NUMS } from '../../theme/tokens'
 interface ChatViewProps {
   messages: AgentMessage[]
   isRequesting: boolean
+  /** The active conversation's last compaction pass — drives the ring's
+   *  post-compaction projection and the composer's 已压缩 chip. */
+  lastCompaction?: CompactionEvent | null
   /** True while a switched-to conversation is still loading from the DB —
    *  suppresses the welcome screen so it doesn't flash before messages land. */
   isLoadingConversation?: boolean
@@ -113,6 +117,7 @@ interface ChatViewProps {
 function ChatView({
   messages,
   isRequesting,
+  lastCompaction,
   isLoadingConversation,
   agentStatus,
   streamingBlocks,
@@ -166,9 +171,10 @@ function ChatView({
   // Mount-time autoFocus alone misses a welcome surface that never unmounts
   // (the chat view stays mounted while other top-level views show).
   const welcomeFocusToken = `${viewKind}:${taskMode}:${newTaskProjectId ?? ''}`
-  // Context usage for the input area's ring: real input tokens from the API when
-  // available, otherwise estimated from the message contents.
-  const contextUsed = useMemo(() => estimateContextUsed(messages), [messages])
+  // Context usage for the input area's ring: the projected size once a
+  // compaction pass ran (the copy the model actually sees, plus everything
+  // appended since), otherwise the same live estimate the compactor reads.
+  const contextUsed = useMemo(() => projectContextUsed(messages, lastCompaction), [messages, lastCompaction])
   // The spawn tree's delivered files (hydrated at terminal status — see
   // useDeliverables): the per-child map the per-turn cards attribute with.
   const childDeliverables = useDeliverables(conversationId, messages, agentStatus)
@@ -683,6 +689,7 @@ function ChatView({
             onResetProfile={onResetProfile}
             contextUsed={contextUsed}
             contextLength={contextLength}
+            lastCompaction={lastCompaction}
             approvalMode={approvalMode}
             onChangeApprovalMode={onChangeApprovalMode}
           />
@@ -852,6 +859,7 @@ function ChatView({
         onResetProfile={onResetProfile}
         contextUsed={contextUsed}
         contextLength={contextLength}
+        lastCompaction={lastCompaction}
         boundExpertId={activeExpertId}
         // The conversation's project keeps coloring the send button after the
         // first message — the color belongs to the task, not to the welcome form.

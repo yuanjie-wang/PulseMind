@@ -189,6 +189,28 @@ export interface StatusToolInfo {
   args?: unknown
 }
 
+// ── compaction ───────────────────────────────────────────────────────
+
+/** One compaction pass over the outgoing API copy. Emitted by the engine when
+ *  a request build actually changed the copy ('request'), when the post-turn
+ *  prewarm ran ('post-turn' — the summary is warmed, the drop lands on the
+ *  next request) and on an explicit /compact ('manual'). `summary` rides only
+ *  when the cached history summary changed, so the mirror's persisted copy
+ *  stays fresh without re-shipping the text every request. */
+export interface CompactionEvent {
+  ts: number
+  source: 'request' | 'post-turn' | 'manual'
+  /** Pipeline layers that changed the copy, in order. */
+  strategies: string[]
+  /** Messages the copy shed (light + hard truncation; nano is 1:1). */
+  droppedMessages: number
+  /** Dropped-region user messages replayed verbatim into the copy. */
+  replayedUserMessages: number
+  tokensBefore: number
+  tokensAfter: number
+  summary?: { firstKeptId: string; text: string } | null
+}
+
 /** Streaming progress events. One notification per event; ordering within a
  *  session is guaranteed per-connection. */
 export type AgentEventData =
@@ -220,6 +242,11 @@ export type AgentEventData =
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean; exitCode?: number }
   | { type: 'plan_update'; plan: PlanSnapshot | null }
   | { type: 'spawn_progress'; message: string }
+  /** The engine compacted the outgoing context copy (or prewarmed the summary
+   *  for it). Carries its own numbers so a client can show what happened —
+   *  compaction is otherwise invisible, which reads to the user as "the model
+   *  suddenly got worse and nothing told me why". */
+  | { type: 'compaction'; event: CompactionEvent }
   | { type: 'done'; stopReason: string }
   | { type: 'error'; message: string }
 
