@@ -5,6 +5,7 @@ import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { applyLlmRequestHook } from '../llm-hook'
 import { dumpLlmRequest } from '../llm/request-dump'
+import { ensureLaunchHooks } from '../hooks-runner'
 import { resolveEnvVarsInString, findUnresolvedEnvVar } from '../../shared/env'
 
 /**
@@ -35,8 +36,15 @@ interface ApplyProfileHeadersOptions {
  * Blank-value headers are skipped so an empty UI row never clobbers a default.
  * Merging is case-insensitive: a custom `authorization` replaces an existing
  * `Authorization` instead of sending both headers.
+ *
+ * This is the ONE place every ${ENV} placeholder resolves (LLM streams, simple
+ * fetches, llm-probe), so it gates on the launch hooks: hooks run concurrently
+ * with window creation now, and a first request racing an unfinished hook
+ * would otherwise resolve `${VAR}` against a process.env the hook hasn't
+ * populated yet and fail fast on a variable that was about to exist.
  */
 export async function applyProfileHeaders(headers?: Record<string, string>, opts: ApplyProfileHeadersOptions = {}): Promise<Record<string, string> | undefined> {
+  await ensureLaunchHooks()
   const base: Record<string, string> = headers
     ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, resolveEnvVarsInString(v)]))
     : {}

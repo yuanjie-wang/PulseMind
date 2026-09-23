@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { StdioTransport, SSETransport, StreamableHTTPTransport, type MCPTransport } from './transport'
-import { getHookEnv } from '../hooks-runner'
+import { ensureLaunchHooks, getHookEnv } from '../hooks-runner'
 
 // ── Heartbeat ─────────────────────────────────────────────────────────
 // Periodic ping detects silently-dead connections (hung SSE stream, killed
@@ -117,6 +117,10 @@ export class MCPClient {
 
   async start(timeoutMs = 30_000): Promise<void> {
     if (this.transport) throw new Error('MCP client is already running')
+
+    // stdio servers spawn with getHookEnv() env; hooks run concurrently with
+    // window creation now, so the first start must wait for them to collect.
+    await ensureLaunchHooks()
 
     if (this.config.transportType === 'streamable-http') {
       if (!this.config.url) throw new Error('Streamable HTTP transport requires url')

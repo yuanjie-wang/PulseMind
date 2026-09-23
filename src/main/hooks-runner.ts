@@ -27,9 +27,31 @@ export function getHookEnv(): Record<string, string> {
 
 const HOOK_EVENTS = ['app-start']
 
+let launchPromise: Promise<void> | null = null
+
+/**
+ * Start the launch hooks exactly once and return their completion.
+ * Hooks run CONCURRENTLY with window creation (a slow user hook — seconds of
+ * sleep or subprocess work in app-start.js — used to sit between DB init and
+ * createWindow, delaying first paint by its full duration). Consumers that
+ * read what hooks produce must await this first: getHookEnv() (terminal exec,
+ * MCP stdio spawn) and the ${ENV} placeholder resolution in applyProfileHeaders.
+ * The IPC surface, the window and the conversation list must NOT wait on it.
+ * Never rejects: runLaunchHooks logs hook failures, so a broken hook degrades
+ * to default env instead of blocking whatever awaited.
+ */
+export function ensureLaunchHooks(): Promise<void> {
+  if (!launchPromise) {
+    launchPromise = runLaunchHooks().catch((err) => {
+      console.error('[Hooks] launch hooks crashed:', err)
+    })
+  }
+  return launchPromise
+}
+
 export async function runLaunchHooks(): Promise<void> {
   // Resolve the login-shell PATH in parallel with hook execution so subprocess
-  // env is ready before MCP servers start (registerIpcHandlers).
+  // env is ready before the first gated consumer (terminal/MCP spawn) proceeds.
   const userPathPromise = initUserPath()
 
   if (!existsSync(HOOKS_DIR)) {

@@ -12,7 +12,7 @@ import { backfillProjectColors } from './storage/project-store'
 import { cleanupExpiredConversations } from './services/conversation-retention'
 import { skillStore } from './storage/skill-store'
 import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
-import { runLaunchHooks } from './hooks-runner'
+import { ensureLaunchHooks } from './hooks-runner'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { resolveThemePreference } from '../shared/theme'
@@ -59,6 +59,24 @@ function applyNativeThemeChange(): void {
     .catch(() => {})
 }
 let splashWindow: BrowserWindow | null = null
+// Set by the main window's ready-to-show (first renderer paint). The splash
+// crossfade holds for it — fading onto a window whose renderer hasn't painted
+// shows the bare background colour. Reset per window: createWindow also runs
+// on the tray/activate relaunch paths.
+let mainWindowReadyAt: number | null = null
+// APP_HOOKS_COMPLETED now joins two independent conditions: the fade-in
+// finished AND the launch hooks finished (hooks run concurrently with the
+// renderer since the startup reorder, so either can land first). The
+// renderer's onHooksCompleted → reloadSettings must still imply "hooks are
+// done", or hook-written settings would be re-read before they exist.
+let fadeCompleted = false
+let hooksComplete = false
+
+function maybeNotifyHooksCompleted(): void {
+  if (!fadeCompleted || !hooksComplete) return
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  try { mainWindow.webContents.send(IPC_CHANNELS.APP_HOOKS_COMPLETED) } catch { /* window gone */ }
+}
 // Pending unresponsive-renderer recovery timer (see createWindow); module-level
 // so a re-created window's handler can clear a stale one.
 let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null
@@ -181,7 +199,7 @@ setInterval(() => {
 // before it was ever visible. MAX_SPLASH_MS caps the wait as a fallback.
 const FADE_MS = 350
 const OVERLAP_MS = 300
-const MIN_SPLASH_MS = 1500
+const MIN_SPLASH_MS = 500
 const MAX_SPLASH_MS = 8000
 // How often to re-check whether the main window is ready before fading the
 // splash. Holds the splash across slow launch hooks instead of leaving a gap.
@@ -205,7 +223,7 @@ function fadeInMainWindow(): void {
     const p = Math.min(1, (Date.now() - start) / FADE_MS)
     mainWindow.setOpacity(p)
     if (p < 1) setTimeout(tick, 16)
-    else mainWindow.webContents.send(IPC_CHANNELS.APP_HOOKS_COMPLETED)
+    else { fadeCompleted = true; maybeNotifyHooksCompleted() }
   }
   tick()
 }
@@ -241,10 +259,11 @@ function scheduleSplashFade(): void {
         scheduleSplashFade()
         return
       }
-    } else if (!mainWindow || mainWindow.isDestroyed()) {
-      // Splash painted but the main window isn't created yet (slow launch
-      // hooks). Hold the splash instead of fading to a black gap; re-check
-      // shortly. Gives up after MAX_SPLASH_MS as a safety valve.
+    } else if (!mainWindow || mainWindow.isDestroyed() || mainWindowReadyAt === null) {
+      // Splash painted but the main window hasn't had its first paint yet
+      // (still loading the renderer bundle — launch hooks no longer gate it).
+      // Hold the splash instead of fading onto the bare window background;
+      // re-check shortly. Gives up after MAX_SPLASH_MS as a safety valve.
       if (splashCreatedAt !== null && Date.now() - splashCreatedAt < MAX_SPLASH_MS) {
         fadeTimer = setTimeout(() => { fadeTimer = null; scheduleSplashFade() }, MAIN_WINDOW_CHECK_MS)
         return
@@ -391,6 +410,16 @@ function createWindow(): void {
     }
   })
   appViewDock.attach(mainWindow)
+  // Readiness anchor for the splash crossfade (see scheduleSplashFade): the
+  // fade holds until the renderer's first paint, revealing a finished window
+  // instead of the background colour. Also logged — the main.log line is the
+  // renderer-boot measurement for startup-timeline work.
+  mainWindowReadyAt = null
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindowReadyAt = Date.now()
+    writeLog('INFO', 'startup: main window ready-to-show')
+  })
   // Action accelerators on Windows/Linux ride before-input-event (no visible
   // menu bar exists under the hidden title bar); macOS uses the real menu's
   // accelerators instead. Attached per window — createWindow also runs on the
@@ -473,7 +502,7 @@ if (gotTheLock) {
   createSplashWindow()
   writeLog('INFO', 'startup: splash window created')
 
-  // Initialize DB before hooks (needed by settings, skills, etc.)
+  // Initialize DB before the IPC handlers open (needed by settings, skills, etc.)
   await initializeDatabase()
   writeLog('INFO', 'startup: database initialized')
   // Backfill conversations.workspace_dir before any session can be created
@@ -491,17 +520,46 @@ if (gotTheLock) {
   // 对话管理 · 最长保留时长: expire conversations older than the policy allows
   // before any session can resurrect one.
   try { await cleanupExpiredConversations() } catch (err) { writeLog('WARN', `startup: conversation retention failed: ${err}`) }
-  // Run hooks first to collect env vars (before MCP servers start)
-  await runLaunchHooks()
-  writeLog('INFO', 'startup: launch hooks completed')
-
   registerIpcHandlers()
   writeLog('INFO', 'startup: ipc handlers registered')
 
+  // The caption button overlay colour follows the theme, and it has to be right at
+  // window creation — bootSettings below is read too late for that. 'system'
+  // resolves against nativeTheme here; the renderer resolves the same preference
+  // against prefers-color-scheme for its own surfaces (PLAN-dark-mode M1).
+  // A fast settings-file read, deliberately the last critical-path step: the
+  // window background must match the theme the renderer will paint.
+  bootThemeMode = resolveThemePreference(
+    (await settingsStore.get()).theme,
+    nativeTheme.shouldUseDarkColors
+  )
+  setTitleBarTheme(bootThemeMode, null)
+  // OS light/dark flips while running: only the 'system' preference reacts.
+  nativeTheme.on('updated', applyNativeThemeChange)
+
+  // ── Critical path ends here ──
+  // Everything between the splash and this line is what the user waits on
+  // before the renderer even starts loading. Launch hooks used to sit in the
+  // middle of it (a slow user hook delayed first paint by its full duration);
+  // they and the menu/tray/services now overlap the renderer boot below.
+  createWindow()
+  writeLog('INFO', 'startup: main window created')
+
+  // Launch hooks collect env vars for subprocesses and ${ENV} placeholders.
+  // Consumers gate themselves via ensureLaunchHooks(): terminal spawn,
+  // MCPClient.start, applyProfileHeaders. The window never waits on them —
+  // a hook that sleeps seconds no longer delays first paint.
+  void ensureLaunchHooks().then(() => {
+    hooksComplete = true
+    maybeNotifyHooksCompleted()
+    writeLog('INFO', 'startup: launch hooks completed')
+  })
+
   // Application menu + action accelerators (mac: a real menu with native
   // accelerators; see menu.ts for the Windows/Linux fallback split).
-  await installApplicationMenu(() => mainWindow)
-  writeLog('INFO', 'startup: application menu installed')
+  installApplicationMenu(() => mainWindow)
+    .then(() => writeLog('INFO', 'startup: application menu installed'))
+    .catch((err) => writeLog('WARN', `startup: application menu failed: ${err}`))
 
   // Calibrate skill preferences against actual files on disk
   skillStore.calibrate().catch((err) => writeLog('WARN', `startup: skillStore.calibrate failed: ${err}`))
@@ -512,68 +570,59 @@ if (gotTheLock) {
     app.dock.setIcon(nativeImage.createFromPath(iconPath))
   }
 
-  // The caption button overlay colour follows the theme, and it has to be right at
-  // window creation — bootSettings below is read too late for that. 'system'
-  // resolves against nativeTheme here; the renderer resolves the same preference
-  // against prefers-color-scheme for its own surfaces (PLAN-dark-mode M1).
-  bootThemeMode = resolveThemePreference(
-    (await settingsStore.get()).theme,
-    nativeTheme.shouldUseDarkColors
-  )
-  setTitleBarTheme(bootThemeMode, null)
-  // OS light/dark flips while running: only the 'system' preference reacts.
-  nativeTheme.on('updated', applyNativeThemeChange)
-
-  createWindow()
-  writeLog('INFO', 'startup: main window created')
-
   // ── Tray residency + launch-at-login (PLAN-0.3.5 M2.3) ──
   // The tray anchors the resident process (closed window keeps the service
   // alive) and hosts the launch-at-login toggle; the preference persists in
   // settings.json and is applied to the OS on every startup.
-  try {
-    const bootSettings = await settingsStore.get()
-    applyLaunchAtLogin(!!bootSettings.launchAtLogin)
-    // Seed the keep-awake switch (defaults off like every 高级 toggle) before
-    // any session can start.
-    keepAwake.setEnabled(bootSettings.keepAwakeEnabled ?? false)
-    // ── Local agent service (M2.1): loopback WS for browser extensions ──
-    if (bootSettings.serviceEnabled !== false) {
-      try {
-        const { restartService } = await import('./service-runtime')
-        const handle = await restartService()
-        writeLog('INFO', `startup: agent service on :${handle?.port}`)
-      } catch (err) {
-        writeLog('WARN', `startup: agent service failed: ${err}`)
+  // Fire-and-forget: the block takes a few hundred ms (service bind, tool
+  // seeding) and must not hold the splash crossfade — the renderer boots far
+  // slower than it finishes, so a session can never outrun the keep-awake
+  // seed below.
+  void (async () => {
+    try {
+      const bootSettings = await settingsStore.get()
+      applyLaunchAtLogin(!!bootSettings.launchAtLogin)
+      // Seed the keep-awake switch (defaults off like every 高级 toggle) before
+      // any session can start.
+      keepAwake.setEnabled(bootSettings.keepAwakeEnabled ?? false)
+      // ── Local agent service (M2.1): loopback WS for browser extensions ──
+      if (bootSettings.serviceEnabled !== false) {
+        try {
+          const { restartService } = await import('./service-runtime')
+          const handle = await restartService()
+          writeLog('INFO', `startup: agent service on :${handle?.port}`)
+        } catch (err) {
+          writeLog('WARN', `startup: agent service failed: ${err}`)
+        }
       }
+      toolStore.init()
+      // Preset tools (M5R): stamp bundle distributions into real tool dirs and
+      // promote pre-M5R legacy template copies (both idempotent).
+      toolStore.seedPresets(getBundlePresetsDir())
+      toolStore.migrateLegacyTemplates()
+      // Routine scheduler: ticks for due cron schedules (works under tray residency).
+      routineScheduler.start()
+      app.on('before-quit', () => { isQuitting = true; routineScheduler.stop(); void serviceRuntime.handle?.close(); void browserService.stopAll() })
+      createTray({
+        getServiceStatus: async () => serviceRuntime.handle ? `服务运行中 :${serviceRuntime.handle.port}` : '服务未运行',
+        getLaunchAtLogin: async () => !!(await settingsStore.get()).launchAtLogin,
+        onToggleLaunchAtLogin: async (enabled) => {
+          await settingsStore.update(s => ({ ...s, launchAtLogin: enabled }))
+          applyLaunchAtLogin(enabled)
+        },
+        onShowWindow: () => {
+          if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return }
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+        },
+        onQuit: () => app.quit(),
+      })
+      writeLog('INFO', 'startup: tray created')
+    } catch (err) {
+      writeLog('WARN', `startup: tray creation failed: ${err}`)
     }
-    toolStore.init()
-    // Preset tools (M5R): stamp bundle distributions into real tool dirs and
-    // promote pre-M5R legacy template copies (both idempotent).
-    toolStore.seedPresets(getBundlePresetsDir())
-    toolStore.migrateLegacyTemplates()
-    // Routine scheduler: ticks for due cron schedules (works under tray residency).
-    routineScheduler.start()
-    app.on('before-quit', () => { isQuitting = true; routineScheduler.stop(); void serviceRuntime.handle?.close(); void browserService.stopAll() })
-    createTray({
-      getServiceStatus: async () => serviceRuntime.handle ? `服务运行中 :${serviceRuntime.handle.port}` : '服务未运行',
-      getLaunchAtLogin: async () => !!(await settingsStore.get()).launchAtLogin,
-      onToggleLaunchAtLogin: async (enabled) => {
-        await settingsStore.update(s => ({ ...s, launchAtLogin: enabled }))
-        applyLaunchAtLogin(enabled)
-      },
-      onShowWindow: () => {
-        if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return }
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.show()
-        mainWindow.focus()
-      },
-      onQuit: () => app.quit(),
-    })
-    writeLog('INFO', 'startup: tray created')
-  } catch (err) {
-    writeLog('WARN', `startup: tray creation failed: ${err}`)
-  }
+  })()
 
   // Tmp cleanup runs in the background (async fs, fire-and-forget) so it never
   // blocks window creation or the UI event loop. Also swept periodically for
@@ -581,10 +630,11 @@ if (gotTheLock) {
   void runTmpCleanup().catch((err) => writeLog('WARN', `startup: tmp cleanup failed: ${err}`))
   setInterval(() => { void runTmpCleanup().catch(() => {}) }, TMP_CLEANUP_INTERVAL_MS)
 
-  // Splash → main window crossfade (independent of hooks). The fade countdown
-  // is anchored to the splash's first paint via scheduleSplashFade (see
-  // createSplashWindow), so a slow compositor never closes the splash before
-  // it was visible. Called after createWindow() above.
+  // Splash → main window crossfade. The fade countdown is anchored to the
+  // splash's first paint (MIN_SPLASH_MS floor) and now also holds for the main
+  // window's ready-to-show — with createWindow this early, the renderer is
+  // usually still loading when the floor elapses, and fading then would paint
+  // the bare background colour. MAX_SPLASH_MS remains the safety valve.
   scheduleSplashFade()
   startupComplete = true
   writeLog('INFO', 'startup: complete')

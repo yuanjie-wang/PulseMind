@@ -7,7 +7,7 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
-import { getHookEnv } from '../hooks-runner'
+import { ensureLaunchHooks, getHookEnv } from '../hooks-runner'
 import { currentSessionSandbox } from '../sandbox/session-context'
 import { isSubpath } from '../../shared/sandbox/path-jail'
 import { auditStore } from '../storage/audit-store'
@@ -84,13 +84,19 @@ export interface TerminalEmitSink {
   error(processId: string, message: string): void
 }
 
-/** Spawn a streaming command. Returns the processId; output arrives via `emit`. */
-export function svcExecuteCommand(
+/** Spawn a streaming command. Returns the processId; output arrives via `emit`.
+ *  Async only to gate the spawn on the launch hooks (both callers — the IPC
+ *  handler and the main-process agent host — already await). */
+export async function svcExecuteCommand(
   command: string,
   cwd: string | undefined,
   timeoutMs: number | undefined,
   emit: TerminalEmitSink,
-): string {
+): Promise<string> {
+  // Launch hooks may still be running when the first command arrives (they no
+  // longer block window creation) — their env (hookEnv + login-shell PATH)
+  // must be in place before the first subprocess spawns.
+  await ensureLaunchHooks()
   const processId = randomUUID()
 
   // Use powershell.exe on Windows (has Unix aliases: ls, cat, pwd, cp, mv, rm);
@@ -207,12 +213,14 @@ export function svcKillCommand(processId: string): void {
  * Unlike svcExecuteCommand, this does NOT stream output — it waits for the
  * process to complete and returns the full result.
  */
-export function svcExecSync(command: string, cwd?: string, timeoutMs?: number): Promise<{ output: string; code: number | null }> {
+export async function svcExecSync(command: string, cwd?: string, timeoutMs?: number): Promise<{ output: string; code: number | null }> {
   const isWin = process.platform === 'win32'
   const [shell, shellArgs] = isWin
     ? ['powershell.exe', ['-NoProfile', '-Command', `${WIN_PS_UTF8_PREFIX}${command}`]]
     : [process.env.SHELL || '/bin/bash', ['-c', command]]
 
+  // Same launch-hook gate as svcExecuteCommand above.
+  await ensureLaunchHooks()
   return new Promise((resolve) => {
     ensureWorkspaceCwd(cwd)
     const child = spawn(shell, shellArgs, {
