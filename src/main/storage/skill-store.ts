@@ -7,6 +7,7 @@ import { getDb } from './database'
 const SKILL_PREFS_FALLBACK: SkillPreferences = { enabledSkills: ['create_skill', 'create_mcp'] }
 import { withZipExtraction, findSkillFiles } from '../utils/zip-extractor'
 import { parseSkillMarkdown, formatSkillMd, validateSkillSpec, type ParsedFrontmatter } from '../utils/skill-parser'
+import { seedSkillResources } from '../utils/skill-resources'
 import { RETIRED_BUILT_IN_SKILLS } from '../../renderer/src/skills/built-in-skills'
 import { parseJsonColumn } from '../utils/json'
 
@@ -326,6 +327,12 @@ export class SkillStore {
         await mkdir(skillDir, { recursive: true })
         await writeFile(mdPath, formatSkillMd(skill), 'utf-8')
       }
+      // Bundled references are seeded independently of SKILL.md: a built-in
+      // that grows a new reference file must land it on the next launch of an
+      // install that already has the skill's SKILL.md.
+      await seedSkillResources(skillDir, skill.resources).catch((e) =>
+        console.error(`[skill-store] Failed to seed resources for ${skill.name}:`, e)
+      )
     }
     for (const retired of RETIRED_BUILT_IN_SKILLS) {
       const skillDir = join(SKILLS_DIR, retired)

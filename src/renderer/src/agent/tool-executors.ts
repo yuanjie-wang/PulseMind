@@ -19,6 +19,7 @@ import { buildCommandFromSkillInput } from './command-builder'
 import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
 import { saveImagesInText } from './image-utils'
 import type { ToolExecContext } from './executors/context'
+import type { SkillDefinition } from '../skills/types'
 import { execPickTool as pickToolImpl } from './executors/pick-tool'
 import { execSpawnAgent as spawnAgentImpl } from './executors/spawn-tool'
 import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool } from './executors/domain-tools'
@@ -34,6 +35,18 @@ export { UI_PREVIEW_MAX } from './executors/context'
 // the model reads large files).
 const READ_DEFAULT_LINE_LIMIT = 200        // read: default lines per page
 const READ_MAX_LINE_LIMIT = 500            // read: hard cap on lines per page (read bypasses the token guardrail, so this is its only bound)
+
+/**
+ * The pick_skill result envelope. The **Location:** line is what makes a body
+ * that names companion files (the office skill's `references/`) usable:
+ * pick_skill ships the in-memory body only, so the file path is the one anchor
+ * the model has for deriving "same directory" paths. Omitted when the engine
+ * has no skillsDir rather than printing a wrong absolute path.
+ */
+function formatSelectedSkill(name: string, definition: SkillDefinition, skillsDir?: string): string {
+  const location = skillsDir ? `\n**Location:** ${skillsDir}/${name}/SKILL.md` : ''
+  return `## Selected Skill: ${name}\n\n**Description:** ${definition.description}\n**Category:** ${definition.category}${location}\n\n### Instructions\n${definition.systemPrompt || '(no instructions)'}`
+}
 
 export class ToolExecutor implements ToolExecContext {
   constructor(
@@ -521,7 +534,7 @@ export class ToolExecutor implements ToolExecContext {
         t.output = `Looking up skill: ${skillName}...`; this.notify()
         const skill = sm!.getSkill(skillName)
         if (skill) {
-          this.addToolResult(t.id, `## Selected Skill: ${skill.definition.name}\n\n**Description:** ${skill.definition.description}\n**Category:** ${skill.definition.category}\n\n### Instructions\n${skill.definition.systemPrompt || '(no instructions)'}`, false)
+          this.addToolResult(t.id, formatSelectedSkill(skill.definition.name, skill.definition, this.opts.skillsDir), false)
           t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
         // Fall back to the experience library (skill-style progressive disclosure)
@@ -557,7 +570,7 @@ export class ToolExecutor implements ToolExecContext {
       }
       const skill = sm!.getSkill(cleanName)
       if (skill) {
-        this.addToolResult(t.id, `## Selected Skill: ${cleanName}\n\n**Description:** ${skill.definition.description}\n**Category:** ${skill.definition.category}\n\n### Instructions\n${skill.definition.systemPrompt || '(no instructions)'}`, false)
+        this.addToolResult(t.id, formatSelectedSkill(cleanName, skill.definition, this.opts.skillsDir), false)
         t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
       const em2 = this.opts.experienceManager

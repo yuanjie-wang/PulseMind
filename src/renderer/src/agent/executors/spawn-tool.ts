@@ -128,9 +128,12 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       : GENERAL_SUBAGENT_PROMPT
 
     // Append available skills context (narrowed to the expert's whitelist).
+    // skillsDir makes the <location> entries absolute — a relative
+    // `office/SKILL.md` gives a sub-agent no root to derive companion-file
+    // paths from (the sub-agent prompt carries no env block to supply one).
     let skillsCtx = ''
     try {
-      const skillsAppendix = ex.opts.skillManager?.getSystemPromptAppendix(undefined, profile?.skillNames)
+      const skillsAppendix = ex.opts.skillManager?.getSystemPromptAppendix(ex.opts.skillsDir, profile?.skillNames)
       if (skillsAppendix) skillsCtx = '\n\n' + skillsAppendix
     } catch { /* non-critical */ }
 

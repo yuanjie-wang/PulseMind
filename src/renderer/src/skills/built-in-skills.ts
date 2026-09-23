@@ -1,4 +1,6 @@
 import type { SkillDefinition } from './types'
+import { OFFICE_SKILL_PROMPT } from './built-in/office-route'
+import { OFFICE_SKILL_REFERENCES } from './built-in/office-references'
 
 /**
  * Built-in skills that ship with PulseMind.
@@ -148,6 +150,36 @@ End with a structured report:
 
 ### 6. Honesty rules
 Never mark a scenario passed because you ran out of budget — say 未覆盖. If a modal/anti-bot wall blocks you, report it as an environment limitation, not a bug. Tell the user "已打开浏览器进行测试" — never mention kernel/sandbox/vm/CDP.`,
+  },
+
+  {
+    name: 'office',
+    description:
+      'Office deliverables (Word / Excel / PPT / PDF): how to choose between generating a new file and byte-faithfully editing an existing one, and the per-format specs each route leads to. Pick it whenever the input or the deliverable is an Office file.',
+    category: 'office',
+    builtIn: true,
+    triggers: [
+      'docx',
+      'xlsx',
+      'pptx',
+      'excel',
+      'powerpoint',
+      'ppt',
+      '幻灯片',
+      '演示文稿',
+      'word文档',
+      'word 文档',
+      '排版',
+      '公文',
+      '合同',
+      '简历',
+      '导出文档',
+    ],
+    systemPrompt: OFFICE_SKILL_PROMPT,
+    // The per-format rule sets SKILL.md points at. Seeded to
+    // ~/.pulsemind/skills/office/references/ by ensureBuiltInSkills — pick_skill
+    // only returns the body, so these have to be on disk for `read` to reach.
+    resources: OFFICE_SKILL_REFERENCES,
   },
 ]
 

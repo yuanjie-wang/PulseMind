@@ -4,6 +4,15 @@ export interface SkillDefinition {
   category: string
   triggers?: string[]
   systemPrompt: string
+  /**
+   * Bundled files seeded next to SKILL.md, keyed by skill-relative path
+   * `references/xlsx.md` → contents). Built-ins only: the SKILL.md body
+   * carries the routing decision and names these files, so a picked skill can
+   * pull one deep rule set on demand instead of shipping every scenario spec in
+   * the always-loaded body. Never serialized into SKILL.md frontmatter — the
+   * frontmatter has no place to put it, and a user copy on disk can differ.
+   */
+  resources?: Record<string, string>
   worksWellWith?: string[]
   builtIn?: boolean
   sourceConversationId?: string
