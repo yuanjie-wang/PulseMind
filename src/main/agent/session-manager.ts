@@ -125,7 +125,11 @@ export class AgentSessionManagerImpl {
   /** Per-session length of the last 'messages' snapshot for append diffing. */
   private lastSentLen = new Map<string, number>()
   private runningLoops = 0
-  private waitingLoops: Array<() => void> = []
+  /** FIFO queue of asks waiting for a loop slot. `parked` is the per-entry
+   *  stop flag: dispatchEngineCall('stopExecution') sets it on this session's
+   *  entries, and the woken ask consumes it to decline a turn that was already
+   *  settled while it sat in the queue (review_20260923 M1). */
+  private waitingLoops: Array<{ sessionId: string; parked: { stopped: boolean }; resolve: () => void }> = []
   /** Per-session registry of tool_use runtime state (status|exitCode|outputLen) for in-place diffing. */
   private toolStatusRegistry = new Map<string, Map<string, string>>()
   /** Per-session registry of message-level stat signatures (the turn's wall
@@ -779,7 +783,19 @@ export class AgentSessionManagerImpl {
       // Queued counts as working: the turn gets a slot imminently, and the
       // engine's own statuses only start once it runs (see system/keep-awake.ts).
       keepAwake.update(sessionId, 'queued')
-      await new Promise<void>((resolve) => this.waitingLoops.push(resolve))
+      const parked: { stopped: boolean } = { stopped: false }
+      await new Promise<void>((resolve) => this.waitingLoops.push({ sessionId, parked, resolve }))
+      // A stop that landed while this ask sat parked already settled its turn:
+      // stopExecution parked the engine at idle (an unattended row finished
+      // 「用户停止」 and tore its gates down), and prepareTurn would reset
+      // isCancelled the moment we startTurn — the whole task would run with
+      // nobody watching (review_20260923 M1). Decline. This ask never took the
+      // slot, so it must not increment; the wake it was handed carries a free
+      // slot — pass it on to the next waiter.
+      if (parked.stopped) {
+        this.waitingLoops.shift()?.resolve()
+        return
+      }
     }
     this.runningLoops += 1
     const sandboxCtx = this.sandboxContexts.get(sessionId)
@@ -793,7 +809,7 @@ export class AgentSessionManagerImpl {
       })
       .finally(() => {
         this.runningLoops -= 1
-        this.waitingLoops.shift()?.()
+        this.waitingLoops.shift()?.resolve()
       })
   }
 
@@ -854,7 +870,16 @@ export class AgentSessionManagerImpl {
       case 'killTool': return engine.killTool(args[0] as string)
       case 'respondToTool': return engine.respondToTool(args[0] as string, args[1] as string)
       case 'extendLoop': return engine.extendLoop()
-      case 'stopExecution': return engine.stopExecution()
+      case 'stopExecution':
+        // A stop aimed at a turn still parked on the loop queue cannot cancel
+        // a loop — there is none yet — so mark the parked ask instead: when
+        // the queue hands it a slot it must decline to start (review_20260923
+        // M1). stopExecution itself still parks the engine at idle, which is
+        // what the caller settles on.
+        for (const wait of this.waitingLoops) {
+          if (wait.sessionId === sessionId) wait.parked.stopped = true
+        }
+        return engine.stopExecution()
       case 'resumeExecution': return engine.resumeExecution()
       case 'clearError': return engine.clearError()
       case 'retryLastTurn': return engine.retryLastTurn()
