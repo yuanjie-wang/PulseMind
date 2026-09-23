@@ -223,6 +223,7 @@ export interface ElectronAPI {
   deleteExperienceRecord: (name: string) => Promise<void>
   readExperienceRecord: (name: string) => Promise<string | null>
   touchExperienceRecord: (name: string) => Promise<void>
+  clearExperiences: () => Promise<number>
   onExperiencesChanged: (callback: () => void) => () => void
 
   // Terminal

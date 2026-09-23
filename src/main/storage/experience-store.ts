@@ -165,6 +165,17 @@ export class ExperienceStore {
     getDb().prepare('DELETE FROM experiences WHERE name = ?').run(name)
   }
 
+  /** Remove every experience: all record dirs + the whole table. Returns the
+   *  count that was removed. */
+  async clear(): Promise<number> {
+    const rows = getDb().prepare('SELECT name FROM experiences').all() as { name: string }[]
+    getDb().prepare('DELETE FROM experiences').run()
+    for (const row of rows) {
+      await rm(join(EXPERIENCES_DIR, row.name), { recursive: true, force: true }).catch(() => {})
+    }
+    return rows.length
+  }
+
   /** Record a trigger of an experience (called when the LLM reads it). */
   async touch(name: string): Promise<void> {
     getDb()

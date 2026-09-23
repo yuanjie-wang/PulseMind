@@ -112,6 +112,7 @@ export const IPC_CHANNELS = {
   EXPERIENCES_DELETE: 'experiences:delete',
   EXPERIENCES_READ: 'experiences:read',
   EXPERIENCES_TOUCH: 'experiences:touch',
+  EXPERIENCES_CLEAR: 'experiences:clear',
   EXPERIENCES_CHANGED: 'experiences:changed',
 
   // ── Terminal ──

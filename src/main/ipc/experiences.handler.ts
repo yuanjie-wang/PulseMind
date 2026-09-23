@@ -26,4 +26,10 @@ export function registerExperienceHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.EXPERIENCES_TOUCH, async (_event, name: string) => {
     experienceStore.touch(name)
   })
+
+  ipcMain.handle(IPC_CHANNELS.EXPERIENCES_CLEAR, async (event) => {
+    const deleted = await experienceStore.clear()
+    event.sender.send(IPC_CHANNELS.EXPERIENCES_CHANGED)
+    return deleted
+  })
 }

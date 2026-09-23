@@ -4,13 +4,16 @@
 // settings page next to 记忆.
 import React, { useCallback, useEffect, useState } from 'react'
 import { Modal, Tag, Typography, Alert, Button, Tooltip, Popconfirm, Empty, Spin, Card } from 'antd'
-import { DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ClearOutlined, DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
 import { MAX_EXPERIENCES } from '../../../../shared/types/experience-types'
 import type { ExperienceRecord } from '../../../../shared/types/experience-types'
 import { useSettings } from '../../hooks/SettingsContext'
 import FeatureSwitch from './FeatureSwitch'
 
 const { Text, Paragraph } = Typography
+
+// 「不再出现」的关闭记忆：同一形态复用 SkillsPanel 的 localStorage 模式。
+const DISMISS_TIP_KEY = 'pulsemind_dismissed_experience_tip'
 
 const CATEGORY_COLORS: Record<string, string> = {
   code: 'blue',
@@ -28,6 +31,12 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
   const [loading, setLoading] = useState(false)
   const [viewName, setViewName] = useState<string | null>(null)
   const [viewContent, setViewContent] = useState<string>('')
+  const [tipDismissed, setTipDismissed] = useState(() => localStorage.getItem(DISMISS_TIP_KEY) === 'true')
+
+  const dismissTip = useCallback(() => {
+    localStorage.setItem(DISMISS_TIP_KEY, 'true')
+    setTipDismissed(true)
+  }, [])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -69,14 +78,39 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
     }
   }, [refresh])
 
+  const handleClearAll = useCallback(async () => {
+    try {
+      await window.electronAPI.clearExperiences()
+      await refresh()
+    } catch (err) {
+      console.error('[ExperiencePanel] clear failed:', err)
+    }
+  }, [refresh])
+
   const content = (
     <>
-      {/* Section title + refresh — matches the 记忆 section's title row. */}
+      {/* Section title + clear/refresh — the title row the 记忆 section uses. */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>
         <Text strong style={{ fontSize: 16 }}>经验</Text>
-        <Tooltip title="重新加载经验列表">
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>
-        </Tooltip>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {experiences.length > 0 && (
+            <Popconfirm
+              title="清空全部经验？"
+              description={`这将删除全部 ${experiences.length} 条经验。`}
+              onConfirm={handleClearAll}
+              okText="清空"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+            >
+              <Button type="text" danger size="small" icon={<ClearOutlined />}>
+                清空
+              </Button>
+            </Popconfirm>
+          )}
+          <Tooltip title="重新加载经验列表">
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => refresh()}>刷新</Button>
+          </Tooltip>
+        </span>
       </div>
       <FeatureSwitch
         label="自动沉淀经验"
@@ -84,12 +118,16 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
         checked={experienceOn}
         onChange={(checked) => saveSettings({ ...settings, experienceEnabled: checked })}
       />
-      <Alert
-        type="info"
-        showIcon
-        style={{ fontSize: 12, marginBottom: 12 }}
-        message={`最多保留 ${MAX_EXPERIENCES} 条经验，超出后按最近触发时间（LRU）自动淘汰最久未使用的条目。查看全文即记录一次触发。`}
-      />
+      {!tipDismissed && (
+        <Alert
+          type="info"
+          showIcon
+          closable
+          onClose={dismissTip}
+          style={{ fontSize: 12, marginBottom: 12 }}
+          title={`最多保留 ${MAX_EXPERIENCES} 条经验，超出后按最近触发时间（LRU）自动淘汰最久未使用的条目。查看全文即记录一次触发。`}
+        />
+      )}
       {loading && experiences.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 24 }}><Spin size="small" /></div>
       ) : experiences.length === 0 ? (
