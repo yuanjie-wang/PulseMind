@@ -1,6 +1,5 @@
 import { existsSync, readdirSync, mkdirSync, renameSync, copyFileSync, rmSync } from 'node:fs'
 import { memoryContentHash } from '../../shared/memory/content-hash'
-import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { DATA_DIR, KNOWLEDGE_RAW_DIR, KNOWLEDGE_WIKI_DIR, getBaseRawDir, getBaseWikiDir } from './index'
@@ -131,7 +130,6 @@ function createTables(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
-    CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash);
     CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
     CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
 
@@ -257,6 +255,12 @@ function createTables(): void {
   // P0 (PLAN-memory-extraction-dedup): memories carry a normalized-content hash for
   // the save-layer dedup gate; existing rows are backfilled once here.
   try { database.exec('ALTER TABLE memories ADD COLUMN content_hash TEXT') } catch (e) {}
+  // The index must come AFTER the ALTER: createTables' blanket exec runs on
+  // every startup, and on an existing database the column only exists once
+  // this ALTER has run — an index there failed with SQLITE_ERROR, which the
+  // init catch used to treat as corruption (database deleted). Never add a
+  // new-column index to that exec.
+  try { database.exec('CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)') } catch (e) {}
   try { database.exec('ALTER TABLE experiences ADD COLUMN files_json TEXT') } catch (e) {}
   try {
     const missing = database.prepare('SELECT id, content FROM memories WHERE content_hash IS NULL').all() as Array<{ id: string; content: string }>
@@ -691,12 +695,23 @@ export async function initializeDatabase(): Promise<void> {
     console.log(`[DB] ${count} conversations in database`)
   } catch (e) {
     console.error('[DB] Initialization failed:', e)
-    if (existsSync(DB_PATH) && db) {
+    // Only a GENUINELY corrupt file may take the recreate path — and even then
+    // it is RENAMED aside (pulsemind.db.corrupt-<ts>), never unlinked: this
+    // branch once fired on a plain migration-ordering SQLITE_ERROR and deleted
+    // the user's live database (2026-09-25). A schema/migration error must
+    // fail the startup loudly instead — an app that cannot migrate must not
+    // take the data with it.
+    const code = (e as { code?: string }).code ?? ''
+    const genuinelyCorrupt = code === 'SQLITE_NOTADB' || code === 'SQLITE_CORRUPT'
+    if (genuinelyCorrupt && existsSync(DB_PATH) && db) {
       try { db.close() } catch { /* ignore */ }
       db = undefined as any
-      console.warn('[DB] Deleting corrupt database and recreating...')
-      await unlink(DB_PATH).catch(() => {})
+      const aside = `${DB_PATH}.corrupt-${Date.now()}`
+      console.warn(`[DB] Database is genuinely corrupt — renaming to ${aside} and recreating...`)
+      try { renameSync(DB_PATH, aside) } catch { /* best-effort */ }
       try { createTables(); createMemoryFts(getDb()); console.log('[DB] Database recreated successfully') } catch (e2) { console.error('[DB] Fatal: could not recreate database:', e2) }
+    } else if (!genuinelyCorrupt) {
+      throw e
     }
   }
 }
