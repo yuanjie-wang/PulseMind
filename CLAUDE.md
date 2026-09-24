@@ -90,12 +90,11 @@ Runs JS hook scripts from `HOOKS_DIR` at startup. Currently supports `app-start`
 ```
 src/main/
 ├── index.ts               # Entry: createWindow, registerIpcHandlers, migrations, local-file protocol
-├── ipc/                   # 16 IPC handler files, one per domain
+├── ipc/                   # IPC handler files, one per domain
 │   ├── index.ts           # Registers all handlers (calls initializeDatabase first)
 │   ├── api-proxy.handler.ts   # SSE streaming proxy with abort/multi-request
 │   ├── terminal.handler.ts    # Async process spawn/kill with 1MB output limit
 │   ├── conversation.handler.ts
-│   ├── canvas.handler.ts      # Canvas workdir management, export, open in browser
 │   ├── knowledge.handler.ts   # Knowledge file import/compile/list/delete
 │   ├── subagent.handler.ts    # Sub-agent profile CRUD
 │   ├── memory.handler.ts
@@ -194,22 +193,12 @@ App.tsx                         # Root: SettingsProvider > TranslationProvider >
 │   ├── CommandCard.tsx         # Tool_use block with ask_user choices
 │   ├── TerminalOutput.tsx
 │   └── EChartsBlock.tsx
-├── components/canvas/          # Canvas/visual generation mode
-│   ├── CanvasView.tsx          # (~1410 lines) Main canvas: pan/zoom, drag/resize, annotations, generation
-│   ├── canvasEngine.ts         # AgentEngine wrapper with canvas-specific prompts
-│   ├── RectFrame.tsx           # Per-rect iframe + child annotation canvas + Grainient overlay
-│   ├── Grainient.tsx           # WebGL gradient animation (OGL library)
-│   ├── LeftAnnotationToolbar.tsx
-│   ├── CanvasToolbar.tsx
-│   ├── RegionConfig.tsx
-│   ├── ZoomControls.tsx
-│   └── AnnotationNotePopup.tsx
 ├── hooks/
 │   ├── useChatController.ts    # (~420 lines) Orchestrator: settings, tools, skills, memory, persistence
 │   ├── useAppSettings.ts
 │   ├── useGreeting.ts
 │   └── SettingsContext.tsx
-├── agent/                      # Agent engine (shared by chat + canvas modes)
+├── agent/                      # Agent engine (shared by chat, tool studio, sub-agents)
 │   ├── AgentEngine.ts          # (~940 lines) State machine: SSE dispatch, tool execution, three-layer compaction
 │   ├── engine/                 # Strategy modules extracted from the engine (stream-runner, execution-flow, context-compactor, …)
 │   ├── tool-executors.ts       # Tool execution implementations (execSpawnAgent, execCommand, etc.)
@@ -237,8 +226,7 @@ App.tsx                         # Root: SettingsProvider > TranslationProvider >
 │   └── types.ts
 ├── memory/
 │   └── MemoryManager.ts        # Auto-extraction + compression pipeline
-├── stores/                     # Zustand stores (canvas mode only)
-│   └── canvasStore.ts          # Canvas annotations, zoom, pan, undo/redo
+├── stores/                     # Zustand stores (navigation, pending composer state, panes)
 ├── i18n/                       # Chinese/English via useTranslation() hook
 │   ├── locales/{zh,en}.ts
 │   └── useTranslation.tsx
