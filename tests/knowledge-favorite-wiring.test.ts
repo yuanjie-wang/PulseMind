@@ -63,11 +63,20 @@ describe('the old favorites surface is gone', () => {
   })
 
   it('nothing under src/ calls the removed API or channel', () => {
-    const stale = /addFavorite|removeFavorite|listFavorites|FAVORITE_ADD|FAVORITE_LIST|FAVORITE_REMOVE|FavoritesSettings|favoritesDrawer|favorites\.db|appLayout\.favorites/
+    // PLAN-browser-favorites (2026-09-25) reintroduces a favorites surface for
+    // the BROWSER (browser_favorites / BROWSER_FAVORITE_* / browsers.favorites
+    // addFavorite...) — a different feature, user-approved; the tombstone now
+    // pins the OLD knowledge-favorites surface by its OWN names only.
+    const stale = /knowledgeFavorite[A-Z]|FAVORITES_CAPTURE|FavoritesSettings|favoritesDrawer|favorites\.db|appLayout\.favorites|favorites\.handler/
     const files = walk('src')
     expect(files.length).toBeGreaterThan(100) // non-vacuity: the walk really walked
     for (const f of files) {
       expect(read(f), `${f} still references the deleted favorites surface`).not.toMatch(stale)
+    }
+    // The deleted implementation files stay deleted (their names are part of
+    // the old surface the tombstone guards).
+    for (const p of ['src/main/ipc/favorites.handler.ts', 'src/main/storage/favorites.db.ts']) {
+      expect(existsSync(join(ROOT, p)), `${p} is back`).toBe(false)
     }
   })
 
