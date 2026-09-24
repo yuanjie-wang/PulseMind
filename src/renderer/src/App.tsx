@@ -188,7 +188,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 description: result.experienceContent.slice(0, 120),
                 content: result.experienceContent,
                 category: result.experienceCategory ?? 'general',
-                sourceConversationId: conversationIdRef.current ?? undefined
+                sourceConversationId: conversationIdRef.current ?? undefined,
+                files: result.experienceFiles
               }).then(({ record }) => {
                 console.log('[SessionReview] Experience saved to experience skill library')
                 experienceManagerRef.current?.ensureTriggers(record.name, {

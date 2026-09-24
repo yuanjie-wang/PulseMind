@@ -6,6 +6,7 @@
 
 import { OneShotAgent } from './OneShotAgent'
 import { extractJson } from './json-utils'
+import { parseScriptFences } from '../../../../shared/experience/script-fence'
 import type { ExtractedMemory } from './MemoryExtractionAgent'
 
 export interface SessionReviewInput {
@@ -23,6 +24,7 @@ export interface SessionReviewOutput {
     title: string
     content: string
     category: string
+    files?: { path: string; content: string }[]
   } | null
 }
 
@@ -60,6 +62,23 @@ An experience has:
   - ## 问题 (Problems) — What went wrong or was tricky? Pain points, pitfalls, frustrations.
   - ## 优化 (Optimization) — Lessons learned, what to do differently next time, actionable takeaways.
 - "category": one of "code", "architecture", "user_pref", "decision", "general" — choose the most relevant category
+
+### Deterministic, repeatable work → ship a SCRIPT
+When the conversation contains fixed, deterministic, re-runnable work (the exact same steps would run again), ALSO distill it into an executable Node script instead of leaving it as prose. Declare it inside "content" as a fenced block:
+
+### File: scripts/<name>.mjs
+\`\`\`js
+<complete script source>
+\`\`\`
+
+followed by a "## 脚本 (Script)" section in the content that documents each script: purpose, exact invocation, parameters, preconditions, and where its output lands.
+
+Script hard requirements (violating any makes the script useless):
+- Node.js 20, ONLY built-in modules prefixed with "node:" (fs, path, ...). The app ships Node 20 with NO npm — a script depending on an npm package can never run on any machine.
+- Parameterize EVERYTHING through process.argv / environment variables. Hard-coding values from THIS conversation (paths, ids, urls) is the classic dead script.
+- Deterministic output, idempotent re-runs, single file, at most 3 files per experience.
+- Write shell/python steps as plain text in the 过程/优化 sections instead — they are NOT portable.
+If the work is judgment-based (not mechanically repeatable), do NOT invent a script.
 
 If this conversation doesn't contain any worthwhile lessons, set "experience" to null.
 
@@ -114,11 +133,19 @@ Return ONLY a JSON object with these keys:
       summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
       keywords: Array.isArray(parsed.keywords) ? parsed.keywords.filter((k: unknown) => typeof k === 'string') : undefined,
       experience: parsed.experience && typeof parsed.experience === 'object' && parsed.experience.content && parsed.experience.content !== 'None'
-        ? {
-            title: typeof parsed.experience.title === 'string' ? parsed.experience.title : '',
-            content: typeof parsed.experience.content === 'string' ? parsed.experience.content : '',
-            category: typeof parsed.experience.category === 'string' ? parsed.experience.category : 'general'
-          }
+        ? (() => {
+            const content = typeof parsed.experience.content === 'string' ? parsed.experience.content : ''
+            // Script fences ride INSIDE content; split them out here (P1.2 of
+            // PLAN-experience-scripts). Rejected files are the store gates'
+            // concern — parse only splits and prefix-checks.
+            const { content: body, files } = parseScriptFences(content)
+            return {
+              title: typeof parsed.experience.title === 'string' ? parsed.experience.title : '',
+              content: body,
+              category: typeof parsed.experience.category === 'string' ? parsed.experience.category : 'general',
+              files: files.length > 0 ? files : undefined,
+            }
+          })()
         : null
     }
   }

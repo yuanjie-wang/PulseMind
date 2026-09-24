@@ -3,7 +3,7 @@
 // record list (max MAX_EXPERIENCES) with view/delete. Rendered inline in the
 // settings page next to 记忆.
 import React, { useCallback, useEffect, useState } from 'react'
-import { Modal, Tag, Typography, Alert, Button, Tooltip, Popconfirm, Empty, Spin, Card } from 'antd'
+import { Modal, Tag, Typography, Alert, Button, Tooltip, Popconfirm, Empty, Spin, Card, message } from 'antd'
 import { ClearOutlined, DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
 import { MAX_EXPERIENCES } from '../../../../shared/types/experience-types'
 import type { ExperienceRecord } from '../../../../shared/types/experience-types'
@@ -31,6 +31,9 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
   const [loading, setLoading] = useState(false)
   const [viewName, setViewName] = useState<string | null>(null)
   const [viewContent, setViewContent] = useState<string>('')
+  // 伴随脚本（PLAN-experience-scripts 1.7）：面板只读查看，无编辑无运行按钮。
+  const [viewRecord, setViewRecord] = useState<ExperienceRecord | null>(null)
+  const [scriptContent, setScriptContent] = useState<{ path: string; content: string } | null>(null)
   const [tipDismissed, setTipDismissed] = useState(() => localStorage.getItem(DISMISS_TIP_KEY) === 'true')
 
   const dismissTip = useCallback(() => {
@@ -49,6 +52,20 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
     }
   }, [])
 
+  // 淘汰可见（PLAN-experience-scripts 1.6）：Manager 在保存挤掉含脚本的经验
+  // 时派发 window 事件，这里弹一条 antd message——无声淘汰丢掉的是已验证的
+  // 自动化，这个代价必须可见。
+  useEffect(() => {
+    const onEvicted = (e: Event): void => {
+      const rec = (e as CustomEvent).detail?.record as { name?: string; files?: string[] } | undefined
+      if (rec?.files?.length) {
+        message.warning(`已淘汰包含脚本的经验：${rec.name ?? ''}`)
+      }
+    }
+    window.addEventListener('pm-experience-evicted', onEvicted)
+    return () => window.removeEventListener('pm-experience-evicted', onEvicted)
+  }, [])
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- async data load, no cascading renders
     refresh()
@@ -60,6 +77,8 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
   const openView = useCallback(async (name: string) => {
     setViewName(name)
     setViewContent('')
+    setScriptContent(null)
+    setViewRecord(experiences.find((e) => e.name === name) ?? null)
     try {
       const content = await window.electronAPI.readExperienceRecord(name)
       setViewContent(content ?? '(empty)')
@@ -67,7 +86,19 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
     } catch (err) {
       setViewContent(`(read failed: ${String(err)})`)
     }
-  }, [refresh])
+  }, [refresh, experiences])
+
+  const openScript = useCallback(async (name: string, relPath: string) => {
+    setScriptContent({ path: relPath, content: '' })
+    try {
+      const content = await window.electronAPI.readExperienceFile(name, relPath)
+      setScriptContent(content === null
+        ? { path: relPath, content: '(读取失败：文件不存在或路径越界)' }
+        : { path: relPath, content })
+    } catch (err) {
+      setScriptContent({ path: relPath, content: `(读取失败：${String(err)})` })
+    }
+  }, [])
 
   const handleDelete = useCallback(async (name: string) => {
     try {
@@ -144,6 +175,11 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
               title={
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>{exp.title}</span>
+                  {exp.files && exp.files.length > 0 && (
+                    <Tag color="geekblue" style={{ marginInlineEnd: 0, fontSize: 11, flexShrink: 0 }}>
+                      含脚本 {exp.files.length}
+                    </Tag>
+                  )}
                   <Tag color={CATEGORY_COLORS[exp.category] ?? 'default'} style={{ marginInlineEnd: 0, fontSize: 11, flexShrink: 0 }}>{exp.category}</Tag>
                 </span>
               }
@@ -196,6 +232,29 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
         <pre style={{ maxHeight: 480, overflow: 'auto', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--pm-wash)', padding: 12, borderRadius: 8 }}>
           {viewContent}
         </pre>
+        {viewRecord?.files && viewRecord.files.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <Text strong style={{ fontSize: 12 }}>伴随脚本（只读）</Text>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+              {viewRecord.files.map((f) => (
+                <Button
+                  key={f}
+                  size="small"
+                  type={scriptContent?.path === f ? 'primary' : 'text'}
+                  style={{ justifyContent: 'flex-start', fontFamily: 'monospace', fontSize: 12 }}
+                  onClick={() => viewName && openScript(viewName, f)}
+                >
+                  {f}
+                </Button>
+              ))}
+            </div>
+            {scriptContent && (
+              <pre style={{ maxHeight: 320, overflow: 'auto', fontSize: 12, background: 'var(--pm-wash)', padding: 12, borderRadius: 8, marginTop: 8 }}>
+                {scriptContent.content}
+              </pre>
+            )}
+          </div>
+        )}
       </Modal>
     </>
   )

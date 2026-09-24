@@ -1,10 +1,59 @@
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { join, isAbsolute, relative } from 'node:path'
+import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import type { ExperienceRecord, ExperienceDraft } from '../../shared/types/experience-types'
 import { MAX_EXPERIENCES } from '../../shared/types/experience-types'
 import { EXPERIENCES_DIR } from './index'
 import { getDb } from './database'
+
+// ── Script payload gates (PLAN-experience-scripts 1.3/1.5) ──
+// An experience's SKILL.md is documentation; its scripts are RUNNABLE. Three
+// gates at save: path jail (scripts/ prefix, no escaping), size (8KB/file,
+// 3 files), and a syntax parse via `node --check` — parse only, never execute.
+// Electron ships Node 20, so scripts run anywhere the app runs WITHOUT npm —
+// hence the prompt-level constraint "node: builtins only".
+const MAX_SCRIPT_BYTES = 8 * 1024
+const MAX_SCRIPTS_PER_EXPERIENCE = 3
+
+/** `path` must name a file under <experienceDir>/scripts/ — relative, no `..`,
+ *  no absolute, no backticks into other dirs. Returns the error or null. */
+export function scriptPathError(relPath: string): string | null {
+  if (!relPath || typeof relPath !== 'string') return 'path is empty'
+  if (isAbsolute(relPath)) return `path must be relative: ${relPath}`
+  if (!relPath.startsWith('scripts/')) return `path must start with scripts/: ${relPath}`
+  const rel = relative(join('exp', 'scripts'), join('exp', relPath))
+  if (rel.startsWith('..') || isAbsolute(rel)) return `path escapes the experience dir: ${relPath}`
+  if (relPath.includes('\\')) return `backslashes are not path separators here: ${relPath}`
+  return null
+}
+
+/** Syntax parse only (`node --check`) — the script never executes at save.
+ *  Runs under ELECTRON_RUN_AS_NODE so process.execPath (the Electron binary)
+ *  behaves as plain Node. Returns null when OK, or the failing reason. */
+export function scriptSyntaxError(_dir: string, relPath: string, content: string): string | null {
+  // tmp lives in the OS temp dir — the experience dir may not exist yet (the
+  // gates run before the save's mkdir) and we must not create half-trees.
+  // Keep the script's extension: `node --check` picks CJS/ESM by extension,
+  // and an extensionless tmp file parses `import` as a SyntaxError.
+  const ext = relPath.endsWith('.mjs') ? '.mjs' : relPath.endsWith('.cjs') ? '.cjs' : '.js'
+  const tmp = join(tmpdir(), `pm-expcheck-${Date.now()}-${randomBytes(4).toString('hex')}${ext}`)
+  try {
+    require('node:fs').writeFileSync(tmp, content, 'utf-8')
+    const res = spawnSync(process.execPath, ['--check', tmp], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      timeout: 10_000,
+    })
+    if (res.status === 0) return null
+    const stderr = (res.stderr ?? '').toString().split('\n').slice(0, 3).join(' ').trim()
+    return `node --check failed: ${stderr || 'syntax error'}`
+  } catch (err) {
+    return `node --check could not run: ${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    try { require('node:fs').unlinkSync(tmp) } catch {}
+  }
+}
 
 function generateId(): string {
   return `exp_${Date.now()}_${randomBytes(4).toString('hex')}`
@@ -55,6 +104,13 @@ function formatExperienceMd(rec: ExperienceRecord, content: string): string {
 }
 
 function rowToRecord(r: any): ExperienceRecord {
+  let files: string[] | undefined
+  if (typeof r.files_json === 'string' && r.files_json) {
+    try {
+      const parsed = JSON.parse(r.files_json)
+      if (Array.isArray(parsed)) files = parsed.filter((f: unknown) => typeof f === 'string')
+    } catch { /* malformed → treated as absent; the SKILL.md body still carries the docs */ }
+  }
   return {
     id: r.id,
     name: r.name,
@@ -65,7 +121,9 @@ function rowToRecord(r: any): ExperienceRecord {
     createdAt: r.created_at,
     lastUsedAt: r.last_used_at,
     useCount: r.use_count,
-    triggers: parseTriggers(r.triggers)
+    triggers: parseTriggers(r.triggers),
+    files: files && files.length > 0 ? files : undefined,
+    dir: join(EXPERIENCES_DIR, r.name) // computed, never stored
   }
 }
 
@@ -77,6 +135,21 @@ export class ExperienceStore {
       .prepare('SELECT * FROM experiences ORDER BY COALESCE(last_used_at, created_at) DESC')
       .all() as any[]
     return rows.map(rowToRecord)
+  }
+
+  /** Read a companion script (panel's read-only view). Same jail as the save
+   *  gate; null on ANY refusal — the panel shows 读取失败, never partial bytes. */
+  async readFileContent(name: string, relPath: string): Promise<string | null> {
+    if (scriptPathError(relPath)) return null
+    const dir = join(EXPERIENCES_DIR, name)
+    const target = join(dir, relPath)
+    const rel = relative(dir, target)
+    if (rel.startsWith('..') || isAbsolute(rel)) return null
+    try {
+      return await readFile(target, 'utf-8')
+    } catch {
+      return null
+    }
   }
 
   async read(name: string): Promise<string | null> {
@@ -94,10 +167,43 @@ export class ExperienceStore {
    * Enforces the MAX_EXPERIENCES cap with LRU eviction (least recently used wins
    * the old age first; never-used entries are evicted before used ones).
    */
-  async save(draft: ExperienceDraft): Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord }> {
+  async save(draft: ExperienceDraft): Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord; rejectedFiles?: string[] }> {
     const name = slugifyTitle(draft.title)
     const existing = getDb().prepare('SELECT * FROM experiences WHERE name = ?').get(name) as any
     const now = localTimestamp()
+
+    // ── Script gates (only when the draft carries files at all) ──
+    const rejectedFiles: string[] = []
+    const acceptedFiles: ExperienceDraft['files'] = []
+    if (draft.files && draft.files.length > 0) {
+      if (draft.files.length > MAX_SCRIPTS_PER_EXPERIENCE) {
+        for (const f of draft.files.slice(MAX_SCRIPTS_PER_EXPERIENCE)) rejectedFiles.push(f.path)
+      }
+      for (const f of draft.files.slice(0, MAX_SCRIPTS_PER_EXPERIENCE)) {
+        const pathErr = scriptPathError(f.path)
+        if (pathErr) { rejectedFiles.push(f.path); console.warn('[experience] file rejected:', pathErr); continue }
+        if (typeof f.content !== 'string' || f.content.length === 0) { rejectedFiles.push(f.path); continue }
+        if (Buffer.byteLength(f.content, 'utf-8') > MAX_SCRIPT_BYTES) {
+          rejectedFiles.push(f.path)
+          console.warn(`[experience] file rejected (over ${MAX_SCRIPT_BYTES} bytes): ${f.path}`)
+          continue
+        }
+        const syntaxErr = scriptSyntaxError(join(EXPERIENCES_DIR, name), f.path, f.content)
+        if (syntaxErr) {
+          rejectedFiles.push(f.path)
+          console.warn(`[experience] file rejected (${syntaxErr}): ${f.path}`)
+          continue
+        }
+        acceptedFiles.push(f)
+      }
+    }
+
+    // 落盘规则只有一条：save 只写它收到的文件，从不清理目录。draft 不带
+    // files 时保留旧 files_json（ensureTriggers 的回写只重写 SKILL.md，
+    // 不许把脚本清单洗掉——记录与磁盘从此对不上）。
+    const effectiveFiles = draft.files && draft.files.length > 0
+      ? acceptedFiles.map((f) => f!.path)
+      : (parseTriggers(existing?.files_json) as string[] | undefined)
     const record: ExperienceRecord = {
       id: existing?.id ?? generateId(),
       name,
@@ -114,20 +220,31 @@ export class ExperienceStore {
     }
     await mkdir(join(EXPERIENCES_DIR, name), { recursive: true })
     await writeFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), formatExperienceMd(record, draft.content), 'utf-8')
+    for (const f of acceptedFiles) {
+      if (!f) continue
+      await mkdir(join(EXPERIENCES_DIR, name, 'scripts'), { recursive: true })
+      await writeFile(join(EXPERIENCES_DIR, name, f.path), f.content, 'utf-8')
+    }
+    record.files = effectiveFiles && effectiveFiles.length > 0 ? effectiveFiles : undefined
     getDb()
       .prepare(
-        `INSERT INTO experiences (id, name, title, description, category, source_conversation_id, created_at, last_used_at, use_count, triggers)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO experiences (id, name, title, description, category, source_conversation_id, created_at, last_used_at, use_count, triggers, files_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
            category = excluded.category,
            source_conversation_id = excluded.source_conversation_id,
-           triggers = excluded.triggers`
+           triggers = excluded.triggers,
+           files_json = COALESCE(excluded.files_json, experiences.files_json)`
       )
-      .run(record.id, record.name, record.title, record.description, record.category, record.sourceConversationId ?? null, record.createdAt, record.lastUsedAt ?? null, record.useCount, JSON.stringify(record.triggers ?? []))
+      .run(record.id, record.name, record.title, record.description, record.category, record.sourceConversationId ?? null, record.createdAt, record.lastUsedAt ?? null, record.useCount, JSON.stringify(record.triggers ?? []), record.files ? JSON.stringify(record.files) : null)
     const evicted = await this.enforceLimit()
-    return { record, evicted }
+    return {
+      record,
+      evicted,
+      rejectedFiles: rejectedFiles.length > 0 ? rejectedFiles : undefined,
+    }
   }
 
   /** Evict experiences beyond MAX_EXPERIENCES using LRU ordering.

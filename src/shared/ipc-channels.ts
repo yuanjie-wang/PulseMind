@@ -111,6 +111,7 @@ export const IPC_CHANNELS = {
   EXPERIENCES_SAVE: 'experiences:save',
   EXPERIENCES_DELETE: 'experiences:delete',
   EXPERIENCES_READ: 'experiences:read',
+  EXPERIENCES_READ_FILE: 'experiences:read-file',
   EXPERIENCES_TOUCH: 'experiences:touch',
   EXPERIENCES_CLEAR: 'experiences:clear',
   EXPERIENCES_CHANGED: 'experiences:changed',

@@ -323,7 +323,7 @@ export class MemoryManager {
      *  the startup backfill passes 1 (bounded, once per conversation). The
      *  cursor deliberately does NOT move on a skip — the delta keeps growing. */
     options?: { minDelta?: number }
-  ): Promise<{ memories: number; experienceTitle: string | null; experienceContent: string | null; experienceCategory: string | null }> {
+  ): Promise<{ memories: number; experienceTitle: string | null; experienceContent: string | null; experienceCategory: string | null; experienceFiles?: { path: string; content: string }[] }> {
     const memoryOn = featureFlags?.memory !== false
     const experienceOn = featureFlags?.experience !== false
     if (!apiKey || (!memoryOn && !experienceOn)) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
@@ -441,12 +441,14 @@ export class MemoryManager {
       let experienceTitle: string | null = null
       let experienceContent: string | null = null
       let experienceCategory: string | null = null
+      let experienceFiles: { path: string; content: string }[] | undefined
       if (experienceOn && result.experience && result.experience.content) {
         const title = result.experience.title
         experienceTitle = typeof title === 'string' && title ? title : null
         const cat = result.experience.category
         experienceCategory = validCategories.includes(cat) ? cat : 'general'
         experienceContent = result.experience.content
+        experienceFiles = result.experience.files
       }
 
       // Check if memory compression is needed
@@ -468,7 +470,7 @@ export class MemoryManager {
       }
 
       console.log(`[MemoryManager] Saved ${memoriesSaved} memory/ies from conversation ${conversationId || 'unknown'}`)
-      return { memories: memoriesSaved, experienceTitle, experienceContent, experienceCategory }
+      return { memories: memoriesSaved, experienceTitle, experienceContent, experienceCategory, experienceFiles }
     } catch (err) {
       console.warn('[MemoryManager] extractAndSaveAll error:', err)
       if (conversationId) {

@@ -335,6 +335,7 @@ export class AgentSessionManagerImpl {
               content: result.experienceContent,
               category: result.experienceCategory ?? 'general',
               sourceConversationId: sessionId,
+              files: result.experienceFiles,
             }).then(({ record }) => {
               managers.experienceManager.ensureTriggers(record.name, llmConfig).catch((err: unknown) =>
                 console.warn('[SessionReview] Trigger extraction failed:', err))

@@ -257,6 +257,7 @@ function createTables(): void {
   // P0 (PLAN-memory-extraction-dedup): memories carry a normalized-content hash for
   // the save-layer dedup gate; existing rows are backfilled once here.
   try { database.exec('ALTER TABLE memories ADD COLUMN content_hash TEXT') } catch (e) {}
+  try { database.exec('ALTER TABLE experiences ADD COLUMN files_json TEXT') } catch (e) {}
   try {
     const missing = database.prepare('SELECT id, content FROM memories WHERE content_hash IS NULL').all() as Array<{ id: string; content: string }>
     if (missing.length > 0) {

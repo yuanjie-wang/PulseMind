@@ -9,6 +9,7 @@
 // longer truncate.
 
 import { getHost } from './host'
+import { join } from 'node:path'
 import { execGitTool } from './engine/git-tools'
 import type { ToolUseBlock } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
@@ -23,6 +24,22 @@ import type { ToolExecContext } from './executors/context'
 import type { SkillDefinition } from '../skills/types'
 import { execPickTool as pickToolImpl } from './executors/pick-tool'
 import { execSpawnAgent as spawnAgentImpl } from './executors/spawn-tool'
+
+/** 经验信封的位置段（PLAN-experience-scripts 1.4）：pick_skill 之前只回
+ *  SKILL.md 原文，模型拿到正文也到不了盘上的脚本。与 formatSelectedSkill
+ *  的 **Location:** 行同构；`dir` 来自 main 的 list() 计算，取不到记录时
+ *  退化为无位置段（现状行为，正文的相对调用命令仍在）。 */
+async function experienceLocationBlock(em: { list(): Promise<Array<{ name: string; dir?: string }>> } | undefined, name: string): Promise<string> {
+  if (!em) return ''
+  try {
+    const rec = (await em.list())?.find((e) => e.name === name)
+    if (!rec?.dir) return ''
+    return `\n\n**Location:** ${join(rec.dir, 'SKILL.md')}\n**Directory:** ${rec.dir}   ← companion scripts live here; read them with read, run them with the terminal (node ${join(rec.dir, 'scripts', '<name>.mjs')} …)`
+  } catch {
+    return ''
+  }
+}
+
 import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool } from './executors/domain-tools'
 
 export type SpawnSubAgentFn = (config: SpawnSubAgentConfig) => SubAgentHandle
@@ -552,7 +569,7 @@ export class ToolExecutor implements ToolExecContext {
           const raw = await em.read(skillName)
           if (raw) {
             em.touch(skillName).catch(() => {})
-            this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}`, false)
+            this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}${experienceLocationBlock(em, skillName)}`, false)
             t.exitCode = 0; t.status = 'completed'; this.notify(); return
           }
         }
@@ -587,7 +604,7 @@ export class ToolExecutor implements ToolExecContext {
         const raw2 = await em2.read(cleanName)
         if (raw2) {
           em2.touch(cleanName).catch(() => {})
-          this.addToolResult(t.id, `## Selected Experience: ${cleanName}\n\n${raw2}`, false)
+          this.addToolResult(t.id, `## Selected Experience: ${cleanName}\n\n${raw2}${experienceLocationBlock(em2, cleanName)}`, false)
           t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
       }

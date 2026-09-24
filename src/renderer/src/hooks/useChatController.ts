@@ -255,13 +255,15 @@ export function useChatController(options: UseChatControllerOptions) {
 
             processedConvRef.current.add(conv.id)
             if (result.experienceContent) {
-              const { record } = await managers.experienceManager.save({
+              const { record, rejectedFiles } = await managers.experienceManager.save({
                 title: result.experienceTitle ?? 'Untitled experience',
                 description: result.experienceContent.slice(0, 120),
                 content: result.experienceContent,
                 category: result.experienceCategory ?? 'general',
-                sourceConversationId: conv.id
+                sourceConversationId: conv.id,
+                files: result.experienceFiles
               })
+              if (rejectedFiles?.length) console.warn('[experience] rejected script files:', rejectedFiles.join(', '))
               managers.experienceManager.ensureTriggers(record.name, {
                 adapter: options.adapter, apiKey: apiKey || '', baseURL: options.baseURL, model: options.model
               }).catch((e: unknown) => console.warn('[experience] Trigger extraction failed:', e))

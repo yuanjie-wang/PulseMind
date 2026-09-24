@@ -219,7 +219,9 @@ export interface ElectronAPI {
 
   // Experiences
   listExperiences: () => Promise<ExperienceRecord[]>
-  saveExperienceRecord: (draft: ExperienceDraft) => Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord }>
+  saveExperienceRecord: (draft: ExperienceDraft) => Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord; rejectedFiles?: string[] }>
+  /** Read a companion script of an experience (read-only panel view). Jail-checked; null on any refusal. */
+  readExperienceFile: (name: string, relPath: string) => Promise<string | null>
   deleteExperienceRecord: (name: string) => Promise<void>
   readExperienceRecord: (name: string) => Promise<string | null>
   touchExperienceRecord: (name: string) => Promise<void>

@@ -45,8 +45,19 @@ export class ExperienceManager {
     return this.cached
   }
 
-  async save(draft: ExperienceDraft): Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord }> {
+  async save(draft: ExperienceDraft): Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord; rejectedFiles?: string[] }> {
     const result = await getHost().saveExperienceRecord(draft)
+    if (result.rejectedFiles?.length) {
+      console.warn('[experience] save rejected script files:', result.rejectedFiles.join(', '))
+    }
+    // 淘汰可见（PLAN-experience-scripts 1.6）：无声淘汰丢掉的是已验证的
+    // 自动化。Manager 在两 个进程都有实例，DOM 只在渲染端存在——用
+    // CustomEvent 把事件递给面板（面板监听后弹 antd message）。
+    if (result.evicted && typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('pm-experience-evicted', { detail: { record: result.evicted } }))
+      } catch { /* 结构化克隆失败的极端情形——淘汰本身已发生，不因通知失败回滚 */ }
+    }
     this.cachedAt = 0
     return result
   }
@@ -58,6 +69,11 @@ export class ExperienceManager {
 
   async read(name: string): Promise<string | null> {
     return getHost().readExperienceRecord(name)
+  }
+
+  /** Companion script content (panel's read-only view). */
+  readFile(name: string, relPath: string): Promise<string | null> {
+    return getHost().readExperienceFile(name, relPath)
   }
 
   async touch(name: string): Promise<void> {
