@@ -431,6 +431,24 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  // In-app navigation is the renderer's own business (Vite full-reload,
+  // wc.reload() after the unresponsive recovery) — both re-enter at the URL
+  // already loaded, or at the dev server origin in dev. Everything else that
+  // would move the window (a stray href, a file:// drop that somehow escaped
+  // the renderer guard) is refused rather than replacing the whole app UI.
+  const devOrigin = process.env.ELECTRON_RENDERER_URL
+    ? new URL(process.env.ELECTRON_RENDERER_URL).origin
+    : null
+  mainWindow.webContents.on('will-navigate', (details) => {
+    try {
+      if (details.url === mainWindow?.webContents.getURL()) return
+      if (devOrigin && new URL(details.url).origin === devOrigin) return
+    } catch {
+      // unparsable URL — fall through and block
+    }
+    details.preventDefault()
+  })
+
   // ── Unresponsive-renderer recovery ──
   // 'unresponsive' fires when the renderer's JS loop is stuck (long sync task,
   // GC death spiral) — the "app frozen but not crashed" state that used to

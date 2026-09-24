@@ -199,6 +199,7 @@ const en: TranslationDict = {
       awaitingInput: 'Select an option above...',
       streaming: 'AI is generating...',
       default: 'Type a message...',
+      dropHint: 'Drop files to attach',
     },
     staged: {
       hintBusy: '{{count}} staged · sends when this turn ends',

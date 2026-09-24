@@ -101,10 +101,10 @@ export function registerAppHandlers(): void {
     await shell.openExternal(url)
   })
 
-  ipcMain.handle(IPC_CHANNELS.FILE_STAT, async (_event, filePath: string): Promise<{ size: number; birthtime: string; mtime: string } | null> => {
+  ipcMain.handle(IPC_CHANNELS.FILE_STAT, async (_event, filePath: string): Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null> => {
     try {
       const s = await stat(filePath)
-      return { size: s.size, birthtime: s.birthtime.toISOString(), mtime: s.mtime.toISOString() }
+      return { size: s.size, birthtime: s.birthtime.toISOString(), mtime: s.mtime.toISOString(), isDirectory: s.isDirectory() }
     } catch { return null }
   })
 }

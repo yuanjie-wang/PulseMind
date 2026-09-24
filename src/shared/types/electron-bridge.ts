@@ -361,7 +361,14 @@ export interface ElectronAPI {
   getDataPaths: () => Promise<DataPaths>
   openFolder: (folderPath: string) => Promise<void>
   openExternal: (url: string) => Promise<void>
-  getFileStat: (filePath: string) => Promise<{ size: number; birthtime: string; mtime: string } | null>
+  getFileStat: (filePath: string) => Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null>
+  /** Disk path behind a pasted/dropped `File` — sync, no IPC. Electron 33
+   *  removed the runtime `File.path` (the ambient d.ts still declares it, so
+   *  that read typechecks and evaluates undefined); the preload's
+   *  `webUtils.getPathForFile` is the only remaining source. `''` for
+   *  pathless blobs (clipboard screenshots, JS-built Files) — the caller
+   *  routes those to its image branch. */
+  getPathForFile: (file: File) => string
 
   // Dialog (cross-platform ask_user)
   showDialog: (options: {

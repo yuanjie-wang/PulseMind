@@ -196,6 +196,7 @@ const zh = {
       awaitingInput: '请选择上述选项...',
       streaming: 'AI 正在生成...',
       default: '输入消息...',
+      dropHint: '松开添加为引用',
     },
     staged: {
       hintBusy: '已暂存 {{count}} 条 · 本回合结束后自动发送',

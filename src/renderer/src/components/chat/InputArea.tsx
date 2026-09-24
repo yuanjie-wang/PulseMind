@@ -13,6 +13,7 @@ import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 import { DEFAULT_APPROVAL_MODE } from '../../../../shared/sandbox/policy'
 import { modelLabel } from '../../../../shared/agent-protocol'
+import { fileUrlToPath, mergeAttachments, isImageFile } from '../../utils/quick-attach'
 
 /** Approval levels, most restrictive first — the order the dropdown lists them
  *  in. The icons are chosen for distinct silhouettes, not for a family: antd's
@@ -309,7 +310,7 @@ export function InputArea({
       filters: [{ name: 'All Files', extensions: ['*'] }],
     })
     if (!result.canceled && result.filePaths.length > 0) {
-      setSelectedFiles((prev) => [...prev, ...result.filePaths])
+      setSelectedFiles((prev) => mergeAttachments(prev, result.filePaths))
     }
   }
 
@@ -318,7 +319,7 @@ export function InputArea({
       properties: ['openDirectory'],
     })
     if (!result.canceled && result.filePaths.length > 0) {
-      setSelectedFolders((prev) => [...prev, ...result.filePaths])
+      setSelectedFolders((prev) => mergeAttachments(prev, result.filePaths))
     }
   }
 
@@ -328,6 +329,141 @@ export function InputArea({
 
   const removeFolder = (index: number) => {
     setSelectedFolders((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  // ── Quick-attach: paste / drag-drop files into the SAME chips the picker
+  // buttons fill, so `[file:]` / `[folder:]` routing in buildMessage is the
+  // single exit. All three entry points below are gated on showAttachments —
+  // the reuse sites (routine run, form assist, tool studio) pass a features
+  // object without `attachments` and must keep their paste/drag behaviour.
+  /** A file drag is tracked by a DEPTH counter, not a relatedTarget test:
+   *  dragenter/dragleave fire once per child crossed, so a bare boolean would
+   *  flicker off every time the pointer passes a chip or a button. */
+  const dragDepthRef = useRef(0)
+  const [dragActive, setDragActive] = useState(false)
+
+  const dragHasFiles = (e: React.DragEvent): boolean =>
+    Array.from(e.dataTransfer?.types ?? []).includes('Files')
+
+  const readAsDataURL = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result ?? ''))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(blob)
+    })
+
+  /** Stat each path and file it or folder it — a path whose stat fails (it
+   *  vanished) is dropped rather than attached blind. De-dup happens inside
+   *  each list, so the same path can never produce two chips. */
+  const addAttachments = async (paths: string[]): Promise<void> => {
+    if (paths.length === 0) return
+    const stats = await Promise.all(paths.map((p) => window.electronAPI.getFileStat(p)))
+    const files: string[] = []
+    const folders: string[] = []
+    paths.forEach((p, i) => {
+      const stat = stats[i]
+      if (!stat) return
+      if (stat.isDirectory) folders.push(p)
+      else files.push(p)
+    })
+    if (files.length > 0) setSelectedFiles((prev) => mergeAttachments(prev, files))
+    if (folders.length > 0) setSelectedFolders((prev) => mergeAttachments(prev, folders))
+  }
+
+  /** Clipboard / drag files → attachments — the same chips the file-picker
+   *  buttons fill, for ANY file type: the disk path comes from the preload's
+   *  `webUtils.getPathForFile` bridge. Electron 33 removed the runtime
+   *  `File.path` (the ambient d.ts still declares one, so that read
+   *  typechecks and evaluates `undefined`), which is why the old
+   *  `if (file.path)` silently dropped every real pasted/dropped file — the
+   *  `.path` fallback below exists only for fixtures/older Electron.
+   *  Pathless blobs (a clipboard screenshot, a JS-built File) fall through:
+   *  images are saved through `saveBase64Image` into tmp first — that IPC
+   *  takes raw base64, so the dataURL prefix goes — non-images are skipped. */
+  const addQuickFiles = async (files: File[]): Promise<void> => {
+    const paths: string[] = []
+    for (const file of files) {
+      const resolved = window.electronAPI.getPathForFile(file) || file.path
+      if (resolved) {
+        paths.push(resolved)
+        continue
+      }
+      if (!isImageFile(file)) continue
+      try {
+        const dataUrl = await readAsDataURL(file)
+        const saved = await window.electronAPI.saveBase64Image(dataUrl.slice(dataUrl.indexOf(',') + 1))
+        if (saved.success && saved.path) paths.push(saved.path)
+        else console.log('[quick-attach] saveBase64Image rejected image', saved)
+      } catch (err) {
+        console.log('[quick-attach] clipboard image save failed', err)
+      }
+    }
+    await addAttachments(paths)
+  }
+
+  /** Quick-attach paste: file clipboard content and a bare `file://` URL
+   *  become chips; anything else is left alone (the plain-text paste of
+   *  today). Sender's non-slot TextArea does NOT preventDefault for us, so
+   *  each intercepting branch must — otherwise the text still lands at the
+   *  caret next to the chip it was meant to become. */
+  const handlePaste = (e: React.ClipboardEvent<HTMLElement>): void => {
+    if (!showAttachments) return
+    const cd = e.clipboardData
+    const files = Array.from(cd?.files ?? [])
+    if (files.length > 0) {
+      e.preventDefault()
+      void addQuickFiles(files)
+      return
+    }
+    const path = fileUrlToPath(cd?.getData('text/plain') ?? '')
+    if (path) {
+      e.preventDefault()
+      void addAttachments([path])
+    }
+  }
+
+  // File drags only — a text/plain drag (the sidebar's) falls through and the
+  // window guard above us ignores it too. dragenter/dragover must ALSO
+  // stopPropagation: the window's file-drop guard sits higher in the bubble
+  // and would write dropEffect='none' over our 'copy' a moment later, which
+  // is what turns the cursor into the forbidden sign mid-drag.
+  const handleDragEnter = (e: React.DragEvent): void => {
+    if (!showAttachments || !dragHasFiles(e)) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current += 1
+    setDragActive(true)
+  }
+
+  const handleDragOver = (e: React.DragEvent): void => {
+    if (!showAttachments || !dragHasFiles(e)) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    // A drag can reach this element without a dragenter the counter saw — arm
+    // it here so the matching dragleave still balances instead of pinning the
+    // highlight on forever.
+    if (dragDepthRef.current === 0) dragDepthRef.current = 1
+    setDragActive(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent): void => {
+    if (!showAttachments || !dragHasFiles(e)) return
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragActive(false)
+  }
+
+  const handleDrop = (e: React.DragEvent): void => {
+    if (!showAttachments || !dragHasFiles(e)) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepthRef.current = 0
+    setDragActive(false)
+    void addQuickFiles(Array.from(e.dataTransfer?.files ?? []))
+    // The drop took focus to wherever the pointer came from — hand it straight
+    // back so the next keystroke reaches the composer.
+    composerRef.current?.focus()
   }
 
   const modelItems =
@@ -476,7 +612,13 @@ export function InputArea({
   }
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div
+      style={{ position: 'relative' }}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <Composer
         ref={composerRef}
         value={inputValue}
@@ -489,6 +631,8 @@ export function InputArea({
         sendAccentHue={sendAccentHue}
         loading={isRequesting && !isInputDisabled}
         layout={layout}
+        onPaste={handlePaste}
+        dropActive={dragActive}
         autoFocus={autoFocus ?? !hasMessages}
         placeholder={
           placeholder ??
@@ -509,7 +653,7 @@ export function InputArea({
           // bottom and painted both overlays on top of the input card.
           // Composer.aboveCard owns the correct anchor (see its doc); here the
           // children stack in document order, popup closest to the card.
-          (topSlot || stagedCount > 0 || (mentionActive && mentionMatches.length > 0)) && (
+          (topSlot || stagedCount > 0 || (mentionActive && mentionMatches.length > 0) || dragActive) && (
             <>
               {topSlot && (
                 <div style={{ display: 'flex', justifyContent: 'center' }}>{topSlot}</div>
@@ -638,6 +782,29 @@ export function InputArea({
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+              {/* Quick-attach: the LAST child, so it stacks closest to the
+                  card — the affordance sits where the files will land. Same
+                  glass family as the two overlays above it, dashed like the
+                  card's own drag highlight. */}
+              {dragActive && (
+                <div
+                  data-drop-hint
+                  style={{
+                    maxWidth: COMPOSER_MAX_WIDTH,
+                    margin: '8px auto 0',
+                    textAlign: 'center',
+                    fontSize: 12,
+                    color: 'var(--pm-text-secondary)',
+                    background: 'var(--pm-elevated)',
+                    border: '1px dashed var(--pm-border-veil)',
+                    borderRadius: 10,
+                    boxShadow: 'var(--pm-shadow-pop)',
+                    padding: '6px 10px',
+                  }}
+                >
+                  {t('chatView.sender.dropHint')}
                 </div>
               )}
             </>

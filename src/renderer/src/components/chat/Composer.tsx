@@ -97,6 +97,13 @@ export interface ComposerProps {
    *  InputArea's @-popup turns Enter into "select the highlighted expert").
    *  `false | void` is Sender's own declared contract, not our invention. */
   onKeyDown?: (e: React.KeyboardEvent<Element>) => false | void
+  /** Paste on the textarea, forwarded to Sender (which routes it to the inner
+   *  input). InputArea's quick-attach handler intercepts file/image clipboard
+   *  content here; a plain-text paste must fall through untouched. */
+  onPaste?: React.ClipboardEventHandler<HTMLElement>
+  /** A file drag is hovering the composer — paints the card with a dashed
+   *  border so the drop target is visible. Driven by InputArea's drag counter. */
+  dropActive?: boolean
   /** Focus the textarea once mounted. */
   autoFocus?: boolean
 }
@@ -120,6 +127,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     layout = 'floating',
     maxRows = 8,
     onKeyDown,
+    onPaste,
+    dropActive,
     autoFocus,
   }: ComposerProps,
   ref
@@ -167,6 +176,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   return (
     <div
       ref={containerRef}
+      className={dropActive ? 'pm-drop-active' : undefined}
       style={
         layout === 'floating'
           ? { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, padding: '12px 24px 24px' }
@@ -229,6 +239,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           placeholder={placeholder}
           disabled={disabled}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           onSubmit={(val) => {
             if (val && typeof val === 'string') send()
           }}
@@ -249,6 +260,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           max-width: ${COMPOSER_MAX_WIDTH}px;
           margin: 0 auto;
           box-shadow: var(--pm-shadow-glass) !important;
+        }
+        /* Quick-attach drop target: the card reads as a dashed receptacle while
+           a file drag hovers it (InputArea's drag counter drives the class on
+           this component's root). border-color overrides the veil above — same
+           specificity, later in this sheet — and --pm-ink is the app's text
+           colour in both themes, so the outline is legible light or dark. */
+        .pm-drop-active .ant-sender {
+          border-style: dashed;
+          border-color: var(--pm-ink);
         }
         /* The send button's fills. The base circle is the antd theme's primary,
            i.e. the ink — black in light, light in dark; pm-send lands only on

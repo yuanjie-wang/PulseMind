@@ -46,6 +46,7 @@ import { usePendingProfileStore } from './stores/pendingProfileStore'
 import { conversationKeyOf } from '../../shared/conversation-key'
 import { NotifyBridge } from './utils/notify'
 import { reportSilentFailure } from './utils/notify-core'
+import { installFileDropGuard } from './utils/file-drop-guard'
 import { buildAntdTheme } from './theme/tokens'
 import { resolveThemePreference, type ThemePreference } from './theme/palette'
 import { applyThemeAttr, readThemeMirror, writeThemeMirror } from './theme/dom'
@@ -414,6 +415,12 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [saveAllConversationsSync])
+
+  // Swallow file drops that reach the window with no composer claiming them —
+  // Chromium's default would navigate to file:// and replace the whole app UI.
+  // The composer opts in itself (its dragover stopPropagates, so this guard's
+  // later dropEffect='none' write never overwrites its 'copy').
+  useEffect(() => installFileDropGuard(window), [])
 
   // Plan panel scroll-to-message
   const [planScrollToMsgId, setPlanScrollToMsgId] = useState<string | null>(null)

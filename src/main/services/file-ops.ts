@@ -358,12 +358,12 @@ export async function svcConvertToMarkdown(filePath: string): Promise<{ content:
   }
 }
 
-export async function svcFileStat(filePath: string): Promise<{ size: number; birthtime: string; mtime: string } | null> {
+export async function svcFileStat(filePath: string): Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null> {
   try {
     const guard = await checkFsTarget(filePath, 'read')
     if (!guard.ok) return null
     const s = await stat(filePath)
-    return { size: s.size, birthtime: s.birthtime.toISOString(), mtime: s.mtime.toISOString() }
+    return { size: s.size, birthtime: s.birthtime.toISOString(), mtime: s.mtime.toISOString(), isDirectory: s.isDirectory() }
   } catch {
     return null
   }

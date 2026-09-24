@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveWindowControlsLayout } from '../shared/window-chrome'
 import type { WindowControlsLayout } from '../shared/window-chrome'
@@ -294,7 +294,23 @@ const electronAPI = {
   getDataPaths: (): Promise<DataPaths> => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_DATA_PATHS),
   openFolder: (folderPath: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SHELL_OPEN_FOLDER, folderPath),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SHELL_OPEN_EXTERNAL, url),
-  getFileStat: (filePath: string): Promise<{ size: number; birthtime: string; mtime: string } | null> => ipcRenderer.invoke(IPC_CHANNELS.FILE_STAT, filePath),
+  getFileStat: (filePath: string): Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null> => ipcRenderer.invoke(IPC_CHANNELS.FILE_STAT, filePath),
+  // Synchronous, no IPC: the disk path behind a pasted/dropped File. Electron
+  // 33 removed the runtime `File.path` (the ambient `interface File { path }`
+  // in electron.d.ts still declares it, so the renderer's read typechecks and
+  // evaluates undefined — every pasted/dropped file was silently dropped
+  // before this existed). webUtils is the only remaining source, and it lives
+  // here in the preload, where contextBridge hands the File through intact
+  // (measured, even under this app's `sandbox: true`). A non-File throws —
+  // caught so the renderer sees '' and falls to the image-blob branch instead
+  // of losing the whole batch to one exception.
+  getPathForFile: (file: File): string => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
 
   // Dialog
   showDialog: (options: {
