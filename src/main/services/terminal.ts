@@ -12,6 +12,7 @@ import { currentSessionSandbox } from '../sandbox/session-context'
 import { isSubpath } from '../../shared/sandbox/path-jail'
 import { auditStore } from '../storage/audit-store'
 import { DATA_DIR } from '../storage'
+import { createStreamDecoder } from './stream-decoder'
 
 interface ProcessEntry {
   process: ChildProcess
@@ -31,9 +32,15 @@ const DEFAULT_TIMEOUT = 60_000 // 60s
 // default is unreliable in a hidden no-console child (CREATE_NO_WINDOW): it can
 // be the OEM codepage (GBK on Chinese systems) even when chcp reports 65001,
 // and modern tools (git, node) emit UTF-8 regardless. Guessing the codepage
-// misdecodes in both directions, so instead we force UTF-8 in the child and
-// decode the pipe as UTF-8.
+// misdecodes in both directions, so instead we force UTF-8 in the child; the
+// pipe side — arbitrary chunk cuts plus legacy tools that still emit GBK on
+// their own stdout — is decoded by stream-decoder.ts (strict UTF-8 → GBK).
 const WIN_PS_UTF8_PREFIX = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8; '
+
+// Windows: Python's pipes default to the ANSI codepage (cp936 on Chinese
+// Windows), the main GBK emitter left after WIN_PS_UTF8_PREFIX above — UTF-8
+// mode makes it emit the bytes the pipe decoder expects.
+const WIN_UTF8_ENV = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
 
 /** Cross-platform process kill. On Windows, signals aren't supported — use `.kill()` or `taskkill`. */
 function killProcess(entry: ProcessEntry, force = false): void {
@@ -118,7 +125,7 @@ export async function svcExecuteCommand(
   const child = spawn(shell, shellArgs, {
     cwd: effectiveCwd,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ...getHookEnv() },
+    env: { ...process.env, ...getHookEnv(), ...(isWin ? WIN_UTF8_ENV : {}) },
     // On Windows, prevent console window from flashing
     windowsHide: true
   })
@@ -133,6 +140,11 @@ export async function svcExecuteCommand(
 
   processes.set(processId, entry)
 
+  // Per-stream decoders: hold incomplete sequences across chunk cuts, fall
+  // back to GBK for tools that ignore the UTF-8 prefix above.
+  const outDecoder = createStreamDecoder()
+  const errDecoder = createStreamDecoder()
+
   // Idle timeout — resets on every stdout/stderr data event.
   // Only kills the process if no output is received for the duration.
   const effectiveTimeout = (timeoutMs != null && timeoutMs > 0) ? timeoutMs : DEFAULT_TIMEOUT
@@ -143,6 +155,13 @@ export async function svcExecuteCommand(
     idleTimer = setTimeout(() => {
       if (!child.killed) {
         killProcess(entry)
+        const outTail = outDecoder.flush()
+        if (outTail) {
+          entry.stdout += outTail
+          emit.output(processId, 'stdout', outTail)
+        }
+        const errTail = errDecoder.flush()
+        if (errTail) emit.output(processId, 'stderr', errTail)
         emit.output(processId, 'stderr', `\n[Command timed out after ${effectiveTimeout / 1000}s with no output]`)
         emit.exit(processId, null, 'SIGTERM')
         processes.delete(processId)
@@ -156,7 +175,8 @@ export async function svcExecuteCommand(
   if (child.stdout) {
     child.stdout.on('data', (chunk: Buffer) => {
       resetIdleTimer()
-      const text = chunk.toString('utf-8')
+      const text = outDecoder.push(chunk)
+      if (!text) return // incomplete sequence held for the next chunk
       entry.stdout += text
       if (entry.stdout.length > OUTPUT_LIMIT) {
         entry.stdout = entry.stdout.slice(0, OUTPUT_LIMIT)
@@ -172,7 +192,8 @@ export async function svcExecuteCommand(
   if (child.stderr) {
     child.stderr.on('data', (chunk: Buffer) => {
       resetIdleTimer()
-      const text = chunk.toString('utf-8')
+      const text = errDecoder.push(chunk)
+      if (!text) return
       entry.stderr += text
       emit.output(processId, 'stderr', text)
     })
@@ -182,6 +203,13 @@ export async function svcExecuteCommand(
   child.on('exit', (code, signal) => {
     if (idleTimer) clearTimeout(idleTimer)
     processes.delete(processId)
+    const outTail = outDecoder.flush()
+    if (outTail) {
+      entry.stdout += outTail
+      emit.output(processId, 'stdout', outTail)
+    }
+    const errTail = errDecoder.flush()
+    if (errTail) emit.output(processId, 'stderr', errTail)
     emit.exit(processId, code, signal)
   })
 
@@ -226,12 +254,17 @@ export async function svcExecSync(command: string, cwd?: string, timeoutMs?: num
     const child = spawn(shell, shellArgs, {
       cwd: cwd || getHomeDir(),
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...getHookEnv() },
+      env: { ...process.env, ...getHookEnv(), ...(isWin ? WIN_UTF8_ENV : {}) },
       windowsHide: true,
       timeout: 0  // Timeout managed by idle timer below
     })
 
     let output = ''
+    const outDecoder = createStreamDecoder()
+    const errDecoder = createStreamDecoder()
+    const flushDecoders = (): void => {
+      output += outDecoder.flush() + errDecoder.flush()
+    }
 
     // Idle timeout — resets on every stdout/stderr data event
     const effectiveTimeout = (timeoutMs != null && timeoutMs > 0) ? timeoutMs : DEFAULT_TIMEOUT
@@ -241,6 +274,7 @@ export async function svcExecSync(command: string, cwd?: string, timeoutMs?: num
       if (idleTimer) clearTimeout(idleTimer)
       idleTimer = setTimeout(() => {
         killProcess({ process: child } as ProcessEntry)
+        flushDecoders()
         output += `\n[Command timed out after ${effectiveTimeout / 1000}s with no output]`
         resolve({ output, code: null })
       }, effectiveTimeout)
@@ -250,18 +284,22 @@ export async function svcExecSync(command: string, cwd?: string, timeoutMs?: num
 
     child.stdout?.on('data', (chunk: Buffer) => {
       resetIdleTimer()
-      output += chunk.toString('utf-8')
+      const text = outDecoder.push(chunk)
+      if (text) output += text
     })
     child.stderr?.on('data', (chunk: Buffer) => {
       resetIdleTimer()
-      output += chunk.toString('utf-8')
+      const text = errDecoder.push(chunk)
+      if (text) output += text
     })
     child.on('error', () => {
       if (idleTimer) clearTimeout(idleTimer)
+      flushDecoders()
       resolve({ output, code: null })
     })
     child.on('exit', (code) => {
       if (idleTimer) clearTimeout(idleTimer)
+      flushDecoders()
       resolve({ output, code })
     })
   })
