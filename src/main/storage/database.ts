@@ -335,6 +335,13 @@ function createTables(): void {
       last_visit_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS browser_favorites (
+      url        TEXT PRIMARY KEY,
+      title      TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
   `)
   // Conversations keep their project binding (welcome page picker); existing
   // databases get the column here.

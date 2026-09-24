@@ -106,6 +106,73 @@ export function zoomForWidth(paneWidth: number): number {
   return Math.min(1, Math.max(0.2, paneWidth / PANE_DESIGN_WIDTH))
 }
 
+/** 收藏键的规范化（PLAN-browser-favorites L3）：host 小写、去尾斜杠、去
+ *  hash——`https://a.com/b` 与 `https://A.com/b/#top` 是同一条收藏。查询
+ *  串保留（不同参数常常是不同页面）。非 http(s) 原样返回 trim 后的值，
+ *  空/null 返回空串（调用方拒收）。 */
+export function normalizeFavoriteUrl(raw: string): string {
+  const input = (raw ?? '').trim()
+  if (!input) return ''
+  try {
+    const u = new URL(input)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return input
+    u.hash = ''
+    u.hostname = u.hostname.toLowerCase()
+    if (u.pathname.length > 1 && u.pathname.endsWith('/')) u.pathname = u.pathname.slice(0, -1)
+    let out = u.toString()
+    if (out.endsWith('/') && u.pathname === '/') out = out.slice(0, -1)
+    return out
+  } catch {
+    return input
+  }
+}
+
+/** 收藏行（下拉联想的输入形状）——与 HistorySuggestionRow 同构除来源。 */
+export interface FavoriteSuggestionRow {
+  url: string
+  title: string | null
+}
+
+/** 下拉联想的合并（PLAN-browser-favorites M2）：收藏先于历史（收藏是刻意
+ *  数据，访问历史是副产品），同 rank 内收藏按加入时间倒序。`rankHistorySuggestions`
+ *  不动——它只管历史行；合并层把收藏置顶、去重（同 URL 只出现一次），再
+ *  用历史填满 limit。 */
+export function mergeSuggestions(
+  text: string,
+  favorites: Array<FavoriteSuggestionRow & { createdAt?: number }>,
+  history: Array<{ url: string; title: string | null; visitCount?: number; lastVisitAt?: number }>,
+  limit = 8,
+): Array<{ url: string; title: string | null; favorite?: boolean }> {
+  const needle = text.trim().toLowerCase()
+  const matches = (row: { url: string; title: string | null }): boolean =>
+    !needle || row.url.toLowerCase().includes(needle) || (row.title ?? '').toLowerCase().includes(needle)
+
+  const seen = new Set<string>()
+  const out: Array<{ url: string; title: string | null; favorite?: boolean }> = []
+
+  const favs = [...favorites]
+    .filter(matches)
+    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+  for (const f of favs) {
+    const key = normalizeFavoriteUrl(f.url)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ url: f.url, title: f.title, favorite: true })
+    if (out.length >= limit) return out
+  }
+
+  // 历史行按 rankHistorySuggestions 的口径交给调用方排好序；这里只去重填空。
+  for (const h of history) {
+    if (out.length >= limit) break
+    const key = normalizeFavoriteUrl(h.url)
+    if (seen.has(key)) continue
+    if (!matches(h)) continue
+    seen.add(key)
+    out.push({ url: h.url, title: h.title, favorite: false })
+  }
+  return out
+}
+
 /** Address-bar normalization: bare hosts like `mail.163.com` or
  *  `localhost:5173` become `https://…` — the URL whitelist requires a scheme
  *  and a real browser completes one silently. Anything already schemed
@@ -170,6 +237,8 @@ export interface RankedSuggestion {
   /** host-prefix beats url-substring beats title-substring; peers by
    *  recency then visit count (裁定 L4's ordering, testable here). */
   rank: 0 | 1 | 2
+  /** 收藏行（PLAN-browser-favorites M2）：dropdown 渲染星形图标用。 */
+  favorite?: boolean
 }
 
 function hostOf(url: string): string {

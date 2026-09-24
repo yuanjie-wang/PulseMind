@@ -7,11 +7,13 @@
 // belong to WorkbenchPane; this component fills its parent.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2, Star, Clock3 } from 'lucide-react'
 import {
   hostLabel,
   isFreshTabUrl,
+  mergeSuggestions,
   normalizeAddressBarInput,
+  normalizeFavoriteUrl,
   rankHistorySuggestions,
   type BrowserPaneAction,
   type BrowserPaneUpdate,
@@ -87,7 +89,37 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   // pane-state push and the main-process dock shifts the webview down while
   // it is open.
   const [suggestions, setSuggestions] = useState<RankedSuggestion[]>([])
+  // 星标态（PLAN-browser-favorites M2）：当前地址是否已收藏，随导航/切 tab 刷新。
+  const [starred, setStarred] = useState(false)
+  const [starTick, setStarTick] = useState(0)
   const [selectedIdx, setSelectedIdx] = useState(-1)
+  const activeUrl = activeTab?.url ?? ''
+  useEffect(() => {
+    if (!activeUrl || isFreshTabUrl(activeUrl)) {
+      setStarred(false)
+      return
+    }
+    let alive = true
+    window.electronAPI.browserFavoriteHas(normalizeFavoriteUrl(activeUrl))
+      .then((has) => { if (alive) setStarred(!!has) })
+      .catch(() => { if (alive) setStarred(false) })
+    return () => { alive = false }
+  }, [activeUrl, starTick])
+  const toggleStar = () => {
+    const url = normalizeFavoriteUrl(activeUrl)
+    if (!url) return
+    if (starred) {
+      window.electronAPI.browserFavoriteRemove(url).then(() => { setStarred(false); setStarTick((t) => t + 1) }).catch(() => {})
+    } else {
+      const title = activeTab?.title || activeUrl
+      window.electronAPI.browserFavoriteAdd(url, title)
+        .then((r) => {
+          if (r?.ok) setStarred(true)
+          setStarTick((t) => t + 1)
+        })
+        .catch(() => {})
+    }
+  }
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [confirmingClear, setConfirmingClear] = useState(false)
   const inputWrapRef = useRef<HTMLDivElement | null>(null)
@@ -101,6 +133,9 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   const showEmpty = pane.tabs.length === 0 || !activeTab || isFreshTabUrl(activeTab.url)
   const [recents, setRecents] = useState<HistorySuggestionRow[]>([])
   const [recentsTick, setRecentsTick] = useState(0)
+  // 空态收藏区（PLAN-browser-favorites M2）：空收藏整区不渲染——不出现
+  // 「去收藏吧」的占位营销文案。
+  const [favorites, setFavorites] = useState<Array<{ url: string; title: string | null; createdAt: number; updatedAt: number }>>([])
   useEffect(() => {
     if (!showEmpty) return
     let alive = true
@@ -109,6 +144,11 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
         if (alive) setRecents((rows ?? []).slice(0, 6))
       })
       .catch(() => { /* history is best-effort — the guidance copy still shows */ })
+    window.electronAPI.browserFavoriteList()
+      .then((rows) => {
+        if (alive) setFavorites(rows ?? [])
+      })
+      .catch(() => { /* favorites are best-effort too */ })
     return () => {
       alive = false
     }
@@ -123,13 +163,19 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
       return
     }
     const seq = ++suggestSeq.current
-    window.electronAPI.browserHistoryQuery(query)
-      .then((rows) => {
+    // 收藏先于历史（PLAN-browser-favorites M2）：两个来源并发查，mergeSuggestions
+    // 置顶收藏（去重），历史按原 rank 填满 limit。
+    Promise.all([
+      window.electronAPI.browserFavoriteQuery(query, 8).catch(() => []),
+      window.electronAPI.browserHistoryQuery(query).catch(() => []),
+    ])
+      .then(([favRows, histRows]) => {
         if (seq !== suggestSeq.current) return // a newer draft superseded this
-        const ranked = rankHistorySuggestions(query, rows ?? [], 8)
-        setSuggestions(ranked)
+        const ranked = rankHistorySuggestions(query, histRows ?? [], 8)
+        const merged = mergeSuggestions(query, favRows ?? [], ranked, 8)
+        setSuggestions(merged)
         setSelectedIdx(-1)
-        if (open) setDropdownOpen(ranked.length > 0)
+        if (open) setDropdownOpen(merged.length > 0)
       })
       .catch(() => { /* history is best-effort — the typed text still navigates */ })
   }
@@ -320,6 +366,15 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
         <div style={{ ...ICON_BUTTON, opacity: activeTab ? 1 : 0.35 }} onClick={() => activeTab && onAction({ op: 'forward', tabId: activeTab.id })} title="前进">
           <ArrowRight size={13} />
         </div>
+        {activeUrl && !isFreshTabUrl(activeUrl) && (
+          <div
+            style={{ ...ICON_BUTTON, color: starred ? 'var(--pm-accent, #4b7bec)' : undefined }}
+            onClick={toggleStar}
+            title={starred ? '取消收藏' : '收藏此页'}
+          >
+            <Star size={12} fill={starred ? 'currentColor' : 'none'} />
+          </div>
+        )}
         <div style={{ ...ICON_BUTTON, opacity: activeTab ? 1 : 0.35 }} onClick={() => activeTab && onAction({ op: 'reload', tabId: activeTab.id })} title="刷新">
           <RotateCw size={12} />
         </div>
@@ -414,7 +469,9 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                       background: i === selectedIdx ? 'var(--pm-tile-soft)' : 'transparent',
                     }}
                   >
-                    <Clock size={12} style={{ flexShrink: 0, color: 'var(--pm-text-muted)' }} />
+                    {s.favorite
+                      ? <Star size={12} style={{ flexShrink: 0, color: 'var(--pm-accent, #4b7bec)' }} fill="currentColor" />
+                      : <Clock size={12} style={{ flexShrink: 0, color: 'var(--pm-text-muted)' }} />}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
                       <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.url}</div>
@@ -501,6 +558,32 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                   padding: 6,
                 }}
               >
+                {favorites.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', margin: '2px 0 6px 10px' }}>收藏</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: favorites.length > 0 ? 8 : 0 }}>
+                      {favorites.slice(0, 4).map((f) => (
+                        <div
+                          key={f.url}
+                          data-pm-empty-item
+                          className="pm-pane-empty-item"
+                          onClick={() => navigateTo(f.url)}
+                          style={{ padding: '5px 10px', borderRadius: 6, cursor: 'pointer', minWidth: 0 }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Star size={10} style={{ flexShrink: 0, color: 'var(--pm-accent, #4b7bec)' }} fill="currentColor" />
+                            <div style={{ fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {f.title || hostLabel(f.url)}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {hostLabel(f.url)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
                 {/* 11px + 10px 缩进 = 行内文字左沿（6 + 10），标签与列表共一条左边线。 */}
                 <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', margin: '2px 0 6px 10px' }}>最近访问</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>

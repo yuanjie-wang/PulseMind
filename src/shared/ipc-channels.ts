@@ -271,6 +271,11 @@ export const IPC_CHANNELS = {
   // globally shared, clearable from the suggestion dropdown's footer.
   BROWSER_HISTORY_QUERY: 'browser:history-query',
   BROWSER_HISTORY_CLEAR: 'browser:history-clear',
+  BROWSER_FAVORITE_ADD: 'browser:favorite-add',
+  BROWSER_FAVORITE_REMOVE: 'browser:favorite-remove',
+  BROWSER_FAVORITE_LIST: 'browser:favorite-list',
+  BROWSER_FAVORITE_QUERY: 'browser:favorite-query',
+  BROWSER_FAVORITE_HAS: 'browser:favorite-has',
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]

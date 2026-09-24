@@ -43,6 +43,7 @@ import { appViewDock } from './app-view-dock'
 import { readDevToolsPort } from './cdp-port'
 import { runPlaywrightOp } from './PlaywrightCommands'
 import { takeDomSnapshot } from './snapshot-refs'
+import { browserFavoriteStore } from '../storage/browser-favorite-store'
 import { runBrowserCode, type BrowserRunOutput } from './kernel'
 
 /** Playwright ops that change page state — the audit-worthy subset. */
@@ -266,6 +267,17 @@ export class BrowserService {
           return browserOk(await this.listTabs(scopeId))
         case 'listDownloads':
           return browserOk(this.listDownloads(scopeId))
+        case 'listFavorites':
+          return browserOk(browserFavoriteStore.list())
+        case 'addFavorite':
+          try {
+            const added = browserFavoriteStore.add(cmd.url, cmd.title)
+            return browserOk({ url: added.url, title: added.title ?? undefined, added: added.created ? true : 'already' })
+          } catch (err) {
+            return browserError('FAVORITE_LIMIT', err instanceof Error ? err.message : String(err))
+          }
+        case 'removeFavorite':
+          return browserOk({ removed: browserFavoriteStore.remove(cmd.url) })
         case 'newTab': {
           if (cmd.url) assertAllowedUrl(cmd.url)
           const backendId = this.activeBackendId(scopeId)

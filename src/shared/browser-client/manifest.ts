@@ -45,6 +45,10 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
           signature: 'downloads(): Promise<Array<{name, path, size, savedAt}>>',
           summary: 'Newest first — files a page downloaded land in this conversation\u2019s workspace; read/upload them via the file tools',
         },
+        favorites: {
+          signature: 'favorites: { list(): Promise<Array<{url, title}>>, add(url, title?): Promise<{url, title?, added}>, remove(url): Promise<boolean> }',
+          summary: 'The user’s saved sites (收藏). list() on demand — when the user mentions a saved site, match by title/host here, NEVER reconstruct the URL from memory. add is idempotent (added:’already’ means it existed)',
+        },
         documentation: {
           signature: 'documentation(): Promise<string>',
           summary: 'The full readout (effective API + workflow docs) — the same object as agent.documentation',

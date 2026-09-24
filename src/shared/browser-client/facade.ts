@@ -77,6 +77,13 @@ export interface BrowserApi {
   }
   /** Files saved by page downloads in this conversation's workspace. */
   downloads: () => Promise<Array<{ name: string; path: string; size: number; savedAt: string }>>
+  /** 用户策展的收藏（PLAN-browser-favorites M3）：list 按需现查（绝不进
+   *  prompt——缓存契约），add 幂等（重复返回 added:'already'），remove 可逆。 */
+  favorites: {
+    list: () => Promise<Array<{ url: string; title?: string }>>
+    add: (url: string, title?: string) => Promise<{ url: string; title?: string; added: true | 'already' }>
+    remove: (url: string) => Promise<boolean>
+  }
   /** Callable readout (docs §…) that also carries `.list()` / `.get(name)` —
    *  one object, so `agent.documentation.get(...)` (the path the workflow doc
    *  promises) and the legacy `documentation()/documentationList/Get` shapes
@@ -196,6 +203,18 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
             `（仅应用内浏览器面板的后端有此对象。）`,
           ),
           downloads: () => invoke({ method: 'listDownloads' }) as Promise<Array<{ name: string; path: string; size: number; savedAt: string }>>,
+          favorites: {
+            /** 收藏是用户策展的数据：按需现查，绝不进 prompt（缓存契约）。 */
+            list: () => invoke({ method: 'listFavorites' }) as Promise<Array<{ url: string; title?: string }>>,
+            add: async (url: string, title?: string) => {
+              const r = (await invoke({ method: 'addFavorite', url, title })) as { url: string; title?: string; added: true | 'already' }
+              return r
+            },
+            remove: async (url: string) => {
+              const r = (await invoke({ method: 'removeFavorite', url })) as { removed: boolean }
+              return r.removed
+            },
+          },
           documentation: documentationGuarded,
           open: async (url: string) => {
             const normalized = assertAllowedUrl(url)

@@ -355,6 +355,11 @@ export interface ElectronAPI {
   /** Address-bar history (PLAN-browser-pane-ux T3): manual navigation only. */
   browserHistoryQuery: (text: string) => Promise<Array<{ url: string; title: string | null; visitCount: number; lastVisitAt: number }>>
   browserHistoryClear: () => Promise<void>
+  browserFavoriteAdd: (url: string, title?: string) => Promise<{ ok: boolean; url: string; created: boolean; error?: string }>
+  browserFavoriteRemove: (url: string) => Promise<boolean>
+  browserFavoriteList: () => Promise<Array<{ url: string; title: string | null; createdAt: number; updatedAt: number }>>
+  browserFavoriteQuery: (text: string, limit?: number) => Promise<Array<{ url: string; title: string | null; createdAt: number; updatedAt: number }>>
+  browserFavoriteHas: (url: string) => Promise<boolean>
   onBrowserPaneUpdate: (
     cb: (update: {
       visible: boolean

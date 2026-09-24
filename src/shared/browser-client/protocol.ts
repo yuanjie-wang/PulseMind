@@ -36,6 +36,9 @@ export type BrowserCommand =
   | { method: 'claimTab'; tabId: string }
   | { method: 'listTabs' }
   | { method: 'listDownloads' }
+  | { method: 'listFavorites' }
+  | { method: 'addFavorite'; url: string; title?: string }
+  | { method: 'removeFavorite'; url: string }
   | { method: 'newTab'; url?: string }
   | { method: 'getState'; tabId: string }
   | { method: 'navigate'; tabId: string; url: string }

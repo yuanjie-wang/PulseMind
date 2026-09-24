@@ -92,6 +92,14 @@ const electronAPI = {
   browserHistoryQuery: (text: string): Promise<Array<{ url: string; title: string | null; visitCount: number; lastVisitAt: number }>> =>
     ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY_QUERY, text),
   browserHistoryClear: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_HISTORY_CLEAR),
+  browserFavoriteAdd: (url: string, title?: string): Promise<{ ok: boolean; url: string; created: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_FAVORITE_ADD, url, title),
+  browserFavoriteRemove: (url: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_FAVORITE_REMOVE, url),
+  browserFavoriteList: (): Promise<Array<{ url: string; title: string | null; createdAt: number; updatedAt: number }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_FAVORITE_LIST),
+  browserFavoriteQuery: (text: string, limit?: number): Promise<Array<{ url: string; title: string | null; createdAt: number; updatedAt: number }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.BROWSER_FAVORITE_QUERY, text, limit),
+  browserFavoriteHas: (url: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.BROWSER_FAVORITE_HAS, url),
   onBrowserPaneUpdate: (cb: (update: unknown) => void) => {
     const listener = (_event: unknown, update: unknown) => cb(update)
     ipcRenderer.on(IPC_CHANNELS.BROWSER_PANE_UPDATE, listener as never)

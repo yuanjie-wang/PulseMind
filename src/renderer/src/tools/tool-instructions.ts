@@ -795,5 +795,6 @@ return after
 - The sandbox has NO timers — \`setTimeout\` is not defined. If a wait is unavoidable, use \`await tab.waitForTimeout(ms)\`; otherwise re-\`domSnapshot()\` instead of sleeping.
 - \`tabs.list()\` items are plain data (\`t.url\`/\`t.title\` as properties). A Tab from \`get()\`/\`open()\` is a live handle: \`await tab.url()\` / \`await tab.title()\` are async methods.
 - Tell the USER "打开浏览器/查看页面" — never mention kernel, CDP, or vm in user-facing text.
+- 收藏 (favorites): the user's saved sites live in \`agent.browsers.favorites\`. The user mentions a saved site (「打开我收藏的知乎」) → \`favorites.list()\` FIRST, match by title/host, then \`open(url)\` with the STORED URL — never reconstruct a URL from memory. 收藏一下 → \`favorites.add(url, title?)\` (envelope says \`added\` or \`'already'\` — tell the user which). 取消收藏 → \`favorites.remove(url)\`. Navigating never auto-populates favorites.
 - http/https only. A call times out at 60s: split work into multiple calls instead of one mega-script.`,
 }
