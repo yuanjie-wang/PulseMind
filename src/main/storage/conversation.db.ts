@@ -273,16 +273,42 @@ function saveConversationInner(conversation: Conversation): void {
   const insertToolResult = database.prepare(
     'INSERT OR REPLACE INTO tool_results (ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
   )
+  // P3-c (PLAN-security-hardening): a full save is the authority on what this
+  // conversation holds, so rows it omits are residue — compaction truncation
+  // and message deletion used to leave them forever (saveConversation is a
+  // pure UPSERT). The reconciliation JSON is json_each-fed because a long
+  // conversation would blow SQLite's bound-variable cap with `IN (?,?,…)`;
+  // tool_results needs its own DELETE because its FK is conversation_id only
+  // (database.ts) — dropped message rows do not drag their tool results along,
+  // and both id columns are global primary keys a residue row would swallow
+  // for any future reuse. Deliberately NOT added to appendConversationMessages:
+  // append is append-only semantics ("只 upsert 指定消息" — its own comment),
+  // and a reconciliation there would delete exactly the rows that did not
+  // travel with the payload.
+  const deleteMessagesNotIn = database.prepare(
+    'DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (SELECT value FROM json_each(?))'
+  )
+  const deleteToolResultsNotIn = database.prepare(
+    'DELETE FROM tool_results WHERE conversation_id = ? AND message_id NOT IN (SELECT value FROM json_each(?))'
+  )
 
   const save = database.transaction(() => {
     upsertConv.run(conversation.id, conversation.title || '新对话', conversation.createdAt || now, lastMsgAt, deriveConvType(conversation.id), deriveRectId(conversation.id), conversation.historySummary || null, conversation.historySummaryFrontier || null)
 
+    // Message ids are generated BEFORE the loop: upsertMsg and the token_usage
+    // row must share one id (a per-row `|| random` here once let the two calls
+    // mint DIFFERENT ids for the same message), and the reconciliation list
+    // must name the ids actually used — a generated id that stayed outside
+    // savedIds would be inserted and then immediately deleted by our own
+    // cleanup in the same transaction.
+    const savedIds: string[] = []
     for (const msg of conversation.messages || []) {
-      const sanitized = sanitizeToolResults(msg.contentBlocks, conversation.id, msg.id, (refId, convId, msgId, blockIdx, toolUseId, content, isErr) => {
-        insertToolResult.run(refId, convId, msgId, blockIdx, toolUseId, content, isErr)
+      const msgId = msg.id || `msg_${conversation.id}_${now}_${savedIds.length}`
+      const sanitized = sanitizeToolResults(msg.contentBlocks, conversation.id, msgId, (refId, convId, msgId2, blockIdx, toolUseId, content, isErr) => {
+        insertToolResult.run(refId, convId, msgId2, blockIdx, toolUseId, content, isErr)
       })
       upsertMsg.run(
-        msg.id || `msg_${conversation.id}_${now}_${Math.random()}`,
+        msgId,
         conversation.id, msg.role, msg.content || '',
         sanitized ? JSON.stringify(sanitized) : null,
         msg.createdAt || now, msg.liked ? 1 : 0, msg.favorited ? 1 : 0,
@@ -290,11 +316,18 @@ function saveConversationInner(conversation: Conversation): void {
       )
       if (msg.inputTokens || msg.outputTokens) {
         insertTokenUsage.run(
-          `tu_${msg.id || `msg_${conversation.id}_${now}_${Math.random()}`}`,
+          `tu_${msgId}`,
           msg.inputTokens || 0, msg.outputTokens || 0, msg.createdAt || now
         )
       }
+      savedIds.push(msgId)
     }
+
+    // Same transaction as the upserts — the list and the rows it authorizes
+    // land atomically, and a crash mid-save leaves the previous consistent set.
+    const savedIdsJson = JSON.stringify(savedIds)
+    deleteMessagesNotIn.run(conversation.id, savedIdsJson)
+    deleteToolResultsNotIn.run(conversation.id, savedIdsJson)
   })
   save()
 }
