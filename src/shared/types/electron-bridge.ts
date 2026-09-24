@@ -22,7 +22,7 @@ import type { SandboxApprovalMode } from '../sandbox/policy'
 import type { Routine, RoutineParam, RoutineRun } from './routine'
 import type { CsvPreviewResult } from '../routine/batch'
 import type { UserTool } from './user-tool'
-import type { AgentSessionCreateOptions } from '../agent-protocol'
+import type { AgentSessionCreateOptions, StatusSnapshot } from '../agent-protocol'
 
 // --- Platform Info ---
 
@@ -482,7 +482,7 @@ export interface ElectronAPI {
   agentSessionCancel: (sessionId: string) => Promise<void>
   agentSessionHistory: (sessionId: string) => Promise<{ messages: unknown[]; agentId: string }>
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null) => Promise<void>
-  agentSessionSnapshot: (sessionId: string) => Promise<{ messages: unknown[]; status: { status: string; error?: string }; streamingBlocks: unknown[]; plan: unknown } | null>
+  agentSessionSnapshot: (sessionId: string) => Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown } | null>
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]) => Promise<unknown>
   agentSessionRefreshOptions: (sessionId: string) => Promise<void>
   serviceGetStatus: () => Promise<ServiceStatus>

@@ -384,7 +384,6 @@ export class ExecutionFlow {
     // Page tools: reads never wait, writes wait per their own tier
     // (`page_execute_js` = 'exec', the rest = 'write').
     const pageTools = toolUses.filter(t => isPageTool(t.name))
-    const pageReadTools = pageTools.filter(t => tierOfTool(t.name) === 'read')
     const pageWriteTools = pageTools.filter(t => tierOfTool(t.name) !== 'read')
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = toolUses.filter(t => isSystemTool(t.name))
@@ -396,7 +395,6 @@ export class ExecutionFlow {
     const experienceTools = toolUses.filter(t => isExperienceTool(t.name))
     const isMCPTool = (name: string): boolean => this.engine.mcpToolOwner.has(name)
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
-    const mcpAutoTools = toolUses.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
     const pageHeldTools = pageWriteTools.filter(t => requiresApproval(this.engine.opts.approvalMode ?? 'auto', tierOfTool(t.name)))
     const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user')
@@ -414,8 +412,16 @@ export class ExecutionFlow {
     this.engine.toolUseBlocks = toolUses
     this.engine.pendingToolIds = new Set(toolUses.map(t => t.id))
     this.engine.isAutoExecuting = true
-    for (const t of [...readOnlyTools, ...writeEditTools, ...systemTools, ...memoryTools, ...knowledgeTools, ...experienceTools, ...mcpAutoTools, ...pageReadTools, ...pageWriteTools]) t.status = 'running'
-    for (const t of askUserTools) t.status = 'running'
+    // The partition is held vs. not-held, never an enumeration of the auto-run
+    // groups: enumerating them skipped `otherTools` (shell exec) and gated MCP,
+    // so at 'auto' those executed while still wearing the stream's 'pending' —
+    // and the next tool's addToolResult parked the engine on awaiting_approval,
+    // painting the approval ladder for a call the ladder never held until the
+    // executor's own status write wiped it a beat later (「即使权限设为完全访问，
+    // 权限审批框也会先出现，再自动消失」). ask_user is not held either and runs
+    // through the same marking.
+    const heldIds = new Set(heldTools.map(t => t.id))
+    for (const t of toolUses) if (!heldIds.has(t.id)) t.status = 'running'
     // What the ladder holds stays pending until the user approves it.
     for (const t of heldTools) t.status = 'pending'
     this.engine.notify()

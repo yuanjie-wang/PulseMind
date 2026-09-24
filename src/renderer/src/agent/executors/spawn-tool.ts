@@ -9,7 +9,7 @@ import {
   toExpertRefCatalogs,
   type ExpertRefCatalogs,
 } from '../../../../shared/expert-context'
-import { nodeNumberOf, resolveNodeRef } from '../../../../shared/plan/graph'
+import { nodeNumberOf, resolveReadyNode } from '../../../../shared/plan/graph'
 import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 import { getCachedMcpServers } from '../mcp-cache'
 import {
@@ -100,9 +100,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     if (planNodeRaw !== undefined && planNodeRaw !== null && planNodeRaw !== '') {
       const plan = ex.getPlan?.()
       if (!plan) throw new Error('planNode was given but no plan is active — call create_plan first, or drop planNode.')
-      planNode = resolveNodeRef(plan, planNodeRaw as string | number)
-      if (!planNode) throw new Error(`Unknown planNode "${String(planNodeRaw)}" — valid: n1..n${plan.nodes.length}.`)
-      if (planNode.status !== 'pending') throw new Error(`Plan node ${planNode.id} is already ${planNode.status} — pick a node from the READY set.`)
+      // resolveReadyNode is the order gate: pending AND dependencies-completed.
+      // A plain pending check here once let the model dispatch a node whose
+      // upstream was still running — depends_on was advisory, not enforced.
+      planNode = resolveReadyNode(plan, planNodeRaw as string | number)
       dispatchPlan = plan
       ex.beginPlanNodeExecution?.(planNode.id, attemptId)
       attemptStarted = true

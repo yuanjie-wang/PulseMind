@@ -211,10 +211,18 @@ export interface CompactionEvent {
   summary?: { firstKeptId: string; text: string } | null
 }
 
+/** The status word plus the optional carriers each word needs downstream —
+ *  shared by the live status event and the re-attach snapshot so the two cannot
+ *  drift (an event spelling its own field list and a snapshot spelling a second
+ *  one is how the retry count got dropped from both, user report 2026-09-24).
+ *  `error`'s reason and `retrying`'s attempt/maxRetries/delayMs/message ride
+ *  only when the engine had them: an honest absence beats a fake zero. */
+export type StatusSnapshot = { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string }
+
 /** Streaming progress events. One notification per event; ordering within a
  *  session is guaranteed per-connection. */
 export type AgentEventData =
-  | { type: 'status'; status: string; attempt?: number; delayMs?: number; toolUseId?: string; error?: string; tools?: StatusToolInfo[] }
+  | ({ type: 'status' } & StatusSnapshot & { toolUseId?: string; tools?: StatusToolInfo[] })
   /** Transport-level events for UI parity with the renderer engine (M1.5):
    *  full message list / coalesced streaming block snapshots. */
   | { type: 'messages'; messages: unknown[] }

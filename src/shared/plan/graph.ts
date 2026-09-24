@@ -134,6 +134,27 @@ export function resolveNodeRef(plan: Plan, ref: string | number): PlanNode | nul
 /** 1-based number of a node, for snapshots and error messages. */
 export const nodeNumberOf = (node: PlanNode): number => Number(node.id.slice(1))
 
+/** spawn_agent 的 planNode 派发门 — resolve the ref AND enforce that the node
+ *  is actually dispatchable: pending AND every dependency completed. The
+ *  pending check alone cannot do this (a node whose upstream is still running
+ *  is also pending), which would make depends_on a prompt-level suggestion
+ *  instead of an execution-level gate. Throws with a model-facing message
+ *  naming exactly which nodes are still open. */
+export function resolveReadyNode(plan: Plan, ref: string | number): PlanNode {
+  const node = resolveNodeRef(plan, ref)
+  if (!node) throw new Error(`Unknown planNode "${ref}" — valid: n1..n${plan.nodes.length}.`)
+  if (node.status !== 'pending') throw new Error(`Plan node ${node.id} is already ${node.status} — pick a node from the READY set.`)
+  const byId = idMap(plan)
+  const open = (node.dependsOn ?? []).filter(d => byId.get(d)?.status !== 'completed')
+  if (open.length > 0) {
+    const detail = open.map(d => `${d} (${byId.get(d)?.status ?? 'unknown'})`).join(', ')
+    throw new Error(
+      `Plan node ${node.id} is not ready — waiting on ${detail}. Dispatch and settle those nodes first; spawn_agent only accepts a node from the READY set.`,
+    )
+  }
+  return node
+}
+
 /** Settle a node in place. Completing a failed node is a retry (D4). When the
  *  last pending node settles, the plan closes. The ONLY writers are the main
  *  agent's advance_plan calls (D6/D7 — single-writer). */

@@ -46,7 +46,7 @@ import { getBundledRipgrepPath, getPlatformName } from '../services/platform-inf
 import { perfTime } from '../perf/perf-log'
 import { keepAwake } from '../system/keep-awake'
 import { rememberLastUsedApprovalMode, rememberLastUsedProfileId, seedLastUsedDefaults } from './last-used-defaults'
-import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, ModelState, CompactionEvent } from '../../shared/agent-protocol'
+import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, StatusSnapshot, ModelState, CompactionEvent } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 
 interface Managers {
@@ -100,6 +100,19 @@ type SessionEventSink = (sessionId: string, data: AgentEventData) => void
  *  (see the reconciliation comment in emitMessages). Deliberately excludes
  *  awaiting_* — the turn is parked mid-decision there, not finished. */
 const TERMINAL_SWEEP_STATUSES = new Set(['completed', 'error', 'idle'])
+
+/** Project an engine status onto the wire's status carrier — the ONE place the
+ *  live event and the re-attach snapshot agree on which optional fields a word
+ *  carries (`error`'s reason; `retrying`'s count, delay and message). */
+function statusSnapshotOf(status: AgentStatus): StatusSnapshot {
+  return {
+    status: status.status,
+    ...(status.status === 'error' ? { error: status.error } : {}),
+    ...(status.status === 'retrying'
+      ? { attempt: status.attempt, maxRetries: status.maxRetries, delayMs: status.delay, message: status.message }
+      : {}),
+  }
+}
 
 function sessionPlatformInfo(): PlatformInfo {
   const p = platform()
@@ -854,7 +867,7 @@ export class AgentSessionManagerImpl {
 
   /** UI snapshot for (re)activating a session. */
   async snapshot(sessionId: string): Promise<{
-    messages: AgentMessage[]; status: { status: string; error?: string }; streamingBlocks: unknown[]; plan: PlanSnapshot | null
+    messages: AgentMessage[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: PlanSnapshot | null
   } | null> {
     if (!this.sessions.has(sessionId) && !this.pendingCreates.has(sessionId)) return null
     const entry = await this.ensureEntry(sessionId).catch(() => null)
@@ -862,11 +875,11 @@ export class AgentSessionManagerImpl {
     const status = entry.engine.agentStatus
     return {
       messages: entry.engine.messages,
-      // The reason rides with the status word here exactly as it does on the
-      // event stream (onStatusChanged): a client that re-attaches to a session
-      // parked in `error` — renderer reload, conversation re-open, panel re-open
-      // — has no other carrier for it and can only show its own fallback.
-      status: { status: status.status, ...(status.status === 'error' ? { error: status.error } : {}) },
+      // The optional carriers ride with the status word here exactly as they do
+      // on the event stream (statusSnapshotOf via onStatusChanged): a client
+      // that re-attaches mid-turn — parked in `error`, or mid-backoff on a
+      // retry — has no other carrier and can only show its own fallback.
+      status: statusSnapshotOf(status),
       streamingBlocks: entry.engine.streamingBlocks as unknown[],
       plan: entry.engine.plan ?? null,
     }
@@ -1018,10 +1031,10 @@ export class AgentSessionManagerImpl {
         keepAwake.update(sessionId, status.status)
         this.emit(sessionId, {
           type: 'status',
-          status: status.status,
-          // Loop failures carry their reason ({ status: 'error', error } —
-          // renderer types/agent.ts); unattended consumers settle on this.
-          ...(status.status === 'error' ? { error: status.error } : {}),
+          // The word plus its optional carriers (error reason / retry count,
+          // delay and message) — statusSnapshotOf is the same projection the
+          // snapshot makes, so a re-attach sees exactly what the event said.
+          ...statusSnapshotOf(status),
           // Held tools ride along on the two "the user must decide" statuses so
           // a remote client (browser extension) can render confirmation cards
           // without holding engine internals. args ships in full only for the

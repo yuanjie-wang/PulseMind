@@ -163,8 +163,63 @@ describe('status folding — the reason rides with the status word', () => {
   })
 })
 
+describe('status folding — a retry carries its count, delay and message', () => {
+  it('reconstructs the full retrying status when attempt and maxRetries arrived', () => {
+    // The regression this pins (user report 2026-09-24: 「网络波动，正在重试，
+    // 这个提示后面现在不展示重试次数了」): stream-runner produced the full status
+    // main-side, but the wire dropped attempt/maxRetries/delay at the emit AND
+    // the fold kept only the status word — so the banner rendered with no
+    // (n/max) and seeded its countdown from undefined → NaN, which also never
+    // clears the interval (NaN <= 1 is false).
+    const state = freshSessionState()
+    applySessionEvent(state, {
+      type: 'status',
+      status: 'retrying',
+      attempt: 2,
+      maxRetries: 20,
+      delayMs: 3000,
+      message: '网络波动，正在重试 (2/20)…',
+    })
+    expect(state.agentStatus).toEqual({
+      status: 'retrying',
+      attempt: 2,
+      maxRetries: 20,
+      delay: 3000,
+      message: '网络波动，正在重试 (2/20)…',
+    })
+  })
+
+  it('defaults a missing delayMs to 0 and message to empty, never NaN', () => {
+    // Idle-timeout and context-overflow retries carry delay: 0; a wire that
+    // sends the pair without them must still yield a renderable status.
+    const state = freshSessionState()
+    applySessionEvent(state, { type: 'status', status: 'retrying', attempt: 1, maxRetries: 1 })
+    expect(state.agentStatus).toEqual({ status: 'retrying', attempt: 1, maxRetries: 1, delay: 0, message: '' })
+  })
+
+  it('leaves a thin wire as the bare word so the banner hides its parens', () => {
+    // Honest absence, same contract as `error`: an older main that never sent
+    // the fields must not yield fake zeros — (0/0) is a wrong count, not a
+    // missing one. The renderer keys its parens off the keys being present.
+    const state = freshSessionState()
+    applySessionEvent(state, { type: 'status', status: 'retrying' })
+    expect(state.agentStatus).toEqual({ status: 'retrying' })
+    expect('attempt' in state.agentStatus).toBe(false)
+    expect('maxRetries' in state.agentStatus).toBe(false)
+  })
+
+  it('does not half-reconstruct when only one of the pair arrived', () => {
+    // The count is one fact: attempt without maxRetries (or vice versa) is a
+    // partial the banner cannot render, so it folds to the bare word rather
+    // than a status where one key exists and the other does not.
+    const state = freshSessionState()
+    applySessionEvent(state, { type: 'status', status: 'retrying', attempt: 3 })
+    expect(state.agentStatus).toEqual({ status: 'retrying' })
+  })
+})
+
 describe('seedSessionState — the reason survives a re-attach', () => {
-  const snapshot = (status: { status: string; error?: string }): Parameters<typeof seedSessionState>[1] =>
+  const snapshot = (status: Parameters<typeof seedSessionState>[1]['status']): Parameters<typeof seedSessionState>[1] =>
     ({ messages: [], status, streamingBlocks: [], plan: null })
 
   it('seeds the reason from the snapshot, not just the status word', () => {
@@ -186,5 +241,21 @@ describe('seedSessionState — the reason survives a re-attach', () => {
     const state = freshSessionState()
     seedSessionState(state, snapshot({ status: 'executing' }))
     expect(state.agentStatus).toEqual({ status: 'executing' })
+  })
+
+  it('seeds the full retrying status so the count shows after a re-attach', () => {
+    // A client that re-attaches while a retry is parked (renderer reload,
+    // conversation re-open mid-backoff) has no other carrier for the count:
+    // the status event was delivered while it was away.
+    const state = freshSessionState()
+    seedSessionState(state, snapshot({ status: 'retrying', attempt: 3, maxRetries: 20, delayMs: 5000, message: '网络波动，正在重试 (3/20)…' }))
+    expect(state.agentStatus).toEqual({ status: 'retrying', attempt: 3, maxRetries: 20, delay: 5000, message: '网络波动，正在重试 (3/20)…' })
+  })
+
+  it('stays bare when the snapshot carries no retry count', () => {
+    const state = freshSessionState()
+    seedSessionState(state, snapshot({ status: 'retrying' }))
+    expect(state.agentStatus).toEqual({ status: 'retrying' })
+    expect('attempt' in state.agentStatus).toBe(false)
   })
 })

@@ -25,7 +25,7 @@ import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../sh
 import type { ExpertProfile } from '../shared/types/expert'
 import type { SummonedExpert } from '../shared/expert-context'
 import type { GitAction, GitResult } from '../shared/types/git'
-import type { AgentSessionCreateOptions } from '../shared/agent-protocol'
+import type { AgentSessionCreateOptions, StatusSnapshot } from '../shared/agent-protocol'
 
 const electronAPI = {
   // Window chrome. Static for the process lifetime, so the renderer can reserve room
@@ -460,7 +460,7 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HISTORY, sessionId),
   agentSessionHydrate: (sessionId: string, messages: unknown[], historySummary?: { text: string; firstKeptId: string } | null): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_HYDRATE, sessionId, messages, historySummary),
-  agentSessionSnapshot: (sessionId: string): Promise<{ messages: unknown[]; status: { status: string; error?: string }; streamingBlocks: unknown[]; plan: unknown } | null> =>
+  agentSessionSnapshot: (sessionId: string): Promise<{ messages: unknown[]; status: StatusSnapshot; streamingBlocks: unknown[]; plan: unknown } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_SNAPSHOT, sessionId),
   agentSessionEngineCall: (sessionId: string, method: string, args?: unknown[]): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_ENGINE_CALL, sessionId, method, args ?? []),

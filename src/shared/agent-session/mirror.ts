@@ -10,7 +10,7 @@
  * DOM-free by construction: the extension runs this inside a content script.
  */
 import type { AgentMessage, AgentStatus, ContentBlock, Plan, ToolUseBlock } from '../../renderer/src/types/agent'
-import type { AgentEventData, CompactionEvent } from '../agent-protocol'
+import type { AgentEventData, CompactionEvent, StatusSnapshot } from '../agent-protocol'
 import { applyMessagesAppend } from './messages'
 
 export interface SessionState {
@@ -31,7 +31,7 @@ export function freshSessionState(): SessionState {
   return { messages: [], agentStatus: { status: 'idle' }, streamingBlocks: [], plan: null, historySummary: null, lastCompaction: null }
 }
 
-/** Fold the wire's (status, error) pair into a mirrored status.
+/** Fold the wire's status carrier into a mirrored status.
  *
  *  The error text IS the payload of a failed status: main's `onStatusChanged`
  *  carries it deliberately (session-manager.ts — "Loop failures carry their
@@ -39,14 +39,30 @@ export function freshSessionState(): SessionState {
  *  (`agentStatus.error` — ChatView / TranscriptView, the panel's ErrorCard).
  *  A fold that keeps only the status word leaves all of them falling back to
  *  their own copy (Unknown error / 未知错误), which is what turned every engine
- *  failure into a mystery. One place interprets the pair: the event fold, the
- *  desktop snapshot seed and the panel's snapshot seed all call this.
+ *  failure into a mystery. One place interprets the carrier: the event fold,
+ *  the desktop snapshot seed and the panel's snapshot seed all call this.
  *
- *  `error` is left OFF when the wire did not carry one (a status emitted
- *  without it, an older main) — the clients' fallback is then honest. */
-export function mirroredStatus(status: string, error?: string): AgentStatus {
-  if (status === 'error' && error !== undefined) return { status: 'error', error }
-  return { status } as AgentStatus
+ *  `retrying` reconstructs the same way, for the same reason: the count is the
+ *  payload (user report 2026-09-24 — the banner's (n/max) vanished when the
+ *  fold kept only the word). The count is ONE fact: only attempt AND
+ *  maxRetries together rebuild it; a partial or absent pair stays the bare
+ *  word, so the banner hides its parens rather than rendering `(/)`.
+ *  `delay`/`message` default to 0/'' once the pair is there (the countdown
+ *  seeds from `delay`, and NaN <= 1 is false — an undefined delay leaked the
+ *  interval forever). Every field is left OFF when the wire did not carry it —
+ *  the clients' fallback is then honest. */
+export function mirroredStatus(snapshot: StatusSnapshot): AgentStatus {
+  if (snapshot.status === 'error' && snapshot.error !== undefined) return { status: 'error', error: snapshot.error }
+  if (snapshot.status === 'retrying' && snapshot.attempt !== undefined && snapshot.maxRetries !== undefined) {
+    return {
+      status: 'retrying',
+      message: snapshot.message ?? '',
+      attempt: snapshot.attempt,
+      maxRetries: snapshot.maxRetries,
+      delay: snapshot.delayMs ?? 0,
+    }
+  }
+  return { status: snapshot.status } as AgentStatus
 }
 
 export function isActiveStatus(status: AgentStatus): boolean {
@@ -131,7 +147,7 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
       return true
     }
     case 'status': {
-      state.agentStatus = mirroredStatus(data.status, data.error)
+      state.agentStatus = mirroredStatus(data)
       return true
     }
     case 'plan_update': {
@@ -192,12 +208,12 @@ export function applySessionEvent(state: SessionState, data: AgentEventData): bo
 /** Seed a mirror from a main-side snapshot (reactivating a live session). */
 export function seedSessionState(state: SessionState, snapshot: {
   messages: unknown[]
-  status: { status: string; error?: string }
+  status: StatusSnapshot
   streamingBlocks: unknown[]
   plan: unknown
 }): void {
   state.messages = snapshot.messages as AgentMessage[]
-  state.agentStatus = mirroredStatus(snapshot.status.status, snapshot.status.error)
+  state.agentStatus = mirroredStatus(snapshot.status)
   state.streamingBlocks = snapshot.streamingBlocks as ContentBlock[]
   state.plan = (snapshot.plan as Plan | null) ?? null
 }

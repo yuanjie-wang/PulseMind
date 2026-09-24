@@ -391,7 +391,10 @@ function ChatView({
   const isRetrying = agentStatus.status === 'retrying'
   const [retryCountdown, setRetryCountdown] = useState(0)
   useEffect(() => {
-    if (agentStatus.status !== 'retrying') {
+    // A thin wire (older main, or the pair never arrived) carries no delay:
+    // seeding from undefined gives NaN, and `NaN <= 1` is false — the interval
+    // would tick for the rest of the turn while the seconds never render.
+    if (agentStatus.status !== 'retrying' || !Number.isFinite(agentStatus.delay)) {
       setRetryCountdown(0)
       return
     }
@@ -818,7 +821,11 @@ function ChatView({
                   </path>
                 </svg>
                 <span>
-                  网络波动，正在重试 ({agentStatus.attempt}/{agentStatus.maxRetries})
+                  网络波动，正在重试
+                  {/* The count is the payload of this banner — but only when it
+                      actually arrived: undefined keys render `(/)`, so the
+                      parens ride behind key presence, not truthiness. */}
+                  {'attempt' in agentStatus && 'maxRetries' in agentStatus && ` (${agentStatus.attempt}/${agentStatus.maxRetries})`}
                   {retryCountdown > 0 && <span style={{ marginLeft: 8, color: 'var(--pm-text-muted)' }}>{retryCountdown}s</span>}
                 </span>
               </div>

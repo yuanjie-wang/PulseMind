@@ -65,7 +65,10 @@ export function usePanel(): PanelApi {
     const next = mirror.current
     next.messages = snapshot.messages as AgentMessage[]
     next.streamingBlocks = snapshot.streamingBlocks as SessionState['streamingBlocks']
-    next.agentStatus = mirroredStatus(snapshot.status, snapshot.statusError)
+    // The panel's snapshot is flat (status + statusError, panel-bridge.ts) and
+    // only feeds the label 重试中 — no count — so it re-wraps into the carrier
+    // shape rather than widening PanelSnapshot.
+    next.agentStatus = mirroredStatus({ status: snapshot.status, error: snapshot.statusError })
     setSession({ ...next })
     setSessionId(snapshot.sessionId)
     setConnection(snapshot.connection)

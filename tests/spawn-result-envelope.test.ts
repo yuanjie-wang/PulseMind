@@ -81,7 +81,7 @@ describe('spawn result envelope: the last line tells the model what to do next',
   it('coexists with the plan-settle line and stays last (the model reads settle, then report)', async () => {
     const plan = {
       objective: 'demo',
-      nodes: [{ id: 'n1', description: '翻译节点', status: 'pending', depends_on: [] }],
+      nodes: [{ id: 'n1', description: '翻译节点', status: 'pending', dependsOn: [] }],
     }
     const { ex, getCaptured } = makeContext({
       status: 'completed',

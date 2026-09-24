@@ -1245,8 +1245,14 @@ export class AgentEngine implements EngineCore {
     if (this.pendingToolIds.size === 0 && !this.isAutoExecuting) this.continueLoop()
     else if (this.pendingToolIds.size > 0) {
       const remaining = this.toolUseBlocks.filter(t => this.pendingToolIds.has(t.id))
-      this.agentStatus = { status: 'awaiting_approval', tools: remaining }
-      this.notify()
+      // Park only for a call the ladder is actually holding ('pending'). This
+      // branch fires after EVERY result in a batch and the rest usually are just
+      // still running — repainting the park then would flip the approval UI on
+      // (and pause the turn clock as waiting-on-user) for a decision nobody owes.
+      if (remaining.some(t => t.status === 'pending')) {
+        this.agentStatus = { status: 'awaiting_approval', tools: remaining }
+        this.notify()
+      }
     }
   }
 
