@@ -243,6 +243,15 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
     throw new Error('包内缺少 xl/workbook.xml — 不是有效的 Excel 工作簿')
   }
 
+  // M5 (PLAN-office-expressiveness): the style ops are exceljs-engine only.
+  // This path exists to spare charts/drawings/themes an exceljs round-trip —
+  // styling through it is out of scope, so refuse loudly instead of guessing.
+  const STYLE_OPS = new Set(['set_style', 'set_column_width', 'freeze_panes'])
+  const styleOp = ops.find((o) => STYLE_OPS.has(String(o.op ?? '')))
+  if (styleOp) {
+    throw new Error(`op「${styleOp.op}」在含图表/绘图/主题的工作簿（OOXML 直编辑路径）上暂不支持——样式修改请先在不含这些对象的副本上操作`)
+  }
+
   // Load shared strings (read-only)
   const sharedStrings: string[] = []
   if (entries.includes('xl/sharedStrings.xml')) {

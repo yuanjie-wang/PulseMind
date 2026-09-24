@@ -367,11 +367,14 @@ Byte-faithful Word (.docx) editing through structured operations.
 - delete_paragraph - refuses paragraphs carrying a section break, and refuses a table cell's only paragraph (an empty cell is invalid).
 - set_paragraph_style - paragraph + style name (e.g. "Heading1").
 - format_text - find + optional bold/italic/underline/color/font_size (points). Only the matched range is formatted; runs split automatically, preserving breaks/tabs and sibling text around the match.
+- insert_image - paragraph + position + image (a WORKSPACE image path: png/jpg/jpeg/gif; http(s)/data: are not embedded) + optional width_px/height_px (max width 600px, ratio kept). The image lands inline as its own paragraph.
+- insert_table_row - table + after_row + optional cells[] (one text per cell; missing = empty). Clones the anchor row's cell formatting (borders/widths). Refuses rows with vertical merges (vMerge) or nested tables.
+- delete_table_row - table + row. Refuses the last remaining row and rows carrying vMerge.
 
 ### Never
 - .doc / encrypted files: ask the user to save as .docx.
-- Tables: replace_text works inside cell text, but structural table edits (add/remove rows) are not supported - refuse and explain.
-- Headers/footers, TOC/fields, images are out of scope - refuse and explain.`,
+- Tables: replace_text works inside cell text; rows can be inserted/deleted (see insert_table_row/delete_table_row) — but vertical merges (vMerge), nested tables and add/remove COLUMN are not supported - refuse and explain.
+- Headers/footers, TOC/fields are out of scope - refuse and explain.`,
 
   xlsx_edit: `## xlsx_edit
 
@@ -386,6 +389,9 @@ Structured Excel (.xlsx) editing. The workbook is checked first: charts, pivot t
 - set_cell - cell ("B3") + value OR formula, optional number_format (e.g. "0.00%", "yyyy-mm-dd").
 - find_replace - replaces in VALUES only. include_formulas: true extends matching to formula cells, whose cached RESULT text gets replaced — the formula expression itself is never rewritten. Rich-text/hyperlink cells that match are refused (whole-cell replacement would destroy their formatting). expected_count defaults to actual.
 - add_row - after_row (0-based index) + values array. Inserts a new row and shifts existing rows down. Optional sheet (defaults to first).
+- set_style - cells ("B3" or "A1:C10") + bold/italic/font_size/color/fill/font/align(left|center|right)/wrap_text. Colors are 6-digit RRGGBB without #. One op covers up to 50,000 cells. Not available on workbooks with charts/drawings/themes (refused).
+- set_column_width - columns ("A" or "A:C", comma-stacks groups) + width (number).
+- freeze_panes - cell ("B2" freezes rows above and columns left of it; "A2" freezes the first row).
 
 ### Never
 - Structural changes (insert/delete columns): formulas would not re-aim; refuse and explain.

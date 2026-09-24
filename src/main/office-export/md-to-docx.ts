@@ -9,12 +9,14 @@
 // bold-italic composition); nesting flattens to plain text inside.
 
 import { marked } from 'marked'
+import { imageDims, displaySize } from '../../shared/office/image-dims'
 import {
   AlignmentType,
   BorderStyle,
   Document,
   ExternalHyperlink,
   HeadingLevel,
+  ImageRun,
   LevelFormat,
   Packer,
   Paragraph,
@@ -75,13 +77,13 @@ function plainText(tokens?: MarkedToken[]): string {
   return tokens.map((t) => (t.tokens && t.tokens.length > 0 ? plainText(t.tokens) : t.text ?? '')).join('')
 }
 
-function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, bold = false): InlineChild[] {
+function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, images: Map<string, Buffer> | undefined, bold = false): InlineChild[] {
   if (!tokens) return []
   const out: InlineChild[] = []
   for (const token of tokens) {
     switch (token.type) {
       case 'text':
-        if (token.tokens && token.tokens.length > 0) out.push(...inlineRuns(token.tokens, degrade, bold))
+        if (token.tokens && token.tokens.length > 0) out.push(...inlineRuns(token.tokens, degrade, images, bold))
         else out.push(new TextRun({ text: token.text ?? '', bold }))
         break
       case 'escape':
@@ -112,6 +114,21 @@ function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, bo
         break
       }
       case 'image': {
+        // M2 (PLAN-office-expressiveness): a resolvable WORKSPACE href embeds
+        // the real image; http(s)/data:/unreadable keeps today's degradation —
+        // never silent, never fetched over the network.
+        const href = decodeURI(String(token.raw ?? '').match(/!\[.*?\]\(\s*([^)\s]+)/)?.[1] ?? '').replace(/^['"]|['"]$/g, '')
+        const buf = images?.get(href)
+        if (buf) {
+          const dims = imageDims(buf)
+          const ext = href.split('.').pop()?.toLowerCase() ?? ''
+          const type = ext === 'png' ? 'png' : ext === 'gif' ? 'gif' : 'jpg'
+          if (dims) {
+            const size = displaySize(dims)
+            out.push(new ImageRun({ type, data: buf, transformation: { width: size.width, height: size.height } }))
+            break
+          }
+        }
         degrade.add('图片')
         const alt = token.text || plainText(token.tokens) || '图片'
         out.push(new TextRun({ text: `[图片:${alt}，正文不支持]`, color: '808080' }))
@@ -130,7 +147,7 @@ function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, bo
 
 const BLOCKQUOTE_BORDER = { left: { style: BorderStyle.SINGLE, size: 18, color: 'C9CBD1', space: 8 } }
 
-function blockChildren(tokens: MarkedToken[], degrade: Degradations): DocxChild[] {
+function blockChildren(tokens: MarkedToken[], degrade: Degradations, images: Map<string, Buffer> | undefined): DocxChild[] {
   const out: DocxChild[] = []
   for (const token of tokens) {
     switch (token.type) {
@@ -143,7 +160,7 @@ function blockChildren(tokens: MarkedToken[], degrade: Degradations): DocxChild[
         break
       }
       case 'paragraph':
-        out.push(new Paragraph({ children: inlineRuns(token.tokens, degrade) }))
+        out.push(new Paragraph({ children: inlineRuns(token.tokens, degrade, images) }))
         break
       case 'blockquote': {
         for (const child of token.tokens ?? []) {
@@ -151,14 +168,14 @@ function blockChildren(tokens: MarkedToken[], degrade: Degradations): DocxChild[
           // a quoted table renders as itself — quoting a grid is not a Word
           // concept.
           if (child.type === 'table') {
-            out.push(tableChild(child, degrade))
+            out.push(tableChild(child, degrade, images))
             continue
           }
           out.push(new Paragraph({
             indent: { left: 480 },
             border: BLOCKQUOTE_BORDER,
             spacing: { before: 80, after: 80 },
-            children: inlineRuns(child.tokens ?? [child], degrade),
+            children: inlineRuns(child.tokens ?? [child], degrade, images),
           }))
         }
         break
@@ -179,10 +196,10 @@ function blockChildren(tokens: MarkedToken[], degrade: Degradations): DocxChild[
         out.push(new Paragraph({ border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: 'C9CBD1', space: 1 } }, spacing: { before: 120, after: 120 } }))
         break
       case 'list':
-        out.push(...listChildren(token, 0, degrade))
+        out.push(...listChildren(token, 0, degrade, images))
         break
       case 'table':
-        out.push(tableChild(token, degrade))
+        out.push(tableChild(token, degrade, images))
         break
       case 'space':
         break
@@ -194,17 +211,17 @@ function blockChildren(tokens: MarkedToken[], degrade: Degradations): DocxChild[
   return out
 }
 
-function listChildren(token: MarkedToken, level: number, degrade: Degradations): Paragraph[] {
+function listChildren(token: MarkedToken, level: number, degrade: Degradations, images: Map<string, Buffer> | undefined): Paragraph[] {
   const capped = Math.min(level, 2) // 嵌套 ≤3 层（0..2），更深拍平到第三层
   const out: Paragraph[] = []
   for (const item of token.items ?? []) {
     const runs: InlineChild[] = []
     for (const child of item.tokens ?? []) {
       if (child.type === 'list') {
-        out.push(...listChildren(child, level + 1, degrade))
+        out.push(...listChildren(child, level + 1, degrade, images))
         continue
       }
-      runs.push(...inlineRuns([child], degrade))
+      runs.push(...inlineRuns([child], degrade, images))
     }
     out.push(new Paragraph(
       token.ordered
@@ -217,29 +234,50 @@ function listChildren(token: MarkedToken, level: number, degrade: Degradations):
 
 const CELL_MARGIN = { top: 60, bottom: 60, left: 100, right: 100 }
 
-function tableChild(token: MarkedToken, degrade: Degradations): Table {
+function tableChild(token: MarkedToken, degrade: Degradations, images: Map<string, Buffer> | undefined): Table {
   const headerRow = new TableRow({
     tableHeader: true,
     children: (token.header ?? []).map((cell) => new TableCell({
       shading: { type: ShadingType.CLEAR, fill: 'F2F3F5' },
       margins: CELL_MARGIN,
-      children: [new Paragraph({ children: inlineRuns(cell.tokens, degrade, true) })],
+      children: [new Paragraph({ children: inlineRuns(cell.tokens, degrade, images, true) })],
     })),
   })
   const bodyRows = (token.rows ?? []).map((row) => new TableRow({
     children: row.map((cell) => new TableCell({
       margins: CELL_MARGIN,
-      children: [new Paragraph({ children: inlineRuns(cell.tokens, degrade) })],
+      children: [new Paragraph({ children: inlineRuns(cell.tokens, degrade, images) })],
     })),
   }))
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...bodyRows] })
 }
 
-/** Markdown string → a real .docx buffer. */
-export async function markdownToDocxBuffer(md: string): Promise<Buffer> {
+/** href paths referenced by ![...](href) — workspace-relative or absolute,
+ *  in document order (the service resolves + reads them, mirroring deckImagePaths). */
+export function mdImagePaths(md: string): Array<{ href: string }> {
+  const out: Array<{ href: string }> = []
+  const seen = new Set<string>()
+  const tokens = marked.lexer(md) as unknown as MarkedToken[]
+  const visit = (list: MarkedToken[]): void => {
+    for (const t of list) {
+      if (t.type === 'image') {
+        let href = decodeURI(String(t.raw ?? '').match(/!\[.*?\]\(\s*([^)\s]+)/)?.[1] ?? '').replace(/^['"]|['"]$/g, '')
+        if (href && !seen.has(href)) { seen.add(href); out.push({ href }) }
+      }
+      if (t.tokens) visit(t.tokens as unknown as MarkedToken[])
+    }
+  }
+  visit(tokens)
+  return out
+}
+
+/** Markdown string → a real .docx buffer. `images` maps workspace hrefs to
+ *  resolved bytes (M2): a hit embeds the real image, a miss keeps the
+ *  degradation placeholder — the resolver decides, never the network. */
+export async function markdownToDocxBuffer(md: string, images?: Map<string, Buffer>): Promise<Buffer> {
   const tokens = marked.lexer(md) as unknown as MarkedToken[]
   const degrade = new Degradations()
-  const children = blockChildren(tokens, degrade)
+  const children = blockChildren(tokens, degrade, images)
   const note = degrade.note()
   if (note) children.push(note)
   const doc = new Document({

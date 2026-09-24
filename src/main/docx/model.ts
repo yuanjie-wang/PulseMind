@@ -36,8 +36,23 @@ export interface ParagraphInfo {
   soleBlockOfCell?: boolean
 }
 
+export interface TableRowsInfo {
+  element: XmlElementNode
+  cells: Array<{ element: XmlElementNode }>
+}
+
+export interface TableInfo {
+  index: number
+  element: XmlElementNode
+  rows: TableRowsInfo[]
+}
+
 export interface DocumentModel {
   paragraphs: ParagraphInfo[]
+  /** BODY-LEVEL `w:tbl` only (M4): nested tables are deliberately not
+   *  addressable — row clones/deletes on a nested grid corrupt vMerge bookkeeping
+   *  and are refused, not half-supported. */
+  tables: TableInfo[]
 }
 
 const isElement = (n: { kind?: string }): n is XmlElementNode => n.kind === 'element'
@@ -108,13 +123,24 @@ export function buildDocumentModel(xml: string): DocumentModel {
   const document = root.children.find((c) => isElement(c) && c.name === 'w:document') as XmlElementNode | undefined
   const body = (document ?? root).children.find((c) => isElement(c) && c.name === 'w:body') as XmlElementNode | undefined
   const paragraphs: ParagraphInfo[] = []
-  if (!body) return { paragraphs }
+  const tables: TableInfo[] = []
+  if (!body) return { paragraphs, tables }
   const collect = (container: XmlElementNode): void => {
     for (const child of container.children) {
       if (!isElement(child)) continue
       if (child.name === 'w:p') {
         paragraphs.push(buildParagraph(child, paragraphs.length))
-      } else if (child.name === 'w:tbl' || child.name === 'w:tr' || child.name === 'w:tc' ||
+      } else if (child.name === 'w:tbl') {
+        const rows: TableRowsInfo[] = []
+        for (const tr of child.children) {
+          if (!isElement(tr) || tr.name !== 'w:tr') continue
+          rows.push({ element: tr, cells: tr.children.filter((c) => isElement(c) && c.name === 'w:tc') as XmlElementNode[] })
+        }
+        tables.push({ index: tables.length, element: child, rows })
+        // Paragraphs inside still join the flat list (replace/format work in
+        // cells); nested tables deliberately do NOT join `tables`.
+        collect(child as XmlElementNode)
+      } else if (child.name === 'w:tr' || child.name === 'w:tc' ||
                  child.name === 'w:sdt' || child.name === 'w:sdtContent' || child.name === 'w:customXml' ||
                  child.name === 'w:hyperlink' || child.name === 'w:body') {
         // Containers recurse until the paragraphs inside (tables nest
@@ -125,7 +151,7 @@ export function buildDocumentModel(xml: string): DocumentModel {
   }
   collect(body as XmlElementNode)
   markSoleCellParagraphs(body as XmlElementNode, paragraphs)
-  return { paragraphs }
+  return { paragraphs, tables }
 }
 
 /** OOXML requires every `w:tc` to keep at least one block-level element; a

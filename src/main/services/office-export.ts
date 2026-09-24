@@ -140,10 +140,41 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
         md = input.content
       }
 
+      // M2 (PLAN-office-expressiveness): resolve the markdown's ![](href)
+      // workspace images up front — an export either lands complete (with
+      // embedded images) or refuses naming the missing file. http(s)/data:
+      // refs are NOT fetched (v1); they keep the generation-side degradation.
+      let mdImages: Map<string, Buffer> | undefined
+      if ((input.format === 'docx' || input.format === 'pdf') && md && /!\[[^\]]*\]\(/.test(md)) {
+        const { mdImagePaths } = await import('../office-export/md-to-docx')
+        const paths = mdImagePaths(md)
+        const httpish = paths.filter((p) => /^(https?:|data:)/i.test(p.href))
+        if (httpish.length > 0) {
+          return { success: false, error: `content 中的图片「${httpish[0].href}」是网络/内联地址——v1 只嵌入工作区里的图片文件（png/jpg/jpeg/gif）` }
+        }
+        if (paths.length > 0) {
+          mdImages = new Map()
+          for (const { href } of paths) {
+            if (mdImages.has(href)) continue
+            const ext = extname(href).toLowerCase()
+            if (!(DECK_IMAGE_EXTS as readonly string[]).includes(ext)) {
+              return { success: false, error: `content 中的图片「${href}」：不支持的图片格式「${ext || '无扩展名'}」（支持 ${DECK_IMAGE_EXTS.join(' / ')}）` }
+            }
+            const imgGuard = await guardFsTarget(href, 'read')
+            if (!imgGuard.ok) return { success: false, error: `content 中的图片「${href}」：${imgGuard.reason}` }
+            try {
+              mdImages.set(href, await pReadFile(await resolveWritablePath(href)))
+            } catch (err) {
+              return { success: false, error: `content 中的图片「${href}」读取失败（${err instanceof Error ? err.message : String(err)}）——先确认文件在工作区里` }
+            }
+          }
+        }
+      }
+
       // Build entirely in memory — a failure here has written nothing.
       let buffer: Buffer
       try {
-        buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, deck: deckSpec, deckImages })
+        buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, deck: deckSpec, deckImages, mdImages })
       } catch (err) {
         return { success: false, error: `导出内容构建失败：${err instanceof Error ? err.message : String(err)}` }
       }
@@ -169,7 +200,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
 
 async function buildBuffer(
   format: ExportFormat,
-  source: { md?: string; csv?: string; docx?: Buffer; deck?: DeckSpec; deckImages?: Map<string, Buffer> }
+  source: { md?: string; csv?: string; docx?: Buffer; deck?: DeckSpec; deckImages?: Map<string, Buffer>; mdImages?: Map<string, Buffer> }
 ): Promise<Buffer> {
   if (format === 'pdf') {
     // pdf is a CONVERSION, not a native layout: an existing docx, or markdown
@@ -177,7 +208,7 @@ async function buildBuffer(
     // (images, math, footnotes) degrades identically on this path.
     const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
     const { docxToPdfBuffer } = await import('../office-export/docx-to-pdf')
-    const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? ''))
+    const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages))
     return docxToPdfBuffer(docx)
   }
   if (format === 'docx') {

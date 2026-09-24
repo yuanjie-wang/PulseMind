@@ -55,7 +55,7 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 生成端表达不了的版式用编辑补：
 - 需要"封面 / 落款"这类独立段落 → \`docx_edit\` \`insert_paragraph\` + \`set_paragraph_style\`（样式名如 \`Heading1\`）。
 - 需要调整位置尺寸（PPT）→ \`pptx_edit\` \`set_shape_geometry\`（单位英寸）。
-- 补不了的（页眉页脚、页码、目录、插入图片）就直说，别硬凑。
+- 补不了的（页眉页脚、页码、目录）就直说，别硬凑；插图给工作区图片路径（png/jpg/jpeg/gif）即可嵌入，网络图 v1 不嵌。
 
 ### 4. 交付前自检
 

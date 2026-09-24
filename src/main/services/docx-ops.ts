@@ -5,6 +5,8 @@
 // wrong-encoding blobs (openDocxPackage).
 
 import { readFile, writeFile, rename } from 'node:fs'
+import { extname } from 'node:path'
+import { DECK_IMAGE_EXTS } from '../../shared/deck/spec'
 import { basename, join, dirname } from 'node:path'
 import { promisify } from 'node:util'
 import { guardFsTarget } from '../sandbox/guard'
@@ -45,7 +47,8 @@ export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[]; 
         try {
           const zip = openDocxPackage(original)
           const docXml = (zip.readFile('word/document.xml') as Buffer).toString('utf8')
-          return { success: true, results: [{ index: 0, op: 'outline', ok: true, detail: '' }], outline: outlineOf(buildDocumentModel(docXml)) }
+          const model = buildDocumentModel(docXml)
+          return { success: true, results: [{ index: 0, op: 'outline', ok: true, detail: '' }], outline: outlineOf(model), tables: model.tables.map((t) => ({ index: t.index, rows: t.rows.length, cols: t.rows[0]?.cells.length ?? 0 })) }
         } catch (err) {
           return { success: false, error: err instanceof Error ? err.message : String(err) }
         }
@@ -59,7 +62,21 @@ export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[]; 
       await snapshotToWorkspace(safePath, sandbox?.workspaceDir ?? input.workspaceDir)
       let outcome: EditDocxResult
       try {
-        outcome = editDocx(original, input.ops)
+        outcome = editDocx(original, input.ops, {
+          // M3 (PLAN-office-expressiveness): op 只带工作区路径，服务层读
+          // 字节（IPC 载荷保持 JSON 安全）——扩展名白名单与 deck 同源。
+          resolveImageBytes: async (path) => {
+            const ext = extname(path).toLowerCase().replace('.', '')
+            if (!(DECK_IMAGE_EXTS as readonly string[]).includes('.' + ext)) return null
+            const imgGuard = await guardFsTarget(path, 'read')
+            if (!imgGuard.ok) return null
+            try {
+              return { ext, bytes: await pReadFile(await resolveWritablePath(path)) }
+            } catch {
+              return null
+            }
+          },
+        })
       } catch (err) {
         if (err instanceof OpBatchError) {
           return { success: false, error: err.message, results: err.results, warnings: warning ? [warning] : [] }
@@ -81,6 +98,7 @@ export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[]; 
         success: true,
         results: outcome.results,
         outline: outcome.outline,
+        tables: outcome.tables,
         warnings: warning ? [warning, ...outcome.warnings] : outcome.warnings,
         backup,
         diff,

@@ -41,6 +41,11 @@ export function scanXlsx(buffer: Buffer): XlsxScanResult {
     // The rest of what an exceljs round-trip silently drops (M3):
     [/^xl\/threadedComments\//, '串联批注（exceljs 往返会丢失）'],
     [/^xl\/slicers\//, '切片器（exceljs 往返会丢失）'],
+    // M0 decision gate (PLAN-office-expressiveness, measured): a sheet whose
+    // conditionalFormatting references a styles dxf makes exceljs CRASH on
+    // load (styles-xform.getDxfStyle) — the whole edit dies. dataValidation,
+    // by contrast, round-trips losslessly and is deliberately NOT forbidden.
+    [/conditionalFormatting/, '条件格式（exceljs 加载含 dxf 引用的规则会直接崩溃）'],
   ]
   for (const [pattern, why] of forbidden) {
     if (names.some((n) => pattern.test(n))) {
@@ -196,6 +201,70 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
         results.push({ index, op: kind, ok: true, detail: `在第 ${afterRow} 行后插入 ${inserted} 行（共 ${ws.rowCount} 行）` })
         continue
       }
+      if (kind === 'set_style') {
+        // M5 (PLAN-office-expressiveness): cell styling, exceljs path ONLY —
+        // the OOXML path (charts etc.) refuses below in editXlsxOOXML.
+        const ws = resolveSheet(op.sheet as string | undefined)
+        const range = parseCellRange(String(op.cells ?? ''))
+        if (!range) throw new Error(`set_style: 非法范围「${op.cells}」（形如 B3 或 A1:C10）`)
+        const total = (range.endRow - range.startRow + 1) * (range.endCol - range.startCol + 1)
+        if (total > 50_000) throw new Error(`set_style: 范围展开 ${total} 个单元格，超过 50,000 上限——缩小范围（整表样式请按列/区域分批）`)
+        if (!['bold', 'italic', 'font_size', 'color', 'fill', 'font', 'align', 'wrap_text'].some((k) => k in op)) {
+          throw new Error('set_style: 没有给出任何样式属性')
+        }
+        const font: Record<string, unknown> = {}
+        if (op.bold !== undefined) font.bold = op.bold === true
+        if (op.italic !== undefined) font.italic = op.italic === true
+        if (op.font_size !== undefined) font.size = Number(op.font_size)
+        if (op.font !== undefined) font.name = String(op.font)
+        if (op.color !== undefined) font.color = { argb: 'FF' + argb(String(op.color)) }
+        const fillBody = op.fill !== undefined ? { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + argb(String(op.fill)) } } : undefined
+        const alignment: Record<string, unknown> = {}
+        if (op.align !== undefined) {
+          const a = String(op.align)
+          if (!['left', 'center', 'right'].includes(a)) throw new Error(`set_style: align 只接受 left/center/right（收到 ${a}）`)
+          alignment.horizontal = a
+        }
+        if (op.wrap_text !== undefined) alignment.wrapText = op.wrap_text === true
+        let touched = 0
+        const firstAddr = rangeAddr(range.startCol, range.startRow)
+        const lastAddr = rangeAddr(range.endCol, range.endRow)
+        for (let r = range.startRow; r <= range.endRow; r++) {
+          for (let c = range.startCol; c <= range.endCol; c++) {
+            const cell = ws.getCell(r, c)
+            if (Object.keys(font).length > 0) cell.font = { ...cell.font, ...font } as never
+            if (fillBody) cell.fill = fillBody as never
+            if (Object.keys(alignment).length > 0) cell.alignment = { ...cell.alignment, ...alignment } as never
+            touched++
+          }
+        }
+        // Read-back: first + last cell of the range (spot check, not 50k cells).
+        readBacks.push({ sheetName: ws.name, address: firstAddr, op: { set_style: op }, after: { address: firstAddr, value: null, formula: null, type: 'style' } } as never)
+        readBacks.push({ sheetName: ws.name, address: lastAddr, op: { set_style: op }, after: { address: lastAddr, value: null, formula: null, type: 'style' } } as never)
+        results.push({ index, op: kind, ok: true, detail: `样式已应用到 ${touched} 个单元格（${rangeAddr(range.startCol, range.startRow)}:${rangeAddr(range.endCol, range.endRow)}）` })
+        continue
+      }
+      if (kind === 'set_column_width') {
+        const ws = resolveSheet(op.sheet as string | undefined)
+        const width = Number(op.width)
+        if (!Number.isFinite(width) || width <= 0) throw new Error(`set_column_width: width 必须是正数（收到 ${op.width}）`)
+        const spec = String(op.columns ?? '')
+        const cols = parseColumnSpec(spec)
+        if (!cols) throw new Error(`set_column_width: 非法列「${spec}」（形如 A 或 A:C，逗号可叠多组）`)
+        for (const c of cols) ws.getColumn(c).width = width
+        readBacks.push({ sheetName: ws.name, address: `${colName(cols[0])}1`, op: { __colWidth: width, __col: cols[0], __cols: cols }, after: { address: '', value: null, formula: null, type: 'style' } })
+        results.push({ index, op: kind, ok: true, detail: `列 ${spec} 宽度 → ${width}` })
+        continue
+      }
+      if (kind === 'freeze_panes') {
+        const ws = resolveSheet(op.sheet as string | undefined)
+        const cell = String(op.cell ?? '')
+        if (!/^[A-Za-z]{1,3}[1-9]\d*$/.test(cell)) throw new Error(`freeze_panes: 非法单元格「${cell}」`)
+        ws.views = [{ state: 'frozen', topLeftCell: cell } as never]
+        readBacks.push({ sheetName: ws.name, address: cell, op: { __freeze: cell }, after: { address: cell, value: null, formula: null, type: 'style' } })
+        results.push({ index, op: kind, ok: true, detail: `冻结窗格于 ${cell}` })
+        continue
+      }
       throw new Error(`未知 op: ${kind}`)
     } catch (err) {
       results.push({ index, op: kind, ok: false, detail: err instanceof Error ? err.message : String(err) })
@@ -214,10 +283,65 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
   const reloaded = new ExcelJS.Workbook()
   await reloaded.xlsx.load(outBuffer as unknown as ArrayBuffer)
 
+  // Read-back gate (L6, M4 + M5 style variants): every written fact is read
+  // back from the RE-SERIALIZED buffer.
+  for (const rb of readBacks) {
+    const op0 = rb.op as Record<string, unknown>
+    if ('set_style' in op0) {
+      const want = op0.set_style as Record<string, unknown>
+      const ws2 = reloaded.getWorksheet(rb.sheetName)
+      if (!ws2) throw new Error(`门禁未通过：重载后缺少工作表「${rb.sheetName}」`)
+      const cell = ws2.getCell(rb.address)
+      const font = cell.font as Record<string, unknown> | undefined
+      if (want.bold !== undefined && font?.bold !== (want.bold === true)) throw new Error(`set_style ${rb.address}: 加粗写盘回读不一致`)
+      if (want.italic !== undefined && font?.italic !== (want.italic === true)) throw new Error(`set_style ${rb.address}: 斜体写盘回读不一致`)
+      if (want.font_size !== undefined && font?.size !== Number(want.font_size)) throw new Error(`set_style ${rb.address}: 字号写盘回读不一致`)
+      if (want.color !== undefined) {
+        const argb = (font?.color as { argb?: string } | undefined)?.argb ?? ''
+        if (!argb.endsWith(String(want.color).toUpperCase())) throw new Error(`set_style ${rb.address}: 字色写盘回读不一致`)
+      }
+      if (want.fill !== undefined) {
+        const fg = (cell.fill as { fgColor?: { argb?: string } } | undefined)?.fgColor?.argb ?? ''
+        if (!fg.endsWith(String(want.fill).toUpperCase())) throw new Error(`set_style ${rb.address}: 填充写盘回读不一致`)
+      }
+      if (want.align !== undefined) {
+        const al = cell.alignment as Record<string, unknown> | undefined
+        if (al?.horizontal !== String(want.align)) throw new Error(`set_style ${rb.address}: 对齐写盘回读不一致`)
+      }
+      if (want.wrap_text !== undefined) {
+        const al = cell.alignment as Record<string, unknown> | undefined
+        if (al?.wrapText !== (want.wrap_text === true)) throw new Error(`set_style ${rb.address}: 换行写盘回读不一致`)
+      }
+      continue
+    }
+    if ('__colWidth' in op0) {
+      const ws2 = reloaded.getWorksheet(rb.sheetName)
+      if (!ws2) throw new Error(`门禁未通过：重载后缺少工作表「${rb.sheetName}」`)
+      const actual = ws2.getColumn(op0.__col as number).width
+      // exceljs width round-trips with float drift (R3) — tolerance, not equality.
+      if (actual === undefined || Math.abs(actual - (op0.__colWidth as number)) > 0.01) {
+        throw new Error(`set_column_width: 列宽写盘回读不一致（期望 ${op0.__colWidth}，实际 ${actual}）`)
+      }
+      continue
+    }
+    if ('__freeze' in op0) {
+      const ws2 = reloaded.getWorksheet(rb.sheetName)
+      if (!ws2) throw new Error(`门禁未通过：重载后缺少工作表「${rb.sheetName}」`)
+      const view = ws2.views[0] as { state?: string; topLeftCell?: string } | undefined
+      if (view?.state !== 'frozen' || view.topLeftCell !== op0.__freeze) {
+        throw new Error(`freeze_panes: 冻结写盘回读不一致`)
+      }
+      continue
+    }
+  }
+
   // Read-back gate (L6, M4): every written cell is read back from the
   // re-serialized buffer — the bytes a client will actually open — not from
   // the in-memory workbook the write just mutated.
   for (const rb of readBacks) {
+    // Style/width/freeze entries carry markers and were checked above.
+    const marker = rb.op as Record<string, unknown>
+    if ('set_style' in marker || '__colWidth' in marker || '__freeze' in marker) continue
     const ws2 = reloaded.getWorksheet(rb.sheetName)
     if (!ws2) throw new Error(`门禁未通过：重载后缺少工作表「${rb.sheetName}」`)
     const check = ws2.getCell(rb.address)
@@ -244,6 +368,53 @@ export class XlsxBatchError extends Error {
     super(`第 ${failed.map((f) => f.index + 1).join('、')} 个 op 失败，整批未应用: ${failed.map((f) => f.detail).join('；')}`)
     this.results = results
   }
+}
+
+/** B3 → {col: 55ish} — 1-based column letter math for style ranges. */
+function colIndexOf(letters: string): number {
+  let n = 0
+  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64)
+  return n
+}
+function colName(n: number): string {
+  let s = ''
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26) }
+  return s
+}
+function rangeAddr(col: number, row: number): string { return `${colName(col)}${row}` }
+
+/** 'B3' | 'A1:C10' → 1-based inclusive bounds; null on garbage. */
+function parseCellRange(spec: string): { startCol: number; startRow: number; endCol: number; endRow: number } | null {
+  const m = /^([A-Za-z]{1,3})([1-9]\d*)(?::([A-Za-z]{1,3})([1-9]\d*))?$/.exec(spec.trim())
+  if (!m) return null
+  const c1 = colIndexOf(m[1]); const r1 = Number(m[2])
+  const c2 = m[3] ? colIndexOf(m[3]) : c1
+  const r2 = m[4] ? Number(m[4]) : r1
+  return { startCol: Math.min(c1, c2), startRow: Math.min(r1, r2), endCol: Math.max(c1, c2), endRow: Math.max(r1, r2) }
+}
+
+/** 'A' | 'A:C' | 'A:C,D' (commas stack groups) → 1-based column numbers. */
+function parseColumnSpec(spec: string): number[] | null {
+  const parts = spec.split(',').map((p) => p.trim()).filter(Boolean)
+  if (parts.length === 0) return null
+  const out: number[] = []
+  for (const part of parts) {
+    const m = /^([A-Za-z]{1,3})(?::([A-Za-z]{1,3}))?$/.exec(part)
+    if (!m) return null
+    const a = colIndexOf(m[1])
+    const b = m[2] ? colIndexOf(m[2]) : a
+    if (b < a) return null
+    for (let c = a; c <= b && c - a < 64; c++) out.push(c) // a runaway group is capped
+  }
+  return out.length > 0 ? out : null
+}
+
+/** RRGGBB (no #) → uppercase; garbage throws (better a loud refuse than a
+ *  silent black fill). */
+function argb(color: string): string {
+  const c = color.replace(/^#/, '').toUpperCase()
+  if (!/^[0-9A-F]{6}$/.test(c)) throw new Error(`颜色「${color}」必须是 6 位 RRGGBB（不带 #）`)
+  return c
 }
 
 /** The outline the tool returns even without edits (L9 xlsx half). */

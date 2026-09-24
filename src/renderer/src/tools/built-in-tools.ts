@@ -525,7 +525,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['outline', 'replace_text', 'insert_paragraph', 'delete_paragraph', 'set_paragraph_style', 'format_text'] },
+              op: { type: 'string', enum: ['outline', 'replace_text', 'insert_paragraph', 'delete_paragraph', 'set_paragraph_style', 'format_text', 'insert_image', 'insert_table_row', 'delete_table_row'] },
               find: { type: 'string' }, replace: { type: 'string' },
               expected_count: { type: 'number' }, paragraph: { type: 'number' },
               track_changes: { type: 'boolean', description: 'Wrap replacement in <w:del>/<w:ins> revision marks (Word/WPS shows as tracked changes). Default false (direct replacement).' },
@@ -595,7 +595,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['inspect', 'set_cell', 'find_replace', 'add_row'] },
+              op: { type: 'string', enum: ['inspect', 'set_cell', 'find_replace', 'add_row', 'set_style', 'set_column_width', 'freeze_panes'] },
               sheet: { type: 'string' },
               cell: { type: 'string', description: 'e.g. "B3"' },
               value: { type: ['string', 'number', 'boolean', 'null'] },

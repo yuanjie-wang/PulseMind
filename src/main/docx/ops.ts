@@ -16,6 +16,9 @@ export type DocxOp =
   | { op: 'delete_paragraph'; paragraph: number }
   | { op: 'set_paragraph_style'; paragraph: number; style: string }
   | { op: 'format_text'; find: string; paragraph?: number; expected_count?: number; bold?: boolean; italic?: boolean; underline?: boolean; color?: string; font_size?: number }
+  | { op: 'insert_image'; paragraph: number; position: 'before' | 'after'; image: string; width_px?: number; height_px?: number }
+  | { op: 'insert_table_row'; table: number; after_row: number; position?: 'before' | 'after'; cells?: string[] }
+  | { op: 'delete_table_row'; table: number; row: number }
 
 export interface OpResult {
   index: number
@@ -24,10 +27,20 @@ export interface OpResult {
   detail: string
 }
 
+export interface PreparedImageInsert {
+  /** The full <w:p> carrying the inline drawing (package layer built it). */
+  paragraphXml: string
+  mediaName: string
+}
+
 export interface ApplyOutcome {
   xml: string
   results: OpResult[]
   outline: Array<{ index: number; style: string | null; text: string }>
+  tables: Array<{ index: number; rows: number; cols: number }>
+  /** insert_image side-effects: the package layer writes media/rels/CT and
+   *  the anchored paragraph XML lands in `xml` via the splice below. */
+  imageInserts: Array<{ paragraphIndex: number; insert: PreparedImageInsert }>
 }
 
 const MAX_OPS_CHARS = 120_000
@@ -153,26 +166,42 @@ function rprWants(op: Extract<DocxOp, { op: 'format_text' }>): RprWant[] {
 
 // ── the batch ──
 
-export function applyOps(xml: string, ops: DocxOp[]): ApplyOutcome {
+export function applyOps(
+  xml: string,
+  ops: DocxOp[],
+  prepareImage?: (path: string, currentXml: string) => PreparedImageInsert,
+): ApplyOutcome {
   let current = xml
   const results: OpResult[] = []
+  const imageInserts: ApplyOutcome['imageInserts'] = []
   for (let index = 0; index < ops.length; index++) {
     const op = ops[index]
     try {
-      const detail = applyOne(current, op)
+      const detail = applyOne(current, op, { prepareImage, imageInserts })
       current = detail.xml
       results.push({ index, op: op.op, ok: true, detail: detail.message })
     } catch (err) {
       results.push({ index, op: op.op, ok: false, detail: err instanceof Error ? err.message : String(err) })
       // L5: a failed op refuses the whole batch — partial application is how
       // the rejected external design corrupted documents silently.
-      return { xml, results, outline: [] }
+      return { xml, results, outline: [], tables: [], imageInserts: [] }
     }
   }
-  return { xml: current, results, outline: outlineOf(buildDocumentModel(current)) }
+  const model = buildDocumentModel(current)
+  return {
+    xml: current,
+    results,
+    outline: outlineOf(model),
+    tables: model.tables.map((t) => ({ index: t.index, rows: t.rows.length, cols: t.rows[0]?.cells.length ?? 0 })),
+    imageInserts,
+  }
 }
 
-function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
+function applyOne(
+  xml: string,
+  op: DocxOp,
+  ctx?: { prepareImage?: (path: string, currentXml: string) => PreparedImageInsert; imageInserts?: ApplyOutcome['imageInserts'] },
+): { xml: string; message: string } {
   const model = buildDocumentModel(xml)
   const replacements: SpliceReplacement[] = []
   let message = ''
@@ -368,10 +397,78 @@ function applyOne(xml: string, op: DocxOp): { xml: string; message: string } {
       message = `格式化 ${matches.length} 处`
       break
     }
+    case 'insert_image': {
+      // M3 (PLAN-office-expressiveness): the paragraph splice happens HERE
+      // (the model owns the anchor positions); the package half (media/rels/
+      // CT working copies) lives in the package layer's prepare callback.
+      const anchor = requireParagraph(model, op.paragraph)
+      if (!ctx?.prepareImage) throw new Error('insert_image: 图片解析器不可用')
+      const prepared = ctx.prepareImage(op.image, xml)
+      ctx.imageInserts!.push({ paragraphIndex: op.paragraph, insert: prepared })
+      const at = op.position === 'before' ? anchor.element.start : anchor.element.end
+      replacements.push({ start: at, end: at, text: prepared.paragraphXml })
+      message = `在段落 ${op.paragraph} ${op.position === 'before' ? '前' : '后'}插入图片`
+      break
+    }
+    case 'insert_table_row': {
+      const table = requireTable(model, op.table)
+      const anchorRow = table.rows[op.after_row]
+      if (!anchorRow) throw new Error(`insert_table_row: 行 ${op.after_row} 不存在（表 ${op.table} 共 ${table.rows.length} 行）`)
+      const position = op.position ?? 'after'
+      // vMerge guard BEFORE any building (the clone would corrupt the grid).
+      for (const cell of anchorRow.cells) {
+        if (xml.slice(cell.start, cell.end).includes('<w:vMerge')) {
+          throw new Error(`insert_table_row: 锚点行含纵向合并单元格（w:vMerge），克隆会破坏合并关系——本表不支持行克隆`)
+        }
+        if (xml.slice(cell.start, cell.end).includes('<w:tbl')) {
+          throw new Error('insert_table_row: 锚点行含嵌套表格，克隆会静默丢掉它——本表不支持行克隆')
+        }
+      }
+      const cells = op.cells ?? []
+      if (cells.length > anchorRow.cells.length) {
+        throw new Error(`insert_table_row: cells 给了 ${cells.length} 个（锚点行只有 ${anchorRow.cells.length} 个单元格）`)
+      }
+      // Clone the anchor row's <w:tr> as the template: tcPr (borders/width/
+      // gridSpan) survives verbatim; cell CONTENT is rebuilt to one paragraph.
+      const rowTemplate = xml.slice(anchorRow.element.start, anchorRow.element.end)
+      const built = anchorRow.cells.map((cell, i) => {
+        const tcPr = cell.children.find((c) => c.kind === 'element' && c.name === 'w:tcPr') as XmlElementNode | undefined
+        const tcPrXml = tcPr ? xml.slice(tcPr.start, tcPr.end) : ''
+        const text = cells[i] ?? ''
+        const space = text !== text.trim() ? ' xml:space="preserve"' : ''
+        return `<w:tc>${tcPrXml}<w:p><w:r><w:t${space}>${escapeXmlText(text)}</w:t></w:r></w:p></w:tc>`
+      }).join('')
+      const newRow = rowTemplate.replace(/^(<w:tr[^>]*>)[\s\S]*(<\/w:tr>)$/, `$1${built}$2`)
+      const at = position === 'before' ? anchorRow.element.start : anchorRow.element.end
+      replacements.push({ start: at, end: at, text: newRow })
+      message = `在表 ${op.table} 第 ${op.after_row} 行${position === 'before' ? '前' : '后'}插入 1 行`
+      break
+    }
+    case 'delete_table_row': {
+      const table = requireTable(model, op.table)
+      const row = table.rows[op.row]
+      if (!row) throw new Error(`delete_table_row: 行 ${op.row} 不存在（表 ${op.table} 共 ${table.rows.length} 行）`)
+      if (table.rows.length <= 1) {
+        throw new Error('delete_table_row: 表格只剩一行，删除会产生空 w:tbl（非法）——请用 delete_paragraph 删除整表内容')
+      }
+      // A vMerge SPANNING the deleted row leaves its restart orphaned — refuse.
+      if (xml.slice(row.element.start, row.element.end).includes('<w:vMerge')) {
+        throw new Error('delete_table_row: 目标行含纵向合并单元格（w:vMerge），删除会破坏合并关系')
+      }
+      replacements.push({ start: row.element.start, end: row.element.end, text: '' })
+      message = `删除表 ${op.table} 第 ${op.row} 行`
+      break
+    }
     default:
       throw new Error(`未知 op: ${(op as { op: string }).op}`)
   }
   return { xml: replacements.length > 0 ? splice(xml, replacements) : xml, message }
+}
+
+function requireTable(model: ReturnType<typeof buildDocumentModel>, index: number) {
+  const table = model.tables[index]
+  if (!table) throw new Error(`表 ${index} 不存在（文档共 ${model.tables.length} 个正文级表格）`)
+  return table
 }
 
 export { GAP_CHAR }

@@ -20,6 +20,24 @@ export async function sheetsToXlsxBuffer(sheets: SheetModel[]): Promise<Buffer> 
   for (const sheet of sheets) {
     const ws = wb.addWorksheet(sheet.name)
     for (const row of typedRows(sheet.rows)) ws.addRow(row)
+    // M5 rider (PLAN-office-expressiveness §2.5): the generated artifact stops
+    // being a bare value grid — first row bold (headers) and every column
+    // sized to its longest cell (+2, capped 50). Excel's own unit math makes
+    // the exact width cosmetic; the point is readable-on-open.
+    if (sheet.rows.length > 0) {
+      const header = ws.getRow(1)
+      if (header) header.font = { ...header.font, bold: true }
+      const colCount = ws.columnCount
+      for (let c = 1; c <= colCount; c++) {
+        let max = 0
+        ws.eachRow((row) => {
+          const v = row.getCell(c).value
+          const len = v === null || v === undefined ? 0 : String(typeof v === 'object' && v !== null && 'formula' in (v as object) ? (v as { result?: unknown }).result ?? '' : v).length
+          if (len > max) max = len
+        })
+        ws.getColumn(c).width = Math.min(max + 2, 50)
+      }
+    }
   }
   return Buffer.from(await wb.xlsx.writeBuffer())
 }

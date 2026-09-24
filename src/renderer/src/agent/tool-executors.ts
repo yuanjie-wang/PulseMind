@@ -352,6 +352,10 @@ export class ToolExecutor implements ToolExecContext {
           // M1: the outline is the payload of an outline-only call — without
           // it in the tool result the manual's "FIRST call with outline" was
           // unusable (index-based ops had nothing to index into).
+          const tables = (result.tables ?? []) as Array<{ index: number; rows: number; cols: number }>
+          if (t.name === 'docx_edit' && tables.length > 0) {
+            parts.push(`表格:\n${tables.map((tb) => `表 ${tb.index}：${tb.rows} 行 × ${tb.cols} 列`).join('\n')}`)
+          }
           const outline = (result.outline ?? []) as Array<Record<string, unknown>>
           if (outline.length > 0) {
             const isDocx = t.name === 'docx_edit'
