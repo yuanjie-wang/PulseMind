@@ -741,7 +741,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         planNode: {
           type: 'string',
           description:
-            'The plan node this task implements: its 1-based number ("2") or id ("n2"). Pass it whenever the task executes a node of the active plan — the spawn result will name the node and remind you to settle it with advance_plan.',
+            'The plan node this task implements: its 1-based number ("2") or id ("n2"). Pass it whenever the task executes a node of the active plan — only a READY node (pending, all dependencies completed) is accepted. The spawn result will name the node and remind you to settle it with advance_plan.',
         },
       },
       required: ['task'],
@@ -754,7 +754,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'create_plan',
     description:
-      'Create an execution DAG for complex multi-step tasks: independent nodes run in PARALLEL (each delegated to its assignee expert via spawn_agent), nodes with depends_on wait for their prerequisites. You MUST call advance_plan with node=<number> after each node settles — the plan does not auto-advance.',
+      'Create an execution DAG for complex multi-step tasks: independent nodes run in PARALLEL (each delegated to its assignee expert via spawn_agent), nodes with depends_on wait for their prerequisites. Array order never implies order — a step without depends_on starts immediately, so dependent steps MUST name their prerequisites. spawn_agent rejects nodes outside the READY set, and you MUST call advance_plan with node=<number> after each node settles — the plan does not auto-advance.',
     category: 'system',
     triggers: ['plan', 'strategy', '步骤', '计划'],
     input_schema: {
@@ -776,7 +776,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
               depends_on: {
                 type: 'array',
                 items: { type: 'integer' },
-                description: '1-based indexes of nodes that must finish before this one can start (e.g. [1, 3]). Omit for a node with no prerequisites — such nodes start immediately, in parallel.',
+                description: "1-based indexes of nodes that must finish before this one can start (e.g. [1, 3]). Nodes WITHOUT depends_on all start immediately, in parallel — array order never sequences them. If this node consumes another node's output, list that node here.",
               },
               assignee: {
                 type: 'string',
@@ -785,7 +785,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
             },
             required: ['description'],
           },
-          description: 'The plan nodes. Array order is preserved for numbering (node 1..N referenced by depends_on and advance_plan).',
+          description: 'The plan nodes. Array order is preserved for numbering (node 1..N referenced by depends_on and advance_plan) — it does NOT imply execution order. A plain string item is also accepted and chains to the previous step.',
         },
       },
       required: ['objective', 'steps'],

@@ -15,7 +15,7 @@
 //            into secrets or PulseMind's own data)
 //   write  — additionally jailed to workspaceDir
 //   baseline (no workspaceDir) — deny-roots only; user-initiated renderer
-//            utilities (knowledge import, canvas) run this way and must keep
+//            utilities (knowledge import) run this way and must keep
 //            writing into ~/.pulsemind, so the baseline list excludes it
 
 import { isAbsolute, resolve, sep } from 'node:path'

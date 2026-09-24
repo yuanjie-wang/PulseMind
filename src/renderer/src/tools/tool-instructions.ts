@@ -450,7 +450,7 @@ Delegate a task to a sub-agent. The sub-agent runs with the same tools as this s
 1. Review the available experts list above — pick one when its expertise fits the task, otherwise omit the ID
 2. The sub-agent starts with that expert's persona and runs independently
 3. When complete, its results are returned as the tool result
-4. **With a plan active**: pass \`planNode\` for every node you dispatch (multiple READY nodes = multiple spawn_agent calls in the same response, each with its own planNode). The result names the node — settle it immediately with \`advance_plan action="complete" node=<number>\`
+4. **With a plan active**: pass \`planNode\` for every node you dispatch (multiple READY nodes = multiple spawn_agent calls in the same response, each with its own planNode). Only nodes in the READY set are accepted — a node whose dependencies are not all completed is rejected. The result names the node — settle it immediately with \`advance_plan action="complete" node=<number>\`
 
 ### Guidelines
 - Use for complex, self-contained sub-tasks (research, analysis, code review, refactoring)
@@ -466,8 +466,9 @@ Create an execution DAG before starting complex multi-step work. Nodes with no d
 ### Parameters
 - **objective** (required) — What this plan aims to achieve
 - **steps** (required) — The plan nodes. Each item: \`{ description, depends_on?, assignee? }\`
-  - **depends_on** — 1-based indexes of prerequisite nodes (e.g. \`[1, 3]\`). Omit for nodes that can start immediately.
+  - **depends_on** — 1-based indexes of prerequisite nodes (e.g. \`[1, 3]\`). **Array order never creates order** — every node without depends_on starts immediately, in parallel with everything else.
   - **assignee** — expert id (capability center) this node is delegated to. Omit for a general sub-agent.
+  - A plain string item is also accepted and chains to the previous step (serial fallback) — prefer the object form with an explicit depends_on.
 
 ### When to use
 - The task requires 3+ coordinated tool calls, or has parts that can proceed independently
@@ -477,11 +478,23 @@ Create an execution DAG before starting complex multi-step work. Nodes with no d
 1. **Before creating the plan**, investigate first (\`read\`, \`search\`, \`list_dir\`, \`webfetch\`) so dependencies reflect reality
 2. Call \`create_plan\` with the objective and the node graph — put independent nodes on separate branches, that is what runs in parallel
 3. The plan (with its READY set) is injected into every subsequent request as context. Array order assigns each node its fixed number (n1..nN) — depends_on, spawn_agent planNode and advance_plan node all use these numbers
-4. Dispatch: spawn one \`spawn_agent\` per READY node (subAgentId = its assignee, planNode = its number) — put them ALL in the same response so they run concurrently
+4. Dispatch: spawn one \`spawn_agent\` per READY node (subAgentId = its assignee, planNode = its number) — put them ALL in the same response so they run concurrently. This is **enforced**: spawn_agent rejects a node whose dependencies are not all completed, so you cannot dispatch ahead of the graph
 5. As each sub-agent returns, call \`advance_plan\` with node=<number> to settle that node; newly READY nodes go out in the next parallel batch
+
+### Example — sequential stages, parallel leaves
+\`\`\`
+steps: [
+  { "description": "调研需求与竞品" },
+  { "description": "实现数据层", "depends_on": [1] },
+  { "description": "实现 UI",     "depends_on": [1] },
+  { "description": "端到端测试",   "depends_on": [2, 3] }
+]
+\`\`\`
+n1 first; n2 and n3 run together once n1 settles; n4 waits for both. Written WITHOUT depends_on, all four would start at once — the array order would do nothing.
 
 ### Rules
 - One node per sub-agent; never execute a delegated node yourself
+- **If a node consumes another node's output, you MUST list that node in its depends_on — array order does not sequence nodes, and a plan of dependent steps with no edges is a fully parallel plan.**
 - Never call advance_plan without node=<number> when several nodes are ready
 - A failed node blocks only its own downstream — retry it (complete), or \`skip\` it and re-plan`,
 
