@@ -45,6 +45,7 @@ import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import { perfTime } from '../perf/perf-log'
 import { keepAwake } from '../system/keep-awake'
+import { rememberLastUsedApprovalMode, rememberLastUsedProfileId, seedLastUsedDefaults } from './last-used-defaults'
 import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, ModelState, CompactionEvent } from '../../shared/agent-protocol'
 import type { HooksConfig } from '../../renderer/src/types/hooks'
 
@@ -441,6 +442,10 @@ export class AgentSessionManagerImpl {
     const settings = await settingsStore.get()
     const profile = settings.profiles.find((p) => p.id === profileId)
     if (!profile) throw new Error(`unknown profile: ${profileId}`)
+    // 换默认模型也是一次「上次使用」的修改 —— 用户刚表达了想用的模型，否则
+    // 新建会话会继续沿用旧值而无视这次修改（桌面设置面板的同一动作在
+    // settings.handler 里以「比对旧 activeProfileId」实现）。
+    rememberLastUsedProfileId(profile.id)
     if (settings.activeProfileId !== profile.id) {
       await settingsStore.update(s => ({ ...s, activeProfileId: profile.id }))
     }
@@ -465,6 +470,10 @@ export class AgentSessionManagerImpl {
     if (profileId) {
       const settings = await settingsStore.get()
       if (!settings.profiles.some((p) => p.id === profileId)) throw new Error(`unknown profile: ${profileId}`)
+      // A real pick on the panel's model dropdown is the user's latest model
+      // choice — the next new conversation starts here too. null (回到默认)
+      // is an unpin, not a choice, and leaves last-used alone.
+      rememberLastUsedProfileId(profileId)
     }
     setConversationProfile(sessionId, profileId)
     await this.refreshOptions(sessionId).catch((err) => {
@@ -486,6 +495,10 @@ export class AgentSessionManagerImpl {
    *  writing the column cannot loosen a run that must not be loosened. */
   async setApprovalMode(sessionId: string, mode: SandboxApprovalMode): Promise<SandboxApprovalMode> {
     setConversationApprovalMode(sessionId, mode)
+    // The panel's 授权 click is a user modification — the sticky last-used
+    // value follows it (the desktop's own click remembers in the IPC door,
+    // conversation.handler; the studio's first-create seed never reaches here).
+    rememberLastUsedApprovalMode(mode)
     await this.refreshOptions(sessionId).catch((err) => {
       console.warn('[AgentSession] approval switch: refresh failed', sessionId, err)
     })
@@ -542,6 +555,11 @@ export class AgentSessionManagerImpl {
   private async doCreateSession(sessionId: string, opts: AgentSessionCreateOptions): Promise<void> {
     const managers = await this.ensureManagers()
     const settings = await settingsStore.get()
+    // 「新建会话沿用上次选择」：一个没有任何创建期配置的普通会话，把全局的
+    // 上次使用值落成自己的列 —— 必须发生在下面 profile/approvalMode 的解析
+    // 之前，本次创建就直接以它运行；之后这个会话各持各的，重启或默认切换
+    // 都不再漂移（详见 last-used-defaults.ts）。
+    seedLastUsedDefaults(sessionId, opts, settings)
     // A create-time profile pin (a routine's model choice) wins when it still
     // resolves; otherwise the conversation's own choice — the model picked on
     // the composer lands on the column before this session exists — and the

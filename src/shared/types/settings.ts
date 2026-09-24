@@ -2,6 +2,7 @@ export type LLMProvider = 'anthropic' | 'openai'
 
 import type { ProjectSortMode } from './project'
 import type { ShortcutActionId } from '../shortcuts'
+import type { SandboxApprovalMode } from '../sandbox/policy'
 
 export interface LlmProfile {
   id: string
@@ -80,4 +81,11 @@ export interface AppSettings {
    *  overrides live here; defaults come from shared/shortcuts.ts, and both
    *  the native menu and the before-input fallback re-derive on save. */
   shortcuts?: Partial<Record<ShortcutActionId, string>>
+  /** 上次使用的授权级别 / 模型 —— 「新建会话沿用上次选择」的那个全局变量。
+   *  用户在任何会话上做的交互式修改（桌面 composer、welcome 页、插件面板、
+   *  设置面板的默认模型）都会写到这里；新建会话把它落成自己的列作为初始值，
+   *  之后每个会话各持各的配置，不再跟随。未设 = 沿用旧规则
+   *  （DEFAULT_APPROVAL_MODE / activeProfileId），也是首次安装的初始态。 */
+  lastUsedApprovalMode?: SandboxApprovalMode
+  lastUsedProfileId?: string
 }

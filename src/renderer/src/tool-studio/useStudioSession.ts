@@ -117,7 +117,9 @@ export function useStudioSession(toolId: string, toolName: string, toolDir: stri
     const seeded = window.electronAPI.getConversation(convId)
       .then((stored) => {
         if (stored?.approvalMode === undefined) {
-          return window.electronAPI.setConversationApprovalMode(convId, 'auto')
+          // source 'derived'：这不是用户的选择（工作室的历史默认），不许把
+          // 「上次使用」污染成全部允许 —— 见 conversation.handler 的门。
+          return window.electronAPI.setConversationApprovalMode(convId, 'auto', 'derived')
             .then(() => 'auto' as const)
         }
         return stored.approvalMode

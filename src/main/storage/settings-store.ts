@@ -2,6 +2,7 @@ import { readFile, writeFile, rename, unlink, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SETTINGS_PATH, DATA_DIR, ensureDataDir } from './index'
 import { resolveEnvVarsDeep, resolveEnvVarsInString } from '../../shared/env'
+import { toSandboxApprovalMode } from '../../shared/sandbox/policy'
 import type { AppSettings, LlmProfile } from '../../shared/types/settings'
 import type { ProjectSortMode } from '../../shared/types/project'
 
@@ -172,6 +173,12 @@ export class SettingsStore {
           debugLlmRequests: parsed.debugLlmRequests === true,
           debugPerfLogs: parsed.debugPerfLogs === true,
           projectSortMode: readProjectSortMode(parsed.projectSortMode),
+          // 上次使用的授权/模型（「新建会话沿用上次选择」）：与可选组同病同治 ——
+          // get() 是逐字段重建，漏掉这里就是写进去读不出来 + 下次整存被抹掉。
+          lastUsedApprovalMode: toSandboxApprovalMode(parsed.lastUsedApprovalMode),
+          lastUsedProfileId: typeof parsed.lastUsedProfileId === 'string' && parsed.lastUsedProfileId
+            ? parsed.lastUsedProfileId
+            : undefined,
           git: readGroup(parsed.git, readGitSettings),
           knowledge: readGroup(parsed.knowledge, readKnowledgeSettings),
           browser: readGroup(parsed.browser, readBrowserSettings),

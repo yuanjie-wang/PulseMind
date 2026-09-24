@@ -69,7 +69,10 @@ describe('desktop 模型 wiring (per conversation)', () => {
 
   it('resolves the picker through the conversation column, default last', () => {
     expect(appSrc).toContain('activeConvProfileId ?? settings.activeProfileId')
-    expect(appSrc).toContain('pendingProfileId ?? settings.activeProfileId')
+    // The welcome branch gained the sticky last-used step (新建会话沿用上次
+    // 选择): the conversation the first message creates seeds it as its own
+    // column, so the label matches what the first ask will run.
+    expect(appSrc).toContain('pendingProfileId ?? settings.lastUsedProfileId ?? settings.activeProfileId')
   })
 
   it('routes the click to the conversation, or holds it for the next one', () => {
@@ -85,7 +88,7 @@ describe('desktop 模型 wiring (per conversation)', () => {
   })
 
   it('writes the column before the loop starts (the first ask resolves it)', () => {
-    const from = controllerSrc.indexOf('const pendingProfile = takePendingProfileId()')
+    const from = controllerSrc.indexOf('const profileSeed = takePendingProfileId()')
     expect(from).toBeGreaterThan(-1)
     const to = controllerSrc.indexOf('engineHandle.startLoop(', from)
     expect(to).toBeGreaterThan(from)

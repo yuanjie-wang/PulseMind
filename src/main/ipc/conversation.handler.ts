@@ -40,6 +40,8 @@ import {
 } from '../storage/stats.db'
 import { getDb } from '../storage/database'
 import type { ToolResultBatchEntry } from '../../shared/types/conversation'
+import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
+import { rememberLastUsedApprovalMode, rememberLastUsedProfileId } from '../agent/last-used-defaults'
 
 // ── Handler wrappers (reduce try-catch boilerplate) ─────────────────────
 
@@ -129,8 +131,22 @@ export function registerConversationHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_LIST, passThrough(IPC_CHANNELS.CONVERSATION_LIST, listConversations, []))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_PROJECT, (_event, id: string, projectId: string) => setConversationProject(id, projectId))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_EXPERT, (_event, id: string, expertId: string | null) => setConversationExpert(id, expertId))
-  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, voidHandler(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, setConversationApprovalMode))
-  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_PROFILE, voidHandler(IPC_CHANNELS.CONVERSATION_SET_PROFILE, setConversationProfile))
+  // 这两扇门都带可选的 source：缺省 = 用户的选择，顺手更新「上次使用」
+  // （新建会话沿用上次选择的那个全局变量）；工具工作室的首建种子
+  // （useStudioSession 的 'auto'）走同一通道，但那不是用户的决定，必须带
+  // 'derived' 进来，否则工作室一开就把 last-used 污染成全部允许。
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE, (_event, id: string, mode: SandboxApprovalMode, source?: 'user' | 'derived') => {
+    try {
+      setConversationApprovalMode(id, mode)
+      if (source !== 'derived') rememberLastUsedApprovalMode(mode)
+    } catch (e) { console.error(`[DB] error ${IPC_CHANNELS.CONVERSATION_SET_APPROVAL_MODE}:`, e) }
+  })
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_SET_PROFILE, (_event, id: string, profileId: string | null, source?: 'user' | 'derived') => {
+    try {
+      setConversationProfile(id, profileId)
+      if (profileId && source !== 'derived') rememberLastUsedProfileId(profileId)
+    } catch (e) { console.error(`[DB] error ${IPC_CHANNELS.CONVERSATION_SET_PROFILE}:`, e) }
+  })
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET, passThrough(IPC_CHANNELS.CONVERSATION_GET, getConversation, null))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_HYDRATE, passThrough(IPC_CHANNELS.CONVERSATION_HYDRATE, hydrateConversation, null))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_DELETE, voidHandler(IPC_CHANNELS.CONVERSATION_DELETE, deleteConversation))

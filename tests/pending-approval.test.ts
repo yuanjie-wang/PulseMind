@@ -66,7 +66,10 @@ describe('desktop 授权 wiring (new conversation)', () => {
   const persistenceSrc = readFileSync(PERSISTENCE, 'utf-8')
 
   it('resolves the button through the held choice before the shared default', () => {
-    expect(appSrc).toContain('pendingApprovalMode ?? DEFAULT_APPROVAL_MODE')
+    // The chain gained the sticky last-used step (新建会话沿用上次选择) — the
+    // held welcome choice still outranks it, and the shared default is still
+    // the last resort for a first-ever run.
+    expect(appSrc).toContain('pendingApprovalMode ?? settings.lastUsedApprovalMode ?? DEFAULT_APPROVAL_MODE')
   })
 
   it('holds the click when there is no conversation, and writes when there is', () => {
@@ -85,7 +88,7 @@ describe('desktop 授权 wiring (new conversation)', () => {
     expect(controllerSrc).toContain('persistence.addConversation(')
 
     const take = controllerSrc.indexOf('takePendingApprovalMode()')
-    const write = controllerSrc.indexOf('persistence.updateConversationApproval(convId, pendingApproval)')
+    const write = controllerSrc.indexOf('persistence.updateConversationApproval(convId, approvalSeed)')
     const start = controllerSrc.indexOf('.startLoop(content')
 
     expect(take).toBeGreaterThan(-1)

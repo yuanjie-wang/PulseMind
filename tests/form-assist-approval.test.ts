@@ -111,7 +111,9 @@ describe('the tool studio: column seed instead of a create-time pin', () => {
   })
 
   it('seeds 全部允许 into the column, once, before the session exists', () => {
-    const seed = STUDIO.indexOf('setConversationApprovalMode(convId, \'auto\')')
+    // source 'derived': the seed is the studio's historical default, not the
+    // user's choice — it must not update the sticky last-used value.
+    const seed = STUDIO.indexOf("setConversationApprovalMode(convId, 'auto', 'derived')")
     const create = STUDIO.indexOf('agentSessionCreate(convId,')
     expect(seed).toBeGreaterThan(-1)
     expect(create).toBeGreaterThan(seed)

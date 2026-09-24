@@ -275,6 +275,10 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     yourName: settings.yourName,
     workspaceDir: settings.workspaceDir,
     autoCleanup: settings.autoCleanup,
+    // 「新建会话沿用上次选择」：welcome 页没选授权/模型时，第一条消息把它们
+    // 作为新会话自己的初始值落列（useChatController 的 materialization）。
+    lastUsedApprovalMode: settings.lastUsedApprovalMode,
+    lastUsedProfileId: settings.lastUsedProfileId,
     locale: settings.locale,
     experienceEnabled: settings.experienceEnabled,
     hooks
@@ -311,15 +315,18 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
 
   // ── 授权档位 (composer's 授权 button, formerly the sidebar YOLO switch) ──
   // Approval belongs to the conversation, not to its project or to a global
-  // setting: each conversation carries its own level (absent = the shared
-  // default, 按需确认 — see DEFAULT_APPROVAL_MODE), and the session manager
-  // re-reads it on every ask so a change lands on the next message. The button
-  // must resolve the fallback exactly as the engine does, or it would label a
+  // setting: each conversation carries its own level, and the session manager
+  // re-reads it on every ask so a change lands on the next message. A
+  // conversation that never chose runs at the sticky last-used value
+  // (「新建会话沿用上次选择」: every interactive change lands in
+  // settings.lastUsedApprovalMode and the next conversation seeds it) — the
+  // shared DEFAULT is only the very first run's fallback. The button must
+  // resolve the fallback exactly as the engine does, or it would label a
   // fresh conversation 全部允许 while the ladder holds calls.
   const pendingApprovalMode = usePendingApprovalStore((s) => s.mode)
   const approvalMode: SandboxApprovalMode = activeConvKey
     ? (conversations.find((c: any) => c.key === activeConvKey)?.approvalMode ?? DEFAULT_APPROVAL_MODE)
-    : (pendingApprovalMode ?? DEFAULT_APPROVAL_MODE)
+    : (pendingApprovalMode ?? settings.lastUsedApprovalMode ?? DEFAULT_APPROVAL_MODE)
   const changeApprovalMode = (mode: SandboxApprovalMode): void => {
     // With no conversation yet the click has nothing to write to — hold it for
     // the one the first message will create (useChatController consumes it).
@@ -329,20 +336,29 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
 
   // ── 模型 (composer's model picker) ──
   // The same per-conversation shape as the 授权 block above: a conversation
-  // that picked a model carries its own profileId; one that never chose
-  // follows the global default (`settings.activeProfileId`, the settings
-  // panel's 默认模型). The picker resolves the fallback exactly as the engine
-  // does — pin > column > default — so the label never shows a model the next
-  // message will not use. A welcome-picked model rides pendingProfileStore to
-  // the conversation the first message creates.
+  // that picked a model carries its own profileId; one that never chose runs
+  // at the sticky last-used value (settings.lastUsedProfileId — a fresh
+  // conversation seeds it as its own column), and only a conversation that
+  // predates that value entirely follows the global default
+  // (`settings.activeProfileId`, the settings panel's 默认模型). The picker
+  // resolves the fallback exactly as the engine does — pin > column > last
+  // used > default — so the label never shows a model the next message will
+  // not use. A welcome-picked model rides pendingProfileStore to the
+  // conversation the first message creates.
   const pendingProfileId = usePendingProfileStore((s) => s.profileId)
   const activeConvProfileId = activeConvKey
     ? conversations.find((c: any) => c.key === activeConvKey)?.profileId
     : undefined
   // undefined column = following the default; null pending = none picked yet.
+  // The fallbacks are asymmetric ON PURPOSE: an EXISTING conversation with no
+  // column resolves to the global default (that is what the engine's
+  // effectiveProfileId does for it — new conversations get last-used seeded
+  // into their column at creation, so they never fall through), while the
+  // welcome composer resolves to last-used because that is what the
+  // conversation it creates will actually seed.
   const effectiveProfileId: string | undefined = activeConvKey
     ? (activeConvProfileId ?? settings.activeProfileId)
-    : (pendingProfileId ?? settings.activeProfileId)
+    : (pendingProfileId ?? settings.lastUsedProfileId ?? settings.activeProfileId)
   const profilePinned = activeConvKey ? activeConvProfileId != null : false
   const changeProfile = (profileId: string): void => {
     if (activeConvKey) updateConversationProfile(activeConvKey, profileId)
@@ -352,6 +368,15 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     if (activeConvKey) updateConversationProfile(activeConvKey, null)
     else usePendingProfileStore.getState().clearProfileId()
   }
+
+  // 进入 welcome（没有任何会话打开）时刷新一次设置快照：welcome composer 的
+  // 授权/模型回退读 settings.lastUsed*，而插件面板等其他表面的修改只落在主
+  // 进程的 settings.json —— 不重读的话，新建会话会沿用一块陈旧的「上次使用」。
+  // （useChatController 的 materialization 用同一份快照播种列，显示与运行
+  // 因此永远一致；这里收缩的只是「上次使用」本身的新鲜度。）
+  useEffect(() => {
+    if (!activeConvKey) void reloadSettings()
+  }, [activeConvKey, reloadSettings])
 
   // Set MemoryManager and KnowledgeManager config so background tasks can call the API
   if (apiKey) {

@@ -282,10 +282,14 @@ export interface ElectronAPI {
   projectReorder: (orderedIds: string[]) => Promise<void>
   setConversationProject: (id: string, projectId: string) => Promise<void>
   setConversationExpert: (id: string, expertId: string | null) => Promise<void>
-  setConversationApprovalMode: (id: string, mode: SandboxApprovalMode) => Promise<void>
+  /** `source` marks a write that is NOT the user's choice — the tool studio's
+   *  first-create seed passes 'derived' so the sticky last-used value
+   *  (「新建会话沿用上次选择」) is not polluted by it. Default 'user'. */
+  setConversationApprovalMode: (id: string, mode: SandboxApprovalMode, source?: 'user' | 'derived') => Promise<void>
   /** Pin (profileId) or unpin (null → follow the global default) the
-   *  conversation's own model. The session re-resolves it on refreshOptions. */
-  setConversationProfile: (id: string, profileId: string | null) => Promise<void>
+   *  conversation's own model. The session re-resolves it on refreshOptions.
+   *  Same `source` contract as setConversationApprovalMode. */
+  setConversationProfile: (id: string, profileId: string | null, source?: 'user' | 'derived') => Promise<void>
   routineList: () => Promise<Routine[]>
   routineGet: (id: string) => Promise<Routine | null>
   routineCreate: (input: Partial<Routine>) => Promise<Routine>

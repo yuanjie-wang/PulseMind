@@ -16,6 +16,21 @@ export function registerSettingsHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async (event, settings: AppSettings) => {
+    // 「上次使用」的保底透传 + 默认模型的 remember。设置编辑器存的是渲染端的
+    // 整份快照（settingsStore.set 是整存），而 last-used 是主进程随时可能在写
+    // 的字段（面板/其他窗口的修改）—— 用当前值覆盖快照里的旧值，整存就不会把
+    // 主进程较新的 last-used 悄悄回滚。随后「默认模型变了」也是一次用户对模型
+    // 的最新表达：直接落进这份整存载荷（不能走 rememberLastUsedProfileId 的
+    // merge 写 —— 它排在 writeChain 前面，会被紧随其后的整存用旧值盖回去），
+    // 与面板侧同一动作在 setActiveProfile 里的 remember 语义一致。
+    try {
+      const current = await settingsStore.get()
+      settings.lastUsedApprovalMode = current.lastUsedApprovalMode
+      settings.lastUsedProfileId = current.lastUsedProfileId
+      if (settings.activeProfileId && settings.activeProfileId !== current.activeProfileId) {
+        settings.lastUsedProfileId = settings.activeProfileId
+      }
+    } catch { /* 读不出当前值就不猜 —— last-used 保持快照原样 */ }
     await settingsStore.set(settings)
     // The window chrome follows the theme, which this save may have just changed.
     // 'system' resolves against nativeTheme here; the renderer resolves the same

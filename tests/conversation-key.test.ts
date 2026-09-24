@@ -96,7 +96,9 @@ describe('the empty key cannot be read as a conversation', () => {
     const src = readFileSync(APP, 'utf-8')
     expect(src).toContain('if (activeConvKey) updateConversationApproval(activeConvKey, mode)')
     expect(src).toContain('usePendingApprovalStore.getState().setMode(mode)')
-    expect(src).toContain('pendingApprovalMode ?? DEFAULT_APPROVAL_MODE')
+    // The welcome fallback gained the sticky last-used step (新建会话沿用上次
+    // 选择); the shared default remains the last resort behind it.
+    expect(src).toContain('pendingApprovalMode ?? settings.lastUsedApprovalMode ?? DEFAULT_APPROVAL_MODE')
   })
 
   it('the renderer refuses to write an approval for a conversation that is not open', () => {

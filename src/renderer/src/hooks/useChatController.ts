@@ -38,6 +38,11 @@ interface UseChatControllerOptions {
   autoCleanup?: boolean
   /** 设置 → 经验 master switch: gates the old-conversation experience backfill. */
   experienceEnabled?: boolean
+  /** 「新建会话沿用上次选择」的全局变量（settings.json 的 last-used 字段）：
+   *  welcome 页没选授权/模型时，第一条消息把它们作为新会话自己的初始值落列
+   *  —— 在 startLoop 之前，且与 welcome composer 的显示读同一份快照。 */
+  lastUsedApprovalMode?: SandboxApprovalMode
+  lastUsedProfileId?: string
   hooks?: HooksConfig
   locale?: 'zh' | 'en'
 }
@@ -408,13 +413,16 @@ export function useChatController(options: UseChatControllerOptions) {
         // it lands on the conversation this message just created, and the write
         // is issued before startLoop so the session's very first ask already runs
         // at that level (main reads the column in doCreateSession).
-        const pendingApproval = takePendingApprovalMode()
-        if (pendingApproval) persistence.updateConversationApproval(convId, pendingApproval)
+        // 「新建会话沿用上次选择」：没选就以上次使用值为初始值 —— 同样在
+        // startLoop 之前落成自己的列，乐观列表同步更新，按钮显示与引擎实际
+        // 档位永不脱节（main 的 doCreateSession 播种只兜不经过这里的路径）。
+        const approvalSeed = takePendingApprovalMode() ?? options.lastUsedApprovalMode
+        if (approvalSeed) persistence.updateConversationApproval(convId, approvalSeed)
         // Same carry for a 模型 picked on the welcome composer: the write is
         // issued before startLoop, so the first ask already resolves the
         // conversation's own profile instead of the global default.
-        const pendingProfile = takePendingProfileId()
-        if (pendingProfile) persistence.updateConversationProfile(convId, pendingProfile)
+        const profileSeed = takePendingProfileId() ?? options.lastUsedProfileId
+        if (profileSeed) persistence.updateConversationProfile(convId, profileSeed)
         engine.activateEngine(convId)
         persistence.activateConversation(convId)
       } else {
