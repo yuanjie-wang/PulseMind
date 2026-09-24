@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DATA_DIR } from '../storage'
 import { settingsStore } from '../storage/settings-store'
@@ -7,6 +7,11 @@ import { settingsStore } from '../storage/settings-store'
 /** ~/.pulsemind/logs/llm-requests/ — one file per LLM call, oldest pruned. */
 export const LLM_DUMP_DIR = join(DATA_DIR, 'logs', 'llm-requests')
 export const LLM_DUMP_MAX_FILES = 60
+/** P3-b (PLAN-security-hardening): each dump is a full request body — a
+ *  conversation transcript. The 60-file cap bounds the COUNT, not the AGE; a
+ *  quiet week leaves month-old transcripts readable. 7 days is enough for any
+ *  one debugging session, and no setting is added for a dev opt-in (打包默认关). */
+export const LLM_DUMP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 /**
  * Headers that identify the caller, masked to their last 4 chars before they
@@ -49,11 +54,21 @@ async function dumpEnabled(): Promise<boolean> {
   }
 }
 
-/** A tool loop makes one dump per iteration — keep the directory bounded. */
+/** A tool loop makes one dump per iteration — keep the directory bounded by
+ *  count (existing) and by age (P3-b): past either line, the file goes. */
 async function pruneOldest(): Promise<void> {
   const names = (await readdir(LLM_DUMP_DIR)).filter(n => n.endsWith('.json')).sort()
+  const now = Date.now()
   for (let i = 0, excess = names.length - LLM_DUMP_MAX_FILES; i < excess; i++) {
     await unlink(join(LLM_DUMP_DIR, names[i])).catch(() => {})
+  }
+  if (names.length <= LLM_DUMP_MAX_FILES) {
+    for (const name of names) {
+      try {
+        const mtime = (await stat(join(LLM_DUMP_DIR, name))).mtimeMs
+        if (now - mtime > LLM_DUMP_MAX_AGE_MS) await unlink(join(LLM_DUMP_DIR, name)).catch(() => {})
+      } catch { /* the count prune may have just removed it — nothing to do */ }
+    }
   }
 }
 

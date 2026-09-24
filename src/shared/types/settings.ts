@@ -88,4 +88,9 @@ export interface AppSettings {
    *  （DEFAULT_APPROVAL_MODE / activeProfileId），也是首次安装的初始态。 */
   lastUsedApprovalMode?: SandboxApprovalMode
   lastUsedProfileId?: string
+  /** 备份保留天数（PLAN-security-hardening P3-a）：db/ 下形如
+   *  `pulsemind.backup_*.db` / `pulsemind.db.bak_*.db` 的备份超过该天数即删。
+   *  缺失/非法 = 默认 30；显式 0 = 永久保留。UI 暂不暴露（debugLlmRequests
+   *  先例），settings.json 手工编辑即生效。 */
+  backupRetentionDays?: number
 }

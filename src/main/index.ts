@@ -35,6 +35,7 @@ import { keepAwake } from './system/keep-awake'
 import { notifyResume } from './ipc/app.handler'
 import { hardenDataDirPermissions } from './storage/permissions'
 import { migrateEncryptedSecrets } from './storage/settings-store'
+import { expireOldBackups } from './services/backup-retention'
 
 // P0 (PLAN-security-hardening): everything this process creates from here on
 // is 0600/0700 — settings.json tmp files (plaintext keys mid-rename), the
@@ -556,6 +557,8 @@ if (gotTheLock) {
   // still plaintext. Before the retention pass, because the backups this
   // expires hold the same secrets the migration is about to encrypt.
   try { await migrateEncryptedSecrets() } catch (err) { writeLog('WARN', `startup: secret migration failed: ${err}`) }
+  // P3-a: expire unmanaged db backups past their retention window.
+  try { expireOldBackups() } catch (err) { writeLog('WARN', `startup: backup retention failed: ${err}`) }
   registerIpcHandlers()
   writeLog('INFO', 'startup: ipc handlers registered')
 

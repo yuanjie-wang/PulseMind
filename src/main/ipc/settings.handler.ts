@@ -4,6 +4,7 @@ import { settingsStore } from '../storage/settings-store'
 import { agentSessionManager } from '../agent/session-manager'
 import { keepAwake } from '../system/keep-awake'
 import { cleanupExpiredConversations } from '../services/conversation-retention'
+import { expireOldBackups } from '../services/backup-retention'
 import { setTitleBarTheme } from '../window-chrome'
 import { rebuildApplicationMenu } from '../menu'
 import { applyLaunchAtLogin } from '../tray'
@@ -32,6 +33,10 @@ export function registerSettingsHandlers(): void {
       }
     } catch { /* 读不出当前值就不猜 —— last-used 保持快照原样 */ }
     await settingsStore.set(settings)
+    // P3-a: the retention family runs on every settings save, so a tightened
+    // backup window takes effect without a restart (cleanupExpiredConversations
+    // precedent — its own save path is below).
+    try { expireOldBackups(settings.backupRetentionDays) } catch { /* best-effort */ }
     // The window chrome follows the theme, which this save may have just changed.
     // 'system' resolves against nativeTheme here; the renderer resolves the same
     // preference against prefers-color-scheme for its own surfaces.

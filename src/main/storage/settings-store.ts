@@ -159,6 +159,14 @@ function readRetentionDays(raw: unknown): number {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
 }
 
+/** 备份保留天数的读取器：与 readRetentionDays 的「缺失=永久」刻意不同 ——
+ *  这里的预期就是默认开启（用户批准 P3 时点名了存量备份），所以缺失/非法
+ *  落到调用方给的默认值；只有显式 0 才是永久保留。 */
+function readRetentionDaysWithDefault(raw: unknown, fallback: number): number {
+  if (raw === 0) return 0
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback
+}
+
 /** 有界正整数字段（agent 运行上限）：缺失 / 非法 / 越界一律回落默认值——
  *  这些数字直接喂给循环与并发的边界判断，宁可回落也不放行坏值。 */
 function readIntInRange(raw: unknown, fallback: number, min: number, max: number): number {
@@ -230,6 +238,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   keepAwakeEnabled: false,
   routineRunRetentionDays: 0,
   conversationRetentionDays: 0,
+  backupRetentionDays: 30,
   maxLoopIterations: 50,
   maxParallelSubAgents: 5,
   debugLlmRequests: false,
@@ -305,6 +314,10 @@ export class SettingsStore {
           debugLlmRequests: parsed.debugLlmRequests === true,
           debugPerfLogs: parsed.debugPerfLogs === true,
           projectSortMode: readProjectSortMode(parsed.projectSortMode),
+          // 备份保留天数（P3-a）：缺失/非法 → 默认 30（这里的预期就是默认开启
+          // ——用户点名了那三个 8 月的无主备份）；显式 0 → 永久保留。与
+          // readRetentionDays 的「缺失=永久」语义刻意不同。
+          backupRetentionDays: readRetentionDaysWithDefault(parsed.backupRetentionDays, 30),
           // 上次使用的授权/模型（「新建会话沿用上次选择」）：与可选组同病同治 ——
           // get() 是逐字段重建，漏掉这里就是写进去读不出来 + 下次整存被抹掉。
           lastUsedApprovalMode: toSandboxApprovalMode(parsed.lastUsedApprovalMode),
