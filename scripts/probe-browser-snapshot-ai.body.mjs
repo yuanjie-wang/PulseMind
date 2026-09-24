@@ -168,12 +168,22 @@ try {
   {
     const { spawn } = await import('node:child_process')
     const http = await import('node:http')
+    const net = await import('node:net')
     const { mkdtempSync, rmSync } = await import('node:fs')
     const { join } = await import('node:path')
     const { tmpdir } = await import('node:os')
+    // A FREE port, not a fixed one: two probe instances racing on a fixed
+    // port connect to EACH OTHER's chromium and every later step reads a
+    // stranger's state (measured). Bind :0, note the assignment, release.
+    const port = await new Promise((resolve, reject) => {
+      const srv = net.createServer()
+      srv.listen(0, '127.0.0.1', () => {
+        const p = srv.address().port
+        srv.close(() => (typeof p === 'number' ? resolve(p) : reject(new Error('no ephemeral port'))))
+      })
+      srv.on('error', reject)
+    })
     const userDataDir = mkdtempSync(join(tmpdir(), 'pm-probe-cdp-'))
-    const port = 19333
-    console.log('  ..  [cdp] spawning chromium on port ' + port)
     const cdpProc = spawn(chromium.executablePath(), [
       '--headless=new', `--remote-debugging-port=${port}`, '--no-first-run', `--user-data-dir=${userDataDir}`, 'about:blank',
     ], { stdio: 'ignore' })
@@ -183,11 +193,8 @@ try {
         await new Promise((r) => setTimeout(r, 250))
         up = await new Promise((res) => http.get(`http://127.0.0.1:${port}/json/version`, (r2) => { r2.resume(); res(true) }).on('error', () => res(false)))
       }
-      console.log('  ..  [cdp] endpoint up=' + up)
       ok(up, 'CDP endpoint came up')
-      console.log('  ..  [cdp] connectOverCDP…')
       const cdp = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
-      console.log('  ..  [cdp] connected')
       try {
         const ctx = cdp.contexts()[0] ?? (await cdp.newContext())
         const cdpPage = ctx.pages()[0] ?? (await ctx.newPage())
@@ -208,15 +215,30 @@ try {
         const cdpAfter = await cdpPage.evaluate(() => window.__clicked || 0)
         check('app-view 路径：aria-ref click 真实落地', () => { eq(cdpAfter, 1) })
       } finally {
-        await cdp.close()
+        // A raced/torn CDP transport can make close() never settle — the
+        // spawn kill below is the real teardown, this is just polite.
+        await Promise.race([cdp.close(), new Promise((r) => setTimeout(r, 5000))]).catch(() => {})
       }
     } finally {
-      cdpProc.kill()
-      rmSync(userDataDir, { recursive: true, force: true })
+      cdpProc.kill('SIGKILL')
+      // SIGKILL is async — the profile files still exist for a beat; deleting
+      // into a dying chrome ENOTEMPTYs (measured). Wait it out, then clean.
+      await Promise.race([
+        new Promise((r) => cdpProc.once('exit', r)),
+        new Promise((r) => setTimeout(r, 3000)),
+      ])
+      try {
+        rmSync(userDataDir, { recursive: true, force: true })
+      } catch {
+        /* best-effort: the OS temp cleaner owns whatever chrome still held */
+      }
     }
   }
 
   console.log('PASS: ' + checks + ' checks — AI 快照 + 差分观察在真实 Chromium 上成立')
+  // The probe's contract is its output; a lingering CDP transport handle must
+  // not keep the process (and the caller's pipeline) hanging past it.
+  process.exit(0)
 } finally {
   await browser.close()
 }

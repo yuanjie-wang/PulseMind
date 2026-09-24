@@ -93,6 +93,12 @@ export interface AppSettings {
    *  缺失/非法 = 默认 30；显式 0 = 永久保留。UI 暂不暴露（debugLlmRequests
    *  先例），settings.json 手工编辑即生效。 */
   backupRetentionDays?: number
+  /** 密钥静态加密开关（PLAN-security-hardening P1，2026-09-25 改为 opt-in）：
+   *  true = 非 ${VAR} 占位符的 apiKey/headers 以 enc:v1: 密文落盘（走
+   *  safeStorage/钥匙串——macOS 首次会弹一次授权密码）。缺省/false = 明文
+   *  落盘，由 P0 的 umask+0600 权限承担防护，完全不触碰钥匙串。已有密文
+   *  在开关关闭后读取仍解密（兼容），下次保存自然回落明文。 */
+  encryptSecrets?: boolean
   /** 记忆合并层水位（PLAN-memory-extraction-dedup P2）：上次增量合并的时间与
    *  当时提取类记忆总数。触发 = 水位后新增 ≥5 条或总量 >50，且距上次 ≥24h。
    *  主进程的 session-manager 在合并后回写这里，重启后水位不丢。 */

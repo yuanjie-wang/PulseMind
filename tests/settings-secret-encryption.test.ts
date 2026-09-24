@@ -34,6 +34,7 @@ const RAW_BASE: RawSettings = {
   theme: 'light',
   myName: 'tester',
   locale: 'zh',
+  encryptSecrets: true, // these tests exercise the ON path; the OFF path has its own describe
   soul: 'a plain string that must never be touched by the secret walk',
 }
 
@@ -220,3 +221,42 @@ describe('keychain DENIED (available but encryptString throws)', () => {
     expect(await mod.migrateEncryptedSecrets()).toBe(true) // still harmless
   })
 })
+
+describe('encryptSecrets OFF (2026-09-25 opt-in ruling) — the keychain is never touched', () => {
+  function writeOff(): void {
+    const raw = readRaw()
+    delete raw.encryptSecrets
+    writeRaw(raw)
+  }
+
+  it('a save keeps plaintext on disk even with safeStorage available', async () => {
+    const store = await freshStore()
+    writeOff()
+    const snapshot = await store.get()
+    await store.set(snapshot)
+    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect((await store.get()).profiles![0].apiKey).toBe('sk-live-secret-123')
+  })
+
+  it('existing ciphertext still reads (compat) and the next save converts back to plaintext', async () => {
+    // First produce ciphertext with the flag ON.
+    const store = await freshStore()
+    await store.set(await store.get())
+    expect(readRaw().profiles![0].apiKey as string).toContain(ENC_PREFIX)
+    // Switch OFF: reads still decode, the next save lands plaintext.
+    const off = readRaw()
+    off.encryptSecrets = false
+    writeRaw(off)
+    expect((await store.get()).profiles![0].apiKey).toBe('sk-live-secret-123')
+    await store.set(await store.get())
+    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+  })
+
+  it('migrateEncryptedSecrets declines when the flag is off', async () => {
+    const mod = await freshStoreModule()
+    writeOff()
+    expect(await mod.migrateEncryptedSecrets()).toBe(false)
+    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+  })
+})
+

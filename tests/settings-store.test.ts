@@ -22,6 +22,7 @@ const RAW_BASE: AppSettings = {
   theme: 'light',
   myName: 'tester',
   locale: 'zh',
+  encryptSecrets: true, // the ciphertext-on-disk assertions exercise the ON path (P1 opt-in)
 }
 
 function writeRaw(content: unknown): void {

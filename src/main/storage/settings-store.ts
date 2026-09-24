@@ -122,12 +122,15 @@ function decodeSecretsDeep<T>(settings: T): T {
   return { ...out, profiles: mapProfileSecrets(out.profiles, decryptSecretValue) } as T
 }
 
-/** Memory → disk: encrypt non-placeholder secrets. Placeholder values land on
- *  disk byte-identical (they are designed to be readable); the empty string
- *  has nothing to protect. */
+/** Memory → disk: encrypt non-placeholder secrets — ONLY when the user opted
+ *  in (`encryptSecrets: true`, 2026-09-25 ruling: the macOS keychain prompt
+ *  is not for everyone, and P0's file permissions carry the default posture).
+ *  Existing ciphertext passes through untouched (get() still decodes it, so a
+ *  switch-off + one save naturally converts back to plaintext). */
 function encodeSecretsDeep<T>(settings: T): T {
-  const out = settings as { profiles?: unknown }
+  const out = settings as { profiles?: unknown; encryptSecrets?: boolean }
   if (!Array.isArray(out?.profiles)) return settings
+  if (out.encryptSecrets !== true) return settings
   return { ...out, profiles: mapProfileSecrets(out.profiles, encryptSecretValue) } as T
 }
 
@@ -137,6 +140,11 @@ function encodeSecretsDeep<T>(settings: T): T {
  *  restores placeholders and re-encodes — so the rewrite is the SAME code
  *  every save runs. Idempotent: the second scan finds nothing. */
 export async function migrateEncryptedSecrets(): Promise<boolean> {
+  // Opt-in gate first (2026-09-25): the flag OFF must never touch the
+  // keychain — that is the whole point of the switch.
+  if (!encryptionAvailable()) return false
+  const current = await settingsStore.get()
+  if (current.encryptSecrets !== true) return false
   let raw: { profiles?: Array<Record<string, unknown>> } | null = null
   try {
     raw = JSON.parse(await readFile(SETTINGS_PATH, 'utf-8'))
@@ -340,6 +348,9 @@ export class SettingsStore {
           // ——用户点名了那三个 8 月的无主备份）；显式 0 → 永久保留。与
           // readRetentionDays 的「缺失=永久」语义刻意不同。
           backupRetentionDays: readRetentionDaysWithDefault(parsed.backupRetentionDays, 30),
+          // P1 opt-in（2026-09-25 用户裁定：不要钥匙串弹窗）：缺省=false，
+          // 明文 + P0 权限承担防护；只有显式 true 才加密。
+          encryptSecrets: parsed.encryptSecrets === true,
           // 记忆合并水位（P2）：整存/逐字段读都走这里，漏了就是写进去读不出来。
           memoryMergeWatermark: readMergeWatermark(parsed.memoryMergeWatermark),
           // 上次使用的授权/模型（「新建会话沿用上次选择」）：与可选组同病同治 ——
