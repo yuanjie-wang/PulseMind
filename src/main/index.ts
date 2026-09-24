@@ -33,6 +33,15 @@ import { serviceRuntime } from './service-runtime'
 import { settingsStore } from './storage/settings-store'
 import { keepAwake } from './system/keep-awake'
 import { notifyResume } from './ipc/app.handler'
+import { hardenDataDirPermissions } from './storage/permissions'
+
+// P0 (PLAN-security-hardening): everything this process creates from here on
+// is 0600/0700 — settings.json tmp files (plaintext keys mid-rename), the
+// -wal/-shm siblings, future service-token writes. Must precede any fs write,
+// which is why it sits at module top. Windows is skipped entirely: its chmod
+// carries only a read-only bit and umask semantics differ, so the whole
+// hardening档 (umask here + the chmod sweep in whenReady) is a no-op there.
+if (process.platform !== 'win32') process.umask(0o077)
 
 let mainWindow: BrowserWindow | null = null
 
@@ -535,6 +544,10 @@ if (gotTheLock) {
   // (fixed 2026-09-17) were invisible to every type='normal' surface — put the
   // columns back before anything lists or cleans them up.
   repairSwappedProjectBindings()
+  // P0 (PLAN-security-hardening): repair the EXISTING tree's modes — the
+  // umask at module top only covers files created from now on. Best-effort
+  // by design; its own summary line reports what it found.
+  if (process.platform !== 'win32') hardenDataDirPermissions()
   // 对话管理 · 最长保留时长: expire conversations older than the policy allows
   // before any session can resurrect one.
   try { await cleanupExpiredConversations() } catch (err) { writeLog('WARN', `startup: conversation retention failed: ${err}`) }
