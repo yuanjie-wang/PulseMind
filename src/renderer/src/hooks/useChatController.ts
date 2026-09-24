@@ -204,8 +204,18 @@ export function useChatController(options: UseChatControllerOptions) {
 
       try {
         const convList = await window.electronAPI.listConversations()
+        // P1 (PLAN-memory-extraction-dedup) 回填三改:
+        //  (a) 只碰 updated_at 距今 >30min 的会话——正在聊的会话由回合末的
+        //      afterSession 提取，回填与它抢同一批尾巴就是重复提取的又一源；
+        //  (b) 跳过当前打开的会话（消与 afterSession 的同会话并发窗）；
+        //  (c) minDelta 传 1——回填每会话一次性、有界，是尾巴的兜底而非节奏项。
+        const thirtyMinAgo = Date.now() - 30 * 60 * 1000
+        const activeKey = persistence.activeConversationKey ? String(persistence.activeConversationKey) : ''
         const candidates = convList.filter(c =>
-          c.messageCount >= 5 && !processedConvRef.current.has(c.id)
+          c.messageCount >= 5
+          && !processedConvRef.current.has(c.id)
+          && (!c.updatedAt || new Date(c.updatedAt).getTime() <= thirtyMinAgo)
+          && c.id !== activeKey
         )
         if (candidates.length === 0) {
           summarizerRunningRef.current = false
@@ -217,7 +227,8 @@ export function useChatController(options: UseChatControllerOptions) {
             // Cheap coarse pre-check (fast path only): messageCount counts ALL
             // message rows, so processedCount >= messageCount implies the
             // conversation is fully extracted. The authoritative incremental
-            // cursor check happens inside MemoryManager.extractAndSaveExperiences.
+            // The authoritative incremental cursor check happens inside
+            // MemoryManager.extractAndSaveAll.
             const processedCount = await window.electronAPI.getConversationExperienceExtractedCount(conv.id)
             if (processedCount >= conv.messageCount) {
               processedConvRef.current.add(conv.id)
@@ -227,52 +238,28 @@ export function useChatController(options: UseChatControllerOptions) {
             const conversation = await window.electronAPI.getConversation(conv.id)
             if (!conversation) continue
 
-            const userMessages = conversation.messages.filter(m =>
-              m.role === 'user' && m.contentBlocks?.some(b => b.type === 'text')
+            // 与 extractAndSaveAll 同一扁平化（toTextMessages 的形状）——旧代码
+            // 只取每条消息首个 text block，两套管线对「第几条」算出不同数，
+            // 尾部因此被反复重提取（plan 诊断 #4 的单位差）。
+            const hasText = conversation.messages.filter(m =>
+              (m.role === 'user' || m.role === 'assistant') && m.contentBlocks?.some(b => b.type === 'text')
             )
-            const assistantMessages = conversation.messages.filter(m =>
-              m.role === 'assistant' && m.contentBlocks?.some(b => b.type === 'text')
-            )
-            const hasEnoughUser = userMessages.length >= 5
-            const hasEnoughAssistant = assistantMessages.length >= 10
-            if (!hasEnoughUser && !hasEnoughAssistant) continue
+            if (hasText.length < 5) continue
 
-            const relevantMessages = conversation.messages.filter(m => {
-              if (m.role === 'user' || m.role === 'assistant') {
-                return m.contentBlocks?.some(b => b.type === 'text')
-              }
-              return false
-            })
-
-            const sessionMessages = relevantMessages.map(m => {
-              const textBlock = m.contentBlocks?.find((b: any) => b.type === 'text')
-              return {
-                role: m.role,
-                content: textBlock ? (textBlock as { type: 'text'; text: string }).text.slice(0, 1500) : ''
-              }
-            })
-
-            let toolCallCount = 0
-            let toolErrorCount = 0
-            for (const m of conversation.messages) {
-              for (const b of m.contentBlocks ?? []) {
-                if (b.type === 'tool_use') toolCallCount++
-                else if (b.type === 'tool_result' && (b as any).is_error) toolErrorCount++
-              }
-            }
-
-            const result = await managers.memoryManager.extractAndSaveExperiences(
-              sessionMessages, apiKey, options.baseURL, options.adapter, options.model,
-              conv.id, options.locale, { toolCallCount, toolErrorCount }
+            // P1 #8: 回填统一走 extractAndSaveAll（memory 关、experience 开），
+            // extractAndSaveExperiences 及 ExperienceAgent 独立路径已删除。
+            const result = await managers.memoryManager.extractAndSaveAll(
+              conversation.messages, apiKey, options.baseURL, options.adapter, options.model,
+              conv.id, options.locale, { memory: false, experience: true }, { minDelta: 1 },
             )
 
             processedConvRef.current.add(conv.id)
-            if (result.content) {
+            if (result.experienceContent) {
               const { record } = await managers.experienceManager.save({
-                title: result.title ?? 'Untitled experience',
-                description: result.content.slice(0, 120),
-                content: result.content,
-                category: result.category ?? 'general',
+                title: result.experienceTitle ?? 'Untitled experience',
+                description: result.experienceContent.slice(0, 120),
+                content: result.experienceContent,
+                category: result.experienceCategory ?? 'general',
                 sourceConversationId: conv.id
               })
               managers.experienceManager.ensureTriggers(record.name, {
