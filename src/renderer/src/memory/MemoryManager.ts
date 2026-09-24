@@ -8,8 +8,9 @@ import type {
 import { DEFAULT_MEMORY_PREFERENCES } from './types'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentMessage, TextBlock } from '../types/agent'
-import { MemoryCompressionAgent, ExperienceAgent, SessionReviewAgent } from '../agent/one-shot-agent'
+import { MemoryCompressionAgent, SessionReviewAgent } from '../agent/one-shot-agent'
 import { getHost } from '../agent/host'
+import { memoryContentHash } from '../../../shared/memory/content-hash'
 
 /**
  * Manages memory capture, storage, and retrieval.
@@ -35,11 +36,38 @@ export class MemoryManager {
   private model: string = ''
 
   private compressionAgent = new MemoryCompressionAgent()
-  private experienceAgent = new ExperienceAgent()
   private sessionReviewAgent = new SessionReviewAgent()
 
   /** Simple flag to prevent concurrent compression runs. */
   private _compressing = false
+
+  // P0 (PLAN-memory-extraction-dedup): failure backoff, process-lifetime.
+  // A conversation whose extraction LLM call just FAILED retried on every
+  // turn end before — same delta, same failure, once a turn. 1h per failure;
+  // three consecutive failures retire the conversation for this process run.
+  private extractionBackoff = new Map<string, { failedAt: number; attempts: number }>()
+  private static BACKOFF_MS = 60 * 60 * 1000
+  private static BACKOFF_MAX_ATTEMPTS = 3
+
+  /** True when this conversation is inside the failure backoff window. */
+  isInBackoff(conversationId: string): boolean {
+    const entry = this.extractionBackoff.get(conversationId)
+    if (!entry) return false
+    if (entry.attempts >= MemoryManager.BACKOFF_MAX_ATTEMPTS) return true
+    return Date.now() - entry.failedAt < MemoryManager.BACKOFF_MS
+  }
+
+  /** P2 watermark: how many memories existed at the last merge + when it ran.
+   *  Pure numbers, mirrored into settings.json by the main-process hook. */
+  private mergeWatermark: { lastRunAt: number; lastCount: number } = { lastRunAt: 0, lastCount: 0 }
+
+  setMergeWatermark(w: { lastRunAt: number; lastCount: number }): void {
+    this.mergeWatermark = w
+  }
+
+  getMergeWatermark(): { lastRunAt: number; lastCount: number } {
+    return { ...this.mergeWatermark }
+  }
 
   // --- Preferences ---
 
@@ -109,61 +137,93 @@ export class MemoryManager {
     return getHost().searchMemories(input)
   }
 
+  // P2 (PLAN-memory-extraction-dedup): the old "over 50 → delete-all → rewrite"
+  // consolidation is GONE. It silently discarded user-edited memories and
+  // re-billed every memory on every rewrite. The replacement is an INCREMENTAL
+  // merge with an explicit watermark (new ≥5 since last merge, or total >50,
+  // and ≥24h since the last run): merged output lands row-by-row through the
+  // hash-gated saveMemory (literal repeats dedupe for free), user-edited rows
+  // (updated_at > created_at) are undeletable by code no matter what the LLM
+  // says, and the watermark rides settings.json via the main-process host.
+  static readonly MERGE_MIN_NEW = 5
+  static readonly MERGE_TOTAL_CAP = 50
+  static readonly MERGE_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000
+
   /**
-   * If extracted memories exceed 50, consolidate to ≤20 via LLM.
-   * Only touches auto-type memories (auto, fact, decision, preference).
-   * Manual memories are never compressed.
+   * Incremental memory merge. Returns true when a merge actually ran.
+   * Only touches extracted types; manual memories are never touched.
    */
-  async ensureMemoryCompressed(): Promise<boolean> {
+  async ensureMemoryMerged(): Promise<boolean> {
     if (this._compressing || !this.adapter || !this.apiKey) return false
+    const wm = this.getMergeWatermark()
+    const now = Date.now()
+    if (wm.lastRunAt !== 0 && now - wm.lastRunAt < MemoryManager.MERGE_MIN_INTERVAL_MS) return false
+
+    const extractedTypes = ['auto', 'fact', 'decision', 'preference']
+    const all = await this.listMemories()
+    const extracted = all.filter((m) => extractedTypes.includes(m.type))
+    const added = wm.lastRunAt === 0
+      ? extracted.length
+      : extracted.filter((m) => new Date(m.createdAt).getTime() > wm.lastRunAt).length
+    const due = added >= MemoryManager.MERGE_MIN_NEW || extracted.length > MemoryManager.MERGE_TOTAL_CAP
+    if (!due) return false
+
     this._compressing = true
-
     try {
-      const extractedTypes = ['auto', 'fact', 'decision', 'preference']
-      let count: number
-      try {
-        count = await getHost().countMemories(extractedTypes)
-      } catch (err: any) {
-        // Database not yet initialized — transient startup condition, silently skip
-        if (err?.message?.includes?.('Database not initialized')) return false
-        throw err
-      }
-      if (count <= 50) return true
-
-      // Load all extracted memories
-      const all = await this.listMemories()
-      const extracted = all.filter((m) => extractedTypes.includes(m.type))
-      if (extracted.length <= 50) return true
-
+      // Input: the FULL set (the merge must see what it consolidates into),
+      // with each line marked so the model can obey the rules below.
       const memoriesText = extracted
-        .map((m) => `- [${m.category}] ${m.content}`)
+        .map((m) => {
+          const marks: string[] = [`[${m.category}]`]
+          if (m.updatedAt && m.createdAt && m.updatedAt > m.createdAt) marks.push('[USER-EDITED]')
+          if (wm.lastRunAt !== 0 && new Date(m.createdAt).getTime() > wm.lastRunAt) marks.push('[NEW]')
+          return `- ${marks.join(' ')} ${m.content.slice(0, 300)}`
+        })
         .join('\n')
 
-      const compressed = await this.compressionAgent.execute(
+      const merged = await this.compressionAgent.execute(
         { memoriesText },
         { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model }, maxTokens: 4000 }
       )
-
-      if (compressed.length === 0) return false
+      if (merged.length === 0) return false
 
       const validTypes = ['auto', 'manual', 'fact', 'decision', 'preference']
       const validCategories = ['code', 'architecture', 'user_pref', 'decision', 'general']
 
-      // Delete all original extracted memories
-      await Promise.all(extracted.map((m) => this.deleteMemory(m.id)))
+      // Output identity = content hash (the same key the save gate uses).
+      const mergedHashes = new Set<string>()
+      for (const mem of merged) {
+        if (!mem.content || mem.content.length < 10) continue
+        mergedHashes.add(memoryContentHash(mem.content))
+      }
 
-      // Save new compressed ones
-      for (const mem of compressed) {
+      // Delete only what the merge truly consumed: un-edited extracted rows
+      // whose content no longer exists in the merged set. A USER-EDITED row
+      // survives unconditionally (the plan's hard rule — the old delete-all
+      // silently destroyed exactly these).
+      for (const m of extracted) {
+        const userEdited = !!(m.updatedAt && m.createdAt && m.updatedAt > m.createdAt)
+        if (userEdited) continue
+        if (!mergedHashes.has(memoryContentHash(m.content))) {
+          await this.deleteMemory(m.id)
+        }
+      }
+
+      // Re-save the merged set: the saveMemory hash gate makes this an UPSERT
+      // against surviving rows (same content → skipped) and an insert for
+      // genuinely new consolidations.
+      for (const mem of merged) {
         if (!mem.content || mem.content.length < 10) continue
         const type = validTypes.includes(mem.type) ? mem.type : 'auto'
         const category = validCategories.includes(mem.category) ? mem.category : 'general'
         await this.saveMemory({ content: mem.content, type: type as MemoryCreateInput['type'], category: category as MemoryCreateInput['category'] })
       }
 
-      console.log(`[MemoryManager] Compressed ${extracted.length} memories to ${compressed.length}`)
+      this.setMergeWatermark({ lastRunAt: now, lastCount: await getHost().countMemories(extractedTypes) })
+      console.log(`[MemoryManager] merged ${extracted.length} extracted memories → ${mergedHashes.size} contents (watermark advanced)`)
       return true
     } catch (err) {
-      console.warn('[MemoryManager] Compression error:', err)
+      console.warn('[MemoryManager] Memory merge error:', err)
       return false
     } finally {
       this._compressing = false
@@ -231,106 +291,6 @@ export class MemoryManager {
   // the system prompt.
   // ===================================================================
 
-  /**
-   * Extract experiences from a completed session.
-   * Uses ExperienceAgent to identify workflow optimizations and pain points.
-   * Returns the experience content and category — caller is responsible for
-   * persisting it to the knowledge base (raw/).
-   *
-   * Incremental: only messages after the stored cursor are analyzed, so a
-   * growing conversation never re-extracts already-processed messages.
-   */
-  async extractAndSaveExperiences(
-    sessionMessages: readonly { role: string; content: string }[],
-    apiKey: string,
-    baseURL: string,
-    adapter: LlmAdapter,
-    model: string,
-    conversationId?: string,
-    locale?: string,
-    stats?: { toolCallCount: number; toolErrorCount: number }
-  ): Promise<{ title: string | null; content: string | null; category: string | null }> {
-    // Experience enablement is the caller's concern (settings-driven backfill);
-    // the memory autoCapture pref must not gate this experience-only pipeline.
-    if (!apiKey) return { title: null, content: null, category: null }
-
-    let cursor = 0
-    // --- Incremental cursor: only analyze messages after the last processed one ---
-    if (conversationId) {
-      const processedCount = await getHost().getConversationExperienceExtractedCount(conversationId)
-      // extractAndSaveAll (afterSession) extracts memories + experiences together and
-      // bumps the memory counter; a satisfied memory counter means this conversation's
-      // experiences were already reviewed, so skip too (prevents the two extraction
-      // paths from double-extracting the same conversation).
-      const memProcessed = await getHost().getConversationExtractedMsgCount(conversationId)
-      if (processedCount >= sessionMessages.length || memProcessed >= sessionMessages.length) {
-        console.log(`[MemoryManager] Already extracted experiences for conversation ${conversationId} at msg count ${processedCount}, skipping`)
-        return { title: null, content: null, category: null }
-      }
-      cursor = processedCount
-      console.log(`[MemoryManager] Extracting experiences for conversation ${conversationId}: ${sessionMessages.length - cursor} new msgs (cursor ${cursor}/${sessionMessages.length})`)
-    }
-
-    // Anchor = last few already-processed messages for context; delta = new messages
-    const anchorStart = Math.max(0, cursor - 3)
-    const anchor = sessionMessages.slice(anchorStart, cursor)
-    const delta = sessionMessages.slice(cursor)
-    if (delta.length === 0) return { title: null, content: null, category: null }
-
-    // Build conversation text: anchor (context only) + delta (to analyze)
-    const parts: string[] = []
-    if (stats) {
-      parts.push(`(Conversation statistics: ${stats.toolCallCount} tool call(s), ${stats.toolErrorCount} tool error(s))`)
-    }
-    if (anchor.length > 0) {
-      parts.push('(PREVIOUSLY EXTRACTED MESSAGES — context only, do not extract from these)')
-      parts.push(...anchor.map((m) => `[${m.role}]: ${m.content.slice(0, 1500)}`))
-    }
-    if (delta.length > 0) {
-      parts.push('(NEW MESSAGES — extract experiences from these)')
-      parts.push(...delta.map((m) => `[${m.role}]: ${m.content.slice(0, 1500)}`))
-    }
-    const conversationText = parts.join('\n\n').slice(0, 30000)
-
-    // Get existing experiences from knowledge base for dedup reference (bounded)
-    const existingExpText = await this.buildExistingExperiencesText()
-
-    try {
-      const result = await this.experienceAgent.execute(
-        { conversationText, existingExperiencesText: existingExpText, locale, stats },
-        { llmConfig: { adapter, apiKey, baseURL, model }, maxTokens: 2000 }
-      )
-
-      if (!result) {
-        console.log(`[MemoryManager] No valuable experience insights — skipping`)
-        if (conversationId) {
-          await getHost().updateConversationExperienceExtractedCount(conversationId, sessionMessages.length).catch((e) => {
-            console.warn('[MemoryManager] Failed to update experience extracted count:', e)
-          })
-        }
-        return { title: null, content: null, category: null }
-      }
-
-      const { title, content: bodyContent, category } = result
-      if (!bodyContent) return { title: null, content: null, category: null }
-
-      const validCategories = ['code', 'architecture', 'user_pref', 'decision', 'general']
-      const experienceCategory = validCategories.includes(category) ? category : 'general'
-
-      if (conversationId) {
-        await getHost().updateConversationExperienceExtractedCount(conversationId, sessionMessages.length).catch((e) => {
-          console.warn('[MemoryManager] Failed to update experience extracted count:', e)
-        })
-      }
-
-      console.log(`[MemoryManager] Extracted experience (${experienceCategory}) from conversation ${conversationId}`)
-      return { title, content: bodyContent, category: experienceCategory }
-    } catch (err) {
-      console.warn('[MemoryManager] extractAndSaveExperiences error:', err)
-      return { title: null, content: null, category: null }
-    }
-  }
-
   // ===================================================================
   // Unified Review (memories + experiences, single LLM call)
   // ===================================================================
@@ -343,7 +303,7 @@ export class MemoryManager {
    * Incremental: only messages after the stored cursor are analyzed, so a
    * growing conversation never re-extracts already-processed messages.
    * The cursor counts text-only messages (user/assistant with a text block),
-   * matching the extractAndSaveExperiences pipeline's message count.
+   * (the backfill uses the same toTextMessages flattening — one cursor unit).
    *
    * Returns { memories count, experienceContent, experienceCategory }.
    */
@@ -356,15 +316,25 @@ export class MemoryManager {
     conversationId?: string,
     locale?: string,
     /** Feature master switches (设置 → 记忆/经验). Absent = both on. */
-    featureFlags?: { memory?: boolean; experience?: boolean }
+    featureFlags?: { memory?: boolean; experience?: boolean },
+    /** P1 (PLAN-memory-extraction-dedup): minimum TEXT-message delta before an
+     *  extraction is worth one LLM call. AfterSession hosts pass 4 (a thin
+     *  delta generalizes into near-duplicates; it waits and accumulates)，
+     *  the startup backfill passes 1 (bounded, once per conversation). The
+     *  cursor deliberately does NOT move on a skip — the delta keeps growing. */
+    options?: { minDelta?: number }
   ): Promise<{ memories: number; experienceTitle: string | null; experienceContent: string | null; experienceCategory: string | null }> {
     const memoryOn = featureFlags?.memory !== false
     const experienceOn = featureFlags?.experience !== false
     if (!apiKey || (!memoryOn && !experienceOn)) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+    if (conversationId && this.isInBackoff(conversationId)) {
+      console.log(`[MemoryManager] conversation ${conversationId} is in extraction backoff, skipping`)
+      return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+    }
 
     // Unify on text-only messages (user/assistant with a text block) — same
-    // cursor semantics as extractAndSaveExperiences, so the two pipelines
-    // agree on what "processed" means.
+    // cursor semantics as the backfill's, so every pipeline
+    // agrees on what "processed" means.
     const textMessages = MemoryManager.toTextMessages(messages)
     if (textMessages.length === 0) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
 
@@ -384,6 +354,14 @@ export class MemoryManager {
     const anchorStart = Math.max(0, cursor - 3)
     const anchor = textMessages.slice(anchorStart, cursor)
     const delta = textMessages.slice(cursor)
+
+    // Minimum-increment gate: a skip leaves the cursor where it is, so the
+    // next turn's delta includes everything seen here (载荷事实 4 of the plan).
+    const minDelta = options?.minDelta ?? 1
+    if (conversationId && delta.length < minDelta) {
+      console.log(`[MemoryManager] delta ${delta.length} < minDelta ${minDelta} for conversation ${conversationId}, waiting to accumulate`)
+      return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+    }
 
     // Build session summary: anchor (context only) + delta (to analyze)
     const summaryParts: string[] = []
@@ -472,12 +450,14 @@ export class MemoryManager {
       }
 
       // Check if memory compression is needed
-      if (memoryOn) await this.ensureMemoryCompressed()
+      if (memoryOn) await this.ensureMemoryMerged()
+
+      if (conversationId) this.extractionBackoff.delete(conversationId)
 
       // Mark conversation as processed — bump BOTH counters (memory + experience).
       // extractAndSaveAll extracts memories AND experiences together, so the
-      // startup background task (extractAndSaveExperiences) must see this as done
-      // or it will re-extract the same experiences from the same conversation.
+      // startup backfill must see this as done or it will re-extract the same
+      // experiences from the same conversation.
       if (conversationId) {
         await getHost().updateConversationExtractedMsgCount(conversationId, textMessages.length).catch((e) => {
           console.warn('[MemoryManager] Failed to update extracted message count:', e)
@@ -491,6 +471,14 @@ export class MemoryManager {
       return { memories: memoriesSaved, experienceTitle, experienceContent, experienceCategory }
     } catch (err) {
       console.warn('[MemoryManager] extractAndSaveAll error:', err)
+      if (conversationId) {
+        const prev = this.extractionBackoff.get(conversationId)
+        const attempts = (prev?.attempts ?? 0) + 1
+        this.extractionBackoff.set(conversationId, { failedAt: Date.now(), attempts })
+        if (attempts >= MemoryManager.BACKOFF_MAX_ATTEMPTS) {
+          console.warn(`[MemoryManager] conversation ${conversationId} failed extraction ${attempts} times — retired for this process run`)
+        }
+      }
       return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
     }
   }
@@ -600,7 +588,7 @@ export class MemoryManager {
   /**
    * Flatten AgentMessage[] into text-only {role, content} pairs (user/assistant
    * with a text block). Used to keep the incremental extraction cursor on the
-   * same unit as extractAndSaveExperiences' caller-built sessionMessages.
+   * same unit the backfill's cursor counts (P1 #7: one flattening everywhere).
    */
   private static toTextMessages(messages: readonly AgentMessage[]): { role: string; content: string }[] {
     const out: { role: string; content: string }[] = []

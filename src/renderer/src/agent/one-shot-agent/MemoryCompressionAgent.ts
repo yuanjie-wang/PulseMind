@@ -16,12 +16,16 @@ export class MemoryCompressionAgent extends OneShotAgent<MemoryCompressionInput,
 
   protected buildSystemPrompt(): string {
     return (
-      'You are a memory consolidation system. Merge and deduplicate the following memories ' +
-      'into a concise set. Remove duplicates, merge related items, keep only genuinely important information. ' +
+      'You are a memory consolidation system performing an INCREMENTAL merge (P2 of the memory dedup plan). ' +
+      'Rules, in priority order: ' +
+      '(1) USER-EDITED memories are authoritative — never drop, rewrite or paraphrase them; carry them over verbatim. ' +
+      '(2) Two memories stating the same fact merge into ONE entry; a LATER correction overrides an earlier statement. ' +
+      '(3) Merge related items; keep only genuinely important, durable information. ' +
+      '(4) Keep the total soft-capped at 20 entries. ' +
       'Return a JSON array of objects, each with keys: ' +
       '"content" (string, the consolidated memory), "type" (one of: "fact", "decision", "preference"), ' +
       '"category" (one of: "code", "architecture", "user_pref", "decision", "general"). ' +
-      'Output at most 20 items. Return ONLY the JSON array, no other text.'
+      'Return ONLY the JSON array, no other text.'
     )
   }
 

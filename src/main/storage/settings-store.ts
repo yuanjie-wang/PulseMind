@@ -176,6 +176,17 @@ function readIntInRange(raw: unknown, fallback: number, min: number, max: number
   return floored
 }
 
+/** 记忆合并水位读取器：形状不对就丢弃（合并层会当作从未合并过，重新
+ *  收敛一次——幂等，无害），绝不带病入库。 */
+function readMergeWatermark(raw: unknown): { lastRunAt?: string; lastCount?: number } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const w = raw as Record<string, unknown>
+  const out: { lastRunAt?: string; lastCount?: number } = {}
+  if (typeof w.lastRunAt === 'string' && w.lastRunAt) out.lastRunAt = w.lastRunAt
+  if (typeof w.lastCount === 'number' && Number.isFinite(w.lastCount) && w.lastCount >= 0) out.lastCount = w.lastCount
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 const PROJECT_SORT_MODES: readonly ProjectSortMode[] = ['created', 'name', 'activity', 'manual']
 
 function readProjectSortMode(raw: unknown): ProjectSortMode | undefined {
@@ -318,6 +329,8 @@ export class SettingsStore {
           // ——用户点名了那三个 8 月的无主备份）；显式 0 → 永久保留。与
           // readRetentionDays 的「缺失=永久」语义刻意不同。
           backupRetentionDays: readRetentionDaysWithDefault(parsed.backupRetentionDays, 30),
+          // 记忆合并水位（P2）：整存/逐字段读都走这里，漏了就是写进去读不出来。
+          memoryMergeWatermark: readMergeWatermark(parsed.memoryMergeWatermark),
           // 上次使用的授权/模型（「新建会话沿用上次选择」）：与可选组同病同治 ——
           // get() 是逐字段重建，漏掉这里就是写进去读不出来 + 下次整存被抹掉。
           lastUsedApprovalMode: toSandboxApprovalMode(parsed.lastUsedApprovalMode),

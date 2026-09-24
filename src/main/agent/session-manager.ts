@@ -320,8 +320,14 @@ export class AgentSessionManagerImpl {
           const result = await managers.memoryManager.extractAndSaveAll(
             messages, profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
             profile.model, sessionId, undefined, { memory: memoryOn, experience: experienceOn },
+            // minDelta=4 (PLAN-memory-extraction-dedup): same contract as the
+            // desktop hook — a thin delta waits, accumulates, extracts once.
+            { minDelta: 4 },
           )
           if (result.memories > 0) console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
+          // extractAndSaveAll may have run the incremental merge — advance
+          // settings.json's watermark so a restart doesn't re-merge.
+          await this.runMemoryMergeSweep().catch((e) => console.warn('[SessionReview] merge sweep failed:', e))
           if (result.experienceContent) {
             managers.experienceManager.save({
               title: result.experienceTitle ?? 'Untitled experience',
@@ -379,10 +385,43 @@ export class AgentSessionManagerImpl {
         const startupSettings = await settingsStore.get()
         await this.syncFeatureToggles(this.managers, startupSettings)
         this.syncRunLimits(startupSettings)
+        this.seedMergeWatermark(this.managers.memoryManager, startupSettings)
+        // P2 (PLAN-memory-extraction-dedup): the merge layer's own sweep — a
+        // few minutes after startup so first paint never waits on an LLM call.
+        // Also runs from extractAndSaveAll (turn ends); the watermark keeps
+        // both entry points honest about "what changed since the last merge".
+        setTimeout(() => {
+          void this.runMemoryMergeSweep().catch((e) => console.warn('[session-manager] memory merge failed:', e))
+        }, 3 * 60 * 1000).unref?.()
         return this.managers
       })()
     }
     return this.managersPromise
+  }
+
+  /** Seed the merge watermark from settings.json onto the manager instance. */
+  private seedMergeWatermark(memoryManager: MemoryManager, settings: AppSettings): void {
+    const w = settings.memoryMergeWatermark
+    memoryManager.setMergeWatermark({
+      lastRunAt: w?.lastRunAt ? new Date(w.lastRunAt).getTime() : 0,
+      lastCount: w?.lastCount ?? 0,
+    })
+  }
+
+  /** Run the incremental memory merge (if due) and persist the watermark.
+   *  Both the delayed startup sweep and the afterSession path land here, so
+   *  settings.json is written by exactly one shape. */
+  async runMemoryMergeSweep(): Promise<boolean> {
+    if (!this.managers) return false
+    const memoryManager = this.managers.memoryManager
+    const ran = await memoryManager.ensureMemoryMerged()
+    const w = memoryManager.getMergeWatermark()
+    if (w.lastRunAt === 0) return ran // never merged — nothing to persist
+    await settingsStore.update((s) => ({
+      ...s,
+      memoryMergeWatermark: { lastRunAt: new Date(w.lastRunAt).toISOString(), lastCount: w.lastCount },
+    })).catch((e) => console.warn('[session-manager] watermark persist failed:', e))
+    return ran
   }
 
   /** Mirror the 设置 → 记忆/经验 master switches onto the shared managers.

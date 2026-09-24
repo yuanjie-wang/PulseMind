@@ -93,4 +93,8 @@ export interface AppSettings {
    *  缺失/非法 = 默认 30；显式 0 = 永久保留。UI 暂不暴露（debugLlmRequests
    *  先例），settings.json 手工编辑即生效。 */
   backupRetentionDays?: number
+  /** 记忆合并层水位（PLAN-memory-extraction-dedup P2）：上次增量合并的时间与
+   *  当时提取类记忆总数。触发 = 水位后新增 ≥5 条或总量 >50，且距上次 ≥24h。
+   *  主进程的 session-manager 在合并后回写这里，重启后水位不丢。 */
+  memoryMergeWatermark?: { lastRunAt?: string; lastCount?: number }
 }

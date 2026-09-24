@@ -175,7 +175,9 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
           // Fire-and-forget — single LLM call extracts memories + experience.
           // MemoryManager flattens contentBlocks to text-only messages and
           // applies the incremental cursor internally.
-          mm.extractAndSaveAll(messages, apiKey, baseURL, adapter, model, conversationIdRef.current ?? undefined, settings.locale).then(result => {
+          // minDelta=4 (PLAN-memory-extraction-dedup): a thin turn-end delta
+          // generalizes into near-duplicates — it waits and accumulates.
+          mm.extractAndSaveAll(messages, apiKey, baseURL, adapter, model, conversationIdRef.current ?? undefined, settings.locale, undefined, { minDelta: 4 }).then(result => {
             if (result.memories > 0) {
               console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
             }
