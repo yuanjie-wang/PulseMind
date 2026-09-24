@@ -66,6 +66,22 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
         },
       },
     },
+    'agent.browsers.favorites': {
+      summary:
+        "The user's curated sites (收藏) — where they WANT to go; history is where they went. Store-backed, same on every backend.",
+      members: {
+        list: {
+          signature: 'list(): Promise<Array<{url, title, createdAt, updatedAt}>>',
+          summary: 'Newest first — when the user names a saved site (「打开我收藏的知乎」), match by title/host here and open() the STORED url, never a reconstructed one',
+        },
+        add: {
+          signature: "add(url, title?): Promise<{url, title, added: true | 'already'}>",
+          summary:
+            "Save a site on the user's explicit ask only (「收藏一下」) — navigating never auto-populates; 'already' means it was saved before, tell the user",
+        },
+        remove: { signature: 'remove(url): Promise<boolean>', summary: '取消收藏; false = that url was not saved' },
+      },
+    },
     tab: {
       summary: 'One live tab. Created fresh per tabs.get()/open() call.',
       members: {

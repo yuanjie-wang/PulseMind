@@ -142,13 +142,13 @@ export function mergeSuggestions(
   favorites: Array<FavoriteSuggestionRow & { createdAt?: number }>,
   history: Array<{ url: string; title: string | null; visitCount?: number; lastVisitAt?: number }>,
   limit = 8,
-): Array<{ url: string; title: string | null; favorite?: boolean }> {
+): MergedSuggestion[] {
   const needle = text.trim().toLowerCase()
   const matches = (row: { url: string; title: string | null }): boolean =>
     !needle || row.url.toLowerCase().includes(needle) || (row.title ?? '').toLowerCase().includes(needle)
 
   const seen = new Set<string>()
-  const out: Array<{ url: string; title: string | null; favorite?: boolean }> = []
+  const out: MergedSuggestion[] = []
 
   const favs = [...favorites]
     .filter(matches)
@@ -237,7 +237,13 @@ export interface RankedSuggestion {
   /** host-prefix beats url-substring beats title-substring; peers by
    *  recency then visit count (裁定 L4's ordering, testable here). */
   rank: 0 | 1 | 2
-  /** 收藏行（PLAN-browser-favorites M2）：dropdown 渲染星形图标用。 */
+}
+
+/** One merged address-bar row (PLAN-browser-favorites M2): favorites first,
+ *  history fills the rest — the dropdown renders the star off `favorite`. */
+export interface MergedSuggestion {
+  url: string
+  title: string | null
   favorite?: boolean
 }
 

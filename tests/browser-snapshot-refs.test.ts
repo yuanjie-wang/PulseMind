@@ -61,6 +61,31 @@ describe('renderAriaTree — trimming and shape', () => {
     const small = renderAriaTree(tree)
     expect(small).not.toContain('仅渲染前')
   })
+
+  it('renders the actionable state decorations (checked/disabled/selected/level/url)', () => {
+    const text = renderAriaTree([
+      { role: 'checkbox', checked: true, ref: 'e1' },
+      { role: 'checkbox', checked: false, ref: 'e2' }, // OFF marks nothing, like Playwright's own YAML
+      { role: 'checkbox', checked: 'mixed', ref: 'e3' },
+      { role: 'button', name: '禁用', disabled: true, ref: 'e4' },
+      { role: 'option', name: '甲', selected: true, ref: 'e5' },
+      { role: 'heading', name: '标题', level: 1, ref: 'e6' },
+      { role: 'link', name: '文档', url: '/docs', ref: 'e7' },
+    ])
+    expect(text).toContain('- checkbox [ref=e1] [checked]')
+    expect(text).toContain('- checkbox [ref=e2]')
+    expect(text).toContain('- checkbox [ref=e3] [mixed]')
+    expect(text).toContain('- button "禁用" [ref=e4] [disabled]')
+    expect(text).toContain('- option "甲" [ref=e5] [selected]')
+    expect(text).toContain('- heading "标题" [ref=e6] [level=1]')
+    expect(text).toContain('- link "文档" [ref=e7] [url=/docs]')
+  })
+
+  it('truncates a long url decoration and keeps the addressability keys first', () => {
+    const text = renderAriaTree([{ role: 'link', name: '长链', url: `/${'x'.repeat(60)}`, ref: 'e1' }])
+    expect(text).toContain(`[url=/${'x'.repeat(39)}…]`) // URL_MAX counts the leading slash
+    expect(text).not.toContain('x'.repeat(40))
+  })
 })
 
 describe('diffTrees + renderDiff — the three kinds', () => {
@@ -115,6 +140,30 @@ describe('diffTrees + renderDiff — the three kinds', () => {
     const b: AriaNode[] = [{ role: 'generic', children: [{ role: 'generic', children: [{ role: 'button', name: 'ok', ref: 'e2' }] }] }]
     const d = diffTrees(a, b)
     expect(d.entries).toHaveLength(0)
+  })
+
+  it('a check toggle is a ~ even though role and name stand still', () => {
+    const before: AriaNode[] = [{ role: 'checkbox', name: '记住我', ref: 'e5' }]
+    const after: AriaNode[] = [{ role: 'checkbox', name: '记住我', checked: true, ref: 'e5' }]
+    const d = diffTrees(before, after)
+    expect(d.entries).toHaveLength(1)
+    expect(d.entries[0]!.kind).toBe('~')
+    const text = renderDiff(d)
+    expect(text).toContain('~ [ref=e5] checkbox "记住我" [checked]（原 无）')
+  })
+
+  it('a disable between snapshots is a ~; a name change hides the redundant old-state suffix', () => {
+    const before: AriaNode[] = [{ role: 'button', name: '提交', ref: 'e5' }]
+    const after: AriaNode[] = [{ role: 'button', name: '提交', disabled: true, ref: 'e5' }]
+    expect(renderDiff(diffTrees(before, after))).toContain('~ [ref=e5] button "提交" [disabled]（原 无）')
+    // name + state both moved → the (原 "name") form wins, one suffix only
+    const renamed: AriaNode[] = [{ role: 'button', name: '取消', disabled: true, ref: 'e5' }]
+    const text = renderDiff(diffTrees(before, renamed))
+    expect(text).toContain('~ [ref=e5] button "取消" [disabled]（原 "提交"）')
+    expect(text).not.toContain('原 无')
+    // state back to plain renders no decorations at all
+    const restored: AriaNode[] = [{ role: 'button', name: '取消', ref: 'e5' }]
+    expect(renderDiff(diffTrees(renamed, restored))).toContain('~ [ref=e5] button "取消"（原 [disabled]）')
   })
 })
 

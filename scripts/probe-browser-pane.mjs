@@ -144,12 +144,19 @@ await page.addScriptTag({
     window.__historyQueries = [];
     window.__historyCleared = 0;
     window.__paneStates = [];
+    window.__favoritesFixture = [];
+    window.__favWrites = [];
     window.electronAPI = new Proxy({}, { get: (_t, key) =>
     key === 'getWindowControls' ? () => ({ side: 'left', inset: 70 })
       : key === 'getPlatformInfo' ? () => Promise.resolve({ platform: 'darwin' })
       : key === 'browserPaneAction' ? (action) => { window.__actions.push(action); return Promise.resolve() }
       : key === 'browserHistoryQuery' ? (text) => { window.__historyQueries.push(text); return Promise.resolve(window.__historyFixture) }
       : key === 'browserHistoryClear' ? () => { window.__historyCleared += 1; window.__historyFixture = []; return Promise.resolve() }
+      : key === 'browserFavoriteHas' ? (url) => Promise.resolve((window.__favoritesFixture || []).some((f) => f.url === url))
+      : key === 'browserFavoriteList' ? () => Promise.resolve(window.__favoritesFixture || [])
+      : key === 'browserFavoriteQuery' ? (text) => { const q = (text || '').toLowerCase(); return Promise.resolve((window.__favoritesFixture || []).filter((f) => f.url.toLowerCase().includes(q) || (f.title || '').toLowerCase().includes(q))) }
+      : key === 'browserFavoriteAdd' ? (url, title) => { window.__favWrites.push(['add', url, title]); window.__favoritesFixture = [{ url, title: title || null, createdAt: Date.now(), updatedAt: Date.now() }].concat(window.__favoritesFixture || []); return Promise.resolve({ ok: true, url, created: true }) }
+      : key === 'browserFavoriteRemove' ? (url) => { window.__favWrites.push(['remove', url]); window.__favoritesFixture = (window.__favoritesFixture || []).filter((f) => f.url !== url); return Promise.resolve(true) }
       : key === 'browserPaneSetState' ? (state) => { window.__paneStates.push(state); return Promise.resolve() }
       : key === 'getSettings' ? () => Promise.resolve({
           activeProfileId: '', profiles: [], theme: 'light', myName: '', soul: '', yourName: '',
@@ -627,6 +634,131 @@ check(
   'empty history hides the recents block but keeps the guidance',
   (await page.locator('[data-pm-empty-recents]').count()) === 0 && (await page.getByText(EMPTY_COPY).isVisible().catch(() => false)),
 )
+
+/* ── 8. Favorites (PLAN-browser-favorites, review round): the star↔store link
+   on a live tab, the empty-state 收藏 block render/skip, and dropdown
+   favorites pinned above history with a hover-revealed delete. All of it is
+   invisible to the source scans — the delete button exists only under hover,
+   and the star's state is one async has() away from the mount. ──────────── */
+await page.evaluate(() => {
+  window.__favoritesFixture = [
+    { url: 'https://www.baidu.com', title: '百度一下', createdAt: 20, updatedAt: 20 },
+    { url: 'https://zhihu.com', title: '知乎', createdAt: 10, updatedAt: 10 },
+  ]
+  window.__historyFixture = [
+    { url: 'https://github.com/', title: 'GitHub', visitCount: 5, lastVisitAt: 77 },
+  ]
+  window.__favWrites = []
+  window.__actions = []
+})
+await page.evaluate(() => window.__mount({ tabs: [] }))
+await shot('pane-favorites-empty.png')
+check(
+  'the empty state renders the 收藏 block with the seeded favorites',
+  (await page.locator('[data-pm-empty-item][data-pm-fav-row]').count()) === 2,
+  `${await page.locator('[data-pm-empty-item][data-pm-fav-row]').count()} fav rows`,
+)
+const favOrder = await page.evaluate(() => {
+  const text = document.querySelector('[data-pm-empty-recents]')?.textContent ?? ''
+  return { fav: text.indexOf('收藏'), rec: text.indexOf('最近访问') }
+})
+check('收藏 sits above 最近访问 in the empty state', favOrder.fav >= 0 && favOrder.rec > favOrder.fav, JSON.stringify(favOrder))
+await page.locator('[data-pm-empty-item][data-pm-fav-row]').first().click()
+await page.waitForTimeout(100)
+const favNav = await page.evaluate(() => window.__actions)
+check(
+  'clicking a favorite row navigates to it (no tabId — main opens the tab)',
+  favNav.length === 1 && favNav[0].op === 'navigate' && favNav[0].url === 'https://www.baidu.com' && !favNav[0].tabId,
+  JSON.stringify(favNav),
+)
+await page.locator('[data-pm-empty-item][data-pm-fav-row]').first().hover()
+await page.locator('[data-pm-fav-del]').first().waitFor({ timeout: 2000 })
+await page.locator('[data-pm-fav-del]').first().click()
+await page.waitForTimeout(150)
+const afterRowDel = await page.evaluate(() => ({ writes: window.__favWrites, favRows: document.querySelectorAll('[data-pm-fav-row]').length }))
+check(
+  'hover reveals the row delete button and clicking it removes the favorite',
+  afterRowDel.favRows === 1 && afterRowDel.writes.some((w) => w[0] === 'remove' && w[1] === 'https://www.baidu.com'),
+  JSON.stringify(afterRowDel),
+)
+await page.locator('[data-pm-empty-item][data-pm-fav-row]').first().hover()
+await page.locator('[data-pm-fav-del]').first().click()
+await page.waitForTimeout(150)
+check(
+  'the 收藏 block disappears once the last favorite is removed (recents stay)',
+  (await page.locator('[data-pm-fav-row]').count()) === 0
+    && (await page.locator('[data-pm-empty-item]').count()) === 1
+    && (await page.getByText('最近访问').isVisible().catch(() => false)),
+)
+
+// 上一段的空态测试已把 fixture 删空——星标段先重新播种，再挂载带 tab 的面板。
+await page.evaluate(() => {
+  window.__favoritesFixture = [{ url: 'https://www.baidu.com', title: '百度一下', createdAt: 20, updatedAt: 20 }]
+})
+await page.evaluate((tabs) => window.__mount({ tabs }), TABS)
+const starOn = page.locator('div[title="取消收藏"]')
+await starOn.waitFor({ timeout: 2000 })
+const starFill = await starOn.evaluate((el) => el.querySelector('svg')?.getAttribute('fill'))
+check('a favorited active tab shows the filled star (state rides the async has())', starFill === 'currentColor', `fill=${starFill}`)
+await page.evaluate(() => { window.__favWrites = [] })
+await starOn.click()
+await page.waitForTimeout(150)
+const starWrites1 = await page.evaluate(() => window.__favWrites)
+check(
+  'clicking the filled star removes the favorite and flips the button',
+  starWrites1.length === 1 && starWrites1[0][0] === 'remove' && starWrites1[0][1] === 'https://www.baidu.com' && (await page.locator('div[title="收藏此页"]').count()) === 1,
+  JSON.stringify(starWrites1),
+)
+await page.evaluate(() => { window.__favWrites = [] })
+await page.locator('div[title="收藏此页"]').click()
+await page.waitForTimeout(150)
+const starWrites2 = await page.evaluate(() => window.__favWrites)
+check(
+  'clicking again re-adds with the normalized url and the page title',
+  starWrites2.length === 1 && starWrites2[0][0] === 'add' && starWrites2[0][1] === 'https://www.baidu.com' && starWrites2[0][2] === '百度一下' && (await page.locator('div[title="取消收藏"]').count()) === 1,
+  JSON.stringify(starWrites2),
+)
+await page.evaluate(() => window.__mount({ tabs: [{ id: 'tab_fresh2', url: 'about:blank', title: '', active: true }] }))
+check(
+  'a fresh about:blank tab shows no star at all',
+  (await page.locator('div[title="收藏此页"]').count()) === 0 && (await page.locator('div[title="取消收藏"]').count()) === 0,
+)
+
+await page.evaluate((tabs) => window.__mount({ tabs }), TABS)
+await page.evaluate(() => {
+  window.__favoritesFixture = [{ url: 'https://www.baidu.com', title: '百度一下', createdAt: 20, updatedAt: 20 }]
+  window.__historyFixture = [
+    { url: 'https://www.baidu.com/s?wd=x', title: '百度搜索', visitCount: 2, lastVisitAt: 90 },
+    { url: 'https://github.com/', title: 'GitHub', visitCount: 5, lastVisitAt: 77 },
+  ]
+  window.__favWrites = []
+})
+await address().click()
+await page.keyboard.type('baidu')
+await page.locator('div[style*="z-index: 40"]').waitFor({ timeout: 3000 })
+const drop = await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('div[style*="z-index: 40"] > div > div')]
+  return { n: rows.length, first: rows[0]?.hasAttribute('data-pm-fav-row') ?? false, second: rows[1]?.hasAttribute('data-pm-fav-row') ?? false }
+})
+check(
+  'typing matches favorites first — the top row is the favorite, history fills below',
+  drop.n >= 2 && drop.first && !drop.second,
+  JSON.stringify(drop),
+)
+await page.locator('[data-pm-fav-row]').first().hover()
+await page.locator('[data-pm-fav-del]').first().click()
+await page.waitForTimeout(150)
+const afterDropDel = await page.evaluate(() => ({
+  writes: window.__favWrites,
+  favRows: document.querySelectorAll('[data-pm-fav-row]').length,
+  total: document.querySelectorAll('div[style*="z-index: 40"] > div > div').length,
+}))
+check(
+  'the dropdown delete button removes the favorite; the history row survives',
+  afterDropDel.writes.length === 1 && afterDropDel.writes[0][0] === 'remove' && afterDropDel.favRows === 0 && afterDropDel.total >= 1,
+  JSON.stringify(afterDropDel),
+)
+await shot('pane-favorites-dropdown.png')
 
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

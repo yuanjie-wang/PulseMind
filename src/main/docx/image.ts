@@ -40,14 +40,17 @@ export function nextDocPrId(documentXml: string): number {
   return max + 1
 }
 
-/** Build the anchored drawing paragraph. Namespaces INLINE. */
+/** Build the anchored drawing paragraph. Namespaces INLINE — all four prefixes
+ *  the fragment uses, including r:embed's relationships namespace: a minimal
+ *  document root that never declares xmlns:r would make the inserted drawing
+ *  namespace-ill-formed and Word would refuse the file. */
 export function drawingParagraph(opts: { docPrId: number; relId: string; widthPx: number; heightPx: number; alt: string }): string {
   const cx = Math.round(opts.widthPx * EMU_PER_PX)
   const cy = Math.round(opts.heightPx * EMU_PER_PX)
   const alt = escapeXmlText(opts.alt || '图片')
   return (
     `<w:p><w:r><w:drawing>` +
-    `<wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">` +
+    `<wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
     `<wp:extent cx="${cx}" cy="${cy}"/>` +
     `<wp:docPr id="${opts.docPrId}" name="图片 ${opts.docPrId}" descr="${alt}"/>` +
     `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +

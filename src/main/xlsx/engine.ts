@@ -259,9 +259,17 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
       if (kind === 'freeze_panes') {
         const ws = resolveSheet(op.sheet as string | undefined)
         const cell = String(op.cell ?? '')
-        if (!/^[A-Za-z]{1,3}[1-9]\d*$/.test(cell)) throw new Error(`freeze_panes: 非法单元格「${cell}」`)
-        ws.views = [{ state: 'frozen', topLeftCell: cell } as never]
-        readBacks.push({ sheetName: ws.name, address: cell, op: { __freeze: cell }, after: { address: cell, value: null, formula: null, type: 'style' } })
+        const addr = /^([A-Za-z]{1,3})([1-9]\d*)$/.exec(cell)
+        if (!addr) throw new Error(`freeze_panes: 非法单元格「${cell}」`)
+        // ECMA-376: xSplit/ySplit ARE the frozen column/row counts. exceljs
+        // writes only what the model carries — a topLeftCell-only view lands
+        // as `<pane state="frozen"/>` with no splits, which freezes NOTHING in
+        // Excel/WPS, and the state/topLeftCell round-trip cannot see the gap.
+        // Compute the splits from the address; absence (=0) stays omitted.
+        const xSplit = colIndexOf(addr[1]) - 1
+        const ySplit = Number(addr[2]) - 1
+        ws.views = [{ state: 'frozen', xSplit, ySplit, topLeftCell: cell } as never]
+        readBacks.push({ sheetName: ws.name, address: cell, op: { __freeze: cell, __xSplit: xSplit, __ySplit: ySplit }, after: { address: cell, value: null, formula: null, type: 'style' } })
         results.push({ index, op: kind, ok: true, detail: `冻结窗格于 ${cell}` })
         continue
       }
@@ -327,9 +335,14 @@ export async function editXlsx(buffer: Buffer, ops: Array<Record<string, unknown
     if ('__freeze' in op0) {
       const ws2 = reloaded.getWorksheet(rb.sheetName)
       if (!ws2) throw new Error(`门禁未通过：重载后缺少工作表「${rb.sheetName}」`)
-      const view = ws2.views[0] as { state?: string; topLeftCell?: string } | undefined
+      const view = ws2.views[0] as { state?: string; topLeftCell?: string; xSplit?: number; ySplit?: number } | undefined
       if (view?.state !== 'frozen' || view.topLeftCell !== op0.__freeze) {
         throw new Error(`freeze_panes: 冻结写盘回读不一致`)
+      }
+      // The splits are the actual freeze — a pane without them freezes nothing
+      // (exceljs parses absent attributes back as 0, so compare numerically).
+      if ((view.xSplit ?? 0) !== op0.__xSplit || (view.ySplit ?? 0) !== op0.__ySplit) {
+        throw new Error(`freeze_panes: 冻结分割数写盘回读不一致（期望 x=${op0.__xSplit}/y=${op0.__ySplit}，实际 x=${view.xSplit ?? 0}/y=${view.ySplit ?? 0}）`)
       }
       continue
     }

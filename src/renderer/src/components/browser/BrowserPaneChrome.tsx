@@ -7,7 +7,7 @@
 // belong to WorkbenchPane; this component fills its parent.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2, Star, Clock3 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2, Star, StarOff, Clock3 } from 'lucide-react'
 import {
   hostLabel,
   isFreshTabUrl,
@@ -18,7 +18,7 @@ import {
   type BrowserPaneAction,
   type BrowserPaneUpdate,
   type HistorySuggestionRow,
-  type RankedSuggestion,
+  type MergedSuggestion,
 } from '../../../../shared/browser/pane'
 import { useBrowserPaneStore } from '../../stores/browserPaneStore'
 
@@ -88,7 +88,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   // WebContentsView paints above all DOM — so its measured height rides the
   // pane-state push and the main-process dock shifts the webview down while
   // it is open.
-  const [suggestions, setSuggestions] = useState<RankedSuggestion[]>([])
+  const [suggestions, setSuggestions] = useState<MergedSuggestion[]>([])
   // 星标态（PLAN-browser-favorites M2）：当前地址是否已收藏，随导航/切 tab 刷新。
   const [starred, setStarred] = useState(false)
   const [starTick, setStarTick] = useState(0)
@@ -125,6 +125,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   const inputWrapRef = useRef<HTMLDivElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
   const suggestSeq = useRef(0)
+  const lastQueryRef = useRef('')
 
   // ── Empty state (PLAN-browser-pane-ux T4) ──
   // Zero tabs OR a fresh (never-navigated) about:blank tab — main folds the
@@ -136,6 +137,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   // 空态收藏区（PLAN-browser-favorites M2）：空收藏整区不渲染——不出现
   // 「去收藏吧」的占位营销文案。
   const [favorites, setFavorites] = useState<Array<{ url: string; title: string | null; createdAt: number; updatedAt: number }>>([])
+  const [hoverFav, setHoverFav] = useState<string | null>(null)
   useEffect(() => {
     if (!showEmpty) return
     let alive = true
@@ -156,6 +158,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
 
   const refreshSuggestions = (text: string, open: boolean) => {
     const query = text.trim()
+    lastQueryRef.current = query
     if (!query) {
       setSuggestions([])
       setSelectedIdx(-1)
@@ -180,6 +183,20 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
       .catch(() => { /* history is best-effort — the typed text still navigates */ })
   }
 
+  // 收藏行的删除入口（PLAN-browser-favorites M2 review 补）：下拉行与空态行
+  // hover 显形同一个按钮；两个视图各自收敛自己渲染的部分。
+  const removeFavoriteUrl = (url: string) => {
+    const key = normalizeFavoriteUrl(url)
+    if (!key) return
+    window.electronAPI.browserFavoriteRemove(key)
+      .then(() => {
+        setStarTick((t) => t + 1)
+        setFavorites((rows) => rows.filter((r) => normalizeFavoriteUrl(r.url) !== key))
+        refreshSuggestions(lastQueryRef.current, true)
+      })
+      .catch(() => { /* favorites are best-effort — the row stays until reload */ })
+  }
+
   const closeDropdown = () => {
     setDropdownOpen(false)
     setSelectedIdx(-1)
@@ -192,7 +209,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
     setDraft({ tabId: activeId, text: null })
   }
 
-  const openSuggestion = (s: RankedSuggestion) => {
+  const openSuggestion = (s: MergedSuggestion) => {
     closeDropdown()
     navigateTo(s.url)
   }
@@ -457,6 +474,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                 {suggestions.map((s, i) => (
                   <div
                     key={s.url}
+                    data-pm-fav-row={s.favorite ? '1' : undefined}
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => openSuggestion(s)}
                     onMouseEnter={() => setSelectedIdx(i)}
@@ -476,6 +494,20 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                       <div style={{ fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</div>
                       <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.url}</div>
                     </div>
+                    {s.favorite && i === selectedIdx && (
+                      <div
+                        data-pm-fav-del
+                        title="取消收藏"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          removeFavoriteUrl(s.url)
+                        }}
+                        style={{ flexShrink: 0, display: 'flex', padding: 2, color: 'var(--pm-text-muted)', cursor: 'pointer' }}
+                      >
+                        <StarOff size={12} />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -561,20 +593,38 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
                 {favorites.length > 0 && (
                   <>
                     <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', margin: '2px 0 6px 10px' }}>收藏</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: favorites.length > 0 ? 8 : 0 }}>
+                    <div
+                      style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 8 }}
+                      onMouseLeave={() => setHoverFav(null)}
+                    >
                       {favorites.slice(0, 4).map((f) => (
                         <div
                           key={f.url}
                           data-pm-empty-item
+                          data-pm-fav-row="1"
                           className="pm-pane-empty-item"
                           onClick={() => navigateTo(f.url)}
+                          onMouseEnter={() => setHoverFav(f.url)}
                           style={{ padding: '5px 10px', borderRadius: 6, cursor: 'pointer', minWidth: 0 }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <Star size={10} style={{ flexShrink: 0, color: 'var(--pm-accent, #4b7bec)' }} fill="currentColor" />
-                            <div style={{ fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: 'var(--pm-text-strong)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {f.title || hostLabel(f.url)}
                             </div>
+                            {hoverFav === f.url && (
+                              <div
+                                data-pm-fav-del
+                                title="取消收藏"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  removeFavoriteUrl(f.url)
+                                }}
+                                style={{ flexShrink: 0, display: 'flex', padding: 2, color: 'var(--pm-text-muted)', cursor: 'pointer' }}
+                              >
+                                <StarOff size={11} />
+                              </div>
+                            )}
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {hostLabel(f.url)}

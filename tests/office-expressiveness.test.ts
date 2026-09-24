@@ -98,6 +98,10 @@ describe('docx_edit insert_image (M3)', () => {
     expect(rels).toContain('pmimg-1.png')
     const docXml = zip.getEntry('word/document.xml')!.getData().toString('utf8')
     expect(docXml).toContain('<wp:inline')
+    // Every prefix the fragment uses must be declared INLINE — a minimal root
+    // without xmlns:r would make the drawing ill-formed (Word: 内容有问题).
+    expect(docXml).toMatch(/<wp:inline[^>]*xmlns:wp=/)
+    expect(docXml).toMatch(/<wp:inline[^>]*xmlns:r=/)
     expect(result.editedParts).toContain('word/media/pmimg-1.png')
     expect(result.editedParts).toContain('word/_rels/document.xml.rels')
   })
@@ -188,6 +192,24 @@ describe('xlsx style ops (M5)', () => {
     ] as never)
     expect(out.results.every((r) => r.ok)).toBe(true)
     expect(out.warnings).toEqual([])
+    // The splits ARE the freeze: a pane without xSplit/ySplit freezes nothing
+    // in Excel/WPS, and the exceljs round-trip cannot see the gap. Assert the
+    // pane XML the client will actually open ('A2' ⇒ ySplit=1, xSplit absent=0).
+    const sheetXml = new AdmZip(out.buffer).getEntry('xl/worksheets/sheet1.xml')!.getData().toString('utf8')
+    const pane = /<pane[^>]*\/?>/.exec(sheetXml)?.[0] ?? ''
+    expect(pane).toContain('state="frozen"')
+    expect(pane).toContain('ySplit="1"')
+    expect(pane).not.toContain('xSplit="0"')
+  })
+
+  it('freeze_panes B2 writes BOTH splits (the bug the round-trip gate missed)', async () => {
+    const buf = await sheetBuf()
+    const out = await editXlsx(buf, [{ op: 'freeze_panes', cell: 'B2' }] as never)
+    const sheetXml = new AdmZip(out.buffer).getEntry('xl/worksheets/sheet1.xml')!.getData().toString('utf8')
+    const pane = /<pane[^>]*\/?>/.exec(sheetXml)?.[0] ?? ''
+    expect(pane).toContain('xSplit="1"')
+    expect(pane).toContain('ySplit="1"')
+    expect(pane).toContain('topLeftCell="B2"')
   })
 
   it('an illegal color refuses loudly', async () => {

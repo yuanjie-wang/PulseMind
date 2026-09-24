@@ -84,7 +84,7 @@ const DOCUMENTS: BrowserDocument[] = [
   },
     {
       name: 'favorites',
-      title: "Favorites — the user’s saved sites (收藏)".replace('x','x'),
+      title: "Favorites — the user’s saved sites (收藏)",
       mode: 'lookup',
       body: `## Favorites (lookup)\n\n\`agent.browsers.favorites\` is the user's curated list of sites (收藏 — where they WANT to go; history is where they went).\n\n- The user mentions a saved site (「打开我收藏的知乎」) → \`favorites.list()\` FIRST, match by title/host, then \`open(url)\` with the STORED URL — NEVER reconstruct a URL from memory.\n- The user says 收藏/收藏一下 → \`favorites.add(url, title?)\`; the envelope says \`added: true\` or \`added: 'already'\` (tell the user it already existed). 取消收藏 → \`favorites.remove(url)\`.\n- Navigating NEVER auto-populates favorites — only explicit user requests write here.`,
     },

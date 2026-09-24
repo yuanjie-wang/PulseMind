@@ -101,7 +101,9 @@ try {
   check('默认 diff：变化一次性到位（实测：引擎对文本置换派发新 ref → 表现为 -旧/+新；同 ref 改名才是 ~，已由 vitest 钉死）', () => {
     ok(diffSnap.text.includes(`- [ref=${btnRef}] button "登录"（已消失）`), 'old identity gone')
     ok(diffSnap.text.includes('"注册"'), 'new label present')
-    ok(/\+ \[ref=e\d+\] link "新增链接"（新增）/.test(diffSnap.text), 'added entry')
+    // The added link carries its href as a [url=…] decoration now (state keys
+    // render in the diff too) — the regex allows for it.
+    ok(/\+ \[ref=e\d+\] link "新增链接"( \[url=[^\]]*\])?（新增）/.test(diffSnap.text), 'added entry')
     ok(diffSnap.text.includes(`- [ref=${aRef}]`), 'removed entry')
     ok(diffSnap.text.includes('其余'), 'unchanged collapse line')
     ok(diffSnap.text.includes('{ full: true }'), 'escape hatch named')
@@ -157,6 +159,61 @@ try {
     await runPlaywrightOp(page, { selector: `aria-ref=${realRef}`, op: 'click' }, forged.tree)
     const hijacked = await page.evaluate(() => window.__hijacked === true)
     check('寻址引擎的 eN 命中真按钮，伪造属性上的自设 eN 未被触发', () => { ok(!hijacked) })
+  }
+
+  // ── 9. app-view backend regression: the same semantics over connectOverCDP ──
+  // AppViewBackend drives the in-app pane over CDP, which is a DIFFERENT
+  // transport from the managed launch above — PLAN §三 named this section and
+  // §六 made it the risk gate, so it lives here, not in a manual step.
+  {
+    const { spawn } = await import('node:child_process')
+    const http = await import('node:http')
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const userDataDir = mkdtempSync(join(tmpdir(), 'pm-probe-cdp-'))
+    const port = 19333
+    console.log('  ..  [cdp] spawning chromium on port ' + port)
+    const cdpProc = spawn(chromium.executablePath(), [
+      '--headless=new', `--remote-debugging-port=${port}`, '--no-first-run', `--user-data-dir=${userDataDir}`, 'about:blank',
+    ], { stdio: 'ignore' })
+    try {
+      let up = false
+      for (let i = 0; i < 40 && !up; i++) {
+        await new Promise((r) => setTimeout(r, 250))
+        up = await new Promise((res) => http.get(`http://127.0.0.1:${port}/json/version`, (r2) => { r2.resume(); res(true) }).on('error', () => res(false)))
+      }
+      console.log('  ..  [cdp] endpoint up=' + up)
+      ok(up, 'CDP endpoint came up')
+      console.log('  ..  [cdp] connectOverCDP…')
+      const cdp = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
+      console.log('  ..  [cdp] connected')
+      try {
+        const ctx = cdp.contexts()[0] ?? (await cdp.newContext())
+        const cdpPage = ctx.pages()[0] ?? (await ctx.newPage())
+        await cdpPage.setContent('<html><body><button id="b" onclick="window.__clicked=(window.__clicked||0)+1">CDP按钮</button></body></html>')
+        const cdpSnap = await takeDomSnapshot(cdpPage)
+        const cdpBtnRef = (function find(tree) {
+          for (const n of tree) {
+            if (n.role === 'button') return n.ref
+            const r = find(n.children ?? [])
+            if (r) return r
+          }
+        })(cdpSnap.tree)
+        check('app-view 路径（connectOverCDP）：mode:ai 快照带 ref', () => {
+          ok(cdpBtnRef, 'button carries an engine ref over CDP')
+          ok(cdpSnap.text.includes('CDP按钮'))
+        })
+        await runPlaywrightOp(cdpPage, { selector: `aria-ref=${cdpBtnRef}`, op: 'click' }, cdpSnap.tree)
+        const cdpAfter = await cdpPage.evaluate(() => window.__clicked || 0)
+        check('app-view 路径：aria-ref click 真实落地', () => { eq(cdpAfter, 1) })
+      } finally {
+        await cdp.close()
+      }
+    } finally {
+      cdpProc.kill()
+      rmSync(userDataDir, { recursive: true, force: true })
+    }
   }
 
   console.log('PASS: ' + checks + ' checks — AI 快照 + 差分观察在真实 Chromium 上成立')

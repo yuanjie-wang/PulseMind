@@ -203,18 +203,25 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
             `（仅应用内浏览器面板的后端有此对象。）`,
           ),
           downloads: () => invoke({ method: 'listDownloads' }) as Promise<Array<{ name: string; path: string; size: number; savedAt: string }>>,
-          favorites: {
-            /** 收藏是用户策展的数据：按需现查，绝不进 prompt（缓存契约）。 */
-            list: () => invoke({ method: 'listFavorites' }) as Promise<Array<{ url: string; title?: string }>>,
-            add: async (url: string, title?: string) => {
-              const r = (await invoke({ method: 'addFavorite', url, title })) as { url: string; title?: string; added: true | 'already' }
-              return r
+          favorites: guardMembers(
+            {
+              // 收藏是用户策展的数据：按需现查，绝不进 prompt（缓存契约）。
+              list: () =>
+                invoke({ method: 'listFavorites' }) as Promise<
+                  Array<{ url: string; title: string | null; createdAt: number; updatedAt: number }>
+                >,
+              add: async (url: string, title?: string) => {
+                const r = (await invoke({ method: 'addFavorite', url, title })) as { url: string; title?: string; added: true | 'already' }
+                return r
+              },
+              remove: async (url: string) => {
+                const r = (await invoke({ method: 'removeFavorite', url })) as { removed: boolean }
+                return r.removed
+              },
             },
-            remove: async (url: string) => {
-              const r = (await invoke({ method: 'removeFavorite', url })) as { removed: boolean }
-              return r.removed
-            },
-          },
+            'agent.browsers.favorites',
+            `（收藏是用户策展的站点：按需 list() 现查，绝不进 prompt。）`,
+          ),
           documentation: documentationGuarded,
           open: async (url: string) => {
             const normalized = assertAllowedUrl(url)

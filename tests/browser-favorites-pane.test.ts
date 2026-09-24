@@ -80,7 +80,11 @@ describe('wiring scans (M1 + M3)', () => {
     expect(read('src/shared/browser-client/protocol.ts')).toContain("method: 'addFavorite'")
     expect(read('src/shared/browser-client/protocol.ts')).toContain("method: 'removeFavorite'")
     const facade = read('src/shared/browser-client/facade.ts')
-    expect(facade).toContain('favorites: {')
+    // manifest 三角一致（review 修正）：favorites 走 guardMembers 声明制，
+    // manifest 里必须有同名对象，documentation() 的 API 清单才会列出它。
+    expect(facade).toContain("'agent.browsers.favorites'")
+    expect(facade).toContain('favorites: guardMembers(')
+    expect(read('src/shared/browser-client/manifest.ts')).toContain("'agent.browsers.favorites'")
     expect(facade).toContain("added: true | 'already'")
     expect(read('src/main/browser/BrowserService.ts')).toContain("case 'listFavorites'")
   })
@@ -90,11 +94,13 @@ describe('wiring scans (M1 + M3)', () => {
     expect(read('src/renderer/src/tools/tool-instructions.ts')).toContain('never reconstruct a URL from memory')
   })
 
-  it('the pane renders the star and the empty-state favorites section', () => {
+  it('the pane renders the star, the empty-state favorites section, and the row delete entry', () => {
     const pane = read('src/renderer/src/components/browser/BrowserPaneChrome.tsx')
     expect(pane).toContain('mergeSuggestions')
     expect(pane).toContain('toggleStar')
     expect(pane).toContain('收藏此页')
-    expect(pane).toContain('收藏')
+    // 删除入口（review 修正）：下拉行与空态行都要有 hover 显形的取消收藏按钮。
+    expect(pane).toContain('data-pm-fav-del')
+    expect(pane).toContain('StarOff')
   })
 })
