@@ -27,6 +27,14 @@ describe('the pick_skill envelope names where the scripts live', () => {
     expect(src).toContain('**Directory:**')
     // both call sites (name-driven and intent-driven selection)
     expect(src.match(/experienceLocationBlock\(/g)?.length).toBeGreaterThanOrEqual(3)
+    // Runtime shape: every CALL SITE must await — the helper is async, and an
+    // un-awaited interpolation ships "[object Promise]" as the envelope tail
+    // (review0925's actual bug). Occurrence counts cannot see it; the await
+    // prefix can. The lookbehind excludes the `async function` definition.
+    const callSites = src.match(/(?<!function )experienceLocationBlock\(/g) ?? []
+    const awaited = src.match(/await experienceLocationBlock\(/g) ?? []
+    expect(callSites.length).toBeGreaterThanOrEqual(2)
+    expect(awaited.length).toBe(callSites.length)
   })
 })
 

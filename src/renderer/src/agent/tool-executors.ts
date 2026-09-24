@@ -573,7 +573,7 @@ export class ToolExecutor implements ToolExecContext {
           const raw = await em.read(skillName)
           if (raw) {
             em.touch(skillName).catch(() => {})
-            this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}${experienceLocationBlock(em, skillName)}`, false)
+            this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}${await experienceLocationBlock(em, skillName)}`, false)
             t.exitCode = 0; t.status = 'completed'; this.notify(); return
           }
         }
@@ -608,7 +608,7 @@ export class ToolExecutor implements ToolExecContext {
         const raw2 = await em2.read(cleanName)
         if (raw2) {
           em2.touch(cleanName).catch(() => {})
-          this.addToolResult(t.id, `## Selected Experience: ${cleanName}\n\n${raw2}${experienceLocationBlock(em2, cleanName)}`, false)
+          this.addToolResult(t.id, `## Selected Experience: ${cleanName}\n\n${raw2}${await experienceLocationBlock(em2, cleanName)}`, false)
           t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
       }

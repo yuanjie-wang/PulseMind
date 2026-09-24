@@ -55,7 +55,18 @@ function encryptSecretValue(plain: string): string {
     }
     return plain
   }
-  return ENC_PREFIX + Buffer.from(safeStorage.encryptString(plain)).toString('base64')
+  try {
+    return ENC_PREFIX + Buffer.from(safeStorage.encryptString(plain)).toString('base64')
+  } catch (err) {
+    // The user DECLINED the macOS keychain prompt (encryptString throws) —
+    // a save must never die on that: fall back to plaintext with one warn,
+    // the same contract as "keychain unavailable".
+    if (!warnedPlaintextFallback) {
+      warnedPlaintextFallback = true
+      console.warn('[settings] keychain denied — storing secrets in PLAINTEXT:', err instanceof Error ? err.message : err)
+    }
+    return plain
+  }
 }
 
 /** Undecryptable = dropped with a warn, never returned as the ciphertext

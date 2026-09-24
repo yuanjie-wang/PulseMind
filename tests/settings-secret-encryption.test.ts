@@ -64,6 +64,7 @@ beforeEach(() => {
 afterEach(async () => {
   const stub = await import('../tests/stubs/electron')
   stub.setStubEncryptionAvailable(true)
+  stub.setStubKeychainDenied(false)
   delete process.env.PULSE_TEST_KEY
 })
 
@@ -194,5 +195,28 @@ describe('secrets at rest (enc:v1:)', () => {
     stub.setStubEncryptionAvailable(false)
     expect(await mod.migrateEncryptedSecrets()).toBe(false)
     expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+  })
+})
+
+describe('keychain DENIED (available but encryptString throws)', () => {
+  it('falls back to plaintext and the save never fails', async () => {
+    const store = await freshStore()
+    const stub = await import('../tests/stubs/electron')
+    stub.setStubKeychainDenied(true)
+    const snapshot = await store.get()
+    await expect(store.set(snapshot)).resolves.toBeUndefined()
+    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect((await store.get()).profiles![0].apiKey).toBe('sk-live-secret-123')
+  })
+
+  it('migrateEncryptedSecrets on denial rewrites plaintext harmlessly (no ciphertext, no throw)', async () => {
+    const mod = await freshStoreModule()
+    const stub = await import('../tests/stubs/electron')
+    stub.setStubKeychainDenied(true)
+    // The rewrite runs and lands plaintext (the deny fallback) — idempotent,
+    // since the next scan finds the same plaintext and declines again.
+    expect(await mod.migrateEncryptedSecrets()).toBe(true)
+    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect(await mod.migrateEncryptedSecrets()).toBe(true) // still harmless
   })
 })

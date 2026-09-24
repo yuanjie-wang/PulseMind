@@ -1,27 +1,35 @@
 // ── Snapshot diff (PLAN-browser-snapshot-ai §1.3) ──
 // domSnapshot() defaults to the DIFF against the tab's last snapshot; the
 // model escapes with `{ full: true }`. Diffs are anchored on refs — eN present
-// on both sides with the same (role, name) is unchanged; a feature change is
-// `~`, a new ref is `+`, a vanished ref is `-`. Refless structural nodes ride
-// with their nearest ref-bearing ancestor: the diff never claims a change for
-// a bare wrapper div, and a changed subtree is reported at the ref the model
-// can address.
+// on both sides with the same (role, name, state) is unchanged; a feature
+// change is `~`, a new ref is `+`, a vanished ref is `-`. State rides the
+// feature tuple (decorateNode's brackets), so a check/uncheck that leaves
+// role and name standing still is still reported — that visibility is what
+// makes fill/check/selectOption verifiable from the snapshot. Refless
+// structural nodes ride with their nearest ref-bearing ancestor: the diff
+// never claims a change for a bare wrapper div, and a changed subtree is
+// reported at the ref the model can address.
 //
 // Output shape is load-bearing: the model decides its next move off the last
 // bytes of a tool result, so the diff block comes FIRST, unchanged material
 // collapses to one line, and the escape hatch (`{full:true}`) is named.
 
-import type { AriaNode } from './snapshot-render'
+import { decorateNode, type AriaNode } from './snapshot-render'
 
 export interface DiffEntry {
   kind: '~' | '+' | '-'
   ref: string
   role: string
   name: string
+  /** Bracket decorations of the node on THIS side of the diff. */
+  state: string
   /** ref-bearing ancestor chain, top-down — tells the model WHERE on the page. */
   path: string[]
-  /** For `~` entries: the name the previous snapshot showed. */
+  /** For `~` entries: the name the previous snapshot showed (rendered only
+   *  when it differs). */
   oldName?: string
+  /** For `~` entries: the previous snapshot's decorations. */
+  oldState?: string
 }
 
 export interface DiffResult {
@@ -32,6 +40,7 @@ export interface DiffResult {
 interface IndexedNode {
   role: string
   name: string
+  state: string
   /** ref-bearing ancestors, top-down, excluding the node itself. */
   path: string[]
 }
@@ -41,7 +50,7 @@ function indexTree(roots: AriaNode[]): Map<string, IndexedNode> {
   const walk = (node: AriaNode, path: string[]): void => {
     const nextPath = node.ref ? [...path, node.ref] : path
     if (node.ref) {
-      index.set(node.ref, { role: node.role, name: cleanName(node.name), path })
+      index.set(node.ref, { role: node.role, name: cleanName(node.name), state: decorateNode(node), path })
     }
     for (const child of node.children ?? []) walk(child, nextPath)
   }
@@ -53,11 +62,12 @@ function cleanName(name: unknown): string {
   return typeof name === 'string' ? name.replace(/\s+/g, ' ').trim() : ''
 }
 
-/** Structural equality of what addressing cares about. A generic container
- *  whose name drifts by whitespace is NOT a change; a button whose label
- *  flipped IS. */
+/** Structural equality of what addressing and verification care about: role,
+ *  name, and the actionable state. A generic container whose name drifts by
+ *  whitespace is NOT a change; a button whose label flipped IS; a checkbox
+ *  that gained [checked] IS — even though nothing else about it moved. */
 function sameFeature(a: IndexedNode, b: IndexedNode): boolean {
-  return a.role === b.role && a.name === b.name
+  return a.role === b.role && a.name === b.name && a.state === b.state
 }
 
 /** The ref-bearing ancestor chain of a ref, from the OTHER side's index when
@@ -75,16 +85,16 @@ export function diffTrees(prev: AriaNode[], next: AriaNode[]): DiffResult {
   for (const [ref, node] of after) {
     const old = before.get(ref)
     if (!old) {
-      entries.push({ kind: '+', ref, role: node.role, name: node.name, path: node.path })
+      entries.push({ kind: '+', ref, role: node.role, name: node.name, state: node.state, path: node.path })
     } else if (!sameFeature(old, node)) {
-      entries.push({ kind: '~', ref, role: node.role, name: node.name, path: node.path, oldName: old.name })
+      entries.push({ kind: '~', ref, role: node.role, name: node.name, state: node.state, path: node.path, oldName: old.name, oldState: old.state })
     } else {
       unchanged++
     }
   }
   for (const [ref, node] of before) {
     if (!after.has(ref)) {
-      entries.push({ kind: '-', ref, role: node.role, name: node.name, path: pathOf(before, ref) })
+      entries.push({ kind: '-', ref, role: node.role, name: node.name, state: node.state, path: pathOf(before, ref) })
     }
   }
 
@@ -103,11 +113,16 @@ export function renderDiff(diff: DiffResult): string {
   const lines: string[] = [`── 与上次快照的差异（${diff.entries.length} 处变化，其余 ${diff.unchanged} 个元素未变）──`]
   for (const e of diff.entries) {
     if (e.kind === '~') {
-      lines.push(`~ [ref=${e.ref}] ${e.role} "${e.name}"${e.oldName ? `（原 "${e.oldName}"）` : ''}`)
+      const nameChanged = e.oldName !== undefined && e.oldName !== e.name
+      const stateChanged = e.oldState !== undefined && e.oldState !== e.state
+      let suffix = ''
+      if (nameChanged) suffix = `（原 "${e.oldName}"）`
+      else if (stateChanged) suffix = `（原 ${e.oldState || '无'}）`
+      lines.push(`~ [ref=${e.ref}] ${e.role}${e.name ? ` "${e.name}"` : ''}${e.state ? ` ${e.state}` : ''}${suffix}`)
     } else if (e.kind === '+') {
-      lines.push(`+ [ref=${e.ref}] ${e.role}${e.name ? ` "${e.name}"` : ''}（新增）`)
+      lines.push(`+ [ref=${e.ref}] ${e.role}${e.name ? ` "${e.name}"` : ''}${e.state ? ` ${e.state}` : ''}（新增）`)
     } else {
-      lines.push(`- [ref=${e.ref}] ${e.role}${e.name ? ` "${e.name}"` : ''}（已消失）`)
+      lines.push(`- [ref=${e.ref}] ${e.role}${e.name ? ` "${e.name}"` : ''}${e.state ? ` ${e.state}` : ''}（已消失）`)
     }
     if (e.path.length > 0) lines.push(`  位置：${e.path.join(' > ')}`)
   }

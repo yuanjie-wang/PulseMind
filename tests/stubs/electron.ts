@@ -64,8 +64,10 @@ const STUB_ENC_MARK = 'stubenc:'
 
 export const safeStorage = {
   isEncryptionAvailable: (): boolean => stubEncryptionAvailable,
-  encryptString: (plain: string): Buffer =>
-    Buffer.from(STUB_ENC_MARK + Buffer.from(plain, 'utf-8').toString('base64'), 'utf-8'),
+  encryptString: (plain: string): Buffer => {
+    if (denyEncrypt) throw new Error('The user denied access to the keychain')
+    return Buffer.from(STUB_ENC_MARK + Buffer.from(plain, 'utf-8').toString('base64'), 'utf-8')
+  },
   decryptString: (blob: Buffer): string => {
     const s = blob.toString('utf-8')
     if (!s.startsWith(STUB_ENC_MARK)) throw new Error('not a stub-encrypted blob')
@@ -76,4 +78,11 @@ export const safeStorage = {
 /** Flip the stub's availability — the plaintext-fallback branch's driver. */
 export function setStubEncryptionAvailable(available: boolean): void {
   stubEncryptionAvailable = available
+}
+
+/** Simulate the user DECLINING the macOS keychain prompt: availability says
+ *  yes, but every encryptString throws. One-shot per setting. */
+let denyEncrypt = false
+export function setStubKeychainDenied(denied: boolean): void {
+  denyEncrypt = denied
 }

@@ -89,7 +89,10 @@ export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput, last
   //      clicking whatever occupies the ref. The name comparison only fires
   //      when the DOM heuristic could actually read one, so label-supplied
   //      names never false-reject. Gen-staleness is gone by design: refs are
-  //      persistent, and step 2 covers a swapped target.
+  //      persistent, and step 2 covers a swapped target. State decorations
+  //      ([checked]/[disabled]) are deliberately NOT verified — changing them
+  //      is what the actions are FOR, so a state verdict here would reject
+  //      every legitimate toggle (they ride the diff channel instead).
   if (isPmRefSelector(selector)) {
     const refId = pmRefNumberOf(selector) ?? selector
     const count = await locator.count()
