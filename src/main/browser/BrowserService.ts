@@ -49,6 +49,10 @@ import { runBrowserCode, type BrowserRunOutput } from './kernel'
 const MUTATING_METHODS = new Set(['navigate', 'back', 'forward', 'reload', 'close', 'evaluate', 'newTab', 'playwright', 'setActiveBackend', 'claimTab'])
 
 interface ServiceTab {
+  /** The tab's last AI-mode snapshot tree + its url (PLAN-browser-snapshot-ai
+   *  §1.3): the diff baseline AND the server-side sig source for action-time
+   *  ref verification. Dropped with the tab entry — no new lifecycle. */
+  lastSnapshot?: { url: string; tree: import('../../shared/browser-client/snapshot-render').AriaNode[] }
   id: string
   backendId: string
   /** Owning conversation — tabs.list() is scoped to it (§4.1 Tab 归属). */
@@ -300,8 +304,12 @@ export class BrowserService {
           await this.closeTab(entry.id)
           this.syncPane()
           return browserOk()
-        case 'snapshot':
-          return browserOk(await takeDomSnapshot(page))
+        case 'snapshot': {
+          const prev = entry.lastSnapshot ?? null
+          const snap = await takeDomSnapshot(page, prev, { full: (cmd as { full?: boolean }).full })
+          entry.lastSnapshot = { url: page.url(), tree: snap.tree }
+          return browserOk(snap.text)
+        }
         case 'screenshot': {
           const buffer = cmd.selector ? await page.locator(cmd.selector).screenshot() : await page.screenshot({ fullPage: cmd.fullPage })
           return browserOk({ mime: 'image/png', base64: buffer.toString('base64') })
@@ -323,7 +331,7 @@ export class BrowserService {
               if (!decision.ok) return browserError('PATH_DENIED', `文件上传被拒绝：${decision.reason}`)
             }
           }
-          return browserOk(await runPlaywrightOp(page, { selector: cmd.selector, op: cmd.op, arg: cmd.arg, timeoutMs: cmd.timeoutMs }))
+          return browserOk(await runPlaywrightOp(page, { selector: cmd.selector, op: cmd.op, arg: cmd.arg, timeoutMs: cmd.timeoutMs }, entry.lastSnapshot?.tree ?? null))
         }
         case 'playwrightWaitForTimeout':
           await page.waitForTimeout(Math.min(Math.max(cmd.ms, 0), 30_000))

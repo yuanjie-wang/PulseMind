@@ -5,7 +5,7 @@
 
 import type { Page } from 'playwright-core'
 import { isPmRefSelector, pmRefNumberOf, PM_REF_RECOVERY_HINT } from '../../shared/browser-client/pm-refs'
-import { refPassSource, currentSnapshotGeneration } from './snapshot-refs'
+import type { AriaNode } from './snapshot-refs'
 import { CHANGE_TRACKED_OPS, describeOperationResult, withChangeWatch } from './change-watch'
 
 /** Ops a model may invoke. Anything not listed is rejected — the whitelist is
@@ -48,6 +48,23 @@ export interface PlaywrightOpInput {
   timeoutMs?: number
 }
 
+/** Find a node's entry in the service-side tree by its eN number. */
+function treeEntryOf(tree: AriaNode[] | null | undefined, ref: string): { role: string; name: string } | null {
+  let found: { role: string; name: string } | null = null
+  const walk = (nodes: AriaNode[]): void => {
+    for (const n of nodes) {
+      if (found) return
+      if (n.ref === ref) {
+        found = { role: n.role, name: typeof n.name === 'string' ? n.name.replace(/\s+/g, ' ').trim() : '' }
+        return
+      }
+      walk(n.children ?? [])
+    }
+  }
+  for (const root of tree ?? []) walk([root])
+  return found
+}
+
 /** Playwright's own timeout message is the one load-bearing string a locator
  *  failure carries — decoration keys on it (stable English in playwright-core,
  *  independent of app locale). */
@@ -55,44 +72,74 @@ function isTimeoutError(err: unknown): boolean {
   return err instanceof Error && /timeout \d+ms exceeded|timed out/i.test(err.message)
 }
 
-export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput): Promise<unknown> {
+export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput, lastTree?: AriaNode[] | null): Promise<unknown> {
   const { selector, op } = input
   if (!PLAYWRIGHT_OPS.has(op)) throw new Error(`不支持的操作：${op}（可用：${[...PLAYWRIGHT_OPS].join(', ')}）`)
   const timeout = Math.min(Math.max(input.timeoutMs ?? 8_000, 500), 30_000)
   const locator = page.locator(selector)
 
-  // A snapshot ref must prove itself before the gesture fires (M11, review
-  // 2026-09-18): one page-realm round trip re-checks the value the walk wrote —
-  //   missing: no element carries N any more (the tag was stripped/removed);
-  //   stale:   N survives only from an OLDER snapshot generation;
-  //   changed: the node was REUSED — attribute intact, content swapped (React
-  //            key reuse, virtual lists), the failure "looks like a success"
-  //            the count() check could never see.
-  // Any doubt fails BEFORE the op and names the fix. A page that cannot run
-  // the verify (torn-down context, host fakes) falls back to the plain count
-  // check — the fast-fail degrades, the op never skips it.
+  // A snapshot ref must prove itself before the gesture fires
+  // (PLAN-browser-snapshot-ai §1.2 — the gen/sig stamping is gone; the sig
+  // lives in the SERVICE-side tree now):
+  //   1. count 0 → the node is gone (or the number comes from a pre-upgrade
+  //      session) — fail FAST, no locator timeout, name the fix;
+  //   2. one round trip reads what the element is NOW and compares against the
+  //      server-side tree's eN entry — a framework that REUSED the node
+  //      (kept the position, swapped the content) is caught here instead of
+  //      clicking whatever occupies the ref. The name comparison only fires
+  //      when the DOM heuristic could actually read one, so label-supplied
+  //      names never false-reject. Gen-staleness is gone by design: refs are
+  //      persistent, and step 2 covers a swapped target.
   if (isPmRefSelector(selector)) {
     const refId = pmRefNumberOf(selector) ?? selector
-    let verdict: { status: string; detail: string } | null = null
-    try {
-      verdict = (await page.evaluate(refPassSource({ mode: 'verify', gen: currentSnapshotGeneration(page), n: refId }))) as { status: string; detail: string }
-    } catch {
-      verdict = null
+    const count = await locator.count()
+    if (count === 0) {
+      throw new Error(`编号 [${refId}] 不存在或已失效——页面在快照后已变化，或该编号来自旧版快照（编号体系已升级，请重新 domSnapshot()）。不要重试旧编号。`)
     }
-    const reason =
-      verdict === null
-        ? (await locator.count()) === 0
-          ? '不存在或已失效——页面在快照后已变化'
-          : null
-        : verdict.status === 'missing'
-          ? '不存在或已失效——页面在快照后已变化'
-          : verdict.status === 'stale'
-            ? `来自旧的快照（${verdict.detail}）——页面在快照后已变化`
-            : verdict.status === 'changed'
-              ? `已失效：${verdict.detail}`
-              : null
-    if (reason) {
-      throw new Error(`编号 [${refId}] ${reason}。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
+    const entry = treeEntryOf(lastTree, `e${refId}`)
+    if (entry) {
+      try {
+        const now = (await page.locator(selector).evaluate((el) => {
+          const norm = (s: string | null): string => (s || '').replace(/\s+/g, ' ').trim()
+          const tag = el.tagName.toLowerCase()
+          const type = (el.getAttribute('type') || '').toLowerCase()
+          let role = el.getAttribute('role') || ''
+          if (!role) {
+            if (tag === 'input') role = (type === 'checkbox' || type === 'radio') ? type : (type === 'submit' || type === 'button' || type === 'file') ? 'button' : 'textbox'
+            else if (tag === 'textarea') role = 'textbox'
+            else if (tag === 'a') role = 'link'
+            else if (tag === 'select') role = 'combobox'
+            else if (tag === 'button' || tag === 'summary') role = 'button'
+            else role = tag
+          }
+          let name = ''
+          const al = el.getAttribute('aria-label')
+          if (al && al.trim()) name = norm(al)
+          else {
+            const txt = norm(el.textContent)
+            if (txt) name = txt.slice(0, 60)
+            else if (tag === 'input') { const v = (el as HTMLInputElement).value || ''; if (v.trim()) name = norm(v) }
+          }
+          return { role: String(role).toLowerCase(), name, textHead: norm(el.textContent).slice(0, 60), tag }
+        })) as { role: string; name: string; textHead: string; tag: string }
+        const roleNow = String(now.role || '').toLowerCase()
+        if (roleNow && entry.role && roleNow !== String(entry.role).toLowerCase()) {
+          throw new Error(`编号 [${refId}] 已失效：现指向 ${roleNow} 元素（快照时是 ${entry.role}）——页面复用了节点。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
+        }
+        const head = (s: string): string => s.replace(/\s+/g, ' ').trim().slice(0, 40)
+        if (now.name && entry.name) {
+          const a = head(now.name)
+          const b = head(entry.name)
+          if (a && b && !b.includes(a) && !a.includes(b)) {
+            throw new Error(`编号 [${refId}] 已失效：现指向 "${now.name.slice(0, 30)}"（快照时是 "${entry.name.slice(0, 30)}"）——页面复用了节点。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
+          }
+        }
+      } catch (err) {
+        // Our own rejection rethrows; an environment that cannot run the probe
+        // (torn-down context) degrades to the count check above — the op never
+        // skips verification entirely.
+        if (err instanceof Error && err.message.includes('编号 [')) throw err
+      }
     }
   }
 

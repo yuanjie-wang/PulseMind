@@ -1,40 +1,37 @@
-// ── Snapshot ref addressing (page_* 哲学, host-side) ──
-// domSnapshot() numbers the page's interactive elements and tags each one with
-// `data-pm-ref`, so the model can address what it just saw by that number —
-// the same observe→address determinism the extension's page_* family gets from
-// its indexed DOM walk, but resolved through the host's single selector engine.
-// Three places must agree on the attribute and its selector form: the in-page
-// walk (main/browser/snapshot-refs.ts), the client sugar (`ref()` here), and
-// the host's stale-ref fast path (main/browser/PlaywrightCommands.ts).
-
-/** The tag the snapshot walk leaves on interactive elements. Namespaced so a
- *  page's own attributes can't collide. The VALUE is `s<gen>:<sig>:<n>` (see
- *  snapshot-refs.ts — generation, content signature, number), so the selector
- *  that addresses N is a SUFFIX match on `:<n>`: the number is the value's
- *  last `:`-segment, and only the walk's own pass writes that shape. */
-export const PM_REF_ATTR = 'data-pm-ref'
+// ── Snapshot ref addressing (PLAN-browser-snapshot-ai) ──
+// domSnapshot() now rides Playwright's own AI-mode snapshot engine
+// (`ariaSnapshotJSON({ mode: 'ai' })`): every node in the returned tree carries
+// a persistent `ref: eN`, and the model addresses it with the bare selector
+// engine form `aria-ref=eN`. No page-realm stamping happens any more — the
+// page is never written (a forged `data-pm-ref`-style attribute cannot hijack
+// addressing, because Playwright's ref engine does not read page-visible
+// attributes).
+//
+// Selector form, measured against playwright-core 1.63: `aria-ref=eN` (bare
+// custom-engine syntax) resolves via page.locator; the CSS-attribute spelling
+// `[aria-ref=eN]` does NOT (there is no DOM attribute). History compatibility:
+// old sessions' snapshots numbered `[3]`, and a bare number still works — the
+// facade sugar converts N through pmRefSelector here, so old numbers resolve
+// to a nonexistent `eN` and the action fast-fails with the upgrade hint.
 
 /** The selector that resolves ref N against the host's locator engine. */
 export function pmRefSelector(n: number | string): string {
-  return `[${PM_REF_ATTR}$=":${n}"]`
+  return `aria-ref=e${n}`
 }
 
 /** Whether a selector is a snapshot ref (the host fast-fails these when the
- *  tag is gone, instead of burning the full locator timeout). */
+ *  node is gone, instead of burning the full locator timeout). */
 export function isPmRefSelector(selector: string): boolean {
-  return selector.startsWith(`[${PM_REF_ATTR}$=":`) && selector.endsWith('"]')
+  return /^aria-ref=e\d+$/.test(selector)
 }
 
-/** The number N a ref selector addresses (the value's last `:`-segment). */
+/** The number N a ref selector addresses (the digits after `e`). */
 export function pmRefNumberOf(selector: string): string | null {
-  if (!isPmRefSelector(selector)) return null
-  // The prefix consumed up to and including the `:`; what remains is N plus
-  // the closing `"]`.
-  const inner = selector.slice(`[${PM_REF_ATTR}$=":`.length, -2)
-  return /^\d+$/.test(inner) ? inner : null
+  const m = /^aria-ref=e(\d+)$/.exec(selector)
+  return m ? m[1] : null
 }
 
 /** Recovery line appended to locator failures: the model decides its next move
  *  off the last bytes of a tool result, so the last bytes name the fix. */
 export const PM_REF_RECOVERY_HINT =
-  '（定位失败：重新调用 domSnapshot()，用返回的最新编号 [N] 直接寻址——tab.playwright(N, op)，或按新快照的 role/name 重建定位器。不要重试旧编号或旧定位器。）'
+  '（定位失败：重新调用 domSnapshot()，用返回的最新编号 [ref=eN] 直接寻址——tab.playwright(N, op)，或按新快照的 role/name 重建定位器。不要重试旧编号或旧定位器。）'

@@ -43,7 +43,7 @@ export type BrowserCommand =
   | { method: 'forward'; tabId: string }
   | { method: 'reload'; tabId: string }
   | { method: 'close'; tabId: string }
-  | { method: 'snapshot'; tabId: string }
+  | { method: 'snapshot'; tabId: string; full?: boolean }
   | { method: 'screenshot'; tabId: string; fullPage?: boolean; selector?: string }
   | { method: 'evaluate'; tabId: string; expression: string }
   | { method: 'playwright'; tabId: string; selector: string; op: string; arg?: string; timeoutMs?: number }

@@ -40,7 +40,7 @@ export interface TabApi {
   close: () => Promise<void>
   /** Numbered interactive elements ([N] refs) first, then the AI/ARIA tree —
    *  the default and primary observation (协议 §5.4); refs address what it saw. */
-  domSnapshot: () => Promise<string>
+  domSnapshot: (options?: { full?: boolean }) => Promise<string>
   /** Always emits through emitImage in the same call (协议 §5.6). */
   screenshot: (options?: { fullPage?: boolean; selector?: string | LocatorSugar }) => Promise<{ emitted: true; mime: string }>
   evaluate: (expression: string) => Promise<unknown>
@@ -137,7 +137,7 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
         forward: async () => { await invoke({ method: 'forward', tabId: id }) },
         reload: async () => { await invoke({ method: 'reload', tabId: id }) },
         close: async () => { await invoke({ method: 'close', tabId: id }) },
-        domSnapshot: async () => (await invoke({ method: 'snapshot', tabId: id })) as string,
+        domSnapshot: async (options) => (await invoke({ method: 'snapshot', tabId: id, full: options?.full })) as string,
         screenshot: async (options) => {
           const shot = (await invoke({
             method: 'screenshot', tabId: id,
