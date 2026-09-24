@@ -34,6 +34,7 @@ import { settingsStore } from './storage/settings-store'
 import { keepAwake } from './system/keep-awake'
 import { notifyResume } from './ipc/app.handler'
 import { hardenDataDirPermissions } from './storage/permissions'
+import { migrateEncryptedSecrets } from './storage/settings-store'
 
 // P0 (PLAN-security-hardening): everything this process creates from here on
 // is 0600/0700 — settings.json tmp files (plaintext keys mid-rename), the
@@ -551,6 +552,10 @@ if (gotTheLock) {
   // 对话管理 · 最长保留时长: expire conversations older than the policy allows
   // before any session can resurrect one.
   try { await cleanupExpiredConversations() } catch (err) { writeLog('WARN', `startup: conversation retention failed: ${err}`) }
+  // P1 (PLAN-security-hardening): rewrite settings.json whose secrets are
+  // still plaintext. Before the retention pass, because the backups this
+  // expires hold the same secrets the migration is about to encrypt.
+  try { await migrateEncryptedSecrets() } catch (err) { writeLog('WARN', `startup: secret migration failed: ${err}`) }
   registerIpcHandlers()
   writeLog('INFO', 'startup: ipc handlers registered')
 

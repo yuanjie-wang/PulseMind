@@ -1,5 +1,6 @@
 import { readFile, writeFile, rename, unlink, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { safeStorage } from 'electron'
 import { SETTINGS_PATH, DATA_DIR, ensureDataDir } from './index'
 import { resolveEnvVarsDeep, resolveEnvVarsInString } from '../../shared/env'
 import { toSandboxApprovalMode } from '../../shared/sandbox/policy'
@@ -20,6 +21,134 @@ interface SettingsCache {
   settings: AppSettings
 }
 let cache: SettingsCache | null = null
+
+// ── Secrets at rest (PLAN-security-hardening P1) ─────────────────────────
+// In memory an AppSettings is ALWAYS plaintext/placeholder; the DISK bytes are
+// ciphertext (except ${VAR} placeholders, which are designed to be readable).
+// Every consumer — session-manager, api-proxy, the renderer settings editor —
+// keeps reading `profile.apiKey` unchanged. The walk touches exactly two
+// fields (each profile's apiKey + each headers value); widening it later
+// means re-checking the restorePlaceholders contract, not just adding a key.
+
+const ENC_PREFIX = 'enc:v1:'
+
+/** True only when a REAL safeStorage answers. Under ELECTRON_RUN_AS_NODE
+ *  (probes) `require('electron')` yields the binary path, so safeStorage is
+ *  undefined here and every secret stays plaintext on disk — which is exactly
+ *  how the probe exercises the fallback branch for free. */
+function encryptionAvailable(): boolean {
+  try {
+    return !!safeStorage && typeof (safeStorage as { isEncryptionAvailable?: unknown }).isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable()
+  } catch {
+    return false
+  }
+}
+
+let warnedPlaintextFallback = false
+
+function encryptSecretValue(plain: string): string {
+  if (!plain || plain.startsWith('${')) return plain
+  if (!encryptionAvailable()) {
+    if (!warnedPlaintextFallback) {
+      warnedPlaintextFallback = true
+      console.warn('[settings] safeStorage unavailable — apiKey/headers are stored in PLAINTEXT')
+    }
+    return plain
+  }
+  return ENC_PREFIX + Buffer.from(safeStorage.encryptString(plain)).toString('base64')
+}
+
+/** Undecryptable = dropped with a warn, never returned as the ciphertext
+ *  string: the one unrecoverable outcome (a keychain reset) must fail as "no
+ *  key configured", not as "requests signed with base64 noise". */
+function decryptSecretValue(value: string): string | undefined {
+  if (!value.startsWith(ENC_PREFIX)) return value
+  if (!encryptionAvailable()) {
+    console.warn('[settings] encrypted secret found but safeStorage is unavailable — dropping the value')
+    return undefined
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(value.slice(ENC_PREFIX.length), 'base64'))
+  } catch {
+    console.warn('[settings] a stored secret could not be decrypted (keychain changed?) — dropping it')
+    return undefined
+  }
+}
+
+interface SecretCarrier {
+  apiKey?: unknown
+  headers?: Record<string, unknown>
+}
+
+function mapProfileSecrets(profiles: unknown[], map: (value: string) => string | undefined): unknown[] {
+  return profiles.map((p) => {
+    if (!p || typeof p !== 'object') return p
+    const next: SecretCarrier & Record<string, unknown> = { ...(p as Record<string, unknown>) }
+    if (typeof next.apiKey === 'string') {
+      const mapped = map(next.apiKey)
+      if (mapped === undefined) delete next.apiKey
+      else next.apiKey = mapped
+    }
+    if (next.headers && typeof next.headers === 'object' && !Array.isArray(next.headers)) {
+      const headers: Record<string, unknown> = { ...next.headers }
+      for (const [k, v] of Object.entries(headers)) {
+        if (typeof v !== 'string') continue
+        const mapped = map(v)
+        if (mapped === undefined) delete headers[k]
+        else headers[k] = mapped
+      }
+      next.headers = headers
+    }
+    return next
+  })
+}
+
+/** Disk → memory: decode `enc:v1:` values. Runs BEFORE resolveEnvVarsDeep in
+ *  get(), so env resolution sees plaintext/placeholders, never ciphertext. */
+function decodeSecretsDeep<T>(settings: T): T {
+  const out = settings as { profiles?: unknown }
+  if (!Array.isArray(out?.profiles)) return settings
+  return { ...out, profiles: mapProfileSecrets(out.profiles, decryptSecretValue) } as T
+}
+
+/** Memory → disk: encrypt non-placeholder secrets. Placeholder values land on
+ *  disk byte-identical (they are designed to be readable); the empty string
+ *  has nothing to protect. */
+function encodeSecretsDeep<T>(settings: T): T {
+  const out = settings as { profiles?: unknown }
+  if (!Array.isArray(out?.profiles)) return settings
+  return { ...out, profiles: mapProfileSecrets(out.profiles, encryptSecretValue) } as T
+}
+
+/** P1 one-time migration: rewrite settings.json whose secrets are still
+ *  plaintext (a pre-hardening file, or a key that predates this build). A
+ *  no-op identity update drives the whole write path — doSet decodes,
+ *  restores placeholders and re-encodes — so the rewrite is the SAME code
+ *  every save runs. Idempotent: the second scan finds nothing. */
+export async function migrateEncryptedSecrets(): Promise<boolean> {
+  let raw: { profiles?: Array<Record<string, unknown>> } | null = null
+  try {
+    raw = JSON.parse(await readFile(SETTINGS_PATH, 'utf-8'))
+  } catch {
+    return false
+  }
+  const isPlainSecret = (v: unknown): boolean =>
+    typeof v === 'string' && v.length > 0 && !v.startsWith('${') && !v.startsWith(ENC_PREFIX)
+  const needs = (raw?.profiles ?? []).some((p) =>
+    p && typeof p === 'object' && (
+      isPlainSecret((p as SecretCarrier).apiKey) ||
+      Object.values(((p as SecretCarrier).headers ?? {}) as Record<string, unknown>).some(isPlainSecret)
+    )
+  )
+  if (!needs) return false
+  if (!encryptionAvailable()) {
+    console.warn('[settings] plaintext secrets found but safeStorage is unavailable — leaving settings.json untouched')
+    return false
+  }
+  await settingsStore.update((s) => ({ ...s }))
+  console.log('[settings] migrated plaintext secrets to safeStorage encryption')
+  return true
+}
 
 function readWorkspaceDir(parsed: Record<string, unknown>): string {
   return (parsed.workspaceDir as string) || (parsed.outputDir as string) || DEFAULT_WORKSPACE_DIR
@@ -140,7 +269,10 @@ export class SettingsStore {
       if (cache && cache.mtimeMs === stats.mtimeMs) return structuredClone(cache.settings)
 
       const data = await readFile(SETTINGS_PATH, 'utf-8')
-      const parsed = resolveEnvVarsDeep(JSON.parse(data), {
+      // Decode ciphertext FIRST: env resolution must see plaintext/placeholder
+      // values, never `enc:v1:` base64 (SKIP_ENV_KEYS keeps apiKey/headers raw
+      // either way, but the ordering is the contract — see restorePlaceholders).
+      const parsed = resolveEnvVarsDeep(decodeSecretsDeep(JSON.parse(data)), {
         keepMissing: false,
         skipKeys: SKIP_ENV_KEYS,
       }) as any
@@ -274,13 +406,24 @@ export class SettingsStore {
     // so a naive write would persist the concrete value and permanently destroy
     // ${VAR} placeholders. Restore the original placeholder wherever the incoming
     // value still matches the resolved placeholder from the previous file.
+    // The previous file is DECODED first: restorePlaceholders' contract is a
+    // plaintext-to-plaintext comparison (旧占位符 resolve 后 === 新值 → 恢复)，
+    // and a plaintext apiKey in prevRaw must compare with the renderer's
+    // plaintext, not with its `enc:v1:` form. Today's field mix happens not to
+    // lose data even against ciphertext (placeholders are never encrypted and
+    // base64 cannot contain `${`), but that is a coincidence of the character
+    // classes, not the contract — decode-first is the honest shape.
     let toWrite: unknown = clean
     try {
-      const prevRaw = JSON.parse(await readFile(SETTINGS_PATH, 'utf-8')) as unknown
+      const prevRaw = decodeSecretsDeep(JSON.parse(await readFile(SETTINGS_PATH, 'utf-8')) as unknown)
       toWrite = restorePlaceholders(prevRaw, clean)
     } catch {
       // No previous file (first write) — write as-is
     }
+    // Encode LAST: the disk bytes are ciphertext, the tmp file included
+    // (rename-over preserves the tmp file's permissions, and the umask from
+    // index.ts already keeps that 0600).
+    toWrite = encodeSecretsDeep(toWrite)
 
     const tmp = `${SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`
     try {

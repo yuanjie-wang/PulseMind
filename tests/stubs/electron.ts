@@ -51,3 +51,29 @@ export const shell = {
     await rename(target, join(TEST_TRASH_DIR, `${Date.now()}-${basename(target)}`))
   },
 }
+
+// ── safeStorage (PLAN-security-hardening P1) ──
+// A reversible fake so the settings-store encryption round-trip runs for real
+// under vitest. The transform must produce bytes distinct from the plaintext
+// (an encrypt that returned its input would make "盘上是密文" vacuous), so it
+// wraps base64 in a marker; `decryptString` throws on anything else, which is
+// how the corrupt-blob test drives the drop-and-warn path. `available` is
+// module state a test flips to drive the plaintext-fallback branch.
+let stubEncryptionAvailable = true
+const STUB_ENC_MARK = 'stubenc:'
+
+export const safeStorage = {
+  isEncryptionAvailable: (): boolean => stubEncryptionAvailable,
+  encryptString: (plain: string): Buffer =>
+    Buffer.from(STUB_ENC_MARK + Buffer.from(plain, 'utf-8').toString('base64'), 'utf-8'),
+  decryptString: (blob: Buffer): string => {
+    const s = blob.toString('utf-8')
+    if (!s.startsWith(STUB_ENC_MARK)) throw new Error('not a stub-encrypted blob')
+    return Buffer.from(s.slice(STUB_ENC_MARK.length), 'base64').toString('utf-8')
+  },
+}
+
+/** Flip the stub's availability — the plaintext-fallback branch's driver. */
+export function setStubEncryptionAvailable(available: boolean): void {
+  stubEncryptionAvailable = available
+}

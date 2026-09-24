@@ -243,7 +243,12 @@ describe('SettingsStore.set — placeholder preservation', () => {
       ...rendererCopy,
       profiles: [{ ...rendererCopy.profiles[0], apiKey: 'sk-brand-new' }],
     } as AppSettings)
-    expect(readRaw().profiles[0].apiKey).toBe('sk-brand-new')
+    // P1 (PLAN-security-hardening): the disk now carries ciphertext; the
+    // genuine-edit contract is that the value survives the round-trip as
+    // plaintext IN MEMORY and stays a single enc layer on disk.
+    const reread = await store.get()
+    expect(reread.profiles[0].apiKey).toBe('sk-brand-new')
+    expect(readRaw().profiles[0].apiKey as string).toContain('enc:v1:')
   })
 })
 
