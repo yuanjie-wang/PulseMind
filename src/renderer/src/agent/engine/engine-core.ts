@@ -80,7 +80,7 @@ export interface EngineCore {
 
   // ── Background extraction bookkeeping ──
   _memExtractionInProgress: boolean
-  _lastMemExtractionTime: number
+  _memSalvageCount: number
 
   // ── Loop control & collaborators ──
   compactor: ContextCompactor

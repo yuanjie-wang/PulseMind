@@ -1,4 +1,5 @@
 import { getDb, withFtsRecovery } from './database'
+import { memoryContentHash } from '../../shared/memory/content-hash'
 
 export interface MemoryRow {
   id: string
@@ -25,14 +26,26 @@ export function listMemories(category?: string): MemoryRow[] {
 export function saveMemory(id: string, content: string, type: string, category: string, source: string | null): void {
   const database = getDb()
   const now = new Date().toISOString()
+  // P0 (PLAN-memory-extraction-dedup): the DB layer is the ONE point every
+  // saveMemory caller passes through (engine's getHost().saveMemory bypasses
+  // MemoryManager entirely; the IPC handler bypasses both) — so the literal
+  // dedup gate lives HERE, not in any manager. A hash hit skips the insert
+  // silently-by-log: the memory already exists and re-adding it is the exact
+  // duplication this plan removes.
+  const contentHash = memoryContentHash(content)
+  const existing = database.prepare('SELECT id FROM memories WHERE content_hash = ? LIMIT 1').get(contentHash)
+  if (existing) {
+    console.log(`[memory] duplicate content skipped (already stored as ${existing.id})`)
+    return
+  }
   const save = database.transaction(() => {
     const result = database.prepare(`
-      INSERT INTO memories (id, content, type, category, source, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (id, content, type, category, source, created_at, updated_at, content_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         content = excluded.content, type = excluded.type,
         category = excluded.category, updated_at = excluded.updated_at
-    `).run(id, content, type, category, source, now, now)
+    `).run(id, content, type, category, source, now, now, contentHash)
 
     withFtsRecovery(() => {
       const rowid = result.lastInsertRowid as number

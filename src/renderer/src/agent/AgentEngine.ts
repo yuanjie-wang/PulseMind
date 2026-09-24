@@ -28,7 +28,7 @@ import { ensureCache } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
 import { SpawnManager } from './engine/spawn-manager'
 import { collectEnabledTools, buildToolProtocols } from './engine/tool-collection'
-import { scheduleMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
+import { runTurnEndMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
 import { StreamRunner } from './engine/stream-runner'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
@@ -819,6 +819,8 @@ export class AgentEngine implements EngineCore {
       this.notify()
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.messages, stopReason: null, status: { status: 'error', error: message } }, 'afterLlmCall')
       safeInvokeObserver(opts.hooks?.afterSession, { messages: this.messages, status: { status: 'error', error: message } }, 'afterSession')
+      // Turn-end memory salvage (error path — the pairs are still in memory).
+      runTurnEndMemoryExtraction(this)
       this.resolveCompletionIfSpawned('error')
     }
   }
@@ -877,9 +879,6 @@ export class AgentEngine implements EngineCore {
     if (this.opts.conversationId) {
       await persistUnsavedToolResults(this)
     }
-
-    // ── Background memory extraction (fire-and-forget, doesn't block request) ──
-    scheduleMemoryExtraction(this)
 
     // Strip image data from tool_results before sending to LLM (keep originals
     // for UI). The transform itself lives in `./strip-tool-results` — extracted
@@ -1311,7 +1310,8 @@ export class AgentEngine implements EngineCore {
   /** Prevents concurrent memory extraction runs */
   /** @internal */
   _memExtractionInProgress = false
-  /** Cooldown timestamp for memory extraction */
+  /** Turn-end salvage runs used by this session (PLAN-memory-extraction-dedup:
+   *  MEM_SALVAGE_MAX_PER_SESSION caps the whole process lifetime of a session). */
   /** @internal */
-  _lastMemExtractionTime = 0
+  _memSalvageCount = 0
 }

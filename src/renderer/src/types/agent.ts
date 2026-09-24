@@ -31,6 +31,12 @@ export interface AgentMessage {
   favorited?: boolean
   autoSummary?: boolean
   compressedIds?: string[]
+  /** Memory-mining mark (PLAN-memory-extraction-dedup): the pair has been
+   *  offered to the extraction LLM once — never again. Deliberately NOT
+   *  autoSummary, which is the compaction-eligibility contract. Not persisted
+   *  as a semantic field; sanitize strips it on save like other runtime marks
+   *  live in memory only. */
+  memExtracted?: boolean
 }
 
 // --- Plan (v2 DAG — the model lives in shared so the main process and the

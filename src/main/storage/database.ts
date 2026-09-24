@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, mkdirSync, renameSync, copyFileSync, rmSync } from 'node:fs'
+import { memoryContentHash } from '../../shared/memory/content-hash'
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
@@ -125,10 +126,12 @@ function createTables(): void {
                     CHECK(category IN ('code', 'architecture', 'user_pref', 'decision', 'general', 'experience')),
       source      TEXT,
       created_at  TEXT NOT NULL,
-      updated_at  TEXT NOT NULL
+      updated_at  TEXT NOT NULL,
+      content_hash TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
+    CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash);
     CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
     CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
 
@@ -251,6 +254,20 @@ function createTables(): void {
   try { database.exec('ALTER TABLE conversations ADD COLUMN plan_json TEXT') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN origin TEXT') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN extracted_msg_count INTEGER NOT NULL DEFAULT 0') } catch (e) {}
+  // P0 (PLAN-memory-extraction-dedup): memories carry a normalized-content hash for
+  // the save-layer dedup gate; existing rows are backfilled once here.
+  try { database.exec('ALTER TABLE memories ADD COLUMN content_hash TEXT') } catch (e) {}
+  try {
+    const missing = database.prepare('SELECT id, content FROM memories WHERE content_hash IS NULL').all() as Array<{ id: string; content: string }>
+    if (missing.length > 0) {
+      const upd = database.prepare('UPDATE memories SET content_hash = ? WHERE id = ?')
+      const backfill = database.transaction(() => {
+        for (const row of missing) upd.run(memoryContentHash(row.content), row.id)
+      })
+      backfill()
+      console.log(`[DB] backfilled ${missing.length} memory content hash(es)`)
+    }
+  } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN experience_extracted_count INTEGER NOT NULL DEFAULT 0') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary TEXT') } catch (e) {}
   try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary_frontier TEXT') } catch (e) {}

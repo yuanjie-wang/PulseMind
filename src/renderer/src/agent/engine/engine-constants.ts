@@ -28,8 +28,13 @@ export const TOOL_PARAM_LIMITS: Record<string, Record<string, number>> = {
 }
 export const MAX_TOOL_INPUT_JSON_BYTES = 1_000_000 // 1 MB safety net for any tool
 
-// ── Background memory extraction cooldown ────────────────────────────────
-export const MEM_EXTRACTION_COOLDOWN = 30_000
+// ── Turn-end memory salvage (PLAN-memory-extraction-dedup) ──────────────
+// In-loop extraction is GONE (scheduleMemoryExtraction deleted — the loop no
+// longer spends LLM calls on memory). The only salvage path runs at TURN END,
+// capped per session, and only when context pressure puts old tool pairs at
+// risk of being compacted away before the turn-end extractAndSaveAll sees them.
+export const MEM_SALVAGE_MAX_PER_SESSION = 3
+export const MEM_SALVAGE_CONTEXT_RATIO = 0.9
 
 // ── Tool-result / spawn-envelope context guardrails ─────────────────────
 // Per-tool-result token budget enforced by the engine's addToolResult (errors

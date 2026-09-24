@@ -3,6 +3,7 @@
  * pump, stream-done await and idle-retry, extracted from AgentEngine.
  */
 import { MAX_STREAM_IDLE_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS } from './engine-constants'
+import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { isContextOverflowRejection, parseContextOverflowLimit } from './context-estimate'
 import { IncrementalJsonTracker } from '../json-stream'
 import { extractInvokeToolCalls } from './result-ingestion'
@@ -249,6 +250,8 @@ export class StreamRunner {
       if (!isCancel) { this.engine.agentStatus = { status: 'error', error: message }; this.engine.notify() }
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: null, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterLlmCall')
       safeInvokeObserver(opts.hooks?.afterSession, { messages: this.engine.messages, status: isCancel ? { status: 'completed' } : { status: 'error', error: message } }, 'afterSession')
+      // Turn-end memory salvage — same contract as execution-flow's call.
+      runTurnEndMemoryExtraction(this.engine)
       if (!isCancel) this.engine.resolveCompletionIfSpawned('error')
       if (isCancel) return
       this.engine.notify()

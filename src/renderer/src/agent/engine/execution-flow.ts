@@ -4,6 +4,7 @@
  * AgentEngine with a back-reference to the owning engine.
  */
 import { getHost } from '../host'
+import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { getCachedMcpServers } from '../mcp-cache'
 import { addTruncatedResults, validateToolParams } from './result-ingestion'
 import { generateMsgId } from '../agent-utils'
@@ -510,6 +511,10 @@ export class ExecutionFlow {
     this.engine.notify()
     safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'completed' } }, 'afterLlmCall')
     safeInvokeObserver(this.engine.opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'completed' } }, 'afterSession')
+    // Turn-end memory salvage (PLAN-memory-extraction-dedup): the loop itself
+    // no longer spends LLM calls on memory; old tool pairs at compaction risk
+    // are mined HERE, once, capped. Fire-and-forget.
+    runTurnEndMemoryExtraction(this.engine)
     this.engine.resolveCompletionIfSpawned('completed')
     // Post-turn compaction prewarm (fire-and-forget): the turn is closed, the
     // engine idle — if usage is high, the expensive history-summary LLM call

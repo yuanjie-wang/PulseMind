@@ -2,7 +2,7 @@
  * Background memory extraction + tool-result persistence (PLAN-0.3.5 split):
  * extracted from AgentEngine. Functions take the engine back-reference.
  */
-import { MEM_EXTRACTION_COOLDOWN } from './engine-constants'
+import { MEM_SALVAGE_MAX_PER_SESSION, MEM_SALVAGE_CONTEXT_RATIO } from './engine-constants'
 import type { EngineCore } from './engine-core'
 import { getHost } from '../host'
 import type { AgentMessage, TextBlock, ToolUseBlock, ToolResultBlock } from '../../types/agent'
@@ -19,6 +19,11 @@ export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promi
 
       if (current.role !== 'assistant' || next.role !== 'user') continue
       if (current.autoSummary || next.autoSummary) continue
+      // P0 (PLAN-memory-extraction-dedup): a pair already mined keeps its mark
+      // forever — without it every salvage pass re-ran the SAME oldest pairs
+      // (nothing else moved the window). Deliberately NOT `autoSummary`: that
+      // field is the compaction-eligibility contract and must stay separate.
+      if ((current as AgentMessage).memExtracted || (next as AgentMessage).memExtracted) continue
       if (i >= engine.messages.length - 4) continue
 
       const hasToolUses = current.contentBlocks.some(b => b.type === 'tool_use')
@@ -67,6 +72,14 @@ export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promi
     }
 
     if (!raw) return
+
+    // The call succeeded — mine these pairs once and never again, even when
+    // the model comes back with an empty set (a no-op answer ends the pair's
+    // candidacy; re-asking it every 30s was the reported waste).
+    for (const pair of compressible) {
+      ;(pair.assistant as AgentMessage).memExtracted = true
+      ;(pair.user as AgentMessage).memExtracted = true
+    }
 
     // Parse response
     let memories: Array<{ content: string; type: string; category: string }> = []
@@ -137,26 +150,32 @@ export async function persistUnsavedToolResults(engine: EngineCore): Promise<voi
     }
   }
 
-export function scheduleMemoryExtraction(engine: EngineCore): void {
+/** Turn-end memory salvage (PLAN-memory-extraction-dedup P0): the ONLY
+ *  remaining in-session memory LLM path. In-loop extraction was deleted, so
+ *  old tool pairs that a mid-turn compaction is about to EAT are salvaged
+ *  here — once per turn end, capped per session, and only under context
+ *  pressure (the pairs are at risk exactly then; below the line the ordinary
+ *  turn-end extractAndSaveAll still sees them as text). Fire-and-forget.
+ *  The per-pair `memExtracted` marks keep repeated turns from re-mining. */
+export function runTurnEndMemoryExtraction(engine: EngineCore): void {
     if (engine._memExtractionInProgress) return
     if (engine.spawnSystemPrompt) return
     if (!engine.opts.conversationId) return
     // Feature master switch (设置 → 记忆): the shared manager's prefs mirror it.
     if (engine.opts.memoryManager && !engine.opts.memoryManager.getPreferences().autoCaptureEnabled) return
-
-    if (Date.now() - engine._lastMemExtractionTime < MEM_EXTRACTION_COOLDOWN) return
+    if (engine._memSalvageCount >= MEM_SALVAGE_MAX_PER_SESSION) return
 
     const estimatedTokens = engine.compactor.contextTokens()
-    if (estimatedTokens < (engine.opts.contextLength || 128000) * 0.9) return
+    if (estimatedTokens < (engine.opts.contextLength || 128000) * MEM_SALVAGE_CONTEXT_RATIO) return
 
+    engine._memSalvageCount++
     engine._memExtractionInProgress = true
-    engine._lastMemExtractionTime = Date.now()
 
-    Promise.resolve().then(async () => {
+    void Promise.resolve().then(async () => {
       try {
         await extractMemoriesFromOldToolPairs(engine)
       } catch (err) {
-        console.warn('[AgentEngine] Memory extraction failed:', err)
+        console.warn('[AgentEngine] Turn-end memory salvage failed:', err)
       } finally {
         engine._memExtractionInProgress = false
       }
