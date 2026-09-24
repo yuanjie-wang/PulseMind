@@ -462,10 +462,6 @@ export interface ElectronAPI {
   knowledgeReextract: (id: string) => Promise<{ success: boolean; error?: string }>
   knowledgeAbortImport: () => void
 
-  // Canvas
-  canvasPrepareWorkDir: (rectId: string, existingCode?: string, fresh?: boolean) => Promise<string>
-  canvasExportHtml: (rectId: string) => Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }>
-  canvasOpenInBrowser: (rectId: string) => Promise<{ success: boolean; error?: string }>
   // ── Agent sessions (engines hosted in main, PLAN-0.3.5 M1.4) ──
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions) => Promise<{ sessionId: string; agentId: string; workspaceDir?: string }>
   /** `summon` is the turn's @-mention roster: one name delegates (the expert's
@@ -485,13 +481,6 @@ export interface ElectronAPI {
   /** Zip the built browser extension and save it through a file dialog. */
   extensionExportZip: () => Promise<{ ok: boolean; path?: string; canceled?: boolean; message?: string }>
   onAgentSessionEvent: (callback: (event: { sessionId: string; data: unknown }) => void) => () => void
-  canvasExportImage: (
-    rectId: string,
-    viewport?: { width: number; height: number },
-    htmlContent?: string,
-  ) => Promise<{ success: boolean; error?: string; canceled?: boolean }>
-  canvasCleanupRect: (rectId: string) => Promise<{ success: boolean; deletedConvs: number }>
-  canvasClearAll: () => Promise<{ success: boolean; deletedConvs: number }>
 
   // SubAgent
   expertList: () => Promise<ExpertProfile[]>

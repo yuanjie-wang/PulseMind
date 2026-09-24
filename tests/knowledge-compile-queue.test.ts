@@ -113,6 +113,6 @@ describe('the compile queue stays out of the first-paint graph', () => {
     const viewHost = readSrc('src/renderer/src/components/layout/ViewHost.tsx')
     const staticViewImports = viewHost.split('\n').filter(l => l.startsWith('import ') && /\.\.\/(centers|routine|search|settings|canvas)\//.test(l))
     expect(staticViewImports).toEqual([])
-    expect(viewHost.match(/lazy\(\(\) => import\(/g)?.length ?? 0).toBeGreaterThanOrEqual(8)
+    expect(viewHost.match(/lazy\(\(\) => import\(/g)?.length ?? 0).toBeGreaterThanOrEqual(7)
   })
 })

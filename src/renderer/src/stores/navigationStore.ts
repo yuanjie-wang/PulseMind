@@ -1,7 +1,7 @@
 // ── Navigation store ──
 // PLAN-0.4.0 M1.2: central navigation state. Replaces the canvasMode /
 // knowledgeMode booleans and the settings-modal `view` string that used to
-// live in AppLayout. Same zustand pattern as canvasStore.
+// live in AppLayout.
 
 import { create } from 'zustand'
 import { CHAT_VIEW, type AppView, type AppViewKind } from '../navigation/types'

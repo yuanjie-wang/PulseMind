@@ -1,8 +1,8 @@
 // ── Keyboard shortcuts settings section ──
 // 设置 → 快捷键: the 8 app-level actions are rebindable here (press-to-record,
 // conflicts and Electron-role keys rejected), everything else is a read-only
-// reference because those combos live inside feature surfaces (composer,
-// canvas) and have no central registry. Saving rides SETTINGS_SET; main
+// reference because those combos live inside feature surfaces (composer) and
+// have no central registry. Saving rides SETTINGS_SET; main
 // rebuilds the menu + fallback from shared/shortcuts.ts, so a rebind lands
 // immediately — including on the command palette's hints.
 import React, { useEffect, useState } from 'react'
@@ -83,7 +83,7 @@ function ShortcutsSettings({ open, onClose, inline }: ShortcutsSettingsProps): R
       })
       setRecording(null)
     }
-    // Capture phase: the composer and canvas handlers must not see a chord
+    // Capture phase: the composer handler must not see a chord
     // the user is trying to record.
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
@@ -163,14 +163,6 @@ function ShortcutsSettings({ open, onClose, inline }: ShortcutsSettingsProps): R
           {fixedRow(t('shortcutSettings.fixedSend'), isMac ? '↩' : 'Enter')}
           {fixedRow(t('shortcutSettings.fixedNewline'), isMac ? '⇧ ↩' : 'Shift+Enter')}
           {fixedRow(t('shortcutSettings.fixedHistory'), '↑ / ↓')}
-          <Text strong style={{ display: 'block', fontSize: 13, marginBottom: 8, marginTop: 12 }}>
-            {t('shortcutSettings.fixedCanvas')}
-          </Text>
-          {fixedRow(t('shortcutSettings.fixedCanvasTools'), 'V / M / C / 2-6')}
-          {fixedRow(t('shortcutSettings.fixedCanvasUndo'), isMac ? '⌘ Z' : 'Ctrl+Z')}
-          {fixedRow(t('shortcutSettings.fixedCanvasRedo'), isMac ? '⇧ ⌘ Z' : 'Ctrl+Y')}
-          {fixedRow(t('shortcutSettings.fixedCanvasEscape'), 'Esc')}
-          {fixedRow(t('shortcutSettings.fixedCanvasDelete'), isMac ? '⌫' : 'Delete')}
           <Text strong style={{ display: 'block', fontSize: 13, marginBottom: 8, marginTop: 12 }}>
             {t('shortcutSettings.fixedGeneral')}
           </Text>

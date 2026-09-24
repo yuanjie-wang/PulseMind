@@ -15,7 +15,7 @@ export interface SessionSandboxContext {
 export const sessionSandbox = new AsyncLocalStorage<SessionSandboxContext>()
 
 /** Current session context, or null outside any session (renderer-initiated
- *  utilities — knowledge import, canvas, attachments). */
+ *  utilities — knowledge import, attachments). */
 export function currentSessionSandbox(): SessionSandboxContext | null {
   return sessionSandbox.getStore() ?? null
 }

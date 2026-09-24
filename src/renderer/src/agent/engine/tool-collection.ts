@@ -121,8 +121,8 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   }
 
   // ── MCP tools (from connected MCP servers) ──────────────────────
-  // Skipped only for sessions whose toolset is explicitly pinned (tool studio,
-  // canvas): those carry their own restricted whitelist and never pick MCP
+  // Skipped only for sessions whose toolset is explicitly pinned (tool studio):
+  // those carry their own restricted whitelist and never pick MCP
   // tools. An expert spawn inherits the host toolset, so it discovers servers
   // exactly like a normal session.
   const doMcpDiscovery = !deps.spawnSystemPrompt || !deps.allowedToolsSet

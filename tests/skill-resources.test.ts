@@ -157,8 +157,8 @@ describe('the skill location reaches the model — the references read path', ()
 
   it('the office body anchors on the Location line / Skills Directory, not a phantom <available_skills>', () => {
     const office = BUILT_IN_SKILLS.find((s) => s.name === 'office')!
-    // The main desktop loop never emits <available_skills> (only canvas and
-    // spawn prompts do) — the body must not send the model looking for it.
+    // The main desktop loop never emits <available_skills> (only spawn
+    // prompts do) — the body must not send the model looking for it.
     expect(office.systemPrompt).not.toContain('<available_skills>')
     expect(office.systemPrompt).toContain('Location')
     expect(office.systemPrompt).toContain('Skills Directory')

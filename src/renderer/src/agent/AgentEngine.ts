@@ -112,7 +112,7 @@ export interface AgentEngineOptions {
    *  is given an explicit level by the session manager (whose own fallback, for
    *  a conversation that never chose one, is DEFAULT_APPROVAL_MODE), so this
    *  case is either a sub-agent inheriting an unset parent or a derived engine
-   *  (tool studio, canvas) that pins its own — nothing here can answer a hold,
+   *  (tool studio) that pins its own — nothing here can answer a hold,
    *  so it must not hold. */
   approvalMode?: SandboxApprovalMode
   locale?: 'zh' | 'en'
@@ -966,13 +966,13 @@ export class AgentEngine implements EngineCore {
       stream: true
     })
 
-    // Log request payload for debugging (full detail for spawned/canvas agents)
+    // Log request payload for debugging (full detail for spawned sub-agents)
     if (this.spawnSystemPrompt) {
-      console.log('=== [CanvasEngine] FULL SYSTEM PROMPT ===')
+      console.log('=== [SpawnedAgent] FULL SYSTEM PROMPT ===')
       console.log(systemPrompt)
-      console.log('=== [CanvasEngine] API MESSAGES ===')
+      console.log('=== [SpawnedAgent] API MESSAGES ===')
       console.log(JSON.stringify(apiMessages, null, 2))
-      console.log('=== [CanvasEngine] TOOLS ===')
+      console.log('=== [SpawnedAgent] TOOLS ===')
       console.log(enabledTools.map(t => t.name))
     }
     // Summary only — the full payload is dumped from the main process (see

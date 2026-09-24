@@ -13,7 +13,6 @@ import { registerFileOpsHandlers } from './file-ops.handler'
 import { registerAgentSessionHandlers } from './agent-session.handler'
 import { registerServiceHandlers } from './service.handler'
 import { registerMcpHandlers } from './mcp.handler'
-import { registerCanvasHandlers } from './canvas.handler'
 import { registerKnowledgeHandlers } from './knowledge.handler'
 import { registerExpertHandlers } from './expert.handler'
 import { registerGitHandlers } from './git.handler'
@@ -50,7 +49,6 @@ export function registerIpcHandlers(): void {
   registerAgentSessionHandlers()
   registerServiceHandlers()
   registerMcpHandlers()
-  registerCanvasHandlers()
   registerKnowledgeHandlers()
   registerExpertHandlers()
   registerGitHandlers()

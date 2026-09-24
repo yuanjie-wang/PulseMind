@@ -7,8 +7,8 @@
  * chat shares, so streaming, settled history and the TranscriptView reuses
  * (experts, tool studio, run records) all get the card without per-view wiring.
  *
- * Isolation is the security model, deliberately stronger than canvas's
- * RectFrame: the `sandbox` carries no same-origin flag, so the fragment gets
+ * Isolation is the security model: the `sandbox` carries no same-origin flag,
+ * so the fragment gets
  * an opaque origin — no localStorage, no cookies, no access to `window.
  * electronAPI` or the app DOM. Scripts and forms still run (the cards are
  * meant to be interactive); the srcdoc document inherits the renderer CSP,
@@ -176,8 +176,8 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   const onOpenInBrowser = async (): Promise<void> => {
     const filePath = await persistCardCopy(code)
     if (!filePath) return
-    // Windows file: URIs are file:///C:/… — the same conversion the canvas
-    // export does (file-ops.ts svcCopyFile).
+    // Windows file: URIs are file:///C:/… — the same conversion
+    // file-ops.ts svcCopyFile does.
     void window.electronAPI.openExternal(`file:///${filePath.replace(/\\/g, '/')}`)
   }
 

@@ -19,10 +19,7 @@ import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import type { SkillState } from '../../skills/types'
 import type { ToolState } from '../../tools/types'
-import type { ConversationListItem } from '../../types/conversation'
 
-const LazyCanvasToolbar = lazy(() => import('../canvas/CanvasToolbar'))
-const LazyCanvasView = lazy(() => import('../canvas/CanvasView'))
 const LazyCentersPage = lazy(() => import('../centers/CentersPage'))
 const LazyRoutineCenter = lazy(() => import('../routine/RoutineCenter'))
 const LazyRoutineEditorPage = lazy(() => import('../routine/RoutineEditorPage'))
@@ -41,35 +38,17 @@ export interface ViewHostProps {
   onRefreshSkills?: () => void
   onDeleteSkill?: (name: string) => void
   importError?: string | null
-  conversations?: ConversationListItem[]
   onSelectConversation?: (key: string) => void
   /** M4 (review 2026-09-18): forwarded to the settings page so 常规's 数据清理
    *  save (a tightened retention window) refreshes the sidebar's conversation list. */
   onReloadConversations?: () => void
 }
 
-export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, conversations, onSelectConversation, onReloadConversations }: ViewHostProps): React.ReactElement | null {
+export function ViewHost({ knowledgeManager, memoryManager, tools, onToggleTool, skills, onToggleSkill, onImportSkill, onRefreshSkills, onDeleteSkill, importError, onSelectConversation, onReloadConversations }: ViewHostProps): React.ReactElement | null {
   const view = useNavigationStore((s) => s.view)
-  const handleCanvasClearAll = () => {
-    window.electronAPI.canvasClearAll().catch((err: unknown) =>
-      console.warn('[ViewHost] Failed to clear all canvas data:', err)
-    )
-  }
 
   let content: React.ReactElement | null
   switch (view.kind) {
-    case 'canvas':
-      content = (
-        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
-            <LazyCanvasToolbar onClearAll={handleCanvasClearAll} />
-          </div>
-          <div style={{ flex: 1, overflow: 'hidden' }}>
-            <LazyCanvasView />
-          </div>
-        </div>
-      )
-      break
     case 'search':
       content = <LazySearchView onOpenConversation={onSelectConversation} />
       break

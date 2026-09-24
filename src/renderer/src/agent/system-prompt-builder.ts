@@ -41,7 +41,7 @@ export interface BuildSystemPromptResult {
   /**
    * Per-turn volatile state, sent as the FINAL message of the request (see
    * AgentEngine.prepareLoopRequest). Null for derived sessions (spawned
-   * sub-agents, canvas), which supply their own prompt and need no session state.
+   * sub-agents), which supply their own prompt and need no session state.
    */
   stateBlock: string | null
 }

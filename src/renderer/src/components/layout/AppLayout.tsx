@@ -714,7 +714,6 @@ function AppLayout({
                 onRefreshSkills={onRefreshSkills}
                 onDeleteSkill={onDeleteSkill}
                 importError={importError}
-                conversations={conversations}
                 onSelectConversation={onSelectConversation}
                 onReloadConversations={onReloadConversations}
               />

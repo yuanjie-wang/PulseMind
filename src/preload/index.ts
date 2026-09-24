@@ -434,12 +434,6 @@ const electronAPI = {
   expertDelete: (id: string): Promise<ExpertProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERT_DELETE, id),
   expertReset: (): Promise<ExpertProfile[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERT_RESET),
 
-  // Canvas
-  canvasPrepareWorkDir: (rectId: string, existingCode?: string, fresh?: boolean): Promise<string> =>
-    ipcRenderer.invoke(IPC_CHANNELS.CANVAS_PREPARE_WORK_DIR, rectId, existingCode, fresh),
-  canvasExportHtml: (rectId: string): Promise<{ success: boolean; filePath?: string; error?: string; canceled?: boolean }> =>
-    ipcRenderer.invoke(IPC_CHANNELS.CANVAS_EXPORT_HTML, rectId),
-  canvasOpenInBrowser: (rectId: string): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.CANVAS_OPEN_IN_BROWSER, rectId),
   // ── Agent sessions (engines hosted in main) ──
   agentSessionCreate: (sessionId: string, opts?: AgentSessionCreateOptions): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_SESSION_CREATE, sessionId, opts),
@@ -468,13 +462,6 @@ const electronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.AGENT_SESSION_EVENT, listener)
     }
   },
-  canvasExportImage: (
-    rectId: string,
-    viewport?: { width: number; height: number },
-    htmlContent?: string,
-  ): Promise<{ success: boolean; error?: string; canceled?: boolean }> => ipcRenderer.invoke(IPC_CHANNELS.CANVAS_EXPORT_IMAGE, rectId, viewport, htmlContent),
-  canvasCleanupRect: (rectId: string): Promise<{ success: boolean; deletedConvs: number }> => ipcRenderer.invoke(IPC_CHANNELS.CANVAS_CLEANUP_RECT, rectId),
-  canvasClearAll: (): Promise<{ success: boolean; deletedConvs: number }> => ipcRenderer.invoke(IPC_CHANNELS.CANVAS_CLEAR_ALL),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

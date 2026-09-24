@@ -4,9 +4,8 @@
 // The sidebar nav column (components/layout/SidebarNav.tsx) and the view container
 // (components/layout/ViewHost.tsx) both read from this via the navigation store.
 
-/** Kinds of top-level content views. `canvas` is kept rendered but is not
- *  reachable from the nav column (PLAN-0.4.0 D7 — entry hidden, code retained). */
-export type AppViewKind = 'chat' | 'search' | 'routines' | 'capability' | 'knowledge' | 'tools' | 'settings' | 'usage' | 'about' | 'canvas'
+/** Kinds of top-level content views. */
+export type AppViewKind = 'chat' | 'search' | 'routines' | 'capability' | 'knowledge' | 'tools' | 'settings' | 'usage' | 'about'
 
 /** The currently displayed top-level view. Extra fields are params consumed by
  *  specific kinds; they are ignored by the rest. */

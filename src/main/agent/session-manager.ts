@@ -549,8 +549,8 @@ export class AgentSessionManagerImpl {
     const profile = await this.resolveProfile(opts.profileId ?? getConversationProfileId(sessionId))
     // Local UI conversations resolve their working directory here (PLAN-0.4.0
     // M8): project-bound ones use the project's fixed workspace, plain ones get
-    // a lazily-created timestamped folder under the global workspace. Canvas /
-    // spawn ids and callers with an explicit workspaceDir keep the old fallback.
+    // a lazily-created timestamped folder under the global workspace. Spawn
+    // ids and callers with an explicit workspaceDir keep the old fallback.
     // Gated on clientId because routines/ws extensions create sessions directly
     // and never went through the IPC handler's resolution. Resolving INSIDE
     // doCreateSession matters for ordering: createSession registers the pending

@@ -33,8 +33,7 @@ export const MAX_PARALLEL_SUBAGENTS = 5
 
 /** The cap's effective value: MAX_PARALLEL_SUBAGENTS until 设置 → 助手设置
  *  applies a saved `maxParallelSubAgents` (session-manager at startup/save for
- *  the main-process-hosted engines, useAppSettings for the renderer's canvas
- *  engine). Module state like the budget map itself — the limiter counts
+ *  the main-process-hosted engines). Module state like the budget map itself — the limiter counts
  *  across engines of a session, so the cap cannot be per-engine. Read on every
  *  acquire, so a saved change lands on the next dispatch without touching
  *  experts already running. `null`/invalid falls back to the constant. */
