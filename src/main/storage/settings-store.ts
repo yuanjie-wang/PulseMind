@@ -45,6 +45,7 @@ function encryptionAvailable(): boolean {
 }
 
 let warnedPlaintextFallback = false
+let warnedCiphertextDropped = false
 
 function encryptSecretValue(plain: string): string {
   if (!plain || plain.startsWith('${')) return plain
@@ -114,11 +115,27 @@ function mapProfileSecrets(profiles: unknown[], map: (value: string) => string |
   })
 }
 
-/** Disk → memory: decode `enc:v1:` values. Runs BEFORE resolveEnvVarsDeep in
- *  get(), so env resolution sees plaintext/placeholders, never ciphertext. */
+/** Disk → memory: decode `enc:v1:` values — ONLY when the user opted in.
+ *  Flag OFF (the default) means ZERO keychain contact: a ciphertext value is
+ *  DROPPED with a re-enter warning instead of being decrypted. decryptString
+ *  is synchronous and its securityd prompt once froze the whole app behind a
+ *  hidden modal (2026-09-25 black-screen report) — the opt-out must be able
+ *  to guarantee that never happens. */
 function decodeSecretsDeep<T>(settings: T): T {
-  const out = settings as { profiles?: unknown }
+  const out = settings as { profiles?: unknown; encryptSecrets?: boolean }
   if (!Array.isArray(out?.profiles)) return settings
+  if (out.encryptSecrets !== true) {
+    let dropped = false
+    const cleaned = mapProfileSecrets(out.profiles, (v) => {
+      if (typeof v === 'string' && v.startsWith(ENC_PREFIX)) { dropped = true; return undefined }
+      return v
+    })
+    if (dropped && !warnedCiphertextDropped) {
+      warnedCiphertextDropped = true
+      console.warn('[settings] encryptSecrets is off but ciphertext values exist — dropped; 请在设置里重新填写各 profile 的 API Key')
+    }
+    return { ...out, profiles: cleaned } as T
+  }
   return { ...out, profiles: mapProfileSecrets(out.profiles, decryptSecretValue) } as T
 }
 

@@ -238,18 +238,19 @@ describe('encryptSecrets OFF (2026-09-25 opt-in ruling) — the keychain is neve
     expect((await store.get()).profiles![0].apiKey).toBe('sk-live-secret-123')
   })
 
-  it('existing ciphertext still reads (compat) and the next save converts back to plaintext', async () => {
-    // First produce ciphertext with the flag ON.
+  it('existing ciphertext is DROPPED (not decoded) once the flag is off — re-enter the key', async () => {
+    // 2026-09-25 black-screen ruling: decoding touches the keychain, and a
+    // blocked securityd modal froze the whole app. Flag off = the value is
+    // dropped with a re-enter warning, never decrypted, never served raw.
     const store = await freshStore()
     await store.set(await store.get())
     expect(readRaw().profiles![0].apiKey as string).toContain(ENC_PREFIX)
-    // Switch OFF: reads still decode, the next save lands plaintext.
     const off = readRaw()
-    off.encryptSecrets = false
+    delete off.encryptSecrets
     writeRaw(off)
-    expect((await store.get()).profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect((await store.get()).profiles![0].apiKey).toBeUndefined()
     await store.set(await store.get())
-    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect(readRaw().profiles![0].apiKey).toBeUndefined() // nothing resurrects
   })
 
   it('migrateEncryptedSecrets declines when the flag is off', async () => {
@@ -260,3 +261,30 @@ describe('encryptSecrets OFF (2026-09-25 opt-in ruling) — the keychain is neve
   })
 })
 
+
+describe('flag OFF + ciphertext on disk — ZERO keychain contact (the black-screen fix)', () => {
+  it('ciphertext values are DROPPED on read and decryptString is never called', async () => {
+    // Produce ciphertext with the flag ON first.
+    const store = await freshStore()
+    await store.set(await store.get())
+    expect(readRaw().profiles![0].apiKey as string).toContain(ENC_PREFIX)
+    // Switch OFF and deny the keychain outright: reads must not even ASK.
+    const stub = await import('../tests/stubs/electron')
+    stub.setStubKeychainDenied(true)
+    const decryptSpy = vi.spyOn(stub.safeStorage, 'decryptString')
+    const off = readRaw()
+    delete off.encryptSecrets
+    writeRaw(off)
+
+    const s = await store.get()
+    expect(s.profiles[0].apiKey).toBeUndefined() // dropped, not served as ciphertext
+    expect(decryptSpy).not.toHaveBeenCalled()
+
+    // A save lands keyless (the value was dropped) and never threw — the
+    // user re-enters their key in the settings UI.
+    await store.set(await store.get())
+    expect(readRaw().profiles![0].apiKey).toBeUndefined()
+    expect(decryptSpy).not.toHaveBeenCalled()
+    decryptSpy.mockRestore()
+  })
+})
