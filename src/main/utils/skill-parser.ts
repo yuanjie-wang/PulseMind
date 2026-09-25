@@ -11,6 +11,7 @@
  */
 
 import type { SkillDefinition } from '../../shared/types/skill-types'
+import { sha256Hex } from '../../shared/memory/content-hash'
 
 // ---------------------------------------------------------------------------
 // YAML subset engine
@@ -566,4 +567,50 @@ export function formatSkillMd(skill: SkillDefinition): string {
   if (skill.createdAt) lines.push(`createdAt: ${emitScalar(skill.createdAt)}`)
   lines.push('---', '', skill.systemPrompt)
   return lines.join('\n')
+}
+
+/** JSON with object keys sorted, so the digest never depends on property order. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
+  if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']'
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return '{' + entries.map(([k, v]) => JSON.stringify(k) + ':' + stableStringify(v)).join(',') + '}'
+}
+
+/**
+ * Format-independent fingerprint of a skill's meaning-carrying fields.
+ *
+ * The retired-built-in sweep (skill-store.ensureBuiltInSkills) has to answer
+ * "is this file the app's own seed, or did the user touch it?" across formatter
+ * versions: the file on disk and the reference can be re-serialized by
+ * DIFFERENT versions of `formatSkillMd` (the 2026-09-15 parser rewrite started
+ * quoting descriptions — which is exactly why the old whole-file byte compare
+ * stopped recognizing a seed written before it). So both sides are reduced to
+ * parsed fields and hashed: the digest survives formatting drift and changes on
+ * any real content edit.
+ *
+ * The field set is FIXED: widening it re-hashes every existing digest, and the
+ * `RETIRED_BUILT_IN_SKILLS` contentHash values must be recomputed with it
+ * (tests/retired-skill-sweep.test.ts pins them against the definitions as they
+ * last shipped).
+ */
+export function skillContentSignature(skill: SkillDefinition | ParsedFrontmatter): string {
+  return sha256Hex(
+    stableStringify({
+      name: skill.name,
+      description: skill.description,
+      category: skill.category ?? '',
+      triggers: skill.triggers ?? [],
+      systemPrompt: skill.systemPrompt,
+      license: skill.license ?? null,
+      compatibility: skill.compatibility ?? null,
+      allowedTools: skill.allowedTools ?? null,
+      metadata: skill.metadata ?? null,
+      sourceConversationId: skill.sourceConversationId ?? null,
+      createdAt: skill.createdAt ?? null,
+      extra: skill.extra ?? null
+    })
+  )
 }

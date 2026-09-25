@@ -187,14 +187,28 @@ Never mark a scenario passed because you ran out of budget — say 未覆盖. If
  * Built-ins that no longer ship. `ensureBuiltInSkills` seeded each of them to
  * ~/.pulsemind/skills/<name>/SKILL.md, where `listImported` still finds it and
  * re-registers it as a user skill — so a retired name needs its seeded copy
- * swept on startup. The sweep deletes the directory only when the file is
- * byte-identical to what the app regenerates from it (format ∘ parse round
- * trip); a file the user has edited — anywhere — fails the compare and keeps
- * working as their imported skill.
+ * swept on startup.
+ *
+ * `contentHash` is `skillContentSignature()` of the definition as it LAST
+ * SHIPPED. It is FROZEN provenance, not a copy to maintain: it must never be
+ * edited to follow the text to wherever it moved (the byte compare this
+ * replaces judged the file against itself and broke the moment the formatter
+ * changed; judging against the retired definition instead is what makes the
+ * compare survive formatting drift). The sweep deletes a file whose signature
+ * matches this hash — or matches the seed manifest entry recorded when the app
+ * itself wrote the file — and keeps everything else: a user edit, an
+ * unparseable file, or a body no record covers (a seed of a superseded
+ * definition from before the manifest existed). Recompute with
+ * `skillContentSignature(<the definition>)` when retiring a skill;
+ * tests/retired-skill-sweep.test.ts pins the values below.
  */
-export const RETIRED_BUILT_IN_SKILLS: string[] = [
-  'browser_use', // Retired 2026-09-18: its protocol moved verbatim into the
-  // `browser` tool's own `instructions` manual (tool-instructions.ts), which
-  // ships in every request via buildToolProtocols — no trigger/pick_skill
-  // round trip, and no second copy to keep in sync.
+export const RETIRED_BUILT_IN_SKILLS: { name: string; contentHash: string }[] = [
+  {
+    name: 'browser_use',
+    // Retired 2026-09-18: its protocol moved verbatim into the `browser`
+    // tool's own `instructions` manual (tool-instructions.ts), which ships in
+    // every request via buildToolProtocols — no trigger/pick_skill round trip,
+    // and no second copy to keep in sync.
+    contentHash: 'dd75a33b822ab9e243e68d0b14af5924a904ea43522a180750a177b864e246c6'
+  }
 ]

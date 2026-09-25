@@ -6,7 +6,7 @@ import { getDb } from './database'
 
 const SKILL_PREFS_FALLBACK: SkillPreferences = { enabledSkills: ['create_skill', 'create_mcp'] }
 import { withZipExtraction, findSkillFiles } from '../utils/zip-extractor'
-import { parseSkillMarkdown, formatSkillMd, validateSkillSpec, type ParsedFrontmatter } from '../utils/skill-parser'
+import { parseSkillMarkdown, formatSkillMd, validateSkillSpec, skillContentSignature, type ParsedFrontmatter } from '../utils/skill-parser'
 import { seedSkillResources } from '../utils/skill-resources'
 import { RETIRED_BUILT_IN_SKILLS } from '../../renderer/src/skills/built-in-skills'
 import { parseJsonColumn } from '../utils/json'
@@ -28,6 +28,37 @@ function toDefinition(parsed: ParsedFrontmatter): SkillDefinition {
     allowedTools: parsed.allowedTools,
     extra: parsed.extra
   }
+}
+
+/**
+ * Provenance of the SKILL.md files this app seeds: skill name → the
+ * `skillContentSignature` of the definition it was written from. A dot-file
+ * beside the skills it describes (listImported reads `<dir>/SKILL.md` per
+ * entry, so a plain file never registers as a skill), recorded when
+ * `ensureBuiltInSkills` writes a file or adopts an existing one whose content
+ * equals the live built-in.
+ *
+ * This is what lets a retirement still recognize its own seed after the
+ * built-in's text has moved on — content-only matching cannot: a seed of the
+ * v1 text is not the v2 text the skill retired with. It also makes the check
+ * independent of `formatSkillMd` drift: the recorded value was never a byte
+ * comparison, only a fingerprint of the meaning.
+ */
+const SEED_MANIFEST_PATH = join(SKILLS_DIR, '.seed-hashes.json')
+
+async function readSeedManifest(): Promise<Record<string, string>> {
+  try {
+    const parsed = JSON.parse(await readFile(SEED_MANIFEST_PATH, 'utf-8')) as {
+      seeds?: Record<string, string>
+    }
+    return parsed.seeds && typeof parsed.seeds === 'object' ? parsed.seeds : {}
+  } catch {
+    return {} // absent or damaged — every file falls back to content matching
+  }
+}
+
+async function writeSeedManifest(seeds: Record<string, string>): Promise<void> {
+  await writeFile(SEED_MANIFEST_PATH, JSON.stringify({ version: 1, seeds }, null, 2), 'utf-8')
 }
 
 export class SkillStore {
@@ -310,22 +341,57 @@ export class SkillStore {
    * Only writes files that don't already exist (never overwrites user modifications).
    * Also sweeps copies of retired built-ins (RETIRED_BUILT_IN_SKILLS) — otherwise
    * `listImported` would re-register the seeded SKILL.md as a user skill after the
-   * built-in is gone. A copy whose body was edited by the user is left alone.
+   * built-in is gone.
+   *
+   * A directory is swept only when the app can ACCOUNT for its content, from
+   * either arm of the provenance check: the seed manifest says this is the file
+   * the app wrote (or adopted, while the built-in was live), or the content's
+   * `skillContentSignature` still equals the definition the skill last shipped
+   * with. Both are format-independent, because the seeded copy and the
+   * reference may have been serialized by different versions of `formatSkillMd`
+   * — the old whole-file byte compare died on exactly that drift (the
+   * 2026-09-15 parser rewrite started quoting descriptions, so a seed written
+   * before it could never round-trip again, and stayed registered as a user
+   * skill). Everything the two arms cannot account for — a user edit, an
+   * unparseable file, a body from before the manifest — is kept: the check can
+   * only ever fail towards keeping.
+   *
    * Stale preference entries (enabled/keywords) for a swept name are pruned by
    * the startup `calibrate()` once the directory is gone.
    */
   async ensureBuiltInSkills(skills: SkillDefinition[]): Promise<void> {
     await this.ensureSkillsDir()
+    const seeds = await readSeedManifest()
+    let seedsDirty = false
+    const recordSeed = (name: string, signature: string) => {
+      if (seeds[name] === signature) return
+      seeds[name] = signature
+      seedsDirty = true
+    }
+
     for (const skill of skills) {
       const skillDir = join(SKILLS_DIR, skill.name)
       const mdPath = join(skillDir, 'SKILL.md')
+      const signature = skillContentSignature(skill)
       try {
-        await readFile(mdPath, 'utf-8')
-        // Already exists, skip to avoid overwriting user changes
+        const existing = await readFile(mdPath, 'utf-8')
+        // Already exists, skip to avoid overwriting user changes — but adopt
+        // its provenance when it IS this built-in's own content: a copy seeded
+        // before the manifest existed has no other way to become recognizable
+        // at retirement, and semantic equality is the only claim that holds
+        // after the formatter has moved on.
+        try {
+          if (skillContentSignature(parseSkillMarkdown(existing, `${skill.name}/SKILL.md`)) === signature) {
+            recordSeed(skill.name, signature)
+          }
+        } catch {
+          // Unparseable counts as user content: never adopted, never overwritten.
+        }
       } catch {
         // Doesn't exist — write it
         await mkdir(skillDir, { recursive: true })
         await writeFile(mdPath, formatSkillMd(skill), 'utf-8')
+        recordSeed(skill.name, signature)
       }
       // Bundled references are seeded independently of SKILL.md: a built-in
       // that grows a new reference file must land it on the next launch of an
@@ -334,8 +400,9 @@ export class SkillStore {
         console.error(`[skill-store] Failed to seed resources for ${skill.name}:`, e)
       )
     }
+
     for (const retired of RETIRED_BUILT_IN_SKILLS) {
-      const skillDir = join(SKILLS_DIR, retired)
+      const skillDir = join(SKILLS_DIR, retired.name)
       const mdPath = join(skillDir, 'SKILL.md')
       let content: string
       try {
@@ -343,17 +410,29 @@ export class SkillStore {
       } catch {
         continue // never seeded, or already swept
       }
-      // "Untouched" is byte-identity with what the app regenerates from the
-      // file's own frontmatter — a user edit ANYWHERE in the file fails the
-      // compare, and an unparseable file counts as user content. The compare
-      // can only ever fail towards keeping the file.
+      let signature: string
       try {
-        const regenerated = formatSkillMd(toDefinition(parseSkillMarkdown(content, `${retired}/SKILL.md`)))
-        if (regenerated !== content) continue
+        signature = skillContentSignature(parseSkillMarkdown(content, `${retired.name}/SKILL.md`))
       } catch {
-        continue
+        continue // an unparseable file counts as user content
       }
+      // Arm 1 — provenance: the manifest recorded this exact content when the
+      // app wrote (or adopted) it, even if the built-in's text has since moved
+      // on. Arm 2 — content: still the definition the skill last shipped with,
+      // which is what recognizes a pre-manifest seed regardless of which
+      // formatter wrote its frontmatter.
+      if (signature !== seeds[retired.name] && signature !== retired.contentHash) continue
       await rm(skillDir, { recursive: true, force: true })
+      if (retired.name in seeds) {
+        delete seeds[retired.name]
+        seedsDirty = true
+      }
+    }
+
+    if (seedsDirty) {
+      await writeSeedManifest(seeds).catch((e) =>
+        console.error('[skill-store] Failed to write seed manifest:', e)
+      )
     }
   }
 }
