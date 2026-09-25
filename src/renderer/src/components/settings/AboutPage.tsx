@@ -2,10 +2,11 @@
 // Formerly AboutSettings (a drawer), a standard view since PLAN-0.4.0. Renders
 // the product intro markdown; the window header carries the page title, so the
 // drawer chrome is gone. Content re-featured per release rather than drifting
-// back to an era-stale feature list — the 0.4.1 pass carries the 0.4.0 rewrite
-// plus the 0921/0922 waves (routine CSV batch, per-conversation models,
-// run-time keep-awake), and the two intro paragraphs name the SHIPPING version
-// (the footer's __APP_VERSION__ already follows package.json on its own).
+// back to an era-stale feature list — the 0.4.2 pass carries the 0.4.1 rewrite
+// plus the 0925 waves (security hardening, the browser observation engine and
+// favorites, script-type experiences, Office expressiveness, memory dedup),
+// and the two intro paragraphs name the SHIPPING version (the footer's
+// __APP_VERSION__ already follows package.json on its own).
 // NOTE: the markdown lives in JS template literals — never emit a backtick or
 // an interpolation (a `${`) into the strings below.
 
@@ -23,7 +24,7 @@ const productIntroMdZh = `
 
 > 每一次脉动，皆是智能。
 
-PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.4.1 是一次全面重铸的大版本：全新的信息架构，项目工作区与日常任务自动化，@召唤专家并行协作，字节级保真的 Office 文档编辑与导出，富预览与预览即编辑，以及随身的浏览器扩展。所有数据都保存在你自己的电脑上。
+PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引擎。0.4.2 把「本地优先」做成可验证的信任：数据全链安全治理（权限收紧、密钥静态加密、备份与残留清理）、随差异观察网页的浏览器代理、可沉淀可执行脚本的经验库、表达力完整的字节级 Office 编辑，以及更聪明的上下文与记忆治理。所有数据都保存在你自己的电脑上。
 
 ## 快速开始
 
@@ -67,7 +68,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 把重复的事交给日程，到点自动执行。
 
 - **例行任务** — 定时（cron）或手动触发，独立会话运行，完成后通知你
-- **CSV 批量运行** — 给任务挂一个 CSV，每行数据用独立会话执行一次任务；并发与单次超时可调，运行历史按行展示，点击钻入该行的会话
+- **CSV/Excel 批量运行** — 给任务挂一个 CSV 或 Excel（首张工作表），每行数据用独立会话执行一次任务；并发与单次超时可调，中断可续跑，运行历史按行展示，点击钻入该行的会话
 - **运行历史** — 按天分桶，可删除、清理、设置保留期限
 - **推荐模板** — 五个职场常用任务，点击带入编辑器，改改就能用
 - **对话式配置** — 用聊天的方式填表；先出提案卡片，确认后才落库
@@ -101,17 +102,26 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 ## 浏览器
 
-- **内置浏览器面板** — 多标签、地址栏历史、即时切换；页面快照带编号引用，AI 精准定位元素
+- **内置浏览器面板** — 多标签、地址栏历史与收藏、即时切换；页面快照带原生引用编号，每步只发差异、iframe 内容一并可见，AI 精准定位元素
+- **收藏** — 地址栏星标收藏常用站点，新标签页直达；也可以对 AI 说「打开我收藏的知乎」，按名字取址、不靠猜
 - **浏览器扩展** — 任意网页右下角点开悬浮球，展开同款对话面板；8 个页面工具直接操作你正在看的标签页，授权与模型在面板里即可切换
 - **安装** — 「设置 → 浏览器插件」提供服务开关、插件包下载与安装指南
 
 ## Office 文档
 
 - **字节级保真编辑** — docx_edit / xlsx_edit / pptx_edit 只改要改的，未触碰的部分逐字节不变，最大程度保留原文档的格式与兼容性
-- **样式操作** — PPT 支持加粗、字号、颜色、形状填充、页面背景与几何尺寸
+- **表达力完整** — Word 生成可嵌图、编辑可增删表格行；Excel 可设样式、列宽与冻结窗格，生成端表头加粗、列宽自适应
+- **结构化版式** — PPT 生成走版式引擎：模型只选版式、给内容，每个坐标由引擎绘制，预览同步
 - **结构先行** — office_inspect 让 AI 编辑前先看清文档结构
 - **安全护栏** — 每次编辑展示结果 diff；结构校验不过，整批拒绝、一字不写；首次编辑自动备份
 - **一键导出** — export_document 从 Markdown 生成 Word / Excel / PPT / PDF，永不覆盖已有文件，成品在预览面板即点即看
+
+## 数据安全
+
+- **目录权限收紧** — 数据目录默认仅本用户可读（0700/0600），启动时自动修复历史遗留权限
+- **密钥静态加密** — API 密钥经系统钥匙串加密落盘（enc:v1:），磁盘上永远不是明文；环境变量占位符照常可用
+- **备份与残留治理** — 数据库备份默认保留 30 天，调试请求转储 7 天过期；压缩或删除会话后的残留数据行自动对账清除
+- **数据不出机** — 对话、记忆、知识、经验全部存本地 SQLite，不依赖任何云端
 
 ## 富预览与预览即编辑
 
@@ -150,8 +160,8 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 - **Agent 引擎** — 自主循环、流式渲染、上下文自动压缩
 - **多模型** — Anthropic / OpenAI 双协议适配，多套配置自由切换，单个会话还可单独指定模型
-- **记忆** — 手动编写 + 会话后自动提取 + 全文检索
-- **经验** — 对话结束自动萃取，最多 20 条、按最近使用淘汰，不重复交学费
+- **记忆** — 手动编写 + 会话后自动提取 + 全文检索；内容哈希去重，重复内容不再反复入库
+- **经验** — 对话结束自动萃取，最多 20 条、按最近使用淘汰；确定性工作可沉淀为随经验落盘的可执行脚本，下次直接按说明运行
 - **会话与统计** — 本地 SQLite 存储，自动标题、自动清理；Token 用量按小时 / 日 / 月统计
 - **双语** — 中文 / English 即时切换，当前语言自动注入提示词
 `
@@ -161,7 +171,7 @@ const productIntroMdEn = `
 
 > Live Intelligence, In Every Pulse.
 
-PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.4.1 is a ground-up release: a new information architecture, project workspaces and routine automation, parallel expert collaboration through @-summons, byte-faithful Office document editing and export, rich previews with in-place editing, and a browser extension that travels with you. All data stays on your own machine.
+PulseMind is a local-first desktop AI assistant powered by its own agent engine. 0.4.2 turns local-first into verifiable trust: full-chain data security governance (tightened permissions, encrypted secrets at rest, backup and residue cleanup), a browser agent that watches pages by diff, experiences that ship runnable scripts, byte-faithful Office editing with full expressiveness, and smarter context and memory governance. All data stays on your own machine.
 
 ## Quick Start
 
@@ -205,7 +215,7 @@ Give the AI a folder of its own, and it can read, write, and keep pushing the wo
 Hand the repetitive work to a schedule and let it run itself.
 
 - **Routines** — cron-scheduled or manual, each run in its own session, with a notification when it finishes
-- **CSV batch runs** — point a routine at a CSV and each data row runs the task in its own session; concurrency and the per-row timeout are adjustable, and the run history lists every row, clickable into its session
+- **CSV/Excel batch runs** — point a routine at a CSV or an Excel sheet (first worksheet) and each data row runs the task in its own session; concurrency and the per-row timeout are adjustable, interrupted batches resume, and the run history lists every row, clickable into its session
 - **Run history** — bucketed by day; delete, clear, or set a retention window
 - **Starter templates** — five workplace templates, one click into the editor
 - **Conversational setup** — fill the form by chatting; a proposal card comes first, and nothing is saved until you confirm
@@ -239,17 +249,26 @@ Hand the repetitive work to a schedule and let it run itself.
 
 ## Browser
 
-- **Built-in browser pane** — tabs, address-bar history, instant switching; snapshots carry numbered references so the AI points at exactly the right element
+- **Built-in browser pane** — tabs, address-bar history and favorites, instant switching; snapshots carry native ref numbers, send only the diff per step, and see into iframes, so the AI points at exactly the right element
+- **Favorites** — star sites in the address bar and reach them from the new-tab page; or just tell the AI "open my favorited Zhihu" — it resolves by name instead of guessing
 - **Browser extension** — the floating orb on any web page opens the same conversation panel; 8 page tools operate on the tab you are looking at, with approval level and model switchable right in the panel
 - **Install** — Settings → Extension has the service toggle, the extension download, and the guide
 
 ## Office Documents
 
 - **Byte-faithful editing** — docx_edit / xlsx_edit / pptx_edit change only what you change; untouched parts stay byte-identical, preserving the original document's formatting and compatibility
-- **Styling ops** — PPTX supports bold, size, color, shape fill, slide background, and geometry
+- **Full expressiveness** — Word generation embeds images and edits table rows; Excel gains styles, column widths, and freeze panes, and generated sheets get bold headers with fitted widths
+- **Structured layouts** — PPT generation runs through a layout engine: the model picks a layout and supplies content; the engine draws every coordinate, preview in sync
 - **Inspect first** — office_inspect shows the document's structure before editing
 - **Safety rails** — every edit shows a result diff; a failed structural check refuses the whole batch and writes nothing; the first edit is backed up automatically
 - **One-step export** — export_document generates Word / Excel / PPT / PDF from Markdown, never overwriting an existing file; results open straight into the preview pane
+
+## Data Security
+
+- **Tightened permissions** — the data directory is readable only by your user (0700/0600); startup repairs any legacy modes
+- **Secrets encrypted at rest** — API keys are encrypted through the OS keychain (enc:v1:) and never sit on disk in plaintext; env-var placeholders keep working
+- **Backup & residue governance** — database backups default to 30 days and debug request dumps expire after 7; rows left behind by compaction or deletion are reconciled away
+- **Data stays local** — conversations, memories, knowledge, and experiences live in local SQLite, with no cloud dependency
 
 ## Rich Previews & In-Place Editing
 
@@ -288,8 +307,8 @@ Build your own tools from three pieces:
 
 - **Agent engine** — autonomous loop, streaming rendering, automatic context compaction
 - **Multi-model** — Anthropic and OpenAI protocols via adapters; switch profiles freely, or pin a different model to a single conversation
-- **Memory** — hand-written + auto-extracted after sessions + full-text search
-- **Experiences** — distilled after conversations, 20 at most with LRU eviction, so lessons are never paid for twice
+- **Memory** — hand-written + auto-extracted after sessions + full-text search; content hashing keeps near-duplicates out
+- **Experiences** — distilled after conversations, 20 at most with LRU eviction; deterministic work can ship as runnable scripts stored with the experience, ready to run next time
 - **Sessions & usage** — local SQLite storage, auto titles, auto cleanup; token usage charted by hour / day / month
 - **Bilingual** — Chinese and English switch instantly; the active language rides the prompt
 `
