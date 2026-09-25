@@ -59,10 +59,11 @@ Single-instance lock → app.whenReady()
   → ensureDataDir()
   → createSplashWindow()              (340×360 frameless splash)
   → await initializeDatabase()        (SQLite, must complete before IPC/hooks)
-  → await runLaunchHooks()            (app-start hook scripts collect env vars)
   → registerIpcHandlers()
-  → skillStore.calibrate()            (sync skill preferences with disk)
+  → await runLaunchHooks()            (app-start GATES the window — session check +
+                                       possible built-in-browser login; splash holds)
   → createWindow()                    (1200×800, min 800×600, sandboxed)
+  → skillStore.calibrate()            (sync skill preferences with disk)
   → Splash→main window crossfade:     (350ms fade, 300ms overlap, min 1.5s splash)
 ```
 
@@ -81,7 +82,9 @@ The 3-second delay after resume gives the network stack time to recover. Rendere
 
 Runs JS hook scripts from `HOOKS_DIR` at startup. Currently supports `app-start` event:
 - Hook scripts export `(context: HookContext) => HookResult` — can return `{ env: Record<string, string> }` to set env vars for terminal/MCP subprocesses
-- Hook context includes: `dataDir`, `workspaceDir`, `skillsDir`, `knowledgeDir`, `platform`, and `env`
+- Hook context includes: `dataDir`, `workspaceDir`, `skillsDir`, `knowledgeDir`, `platform`, `env`, and `browser`
+- **app-start GATES the main window** (user decision 2026-09-25, reversing the earlier hooks-run-concurrently fix): `index.ts` awaits `ensureLaunchHooks()` *before* `createWindow()`, and the splash holds indefinitely until the gate opens — so the hook can run a login flow (validate session → open the login page → poll the server-side check → `close()`); any hook latency is startup latency by design. `window-all-closed` stays safe because `startupComplete` is still false, and the splash's `MAX_SPLASH_MS` valve re-anchors to `hooksCompletedAt`.
+- **`ctx.browser.open(url, opts?) → { close() }`** (`src/main/hook-browser.ts`): opens a standalone built-in-browser window (the app's own Chromium, default persistent session — same profile as the in-app pane), URL gated by the shared `assertAllowedUrl` (http/https/about). Deliberately minimal: open + idempotent `close()` (destroy-based, so a page beforeunload can't block it); the completion signal is the hook's own server-side polling, not any window observation. Opening it CLOSES the splash (user ruling 2026-09-25: the splash and the login window never share the screen — destroyed in the same synchronous tick the window is created), and `scheduleSplashFade`'s splash-less branch keeps the gate hold and the `MAX_SPLASH_MS` valve, so the main window still waits for its own first paint.
 - Collected env vars stored in module-level `hookEnv` and retrieved by `getHookEnv()`
 - `getHookEnv()` also injects the user's login-shell PATH (resolved once at startup via `$SHELL -lic 'echo $PATH'` in `src/main/utils/user-path.ts`) so subprocesses can find tools like `bunx`/`codegraph` that only exist on the shell PATH — packaged apps launched from Finder get a minimal PATH otherwise. A hook-set `PATH` wins over the injected one.
 
