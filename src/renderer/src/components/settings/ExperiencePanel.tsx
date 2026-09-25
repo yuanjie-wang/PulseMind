@@ -202,6 +202,7 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
               </Paragraph>
               <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--pm-text-soft)', marginTop: 6 }}>
                 <span>创建 {exp.createdAt}</span>
+                {exp.updatedAt && <span>更新 {exp.updatedAt}</span>}
                 <span>{exp.lastUsedAt ? `最近触发 ${exp.lastUsedAt}` : '从未触发'}</span>
                 <span>触发 {exp.useCount} 次</span>
               </div>

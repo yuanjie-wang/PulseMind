@@ -7,8 +7,6 @@ import { describe, expect, it } from 'vitest'
 import {
   KnowledgeCompilerAgent,
   validateWikiAction,
-  isValidWikiPath,
-  hasRequiredFrontmatter,
   WikiPlanAgent,
 } from '../src/renderer/src/agent/one-shot-agent/KnowledgeCompilerAgent'
 import { wikiPageIsOrphan, wikiPageSources } from '../src/shared/knowledge/wiki'

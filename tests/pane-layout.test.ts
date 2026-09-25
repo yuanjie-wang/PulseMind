@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import {
   PANE_BORDER_WIDTH,
   PANE_CHROME_HEIGHT,
-  PANE_MIN_WIDTH,
   clampPaneWidth,
   defaultPaneWidth,
   normalizeAddressBarInput,

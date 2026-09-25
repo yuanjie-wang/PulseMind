@@ -11,7 +11,6 @@ import { ensureLaunchHooks, getHookEnv } from '../hooks-runner'
 import { currentSessionSandbox } from '../sandbox/session-context'
 import { isSubpath } from '../../shared/sandbox/path-jail'
 import { auditStore } from '../storage/audit-store'
-import { DATA_DIR } from '../storage'
 import { createStreamDecoder } from './stream-decoder'
 
 interface ProcessEntry {

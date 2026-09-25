@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React from 'react'
 import { useTranslation } from '../i18n/useTranslation'
 
 function ErrorBoundaryFallback({ error }: { error: Error | null }): React.ReactElement {

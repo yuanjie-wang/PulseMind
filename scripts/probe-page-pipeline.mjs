@@ -1,3 +1,6 @@
+// PMPage is the esbuild bundle globalName (see build() below): every
+// reference runs inside the page via page.evaluate, never in this process.
+/* global PMPage */
 /**
  * Real-browser check of the page DOM pipeline (PLAN-browser-extension M2.1).
  *

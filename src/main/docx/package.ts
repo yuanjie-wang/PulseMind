@@ -43,7 +43,6 @@ export function editDocx(buffer: Buffer, ops: DocxOp[], opts?: { resolveImageByt
   if (!payload.ok) throw new Error(payload.reason)
 
   const zip = openDocxPackage(buffer)
-  const docEntry = zip.getEntry(DOCUMENT_PART)!
   const originalXml = (zip.readFile(DOCUMENT_PART) as Buffer).toString('utf8')
 
   // M3: the image batch state — working copies of rels/content-types live
@@ -163,7 +162,6 @@ export function verifySemantic(beforeXml: string, afterXml: string, ops: DocxOp[
   const before = buildDocumentModel(beforeXml)
   const after = buildDocumentModel(afterXml)
   let expectedCount = before.paragraphs.length
-  const textsBefore = before.paragraphs.map((p) => p.text)
   for (const op of ops) {
     if (op.op === 'insert_paragraph') expectedCount += 1
     if (op.op === 'insert_image') expectedCount += 1

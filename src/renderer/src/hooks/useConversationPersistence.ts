@@ -127,6 +127,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     () => saveConversationById(convIdRef.current, true), [saveConversationById]
   )
   const saveNewRef = useRef<() => Promise<void>>(null as unknown as () => Promise<void>)
+  // eslint-disable-next-line react-hooks/refs -- latest-conversation-id bridge for the sync saver; read only from callers after commit
   saveNewRef.current = () => saveConversationById(convIdRef.current)
 
   const saveConversationByIdSync = useCallback((convId: string) => {

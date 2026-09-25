@@ -28,7 +28,8 @@ export function snapMove(
   others: Bounds[],
   threshold = THRESHOLD,
 ): { bounds: Bounds; lines: SnapLine[] } {
-  let { x, y, width, height } = bounds
+  const { width, height } = bounds
+  let { x, y } = bounds
   const lines: SnapLine[] = []
 
   const xCandidates: { pos: number; offset: number }[] = []

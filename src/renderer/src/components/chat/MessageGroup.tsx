@@ -390,6 +390,7 @@ export const MessageGroup = React.memo(function MessageGroup({
       console.warn('[MessageGroup] Knowledge save failed:', err)
       notify.error(`${t('chatView.error')}: ${err instanceof Error ? err.message : String(err)}`)
     }
+  // eslint-disable-next-line react-hooks/refs -- the in-flight click latch handed to the action factory; a latch is not UI state
   }, favoriteLatch.current)
 
   // 存为日常任务 runs once per click: while the await is in flight the latch

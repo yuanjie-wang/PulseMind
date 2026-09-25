@@ -28,7 +28,6 @@ import {
 import { getDb } from './database'
 import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
 import {
-  KNOWLEDGE_DIR,
   KNOWLEDGE_SCHEMA_DIR,
   KNOWLEDGE_RAW_DIR,
   KNOWLEDGE_WIKI_DIR,
@@ -474,7 +473,7 @@ export async function searchContent(query: string, baseId?: string): Promise<Con
   }
 
   // Search all bases
-  let allResults: ContentMatch[] = []
+  const allResults: ContentMatch[] = []
   for (const b of listKnowledgeBases()) {
     const rawDir = getBaseRawDir(b.id)
     if (!existsSync(rawDir)) continue
@@ -866,7 +865,7 @@ export async function importUrl(url: string, baseId?: string): Promise<Knowledge
 
     const dom = new JSDOM(html, { url })
     const document = dom.window.document
-    document.querySelectorAll('script, style').forEach(function(el) { (el as Element).parentNode && (el as Element).parentNode!.removeChild(el as Element) })
+    document.querySelectorAll('script, style').forEach(function(el) { (el as Element).parentNode?.removeChild(el as Element) })
 
     // Extract text from SVG <text>/<tspan> nodes and inject as regular HTML
     // (Word Online and similar tools render document content in SVG, which

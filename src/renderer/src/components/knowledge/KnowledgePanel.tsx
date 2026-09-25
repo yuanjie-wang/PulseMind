@@ -269,9 +269,11 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
   }, [knowledgeManager, scopedBaseId, searchQuery, searchMode, filterSourceType, filterStatus, sortState, page, pageSize])
 
   const loadFilesRef = useRef(loadFiles)
+  // eslint-disable-next-line react-hooks/refs -- latest-loadFiles mirror; the effect below is keyed on loadFiles itself
   loadFilesRef.current = loadFiles
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async refetch: the flag marks the load started and clears when the promise settles
     setLoading(true)
     loadFilesRef.current().finally(() => setLoading(false))
   }, [loadFiles])
@@ -331,6 +333,7 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
 
     // Restore the currently-compiling file's loading state
     if (compileQueue.running && compileQueue.compilingFileId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- restores the module-level compile queue's running state on remount — an external system
       setCompilingFileIds(new Set([compileQueue.compilingFileId]))
     }
 

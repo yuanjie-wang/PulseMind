@@ -136,7 +136,7 @@ describe('knowledge read path — baseId travels GET_RAW / READ_WIKI / APPLY / R
     expect(handler).toContain('svcGetRaw(relativePath, baseId)')
     expect(handler).toContain('svcGetRawPath(relativePath, baseId)')
     expect(handler).toContain('svcReadWiki(relativePath, baseId)')
-    expect(handler).toMatch(/baseId\?: string\n  \}\) => svcApplyWikiChanges/)
+    expect(handler).toMatch(/baseId\?: string\n {2}\}\) => svcApplyWikiChanges/)
     expect(handler).toContain('svcRebuildIndex(baseId)')
   })
 
@@ -151,7 +151,7 @@ describe('knowledge read path — baseId travels GET_RAW / READ_WIKI / APPLY / R
   it('the ElectronAPI contract declares the parameters', () => {
     expect(bridge).toMatch(/knowledgeGetRaw: \(relativePath: string, baseId\?: string\)/)
     expect(bridge).toMatch(/knowledgeReadWiki: \(relativePath\?: string, baseId\?: string\)/)
-    expect(bridge).toMatch(/baseId\?: string\n  \}\) => Promise<\{ written: number/)
+    expect(bridge).toMatch(/baseId\?: string\n {2}\}\) => Promise<\{ written: number/)
     expect(bridge).toMatch(/knowledgeRebuildIndex: \(baseId\?: string\)/)
   })
 
@@ -159,7 +159,7 @@ describe('knowledge read path — baseId travels GET_RAW / READ_WIKI / APPLY / R
     expect(manager).toContain('const baseId = file.baseId')
     expect(manager).toContain('this.readRawContent(file.filePath, baseId)')
     expect(manager).toContain('this.readWiki(\'index.md\', baseId)')
-    expect(manager).toMatch(/compiledIds: \[file\.id\],\n      baseId/)
+    expect(manager).toMatch(/compiledIds: \[file\.id\],\n {6}baseId/)
     expect(manager).toContain('await this.rebuildWikiIndex(baseId)')
   })
 })

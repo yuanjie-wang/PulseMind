@@ -10,7 +10,6 @@ import type { ExperienceManager } from '../experiences/ExperienceManager'
 import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
-import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../../../shared/agent-session/mirror'
 import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { SummonedExpert } from '../../../shared/expert-context'
@@ -241,6 +240,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   }, [])
 
   const onBackgroundCompleteRef = useRef(options.onBackgroundComplete)
+  // eslint-disable-next-line react-hooks/refs -- latest-callback mirror bridged into the mount-only subscription above
   onBackgroundCompleteRef.current = options.onBackgroundComplete
 
   /** Mark a conversation as the active one (keeps the ref in sync with callers). */
@@ -264,6 +264,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
 
   // ── Signal option changes to the main-hosted engines ──
   const prevOptionsRef = useRef<Partial<typeof options>>({})
+  /* eslint-disable react-hooks/refs -- render-time diff against the previous options to decide whether the refresh effect below fires; the diff IS the signal by design */
   const optionsChanged =
     prevOptionsRef.current.apiKey !== options.apiKey ||
     prevOptionsRef.current.baseURL !== options.baseURL ||
@@ -287,6 +288,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       locale: options.locale
     }
   }
+  /* eslint-enable react-hooks/refs */
   useEffect(() => {
     if (!optionsChanged) return
     for (const convId of enginesRef.current.keys()) {

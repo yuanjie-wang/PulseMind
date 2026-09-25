@@ -61,7 +61,9 @@ export function useChatManagers(options: UseChatManagersOptions) {
   const skillManagerRef = useRef<SkillManager>(new SkillManager())
 
   // Tool/skill state
+    // eslint-disable-next-line react-hooks/refs -- useState seeded from the just-created manager instance; a read-once initializer, not live UI state
   const [tools, setTools] = useState<ToolState[]>(toolManagerRef.current.getAllTools())
+    // eslint-disable-next-line react-hooks/refs -- useState seeded from the just-created manager instance; a read-once initializer, not live UI state
   const [skills, setSkills] = useState<SkillState[]>(skillManagerRef.current.getAllSkills())
   const [importError, setImportError] = useState<string | null>(null)
 
@@ -277,6 +279,7 @@ export function useChatManagers(options: UseChatManagersOptions) {
     }
   }, [apiKey, options.adapter, options.baseURL, options.model])
 
+    /* eslint-disable react-hooks/refs -- the stable manager instances are exposed through their refs; each is fixed for the hook's lifetime and read only after commit */
   return {
     memoryManager: memoryManagerRef.current,
     knowledgeManager: knowledgeManagerRef.current,
@@ -288,6 +291,7 @@ export function useChatManagers(options: UseChatManagersOptions) {
     importError,
     skillsDir,
     platformInfo: platformInfoRef.current,
+    /* eslint-enable react-hooks/refs */
     prefsLoadedRef,
     toolsReadyRef,
     skillsReadyRef,

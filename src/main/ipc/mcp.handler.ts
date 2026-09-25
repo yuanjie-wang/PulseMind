@@ -198,7 +198,7 @@ export function registerMcpHandlers(): void {
       const server = serverManager.register(config)
       await persistCustomServers()
       event.sender.send(IPC_CHANNELS.MCP_SERVERS_CHANGED)
-      const { client, ...info } = server
+       const { client: _client, ...info } = server
       return { success: true, server: info }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }

@@ -243,7 +243,6 @@ export async function startAgentService(
         const params = (msg.params ?? {}) as Record<string, unknown>
         switch (msg.method) {
           case Methods.hello: {
-            const clientVersion = typeof params.clientVersion === 'string' ? params.clientVersion : 'unknown'
             conn.clientId = typeof params.clientId === 'string' && params.clientId ? params.clientId : 'anonymous'
             // Same-clientId replacement: kick the ghost connection (M2.2).
             const prior = byClient.get(conn.clientId)

@@ -24,7 +24,6 @@ function guardHome(dataDir) {
   if (!home) throw new Error('PM_HOME is not set')
   if (!dataDir.startsWith(home)) throw new Error('DATA_DIR outside PM_HOME')
 }
-const fromRepo = createRequire(join(REPO_ROOT, 'package.json'))
 
 async function phaseMain() {
   const ExcelJS = (await import('exceljs')).default

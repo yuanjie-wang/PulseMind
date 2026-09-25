@@ -18,7 +18,6 @@ describe('P1 — built-in tools moved into the capability center', () => {
   const navTypes = read('src/renderer/src/navigation/types.ts')
   const settingsPage = read('src/renderer/src/components/settings/SettingsPage.tsx')
   const zh = read('src/renderer/src/i18n/locales/zh.ts')
-  const en = read('src/renderer/src/i18n/locales/en.ts')
 
   it('the capability tab union carries tools', () => {
     expect(center).toMatch(/export type CapabilityTab = 'mcp' \| 'skills' \| 'expert' \| 'tools'/)

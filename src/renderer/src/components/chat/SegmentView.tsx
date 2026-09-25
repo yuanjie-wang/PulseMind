@@ -75,13 +75,14 @@ function StreamingText({ blocks }: { blocks: ContentBlock[] }): React.ReactEleme
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12 }}>
       <div style={{ paddingLeft: 12, width: '100%', fontSize: 14, lineHeight: 1.6 }}>
-        {blocks.map((block, i) => {
+        {blocks.map((block, i) => { // eslint-disable-line react-hooks/refs -- per-block throttle cache: a structural-sharing cache, not UI state (same pattern as TranscriptView)
           if (block.type !== 'text') return null
           let throttle = throttlesRef.current.get(i)
           if (!throttle) {
             throttle = createTextThrottle(STREAM_PARSE_MIN_INTERVAL)
             throttlesRef.current.set(i, throttle)
           }
+          // eslint-disable-next-line react-hooks/purity -- the stream throttle's arrival clock: feed() decides how much of the accumulated text may show now
           const shown = throttle.feed(block.text, performance.now())
           return (
             <div key={i} className={mdClass} style={{ color: 'var(--pm-text-strong)' }}>

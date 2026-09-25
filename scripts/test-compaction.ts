@@ -79,11 +79,6 @@ function assertEq(actual: number, expected: number, label: string): void {
   else { failed++; failures.push(`${label}: expected ${expected}, got ${actual}`) }
 }
 
-function assertApprox(actual: number, expected: number, tolerance: number, label: string): void {
-  if (Math.abs(actual - expected) <= tolerance) { passed++ }
-  else { failed++; failures.push(`${label}: expected ~${expected}, got ${actual}`) }
-}
-
 // ══════════════════════════════════════════════════════════════
 // Test 1: estimateTokens
 // ══════════════════════════════════════════════════════════════

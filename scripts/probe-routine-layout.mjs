@@ -891,15 +891,6 @@ const openListSelector = async (field) => {
 // A select trigger shows EITHER the selected label (as the .ant-select-content
 // box's title attribute, or the value element for styled options) OR the
 // placeholder element — never both.
-const readSelect = (root) => {
-  if (!root) return { value: null, placeholder: null }
-  const titled = root.querySelector('.ant-select-content[title]')
-  if (titled) return { value: titled.getAttribute('title'), placeholder: null }
-  const valued = root.querySelector('.ant-select-content-value')
-  if (valued) return { value: valued.textContent, placeholder: null }
-  const ph = root.querySelector('.ant-select-placeholder')
-  return { value: null, placeholder: ph ? ph.textContent : null }
-}
 const runContextForm = () => page.evaluate(() => {
   const readSelect = (root) => {
     if (!root) return { value: null, placeholder: null }

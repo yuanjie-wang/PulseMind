@@ -3,7 +3,7 @@
  * agent session manager (and other non-IPC consumers) can use it without
  * dragging electron IPC into the import graph.
  */
-import { platform, release, arch } from 'node:os'
+import { platform, arch } from 'node:os'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 

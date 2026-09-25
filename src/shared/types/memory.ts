@@ -1,7 +1,7 @@
 // --- Memory Entry Types ---
 
-const MEMORY_TYPES = ['auto', 'manual', 'decision', 'fact', 'preference', 'experience'] as const
-const MEMORY_CATEGORIES = ['code', 'architecture', 'user_pref', 'decision', 'general', 'experience'] as const
+export const MEMORY_TYPES = ['auto', 'manual', 'decision', 'fact', 'preference', 'experience'] as const
+export const MEMORY_CATEGORIES = ['code', 'architecture', 'user_pref', 'decision', 'general', 'experience'] as const
 
 export type MemoryType = (typeof MEMORY_TYPES)[number]
 export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number]

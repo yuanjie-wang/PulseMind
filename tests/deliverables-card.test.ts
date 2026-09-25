@@ -21,7 +21,7 @@ import { collectDeliverables } from '../src/renderer/src/components/chat/deliver
 import { usePreviewPaneStore } from '../src/renderer/src/stores/previewPaneStore'
 import { useWorkbenchStore } from '../src/renderer/src/stores/workbenchStore'
 import { TranslationProvider } from '../src/renderer/src/i18n/useTranslation'
-import type { AgentMessage, AgentStatus } from '../src/renderer/src/types/agent'
+import type { AgentMessage } from '../src/renderer/src/types/agent'
 
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
 const AT = '2026-09-18T10:00:00.000Z'

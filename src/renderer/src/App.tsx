@@ -75,7 +75,7 @@ type SubAgentViewTarget =
   | { kind: 'spawn'; subConvId: string; title: string }
 
 function AppContent(): React.ReactElement {
-  const { settings, loading, hasApiKey, activeProfile, saveSettings, reloadSettings } = useSettings()
+  const { settings, loading, hasApiKey, activeProfile, reloadSettings } = useSettings()
   const { locale, setLocale } = useTranslation()
 
   // Sync settings.locale -> TranslationProvider on load and when settings change
@@ -290,9 +290,11 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   })
 
   // Wire refs for hook access
+  /* eslint-disable react-hooks/refs -- latest-instance mirrors for hook access below; consumers run in effects and callbacks, never during render */
   memoryManagerRef.current = memoryManager
   knowledgeManagerRef.current = knowledgeManager
   experienceManagerRef.current = experienceManager
+  /* eslint-enable react-hooks/refs */
 
   // Mirror the 设置 → 记忆/经验 master switches onto the renderer-side managers
   // (session backfill, startup compression). The main-side managers are synced
@@ -304,6 +306,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   }, [memoryManager, experienceManager, settings.memoryEnabled, settings.experienceEnabled])
 
   // Keep conversationId ref in sync for the afterSession hook
+  // eslint-disable-next-line react-hooks/refs -- afterSession reads the live conversation id; mirrored fresh each render
   conversationIdRef.current = activeConversationKey
     ? String(activeConversationKey.toString())
     : null

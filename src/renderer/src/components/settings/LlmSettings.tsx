@@ -75,6 +75,7 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
     const providers = clone(settings.providers ?? [])
     const activeProvider = providers.find((p) => (p.models ?? []).some((m) => m.id === settings.activeProfileId))
       ?? providers[0]
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- dialog-open reset: re-seeds the editing draft from the persisted settings
     setDraftProviders(providers)
     setEditingProviderId(activeProvider?.id ?? '')
     const activeInProvider = activeProvider?.models?.some((m) => m.id === settings.activeProfileId)
@@ -130,6 +131,7 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
   // Custom headers editor: local rows synced to the draft provider's headers.
   const [headerRows, setHeaderRows] = useState<{ key: string; value: string }[]>([])
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the rows are the local editing buffer, re-seeded when the draft provider changes
     setHeaderRows(
       draftProvider?.headers
         ? Object.entries(draftProvider.headers).map(([k, v]) => ({ key: k, value: v }))

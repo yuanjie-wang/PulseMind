@@ -9,7 +9,6 @@ import type { AgentMessage, ContentBlock, ToolResultBlock, TextBlock, ToolUseBlo
 import type { CompactionEvent } from '../../../../shared/agent-protocol/payloads'
 import { contextTokensOf, estimateMessagesTokens, estimateTextTokens } from './context-estimate'
 
-const HARD_TRUNCATE_MIN_REMAINING = 10_000
 const LIGHT_COMPACT_MIN_REMAINING = 30_000
 const SUMMARY_TEXT_CAP = 2000
 const SUMMARY_INPUT_CAP = 40000

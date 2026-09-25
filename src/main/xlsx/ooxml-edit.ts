@@ -136,15 +136,6 @@ function findElement(node: XmlNode, name: string): XmlNode | undefined {
   return undefined
 }
 
-function findElements(node: XmlNode, name: string): XmlNode[] {
-  const results: XmlNode[] = []
-  const walk = (n: XmlNode) => {
-    if (n.kind === 'element' && n.name === name) results.push(n)
-    if (n.children) n.children.forEach(walk)
-  }
-  walk(node)
-  return results
-}
 
 function getText(node: XmlNode): string {
   if (node.kind === 'text') return node.text ?? ''
@@ -399,7 +390,7 @@ export async function editXlsxOOXML(buffer: Buffer, ops: Array<Record<string, un
           // Insert new <row> element — we need to splice it into the XML
           // Find sheetData and insert in row order
           const ws = findElement(state.tree, 'worksheet') ?? state.tree
-          let sheetData = findElement(ws, 'sheetData')
+          const sheetData = findElement(ws, 'sheetData')
           if (!sheetData) {
             // sheetData doesn't exist — add it before </worksheet>
             appendInsideElement(state, ws, `\n    <sheetData>\n      <row r="${ref.row}">\n        <c r="${address}"/>\n      </row>\n    </sheetData>`)

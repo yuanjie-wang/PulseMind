@@ -397,7 +397,6 @@ check('…and a real hit-test at its centre finds the tab (nothing clipped)', re
         (stubbed) query channel drive the panel; ↑↓+Enter walk it, Esc is
         two-stage, the footer clears with a confirm step, and the open
         dropdown reports its height so main can shift the webview. ──────── */
-const DROPDOWN_ROW = '.pm-pane-tabstrip, div'
 const suggestionItems = () => page.locator('div[style*="z-index: 40"] > div > div')
 await page.evaluate(() => {
   window.__historyFixture = [

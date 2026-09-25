@@ -367,7 +367,7 @@ async function main() {
     const only = new Set(opts.only);
     const unknown = opts.only.filter((n) => !deps.some((d) => d.name === n));
     if (unknown.length) die(`--only 里的包不在 package.json：${unknown.join(', ')}`);
-    for (const d of deps) if (!only.has(d.name) && d.status !== 'skipped') d.status = 'skipped', (d.note = '--only 未选中');
+    for (const d of deps) if (!only.has(d.name) && d.status !== 'skipped') { d.status = 'skipped'; d.note = '--only 未选中'; }
   }
 
   const checkable = deps.filter((d) => d.status !== 'skipped');

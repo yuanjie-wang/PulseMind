@@ -78,6 +78,7 @@ function usePreviewFile(
   }, [path, kind])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load() marks the pane 'loading' before its await; that state belongs to the async load
     load()
   }, [load, reloadTick])
 
@@ -144,6 +145,7 @@ function OfficePreview({ path, kind }: { path: string; kind: FileKind }): React.
   const [markdown, setMarkdown] = useState('')
   useEffect(() => {
     let alive = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the async conversion loading mark, set before convertFileToMarkdown resolves
     setState('loading')
     window.electronAPI.convertFileToMarkdown(path)
       .then((result) => {

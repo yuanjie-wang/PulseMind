@@ -10,7 +10,7 @@ import type { ElectronAPI } from '../../types/electron'
  *   - a mock host in tests
  * Keep keys in sync with actual usage; tsc fails loudly when a key drifts.
  */
-const HOST_METHOD_KEYS = [
+export const HOST_METHOD_KEYS = [
   // LLM transport
   'apiFetchStream',
   'apiAbortStream',

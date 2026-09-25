@@ -119,7 +119,7 @@ const headerLeftInset = (collapsed: boolean): number => (collapsed && CONTROLS_O
 interface AppLayoutProps {
   children?: React.ReactNode
   conversations: ConversationListItem[]
-  activeConversationKey: string | Symbol | undefined
+  activeConversationKey: string | symbol | undefined
   /** Session-cap inputs: creating is capped unless auto-cleanup is on. */
   totalSessions: number
   autoCleanup: boolean

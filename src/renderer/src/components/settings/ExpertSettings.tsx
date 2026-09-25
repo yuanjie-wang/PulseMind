@@ -148,6 +148,7 @@ const ExpertSettings = React.forwardRef<ExpertSettingsHandle, ExpertSettingsProp
   }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async list refresh on mount; state lands after the await
     refresh()
   }, [refresh])
 

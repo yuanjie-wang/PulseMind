@@ -23,7 +23,7 @@
  */
 import { build } from 'esbuild'
 import { chromium } from 'playwright-core'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -179,7 +179,6 @@ check('cover title text renders', (await page.locator('[data-pptx-slide="1"]').i
 /* ── 3. Section tint + two-col panels + kpi cards. ── */
 const sectionBg = await slides().nth(1).evaluate((el) => getComputedStyle(el).backgroundColor)
 check('section page background is the derived tint', sectionBg === TINT_SECTION, sectionBg)
-const twoColPanels = page.locator('[data-pptx-slide="4"] [data-shape]', { hasText: '' })
 const panelStyles = await page.locator('[data-pptx-slide="4"] [data-shape]').evaluateAll((els) =>
   els.filter((el) => getComputedStyle(el).borderRadius !== '0px').map((el) => ({ bg: getComputedStyle(el).backgroundColor, x: el.offsetLeft, w: el.offsetWidth })))
 check('two-col draws two tinted rounded panels side by side',

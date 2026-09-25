@@ -4586,7 +4586,6 @@ const expWelcomeLight = await welcomeExpectations()
 const welcomeLight = await checkWelcomeRoles('浅色', expWelcomeLight)
 
 // the project card's hover, driven by a real mouse (React writes it inline)
-const wv = await welcomeVec()
 // rect for the first grid card comes from the DOM the same way the reader walks it
 // The three §11 hosts stack vertically and the projects grid lands below the
 // fold, so the hover scrolls the card into view first and measures the rect

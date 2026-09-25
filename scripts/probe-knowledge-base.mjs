@@ -143,7 +143,6 @@ async function phaseMain() {
 
   // ── ③ wiki FTS lifecycle (K4) + K1 apply-side refusal ──
   const store = await import('../src/main/storage/knowledge-store')
-  const pageA = '---\ntitle: Cache\ntype: concept\nsources:\n  - ' + RAW_A + '\n---\n\nConcept body from A'
   const sharedPage = '---\ntitle: Cache\ntype: entity\nsources:\n  - ' + RAW_A + '\n  - ' + RAW_B + '\n---\n\nMerged entity body'
   const written = store.applyWikiChanges([
     { filePath: 'sources/source-a.md', content: '---\ntitle: Source A\ntype: source\nsources:\n  - ' + RAW_A + '\n---\n\nA summary' },

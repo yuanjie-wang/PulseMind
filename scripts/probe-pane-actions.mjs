@@ -116,7 +116,6 @@ async function phaseRun() {
 
   const { browserHistoryStore } = await import('../src/main/storage/browser-history-store')
   // query('') is the recency feed since T4.2 — the whole table, newest first.
-  const allRows = () => browserHistoryStore.query('', 500)
 
   const service = new BrowserService()
   await new Promise((r) => setTimeout(r, 50)) // loadDefaults settles
@@ -283,7 +282,6 @@ async function phaseRun() {
   )
   check('…with a title snapshot (empty here, null tolerated)', histSoFar.every((r) => r && (r.title === null || typeof r.title === 'string')), JSON.stringify(histSoFar.map((r) => r?.title)))
 
-  const countBefore = histSoFar.filter(Boolean).length
   service.handlePaneState(paneState(SCOPE_B), sender) // section 5 left SCOPE_D active
   await service.handlePaneAction({ op: 'navigate', tabId: bTabs[0].tabId, url: 'https://mail.163.com/' }, sender)
   const mailRow = browserHistoryStore.query('mail.163.com', 10).find((r) => r.url === 'https://mail.163.com/')

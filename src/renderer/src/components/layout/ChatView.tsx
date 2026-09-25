@@ -139,7 +139,7 @@ function ChatView({
   onExtendLoop,
   onResumeExecution,
   onStopExecution,
-  onSaveConversation,
+  onSaveConversation: _onSaveConversation,
   conversationId,
   conversationTitle,
   profiles,
@@ -395,6 +395,7 @@ function ChatView({
     // seeding from undefined gives NaN, and `NaN <= 1` is false — the interval
     // would tick for the rest of the turn while the seconds never render.
     if (agentStatus.status !== 'retrying' || !Number.isFinite(agentStatus.delay)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- seeds the countdown from the wire status; the interval below owns every tick after
       setRetryCountdown(0)
       return
     }
@@ -453,6 +454,7 @@ function ChatView({
   const cachedSegmentsRef = useRef<readonly Segment[]>([])
 
   const allSegments = useMemo((): Segment[] => {
+    /* eslint-disable react-hooks/refs -- structural-sharing caches, not UI state (same pattern as TranscriptView) */
     const segs = buildSegments({
       messages,
       isStreaming,
@@ -461,6 +463,7 @@ function ChatView({
       streamingToolAccum: streamingToolAccumRef.current,
     })
     cachedSegmentsRef.current = segs
+    /* eslint-enable react-hooks/refs */
     return segs
   }, [messages, isStreaming, streamingBlocks])
 
@@ -533,6 +536,7 @@ function ChatView({
   // Stable ref for the plan-jump-done callback so the effect below never needs it
   // in deps (the parent's inline arrow would otherwise re-run the effect every render).
   const onPlanScrollHandledRef = useRef(onPlanScrollHandled)
+  // eslint-disable-next-line react-hooks/refs -- latest-callback mirror for the jump effect below (see the comment above)
   onPlanScrollHandledRef.current = onPlanScrollHandled
   // Timers live in refs and are only cancelled on unmount, not on effect re-runs:
   // the parent clears planScrollToMsgId right after the jump (see below), which

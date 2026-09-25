@@ -274,6 +274,7 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
   }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async server-list refresh on mount and on the external change event below
     refresh()
     const onMcpChange = () => refresh()
     window.addEventListener('mcp-state-changed', onMcpChange)

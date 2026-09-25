@@ -7,7 +7,7 @@
 // belong to WorkbenchPane; this component fills its parent.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2, Star, StarOff, Clock3 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RotateCw, ExternalLink, Globe, Plus, X, Clock, Trash2, Star, StarOff } from 'lucide-react'
 import {
   hostLabel,
   isFreshTabUrl,
@@ -96,6 +96,7 @@ export function BrowserPaneChrome({ pane, onAction }: Props) {
   const activeUrl = activeTab?.url ?? ''
   useEffect(() => {
     if (!activeUrl || isFreshTabUrl(activeUrl)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resets the previous URL's star while this URL's favorite status is fetched below
       setStarred(false)
       return
     }

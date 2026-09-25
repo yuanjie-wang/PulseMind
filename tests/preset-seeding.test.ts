@@ -22,8 +22,6 @@ describe('planPresetSeeds', () => {
 
   it('handles multiple new presets after an app upgrade ships more presets', () => {
     const bundle = ['calculator', 'pomodoro', 'http-client']
-    const existing = ['preset_calculator', 'preset_pomodoro']
-    const deleted = ['http-client']
     expect(planPresetSeeds(bundle, ['calculator', 'pomodoro'], ['http-client'])).toEqual([])
   })
 })

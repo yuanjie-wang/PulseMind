@@ -129,7 +129,7 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
   // Subsequent routine switches from the left pane fall back to the newest, so
   // a stale initialRunId from the entry card never leaks onto another task.
   const didInitRef = useRef(false)
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- async run-list load, setState lands after await
+
   useEffect(() => {
     const prefer = !didInitRef.current ? initialRunId : undefined
     didInitRef.current = true

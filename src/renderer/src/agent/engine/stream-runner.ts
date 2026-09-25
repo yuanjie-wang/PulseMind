@@ -8,7 +8,7 @@ import { isContextOverflowRejection, parseContextOverflowLimit } from './context
 import { IncrementalJsonTracker } from '../json-stream'
 import { extractInvokeToolCalls } from './result-ingestion'
 import { summarizeToolCall } from './context-compactor'
-import { generateMsgId, safeInvoke, safeInvokeObserver } from '../agent-utils'
+import { generateMsgId, safeInvokeObserver } from '../agent-utils'
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import type { AgentEngineOptions } from '../AgentEngine'
 import type { EngineCore } from './engine-core'
@@ -24,7 +24,6 @@ export class StreamRunner {
 
   async run(opts: AgentEngineOptions, req: PreparedRequest): Promise<void> {
     const { apiUrl, headers, resolvedBody } = req
-    const engine = this.engine
 
     // Variables for cleanup — hoisted outside try so catch can access them
     let requestId: string

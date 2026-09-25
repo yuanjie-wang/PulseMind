@@ -3,7 +3,6 @@
 import type { AgentServiceHandle } from './agent/ws-server'
 import { settingsStore } from './storage/settings-store'
 import { startAgentService } from './agent/ws-server'
-import { randomUUID } from 'node:crypto'
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DATA_DIR } from './storage'

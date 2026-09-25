@@ -246,22 +246,22 @@ function createTables(): void {
 
   // ── Schema migrations for existing databases ──
   // ALTER TABLE will fail if column already exists, so we catch and ignore.
-  try { database.exec('ALTER TABLE conversations ADD COLUMN summary TEXT') } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN keywords TEXT') } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0') } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN plan_json TEXT') } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN origin TEXT') } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN extracted_msg_count INTEGER NOT NULL DEFAULT 0') } catch (e) {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN summary TEXT') } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN keywords TEXT') } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0') } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN plan_json TEXT') } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN origin TEXT') } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN extracted_msg_count INTEGER NOT NULL DEFAULT 0') } catch {}
   // P0 (PLAN-memory-extraction-dedup): memories carry a normalized-content hash for
   // the save-layer dedup gate; existing rows are backfilled once here.
-  try { database.exec('ALTER TABLE memories ADD COLUMN content_hash TEXT') } catch (e) {}
+  try { database.exec('ALTER TABLE memories ADD COLUMN content_hash TEXT') } catch {}
   // The index must come AFTER the ALTER: createTables' blanket exec runs on
   // every startup, and on an existing database the column only exists once
   // this ALTER has run — an index there failed with SQLITE_ERROR, which the
   // init catch used to treat as corruption (database deleted). Never add a
   // new-column index to that exec.
-  try { database.exec('CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)') } catch (e) {}
-  try { database.exec('ALTER TABLE experiences ADD COLUMN files_json TEXT') } catch (e) {}
+  try { database.exec('CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)') } catch {}
+  try { database.exec('ALTER TABLE experiences ADD COLUMN files_json TEXT') } catch {}
   try {
     const missing = database.prepare('SELECT id, content FROM memories WHERE content_hash IS NULL').all() as Array<{ id: string; content: string }>
     if (missing.length > 0) {
@@ -272,21 +272,26 @@ function createTables(): void {
       backfill()
       console.log(`[DB] backfilled ${missing.length} memory content hash(es)`)
     }
-  } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN experience_extracted_count INTEGER NOT NULL DEFAULT 0') } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary TEXT') } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary_frontier TEXT') } catch (e) {}
-  try { database.exec('ALTER TABLE messages ADD COLUMN liked INTEGER NOT NULL DEFAULT 0') } catch (e) {}
-  try { database.exec('ALTER TABLE messages ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0') } catch (e) {}
-  try { database.exec('ALTER TABLE messages ADD COLUMN processing_ms INTEGER') } catch (e) {}
-  try { database.exec('ALTER TABLE messages ADD COLUMN input_tokens INTEGER') } catch (e) {}
-  try { database.exec('ALTER TABLE messages ADD COLUMN output_tokens INTEGER') } catch (e) {}
-  try { database.exec('ALTER TABLE messages ADD COLUMN auto_summary INTEGER NOT NULL DEFAULT 0') } catch (e) {}
-  try { database.exec('ALTER TABLE messages ADD COLUMN compressed_ids TEXT') } catch (e) {}
+  } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN experience_extracted_count INTEGER NOT NULL DEFAULT 0') } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary TEXT') } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN history_summary_frontier TEXT') } catch {}
+  try { database.exec('ALTER TABLE messages ADD COLUMN liked INTEGER NOT NULL DEFAULT 0') } catch {}
+  try { database.exec('ALTER TABLE messages ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0') } catch {}
+  try { database.exec('ALTER TABLE messages ADD COLUMN processing_ms INTEGER') } catch {}
+  try { database.exec('ALTER TABLE messages ADD COLUMN input_tokens INTEGER') } catch {}
+  try { database.exec('ALTER TABLE messages ADD COLUMN output_tokens INTEGER') } catch {}
+  try { database.exec('ALTER TABLE messages ADD COLUMN auto_summary INTEGER NOT NULL DEFAULT 0') } catch {}
+  try { database.exec('ALTER TABLE messages ADD COLUMN compressed_ids TEXT') } catch {}
   // Ensure tool_results has the is_error column
-  try { database.exec('ALTER TABLE tool_results ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0') } catch (e) {}
-  try { database.exec('ALTER TABLE knowledge_files ADD COLUMN wiki_outputs TEXT') } catch (e) {}
-  try { database.exec("ALTER TABLE experiences ADD COLUMN triggers TEXT NOT NULL DEFAULT '[]'") } catch (e) {}
+  try { database.exec('ALTER TABLE tool_results ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0') } catch {}
+  try { database.exec('ALTER TABLE knowledge_files ADD COLUMN wiki_outputs TEXT') } catch {}
+  try { database.exec("ALTER TABLE experiences ADD COLUMN triggers TEXT NOT NULL DEFAULT '[]'") } catch {}
+  // PLAN-experience-iteration: `updated_at` marks a record as iterated (set only
+  // when a targetName save lands with a changed content hash), `content_hash`
+  // is the save-layer gate that skips a no-op SKILL.md rewrite.
+  try { database.exec('ALTER TABLE experiences ADD COLUMN updated_at TEXT') } catch {}
+  try { database.exec('ALTER TABLE experiences ADD COLUMN content_hash TEXT') } catch {}
 
   // ── PLAN-0.4.0 M3/M6: projects, routine-run history, audit log ──
   // Projects are named fixed workspaces picked on the welcome page (the
@@ -349,7 +354,7 @@ function createTables(): void {
   `)
   // Conversations keep their project binding (welcome page picker); existing
   // databases get the column here.
-  try { database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT') } catch (e) {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN project_id TEXT') } catch {}
   // The project's identity hue moved from "hashed at render" to a stored field
   // (2026-09-16); rows created before it keep NULL until the startup backfill
   // fills them from their name — which is exactly what the renderer derived.
@@ -371,7 +376,7 @@ function createTables(): void {
   try { database.exec('ALTER TABLE conversations ADD COLUMN workspace_dir TEXT') } catch { /* column may already exist */ }
   // Every conversation not explicitly bound to a project belongs to the
   // synthesized default project.
-  try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch (e) {}
+  try { database.exec("UPDATE conversations SET project_id = 'default' WHERE project_id IS NULL") } catch {}
   // ── PLAN-routine-batch: batch bookkeeping on routine_runs ──
   // parent_run_id is what makes a row a batch CHILD (parents and single runs
   // leave it NULL — the flat run history filters on that); row_index locates
@@ -387,21 +392,21 @@ function createTables(): void {
   database.exec('CREATE INDEX IF NOT EXISTS idx_routine_runs_parent ON routine_runs(parent_run_id)')
   // ── 专家配置包 (expert config packs): extended subagent_profiles + per-conversation binding ──
   for (const col of ['description TEXT', 'methodology TEXT', 'output_spec TEXT', 'constraints TEXT', 'knowledge_file_ids TEXT']) {
-    try { database.exec(`ALTER TABLE subagent_profiles ADD COLUMN ${col}`) } catch (e) {}
+    try { database.exec(`ALTER TABLE subagent_profiles ADD COLUMN ${col}`) } catch {}
   }
-  try { database.exec('ALTER TABLE subagent_profiles ADD COLUMN icon TEXT') } catch (e) {}
+  try { database.exec('ALTER TABLE subagent_profiles ADD COLUMN icon TEXT') } catch {}
   // 引用关系（技能名 / 连接器 id）：专家点名自己常用的技能与连接器，随指令注入，
   // 但不是权限白名单 —— 能力仍然与全局一致。
   for (const col of ['skill_names TEXT', 'mcp_server_ids TEXT']) {
-    try { database.exec(`ALTER TABLE subagent_profiles ADD COLUMN ${col}`) } catch (e) {}
+    try { database.exec(`ALTER TABLE subagent_profiles ADD COLUMN ${col}`) } catch {}
   }
-  try { database.exec("UPDATE subagent_profiles SET description = '' WHERE description IS NULL") } catch (e) {}
-  try { database.exec("UPDATE subagent_profiles SET knowledge_file_ids = '[]' WHERE knowledge_file_ids IS NULL") } catch (e) {}
-  try { database.exec('ALTER TABLE conversations ADD COLUMN expert_id TEXT') } catch (e) {}
+  try { database.exec("UPDATE subagent_profiles SET description = '' WHERE description IS NULL") } catch {}
+  try { database.exec("UPDATE subagent_profiles SET knowledge_file_ids = '[]' WHERE knowledge_file_ids IS NULL") } catch {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN expert_id TEXT') } catch {}
   // 授权档位按会话存储；缺失 = 从未选择（按 'auto' 处理）。
-  try { database.exec('ALTER TABLE conversations ADD COLUMN approval_mode TEXT') } catch (e) {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN approval_mode TEXT') } catch {}
   // 会话级模型按会话存储；缺失 = 从未选择（跟随全局默认 activeProfileId）。
-  try { database.exec('ALTER TABLE conversations ADD COLUMN profile_id TEXT') } catch (e) {}
+  try { database.exec('ALTER TABLE conversations ADD COLUMN profile_id TEXT') } catch {}
   // ── 专家去内置化：能力收敛交给全局，专家只描述身份 + 私有知识 ──
   // 两个内置基础设施子代理（通用/画布）连同「内置锁定工具」概念一起退场：
   // 画布有自己的硬编码人设与工具白名单，spawn 无档案时走通用子代理人设。
@@ -410,11 +415,11 @@ function createTables(): void {
   // 保留空列让回滚到旧版本仍然可用，代价只是表里几列不再被使用。
   try {
     database.exec("DELETE FROM subagent_profiles WHERE id IN ('subagent-general','subagent-canvas')")
-  } catch (e) {}
+  } catch {}
   // ── M5R: retype legacy tool-studio conversations ──
   // They used to derive as 'normal' and leak into the chat list; upsert's
   // ON CONFLICT never updates type, so existing rows need this one-time sweep.
-  try { database.exec("UPDATE conversations SET type='tool' WHERE id LIKE 'toolstudio_%'") } catch (e) {}
+  try { database.exec("UPDATE conversations SET type='tool' WHERE id LIKE 'toolstudio_%'") } catch {}
 
   // ── PLAN-settings-restructure P2: knowledge favorite source + favorites removal ──
   migrateKnowledgeFavoriteSource(database)

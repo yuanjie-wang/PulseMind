@@ -58,7 +58,8 @@ describe('sweep gate (sweepKeyOf / sweepKeysMatch)', () => {
   it('any mutation (new array reference) opens the gate — capture runs', () => {
     const e = engine([{ id: 'a' }])
     const key = sweepKeyOf(e)
-    e.messages.push  // exists on arrays; the engine replaces the whole array
+    // exists on arrays; the engine replaces the whole array
+    expect(typeof e.messages.push).toBe('function')
     const mutated = engine([{ id: 'a' }, { id: 'b' }])
     expect(sweepKeysMatch(key, sweepKeyOf(mutated))).toBe(false)
   })

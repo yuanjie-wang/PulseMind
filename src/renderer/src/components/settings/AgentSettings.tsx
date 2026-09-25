@@ -24,6 +24,7 @@ function AgentSettings({ open, onClose, inline }: AgentSettingsProps): React.Rea
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- modal-open reset: re-seeds the local draft from props when the dialog opens
       setLocalSettings(settings)
     }
   }, [open, settings])

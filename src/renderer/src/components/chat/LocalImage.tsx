@@ -18,7 +18,7 @@ export function getExt(filePath: string): string | null {
 }
 
 export function LocalImage(props: React.ImgHTMLAttributes<HTMLImageElement> & Record<string, unknown>): React.ReactElement {
-  const { src, children, domNode, streamStatus, ...rest } = props
+  const { src, children: _children, domNode: _domNode, streamStatus: _streamStatus, ...rest } = props
   const [viewerOpen, setViewerOpen] = useState(false)
 
   // Handle both <img src="..."> (from XMarkdown) and <local-image data-path="..."> (from FileRefChip)
@@ -28,7 +28,7 @@ export function LocalImage(props: React.ImgHTMLAttributes<HTMLImageElement> & Re
   // Matches both /.pulsemind/tmp/xxx, /Users/xxx/.pulsemind/tmp/xxx,
   // and Windows C:\Users\xxx\.pulsemind\tmp\xxx
   let resolvedSrc = filePath
-  if (resolvedSrc && /[\/\\]\.pulsemind[\/\\]tmp[\/\\]/.test(resolvedSrc)) {
+  if (resolvedSrc && /[/\\]\.pulsemind[/\\]tmp[/\\]/.test(resolvedSrc)) {
     if (!resolvedSrc.startsWith('local-file://')) {
       resolvedSrc = `local-file://${resolvedSrc.replace(/\\/g, '/')}`
     }

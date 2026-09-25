@@ -8,8 +8,6 @@ import {
   saveConversation,
   appendConversationMessages,
   persistToolResults,
-  deriveConvType,
-  deriveRectId,
   updateMessageMetadata,
   deleteConversation,
   setConversationProject,

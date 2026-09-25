@@ -286,7 +286,6 @@ function applyOne(
     }
     case 'insert_paragraph': {
       const anchor = requireParagraph(model, op.paragraph)
-      const anchorRaw = xml.slice(anchor.element.start, anchor.element.end)
       const pPr = anchor.element.children.find((c) => c.kind === 'element' && c.name === 'w:pPr') as XmlElementNode | undefined
       let pPrXml = ''
       if (op.style) {

@@ -9,7 +9,6 @@ import { resolve, sep, extname, join, relative, basename } from 'node:path'
 import { execFile } from 'node:child_process'
 import { getBaseRawDir, getBaseWikiDir } from '../storage'
 import {
-  importLocalFile,
   importLocalFiles,
   importUrl,
   reextractKnowledge,

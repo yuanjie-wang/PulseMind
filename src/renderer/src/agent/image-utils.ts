@@ -6,7 +6,7 @@ function isBase64Image(s: string): boolean {
 }
 
 /** Find absolute paths ending with image extensions in a string. Supports both Unix and Windows paths. */
-const IMAGE_PATH_RE = /((?:[A-Za-z]:)?[\/\\][^\s"'`,\]}]+\.(?:png|jpg|jpeg|webp|gif))/gi
+const IMAGE_PATH_RE = /((?:[A-Za-z]:)?[/\\][^\s"'`,\]}]+\.(?:png|jpg|jpeg|webp|gif))/gi
 
 export async function saveImagesInText(text: string): Promise<string> {
   // 1. Save any base64 images

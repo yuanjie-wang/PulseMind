@@ -28,7 +28,7 @@ export async function extractHtml(filePath: string, buffer: Buffer): Promise<Ext
   }
 
   // Extract title from <title> tag or filename
-  let title = document.querySelector('title')?.textContent?.trim() || basename(filePath).replace(/\.[^.]+$/, '')
+  const title = document.querySelector('title')?.textContent?.trim() || basename(filePath).replace(/\.[^.]+$/, '')
 
   // Use Readability to extract main content
   const reader = new Readability(document)

@@ -15,7 +15,7 @@
 import { build } from 'esbuild'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -23,7 +23,6 @@ const root = process.cwd()
 const work = mkdtempSync(join(tmpdir(), 'pm-last-used-'))
 const home = join(work, 'home')
 mkdirSync(join(home, '.pulsemind'), { recursive: true })
-const settingsPath = join(home, '.pulsemind', 'settings.json')
 const require = createRequire(join(root, 'package.json'))
 const source = `
 import assert from 'node:assert/strict'

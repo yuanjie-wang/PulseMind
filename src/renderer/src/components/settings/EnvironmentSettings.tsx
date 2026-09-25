@@ -42,6 +42,7 @@ function EnvironmentSettings({ open, onClose, inline, onReloadConversations }: E
   // Sync the draft fields and load the data paths on open
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- modal-open reset: re-seeds the draft fields from props; the async path load follows
       setLocalWorkspaceDir(settings.workspaceDir || '')
       setLocalLoopLimit(settings.maxLoopIterations ?? 50)
       setLocalParallelLimit(settings.maxParallelSubAgents ?? 5)

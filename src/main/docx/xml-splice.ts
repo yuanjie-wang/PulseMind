@@ -76,7 +76,7 @@ export function looksLikeSupportedXml(text: string): boolean {
 export function parseXml(xml: string): ParsedXml {
   const allElements: XmlElementNode[] = []
   const root: XmlElementNode = { kind: 'element', name: '#document', start: 0, end: xml.length, startTagStart: 0, startTagEnd: 0, endTag: null, attrs: new Map(), children: [], parent: null }
-  let stack: XmlElementNode[] = [root]
+  const stack: XmlElementNode[] = [root]
   let i = 0
   const n = xml.length
 
