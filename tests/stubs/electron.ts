@@ -12,6 +12,9 @@ mkdirSync(join(APP_ROOT, 'templates', 'pulsemind'), { recursive: true })
 export const app = {
   isPackaged: false,
   getAppPath: () => APP_ROOT,
+  // hook-browser awaits this defensively before constructing a window; under
+  // the stub there is nothing to wait for (the app is "ready" by definition).
+  whenReady: async (): Promise<void> => undefined,
 }
 
 // `powerSaveBlocker` is here for the keep-awake guard (src/main/system/keep-awake.ts):
@@ -85,4 +88,110 @@ export function setStubEncryptionAvailable(available: boolean): void {
 let denyEncrypt = false
 export function setStubKeychainDenied(denied: boolean): void {
   denyEncrypt = denied
+}
+
+// ── ipcMain / dialog / BrowserWindow (terminal gate, review 2026-09-25 P0-3) ──
+// `ipcMain.handle` registers into a Map so a test drives the REAL registered
+// handler with a synthetic invoke event — the gate under test is the
+// production code path, never a copy of it. Importing THIS file and letting
+// the handler import 'electron' resolve through the vitest alias yields the
+// same module instance, so the registry the test reads is the one the
+// handler filled.
+export const ipcMain = {
+  handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  handle(channel: string, listener: (...args: unknown[]) => unknown): void {
+    this.handlers.set(channel, listener)
+  },
+  removeHandler(channel: string): void {
+    this.handlers.delete(channel)
+  },
+}
+export function resetStubIpcHandlers(): void {
+  ipcMain.handlers.clear()
+}
+
+// `dialog.showMessageBox` — the native confirmation the gate blocks on.
+// response 0 = 允许执行, 1 = 拒绝 (the handler's defaultId/cancelId).
+// The call log is the non-vacuity surface for "the gate really asked": a gate
+// that skipped the dialog and fell through to allowed shows an empty log.
+let stubDialogResponse = 1
+const stubDialogCalls: unknown[][] = []
+export function setStubDialogResponse(response: number): void {
+  stubDialogResponse = response
+}
+export function getStubDialogCalls(): unknown[][] {
+  return stubDialogCalls
+}
+export function resetStubDialog(): void {
+  stubDialogResponse = 1
+  stubDialogCalls.length = 0
+}
+export const dialog = {
+  showMessageBox: async (
+    ...args: unknown[]
+  ): Promise<{ response: number; checkboxChecked: boolean }> => {
+    stubDialogCalls.push(args)
+    return { response: stubDialogResponse, checkboxChecked: false }
+  },
+}
+
+// ── BrowserWindow ──
+// `fromWebContents` returns null — the window-less fallback overload the gate
+// must handle (detached/crashed renderer). `getSender()` then talks to the
+// event's own webContents, which is what a test's fake sender is.
+//
+// Instances exist for hook-browser: the login-window primitive constructs one
+// exactly as the app does, so the stub models the four runtime facts its
+// contract rests on — construction options (assertable), loadURL (records
+// the navigation), destroy → 'closed' (the event `close()` resolves on), and
+// isDestroyed (the idempotency guard). The registry + reset are the
+// assertion surface: how many windows opened, with what, and whether they
+// were actually destroyed.
+export class BrowserWindow {
+  static fromWebContents(_webContents: unknown): null {
+    return null
+  }
+
+  readonly options: Record<string, unknown>
+  readonly loadedUrls: string[] = []
+  private destroyed = false
+  private readonly listeners = new Map<string, Array<() => void>>()
+
+  constructor(options: Record<string, unknown> = {}) {
+    this.options = options
+    stubBrowserWindows.push(this)
+  }
+
+  loadURL(url: string): Promise<void> {
+    this.loadedUrls.push(url)
+    return Promise.resolve()
+  }
+
+  isDestroyed(): boolean {
+    return this.destroyed
+  }
+
+  once(event: string, listener: () => void): void {
+    const list = this.listeners.get(event) ?? []
+    list.push(listener)
+    this.listeners.set(event, list)
+  }
+
+  destroy(): void {
+    if (this.destroyed) return
+    this.destroyed = true
+    for (const listener of this.listeners.get('closed') ?? []) listener()
+    this.listeners.delete('closed')
+  }
+}
+
+const stubBrowserWindows: BrowserWindow[] = []
+
+/** Every window constructed since the last reset, in creation order. */
+export function getStubBrowserWindows(): BrowserWindow[] {
+  return [...stubBrowserWindows]
+}
+
+export function resetStubBrowserWindows(): void {
+  stubBrowserWindows.length = 0
 }

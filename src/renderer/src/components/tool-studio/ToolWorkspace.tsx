@@ -1,5 +1,6 @@
 // ── Tool workspace (M5R 工作室态) ──
-// Left: live preview iframe (srcDoc + injectToolSdk + connectToolBridge).
+// Left: live preview iframe (mountToolDocument: local-file tmp copy +
+// injectToolSdk + connectToolBridge).
 // Right: the build conversation — the SAME hosted agent loop and the same
 // transcript/composer components as the main chat (M5R unification); only the
 // session config differs (builder prompt, narrow toolset, tool dir, unattended).

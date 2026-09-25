@@ -5,6 +5,10 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 
 vi.mock('../src/main/sandbox/guard', () => ({
+  // The one real rule file-ops still imports from this module (resolvePath
+  // shares the guard's `~` → home expansion): mirrored verbatim, identity for
+  // the absolute paths these tests use.
+  expandTilde: (t: string) => (t.startsWith('~') ? join(homedir(), t.slice(1)) : t),
   guardFsTarget: async (target: string, mode: string) =>
     target.includes('deny') ? { ok: false, reason: `deny-listed (${mode})` } : { ok: true },
 }))
@@ -26,7 +30,7 @@ beforeEach(() => {
 // Instead of mocking node:fs, run against actual temp files.
 import AdmZip from 'adm-zip'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 function tempFile(name: string, buf: Buffer): string {

@@ -1,12 +1,11 @@
 import { ipcMain, shell, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { platform, release, arch } from 'node:os'
-import { join } from 'node:path'
-import { existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR, TOOLS_DIR } from '../storage'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
+import { safeExternalUrl } from '../utils/external-url'
 
 export interface PlatformInfo {
   platform: string
@@ -72,7 +71,8 @@ export function registerAppHandlers(): void {
       try {
         await new Promise<void>((resolve, reject) => {
           execFile(info.ripgrepPath!, ['--version'], { timeout: 5000 }, (err) => {
-            err ? reject(err) : resolve()
+            if (err) reject(err)
+            else resolve()
           })
         })
       } catch {
@@ -98,7 +98,10 @@ export function registerAppHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.SHELL_OPEN_EXTERNAL, async (_event, url: string): Promise<void> => {
-    await shell.openExternal(url)
+    // Scheme-gated (review 2026-09-25 P0-2) — see utils/external-url.ts.
+    const safe = safeExternalUrl(url, DATA_DIR)
+    if (!safe) throw new Error(`blocked external URL (scheme not allowed): ${String(url).slice(0, 120)}`)
+    await shell.openExternal(safe)
   })
 
   ipcMain.handle(IPC_CHANNELS.FILE_STAT, async (_event, filePath: string): Promise<{ size: number; birthtime: string; mtime: string; isDirectory: boolean } | null> => {

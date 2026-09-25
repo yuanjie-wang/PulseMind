@@ -1,7 +1,16 @@
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi } from 'vitest'
-import { HtmlArtifactCard, buildCardDocument, isHtmlFenceLang, hashText } from '../src/renderer/src/components/chat/HtmlArtifactCard'
+import {
+  HtmlArtifactCard,
+  buildCardDocument,
+  isHtmlFenceLang,
+  hashText,
+  persistHtmlCopy,
+  toLocalFileUrl,
+} from '../src/renderer/src/components/chat/HtmlArtifactCard'
 import zh from '../src/renderer/src/i18n/locales/zh'
 import en from '../src/renderer/src/i18n/locales/en'
 
@@ -89,5 +98,90 @@ describe('htmlCard i18n keys', () => {
       expect(zhCard?.[k], `zh.htmlCard.${k}`).toBeTruthy()
       expect(enCard?.[k], `en.htmlCard.${k}`).toBeTruthy()
     }
+  })
+})
+
+// The frame's serving path (review 2026-09-25 P1): a local-file: URL over a
+// content-addressed tmp copy. node-env cannot mount the effect (no window, no
+// layout), so the two helpers it composes are pinned here and the wiring is
+// pinned as source — the shape that must never come back is a blob URL:
+// blob: INHERITS the parent CSP (measured, scripts/probe-csp-inheritance.mjs)
+// and would kill every inline script the model writes.
+describe('persistHtmlCopy / toLocalFileUrl (the local-frame path)', () => {
+  const g = globalThis as { window?: unknown }
+
+  function stubApi(api: unknown): () => void {
+    const hadWindow = 'window' in g
+    const saved = g.window
+    g.window = { ...((saved as object) ?? {}), electronAPI: api }
+    return () => {
+      if (hadWindow) g.window = saved
+      else delete g.window
+    }
+  }
+
+  it('writes content-addressed under tmp/html-cards and builds the local-file URL', async () => {
+    const writes: Array<{ filePath: string; content: string }> = []
+    const restore = stubApi({
+      getDataPaths: async () => ({ dataDir: '/d' }),
+      writeFile: async (input: { filePath: string; content: string }) => {
+        writes.push(input)
+        return { success: true }
+      },
+    })
+    try {
+      const p = await persistHtmlCopy('abc')
+      expect(p).toBe(`/d/tmp/html-cards/${hashText('abc')}.html`)
+      expect(await persistHtmlCopy('abc')).toBe(p) // same content → same path (no reload)
+      expect(await persistHtmlCopy('abd')).not.toBe(p)
+      expect(writes.map((w) => w.content)).toEqual(['abc', 'abc', 'abd'])
+
+      expect(toLocalFileUrl('/d/tmp/html-cards/x.html')).toBe('local-file:///d/tmp/html-cards/x.html')
+      // Windows: the drive letter rides the URL hostname (resolveLocalFilePath reads it back).
+      expect(toLocalFileUrl('C:\\Users\\me\\x.html')).toBe('local-file://C:/Users/me/x.html')
+    } finally {
+      restore()
+    }
+  })
+
+  it('returns null when the write fails or the bridge is absent', async () => {
+    const restoreFail = stubApi({
+      getDataPaths: async () => ({ dataDir: '/d' }),
+      writeFile: async () => ({ success: false, error: 'denied' }),
+    })
+    try {
+      expect(await persistHtmlCopy('abc')).toBeNull()
+    } finally {
+      restoreFail()
+    }
+    const restoreAbsent = stubApi(undefined)
+    try {
+      expect(await persistHtmlCopy('abc')).toBeNull() // no electronAPI at all → srcdoc fallback signal
+    } finally {
+      restoreAbsent()
+    }
+  })
+})
+
+describe('the serving path is local-file, never blob (source contract)', () => {
+  const read = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf-8')
+
+  it('neither frame consumer mints a blob URL, and frame-src names local-file only', () => {
+    const card = read('../src/renderer/src/components/chat/HtmlArtifactCard.tsx')
+    const bridge = read('../src/renderer/src/tool-studio/bridge-host.ts')
+    const indexHtml = read('../src/renderer/index.html')
+    for (const [name, src] of [
+      ['card', card],
+      ['bridge-host', bridge],
+    ] as const) {
+      expect(src, `${name} must not use createObjectURL (blob inherits the CSP)`).not.toContain('createObjectURL')
+      expect(src, `${name} must serve frames over local-file:`).toContain('local-file://')
+    }
+    expect(indexHtml).toContain('frame-src local-file:;')
+    expect(indexHtml).not.toContain('frame-src local-file: blob:')
+    // The CSP itself, not the comment above it (the comment SAYS the words).
+    const csp = indexHtml.match(/Content-Security-Policy" content="([^"]+)"/)?.[1] ?? ''
+    expect(csp).toMatch(/script-src 'self'/)
+    expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/)
   })
 })

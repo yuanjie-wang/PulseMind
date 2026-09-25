@@ -104,6 +104,60 @@ describe('guardPath — workspace under a deny root (M8.1)', () => {
   })
 })
 
+describe('guardPath — dual-coordinate workspace (workspaceReal)', () => {
+  // realTarget is always canonical; a workspace whose ancestors include a
+  // symlink (/tmp → /private/tmp) is spelled differently from its real path.
+  // Judging real against the lexical root denied EVERY op inside such a
+  // workspace (measured: svcCopyFile's session cases failed on it).
+  const lexicalWs = '/tmp/pm-workspace'
+  const realWs = '/private/tmp/pm-workspace'
+  const dualBase = { denyRoots, workspaceDir: lexicalWs, workspaceReal: realWs }
+
+  it('allow a canonical write inside the canonical root', () => {
+    const d = guardPath({ ...dualBase, target: `${lexicalWs}/out.txt`, operation: 'write', realTarget: `${realWs}/out.txt` })
+    expect(d.ok).toBe(true)
+  })
+
+  it('deny a canonical write escaping BOTH spellings', () => {
+    const d = guardPath({ ...dualBase, target: `${lexicalWs}/link`, operation: 'write', realTarget: '/Users/dev/Desktop/evil.txt' })
+    expect(d.ok).toBe(false)
+    expect(d.ok ? '' : d.reason).toMatch(/outside the workspace/)
+  })
+
+  it('keep the deny-root exemption working under the spelling mismatch', () => {
+    // Workspace under ~/.pulsemind (a deny root for sessions): realInside must
+    // be judged against workspaceReal, or the exemption collapses and the
+    // session loses its own workspace to the ancestor deny.
+    const buriedLex = '/tmp/.pulsemind/workspace/ws1'
+    const buriedReal = '/private/tmp/.pulsemind/workspace/ws1'
+    const d = guardPath({
+      denyRoots,
+      workspaceDir: buriedLex,
+      workspaceReal: buriedReal,
+      target: `${buriedLex}/notes.md`,
+      operation: 'write',
+      realTarget: `${buriedReal}/notes.md`,
+    })
+    expect(d.ok).toBe(true)
+    // And a real link escape out of the buried workspace still hits the deny.
+    const escape = guardPath({
+      denyRoots,
+      workspaceDir: buriedLex,
+      workspaceReal: buriedReal,
+      target: `${buriedLex}/link`,
+      operation: 'write',
+      realTarget: `${HOME}/.ssh/id_rsa`,
+    })
+    expect(escape.ok).toBe(false)
+  })
+
+  it('allow a target whose canonical location is the workspace', () => {
+    // Spelled via a symlink outside — lands inside, must pass.
+    const d = guardPath({ ...dualBase, target: '/elsewhere/ws-link/x.txt', operation: 'write', realTarget: `${realWs}/x.txt` })
+    expect(d.ok).toBe(true)
+  })
+})
+
 describe('buildDenyRoots', () => {
   it('adds the macOS keychain only on darwin', () => {
     expect(buildDenyRoots(HOME, 'darwin').some((r) => r.includes('Keychains'))).toBe(true)

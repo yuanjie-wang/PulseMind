@@ -5,11 +5,11 @@
  */
 import { readFile, writeFile, appendFile, stat, mkdir, readdir, type Dirent } from 'node:fs/promises'
 import * as path from 'node:path'
-import * as os from 'node:os'
 import { patchContent } from '../utils/patch-utils'
 import { DATA_DIR } from '../storage'
 import { getOrConvert } from '../storage/read-cache'
-import { guardFsTarget, checkFsTarget } from '../sandbox/guard'
+import { guardFsTarget, checkFsTarget, expandTilde } from '../sandbox/guard'
+import { currentSessionSandbox } from '../sandbox/session-context'
 import { withPathLock } from '../sandbox/write-lock'
 
 export interface EditFileInput {
@@ -109,9 +109,17 @@ export async function svcCopyFileToTmp(sourcePath: string): Promise<{ success: b
 
 /** Resolve user-supplied path to an absolute, normalized path (no `..` traversal). */
 function resolvePath(input: string): string {
-  // Expand ~ to home directory (path.resolve does NOT handle ~)
-  const normalized = input.startsWith('~') ? path.join(os.homedir(), input.slice(1)) : input
-  const resolved = path.resolve(normalized)
+  // Same rule the guard applies (expandTilde in sandbox/guard) — the guard
+  // judges THIS spelling, so the operation must land on it.
+  const normalized = expandTilde(input)
+  // Relative paths hang off the session workspace, in the same coordinate the
+  // guard's resolveTarget judges them in (workspace-relative is the documented
+  // meaning of a relative path for an agent); without a session they resolve
+  // against the cwd, as before. Judgment and landing spot cannot diverge.
+  const ws = currentSessionSandbox()?.workspaceDir
+  const resolved = ws && !path.isAbsolute(normalized)
+    ? path.resolve(ws, normalized)
+    : path.resolve(normalized)
   // Reject paths that resolve outside the filesystem root (impossible case, but safe)
   if (!resolved.startsWith('/') && !resolved.match(/^[A-Z]:\\/i)) {
     throw new Error('Path must be absolute')
@@ -160,11 +168,24 @@ export async function svcCopyFile(input: { sourceUrl?: string; destination: stri
     if (sourcePath.startsWith('file://')) {
       sourcePath = sourcePath.slice(process.platform === 'win32' ? 8 : 7)
     }
+    if (!sourcePath) return { success: false, error: 'copy source is empty' }
+    // Both ends are guarded, like every sibling entry in this file (review
+    // 2026-09-25): the SOURCE is an arbitrary read (deny-roots apply — ~/.ssh
+    // etc. must not be copyable into a workspace the model can read), and the
+    // DESTINATION is an arbitrary write (baseline deny-roots for renderer
+    // origins; the workspace jail when an agent session context is active).
+    const srcGuard = await checkFsTarget(sourcePath, 'read')
+    if (!srcGuard.ok) return { success: false, error: srcGuard.reason }
+    const destGuard = await guardFsTarget(input.destination, 'write')
+    if (!destGuard.ok) return { success: false, error: destGuard.reason }
     const safeDest = await resolveWritablePath(input.destination)
     // Copy is a write: create the destination's parents (the conversation
     // workspace itself is minted, not created, until the first write lands).
     await mkdir(path.dirname(safeDest), { recursive: true })
-    await cf(sourcePath, safeDest)
+    // Read the GUARD'S resolved source, not the raw spelling: `~` expansion
+    // and workspace-relative joins happen inside the guard, and the bytes must
+    // come from exactly the file it judged.
+    await cf(srcGuard.resolved, safeDest)
     return { success: true }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Unknown' }

@@ -4,7 +4,7 @@
 //   2. path jail (fs ops are jailed to the tool's own directory — D16)
 //   3. audit (every call recorded — M6.7)
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { clipboard, shell } from 'electron'
 import { Notification } from 'electron'
@@ -12,6 +12,8 @@ import { toolStore } from '../storage/tool-store'
 import { TOOLS_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
 import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
+import { resolveRealTargetSync } from '../sandbox/real-path'
+import { isPrivateHost } from '../utils/ssrf'
 import { homedir, platform } from 'node:os'
 import type { UserTool } from '../../shared/types/user-tool'
 
@@ -38,12 +40,18 @@ const REQUIRED_CAPABILITY: Record<string, string | null> = {
   'storage.keys': null,
 }
 
-/** Blocks cloud-metadata and loopback endpoints from generated tools. */
-function isBlockedHost(url: URL): boolean {
-  const host = url.hostname
-  if (host === '169.254.169.254' || host === 'metadata.google.internal') return true
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.local')) return true
-  return false
+/** Literal hosts that must never be reachable from a generated tool even
+ *  before DNS: the cloud-metadata name and mDNS suffixes may resolve through
+ *  paths the shared private-IP classifier doesn't see (or not resolve at all). */
+const LITERAL_BLOCKED_HOSTS = new Set(['metadata.google.internal', 'localhost', 'metadata.google', 'instance-data'])
+
+/** SSRF gate for generated tools: literal metadata names + mDNS suffixes,
+ *  then the shared private/reserved-range classifier (RFC1918, loopback,
+ *  link-local, CGNAT, multicast — via literal IP or DNS). */
+async function isBlockedHost(url: URL): Promise<boolean> {
+  const host = url.hostname.toLowerCase()
+  if (LITERAL_BLOCKED_HOSTS.has(host) || host.endsWith('.local')) return true
+  return isPrivateHost(host)
 }
 
 // ── storage (KV per tool, storage.json) ──
@@ -83,7 +91,7 @@ async function httpRequest(params: Record<string, unknown>): Promise<{ status: n
     throw bridgeError('BAD_REQUEST', `无效 URL: ${url}`)
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) throw bridgeError('BAD_REQUEST', '仅支持 http/https')
-  if (isBlockedHost(parsed)) throw bridgeError('EXEC_FAILED', '该地址不允许访问')
+  if (await isBlockedHost(parsed)) throw bridgeError('EXEC_FAILED', '该地址不允许访问')
 
   const method = String(params.method ?? 'GET').toUpperCase()
   const headers = (params.headers && typeof params.headers === 'object' ? params.headers : {}) as Record<string, string>
@@ -114,11 +122,28 @@ function resolveToolPath(toolId: string, target: unknown): string {
   const toolDir = join(TOOLS_DIR, toolId)
   const input = String(target ?? '')
   const resolved = resolve(toolDir, input)
+
+  // Judge the REAL location, not the spelling (review 2026-09-25 P1): a
+  // nonexistent target skips plain realpath entirely, so a write through a
+  // symlinked parent inside the tool dir escaped while looking legal. A
+  // target that exists but cannot be resolved (dangling/loop symlink) fails
+  // closed — a write would follow the link out of the judged location.
+  const real = resolveRealTargetSync(resolved)
+  if (real.status === 'unresolvable') {
+    throw bridgeError('PATH_OUTSIDE_TOOL_DIR', 'path cannot be resolved (symlink loop or dangling link)')
+  }
+  // Anchor the jail on the tool dir's REAL location too — if a symlinked
+  // ancestor relocates it, comparing the real target against the lexical
+  // toolDir would deny every op of that tool.
+  let realToolDir = toolDir
+  try { realToolDir = realpathSync(toolDir) } catch { /* not created yet — lexical anchor */ }
+
   const decision = guardPath({
     target: resolved,
     operation: 'write', // strictest read for both read/write ops is equivalent here: deny-root check
     denyRoots: buildBaselineDenyRoots(homedir(), platform()),
-    workspaceDir: toolDir,
+    workspaceDir: realToolDir,
+    realTarget: real.path,
   })
   if (!decision.ok) throw bridgeError('PATH_OUTSIDE_TOOL_DIR', decision.reason)
   return decision.resolved

@@ -8,17 +8,30 @@
  * (experts, tool studio, run records) all get the card without per-view wiring.
  *
  * Isolation is the security model: the `sandbox` carries no same-origin flag,
- * so the fragment gets
- * an opaque origin — no localStorage, no cookies, no access to `window.
- * electronAPI` or the app DOM. Scripts and forms still run (the cards are
- * meant to be interactive); the srcdoc document inherits the renderer CSP,
- * whose `script-src 'unsafe-inline'` is what lets the model's inline JS run
- * at all. `allow-popups` without `-to-escape` keeps any popup it opens
- * sandboxed too.
+ * so the fragment gets an opaque origin — no localStorage, no cookies, no
+ * access to `window.electronAPI` or the app DOM. Scripts and forms still run
+ * (the cards are meant to be interactive). The frame is served a
+ * `local-file:` URL over a tmp copy (review 2026-09-25 P1), not srcdoc: the
+ * page's `script-src` lost 'unsafe-inline', and a srcdoc document INHERITS
+ * the parent CSP, which would kill the model's inline JS. blob: was the first
+ * migration and is wrong — measured in `scripts/probe-csp-inheritance.mjs`,
+ * a blob: child FIRES its load event and still refuses its inline script
+ * (the creator's policy applies), so the blob path died exactly where srcdoc
+ * would have. `local-file:` is the app's own protocol (protocol.handle in
+ * main, the preview pane's) and does NOT inherit — same probe, same sandbox
+ * flags. The copy is content-addressed (hashText), so an unchanged document
+ * maps to the same path and a re-render never reloads the frame; tmp-cleanup
+ * sweeps the directory (7 days — the copy is re-written on the next mount
+ * anyway). SSR/jsdom have no `electronAPI` write, so they render the srcdoc
+ * fallback below and the effect never replaces it. `allow-popups` without
+ * `-to-escape` stays deliberately: it is the only path an in-card
+ * `target=_blank` link has to the window open handler → scheme-gated
+ * `shell.openExternal` in main, and popped frames remain sandboxed because
+ * `-to-escape` is absent.
  *
  * Streaming: x-markdown emits the code token for an UNTERMINATED fence
  * (`streamStatus: 'loading'`), so the card can live-preview while the model
- * writes. Each srcDoc change reloads the whole frame, so during the stream
+ * writes. Each snapshot swap reloads the whole frame, so during the stream
  * the snapshot advances at most every STREAM_PREVIEW_MIN_INTERVAL (the same
  * throttle shape StreamingText uses for the parse; feed() is idempotent, so
  * calling it during render is safe under StrictMode). `streaming=false` is
@@ -31,7 +44,7 @@
  * verbatim — it gets no measure script and rides the default height with
  * internal scrolling, which is what a page-shaped artifact wants anyway.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from 'antd'
 import { ChromeOutlined, CopyOutlined, ExpandOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -42,6 +55,18 @@ const CARD_MIN_HEIGHT = 120
 const CARD_MAX_HEIGHT = 480
 const CARD_DEFAULT_HEIGHT = 280
 const STREAM_PREVIEW_MIN_INTERVAL = 1000
+
+/** useLayoutEffect in the browser (swap the blob URL in before paint), the
+ *  plain effect under SSR/node — a server render of a layout effect warns and
+ *  runs nothing anyway. The card is browser-only; the alias exists for the
+ *  renderToStaticMarkup test that mounts it. */
+const useFrameLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect
+
+/** Whether frames here can be served from disk: the renderer preload exposes
+ *  `writeFile`, SSR/jsdom do not. Evaluated at module load — the bridge
+ *  exists before page scripts — and it is what splits a local-file frame
+ *  (browser) from the srcdoc fallback (everything else). */
+const CAN_PERSIST = typeof window !== 'undefined' && typeof window.electronAPI?.writeFile === 'function'
 
 /** A full HTML document the model wrote as a page, not a fragment. */
 const FULL_DOCUMENT = /<!doctype html|<html[\s>]/i
@@ -83,17 +108,28 @@ export function buildCardDocument(code: string): string {
   ].join('')
 }
 
-async function persistCardCopy(code: string): Promise<string | null> {
+/** Write `content` to the content-addressed tmp html-cards dir and return the
+ *  absolute path; null when the write (or dataPaths) fails — the frame treats
+ *  that as "fall back to srcdoc". Shared by the frame (the built document) and
+ *  the header buttons (the raw fence code), hence the generic name. */
+export async function persistHtmlCopy(content: string): Promise<string | null> {
   try {
     const paths = await window.electronAPI.getDataPaths()
     // Renderer-layer writes carry no session context, so the guard applies
     // only the baseline deny roots — the app's own data dir stays writable.
-    const filePath = `${paths.dataDir}/tmp/html-cards/${hashText(code)}.html`
-    const res = await window.electronAPI.writeFile({ filePath, content: code })
+    const filePath = `${paths.dataDir}/tmp/html-cards/${hashText(content)}.html`
+    const res = await window.electronAPI.writeFile({ filePath, content })
     return res.success ? filePath : null
   } catch {
     return null
   }
+}
+
+/** Absolute fs path → the local-file: URL. Windows drive letters ride the
+ *  URL hostname (local-file://C:/…), which serveLocalFile's
+ *  resolveLocalFilePath reads back — same conversion LocalImage uses. */
+export function toLocalFileUrl(filePath: string): string {
+  return `local-file://${filePath.replace(/\\/g, '/')}`
 }
 
 function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }): React.ReactElement {
@@ -125,8 +161,9 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // The streaming snapshot: see the header comment. Replacing srcDoc reloads
-  // the frame, so freshness is quantized instead of chasing every parse tick —
+  // The streaming snapshot: see the header comment. Replacing the frame's
+  // document (each blob URL swap) reloads the frame, so freshness is
+  // quantized instead of chasing every parse tick —
   // the throttle is fed in an effect (purity rule: no ref reads / clocks in
   // render) and `shown` only advances when feed() hands out a new snapshot;
   // identical state bails the re-render out.
@@ -142,6 +179,33 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   }, [code, streaming])
   /* eslint-enable react-hooks/set-state-in-effect */
   const doc = useMemo(() => buildCardDocument(shown), [shown])
+
+  // Serve the frame from a local-file: URL over a tmp copy (header comment:
+  // srcdoc — and blob:, measured — inherit the renderer CSP and kill the
+  // model's inline JS). A layout effect so the first URL lands before paint
+  // wherever the async write allows; until it does, the frame carries neither
+  // src nor srcDoc (about:blank — better than a srcdoc frame that loads with
+  // its scripts refused and then reloads). Stale resolutions are dropped by
+  // the cleanup flag; the file itself is content-addressed and swept by
+  // tmp-cleanup, so there is no URL lifetime to manage here.
+  const [frameUrl, setFrameUrl] = useState<string | null>(null)
+  const [persistFailed, setPersistFailed] = useState(false)
+  useFrameLayoutEffect(() => {
+    if (!CAN_PERSIST) return // no write path: the srcdoc fallback is the render
+    let stale = false
+    void persistHtmlCopy(doc).then((filePath) => {
+      if (stale) return
+      if (filePath) {
+        setPersistFailed(false)
+        setFrameUrl(toLocalFileUrl(filePath))
+      } else {
+        setPersistFailed(true) // write unavailable → srcdoc fallback below
+      }
+    })
+    return () => {
+      stale = true
+    }
+  }, [doc])
 
   useEffect(() => {
     function onMessage(e: MessageEvent): void {
@@ -174,7 +238,7 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   }
 
   const onOpenInBrowser = async (): Promise<void> => {
-    const filePath = await persistCardCopy(code)
+    const filePath = await persistHtmlCopy(code)
     if (!filePath) return
     // Windows file: URIs are file:///C:/… — the same conversion
     // file-ops.ts svcCopyFile does.
@@ -182,7 +246,7 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   }
 
   const onOpenInPreview = async (): Promise<void> => {
-    const filePath = await persistCardCopy(code)
+    const filePath = await persistHtmlCopy(code)
     if (filePath) openInPreviewPane(filePath)
   }
 
@@ -241,7 +305,8 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
           ref={iframeRef}
           title={t('htmlCard.title')}
           sandbox="allow-scripts allow-popups allow-forms allow-modals"
-          srcDoc={doc}
+          src={frameUrl ?? undefined}
+          srcDoc={frameUrl === null && (!CAN_PERSIST || persistFailed) ? doc : undefined}
           style={{
             display: 'block',
             width: '100%',

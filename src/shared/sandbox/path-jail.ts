@@ -38,6 +38,13 @@ export interface GuardPathInput {
   denyRoots: string[]
   /** Present only for agent sessions. Absent = baseline (deny-roots only). */
   workspaceDir?: string
+  /** Canonical spelling of `workspaceDir` when the caller resolved it.
+   *  `realTarget` is always canonical, so judging it against a lexical
+   *  workspace root would deny EVERY op inside a workspace whose ancestors
+   *  include a symlink (`/tmp` → `/private/tmp`, a symlinked home). Each
+   *  comparison runs in its own coordinate system: lexical against lexical,
+   *  real against real. */
+  workspaceReal?: string | null
   /** Realpath-resolved target when the caller could resolve it (symlinks,
    *  `/tmp` → `/private/tmp`). Checked in addition to the lexical resolution. */
   realTarget?: string | null
@@ -109,7 +116,7 @@ export function guardPath(input: GuardPathInput): PathDecision {
   // not count, keeping deny roots effective for link escapes.
   const lexicalInside = !!input.workspaceDir && isSubpath(input.workspaceDir, resolved)
   const realInside = input.workspaceDir && input.realTarget != null
-    ? isSubpath(input.workspaceDir, input.realTarget)
+    ? isSubpath(input.workspaceReal ?? input.workspaceDir, input.realTarget)
     : null
   const inWorkspace = lexicalInside && realInside !== false
 
@@ -124,10 +131,12 @@ export function guardPath(input: GuardPathInput): PathDecision {
 
   if (input.operation === 'read') return { ok: true, resolved }
 
-  // Writes are jailed to the workspace.
-  const writableRoots = [input.workspaceDir]
-  // When the caller resolved symlinks, the REAL location governs: a link that
-  // sits inside the workspace but points outside must not pass.
+  // Writes are jailed to the workspace. Both spellings of the root are
+  // writable: `realTarget` judges against the canonical root (the default —
+  // a link inside the workspace pointing outside must not pass), while a
+  // caller with no `realTarget` resolves lexically and judges lexically.
+  const writableRoots: string[] = [input.workspaceDir]
+  if (input.workspaceReal) writableRoots.push(input.workspaceReal)
   const judgeTarget = input.realTarget ?? resolved
   const inside = writableRoots.some((root) => isSubpath(root, judgeTarget))
   if (!inside) {

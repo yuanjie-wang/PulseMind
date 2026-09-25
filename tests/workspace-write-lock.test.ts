@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
 
 // file-ops pulls in the sandbox guard, which pulls in the audit store and the
@@ -9,6 +9,10 @@ import { describe, expect, it, vi } from 'vitest'
 // jail (covered by path-jail.test.ts), so the guard is replaced wholesale with
 // an allow-all.
 vi.mock('../src/main/sandbox/guard', () => ({
+  // The one real rule file-ops still imports from this module (resolvePath
+  // shares the guard's `~` → home expansion): mirrored verbatim, identity for
+  // the absolute paths these tests use.
+  expandTilde: (t: string) => (t.startsWith('~') ? join(homedir(), t.slice(1)) : t),
   guardFsTarget: async (t: string) => ({ ok: true, resolved: t }),
   checkFsTarget: async (t: string) => ({ ok: true, resolved: t }),
 }))

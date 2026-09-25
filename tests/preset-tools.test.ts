@@ -569,12 +569,27 @@ describe('preset tool: qrcode', () => {
 // none of them can see the ordering that decides whether a startup bridge call
 // is answered at all. That ordering is the whole contract of mountToolDocument,
 // so it gets pinned here rather than inferred from a preset's behaviour.
+// Since review 2026-09-25 P1 the document rides a `local-file:` URL over a
+// tmp copy (srcdoc inherits the renderer CSP whose script-src lost
+// 'unsafe-inline', and blob: measured to inherit it too — see
+// scripts/probe-csp-inheritance.mjs), so the bytes reach the frame through a
+// stubbed `electronAPI.writeFile` and are asserted from the recorded writes.
+// The write is async, which is exactly what the ordering contract needs: the
+// document can only appear LATER than the listener, never earlier. The
+// srcdoc fallback is for hosts with no write path — a failed write lands
+// there too, and is asserted below.
 describe('tool bridge host: the listener is attached before the document', () => {
-  const seen = { attached: 0, order: [] as string[] }
+  const seen = {
+    attached: 0,
+    order: [] as string[],
+    writes: [] as { filePath: string; content: string }[],
+    failWrite: false,
+  }
   const savedWindow = (globalThis as { window?: unknown }).window
 
-  // `connectToolBridge` reads the global `window` at both attach and detach, so
-  // the stub has to stay installed for the whole block (not just around mount).
+  // `connectToolBridge` reads the global `window` at attach and detach, and
+  // the document write reads `window.electronAPI`, so the stub has to stay
+  // installed for the whole block (not just around mount).
   beforeAll(() => {
     ;(globalThis as { window?: unknown }).window = {
       addEventListener(type: string) {
@@ -586,6 +601,14 @@ describe('tool bridge host: the listener is attached before the document', () =>
       removeEventListener(type: string) {
         if (type === 'message') seen.attached--
       },
+      electronAPI: {
+        getDataPaths: async () => ({ dataDir: '/data' }),
+        writeFile: async (input: { filePath: string; content: string }) => {
+          if (seen.failWrite) return { success: false, error: 'stub says no' }
+          seen.writes.push({ filePath: input.filePath, content: input.content })
+          return { success: true }
+        },
+      },
     }
   })
   afterAll(() => {
@@ -594,65 +617,111 @@ describe('tool bridge host: the listener is attached before the document', () =>
   beforeEach(() => {
     seen.attached = 0
     seen.order = []
+    seen.writes = []
+    seen.failWrite = false
   })
 
+  /** Let the async write land and its src/srcdoc assignment run. */
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
   /** An iframe that records when its document is assigned. */
-  function probeIframe(): { iframe: HTMLIFrameElement; doc: () => string } {
-    let doc = ''
+  function probeIframe(): { iframe: HTMLIFrameElement; src: () => string; srcdoc: () => string } {
+    let src = ''
+    let srcdoc = ''
     const iframe = {
       contentWindow: null,
+      get src() {
+        return src
+      },
+      set src(value: string) {
+        seen.order.push('doc')
+        src = value
+      },
       get srcdoc() {
-        return doc
+        return srcdoc
       },
       set srcdoc(value: string) {
-        seen.order.push('srcdoc')
-        doc = value
+        seen.order.push('doc')
+        srcdoc = value
       },
     } as unknown as HTMLIFrameElement
-    return { iframe, doc: () => doc }
+    return { iframe, src: () => src, srcdoc: () => srcdoc }
   }
 
-  it('attaches the listener, then the tool document', () => {
-    const { iframe } = probeIframe()
+  it('attaches the listener, then the tool document', async () => {
+    const { iframe, src } = probeIframe()
     mountToolDocument(iframe, 'preset_pomodoro', '<html><body><p>x</p></body></html>')
-    expect(seen.order).toEqual(['listen', 'srcdoc'])
+    // The document is never assigned in the same tick as the listener — the
+    // write has to resolve first — so "listen" strictly precedes "doc".
+    expect(seen.order).toEqual(['listen'])
+    await flush()
+    expect(seen.order).toEqual(['listen', 'doc'])
+    expect(src()).toMatch(/^local-file:\/\/\/data\/tmp\/tool-docs\//)
     expect(seen.attached).toBe(1)
   })
 
-  it('mounts a real preset with the SDK ahead of its own markup', () => {
+  it('mounts a real preset with the SDK ahead of its own markup', async () => {
     const html = readFileSync(`${PRESETS_DIR}pomodoro/app.html`, 'utf-8')
-    const { iframe, doc } = probeIframe()
+    const { iframe, src } = probeIframe()
     mountToolDocument(iframe, 'preset_pomodoro', html)
-    expect(seen.order).toEqual(['listen', 'srcdoc'])
+    await flush()
     // The SDK is inserted first, so `window.pulsemind` exists by the time the
     // tool's own script (which reads storage at the bottom) runs.
-    expect(doc().indexOf('pulsemind-tool-host')).toBeGreaterThanOrEqual(0)
-    expect(doc().indexOf('pulsemind-tool-host')).toBeLessThan(doc().indexOf('id="clock"'))
+    const text = seen.writes[0].content
+    expect(text.indexOf('pulsemind-tool-host')).toBeGreaterThanOrEqual(0)
+    expect(text.indexOf('pulsemind-tool-host')).toBeLessThan(text.indexOf('id="clock"'))
+    // Content-addressed stem: a stable, collision-unlikely name, so an
+    // unchanged document always maps to the same tmp file.
+    expect(seen.writes[0].filePath).toMatch(/\/tmp\/tool-docs\/[0-9a-f]+-[0-9a-f]+\.html$/)
+    expect(src()).toBe(`local-file://${seen.writes[0].filePath}`)
   })
 
-  it('detaches the listener it attached', () => {
+  it('detaches the listener it attached', async () => {
     const { iframe } = probeIframe()
     const detach = mountToolDocument(iframe, 'preset_pomodoro', '<html></html>')
+    await flush()
     expect(seen.attached).toBe(1)
     detach()
     expect(seen.attached).toBe(0)
   })
 
-  it('does not reload an unchanged document, but does reload a changed one', () => {
-    // StrictMode double-invokes effects in dev. Re-assigning the same srcdoc
+  it('does not reload an unchanged document, but does reload a changed one', async () => {
+    // StrictMode double-invokes effects in dev. Re-assigning the same document
     // would restart the tool — and re-run its startup bridge calls — on every
-    // mount, so an unchanged document is left alone.
-    const { iframe, doc } = probeIframe()
+    // mount, so an unchanged document is left alone — both while its write is
+    // still pending and once it has landed.
+    const { iframe, src } = probeIframe()
     const first = '<html><body><p>x</p></body></html>'
     mountToolDocument(iframe, 'preset_pomodoro', first)
     mountToolDocument(iframe, 'preset_pomodoro', first)
-    expect(seen.order).toEqual(['listen', 'srcdoc', 'listen'])
-    expect(doc()).toContain('<p>x</p>')
+    await flush()
+    expect(seen.order).toEqual(['listen', 'listen', 'doc'])
+    expect(seen.writes).toHaveLength(1)
+    expect(seen.writes[0].content).toContain('<p>x</p>')
+
+    mountToolDocument(iframe, 'preset_pomodoro', first) // the applied re-mount
+    await flush()
+    expect(seen.order).toEqual(['listen', 'listen', 'doc', 'listen'])
+    expect(seen.writes).toHaveLength(1)
 
     mountToolDocument(iframe, 'preset_pomodoro', '<html><body><p>y</p></body></html>')
     // Each mount brings its own listener (the caller detaches the previous one);
     // only the document assignment is the part that must not repeat.
-    expect(seen.order).toEqual(['listen', 'srcdoc', 'listen', 'listen', 'srcdoc'])
-    expect(doc()).toContain('<p>y</p>')
+    await flush()
+    expect(seen.order).toEqual(['listen', 'listen', 'doc', 'listen', 'listen', 'doc'])
+    expect(seen.writes).toHaveLength(2)
+    expect(seen.writes[1].content).toContain('<p>y</p>')
+    expect(src()).toBe(`local-file://${seen.writes[1].filePath}`)
+  })
+
+  it('falls back to srcdoc when the write fails (host without a write path)', async () => {
+    seen.failWrite = true
+    const { iframe, srcdoc, src } = probeIframe()
+    mountToolDocument(iframe, 'preset_pomodoro', '<html><body><p>z</p></body></html>')
+    await flush()
+    expect(seen.order).toEqual(['listen', 'doc'])
+    expect(srcdoc()).toContain('<p>z</p>')
+    expect(src()).toBe('')
+    expect(seen.writes).toHaveLength(0)
   })
 })

@@ -1,8 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
-import { lookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
+import { isPrivateHost } from '../utils/ssrf'
 import { applyLlmRequestHook } from '../llm-hook'
 import { dumpLlmRequest } from '../llm/request-dump'
 import { ensureLaunchHooks } from '../hooks-runner'
@@ -82,34 +81,6 @@ export async function applyProfileHeaders(headers?: Record<string, string>, opts
     }
   }
   return result
-}
-
-/** Check if an IP falls within private/reserved ranges (SSRF prevention). */
-function isPrivateIP(ip: string): boolean {
-  const parts = ip.split('.').map(Number)
-  if (parts.length !== 4) return ip === '::1' || ip.startsWith('fc') || ip.startsWith('fd')
-  // 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
-  return parts[0] === 127 || parts[0] === 10 || parts[0] === 169
-    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
-    || (parts[0] === 192 && parts[1] === 168)
-}
-
-const PRIVATE_HOST_TTL = 5 * 60 * 1000 // 5 minutes
-const privateHostCache = new Map<string, { result: boolean; time: number }>()
-
-/** Check whether a hostname resolves to a private IP (with in-memory cache). */
-async function isPrivateHost(hostname: string): Promise<boolean> {
-  if (isIP(hostname)) return isPrivateIP(hostname)
-  const cached = privateHostCache.get(hostname)
-  if (cached !== undefined && Date.now() - cached.time < PRIVATE_HOST_TTL) return cached.result
-  try {
-    const { address } = await lookup(hostname)
-    const result = isPrivateIP(address)
-    privateHostCache.set(hostname, { result, time: Date.now() })
-    return result
-  } catch {
-    return false // DNS failure — let the fetch itself fail naturally
-  }
 }
 
 /** Verify the request URL is not an SSRF attempt against the user's configured API host. */
@@ -389,7 +360,7 @@ export function abortLlmStream(requestId: string): void {
 /** Simple non-streaming fetch: SSRF-validated, 30s timeout, 50MB cap, returns text. */
 export async function performSimpleFetch(url: string, options: SimpleFetchOptions): Promise<string | null> {
   console.log(`[API-Proxy] Simple fetch: POST ${url}`)
-  try { await validateRequestUrl(url) } catch (e) {
+  try { await validateRequestUrl(url) } catch {
     console.error(`[API-Proxy] SSRF blocked: ${url}`)
     return null
   }

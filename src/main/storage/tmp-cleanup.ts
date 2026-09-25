@@ -18,6 +18,12 @@ const BUCKETS: BucketSpec[] = [
   { dir: 'screenshot', ext: '.jpg', ttlMs: 30 * DAY },
   // Offloaded tool-result overflow, only re-read within the same loop — shortest TTL.
   { dir: 'trunc', ext: '.txt', ttlMs: 7 * DAY },
+  // Content-addressed frame copies (HTML artifact cards, tool-studio previews —
+  // both served over local-file:, review 2026-09-25 P1). Both consumers
+  // re-write on their next mount, so eviction costs one write, never a broken
+  // frame; an in-use copy is freshly written and far from the TTL.
+  { dir: 'html-cards', ext: '.html', ttlMs: 7 * DAY },
+  { dir: 'tool-docs', ext: '.html', ttlMs: 7 * DAY },
 ]
 
 /** Legacy files written to the tmp root before bucket subdivision. */

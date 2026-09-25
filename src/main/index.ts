@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
 import { serveLocalFile } from './preview/serve-preview'
 import { registerIpcHandlers } from './ipc'
-import { ensureDataDir, getBundlePresetsDir } from './storage'
+import { ensureDataDir, getBundlePresetsDir, DATA_DIR } from './storage'
+import { safeExternalUrl } from './utils/external-url'
 import { initializeDatabase, ensureDbHealthy } from './storage/database'
 import { backfillConversationWorkspaces } from './storage/conversation-workspace'
 import { repairSwappedProjectBindings } from './storage/conversation.db'
@@ -438,7 +439,11 @@ function createWindow(): void {
   attachShortcutFallback(mainWindow)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    // Scheme-gated (review 2026-09-25 P0-2): window.open/target=_blank from
+    // any content reaches here — untrusted markup must not be able to hand
+    // the OS launcher smb://, file:///.command or a custom app protocol.
+    const safe = safeExternalUrl(details.url, DATA_DIR)
+    if (safe) void shell.openExternal(safe)
     return { action: 'deny' }
   })
 
