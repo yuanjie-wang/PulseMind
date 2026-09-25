@@ -211,3 +211,53 @@ describe('markdown → real docx (附录 A mapping)', () => {
     expect(xml).toContain('中文与 English 混排、以及「标点」和数字 12345。')
   })
 })
+
+describe('docx fontSize (generation-side font control)', () => {
+  async function stylesFor(fontSize?: number): Promise<{ styles: string; docDefaults: string }> {
+    const buf = await markdownToDocxBuffer('# 标题\n\n正文内容。', undefined, fontSize !== undefined ? { fontSize } : undefined)
+    const styles = new AdmZip(buf).readAsText('word/styles.xml')
+    return { styles, docDefaults: styles.slice(styles.indexOf('<w:docDefaults>'), styles.indexOf('</w:docDefaults>')) }
+  }
+  const headingBlock = (styles: string, id: string): string =>
+    styles.match(new RegExp(`w:styleId="${id}"[\\s\\S]*?</w:style>`))?.[0] ?? ''
+
+  it('without fontSize the document defaults stay EMPTY — Word renders its own default', async () => {
+    const { docDefaults } = await stylesFor()
+    expect(docDefaults).toContain('<w:rPrDefault/>')
+    expect(docDefaults).not.toContain('<w:sz')
+  })
+
+  it('fontSize lands as the body default in half-points (10.5pt → 21)', async () => {
+    const { docDefaults } = await stylesFor(10.5)
+    expect(docDefaults).toContain('<w:sz w:val="21"/>')
+    expect(docDefaults).toContain('<w:szCs w:val="21"/>')
+  })
+
+  it('Heading1–3 scale off the 11pt baseline and KEEP their default colors (the lib replaces the whole run)', async () => {
+    const { styles, docDefaults } = await stylesFor(14)
+    expect(docDefaults).toContain('<w:sz w:val="28"/>')
+    expect(headingBlock(styles, 'Heading1')).toContain('<w:sz w:val="41"/>') // 16pt × 14/11
+    expect(headingBlock(styles, 'Heading1')).toContain('w:val="2E74B5"')
+    expect(headingBlock(styles, 'Heading2')).toContain('<w:sz w:val="33"/>') // 13pt × 14/11
+    expect(headingBlock(styles, 'Heading3')).toContain('<w:sz w:val="31"/>') // 12pt × 14/11
+    expect(headingBlock(styles, 'Heading3')).toContain('w:val="1F4D78"')
+    // Heading4+ carry no size in Word's defaults — they inherit the body size
+    expect(headingBlock(styles, 'Heading4')).not.toContain('<w:sz')
+  })
+
+  it('body runs carry NO explicit size — they inherit the document default', async () => {
+    const buf = await markdownToDocxBuffer('正文内容。', undefined, { fontSize: 14 })
+    const xml = new AdmZip(buf).readAsText('word/document.xml')
+    expect(xml).toContain('正文内容。')
+    expect(xml).not.toContain('<w:sz')
+  })
+
+  it('the code block and the degradation note scale with fontSize', async () => {
+    const code = await markdownToDocxBuffer('```js\nconst a = 1\n```', undefined, { fontSize: 14 })
+    expect(new AdmZip(code).readAsText('word/document.xml')).toContain('<w:sz w:val="23"/>') // 9pt × 14/11
+    const plainCode = await markdownToDocxBuffer('```js\nconst a = 1\n```')
+    expect(new AdmZip(plainCode).readAsText('word/document.xml')).toContain('<w:sz w:val="18"/>')
+    const note = await markdownToDocxBuffer('![x](a.png)', undefined, { fontSize: 14 })
+    expect(new AdmZip(note).readAsText('word/document.xml')).toContain('<w:sz w:val="23"/>')
+  })
+})

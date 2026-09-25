@@ -42,6 +42,10 @@ export interface ExportDocumentInput {
   /** format pptx alternative to content: a structured deck spec
    *  (shared/deck/spec) — the model picks layouts, the engine draws. */
   deck?: unknown
+  /** docx/pdf only: the body font size in 磅 (6–72, .5 steps). Headings and
+   *  the code block scale with it; a pdf converted from an EXISTING .docx
+   *  refuses it (nothing re-generates on that path). */
+  fontSize?: number
   filePath: string
 }
 
@@ -72,6 +76,20 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
     }
     if (hasContent === hasSource && !hasDeck) {
       return { success: false, error: 'content 与 sourcePath 二选一：内联内容直接给 content；导出工作区已有文件给 sourcePath，不要同时给或都不给' }
+    }
+    // fontSize: docx/pdf generation only. The pdf target fed an EXISTING
+    // .docx through sourcePath is a byte conversion — nothing re-generates,
+    // so there is no size to set there either (say so, don't drop it silently).
+    if (input.fontSize !== undefined) {
+      if (input.format !== 'docx' && input.format !== 'pdf') {
+        return { success: false, error: `fontSize 仅支持 format docx / pdf，收到「${input.format}」——xlsx 用 set_style、pptx 用 deck 或 pptx_edit 调字号` }
+      }
+      if (typeof input.fontSize !== 'number' || !Number.isFinite(input.fontSize) || input.fontSize < 6 || input.fontSize > 72) {
+        return { success: false, error: `fontSize 需是 6–72 的数字（磅，可带 0.5，如 10.5=五号、12=小四、16=三号），收到「${input.fontSize}」` }
+      }
+      if (hasSource && extname(String(input.sourcePath)).toLowerCase() === '.docx') {
+        return { success: false, error: 'format pdf 的 sourcePath 是既有 .docx 的转换，不重新生成，字号改不了——先用 docx_edit 的 format_text 调字号，再转 PDF' }
+      }
     }
     if (hasContent && (input.content as string).length > CONTENT_LIMIT) {
       return { success: false, error: `内联 content 超过 100KB（${Math.round((input.content as string).length / 1024)}KB）——请先用 write 把内容写入工作区文件，再通过 sourcePath 导出` }
@@ -174,7 +192,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
       // Build entirely in memory — a failure here has written nothing.
       let buffer: Buffer
       try {
-        buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, deck: deckSpec, deckImages, mdImages })
+        buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, deck: deckSpec, deckImages, mdImages, fontSize: input.fontSize })
       } catch (err) {
         return { success: false, error: `导出内容构建失败：${err instanceof Error ? err.message : String(err)}` }
       }
@@ -200,7 +218,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
 
 async function buildBuffer(
   format: ExportFormat,
-  source: { md?: string; csv?: string; docx?: Buffer; deck?: DeckSpec; deckImages?: Map<string, Buffer>; mdImages?: Map<string, Buffer> }
+  source: { md?: string; csv?: string; docx?: Buffer; deck?: DeckSpec; deckImages?: Map<string, Buffer>; mdImages?: Map<string, Buffer>; fontSize?: number }
 ): Promise<Buffer> {
   if (format === 'pdf') {
     // pdf is a CONVERSION, not a native layout: an existing docx, or markdown
@@ -208,12 +226,12 @@ async function buildBuffer(
     // (images, math, footnotes) degrades identically on this path.
     const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
     const { docxToPdfBuffer } = await import('../office-export/docx-to-pdf')
-    const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages))
+    const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages, { fontSize: source.fontSize }))
     return docxToPdfBuffer(docx)
   }
   if (format === 'docx') {
     const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
-    return markdownToDocxBuffer(source.md ?? source.csv ?? '')
+    return markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages, { fontSize: source.fontSize })
   }
   if (format === 'pptx') {
     if (source.deck) {

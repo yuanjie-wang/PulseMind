@@ -21,6 +21,7 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
   - 一页只讲一件事：bullets 3–8 条每条 ≤20 字；table ≤12 行超了拆页；chart 的 categories 2–12 个。
   - 数据来源写在该页的 note 里；deck.theme.accent 可指定主题色（用户给了品牌色就用它）。
 - sourcePath: convert an existing workspace file instead — .md/.csv for the generators, **.docx for format pdf**. Large sources avoid re-sending content.
+- fontSize: (docx/pdf only) 正文基准字号，磅，6–72 可带 0.5（10.5=五号、12=小四、14=四号、16=三号）。标题与代码块按基准等比缩放，层级不塌；不给就是 Word 默认。**format pdf + sourcePath（既有 .docx）拒绝 fontSize**——那条路是字节转换不重新生成，字号请先用 \`docx_edit\` 改好再转。只改某几处字号：先导出，再用 \`docx_edit\` 的 \`format_text\` 带 \`font_size\` 补。
 
 ### Rules
 - file_path is workspace-relative; omit it to land \`export-<timestamp>.<format>\` in the workspace root. Existing files are NEVER overwritten — \`报告.xlsx\` taken → \`报告-2.xlsx\`.
@@ -28,7 +29,7 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 - Failure refuses the WHOLE call with a readable reason (nothing is written) — fix the cause and retry.
 
 ### Honest capability limits
-- docx: images / math / footnotes degrade to raw text with a closing note; no cover pages, headers or footers.
+- docx: images / math / footnotes degrade to raw text with a closing note; no cover pages, headers or footers; generation-side font control is the one document-wide \`fontSize\` (no per-paragraph sizes — those go through \`docx_edit\` after export).
 - pdf: 由 docx 渲染而来（无原生 markdown 排版引擎）——docx 的降级边界在这里同样适用；文本框、页眉页脚、SmartArt 等渲染器不支持的元素会缺失；分页尺寸按文档首页；转换失败整批拒绝，不写半成品。
 - xlsx: NO formulas are generated, dates stay text, numbers convert only when the exact round-trip is safe (leading zeros like 工号 007 stay text on purpose).
 - csv: exports the FIRST table/sheet only.

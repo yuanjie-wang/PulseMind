@@ -175,7 +175,7 @@ export const mainHost: PulseHost = {
       validateMcpConfig(config)
       const server = serverManager.register(config)
       await persistCustomServers()
-      const { client, ...info } = server
+        const { client: _client, ...info } = server
       return { success: true, server: info }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
@@ -268,7 +268,7 @@ export const mainHost: PulseHost = {
     svcPptx.svcEditPptx(input as { filePath: string; ops: never[] }) as Promise<import('../../shared/office/ops').PptxEditOutcome & { success: boolean; error?: string; backup?: string; diff?: string; changeSummary?: string }>,
   editXlsx: async (input: { filePath: string; ops: any[] }) => svcXlsx.svcEditXlsx(input as { filePath: string; ops: never[] }),
   inspectOffice: async (input: { filePath: string }) => (await import('../services/office-inspect')).svcInspectOffice(input),
-  exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; deck?: unknown; filePath: string }) =>
+  exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; deck?: unknown; fontSize?: number; filePath: string }) =>
     svcExport.svcExportDocument(input),
   knowledgeWriteExperience: (data) => Promise.resolve(kq.svcWriteExperience(data)),
 

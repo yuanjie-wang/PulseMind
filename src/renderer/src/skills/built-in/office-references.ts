@@ -7,7 +7,8 @@
  * Every claim here is checked against the implementation, because a rule set
  * that promises more than the engine does is worse than no rule set:
  *   - markdown → docx mapping: office-export/md-to-docx.ts (only code runs get
- *     a face; there is no document-level font control)
+ *     a face; fonts are never chosen — the one document-level control is the
+ *     export_document `fontSize`, which scales body/headings/code together)
  *   - markdown → xlsx: office-export/md-tables.ts + cell-type.ts (a bare grid —
  *     no styles, no formulas)
  *   - markdown → pptx: office-export/md-to-pptx.ts (slide limit 200, bullet
@@ -44,12 +45,14 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
 行内样式只取**最外层**一层：\`***加粗且斜体***\` 只落加粗或斜体中的一层，不会组合成两者兼有。这是既定的保真口径，不是 bug。
 
+整份文档的字号用 \`export_document\` 的 \`fontSize\`（磅，6–72 可带 0.5：10.5=五号、12=小四、14=四号、16=三号）：它设的是**正文基准**，标题与代码块按同一比例缩放，层级不塌（不给就是 Word 默认 11 磅）。要让某一两处不一样：先导出，再用 \`docx_edit\` 的 \`format_text\` 带 \`font_size\` 单点改。
+
 ## 二、表达不了的（别硬凑，如实说）
 
 - **封面页、页眉页脚、页码、目录**：生成端没有这些概念。
 - **插入图片（网络/内联地址）**：\`http(s)://\` 与 \`data:\` 的图片不嵌图，保持占位文字（形如 \`[图片:xxx.png,正文不支持]\`）——工作区里的图片文件才会真正嵌入。
 - **公式、脚注、内嵌 HTML**：原文照抄 + 文末一行说明。
-- **字体与字号**：正文不控制字体，Word / WPS 按自己的默认样式渲染（CJK 由打开端替换）。只有代码块固定用等宽字体（Courier New）。
+- **字体与局部字号**：字体从不指定，Word / WPS 按自己的默认样式渲染（CJK 由打开端替换；只有代码块固定等宽 Courier New）。字号只有 \`fontSize\` 这一个全文基准，**没有逐段字号**——逐段的先导出，再用 \`docx_edit\` 的 \`format_text\` 改。
 - **首行缩进、行距、分节、页面设置**：无。
 
 用户明确要封面 / 页眉页脚 / 页码时：告诉他生成端做不到，但可以用 \`docx_edit\` 补一个封面段落，其余的建议他在 Word 里手动加一次（加完就是模板，之后可复用）。
@@ -86,8 +89,8 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 - **先 \`outline\`**：拿段落索引 + 样式 + 文本长度。索引是后续 op 的定位依据。
 - **索引随批次变化**：同一批里前面的 \`insert_paragraph\` / \`delete_paragraph\` 会改变后面段落的编号。按你对最终形态的意图排列顺序。
 - **\`replace_text\` 默认要求恰好命中 1 处**，命中数不符整批拒绝。多处的用 \`expected_count\` 或 \`paragraph\` 收窄——不要靠"反正会改第一处"。
-- **表格只能改单元格内的文字**，不能加行删行。用户要加行就直说做不到，并给替代（改成新表导出 / 请他在 Word 里加行后再让我填）。
-- **页眉页脚、页码、目录、域、图片不在范围内**——工具手册已列明，遇到就如实拒绝。
+- **表格能改文字，也能加行删行**：\`insert_table_row\`（\`after_row\` 后插，可带每格文字，克隆锚点行的边框列宽）/ \`delete_table_row\`。护栏会拒绝竖向合并（vMerge）、嵌套表和删最后一行——撞上就如实说明并给替代。**加列 / 删列做不到**：要加列就加在末尾，或重出一张表。
+- **页眉页脚、页码、目录、域不在范围内**——工具手册已列明，遇到就如实拒绝。**图片可以插**：\`insert_image\` 给工作区路径（png/jpg/jpeg/gif，宽上限 600px 等比缩），http(s) / data: 地址嵌不了。
 - **修订模式**（\`track_changes: true\`）是给"改用户已有的正式文件"用的，让改动可审阅；你自己刚生成的一份新稿子没必要留痕。
 `,
 

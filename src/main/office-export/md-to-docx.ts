@@ -30,6 +30,15 @@ import {
 
 const NUMBERING_REFERENCE = 'pm-export-ordered'
 const CODE_FONT = 'Courier New'
+// ── fontSize (export_document, 磅) ── Word's default body size is the
+// baseline the built-in Heading1–3 sizes (16/13/12pt) and the 9pt code block
+// are proportioned against: a caller-set fontSize rescales all of them by
+// fontSize / BODY_BASE_PT, so a 四号 (14pt) body never outgrows its own
+// headings (Heading2 would otherwise sit at 13pt, BELOW the body).
+const BODY_BASE_PT = 11
+const CODE_HALF_BASE = 18 // code block + degradation note at the base body
+const HEADING_HALF_BASE = [32, 26, 24] // Heading1–3 at the base body, half-points
+const HEADING_COLOR = ['2E74B5', '2E74B5', '1F4D78'] // the docx lib's defaults — re-stated in fontStyles()
 const HEADING_LEVELS = [
   HeadingLevel.HEADING_1,
   HeadingLevel.HEADING_2,
@@ -55,9 +64,11 @@ type MarkedCell = { text: string; tokens?: MarkedToken[] }
 type DocxChild = Paragraph | Table
 type InlineChild = TextRun | ExternalHyperlink
 
-/** Everything that got downgraded, for the closing honesty note. */
+/** Everything that got downgraded, for the closing honesty note.
+ *  `noteSize` (half-points) rides the document's fontSize like the code block does. */
 class Degradations {
   private readonly kinds = new Set<string>()
+  constructor(private readonly noteSize: number = CODE_HALF_BASE) {}
   add(kind: string): void {
     this.kinds.add(kind)
   }
@@ -65,7 +76,7 @@ class Degradations {
     if (this.kinds.size === 0) return null
     const names = [...this.kinds].join('、')
     return new Paragraph({
-      children: [new TextRun({ text: `注：${names}在 Word 导出中不支持，已以原文本呈现。`, italics: true, color: '808080', size: 18 })],
+      children: [new TextRun({ text: `注：${names}在 Word 导出中不支持，已以原文本呈现。`, italics: true, color: '808080', size: this.noteSize })],
       spacing: { before: 240 },
     })
   }
@@ -147,7 +158,7 @@ function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, im
 
 const BLOCKQUOTE_BORDER = { left: { style: BorderStyle.SINGLE, size: 18, color: 'C9CBD1', space: 8 } }
 
-function blockChildren(tokens: MarkedToken[], degrade: Degradations, images: Map<string, Buffer> | undefined): DocxChild[] {
+function blockChildren(tokens: MarkedToken[], degrade: Degradations, images: Map<string, Buffer> | undefined, codeSize: number): DocxChild[] {
   const out: DocxChild[] = []
   for (const token of tokens) {
     switch (token.type) {
@@ -187,7 +198,7 @@ function blockChildren(tokens: MarkedToken[], degrade: Degradations, images: Map
           out.push(new Paragraph({
             shading: { type: ShadingType.CLEAR, fill: 'F5F5F5' },
             spacing: { before: 0, after: 0 },
-            children: [new TextRun({ text: line === '' ? ' ' : line, font: CODE_FONT, size: 18 })],
+            children: [new TextRun({ text: line === '' ? ' ' : line, font: CODE_FONT, size: codeSize })],
           }))
         }
         break
@@ -261,7 +272,7 @@ export function mdImagePaths(md: string): Array<{ href: string }> {
   const visit = (list: MarkedToken[]): void => {
     for (const t of list) {
       if (t.type === 'image') {
-        let href = decodeURI(String(t.raw ?? '').match(/!\[.*?\]\(\s*([^)\s]+)/)?.[1] ?? '').replace(/^['"]|['"]$/g, '')
+        const href = decodeURI(String(t.raw ?? '').match(/!\[.*?\]\(\s*([^)\s]+)/)?.[1] ?? '').replace(/^['"]|['"]$/g, '')
         if (href && !seen.has(href)) { seen.add(href); out.push({ href }) }
       }
       if (t.tokens) visit(t.tokens as unknown as MarkedToken[])
@@ -273,14 +284,39 @@ export function mdImagePaths(md: string): Array<{ href: string }> {
 
 /** Markdown string → a real .docx buffer. `images` maps workspace hrefs to
  *  resolved bytes (M2): a hit embeds the real image, a miss keeps the
- *  degradation placeholder — the resolver decides, never the network. */
-export async function markdownToDocxBuffer(md: string, images?: Map<string, Buffer>): Promise<Buffer> {
+ *  degradation placeholder — the resolver decides, never the network.
+ *  `options.fontSize` (磅) sets the document-wide body size; headings and the
+ *  code block scale with it (BODY_BASE_PT), and WITHOUT it no styles part is
+ *  emitted — the output stays byte-identical to a fontSize-less export. */
+export async function markdownToDocxBuffer(
+  md: string,
+  images?: Map<string, Buffer>,
+  options?: { fontSize?: number },
+): Promise<Buffer> {
+  const fontSize = options?.fontSize
+  const scale = fontSize !== undefined ? fontSize / BODY_BASE_PT : 1
+  const codeSize = Math.round(CODE_HALF_BASE * scale)
   const tokens = marked.lexer(md) as unknown as MarkedToken[]
-  const degrade = new Degradations()
-  const children = blockChildren(tokens, degrade, images)
+  const degrade = new Degradations(codeSize)
+  const children = blockChildren(tokens, degrade, images, codeSize)
   const note = degrade.note()
   if (note) children.push(note)
   const doc = new Document({
+    // The docx lib shallow-merges each `default` key over its own `{ run }`,
+    // so a heading override must re-state the default color — size alone
+    // would silently drop the headings to black.
+    ...(fontSize !== undefined
+      ? {
+          styles: {
+            default: {
+              document: { run: { size: Math.round(fontSize * 2) } },
+              heading1: { run: { color: HEADING_COLOR[0], size: Math.round(HEADING_HALF_BASE[0] * scale) } },
+              heading2: { run: { color: HEADING_COLOR[1], size: Math.round(HEADING_HALF_BASE[1] * scale) } },
+              heading3: { run: { color: HEADING_COLOR[2], size: Math.round(HEADING_HALF_BASE[2] * scale) } },
+            },
+          },
+        }
+      : {}),
     numbering: {
       config: [{
         reference: NUMBERING_REFERENCE,

@@ -89,6 +89,26 @@ async function phaseMain() {
     check('docx read-back: content in word/document.xml', xml.includes('探针报告') && xml.includes('正文内容。'))
   }
 
+  // ①b fontSize: the body default lands in the real styles.xml, the headings
+  //    scale with it AND keep their color (the lib replaces the whole run) ──
+  const sized = await svcExportDocument({ format: 'docx', content: '# 标题\n\n正文内容。', fontSize: 14, filePath: join(ws, '字号.docx') })
+  check('docx fontSize export succeeds', sized.success === true, sized.error)
+  if (sized.success) {
+    const styles = new AdmZip(readFileSync(sized.path)).readAsText('word/styles.xml')
+    const docDefaults = styles.slice(styles.indexOf('<w:docDefaults>'), styles.indexOf('</w:docDefaults>'))
+    check('fontSize 14 lands as the body default (sz 28)', docDefaults.includes('<w:sz w:val="28"/>'), docDefaults.slice(0, 200))
+    const h1 = styles.match(/w:styleId="Heading1"[\s\S]*?<\/w:style>/)?.[0] ?? ''
+    check('Heading1 scales to 41 half-points AND keeps its color', h1.includes('<w:sz w:val="41"/>') && h1.includes('2E74B5'))
+  }
+  const badSize = await svcExportDocument({ format: 'xlsx', content: MD_TABLE, fontSize: 14, filePath: join(ws, '字号.xlsx') })
+  check('fontSize on xlsx is refused readably', badSize.success === false && (badSize.error ?? '').includes('fontSize'), badSize.error)
+  if (docx.success) {
+    // the conversion path never re-generates — the refusal must come BEFORE
+    // the real converter (a BrowserWindow) would be needed
+    const pdfSize = await svcExportDocument({ format: 'pdf', sourcePath: docx.path, fontSize: 14, filePath: join(ws, '转.pdf') })
+    check('fontSize + pdf(existing docx) is refused with a docx_edit pointer', pdfSize.success === false && (pdfSize.error ?? '').includes('docx_edit'), pdfSize.error)
+  }
+
   const csv = await svcExportDocument({ format: 'csv', content: MD_TABLE, filePath: join(ws, '库存.csv') })
   check('csv export succeeds', csv.success === true, csv.error)
   if (csv.success) {

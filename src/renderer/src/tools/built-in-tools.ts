@@ -651,6 +651,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           required: ['title', 'slides'],
         },
         sourcePath: { type: 'string', description: 'Path to an existing workspace file to convert instead of inline content: .md/.csv for the generators, .docx for format pdf.' },
+        fontSize: { type: 'number', description: '(docx/pdf only) 正文基准字号，单位磅，6–72 可带 0.5（10.5=五号、12=小四、16=三号）——标题与代码块按比例缩放。只调局部字号：先导出，再用 docx_edit 的 format_text 改。' },
         file_path: { type: 'string', description: 'Relative target path (default: export-<timestamp>.<format> in the workspace root). Existing files are never overwritten — a -2 suffix is added.' },
       },
       required: ['format'],

@@ -6,6 +6,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('../src/main/sandbox/guard', () => ({
+  // The one real rule file-ops still imports from this module (resolvePath
+  // shares the guard's `~` → home expansion): mirrored verbatim, identity for
+  // the absolute paths these tests use.
+  expandTilde: (t: string) => (t.startsWith('~') ? join(homedir(), t.slice(1)) : t),
   guardFsTarget: async (target: string, mode: string) =>
     target.includes('deny') ? { ok: false, reason: `deny-listed (${mode})` } : { ok: true },
 }))
@@ -32,7 +36,7 @@ const { docxToPdfBuffer } = await import('../src/main/office-export/docx-to-pdf'
 import AdmZip from 'adm-zip'
 import ExcelJS from 'exceljs'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 function tempDir(): string {
@@ -163,6 +167,57 @@ describe('svcExportDocument', () => {
     expect(result.success).toBe(false)
     expect(result.error).toContain('读回门')
     expect(existsSync(join(dir, '坏.docx'))).toBe(false)
+  })
+
+  it('docx embeds a workspace image the service resolved (the M2 promise — docx call site too)', async () => {
+    const dir = tempDir()
+    const png = join(dir, 'shot.png')
+    writeFileSync(png, PNG_1PX)
+    const result = await svcExportDocument({ format: 'docx', content: `![截图](${png})`, filePath: join(dir, '带图.docx') })
+    expect(result.success).toBe(true)
+    const zip = new AdmZip(readFileSync(result.path!))
+    expect(zip.getEntries().some((e) => e.entryName.startsWith('word/media/'))).toBe(true)
+  })
+})
+
+describe('svcExportDocument fontSize contract (docx/pdf generation only)', () => {
+  it('a docx export lands with the requested body size; the pdf (markdown path) rides the same options', async () => {
+    const dir = tempDir()
+    const result = await svcExportDocument({ format: 'docx', content: '# 标题\n\n正文内容。', fontSize: 14, filePath: join(dir, '字号.docx') })
+    expect(result.success).toBe(true)
+    const styles = new AdmZip(readFileSync(result.path!)).readAsText('word/styles.xml')
+    const docDefaults = styles.slice(styles.indexOf('<w:docDefaults>'), styles.indexOf('</w:docDefaults>'))
+    expect(docDefaults).toContain('<w:sz w:val="28"/>')
+
+    const pdf = await svcExportDocument({ format: 'pdf', content: '# 标题', fontSize: 16, filePath: join(dir, '字号.pdf') })
+    expect(pdf.success).toBe(true)
+    expect(vi.mocked(markdownToDocxBuffer).mock.calls.at(-1)?.[2]).toEqual({ fontSize: 16 })
+  })
+
+  it('refuses fontSize where it cannot apply (other formats) and out of range', async () => {
+    const dir = tempDir()
+    const xlsx = await svcExportDocument({ format: 'xlsx', content: MD_TABLE, fontSize: 14, filePath: join(dir, 'a.xlsx') })
+    expect(xlsx.success).toBe(false)
+    expect(xlsx.error).toContain('fontSize 仅支持 format docx / pdf')
+
+    const huge = await svcExportDocument({ format: 'docx', content: '# x', fontSize: 500, filePath: join(dir, 'b.docx') })
+    expect(huge.success).toBe(false)
+    expect(huge.error).toContain('6–72')
+
+    const notNum = await svcExportDocument({ format: 'docx', content: '# x', fontSize: '14' as unknown as number, filePath: join(dir, 'c.docx') })
+    expect(notNum.success).toBe(false)
+    expect(notNum.error).toContain('6–72')
+  })
+
+  it('pdf from an EXISTING .docx refuses fontSize — that path never re-generates', async () => {
+    const dir = tempDir()
+    const src = join(dir, '合同.docx')
+    writeFileSync(src, 'not a real docx — the refusal must come before any read')
+    const before = vi.mocked(docxToPdfBuffer).mock.calls.length
+    const result = await svcExportDocument({ format: 'pdf', sourcePath: src, fontSize: 14, filePath: join(dir, 'out.pdf') })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('docx_edit')
+    expect(vi.mocked(docxToPdfBuffer).mock.calls.length).toBe(before)
   })
 })
 
@@ -328,6 +383,25 @@ describe('export_document wiring (source scans; the unit halves live in their ow
     expect(service).toContain("from '../../shared/deck/spec'")
     expect(service).toContain('deckToPptxBuffer')
     expect(service).toContain('deckImagePaths')
+  })
+
+  it('fontSize is wired end to end: schema → manual → executor → bridges → service → generator', () => {
+    const fs = require('node:fs') as typeof import('node:fs')
+    const read = (p: string) => fs.readFileSync(p, 'utf8')
+    // a model that never sees the parameter never sends it
+    expect(read('src/renderer/src/tools/built-in-tools.ts')).toContain("fontSize: { type: 'number'")
+    expect(read('src/renderer/src/tools/tool-instructions.ts')).toContain('fontSize: (docx/pdf only)')
+    // the executor refuses before the IPC roundtrip, and passes the value through
+    const executor = read('src/renderer/src/agent/tool-executors.ts')
+    expect(executor).toContain('fontSize 仅支持 format docx / pdf')
+    expect(executor).toMatch(/deck: hasDeck \? t\.input\.deck : undefined, fontSize/)
+    // the payload crosses preload + bridge + host with the same field
+    expect(read('src/preload/index.ts')).toContain('fontSize?: number')
+    expect(read('src/shared/types/electron-bridge.ts')).toContain('fontSize?: number')
+    expect(read('src/main/agent/main-host.ts')).toContain('fontSize?: number')
+    // the service validates + threads it; the generator holds the scaling rule
+    expect(read('src/main/services/office-export.ts')).toContain('input.fontSize')
+    expect(read('src/main/office-export/md-to-docx.ts')).toContain('BODY_BASE_PT')
   })
 
   it('the pdf target is wired end to end: enum, executor, bridge, manual, converter page', () => {
