@@ -32,6 +32,13 @@ const P2 = ((SCROLL_DURATION * SCROLL_CYCLES) / CYCLE_DURATION) * 100
  *  one aligned band instead of a narrow strip. */
 const QUICK_AREA_HEIGHT = 224
 const QUICK_AREA_MAX_WIDTH = 952
+/** Switcher-to-logo breathing room, elastic: flex-grow fills it from the
+ *  column's spare height up to this cap, and basis 0 lets it collapse to zero
+ *  before anything else gives way on a short window. Together with the
+ *  switcher band's 8px and this root's 24px padding the MAXIMUM gap is
+ *  168 — the same as the old fixed 144 + 24, so tall windows look unchanged
+ *  while short ones shrink the blank instead of squeezing the logo. */
+const TOP_SPACER_MAX = 136
 /** Horizontal room the band reserves so its scrollbar thumb never sits on the
  *  cards' right edge; the 952 column stays centered inside it. An overlay
  *  thumb is ~10px wide, hence 24 (12px of clear space per side). */
@@ -65,7 +72,15 @@ export function WelcomeContent({
         ${P2.toFixed(4)}% { transform: translateX(-${LOGO_SIZE_WIDTH * SCROLL_CYCLES}px); }
         100% { transform: translateX(-${LOGO_SIZE_WIDTH * SCROLL_CYCLES}px); }
       }`}</style>
-      <div style={{ overflow: 'hidden', width: LOGO_SIZE_WIDTH, height: LOGO_SIZE_HEIGHT, margin: '0 auto 16px', borderRadius: 8 }}>
+      {/* Elastic top gap: the column's spare height (half of it, capped at
+          TOP_SPACER_MAX) is the blank under the switcher — it shrinks to zero
+          on a short window, then the quick band's 224 floor holds and the
+          region scrolls. The fixed elements below all carry flexShrink:0, so
+          overflow can never squeeze the logo (their overflow:hidden would
+          otherwise give them an automatic minimum of 0). The data hooks are
+          probe-welcome-layout.mjs's measurement points. */}
+      <div data-welcome-spacer style={{ flex: '1 1 0', maxHeight: TOP_SPACER_MAX, minHeight: 0 }} />
+      <div data-welcome-logo style={{ overflow: 'hidden', width: LOGO_SIZE_WIDTH, height: LOGO_SIZE_HEIGHT, margin: '0 auto 16px', borderRadius: 8, flexShrink: 0 }}>
         <div
           style={{
             display: 'flex',
@@ -80,7 +95,7 @@ export function WelcomeContent({
           ))}
         </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', gap: 6, marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', gap: 6, marginBottom: 8, flexShrink: 0 }}>
         <div style={{ maxWidth: '80%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <Typography.Title key={greeting || 'default-title'} level={2} style={{ margin: 0, animation: 'greetingIn 0.6s ease' }}>
             {greeting || t('welcome.title')}
@@ -90,7 +105,7 @@ export function WelcomeContent({
           <InfoCircleOutlined style={{ fontSize: 12, color: 'var(--pm-text-faint)', cursor: 'help', marginTop: 4 }} />
         </Tooltip>
       </div>
-      <Typography.Text type="secondary" style={{ fontSize: 16, maxWidth: 400, display: 'block', margin: '0 auto', marginBottom: 24, marginTop: 20 }}>
+      <Typography.Text type="secondary" style={{ fontSize: 16, maxWidth: 400, display: 'block', margin: '0 auto', marginBottom: 24, marginTop: 20, flexShrink: 0 }}>
         {t('welcome.subtitle')}
         <Tooltip title={t('welcome.about')}>
           <ArrowRightOutlined style={{ marginLeft: 8, cursor: 'pointer', color: 'inherit', fontSize: 14 }} onClick={() => navigate({ kind: 'settings', settingsTab: 'about' })} />
@@ -132,9 +147,10 @@ export function WelcomeContent({
             marginBottom: 24,
             maxWidth: 400,
             textAlign: 'center',
-            display: 'inline-block',
-            alignSelf: 'center',
-          }}
+          display: 'inline-block',
+          alignSelf: 'center',
+          flexShrink: 0,
+        }}
         >
           <p style={{ margin: '0 0 12px', color: 'var(--pm-warn)' }}>
             <KeyOutlined /> {t('welcome.noApiKey')}

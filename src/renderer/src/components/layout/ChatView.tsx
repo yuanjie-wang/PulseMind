@@ -654,8 +654,12 @@ function ChatView({
         {/* Task form switcher (M8.4-rev): 对话 / 项目, its own top band so
             short windows can never slide the content over it (it used to be
             absolutely pinned, and the centered logo overlapped it). Drives the
-            same store the welcome page panels and handleRequest consume. */}
-        <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 144px' }}>
+            same store the welcome page panels and handleRequest consume.
+            Bottom padding stays SMALL: the switcher-to-logo breathing room is
+            an elastic spacer inside WelcomeContent (flex-grow, capped), not a
+            fixed band — a fixed 144px here sat outside the scroll region and
+            squeezed the logo on short windows. */}
+        <div data-welcome-switcher style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '16px 0 8px' }}>
           <Segmented
             className="task-switch"
             size="large"
@@ -671,7 +675,7 @@ function ChatView({
         {/* Welcome content: auto-margin centering that degrades to scrolling
             when the window is too short (alignItems:center would clip the top
             under the switcher instead). */}
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex' }}>
+        <div data-welcome-region style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex' }}>
           <WelcomeContent
             greeting={greeting}
             hasApiKey={hasApiKey}
