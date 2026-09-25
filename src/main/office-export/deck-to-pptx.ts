@@ -373,11 +373,18 @@ function renderImage(slide: Slide, s: DeckSlide, images: Map<string, Buffer>): v
 function renderSlide(pptx: PptxGenJS, s: DeckSlide, index: number, accent: string, images: Map<string, Buffer>): void {
   const slide = pptx.addSlide()
   switch (s.layout) {
+    // cover/section take the note too (addFooter's null page number exists
+    // for exactly these no-chrome layouts) — the schema promises "any slide
+    // can carry a note", and silently dropping it on two layouts broke that
+    // contract the moment the model followed the instructions (review0924 M6:
+    // 不做静默降级).
     case 'cover':
       renderCover(slide, s, accent)
+      addFooter(slide, null, s.note)
       break
     case 'section':
       renderSection(slide, s, accent)
+      addFooter(slide, null, s.note)
       break
     case 'bullets':
       addTitleChrome(slide, s.title ?? '', accent)

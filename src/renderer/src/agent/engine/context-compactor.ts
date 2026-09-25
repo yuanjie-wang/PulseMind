@@ -323,7 +323,25 @@ export class ContextCompactor {
     this.historySummary = text && frontierId ? { firstKeptId: frontierId, text } : null
   }
 
+  /** Request-path entry (prepareLoopRequest). If a prewarm is in flight, wait
+   *  it out first: the prewarm computed its frontier with the very same
+   *  nano → light → hard pipeline, so one LLM round-trip of waiting lands this
+   *  pass in the stable-frontier cache hit below instead of racing a second
+   *  concurrent summarization call — and the user's next message tends to
+   *  land inside the prewarm's window, which is why the prewarm exists
+   *  (review0924 M2). The prewarm itself calls injectHistorySummaryInto
+   *  directly, so the wait can never self-deadlock. */
   async injectHistorySummary(
+    original: AgentMessage[],
+    lightCompacted: AgentMessage[],
+    truncated: AgentMessage[],
+    instruction?: string
+  ): Promise<AgentMessage[]> {
+    if (this.prewarmPromise) await this.prewarmPromise.catch(() => {})
+    return this.injectHistorySummaryInto(original, lightCompacted, truncated, instruction)
+  }
+
+  private async injectHistorySummaryInto(
     original: AgentMessage[],
     lightCompacted: AgentMessage[],
     truncated: AgentMessage[],
@@ -593,7 +611,32 @@ export class ContextCompactor {
     const original = this.deps.getMessages()
     if (original.length <= MIN_KEEP) return null
     this.prewarmInFlight = true
+    const run = this.prewarmBody(original, contextLength, source, instruction).finally(() => {
+      this.prewarmInFlight = false
+      this.prewarmPromise = null
+    })
+    this.prewarmPromise = run
+    return run
+  }
+
+  /** The in-flight prewarm's promise, if any. The request path reads it (via
+   *  injectHistorySummary) to wait out a running summary instead of racing a
+   *  second concurrent LLM call — review0924 M2. */
+  private prewarmPromise: Promise<CompactionEvent | null> | null = null
+
+  private async prewarmBody(
+    original: AgentMessage[],
+    contextLength: number,
+    source: 'post-turn' | 'manual',
+    instruction?: string
+  ): Promise<CompactionEvent | null> {
     const savedMarks = new Set(this._compressedToolUseIds)
+    // Marks snapshot at the suspension point (assigned just before the await):
+    // everything added from there on belongs to a request that interleaved
+    // during the await — JS is single threaded, so the sync pipeline before it
+    // cannot be interrupted — and the finally below must keep those while
+    // still discarding this prewarm's own marks.
+    let marksAtSuspend = savedMarks
     try {
       const tokensBefore = contextTokensOf(original)
       const nano = this.nanoCompact(original)
@@ -602,7 +645,8 @@ export class ContextCompactor {
       const droppedCount = light.length - truncated.length
       if (droppedCount <= 0) return null
       const summaryBefore = this.historySummary ? { ...this.historySummary } : null
-      const final = await this.injectHistorySummary(original, light, truncated, instruction)
+      marksAtSuspend = new Set(this._compressedToolUseIds)
+      const final = await this.injectHistorySummaryInto(original, light, truncated, instruction)
       const summary = this.historySummary
       const summaryChanged =
         !summary || !summaryBefore ||
@@ -628,8 +672,16 @@ export class ContextCompactor {
         summary: summaryChanged ? (summary ? { ...summary } : null) : undefined,
       }
     } finally {
-      this._compressedToolUseIds = savedMarks
-      this.prewarmInFlight = false
+      // Merge, not whole-restore: this prewarm's own nano marks are still
+      // discarded (the prewarmed copy is thrown away — keeping them would make
+      // the real request's nano pass skip those blocks and re-inflate), but
+      // marks a request wrote while we were suspended must survive — a whole
+      // restore erased them and only placeholder re-derivation + the double
+      // tool_result_id got the copy back (review0924 M2).
+      const current = this._compressedToolUseIds
+      const merged = new Set(savedMarks)
+      for (const id of current) if (!marksAtSuspend.has(id)) merged.add(id)
+      this._compressedToolUseIds = merged
     }
   }
 

@@ -9,6 +9,7 @@
 
 import { settingsStore } from '../storage/settings-store'
 import { resolveEnvVarsInString, findUnresolvedEnvVar } from '../../shared/env'
+import { ensureLaunchHooks } from '../hooks-runner'
 import {
   buildProbeBody,
   buildProbeHeaders,
@@ -26,6 +27,13 @@ const PROBE_TIMEOUT_MS = 15_000
 export type { LlmProbeInput, LlmProbeOutcome }
 
 export async function testLlmConnection(input: LlmProbeInput & { profileId?: string }): Promise<LlmProbeOutcome> {
+  // The ${ENV} resolution below must see what a real request would see, and a
+  // variable provided by hooks/app-start.js only exists once the launch hooks
+  // have run — since they overlap the window boot (61acf04), a cold start can
+  // reach 「测试连接」 while the hook is still on its way. Gate here, at the
+  // ONE place every ${ENV} placeholder resolves (this stays the launch-hook
+  // gate only; the llm-request hook deliberately never touches a probe).
+  await ensureLaunchHooks()
   // A profileId resolves against the SAVED profile; inline fields test
   // unsaved edits in the settings drawer. Inline wins when both are given.
   let provider = input.provider

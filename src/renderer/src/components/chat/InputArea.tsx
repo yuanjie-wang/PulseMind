@@ -466,22 +466,42 @@ export function InputArea({
     composerRef.current?.focus()
   }
 
-  const modelItems =
-    profiles?.map((p) => ({
+  // Grouped by 供应商 (providerName) when more than one provider is in play —
+  // a flat list of model ids no longer says whose they are once a provider
+  // carries several models. One provider stays flat: a lone group header is
+  // noise. A pinned conversation's reset item rides below every group, only
+  // shown while pinned (or it offers to undo nothing).
+  const modelItems = (() => {
+    const flat = (profiles ?? []).map((p) => ({
       key: p.id,
       label: modelLabel(p),
-      onClick: () => onSelectProfile?.(p.id),
-    })) ?? []
-  // A pinned conversation can drop its own choice and follow the global
-  // default again. Only shown while pinned, or the item would offer to undo
-  // nothing (and read as a second, confusing "default" entry).
-  if (profilePinned && onResetProfile) {
-    modelItems.push({
-      key: '__follow_default__',
-      label: t('chatView.model.followDefault'),
-      onClick: onResetProfile,
+      provider: p.providerName ?? '',
+    }))
+    const resetItem = (profilePinned && onResetProfile)
+      ? [{ key: '__follow_default__', label: t('chatView.model.followDefault'), onClick: onResetProfile }]
+      : []
+    const toMenuItem = ({ key, label }: { key: string; label: string }) => ({
+      key,
+      label,
+      onClick: () => onSelectProfile?.(key),
     })
-  }
+    const providerNames: string[] = []
+    for (const item of flat) {
+      if (!providerNames.includes(item.provider)) providerNames.push(item.provider)
+    }
+    if (providerNames.length <= 1) {
+      return [...flat.map(toMenuItem), ...resetItem]
+    }
+    return [
+      ...providerNames.map((name) => ({
+        key: `provider_group_${name}`,
+        label: name,
+        type: 'group' as const,
+        children: flat.filter((item) => item.provider === name).map(toMenuItem),
+      })),
+      ...resetItem,
+    ]
+  })()
 
   const hasAttachments = selectedFiles.length + selectedFolders.length > 0
 
@@ -675,12 +695,20 @@ export function InputArea({
                     padding: '6px 8px 8px',
                   }}
                 >
-                  {/* The hint is per-state on purpose: while a turn runs the
-                      queue drains itself; at a settled non-completed end (error,
-                      pause, loop-limit) it does NOT — saying "auto-send" there
-                      would be a promise the code keeps only sometimes. */}
+                  {/* The hint is per-state on purpose, and the branch key is
+                      the drain rule itself (staged-drain.ts
+                      ACTIVE_TURN_STATUSES): isRequesting covers
+                      streaming/executing/retrying/awaiting_approval and
+                      isAwaitingInput the last park — together exactly the
+                      statuses whose path to `completed` drains this queue.
+                      Keying on isRequesting alone read "won't auto-send" to a
+                      user parked on ask_user, and the drain then sent anyway
+                      (review0924 M3). At a settled non-completed end (error,
+                      pause, loop-limit) it does NOT auto-send — saying "auto-
+                      send" there would be a promise the code keeps only
+                      sometimes. */}
                   <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', padding: '0 4px 4px' }}>
-                    {t(isRequesting ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled', { count: stagedCount })}
+                    {t(isRequesting || isAwaitingInput ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled', { count: stagedCount })}
                   </div>
                   {(stagedQueue ?? []).map((item) => (
                     <div

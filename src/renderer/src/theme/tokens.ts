@@ -115,6 +115,12 @@ export function buildAntdTheme(mode: ThemeMode): ThemeConfig {
       // in the checkbox sheet) to ink, the same inversion solid primary
       // surfaces already take via colorTextLightSolid.
       Checkbox: dark ? { colorWhite: INK } : {},
+      // Radio's checked dot is the same mechanism's second consumer: the dot
+      // paints colorWhite on a colorPrimary disc — in dark, white on
+      // near-white, the tick-vanished shape again (the MCP 传输类型 radios
+      // were unreadable). The radio sheet's colorWhite use is the dot alone,
+      // so the same scoped flip applies (review0924 M8).
+      Radio: dark ? { colorWhite: INK } : {},
       // Destructive buttons are neutral, not red: every shade a danger Button
       // draws (text, solid fill, border, hover/active) derives from this one
       // seed under the active algorithm. Grey in light; in dark the seed is the

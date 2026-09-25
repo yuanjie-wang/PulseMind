@@ -147,8 +147,19 @@ class BatchRunner {
         throw new Error(`「${state.routine.name}」已有批量运行在进行，请等待完成或先停止`)
       }
     }
-    const concurrency = normalizeBatchConcurrency(routine.batch?.concurrency) ?? DEFAULT_BATCH_CONCURRENCY
-    const timeoutMinutes = normalizeBatchTimeoutMinutes(routine.batch?.timeoutMinutes) ?? DEFAULT_BATCH_TIMEOUT_MINUTES
+    // Values resume what the PARENT ran with, not what the routine is
+    // configured with now: start() records the effective per-run values in the
+    // parent meta, and the workspace header reads them back — so a long task
+    // given a 120-minute per-run override must not have its remaining rows
+    // re-killed by the config default (15 minutes), and config edits between
+    // waves must not silently diverge the header's number from the limit the
+    // rows actually run under (review0924 M4).
+    const concurrency = normalizeBatchConcurrency(parent.batch?.concurrency)
+      ?? normalizeBatchConcurrency(routine.batch?.concurrency)
+      ?? DEFAULT_BATCH_CONCURRENCY
+    const timeoutMinutes = normalizeBatchTimeoutMinutes(parent.batch?.timeoutMinutes)
+      ?? normalizeBatchTimeoutMinutes(routine.batch?.timeoutMinutes)
+      ?? DEFAULT_BATCH_TIMEOUT_MINUTES
     routineStore.reopenBatchRun(parentRunId)
     auditStore.record({ scope: 'routine', actor: routine.id, action: 'batch.resume', target: parentRunId, decision: 'allowed' })
     this.spawn({ ...parent, status: 'running', finishedAt: undefined, error: undefined }, routine, total, (i) => paramsByIndex.get(i) ?? {}, concurrency, timeoutMinutes, plan.indices)

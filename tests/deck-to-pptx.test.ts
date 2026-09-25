@@ -36,6 +36,28 @@ describe('deck → pptx: chrome & text layouts', () => {
     expect(xml).not.toContain('<a:t>1</a:t>')
   })
 
+  // review0924 M6: the schema lets ANY slide carry a note, so cover/section
+  // must render it too — a silently dropped note is a delivered-model-believes
+  // / user-sees-nothing split, the exact thing the office engine refuses.
+  it('cover and section render their note (no page number) instead of dropping it', async () => {
+    const zip = unzipSync(await bufferOf({
+      title: 'T',
+      slides: [
+        { layout: 'cover', title: '封面', note: '来源：季度报表' },
+        { layout: 'section', title: '第一章', note: '数据截至 2026-09' },
+        { layout: 'bullets', title: '正文', bullets: ['一'], note: '来源：正文注脚' },
+      ],
+    }))
+    const cover = slideXml(zip, 1)
+    expect(cover).toContain('<a:t>来源：季度报表</a:t>')
+    expect(cover).not.toContain('<a:t>1</a:t>')
+    expect(slideXml(zip, 2)).toContain('<a:t>数据截至 2026-09</a:t>')
+    expect(slideXml(zip, 2)).not.toContain('<a:t>2</a:t>')
+    // the content page keeps its numbered foot
+    expect(slideXml(zip, 3)).toContain('<a:t>来源：正文注脚</a:t>')
+    expect(slideXml(zip, 3)).toContain('<a:t>3</a:t>')
+  })
+
   it('every layout renders its page; content pages get page numbers', async () => {
     const zip = unzipSync(await bufferOf({
       title: 'T',

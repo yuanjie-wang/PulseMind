@@ -534,7 +534,55 @@ async function main() {
     assert.equal(routineStore.getRun(parentJ2.id).batch.timeoutMinutes, 30)
   })
 
-  console.log('PASS: ' + checks + ' checks — batch runs row-by-row through the real store, runner and cleanup, resume/xlsx/override/timeout included')
+  // ── 14. Resume inherits the parent's per-run values (review0924 M4) ──
+  // The wave is the SAME batch as its parent: start() records the effective
+  // per-run values in the parent meta and resume() must read THOSE first —
+  // a config edit between the waves must not change what the remaining rows
+  // run under (the workspace header reads the parent meta too, so this is
+  // also what keeps the header truthful). Observable through the pool: a
+  // batch started with override concurrency 1, stopped mid-wave, config
+  // widened to 3, resumed — the parked createSession gate holds the wave's
+  // first row inside the mint window, and the next row must stay queued (the
+  // buggy resume read the config's 3 and dispatched two rows together).
+  const csvR = writeCsv('r.csv', 'repo\\nrr1\\nrr2\\nrr3\\n')
+  const routineR = makeRoutine('巡检 R', csvR) // saved config: concurrency 2
+  const parentR = await routineBatchRunner.start(routineStore.get(routineR.id), 'manual', { concurrency: 1 })
+  assert.equal(parentR.batch.concurrency, 1, 'this run starts serially (override)')
+  askBehavior = 'hang'
+  await until(() => childrenOf(parentR.id).length === 1, 'batch R row 1 dispatched')
+  routineBatchRunner.stop(parentR.id)
+  await until(() => routineStore.getRun(parentR.id)?.status !== 'running', 'batch R settles after stop')
+  askBehavior = 'complete'
+  check('resume-source setup: stop leaves 1 failed + 2 skipped under override 1', () => {
+    assert.deepEqual(childrenOf(parentR.id).map((c) => c.status), ['failed', 'skipped', 'skipped'])
+    assert.equal(routineStore.getRun(parentR.id).status, 'partial')
+  })
+  routineStore.update(routineR.id, { batch: { csvPath: csvR, concurrency: 3 } })
+  // The stub pushes the session only AFTER the gate releases, so counting the
+  // sessions array while parked sees nothing — wrap createSession and count
+  // ENTRIES (the stub still owns the gate wait and the push).
+  let gateEntries = 0
+  const baseCreate = agentSessionManager.createSession
+  agentSessionManager.createSession = async (id, opts) => {
+    gateEntries++
+    return baseCreate(id, opts)
+  }
+  createSessionGate = (() => { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } })()
+  await routineBatchRunner.resume(parentR.id)
+  await until(() => gateEntries >= 1, 'resumed wave row dispatched into the gate')
+  await new Promise((r) => setTimeout(r, 50))
+  check('the resumed wave runs the PARENT serially: config now says 3, the next row stays queued', () => {
+    assert.equal(gateEntries, 1, 'a second concurrent dispatch — resume read the config, not the parent meta')
+    assert.equal(routineStore.getRun(parentR.id).batch.concurrency, 1)
+  })
+  createSessionGate.resolve()
+  createSessionGate = null
+  await until(() => routineStore.getRun(parentR.id)?.status !== 'running', 'batch R wave 2 settles')
+  check('releasing the gate lets the resumed wave finish every unfinished row', () => {
+    assert.equal(routineStore.getRun(parentR.id).status, 'success')
+  })
+
+  console.log('PASS: ' + checks + ' checks — batch runs row-by-row through the real store, runner and cleanup, resume/xlsx/override/timeout/resume-inherit included')
 }
 main().then(() => process.exit(0)).catch(error => { console.error(error); process.exit(1) })
 `

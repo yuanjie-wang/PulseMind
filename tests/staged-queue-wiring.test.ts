@@ -41,7 +41,12 @@ describe('InputArea: Enter mid-run stages instead of silently dropping', () => {
   it('renders the strip above the card with both per-state hints', () => {
     expect(INPUT_AREA).toContain('data-staged-strip')
     expect(INPUT_AREA).toContain('data-staged-item')
-    expect(INPUT_AREA).toContain("t(isRequesting ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled'")
+    // The hint branch is the drain rule (staged-drain.ts ACTIVE_TURN_STATUSES):
+    // isRequesting covers streaming/executing/retrying/awaiting_approval and
+    // isAwaitingInput the last park — keying on isRequesting alone read "won't
+    // auto-send" to a user parked on ask_user while the drain sent anyway
+    // (review0924 M3, also scanned in staged-drain-edge.test.ts).
+    expect(INPUT_AREA).toContain("t(isRequesting || isAwaitingInput ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled'")
     // The strip anchors through the same aboveCard slot as the mention popup.
     expect(INPUT_AREA).toContain('topSlot || stagedCount > 0')
   })

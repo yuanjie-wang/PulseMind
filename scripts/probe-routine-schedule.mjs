@@ -15,7 +15,10 @@
  *   · the selected chip wears solid ink (bg --pm-ink, ink --pm-ink-contrast);
  *   · labels/captions resolve through the CSS vars — light byte-identical to
  *     the literals they replaced (#666/#999/#cf1322), dark on the dark rungs;
- *   · the native time input follows color-scheme (light / dark);
+ *   · the time field is the antd TimePicker (review0924 M5: the probe was
+ *     written against the native `input[type=time]` it replaced and crashed
+ *     on HEAD) — its inner input carries the draft time and the picker
+ *     repaints with the app palette per mode;
  *   · an invalid cron hint carries --pm-error in BOTH modes.
  *
  * Non-vacuity: every assertion reads a computed style or the draft the real
@@ -128,7 +131,11 @@ await page.locator(`${FIELD} .ant-switch`).click()
 await page.waitForSelector(`${FIELD} .ant-segmented`, { timeout: 5000 })
 check('开关联动出定时面板', await page.locator(`${FIELD} .ant-segmented`).count() === 1)
 check('分段控件有五个频率', await page.locator(`${FIELD} .ant-segmented-item`).count() === 5)
-check('默认每天行在（时间输入框）', await page.locator(`${FIELD} input[type=time]`).count() === 1)
+// The daily row's time field is the antd TimePicker (antd v6 renders no
+// `type` attribute on its inner input — the native `input[type=time]` this
+// probe originally counted is gone), and its value carries the draft time.
+check('默认每天行在（TimePicker 输入框，草稿时刻 09:00）', await page.locator(`${FIELD} .ant-picker input`).count() === 1
+  && await page.inputValue(`${FIELD} .ant-picker input`) === '09:00')
 
 // ── 2. Segmented swaps the rows ──
 await page.locator(`${FIELD} .ant-segmented-item`, { hasText: '每周' }).click()
@@ -166,8 +173,11 @@ cs = await stylesOf(`${FIELD} span[style*="font-size: 12"]`, ['color'])
 check('行标签 #666（浅色不变）', cs.color === 'rgb(102, 102, 102)', JSON.stringify(cs))
 cs = await stylesOf(`${FIELD} .pm-sched-hint`, ['color'])
 check('提示行 #999（浅色不变）', cs.color === 'rgb(153, 153, 153)', JSON.stringify(cs))
-cs = await stylesOf(`${FIELD} input[type=time]`, ['color-scheme'])
-check('时间输入 color-scheme: light', cs['color-scheme'] === 'light', JSON.stringify(cs))
+// The TimePicker repaints with the app palette: antd's container colour is
+// white in light (color-scheme says nothing to a text input, so the old pin
+// was reading a property the component never had).
+cs = await stylesOf(`${FIELD} .ant-picker`, ['background-color'])
+check('TimePicker 底色走浅色容器白', cs['background-color'] === 'rgb(255, 255, 255)', JSON.stringify(cs))
 await page.screenshot({ path: join(SHOTS, 'schedule-light.png'), fullPage: true })
 
 // ── 5. dark: same section, every ink on the dark rung ──
@@ -182,8 +192,8 @@ cs = await stylesOf(`${FIELD} .pm-sched-chip--active`, ['background-color', 'col
 check('选中胶囊反色（深色墨）', cs['background-color'] === 'rgb(230, 230, 230)' && cs.color === 'rgb(0, 0, 0)', JSON.stringify(cs))
 cs = await stylesOf(`${FIELD} .pm-sched-panel`, ['background-color', 'border-color'])
 check('面板底/边走深色变量', cs['background-color'] === 'rgba(255, 255, 255, 0.03)' && cs['border-color'] === 'rgb(43, 43, 43)', JSON.stringify(cs))
-cs = await stylesOf(`${FIELD} input[type=time]`, ['color-scheme'])
-check('时间输入 color-scheme: dark', cs['color-scheme'] === 'dark', JSON.stringify(cs))
+cs = await stylesOf(`${FIELD} .ant-picker`, ['background-color'])
+check('TimePicker 底色随主题翻到深色容器（不再停留白色）', cs['background-color'] !== 'rgb(255, 255, 255)' && cs['background-color'] !== 'rgba(0, 0, 0, 0)', JSON.stringify(cs))
 
 // ── 6. invalid cron → --pm-error in dark (#ff7875) ──
 // '0 9 * *' turns out VALID (cron-parser pads), so the fixture is a real

@@ -390,9 +390,13 @@ export class AgentEngine implements EngineCore {
    *  next turn). Resolves with the compaction event for UI feedback, or null
    *  when there was nothing to drop (conversation below the keep-window
    *  floor) or a turn is in flight — compacting mid-turn would race the loop
-   *  on the shared summary cache. */
+   *  on the shared summary cache. No isCancelled gate on purpose: that flag
+   *  means "late tool results must not revive the loop", while compaction
+   *  sends no request and touches only the API copy — and a stopped (idle)
+   *  or paused (awaiting_continue) conversation is exactly when the user
+   *  reaches for /compact. The gate made the command a silent no-op that
+   *  reported the opposite of what happened (review0924 M1). */
   compactNow = async (instruction?: string): Promise<CompactionEvent | null> => {
-    if (this.isCancelled) return null
     const status = this.agentStatus.status
     if (status === 'streaming' || status === 'executing' || status === 'retrying') return null
     this.manualCompactActive = true

@@ -365,7 +365,7 @@ import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/pris
 // targets, and the probe never navigates to settings), the ErrorBoundary reload
 // button's UA face, and \`.project-row-action:disabled\`, which no fixture can
 // reach because the menus it lives in are opened only on hover.
-import { App as AntdApp, theme as themeApi } from 'antd'
+import { App as AntdApp, Radio, theme as themeApi } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import AppLayout from './src/renderer/src/components/layout/AppLayout'
 import ConversationSidebar from './src/renderer/src/components/layout/ConversationSidebar'
@@ -2014,6 +2014,42 @@ window.__knowledgeVector = () => {
     tick: after ? after.borderRightColor : null,
     tickBottom: after ? after.borderBottomColor : null,
     batchBarBg: bar ? getComputedStyle(bar).backgroundColor : null,
+  }
+}
+
+// ── §17b's mount — a plain Radio.Group under the same WelcomeMode wrapper
+// (the MCP 传输类型 radios are the app's Radio.Group consumers; the group's
+// shape — one checked option — is all the reader needs). The dot is the
+// radio inner's ::after painting colorWhite over the colorPrimary disc,
+// which is the Checkbox-tick mechanism's second consumer (review0924 M8).
+window.__mountRadio = () => {
+  const host = document.createElement('div')
+  host.id = 'radio-host'
+  document.body.appendChild(host)
+  createRoot(host).render(
+    <WelcomeMode>
+      <Radio.Group
+        defaultValue="stdio"
+        options={[
+          { label: 'stdio', value: 'stdio' },
+          { label: 'SSE', value: 'sse' },
+          { label: '流式 HTTP', value: 'http' },
+        ]}
+      />
+    </WelcomeMode>
+  )
+}
+window.__radioVector = () => {
+  const host = document.getElementById('radio-host')
+  if (!host) return null
+  // antd v6 dropped the -inner span: the .ant-radio span IS the disc (checked
+  // paints radioBgColor on it) and the dot is its ::after (radioColor).
+  const disc = host.querySelector('.ant-radio-checked')
+  const dot = disc ? getComputedStyle(disc, '::after') : null
+  return {
+    checked: !!disc,
+    discBg: disc ? getComputedStyle(disc).backgroundColor : null,
+    dotBg: dot ? dot.backgroundColor : null,
   }
 }
 
@@ -5421,6 +5457,34 @@ await page.waitForTimeout(KB_TICK_SETTLE)
   )
 }
 await page.evaluate(() => window.__setMode('light'))
+
+// ── §17b — the Radio dot rides the same scoped flip as the Checkbox tick ──
+// (review0924 M8: the dark primary is the near-white #e6e6e6 and the checked
+// dot painted colorWhite — invisible on its own disc. The token is scoped to
+// the radio sheet, so light's white-on-ink dot stays untouched.)
+await page.evaluate(() => window.__mountRadio())
+await page.waitForSelector('#radio-host .ant-radio-checked', { timeout: 10000 })
+{
+  const lightRadio = await page.evaluate(() => window.__radioVector())
+  check('浅色 Radio：选中点白色画在墨色盘上（翻墨前的正确形状）', lightRadio.discBg === 'rgb(0, 0, 0)' && lightRadio.dotBg === 'rgb(255, 255, 255)', `disc=${lightRadio.discBg} dot=${lightRadio.dotBg}`)
+  await page.evaluate(() => window.__setMode('dark'))
+  // The mode flip tweens the antd token repaint (a fixed 300ms read landed
+  // mid-flight at disc rgb(199,199,199) / dot rgb(6,6,6)) — wait for the
+  // settled ink dot instead of guessing the tween's length, §17's recipe.
+  await page.waitForFunction(() => {
+    const disc = document.querySelector('#radio-host .ant-radio-checked')
+    return !!disc && getComputedStyle(disc, '::after').backgroundColor === 'rgb(0, 0, 0)'
+  }, null, { timeout: 5000 }).catch(() => {})
+  // The disc's own tween lands behind the dot's; give it the same beat.
+  await page.waitForTimeout(300)
+  const darkRadio = await page.evaluate(() => window.__radioVector())
+  // rgb(199,199,199) is the app's settled dark checked-disc (antd derives it
+  // from the near-white primary — §17's checkbox box reads the same value);
+  // the pre-fix dot was colorWhite white-on-199 — the flip is the fix.
+  check('深色 Radio：选中盘 = 深色选中底，选中点翻成墨色（修复前 colorWhite 没入选中盘）', darkRadio.discBg === 'rgb(199, 199, 199)' && darkRadio.dotBg === 'rgb(0, 0, 0)', `disc=${darkRadio.discBg} dot=${darkRadio.dotBg}`)
+  check('深色 Radio：点与盘可辨', darkRadio.dotBg !== darkRadio.discBg && darkRadio.dotBg !== 'rgb(255, 255, 255)', `dot=${darkRadio.dotBg}`)
+  await page.evaluate(() => window.__setMode('light'))
+}
 
 /** Flat compare of two vectors; `keys` limits it to a subset of properties. */
 function diffVector(a, b, keys) {
