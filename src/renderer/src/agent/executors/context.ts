@@ -26,6 +26,10 @@ export interface ToolExecContext {
   /** Parent-owned, attempt-scoped lifecycle; never settles acceptance. */
   beginPlanNodeExecution?: (ref: string | number, attemptId: string) => void
   updatePlanNodeExecution?: (ref: string | number, attemptId: string, status: PlanNodeExecutionStatus, subConvId?: string) => void
+  /** CAS the delivered node's output onto the plan as its handoff — the
+   *  downstream hand-off medium (PLAN-plan-scheduler S8). Routed through
+   *  PlanManager like every other plan write. */
+  recordNodeHandoff?: (ref: string | number, attemptId: string, text: string) => boolean
   /** 单专家 @召唤的结论原文交付：the executor hands the finished expert's text to
    *  the engine, which delivers it as the turn's own assistant message instead
    *  of letting another LLM round re-summarize it (which loses information).

@@ -264,14 +264,14 @@ export function formatSummonForPrompt(summon: SummonState | null): string | null
     'Their work is the deliverable: plan it, hand each one their part, and never do their work yourself.',
     '',
     '1. Call `create_plan` first. EVERY summoned expert above must be the `assignee` of at least one node — a node that names an un-summoned expert (or none) does not discharge that expert\'s summons. Write each node description as the assignment for the expert named as its assignee.',
-    '2. Dispatch every READY node with `spawn_agent` (subAgentId = its assignee, planNode = its number) — put them ALL in the same response so the experts run in parallel.',
-    '3. Settle each node with `advance_plan action="complete" node=<number>` as its result comes back.',
-    '4. Your own output is the synthesis the user reads once every node has settled — not a substitute for their work.'
+    '2. Once created, the scheduler dispatches every READY node to its assignee (in parallel) and settles each delivery — do NOT call `spawn_agent` or `advance_plan` for those yourself.',
+    '3. You are consulted when a node FAILED: re-dispatch it with `spawn_agent` (subAgentId = its assignee, planNode = its number) to retry, or `advance_plan` action="fail" / action="skip" with node=<number>.',
+    '4. Your own output is the synthesis the user reads once the plan completes — not a substitute for their work.'
   ]
   if (summon.nudged) {
     lines.push(
       '',
-      '**You ended the previous turn without creating the plan**, so none of the summoned experts has been asked to work yet. Do that now: `create_plan` with all of them assigned, and the READY nodes dispatched in the same response.'
+      '**You ended the previous turn without creating the plan**, so none of the summoned experts has been asked to work yet. Do that now: `create_plan` with all of them assigned — the scheduler takes the READY nodes from there.'
     )
   }
   return lines.join('\n')

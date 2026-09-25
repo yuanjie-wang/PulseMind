@@ -8,6 +8,17 @@ import type { Plan, PlanNode, PlanNodeStatus, PlanNodeExecutionStatus } from '..
 
 export const MAX_PLAN_NODES = 20
 
+/** Per-node handoff cap (PLAN-plan-scheduler S8/S9): the completed node's
+ *  output text stored on `PlanNode.handoff` and persisted with plan_json.
+ *  Worst case 20 × 6k = 120k on the conversation row — SQLite TEXT, fine; the
+ *  full output always remains in the node's sub-conversation. */
+export const NODE_HANDOFF_MAX = 6_000
+
+/** Total budget for the `## Upstream Node Results` section injected into a
+ *  dependent spawn's prompt (S8). Direct dependencies only; overflow truncates
+ *  with a pointer to the sub-conversation rather than dropping sections. */
+export const UPSTREAM_RESULTS_MAX = 8_000
+
 export interface RawPlanNode {
   description: string
   /** 1-based indexes into the input array — the tool protocol form (D3). */
@@ -144,6 +155,15 @@ export function resolveReadyNode(plan: Plan, ref: string | number): PlanNode {
   const node = resolveNodeRef(plan, ref)
   if (!node) throw new Error(`Unknown planNode "${ref}" — valid: n1..n${plan.nodes.length}.`)
   if (node.status !== 'pending') throw new Error(`Plan node ${node.id} is already ${node.status} — pick a node from the READY set.`)
+  // Live-attempt guard (PLAN-plan-scheduler S7): a pending node with a queued
+  // or running attempt is ALREADY dispatched — by the scheduler or by an
+  // earlier call in the same response. pending + deps-completed alone cannot
+  // tell that apart, so without this the model double-spawns the same work.
+  if (node.execution && (node.execution.status === 'queued' || node.execution.status === 'running')) {
+    throw new Error(
+      `Plan node ${node.id} already has a live attempt (${node.execution.status}) — it is being dispatched; wait for it to settle.`,
+    )
+  }
   const byId = idMap(plan)
   const open = (node.dependsOn ?? []).filter(d => byId.get(d)?.status !== 'completed')
   if (open.length > 0) {
@@ -156,8 +176,10 @@ export function resolveReadyNode(plan: Plan, ref: string | number): PlanNode {
 }
 
 /** Settle a node in place. Completing a failed node is a retry (D4). When the
- *  last pending node settles, the plan closes. The ONLY writers are the main
- *  agent's advance_plan calls (D6/D7 — single-writer). */
+ *  last pending node settles, the plan closes. Writers (D7, amended by
+ *  PLAN-plan-scheduler S2): still PlanManager alone — its advance_plan
+ *  executor AND its autoSettle (the scheduler's delivery→completed path) both
+ *  come through here; nothing else touches node status. */
 export function markNode(
   plan: Plan,
   ref: string | number,
@@ -296,13 +318,17 @@ export function formatPlanForPrompt(plan: Plan | null): string | null {
   for (const node of active.nodes) lines.push(describeNode(node, byId, ready))
   lines.push('', '### Rules')
   if ((active.mode ?? 'delegated') === 'delegated') {
-    lines.push('1. READY nodes are independent — dispatch EACH one now with `spawn_agent` (subAgentId = its assignee, task = the node description). Multiple READY nodes: put multiple spawn_agent calls in the SAME response so they run in parallel.')
+    // PLAN-plan-scheduler S1: the scheduler owns dispatch and settlement, so
+    // the rules tell the model what it is actually consulted for — anything
+    // vaguer produces ritual spawn/advance rounds the scheduler exists to kill.
+    lines.push('1. READY nodes are dispatched AUTOMATICALLY by the scheduler (each to its assignee, in parallel) — do NOT call spawn_agent for them yourself, and do NOT report their delivery.')
     lines.push('2. Never execute a delegated node yourself.')
+    lines.push('3. You are consulted at exactly two points: a node FAILED (decide: re-dispatch it to retry, or `advance_plan` action="fail" / action="skip" with node=<its number>), and the final settle (write the answer for the user; action="finish" only to close early).')
   } else {
     lines.push('1. Execute READY nodes yourself in dependency order.')
+    lines.push('2. When a node settles call `advance_plan` with node=<its number> — the plan never advances on its own. action="complete" (retrying a failed node = retry), action="fail", action="skip".')
+    lines.push('3. Close with action="finish" once the objective is met; the plan auto-closes when the last node settles.')
   }
-  lines.push('2. When a node settles call `advance_plan` with node=<its number> — the plan NEVER auto-advances. action="complete" (retrying a failed node = retry), action="fail", action="skip".')
-  lines.push('3. Close with action="finish" once the objective is met; the plan auto-closes when the last node settles.')
   return lines.join('\n')
 }
 
@@ -321,7 +347,13 @@ export function formatPlanSnapshot(plan: Plan | null, info: PlanSnapshotInfo): s
   const parts: string[] = []
   const ref = info.node !== undefined ? resolveNodeRef(active, info.node) : null
   const num = ref ? nodeNumberOf(ref) : null
-  if (info.action === 'create') parts.push(`Plan created with ${active.nodes.length} node(s), numbered n1..n${active.nodes.length} — the numbering is fixed; dispatch nodes with spawn_agent planNode=<n> and settle them with advance_plan node=<n>. Mode: ${active.mode ?? 'delegated'}. All nodes start pending.`)
+  if (info.action === 'create') {
+    const delegated = (active.mode ?? 'delegated') === 'delegated'
+    parts.push(`Plan created with ${active.nodes.length} node(s), numbered n1..n${active.nodes.length} — the numbering is fixed. Mode: ${active.mode ?? 'delegated'}. All nodes start pending.`
+      + (delegated
+        ? ' The scheduler dispatches READY nodes and settles each one on delivery — you are consulted only when a node fails.'
+        : ' Dispatch nodes with spawn_agent planNode=<n> and settle them with advance_plan node=<n>.'))
+  }
   else if (active.completed && info.action === 'complete') parts.push(`Node n${num} completed — every node is settled, the plan is complete.`)
   else if (info.action === 'complete' && num !== null) parts.push(`Node n${num} completed.`)
   else if (info.action === 'fail' && num !== null) parts.push(`Node n${num} FAILED. Its dependents are blocked — retry it (action="complete") or give up on it (action="skip").`)
@@ -342,4 +374,38 @@ export function formatPlanSnapshot(plan: Plan | null, info: PlanSnapshotInfo): s
   }
   if (info.notes) parts.push('', info.notes)
   return parts.join('\n')
+}
+
+/** The `## Upstream Node Results` section for a spawn of `node`
+ *  (PLAN-plan-scheduler S8) — the downstream hand-off, code-authored so it
+ *  cannot be lost to a model that forgets to transcribe. One sub-section per
+ *  DIRECT dependency (transitivity is the graph's job, not the prompt's):
+ *  the dependency's handoff text, falling back to its one-line summary, falling
+ *  back to an explicit "no recorded output". Total budget UPSTREAM_RESULTS_MAX
+ *  — overflow truncates the tail and says where the full output lives.
+ *  Null when there is nothing to hand over (no deps, or the node is unknown). */
+export function formatUpstreamResults(plan: Plan | null, node: PlanNode): string | null {
+  if (!plan) return null
+  const byId = idMap(plan)
+  const deps = node.dependsOn.map(id => byId.get(id)).filter((d): d is PlanNode => !!d)
+  if (deps.length === 0) return null
+
+  const sections: string[] = ['## Upstream Node Results']
+  let used = sections[0].length
+  for (const dep of deps) {
+    const body = (dep.handoff ?? dep.summary ?? '').trim() || '(no recorded output — see its node session)'
+    let block = `### ${dep.id}: ${dep.description}\n${body}`
+    if (used + block.length + 2 > UPSTREAM_RESULTS_MAX) {
+      const room = UPSTREAM_RESULTS_MAX - used - 2
+      if (room > 0) block = block.slice(0, Math.max(0, room)) + '\n[... truncated — the full output is in this node\'s sub-conversation]'
+      else break
+      sections.push(block)
+      used += block.length + 2
+      break
+    }
+    sections.push(block)
+    used += block.length + 2
+  }
+  if (sections.length === 1) return null
+  return sections.join('\n\n')
 }

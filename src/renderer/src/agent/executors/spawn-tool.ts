@@ -9,7 +9,7 @@ import {
   toExpertRefCatalogs,
   type ExpertRefCatalogs,
 } from '../../../../shared/expert-context'
-import { nodeNumberOf, resolveReadyNode } from '../../../../shared/plan/graph'
+import { formatUpstreamResults, nodeNumberOf, resolveReadyNode } from '../../../../shared/plan/graph'
 import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 import { getCachedMcpServers } from '../mcp-cache'
 import {
@@ -143,9 +143,25 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     const taskText = planNode
       ? `${task}\n\n(You are executing plan node ${planNode.id} of a larger plan — scope your work to this node only.)`
       : task
-    const systemPrompt = `${expertBlock}\n\n## Your Task\n${taskText}${skillsCtx}`
+    // Upstream hand-off (PLAN-plan-scheduler S8): the direct dependencies'
+    // recorded output rides the prompt as data — the sub-agent has no state
+    // block (spawnSystemPrompt branch → stateBlock null) and no tool to read
+    // its ancestors, so without this the only channel is the parent model
+    // transcribing upstream results into `task`, which is exactly the lossy
+    // link this replaces. Read against the LIVE plan at dispatch time, like
+    // the planNode gate above.
+    const upstream = planNode ? formatUpstreamResults(ex.getPlan?.() ?? null, planNode) : null
+    // The task rides the sub-agent's FIRST USER MESSAGE, not the system prompt
+    // (user ruling 2026-09-25): the user can read what was delegated in the
+    // sub-agent transcript, where the old shape showed only a fixed placeholder
+    // and buried the task in an invisible prompt. The system prompt keeps the
+    // invariant half — expert identity/methodology + the skills appendix —
+    // so `spawnSystemPrompt` stays non-empty for every discriminator that
+    // keys on it, and nothing volatile precedes the tool schemas.
+    const taskMessage = `## Your Task\n${taskText}${upstream ? `\n\n${upstream}` : ''}`
+    const systemPrompt = `${expertBlock}${skillsCtx}`
 
-    console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" prompt length=${systemPrompt.length} first 200 chars:`, systemPrompt.slice(0, 200))
+    console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" system prompt length=${systemPrompt.length}, task message length=${taskMessage.length} first 200 chars:`, taskMessage.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
     ex.notify()
 
@@ -181,7 +197,12 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       // 没有专家包（通用子代理）才留 undefined，表示不限制。
       const handle = ex.spawnSubAgent!({
         systemPrompt,
-        initialMessages: [],
+        initialMessages: [{
+          id: `spawn_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+          role: 'user',
+          contentBlocks: [{ type: 'text', text: taskMessage }],
+          createdAt: new Date().toISOString(),
+        }],
         title: `${profile?.name || '子代理'}: ${task.slice(0, 60)}`,
         allowedSkills: profile ? profile.skillNames ?? [] : undefined,
         allowedMcpServers: profile ? profile.mcpServerIds ?? [] : undefined,
@@ -226,6 +247,15 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         .flatMap(m => m.contentBlocks)
       const subText = subAssistantTexts.filter(b => b.type === 'text').map(b => (b as TextBlock).text).join('\n\n').slice(0, SUBAGENT_TEXT_MAX)
       const subTools = subAssistantTexts.filter(b => b.type === 'tool_use').map(b => `[tool_use: ${(b as ToolUseBlock).name}]`).join(', ')
+      // Hand-off capture (PLAN-plan-scheduler S8): a successful node's output
+      // becomes the plan's carrier for its dependents — recorded HERE, at the
+      // one choke point every spawn's result flows through, before any
+      // summarization for the parent. CAS on attemptId (via PlanManager) means
+      // a straggler from a superseded retry can't overwrite a newer attempt.
+      // Failures record nothing: their dependents are blocked anyway.
+      if (planNode && result.status === 'completed' && attemptStarted && ex.getPlan?.() === dispatchPlan) {
+        ex.recordNodeHandoff?.(planNode.id, attemptId, subText)
+      }
       const expertName = profile?.name || subAgentId || '(general sub-agent)'
       // Shared round budget: this batch's envelopes split one allowance so a
       // wide parallel dispatch cannot append a window-busting collector message.
@@ -258,10 +288,18 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         let summary = result.status === 'completed'
           ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
           : `## Sub-Agent Result (${result.status})\n\nThe sub-agent did not complete successfully.${errorDetail}`
-        // Close the create_plan → spawn_agent → advance_plan loop in the model's
-        // face: the result names the node and the exact settle call to make.
+        // Close the plan loop in the model's face: the result names the node
+        // and what happens to it next. Mode-gated (PLAN-plan-scheduler): a
+        // delegated plan settles on delivery — telling the model to call
+        // advance_plan here would invite a ritual round the scheduler exists
+        // to remove — while a failed spawn still gets the settle instruction,
+        // because THAT is the consult the model must answer (direct mode
+        // keeps the original wording throughout: it never auto-settles).
         if (planNode) {
-          summary += `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — settle it now with advance_plan action="complete" node=${nodeNumberOf(planNode)} (or "fail" / "skip" if it did not succeed).`
+          const delegated = (dispatchPlan?.mode ?? 'delegated') === 'delegated'
+          summary += delegated && result.status === 'completed'
+            ? `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — its output has been recorded as the node's handoff for downstream nodes; the scheduler settles it automatically.`
+            : `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — settle it now with advance_plan action="complete" node=${nodeNumberOf(planNode)} (or "fail" / "skip" if it did not succeed).`
         }
         // Close-out instruction, deliberately the LAST bytes of the envelope:
         // the envelope reads like an intermediate artifact, and a weak model

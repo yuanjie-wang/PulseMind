@@ -6,7 +6,8 @@
  * Stored statuses are the only truth: 'ready' and 'blocked' are DERIVED
  * (shared/plan/graph.ts) and never persisted, so storage and derivation cannot
  * disagree. Acceptance (status) is separate from execution: the parent spawn
- * executor records an attempt's lifecycle, but only advance_plan settles it.
+ * executor records an attempt's lifecycle, but settlement is PlanManager's
+ * alone — via advance_plan or (since PLAN-plan-scheduler) the auto-scheduler.
  */
 
 export type PlanNodeStatus = 'pending' | 'completed' | 'failed' | 'skipped'
@@ -41,6 +42,14 @@ export interface PlanNode {
    *  restart, whereas the tool block's own copy rides the live status diff and
    *  can disappear with the assistant message when history is compacted. */
   subConvId?: string
+  /** The completed node's output text (capped at NODE_HANDOFF_MAX), captured
+   *  at the spawn choke point (PLAN-plan-scheduler S8) — the downstream
+   *  hand-off medium. Written only on successful delivery (CAS on attemptId,
+   *  same discipline as execution), persisted with plan_json, and injected
+   *  into each dependent spawn's prompt as `## Upstream Node Results`.
+   *  Absent = nothing to hand over (legacy/manual completion), where
+   *  consumers fall back to `summary`. */
+  handoff?: string
 }
 
 export interface Plan {

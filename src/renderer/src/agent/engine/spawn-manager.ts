@@ -131,6 +131,10 @@ export class SpawnManager {
     this.engine.pendingToolIds = new Set()
     this.engine.opts.adapter.reconcileMessages?.(this.engine.messages)
     if (this.engine.messages.length === 0) {
+      // Defensive only: spawn_agent now supplies the task AS the first user
+      // message (visible in the sub-agent transcript), so this fixed line is
+      // unreachable from that path — it exists so an empty-message spawn can
+      // never send a request with no user turn at all.
       this.engine.messages = [{
         id: `spawn_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
         role: 'user',
@@ -154,8 +158,9 @@ export class SpawnManager {
     const convId = this.engine.opts.conversationId
     if (convId && this.engine.messages.length > 0) {
       const firstText = this.engine.messages[0]?.contentBlocks?.find(b => b.type === 'text')?.text || ''
-      // The injected kick-off message is a fixed string — prefer the delegated
-      // expert name + task so sub-agent sessions are distinguishable in the list.
+      // Prefer the explicit spawn title: the kick-off message is now the whole
+      // task paragraph, which makes a poor (multi-line) list label — firstText
+      // only covers a config that supplied no title at all.
       const title = this.engine.spawnTitle || firstText || 'Sub-agent'
       const conv = agentMessagesToConversation(this.engine.messages, convId, title)
       getHost().saveConversation(conv).catch(err =>

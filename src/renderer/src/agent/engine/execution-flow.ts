@@ -199,7 +199,10 @@ export class ExecutionFlow {
     this.engine.pendingToolIds = new Set()
     this.engine.agentStatus = { status: 'idle' }
     this.engine.notify()
-    setTimeout(() => this.engine.continueLoop(), 0)
+    // Resume takes the scheduler first (PLAN-plan-scheduler): a live attempt
+    // owns the turn (true → nothing re-issued here, that attempt's drain
+    // re-kicks), otherwise the ordinary continuation runs.
+    setTimeout(() => { if (!this.engine.planScheduler.kick()) this.engine.continueLoop() }, 0)
   }
 
   /** Fully stop execution (main agent + abort all sub-agents) */
@@ -454,8 +457,13 @@ export class ExecutionFlow {
         } else {
           this.engine.agentStatus = { status: 'awaiting_user_input', tools: askUserTools }
         }
-      } else if (this.engine.pendingToolIds.size === 0) this.engine.continueLoop()
-      else { this.engine.agentStatus = { status: 'completed' }; this.engine.resolveCompletionIfSpawned('completed') }
+      } else if (this.engine.pendingToolIds.size === 0) {
+        // kick() true = the scheduler just dispatched a wave (or an attempt
+        // owns the turn): status is `executing` and the batch's own drain
+        // re-enters here — painting `completed` over it would report the turn
+        // finished while experts are still running.
+        if (!this.engine.planScheduler.kick()) this.engine.continueLoop()
+      } else { this.engine.agentStatus = { status: 'completed' }; this.engine.resolveCompletionIfSpawned('completed') }
       this.engine.notify()
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'tool_use', status: this.engine.agentStatus }, 'afterLlmCall')
       return
@@ -497,6 +505,13 @@ export class ExecutionFlow {
     // that will continue. The bound lives in the engine (`nudged`), so a model
     // that ignores both the brief and this correction closes normally next time.
     if (this.engine.nudgeSummonIfUnplanned()) return
+    // Plan scheduler (PLAN-plan-scheduler): a turn that stops with the plan
+    // still open is not a stopping point — a delivered wave settles and the
+    // READY set dispatches here, keeping the turn OPEN (true = do NOT close,
+    // no `completed` status, the clock keeps running, exactly like the nudge
+    // above). consult/none fall through: a failure the model has not answered,
+    // or the completed plan's final synthesis, is an ordinary turn end.
+    if (this.engine.planScheduler.kick()) return
     // The turn's duration — user send → this last output character, with every
     // thinking round and tool call in between counted and any stretch parked on
     // the user (held approval / ask_user / loop-limit prompt / manual pause)

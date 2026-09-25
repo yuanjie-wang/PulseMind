@@ -338,10 +338,16 @@ describe('plan mode: a summons that ends with no plan is re-issued exactly once'
       } as ToolUseBlock)
       expect(engine.summon?.engaged).toBe(true)
       continueLoop.mockClear()
+      dispatch.mockClear()
       engine.handleEndTurnResponse(null)
       await tick()
+      // The nudge retires, AND the plan scheduler now owns this turn end
+      // (PLAN-plan-scheduler): n1 is READY with no attempt, so the turn stays
+      // OPEN on a synthetic dispatch instead of closing — no LLM round, no
+      // continueLoop. The close happens only after every node settles.
       expect(continueLoop).not.toHaveBeenCalled()
-      expect(engine.agentStatus).toEqual({ status: 'completed' })
+      expect(dispatch).toHaveBeenCalledTimes(1)
+      expect(engine.agentStatus).toMatchObject({ status: 'executing' })
     } finally {
       continueLoop.mockRestore()
       dispatch.mockRestore()

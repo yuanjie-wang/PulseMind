@@ -97,21 +97,41 @@ describe('parent-owned plan execution, separate from acceptance', () => {
     releases.forEach(release => release?.())
   })
 
-  it('replayed tool IDs get distinct attempts; old completion cannot overwrite the latest link or state', async () => {
+  it('refuses a replay while the attempt is live; a retry gets distinct attempts and a straggler cannot overwrite', async () => {
     const f = fixture()
     const first = execSpawnAgent(f.ex, tool()); await Promise.resolve()
     const oldId = f.node().execution!.attemptId
+    expect(f.node().execution?.status).toBe('running')
+
+    // PLAN-plan-scheduler S1: while the node has a LIVE attempt, a second
+    // dispatch (model replay or scheduler double-fire) bounces at the gate —
+    // the node keeps attempt one, nothing about it changes.
+    await execSpawnAgent(f.ex, tool())
+    expect(f.node().execution!.attemptId).toBe(oldId)
+    expect(f.node().subConvId).toBe('sub_1') // the refusal touches nothing
+    expect(f.ex.addToolResult).toHaveBeenCalledWith('same-tool-id', expect.stringContaining('already has a live attempt'), true)
+
+    // Settle the first attempt as failed — that is what makes the node
+    // retryable (the consult round's re-dispatch path).
+    f.finish(0, 'error'); await first
+    expect(f.node().execution?.status).toBe('failed')
+    expect(f.node().status).toBe('pending')
+
+    // The retry records a DISTINCT attempt (same tool id replayed), still
+    // without accepting the node or linking a session — those are per-attempt.
     const second = execSpawnAgent(f.ex, tool())
     expect(f.node().execution!.attemptId).not.toBe(oldId)
-    expect(f.node().subConvId).toBeUndefined()
+    expect(f.node().execution?.status).toBe('queued')
+    expect(f.node().subConvId).toBeUndefined() // beginNodeExecution resets the link for the new attempt
+    // The superseded attempt's straggler cannot write onto the live one.
+    expect(updateNodeExecution(f.manager.plan!, 1, oldId, 'running', 'late')).toBe(false)
     await Promise.resolve()
-    const count = f.persisted.length
-    f.finish(0); await first
-    expect(f.persisted).toHaveLength(count)
     expect(f.node().execution?.status).toBe('running')
     expect(f.node().subConvId).toBe('sub_2')
     f.finish(1); await second
     expect(f.node().execution?.status).toBe('delivered')
+    expect(f.node().subConvId).toBe('sub_2')
+    // …and the new attempt's own id is what a late write must carry.
     expect(updateNodeExecution(f.manager.plan!, 1, f.node().execution!.attemptId, 'running', 'late')).toBe(false)
   })
 

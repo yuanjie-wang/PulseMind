@@ -78,7 +78,7 @@ describe('spawn result envelope: the last line tells the model what to do next',
     expect(getCaptured()!.isError).toBe(true)
   })
 
-  it('coexists with the plan-settle line and stays last (the model reads settle, then report)', async () => {
+  it('delegated plan: the settle line says the scheduler settles it — no ritual advance_plan', async () => {
     const plan = {
       objective: 'demo',
       nodes: [{ id: 'n1', description: '翻译节点', status: 'pending', dependsOn: [] }],
@@ -92,8 +92,35 @@ describe('spawn result envelope: the last line tells the model what to do next',
     await execSpawnAgent(ex, tool({ task: '翻译', planNode: 'n1' }))
 
     const content = getCaptured()!.content
-    expect(content).toContain('advance_plan action="complete" node=1')
+    expect(content).toContain('**Plan node n1** ("翻译节点")')
+    // PLAN-plan-scheduler: a delegated delivery hands off (handoff recorded),
+    // the scheduler settles — telling the model to advance_plan here is the
+    // ritual round the scheduler exists to remove.
+    expect(content).toContain('the scheduler settles it automatically')
+    expect(content).not.toContain('advance_plan action="complete"')
+    // The close-out still comes last: report, don't re-dispatch.
     expect(content).toContain('**This result is the deliverable.**')
+    expect(content.indexOf('the scheduler settles it automatically')).toBeLessThan(content.indexOf('**This result is the deliverable.**'))
+    expect(content.trimEnd().endsWith('near-identical task.')).toBe(true)
+  })
+
+  it('direct plan keeps the settle-now instruction (that mode never auto-settles)', async () => {
+    const plan = {
+      objective: 'demo',
+      mode: 'direct',
+      nodes: [{ id: 'n1', description: '翻译节点', status: 'pending', dependsOn: [] }],
+    }
+    const { ex, getCaptured } = makeContext({
+      status: 'completed',
+      messages: subMessages('译文：猪在哪里？'),
+    })
+    ;(ex as { getPlan?: () => unknown }).getPlan = () => plan
+
+    await execSpawnAgent(ex, tool({ task: '翻译', planNode: 'n1' }))
+
+    const content = getCaptured()!.content
+    expect(content).toContain('advance_plan action="complete" node=1')
+    expect(content).not.toContain('the scheduler settles it automatically')
     expect(content.indexOf('advance_plan action="complete"')).toBeLessThan(content.indexOf('**This result is the deliverable.**'))
   })
 })

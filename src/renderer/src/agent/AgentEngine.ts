@@ -30,6 +30,7 @@ import { SpawnManager } from './engine/spawn-manager'
 import { collectEnabledTools, buildToolProtocols } from './engine/tool-collection'
 import { runTurnEndMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
 import { ExecutionFlow } from './engine/execution-flow'
+import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
@@ -334,8 +335,9 @@ export class AgentEngine implements EngineCore {
    *  the start of every turn. */
   private delegatedToolUseId: string | null = null
   /** @internal The summoned expert's conclusion, waiting for continueLoop to
-   *  append it as this turn's own assistant message. */
-  private pendingVerbatimReply: string | null = null
+   *  append it as this turn's own assistant message. Public on EngineCore so
+   *  the plan scheduler can yield to it (that verbatim close owns the turn). */
+  pendingVerbatimReply: string | null = null
   /** @internal Multi-expert @-summon state (plan mode). Null outside such a
    *  turn — see startPlanningLoop / buildSummonNudge. */
   summon: SummonState | null = null
@@ -356,6 +358,11 @@ export class AgentEngine implements EngineCore {
   toolExecutor: ToolExecutor
   private spawnManager = new SpawnManager(this)
   private streamRunner = new StreamRunner(this)
+  /** Delegated-plan auto-scheduler (PLAN-plan-scheduler): kick() takes first
+   *  refusal at drains, turn end and resume — see engine/plan-scheduler.ts.
+   *  The annotation is load-bearing: without it the initializer infers through
+   *  EngineCore (which names this very field) and TS reports a circular any. */
+  planScheduler: PlanScheduler = new PlanScheduler(this)
   private runLlmStream = (opts: AgentEngineOptions, req: { apiUrl: string; headers: Record<string, string>; resolvedBody: unknown }): Promise<void> => this.streamRunner.run(opts, req)
   reportSpawnProgress = (msg: string, force = false): void => { this.spawnManager.reportProgress(msg, force) }
   /** @internal */
@@ -487,6 +494,7 @@ export class AgentEngine implements EngineCore {
       (ref, attemptId) => this.planManager.beginNodeExecution(ref, attemptId),
       (ref, attemptId, status, subConvId) => this.planManager.updateNodeExecution(ref, attemptId, status, subConvId),
       () => this.countRoundSpawnCalls(),
+      (ref, attemptId, text) => this.planManager.recordNodeHandoff(ref, attemptId, text),
     )
   }
 
@@ -1245,7 +1253,10 @@ export class AgentEngine implements EngineCore {
     }
 
     this.pendingToolIds.delete(toolUseId)
-    if (this.pendingToolIds.size === 0 && !this.isAutoExecuting) this.continueLoop()
+    // Async straggler drain (PLAN-plan-scheduler): the plan scheduler gets
+    // first refusal — a delivered wave settles and the next dispatches here,
+    // with no LLM round in between. false → the ordinary continuation.
+    if (this.pendingToolIds.size === 0 && !this.isAutoExecuting && !this.planScheduler.kick()) this.continueLoop()
     else if (this.pendingToolIds.size > 0) {
       const remaining = this.toolUseBlocks.filter(t => this.pendingToolIds.has(t.id))
       // Park only for a call the ladder is actually holding ('pending'). This

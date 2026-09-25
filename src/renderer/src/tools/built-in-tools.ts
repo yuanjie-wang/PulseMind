@@ -793,7 +793,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         planNode: {
           type: 'string',
           description:
-            'The plan node this task implements: its 1-based number ("2") or id ("n2"). Pass it whenever the task executes a node of the active plan — only a READY node (pending, all dependencies completed) is accepted. The spawn result will name the node and remind you to settle it with advance_plan.',
+            'The plan node this task implements: its 1-based number ("2") or id ("n2"). Pass it whenever the task executes a node of the active plan — only a READY node (pending, all dependencies completed) and never one with a live attempt is accepted. The node settles automatically when the sub-agent delivers; you are consulted only if it fails.',
         },
       },
       required: ['task'],
@@ -806,7 +806,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'create_plan',
     description:
-      'Create an execution DAG for complex multi-step tasks: independent nodes run in PARALLEL (each delegated to its assignee expert via spawn_agent), nodes with depends_on wait for their prerequisites. Array order never implies order — a step without depends_on starts immediately, so dependent steps MUST name their prerequisites. spawn_agent rejects nodes outside the READY set, and you MUST call advance_plan with node=<number> after each node settles — the plan does not auto-advance.',
+      'Create an execution DAG for complex multi-step tasks: independent nodes run in PARALLEL (each delegated to its assignee expert via spawn_agent), nodes with depends_on wait for their prerequisites. Array order never implies order — a step without depends_on starts immediately, so dependent steps MUST name their prerequisites. Once created, the scheduler runs the plan: READY nodes dispatch automatically, each delivery settles automatically. You are consulted at exactly two points — a node FAILED (decide: re-dispatch to retry, or advance_plan action="fail"/"skip"), and the plan completing (write the final answer for the user).',
     category: 'system',
     triggers: ['plan', 'strategy', '步骤', '计划'],
     input_schema: {
@@ -850,7 +850,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'advance_plan',
     description:
-      'MANDATORY after each node settles: report it with action + node. The plan never advances on its own. When several nodes run in parallel, report each one as it settles.',
+      'The plan\'s decision tool — the scheduler settles successful deliveries and dispatches READY nodes on its own, so do NOT report those. Use it when a node FAILED (action="fail" or "skip"; re-dispatching it yourself retries it), to correct a status by hand, or action="finish" to close the plan early. The final answer after completion is written as your message, not via this tool.',
     category: 'system',
     triggers: ['next step', 'step complete', 'done', '进度', '下一步'],
     input_schema: {

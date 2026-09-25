@@ -76,6 +76,23 @@ describe('resolveReadyNode — the dispatch gate', () => {
     expect(() => resolveReadyNode(plan, 9)).toThrow('Unknown planNode "9" — valid: n1..n4.')
   })
 
+  it('refuses a node with a LIVE attempt — the scheduler/model double-dispatch guard (PLAN-plan-scheduler S1)', () => {
+    const plan = diamond()
+    markNode(plan, 1, 'completed')
+    // n2 is READY (deps done) but its attempt is already out: a model-emitted
+    // spawn for the same node must bounce instead of running the work twice.
+    plan.nodes[1].execution = { attemptId: 'a1', status: 'queued' }
+    expect(() => resolveReadyNode(plan, 2)).toThrow('n2 already has a live attempt (queued)')
+    plan.nodes[1].execution = { attemptId: 'a1', status: 'running' }
+    expect(() => resolveReadyNode(plan, 2)).toThrow('n2 already has a live attempt (running)')
+    // Settled attempts are NOT live: settle (delivered), retry (failed) and
+    // the consult path (stopped) all need the node reachable again.
+    for (const status of ['delivered', 'failed', 'stopped'] as const) {
+      plan.nodes[1].execution = { attemptId: 'a1', status }
+      expect(resolveReadyNode(plan, 2).id).toBe('n2')
+    }
+  })
+
   it('a fully-parallel plan never trips the gate (the common path stays free)', () => {
     const plan = createPlanDag('all parallel', [
       { description: 'a' },
@@ -107,16 +124,22 @@ describe('wiring: spawn routes through the gate, and the copy carries the contra
     expect(instructions).toContain('Array order never creates order')
     expect(instructions).toContain("If a node consumes another node's output, you MUST list that node in its depends_on")
     // The gate itself is announced to the model — a rejected dispatch must not
-    // be the first time it hears about the READY rule.
-    expect(instructions).toContain('spawn_agent rejects a node whose dependencies are not all completed')
-    expect(instructions).toContain('Only nodes in the READY set are accepted')
+    // be the first time it hears about the READY rule (PLAN-plan-scheduler
+    // widened it: live attempts are refused too, and the scheduler, not the
+    // model, emits the READY set).
+    expect(instructions).toContain('only READY nodes with no live attempt are accepted')
+    expect(instructions).toContain('a node whose dependencies are not all completed, or one already being dispatched, is rejected')
+    expect(instructions).toContain('the SCHEDULER dispatches the READY set itself')
   })
 
   it('schema descriptions warn that array order never sequences and name the enforcement', () => {
     const tools = src('src/renderer/src/tools/built-in-tools.ts')
     expect(tools).toContain('array order never sequences them')
     expect(tools).toContain('it does NOT imply execution order')
-    expect(tools).toContain('only a READY node (pending, all dependencies completed) is accepted')
-    expect(tools).toContain('spawn_agent rejects nodes outside the READY set')
+    expect(tools).toContain('only a READY node (pending, all dependencies completed) and never one with a live attempt is accepted')
+    // The scheduler's ownership is what the create_plan description now sells:
+    // automatic dispatch, automatic settle, consultation on failure only.
+    expect(tools).toContain('the scheduler runs the plan')
+    expect(tools).toContain('READY nodes dispatch automatically, each delivery settles automatically')
   })
 })

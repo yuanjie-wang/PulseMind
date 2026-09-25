@@ -1,12 +1,15 @@
 /**
- * Plan tool executors (PLAN-plan-dag): create_plan / advance_plan. All graph
- * rules (validation, ready/blocked derivation, snapshot text) live in
- * shared/plan/graph.ts — this class only adapts tool input to it and anchors
- * jump targets. The plan's ONLY writers are these two executors, i.e. the main
- * agent's explicit tool calls (single-writer; sub-agents never touch it).
+ * Plan tool executors (PLAN-plan-dag): create_plan / advance_plan, plus the
+ * auto-scheduler's two channels (PLAN-plan-scheduler S2: autoSettle /
+ * recordNodeHandoff). All graph rules (validation, ready/blocked derivation,
+ * snapshot text) live in shared/plan/graph.ts — this class only adapts callers
+ * to it and anchors jump targets. The plan's ONLY writer is this class
+ * (single-writer); what changed in PLAN-plan-scheduler is that the writer has
+ * two policies — the model's advance_plan executor and the scheduler's
+ * delivery→completed settle — not one. Sub-agents never touch the plan.
  */
 import type { ToolUseBlock, AgentMessage } from '../types/agent'
-import type { Plan, PlanNodeExecutionStatus } from '../../../shared/types/plan'
+import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../shared/types/plan'
 import type { SummonedExpert } from '../../../shared/expert-context'
 import {
   beginNodeExecution,
@@ -16,6 +19,7 @@ import {
   formatPlanSnapshot,
   linkNodeSession,
   markNode,
+  NODE_HANDOFF_MAX,
   readyNodes,
   resolveNodeRef,
   type RawPlanNode,
@@ -71,6 +75,50 @@ export class PlanManager {
 
   updateNodeExecution(ref: string | number, attemptId: string, status: PlanNodeExecutionStatus, subConvId?: string): void {
     if (this.plan && updateNodeExecution(this.plan, ref, attemptId, status, subConvId)) this.notifyPlanChange()
+  }
+
+  /** Auto-scheduler settlement (PLAN-plan-scheduler S2/S10): a node whose
+   *  attempt DELIVERED is accepted without an LLM round — the whole point of
+   *  the scheduler. Same single-writer class, second policy: markNode's
+   *  auto-close on the last settle is reused, and the summary defaults to the
+   *  handoff's first line (a later advance_plan notes still overwrites it).
+   *  Only a genuinely delivered, still-pending node settles; anything else is
+   *  a no-op so a stale kick cannot double-settle or revive a node. */
+  autoSettle(ref: string | number): boolean {
+    const plan = this.plan
+    if (!plan) return false
+    const node = resolveNodeRef(plan, ref)
+    if (!node || node.status !== 'pending' || node.execution?.status !== 'delivered') return false
+    const firstLine = PlanManager.handoffFirstLine(node)
+    markNode(plan, node.id, 'completed', firstLine !== undefined ? { summary: node.summary ?? firstLine } : undefined)
+    this.notifyPlanChange()
+    return true
+  }
+
+  /** CAS the delivered node's output onto the plan (PLAN-plan-scheduler S8) —
+   *  the downstream hand-off medium. attemptId must match the LIVE attempt
+   *  (same discipline as updateNodeExecution): a straggler from a superseded
+   *  retry can never overwrite the newer attempt's handoff. Capped at
+   *  NODE_HANDOFF_MAX on the way in, so plan_json stays bounded. */
+  recordNodeHandoff(ref: string | number, attemptId: string, text: string): boolean {
+    const plan = this.plan
+    if (!plan || !attemptId) return false
+    const node = resolveNodeRef(plan, ref)
+    if (!node || node.execution?.attemptId !== attemptId) return false
+    const trimmed = text.slice(0, NODE_HANDOFF_MAX)
+    if (!trimmed.trim() || node.handoff === trimmed) return false
+    node.handoff = trimmed
+    this.notifyPlanChange()
+    return true
+  }
+
+  /** First non-empty line of the handoff, ≤120 chars — autoSettle's default
+   *  summary (S10), so snapshots and the panel show what the node produced
+   *  without the model writing a notes line it never gets the chance to. */
+  private static handoffFirstLine(node: PlanNode): string | undefined {
+    const line = (node.handoff ?? '').split('\n').map(s => s.trim()).find(s => s.length > 0)
+    if (!line) return undefined
+    return line.length > 120 ? `${line.slice(0, 119)}…` : line
   }
 
   /** The assistant message carrying this tool call — the panel's jump anchor. */

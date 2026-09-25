@@ -14,6 +14,7 @@ import type { SubAgentResult } from '../agent-utils'
 import type { AgentEngineOptions } from '../AgentEngine'
 import type { ToolExecutor } from '../tool-executors'
 import type { PlanManager } from '../plan-manager'
+import type { PlanScheduler } from './plan-scheduler'
 import type { ContextCompactor } from './context-compactor'
 import type { IncrementalJsonTracker } from '../json-stream'
 import type { TurnClock } from './turn-clock'
@@ -28,6 +29,16 @@ export interface EngineCore {
   toolUseBlocks: ToolUseBlock[]
   jsonAccumulators: Map<number, IncrementalJsonTracker>
   planManager: PlanManager
+  /** The delegated plan's auto-scheduler (PLAN-plan-scheduler). `kick()` gets
+   *  first refusal at every drain / turn end / resume: true = the scheduler
+   *  took the turn (dispatched, or an attempt is live), so the caller must
+   *  neither continueLoop nor close the turn; false = the ordinary LLM round. */
+  planScheduler: PlanScheduler
+  /** A single-expert @-summon's conclusion awaiting delivery as the turn's own
+   *  assistant message (set by deliverExpertConclusion, consumed by
+   *  continueLoop). While set the scheduler yields — that verbatim close owns
+   *  the turn and must not be delayed behind a synthetic dispatch. */
+  pendingVerbatimReply: string | null
 
   // ── Request/loop state ──
   opts: AgentEngineOptions
@@ -62,6 +73,10 @@ export interface EngineCore {
   activeSubAgents: Map<string, EngineCore>
   spawnSystemPrompt?: string
   spawnTitle?: string
+  /** True only for an engine SpawnManager constructed as a child (NOT for a
+   *  pinned prompt override landing in spawnSystemPrompt) — the plan
+   *  scheduler's applicability gate rides on it, as does ask_user's fail-fast. */
+  isSpawnedSubAgent: boolean
   onSpawnProgress?: (summary: string) => void
   resolveCompletion?: (result: SubAgentResult) => void
   completionPromise?: Promise<SubAgentResult>

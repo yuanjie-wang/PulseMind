@@ -228,11 +228,16 @@ describe('spawn_agent planNode linkage', () => {
     // node click — the only copy that is persisted with the plan).
     expect(t.subConvId).toBe('sub_conv_B')
     expect(engine.planManager.plan.nodes[1].subConvId).toBe('sub_conv_B')
-    // Status-neutral: a dispatch links the node, advance_plan is what settles it.
+    // Status-neutral at DISPATCH time: a dispatch links the node; settlement
+    // is the scheduler's (delegated) or advance_plan's (direct) — neither
+    // happens inside this call.
     expect(engine.planManager.plan.nodes[1].status).toBe('pending')
     const content = toolResultContent(engine, 'tu_p')
     expect(content).toContain('**Plan node n2** ("前端")')
-    expect(content).toContain('advance_plan action="complete" node=2')
+    // Delegated mode (createPlanDag's default): the envelope hands the node
+    // off and names the scheduler as the settler — no ritual advance_plan.
+    expect(content).toContain('the scheduler settles it automatically')
+    expect(content).not.toContain('advance_plan action="complete"')
     expect(finishedAt.size).toBe(1) // the sub-agent actually ran
   })
 

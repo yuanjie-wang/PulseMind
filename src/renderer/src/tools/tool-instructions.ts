@@ -476,7 +476,7 @@ Delegate a task to a sub-agent. The sub-agent runs with the same tools as this s
 1. Review the available experts list above — pick one when its expertise fits the task, otherwise omit the ID
 2. The sub-agent starts with that expert's persona and runs independently
 3. When complete, its results are returned as the tool result
-4. **With a plan active**: pass \`planNode\` for every node you dispatch (multiple READY nodes = multiple spawn_agent calls in the same response, each with its own planNode). Only nodes in the READY set are accepted — a node whose dependencies are not all completed is rejected. The result names the node — settle it immediately with \`advance_plan action="complete" node=<number>\`
+4. **With a plan active**: only READY nodes with no live attempt are accepted (a node whose dependencies are not all completed, or one already being dispatched, is rejected). In a delegated plan — the default — the SCHEDULER dispatches the READY set itself: you only emit spawn_agent by hand to **retry a node that failed**. A delivered node settles automatically and its output becomes the handoff downstream nodes receive; a failure brings the decision back to you.
 
 ### Guidelines
 - Use for complex, self-contained sub-tasks (research, analysis, code review, refactoring)
@@ -504,8 +504,8 @@ Create an execution DAG before starting complex multi-step work. Nodes with no d
 1. **Before creating the plan**, investigate first (\`read\`, \`search\`, \`list_dir\`, \`webfetch\`) so dependencies reflect reality
 2. Call \`create_plan\` with the objective and the node graph — put independent nodes on separate branches, that is what runs in parallel
 3. The plan (with its READY set) is injected into every subsequent request as context. Array order assigns each node its fixed number (n1..nN) — depends_on, spawn_agent planNode and advance_plan node all use these numbers
-4. Dispatch: spawn one \`spawn_agent\` per READY node (subAgentId = its assignee, planNode = its number) — put them ALL in the same response so they run concurrently. This is **enforced**: spawn_agent rejects a node whose dependencies are not all completed, so you cannot dispatch ahead of the graph
-5. As each sub-agent returns, call \`advance_plan\` with node=<number> to settle that node; newly READY nodes go out in the next parallel batch
+4. The **scheduler** takes over: READY nodes dispatch automatically (synthetic \`spawn_agent\` batches, one wave at a time), each delivery settles automatically with the node's output recorded as its **handoff**, and downstream nodes receive their direct dependencies' handoffs in their task prompt. Do NOT transcribe the READY set, do NOT spawn for it, do NOT report deliveries
+5. You are consulted at exactly two points: a node **FAILED** (re-dispatch it to retry, or \`advance_plan action="fail"/"skip"\` with node=<number>), and the plan **completing** (write the final answer for the user; \`action="finish"\` only to close early)
 
 ### Example — sequential stages, parallel leaves
 \`\`\`
@@ -519,22 +519,22 @@ steps: [
 n1 first; n2 and n3 run together once n1 settles; n4 waits for both. Written WITHOUT depends_on, all four would start at once — the array order would do nothing.
 
 ### Rules
-- One node per sub-agent; never execute a delegated node yourself
+- One node per sub-agent; never execute a delegated node yourself, and never re-dispatch a node the scheduler already dispatched (a live attempt is rejected anyway)
 - **If a node consumes another node's output, you MUST list that node in its depends_on — array order does not sequence nodes, and a plan of dependent steps with no edges is a fully parallel plan.**
-- Never call advance_plan without node=<number> when several nodes are ready
-- A failed node blocks only its own downstream — retry it (complete), or \`skip\` it and re-plan`,
+- Never call advance_plan to report a delivery — the scheduler settles those; it is for fail/skip/finish and hand correction, always with node=<number>
+- A failed node blocks only its own downstream — retry it (re-dispatch, or \`complete\`), or \`skip\` it and re-plan`,
 
   advance_plan: `## advance_plan
 
-Settle a plan node after it finishes, fails, or is abandoned — the plan NEVER advances by itself.
+The plan's decision tool. A delegated plan — the default — runs itself: the scheduler dispatches READY nodes and settles each delivery (recording the node's output as its handoff for downstream nodes). Do NOT call this tool for those. Reach for it when a node FAILED, to hand-correct a status, or to close the plan early.
 
 ### Parameters
-- **action** (required) — \`complete\` (node done; completing a failed node = retry), \`fail\` (node failed, downstream blocks), \`skip\` (abandon the node), \`finish\` (force-complete everything, close the plan)
+- **action** (required) — \`complete\` (hand-correct a node to done; on a failed node = retry), \`fail\` (node failed, downstream blocks until retried or skipped), \`skip\` (abandon the node), \`finish\` (force-complete everything, close the plan — the normal close happens by itself once every node is terminal)
 - **node** (required unless exactly one node is ready) — the node's 1-based number (\`"2"\`) or id (\`"n2"\`)
 - **notes** — optional one-line outcome; stored on the node and shown in the plan panel
 
-### Parallel etiquette
-When you dispatched several nodes in parallel, settle each one as its result comes back — separate advance_plan calls, each with its own node. Every snapshot tells you which nodes are READY next: dispatch them in the same response as parallel spawn_agent calls.`,
+### When a node fails
+The scheduler stops and pulls you in for one decision: re-dispatch the node with \`spawn_agent planNode=…\` to retry it, or settle it with \`fail\`/\`skip\` so the remaining graph can continue.`,
 
   pick_tool: `## pick_tool
 

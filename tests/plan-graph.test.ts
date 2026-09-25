@@ -149,7 +149,7 @@ describe('migrateLinearPlan', () => {
 })
 
 describe('text rendering', () => {
-  it('prompt section marks READY / blocked nodes and carries the parallel dispatch rule', () => {
+  it('prompt section marks READY / blocked nodes and states the scheduler contract (delegated)', () => {
     const plan = diamond()
     markNode(plan, 1, 'completed')
     markNode(plan, 2, 'failed')
@@ -160,11 +160,24 @@ describe('text rendering', () => {
     expect(text).toContain('n4: 发布 — blocked (waiting on: n2)')
     expect(text).toContain('n3: 后端 — READY')
     expect(text).toContain('(assignee: fe-expert)')
-    expect(text).toContain('SAME response so they run in parallel')
-    expect(text).toContain('NEVER auto-advances')
+    // PLAN-plan-scheduler: the delegated rules no longer ask the model to
+    // transcribe the READY set or report deliveries — the scheduler owns both.
+    expect(text).toContain('dispatched AUTOMATICALLY by the scheduler')
+    expect(text).toContain('consulted at exactly two points')
+    expect(text).not.toContain('SAME response so they run in parallel')
+    expect(text).not.toContain('NEVER auto-advances')
     const closed = diamond()
     closed.completed = true
     expect(formatPlanForPrompt(closed)).toBeNull()
+  })
+
+  it('direct mode keeps the model-driven rules (the scheduler never touches it)', () => {
+    const plan = diamond()
+    plan.mode = 'direct'
+    const text = formatPlanForPrompt(plan)!
+    expect(text).toContain('the plan never advances on its own')
+    expect(text).toContain('Execute READY nodes yourself')
+    expect(text).not.toContain('AUTOMATICALLY')
   })
 
   it('snapshot reports the mutation, the ready set and notes', () => {
