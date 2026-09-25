@@ -1,4 +1,5 @@
 import type { ExperienceRecord, ExperienceDraft } from '../../../shared/types/experience-types'
+import { parseExperienceMd } from '../../../shared/experience/frontmatter'
 import { SkillKeywordAgent } from '../agent/one-shot-agent'
 import type { LlmAdapter } from '../llm/adapter'
 import { getHost } from '../agent/host'
@@ -118,10 +119,17 @@ ${records.map((r) => r.name).join(', ')}`
   /**
    * Extract trigger keywords for an experience (idempotent: skips when the
    * record already has triggers). Callers run this fire-and-forget after save.
+   *
+   * `force` (PLAN-experience-iteration): an ITERATED record's old triggers may
+   * no longer describe its revised content, so the post-iteration caller
+   * re-extracts even though triggers exist. The rewrite re-saves with
+   * `targetName` — an iteration that renamed its title must not fork a new
+   * record here, and the store's hash gate keeps it from reading as a second
+   * revision (frontmatter-only change, body untouched).
    */
-  async ensureTriggers(name: string, llm: ExperienceLlmConfig): Promise<void> {
+  async ensureTriggers(name: string, llm: ExperienceLlmConfig, force = false): Promise<void> {
     const rec = (await this.ensureCached()).find((r) => r.name === name)
-    if (!rec || (rec.triggers && rec.triggers.length > 0)) return
+    if (!rec || (!force && rec.triggers && rec.triggers.length > 0)) return
     const raw = await this.read(name)
     if (!raw) return
     try {
@@ -144,7 +152,8 @@ ${records.map((r) => r.name).join(', ')}`
           content: content || rec.description,
           category: rec.category,
           sourceConversationId: rec.sourceConversationId,
-          triggers: trimmed
+          triggers: trimmed,
+          targetName: name
         })
         console.log(`[ExperienceManager] Extracted ${trimmed.length} trigger keyword(s) for "${name}"`)
       }
@@ -152,15 +161,4 @@ ${records.map((r) => r.name).join(', ')}`
       console.warn(`[ExperienceManager] Trigger extraction failed for "${name}":`, e)
     }
   }
-}
-
-function parseExperienceMd(raw: string, fallbackTitle: string): { title: string; content: string } {
-  const m = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/)
-  if (!m) return { title: fallbackTitle, content: raw }
-  const fm = m[1]
-  const content = m[2].trim()
-  const titleMatch = fm.match(/^title:\s*(.*)$/m)
-  let title = titleMatch ? titleMatch[1].trim() : fallbackTitle
-  title = title.replace(/^["']|["']$/g, '')
-  return { title, content }
 }

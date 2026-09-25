@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import type { ExperienceRecord, ExperienceDraft } from '../../shared/types/experience-types'
 import { MAX_EXPERIENCES } from '../../shared/types/experience-types'
+import { sha256Hex, normalizeMemoryContent } from '../../shared/memory/content-hash'
 import { EXPERIENCES_DIR } from './index'
 import { getDb } from './database'
 
@@ -94,6 +95,7 @@ function formatExperienceMd(rec: ExperienceRecord, content: string): string {
     `category: ${rec.category}`,
     `createdAt: ${rec.createdAt}`
   ]
+  if (rec.updatedAt) lines.push(`updatedAt: ${rec.updatedAt}`)
   if (rec.triggers && rec.triggers.length > 0) {
     lines.push('triggers:', ...rec.triggers.map((t) => `  - ${t}`))
   }
@@ -123,8 +125,30 @@ function rowToRecord(r: any): ExperienceRecord {
     useCount: r.use_count,
     triggers: parseTriggers(r.triggers),
     files: files && files.length > 0 ? files : undefined,
-    dir: join(EXPERIENCES_DIR, r.name) // computed, never stored
+    dir: join(EXPERIENCES_DIR, r.name), // computed, never stored
+    updatedAt: r.updated_at ?? null
   }
+}
+
+/** The raw `experiences` row shape save() reads back for upsert decisions —
+ *  only the columns that gate id/createdAt/LRU preservation. */
+interface ExperienceRow {
+  id: string
+  created_at: string
+  last_used_at: string | null
+  use_count: number
+  triggers: string | null
+  files_json: string | null
+  updated_at: string | null
+  content_hash: string | null
+}
+
+/** Content hash of an experience body (PLAN-experience-iteration): the
+ *  save-layer gate that distinguishes a real revision from a no-op re-save.
+ *  Reuses the memory dedup's normalizer + SHA-256 — same rule: trim +
+ *  collapse whitespace, then hash. */
+export function experienceContentHash(content: string): string {
+  return sha256Hex(normalizeMemoryContent(content))
 }
 
 export class ExperienceStore {
@@ -166,11 +190,32 @@ export class ExperienceStore {
    * Persist an experience as a standalone SKILL.md under ~/.pulsemind/experiences/.
    * Enforces the MAX_EXPERIENCES cap with LRU eviction (least recently used wins
    * the old age first; never-used entries are evicted before used ones).
+   *
+   * Iteration (PLAN-experience-iteration): a draft carrying `targetName` looks
+   * the row up by THAT name instead of the slugified title, so a revised title
+   * lands on the record it revises instead of forking a second entry. An
+   * unknown target falls back to the create path (宁可多一条不可丢洞见) with a
+   * warning. `updated_at` is stamped only when an iteration's content hash
+   * actually differs — a no-op re-save (or the trigger-extraction rewrite,
+   * which only touches frontmatter) never marks the record as revised.
    */
   async save(draft: ExperienceDraft): Promise<{ record: ExperienceRecord; evicted?: ExperienceRecord; rejectedFiles?: string[] }> {
-    const name = slugifyTitle(draft.title)
-    const existing = getDb().prepare('SELECT * FROM experiences WHERE name = ?').get(name) as any
+    const slug = slugifyTitle(draft.title)
+    const db = getDb()
+    let name = slug
+    let existing: ExperienceRow | undefined
+    if (draft.targetName) {
+      existing = db.prepare('SELECT * FROM experiences WHERE name = ?').get(draft.targetName) as ExperienceRow | undefined
+      if (existing) name = draft.targetName
+      else console.warn(`[experience] target "${draft.targetName}" not in the pool — falling back to create`)
+    }
+    if (!existing) {
+      existing = db.prepare('SELECT * FROM experiences WHERE name = ?').get(slug) as ExperienceRow | undefined
+      name = slug
+    }
     const now = localTimestamp()
+    const contentHash = experienceContentHash(draft.content)
+    const contentChanged = !existing || existing.content_hash !== contentHash
 
     // ── Script gates (only when the draft carries files at all) ──
     const rejectedFiles: string[] = []
@@ -204,6 +249,14 @@ export class ExperienceStore {
     const effectiveFiles = draft.files && draft.files.length > 0
       ? acceptedFiles.map((f) => f!.path)
       : (parseTriggers(existing?.files_json) as string[] | undefined)
+    // `updated_at` marks an ITERATION: a declared target whose content really
+    // changed (a pre-existing row whose content_hash is NULL counts as changed
+    // — it was written before this gate existed). Creation leaves it null;
+    // ensureTriggers carries no targetName, so a frontmatter-only rewrite
+    // never reads as "revised". Legacy NULL hashes therefore only misfire when
+    // a targetName save lands on a pre-upgrade row with byte-identical content
+    // — a contradiction (the model was told to revise, produced no change).
+    const bumpUpdated = Boolean(draft.targetName && existing && contentChanged)
     const record: ExperienceRecord = {
       id: existing?.id ?? generateId(),
       name,
@@ -216,10 +269,24 @@ export class ExperienceStore {
       useCount: existing?.use_count ?? 0,
       triggers: draft.triggers && draft.triggers.length > 0
         ? draft.triggers
-        : parseTriggers(existing?.triggers)
+        : parseTriggers(existing?.triggers),
+      updatedAt: bumpUpdated ? now : existing?.updated_at ?? null
     }
-    await mkdir(join(EXPERIENCES_DIR, name), { recursive: true })
-    await writeFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), formatExperienceMd(record, draft.content), 'utf-8')
+    // Rewrite SKILL.md only when the rendered bytes differ from what is on
+    // disk — a stricter test than the content hash alone: the hash misses
+    // frontmatter-only changes (ensureTriggers persisting new triggers), which
+    // still have to reach the file the raw view and pick_skill hand to the model.
+    const nextMd = formatExperienceMd(record, draft.content)
+    let writeSkill = true
+    if (existing) {
+      try {
+        writeSkill = await readFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), 'utf-8').then((s) => s !== nextMd)
+      } catch { /* no file yet (dir deleted, row remains) → write */ }
+    }
+    if (writeSkill) {
+      await mkdir(join(EXPERIENCES_DIR, name), { recursive: true })
+      await writeFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), nextMd, 'utf-8')
+    }
     for (const f of acceptedFiles) {
       if (!f) continue
       await mkdir(join(EXPERIENCES_DIR, name, 'scripts'), { recursive: true })
@@ -228,17 +295,19 @@ export class ExperienceStore {
     record.files = effectiveFiles && effectiveFiles.length > 0 ? effectiveFiles : undefined
     getDb()
       .prepare(
-        `INSERT INTO experiences (id, name, title, description, category, source_conversation_id, created_at, last_used_at, use_count, triggers, files_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO experiences (id, name, title, description, category, source_conversation_id, created_at, last_used_at, use_count, triggers, files_json, updated_at, content_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
            category = excluded.category,
            source_conversation_id = excluded.source_conversation_id,
            triggers = excluded.triggers,
-           files_json = COALESCE(excluded.files_json, experiences.files_json)`
+           files_json = COALESCE(excluded.files_json, experiences.files_json),
+           updated_at = excluded.updated_at,
+           content_hash = excluded.content_hash`
       )
-      .run(record.id, record.name, record.title, record.description, record.category, record.sourceConversationId ?? null, record.createdAt, record.lastUsedAt ?? null, record.useCount, JSON.stringify(record.triggers ?? []), record.files ? JSON.stringify(record.files) : null)
+      .run(record.id, record.name, record.title, record.description, record.category, record.sourceConversationId ?? null, record.createdAt, record.lastUsedAt ?? null, record.useCount, JSON.stringify(record.triggers ?? []), record.files ? JSON.stringify(record.files) : null, record.updatedAt ?? null, contentHash)
     const evicted = await this.enforceLimit()
     return {
       record,

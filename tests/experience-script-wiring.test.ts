@@ -83,3 +83,61 @@ describe('extraction saves carry files end to end', () => {
     expect(read('src/renderer/src/hooks/useChatController.ts')).toContain('files: result.experienceFiles')
   })
 })
+
+// ── Iteration wiring (PLAN-experience-iteration) ──
+// Source scans: each layer must actually carry the update target down to the
+// store, and the gate's inputs (stats, locale) must reach the prompt.
+describe('the iteration chain: action/target → targetName → force triggers', () => {
+  it('all three save call sites pass targetName: result.experienceTarget', () => {
+    const sites: Array<[string, string]> = [
+      ['src/main/agent/session-manager.ts', 'targetName: result.experienceTarget'],
+      ['src/renderer/src/App.tsx', 'targetName: result.experienceTarget'],
+      ['src/renderer/src/hooks/useChatController.ts', 'targetName: result.experienceTarget'],
+    ]
+    for (const [file, needle] of sites) {
+      const src = read(file)
+      expect(src).toContain(needle) // missing → the update silently forks a create
+      expect(src).toContain('ensureTriggers(record.name')
+      // a revised record's triggers must be re-extracted (force flag)
+      expect(src).toMatch(/ensureTriggers\([\s\S]*?Boolean\(result\.experienceTarget\)/)
+    }
+  })
+
+  it('MemoryManager turns action=target into experienceTarget, and reads the pool not the knowledge base', () => {
+    const src = read('src/renderer/src/memory/MemoryManager.ts')
+    expect(src).toContain("result.experience.action === 'update'")
+    expect(src).toContain('experienceTarget = result.experience.target')
+    expect(src).toContain('listExperiences()')
+    expect(src).toContain('readExperienceRecord(rec.name)')
+    // the old (blind) dedup source — knowledge base rows the migration wrote once
+    expect(src).not.toContain('knowledgeListFiles')
+    expect(src).not.toContain('knowledgeGetRaw')
+  })
+
+  it('the session-manager afterSession passes the real locale and no text pre-filter', () => {
+    const src = read('src/main/agent/session-manager.ts')
+    // 7th positional arg of extractAndSaveAll — `undefined` pinned the live
+    // extraction prompt to English forever
+    expect(src).toContain('profile.model, sessionId, settings.locale, { memory: memoryOn')
+    expect(src).not.toContain("filter((m) => m.contentBlocks?.some((b) => b.type === 'text'))")
+    expect(src).toContain('ctx.messages')
+  })
+
+  it('the renderer afterSession passes the full message list (stats must see tool blocks)', () => {
+    const src = read('src/renderer/src/App.tsx')
+    expect(src).toContain('mm.extractAndSaveAll(ctx.messages,')
+    expect(src).not.toContain('ctx.messages.filter(m => m.contentBlocks?.some')
+  })
+
+  it('the dead strict-gate shell is gone; its gate now lives in the live prompt', () => {
+    expect(() => read('src/renderer/src/agent/one-shot-agent/ExperienceAgent.ts')).toThrow()
+    const src = read('src/renderer/src/agent/one-shot-agent/SessionReviewAgent.ts')
+    expect(src).toContain('QUALIFICATION GATE')
+    expect(src).toContain('5+ tool calls')
+    expect(src).toContain('does NOT qualify')
+    expect(src).toContain('Conversation statistics')
+    // three-way protocol
+    expect(src).toContain('DUPLICATES / EXTENDS / NEW')
+    expect(src).toContain('"action": "create|update"')
+  })
+})

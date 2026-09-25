@@ -6,10 +6,27 @@ import { buildCommandFromSkillInput } from '../command-builder'
 import { beginTerminalSpan } from '../terminal-span'
 import type { ToolUseBlock } from '../../types/agent'
 import type { KnowledgeFile } from '../../../../shared/types/knowledge'
+import { EXPERIENCE_CATEGORIES, type ExperienceDraft } from '../../../../shared/types/experience-types'
 import { UI_PREVIEW_MAX, type ToolExecContext } from './context'
 
 /** memory_search: tool block .output preview. */
 const MEMORY_PREVIEW_MAX = 2000
+
+/** Create-path title default (the first meaningful line, heading markers
+ *  stripped) when the model supplies neither a title nor a target to keep. */
+function deriveExperienceTitle(content: string): string {
+  const line = content.split('\n').map((s) => s.trim()).find((s) => s.length > 0) ?? ''
+  const title = line.replace(/^#+\s*/, '').replace(/^[-*>]\s*/, '') || 'Untitled experience'
+  return title.length > 60 ? `${title.slice(0, 57)}…` : title
+}
+
+/** Only a clean, bounded keyword list counts as explicit triggers — anything
+ *  else falls through to the automatic extraction path after the save. */
+function experienceTriggers(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const list = value.map((v) => String(v).trim()).filter((v) => v.length > 0 && v.length <= 40).slice(0, 12)
+  return list.length > 0 ? list : undefined
+}
 
 export async function execMemoryTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
     if (t.name === 'memory_search') {
@@ -131,7 +148,7 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
 
         if (mode === 'wiki') {
           // Wiki mode: ripgrep search across compiled wiki pages (fastest path)
-          let matches = query ? await km.searchWiki(query, scopeBaseId) : []
+          const matches = query ? await km.searchWiki(query, scopeBaseId) : []
           if (matches.length === 0) {
             t.output = 'No matching wiki pages found.'; ex.addToolResult(t.id, 'No matching wiki pages found.', false)
           } else {
@@ -280,6 +297,69 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
 }
 
 export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+    // experience_save — the pool's ONE sanctioned writer. The records live under
+    // ~/.pulsemind, a path-jail deny root, so neither file ops nor the shell can
+    // reach them (read goes through the shell and works; write/edit do not);
+    // ExperienceManager.save is the door, and it carries the store's own gates
+    // (script paths, 8KB, `node --check`, the 20-record LRU).
+    if (t.name === 'experience_save') {
+      const em = ex.opts.experienceManager
+      const fail = (msg: string): void => { t.output = msg; t.exitCode = 1; ex.addToolResult(t.id, msg, true) }
+      if (!em) { fail('Experience manager not available.'); return true }
+      const content = String(t.input.content || '').trim()
+      if (!content) { fail('Error: content is required.'); return true }
+      try {
+        const targetName = String(t.input.targetName || '').trim()
+        const all = await em.list()
+        const existing = targetName ? all.find((r) => r.name === targetName) : undefined
+        // The store would fall back to creating a look-alike — for a tool the
+        // honest answer is a refusal that names the real candidates, or a
+        // revision silently forks a near-duplicate into a 20-slot pool.
+        if (targetName && !existing) {
+          fail(`经验 "${targetName}" 不存在，已拒绝保存（不会另建一份近似记录）。可用 name：${all.map((r) => r.name).join(', ') || '（池为空）'}`)
+          return true
+        }
+        const askedCategory = String(t.input.category || '')
+        const draft: ExperienceDraft = {
+          // A revision keeps its own title/category when the model omits them;
+          // the body is replaced either way (the store's contract).
+          title: String(t.input.title || '').trim() || existing?.title || deriveExperienceTitle(content),
+          description: String(t.input.description || '').trim() || content.replace(/\s+/g, ' ').slice(0, 120),
+          content,
+          category: (EXPERIENCE_CATEGORIES as readonly string[]).includes(askedCategory)
+            ? askedCategory
+            : existing?.category || 'general',
+          sourceConversationId: ex.opts.conversationId ?? existing?.sourceConversationId,
+          targetName: targetName || undefined,
+          triggers: experienceTriggers(t.input.triggers),
+        }
+        const { record, evicted, rejectedFiles } = await em.save(draft)
+        const lines = [
+          `${targetName ? '已修订' : '已保存'}经验「${record.title}」（name: \`${record.name}\`）`,
+          `- 类别：${record.category}`,
+          record.triggers?.length
+            ? `- 触发词：${record.triggers.join('、')}`
+            : '- 触发词：稍后自动提取（在此之前按 name 仍可读到）',
+        ]
+        if (evicted) lines.push(`- 池已满 20 条，最久未用的经验「${evicted.title}」（\`${evicted.name}\`）被挤出`)
+        if (rejectedFiles?.length) lines.push(`- 被拒的脚本文件：${rejectedFiles.join('、')}（经验正文已照常保存）`)
+        const report = lines.join('\n')
+        t.output = report
+        t.exitCode = 0
+        ex.addToolResult(t.id, report, false)
+        // Trigger keywords are the one part a model shouldn't have to spell
+        // out. Same fire-and-forget contract as the afterSession hosts, force
+        // on a revision (its old keywords may no longer describe the body).
+        if (!draft.triggers?.length && ex.opts.apiKey) {
+          em.ensureTriggers(record.name, {
+            adapter: ex.opts.adapter, apiKey: ex.opts.apiKey, baseURL: ex.opts.baseURL, model: ex.opts.model,
+          }, Boolean(targetName)).catch((e: unknown) => console.warn('[experience_save] trigger extraction failed:', e))
+        }
+      } catch (err) {
+        fail(`保存经验失败：${err instanceof Error ? err.message : String(err)}`)
+      }
+      return true
+    }
     if (t.name === 'experience_read') {
       const name = String(t.input.name || '')
       if (!name) {

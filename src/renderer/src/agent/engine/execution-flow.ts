@@ -269,7 +269,7 @@ export class ExecutionFlow {
     const memoryTools = tools.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
     const knowledgeTools = tools.filter(t => isKnowledgeTool(t.name))
-    const isExperienceTool = (name: string): boolean => name === 'experience_read'
+    const isExperienceTool = (name: string): boolean => name === 'experience_read' || name === 'experience_save'
     const experienceTools = tools.filter(t => isExperienceTool(t.name))
     const isMCPTool = (name: string): boolean => this.engine.mcpToolOwner.has(name)
     // Gated (requireApproval) MCP tools behave like otherTools: held for approval
@@ -392,7 +392,7 @@ export class ExecutionFlow {
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
     const knowledgeTools = toolUses.filter(t => isKnowledgeTool(t.name))
-    const isExperienceTool = (name: string): boolean => name === 'experience_read'
+    const isExperienceTool = (name: string): boolean => name === 'experience_read' || name === 'experience_save'
     const experienceTools = toolUses.filter(t => isExperienceTool(t.name))
     const isMCPTool = (name: string): boolean => this.engine.mcpToolOwner.has(name)
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))

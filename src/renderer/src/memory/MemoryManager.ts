@@ -11,6 +11,8 @@ import type { AgentMessage, TextBlock } from '../types/agent'
 import { MemoryCompressionAgent, SessionReviewAgent } from '../agent/one-shot-agent'
 import { getHost } from '../agent/host'
 import { memoryContentHash } from '../../../shared/memory/content-hash'
+import { parseExperienceMd } from '../../../shared/experience/frontmatter'
+import type { ExperienceRecord } from '../../../shared/types/experience-types'
 
 /**
  * Manages memory capture, storage, and retrieval.
@@ -22,9 +24,10 @@ import { memoryContentHash } from '../../../shared/memory/content-hash'
  *   C. Recent Sessions — conversation id + summary from SQLite,
  *      split into 15min–24h (all) and >24h (latest 50).
  *
- * Note: experiences (workflow optimizations, pain points) are now stored in the
- * knowledge base (raw/ directory) and compiled into wiki pages, replacing the
- * old in-memory experiences section.
+ * Note: experiences (workflow optimizations, pain points) live in the
+ * experience pool (`~/.pulsemind/experiences/`, skill-format records) — the
+ * extraction pass reads that pool for dedup/iteration context and the CALLER
+ * persists the returned experience (PLAN-experience-iteration).
  */
 export class MemoryManager {
   private prefs: MemoryPreferences = { ...DEFAULT_MEMORY_PREFERENCES }
@@ -323,7 +326,16 @@ export class MemoryManager {
      *  the startup backfill passes 1 (bounded, once per conversation). The
      *  cursor deliberately does NOT move on a skip — the delta keeps growing. */
     options?: { minDelta?: number }
-  ): Promise<{ memories: number; experienceTitle: string | null; experienceContent: string | null; experienceCategory: string | null; experienceFiles?: { path: string; content: string }[] }> {
+  ): Promise<{
+    memories: number
+    experienceTitle: string | null
+    experienceContent: string | null
+    experienceCategory: string | null
+    experienceFiles?: { path: string; content: string }[]
+    /** Set when the model chose to ITERATE (action=update): the pool record
+     *  `name` the content is a revision OF. Pass it to save({targetName}). */
+    experienceTarget?: string
+  }> {
     const memoryOn = featureFlags?.memory !== false
     const experienceOn = featureFlags?.experience !== false
     if (!apiKey || (!memoryOn && !experienceOn)) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
@@ -437,11 +449,12 @@ export class MemoryManager {
         }
       }
 
-      // --- Extract experience (don't save to memories — caller saves to knowledge base) ---
+      // --- Extract experience (don't save to memories — caller saves to the pool) ---
       let experienceTitle: string | null = null
       let experienceContent: string | null = null
       let experienceCategory: string | null = null
       let experienceFiles: { path: string; content: string }[] | undefined
+      let experienceTarget: string | undefined
       if (experienceOn && result.experience && result.experience.content) {
         const title = result.experience.title
         experienceTitle = typeof title === 'string' && title ? title : null
@@ -449,6 +462,11 @@ export class MemoryManager {
         experienceCategory = validCategories.includes(cat) ? cat : 'general'
         experienceContent = result.experience.content
         experienceFiles = result.experience.files
+        if (result.experience.action === 'update' && result.experience.target) {
+          // action=update with a name the model saw in the pool section →
+          // caller re-targets its save; the agent already validated/degraded.
+          experienceTarget = result.experience.target
+        }
       }
 
       // Check if memory compression is needed
@@ -470,7 +488,7 @@ export class MemoryManager {
       }
 
       console.log(`[MemoryManager] Saved ${memoriesSaved} memory/ies from conversation ${conversationId || 'unknown'}`)
-      return { memories: memoriesSaved, experienceTitle, experienceContent, experienceCategory, experienceFiles }
+      return { memories: memoriesSaved, experienceTitle, experienceContent, experienceCategory, experienceFiles, experienceTarget }
     } catch (err) {
       console.warn('[MemoryManager] extractAndSaveAll error:', err)
       if (conversationId) {
@@ -606,27 +624,44 @@ export class MemoryManager {
   }
 
   /**
-   * Bounded reference of existing experiences (newest first) for LLM dedup.
-   * Old code concatenated EVERY experience file's first 300 chars, which
-   * ballooned past context limits and diluted the dedup signal.
+   * Bounded reference of the LIVE experience pool (newest first) so the model
+   * can judge DUPLICATES / EXTENDS / NEW against actual content — one summary
+   * line per record plus the entry's body (truncated per record), with a
+   * pool-wide budget so 20 full entries cannot blow the context.
+   *
+   * Reads `listExperiences` + `readExperienceRecord`; an absent host surface
+   * (or an unreadable file) degrades to '' exactly as the old try/catch did.
+   * Returns the LINES ONLY — the section header belongs to the agent's
+   * buildUserMessages (the old code emitted it in both places). The previous
+   * source was the KNOWLEDGE BASE (rows only the 0.3.4 one-shot migration ever
+   * wrote), so live pool entries were invisible to dedup.
    */
-  private async buildExistingExperiencesText(maxCount = 40, maxLen = 200): Promise<string> {
-    const allFiles = await getHost().knowledgeListFiles()
-    const expFiles = (allFiles || [])
-      .filter((f: { sourceType: string }) => f.sourceType === 'experience')
-      .slice(0, maxCount)
-    const expContents = await Promise.all(
-      expFiles.map(async (f: { filePath: string }) => {
-        try {
-          const c = await getHost().knowledgeGetRaw(f.filePath)
-          return `- ${c.slice(0, maxLen)}`
-        } catch { return '' }
-      })
-    )
-    const lines = expContents.filter(Boolean)
-    return lines.length > 0
-      ? 'EXISTING EXPERIENCES (check if new insight relates to or duplicates any of these):\n' + lines.join('\n')
-      : ''
+  private async buildExistingExperiencesText(maxCount = 40, maxBodyLen = 1500, maxTotal = 30000): Promise<string> {
+    let records: ExperienceRecord[]
+    try {
+      records = (await getHost().listExperiences()) ?? []
+    } catch {
+      return ''
+    }
+    if (records.length === 0) return ''
+    const lines: string[] = []
+    let total = 0
+    for (const rec of records.slice(0, maxCount)) {
+      let body = ''
+      try {
+        const raw = await getHost().readExperienceRecord(rec.name)
+        if (raw) body = parseExperienceMd(raw, rec.title).content.slice(0, maxBodyLen)
+      } catch {
+        /* unreadable file → the summary line still lands */
+      }
+      const line = body
+        ? `- ${rec.name} | ${rec.category} | ${rec.description}\n${body}`
+        : `- ${rec.name} | ${rec.category} | ${rec.description}`
+      if (total + line.length > maxTotal) break // pool-wide budget: stop, don't truncate mid-record
+      total += line.length
+      lines.push(line)
+    }
+    return lines.join('\n')
   }
 
   /**

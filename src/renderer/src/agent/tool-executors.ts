@@ -92,6 +92,8 @@ export class ToolExecutor implements ToolExecContext {
     /** @internal spawn_agent calls in the current round — the shared envelope
      *  budget's denominator (see executors/spawn-tool.ts spawnEnvelopeBudget) */
     spawnBatchTotal?: () => number,
+    /** @internal CAS the delivered node's output onto the plan as its handoff */
+    recordNodeHandoff?: ToolExecContext['recordNodeHandoff'],
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
@@ -104,6 +106,7 @@ export class ToolExecutor implements ToolExecContext {
     this.beginPlanNodeExecution = beginPlanNodeExecution
     this.updatePlanNodeExecution = updatePlanNodeExecution
     this.spawnBatchTotal = spawnBatchTotal
+    this.recordNodeHandoff = recordNodeHandoff
   }
 
   opts: AgentEngineOptions
@@ -117,6 +120,7 @@ export class ToolExecutor implements ToolExecContext {
   beginPlanNodeExecution?: ToolExecContext['beginPlanNodeExecution']
   updatePlanNodeExecution?: ToolExecContext['updatePlanNodeExecution']
   spawnBatchTotal?: () => number
+  recordNodeHandoff?: ToolExecContext['recordNodeHandoff']
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
@@ -418,11 +422,16 @@ export class ToolExecutor implements ToolExecContext {
           const parsed = parseDeckSpec(t.input.deck)
           if (!parsed.ok) throw new Error(parsed.error)
         }
+        const fontSize = t.input.fontSize
+        if (fontSize !== undefined) {
+          if (typeof fontSize !== 'number' || !Number.isFinite(fontSize)) throw new Error(`fontSize 需是 6–72 的数字（磅），收到「${fontSize}」`)
+          if (format !== 'docx' && format !== 'pdf') throw new Error(`fontSize 仅支持 format docx / pdf——收到「${format}」`)
+        }
         const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
         const rawPath = String(t.input.file_path || '') || `export-${stamp}.${format}`
         const fp = this.resolveWorkspacePath(rawPath)
         t.output = `Exporting ${format.toUpperCase()} → ${fp}...`; this.notify()
-        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf', content, sourcePath, deck: hasDeck ? t.input.deck : undefined, filePath: fp })
+        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf', content, sourcePath, deck: hasDeck ? t.input.deck : undefined, fontSize, filePath: fp })
         if (result.success) {
           const summary = `Exported ${result.path} (${Math.round((result.bytes ?? 0) / 1024)} KB)`
           t.output = summary

@@ -421,7 +421,7 @@ export class ContextCompactor {
   nanoCompact(messages: AgentMessage[]): AgentMessage[] {
     const TIER_MAP: Record<string, number> = {
       exec: 1, search: 1, find: 1, list_dir: 1,
-      read: 2, knowledge_read: 2, knowledge_search: 2, experience_read: 2,
+      read: 2, knowledge_read: 2, knowledge_search: 2, experience_read: 2, experience_save: 2,
       memory_search: 2, memory_save: 2, conversation_search: 2, tool_result_search: 2,
       spawn_agent: 2, edit: 2, write: 2, install: 2, pick_skill: 2, pick_tool: 2, webfetch: 2
     }

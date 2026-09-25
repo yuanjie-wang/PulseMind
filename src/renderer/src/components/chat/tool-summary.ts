@@ -23,7 +23,7 @@ export type ToolTranslator = (key: string) => string
 const LABEL_KEYS: ReadonlySet<string> = new Set([
   'read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec', 'install', 'webfetch',
   'memory_search', 'memory_save', 'conversation_search', 'tool_result_search',
-  'pick_skill', 'pick_tool', 'knowledge_search', 'knowledge_read', 'experience_read',
+  'pick_skill', 'pick_tool', 'knowledge_search', 'knowledge_read', 'experience_read', 'experience_save',
   'spawn_agent', 'create_plan', 'advance_plan', 'docx_edit', 'xlsx_edit', 'pptx_edit', 'export_document',
   'git_status', 'git_diff', 'git_log', 'git_commit', 'git_restore',
   'page_get_content', 'page_scroll', 'page_wait', 'page_click', 'page_input', 'page_select', 'page_back', 'page_execute_js',

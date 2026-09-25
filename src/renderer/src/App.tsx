@@ -169,15 +169,15 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
       // Auto-capture memories/summary when session ends (completed, error, or cancelled)
       if (memoryManagerRef.current && apiKey) {
         const mm = memoryManagerRef.current
-        const messages = ctx.messages.filter(m => m.contentBlocks?.some(b => b.type === 'text'))
-
-        if (messages.length > 0) {
+        // Pass the FULL message list (PLAN-experience-iteration): the old
+        // text-only pre-filter made the gate's `(Conversation statistics: …)`
+        // line undercount every tool call and error, and extractAndSaveAll
+        // flattens to text messages internally anyway (one cursor unit).
+        if (ctx.messages.length > 0) {
           // Fire-and-forget — single LLM call extracts memories + experience.
-          // MemoryManager flattens contentBlocks to text-only messages and
-          // applies the incremental cursor internally.
           // minDelta=4 (PLAN-memory-extraction-dedup): a thin turn-end delta
           // generalizes into near-duplicates — it waits and accumulates.
-          mm.extractAndSaveAll(messages, apiKey, baseURL, adapter, model, conversationIdRef.current ?? undefined, settings.locale, undefined, { minDelta: 4 }).then(result => {
+          mm.extractAndSaveAll(ctx.messages, apiKey, baseURL, adapter, model, conversationIdRef.current ?? undefined, settings.locale, undefined, { minDelta: 4 }).then(result => {
             if (result.memories > 0) {
               console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
             }
@@ -189,12 +189,14 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 content: result.experienceContent,
                 category: result.experienceCategory ?? 'general',
                 sourceConversationId: conversationIdRef.current ?? undefined,
-                files: result.experienceFiles
+                files: result.experienceFiles,
+                // Iteration (PLAN-experience-iteration): update target re-aims the save.
+                targetName: result.experienceTarget
               }).then(({ record }) => {
                 console.log('[SessionReview] Experience saved to experience skill library')
                 experienceManagerRef.current?.ensureTriggers(record.name, {
                   adapter, apiKey: apiKey || '', baseURL, model
-                }).catch((err: unknown) => console.warn('[SessionReview] Trigger extraction failed:', err))
+                }, Boolean(result.experienceTarget)).catch((err: unknown) => console.warn('[SessionReview] Trigger extraction failed:', err))
               }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
             }
           })
@@ -395,7 +397,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     let attempts = 0
     let timer: ReturnType<typeof setTimeout>
     const attempt = () => {
-      memoryManager.ensureMemoryCompressed().then((ok) => {
+      memoryManager.ensureMemoryMerged().then((ok) => {
         if (!ok && attempts < 3) {
           attempts++
           const delay = Math.min(10000 * Math.pow(2, attempts), 60000)

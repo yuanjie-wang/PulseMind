@@ -279,6 +279,7 @@ const en: TranslationDict = {
     knowledge_search: 'Search knowledge',
     knowledge_read: 'Read knowledge',
     experience_read: 'Read experience',
+    experience_save: 'Save experience',
     spawn_agent: 'Dispatch expert',
     create_plan: 'Create plan',
     advance_plan: 'Update plan',

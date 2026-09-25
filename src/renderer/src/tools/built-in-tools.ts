@@ -719,6 +719,58 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     availability: 'gated',
   },
 
+  // ── experience_save ────────────────────────────────────────────────
+  // The write half of the experience pool, opened on demand (the review agent's
+  // afterSession extraction stays the automatic path; this is the "user asks for
+  // it now" path). Reaches the store through ExperienceManager.save — the ONLY
+  // writer: the pool lives under ~/.pulsemind, which is a path-jail deny root,
+  // so file/shell writes are blocked by design and this tool is not a way
+  // around that, it IS the sanctioned door.
+  {
+    name: 'experience_save',
+    description: 'Save or revise a workflow experience (a reusable lesson from this conversation) so future conversations can pick it up.',
+    category: 'experience',
+    triggers: ['save experience', 'repeatable', '沉淀经验', '保存经验', '记录经验', '优化经验', '复盘', '经验'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description:
+            'The full experience in Markdown (Background / Process / Problems / Optimization). With targetName this REPLACES the whole body.',
+        },
+        targetName: {
+          type: 'string',
+          description:
+            "The `name` of an existing experience to revise (iterate). Omit to create a new one — the title's slug becomes its name.",
+        },
+        title: {
+          type: 'string',
+          description: 'Short title. Defaults to the existing title when revising, otherwise the first line of content.',
+        },
+        description: {
+          type: 'string',
+          description: 'One-line summary for the index. Defaults to the first 120 characters of content.',
+        },
+        category: {
+          type: 'string',
+          enum: ['code', 'architecture', 'user_pref', 'decision', 'general'],
+          description: 'Bucket for the experience (defaults to the existing one, else general).',
+        },
+        triggers: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            '3-6 keywords that surface this experience in later conversations. Omit to have them extracted automatically after the save.',
+        },
+      },
+      required: ['content'],
+    },
+    instructions: toolInstructions.experience_save,
+    builtIn: true,
+    availability: 'gated',
+  },
+
   // ── spawn_agent ────────────────────────────────────────────────────
   {
     name: 'spawn_agent',

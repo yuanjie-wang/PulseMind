@@ -25,6 +25,12 @@ export interface SessionReviewOutput {
     content: string
     category: string
     files?: { path: string; content: string }[]
+    /** THREE-WAY protocol (PLAN-experience-iteration): 'create' (default) makes
+     *  a new pool record; 'update' says `content` is the full revised document
+     *  OF `target` (a pool record name). parseResponse degrades a bad update
+     *  to 'create' rather than drop the insight. */
+    action?: 'create' | 'update'
+    target?: string
   } | null
 }
 
@@ -48,8 +54,17 @@ Also generate:
 - "keywords": array of search keywords (max 10, prefer Chinese if conversation is in Chinese)
 
 ## B. Experience (optional)
-Determine if the conversation contains lessons or observations worth remembering for future work. There are two types of valuable experience:
 
+### B1. QUALIFICATION GATE — pass this BEFORE writing anything
+The conversation summary begins with a line like "(Conversation statistics: N tool call(s), M tool error(s))". Use it. Extract an experience ONLY if the conversation contains at least ONE of these four situations:
+1. A complex task completed successfully (the statistics show 5+ tool calls)
+2. The agent hit a wall (failed attempts, errors, dead ends — the statistics show tool errors, or the transcript shows repeated failures) and eventually found a viable path — the struggle itself is the lesson
+3. The user corrected the agent's behavior or approach — the correction is worth remembering
+4. A non-trivial workflow was discovered — a multi-step process, ordering, or technique that would save time next time
+
+A casual chat, a simple question answered in one exchange, a one-off decision, or a task with no tools and no friction does NOT qualify. When the statistics show few tool calls, zero tool errors, AND the transcript carries no correction or pain point — set "experience" to null.
+
+Two types of valuable experience, once the gate passes:
 **Optimizations:** A repetitive task was simplified, a workflow shortcut discovered, a process improvement found through trial and error. Worth remembering because the same situation will come up again.
 
 **User pain points:** The user expressed frustration, dissatisfaction, or pushed back on an approach. This signals a recurring problem worth avoiding in the future.
@@ -62,6 +77,14 @@ An experience has:
   - ## 问题 (Problems) — What went wrong or was tricky? Pain points, pitfalls, frustrations.
   - ## 优化 (Optimization) — Lessons learned, what to do differently next time, actionable takeaways.
 - "category": one of "code", "architecture", "user_pref", "decision", "general" — choose the most relevant category
+
+### B2. DUPLICATES / EXTENDS / NEW — the three ways an insight meets the pool
+When EXISTING EXPERIENCES is provided, compare your insight against EVERY entry and pick exactly one:
+- **DUPLICATES** — an existing entry already covers this lesson (even worded differently): set "experience" to null.
+- **EXTENDS** — an existing entry covers the SAME subject and this conversation adds to it (a new pitfall, a correction, a better step, a script worth keeping alongside): set "action": "update" and "target" to that entry's name (the first field of its "- name | category | ..." line, copy it verbatim). "content" is then the FULL revised document — keep every paragraph of the existing entry that still holds, fold the new lesson into the matching section, and do NOT truncate: the existing text you were shown may itself be truncated, so treat it as the source of truth for what to keep.
+- **NEW** — no entry covers it: set "action": "create" (or omit "action"; create is the default) with the new title.
+
+If "action" is "update", the store overwrites the target record with your "content" — a partial fragment would destroy the entry, so always send the complete merged document.
 
 ### Deterministic, repeatable work → ship a SCRIPT
 When the conversation contains fixed, deterministic, re-runnable work (the exact same steps would run again), ALSO distill it into an executable Node script instead of leaving it as prose. Declare it inside "content" as a fenced block:
@@ -80,9 +103,9 @@ Script hard requirements (violating any makes the script useless):
 - Write shell/python steps as plain text in the 过程/优化 sections instead — they are NOT portable.
 If the work is judgment-based (not mechanically repeatable), do NOT invent a script.
 
-If this conversation doesn't contain any worthwhile lessons, set "experience" to null.
+On an "update": a script that CHANGES goes in a fence with the SAME path — it overwrites the old file. Scripts you are not changing must NOT be re-emitted (files not listed are left untouched on disk). A script that is now wrong should simply be omitted from the revised content.
 
-Important: If existing experiences are provided, ONLY output an experience that is NOT already covered by them. If the insight duplicates an existing experience, set "experience" to null.
+If this conversation doesn't contain any worthwhile lessons, set "experience" to null.
 
 ## Output Format
 Return ONLY a JSON object with these keys:
@@ -90,7 +113,7 @@ Return ONLY a JSON object with these keys:
   "memories": [{ "content": "...", "type": "fact|decision|preference", "category": "code|architecture|user_pref|decision|general" }],
   "summary": "...",
   "keywords": ["...", "..."],
-  "experience": { "title": "...", "content": "...", "category": "code|architecture|user_pref|decision|general" } | null
+  "experience": { "action": "create|update", "target": "<existing name, only when action=update>", "title": "...", "content": "...", "category": "code|architecture|user_pref|decision|general" } | null
 }`
   }
 
@@ -104,7 +127,7 @@ Return ONLY a JSON object with these keys:
       : ''
 
     const existingSection = input.existingExperiencesText
-      ? `\n\nEXISTING EXPERIENCES (check if new insight relates to or duplicates any of these):\n${input.existingExperiencesText}`
+      ? `\n\nEXISTING EXPERIENCES (the live experience pool — decide DUPLICATES / EXTENDS / NEW against these; each line is "- name | category | description" followed by the entry's body):\n${input.existingExperiencesText}`
       : ''
 
     return [{
@@ -113,12 +136,12 @@ Return ONLY a JSON object with these keys:
     }]
   }
 
-  protected parseResponse(raw: string): SessionReviewOutput {
+  protected parseResponse(raw: string, input: SessionReviewInput): SessionReviewOutput {
     const parsed = extractJson<{
       memories?: unknown[]
       summary?: string
       keywords?: unknown[]
-      experience?: { title?: string; content?: string; category?: string } | null
+      experience?: { title?: string; content?: string; category?: string; action?: string; target?: string } | null
     }>(raw)
 
     if (!parsed) return this.getDefaultOutput()
@@ -139,11 +162,24 @@ Return ONLY a JSON object with these keys:
             // PLAN-experience-scripts). Rejected files are the store gates'
             // concern — parse only splits and prefix-checks.
             const { content: body, files } = parseScriptFences(content)
+            // THREE-WAY protocol: an update must name a record the model was
+            // actually shown. Unknown/missing target degrades to create —
+            // 宁可多一条不可丢洞见 (the store has the same fallback for a
+            // target evicted between prompt-build and save).
+            const poolNames = poolNamesOf(input.existingExperiencesText)
+            const wantsUpdate = parsed.experience.action === 'update'
+            const target = typeof parsed.experience.target === 'string' ? parsed.experience.target.trim() : ''
+            const validTarget = wantsUpdate && target && poolNames.has(target)
+            if (wantsUpdate && !validTarget) {
+              console.warn(`[SessionReviewAgent] update target ${target ? `"${target}" not in the pool` : 'missing'} — degrading to create`)
+            }
             return {
               title: typeof parsed.experience.title === 'string' ? parsed.experience.title : '',
               content: body,
               category: typeof parsed.experience.category === 'string' ? parsed.experience.category : 'general',
               files: files.length > 0 ? files : undefined,
+              action: validTarget ? 'update' as const : 'create' as const,
+              target: validTarget ? target : undefined,
             }
           })()
         : null
@@ -153,4 +189,17 @@ Return ONLY a JSON object with these keys:
   protected getDefaultOutput(): SessionReviewOutput {
     return { memories: [] }
   }
+}
+
+/** The set of pool record names the prompt actually showed the model — the
+ *  first field of each "- name | category | description" line. An `update`
+ *  target outside this set is a hallucination and degrades to create. */
+export function poolNamesOf(existingExperiencesText?: string): Set<string> {
+  const names = new Set<string>()
+  if (!existingExperiencesText) return names
+  for (const line of existingExperiencesText.split('\n')) {
+    const m = line.match(/^- (\S+) \| /)
+    if (m) names.add(m[1])
+  }
+  return names
 }

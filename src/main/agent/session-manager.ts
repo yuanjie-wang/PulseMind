@@ -314,12 +314,15 @@ export class AgentSessionManagerImpl {
           if (!memoryOn && !experienceOn) return
 
           const llmConfig = { adapter: createLlmAdapter(profile.provider ?? 'anthropic'), apiKey: profile.apiKey ?? '', baseURL: profile.baseURL, model: profile.model }
-          const messages = ctx.messages.filter((m) => m.contentBlocks?.some((b) => b.type === 'text'))
-          if (messages.length === 0) return
+          // Pass the FULL message list (PLAN-experience-iteration): the old
+          // text-only pre-filter made the gate's `(Conversation statistics: …)`
+          // line undercount every tool call and error, and extractAndSaveAll
+          // flattens to text messages internally anyway (one cursor unit).
+          if (ctx.messages.length === 0) return
           // Fire-and-forget — single LLM call extracts memories + experience.
           const result = await managers.memoryManager.extractAndSaveAll(
-            messages, profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
-            profile.model, sessionId, undefined, { memory: memoryOn, experience: experienceOn },
+            ctx.messages, profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
+            profile.model, sessionId, settings.locale, { memory: memoryOn, experience: experienceOn },
             // minDelta=4 (PLAN-memory-extraction-dedup): same contract as the
             // desktop hook — a thin delta waits, accumulates, extracts once.
             { minDelta: 4 },
@@ -336,8 +339,13 @@ export class AgentSessionManagerImpl {
               category: result.experienceCategory ?? 'general',
               sourceConversationId: sessionId,
               files: result.experienceFiles,
+              // Iteration (PLAN-experience-iteration): the model's update
+              // target re-aims this save at the record it revises.
+              targetName: result.experienceTarget,
             }).then(({ record }) => {
-              managers.experienceManager.ensureTriggers(record.name, llmConfig).catch((err: unknown) =>
+              // A revised record's old triggers may no longer describe it —
+              // re-extract even though triggers exist.
+              managers.experienceManager.ensureTriggers(record.name, llmConfig, Boolean(result.experienceTarget)).catch((err: unknown) =>
                 console.warn('[SessionReview] Trigger extraction failed:', err))
             }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
           }

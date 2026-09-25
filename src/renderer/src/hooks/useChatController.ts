@@ -16,7 +16,6 @@ import { takeStagedHead, restoreStaged, clearStagedMessages, clearAllStagedMessa
 import { shouldDrainOnStatusChange } from '../utils/staged-drain'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
-import type { AgentEngine } from '../agent/AgentEngine'
 import type { AgentMessage } from '../types/agent'
 import type { HooksConfig } from '../types/hooks'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
@@ -86,8 +85,10 @@ export function useChatController(options: UseChatControllerOptions) {
     onBackgroundComplete: (convId: string) => onBackgroundCompleteRef.current(convId),
     onSkillStateChange: managers.refreshSkills
   })
+  /* eslint-disable react-hooks/refs -- latest-instance mirrors: engineBridge is read by child effects, onBackgroundComplete is invoked from engine callbacks */
   engineBridgeRef.current = engine
   onBackgroundCompleteRef.current = onBackgroundComplete
+  /* eslint-enable react-hooks/refs */
 
   // ── 4. Persistence (save/load conversations) ──
   const persistence = useConversationPersistence({
@@ -150,6 +151,7 @@ export function useChatController(options: UseChatControllerOptions) {
     window.electronAPI.updateConversationTitle(convId, finalTitle)
   }, [apiKey, baseURL, options.adapter, options.model, options.locale, persistence])
 
+  // eslint-disable-next-line react-hooks/refs -- latest-title-generator mirror; callers run after commit
   generateTitleRef.current = generateTitle as any
 
   // ── 存为日常任务 (the chat toolbar's routine entry) ──────────────────
@@ -261,12 +263,14 @@ export function useChatController(options: UseChatControllerOptions) {
                 content: result.experienceContent,
                 category: result.experienceCategory ?? 'general',
                 sourceConversationId: conv.id,
-                files: result.experienceFiles
+                files: result.experienceFiles,
+                // Iteration (PLAN-experience-iteration): update target re-aims the save.
+                targetName: result.experienceTarget
               })
               if (rejectedFiles?.length) console.warn('[experience] rejected script files:', rejectedFiles.join(', '))
               managers.experienceManager.ensureTriggers(record.name, {
                 adapter: options.adapter, apiKey: apiKey || '', baseURL: options.baseURL, model: options.model
-              }).catch((e: unknown) => console.warn('[experience] Trigger extraction failed:', e))
+              }, Boolean(result.experienceTarget)).catch((e: unknown) => console.warn('[experience] Trigger extraction failed:', e))
             }
           } catch (convErr) {
             console.warn('[experience] Failed to process conversation ' + conv.id + ':', convErr)

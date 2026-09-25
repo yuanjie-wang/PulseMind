@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { normalizeMemoryContent, memoryContentHash, sha256Hex } from '../src/shared/memory/content-hash'
 
@@ -58,7 +59,7 @@ describe('the extraction idempotence machine (mock engine, real extraction modul
   // point is that the second run issues ZERO LLM calls after the first run
   // marked its pairs.
   function makeEngine(overrides: Partial<Record<string, unknown>> = {}) {
-    let llmCalls = 0
+    const llmCalls = 0
     const pair = (i: number): { assistant: any; user: any } => ({
       assistant: { id: `a${i}`, role: 'assistant', contentBlocks: [{ type: 'text', text: `reasoning ${i}` }, { type: 'tool_use', name: 'read', id: `t${i}` }] },
       user: { id: `u${i}`, role: 'user', contentBlocks: [{ type: 'tool_result', tool_use_id: `t${i}`, content: `result ${i}` }] },
@@ -203,5 +204,20 @@ describe('the incremental merge layer (P2)', () => {
     expect(read('src/shared/types/settings.ts')).toContain('memoryMergeWatermark')
     expect(read(SESSION_MANAGER)).toContain('runMemoryMergeSweep')
     expect(read(SESSION_MANAGER)).toContain('memoryMergeWatermark: { lastRunAt: new Date(w.lastRunAt).toISOString(), lastCount: w.lastCount }')
+  })
+  it('every caller uses the new name — a stale call crashes the app, not the test', () => {
+    // App.tsx's startup compression effect kept calling the deleted
+    // ensureMemoryCompressed() after the rename: with no API key the effect
+    // returned early, so the TypeError only surfaced once a key resolved —
+    // as a white screen on boot. Scan ALL of src/, not just the class file.
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+        const p = join(dir, e.name)
+        if (e.isDirectory()) return walk(p)
+        return /\.tsx?$/.test(p) ? [p] : []
+      })
+    const stale = walk('src').filter((f) => read(f).includes('ensureMemoryCompressed'))
+    expect(stale).toEqual([])
+    expect(read(APP)).toContain('memoryManager.ensureMemoryMerged()')
   })
 })

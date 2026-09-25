@@ -16,6 +16,10 @@ export interface ExperienceRecord {
   /** Read-only computed address of the experience directory (main fills it in
    *  list(); never stored). The pick_skill envelope and the panel both read it. */
   dir?: string
+  /** Set when this record has been iterated on (PLAN-experience-iteration):
+   *  the last time a save overwrote its content with a different hash.
+   *  Absent/null = created only, never revised. */
+  updatedAt?: string | null
 }
 
 /** A script file that ships with an experience. `path` is relative to the
@@ -35,6 +39,10 @@ export interface ExperienceDraft {
   /** Files written alongside SKILL.md. Absent = keep whatever is on disk and
    *  in files_json (the ensureTriggers rewrite must not wash the list). */
   files?: ExperienceDraftFile[]
+  /** The pool record this save ITERATES on (PLAN-experience-iteration): an
+   *  existing record `name` to upsert into instead of the slugified title.
+   *  Absent = create/replace by title slug (the pre-iteration behaviour). */
+  targetName?: string
 }
 
 export const MAX_EXPERIENCES = 20

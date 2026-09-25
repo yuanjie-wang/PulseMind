@@ -443,6 +443,26 @@ Read the full content of a past workflow experience when it is relevant to the c
 - Apply the Optimization section as a lesson when performing the same kind of task
 - Reading an experience is the only way its full content becomes available — the index only shows titles`,
 
+  experience_save: `## experience_save
+
+Persist a workflow experience so future conversations can reuse it. This is the WRITE path of the experience pool \`experience_read\` reads back; the automatic end-of-session extraction stays in place, and this tool is for the moment the USER asks for it now.
+
+### Parameters
+- **content** (required) — the whole body in Markdown: Background / Process / Problems / Optimization. With \`targetName\` it replaces the previous body entirely (there is no partial patch).
+- **targetName** (optional) — the \`name\` of an existing experience to revise. Omit = create, and the title's slug becomes the new name.
+- **title** / **description** / **category** (optional) — defaults are stated in the schema; a revision keeps its own title when you don't supply one.
+- **triggers** (optional) — 3-6 keywords that surface this experience later. Omit and they are extracted automatically after the save.
+
+### When to call
+- ONLY on an explicit user request (「沉淀一下」「把这次的记下来」「优化那条经验」), or when the user corrects you and the correction is worth reusing next time.
+- NOT for facts, preferences or decisions — those go to \`memory_save\`. NOT for documents or URLs — those go to the knowledge base.
+- Before creating, look at the Experience Index already in your context: a record that fits is a REVISION (\`targetName\`), never a second near-duplicate. The pool holds 20 records.
+
+### Guidelines
+- The body must stand alone — the next reader was not in this conversation. Name the site, the button, the error, the workaround.
+- Report back what you wrote: created or revised, the title, and the \`name\`. If the pool was full, name the record that was evicted; if a script file was rejected, say so (the body is saved either way).
+- A rejected save is not silent: \`targetName\` that matches nothing fails with the available names instead of forking a look-alike record.`,
+
   spawn_agent: `## spawn_agent
 
 Delegate a task to a sub-agent. The sub-agent runs with the same tools as this session, in its own isolated context.

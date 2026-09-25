@@ -130,7 +130,88 @@ async function main() {
     })
   }
 
-  console.log('PASS: ' + checks + ' checks — 脚本型经验端到端成立（真 store + 真 SQLite）')
+  // ── 5. iteration via targetName (PLAN-experience-iteration) ──
+  {
+    const { getDb } = await import('./src/main/storage/database')
+    const base = await experienceStore.save({
+      title: '可迭代经验',
+      description: '初版描述',
+      content: 'v1 正文',
+      category: 'general',
+      files: [{ path: 'scripts/agg.mjs', content: GOOD }],
+    })
+    // Backdate created_at to a sentinel so the bump is measurable: saves
+    // within one second would otherwise make created_at == updated_at and
+    // the "createdAt not regenerated" assertion would pass vacuously.
+    // NULL content_hash also simulates a pre-upgrade row (still counts as changed).
+    getDb().prepare('UPDATE experiences SET created_at = ?, updated_at = NULL, content_hash = NULL WHERE name = ?')
+      .run('2020-01-01 00:00:00', base.record.name)
+
+    const iter = await experienceStore.save({
+      targetName: base.record.name,
+      title: '可迭代经验（修订）',
+      description: '修订描述',
+      content: 'v2 修订正文 —— 合并后的完整修订稿',
+      category: 'general',
+    })
+    const rowOf = () => experienceStore.list().find((r) => r.name === base.record.name)
+    check('targetName 迭代落在同一行：id 不换、createdAt 保哨兵、不生第二行', () => {
+      assert.equal(iter.record.name, base.record.name)
+      assert.equal(iter.record.id, base.record.id)
+      assert.equal(rowOf().createdAt, '2020-01-01 00:00:00')
+      assert.equal(iter.record.title, '可迭代经验（修订）')
+      // a fork would show as a second row under the revised title's slug
+      const forks = experienceStore.list().filter((r) => r.title.includes('可迭代经验'))
+      assert.equal(forks.length, 1)
+    })
+    check('updated_at 置位（离开哨兵）且写进 SKILL.md frontmatter', () => {
+      const listed = rowOf()
+      assert.notEqual(listed.updatedAt, null)
+      assert.notEqual(listed.updatedAt, '2020-01-01 00:00:00')
+      const md = readFileSync(join(dirOf(base.record.name), 'SKILL.md'), 'utf-8')
+      assert.match(md, /updatedAt: /)
+    })
+    check('迭代后脚本 files_json 与磁盘存续（save 只写收到的文件）', () => {
+      assert.deepEqual(rowOf().files, ['scripts/agg.mjs'])
+      assert.equal(existsSync(join(dirOf(base.record.name), 'scripts', 'agg.mjs')), true)
+    })
+
+    // Same content again → the hash gate keeps the stamp.
+    const again = await experienceStore.save({
+      targetName: base.record.name,
+      title: '可迭代经验（修订）',
+      description: '修订描述',
+      content: 'v2 修订正文 —— 合并后的完整修订稿',
+      category: 'general',
+    })
+    check('同内容重存不 bump updated_at（哈希门）', () => {
+      assert.equal(again.record.updatedAt, rowOf().updatedAt)
+      assert.notEqual(again.record.updatedAt, null)
+    })
+
+    // ensureTriggers-force shape: frontmatter-only change reaches the file
+    // but never reads as a second revision.
+    const trig = await experienceStore.save({
+      targetName: base.record.name,
+      title: '可迭代经验（修订）',
+      description: '修订描述',
+      content: 'v2 修订正文 —— 合并后的完整修订稿',
+      category: 'general',
+      triggers: ['聚合', '导出'],
+    })
+    check('仅触发词回写：updated_at 停在原值，触发词仍落到 SKILL.md', () => {
+      assert.equal(trig.record.updatedAt, rowOf().updatedAt)
+      const md = readFileSync(join(dirOf(base.record.name), 'SKILL.md'), 'utf-8')
+      assert.match(md, /- 聚合/)
+    })
+    check('迭代不算「被使用」：useCount/lastUsedAt 不动（LRU 的账另记）', () => {
+      const listed = rowOf()
+      assert.equal(listed.useCount, base.record.useCount)
+      assert.equal(listed.lastUsedAt, base.record.lastUsedAt)
+    })
+  }
+
+  console.log('PASS: ' + checks + ' checks — 脚本型经验 + 自迭代端到端成立（真 store + 真 SQLite）')
 }
 main().then(() => process.exit(0)).catch((error) => { console.error(error); process.exit(1) })
 `
