@@ -10,15 +10,25 @@ import ConversationRows, { groupConversationsByDate, type ConversationListItem }
 // The header labels the rows render under — the component reads them through
 // useTranslation, so the mock doubles as the wiring check: a GROUP_LABEL_KEY
 // that points at a renamed key would fall through to the raw path and fail
-// the header assertions below.
+// the header assertions below. The 显示更多 label interpolates {{count}}, so
+// the mock does too — otherwise the remaining-count assertions would read the
+// raw placeholder.
 const LABELS: Record<string, string> = {
   'conversationSidebar.groupPinned': '置顶',
   'conversationSidebar.groupToday': '今天',
   'conversationSidebar.groupYesterday': '昨天',
-  'conversationSidebar.groupEarlier': '更早'
+  'conversationSidebar.groupEarlier': '更早',
+  'conversationSidebar.showMore': '显示更多（还有 {{count}} 条）'
 }
 vi.mock('../src/renderer/src/i18n/useTranslation', () => ({
-  useTranslation: () => ({ t: (key: string) => LABELS[key] ?? key })
+  useTranslation: () => ({
+    t: (key: string, values?: Record<string, string | number>) => {
+      const raw = LABELS[key] ?? key
+      return values
+        ? Object.entries(values).reduce((s, [k, v]) => s.replace(`{{${k}}}`, String(v)), raw)
+        : raw
+    }
+  })
 }))
 
 const DAY_NOW = new Date(2026, 8, 16, 12, 0).getTime() // Wed 2026-09-16, local noon
@@ -137,6 +147,82 @@ describe('ConversationRows groupByDate render', () => {
     expect(html).not.toContain('置顶')
     expect(html.indexOf('data-conv-row="pin"')).toBeGreaterThan(-1)
     expect(html.indexOf('data-conv-row="pin"')).toBeLessThan(html.indexOf('data-conv-row="old"'))
+  })
+})
+
+// ── Pagination: each block starts at 10, 置顶 aside ──
+// Static markup sees the SLICE — which rows made it, which block the button
+// belongs to, how many remain. The CLICK lives in
+// scripts/probe-sidebar-time-groups.mjs, which drives a real mouse.
+
+/** One block's segment: from its group header to the next header (or EOF). */
+const segmentOf = (html: string, bucket: string): string => {
+  const start = html.indexOf(`data-conv-group="${bucket}"`)
+  expect(start).toBeGreaterThan(-1)
+  const next = html.indexOf('data-conv-group=', start + 1)
+  return html.slice(start, next < 0 ? html.length : next)
+}
+const rowsIn = (segment: string): string[] =>
+  [...segment.matchAll(/data-conv-row="([^"]+)"/g)].map((m) => m[1])
+const moreIn = (segment: string): { block: string; text: string } | null => {
+  const m = segment.match(/data-conv-more="([^"]+)"[^>]*>([^<]*)</)
+  return m ? { block: m[1], text: m[2] } : null
+}
+
+/** N 今天 conversations, keys in recency order (t0 newest) — stamped inside
+ *  today's own calendar day from midnight, so the bucket holds whenever the
+ *  suite runs. */
+const manyToday = (n: number): ConversationListItem[] => {
+  const midnight = new Date()
+  midnight.setHours(0, 0, 0, 0)
+  return Array.from({ length: n }, (_, i) =>
+    conv(`t${i}`, { updatedAt: new Date(midnight.getTime() + (n - i) * 60_000).toISOString() }))
+}
+
+describe('ConversationRows block pagination', () => {
+  it('a day block renders its first 10 rows and a 显示更多 naming the rest', () => {
+    const s = relativeStamps()
+    const html = renderRows([
+      ...manyToday(13),
+      conv('y0', { updatedAt: s.yesterday }),
+      conv('y1', { updatedAt: s.yesterday }),
+    ], true)
+
+    const today = segmentOf(html, 'today')
+    expect(rowsIn(today)).toEqual(['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7', 't8', 't9'])
+    expect(today).not.toContain('data-conv-row="t10"')
+    expect(moreIn(today)).toEqual({ block: 'today', text: '显示更多（还有 3 条）' })
+
+    // Pagination is per block: yesterday fits on one page and grows no button.
+    const yesterday = segmentOf(html, 'yesterday')
+    expect(rowsIn(yesterday)).toEqual(['y0', 'y1'])
+    expect(moreIn(yesterday)).toBeNull()
+  })
+
+  it('a block that fits the first page renders no button', () => {
+    const html = renderRows(manyToday(10), true)
+    expect(rowsIn(segmentOf(html, 'today'))).toHaveLength(10)
+    expect(html).not.toContain('data-conv-more')
+  })
+
+  it('the 置顶 block is exempt — all 12 pins render, no button hides any', () => {
+    const html = renderRows(
+      Array.from({ length: 12 }, (_, i) => conv(`p${i}`, { pinned: true })),
+      true
+    )
+    const pinned = segmentOf(html, 'pinned')
+    expect(rowsIn(pinned)).toHaveLength(12)
+    expect(moreIn(pinned)).toBeNull()
+  })
+
+  it('the project tab pages its flat list, pins included whole', () => {
+    const pinned = ['p0', 'p1', 'p2'].map((key) => conv(key, { pinned: true }))
+    const html = renderRows([...pinned, ...manyToday(14)], false)
+
+    expect(html).not.toContain('data-conv-group')
+    expect(html.match(/data-conv-row="/g)).toHaveLength(13) // 3 pins + 10
+    expect(html).not.toContain('data-conv-row="t10"')
+    expect(moreIn(html)).toEqual({ block: 'flat', text: '显示更多（还有 4 条）' })
   })
 })
 

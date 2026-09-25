@@ -16,6 +16,10 @@
  *     matter when the probe runs.
  *   - the TAB boundary. The grouping belongs to the 对话 tab only; switching
  *     to 项目 must paint project headers and not a single time-group header.
+ *   - the PAGING. Each block starts at 10 rows plus a 显示更多 button that
+ *     loads 10 more per click (置顶 renders whole) — a slice is visible in
+ *     source, but "the click lands and the other blocks stay put" needs a
+ *     real mouse and a real DOM count.
  *
  * The mounted surface is the production AppLayout/ConversationSidebar/
  * ConversationRows behind a stubbed electronAPI — no Electron, no LLM.
@@ -223,6 +227,107 @@ await page.locator('.ant-layout-sider').screenshot({ path: join(SHOTS, 'zh-proje
 await listTab('对话').click()
 await page.waitForSelector('[data-conv-group="today"]')
 check('back on 对话 tab the groups return', (await page.evaluate(() => window.__readGroups())).length === 4)
+
+/* ── 显示更多: every block pages at 10, 置顶 aside ─────────────────────── */
+
+// Timestamps are pinned to CALENDAR day, never elapsed time: MIDNIGHT + k min
+// is 今天 whatever hour the probe runs at (a future stamp is still today's
+// day), MIDNIGHT - k h is 昨天. Keys go newest-first, so t0 is the first row.
+const PAGED = [
+  ...Array.from({ length: 25 }, (_, i) => ({
+    key: `pg_today_${i}`, label: `今天会话 ${i}`, updatedAt: iso(MIDNIGHT + (25 - i) * 60_000)
+  })),
+  ...Array.from({ length: 12 }, (_, i) => ({
+    key: `pg_pin_${i}`, label: `置顶会话 ${i}`, pinned: true,
+    updatedAt: iso(MIDNIGHT - (i + 1) * 86_400_000)
+  })),
+  ...Array.from({ length: 3 }, (_, i) => ({
+    key: `pg_y_${i}`, label: `昨天会话 ${i}`, updatedAt: iso(MIDNIGHT - 3_600_000 - i * 60_000)
+  })),
+]
+
+const readPaged = () => page.evaluate(() => ({
+  groups: [...document.querySelectorAll('[data-conv-group]')].map((h) => ({
+    bucket: h.getAttribute('data-conv-group'),
+    rows: [...h.parentElement.querySelectorAll(':scope > [data-conv-row]')]
+      .map((r) => r.getAttribute('data-conv-row')),
+  })),
+  // EVERY button, not the first: one per block is the per-block contract.
+  mores: [...document.querySelectorAll('[data-conv-more]')].map((m) => ({
+    block: m.getAttribute('data-conv-more'), text: m.textContent
+  })),
+}))
+
+await page.evaluate((convs) => window.__mountSidebar({ conversations: convs }), PAGED)
+await page.waitForSelector('[data-conv-more="today"]')
+
+let st = await readPaged()
+const rowsOf = (bucket) => st.groups.find((g) => g.bucket === bucket)?.rows ?? []
+check('今天 starts at its first 10 rows, newest first',
+  rowsOf('today').length === 10 && rowsOf('today')[0] === 'pg_today_0' && rowsOf('today')[9] === 'pg_today_9',
+  JSON.stringify(rowsOf('today')))
+check('its 显示更多 sits under the block and names the 15 hidden',
+  st.mores.length === 1 && st.mores[0].block === 'today' && st.mores[0].text === '显示更多（还有 15 条）',
+  JSON.stringify(st.mores))
+check('置顶 is exempt: all 12 pins render, no button covers them',
+  rowsOf('pinned').length === 12 && rowsOf('pinned')[0] === 'pg_pin_0', String(rowsOf('pinned').length))
+check('a block that fits (昨天, 3 rows) gets no button',
+  rowsOf('yesterday').length === 3, String(rowsOf('yesterday').length))
+
+await page.locator('[data-conv-more="today"]').click()
+st = await readPaged()
+check('one click loads the next 10 (10 → 20)',
+  rowsOf('today').length === 20 && st.mores[0]?.text === '显示更多（还有 5 条）',
+  `${rowsOf('today').length} / ${st.mores[0]?.text}`)
+await page.locator('[data-conv-more="today"]').click()
+st = await readPaged()
+check('the next click loads the rest and the button goes (25, none left)',
+  rowsOf('today').length === 25 && st.mores.length === 0,
+  `${rowsOf('today').length} / ${st.mores.length}`)
+check('the clicks never touched the sibling blocks',
+  rowsOf('pinned').length === 12 && rowsOf('yesterday').length === 3,
+  `${rowsOf('pinned').length}/${rowsOf('yesterday').length}`)
+
+await page.evaluate((convs) => window.__mountSidebar({ locale: 'en', conversations: convs }), PAGED)
+await page.waitForSelector('[data-conv-more="today"]')
+const enMore = (await page.locator('[data-conv-more="today"]').textContent()).trim()
+check('EN label: Show more (15 left)', enMore === 'Show more (15 left)', enMore)
+
+/* ── The project tab pages each project block the same way ──────────────── */
+
+const PROJECT_CONVS = [
+  ...Array.from({ length: 15 }, (_, i) => ({
+    key: `proj_${i}`, label: `项目会话 ${i}`, projectId: 'p1',
+    updatedAt: iso(MIDNIGHT + (15 - i) * 60_000)
+  })),
+  ...Array.from({ length: 2 }, (_, i) => ({
+    key: `proj_pin_${i}`, label: `项目置顶 ${i}`, projectId: 'p1', pinned: true,
+    updatedAt: iso(MIDNIGHT - (i + 1) * 86_400_000)
+  })),
+]
+const readProjectBlock = () => page.evaluate(() => {
+  const wrap = document.querySelector('[data-project-header="p1"]')?.parentElement
+  return {
+    rows: [...(wrap?.querySelectorAll('[data-conv-row]') || [])].map((r) => r.getAttribute('data-conv-row')),
+    mores: [...document.querySelectorAll('[data-conv-more]')].map((m) => m.getAttribute('data-conv-more')),
+  }
+})
+
+// These conversations belong to p1, so the 对话 tab shows nothing of them —
+// straight to 项目, which is where its own block paging lives.
+await page.evaluate((convs) => window.__mountSidebar({ conversations: convs }), PROJECT_CONVS)
+await page.waitForSelector('.sidebar-list-tab')
+await listTab('项目').click()
+await page.waitForSelector('div[data-project-header="p1"]')
+
+let pb = await readProjectBlock()
+check('project block pages too: 2 pins whole + 10 of 15, one flat button',
+  pb.rows.length === 12 && pb.rows[0] === 'proj_pin_0' && pb.mores.join(',') === 'flat',
+  JSON.stringify(pb))
+await page.locator('[data-conv-more="flat"]').click()
+pb = await readProjectBlock()
+check('its click loads the remaining 5 (2 pins + 15, no button)',
+  pb.rows.length === 17 && pb.mores.length === 0, JSON.stringify(pb))
 
 await browser.close()
 const failed = results.filter((r) => !r.pass)

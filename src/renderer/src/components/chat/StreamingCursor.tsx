@@ -16,7 +16,11 @@ export function StreamingCursor({ show, contentInset = MESSAGE_COLUMN_INSET }: {
   return (
     <div style={{ maxWidth: 1000, margin: '0 auto', padding: `0 ${contentInset}px` }}>
       <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12, paddingLeft: 12 }}>
+        {/* data-streaming-cursor is a test hook: vitest/probes assert the
+            blink's presence or absence without depending on the uid-mangled
+            keyframe name inside the inline <style>. */}
         <span
+          data-streaming-cursor=""
           style={{
             display: 'inline-block',
             width: 6,

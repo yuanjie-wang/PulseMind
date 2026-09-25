@@ -13,6 +13,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import type { AgentMessage, ContentBlock } from '../../types/agent'
+import { storedMessagesToAgentMessages } from '../../utils/message-utils'
 import { TranscriptView } from '../chat/TranscriptView'
 
 export interface SubAgentSessionViewProps {
@@ -83,7 +84,11 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
       try {
         const conv = await window.electronAPI.hydrateConversation(subConvId)
         if (cancelled) return
-        const msgs = renderable((conv?.messages ?? []) as AgentMessage[])
+        // tool_use.status is stripped on save, so the raw rows reach us with
+        // every block undefined — restore completion from the persisted
+        // tool_results like every other load path, or the whole view renders
+        // 执行状态未知.
+        const msgs = renderable(storedMessagesToAgentMessages(conv?.messages ?? []))
         const sig = signature(msgs)
         if (sig !== sigRef.current) {
           sigRef.current = sig
@@ -184,12 +189,17 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
         </div>
       )}
 
-      {/* The same transcript the main chat renders — minus the composer. */}
+      {/* The same transcript the main chat renders — minus the composer.
+          While the node is still open the tail carries the blinking cursor,
+          exactly like the main chat during a run (user ruling 2026-09-25:
+          子对话需要和主对话一样有个闪烁光标). `live` is the App-derived node
+          state (no engine handle here), `loading` keeps the first hydrate from
+          blinking over an empty transcript. */}
       <TranscriptView
         messages={messages.slice(-visibleLimit)}
         agentStatus={{ status: 'idle' }}
         streamingBlocks={[] as ContentBlock[]}
-        isRequesting={false}
+        isRequesting={live && !loading}
         restoring={loading}
         emptyHint={loadError ?? '暂无对话内容'}
         actions={live ? 'viewOnly' : 'full'}

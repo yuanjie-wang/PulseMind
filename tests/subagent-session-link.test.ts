@@ -30,6 +30,7 @@ const MESSAGE_GROUP = R('components', 'chat', 'MessageGroup.tsx')
 const EXECUTION_SEGMENT = R('components', 'chat', 'ExecutionSegment.tsx')
 const SEGMENT_VIEW = R('components', 'chat', 'SegmentView.tsx')
 const CHAT_VIEW = R('components', 'layout', 'ChatView.tsx')
+const WORKBENCH_PANE = R('components', 'workbench', 'WorkbenchPane.tsx')
 const APP = R('App.tsx')
 
 const read = (path: string) => readFileSync(path, 'utf-8')
@@ -175,5 +176,35 @@ describe('the spawn card opens the one sub-agent session view', () => {
     expect(appSrc).toContain('?.status === \'pending\'')
     expect(appSrc).toMatch(/b\.subConvId === subAgentView\.subConvId/)
     expect(appSrc).toMatch(/b\.status === 'running' \|\| b\.status === 'pending'/)
+  })
+
+  // User ruling 2026-09-25: 主对话打开了侧边窗口，进入子对话中也要打开 —
+  // the drill-in overlays the chat COLUMN only. That has two halves, both
+  // wiring (node-env can't mount App): ChatView must stay PAINTED (its
+  // display:none also hid the docked WorkbenchPane along with the chat), and
+  // the overlay must stop at the pane's left edge — the same
+  // openByConversation[wbKey] expression ChatView/WorkbenchPane read, so the
+  // paddingRight reserve and the overlay's right inset can't disagree.
+  it('keeps the chat pane painted under the drill-in and cuts the overlay at the docked workbench', () => {
+    const appSrc = read(APP)
+
+    expect(appSrc).not.toContain("display: subAgentView ? 'none'")
+    expect(appSrc).toContain('right: workbenchOpen ? workbenchWidth : 0')
+    expect(appSrc).toContain('openByConversation[wbKey] ?? false')
+    expect(appSrc).toContain('const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY')
+    // The workbench reads its own open flag through the identical expression —
+    // if one side ever keys differently the overlay starts covering the dock.
+    expect(read(WORKBENCH_PANE)).toContain('s.openByConversation[key] ?? false')
+  })
+
+  // The other ruling: 子对话需要和主对话一样有个闪烁光标. TranscriptView blinks
+  // StreamingCursor on isRequesting alone (agentStatus stays idle — no engine
+  // handle here), so the view must thread live into it.
+  it('threads the live flag into the transcript as isRequesting', () => {
+    expect(read(R('components', 'subagent', 'SubAgentSessionView.tsx')))
+      .toContain('isRequesting={live && !loading}')
+    // The hook the DOM tests/probe key on (the keyframe name carries a uid).
+    expect(read(R('components', 'chat', 'StreamingCursor.tsx')))
+      .toContain('data-streaming-cursor=')
   })
 })

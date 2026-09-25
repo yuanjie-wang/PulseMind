@@ -853,6 +853,7 @@ const zh = {
     groupToday: '今天',
     groupYesterday: '昨天',
     groupEarlier: '更早',
+    showMore: '显示更多（还有 {{count}} 条）',
     time: {
       justNow: '刚刚',
       minutesAgo: '{{count}}分钟前',

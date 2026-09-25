@@ -9,6 +9,11 @@
 // `groupByDate`, which wraps the rows in 置顶 / 今天 / 昨天 / 更早 sections
 // (groupConversationsByDate below); the project tab keeps the flat order
 // inside each project group.
+//
+// Each of those sections is a BLOCK for paging: the first 10 render, and a
+// 显示更多 button under the block loads 10 more. 置顶除外 — the pin pool (and
+// pinned rows in the project tab's flat list) render whole, because a pin
+// hidden behind a button is a pin that failed.
 
 import React, { useEffect, useState } from 'react'
 import { Dropdown, Input, Modal } from 'antd'
@@ -43,6 +48,34 @@ const GROUP_LABEL_KEY: Record<ConversationDateGroup['bucket'], string> = {
   today: 'conversationSidebar.groupToday',
   yesterday: 'conversationSidebar.groupYesterday',
   earlier: 'conversationSidebar.groupEarlier'
+}
+
+/** First page of a block — and how much each 显示更多 click loads. Both tabs'
+ *  blocks start at 10: 今天/昨天/更早 in the 对话 tab, each project's list in
+ *  the project tab. The 置顶 block is outside the count (see header). */
+export const CONVERSATION_PAGE_SIZE = 10
+
+/** The block's 显示更多 row — rendered only while rows remain hidden. */
+function ShowMoreBlock({
+  blockKey,
+  remaining,
+  onMore
+}: {
+  blockKey: string
+  remaining: number
+  onMore: (blockKey: string) => void
+}): React.ReactElement {
+  const { t } = useTranslation()
+  return (
+    <button
+      type="button"
+      className="conv-show-more"
+      data-conv-more={blockKey}
+      onClick={() => onMore(blockKey)}
+    >
+      {t('conversationSidebar.showMore', { count: remaining })}
+    </button>
+  )
 }
 
 interface ConversationRowsProps {
@@ -214,6 +247,13 @@ function ConversationRows({
   const [openMenuKey, setOpenMenuKey] = useState<string | null>(null)
   const [renamingKey, setRenamingKey] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  // Per-block visible count, keyed by block (bucket name, or 'flat' for the
+  // project tab's one list). Absent = the first page. Local to this mount: a
+  // tab switch or a collapsed project group starts back at 10, like the rest
+  // of the list's transient state (collapsedIds).
+  const [limits, setLimits] = useState<Record<string, number>>({})
+  const showMore = (blockKey: string): void =>
+    setLimits((prev) => ({ ...prev, [blockKey]: (prev[blockKey] ?? CONVERSATION_PAGE_SIZE) + CONVERSATION_PAGE_SIZE }))
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS)
@@ -286,6 +326,12 @@ function ConversationRows({
   // ticking `now`, so a conversation re-buckets within a minute of midnight.
   const groups = groupByDate ? groupConversationsByDate(conversations, now) : null
 
+  // The project tab's flat list pages too: pins render whole, the unpinned
+  // tail takes the first page (置顶除外 — same rule as the pin group above).
+  const flatLimit = limits.flat ?? CONVERSATION_PAGE_SIZE
+  const flatRest = sorted.filter((c) => !c.pinned)
+  const flatVisible = flatRest.slice(0, flatLimit)
+
   return (
     <>
       <style>{`
@@ -293,17 +339,46 @@ function ConversationRows({
           0% { transform: scale(0.8); opacity: 0.5; }
           100% { transform: scale(2.4); opacity: 0; }
         }
+        .conv-show-more {
+          display: block; width: 100%; text-align: left;
+          border: none; background: transparent; cursor: pointer;
+          font: inherit; font-size: 12px; color: var(--pm-text-muted);
+          /* Aligned with the rows above (10px gutter + 6px gap + 8px pad). */
+          padding: 4px 8px 4px 24px; margin-bottom: 2px; border-radius: 6px;
+        }
+        .conv-show-more:hover { color: var(--pm-ink); background: var(--pm-hover); }
       `}</style>
       {groups
-        ? groups.map((group) => (
-          <div key={group.bucket}>
-            <div data-conv-group={group.bucket} style={GROUP_HEADER_STYLE}>
-              {t(GROUP_LABEL_KEY[group.bucket])}
+        ? groups.map((group) => {
+          // 置顶除外: the pin pool renders whole; a day bucket pages at 10.
+          const limit = group.bucket === 'pinned' ? group.items.length : limits[group.bucket] ?? CONVERSATION_PAGE_SIZE
+          const items = group.items.slice(0, limit)
+          const remaining = group.items.length - items.length
+          return (
+            <div key={group.bucket}>
+              <div data-conv-group={group.bucket} style={GROUP_HEADER_STYLE}>
+                {t(GROUP_LABEL_KEY[group.bucket])}
+              </div>
+              {items.map(renderRow)}
+              {remaining > 0 && (
+                <ShowMoreBlock blockKey={group.bucket} remaining={remaining} onMore={showMore} />
+              )}
             </div>
-            {group.items.map(renderRow)}
-          </div>
-        ))
-        : sorted.map(renderRow)}
+          )
+        })
+        : (
+          <>
+            {sorted.filter((c) => c.pinned).map(renderRow)}
+            {flatVisible.map(renderRow)}
+            {flatRest.length - flatVisible.length > 0 && (
+              <ShowMoreBlock
+                blockKey="flat"
+                remaining={flatRest.length - flatVisible.length}
+                onMore={showMore}
+              />
+            )}
+          </>
+        )}
       <Modal
         title={t('conversationSidebar.renameTitle')}
         open={renamingKey !== null}

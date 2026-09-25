@@ -495,6 +495,15 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
       )
     )
   }, [subAgentView, plan, messages])
+  // The docked workbench's own open state — the drill-in overlay must stop at
+  // its left edge instead of covering it (user ruling 2026-09-25: 主对话打开了
+  // 侧边窗口，进入子对话也要打开). Same key expression ChatView/WorkbenchPane
+  // use, so the reserve (ChatView's paddingRight) and the overlay's right
+  // inset can never disagree; reading the same store also means opening or
+  // closing the dock FROM the sub-agent session re-cuts the overlay live.
+  const wbKey = activeConvKey ?? DRAFT_CONVERSATION_KEY
+  const workbenchOpen = useWorkbenchStore((s) => s.openByConversation[wbKey] ?? false)
+  const workbenchWidth = useWorkbenchStore((s) => s.width)
   /** Nodes that resolve to somewhere — drives the graph's cursor and tooltip, so
    *  a node the model never dispatched does not advertise a click it drops. */
   const openableNodeIds = useMemo(() => {
@@ -619,9 +628,13 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 a ternary here unmounted ChatView, so the header could switch
                 conversations while the pane kept showing the previous one's
                 sub-agent transcript — and the welcome page, drafts, scroll
-                position and docked panes all froze with it. */}
+                position and docked panes all froze with it. ChatView therefore
+                stays PAINTED (display:none would hide the docked workbench
+                together with the chat): the overlay below covers the chat
+                column only, so the side window the main chat had open remains
+                visible over the sub-agent session (user ruling 2026-09-25). */}
             <div style={{ position: 'relative', height: '100%' }}>
-              <div style={{ height: '100%', display: subAgentView ? 'none' : undefined }}>
+              <div style={{ height: '100%' }}>
                 <ChatView
               messages={messages}
               isRequesting={isRequesting}
@@ -682,7 +695,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 />
               </div>
               {subAgentView && (
-                <div style={{ position: 'absolute', inset: 0 }}>
+                <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: workbenchOpen ? workbenchWidth : 0 }}>
                   <SubAgentSessionView
                     subConvId={subAgentView.subConvId}
                     title={subAgentView.title}

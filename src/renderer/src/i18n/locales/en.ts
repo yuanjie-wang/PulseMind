@@ -860,6 +860,7 @@ const en: TranslationDict = {
     groupToday: 'Today',
     groupYesterday: 'Yesterday',
     groupEarlier: 'Earlier',
+    showMore: 'Show more ({{count}} left)',
     time: {
       justNow: 'Just now',
       minutesAgo: '{{count}}m ago',

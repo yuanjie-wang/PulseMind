@@ -197,6 +197,13 @@ check('[view] header names the node and offers 返回主对话',
 check('[view] the run-state tag follows the live flag, and reads 子代理运行中 while open',
   text.includes('子代理运行中'), '')
 
+// The blinking tail cursor while the node is open — the same StreamingCursor
+// the main chat renders during a run (data-streaming-cursor is its test hook;
+// the keyframe name carries a uid, so presence is what's assertable).
+const liveCursor = await page.locator('#view [data-streaming-cursor]').count()
+check('[view] a live session blinks the streaming cursor like the main chat',
+  liveCursor === 1, `cursor×${liveCursor}`)
+
 // Exactly the two ruled differences: no composer of any kind.
 const composerBits = await page.evaluate(() => ({
   textarea: document.querySelectorAll('#view textarea').length,
@@ -254,6 +261,9 @@ check('[view] a settled session reads 已结束 and stops polling',
   settledText.includes('已结束') && settledCalls2 === settledCalls,
   `${settledCalls} → ${settledCalls2} reads after settling`)
 
+const settledCursor = await page.locator('#view [data-streaming-cursor]').count()
+check('[view] a settled session shows no cursor', settledCursor === 0, `cursor×${settledCursor}`)
+
 // A read failure surfaces instead of blank-screening (and is retried while open).
 await page.locator('#toggle-live').click() // live again
 await page.waitForTimeout(200)
@@ -263,6 +273,11 @@ const recovered = await page.locator('#view').innerText()
 check('[view] a failed read recovers on the next poll instead of sticking',
   recovered.includes('第二轮：新增了一段文案') && !recovered.includes('读取失败'),
   recovered.includes('读取失败') ? 'error text stuck' : 'recovered')
+
+// Live again: the cursor comes back (the view never unmounted, so this is a
+// re-render on the live prop alone — no loading window in between).
+const relitCursor = await page.locator('#view [data-streaming-cursor]').count()
+check('[view] flipping live back on restores the cursor', relitCursor === 1, `cursor×${relitCursor}`)
 
 check('[view] renders without a page error', pageErrors.length === 0, pageErrors.join(' | '))
 
