@@ -4,9 +4,51 @@ import type { ProjectSortMode } from './project'
 import type { ShortcutActionId } from '../shortcuts'
 import type { SandboxApprovalMode } from '../sandbox/policy'
 
+/**
+ * 模型配置分两层（供应商 → 模型）：一个供应商只有一份连接配置（接口规范 /
+ * baseURL / apiKey / headers），名下挂多个模型条目，各自的模型名、maxTokens、
+ * contextLength 独立设置。`LlmProfile` 是「某个模型连同它所属供应商」的解析
+ * 视图 —— 设置存储读取时物化（providerId/providerName 与连接字段从供应商填
+ * 入），写入时反向拆解，磁盘上永远不存这个扁平形态。
+ */
+
+/** 模型条目（模型层）：嵌在 LlmProviderConfig.models 里落盘。 */
+export interface LlmModelConfig {
+  id: string
+  /** API 模型名，如 deepseek-chat / claude-sonnet-4-20250514 */
+  model: string
+  /** 展示名（模型选择器里优先显示；缺省回落 model） */
+  name?: string
+  maxTokens: number
+  contextLength?: number
+}
+
+/** 供应商（连接层）：baseURL / apiKey / headers 被名下所有模型共享。 */
+export interface LlmProviderConfig {
+  id: string
+  name: string
+  /** API 规范 —— 旧 LlmProfile.provider 字段的语义：决定请求走 Anthropic
+   *  还是 OpenAI 兼容适配器，与「哪家供应商」解耦。 */
+  apiFormat: LLMProvider
+  baseURL: string
+  apiKey?: string
+  headers?: Record<string, string>
+  models: LlmModelConfig[]
+}
+
+/**
+ * 解析视图 = 供应商连接 + 模型参数。所有消费方（引擎、代理、探针、选择器）
+ * 读的都是这个形态；id 即模型条目 id —— conversations.profile_id、
+ * lastUsedProfileId、插件面板的选中值引用的都是它。
+ */
 export interface LlmProfile {
   id: string
   name: string
+  /** 所属供应商（物化字段，不落盘）。 */
+  providerId?: string
+  /** 供应商显示名（物化字段，不落盘），模型选择器分组/前缀用。 */
+  providerName?: string
+  /** API 规范（物化自所属供应商；旧扁平格式的存量字段）。 */
   provider?: LLMProvider
   baseURL: string
   model: string
@@ -18,6 +60,10 @@ export interface LlmProfile {
 
 export interface AppSettings {
   activeProfileId: string
+  /** 权威形态：供应商及其名下模型。写入路径只认它（派生的 profiles 被忽略）。 */
+  providers: LlmProviderConfig[]
+  /** 派生只读视图（get() 物化）：每个模型一条、连接字段已从供应商填入。
+   *  渲染端与主进程的大量消费方读它；写入时由存储层重算，不要手工维护。 */
   profiles: LlmProfile[]
   /** PLAN-dark-mode M1: 'system' follows the OS — the renderer resolves it via
    *  prefers-color-scheme, main via nativeTheme. Existing settings.json files

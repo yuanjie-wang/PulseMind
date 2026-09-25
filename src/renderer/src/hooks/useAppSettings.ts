@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { AppSettings, LlmProfile } from '../types/settings'
+import type { AppSettings, LlmProfile, LlmProviderConfig } from '../types/settings'
 
 const DEFAULT_SETTINGS: AppSettings = {
   activeProfileId: '',
+  providers: [],
   profiles: [],
   // Renderer-side default shown only while settings load over IPC (the real
   // default lives in main's settings-store, also 'dark'; the theme mirror in
@@ -25,16 +26,16 @@ export interface UseAppSettingsReturn {
   hasApiKey: boolean
   saveSettings: (s: AppSettings) => Promise<void>
   reloadSettings: () => Promise<void>
-  setApiKey: (key: string) => Promise<void>
-  getApiKey: () => Promise<string | null>
-  // Profile management
+  // Profile management (两层模型配置：供应商 → 模型)
   activeProfile: LlmProfile | undefined
+  /** Switch the DEFAULT model (`settings.activeProfileId` = a model entry id).
+   *  New conversations and conversations without their own choice follow it. */
   switchProfile: (profileId: string) => Promise<void>
-  addProfile: (profile: LlmProfile) => Promise<void>
-  saveProfile: (profileId: string, updates: LlmProfile) => Promise<void>
-  deleteProfile: (profileId: string) => Promise<void>
-  /** Atomic save profile data + switch to it in a single state update */
-  saveAndSwitchProfile: (profileId: string, profile: LlmProfile) => Promise<void>
+  /** Persist a whole providers draft (the settings editor's two-layer edit).
+   *  `activeProfileId` rides the same write when 使用此模型 was pressed. The
+   *  derived `profiles` are re-derived main-side; a reload pulls the fresh
+   *  merged views back into this context. */
+  saveModelConfig: (providers: LlmProviderConfig[], activeProfileId?: string) => Promise<void>
 }
 
 export function useAppSettings(): UseAppSettingsReturn {
@@ -56,12 +57,16 @@ export function useAppSettings(): UseAppSettingsReturn {
     load()
   }, [])
 
-  const activeProfile = settings.profiles.find(
+  // settings.profiles is the store's MERGED view (one entry per model,
+  // connection fields materialized from its provider) — the credentials the
+  // welcome composer and MCP summaries read live here. `?? []` keeps fixtures
+  // / pre-hydration snapshots from crashing on a missing key.
+  const activeProfile = (settings.profiles ?? []).find(
     (p) => p.id === settings.activeProfileId
   )
 
-  // API key is stored directly in the profile (settings.json), not in a
-  // separate encrypted file.  Derived here so it stays in sync automatically.
+  // API key is stored on the provider (settings.json) and materialized onto
+  // the merged profile view, so it stays in sync automatically.
   const hasApiKey = !!activeProfile?.apiKey
 
   const saveSettings = useCallback(async (s: AppSettings) => {
@@ -102,7 +107,7 @@ export function useAppSettings(): UseAppSettingsReturn {
     []
   )
 
-  // --- Profile management ---
+  // --- Model config (供应商 → 模型 两层) ---
 
   const switchProfile = useCallback(
     async (profileId: string) => {
@@ -115,90 +120,30 @@ export function useAppSettings(): UseAppSettingsReturn {
     [settings, persistAndUpdate]
   )
 
-  const addProfile = useCallback(
-    async (profile: LlmProfile) => {
-      const updated = {
-        ...settings,
-        profiles: [...settings.profiles, profile]
-        // Don't auto-activate — user must click "Use This Profile"
+  const saveModelConfig = useCallback(
+    async (providers: LlmProviderConfig[], activeProfileId?: string) => {
+      setSaving(true)
+      try {
+        const payload: AppSettings = {
+          ...settings,
+          providers,
+          ...(activeProfileId ? { activeProfileId } : {})
+        }
+        await window.electronAPI.setSettings(payload)
+        // The merged profile views were re-derived main-side — pull them back
+        // instead of trusting this snapshot's stale copies (the welcome
+        // composer reads activeProfile right after a save).
+        const fresh = await window.electronAPI.getSettings()
+        setSettings(fresh)
+      } catch (err) {
+        console.error('Failed to save model config:', err)
+        throw err
+      } finally {
+        setSaving(false)
       }
-      await persistAndUpdate(updated)
     },
-    [settings, persistAndUpdate]
+    [settings]
   )
-
-  /**
-   * Save profile fields (apiKey is now part of LlmProfile, so it is
-   * persisted atomically with the rest of the profile in settings.json).
-   */
-  const saveProfile = useCallback(
-    async (profileId: string, profile: LlmProfile) => {
-      console.log(`[useAppSettings] saveProfile: id=${profileId} name="${profile.name}" model=${profile.model}`)
-      const updated = {
-        ...settings,
-        profiles: settings.profiles.map((p) =>
-          p.id === profileId ? profile : p
-        )
-      }
-      await persistAndUpdate(updated)
-    },
-    [settings, persistAndUpdate]
-  )
-
-  const deleteProfile = useCallback(
-    async (profileId: string) => {
-      if (settings.profiles.length <= 1) return // can't delete last profile
-      const remaining = settings.profiles.filter((p) => p.id !== profileId)
-      const nextId =
-        settings.activeProfileId === profileId
-          ? remaining[0].id
-          : settings.activeProfileId
-      const updated = {
-        ...settings,
-        activeProfileId: nextId,
-        profiles: remaining
-      }
-      await persistAndUpdate(updated)
-    },
-    [settings, persistAndUpdate]
-  )
-
-  /**
-   * Atomically save profile data AND switch activeProfileId in a single
-   * state update.  This avoids the stale-closure race that occurs when
-   * saveProfile and switchProfile are called sequentially (the second call
-   * reads stale `settings` from its closure and overwrites the first).
-   */
-  const saveAndSwitchProfile = useCallback(
-    async (profileId: string, profile: LlmProfile) => {
-      console.log(`[useAppSettings] saveAndSwitchProfile: id=${profileId} name="${profile.name}" model=${profile.model}`)
-      const updated = {
-        ...settings,
-        activeProfileId: profileId,
-        profiles: settings.profiles.map((p) =>
-          p.id === profileId ? profile : p
-        )
-      }
-      await persistAndUpdate(updated)
-    },
-    [settings, persistAndUpdate]
-  )
-
-  const setApiKeyFn = useCallback(async (key: string) => {
-    if (!activeProfile) return
-    const profile = { ...activeProfile, apiKey: key }
-    const updated = {
-      ...settings,
-      profiles: settings.profiles.map((p) =>
-        p.id === activeProfile.id ? profile : p
-      )
-    }
-    await persistAndUpdate(updated)
-  }, [settings, activeProfile, persistAndUpdate])
-
-  const getApiKey = useCallback(async (): Promise<string | null> => {
-    return activeProfile?.apiKey ?? null
-  }, [activeProfile])
 
   return {
     settings,
@@ -207,14 +152,9 @@ export function useAppSettings(): UseAppSettingsReturn {
     hasApiKey,
     saveSettings,
     reloadSettings,
-    setApiKey: setApiKeyFn,
-    getApiKey,
     // Profile management
     activeProfile,
     switchProfile,
-    addProfile,
-    saveProfile,
-    deleteProfile,
-    saveAndSwitchProfile
+    saveModelConfig
   }
 }

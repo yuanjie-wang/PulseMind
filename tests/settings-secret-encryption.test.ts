@@ -2,13 +2,18 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-type RawSettings = Record<string, unknown> & { profiles?: Array<Record<string, unknown>> }
+type RawSettings = Record<string, unknown> & { profiles?: Array<Record<string, unknown>>; providers?: Array<Record<string, unknown>> }
 
 const HOME = process.env.HOME as string
 const DATA_DIR = join(HOME, '.pulsemind')
 const SETTINGS_PATH = join(DATA_DIR, 'settings.json')
 const ENC_PREFIX = 'enc:v1:'
 
+// The fixture is the LEGACY flat shape on purpose: every read migrates it into
+// the two-layer form (providers + nested models), and p1/p2 differ in apiKey,
+// so they group into two providers — providers[0] carries p1 (the real
+// secret), providers[1] carries p2 (the placeholder). A WRITE persists the
+// provider shape; before the first write the file on disk still has `profiles`.
 const RAW_BASE: RawSettings = {
   activeProfileId: 'p1',
   profiles: [
@@ -44,6 +49,11 @@ function writeRaw(content: unknown): void {
 
 function readRaw(): RawSettings {
   return JSON.parse(readFileSync(SETTINGS_PATH, 'utf-8'))
+}
+
+/** Provider i as persisted on disk (post-write shape). */
+function readProviderRaw(i: number): Record<string, unknown> {
+  return readRaw().providers![i]
 }
 
 async function freshStore() {
@@ -83,11 +93,10 @@ describe('secrets at rest (enc:v1:)', () => {
     expect(s.profiles[0].apiKey).toBe('sk-live-secret-123')
     expect(s.profiles[0].headers).toMatchObject({ 'x-api-token': 'bearer-token-xyz' })
 
-    const disk = readRaw()
-    const apiKey = disk.profiles![0].apiKey as string
+    const apiKey = readProviderRaw(0).apiKey as string
     expect(apiKey.startsWith(ENC_PREFIX)).toBe(true)
     expect(apiKey).not.toContain('sk-live-secret-123')
-    expect((disk.profiles![0].headers as Record<string, string>)['x-api-token'].startsWith(ENC_PREFIX)).toBe(true)
+    expect((readProviderRaw(0).headers as Record<string, string>)['x-api-token'].startsWith(ENC_PREFIX)).toBe(true)
   })
 
   it('keeps ${VAR} placeholders byte-identical on disk (they are designed to be readable)', async () => {
@@ -107,11 +116,12 @@ describe('secrets at rest (enc:v1:)', () => {
 
   it('round-trips a renderer save: resolved value re-encrypts, placeholder survives byte-identical', async () => {
     const store = await freshStore()
-    // The renderer edits from the RESOLVED snapshot it received.
+    // The renderer edits from the RESOLVED snapshot it received — the
+    // two-layer edit path touches providers (profiles are derived views).
     const snapshot = await store.get()
     const edited = JSON.parse(JSON.stringify(snapshot))
-    edited.profiles[0].apiKey = 'sk-brand-new-key'
-    edited.profiles[1].apiKey = '${PULSE_TEST_KEY}'
+    edited.providers[0].apiKey = 'sk-brand-new-key'
+    edited.providers[1].apiKey = '${PULSE_TEST_KEY}'
     await store.set(edited)
 
     const s = await store.get()
@@ -119,37 +129,37 @@ describe('secrets at rest (enc:v1:)', () => {
     expect(s.profiles[1].apiKey).toBe('${PULSE_TEST_KEY}')
 
     const disk = readRaw()
-    expect((disk.profiles![0].apiKey as string).startsWith(ENC_PREFIX)).toBe(true)
-    expect(disk.profiles![0].apiKey).not.toContain('sk-brand-new-key')
-    expect(disk.profiles![1].apiKey).toBe('${PULSE_TEST_KEY}')
+    expect((disk.providers![0].apiKey as string).startsWith(ENC_PREFIX)).toBe(true)
+    expect(disk.providers![0].apiKey).not.toContain('sk-brand-new-key')
+    expect(disk.providers![1].apiKey).toBe('${PULSE_TEST_KEY}')
   })
 
   it('the secret walk touches ONLY apiKey/headers — no other string field is encrypted', async () => {
     const store = await freshStore()
     const snapshot = await store.get()
     await store.set(snapshot)
-    const disk = readRaw()
-    expect(disk.soul).toBe(RAW_BASE.soul)
-    expect(disk.profiles![0].name).toBe('test-profile')
-    expect((disk.profiles![0].headers as Record<string, string>)['x-api-token'].startsWith(ENC_PREFIX)).toBe(true)
+    const provider = readProviderRaw(0)
+    expect(readRaw().soul).toBe(RAW_BASE.soul)
+    expect((provider.models as Array<Record<string, unknown>>)[0].name).toBe('test-profile')
+    expect((provider.headers as Record<string, string>)['x-api-token'].startsWith(ENC_PREFIX)).toBe(true)
   })
 
   it('restorePlaceholders still works against a ciphertext previous file (decode-first ordering)', async () => {
     const store = await freshStore()
-    await store.get() // first write encrypts
+    await store.set(await store.get()) // a write encrypts — the file below is the ciphertext previous file
     // A renderer sends the SAME plaintext back — the placeholder restore must
     // not misfire, and the value must re-encrypt, not double-encrypt.
     const snapshot = await store.get()
-    snapshot.profiles[0].apiKey = 'sk-live-secret-123'
+    ;(snapshot.providers![0] as Record<string, unknown>).apiKey = 'sk-live-secret-123'
     await store.set(snapshot)
     const s = await store.get()
     expect(s.profiles[0].apiKey).toBe('sk-live-secret-123')
-    const disk = readRaw()
-    expect(disk.profiles![0].apiKey as string).toBeTruthy()
-    expect((disk.profiles![0].apiKey as string).startsWith(ENC_PREFIX)).toBe(true)
+    const apiKey = readProviderRaw(0).apiKey as string
+    expect(apiKey).toBeTruthy()
+    expect(apiKey.startsWith(ENC_PREFIX)).toBe(true)
     // Exactly one enc layer: unwrapping the base64 yields the plaintext, not
     // another enc:v1: string.
-    const b64 = (disk.profiles![0].apiKey as string).slice(ENC_PREFIX.length)
+    const b64 = apiKey.slice(ENC_PREFIX.length)
     const stub = await import('../tests/stubs/electron')
     const decoded = stub.safeStorage.decryptString(Buffer.from(b64, 'base64'))
     expect(decoded.startsWith(ENC_PREFIX)).toBe(false)
@@ -166,7 +176,7 @@ describe('secrets at rest (enc:v1:)', () => {
     const s = await store.get()
     expect(s.profiles[0].apiKey).toBe('sk-live-secret-123')
     // Disk stays plaintext when encryption never became available.
-    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect(readProviderRaw(0).apiKey).toBe('sk-live-secret-123')
   })
 
   it('an undecryptable blob is DROPPED, never served as the ciphertext', async () => {
@@ -183,7 +193,7 @@ describe('secrets at rest (enc:v1:)', () => {
     const mod = await freshStoreModule()
     // RAW_BASE holds a plaintext secret; the stub is available.
     expect(await mod.migrateEncryptedSecrets()).toBe(true)
-    expect((readRaw().profiles![0].apiKey as string).startsWith(ENC_PREFIX)).toBe(true)
+    expect((readProviderRaw(0).apiKey as string).startsWith(ENC_PREFIX)).toBe(true)
     // Second run: nothing left to migrate — no rewrite.
     expect(await mod.migrateEncryptedSecrets()).toBe(false)
     const store = await freshStore()
@@ -206,7 +216,7 @@ describe('keychain DENIED (available but encryptString throws)', () => {
     stub.setStubKeychainDenied(true)
     const snapshot = await store.get()
     await expect(store.set(snapshot)).resolves.toBeUndefined()
-    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect(readProviderRaw(0).apiKey).toBe('sk-live-secret-123')
     expect((await store.get()).profiles![0].apiKey).toBe('sk-live-secret-123')
   })
 
@@ -217,7 +227,7 @@ describe('keychain DENIED (available but encryptString throws)', () => {
     // The rewrite runs and lands plaintext (the deny fallback) — idempotent,
     // since the next scan finds the same plaintext and declines again.
     expect(await mod.migrateEncryptedSecrets()).toBe(true)
-    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect(readProviderRaw(0).apiKey).toBe('sk-live-secret-123')
     expect(await mod.migrateEncryptedSecrets()).toBe(true) // still harmless
   })
 })
@@ -234,7 +244,7 @@ describe('encryptSecrets OFF (2026-09-25 opt-in ruling) — the keychain is neve
     writeOff()
     const snapshot = await store.get()
     await store.set(snapshot)
-    expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect(readProviderRaw(0).apiKey).toBe('sk-live-secret-123')
     expect((await store.get()).profiles![0].apiKey).toBe('sk-live-secret-123')
   })
 
@@ -244,13 +254,13 @@ describe('encryptSecrets OFF (2026-09-25 opt-in ruling) — the keychain is neve
     // dropped with a re-enter warning, never decrypted, never served raw.
     const store = await freshStore()
     await store.set(await store.get())
-    expect(readRaw().profiles![0].apiKey as string).toContain(ENC_PREFIX)
+    expect(readProviderRaw(0).apiKey as string).toContain(ENC_PREFIX)
     const off = readRaw()
     delete off.encryptSecrets
     writeRaw(off)
     expect((await store.get()).profiles![0].apiKey).toBeUndefined()
     await store.set(await store.get())
-    expect(readRaw().profiles![0].apiKey).toBeUndefined() // nothing resurrects
+    expect(readProviderRaw(0).apiKey).toBeUndefined() // nothing resurrects
   })
 
   it('migrateEncryptedSecrets declines when the flag is off', async () => {
@@ -267,7 +277,7 @@ describe('flag OFF + ciphertext on disk — ZERO keychain contact (the black-scr
     // Produce ciphertext with the flag ON first.
     const store = await freshStore()
     await store.set(await store.get())
-    expect(readRaw().profiles![0].apiKey as string).toContain(ENC_PREFIX)
+    expect(readProviderRaw(0).apiKey as string).toContain(ENC_PREFIX)
     // Switch OFF and deny the keychain outright: reads must not even ASK.
     const stub = await import('../tests/stubs/electron')
     stub.setStubKeychainDenied(true)
@@ -283,7 +293,7 @@ describe('flag OFF + ciphertext on disk — ZERO keychain contact (the black-scr
     // A save lands keyless (the value was dropped) and never threw — the
     // user re-enters their key in the settings UI.
     await store.set(await store.get())
-    expect(readRaw().profiles![0].apiKey).toBeUndefined()
+    expect(readProviderRaw(0).apiKey).toBeUndefined()
     expect(decryptSpy).not.toHaveBeenCalled()
     decryptSpy.mockRestore()
   })

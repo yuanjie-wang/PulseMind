@@ -455,21 +455,25 @@ export class AgentSessionManagerImpl {
 
   /** Resolve the LLM profile to run a session with: `preferredId` (a
    *  create-time pin, e.g. a routine's model choice) when it still resolves,
-   *  otherwise the active profile. Falls back to first profile. */
+   *  otherwise the active profile. Falls back to first profile. The list is
+   *  the store's merged view — one entry per model, connection fields already
+   *  materialized from its 供应商. */
   private async resolveProfile(preferredId?: string): Promise<LlmProfile> {
     const settings = await settingsStore.get()
     const profile = (preferredId ? settings.profiles.find((p) => p.id === preferredId) : undefined)
       ?? settings.profiles.find((p) => p.id === settings.activeProfileId)
       ?? settings.profiles[0]
-    if (!profile) throw new Error('未配置 LLM Profile,请先在设置中添加')
+    if (!profile) throw new Error('未配置模型，请先在设置中添加供应商和模型')
     return profile
   }
 
   /** The selectable models for a 模型下拉. Deliberately narrowed to what a
    *  client needs to render the list: the profile's credentials and endpoint
-   *  never go on the wire. With `sessionId` the active id is that session's
-   *  effective model (its own choice under the create-time pin); without one
-   *  it is the global default the unpinned conversations follow. */
+   *  never go on the wire. `providerName` (the 供应商 display name) is what
+   *  pickers group/prefix by — a model id alone no longer says whose it is.
+   *  With `sessionId` the active id is that session's effective model (its own
+   *  choice under the create-time pin); without one it is the global default
+   *  the unpinned conversations follow. */
   async modelState(sessionId?: string): Promise<ModelState> {
     const settings = await settingsStore.get()
     const ownId = sessionId
@@ -479,7 +483,7 @@ export class AgentSessionManagerImpl {
       ?? settings.profiles.find((p) => p.id === settings.activeProfileId)
       ?? settings.profiles[0]
     return {
-      profiles: settings.profiles.map((p) => ({ id: p.id, name: p.name, provider: p.provider, model: p.model })),
+      profiles: settings.profiles.map((p) => ({ id: p.id, name: p.name, provider: p.provider, providerName: p.providerName, model: p.model })),
       activeId: active?.id ?? '',
     }
   }

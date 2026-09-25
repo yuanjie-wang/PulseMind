@@ -30,10 +30,10 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 ### 连接模型
 
-进入「设置 → 模型设置」，配置你的大语言模型：
+进入「设置 → 模型设置」，分两层配置你的大语言模型：
 
-- **提供商** — Anthropic、OpenAI 或任意 OpenAI 兼容接口（含国内厂商）
-- **模型** — 要使用的模型名称
+- **供应商** — 一条共享连接：接口规范（Anthropic 或 OpenAI 兼容）、基础 URL、API 密钥与自定义请求头；一个供应商可挂多个模型，全部复用这条连接
+- **模型** — 供应商名下的每个模型各自保存模型名、显示名、最大输出与上下文长度
 - **API 密钥** — 仅存储在本地
 - **基础 URL** — 代理或兼容接口的自定义地址
 
@@ -159,7 +159,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 ## 一直都在的核心能力
 
 - **Agent 引擎** — 自主循环、流式渲染、上下文自动压缩
-- **多模型** — Anthropic / OpenAI 双协议适配，多套配置自由切换，单个会话还可单独指定模型
+- **多模型** — Anthropic / OpenAI 双协议适配，模型按供应商分组共享凭据，单个会话还可单独指定模型
 - **记忆** — 手动编写 + 会话后自动提取 + 全文检索；内容哈希去重，重复内容不再反复入库
 - **经验** — 对话结束自动萃取，最多 20 条、按最近使用淘汰；确定性工作可沉淀为随经验落盘的可执行脚本，下次直接按说明运行
 - **会话与统计** — 本地 SQLite 存储，自动标题、自动清理；Token 用量按小时 / 日 / 月统计
@@ -177,10 +177,10 @@ PulseMind is a local-first desktop AI assistant powered by its own agent engine.
 
 ### Connect a Model
 
-Go to Settings → Models and configure your LLM:
+Go to Settings → Models and configure your LLM in two layers:
 
-- **Provider** — Anthropic, OpenAI, or any OpenAI-compatible service
-- **Model** — the model name to use
+- **Provider** — a shared connection: API format (Anthropic or OpenAI-compatible), Base URL, API Key, and custom headers. One provider can host many models, and they all reuse its connection.
+- **Models** — each model under the provider keeps its own model name, display name, max output tokens, and context length.
 - **API Key** — stored locally only
 - **Base URL** — custom endpoint for proxies or compatible interfaces
 
@@ -306,7 +306,7 @@ Build your own tools from three pieces:
 ## The Core That Was Always Here
 
 - **Agent engine** — autonomous loop, streaming rendering, automatic context compaction
-- **Multi-model** — Anthropic and OpenAI protocols via adapters; switch profiles freely, or pin a different model to a single conversation
+- **Multi-model** — Anthropic and OpenAI protocols via adapters; group models under shared-credential providers, or pin a different model to a single conversation
 - **Memory** — hand-written + auto-extracted after sessions + full-text search; content hashing keeps near-duplicates out
 - **Experiences** — distilled after conversations, 20 at most with LRU eviction; deterministic work can ship as runnable scripts stored with the experience, ready to run next time
 - **Sessions & usage** — local SQLite storage, auto titles, auto cleanup; token usage charted by hour / day / month

@@ -4,12 +4,12 @@ import { safeStorage } from 'electron'
 import { SETTINGS_PATH, DATA_DIR, ensureDataDir } from './index'
 import { resolveEnvVarsDeep, resolveEnvVarsInString } from '../../shared/env'
 import { toSandboxApprovalMode } from '../../shared/sandbox/policy'
-import type { AppSettings, LlmProfile } from '../../shared/types/settings'
+import type { AppSettings, LlmProfile, LlmProviderConfig, LlmModelConfig, LLMProvider } from '../../shared/types/settings'
 import type { ProjectSortMode } from '../../shared/types/project'
 
 const DEFAULT_WORKSPACE_DIR = join(DATA_DIR, 'workspace')
 
-/** Profile `headers` and `apiKey` keep raw ${VAR} placeholders: nothing
+/** Provider `headers` and `apiKey` keep raw ${VAR} placeholders: nothing
  * env-resolved ever round-trips through the renderer back into settings.json
  * (a resolved value saved back would permanently destroy the placeholder).
  * Both are resolved per-request in api-proxy.handler.ts. */
@@ -22,13 +22,193 @@ interface SettingsCache {
 }
 let cache: SettingsCache | null = null
 
+// ── 供应商/模型两层结构（模型配置分层）────────────────────────────────────
+// settings.json 的权威形态是 providers[]（连接层：apiFormat/baseURL/apiKey/
+// headers 被名下模型共享）+ 嵌套的 models[]（模型层：模型名/maxTokens/
+// contextLength 各自设置）。磁盘上**不存在**扁平的 profiles —— 那是 get()
+// 在读取时物化的派生视图（每个模型一条，连接字段从所属供应商填入），写入时
+// 被丢弃重算。迁移只发生在读取：旧扁平 profiles 按「接口规范+baseURL+apiKey+
+// headers」归组成供应商，模型条目**继承旧 profile id**，所以
+// conversations.profile_id / lastUsedProfileId / 插件面板选中值等引用不需要
+// 任何数据迁移就继续解析。get() 的迁移是幂等纯函数（不写盘）；第一次整存
+// 自然把新形态落盘。
+
+/** 常见官方端点 → 供应商展示名（迁移旧 profiles 时给归组结果起名用）。
+ *  未命中回落 baseURL 主机名，再回落接口规范的通名。 */
+const WELL_KNOWN_PROVIDER_HOSTS: Array<[string, string]> = [
+  ['api.anthropic.com', 'Anthropic'],
+  ['api.openai.com', 'OpenAI'],
+  ['api.deepseek.com', 'DeepSeek'],
+  ['api.moonshot.cn', 'Moonshot AI'],
+  ['api.moonshot.ai', 'Moonshot AI'],
+  ['open.bigmodel.cn', '智谱 AI'],
+  ['dashscope.aliyuncs.com', '阿里云百炼'],
+  ['api.siliconflow.cn', '硅基流动'],
+  ['openrouter.ai', 'OpenRouter'],
+  ['api.mistral.ai', 'Mistral'],
+  ['api.groq.com', 'Groq'],
+  ['api.x.ai', 'xAI'],
+]
+
+const PROVIDER_FORMAT_LABELS: Record<LLMProvider, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI Compatible',
+}
+
+function providerNameFor(baseURL: string, apiFormat: LLMProvider): string {
+  try {
+    const host = new URL(baseURL).hostname.toLowerCase()
+    const known = WELL_KNOWN_PROVIDER_HOSTS.find(([h]) => host === h || host.endsWith(`.${h}`))
+    if (known) return known[1]
+    if (host) return host
+  } catch { /* 不可解析的 URL —— 回落接口规范通名 */ }
+  return PROVIDER_FORMAT_LABELS[apiFormat]
+}
+
+function randomId(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 容错地归一一份 providers（读盘/写盘共用）：形状不对的字段回落默认值，
+ *  未知子键保留（与 readGroup 的约定一致，未来加字段不再重演 H1/H2）。 */
+function normalizeProviders(raw: unknown): LlmProviderConfig[] {
+  if (!Array.isArray(raw)) return []
+  const out: LlmProviderConfig[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const p = item as Record<string, unknown>
+    const apiFormat: LLMProvider = p.apiFormat === 'openai' ? 'openai' : 'anthropic'
+    const baseURL = typeof p.baseURL === 'string' ? p.baseURL : ''
+    out.push({
+      ...(p as Record<string, unknown>),
+      id: typeof p.id === 'string' && p.id ? p.id : randomId('prov'),
+      name: typeof p.name === 'string' && p.name ? p.name : providerNameFor(baseURL, apiFormat),
+      apiFormat,
+      baseURL,
+      apiKey: typeof p.apiKey === 'string' ? p.apiKey : undefined,
+      headers: p.headers && typeof p.headers === 'object' && !Array.isArray(p.headers)
+        ? (p.headers as Record<string, string>)
+        : undefined,
+      models: normalizeModels(p.models),
+    } as LlmProviderConfig)
+  }
+  return out
+}
+
+function normalizeModels(raw: unknown): LlmModelConfig[] {
+  if (!Array.isArray(raw)) return []
+  const out: LlmModelConfig[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const m = item as Record<string, unknown>
+    const entry: Record<string, unknown> = {
+      ...(m as Record<string, unknown>),
+      id: typeof m.id === 'string' && m.id ? m.id : randomId('model'),
+      model: typeof m.model === 'string' ? m.model : '',
+      name: typeof m.name === 'string' && m.name ? m.name : undefined,
+      maxTokens: typeof m.maxTokens === 'number' && Number.isFinite(m.maxTokens) && m.maxTokens > 0
+        ? m.maxTokens
+        : 32768,
+      contextLength: typeof m.contextLength === 'number' && Number.isFinite(m.contextLength) && m.contextLength > 0
+        ? m.contextLength
+        : undefined,
+    }
+    out.push(entry as unknown as LlmModelConfig)
+  }
+  return out
+}
+
+/** 模型条目上误带的连接/派生字段（渲染端快照脏数据）在写盘前剥掉：
+ *  连接字段只属于供应商层，模型条目带了也永远不会被读。 */
+const MODEL_DISK_STRIP_KEYS = new Set(['providerId', 'providerName', 'provider', 'baseURL', 'apiKey', 'headers'])
+
+function providersForDisk(settings: Pick<AppSettings, 'providers' | 'profiles'>): LlmProviderConfig[] {
+  const providers = Array.isArray((settings as { providers?: unknown }).providers)
+    ? normalizeProviders(settings.providers)
+    : groupLegacyProfiles((settings.profiles ?? []) as LlmProfile[])
+  return providers.map((p) => ({
+    ...p,
+    models: p.models.map((m) => {
+      const entry: Record<string, unknown> = { ...(m as unknown as Record<string, unknown>) }
+      for (const k of MODEL_DISK_STRIP_KEYS) delete entry[k]
+      return entry as unknown as LlmModelConfig
+    }),
+  }))
+}
+
+/** 旧扁平 profiles → 供应商归组。归组键 = (接口规范, baseURL, apiKey, headers)；
+ *  四元组完全一致的 profile 才共用一个供应商，其余各自成组（宁多勿错）。
+ *  模型条目继承旧 profile 的 id 与展示名。 */
+function groupLegacyProfiles(profiles: LlmProfile[]): LlmProviderConfig[] {
+  interface LegacyGroup {
+    apiFormat: LLMProvider
+    baseURL: string
+    apiKey?: string
+    headers?: Record<string, string>
+    profiles: LlmProfile[]
+  }
+  const groups = new Map<string, LegacyGroup>()
+  for (const profile of profiles) {
+    if (!profile || typeof profile !== 'object') continue
+    const apiFormat: LLMProvider = profile.provider === 'openai' ? 'openai' : 'anthropic'
+    const baseURL = typeof profile.baseURL === 'string' ? profile.baseURL : ''
+    const apiKey = typeof profile.apiKey === 'string' && profile.apiKey ? profile.apiKey : undefined
+    const headers = profile.headers && typeof profile.headers === 'object' && Object.keys(profile.headers).length > 0
+      ? profile.headers
+      : undefined
+    const key = JSON.stringify([apiFormat, baseURL, apiKey, headers ? Object.entries(headers).sort() : []])
+    const group = groups.get(key)
+    if (group) group.profiles.push(profile)
+    else groups.set(key, { apiFormat, baseURL, apiKey, headers, profiles: [profile] })
+  }
+  return [...groups.values()].map((g) => ({
+    id: randomId('prov'),
+    name: providerNameFor(g.baseURL, g.apiFormat),
+    apiFormat: g.apiFormat,
+    baseURL: g.baseURL,
+    apiKey: g.apiKey,
+    headers: g.headers,
+    models: g.profiles.map((p) => ({
+      id: p.id,
+      model: p.model,
+      name: p.name,
+      maxTokens: p.maxTokens,
+      contextLength: p.contextLength,
+    })),
+  }))
+}
+
+/** 派生只读视图：每个模型一条 LlmProfile，连接字段从所属供应商物化。
+ *  消费方（引擎/代理/探针/选择器）只读这个形态。 */
+function materializeProfiles(providers: LlmProviderConfig[]): LlmProfile[] {
+  const out: LlmProfile[] = []
+  for (const provider of providers) {
+    for (const m of provider.models ?? []) {
+      out.push({
+        id: m.id,
+        name: m.name || m.model,
+        providerId: provider.id,
+        providerName: provider.name,
+        provider: provider.apiFormat,
+        baseURL: provider.baseURL,
+        apiKey: provider.apiKey,
+        headers: provider.headers,
+        model: m.model,
+        maxTokens: m.maxTokens,
+        contextLength: m.contextLength,
+      })
+    }
+  }
+  return out
+}
+
 // ── Secrets at rest (PLAN-security-hardening P1) ─────────────────────────
 // In memory an AppSettings is ALWAYS plaintext/placeholder; the DISK bytes are
 // ciphertext (except ${VAR} placeholders, which are designed to be readable).
 // Every consumer — session-manager, api-proxy, the renderer settings editor —
-// keeps reading `profile.apiKey` unchanged. The walk touches exactly two
-// fields (each profile's apiKey + each headers value); widening it later
-// means re-checking the restorePlaceholders contract, not just adding a key.
+// keeps reading the merged view's apiKey/headers unchanged. The walk touches
+// exactly the secret carriers (each provider's apiKey + headers, plus each
+// LEGACY profile's — a pre-migration file is decoded before grouping).
 
 const ENC_PREFIX = 'enc:v1:'
 
@@ -92,8 +272,10 @@ interface SecretCarrier {
   headers?: Record<string, unknown>
 }
 
-function mapProfileSecrets(profiles: unknown[], map: (value: string) => string | undefined): unknown[] {
-  return profiles.map((p) => {
+/** apiKey/headers 的载荷形状在 provider（供应商层）与 legacy profile（旧扁平
+ *  层）上完全一致 —— 一个 walker 走两种数组。 */
+function mapSecretCarriers(carriers: unknown[], map: (value: string) => string | undefined): unknown[] {
+  return carriers.map((p) => {
     if (!p || typeof p !== 'object') return p
     const next: SecretCarrier & Record<string, unknown> = { ...(p as Record<string, unknown>) }
     if (typeof next.apiKey === 'string') {
@@ -115,6 +297,14 @@ function mapProfileSecrets(profiles: unknown[], map: (value: string) => string |
   })
 }
 
+function mapSettingsSecrets<T>(settings: T, map: (value: string) => string | undefined): T {
+  const out = settings as { providers?: unknown; profiles?: unknown }
+  const next: Record<string, unknown> = { ...(out as Record<string, unknown>) }
+  if (Array.isArray(out?.providers)) next.providers = mapSecretCarriers(out.providers, map)
+  if (Array.isArray(out?.profiles)) next.profiles = mapSecretCarriers(out.profiles, map)
+  return next as T
+}
+
 /** Disk → memory: decode `enc:v1:` values — ONLY when the user opted in.
  *  Flag OFF (the default) means ZERO keychain contact: a ciphertext value is
  *  DROPPED with a re-enter warning instead of being decrypted. decryptString
@@ -122,21 +312,22 @@ function mapProfileSecrets(profiles: unknown[], map: (value: string) => string |
  *  hidden modal (2026-09-25 black-screen report) — the opt-out must be able
  *  to guarantee that never happens. */
 function decodeSecretsDeep<T>(settings: T): T {
-  const out = settings as { profiles?: unknown; encryptSecrets?: boolean }
-  if (!Array.isArray(out?.profiles)) return settings
+  const out = settings as { providers?: unknown; profiles?: unknown; encryptSecrets?: boolean }
+  const hasCarriers = Array.isArray(out?.providers) || Array.isArray(out?.profiles)
+  if (!hasCarriers) return settings
   if (out.encryptSecrets !== true) {
     let dropped = false
-    const cleaned = mapProfileSecrets(out.profiles, (v) => {
+    const cleaned = mapSettingsSecrets(settings, (v) => {
       if (typeof v === 'string' && v.startsWith(ENC_PREFIX)) { dropped = true; return undefined }
       return v
     })
     if (dropped && !warnedCiphertextDropped) {
       warnedCiphertextDropped = true
-      console.warn('[settings] encryptSecrets is off but ciphertext values exist — dropped; 请在设置里重新填写各 profile 的 API Key')
+      console.warn('[settings] encryptSecrets is off but ciphertext values exist — dropped; 请在设置里重新填写 API Key')
     }
-    return { ...out, profiles: cleaned } as T
+    return cleaned
   }
-  return { ...out, profiles: mapProfileSecrets(out.profiles, decryptSecretValue) } as T
+  return mapSettingsSecrets(settings, decryptSecretValue)
 }
 
 /** Memory → disk: encrypt non-placeholder secrets — ONLY when the user opted
@@ -145,10 +336,11 @@ function decodeSecretsDeep<T>(settings: T): T {
  *  Existing ciphertext passes through untouched (get() still decodes it, so a
  *  switch-off + one save naturally converts back to plaintext). */
 function encodeSecretsDeep<T>(settings: T): T {
-  const out = settings as { profiles?: unknown; encryptSecrets?: boolean }
-  if (!Array.isArray(out?.profiles)) return settings
+  const out = settings as { providers?: unknown; profiles?: unknown; encryptSecrets?: boolean }
+  const hasCarriers = Array.isArray(out?.providers) || Array.isArray(out?.profiles)
+  if (!hasCarriers) return settings
   if (out.encryptSecrets !== true) return settings
-  return { ...out, profiles: mapProfileSecrets(out.profiles, encryptSecretValue) } as T
+  return mapSettingsSecrets(settings, encryptSecretValue)
 }
 
 /** P1 one-time migration: rewrite settings.json whose secrets are still
@@ -162,7 +354,7 @@ export async function migrateEncryptedSecrets(): Promise<boolean> {
   if (!encryptionAvailable()) return false
   const current = await settingsStore.get()
   if (current.encryptSecrets !== true) return false
-  let raw: { profiles?: Array<Record<string, unknown>> } | null = null
+  let raw: { providers?: Array<Record<string, unknown>>; profiles?: Array<Record<string, unknown>> } | null = null
   try {
     raw = JSON.parse(await readFile(SETTINGS_PATH, 'utf-8'))
   } catch {
@@ -170,12 +362,14 @@ export async function migrateEncryptedSecrets(): Promise<boolean> {
   }
   const isPlainSecret = (v: unknown): boolean =>
     typeof v === 'string' && v.length > 0 && !v.startsWith('${') && !v.startsWith(ENC_PREFIX)
-  const needs = (raw?.profiles ?? []).some((p) =>
-    p && typeof p === 'object' && (
+  const carrierNeeds = (p: unknown): boolean =>
+    !!p && typeof p === 'object' && (
       isPlainSecret((p as SecretCarrier).apiKey) ||
       Object.values(((p as SecretCarrier).headers ?? {}) as Record<string, unknown>).some(isPlainSecret)
     )
-  )
+  const needs =
+    (raw?.providers ?? []).some(carrierNeeds) ||
+    (raw?.profiles ?? []).some(carrierNeeds)
   if (!needs) return false
   if (!encryptionAvailable()) {
     console.warn('[settings] plaintext secrets found but safeStorage is unavailable — leaving settings.json untouched')
@@ -267,6 +461,7 @@ function readBrowserSettings(group: Record<string, unknown>): AppSettings['brows
 
 const FALLBACK_SETTINGS: AppSettings = {
   activeProfileId: '',
+  providers: [],
   profiles: [],
   // Dark is the app's default look: only a brand-new install or a corrupt file
   // lands here — existing settings.json files carry an explicit theme and keep
@@ -333,13 +528,21 @@ export class SettingsStore {
         skipKeys: SKIP_ENV_KEYS,
       }) as any
 
-      // New format: has profiles array
-      if (parsed.profiles && Array.isArray(parsed.profiles)) {
-        const profiles: LlmProfile[] = parsed.profiles
+      // New format: providers/models two-layer (or a legacy flat profiles
+      // array, which groups into it below — the read path never rejects an
+      // old file, it migrates in memory).
+      if (parsed && (Array.isArray(parsed.providers) || Array.isArray(parsed.profiles))) {
+        const providers = Array.isArray(parsed.providers)
+          ? normalizeProviders(parsed.providers)
+          : groupLegacyProfiles(parsed.profiles as LlmProfile[])
+        // 派生视图：模型条目继承旧 profile id，所以 activeProfileId /
+        // conversations.profile_id 等既有引用原样可用。
+        const profiles = materializeProfiles(providers)
         const result: AppSettings = {
           activeProfileId: profiles.length > 0
-            ? (parsed.activeProfileId || profiles[0].id)
+            ? (profiles.some((p) => p.id === parsed.activeProfileId) ? parsed.activeProfileId : profiles[0].id)
             : '',
+          providers,
           profiles,
           theme: parsed.theme ?? 'dark',
           myName: parsed.myName ?? '',
@@ -384,7 +587,7 @@ export class SettingsStore {
         return structuredClone(result)
       }
 
-      // Old format: migrate single profile to profiles array
+      // Old format: migrate single profile to the two-layer format
       const migrated = this.migrate(parsed)
       cache = { mtimeMs: stats.mtimeMs, settings: migrated }
       return structuredClone(migrated)
@@ -394,7 +597,8 @@ export class SettingsStore {
   }
 
   /**
-   * Migrate from old single-profile format to the new profiles-based format.
+   * Migrate from the pre-profiles single-profile format. The profile lands in
+   * the same two-layer shape everything else reads.
    */
   private migrate(old: Record<string, unknown>): AppSettings {
     const profile: LlmProfile = {
@@ -406,10 +610,12 @@ export class SettingsStore {
       provider: (old.provider as 'anthropic' | 'openai') || undefined,
       apiKey: (old.apiKey as string) || undefined
     }
+    const providers = groupLegacyProfiles([profile])
 
     return {
       activeProfileId: 'default',
-      profiles: [profile],
+      providers,
+      profiles: materializeProfiles(providers),
       theme: (old.theme as string) === 'dark' ? 'dark' : 'light',
       myName: '',
       soul: '',
@@ -464,8 +670,12 @@ export class SettingsStore {
   }
 
   private async doSet(settings: AppSettings): Promise<void> {
+    // 派生的 profiles 不落盘：供应商层是唯一权威，模型条目上误带的连接字段
+    // 一并剥掉（providersForDisk；快照缺 providers 时按旧 profiles 归组救回）。
     // Strip legacy outputDir key, write as workspaceDir only
-    const { outputDir: _legacy, ...clean } = settings as unknown as Record<string, unknown>
+    const { outputDir: _legacy, ...rest } = settings as unknown as Record<string, unknown>
+    delete rest.profiles
+    const canonical: Record<string, unknown> = { ...rest, providers: providersForDisk(settings) }
 
     // The renderer holds RESOLVED values (env placeholders already replaced),
     // so a naive write would persist the concrete value and permanently destroy
@@ -474,14 +684,18 @@ export class SettingsStore {
     // The previous file is DECODED first: restorePlaceholders' contract is a
     // plaintext-to-plaintext comparison (旧占位符 resolve 后 === 新值 → 恢复)，
     // and a plaintext apiKey in prevRaw must compare with the renderer's
-    // plaintext, not with its `enc:v1:` form. Today's field mix happens not to
-    // lose data even against ciphertext (placeholders are never encrypted and
-    // base64 cannot contain `${`), but that is a coincidence of the character
-    // classes, not the contract — decode-first is the honest shape.
-    let toWrite: unknown = clean
+    // plaintext, not with its `enc:v1:` form. A pre-two-layer previous file is
+    // grouped into the provider shape first, so the per-field comparison has a
+    // counterpart on the format boundary (the first save after a migration).
+    let toWrite: unknown = canonical
     try {
-      const prevRaw = decodeSecretsDeep(JSON.parse(await readFile(SETTINGS_PATH, 'utf-8')) as unknown)
-      toWrite = restorePlaceholders(prevRaw, clean)
+      const prevRaw = decodeSecretsDeep(JSON.parse(await readFile(SETTINGS_PATH, 'utf-8')) as unknown) as Record<string, unknown>
+      // 注意 providers 传 undefined（不是 []）—— providersForDisk 靠它的缺位
+      // 才会走旧 profiles 的归组分支。
+      const prevCanonical: Record<string, unknown> = Array.isArray(prevRaw?.providers)
+        ? prevRaw
+        : { ...prevRaw, providers: providersForDisk({ profiles: (prevRaw?.profiles ?? []) as LlmProfile[] } as AppSettings) }
+      toWrite = restorePlaceholders(prevCanonical, canonical)
     } catch {
       // No previous file (first write) — write as-is
     }

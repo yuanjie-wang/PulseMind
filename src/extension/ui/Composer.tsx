@@ -13,7 +13,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
-import { modelLabel, type ModelState } from '../../shared/agent-protocol'
+import { fullModelLabel, type ModelState } from '../../shared/agent-protocol'
 import { Icon } from './icons'
 
 const MAX_HEIGHT_PX = 160
@@ -99,7 +99,7 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
   // the placeholder reserved for the case where there is no profile at all.
   const profiles = model?.profiles ?? []
   const activeProfile = profiles.find((p) => p.id === model?.activeId) ?? profiles[0]
-  const activeModelLabel = activeProfile ? modelLabel(activeProfile) : '选择模型'
+  const activeModelLabel = activeProfile ? fullModelLabel(activeProfile) : '选择模型'
 
   // 全部允许 = 工具调用不再经过批准，是唯一「无人拦截」的一档，所以它的图标和
   // 文案一起转警示橙（InputArea 的 UNRESTRICTED_COLOR，同一值同一用意）。加在
@@ -179,6 +179,10 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
               </button>
               {modelMenu.open && (
                 <div className="pm-model-menu">
+                  {/* Flat list with the 供应商 prefix (fullModelLabel): the
+                      380px panel has no room for group headers, and with two
+                      providers carrying the same model id a bare label no
+                      longer says whose it is. */}
                   {profiles.map((profile) => (
                     <button
                       key={profile.id}
@@ -189,7 +193,7 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
                         onSelectModel(profile.id)
                       }}
                     >
-                      {modelLabel(profile)}
+                      {fullModelLabel(profile)}
                     </button>
                   ))}
                 </div>

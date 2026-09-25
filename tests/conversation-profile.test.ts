@@ -83,7 +83,9 @@ describe('desktop 模型 wiring (per conversation)', () => {
   it('offers 跟随默认 only while the conversation carries its own model', () => {
     expect(appSrc).toContain('const profilePinned = activeConvKey ? activeConvProfileId != null : false')
     const inputSrc = readFileSync(INPUT_AREA, 'utf-8')
-    expect(inputSrc).toContain('if (profilePinned && onResetProfile)')
+    // The model menu is grouped by 供应商 now; the reset item is built inline
+    // as the trailing entry — the conditional wiring is what the scan pins.
+    expect(inputSrc).toContain('(profilePinned && onResetProfile)')
     expect(inputSrc).toContain("t('chatView.model.followDefault')")
   })
 

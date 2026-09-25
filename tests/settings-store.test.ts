@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-type AppSettings = Record<string, unknown> & { profiles: Array<Record<string, unknown>> }
+type AppSettings = Record<string, unknown> & { profiles?: Array<Record<string, unknown>>; providers?: Array<Record<string, unknown>> }
 
 const HOME = process.env.HOME as string
 const DATA_DIR = join(HOME, '.pulsemind')
@@ -213,8 +213,10 @@ describe('SettingsStore.set — placeholder preservation', () => {
     expect(rendererCopy.profiles[0].apiKey).toBe('${PULSE_TEST_KEY}') // raw after the fix
 
     // Any settings save (theme toggle etc.) round-trips the renderer copy.
+    // The two-layer format writes providers (the derived profiles are
+    // re-computed main-side), and the secret rides the provider now.
     await store.set({ ...rendererCopy, theme: 'dark' } as AppSettings)
-    expect(readRaw().profiles[0].apiKey).toBe('${PULSE_TEST_KEY}')
+    expect(readRaw().providers![0].apiKey).toBe('${PULSE_TEST_KEY}')
     expect(readRaw().theme).toBe('dark')
   })
 
@@ -223,7 +225,7 @@ describe('SettingsStore.set — placeholder preservation', () => {
     const rendererCopy = await store.get() // env unset here
     process.env.PULSE_TEST_KEY = 'sk-late' // hook sets it afterwards
     await store.set({ ...rendererCopy, theme: 'dark' } as AppSettings)
-    expect(readRaw().profiles[0].apiKey).toBe('${PULSE_TEST_KEY}')
+    expect(readRaw().providers![0].apiKey).toBe('${PULSE_TEST_KEY}')
   })
 
   it('keeps a non-skipped placeholder whose resolution round-trips unchanged', async () => {
@@ -240,16 +242,17 @@ describe('SettingsStore.set — placeholder preservation', () => {
     process.env.PULSE_TEST_KEY = 'sk-resolved'
     const store = await freshStore()
     const rendererCopy = await store.get()
+    // The two-layer edit path: the provider carries the secret.
     await store.set({
       ...rendererCopy,
-      profiles: [{ ...rendererCopy.profiles[0], apiKey: 'sk-brand-new' }],
+      providers: [{ ...rendererCopy.providers![0], apiKey: 'sk-brand-new' }],
     } as AppSettings)
     // P1 (PLAN-security-hardening): the disk now carries ciphertext; the
     // genuine-edit contract is that the value survives the round-trip as
     // plaintext IN MEMORY and stays a single enc layer on disk.
     const reread = await store.get()
     expect(reread.profiles[0].apiKey).toBe('sk-brand-new')
-    expect(readRaw().profiles[0].apiKey as string).toContain('enc:v1:')
+    expect(readRaw().providers![0].apiKey as string).toContain('enc:v1:')
   })
 })
 

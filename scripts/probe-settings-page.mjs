@@ -35,12 +35,24 @@ function check(name, pass, detail) {
   console.log(`${pass ? 'ok  ' : 'FAIL'} ${name}${detail === undefined ? '' : ` — ${detail}`}`)
 }
 
-/** Two populated profiles: the fixture's active profile (DeepSeek, OpenAI-
- *  compatible) and a non-active one to switch to. Writes must carry them
- *  through untouched — asserted below on the auto-cleanup write. */
-const FIXTURE_PROFILES = [
-  { id: 'profile_a', name: 'DeepSeek 官方', provider: 'openai', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat', maxTokens: 32768, contextLength: 65536, apiKey: 'sk-fixture-deepseek' },
-  { id: 'profile_b', name: 'Claude 官方', provider: 'anthropic', baseURL: 'https://api.anthropic.com', model: 'claude-sonnet-4-20250514', maxTokens: 32768, contextLength: 200000 },
+/** Two providers with three models (the two-layer 供应商 → 模型 shape): the
+ *  default model (profile_a) and a sibling live under DeepSeek 官方; a second
+ *  provider (Claude 官方) carries profile_b. Writes must carry them through
+ *  untouched — asserted below on the auto-cleanup write. */
+const FIXTURE_PROVIDERS = [
+  {
+    id: 'prov_ds', name: 'DeepSeek 官方', apiFormat: 'openai', baseURL: 'https://api.deepseek.com', apiKey: 'sk-fixture-deepseek',
+    models: [
+      { id: 'profile_a', name: 'DeepSeek Chat', model: 'deepseek-chat', maxTokens: 32768, contextLength: 65536 },
+      { id: 'profile_a2', name: 'DeepSeek Reasoner', model: 'deepseek-reasoner', maxTokens: 16384, contextLength: 65536 },
+    ],
+  },
+  {
+    id: 'prov_claude', name: 'Claude 官方', apiFormat: 'anthropic', baseURL: 'https://api.anthropic.com',
+    models: [
+      { id: 'profile_b', model: 'claude-sonnet-4-20250514', maxTokens: 32768, contextLength: 200000 },
+    ],
+  },
 ]
 
 /** Fixture settings: retainers at 0 (永久保留) and git injection on, i.e. a fresh
@@ -53,7 +65,7 @@ import SettingsPage from './src/renderer/src/components/settings/SettingsPage'
 import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 
-let settings = { activeProfileId: 'profile_a', profiles: ${JSON.stringify(FIXTURE_PROFILES)}, theme: 'light', locale: 'zh', workspaceDir: '/fixture/workspace', autoCleanup: false, launchAtLogin: false, conversationRetentionDays: 0, routineRunRetentionDays: 0, git: { contextInjection: true } }
+let settings = { activeProfileId: 'profile_a', providers: ${JSON.stringify(FIXTURE_PROVIDERS)}, theme: 'light', locale: 'zh', workspaceDir: '/fixture/workspace', autoCleanup: false, launchAtLogin: false, conversationRetentionDays: 0, routineRunRetentionDays: 0, git: { contextInjection: true } }
 window.initialSettings = JSON.parse(JSON.stringify(settings))
 window.settingsWrites = []
 window.openedFolders = []
@@ -164,14 +176,14 @@ await page.waitForFunction(() => window.settingsWrites.length > 0)
 const limitsWrite = await page.evaluate(() => window.settingsWrites[window.settingsWrites.length - 1])
 check('保存携带 maxLoopIterations=80 / maxParallelSubAgents=5，其他字段原样',
   limitsWrite.maxLoopIterations === 80 && limitsWrite.maxParallelSubAgents === 5 &&
-  limitsWrite.workspaceDir === '/fixture/workspace' && JSON.stringify(limitsWrite.profiles) === JSON.stringify(FIXTURE_PROFILES),
+  limitsWrite.workspaceDir === '/fixture/workspace' && JSON.stringify(limitsWrite.providers) === JSON.stringify(FIXTURE_PROVIDERS),
   JSON.stringify({ loop: limitsWrite.maxLoopIterations, parallel: limitsWrite.maxParallelSubAgents }))
 
 // ── 3.6 启动 / 数据清理 on 常规 (moved out of 数据与运行, 2026-09-21): every
 // switch writes exactly its own preference over the live settings ──
 check('常规面板正好两个开关（开机自启 / 自动清理会话）', await page.evaluate(() => document.querySelectorAll('button.ant-switch').length) === 2,
   String(await page.evaluate(() => document.querySelectorAll('button.ant-switch').length)))
-const PROBE_KEYS = ['launchAtLogin', 'autoCleanup', 'debugLlmRequests', 'git', 'conversationRetentionDays', 'routineRunRetentionDays', 'workspaceDir', 'profiles', 'activeProfileId', 'locale', 'theme']
+const PROBE_KEYS = ['launchAtLogin', 'autoCleanup', 'debugLlmRequests', 'git', 'conversationRetentionDays', 'routineRunRetentionDays', 'workspaceDir', 'providers', 'activeProfileId', 'locale', 'theme']
 /** Which of the load-bearing fields the newest write moved relative to the write before it. */
 const lastDiff = () => page.evaluate((keys) => {
   const writes = window.settingsWrites
@@ -190,8 +202,8 @@ check('「开机自启」只改动 launchAtLogin', JSON.stringify(launch.diff) =
 check('开机自启写入 true', launch.write.launchAtLogin === true, String(launch.write.launchAtLogin))
 const cleanup = await toggle('自动清理会话')
 check('「自动清理会话」只改动 autoCleanup', JSON.stringify(cleanup.diff) === '["autoCleanup"]', JSON.stringify(cleanup.diff))
-check('自动清理写入 true，profiles 原样带过（不被写路径搅动）',
-  cleanup.write.autoCleanup === true && JSON.stringify(cleanup.write.profiles) === JSON.stringify(FIXTURE_PROFILES) && cleanup.write.locale === 'zh')
+check('自动清理写入 true，providers 原样带过（不被写路径搅动）',
+  cleanup.write.autoCleanup === true && JSON.stringify(cleanup.write.providers) === JSON.stringify(FIXTURE_PROVIDERS) && cleanup.write.locale === 'zh')
 
 // ── 3.7 Both retention selects offer the SAME four choices (shared retention-options) ──
 const selectIndex = (label) => page.evaluate((l) => [...document.querySelectorAll('.ant-select')]
@@ -254,7 +266,7 @@ check('选中态从常规移到了高级',
   (await wash('data')) === 'rgb(240, 240, 240)' && (await wash('environment')) === 'rgba(0, 0, 0, 0)',
   `${await wash('data')} / ${await wash('environment')}`)
 await page.screenshot({ path: join(SHOTS, 'settings-data.png') })
-check('高级面板正好三个开关（调试 / Git / 自动编译）', await page.evaluate(() => document.querySelectorAll('button.ant-switch').length) === 3,
+check('高级面板正好四个开关（休眠 / 调试 / Git / 自动编译）', await page.evaluate(() => document.querySelectorAll('button.ant-switch').length) === 4,
   String(await page.evaluate(() => document.querySelectorAll('button.ant-switch').length)))
 const debug = await toggle('记录 LLM 请求报文')
 check('「记录 LLM 请求报文」只改动 debugLlmRequests', JSON.stringify(debug.diff) === '["debugLlmRequests"]', JSON.stringify(debug.diff))
@@ -285,59 +297,69 @@ check('内容列的宽度上限 = 菜单 160 + PAGE_COLUMN_MAX_WIDTH，且窄于
   parseFloat(geometry.wrapperWidth) === 160 + parseFloat(geometry.cap) && parseFloat(geometry.cap) < geometry.pageWidth,
   JSON.stringify(geometry))
 
-// ── 8. LLM 设置：分组 / 高级折叠 / 底部动作条 / 脏离开守卫 ──
+// ── 8. LLM 设置：供应商 → 模型 两层 / Headers 折叠 / 底部动作条 / 脏离开守卫 ──
 await page.locator('[data-settings-menu="settings"]').click()
-await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('配置名称'))
+await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('供应商名称'))
 await page.waitForTimeout(200)
 const llmText = () => page.evaluate(() => document.querySelector('.settings-scroll').textContent)
 // textContent counts hidden DOM (antd keeps the fold's content mounted);
 // innerText is what the user can actually see.
 const llmVisibleText = () => page.evaluate(() => document.querySelector('.settings-scroll').innerText)
-// The profile select is the pane's first (provider select comes later, in 连接).
-const profileSelect = page.locator('.ant-select').first()
-const profileSelectText = async () => (await profileSelect.innerText()).replace(/\n/g, ' ')
+// The two-layer pane is exactly two <section>s: [0] 供应商 (connection layer),
+// [1] 模型 (model layer). The layer's select is its first.
+const providerSection = page.locator('.settings-scroll section').nth(0)
+const modelSection = page.locator('.settings-scroll section').nth(1)
+const providerSelectText = async () => (await providerSection.locator('.ant-select').first().innerText()).replace(/\n/g, ' ')
+const modelSelectText = async () => (await modelSection.locator('.ant-select').first().innerText()).replace(/\n/g, ' ')
 
-check('选择器内联展示「默认模型」标记（收起态就可见）',
-  (await profileSelectText()).includes('DeepSeek 官方') && (await profileSelectText()).includes('默认模型'),
-  await profileSelectText())
+check('两层结构都在页面上：供应商区（连接共享）+ 模型区（参数独立）',
+  (await llmText()).includes('供应商') && (await llmText()).includes('模型') &&
+  (await llmText()).includes('共享') && (await llmText()).includes('独立'))
+check('供应商选择器内联展示「默认模型」标记（默认模型在该供应商名下）',
+  (await providerSelectText()).includes('DeepSeek 官方') && (await providerSelectText()).includes('默认模型'),
+  await providerSelectText())
+check('模型选择器显示默认模型（displayName），同样挂「默认模型」标记',
+  (await modelSelectText()).includes('DeepSeek Chat') && (await modelSelectText()).includes('默认模型'),
+  await modelSelectText())
 check('没有「当前使用中」假按钮（状态并入选择器）', !(await llmText()).includes('当前使用中'))
-check('连接分组标题在页面上', (await llmText()).includes('连接'))
-check('高级组是一个折叠头，默认收起（调参内容不可见）',
-  (await page.getByText('高级设置', { exact: true }).count()) === 1 &&
-  !(await llmVisibleText()).includes('最大输出 Token'))
+check('模型参数直接可见（maxTokens / 上下文长度不再藏进高级折叠）',
+  (await llmVisibleText()).includes('最大输出 Token') && (await llmVisibleText()).includes('上下文长度'))
+check('自定义 Headers 是供应商区的折叠头，默认收起（行编辑器不可见）',
+  (await page.getByText('自定义 Headers', { exact: true }).count()) === 1 &&
+  !(await llmVisibleText()).includes('添加 Header'))
+check('测试连接按钮在供应商区（对当前供应商+所选模型）',
+  await providerSection.getByRole('button', { name: '测试连接' }).isVisible())
 
-// Footer: editing the ACTIVE profile and clean → save-only, disabled.
+// Footer: editing target IS the default model and clean → save-only, disabled.
 const saveBtn = page.getByRole('button', { name: '已保存' })
 check('底部动作条：干净状态下只有置灰的「已保存」',
   await saveBtn.isVisible() && await saveBtn.isDisabled())
-check('底部动作条：激活配置不出现「设为默认模型」',
+check('底部动作条：编辑目标即默认模型，不出现「设为默认模型」',
   (await page.getByRole('button', { name: '设为默认模型' }).count()) === 0)
 check('脏提示在干净状态下不可见', await page.getByText('有未保存的更改').isHidden())
 await page.screenshot({ path: join(SHOTS, 'settings-llm.png') })
 
-// Expand 高级设置: the tuning knobs live inside the fold. The arrow's aria-label
-// (expanded/collapsed) and the panel's -panel-active class are the open gates
-// (antd 6 renamed the content node: .ant-collapse-panel, not -content).
-await page.getByText('高级设置', { exact: true }).click()
+// Expand the headers fold. The arrow's aria-label (expanded/collapsed) and the
+// panel's -panel-active class are the open gates (antd 6 renamed the content
+// node: .ant-collapse-panel, not -content).
+await page.getByText('自定义 Headers', { exact: true }).click()
 await page.locator('.ant-collapse-arrow[aria-label="expanded"]').waitFor()
 await page.locator('.ant-collapse-panel-active').waitFor({ state: 'visible' })
 await page.waitForTimeout(300) // let the expand motion settle before the shot
-check('展开后调参项与自定义 Headers 都在（且可见）',
-  (await llmVisibleText()).includes('最大输出 Token') && (await llmVisibleText()).includes('添加 Header'))
+check('展开后 Headers 行编辑器可见（添加 Header）', (await llmVisibleText()).includes('添加 Header'))
 await page.screenshot({ path: join(SHOTS, 'settings-llm-expanded.png') })
 
-// Switch to the NON-active profile — a clean switch asks nothing.
-await profileSelect.click()
+// Switch to the sibling model (same provider, non-default) — a clean switch asks nothing.
+await modelSection.locator('.ant-select').first().click()
 await page.waitForSelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')
-await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', { hasText: 'Claude 官方' }).click()
+await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', { hasText: 'DeepSeek Reasoner' }).click()
 await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('设为默认模型'))
-check('切到非激活配置：选择器不再挂「默认模型」，出现「设为默认模型」，保存仍置灰',
-  !(await profileSelectText()).includes('默认模型') &&
+check('切到非默认模型：出现「设为默认模型」，保存仍置灰',
   await page.getByRole('button', { name: '设为默认模型' }).isVisible() &&
   await page.getByRole('button', { name: '已保存' }).isDisabled())
 
-// Dirty via a name edit: hint appears, save lights up.
-await page.getByLabel('配置名称').fill('Claude 工作号')
+// Dirty via a provider rename: hint appears, save lights up.
+await page.getByLabel('供应商名称').fill('DeepSeek 工作号')
 await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('保存配置'))
 const dirtySave = page.getByRole('button', { name: '保存配置' })
 check('编辑后：脏提示可见，保存亮起',
@@ -347,11 +369,10 @@ check('编辑后：脏提示可见，保存亮起',
 await page.locator('[data-settings-menu="environment"]').click()
 await page.waitForSelector('.ant-modal-confirm')
 const guardText = (await page.locator('.ant-modal-confirm').innerText()).replace(/\n/g, ' / ')
-check('带脏改动切分区先弹放弃确认（点名该配置当前的名字）',
-  guardText.includes('放弃未保存的更改') && guardText.includes('Claude 工作号'), guardText)
+check('带脏改动切分区先弹放弃确认', guardText.includes('放弃未保存的更改'), guardText)
 await page.locator('.ant-modal-confirm-btns .ant-btn:not(.ant-btn-primary)').click()
-await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('配置名称'))
-check('取消后留在本分区，编辑未丢', (await page.getByLabel('配置名称').inputValue()) === 'Claude 工作号')
+await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('供应商名称'))
+check('取消后留在本分区，编辑未丢', (await page.getByLabel('供应商名称').inputValue()) === 'DeepSeek 工作号')
 await page.locator('[data-settings-menu="environment"]').click()
 await page.waitForSelector('.ant-modal-confirm')
 await page.locator('.ant-modal-confirm-btns .ant-btn-primary').click()
@@ -359,11 +380,11 @@ await page.waitForFunction(() => document.querySelector('.settings-scroll').text
 await page.waitForTimeout(300) // the menu's selected background eases in over 0.15s — read it settled
 check('确认放弃后落到目标分区（常规）', (await wash('environment')) === 'rgb(240, 240, 240)', await wash('environment'))
 await page.locator('[data-settings-menu="settings"]').click()
-await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('配置名称'))
-// Navigating away unmounted the section: on return the editing target resets to
-// the ACTIVE profile — the discarded rename is gone with the mount.
-check('回到本分区：编辑已弃置（回到激活配置的已存值，无脏提示）',
-  (await page.getByLabel('配置名称').inputValue()) === 'DeepSeek 官方' && await page.getByText('有未保存的更改').isHidden())
+await page.waitForFunction(() => document.querySelector('.settings-scroll').textContent.includes('供应商名称'))
+// Navigating away unmounted the section: on return the draft resets to the
+// stored providers — the discarded rename is gone with the mount.
+check('回到本分区：编辑已弃置（回到已存供应商名，无脏提示）',
+  (await page.getByLabel('供应商名称').inputValue()) === 'DeepSeek 官方' && await page.getByText('有未保存的更改').isHidden())
 
 check('页面没有渲染期报错', await page.evaluate(() => window.renderErrors.length) === 0,
   JSON.stringify(await page.evaluate(() => window.renderErrors)))

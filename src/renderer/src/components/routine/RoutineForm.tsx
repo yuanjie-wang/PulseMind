@@ -461,7 +461,7 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
 function RunContextSection({ draft, onChange, models, activeModelId }: {
   draft: RoutineDraftState
   onChange: (draft: RoutineDraftState) => void
-  models: Array<{ id: string; name: string }>
+  models: Array<{ id: string; name: string; providerName?: string }>
   activeModelId?: string
 }): React.ReactElement {
   const pickWorkspaceDir = async (): Promise<void> => {
@@ -473,10 +473,24 @@ function RunContextSection({ draft, onChange, models, activeModelId }: {
   // A stored routine can point at a since-deleted profile — keep the raw value
   // visible (and clearable) instead of antd printing the bare id.
   const modelValue = draft.profileId
-  const modelOptions = models.map((p) => ({
+  const toOption = (p: { id: string; name: string }) => ({
     value: p.id,
     label: p.id === activeModelId ? `${p.name}（当前）` : p.name,
-  }))
+  })
+  // Grouped by 供应商 when more than one is in play; a single provider stays
+  // flat (a lone group header is noise).
+  const providerNames: string[] = []
+  for (const p of models) {
+    const name = p.providerName ?? ''
+    if (!providerNames.includes(name)) providerNames.push(name)
+  }
+  const modelOptions: Array<{ value: string; label: string } | { label: string; options: Array<{ value: string; label: string }> }> =
+    providerNames.length <= 1
+      ? models.map(toOption)
+      : providerNames.map((name) => ({
+          label: name,
+          options: models.filter((p) => (p.providerName ?? '') === name).map(toOption),
+        }))
   if (modelValue && !models.some((p) => p.id === modelValue)) {
     modelOptions.unshift({ value: modelValue, label: `${modelValue}（已删除，将使用当前模型）` })
   }
@@ -535,8 +549,9 @@ export interface RoutineFormProps {
   appliedAssistantPatch: RoutineAssistantPatch | null
   onUndoAssistantPatch: () => void
   /** Model profiles for the 模型 select, narrowed to what a picker needs
-   *  (id + display name) — the credentials never belong in a form component. */
-  models: Array<{ id: string; name: string }>
+   *  (id + display name + the provider's display name for grouping) — the
+   *  credentials never belong in a form component. */
+  models: Array<{ id: string; name: string; providerName?: string }>
   activeModelId?: string
 }
 

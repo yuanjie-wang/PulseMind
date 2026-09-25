@@ -105,7 +105,7 @@ src/main/
 │   ├── database.ts        # SQLite (better-sqlite3, WAL mode, FTS5 for memories)
 │   ├── knowledge-store.ts # Knowledge file registry + schema compilation
 │   ├── extractors/        # Child-process extraction worker + format-specific extractors
-│   ├── settings-store.ts  # ~/.pulsemind/settings.json (profiles-based format)
+│   ├── settings-store.ts  # ~/.pulsemind/settings.json (providers→models two-layer format; profiles = derived merged view)
 │   ├── skill-store.ts     # Skill file management + calibration
 │   ├── mcp-server-store.ts
 │   ├── tool-preferences-store.ts
@@ -147,7 +147,7 @@ Settings stored in `~/.pulsemind/settings.json`:
 - **Profiles** — array of `LlmProfile[]` (provider, apiKey, baseURL, model, maxTokens)
 - **Global settings** — theme, persona (soul), locale, autoCleanup, workspaceDir
 - **Migration** from old single-profile format handled in `SettingsStore.migrate()`. The pre-0.4 `yoloMode` boolean and the short-lived `approvalMode` key are both dropped: approval is per conversation now (`conversations.approval_mode`)
-- **Template**: default settings in `templates/pulsemind/settings.json` — includes default soul/persona prompt, empty profiles array, theme light, locale zh
+- **Template**: default settings in `templates/pulsemind/settings.json` — includes default soul/persona prompt, empty providers array, theme light, locale zh
 
 ### Renderer-Side Managers
 
@@ -475,7 +475,7 @@ ESLint applies `no-require-imports: off` for main/preload (CommonJS). Renderer g
 
 On first launch, the app migrates data from the old `~/.pulseai/` directory to `~/.pulsemind/` and renames `pulseai.db` → `pulsemind.db` if present.
 
-- `settings.json` — profiles (provider, apiKey, baseURL, model, maxTokens), theme, persona, locale, autoCleanup
+- `settings.json` — two-layer model config: `providers[]` (apiFormat/baseURL/apiKey/headers shared) each with nested `models[]` (model/maxTokens/contextLength); `settings.profiles` is the derived merged view; theme, persona, locale, autoCleanup
 - `pulsemind.db` — SQLite (WAL mode + FTS5): conversations, messages, memories, favorites, token_usage, knowledge_files
 - `MEMORY.md` — auto-injected into every system prompt
 - `tool-preferences.json` / `skill-preferences.json` — enabled/disabled state

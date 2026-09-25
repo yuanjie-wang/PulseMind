@@ -1,3 +1,3 @@
-import type { AppSettings, LlmProfile, LLMProvider } from '../../../shared/types/settings'
+import type { AppSettings, LlmProfile, LlmProviderConfig, LlmModelConfig, LLMProvider } from '../../../shared/types/settings'
 
-export type { AppSettings, LlmProfile, LLMProvider }
+export type { AppSettings, LlmProfile, LlmProviderConfig, LlmModelConfig, LLMProvider }

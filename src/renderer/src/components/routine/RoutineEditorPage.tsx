@@ -494,7 +494,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId, routineDraft 
               onChange={editDraft}
               appliedAssistantPatch={assist.appliedPatch}
               onUndoAssistantPatch={undoAssistantPatch}
-              models={settings.profiles.map((p) => ({ id: p.id, name: p.name }))}
+              models={settings.profiles.map((p) => ({ id: p.id, name: p.name, providerName: p.providerName }))}
               activeModelId={settings.activeProfileId}
             />
           </div>

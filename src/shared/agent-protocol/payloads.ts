@@ -102,7 +102,10 @@ export interface SessionSetApprovalModeParams {
 export interface ModelOption {
   id: string
   name?: string
+  /** API 规范（'anthropic' | 'openai'）—— 旧字段语义，回退标签还在用。 */
   provider?: string
+  /** 所属供应商的显示名（两层模型配置的连接层）；分组/前缀用。 */
+  providerName?: string
   model: string
 }
 
@@ -120,6 +123,15 @@ export interface ModelState {
  *  and a fork would make the same profile read differently in each. */
 export function modelLabel(option: ModelOption): string {
   return option.name || `${option.provider ?? ''}:${option.model}`
+}
+
+/** The flat-list label: 供应商前缀 + modelLabel. Grouped pickers (antd group
+ *  headers) use modelLabel alone — the group row already names the provider;
+ *  a flat list (the extension panel) prefixes it so 「deepseek-chat」 still
+ *  says whose it is when two providers carry the same model id. */
+export function fullModelLabel(option: ModelOption): string {
+  const base = modelLabel(option)
+  return option.providerName ? `${option.providerName} · ${base}` : base
 }
 
 /** model.list — the state a client renders its picker from. */
