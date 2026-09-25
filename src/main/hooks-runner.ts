@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import os from 'node:os'
 import { DATA_DIR, HOOKS_DIR, WORKSPACE_DIR, SKILLS_DIR, KNOWLEDGE_DIR } from './storage/index'
 import { getUserPath, initUserPath } from './utils/user-path'
+import { openBuiltInWindow } from './hook-browser'
 import type { HookContext, HookResult } from '../shared/types/hooks'
 
 const PLATFORM_NAMES: Record<string, string> = {
@@ -31,14 +32,21 @@ let launchPromise: Promise<void> | null = null
 
 /**
  * Start the launch hooks exactly once and return their completion.
- * Hooks run CONCURRENTLY with window creation (a slow user hook — seconds of
- * sleep or subprocess work in app-start.js — used to sit between DB init and
- * createWindow, delaying first paint by its full duration). Consumers that
- * read what hooks produce must await this first: getHookEnv() (terminal exec,
- * MCP stdio spawn) and the ${ENV} placeholder resolution in applyProfileHeaders.
- * The IPC surface, the window and the conversation list must NOT wait on it.
- * Never rejects: runLaunchHooks logs hook failures, so a broken hook degrades
- * to default env instead of blocking whatever awaited.
+ *
+ * app-start GATES the main window (user decision 2026-09-25, reversing the
+ * earlier concurrency fix): the hook may run a login flow — open the built-in
+ * browser via ctx.browser.open, poll its server-side session endpoint, close
+ * — and the app must not start until that resolves. index.ts awaits this
+ * BEFORE createWindow; the splash holds the screen meanwhile, so a valid
+ * session (fast local check) is near-instant and a login costs exactly the
+ * time the user takes. The cost accepted with the decision: any hook latency
+ * is startup latency (a hook that sleeps seconds delays first paint by them).
+ *
+ * Consumers that read what hooks produce still await this first:
+ * getHookEnv() (terminal exec, MCP stdio spawn) and the ${ENV} placeholder
+ * resolution in applyProfileHeaders. Never rejects: runLaunchHooks logs hook
+ * failures, so a broken hook degrades to default env instead of blocking
+ * whatever awaited — the gate moves on either way.
  */
 export function ensureLaunchHooks(): Promise<void> {
   if (!launchPromise) {
@@ -81,7 +89,8 @@ export async function runLaunchHooks(): Promise<void> {
           release: os.release(),
           arch: os.arch(),
         },
-        env: { ...process.env as Record<string, string> }
+        env: { ...process.env as Record<string, string> },
+        browser: { open: openBuiltInWindow },
       }
 
       const result: HookResult = await hookFn(context)

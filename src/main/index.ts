@@ -14,6 +14,7 @@ import { cleanupExpiredConversations } from './services/conversation-retention'
 import { skillStore } from './storage/skill-store'
 import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { ensureLaunchHooks } from './hooks-runner'
+import { setHookWindowOpenListener } from './hook-browser'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { resolveThemePreference } from '../shared/theme'
@@ -76,13 +77,18 @@ let splashWindow: BrowserWindow | null = null
 // shows the bare background colour. Reset per window: createWindow also runs
 // on the tray/activate relaunch paths.
 let mainWindowReadyAt: number | null = null
-// APP_HOOKS_COMPLETED now joins two independent conditions: the fade-in
-// finished AND the launch hooks finished (hooks run concurrently with the
-// renderer since the startup reorder, so either can land first). The
-// renderer's onHooksCompleted → reloadSettings must still imply "hooks are
-// done", or hook-written settings would be re-read before they exist.
+// APP_HOOKS_COMPLETED joins two conditions: the fade-in finished AND the
+// launch hooks finished. Since the login gate (2026-09-25) hooks always
+// finish BEFORE the window exists, but the renderer's onHooksCompleted →
+// reloadSettings must still imply "hooks are done", or hook-written
+// settings would be re-read before they exist — keep both.
 let fadeCompleted = false
 let hooksComplete = false
+// When the launch-hook gate released — the anchor for the splash's
+// MAX_SPLASH_MS safety valve (see scheduleSplashFade): after a long login
+// the splash has long outlived that budget, and the valve must measure the
+// wait for the MAIN WINDOW instead of the whole startup. Null = gate held.
+let hooksCompletedAt: number | null = null
 
 function maybeNotifyHooksCompleted(): void {
   if (!fadeCompleted || !hooksComplete) return
@@ -262,21 +268,55 @@ function scheduleSplashFade(): void {
   fadeTimer = setTimeout(() => {
     fadeTimer = null
     if (!splashWindow || splashWindow.isDestroyed()) {
+      // Splash already gone. Normal after the crossfade (nothing to do), or
+      // because a launch hook opened the login window and the listener closed
+      // the splash for it — then the main window must still wait for its own
+      // first paint, with the SAME gate hold and MAX_SPLASH_MS valve as the
+      // painted path below: a straight fadeInMainWindow() here would show the
+      // bare background colour, the exact thing the holds exist to avoid.
+      if (fadeCompleted) return
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindowReadyAt !== null) {
+        fadeInMainWindow()
+        return
+      }
+      if (!hooksComplete) {
+        fadeTimer = setTimeout(() => { fadeTimer = null; scheduleSplashFade() }, MAIN_WINDOW_CHECK_MS)
+        return
+      }
+      const valveAnchor = hooksCompletedAt ?? splashCreatedAt
+      if (valveAnchor !== null && Date.now() - valveAnchor < MAX_SPLASH_MS) {
+        fadeTimer = setTimeout(() => { fadeTimer = null; scheduleSplashFade() }, MAIN_WINDOW_CHECK_MS)
+        return
+      }
       fadeInMainWindow()
       return
     }
     if (splashShownAt === null) {
-      // Splash hasn't painted yet — don't close it blank. Retry until MAX_SPLASH_MS.
-      if (splashCreatedAt !== null && Date.now() - splashCreatedAt < MAX_SPLASH_MS) {
+      // Splash hasn't painted yet — don't close it blank. Retry until
+      // MAX_SPLASH_MS; while the launch-hook gate holds (login flow) retry
+      // indefinitely — the splash must outlive the login, it is the only
+      // surface besides the login window.
+      if (!hooksComplete || (splashCreatedAt !== null && Date.now() - splashCreatedAt < MAX_SPLASH_MS)) {
         scheduleSplashFade()
         return
       }
     } else if (!mainWindow || mainWindow.isDestroyed() || mainWindowReadyAt === null) {
       // Splash painted but the main window hasn't had its first paint yet
-      // (still loading the renderer bundle — launch hooks no longer gate it).
-      // Hold the splash instead of fading onto the bare window background;
-      // re-check shortly. Gives up after MAX_SPLASH_MS as a safety valve.
-      if (splashCreatedAt !== null && Date.now() - splashCreatedAt < MAX_SPLASH_MS) {
+      // (still loading the renderer bundle). Hold the splash instead of
+      // fading onto the bare window background; re-check shortly.
+      // While the launch-hook gate holds (login flow) hold INDEFINITELY —
+      // a login takes as long as the user takes. After the gate, the
+      // MAX_SPLASH_MS safety valve is anchored to hooks COMPLETION, not
+      // splash creation: a two-minute login would otherwise have burnt the
+      // whole budget before createWindow even ran, and the crossfade would
+      // fire before the renderer painted (the bare-background flash the
+      // hold exists to avoid).
+      if (!hooksComplete) {
+        fadeTimer = setTimeout(() => { fadeTimer = null; scheduleSplashFade() }, MAIN_WINDOW_CHECK_MS)
+        return
+      }
+      const valveAnchor = hooksCompletedAt ?? splashCreatedAt
+      if (valveAnchor !== null && Date.now() - valveAnchor < MAX_SPLASH_MS) {
         fadeTimer = setTimeout(() => { fadeTimer = null; scheduleSplashFade() }, MAIN_WINDOW_CHECK_MS)
         return
       }
@@ -513,7 +553,10 @@ if (gotTheLock) {
     if (process.platform !== 'darwin') {
       // Never quit mid-transition: if a window was closed before startup
       // finished (e.g. splash closed while the main window was still hidden),
-      // closing the app is the "auto-close" symptom we're chasing.
+      // closing the app is the "auto-close" symptom we're chasing. This also
+      // covers the login gate (2026-09-25): startupComplete stays false
+      // until after createWindow, so closing the login window — or every
+      // window — during app-start's login flow never quits the app.
       if (!startupComplete) return
       app.quit()
     }
@@ -583,21 +626,45 @@ if (gotTheLock) {
 
   // ── Critical path ends here ──
   // Everything between the splash and this line is what the user waits on
-  // before the renderer even starts loading. Launch hooks used to sit in the
-  // middle of it (a slow user hook delayed first paint by its full duration);
-  // they and the menu/tray/services now overlap the renderer boot below.
+  // before the renderer even starts loading.
+
+  // Launch hooks GATE the main window (user decision 2026-09-25 — this
+  // reverses the earlier "hooks run concurrently with window creation"
+  // fix): app-start.js may run a login flow — open the built-in browser
+  // (ctx.browser.open), poll its server-side session endpoint, close it —
+  // and the app must not start until that resolves. The splash holds the
+  // screen while we wait (scheduleSplashFade holds INDEFINITELY while
+  // hooksComplete is false): a valid session is a fast local check, an
+  // invalid one costs exactly the login. Consumers already gate on
+  // ensureLaunchHooks(): terminal spawn, MCPClient.start,
+  // applyProfileHeaders — this is also where the env vars they read are
+  // collected. Never rejects: a broken hook degrades to default env and
+  // the gate opens anyway.
+  // The splash and the login window must never share the screen (user ruling
+  // 2026-09-25, replacing the earlier demote-only behaviour): the moment a
+  // hook opens its browser window the splash is destroyed — same synchronous
+  // tick as the window's creation, so no frame is ever composited with both
+  // (the splash sits alwaysOnTop over the new window until it dies; what
+  // the user sees is splash → login page). destroy(), not the fade: a
+  // fading splash is still a second surface. Everything downstream already
+  // tolerates a missing splash: fadeOutSplash and scheduleSplashFade
+  // re-check isDestroyed(), and scheduleSplashFade's splash-less branch
+  // carries the same gate hold and MAX_SPLASH_MS valve as the painted path.
+  setHookWindowOpenListener(() => {
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.destroy()
+      splashWindow = null
+      writeLog('INFO', 'startup: splash closed for launch-hook window')
+    }
+  })
+  await ensureLaunchHooks()
+  hooksComplete = true
+  hooksCompletedAt = Date.now()
+  maybeNotifyHooksCompleted()
+  writeLog('INFO', 'startup: launch hooks completed')
+
   createWindow()
   writeLog('INFO', 'startup: main window created')
-
-  // Launch hooks collect env vars for subprocesses and ${ENV} placeholders.
-  // Consumers gate themselves via ensureLaunchHooks(): terminal spawn,
-  // MCPClient.start, applyProfileHeaders. The window never waits on them —
-  // a hook that sleeps seconds no longer delays first paint.
-  void ensureLaunchHooks().then(() => {
-    hooksComplete = true
-    maybeNotifyHooksCompleted()
-    writeLog('INFO', 'startup: launch hooks completed')
-  })
 
   // Application menu + action accelerators (mac: a real menu with native
   // accelerators; see menu.ts for the Windows/Linux fallback split).
@@ -729,7 +796,12 @@ if (gotTheLock) {
   })
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    // hooksComplete guard: while the launch-hook gate holds (login flow), a
+    // dock click must not conjure the main window around the login. The
+    // zero-window case there is the login window being closed mid-gate (the
+    // splash closes itself the moment that window opens) — leaving it
+    // windowless beats starting ungated.
+    if (BrowserWindow.getAllWindows().length === 0 && hooksComplete) {
       createWindow()
     }
   })

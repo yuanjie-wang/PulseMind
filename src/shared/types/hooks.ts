@@ -1,3 +1,27 @@
+/** Handle to a window opened via `ctx.browser.open` (login flows). */
+export interface HookWindowHandle {
+  /** Close the window and resolve once it is actually gone. Idempotent —
+   *  resolving immediately when already destroyed (including a manual close
+   *  by the user). Destroy, not close: a page's beforeunload dialog must not
+   *  be able to block the hook. */
+  close(): Promise<void>
+}
+
+export interface HookWindowOptions {
+  title?: string
+  width?: number
+  height?: number
+}
+
+/**
+ * Built-in browser windows available to the app-start hook: the app's own
+ * Chromium in a standalone window on the default (persistent) session — the
+ * login page a flow opens before the main window exists.
+ */
+export interface HookBrowserApi {
+  open(url: string, options?: HookWindowOptions): Promise<HookWindowHandle>
+}
+
 export interface HookContext {
   event: string
   dataDir: string
@@ -10,6 +34,7 @@ export interface HookContext {
     arch: string
   }
   env: Record<string, string>
+  browser: HookBrowserApi
 }
 
 export interface HookResult {
