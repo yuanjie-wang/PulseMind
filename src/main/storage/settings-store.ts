@@ -349,11 +349,16 @@ function encodeSecretsDeep<T>(settings: T): T {
  *  restores placeholders and re-encodes — so the rewrite is the SAME code
  *  every save runs. Idempotent: the second scan finds nothing. */
 export async function migrateEncryptedSecrets(): Promise<boolean> {
-  // Opt-in gate first (2026-09-25): the flag OFF must never touch the
-  // keychain — that is the whole point of the switch.
-  if (!encryptionAvailable()) return false
+  // Opt-in gate FIRST — before ANY safeStorage probe (2026-09-25): even
+  // isEncryptionAvailable() is a keychain round-trip on macOS, and behind
+  // authd it can stall the main thread for a minute or more (measured 63–479s
+  // of blocked startup, stack at SecKeychainAddGenericPassword →
+  // makeLoginAuthUI). Flag OFF must never reach it — that is the whole point
+  // of the switch. get() itself is safe: decodeSecretsDeep's flag-OFF branch
+  // drops ciphertext without probing.
   const current = await settingsStore.get()
   if (current.encryptSecrets !== true) return false
+  if (!encryptionAvailable()) return false
   let raw: { providers?: Array<Record<string, unknown>>; profiles?: Array<Record<string, unknown>> } | null = null
   try {
     raw = JSON.parse(await readFile(SETTINGS_PATH, 'utf-8'))

@@ -263,11 +263,18 @@ describe('encryptSecrets OFF (2026-09-25 opt-in ruling) — the keychain is neve
     expect(readProviderRaw(0).apiKey).toBeUndefined() // nothing resurrects
   })
 
-  it('migrateEncryptedSecrets declines when the flag is off', async () => {
+  it('migrateEncryptedSecrets declines when the flag is off — and never even probes the keychain', async () => {
     const mod = await freshStoreModule()
     writeOff()
+    // The availability probe itself IS a keychain round-trip on macOS and
+    // stalled startup 63–479s (2026-09-25) — flag OFF must not reach it, so
+    // the assertion is on the CALL, not just the return value.
+    const stub = await import('../tests/stubs/electron')
+    const availSpy = vi.spyOn(stub.safeStorage, 'isEncryptionAvailable')
     expect(await mod.migrateEncryptedSecrets()).toBe(false)
     expect(readRaw().profiles![0].apiKey).toBe('sk-live-secret-123')
+    expect(availSpy).not.toHaveBeenCalled()
+    availSpy.mockRestore()
   })
 })
 
