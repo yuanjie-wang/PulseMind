@@ -5,30 +5,60 @@
 // and the fast-fail wiring of runPlaywrightOp against a fake page.
 
 import { describe, expect, it } from 'vitest'
-import { pmRefSelector, isPmRefSelector, pmRefNumberOf, PM_REF_RECOVERY_HINT } from '../src/shared/browser-client/pm-refs'
+import { pmRefSelector, isRefLiteral, resolveSelectorArg, isPmRefSelector, pmRefOf, PM_REF_RECOVERY_HINT } from '../src/shared/browser-client/pm-refs'
 import { renderAriaTree, MAX_REF_NODES, type AriaNode } from '../src/shared/browser-client/snapshot-render'
 import { diffTrees, renderDiff } from '../src/shared/browser-client/snapshot-diff'
 import { runPlaywrightOp } from '../src/main/browser/PlaywrightCommands'
+import { sameDocumentUrl } from '../src/main/browser/snapshot-refs'
 import { playwrightSugar } from '../src/shared/browser-client/playwright-sugar'
 
 describe('pm-refs — the aria-ref selector shape', () => {
   it('builds the bare engine selector and recognizes nothing else', () => {
     expect(pmRefSelector(3)).toBe('aria-ref=e3')
+    expect(pmRefSelector('74')).toBe('aria-ref=e74') // a digit string is still a bare number
     expect(isPmRefSelector('aria-ref=e12')).toBe(true)
     expect(isPmRefSelector('[aria-ref="e12"]')).toBe(false) // CSS spelling does NOT resolve (measured)
     expect(isPmRefSelector('aria-ref=ex')).toBe(false)
     expect(isPmRefSelector('button')).toBe(false)
-    expect(pmRefNumberOf('aria-ref=e12')).toBe('12')
-    expect(pmRefNumberOf('aria-ref=e')).toBeNull()
+    expect(pmRefOf('aria-ref=e12')).toBe('e12')
+    expect(pmRefOf('aria-ref=e')).toBeNull()
   })
 
-  it('the sugar ref() normalizes to the wire selector', () => {
-    const loc = playwrightSugar.ref(3)
-    expect(loc.selector).toBe('aria-ref=e3')
+  // Measured on a webmail login flow (conv_20260925230016): the snapshot
+  // printed [ref=e1] on the login page and [ref=f7e1] after the SPA had been
+  // walked a few navigations — the frame id is a persistent counter that grows,
+  // so the prefix reaches even the MAIN document. `tab.playwright('f7e74')`
+  // then went out as a raw CSS selector and burned an 8s locator timeout,
+  // while `tab.playwright(74)` resolved e74 in the wrong frame (count 0 →
+  // 编号不存在). No API path produced aria-ref=f7e74 at all.
+  it('a frame-prefixed ref is one token: selector, recognition and error name', () => {
+    expect(pmRefSelector('f7e74')).toBe('aria-ref=f7e74')
+    expect(pmRefSelector(74)).toBe('aria-ref=e74')
+    expect(isPmRefSelector('aria-ref=f7e74')).toBe(true)
+    expect(pmRefOf('aria-ref=f7e74')).toBe('f7e74')
+    expect(isRefLiteral('f7e74')).toBe(true)
+    expect(isRefLiteral('e74')).toBe(true)
+    expect(isRefLiteral('74')).toBe(false) // a bare number is not the token form
+    expect(isRefLiteral('internal:role=button')).toBe(false)
   })
 
-  it('the recovery hint names the new numbering', () => {
+  it('a bare ref literal passed as a string becomes the selector; anything else passes through', () => {
+    expect(resolveSelectorArg('f7e74')).toBe('aria-ref=f7e74')
+    expect(resolveSelectorArg('e12')).toBe('aria-ref=e12')
+    // CSS/XPath/role chains are already selectors and must never be re-prefixed
+    expect(resolveSelectorArg('button.submit')).toBe('button.submit')
+    expect(resolveSelectorArg('internal:role=button')).toBe('internal:role=button')
+  })
+
+  it('the sugar ref() accepts the printed token as-is', () => {
+    expect(playwrightSugar.ref(3).selector).toBe('aria-ref=e3')
+    expect(playwrightSugar.ref('f7e74').selector).toBe('aria-ref=f7e74')
+  })
+
+  it('the recovery hint names the new numbering AND the frame-prefix rule', () => {
     expect(PM_REF_RECOVERY_HINT).toContain('[ref=eN]')
+    expect(PM_REF_RECOVERY_HINT).toContain('f7e74')
+    expect(PM_REF_RECOVERY_HINT).toContain('原样')
   })
 })
 
@@ -169,15 +199,15 @@ describe('diffTrees + renderDiff — the three kinds', () => {
 
 describe('runPlaywrightOp — the ref fast-fail (fake page)', () => {
   function fakePage(ops: { count?: number; probe?: unknown }) {
-    let locatorCalls = 0
+    let _locatorCalls = 0
     const makeLocator = () => ({
       count: async () => ops.count ?? 1,
       evaluate: async () => ops.probe,
       click: async () => 'clicked',
     })
     return {
-      locator: (sel: string) => {
-        locatorCalls++
+      locator: (_sel: string) => {
+        _locatorCalls++
         return makeLocator()
       },
     } as never as Parameters<typeof runPlaywrightOp>[0]
@@ -205,5 +235,39 @@ describe('runPlaywrightOp — the ref fast-fail (fake page)', () => {
   it('a non-ref selector skips the whole verify', async () => {
     const page = fakePage({ count: 0 }) // count 0 would fail a ref — plain selectors never check
     await expect(runPlaywrightOp(page, { selector: 'button.submit', op: 'click' })).resolves.toBe('clicked')
+  })
+
+  // The frame prefix is part of the ADDRESS: the tree is keyed on the exact
+  // token the snapshot printed, and the error must name that token back.
+  it('a frame-prefixed ref fails, verifies and reports WITH its prefix', async () => {
+    const gone = fakePage({ count: 0 })
+    const err = await runPlaywrightOp(gone, { selector: 'aria-ref=f7e74', op: 'click' }).catch((e: Error) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('编号 [ref=f7e74] 不存在或已失效')
+    expect((err as Error).message).toContain('只传数字会丢掉帧前缀') // names the exact mistake observed
+
+    const page = fakePage({ count: 1, probe: { role: 'button', name: '登录', textHead: '登录', tag: 'button' } })
+    const tree: AriaNode[] = [{ role: 'button', name: '登录', ref: 'f7e74' }]
+    await expect(runPlaywrightOp(page, { selector: 'aria-ref=f7e74', op: 'click' }, tree)).resolves.toBe('clicked')
+    // ...and the swap check fires on the prefixed entry too (dropping the prefix
+    // would find nothing and silently fall back to count-only verification)
+    const swapped = fakePage({ count: 1, probe: { role: 'textbox', name: '搜索', textHead: '搜索', tag: 'input' } })
+    await expect(runPlaywrightOp(swapped, { selector: 'aria-ref=f7e74', op: 'click' }, tree)).rejects.toThrow(/编号 \[ref=f7e74\] 已失效/)
+  })
+})
+
+describe('sameDocumentUrl — the hash-route diff gate', () => {
+  it('diffs across an SPA fragment switch (the reset that forced full renders)', () => {
+    expect(sameDocumentUrl('https://mail.example.com/#write', 'https://mail.example.com/#contacts')).toBe(true)
+    expect(sameDocumentUrl('https://a.com/x#one', 'https://a.com/x#one')).toBe(true)
+  })
+  it('a real navigation still ends the diff', () => {
+    expect(sameDocumentUrl('https://a.com/#write', 'https://b.com/#write')).toBe(false)
+    expect(sameDocumentUrl('https://a.com/list', 'https://a.com/detail')).toBe(false)
+    expect(sameDocumentUrl('https://a.com/list?page=1', 'https://a.com/list?page=2')).toBe(false) // query IS a new document
+  })
+  it('a trailing fragment never leaves a dangling candidate', () => {
+    expect(sameDocumentUrl('https://a.com/x', 'https://a.com/x#')).toBe(true)
+    expect(sameDocumentUrl('https://a.com/x#y', 'https://a.com/x')).toBe(true)
   })
 })

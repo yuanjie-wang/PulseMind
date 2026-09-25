@@ -4,7 +4,7 @@
 // escape hatches all land here; no CDP/DOM glue gets written anywhere else.
 
 import type { Page } from 'playwright-core'
-import { isPmRefSelector, pmRefNumberOf, PM_REF_RECOVERY_HINT } from '../../shared/browser-client/pm-refs'
+import { isPmRefSelector, pmRefOf, PM_REF_RECOVERY_HINT } from '../../shared/browser-client/pm-refs'
 import type { AriaNode } from './snapshot-refs'
 import { CHANGE_TRACKED_OPS, describeOperationResult, withChangeWatch } from './change-watch'
 
@@ -94,12 +94,14 @@ export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput, last
   //      is what the actions are FOR, so a state verdict here would reject
   //      every legitimate toggle (they ride the diff channel instead).
   if (isPmRefSelector(selector)) {
-    const refId = pmRefNumberOf(selector) ?? selector
+    // The WHOLE ref, frame prefix included: `f7e74` and `e74` are different
+    // addresses, and the tree is keyed on exactly what the snapshot printed.
+    const refId = pmRefOf(selector) ?? selector
     const count = await locator.count()
     if (count === 0) {
-      throw new Error(`编号 [${refId}] 不存在或已失效——页面在快照后已变化，或该编号来自旧版快照（编号体系已升级，请重新 domSnapshot()）。不要重试旧编号。`)
+      throw new Error(`编号 [ref=${refId}] 不存在或已失效——编号带帧前缀时（如 [ref=f7e74]）必须连前缀一起原样传入，只传数字会丢掉帧前缀而指向错误的帧；也可能是页面在快照后已变化，或该编号来自旧版快照（编号体系已升级，请重新 domSnapshot()）。不要重试旧编号。`)
     }
-    const entry = treeEntryOf(lastTree, `e${refId}`)
+    const entry = treeEntryOf(lastTree, refId)
     if (entry) {
       try {
         const now = (await page.locator(selector).evaluate((el) => {
@@ -127,21 +129,21 @@ export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput, last
         })) as { role: string; name: string; textHead: string; tag: string }
         const roleNow = String(now.role || '').toLowerCase()
         if (roleNow && entry.role && roleNow !== String(entry.role).toLowerCase()) {
-          throw new Error(`编号 [${refId}] 已失效：现指向 ${roleNow} 元素（快照时是 ${entry.role}）——页面复用了节点。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
+          throw new Error(`编号 [ref=${refId}] 已失效：现指向 ${roleNow} 元素（快照时是 ${entry.role}）——页面复用了节点。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
         }
         const head = (s: string): string => s.replace(/\s+/g, ' ').trim().slice(0, 40)
         if (now.name && entry.name) {
           const a = head(now.name)
           const b = head(entry.name)
           if (a && b && !b.includes(a) && !a.includes(b)) {
-            throw new Error(`编号 [${refId}] 已失效：现指向 "${now.name.slice(0, 30)}"（快照时是 "${entry.name.slice(0, 30)}"）——页面复用了节点。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
+            throw new Error(`编号 [ref=${refId}] 已失效：现指向 "${now.name.slice(0, 30)}"（快照时是 "${entry.name.slice(0, 30)}"）——页面复用了节点。重新 domSnapshot() 获取新编号，不要重试旧编号。`)
           }
         }
       } catch (err) {
         // Our own rejection rethrows; an environment that cannot run the probe
         // (torn-down context) degrades to the count check above — the op never
         // skips verification entirely.
-        if (err instanceof Error && err.message.includes('编号 [')) throw err
+        if (err instanceof Error && err.message.includes('编号 [ref=')) throw err
       }
     }
   }

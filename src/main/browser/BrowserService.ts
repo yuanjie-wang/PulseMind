@@ -18,6 +18,7 @@ import {
   type BrowserCommand,
   type BrowserCommandResult,
   type BrowserTabInfo,
+  type PageExpression,
 } from '../../shared/browser-client/protocol'
 import {
   clampPaneWidth,
@@ -144,7 +145,6 @@ export class BrowserService {
     if (clamped !== this.paneWidth) {
       this.paneWidth = clamped
       try {
-        const s = await settingsStore.get()
         await settingsStore.update(s => ({ ...s, browser: { ...s.browser, paneWidth: clamped } }))
       } catch {
         /* width stays session-only */
@@ -624,7 +624,7 @@ export class BrowserService {
       'url' in cmd
         ? cmd.url
         : 'expression' in cmd
-          ? cmd.expression.slice(0, 120)
+          ? auditPreview(cmd.expression)
           : 'op' in cmd
             ? `${cmd.op} ${cmd.selector.slice(0, 80)}`
             : 'tabId' in cmd
@@ -647,6 +647,17 @@ export class BrowserService {
 }
 
 export const browserService = new BrowserService()
+
+/** Audit preview for an `evaluate` payload. It runs BEFORE the command, so it
+ *  must accept whatever the kernel handed over: a source string (the common
+ *  case) or a function (Playwright calls it in the page — `() => document.title`
+ *  is the idiom a model reaches for first). Calling `.slice` on the latter
+ *  threw `e.expression.slice is not a function` and killed the whole call
+ *  before Playwright ever saw it. */
+function auditPreview(expression: PageExpression): string {
+  const text = typeof expression === 'string' ? expression : typeof expression === 'function' ? expression.toString() : String(expression)
+  return text.slice(0, 120)
+}
 
 /** Field equality over the small pane-update payload — no dependency, no
  *  serialization. Title/url can lag a page's own mutation until the backend

@@ -1,7 +1,8 @@
 import { chromium } from 'playwright-core'
 import { takeDomSnapshot } from '../src/main/browser/snapshot-refs.ts'
 import { runPlaywrightOp } from '../src/main/browser/PlaywrightCommands.ts'
-import { MAX_REF_NODES, renderAriaTree } from '../src/shared/browser-client/snapshot-render.ts'
+import { MAX_REF_NODES } from '../src/shared/browser-client/snapshot-render.ts'
+import { pmRefSelector, pmRefOf } from '../src/shared/browser-client/pm-refs.ts'
 let checks = 0
 const check = (label, fn) => { fn(); checks++; console.log('  ok  ' + label) }
 const eq = (a, b, msg) => { if (a !== b) throw new Error(`${msg ?? 'assert'}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`) }
@@ -32,7 +33,6 @@ try {
   })
 
   // ── 2. Ref persistence across snapshots ──
-  const refOf = (label) => { const m = snap.tree.map ? JSON.stringify(snap.tree).match(new RegExp('"ref":"(e\\d+)","[^"]*"')) : null; return m?.[1] }
   const allRefs = (tree) => JSON.stringify(tree).match(/e\d+/g) ?? []
   const refs1 = allRefs(snap.tree)
   snap = await takeDomSnapshot(page, { url: page.url(), tree: snap.tree })
@@ -118,6 +118,23 @@ try {
     ok(navSnap.text.includes('- document [ref=e1]'), 'full render (mojibake-safe structural assert; data: URL decodes CJK as latin1)')
   })
 
+  // ── 6b. A hash-only change is the SAME document (SPA 路由) — diff must ride ──
+  // The old strict `prev.url === url` reset the diff on every module switch, so
+  // the model got 「879 处变化」 where a dozen-line diff would have named the
+  // real change, and lost the numbering-persistence header with it.
+  {
+    await page.goto('data:text/html,<main><button>hash</button></main>#write')
+    const hashA = await takeDomSnapshot(page)
+    const urlA = page.url()
+    await page.goto(`${urlA.replace('#write', '#contacts')}`)
+    const hashB = await takeDomSnapshot(page, { url: urlA, tree: hashA.tree })
+    check('hash 只换片段 → 仍走 diff，不退回全量（片段切换不结束同文档）', () => {
+      eq(page.url(), urlA.replace('#write', '#contacts'), 'the fragment really moved')
+      ok(!hashB.text.includes('页面全量'), 'no full render')
+      ok(hashB.text.includes('与上次快照的差异（') || hashB.text.includes('无变化'), 'diff branch taken')
+    })
+  }
+
   // ── 7. Trim: >MAX refs says so ──
   {
     let many = '<div>'
@@ -161,7 +178,51 @@ try {
     check('寻址引擎的 eN 命中真按钮，伪造属性上的自设 eN 未被触发', () => { ok(!hijacked) })
   }
 
-  // ── 9. app-view backend regression: the same semantics over connectOverCDP ──
+  // ── 9. Frame-prefixed refs: the token is `f<frame>e<N>`, and only IT loads ──
+  // Measured on conv_20260925230016 (webmail): after a few navigations the
+  // snapshot printed `[ref=f7e74]`, the digits-only selector resolved e74 in
+  // the WRONG frame (count 0 → 编号不存在) and the string form went out as raw
+  // CSS (8s locator timeout). The recipe below is deterministic, not lucky:
+  // seed frames, then navigate twice — the frame counter survives navigations,
+  // so the MAIN document's own refs come back prefixed.
+  {
+    const frames = '<iframe srcdoc="<button>inner</button>"></iframe>'
+    await page.setContent(`<main><button>frame-owner</button></main>${frames.repeat(6)}`)
+    await page.goto('data:text/html,<main><button>nav1</button></main>')
+    await page.goto('data:text/html,<main><button id="probe-b" onclick="window.__pc=(window.__pc||0)+1">nav2</button></main>')
+    const prefixed = await takeDomSnapshot(page)
+    const ref = (function find(nodes) {
+      for (const n of nodes) {
+        if (n.role === 'button') return n.ref
+        const hit = find(n.children ?? [])
+        if (hit) return hit
+      }
+    })(prefixed.tree)
+    ok(/^f\d+e\d+$/.test(ref ?? ''), `main-document ref carries a frame prefix (got ${ref})`)
+    const digits = ref.replace(/^f\d+e/, '')
+    const fullCount = await page.locator(pmRefSelector(ref)).count()
+    const bareCount = await page.locator(`aria-ref=e${digits}`).count()
+    const routed = pmRefOf(pmRefSelector(ref))
+    check('帧前缀编号：pmRefSelector 的完整 token 可寻址（count 1），只传数字指向错误帧（count 0）', () => {
+      eq(fullCount, 1)
+      eq(bareCount, 0) // the whole defect, in one number
+      eq(routed, ref)
+    })
+    await runPlaywrightOp(page, { selector: pmRefSelector(ref), op: 'click' }, prefixed.tree)
+    const clicks = await page.evaluate(() => window.__pc || 0)
+    check('帧前缀编号走 runPlaywrightOp 真实点击落地（且过了服务端树回查）', () => { eq(clicks, 1) })
+    // digits-only through the same path must be the FAST failure, not a timeout
+    const t0 = Date.now()
+    let named = false
+    try {
+      await runPlaywrightOp(page, { selector: `aria-ref=e${digits}`, op: 'click' }, prefixed.tree)
+    } catch (e) {
+      named = /编号 \[ref=e\d+\] 不存在或已失效/.test(e.message) && Date.now() - t0 < 3000
+    }
+    check('丢前缀的寻址快失败并点名前缀规则（<3s，报错里有「丢掉帧前缀」）', () => { ok(named) })
+  }
+
+  // ── 10. app-view backend regression: the same semantics over connectOverCDP ──
   // AppViewBackend drives the in-app pane over CDP, which is a DIFFERENT
   // transport from the managed launch above — PLAN §三 named this section and
   // §六 made it the risk gate, so it lives here, not in a manual step.

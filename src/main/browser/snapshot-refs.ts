@@ -6,7 +6,8 @@
 // and nothing is ever written into the page realm.
 //
 // The tree is rendered (snapshot-render.ts) and, when the tab has a previous
-// snapshot on the SAME url, diffed (snapshot-diff.ts) — the diff rides by
+// snapshot of the SAME document (sameDocumentUrl — a hash-route module switch
+// does not end the diff), diffed (snapshot-diff.ts) — the diff rides by
 // default, `{ full: true }` escapes. Trimming applies to the render; the FULL
 // untrimmed tree is what the caller stores for the next diff, so a trimmed
 // name never makes two snapshots disagree.
@@ -31,9 +32,24 @@ export async function pullAriaTree(page: Page): Promise<AriaNode[]> {
   return Array.isArray(tree) ? tree : []
 }
 
-/** One observation: full render by default, diff when a same-url previous
- *  snapshot exists and `full` is not forced. Returns the text for the model
- *  AND the tree for the caller to store. */
+/** Two URLs name the SAME document for diff purposes when they differ only in
+ *  the fragment. A hash router rewrites `#write` → `#contacts` on every module
+ *  switch without reloading, so strict equality reset the diff each time: the
+ *  model then paid for a full render (measured: 「879 处变化」) where a dozen-line
+ *  diff would have named the real change — and lost the numbering-persistence
+ *  header while at it. Query strings still count as a new document. */
+export function sameDocumentUrl(a: string, b: string): boolean {
+  return stripFragment(a) === stripFragment(b)
+}
+
+function stripFragment(url: string): string {
+  const i = url.indexOf('#')
+  return i < 0 ? url : url.slice(0, i)
+}
+
+/** One observation: full render by default, diff when a previous snapshot of
+ *  the same document exists and `full` is not forced. Returns the text for the
+ *  model AND the tree for the caller to store. */
 export async function takeDomSnapshot(
   page: Page,
   prev?: StoredSnapshot | null,
@@ -42,7 +58,7 @@ export async function takeDomSnapshot(
   const tree = await pullAriaTree(page)
   const url = page.url()
 
-  const sameUrl = prev && prev.url === url
+  const sameUrl = prev && sameDocumentUrl(prev.url, url)
   if (!opts?.full && sameUrl && prev) {
     const diff = diffTrees(prev.tree, tree)
     return { text: renderDiff(diff), tree }

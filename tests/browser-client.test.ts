@@ -140,6 +140,55 @@ describe('facade against a mock execute', () => {
     await expect(facade.agent.browsers.tabs.get('ghost')).rejects.toThrow(/tabs\.list/)
   })
 
+  // conv_20260925230016: the snapshot printed [ref=f7e74], the model passed it
+  // as a string, and the facade's raw pass-through turned it into a CSS
+  // selector → 8s locator timeout. The number 74 meanwhile resolved e74 in the
+  // wrong frame → count 0 → 编号不存在. Ref-shaped strings are the one thing the
+  // string branch must translate instead of passing along.
+  it('ref literals reach the wire as aria-ref; numbers and raw selectors keep their form', async () => {
+    const sent: BrowserCommand[] = []
+    const facade = createBrowserFacade({
+      execute: (cmd) => {
+        sent.push(cmd)
+        if (cmd.method === 'listTabs') return { ok: true, value: [{ id: 't1', url: 'https://a.com/' }] }
+        return { ok: true, value: 'ok' }
+      },
+      emitImage: () => {},
+    })
+    const tab = await facade.agent.browsers.open('https://a.com/')
+    await tab.playwright('f7e74', 'click')
+    await tab.playwright(74, 'click')
+    await tab.playwright('button.submit', 'click')
+    await tab.playwright(playwrightSugar.ref('f7e74'), 'click')
+    const ops = sent.filter((c): c is Extract<BrowserCommand, { method: 'playwright' }> => c.method === 'playwright')
+    expect(ops.map((o) => o.selector)).toEqual([
+      'aria-ref=f7e74',
+      'aria-ref=e74',
+      'button.submit', // a CSS escape hatch must never be re-prefixed
+      'aria-ref=f7e74',
+    ])
+  })
+
+  it('evaluate carries a function through untouched and rejects junk at the entry', async () => {
+    const sent: BrowserCommand[] = []
+    const facade = createBrowserFacade({
+      execute: (cmd) => {
+        sent.push(cmd)
+        if (cmd.method === 'listTabs') return { ok: true, value: [{ id: 't1', url: 'https://a.com/' }] }
+        return { ok: true, value: 'ok' }
+      },
+      emitImage: () => {},
+    })
+    const tab = await facade.agent.browsers.open('https://a.com/')
+    const fn = () => document.title
+    await tab.evaluate(fn)
+    const ev = sent.find((c): c is Extract<BrowserCommand, { method: 'evaluate' }> => c.method === 'evaluate')
+    expect(ev?.expression).toBe(fn) // NOT stringified — Playwright calls it in the page
+    await tab.evaluate('document.title')
+    await expect(tab.evaluate(42 as never)).rejects.toThrow(/只接受表达式字符串或函数/)
+    await expect(tab.evaluate(null as never)).rejects.toThrow(/收到 null/)
+  })
+
   it('routes backend switching and user surfaces to commands', async () => {
     const sent: BrowserCommand[] = []
     const facade = createBrowserFacade({

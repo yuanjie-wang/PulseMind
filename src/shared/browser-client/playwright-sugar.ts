@@ -73,7 +73,7 @@ function makeLocator(selector: string): LocatorSugar {
       nth: (index) => chain(`nth=${index}`),
     },
     'locator',
-    `（定位器只是“描述元素”，不执行操作——交给 await tab.playwright(locator, 'click') 执行；按快照编号更直接：await tab.playwright(3, 'click')。）`,
+    `（定位器只是“描述元素”，不执行操作——交给 await tab.playwright(locator, 'click') 执行；按快照编号更直接：await tab.playwright(3, 'click')，编号带帧前缀时原样传入 tab.playwright('f7e74', 'click')。）`,
   )
 }
 
@@ -85,9 +85,11 @@ export const playwrightSugar = {
   getByPlaceholder: (text: string | RegExp, options?: { exact?: boolean }): LocatorSugar =>
     makeLocator(`internal:attr=[placeholder=${textMatcher(text, options?.exact)}]`),
   getByTestId: (id: string): LocatorSugar => makeLocator(`internal:testid=[data-testid=${quote(id)}]`),
-  /** Snapshot ref: the [N] assigned by THIS tab's latest domSnapshot(). The
-   *  deterministic address — no name transcription between seeing and acting. */
-  ref: (n: number): LocatorSugar => makeLocator(pmRefSelector(n)),
+  /** Snapshot ref: the token printed by THIS tab's latest domSnapshot() — pass
+   *  it verbatim, frame prefix and all (`ref('f7e74')`), or the bare number for
+   *  an un-prefixed `eN`. The deterministic address — no name transcription
+   *  between seeing and acting. */
+  ref: (n: number | string): LocatorSugar => makeLocator(pmRefSelector(n)),
   /** Accept a raw CSS/XPath selector as an escape hatch. */
   selector: (raw: string): LocatorSugar => makeLocator(raw),
 }

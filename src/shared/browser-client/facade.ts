@@ -13,7 +13,7 @@ import {
   type BrowserTabInfo,
 } from './protocol'
 import { playwrightSugar, type LocatorSugar } from './playwright-sugar'
-import { pmRefSelector } from './pm-refs'
+import { pmRefSelector, resolveSelectorArg } from './pm-refs'
 import { matchTabForUrl } from './selection'
 import { documentationText, getDocument, listDocuments } from './documentation'
 import { AGENT_PLAYWRIGHT_HINT, PLAYWRIGHT_SURFACE_HINT, guardCallable, guardMembers } from './member-guard'
@@ -43,9 +43,13 @@ export interface TabApi {
   domSnapshot: (options?: { full?: boolean }) => Promise<string>
   /** Always emits through emitImage in the same call (协议 §5.6). */
   screenshot: (options?: { fullPage?: boolean; selector?: string | LocatorSugar }) => Promise<{ emitted: true; mime: string }>
-  evaluate: (expression: string) => Promise<unknown>
-  /** The one selector-engine entry: (sugar|string|ref-number, op, arg?). A
-   *  bare number N addresses the [N] element from the latest domSnapshot(). */
+  /** A page-realm expression: source text or a function (Playwright calls the
+   *  latter). Both are legitimate idioms — `() => document.title` is what a
+   *  model writes first, and forcing it to a string by hand is the trap. */
+  evaluate: (expression: string | (() => unknown)) => Promise<unknown>
+  /** The one selector-engine entry: (sugar|ref-literal|ref-number, op, arg?).
+   *  A bare number N addresses [ref=eN]; a ref printed by the latest
+   *  domSnapshot() is passed VERBATIM — frame prefix included (`"f7e74"`). */
   playwright: (selector: number | string | LocatorSugar, op: string, arg?: string, options?: { timeoutMs?: number }) => Promise<unknown>
   waitForTimeout: (ms: number) => Promise<void>
 }
@@ -149,19 +153,27 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
           const shot = (await invoke({
             method: 'screenshot', tabId: id,
             fullPage: options?.fullPage,
-            selector: options?.selector ? (typeof options.selector === 'string' ? options.selector : options.selector.selector) : undefined,
+            selector: options?.selector ? (typeof options.selector === 'string' ? resolveSelectorArg(options.selector) : options.selector.selector) : undefined,
           })) as { mime: string; base64: string }
           deps.emitImage({ mime: shot.mime, base64: shot.base64 })
           return { emitted: true, mime: shot.mime }
         },
-        evaluate: async (expression: string) => invoke({ method: 'evaluate', tabId: id, expression }),
+        evaluate: async (expression: string | (() => unknown)) => {
+          // Fail at the entry, in the model's own vocabulary: a number/null
+          // reaching page.evaluate surfaces as a Playwright-internal TypeError
+          // far from the line that produced it.
+          if (typeof expression !== 'string' && typeof expression !== 'function') {
+            throw new Error(`evaluate 只接受表达式字符串或函数，收到 ${expression === null ? 'null' : typeof expression}——例如 evaluate('document.title') 或 evaluate(() => document.title)`)
+          }
+          return invoke({ method: 'evaluate', tabId: id, expression })
+        },
         // A method, not a locator factory — this is the exact spot the model
         // wrote `tab.playwright.getByRole` (the factory lives on agent.playwright).
         playwright: guardCallable(
           async (selector, op, arg, options) =>
             invoke({
               method: 'playwright', tabId: id,
-              selector: typeof selector === 'number' ? pmRefSelector(selector) : typeof selector === 'string' ? selector : selector.selector,
+              selector: typeof selector === 'number' ? pmRefSelector(selector) : typeof selector === 'string' ? resolveSelectorArg(selector) : selector.selector,
               op, arg, timeoutMs: options?.timeoutMs,
             }),
           `tab.playwright`,

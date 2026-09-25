@@ -29,6 +29,12 @@ export interface BrowserTabInfo {
   title?: string
 }
 
+/** What `evaluate` takes: source text, or a function Playwright calls inside
+ *  the page. Both are legal because BrowserCommand never crosses IPC — the
+ *  kernel builds it in-process (main/host calls `runBrowserCode` with a code
+ *  string), so a function value survives the trip. */
+export type PageExpression = string | ((...args: unknown[]) => unknown)
+
 export type BrowserCommand =
   | { method: 'getDescriptor' }
   | { method: 'setActiveBackend'; backend: 'managed' | 'app-view' }
@@ -48,7 +54,7 @@ export type BrowserCommand =
   | { method: 'close'; tabId: string }
   | { method: 'snapshot'; tabId: string; full?: boolean }
   | { method: 'screenshot'; tabId: string; fullPage?: boolean; selector?: string }
-  | { method: 'evaluate'; tabId: string; expression: string }
+  | { method: 'evaluate'; tabId: string; expression: PageExpression }
   | { method: 'playwright'; tabId: string; selector: string; op: string; arg?: string; timeoutMs?: number }
   | { method: 'playwrightWaitForTimeout'; tabId: string; ms: number }
 
