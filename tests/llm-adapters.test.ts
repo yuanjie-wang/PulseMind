@@ -2,14 +2,19 @@
 // zero-coverage surface in the renderer: 974 lines of request building, message
 // serialization and SSE parsing with no test at all. Everything below drives the
 // REAL openaiAdapter/anthropicAdapter with synthetic wire text and in-memory
-// AgentMessage fixtures. callNonStreaming is deliberately NOT driven — it
-// funnels into getHost().apiFetch / fetchStreamChunks (main-process proxy +
-// network), which llm-request-dump.test.ts and the api-proxy tests own instead.
+// AgentMessage fixtures. callNonStreaming used to be the deliberate exception
+// (review 20260925 中10) — the one-shot agents' path (title, greeting, memory
+// consolidation, session review) had zero coverage. It is driven now: the fake
+// host below replays SSE chunk strings over exactly the stream events
+// fetchStreamChunks subscribes to, so the boundary stubbed is the same one the
+// api-proxy owns — the adapter's own parsing/accumulation is exercised for real.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, afterEach } from 'vitest'
 import { openaiAdapter } from '../src/renderer/src/llm/OpenAIAdapter'
 import { anthropicAdapter } from '../src/renderer/src/llm/AnthropicAdapter'
 import { createStreamParser } from '../src/renderer/src/llm/stream-utils'
+import { setHost } from '../src/renderer/src/agent/host'
+import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import type { StreamEventHandlers } from '../src/renderer/src/llm/stream-types'
 import type { AgentMessage } from '../src/renderer/src/types/agent'
 import type { ContentBlock } from '../src/shared/types/agent'
@@ -662,5 +667,96 @@ describe('anthropicAdapter.extractTextContent', () => {
     expect(anthropicAdapter.extractTextContent('plain text')).toBe('plain text')
     expect(anthropicAdapter.extractTextContent('{"content":[]}')).toBeNull()
     expect(anthropicAdapter.extractTextContent(null)).toBeNull()
+  })
+})
+
+// ── callNonStreaming (review 2026-09-26 中10) ────────────────────────────
+
+type StreamEvt = { requestId: string; data?: string; error?: string }
+
+/** A fake host that replays `chunks` over the stream events fetchStreamChunks
+ *  subscribes to — the outermost boundary, exactly what the production
+ *  api-proxy answers. Captures the apiFetchStream args for request asserts. */
+function hostReplaying(chunks: string[], opts?: { failWith?: string }): { host: PulseHost; calls: Array<{ requestId: string; url: string; options?: { body?: unknown } }> } {
+  let chunkCb: ((e: StreamEvt) => void) | null = null
+  let errorCb: ((e: StreamEvt) => void) | null = null
+  let doneCb: ((e: StreamEvt) => void) | null = null
+  const calls: Array<{ requestId: string; url: string; options?: { body?: unknown } }> = []
+  const host = {
+    onApiStreamChunk: (cb: (e: StreamEvt) => void) => { chunkCb = cb; return () => { chunkCb = null } },
+    onApiStreamError: (cb: (e: StreamEvt) => void) => { errorCb = cb; return () => { errorCb = null } },
+    onApiStreamDone: (cb: (e: StreamEvt) => void) => { doneCb = cb; return () => { doneCb = null } },
+    apiFetchStream: async (requestId: string, url: string, options?: { body?: unknown }) => {
+      calls.push({ requestId, url, options })
+      if (opts?.failWith) {
+        errorCb?.({ requestId, error: opts.failWith })
+        return
+      }
+      for (const c of chunks) chunkCb?.({ requestId, data: c })
+      doneCb?.({ requestId })
+    },
+  }
+  return { host: host as unknown as PulseHost, calls }
+}
+
+describe('openaiAdapter.callNonStreaming', () => {
+  afterEach(() => setHost(null as unknown as PulseHost))
+
+  it('accumulates visible content across chunks and reports usage + finish reason', async () => {
+    const { host, calls } = hostReplaying([
+      deltaChunk({ role: 'assistant' }),
+      deltaChunk({ content: 'Hello' }),
+      deltaChunk({ content: ' 世界' }, 'stop'),
+      usageChunk({ prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 }),
+      'data: [DONE]\n',
+    ])
+    setHost(host)
+    const usage: unknown[] = []
+    const reasons: (string | null)[] = []
+    const out = await openaiAdapter.callNonStreaming('k', 'https://api.test/v1', 'm', 'sys', [{ role: 'user', content: 'hi' }], 100, (u) => usage.push(u), (r) => reasons.push(r))
+    expect(out).toBe('Hello 世界')
+    expect(usage).toEqual([{ inputTokens: 11, outputTokens: 7, promptCacheHitTokens: undefined }])
+    expect(reasons).toEqual(['stop'])
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://api.test/v1/chat/completions')
+    const body = calls[0].options?.body as { messages: Array<{ role: string; content: string }>; stream: boolean; model: string }
+    expect(body.stream).toBe(true)
+    expect(body.model).toBe('m')
+    expect(body.messages[0]).toEqual({ role: 'system', content: 'sys' })
+    expect(body.messages[1]).toEqual({ role: 'user', content: 'hi' })
+  })
+
+  it('keeps reasoning_content out of the response and skips malformed JSON lines', async () => {
+    const { host } = hostReplaying([
+      deltaChunk({ reasoning_content: 'internal thinking' }) + dataLine('not json'),
+      deltaChunk({ content: 'clean' }),
+      'data: [DONE]\n',
+    ])
+    setHost(host)
+    const out = await openaiAdapter.callNonStreaming('k', 'https://api.test/v1', 'm', '', [{ role: 'user', content: 'hi' }])
+    expect(out).toBe('clean')
+  })
+
+  it('returns null (not a throw) when the stream errors — the empty-catch tail', async () => {
+    const { host } = hostReplaying([], { failWith: 'upstream 502' })
+    setHost(host)
+    const out = await openaiAdapter.callNonStreaming('k', 'https://api.test/v1', 'm', '', [{ role: 'user', content: 'hi' }])
+    expect(out).toBeNull()
+  })
+
+  it('returns null when the stream completes with no visible content', async () => {
+    const { host } = hostReplaying([deltaChunk({ role: 'assistant' }), 'data: [DONE]\n'])
+    setHost(host)
+    const out = await openaiAdapter.callNonStreaming('k', 'https://api.test/v1', 'm', '', [{ role: 'user', content: 'hi' }])
+    expect(out).toBeNull()
+  })
+
+  it('splits a chunk arriving mid-JSON (buffer carry) and flushes the tail buffer', async () => {
+    const full = deltaChunk({ content: 'tail' })
+    const cut = Math.floor(full.length / 2)
+    const { host } = hostReplaying([deltaChunk({ content: 'head' }), full.slice(0, cut), full.slice(cut)])
+    setHost(host)
+    const out = await openaiAdapter.callNonStreaming('k', 'https://api.test/v1', 'm', '', [{ role: 'user', content: 'hi' }])
+    expect(out).toBe('headtail')
   })
 })

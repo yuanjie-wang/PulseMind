@@ -25,6 +25,7 @@ export interface StreamEventHandlers {
     type: string
     text?: string
     partial_json?: string
+    thinking?: string
   }) => void
 
   onContentBlockStop: (index: number) => void
