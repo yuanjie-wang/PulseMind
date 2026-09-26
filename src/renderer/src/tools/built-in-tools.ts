@@ -541,7 +541,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.docx_edit,
     builtIn: true,
-    availability: 'always',
+    availability: 'gated',
   },
   {
     name: 'pptx_edit',
@@ -578,7 +578,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.pptx_edit,
     builtIn: true,
-    availability: 'always',
+    availability: 'gated',
   },
   {
     name: 'xlsx_edit',
@@ -613,6 +613,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['file_path', 'ops'],
     },
     instructions: toolInstructions.xlsx_edit,
+    builtIn: true,
+    availability: 'gated',
   },
   // ── office_inspect (PLAN-office-editing §P1) ─────────────────────
   {
@@ -628,6 +630,8 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       required: ['file_path'],
     },
     instructions: toolInstructions.office_inspect,
+    builtIn: true,
+    availability: 'gated',
   },
   // ── export_document (PLAN-office-export) ───────────────────────────
   {
@@ -658,7 +662,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.export_document,
     builtIn: true,
-    availability: 'always',
+    availability: 'gated',
   },
 
   // ── knowledge_read ─────────────────────────────────────────────────

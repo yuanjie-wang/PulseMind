@@ -46,6 +46,13 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   // ── Gated built-in tools: keyword auto-trigger + session activation ──
   // Category-level: any trigger hit activates the whole gated category (git/memory/knowledge),
   // so "commit my changes" surfaces status/diff/log/commit/restore together.
+  // Restored 2026-09-26 (user: 按需激活的工具不应直接出现在上下文中) after a
+  // same-day experiment that shipped them unconditionally — the gate is the
+  // product semantics; what KEEPS the cross-conversation cache warm is the two
+  // shapes below it: activated gated schemas ride at the END of the tools
+  // array, and gated manuals are excluded from buildToolProtocols. Together
+  // they make system + base-schemas byte-identical for every conversation, so
+  // differently-activated conversations still share that whole trunk.
   {
     const userText = deps.messages
       .filter((m) => m.role === 'user')
@@ -74,7 +81,10 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   {
     const activated = new Set(deps.selectedBuiltinTools)
     const allowed = deps.allowedToolsSet
-    enabledTools = enabledTools.filter((t) => t.availability !== 'gated' || activated.has(t.name) || allowed?.has(t.name))
+    const kept = enabledTools.filter((t) => t.availability !== 'gated' || activated.has(t.name) || allowed?.has(t.name))
+    const base = kept.filter((t) => t.availability !== 'gated')
+    const gated = kept.filter((t) => t.availability === 'gated')
+    enabledTools = [...base, ...gated]
   }
 
   const skillManager = deps.opts.skillManager
@@ -175,7 +185,9 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
         }
 
         // Gated built-in categories the model can still activate via pick_tool —
-        // one row per category (mirrors the per-server MCP rows above).
+        // one row per category (mirrors the per-server MCP rows above). This
+        // list is what tells the model the categories EXIST; the tools
+        // themselves stay out of the toolset until activated.
         const activatedBuiltins = new Set(deps.selectedBuiltinTools)
         const builtinByCat = new Map<string, string[]>()
         for (const d of toolManager.getEnabledTools().map((t) => t.definition)) {
@@ -248,13 +260,18 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
  * descriptions alone — measured consequence: mimo-v2.5 re-dispatched a
  * completed spawn_agent five times in a row because nothing told it that a
  * returned result is the deliverable. Built from the FINAL enabled toolset
- * (after the gate and the whitelists), so the prompt never describes a tool
- * the request does not carry. MCP tools carry `instructions: ''` and drop out.
+ * (after the whitelists), so the prompt never describes a tool
+ * the request does not carry. MCP tools carry `instructions: ''` and drop out —
+ * and so do GATED tools, on purpose (2026-09-26): their manuals would make the
+ * system prompt differ between conversations with different activations and
+ * fragment the shared trunk; a gated tool's manual rides its pick_tool
+ * activation result instead, landing as ordinary conversation content.
  * Static per toolset, so the provider's cached prefix only moves when the
  * tool schemas move anyway.
  */
-export function buildToolProtocols(enabledTools: Array<{ instructions?: string }>): string {
+export function buildToolProtocols(enabledTools: Array<{ instructions?: string; availability?: string }>): string {
   const sections = enabledTools
+    .filter((t) => t.availability !== 'gated')
     .map((t) => (t.instructions || '').trim())
     .filter(Boolean)
   if (sections.length === 0) return ''

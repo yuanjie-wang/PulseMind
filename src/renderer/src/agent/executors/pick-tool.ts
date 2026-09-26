@@ -9,6 +9,17 @@ import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId, isBuiltinServerId 
 import type { ToolUseBlock } from '../../types/agent'
 import type { ToolExecContext } from './context'
 
+/** One pickable tool: an MCP tool, or a gated built-in (whose `instructions`
+ *  manual rides the activation result — gated manuals are excluded from the
+ *  system prompt's Tool Protocols so the shared trunk stays byte-stable). */
+interface PickCandidate {
+  name: string
+  serverId: string
+  description: string
+  inputSchema: any
+  instructions?: string
+}
+
 export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSelectedTools: (names: string[]) => void): Promise<void> {
   t.status = 'running'; ex.notify()
   try {
@@ -21,7 +32,7 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
       // 可用连接器白名单（专家 / 子代理）：白名单外的服务器连候选都不进，
       // 否则 pick_tool 会成为绕过限制的入口。undefined = 不限制，空数组 = 一个都不许用。
       const allowedServers = ex.opts.allowedMcpServers ? new Set(ex.opts.allowedMcpServers) : null
-      const all: Array<{ name: string; serverId: string; description: string; inputSchema: any }> = []
+      const all: PickCandidate[] = []
       for (const server of servers) {
         if (server.status !== 'connected') continue
         if (allowedServers && !allowedServers.has(server.id)) continue
@@ -31,7 +42,7 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
       }
       for (const def of ex.opts.toolManager.getEnabledTools().map(t => t.definition)) {
         if (def.availability !== 'gated') continue
-        all.push({ name: def.name, serverId: builtinCategoryServerId(def.category), description: def.description, inputSchema: def.input_schema })
+        all.push({ name: def.name, serverId: builtinCategoryServerId(def.category), description: def.description, inputSchema: def.input_schema, instructions: def.instructions })
       }
       return all
     }
@@ -44,7 +55,7 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
       if (hasMcp && hasBuiltin) return '## Selected Tools'
       return hasBuiltin ? '## Selected Built-in Tools' : '## Selected MCP Tools'
     }
-    const formatResult = (tools: Array<{ name: string; serverId: string; description: string; inputSchema: any }>, header: string): string => {
+    const formatResult = (tools: PickCandidate[], header: string): string => {
       const lines = tools.map(t =>
         `- **${t.name}** (from \`${srcLabel(t.serverId)}\`): ${t.description || '(no description)'}`
       )
@@ -54,6 +65,15 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
           : '*No parameters*'
         return `**${t.name}** (from \`${srcLabel(t.serverId)}\`)\n\n${schema}`
       }).join('\n\n---\n\n')
+      // Gated built-ins carry their `instructions` manuals HERE instead of the
+      // system prompt: the manual lands as ordinary conversation content at the
+      // moment of activation, and the shared prefix never moves.
+      const manuals = tools
+        .map((t) => (t.instructions || '').trim())
+        .filter(Boolean)
+      const protocols = manuals.length > 0
+        ? `\n\n### Usage Protocols\n\n${manuals.join('\n\n')}`
+        : ''
       const hasBuiltin = tools.some(t => isBuiltinServerId(t.serverId))
       const hasMcp = tools.some(t => !isBuiltinServerId(t.serverId))
       const availability = hasBuiltin && hasMcp
@@ -61,7 +81,7 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
         : hasBuiltin
           ? 'These built-in tools are now available for you to use.'
           : 'These MCP tools are now available for you to use.'
-      return `${header}\n\n${lines.join('\n')}\n\n### Tool Signatures\n\n${schemas}\n\n${availability}`
+      return `${header}\n\n${lines.join('\n')}\n\n### Tool Signatures\n\n${schemas}${protocols}\n\n${availability}`
     }
 
     // ── Mode 1: direct name lookup (MCP or gated built-in tools) ──
@@ -115,11 +135,12 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
       const category = serverNameInput.replace(/^builtin:/, '').toLowerCase()
       const catDefs = ex.opts.toolManager.getEnabledTools().map(t => t.definition).filter(d => d.availability === 'gated' && d.category === category)
       if (catDefs.length > 0) {
-        const catTools = catDefs.map(d => ({
+        const catTools: PickCandidate[] = catDefs.map(d => ({
           name: d.name,
           serverId: builtinCategoryServerId(d.category),
           description: d.description,
-          inputSchema: d.input_schema
+          inputSchema: d.input_schema,
+          instructions: d.instructions
         }))
         const names = catTools.map(t => t.name)
         const summary = BUILTIN_CATEGORY_SUMMARIES[category]
