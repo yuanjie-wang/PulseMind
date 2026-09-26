@@ -203,6 +203,7 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
         restoring={loading}
         emptyHint={loadError ?? '暂无对话内容'}
         actions={live ? 'viewOnly' : 'full'}
+        entranceKey={subConvId}
         onApproveTool={noop}
         onRejectTool={noop}
         onKillTool={noop}

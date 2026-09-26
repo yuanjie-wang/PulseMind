@@ -5,6 +5,7 @@ import { MessageGroup } from './MessageGroup'
 import { ApprovalArea } from './ApprovalArea'
 import { useTranslation } from '../../i18n/useTranslation'
 import { toolBlockSummary, toolDisplayName, type ToolTranslator } from './tool-summary'
+import { CollapseBody } from './motion'
 
 // Injected once into <head> to avoid creating a new <style> element on every render
 const KEYFRAMES = `@keyframes pulsemind-spin { 100% { transform: rotate(360deg); } } @keyframes pulsemind-fade-in { 0% { opacity: 0; transform: translateY(2px); } 100% { opacity: 1; transform: translateY(0); } }`
@@ -237,8 +238,9 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
         </div>
       )}
 
-      {/* Expanded body */}
-      {expanded && (
+      {/* Expanded body — grows open through CollapseBody (@starting-style, see
+          motion.tsx); closing is the plain unmount it always was. */}
+      <CollapseBody open={expanded}>
         <div style={{ padding: '8px 12px 4px', border: '1px solid var(--pm-border-soft)', borderRadius: 8 }}>
           {props.messages.map((msg) => (
             <MessageGroup
@@ -256,7 +258,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
             />
           ))}
         </div>
-      )}
+      </CollapseBody>
     </div>
   )
 })

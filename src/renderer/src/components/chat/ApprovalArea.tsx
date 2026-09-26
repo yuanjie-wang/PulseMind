@@ -19,15 +19,20 @@ import { CloseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons'
 import type { ToolUseBlock } from '../../types/agent'
 import { useTranslation } from '../../i18n/useTranslation'
 import { toolBlockSummary, toolDisplayName } from './tool-summary'
+import { APPROVAL_IN_ANIM } from './motion'
 
 // The amber of the held tool headers (CollapsibleToolBlock's needsAction tint and
-// ExecutionSegment's header text), so the area reads as the same state.
+// ExecutionSegment's header text), so the area reads as the same state. The
+// entrance (slide + a two-beat edge pulse) marks the moment a decision becomes
+// yours; it replays on remount, which is only ever a deliberate re-open of the
+// collapsed layer — never on its own.
 const areaStyle: React.CSSProperties = {
   margin: '4px 0',
   padding: '8px 10px',
   background: 'var(--pm-warn-bg)',
   border: '1px solid var(--pm-warn-border)',
-  borderRadius: 6
+  borderRadius: 6,
+  animation: APPROVAL_IN_ANIM
 }
 
 const rowStyle: React.CSSProperties = {

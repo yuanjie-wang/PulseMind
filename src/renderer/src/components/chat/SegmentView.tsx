@@ -10,6 +10,7 @@ import { ExecutionSegment } from './ExecutionSegment'
 import { CodeBlock } from './CodeBlock'
 import { useMarkdownThemeClass } from '../../theme/mode'
 import { createTextThrottle, STREAM_PARSE_MIN_INTERVAL } from './stream-throttle'
+import { ENTER_ANIM } from './motion'
 import type { ContentBlock } from '../../types/agent'
 import type { Segment } from './message-segments'
 
@@ -177,6 +178,7 @@ export function SegmentBlock({
   highlightedMsgId,
   actions = 'full',
   contentInset = MESSAGE_COLUMN_INSET,
+  enter = false,
   ...viewProps
 }: Omit<SegmentViewProps, 'actions'> & {
   /** The following segment, if any — decides whether actions show. */
@@ -189,6 +191,10 @@ export function SegmentBlock({
    *  narrower host (the expert editor's card) passes 0 instead, so the bubbles
    *  and the composer end up the same width there too. */
   contentInset?: number
+  /** A newly arrived segment (use-segment-entrance): one entrance animation on
+   *  this mount. History hydration and windowed remounts pass nothing and
+   *  render settled. */
+  enter?: boolean
 }): React.ReactElement {
   const anchorId = segmentAnchorId(seg)
   const highlighted = !!highlightedMsgId && highlightedMsgId === anchorId
@@ -202,6 +208,7 @@ export function SegmentBlock({
         padding: `0 ${contentInset}px`,
         transition: 'background 0.5s',
         background: highlighted ? 'var(--pm-link-bg)' : undefined,
+        animation: enter ? ENTER_ANIM : undefined,
       }}
     >
       <SegmentView

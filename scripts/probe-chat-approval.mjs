@@ -235,7 +235,16 @@ const page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
 page.on('pageerror', (err) => console.log('  [page error]', err.message))
 // A real http origin rather than setContent: an opaque about:blank origin denies the
 // localStorage access the preview-pane store reaches for.
-const PAGE = '<!doctype html><html><body style="margin:0"><div id="root"></div></body></html>'
+// The motion kill is the same sheet probe-theme-dark injects, scoped the same way
+// (inside #root only): the transcript now plays entrance/collapse micro-animations
+// (chat/motion.tsx), and getComputedStyle reports MID-ANIMATION values — a box
+// measured during the 0.22s entrance would fail these geometry checks on the
+// animation, not on the code under test. It must NOT go document-wide: antd portals
+// its dropdown/menu motion to <body>, and a global kill leaves the open animation
+// stuck so the menu item never becomes visible (measured, same as theme-dark's
+// stuck ant-zoom-leave).
+const PAGE =
+  '<!doctype html><html><head><style>#root *,#root *::before,#root *::after{animation:none!important;transition:none!important}</style></head><body style="margin:0"><div id="root"></div></body></html>'
 await page.route('http://pm-probe.local/**', (route) => route.fulfill({ contentType: 'text/html', body: PAGE }))
 await page.goto('http://pm-probe.local/')
 await page.addScriptTag({ path: OUT })

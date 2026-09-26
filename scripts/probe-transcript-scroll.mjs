@@ -163,7 +163,14 @@ page.on('pageerror', (err) => console.log('  [page error]', err.message))
 // A real http origin rather than setContent: an opaque about:blank origin denies the
 // localStorage access the stores behind the transcript reach for. The one route
 // serves the deliberately LATE image (600ms) from section 4.
-const PAGE = '<!doctype html><html><body style="margin:0"><div id="root"></div></body></html>'
+// The motion kill is the same sheet probe-theme-dark injects, scoped the same way
+// (inside #root only — antd portals its dropdown/menu motion to <body>, and a
+// document-wide kill leaves the open animation stuck so the menu never becomes
+// visible): the transcript now plays entrance/collapse micro-animations
+// (chat/motion.tsx), and getComputedStyle reports MID-ANIMATION values — a box
+// measured during the 0.22s entrance would fail these geometry checks on the
+// animation, not on the code under test.
+const PAGE = '<!doctype html><html><head><style>#root *,#root *::before,#root *::after{animation:none!important;transition:none!important}</style></head><body style="margin:0"><div id="root"></div></body></html>'
 await page.route('http://pm-probe.local/**', (route) => {
   if (route.request().url().endsWith('late.svg')) {
     setTimeout(() => route.fulfill({

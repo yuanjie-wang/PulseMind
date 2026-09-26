@@ -7,6 +7,7 @@ import { useProjectHue } from '../../stores/projectStore'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { SegmentBlock } from '../chat/SegmentView'
 import { buildSegments, getSegmentAnchorId, getSegmentKey, type Segment } from '../chat/message-segments'
+import { useSegmentEntrance } from '../chat/use-segment-entrance'
 import { routineEntryAllowed, routineEntryTargetIndex } from '../chat/routine-entry'
 import { StreamingCursor } from '../chat/StreamingCursor'
 import { ErrorDisplay } from '../chat/ErrorDisplay'
@@ -472,6 +473,11 @@ function ChatView({
   const windowTop = Math.max(0, allSegments.length - PAGE_SIZE - extraTop)
   const renderedSegments = allSegments.slice(windowTop)
 
+  // Newly arrived segments play the entrance animation; hydration renders
+  // settled (see the hook — conversationId resets it if a conversation ever
+  // swaps under this still-mounted view).
+  const freshSegKeys = useSegmentEntrance(allSegments, conversationId)
+
   // Per-turn deliverables (2026-09-19): rows derived from the FULL message
   // list, keyed on its identity — deliberately NOT on allSegments, which is
   // rebuilt per streamed token, so the per-turn derivation is not re-paid per
@@ -625,6 +631,7 @@ function ChatView({
         highlightedMsgId={highlightedMsgId}
         isRequesting={isRequesting}
         awaitingApproval={agentStatus.status === 'awaiting_approval'}
+        enter={freshSegKeys.has(getSegmentKey(seg))}
         onApproveTool={onApproveTool}
         onRejectTool={onRejectTool}
         onKillTool={onKillTool ?? onRejectTool}
@@ -636,7 +643,7 @@ function ChatView({
         aboveActions={aboveActions}
       />
     ),
-    [highlightedMsgId, allSegments, isRequesting, agentStatus.status, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, routineEntryIndex, onExtractRoutine, onOpenSubAgent],
+    [highlightedMsgId, allSegments, isRequesting, agentStatus.status, freshSegKeys, onApproveTool, onRejectTool, onKillTool, onRespondToTool, conversationId, conversationTitle, routineEntryIndex, onExtractRoutine, onOpenSubAgent],
   )
 
   // ── Render ──

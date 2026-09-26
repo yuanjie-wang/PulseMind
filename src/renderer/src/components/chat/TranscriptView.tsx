@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 
 import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import { buildSegments, getSegmentKey, type Segment } from './message-segments'
 import { SegmentBlock, MESSAGE_COLUMN_INSET } from './SegmentView'
+import { useSegmentEntrance } from './use-segment-entrance'
 import type { MessageActions } from './MessageGroup'
 import { StreamingCursor } from './StreamingCursor'
 import { ErrorDisplay } from './ErrorDisplay'
@@ -39,6 +40,12 @@ export interface TranscriptViewProps {
    *  pairs with the composer's cap); a narrow host passes 0 so the bubbles and
    *  the composer are the same width. */
   contentInset?: number
+  /** Conversation identity for the entrance rule: a host that swaps whole
+   *  conversations under this still-mounted view (the sub-agent session view
+   *  flipping nodes) passes the id, so a switch reads as an open (history, no
+   *  entrance wave) instead of a burst of animations. A host that remounts per
+   *  conversation needs nothing. */
+  entranceKey?: string
   onApproveTool: (toolUseId: string) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool: (toolUseId: string) => void
@@ -58,6 +65,7 @@ export function TranscriptView({
   restoringHint,
   actions = 'full',
   contentInset = MESSAGE_COLUMN_INSET,
+  entranceKey,
   onApproveTool,
   onRejectTool,
   onKillTool,
@@ -98,6 +106,11 @@ export function TranscriptView({
     /* eslint-enable react-hooks/refs */
     return segs
   }, [messages, isStreaming, streamingBlocks])
+
+  // Newly arrived segments play the entrance animation; hydration renders
+  // settled (see the hook). Layout-effect driven, so the animation style is on
+  // the element before its first paint.
+  const freshSegKeys = useSegmentEntrance(segments, entranceKey)
 
   // Write the view to its tail. A plain scrollTop write, not scrollIntoView:
   // `block: 'end'` stops at the scrollport's edge and leaves the tail the
@@ -204,6 +217,7 @@ export function TranscriptView({
           awaitingApproval={agentStatus.status === 'awaiting_approval'}
           actions={actions}
           contentInset={contentInset}
+          enter={freshSegKeys.has(getSegmentKey(seg))}
           onApproveTool={onApproveTool}
           onRejectTool={onRejectTool}
           onKillTool={onKillTool}

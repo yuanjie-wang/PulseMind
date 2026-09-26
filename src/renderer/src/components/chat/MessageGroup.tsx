@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { XMarkdown } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
 import {
@@ -36,6 +36,7 @@ import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { enqueueCompileForFile } from '../knowledge/compile-queue'
 import { createKnowledgeSaveAction } from './knowledge-save'
 import { useMarkdownThemeClass } from '../../theme/mode'
+import { CollapseBody, POP_ANIM, SHAKE_ANIM } from './motion'
 
 // --- Bubble styles ---
 
@@ -124,6 +125,20 @@ function CollapsibleToolBlock({
   const needsAction = block.status === 'pending' && !!onApproveTool && awaitingApproval
   const [collapsed, setCollapsed] = useState(block.name !== 'ask_user')
 
+  // Status-settlement feedback: the header glyph pops when a LIVE call completes
+  // and shakes when one fails/rejected. A history load mounts the glyph already
+  // settled — the effect only fires on a status CHANGE after mount, so opening
+  // an old conversation never replays the pop.
+  const [settleFx, setSettleFx] = useState<'pop' | 'shake' | null>(null)
+  const prevStatusRef = useRef(block.status)
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = block.status
+    if (prev === block.status) return
+    const failed = block.status === 'rejected' || (block.status === 'completed' && block.exitCode !== undefined && block.exitCode !== 0)
+    setSettleFx(block.status === 'completed' && !failed ? 'pop' : failed ? 'shake' : null)
+  }, [block.status, block.exitCode])
+
   // File preview button (PLAN-preview-pane): completed write/edit calls with
   // a file path open the file in the chat's right preview pane.
   const inputFilePath = typeof block.input?.file_path === 'string' ? (block.input.file_path as string) : ''
@@ -170,7 +185,15 @@ function CollapsibleToolBlock({
             palette (#4ec9b0 / #f44747, CommandCard's skin) and stays literal on
             purpose — that family is dark in both modes and is not part of the
             theme migration; both values already read on a light or dark fill. */}
-        <span style={{ fontSize: 14, flexShrink: 0, width: 18, textAlign: 'center' }}>
+        <span
+          style={{
+            fontSize: 14,
+            flexShrink: 0,
+            width: 18,
+            textAlign: 'center',
+            animation: settleFx === 'pop' ? POP_ANIM : settleFx === 'shake' ? SHAKE_ANIM : undefined
+          }}
+        >
           {block.status === undefined && completedFromResult ? <CheckOutlined style={{color:'#4ec9b0'}} /> : block.status === undefined ? <ArrowDownOutlined style={{color:'var(--pm-text-muted)'}} /> : block.status === 'running' ? <HourglassOutlined /> : block.status === 'completed' ? (block.exitCode === 0 ? <CheckOutlined style={{color:'#4ec9b0'}} /> : <CloseOutlined style={{color:'#f44747'}} />) : block.status === 'rejected' ? <CloseOutlined style={{color:'#f44747'}} /> : <SettingOutlined />}
         </span>
         {/* Tool name — the human verb (PLAN-tool-ux T1); the object stays in the summary */}
@@ -245,9 +268,11 @@ function CollapsibleToolBlock({
 
       {/* Full CommandCard when expanded. A read-only host (the sub-agent session
           view, the expert editor's preview) passes no approve/kill handlers, so
-          the card renders without its action buttons. */}
-      {!collapsed && (
-        needsAction && onRejectTool ? (
+          the card renders without its action buttons. The body grows open
+          through CollapseBody (@starting-style, see motion.tsx); closing is the
+          plain unmount it always was. */}
+      <CollapseBody open={!collapsed}>
+        {needsAction && onRejectTool ? (
           <CommandCard
             block={block}
             onApprove={() => onApproveTool(block.id)}
@@ -262,8 +287,8 @@ function CollapsibleToolBlock({
           />
         ) : (
           <CommandCard block={block} />
-        )
-      )}
+        )}
+      </CollapseBody>
 
     </div>
   )
@@ -321,6 +346,12 @@ export const MessageGroup = React.memo(function MessageGroup({
   const [liked, setLiked] = useState(msg.liked ?? false)
   const [favorited, setFavorited] = useState(msg.favorited ?? false)
   const [copied, setCopied] = useState(false)
+  // Pop flags for the glyphs a user action turns "on" (like / favorite / copy).
+  // Hydration can mount the message already liked or favorited — the flag, not
+  // the state, decides whether the glyph pops, so opening an old conversation
+  // doesn't replay a burst of pops; only a click does.
+  const [likedPop, setLikedPop] = useState(false)
+  const [favoritedPop, setFavoritedPop] = useState(false)
   // One-way knowledge entry (PLAN-settings-restructure P2): the save is not
   // reversible from here — delete only via the Knowledge Center. A visible
   // failure must allow a retry, so the saved state is only flipped after the
@@ -385,7 +416,7 @@ export const MessageGroup = React.memo(function MessageGroup({
     // Backend owns the marker; always enqueue even before the panel mounts.
     enqueue: (file) => { if (file.status === 'raw') enqueueCompileForFile(file.id) },
     pending: setSavingFavorite,
-    success: () => { setFavorited(true); notify.success(t('chatView.favorited')) },
+    success: () => { setFavorited(true); setFavoritedPop(true); notify.success(t('chatView.favorited')) },
     error: (err) => {
       console.warn('[MessageGroup] Knowledge save failed:', err)
       notify.error(`${t('chatView.error')}: ${err instanceof Error ? err.message : String(err)}`)
@@ -552,7 +583,7 @@ export const MessageGroup = React.memo(function MessageGroup({
             onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
           >
-            {copied ? <CheckOutlined /> : <CopyOutlined />}
+            {copied ? <CheckOutlined style={{ animation: POP_ANIM }} /> : <CopyOutlined />}
           </button>
           <button
             style={{ ...btnBase, color: 'var(--pm-text-faint)' }}
@@ -570,13 +601,14 @@ export const MessageGroup = React.memo(function MessageGroup({
                 onClick={() => {
                   const next = !liked
                   setLiked(next)
+                  setLikedPop(true)
                   window.electronAPI.updateMessageMetadata(msg.id, { liked: next })
                 }}
                 title={t('chatView.like')}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
               >
-                {liked ? <LikeFilled /> : <LikeOutlined />}
+                {liked ? <LikeFilled style={likedPop ? { animation: POP_ANIM } : undefined} /> : <LikeOutlined />}
               </button>
               <button
                 data-testid="knowledge-save"
@@ -600,7 +632,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
               >
-                {favorited ? <BookFilled /> : <BookOutlined />}
+                {favorited ? <BookFilled style={favoritedPop ? { animation: POP_ANIM } : undefined} /> : <BookOutlined />}
               </button>
               {onExtractRoutine && (
                 <button
