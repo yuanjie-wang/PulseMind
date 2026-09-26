@@ -46,7 +46,7 @@ export interface PlanNode {
    *  at the spawn choke point (PLAN-plan-scheduler S8) — the downstream
    *  hand-off medium. Written only on successful delivery (CAS on attemptId,
    *  same discipline as execution), persisted with plan_json, and injected
-   *  into each dependent spawn's prompt as `## Upstream Node Results`.
+   *  into each dependent spawn's prompt as `## 前序节点处理结果`.
    *  Absent = nothing to hand over (legacy/manual completion), where
    *  consumers fall back to `summary`. */
   handoff?: string

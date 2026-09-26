@@ -158,7 +158,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // invariant half — expert identity/methodology + the skills appendix —
     // so `spawnSystemPrompt` stays non-empty for every discriminator that
     // keys on it, and nothing volatile precedes the tool schemas.
-    const taskMessage = `## Your Task\n${taskText}${upstream ? `\n\n${upstream}` : ''}`
+    const taskMessage = `## 你的任务\n${taskText}${upstream ? `\n\n${upstream}` : ''}`
     const systemPrompt = `${expertBlock}${skillsCtx}`
 
     console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" system prompt length=${systemPrompt.length}, task message length=${taskMessage.length} first 200 chars:`, taskMessage.slice(0, 200))

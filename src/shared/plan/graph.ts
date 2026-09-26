@@ -14,7 +14,7 @@ export const MAX_PLAN_NODES = 20
  *  full output always remains in the node's sub-conversation. */
 export const NODE_HANDOFF_MAX = 6_000
 
-/** Total budget for the `## Upstream Node Results` section injected into a
+/** Total budget for the `## 前序节点处理结果` section injected into a
  *  dependent spawn's prompt (S8). Direct dependencies only; overflow truncates
  *  with a pointer to the sub-conversation rather than dropping sections. */
 export const UPSTREAM_RESULTS_MAX = 8_000
@@ -376,7 +376,7 @@ export function formatPlanSnapshot(plan: Plan | null, info: PlanSnapshotInfo): s
   return parts.join('\n')
 }
 
-/** The `## Upstream Node Results` section for a spawn of `node`
+/** The `## 前序节点处理结果` section for a spawn of `node`
  *  (PLAN-plan-scheduler S8) — the downstream hand-off, code-authored so it
  *  cannot be lost to a model that forgets to transcribe. One sub-section per
  *  DIRECT dependency (transitivity is the graph's job, not the prompt's):
@@ -390,7 +390,7 @@ export function formatUpstreamResults(plan: Plan | null, node: PlanNode): string
   const deps = node.dependsOn.map(id => byId.get(id)).filter((d): d is PlanNode => !!d)
   if (deps.length === 0) return null
 
-  const sections: string[] = ['## Upstream Node Results']
+  const sections: string[] = ['## 前序节点处理结果']
   let used = sections[0].length
   for (const dep of deps) {
     const body = (dep.handoff ?? dep.summary ?? '').trim() || '(no recorded output — see its node session)'

@@ -19,7 +19,7 @@ import { resetSubAgentLimiter } from '../src/renderer/src/agent/engine/subagent-
  *  ② a failed node pulls the model in for exactly ONE consult and the
  *     downstream wave is never dispatched (失败立即拉回 LLM, no auto-retry);
  *  ③ each downstream spawn's FIRST USER MESSAGE carries the task plus its
- *     direct dependencies' output verbatim as a `## Upstream Node Results`
+ *     direct dependencies' output verbatim as a `## 前序节点处理结果`
  *     section — the channel that replaces the parent model transcribing
  *     upstream results into `task`, and the visible record of what was
  *     delegated (user ruling 2026-09-25: the task used to live in the
@@ -223,19 +223,19 @@ describe('plan scheduler integration — upstream results reach the sub-agent', 
     // The task lives ONLY in the first user message — the system prompt keeps
     // the invariant expert/capability half, nothing volatile in front of the
     // tool schemas (user ruling 2026-09-25).
-    expect(taskMessages['调研']).toContain('## Your Task')
-    expect(prompts['调研']).not.toContain('## Your Task')
+    expect(taskMessages['调研']).toContain('## 你的任务')
+    expect(prompts['调研']).not.toContain('## 你的任务')
     expect(prompts['前端']).not.toContain('调研产出')
 
     // The root has no dependencies → no section.
-    expect(taskMessages['调研']).not.toContain('## Upstream Node Results')
+    expect(taskMessages['调研']).not.toContain('## 前序节点处理结果')
 
     // n2 gets n1's output VERBATIM (handoff, not a paraphrase), after the task.
     const n2 = taskMessages['前端']
-    expect(n2).toContain('## Upstream Node Results')
+    expect(n2).toContain('## 前序节点处理结果')
     expect(n2).toContain('### n1: 调研')
     expect(n2).toContain('调研产出：竞品 X 定价 99 元')
-    expect(n2.indexOf('## Your Task')).toBeLessThan(n2.indexOf('## Upstream Node Results'))
+    expect(n2.indexOf('## 你的任务')).toBeLessThan(n2.indexOf('## 前序节点处理结果'))
 
     // n4 gets BOTH of its direct dependencies, one section each.
     const n4 = taskMessages['发布']

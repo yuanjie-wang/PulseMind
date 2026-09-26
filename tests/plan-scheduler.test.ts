@@ -275,7 +275,7 @@ describe('formatUpstreamResults — what a downstream spawn receives', () => {
     plan.nodes[0].summary = 'summary fallback'
     plan.nodes[0].handoff = 'full upstream output'
     const out = formatUpstreamResults(plan, plan.nodes[1]) // n2 → n1
-    expect(out).toContain('## Upstream Node Results')
+    expect(out).toContain('## 前序节点处理结果')
     expect(out).toContain('### n1: 调研')
     expect(out).toContain('full upstream output')
     expect(out).not.toContain('summary fallback') // handoff wins
