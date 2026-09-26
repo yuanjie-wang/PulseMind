@@ -119,7 +119,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 ## 数据安全
 
 - **目录权限收紧** — 数据目录默认仅本用户可读（0700/0600），启动时自动修复历史遗留权限
-- **密钥静态加密** — API 密钥经系统钥匙串加密落盘（enc:v1:），磁盘上永远不是明文；环境变量占位符照常可用
+- **密钥加密（可选启用）** — 在设置中开启「加密密钥」后，API 密钥经系统钥匙串加密落盘（enc:v1:）；默认明文落盘，靠目录权限（0600）与磁盘加密防护；环境变量占位符两种模式下照常可用
 - **备份与残留治理** — 数据库备份默认保留 30 天，调试请求转储 7 天过期；压缩或删除会话后的残留数据行自动对账清除
 - **数据不出机** — 对话、记忆、知识、经验全部存本地 SQLite，不依赖任何云端
 
@@ -266,7 +266,7 @@ Hand the repetitive work to a schedule and let it run itself.
 ## Data Security
 
 - **Tightened permissions** — the data directory is readable only by your user (0700/0600); startup repairs any legacy modes
-- **Secrets encrypted at rest** — API keys are encrypted through the OS keychain (enc:v1:) and never sit on disk in plaintext; env-var placeholders keep working
+- **Secret encryption (opt-in)** — with 「加密密钥」 enabled in settings, API keys are encrypted through the OS keychain (enc:v1:); the default is plaintext on disk, protected by file permissions (0600) and disk encryption; env-var placeholders keep working in either mode
 - **Backup & residue governance** — database backups default to 30 days and debug request dumps expire after 7; rows left behind by compaction or deletion are reconciled away
 - **Data stays local** — conversations, memories, knowledge, and experiences live in local SQLite, with no cloud dependency
 
