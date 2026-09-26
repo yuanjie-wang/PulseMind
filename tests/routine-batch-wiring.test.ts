@@ -309,8 +309,11 @@ describe('batch per-row timeout (单次超时)', () => {
   it('the runner resolves override → saved config → default, and records it on the parent', () => {
     const src = source('src/main/routine/batch-runner.ts')
     expect(src).toContain('normalizeBatchTimeoutMinutes(overrides?.timeoutMinutes)')
-    expect(src).toContain('normalizeBatchTimeoutMinutes(routine.batch?.timeoutMinutes)')
-    expect(src).toContain('?? DEFAULT_BATCH_TIMEOUT_MINUTES')
+    // The config → default half is SHARED now (routine-runner resolves the
+    // very same function for a single run — see tests/routine-run-stop.test.ts);
+    // two inline copies of that tail is exactly how the two shapes drift.
+    expect(src).toContain('?? effectiveTimeoutMinutes(routine.batch)')
+    expect(src).not.toContain('?? DEFAULT_BATCH_TIMEOUT_MINUTES')
     // The parent's meta is where 续跑 waves and the workspace header read it.
     expect(src).toContain('timeoutMinutes,')
     // resume re-resolves from the routine config (same as concurrency).
@@ -318,7 +321,7 @@ describe('batch per-row timeout (单次超时)', () => {
     const spawnIdx = src.indexOf('private spawn(', resumeIdx)
     expect(resumeIdx).toBeGreaterThan(-1)
     expect(spawnIdx).toBeGreaterThan(resumeIdx)
-    expect(src.slice(resumeIdx, spawnIdx)).toContain('normalizeBatchTimeoutMinutes(routine.batch?.timeoutMinutes)')
+    expect(src.slice(resumeIdx, spawnIdx)).toContain('effectiveTimeoutMinutes(routine.batch)')
   })
 
   it('each row executes under the recorded ceiling (executeUnattended timeoutMs)', () => {

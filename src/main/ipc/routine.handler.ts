@@ -57,6 +57,13 @@ export function registerRoutineHandlers(): void {
     return routineRunner.start(routine, 'manual', params)
   })
 
+  // 停止一次进行中的单笔运行 — the runner holds its engine handle, so a
+  // settled/stale/batch row refuses (「该运行已不在进行中」) instead of
+  // silently no-opping; a batch's 停止批量 is ROUTINE_BATCH_STOP.
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_RUN_STOP, (_event, runId: string) => {
+    routineRunner.stop(runId)
+  })
+
   ipcMain.handle(IPC_CHANNELS.ROUTINE_RUNS, (_event, routineId?: string, limit?: number) => routineStore.listRuns(routineId, limit))
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_RUN_DELETE, (_event, runId: string) => routineRunHistory.remove(runId))

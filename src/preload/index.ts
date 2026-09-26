@@ -60,6 +60,7 @@ const electronAPI = {
   routineDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_DELETE, id),
   routineToggle: (id: string, enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_TOGGLE, id, enabled),
   routineRun: (id: string, params?: Record<string, string>) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUN, id, params),
+  routineRunStop: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUN_STOP, runId),
   routineRuns: (routineId?: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUNS, routineId, limit),
   routineRunDelete: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUN_DELETE, runId),
   routineRunsClear: (routineId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_RUNS_CLEAR, routineId),

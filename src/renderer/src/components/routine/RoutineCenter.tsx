@@ -22,8 +22,9 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { App as AntdApp, Button, Switch, Tag, Tooltip } from 'antd'
-import { ClockCircleOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
+import { notify } from '../../utils/notify'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { checkCron } from '../../../../shared/schedule/cron'
 import { describeCron } from '../../utils/schedule-text'
@@ -31,6 +32,7 @@ import { describeRelativeTimeText, bucketRunByDate, type DateBucket } from '../.
 import { RoutineWorkspace, RUN_STATUS_TAG, RunStatusIcon } from './RoutineWorkspace'
 import { useRoutineRunNow } from './RoutineRunModal'
 import { useRoutineBatchRun } from './BatchRunModal'
+import { stopRunConfirm, stopRoutineRun } from './stop-run'
 import { ROUTINE_TEMPLATES, routineScheduleLabel } from './routine-templates'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
 
@@ -203,6 +205,30 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
       onOk: async () => {
         await window.electronAPI.routineDelete(routine.id)
         void reload()
+      },
+    })
+  }
+
+  /** 停止 a run right where it is listed — the sidebar is the first surface a
+   *  freshly started run appears on (立即运行 lands here), so waiting for the
+   *  workspace would be the only way to reach a stop. Same confirm copy and
+   *  transport as the workspace's stop (stop-run.ts). */
+  const stopRun = (run: RoutineRun): void => {
+    const { title, content } = stopRunConfirm(run)
+    modal.confirm({
+      title,
+      content,
+      okText: '停止',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await stopRoutineRun(run)
+        } catch (err) {
+          notify.error(err instanceof Error ? err.message : String(err))
+          throw err
+        }
+        await reload()
       },
     })
   }
@@ -503,6 +529,16 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                                   {timeText && <span>· {timeText}</span>}
                                 </div>
                               </div>
+                              {isRunning && (
+                                <Tooltip title={run.batch ? '停止这次批量运行' : '停止这次运行'}>
+                                  <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<PauseCircleOutlined />}
+                                    onClick={(e) => { e.stopPropagation(); stopRun(run) }}
+                                  />
+                                </Tooltip>
+                              )}
                             </div>
                           )
                         })}

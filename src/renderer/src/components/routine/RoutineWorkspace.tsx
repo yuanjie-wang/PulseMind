@@ -32,6 +32,7 @@ import { TranscriptView } from '../chat/TranscriptView'
 import { InputArea } from '../chat/InputArea'
 import { describeRelativeTimeText } from '../../utils/relative-time'
 import { PANE_ROW_STYLES } from './pane-styles'
+import { stopRunConfirm, stopRoutineRun } from './stop-run'
 import type { Routine, RoutineRun } from '../../../../shared/types/routine'
 import type { MenuProps } from 'antd'
 import { DEFAULT_BATCH_TIMEOUT_MINUTES } from '../../../../shared/routine/batch'
@@ -162,6 +163,30 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
    *  newest run when it was the one just deleted). */
   const refreshKeeping = (goneRunId?: string): Promise<void> =>
     openRuns(routineId, goneRunId && goneRunId === selectedRunId ? undefined : selectedRunId ?? undefined)
+
+  /** 停止 for whatever run row this surface shows — a single run reaches the
+   *  runner's own handle, a batch parent its pool (stop-run.ts). The refresh
+   *  matters: the settle happens main-side, so the middle pane would otherwise
+   *  keep reading 运行中 until the next 3s poll, and the header's button with it. */
+  const stopRun = (run: RoutineRun): void => {
+    const { title, content } = stopRunConfirm(run)
+    modal.confirm({
+      title,
+      content,
+      okText: '停止',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await stopRoutineRun(run)
+        } catch (err) {
+          notify.error(err instanceof Error ? err.message : String(err))
+          throw err
+        }
+        await openRuns(routineId, run.id)
+      },
+    })
+  }
 
   // ── Cleanup (手动清理 + 保留策略) ──
 
@@ -335,6 +360,21 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
                   <span style={{ fontSize: 11, color: 'var(--pm-text-faint)', marginInlineStart: 'auto' }}>
                     {describeRelativeTimeText(run.startedAt, runsFetchedAt, t) ?? new Date(run.startedAt).toLocaleString()}
                   </span>
+                  {/* 停止 sits in the same hover-revealed action slot as the
+                      delete beside it — the row's own escape hatch, so a run
+                      started from anywhere (card, schedule, retry row) can be
+                      stopped where it is listed, not only from its pane. */}
+                  {run.status === 'running' && (
+                    <Tooltip title={run.batch ? '停止这次批量运行' : '停止这次运行'}>
+                      <Button
+                        className="pane-row-action"
+                        type="text"
+                        size="small"
+                        icon={<PauseCircleOutlined style={{ fontSize: 12 }} />}
+                        onClick={(e) => { e.stopPropagation(); stopRun(run) }}
+                      />
+                    </Tooltip>
+                  )}
                   <Tooltip title={run.status === 'running' ? '运行中，结束后可删除' : '删除这条记录'}>
                     <Button
                       className="pane-row-action"
@@ -381,6 +421,14 @@ export function RoutineWorkspace({ routines, initialRoutineId, initialRunId, act
                   <RunStatusIcon status={selectedRun.status} />
                   <span style={{ fontSize: 12, color: 'var(--pm-text-quiet)' }}>{selectedRun.trigger === 'schedule' ? '定时触发' : '手动触发'}</span>
                   <span style={{ fontSize: 12, color: 'var(--pm-text-faint)' }}>{new Date(selectedRun.startedAt).toLocaleString()}</span>
+                  <span style={{ flex: 1 }} />
+                  {/* A single run's 停止 — the batch parent's counterpart lives
+                      in BatchRunView's header. Visible only while the runner
+                      owns the loop, which is exactly while the row is
+                      'running' (a settled run has no handle to interrupt). */}
+                  {selectedRun.status === 'running' && (
+                    <Button size="small" icon={<PauseCircleOutlined />} onClick={() => stopRun(selectedRun)}>停止</Button>
+                  )}
                 </>
               ) : (
                 <span style={{ fontSize: 12, color: 'var(--pm-text-muted)' }}>选择一次运行记录查看对话</span>
@@ -535,14 +583,20 @@ function BatchRunView({ run, routine, onResumed }: { run: RoutineRun; routine: R
     : `续跑剩余 ${unfinished} 行`
 
   const stop = (): void => {
+    const { title, content } = stopRunConfirm(run)
     modal.confirm({
-      title: '停止这次批量运行？',
-      content: '未开始的行将标记为已跳过，正在运行的行会被中止。',
+      title,
+      content,
       okText: '停止',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await window.electronAPI.routineBatchStop(run.id)
+        try {
+          await stopRoutineRun(run)
+        } catch (err) {
+          notify.error(err instanceof Error ? err.message : String(err))
+          throw err
+        }
         await openItems(run.id)
       },
     })

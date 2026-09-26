@@ -7,7 +7,7 @@
  * injected by batch runs, absent (token stays visible) in single runs. */
 
 import { describe, expect, it } from 'vitest'
-import { analyzeCsvBatch, rowParamsAt, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY, BATCH_TIMEOUT_MINUTE_OPTIONS, MAX_BATCH_TIMEOUT_MINUTES, DEFAULT_BATCH_TIMEOUT_MINUTES } from '../src/shared/routine/batch'
+import { analyzeCsvBatch, rowParamsAt, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, effectiveTimeoutMinutes, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY, BATCH_TIMEOUT_MINUTE_OPTIONS, MAX_BATCH_TIMEOUT_MINUTES, DEFAULT_BATCH_TIMEOUT_MINUTES } from '../src/shared/routine/batch'
 import { builtinRoutineVars, renderRoutinePrompt, resolveParamValues, assertRunnableParams as assertRunnableParamsRow } from '../src/shared/routine/params'
 import { parseCsv } from '../src/shared/routine/csv'
 import type { Routine, RoutineParam } from '../src/shared/types/routine'
@@ -134,6 +134,30 @@ describe('batch per-row timeout validation (单次超时)', () => {
     // Both constants pinned — changing one is a user-visible ruling.
     expect(DEFAULT_BATCH_TIMEOUT_MINUTES).toBe(15)
     expect(MAX_BATCH_TIMEOUT_MINUTES).toBe(120)
+  })
+})
+
+describe('effectiveTimeoutMinutes — the one config→ceiling chain', () => {
+  // A single run and a batch row must read the SAME value off the routine
+  // (user 2026-09-26: 「设置批量参数后，再使用单笔运行，无法享受到超时时间等配置」).
+  // routine-runner and batch-runner both call this, so a change to the chain
+  // moves both shapes of run together — that is what these pin.
+  it('the configured 单次超时 wins for both shapes of run', () => {
+    expect(effectiveTimeoutMinutes({ timeoutMinutes: 45 })).toBe(45)
+    expect(effectiveTimeoutMinutes({ timeoutMinutes: 1 })).toBe(1)
+  })
+
+  it('no config → the shared default (the single-run ceiling unchanged)', () => {
+    expect(effectiveTimeoutMinutes(undefined)).toBe(DEFAULT_BATCH_TIMEOUT_MINUTES)
+    expect(effectiveTimeoutMinutes({})).toBe(DEFAULT_BATCH_TIMEOUT_MINUTES)
+  })
+
+  it('an invalid stored value refuses rather than falling back silently', () => {
+    // A hand-edited routine JSON must refuse the start — running under 15
+    // minutes when the user wrote 900 is the late-fire bug in another shape.
+    expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 0 })).toThrow(/无效的单次超时/)
+    expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 900 })).toThrow(/无效的单次超时/)
+    expect(() => effectiveTimeoutMinutes({ timeoutMinutes: 2.5 })).toThrow(/无效的单次超时/)
   })
 })
 

@@ -55,6 +55,14 @@ export function RoutineRunModal({ routine, open, onClose, onRun }: RoutineRunMod
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 4 }}>
         <div style={{ fontSize: 12, color: '#999' }}>{t('routine.runModalHint')}</div>
+        {/* The configured 单次超时 now bounds a single run too (it used to be
+            batch-only), so say so where the run is started — a task whose
+            ceiling is 60 minutes should not read as the built-in 15. */}
+        {routine?.batch?.timeoutMinutes != null && (
+          <div style={{ fontSize: 12, color: '#999' }} data-run-timeout>
+            {t('routine.runModalTimeout', { minutes: routine.batch.timeoutMinutes })}
+          </div>
+        )}
         {(routine?.params ?? []).map((p) => {
           const value = values[p.key] ?? ''
           const blank = value.trim() === ''

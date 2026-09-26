@@ -814,6 +814,7 @@ const en: TranslationDict = {
     triggerManual: 'Manual',
     runModalTitle: 'Run "{{name}}"',
     runModalHint: 'Fill in the parameters for this run; scheduled runs always use the defaults.',
+    runModalTimeout: 'Per-run timeout for this run: {{minutes}} minutes — an overrun stops the run and marks it failed.',
     runModalDefaultPlaceholder: 'Default: {{value}}',
     runModalOptionalPlaceholder: 'Optional',
     runStarted: 'Started "{{name}}" — we will notify you when it finishes',

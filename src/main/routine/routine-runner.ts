@@ -15,9 +15,10 @@
 // The unattended execution body is shared with the batch runner
 // (batch-runner.ts): `executeUnattended` is the primitive — one run row, one
 // conversation, the gates, the timeout, the settlement — and `start` is the
-// single-run entry (assert params, mint the row, fire). The batch runner
-// mints its own child rows and calls the primitive per row, suppressing the
-// per-row notification and collecting settlements through `onSettled`.
+// single-run entry (assert params, mint the row, fire), keeping its handle in
+// a registry so `stop` can interrupt it — the batch runner mints its own child
+// rows and calls the primitive per row, suppressing the per-row notification
+// and collecting settlements through `onSettled`.
 
 import { BrowserWindow, Notification } from 'electron'
 import { shortUuid } from '../utils/id'
@@ -28,14 +29,15 @@ import { saveConversation } from '../storage/conversation.db'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
 import { assertRunnableParams, renderRoutinePrompt } from '../../shared/routine/params'
-import { DEFAULT_BATCH_TIMEOUT_MINUTES } from '../../shared/routine/batch'
+import { DEFAULT_BATCH_TIMEOUT_MINUTES, effectiveTimeoutMinutes } from '../../shared/routine/batch'
 import type { AgentEventData } from '../../shared/agent-protocol'
 import type { AgentMessage } from '../../renderer/src/types/agent'
 import type { Routine, RoutineRun } from '../../shared/types/routine'
 
 /** Hard ceiling for one routine run (a hung run must not hold the slot forever).
  *  Derived from the shared batch default so the single-run ceiling and a batch
- *  row's default cannot drift apart. */
+ *  row's default cannot drift apart — and only a routine WITHOUT a configured
+ *  单次超时 lands here; with one, `effectiveTimeoutMinutes` is the ceiling. */
 const RUN_TIMEOUT_MS = DEFAULT_BATCH_TIMEOUT_MINUTES * 60_000
 
 /** After a stop is requested: how long the engine gets to report its terminal
@@ -110,7 +112,9 @@ export interface UnattendedRunOptions {
   notifyOnFinish?: boolean
   /** Hard ceiling for THIS run in ms; absent = RUN_TIMEOUT_MS. The batch
    *  runner passes each row's configured 单次超时 (normalized to whole
-   *  minutes at the start/resume door); single runs take the default. */
+   *  minutes at the start/resume door); a single run passes the routine's own
+   *  configured value through the same `effectiveTimeoutMinutes` chain, so the
+   *  config bounds both shapes of run. */
   timeoutMs?: number
   /** The batch pool's slot-release point: fires after the run row is finished
    *  AND the transcript is persisted (both halves of "this row is inspectable"). */
@@ -269,6 +273,15 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
   }
 }
 
+/** In-flight single runs by run id — what 停止 reaches. Batch rows are NOT
+ *  here: the batch runner holds their handles in its own state map and stops
+ *  them through routineBatchRunner.stop. An entry lives exactly as long as its
+ *  run: it is removed on settlement (onSettled, after the transcript is
+ *  persisted) — NOT on stop itself, because the row keeps reading 运行中 for
+ *  the beat it takes stopExecution to park the engine, and a second click in
+ *  that window must be a harmless repeat rather than an error toast. */
+const activeSingleRuns = new Map<string, UnattendedRunHandle>()
+
 export const routineRunner = {
   /** Fire-and-forget execution; resolves immediately with the run record while
    *  the run continues in the background (scheduler ticks must not block).
@@ -278,9 +291,15 @@ export const routineRunner = {
     // A run whose required params resolved blank would execute a mangled prompt
     // (「检查  仓库的漏洞」) with nothing warning — refuse here instead. A manual
     // run throws so the click surfaces the reason; a scheduled fire has nobody
-    // to tell, so it lands in run history as a failed run carrying it.
+    // to tell, so it lands in run history as a failed run carrying it. The
+    // 单次超时 rides the same door for the same reason (a hand-edited routine
+    // whose timeout is out of range refuses the run rather than running under a
+    // ceiling the user did not choose), and it is the task's config — a single
+    // run inherits it exactly like a batch row does.
+    let timeoutMs: number
     try {
       assertRunnableParams(routine, params)
+      timeoutMs = effectiveTimeoutMinutes(routine.batch) * 60_000
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       if (trigger === 'manual') throw err
@@ -290,7 +309,33 @@ export const routineRunner = {
     }
     const convId = `routine_${Date.now()}_${shortUuid(6)}`
     const run = routineStore.startRun(routine.id, trigger, convId)
-    executeUnattended({ runId: run.id, routine, convId, params })
+    activeSingleRuns.set(run.id, executeUnattended({
+      runId: run.id,
+      routine,
+      convId,
+      params,
+      timeoutMs,
+      // The pool's slot-release point doubles as registry cleanup: once the
+      // row is finished AND its transcript persisted there is nothing left
+      // for 停止 to interrupt.
+      onSettled: () => activeSingleRuns.delete(run.id),
+    }))
     return run
+  },
+
+  /** 停止 an in-flight single run: interrupt the engine (stopExecution) and
+   *  settle the row 「用户停止」 through the primitive's own handle — the event
+   *  listener keys off `stopRequested`, so stopping any other way would leave
+   *  the row 'running' until its timeout. Repeating the stop while the first
+   *  one is still landing is a no-op inside the handle. No live handle at all
+   *  (already settled, a batch parent/child, a row from before a restart) →
+   *  throws, so a stale 运行中 row's click says why instead of silently doing
+   *  nothing. */
+  stop(runId: string): void {
+    const handle = activeSingleRuns.get(runId)
+    if (!handle) throw new Error('该运行已不在进行中')
+    const run = routineStore.getRun(runId)
+    if (run) auditStore.record({ scope: 'routine', actor: run.routineId, action: 'run.stop', target: runId, decision: 'allowed' })
+    handle.stop()
   },
 }

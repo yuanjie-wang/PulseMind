@@ -807,6 +807,7 @@ const zh = {
     triggerManual: '手动',
     runModalTitle: '运行「{{name}}」',
     runModalHint: '填写本次运行的参数；定时运行始终使用默认值。',
+    runModalTimeout: '本次运行的单次超时为 {{minutes}} 分钟，超时会自动停止并记为失败。',
     runModalDefaultPlaceholder: '默认值：{{value}}',
     runModalOptionalPlaceholder: '选填',
     runStarted: '已开始执行「{{name}}」，完成后会通知你',

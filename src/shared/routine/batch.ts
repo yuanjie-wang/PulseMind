@@ -116,6 +116,18 @@ export function normalizeBatchTimeoutMinutes(value: unknown): number | undefined
   return value
 }
 
+/** The ceiling a run of this routine executes under, in minutes: its configured
+ *  单次超时, else the default. ONE chain for a single run and a batch row — the
+ *  value lives on `routine.batch` because that is where the editor writes it
+ *  (storing it needs a CSV), but it bounds the TASK's runs, not the file's
+ *  (user 2026-09-26: 「设置批量参数后，再使用单笔运行，无法享受到超时时间等配置」).
+ *  A batch's per-run override layers on top at the start door, so only the
+ *  config half lives here; an invalid stored value throws (refuse the start,
+ *  don't fire late). */
+export function effectiveTimeoutMinutes(batch: { timeoutMinutes?: number } | undefined): number {
+  return normalizeBatchTimeoutMinutes(batch?.timeoutMinutes) ?? DEFAULT_BATCH_TIMEOUT_MINUTES
+}
+
 // ── Resume after an interruption (停止 / 应用退出) ──
 // A batch's rows may be attempted more than once: continuing a batch appends a
 // new WAVE of child rows for the unfinished indices under the SAME parent. A

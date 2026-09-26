@@ -304,6 +304,10 @@ export interface ElectronAPI {
   routineDelete: (id: string) => Promise<void>
   routineToggle: (id: string, enabled: boolean) => Promise<Routine | null>
   routineRun: (id: string, params?: Record<string, string>) => Promise<RoutineRun>
+  /** 停止一次进行中的单笔运行：中断引擎，记录落为失败（用户停止）。批量运行
+   *  不走这里（routineBatchStop）。无 live 句柄（已结束/重启前的旧行/批量行）
+   *  抛错给调用方展示。 */
+  routineRunStop: (runId: string) => Promise<void>
   routineRuns: (routineId?: string, limit?: number) => Promise<RoutineRun[]>
   /** 删除一条运行记录（连同它的对话）。返回删除条数。 */
   routineRunDelete: (runId: string) => Promise<number>

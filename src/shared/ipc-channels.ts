@@ -240,6 +240,8 @@ export const IPC_CHANNELS = {
   ROUTINE_DELETE: 'routine:delete',
   ROUTINE_TOGGLE: 'routine:toggle',
   ROUTINE_RUN: 'routine:run',
+  /** 停止一次进行中的单笔运行（批量停止走 ROUTINE_BATCH_STOP）。 */
+  ROUTINE_RUN_STOP: 'routine:run-stop',
   ROUTINE_RUNS: 'routine:runs',
   /** 手动清理运行历史（运行记录 + 它产生的对话）—— 见 routine-run-history。 */
   ROUTINE_RUN_DELETE: 'routine:run-delete',

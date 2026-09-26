@@ -10,7 +10,10 @@
 // rows} the CSV parser yields), and the start dialog's per-run concurrency
 // override reaches the pool without touching the saved config, and a row's
 // 单次超时 both fires (settling the row failed with 运行超时) and threads from
-// config/override to the parent's meta. vitest covers
+// config/override to the parent's meta. Section 15 extends both claims to the
+// SINGLE run (user 2026-09-26): its ceiling is scheduled from the routine's
+// configured 单次超时 rather than the built-in default, and 停止 reaches it
+// through the runner's own registered handle. vitest covers
 // the pure halves (CSV parsing, mapping, the worker queue, the resume folds) —
 // this probe drives the production pair (real routine-store + real
 // batch-runner over real SQLite) with the session manager stubbed at the
@@ -582,7 +585,76 @@ async function main() {
     assert.equal(routineStore.getRun(parentR.id).status, 'success')
   })
 
-  console.log('PASS: ' + checks + ' checks — batch runs row-by-row through the real store, runner and cleanup, resume/xlsx/override/timeout/resume-inherit included')
+  // ── 15. 单笔运行: the configured 单次超时 is ITS ceiling, and 停止 reaches
+  // it (user 2026-09-26: 「设置批量参数后，再使用单笔运行，无法享受到超时时间
+  // 等配置」/「需要停止按钮」). The batch sections cannot make either claim: a
+  // single run never touches the pool, and its ceiling was a constant
+  // (RUN_TIMEOUT_MS) before this. The FIRING side is read off the timeout the
+  // runner actually SCHEDULES — a real 30-minute wait is not a probe — by
+  // wrapping setTimeout across the synchronous start window. ──
+  const { routineRunner } = await import('./src/main/routine/routine-runner')
+  const singleRoutine = (name, batch) => routineStore.create({
+    name, description: '', prompt: '跑 {{repo}}',
+    params: [{ key: 'repo', label: '仓库', required: true }],
+    enabled: true, ...(batch ? { batch } : {}),
+  })
+  const recordScheduled = () => {
+    const seen = []
+    const real = global.setTimeout
+    global.setTimeout = (fn, ms, ...rest) => { seen.push(ms); return real(fn, ms, ...rest) }
+    return { seen, restore: () => { global.setTimeout = real } }
+  }
+
+  const routineS = singleRoutine('单笔 S', { csvPath: csvJ, timeoutMinutes: 30 })
+  let recorder = recordScheduled()
+  const runS = routineRunner.start(routineStore.get(routineS.id), 'manual', { repo: 's1' })
+  recorder.restore()
+  check('a single run schedules its ceiling from the configured 单次超时 (30 min, not the 15-min default)', () => {
+    assert.ok(recorder.seen.includes(30 * 60_000), 'expected 1800000 among ' + JSON.stringify(recorder.seen))
+    assert.ok(!recorder.seen.includes(15 * 60_000), 'the default must not be scheduled when a config exists')
+  })
+  await until(() => routineStore.getRun(runS.id)?.status === 'success', 'single run S settles')
+
+  const routineS2 = singleRoutine('单笔 S2', undefined) // no batch config at all
+  recorder = recordScheduled()
+  const runS2 = routineRunner.start(routineStore.get(routineS2.id), 'manual', { repo: 's2' })
+  recorder.restore()
+  check('a routine with no config keeps the built-in 15-minute ceiling', () => {
+    assert.ok(recorder.seen.includes(15 * 60_000), 'expected 900000 among ' + JSON.stringify(recorder.seen))
+  })
+  await until(() => routineStore.getRun(runS2.id)?.status === 'success', 'single run S2 settles')
+
+  // 停止: the handle is what carries it — without it the engine keeps running
+  // and the row only fails at its timeout (15/30 minutes out).
+  askBehavior = 'hang'
+  const runT = routineRunner.start(routineStore.get(routineS.id), 'manual', { repo: 't1' })
+  await until(() => sessions.some((s) => s.id === runT.conversationId), 'single run session created')
+  routineRunner.stop(runT.id)
+  // The row keeps reading 运行中 for the beat it takes stopExecution to park
+  // the engine, so a second click in that window must be a harmless repeat —
+  // NOT the misleading 「该运行已不在进行中」 toast.
+  check('a repeat click while the first stop is landing is a silent no-op', () => {
+    routineRunner.stop(runT.id) // must not throw
+  })
+  await until(() => routineStore.getRun(runT.id)?.status === 'failed', 'single run settles after stop')
+  check('stop interrupts the single run: the row settles 用户停止', () => {
+    assert.match(routineStore.getRun(runT.id).error, /用户停止/)
+  })
+  await sleep(30) // onSettled (after the transcript persists) drops the entry
+  check('once settled the entry is gone — a further stop refuses instead of no-opping', () => {
+    assert.throws(() => routineRunner.stop(runT.id), /不在进行中/)
+    assert.throws(() => routineRunner.stop('run_never_existed'), /不在进行中/)
+  })
+  askBehavior = 'complete'
+
+  const runC = routineRunner.start(routineStore.get(routineS.id), 'manual', { repo: 'c1' })
+  await until(() => routineStore.getRun(runC.id)?.status === 'success', 'single run completes')
+  await sleep(30) // onSettled fires after the transcript persists
+  check('a settled single run has no handle left either', () => {
+    assert.throws(() => routineRunner.stop(runC.id), /不在进行中/)
+  })
+
+  console.log('PASS: ' + checks + ' checks — batch runs row-by-row through the real store, runner and cleanup, resume/xlsx/override/timeout/resume-inherit/single-run timeout+stop included')
 }
 main().then(() => process.exit(0)).catch(error => { console.error(error); process.exit(1) })
 `

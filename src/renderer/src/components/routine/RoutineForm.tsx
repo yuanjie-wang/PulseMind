@@ -434,7 +434,7 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
               options={BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `${m} 分钟` }))}
               data-batch-timeout
             />
-            <div style={CAPTION}>每一行超过该时长未结束会被停止并记为失败；默认 15 分钟。</div>
+            <div style={CAPTION}>批量的每一行、以及该任务的单笔运行，超过该时长未结束都会被停止并记为失败；默认 15 分钟。</div>
           </div>
           <div style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
