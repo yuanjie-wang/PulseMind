@@ -33,7 +33,7 @@ const userMsg = (text: string) => ({
 })
 
 const memoryStub = (context: string) =>
-  ({ buildMemoryContext: async () => context }) as unknown as AgentEngineOptions['memoryManager']
+  ({ getStableMemoryContext: async () => context }) as unknown as AgentEngineOptions['memoryManager']
 
 const experienceStub = (matched: { name: string; description: string }[]) =>
   ({
@@ -59,11 +59,15 @@ afterEach(() => vi.useRealTimers())
 // ── The invariant core ────────────────────────────────────────────────
 
 describe('invariant core', () => {
-  it('is byte-identical when the clock, plan, page, workspace and memory all move', async () => {
+  it('is byte-identical when the clock, plan, page and workspace all move (one shared memory snapshot)', async () => {
+    // The memory context now rides the core — byte-stable via the manager's
+    // double 3h TTL — so the invariance claim is: one SHARED snapshot does not
+    // move when per-turn / per-conversation state does.
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-15T06:00:00.000Z'))
+    const sharedMemory = memoryStub('# Memory Context\n- a fact')
     const first = await buildSystemPrompt({
-      opts: opts({ workspaceDir: '/tmp/ws-a', memoryManager: memoryStub('# Memory Context\n- old fact') }),
+      opts: opts({ workspaceDir: '/tmp/ws-a', memoryManager: sharedMemory }),
       messages: [userMsg('hello')],
       plan: plan('auto', false),
     })
@@ -72,7 +76,7 @@ describe('invariant core', () => {
     const second = await buildSystemPrompt({
       opts: opts({
         workspaceDir: '/tmp/ws-b',
-        memoryManager: memoryStub('# Memory Context\n- a fact saved mid-session'),
+        memoryManager: sharedMemory,
         pageContext: { url: 'https://example.test/a', title: 'Example' },
       }),
       messages: [userMsg('hello')],
@@ -84,7 +88,7 @@ describe('invariant core', () => {
     expect(second.systemPrompt).toBe(first.systemPrompt)
   })
 
-  it('carries no clock, no workspace and no memory', async () => {
+  it('carries no clock and no workspace; the memory context rides the snapshot', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-15T06:00:00.000Z'))
     const { systemPrompt } = await buildSystemPrompt({
@@ -95,7 +99,9 @@ describe('invariant core', () => {
 
     expect(systemPrompt).not.toMatch(/\d{4}-\d{2}-\d{2}/) // no date anywhere
     expect(systemPrompt).not.toContain('/tmp/ws-a')
-    expect(systemPrompt).not.toContain('SECRET_FACT')
+    // 2026-09-26 contract flip: the memory context IS in the core now (3h
+    // snapshot) — this assertion pins the new shape against a silent revert.
+    expect(systemPrompt).toContain('SECRET_FACT')
   })
 
   it('stays identical across conversations that differ only in per-conversation state', async () => {
@@ -142,7 +148,9 @@ describe('session state block', () => {
 
     expect(stateBlock).toBeTruthy()
     expect(stateBlock).toContain('<session-state>')
-    expect(stateBlock).toContain('SECRET_FACT')
+    // Memory left the block for the frozen core (2026-09-26) — the volatile
+    // tail carries only the genuinely per-turn / per-conversation values.
+    expect(stateBlock).not.toContain('SECRET_FACT')
     expect(stateBlock).toContain('/tmp/ws-a')
     expect(stateBlock).toContain('https://example.test/a')
     expect(stateBlock).toContain('Objective: "ship the cache work"')
@@ -167,7 +175,7 @@ describe('session state block', () => {
     const block = stateBlock as string
     const clockAt = block.indexOf('## Current Date')
     expect(clockAt).toBeGreaterThan(-1)
-    for (const section of ['# Memory Context', '## Workspace', '## Current Plan', '## Current Page', 'https://example.test/a']) {
+    for (const section of ['## Workspace', '## Current Plan', '## Current Page', 'https://example.test/a']) {
       expect(block.indexOf(section)).toBeGreaterThan(-1)
       expect(block.indexOf(section)).toBeLessThan(clockAt)
     }

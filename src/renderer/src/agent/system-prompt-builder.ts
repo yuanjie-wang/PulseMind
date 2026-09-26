@@ -28,8 +28,12 @@ export interface BuildSystemPromptResult {
   /**
    * The invariant prefix. Byte-identical across every turn of every conversation
    * and across restarts: it carries only contracts (identity, environment shape,
-   * tool-call format, output conventions) and never a value that can change while
-   * the app runs — no clock, no memory, no git status, no workspace.
+   * tool-call format, output conventions) plus the memory context, which rides
+   * a two-clock TTL (3h global snapshot + 1h per-conversation pin, 2026-09-26
+   * user ruling) so its bytes stay stable within a conversation and across the
+   * conversations pinning the same window. Everything else follows the old
+   * shape: no clock, no git status, no workspace — those are per-turn or
+   * per-conversation values and cannot ride a shared prefix.
    *
    * That invariance is the whole point. DeepSeek's cache matches a prompt prefix
    * from token 0 and renders `system → tools → messages`, so the system prompt
@@ -75,9 +79,13 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
 
 /**
  * The frozen part of the prompt: identity + the contracts that hold for every
- * request this app makes. Nothing here may read a clock, the database, git or
- * the settings file — a value that can change mid-session belongs in
- * buildStateBlock instead (or the cached prefix dies with it).
+ * request this app makes. Nothing here may read a clock, git or the settings
+ * file — a value that can change mid-session belongs in buildStateBlock
+ * instead (or the cached prefix dies with it). The one sanctioned database
+ * read is the memory context, whose bytes are held stable by the manager's
+ * two-clock TTL (3h global snapshot + 1h per-conversation pin): re-pinning identical
+ * bytes is free, so within a conversation and across conversations in the
+ * same window this section never moves.
  */
 async function buildCorePrompt(opts: AgentEngineOptions, toolProtocols?: string): Promise<string> {
   const parts: string[] = []
@@ -119,6 +127,18 @@ You have a local knowledge base (compiled wiki) of project documents and past co
     if (expIndex) parts.push(expIndex)
   }
 
+  // ── Memory context (2026-09-26: moved out of the state block) ──
+  // Extracted Memories + the recent-conversations table are GLOBAL data, so
+  // with the manager's double 3h TTL they are byte-identical across
+  // conversations and reusable by DeepSeek's cross-request prefix cache. The
+  // per-conversation Workspace section stays in the state block for the same
+  // reason in reverse: a per-conversation value in this shared prefix would
+  // cold-start every new conversation.
+  if (opts.memoryManager) {
+    const memoryContext = await opts.memoryManager.getStableMemoryContext(opts.conversationId)
+    if (memoryContext) parts.push(memoryContext)
+  }
+
   // ── Managed-tool appendix (renderer-provided; empty for the built-in manager) ──
   const toolAppendix = opts.toolManager?.getSystemPromptAppendix()
   if (toolAppendix) parts.push(toolAppendix)
@@ -157,11 +177,14 @@ function buildEnvironmentSection(
 }
 
 /**
- * The per-turn tail. Sections are ordered by how often they change: memory and
- * git first, the clock LAST. That order is load-bearing, not cosmetic — within a
+ * The per-turn tail. Sections are ordered by how often they change: git first,
+ * the clock LAST. That order is load-bearing, not cosmetic — within a
  * tool loop the same block is re-sent on every iteration, and the cache can only
  * reuse it up to the first byte that differs, so the one field that always
- * changes (the time) must not sit in front of the ones that didn't.
+ * changes (the time) must not sit in front of the ones that didn't. The memory
+ * context used to lead this block; it moved into the frozen core (3h snapshot,
+ * 2026-09-26) where the prefix cache can actually reuse it — the block is
+ * re-sent and re-billed whole on every request.
  */
 async function buildStateBlock(params: {
   opts: AgentEngineOptions
@@ -171,11 +194,6 @@ async function buildStateBlock(params: {
 }): Promise<string> {
   const { opts, plan, summon } = params
   const sections: string[] = []
-
-  if (opts.memoryManager) {
-    const memoryContext = await opts.memoryManager.buildMemoryContext()
-    if (memoryContext) sections.push(memoryContext)
-  }
 
   // Git status — OFF unless the user turned the injection on in settings, and
   // skipped silently outside a repo.
@@ -404,7 +422,7 @@ const WINDOWS_SHELL_NOTES = `\
 
 const SESSION_STATE_NOTICE = `\
 ## Session State
-Volatile per-turn context — the current date and time, the workspace, memory, git status, the current plan, the page a browser client is showing, and any matching skills/experiences — is appended as a \`<session-state>\` block in the FINAL message of the request. Read the values from the LATEST block; earlier blocks in the history are snapshots of earlier turns and may be stale.`
+Volatile per-turn context — the current date and time, the workspace, git status, the current plan, the page a browser client is showing, and any matching skills/experiences — is appended as a \`<session-state>\` block in the FINAL message of the request. Read the values from the LATEST block; earlier blocks in the history are snapshots of earlier turns and may be stale.`
 
 const TOOL_CALL_FORMAT = `\
 ## Tool Call Format

@@ -60,16 +60,87 @@ export class MemoryManager {
     return Date.now() - entry.failedAt < MemoryManager.BACKOFF_MS
   }
 
-  /** P2 watermark: how many memories existed at the last merge + when it ran.
-   *  Pure numbers, mirrored into settings.json by the main-process hook. */
-  private mergeWatermark: { lastRunAt: number; lastCount: number } = { lastRunAt: 0, lastCount: 0 }
-
-  setMergeWatermark(w: { lastRunAt: number; lastCount: number }): void {
-    this.mergeWatermark = w
+  /** P2 watermark: how many memories existed at the last merge + when it ran,
+   *  plus when the last ATTEMPT ran. Only a successful merge advances
+   *  lastRunAt (the 24h clock and the [NEW] marks); a failed or empty attempt
+   *  advances only lastAttemptAt (the retry clock). Mirrored into
+   *  settings.json by the main-process hook so both survive a restart. */
+  private mergeWatermark: { lastRunAt: number; lastCount: number; lastAttemptAt: number } = {
+    lastRunAt: 0,
+    lastCount: 0,
+    lastAttemptAt: 0,
   }
 
-  getMergeWatermark(): { lastRunAt: number; lastCount: number } {
+  setMergeWatermark(w: { lastRunAt: number; lastCount: number; lastAttemptAt?: number }): void {
+    this.mergeWatermark = { lastAttemptAt: 0, ...w }
+  }
+
+  getMergeWatermark(): { lastRunAt: number; lastCount: number; lastAttemptAt: number } {
     return { ...this.mergeWatermark }
+  }
+
+  // ── Prompt-cache memory snapshot (2026-09-26 用户裁定) ────────────────
+  // The memory context (# Memory Context: extracted memories + the recent-
+  // conversations table) moved OUT of the per-turn state block INTO the system
+  // prompt, where DeepSeek's prefix cache can actually reuse it — the block is
+  // re-sent and re-billed every request, the system prompt is the shared trunk.
+  // Two clocks keep its bytes stable (2026-09-26 用户裁定: global 3h, session 1h):
+  //   全局快照 — one string per process, rebuilt lazily at most once per its 3h
+  //     TTL; every conversation that pins inside the window shares its bytes,
+  //     so conversations warm EACH OTHER's prefix.
+  //   会话级 pin — a conversation pins the global string at its first request
+  //     and keeps those bytes for its own 1h TTL, so a live conversation never
+  //     changes its prefix mid-flight. On expiry it re-pins from the CURRENT
+  //     global — usually still fresh (no rebuild, identical bytes, free); when
+  //     the global did rebuild with changed memories, the new bytes land at the
+  //     pin's hourly boundary (one re-bill, at most once per hour).
+  // Worst-case staleness ≈ 4h (a pin can hold data that was already up to 3h
+  // old when it pinned, then holds it 1h). This deliberately reverses the
+  // 「memory visible on the very next call」 shape of PLAN-memory-extraction-dedup.
+  static readonly MEMORY_CONTEXT_GLOBAL_TTL_MS = 3 * 60 * 60 * 1000
+  static readonly MEMORY_CONTEXT_SESSION_TTL_MS = 1 * 60 * 60 * 1000
+  /** Pin-table cap: entries hold a ~7KB string each; 64 conversations cover
+   *  every plausibly-live session, oldest-capturedAt evicted on overflow. */
+  private static readonly MEMORY_CONTEXT_PIN_CAP = 64
+  private memoryContextSnapshot: { text: string; capturedAt: number } | null = null
+  private memoryContextPins = new Map<string, { text: string; capturedAt: number }>()
+
+  /**
+   * The system-prompt memory context: byte-stable within a conversation's TTL
+   * and across conversations pinning the same global window. `conversationId`
+   * absent (tests, tools without a session) → the global snapshot only.
+   */
+  async getStableMemoryContext(conversationId?: string): Promise<string> {
+    // The master switch must take effect on the next request, so the OFF path
+    // never reads or writes either cache.
+    if (!this.prefs.autoInjectEnabled) return ''
+    const now = Date.now()
+
+    if (conversationId) {
+      const pin = this.memoryContextPins.get(conversationId)
+      if (pin && now - pin.capturedAt < MemoryManager.MEMORY_CONTEXT_SESSION_TTL_MS) return pin.text
+    }
+
+    if (!this.memoryContextSnapshot || now - this.memoryContextSnapshot.capturedAt >= MemoryManager.MEMORY_CONTEXT_GLOBAL_TTL_MS) {
+      this.memoryContextSnapshot = { text: await this.buildMemoryContext(), capturedAt: now }
+    }
+    const text = this.memoryContextSnapshot.text
+
+    if (conversationId) {
+      this.memoryContextPins.set(conversationId, { text, capturedAt: now })
+      if (this.memoryContextPins.size > MemoryManager.MEMORY_CONTEXT_PIN_CAP) {
+        let oldestKey: string | null = null
+        let oldest = Infinity
+        for (const [key, entry] of this.memoryContextPins) {
+          if (entry.capturedAt < oldest) {
+            oldest = entry.capturedAt
+            oldestKey = key
+          }
+        }
+        if (oldestKey) this.memoryContextPins.delete(oldestKey)
+      }
+    }
+    return text
   }
 
   // --- Preferences ---
@@ -151,6 +222,12 @@ export class MemoryManager {
   static readonly MERGE_MIN_NEW = 5
   static readonly MERGE_TOTAL_CAP = 50
   static readonly MERGE_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000
+  /** Failed/empty merge attempts retry on this shorter clock instead of the
+   *  24h success interval (one transient LLM failure must not freeze merging
+   *  for a day), and it is the ceiling on the idle spin: before 2026-09-26 an
+   *  attempt advanced nothing, so every session end re-fired the identical
+   *  consolidate call — four byte-identical payloads in two minutes. */
+  static readonly MERGE_RETRY_MS = 2 * 60 * 60 * 1000
 
   /**
    * Incremental memory merge. Returns true when a merge actually ran.
@@ -160,7 +237,16 @@ export class MemoryManager {
     if (this._compressing || !this.adapter || !this.apiKey) return false
     const wm = this.getMergeWatermark()
     const now = Date.now()
-    if (wm.lastRunAt !== 0 && now - wm.lastRunAt < MemoryManager.MERGE_MIN_INTERVAL_MS) return false
+    // Two-tier gate: a successful merge holds the 24h clock (lastRunAt), a
+    // failed or empty attempt holds only the retry clock (lastAttemptAt). The
+    // gate must read the ATTEMPT — an attempt that advanced nothing used to
+    // leave every gate open, and with lastRunAt === 0 the "added" count below
+    // is the whole pool, so every trigger re-qualified.
+    const lastTouch = Math.max(wm.lastRunAt, wm.lastAttemptAt)
+    if (lastTouch !== 0) {
+      const gap = wm.lastRunAt >= wm.lastAttemptAt ? MemoryManager.MERGE_MIN_INTERVAL_MS : MemoryManager.MERGE_RETRY_MS
+      if (now - lastTouch < gap) return false
+    }
 
     const extractedTypes = ['auto', 'fact', 'decision', 'preference']
     const all = await this.listMemories()
@@ -171,6 +257,10 @@ export class MemoryManager {
     const due = added >= MemoryManager.MERGE_MIN_NEW || extracted.length > MemoryManager.MERGE_TOTAL_CAP
     if (!due) return false
 
+    // The attempt counts from here — before the LLM call — so a throw (caught
+    // below) still lands inside the retry window instead of re-firing at the
+    // very next session end.
+    this.setMergeWatermark({ ...wm, lastAttemptAt: now })
     this._compressing = true
     try {
       // Input: the FULL set (the merge must see what it consolidates into),
@@ -188,7 +278,14 @@ export class MemoryManager {
         { memoriesText },
         { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model }, maxTokens: 4000 }
       )
-      if (merged.length === 0) return false
+      if (merged.length === 0) {
+        // The model ran and consolidated nothing — or its output did not parse
+        // (extractJson already tried fences and bare-JSON recovery). Warn with
+        // the input size so a systematic parse miss is diagnosable; lastRunAt
+        // stays put and the attempt gate caps the retry at one per RETRY_MS.
+        console.warn(`[MemoryManager] memory merge produced 0 entries for ${extracted.length} inputs — will retry after MERGE_RETRY_MS`)
+        return false
+      }
 
       const validTypes = ['auto', 'manual', 'fact', 'decision', 'preference']
       const validCategories = ['code', 'architecture', 'user_pref', 'decision', 'general']
@@ -222,7 +319,7 @@ export class MemoryManager {
         await this.saveMemory({ content: mem.content, type: type as MemoryCreateInput['type'], category: category as MemoryCreateInput['category'] })
       }
 
-      this.setMergeWatermark({ lastRunAt: now, lastCount: await getHost().countMemories(extractedTypes) })
+      this.setMergeWatermark({ lastRunAt: now, lastCount: await getHost().countMemories(extractedTypes), lastAttemptAt: now })
       console.log(`[MemoryManager] merged ${extracted.length} extracted memories → ${mergedHashes.size} contents (watermark advanced)`)
       return true
     } catch (err) {

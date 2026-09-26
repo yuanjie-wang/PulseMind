@@ -203,7 +203,12 @@ describe('the incremental merge layer (P2)', () => {
   it('the watermark rides settings.json and main persists it', () => {
     expect(read('src/shared/types/settings.ts')).toContain('memoryMergeWatermark')
     expect(read(SESSION_MANAGER)).toContain('runMemoryMergeSweep')
-    expect(read(SESSION_MANAGER)).toContain('memoryMergeWatermark: { lastRunAt: new Date(w.lastRunAt).toISOString(), lastCount: w.lastCount }')
+    // 2026-09-26 空转修复：持久化形状带上 lastAttemptAt（失败/空尝试的时钟），
+    // 且裸尝试也要落盘——否则每次重启都会把「从未尝试」当成「从未合并」重打一遍。
+    const sm = read(SESSION_MANAGER)
+    expect(sm).toContain('lastRunAt: new Date(w.lastRunAt).toISOString()')
+    expect(sm).toContain('lastAttemptAt: new Date(w.lastAttemptAt).toISOString()')
+    expect(sm).toContain('lastAttemptAt: w?.lastAttemptAt ? new Date(w.lastAttemptAt).getTime() : 0')
   })
   it('every caller uses the new name — a stale call crashes the app, not the test', () => {
     // App.tsx's startup compression effect kept calling the deleted

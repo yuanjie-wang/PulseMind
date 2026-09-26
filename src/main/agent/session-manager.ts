@@ -414,6 +414,7 @@ export class AgentSessionManagerImpl {
     memoryManager.setMergeWatermark({
       lastRunAt: w?.lastRunAt ? new Date(w.lastRunAt).getTime() : 0,
       lastCount: w?.lastCount ?? 0,
+      lastAttemptAt: w?.lastAttemptAt ? new Date(w.lastAttemptAt).getTime() : 0,
     })
   }
 
@@ -425,10 +426,18 @@ export class AgentSessionManagerImpl {
     const memoryManager = this.managers.memoryManager
     const ran = await memoryManager.ensureMemoryMerged()
     const w = memoryManager.getMergeWatermark()
-    if (w.lastRunAt === 0) return ran // never merged — nothing to persist
+    // Persist every touch — including bare attempts. The idle-spin fix rides
+    // on lastAttemptAt surviving the restart: without it a failed merge is
+    // re-attempted once per process launch, and lastRunAt === 0 means the
+    // "added" count is the full pool, so it was always re-due.
+    if (w.lastRunAt === 0 && !w.lastAttemptAt) return ran // never attempted — nothing to persist
     await settingsStore.update((s) => ({
       ...s,
-      memoryMergeWatermark: { lastRunAt: new Date(w.lastRunAt).toISOString(), lastCount: w.lastCount },
+      memoryMergeWatermark: {
+        ...(w.lastRunAt !== 0 ? { lastRunAt: new Date(w.lastRunAt).toISOString() } : {}),
+        lastCount: w.lastCount,
+        ...(w.lastAttemptAt ? { lastAttemptAt: new Date(w.lastAttemptAt).toISOString() } : {}),
+      },
     })).catch((e) => console.warn('[session-manager] watermark persist failed:', e))
     return ran
   }

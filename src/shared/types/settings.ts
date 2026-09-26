@@ -147,6 +147,8 @@ export interface AppSettings {
   encryptSecrets?: boolean
   /** 记忆合并层水位（PLAN-memory-extraction-dedup P2）：上次增量合并的时间与
    *  当时提取类记忆总数。触发 = 水位后新增 ≥5 条或总量 >50，且距上次 ≥24h。
-   *  主进程的 session-manager 在合并后回写这里，重启后水位不丢。 */
-  memoryMergeWatermark?: { lastRunAt?: string; lastCount?: number }
+   *  lastAttemptAt 是失败/空结果的尝试时钟（2h 重试）——空转修复（2026-09-26）
+   *  靠它跨重启仍然有效。主进程的 session-manager 在合并后回写这里，重启后
+   *  水位不丢。 */
+  memoryMergeWatermark?: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string }
 }

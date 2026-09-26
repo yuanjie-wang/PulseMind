@@ -412,13 +412,15 @@ function readIntInRange(raw: unknown, fallback: number, min: number, max: number
 }
 
 /** 记忆合并水位读取器：形状不对就丢弃（合并层会当作从未合并过，重新
- *  收敛一次——幂等，无害），绝不带病入库。 */
-function readMergeWatermark(raw: unknown): { lastRunAt?: string; lastCount?: number } | undefined {
+ *  收敛一次——幂等，无害），绝不带病入库。lastAttemptAt 是失败/空尝试的
+ *  时钟（空转修复 2026-09-26），与 lastRunAt 一样可选。 */
+function readMergeWatermark(raw: unknown): { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string } | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const w = raw as Record<string, unknown>
-  const out: { lastRunAt?: string; lastCount?: number } = {}
+  const out: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string } = {}
   if (typeof w.lastRunAt === 'string' && w.lastRunAt) out.lastRunAt = w.lastRunAt
   if (typeof w.lastCount === 'number' && Number.isFinite(w.lastCount) && w.lastCount >= 0) out.lastCount = w.lastCount
+  if (typeof w.lastAttemptAt === 'string' && w.lastAttemptAt) out.lastAttemptAt = w.lastAttemptAt
   return Object.keys(out).length > 0 ? out : undefined
 }
 
