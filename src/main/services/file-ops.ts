@@ -3,7 +3,8 @@
  * file-ops.handler.ts closures, extracted so both the IPC handlers and the
  * main-process agent host call the same functions.
  */
-import { readFile, writeFile, appendFile, stat, mkdir, readdir, type Dirent } from 'node:fs/promises'
+import { readFile, writeFile, appendFile, stat, mkdir, readdir } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import * as path from 'node:path'
 import { patchContent } from '../utils/patch-utils'
 import { DATA_DIR } from '../storage'
@@ -91,6 +92,12 @@ export async function svcSaveBase64Image(data: string): Promise<{ success: boole
 
 export async function svcCopyFileToTmp(sourcePath: string): Promise<{ success: boolean; path: string }> {
   try {
+    // The source is an arbitrary read, exactly like svcCopyFile's (review
+    // 2026-09-26 中2): deny-roots apply, or a compromised renderer could
+    // transcode any sharp-decodable image (private photos included) into
+    // tmp/ and read the copy back over its IPC channel.
+    const guard = await checkFsTarget(sourcePath, 'read')
+    if (!guard.ok) return { success: false, path: `Error: ${guard.reason}` }
     const tmpDir = path.join(DATA_DIR, 'tmp', 'screenshot')
     await mkdir(tmpDir, { recursive: true })
     const timestamp = Date.now()
