@@ -11,12 +11,29 @@
 // free of DB/audit/service dependencies, so a future flow registry or a
 // runtime trigger (connector missing credentials) calls this same function.
 
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow, app, shell } from 'electron'
 import { assertAllowedUrl } from '../shared/browser-client/protocol'
+import { safeExternalUrl } from './utils/external-url'
+import { DATA_DIR } from './storage/index'
 import type { HookWindowHandle, HookWindowOptions } from '../shared/types/hooks'
 
 const DEFAULT_WIDTH = 1024
 const DEFAULT_HEIGHT = 768
+
+/** Every window this module opened, so the launch-hook watchdog can close the
+ *  hook's login window when it abandons the flow (review 2026-09-26 中4) — a
+ *  timed-out hook must not leave a login window floating over the app that
+ *  already moved on. */
+const openHookWindows = new Set<BrowserWindow>()
+
+/** Close every window openBuiltInWindow created. Idempotent; the hook's own
+ *  late handle.close() is idempotent too (destroyed-window check). */
+export function closeAllHookWindows(): void {
+  for (const win of openHookWindows) {
+    if (!win.isDestroyed()) win.destroy()
+  }
+  openHookWindows.clear()
+}
 
 /** Registered by index.ts: the splash and the login window must never share
  *  the screen (user ruling 2026-09-25), so the owner CLOSES the splash the
@@ -58,6 +75,35 @@ export async function openBuiltInWindow(
     },
   })
   onWindowOpen?.()
+
+  // The login window loads ARBITRARY remote content (third-party scripts
+  // included), so it carries the same two gates the main window got in P0-2
+  // (review 2026-09-26 中3) — assertAllowedUrl only gated the FIRST url:
+  //   • window.open/target=_blank: denied as a new window; the URL goes to
+  //     the OS launcher through safeExternalUrl's scheme gate, never raw.
+  //   • will-navigate: the login flow legitimately redirects and the user
+  //     clicks links, so every http/https navigation passes (unlike the main
+  //     window's own-origin-only rule) — what must not happen is the page
+  //     moving this window to file:// or a custom scheme.
+  win.webContents.setWindowOpenHandler((details) => {
+    const safe = safeExternalUrl(details.url, DATA_DIR)
+    if (safe) void shell.openExternal(safe)
+    return { action: 'deny' }
+  })
+  win.webContents.on('will-navigate', (details) => {
+    let protocol = ''
+    try {
+      protocol = new URL(details.url).protocol
+    } catch {
+      // unparsable URL — fall through and block
+    }
+    if (protocol === 'http:' || protocol === 'https:') return
+    details.preventDefault()
+    console.warn(`[hook-browser] blocked in-window navigation to ${protocol || details.url}`)
+  })
+
+  openHookWindows.add(win)
+  win.once('closed', () => { openHookWindows.delete(win) })
   win.loadURL(target).catch((err: unknown) => {
     // The window is already open and showing whatever it can (an error page
     // is a visible answer); failing open() here would tear down the flow.

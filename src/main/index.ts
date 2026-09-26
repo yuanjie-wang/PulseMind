@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, nativeImage, nativeTheme, protocol, powerMonitor, screen } from 'electron'
+import { app, BrowserWindow, dialog, shell, nativeImage, nativeTheme, protocol, powerMonitor, screen } from 'electron'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
@@ -13,7 +13,7 @@ import { backfillProjectColors } from './storage/project-store'
 import { cleanupExpiredConversations } from './services/conversation-retention'
 import { skillStore } from './storage/skill-store'
 import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
-import { ensureLaunchHooks } from './hooks-runner'
+import { ensureLaunchHooks, skipLaunchHooks } from './hooks-runner'
 import { setHookWindowOpenListener } from './hook-browser'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
@@ -539,6 +539,39 @@ function createWindow(): void {
   }
 }
 
+// ── Gate-period escape surface (review 2026-09-26 中4) ──
+// The dialog is async on purpose: showMessageBoxSync would freeze the main
+// thread the hook's poll loop is running on. 继续等待 leaves the gate as it
+// is — bounded by the hook's own deadline and the hooks-runner watchdog —
+// 跳过 resolves the gate without waiting for the hooks (they keep running
+// in the background; a late env var still reaches hookEnv).
+let gateSkipDialogOpen = false
+async function offerGateSkipDialog(): Promise<void> {
+  if (gateSkipDialogOpen || hooksComplete || startupComplete) return
+  gateSkipDialogOpen = true
+  writeLog('WARN', 'startup: all windows closed while the launch-hook gate holds — offering wait/skip')
+  try {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'PulseMind',
+      message: '启动流程仍在等待（例如登录）',
+      detail: '所有窗口已关闭，但启动门还没有放行。可以继续等待启动流程自行结束，或跳过它直接进入应用。',
+      buttons: ['继续等待', '跳过并启动'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    })
+    if (response === 1) {
+      writeLog('INFO', 'startup: user chose to skip the launch gate')
+      skipLaunchHooks()
+    }
+  } catch (err) {
+    writeLog('WARN', `startup: gate-skip dialog failed: ${err instanceof Error ? err.message : err}`)
+  } finally {
+    gateSkipDialogOpen = false
+  }
+}
+
 if (gotTheLock) {
   app.on('second-instance', () => {
     if (mainWindow) {
@@ -557,7 +590,15 @@ if (gotTheLock) {
       // covers the login gate (2026-09-25): startupComplete stays false
       // until after createWindow, so closing the login window — or every
       // window — during app-start's login flow never quits the app.
-      if (!startupComplete) return
+      if (!startupComplete) {
+        // Gate-period escape surface (review 2026-09-26 中4): with every
+        // window closed and the launch hook still pending, the process used
+        // to sit on with no window, no tray, no taskbar presence — killable
+        // only from task manager. Offer the minimal face instead: keep
+        // waiting, or skip the gate and start.
+        if (!hooksComplete) void offerGateSkipDialog()
+        return
+      }
       app.quit()
     }
   })

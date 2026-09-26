@@ -4,7 +4,9 @@
 // ⚠ 本钩子门控主窗口创建（登录门）：钩子跑多久，应用就等多久 —— splash
 //   会一直顶屏（钩子用 ctx.browser.open 打开内置浏览器的瞬间，splash 自动
 //   关闭，两个窗口不会同屏）。轮询/等待必须自带超时与放弃分支，否则应用
-//   永远停在启动页。
+//   永远停在启动页。主进程侧另有看门狗兜底：钩子默认最多等 10 分钟
+//   （`module.exports.timeout = 毫秒` 可覆盖），超时后启动继续、登录窗自动
+//   关闭——但别依赖它，钩子自己的等待分支才是第一道保险。
 //
 // 下面的登录流程是示例骨架（保持注释态）：直接启用会因 checkSession 未定义
 // 而报错，且打开的登录窗不会被关闭。按你的服务端校验接口改写、补上
@@ -15,7 +17,12 @@ module.exports = async (ctx) => {
   //
   // async function checkSession() {
   //   try {
-  //     const res = await fetch('https://api.example.com/session/check', { headers: { … } })
+  //     // 每个轮询请求必须自带 AbortSignal.timeout：Chromium 的 fetch 对网络
+  //     // 黑洞默认永不超时，裸 fetch 会把启动门一起挂死。
+  //     const res = await fetch('https://api.example.com/session/check', {
+  //       headers: { … },
+  //       signal: AbortSignal.timeout(10_000),
+  //     })
   //     return res.ok
   //   } catch {
   //     return false

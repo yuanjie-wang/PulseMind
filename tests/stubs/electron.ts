@@ -47,12 +47,24 @@ export const TEST_TRASH_DIR = join(process.env.HOME || '/tmp', 'pulsemind-test-t
 // only falls back to a real removal where no trash exists. Modelling the happy
 // path (a move into a scratch trash) is what makes "a deleted file is
 // recoverable" a claim a test can check; the fallback is exercised by a test
-// that replaces this function with a throwing one.
+// that replaces this function with a throwing one. `openExternal` records the
+// URLs the window-open gate handed the OS launcher (review 2026-09-26 中3) —
+// an empty log on a popup URL is the non-vacuity surface for "the gate ran".
+const externalOpens: string[] = []
 export const shell = {
   trashItem: async (target: string): Promise<void> => {
     mkdirSync(TEST_TRASH_DIR, { recursive: true })
     await rename(target, join(TEST_TRASH_DIR, `${Date.now()}-${basename(target)}`))
   },
+  openExternal: async (url: string): Promise<void> => {
+    externalOpens.push(url)
+  },
+}
+export function getStubExternalOpens(): string[] {
+  return [...externalOpens]
+}
+export function resetStubExternalOpens(): void {
+  externalOpens.length = 0
 }
 
 // ── safeStorage (PLAN-security-hardening P1) ──
@@ -156,6 +168,33 @@ export class BrowserWindow {
   readonly loadedUrls: string[] = []
   private destroyed = false
   private readonly listeners = new Map<string, Array<() => void>>()
+  /** The registered window-open handler + the will-navigate listener — the
+   *  P0-2 gates the login window installs (review 2026-09-26 中3). */
+  private windowOpenHandler: ((details: { url: string }) => { action: string }) | null = null
+  private willNavigateListener: ((details: { url: string; preventDefault: () => void }) => void) | null = null
+  readonly windowOpenDecisions: Array<{ url: string; action: string }> = []
+  readonly webContents = {
+    setWindowOpenHandler: (handler: (details: { url: string }) => { action: string }): void => {
+      this.windowOpenHandler = handler
+    },
+    on: (event: string, listener: (details: { url: string; preventDefault: () => void }) => void): void => {
+      if (event === 'will-navigate') this.willNavigateListener = listener
+    },
+  }
+
+  /** Drive a page-side window.open through the registered gate. */
+  openWindow(url: string): { action: string } {
+    const decision = this.windowOpenHandler ? this.windowOpenHandler({ url }) : { action: 'allow' }
+    this.windowOpenDecisions.push({ url, action: decision.action })
+    return decision
+  }
+
+  /** Drive a top-frame navigation; true = allowed, false = preventDefault'd. */
+  navigate(url: string): boolean {
+    let blocked = false
+    this.willNavigateListener?.({ url, preventDefault: () => { blocked = true } })
+    return !blocked
+  }
 
   constructor(options: Record<string, unknown> = {}) {
     this.options = options
