@@ -13,8 +13,15 @@
 export interface AriaNode {
   role: string
   name?: string
+  /** The node's own (direct) text — Playwright puts nameless prose here
+   *  (`<p>正文</p>` renders no accessible name). The renderer must print it or
+   *  the page's prose silently vanishes from the snapshot. */
+  text?: string
   ref?: string
-  children?: AriaNode[]
+  /** Mixed: child nodes AND bare strings (`<span>行内</span>`,
+   *  `<label>用户名 <input></label>`) both arrive through the blind
+   *  `as AriaNode[]` cast — walk() must branch before descending. */
+  children?: (AriaNode | string)[]
   /** Actionable state the AI engine carries. The renderer shows them and the
    *  diff folds them into the feature tuple — a check toggle IS a change. */
   checked?: boolean | 'mixed'
@@ -60,12 +67,18 @@ export function renderAriaTree(roots: AriaNode[]): string {
   let refCount = 0
   let truncated = false
 
-  const walk = (node: AriaNode, depth: number): void => {
+  const walk = (node: AriaNode | string, depth: number): void => {
     if (truncated) return
+    // A bare string child is the inline text of the parent (`<span>行内</span>`
+    // arrives as {role:'generic', children:['行内']}); printing a line of its
+    // own would render `- undefined` noise under the parent that already
+    // carries the same prose via `text`.
+    if (typeof node === 'string') return
     const indent = '  '.repeat(depth)
     const name = clean(node.name)
     let head = `${indent}- ${node.role}`
-    if (name) head += ` "${name.length > NAME_MAX ? name.slice(0, NAME_MAX) + '…' : name}"`
+    const body = name || clean(node.text)
+    if (body) head += ` "${body.length > NAME_MAX ? body.slice(0, NAME_MAX) + '…' : body}"`
     if (node.ref) {
       if (refCount >= MAX_REF_NODES) {
         truncated = true

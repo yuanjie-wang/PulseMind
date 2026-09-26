@@ -47,7 +47,10 @@ interface IndexedNode {
 
 function indexTree(roots: AriaNode[]): Map<string, IndexedNode> {
   const index = new Map<string, IndexedNode>()
-  const walk = (node: AriaNode, path: string[]): void => {
+  const walk = (node: AriaNode | string, path: string[]): void => {
+    // Bare string children are inline text already carried by the parent's
+    // own `text` key — no ref to index, nothing to descend.
+    if (typeof node === 'string') return
     const nextPath = node.ref ? [...path, node.ref] : path
     if (node.ref) {
       index.set(node.ref, { role: node.role, name: cleanName(node.name), state: decorateNode(node), path })

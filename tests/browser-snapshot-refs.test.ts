@@ -116,6 +116,40 @@ describe('renderAriaTree — trimming and shape', () => {
     expect(text).toContain(`[url=/${'x'.repeat(39)}…]`) // URL_MAX counts the leading slash
     expect(text).not.toContain('x'.repeat(40))
   })
+
+  // review 2026-09-26 中6: Playwright puts nameless prose in a `text` key
+  // (`<p>正文</p>` carries no accessible name) and mixes bare strings into
+  // children (`<span>行内</span>`). The renderer used to drop the former and
+  // print `- undefined` for the latter — a content page's prose simply was
+  // not in the snapshot.
+  it('renders the text key of nameless nodes (paragraph/blockquote prose survives)', () => {
+    const out = renderAriaTree([
+      { role: 'paragraph', ref: 'e4', text: '第一段正文。' },
+      { role: 'blockquote', ref: 'e5', text: '引文' },
+    ])
+    expect(out).toContain('- paragraph "第一段正文。" [ref=e4]')
+    expect(out).toContain('- blockquote "引文" [ref=e5]')
+  })
+
+  it('an accessible name wins over the text key; string children never render as - undefined', () => {
+    const out = renderAriaTree([
+      { role: 'button', name: '按钮名', text: '不应渲染', ref: 'e1' },
+      { role: 'generic', ref: 'e2', children: ['行内文本'] },
+      { role: 'label', ref: 'e3', text: '用户名', children: ['用户名', { role: 'textbox', ref: 'e4' }] },
+    ])
+    expect(out).toContain('- button "按钮名" [ref=e1]')
+    expect(out).not.toContain('不应渲染')
+    expect(out).toContain('- generic [ref=e2]')
+    expect(out).toContain('- label "用户名" [ref=e3]')
+    expect(out).toContain('- textbox [ref=e4]')
+    expect(out).not.toContain('undefined')
+  })
+
+  it('the text key folds whitespace and trims at NAME_MAX like a name', () => {
+    const long = 'y'.repeat(120)
+    const out = renderAriaTree([{ role: 'paragraph', ref: 'e1', text: long }])
+    expect(out).toContain(`"${'y'.repeat(80)}…"`)
+  })
 })
 
 describe('diffTrees + renderDiff — the three kinds', () => {
@@ -219,17 +253,18 @@ describe('runPlaywrightOp — the ref fast-fail (fake page)', () => {
   })
 
   it('a live ref with a role swap is rejected before the op (the reused-node trap)', async () => {
-    const page = fakePage({ count: 1, probe: { role: 'textbox', name: '搜索', textHead: '搜索', tag: 'input' } })
+    const page = fakePage({ count: 1, probe: { roleSet: ['textbox'], name: '搜索', textHead: '搜索', tag: 'input' } })
     const tree: AriaNode[] = [{ role: 'button', name: '登录', ref: 'e3' }]
-    await expect(runPlaywrightOp(page, { selector: 'aria-ref=e3', op: 'click' }, tree)).rejects.toThrow(/现指向 textbox 元素（快照时是 button）/)
+    await expect(runPlaywrightOp(page, { selector: 'aria-ref=e3', op: 'click' }, tree)).rejects.toThrow(/现指向 input 元素（快照时是 button）/)
   })
 
   it('a live ref matching the tree entry runs the op; a missing tree entry degrades to count', async () => {
-    const page = fakePage({ count: 1, probe: { role: 'button', name: '登录', textHead: '登录', tag: 'button' } })
+    const page = fakePage({ count: 1, probe: { roleSet: ['button'], name: '登录', textHead: '登录', tag: 'button' } })
     const tree: AriaNode[] = [{ role: 'button', name: '登录', ref: 'e3' }]
     await expect(runPlaywrightOp(page, { selector: 'aria-ref=e3', op: 'click' }, tree)).resolves.toBe('clicked')
     const noTree = fakePage({ count: 1 })
-    await expect(runPlaywrightOp(noTree, { selector: 'aria-ref=e3', op: 'click' })).resolves.toBe('clicked')
+    await expect(runPlaywrightOp(noTree, { selector: 'aria-ref=e3', op: 'click' }, tree)).resolves.toBe('clicked')
+    await expect(runPlaywrightOp(fakePage({ count: 1 }), { selector: 'aria-ref=e3', op: 'click' })).resolves.toBe('clicked')
   })
 
   it('a non-ref selector skips the whole verify', async () => {
@@ -246,13 +281,49 @@ describe('runPlaywrightOp — the ref fast-fail (fake page)', () => {
     expect((err as Error).message).toContain('编号 [ref=f7e74] 不存在或已失效')
     expect((err as Error).message).toContain('只传数字会丢掉帧前缀') // names the exact mistake observed
 
-    const page = fakePage({ count: 1, probe: { role: 'button', name: '登录', textHead: '登录', tag: 'button' } })
+    const page = fakePage({ count: 1, probe: { roleSet: ['button'], name: '登录', textHead: '登录', tag: 'button' } })
     const tree: AriaNode[] = [{ role: 'button', name: '登录', ref: 'f7e74' }]
     await expect(runPlaywrightOp(page, { selector: 'aria-ref=f7e74', op: 'click' }, tree)).resolves.toBe('clicked')
     // ...and the swap check fires on the prefixed entry too (dropping the prefix
     // would find nothing and silently fall back to count-only verification)
-    const swapped = fakePage({ count: 1, probe: { role: 'textbox', name: '搜索', textHead: '搜索', tag: 'input' } })
+    const swapped = fakePage({ count: 1, probe: { roleSet: ['textbox'], name: '搜索', textHead: '搜索', tag: 'input' } })
     await expect(runPlaywrightOp(swapped, { selector: 'aria-ref=f7e74', op: 'click' }, tree)).rejects.toThrow(/编号 \[ref=f7e74\] 已失效/)
+  })
+
+  // review 2026-09-26 高1: the role check used to compare the SNAPSHOT's ARIA
+  // role against the DOM tag name (`else role = tag`), so every node the
+  // full-tree addressing added — generic containers, headings, lists, nav —
+  // false-rejected 6 of 10 typical refs in a real Chromium. The check now
+  // runs only when the DOM side can name the role(s) the snapshot could have
+  // printed; untrusted nodes (generic div, context-dependent landmarks,
+  // exotic input types) verify by name/text alone.
+  it('a generic container is NOT false-rejected (tag ≠ ARIA role is the old bug)', async () => {
+    const page = fakePage({ count: 1, probe: { roleSet: null, name: '', textHead: '', tag: 'div' } })
+    const tree: AriaNode[] = [{ role: 'generic', ref: 'e5' }]
+    await expect(runPlaywrightOp(page, { selector: 'aria-ref=e5', op: 'click' }, tree)).resolves.toBe('clicked')
+  })
+
+  it('implicit-mapped tags verify against their snapshot role (heading/list/document)', async () => {
+    const heading = fakePage({ count: 1, probe: { roleSet: ['heading'], name: '设置', textHead: '设置', tag: 'h1' } })
+    await expect(runPlaywrightOp(heading, { selector: 'aria-ref=e6', op: 'click' }, [{ role: 'heading', name: '设置', ref: 'e6' }])).resolves.toBe('clicked')
+
+    const list = fakePage({ count: 1, probe: { roleSet: ['list'], name: '', textHead: '', tag: 'ul' } })
+    await expect(runPlaywrightOp(list, { selector: 'aria-ref=e7', op: 'click' }, [{ role: 'list', ref: 'e7' }])).resolves.toBe('clicked')
+
+    const document_ = fakePage({ count: 1, probe: { roleSet: ['document'], name: '', textHead: '', tag: 'html' } })
+    await expect(runPlaywrightOp(document_, { selector: 'aria-ref=e1', op: 'click' }, [{ role: 'document', ref: 'e1' }])).resolves.toBe('clicked')
+
+    // ...and a genuine swap is still caught through the mapped table
+    const swapped = fakePage({ count: 1, probe: { roleSet: ['heading'], name: '', textHead: '', tag: 'h1' } })
+    await expect(runPlaywrightOp(swapped, { selector: 'aria-ref=e7', op: 'click' }, [{ role: 'list', ref: 'e7' }])).rejects.toThrow(/现指向 h1 元素（快照时是 list）/)
+  })
+
+  it('a nameless text node verifies by its snapshot `text` (the paragraph path)', async () => {
+    const matching = fakePage({ count: 1, probe: { roleSet: ['paragraph'], name: '', textHead: '段落正文内容', tag: 'p' } })
+    await expect(runPlaywrightOp(matching, { selector: 'aria-ref=e4', op: 'click' }, [{ role: 'paragraph', text: '段落正文内容', ref: 'e4' }])).resolves.toBe('clicked')
+
+    const swapped = fakePage({ count: 1, probe: { roleSet: ['paragraph'], name: '', textHead: '换掉的内容', tag: 'p' } })
+    await expect(runPlaywrightOp(swapped, { selector: 'aria-ref=e4', op: 'click' }, [{ role: 'paragraph', text: '段落正文内容', ref: 'e4' }])).rejects.toThrow(/已失效：现指向 "换掉的内容"（快照时是 "段落正文内容"）/)
   })
 })
 
