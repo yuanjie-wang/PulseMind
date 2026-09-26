@@ -49,6 +49,7 @@ export function InputArea({
   isAwaitingInput,
   hasMessages,
   topSlot,
+  hidden,
   onSendMessage,
   onCancel,
   profiles,
@@ -80,6 +81,12 @@ export function InputArea({
   /** Optional strip rendered just above the composer (plan status, etc.).
    *  Absent = nothing rendered — non-chat reuse stays untouched. */
   topSlot?: React.ReactNode
+  /** Suppress the whole surface (root goes display:none — the component stays
+   *  MOUNTED, so the draft inside survives). The host uses this while it
+   *  paints something over this column: the floating Composer is absolute
+   *  with zIndex 10, which would otherwise draw ABOVE the host's overlay and
+   *  cover its tail (the sub-agent drill-in's streaming cursor). */
+  hidden?: boolean
   onSendMessage: (content: string) => void
   onCancel: () => void
   profiles?: LlmProfile[]
@@ -633,7 +640,7 @@ export function InputArea({
 
   return (
     <div
-      style={{ position: 'relative' }}
+      style={{ position: 'relative', display: hidden ? 'none' : undefined }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

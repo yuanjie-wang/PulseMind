@@ -114,6 +114,12 @@ interface ChatViewProps {
   /** Effective tool-approval level for the composer's 授权 button. */
   approvalMode?: SandboxApprovalMode
   onChangeApprovalMode?: (mode: SandboxApprovalMode) => void
+  /** Suppress the composer while the host overlays this column (the sub-agent
+   *  drill-in): the floating Composer is absolute with zIndex 10 inside this
+   *  root, so it paints ABOVE the host's z-auto overlay and would cover the
+   *  overlay's tail — the streaming cursor. display:none via InputArea, never
+   *  a conditional render: the draft lives inside the component. */
+  hideComposer?: boolean
 }
 
 // --- Message grouping lives in chat/message-segments (shared with the tool studio) ---
@@ -160,6 +166,7 @@ function ChatView({
   onUnbindExpert,
   approvalMode,
   onChangeApprovalMode,
+  hideComposer,
   plan,
   onPlanJump,
   onOpenPlanNode,
@@ -882,6 +889,7 @@ function ChatView({
 
       <InputArea
         key={conversationId ?? 'new'}
+        hidden={hideComposer}
         isRequesting={isRequesting}
         isStreaming={isStreaming}
         isAwaitingApproval={agentStatus.status === 'awaiting_approval'}

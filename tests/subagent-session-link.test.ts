@@ -207,4 +207,28 @@ describe('the spawn card opens the one sub-agent session view', () => {
     expect(read(R('components', 'chat', 'StreamingCursor.tsx')))
       .toContain('data-streaming-cursor=')
   })
+
+  // Third ruling of the same pass: 输出流的尾部会被输入框遮挡，应该要把输入框隐藏.
+  // The floating Composer is absolute with zIndex 10 INSIDE ChatView's relative
+  // root, so with ChatView now painted it drew ABOVE the drill-in overlay
+  // (z-auto) and covered the sub-agent session's tail. The fix is suppression,
+  // not a z-index war: App passes the flag, ChatView threads it, InputArea's
+  // root goes display:none — mounted, never unmounted, so the draft survives.
+  // All wiring (node-env can't mount any of the three); the observable
+  // visibility + draft half lives in scripts/probe-chat-deliverables.mjs.
+  it('suppresses the main composer while the drill-in covers the chat column', () => {
+    expect(read(APP)).toContain('hideComposer={!!subAgentView}')
+
+    const chatSrc = read(CHAT_VIEW)
+    expect(chatSrc).toContain('hideComposer?: boolean')
+    expect(chatSrc).toContain('hideComposer,')
+    expect(chatSrc).toContain('hidden={hideComposer}')
+
+    const inputSrc = read(R('components', 'chat', 'InputArea.tsx'))
+    expect(inputSrc).toContain('display: hidden ? \'none\' : undefined')
+    // The reason the hide exists at all: pin the floating root's z-index, the
+    // fact that made the composer paint over a z-auto overlay.
+    expect(read(R('components', 'chat', 'Composer.tsx')))
+      .toContain("position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10")
+  })
 })

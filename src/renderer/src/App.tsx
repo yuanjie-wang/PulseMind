@@ -658,6 +658,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               contextLength={contextLength}
               onOpenPlanNode={onOpenPlanNode}
               onOpenSubAgent={onOpenSubAgent}
+              hideComposer={!!subAgentView}
               onExtractRoutine={extractRoutine}
               canOpenNode={canOpenNode}
               onSendMessage={handleRequest}

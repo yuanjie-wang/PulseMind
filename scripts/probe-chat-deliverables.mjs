@@ -146,6 +146,11 @@ const TAIL = [
 function Harness() {
   const [messages, setMessages] = useState([])
   const [status, setStatus] = useState({ status: 'idle' })
+  // The sub-agent drill-in suppression (App's hideComposer={!!subAgentView}):
+  // state-driven so the section at the end can toggle it without remounting —
+  // the whole point is that InputArea stays mounted with its draft.
+  const [hideComposer, setHideComposer] = useState(false)
+  window.__setHideComposer = (v) => { setHideComposer(!!v); return true }
   window.__mountWelcome = () => { setMessages([]); setStatus({ status: 'idle' }); return true }
   // A conversation that never wrote a file: the chat branch renders (so the
   // workbench exists — the welcome branch returns before it), and the 产物
@@ -195,6 +200,7 @@ function Harness() {
         conversationId={CONV_KEY}
         workspaceDir={WS}
         conversations={[]}
+        hideComposer={hideComposer}
         isRequesting={status.status !== 'idle'}
         agentStatus={status}
         streamingBlocks={[]}
@@ -424,6 +430,40 @@ await page.waitForTimeout(300)
   await page.evaluate(() => window.__finishTurn())
   await page.waitForTimeout(200)
   await page.screenshot({ path: join(SHOTS, 'expanded.png') })
+}
+
+// ── 5. hideComposer: the drill-in overlay's tail must not be covered ──
+// The floating Composer is absolute with zIndex 10 inside ChatView's relative
+// root, so with ChatView now painted (the workbench-visible drill-in) it drew
+// ABOVE App's z-auto overlay and covered the sub-agent session's streaming
+// cursor (user report 2026-09-25: 输出流的尾部会被输入框遮挡). The fix is
+// suppression on InputArea's root — display:none, never a conditional render,
+// or the draft inside would die with the unmount. Both halves are measured:
+// invisible while hidden, and the typed draft survives the hide/show cycle.
+{
+  console.log('== 输入框抑制（子代理 drill-in 期间）==')
+  const box = () => page.evaluate(() => {
+    const ta = document.querySelector('#root textarea')
+    if (!ta) return null
+    const r = ta.getBoundingClientRect()
+    return { w: Math.round(r.width), value: ta.value }
+  })
+  await page.locator('#root textarea').fill('这段草稿不能丢')
+  await page.waitForTimeout(100)
+  const before = await box()
+  check('对照：浮层输入框默认可见且带着草稿', !!before && before.w > 0 && before.value === '这段草稿不能丢', JSON.stringify(before))
+
+  await page.evaluate(() => window.__setHideComposer(true))
+  await page.waitForTimeout(150)
+  const hidden = await box()
+  const mounted = await page.evaluate(() => document.querySelectorAll('#root textarea').length)
+  check('hideComposer 后输入框整体不可见（rect 归零）', !!hidden && hidden.w === 0, JSON.stringify(hidden))
+  check('隐藏靠 display:none 而非卸载（输入框仍在 DOM）', mounted === 1, `textarea×${mounted}`)
+
+  await page.evaluate(() => window.__setHideComposer(false))
+  await page.waitForTimeout(150)
+  const after = await box()
+  check('恢复后输入框重新可见且草稿仍在', !!after && after.w > 0 && after.value === '这段草稿不能丢', JSON.stringify(after))
 }
 
 await browser.close()
