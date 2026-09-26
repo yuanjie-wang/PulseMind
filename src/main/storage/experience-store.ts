@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto'
 import type { ExperienceRecord, ExperienceDraft } from '../../shared/types/experience-types'
 import { MAX_EXPERIENCES } from '../../shared/types/experience-types'
 import { sha256Hex, normalizeMemoryContent } from '../../shared/memory/content-hash'
+import { parseExperienceMd } from '../../shared/experience/frontmatter'
 import { EXPERIENCES_DIR } from './index'
 import { getDb } from './database'
 
@@ -134,6 +135,7 @@ function rowToRecord(r: any): ExperienceRecord {
  *  only the columns that gate id/createdAt/LRU preservation. */
 interface ExperienceRow {
   id: string
+  title: string
   created_at: string
   last_used_at: string | null
   use_count: number
@@ -257,6 +259,36 @@ export class ExperienceStore {
     // a targetName save lands on a pre-upgrade row with byte-identical content
     // — a contradiction (the model was told to revise, produced no change).
     const bumpUpdated = Boolean(draft.targetName && existing && contentChanged)
+
+    // ── Truncation-driven loss guard (review 2026-09-26 中5) ──
+    // The iteration prompt shows each pool record truncated to the first 1500
+    // characters (MemoryManager.buildExistingExperiencesText's per-record
+    // budget) and asks for the FULL revised document back — so a record longer
+    // than that budget gets merged from a PARTIAL view, and the whole-body
+    // upsert below would silently drop everything the model never saw
+    // (script-carrying records blow past 1500 easily: 8KB per script, 3 of
+    // them). When the target's existing body exceeds the budget and the draft
+    // comes back meaningfully SHORTER than that body, the revision is refused
+    // with the record untouched; the agent reads the full SKILL.md (its
+    // envelope names the directory) and resubmits with everything included.
+    if (bumpUpdated && existing) {
+      try {
+        const oldMd = await readFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), 'utf-8')
+        const oldLen = parseExperienceMd(oldMd, existing.title).content.length
+        const DEDUP_VIEW_BODY_BUDGET = 1500
+        if (oldLen > DEDUP_VIEW_BODY_BUDGET && draft.content.length < oldLen * 0.9) {
+          throw new Error(
+            `修订被拒绝：「${existing.title}」现有正文共 ${oldLen} 字符，而提炼视图只展示前 ${DEDUP_VIEW_BODY_BUDGET} 字符；` +
+            `新稿只有 ${draft.content.length} 字符，会把模型从未见过的尾部整体丢掉。` +
+            `请先读取该记录目录下的完整 SKILL.md，把全部既有内容并入修订稿后重试（修订稿不应显著短于原正文）。`
+          )
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith('修订被拒绝')) throw err
+        /* old file unreadable (dir deleted etc.) → nothing to lose, save proceeds */
+      }
+    }
+
     const record: ExperienceRecord = {
       id: existing?.id ?? generateId(),
       name,

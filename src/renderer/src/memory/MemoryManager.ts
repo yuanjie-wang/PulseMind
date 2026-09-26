@@ -648,14 +648,32 @@ export class MemoryManager {
     let total = 0
     for (const rec of records.slice(0, maxCount)) {
       let body = ''
+      let truncatedAt = 0
       try {
         const raw = await getHost().readExperienceRecord(rec.name)
-        if (raw) body = parseExperienceMd(raw, rec.title).content.slice(0, maxBodyLen)
+        if (raw) {
+          const content = parseExperienceMd(raw, rec.title).content
+          if (content.length > maxBodyLen) {
+            body = content.slice(0, maxBodyLen)
+            truncatedAt = content.length
+          } else {
+            body = content
+          }
+        }
       } catch {
         /* unreadable file → the summary line still lands */
       }
-      const line = body
-        ? `- ${rec.name} | ${rec.category} | ${rec.description}\n${body}`
+      // An explicit 截断 marker, not a silent slice (review 2026-09-26 中5):
+      // the revision prompt asks for the FULL document, so the model must be
+      // able to tell a complete entry from a partial one — and the store's
+      // loss guard rejects a revision that would drop the unseen tail.
+      const bodyText = body
+        ? truncatedAt
+          ? `${body}\n（……本条正文在提炼视图中被截断，完整正文共 ${truncatedAt} 字符——不要以这份节选为唯一事实来源去修订该条）`
+          : body
+        : ''
+      const line = bodyText
+        ? `- ${rec.name} | ${rec.category} | ${rec.description}\n${bodyText}`
         : `- ${rec.name} | ${rec.category} | ${rec.description}`
       if (total + line.length > maxTotal) break // pool-wide budget: stop, don't truncate mid-record
       total += line.length
