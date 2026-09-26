@@ -493,8 +493,8 @@ function ChatView({
   // 对话工具条, via MessageGroup's aboveActions slot) when the turn closes on
   // assistant text, or as a sibling block after the last segment otherwise.
   const turnRows = useMemo(
-    () => collectTurnDeliverables(messages, childDeliverables),
-    [messages, childDeliverables],
+    () => collectTurnDeliverables(messages, childDeliverables, { workspaceDir }),
+    [messages, childDeliverables, workspaceDir],
   )
   const turnPlacement = useMemo(() => segmentTurnPlacement(allSegments), [allSegments])
 

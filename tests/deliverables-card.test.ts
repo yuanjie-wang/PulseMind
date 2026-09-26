@@ -92,7 +92,10 @@ describe('TurnDeliverablesCard', () => {
     const withChild = {
       rows: [
         ...base.rows,
-        { path: '/ws/child-only.md', ops: [{ tool: 'write', at: AT, ok: true }], lastAt: AT, fromConvIds: ['sub_9'] }
+        { path: '/ws/child-only.md', ops: [{ tool: 'write', at: AT, ok: true }], lastAt: AT, fromConvIds: ['sub_9'] },
+        // export-only: the row exists (the file WAS delivered) but carries no
+        // count badge — 导出不计数 (user ruling 2026-09-26)
+        { path: '/ws/报告.pdf', ops: [{ tool: 'export_document', at: AT, ok: true }], lastAt: AT, fromConvIds: [] }
       ],
       sources: [...base.sources, { convId: 'sub_9', title: '调研专家' }]
     }
@@ -101,12 +104,14 @@ describe('TurnDeliverablesCard', () => {
     )
     try {
       const rows = mounted.container.querySelectorAll('[data-testid="turn-deliverables-row"]')
-      expect(rows).toHaveLength(3)
+      expect(rows).toHaveLength(4)
       expect(rows[0].textContent).toContain('report.md')
-      expect(rows[0].textContent).toContain('写入文件 ×2')
-      expect(rows[0].textContent).toContain('编辑文件 ×1')
+      expect(rows[0].textContent).toContain('新增 ×2')
+      expect(rows[0].textContent).toContain('编辑 ×1')
       expect(rows[1].textContent).toContain('Word')
       expect(rows[2].textContent).toContain('来自：调研专家')
+      expect(rows[3].textContent).toContain('报告.pdf')
+      expect(rows[3].textContent).not.toContain('×')
       expect(mounted.container.textContent).toContain('本轮产物')
       // the honesty boundary rides the head's tooltip — the footnote itself
       // went away with the aggregate panel
@@ -183,8 +188,10 @@ describe('Wiring (source scans — the mount itself is probe territory)', () => 
     const src = read(CHAT_VIEW)
     expect(src).toContain('useDeliverables(conversationId, messages, agentStatus)')
     // per-turn derivation keyed on the FULL message identity — never the
-    // render window (head truncation would drop old turns' cards)
-    expect(src).toContain('collectTurnDeliverables(messages, childDeliverables)')
+    // render window (head truncation would drop old turns' cards). The
+    // workspace rides along so relative inputs canonicalize (one file, one
+    // row — the conv_20260925211304 double-row regression).
+    expect(src).toContain('collectTurnDeliverables(messages, childDeliverables, { workspaceDir })')
     expect(src).not.toContain('collectTurnDeliverables(renderedSegments')
     expect(src).toContain('<TurnDeliverablesCard')
     // the two mount points: the aboveActions slot for text-ending turns, the

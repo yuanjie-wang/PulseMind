@@ -8,10 +8,10 @@
  */
 import React from 'react'
 import type { Deliverable, DeliverableRow } from './deliverables'
+import { verbCounts } from './deliverables'
 import { baseName, detectFileKind, resolvePreviewPath } from '../../../../shared/preview/file-kind'
 import { usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { useTranslation } from '../../i18n/useTranslation'
-import { toolDisplayName } from './tool-summary'
 
 /** Rows visible before the list scrolls — a summary, not a transcript. */
 export const VISIBLE_ROWS = 8
@@ -91,8 +91,7 @@ export function DeliverableRows({
     >
       {deliverable.rows.map((row) => {
         const { display, absolute } = displayPath(row, workspaceDir)
-        const opCounts = new Map<string, number>()
-        for (const op of row.ops) opCounts.set(op.tool, (opCounts.get(op.tool) ?? 0) + 1)
+        const counts = verbCounts(row.ops)
         const badge = officeBadge(row.path)
         const fromChild = row.fromConvIds.length > 0
         return (
@@ -150,9 +149,9 @@ export function DeliverableRows({
               </span>
             )}
             <span style={{ flexShrink: 0, color: 'var(--pm-text-muted)', fontSize: 11, display: 'inline-flex', gap: 6 }}>
-              {[...opCounts].map(([tool, count]) => (
-                <span key={tool}>
-                  {toolDisplayName(tool, t)} ×{count}
+              {counts.map(({ verb, count }) => (
+                <span key={verb}>
+                  {t(verb === 'create' ? 'deliverables.opCreate' : 'deliverables.opEdit')} ×{count}
                 </span>
               ))}
             </span>

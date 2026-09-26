@@ -15,6 +15,7 @@
 
 import type { AgentMessage, ToolResultBlock, ToolUseBlock } from '../../types/agent'
 import type { Segment } from './message-segments'
+import { resolvePreviewPath } from '../../../../shared/preview/file-kind'
 
 /** Tools whose success writes/edits a file at an input path we can name.
  *  Deliberately NOT `exec` — shell redirections and scripts leave no
@@ -39,8 +40,11 @@ export interface DeliverableOp {
 }
 
 export interface DeliverableRow {
-  /** The path exactly as the model wrote it in `input.file_path` — no
-   *  normalization, no guessing (v1: two spellings are two rows). */
+  /** The path as the model named it, canonicalized: a workspace-relative
+   *  input resolves against `opts.workspaceDir` when the caller knows it, so
+   *  one file written as 「导出时的绝对路径」+「编辑时的相对路径」 is ONE row
+   *  (conv_20260925211304: the same docx showed twice). Unknown workspace →
+   *  the raw string, exactly as before. */
   path: string
   ops: DeliverableOp[]
   lastAt: string
@@ -54,6 +58,38 @@ export interface Deliverable {
   /** Child conversations that produced rows (main session is implicit and
    *  never listed). Titles are attached by the aggregating hook. */
   sources: Array<{ convId: string; title?: string }>
+}
+
+/** The count badge's verb buckets (user ruling 2026-09-26: the card counts
+ *  新增/编辑, never 导出次数). Every FILE_WRITER_TOOLS member names its verb
+ *  here EXCEPT export_document, whose ops still ride the row (they establish
+ *  an export-only file's existence and its lastAt) but are deliberately
+ *  uncounted — a new writer tool joining FILE_WRITER_TOOLS must pick a bucket
+ *  or its ops silently vanish from the badge (pinned by verbCounts tests). */
+const OP_VERB: Partial<Record<string, 'create' | 'edit'>> = {
+  write: 'create',
+  edit: 'edit',
+  docx_edit: 'edit',
+  xlsx_edit: 'edit',
+  pptx_edit: 'edit',
+}
+
+export interface DeliverableVerbCount {
+  verb: 'create' | 'edit'
+  count: number
+}
+
+/** One row's badge counts in display order (新增 first), zero counts dropped —
+ *  an export-only row therefore shows no count at all. */
+export function verbCounts(ops: DeliverableOp[]): DeliverableVerbCount[] {
+  const counts = new Map<DeliverableVerbCount['verb'], number>()
+  for (const op of ops) {
+    const verb = OP_VERB[op.tool]
+    if (!verb) continue
+    counts.set(verb, (counts.get(verb) ?? 0) + 1)
+  }
+  const ordered: DeliverableVerbCount['verb'][] = ['create', 'edit']
+  return ordered.flatMap((verb) => (counts.has(verb) ? [{ verb, count: counts.get(verb)! }] : []))
 }
 
 function extractFilePath(input: unknown): string | null {
@@ -82,10 +118,16 @@ function extractExportedPath(result: ToolResultBlock): string | null {
  *  regardless of which message carries the result (the engine folds a whole
  *  round's results into ONE later user message, and hydration replays the
  *  same shape). The op's time is the RESULT message's — the moment the write
- *  actually completed, not when the call was minted. */
+ *  actually completed, not when the call was minted.
+ *
+ *  `opts.workspaceDir` canonicalizes the dedup key: the executor resolves
+ *  relative file inputs main-side (resolvePreviewPath's own contract), so the
+ *  collector resolves them the same way — otherwise export_document's row
+ *  (keyed on the result's ABSOLUTE path) and docx_edit's row (keyed on the
+ *  RELATIVE input) are two spellings of one file and the card shows it twice. */
 export function collectDeliverables(
   messages: AgentMessage[],
-  opts?: { convId?: string }
+  opts?: { convId?: string; workspaceDir?: string }
 ): Deliverable {
   const resultMap = new Map<string, { result: ToolResultBlock; at: string }>()
   for (const message of messages) {
@@ -110,6 +152,7 @@ export function collectDeliverables(
         path = extractExportedPath(paired.result) ?? path
       }
       if (!path) continue
+      path = resolvePreviewPath(path, opts?.workspaceDir)
       const op: DeliverableOp = { tool: use.name, at: paired.at, ok: true }
       const existing = byPath.get(path)
       if (existing) {
@@ -215,7 +258,8 @@ const isTurnStart = (message: AgentMessage): boolean =>
  *  streaming segment list, so it is not re-paid per streamed token. */
 export function collectTurnDeliverables(
   messages: AgentMessage[],
-  childParts?: ReadonlyMap<string, Deliverable>
+  childParts?: ReadonlyMap<string, Deliverable>,
+  opts?: { workspaceDir?: string }
 ): Deliverable[] {
   const slices: AgentMessage[][] = []
   for (const message of messages) {
@@ -223,7 +267,7 @@ export function collectTurnDeliverables(
     else slices[slices.length - 1].push(message)
   }
   return slices.map((slice) => {
-    const parts: Deliverable[] = [collectDeliverables(slice)]
+    const parts: Deliverable[] = [collectDeliverables(slice, { workspaceDir: opts?.workspaceDir })]
     const seen = new Set<string>()
     for (const subConvId of spawnTargets(slice)) {
       if (seen.has(subConvId)) continue

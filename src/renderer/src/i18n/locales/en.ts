@@ -308,6 +308,8 @@ const en: TranslationDict = {
     preview: 'Preview',
     from: 'From: {{name}}',
     honestBoundary: 'Only direct writes/edits are listed; files produced indirectly by commands are not',
+    opCreate: 'Added',
+    opEdit: 'Edited',
   },
 
   htmlCard: {

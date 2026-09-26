@@ -4,7 +4,8 @@ import {
   collectDeliverables,
   collectTurnDeliverables,
   mergeDeliverables,
-  segmentTurnPlacement
+  segmentTurnPlacement,
+  verbCounts
 } from '../src/renderer/src/components/chat/deliverables'
 import { groupMessages } from '../src/renderer/src/components/chat/message-segments'
 import type { AgentMessage, ContentBlock } from '../src/renderer/src/types/agent'
@@ -35,6 +36,44 @@ describe('FILE_WRITER_TOOLS', () => {
     expect([...FILE_WRITER_TOOLS].sort()).toEqual(['docx_edit', 'edit', 'export_document', 'pptx_edit', 'write', 'xlsx_edit'])
     expect(FILE_WRITER_TOOLS.has('exec')).toBe(false)
     expect(FILE_WRITER_TOOLS.has('read')).toBe(false)
+  })
+})
+
+describe('verbCounts', () => {
+  // The badge counts 新增/编辑 only (user ruling 2026-09-26): export ops ride
+  // the row but are never counted, and every other writer tool owns a bucket.
+  it('counts export_document ops as NOTHING — the conv_20260925211304 badge shape', () => {
+    const ops = [
+      ...Array.from({ length: 2 }, (_, i) => ({ tool: 'export_document', at: `t${i}`, ok: true })),
+      ...Array.from({ length: 7 }, (_, i) => ({ tool: 'docx_edit', at: `e${i}`, ok: true }))
+    ]
+    expect(verbCounts(ops)).toEqual([{ verb: 'edit', count: 7 }])
+  })
+
+  it('buckets write as 新增 and the edit family as 编辑, in that order, zeros dropped', () => {
+    expect(verbCounts([{ tool: 'write', at: 't', ok: true }])).toEqual([{ verb: 'create', count: 1 }])
+    expect(
+      verbCounts([
+        { tool: 'edit', at: 't', ok: true },
+        { tool: 'docx_edit', at: 't', ok: true },
+        { tool: 'xlsx_edit', at: 't', ok: true },
+        { tool: 'pptx_edit', at: 't', ok: true }
+      ])
+    ).toEqual([{ verb: 'edit', count: 4 }])
+    expect(verbCounts([{ tool: 'write', at: 't', ok: true }, { tool: 'edit', at: 't', ok: true }])).toEqual([
+      { verb: 'create', count: 1 },
+      { verb: 'edit', count: 1 }
+    ])
+    // export-only row: the badge shows nothing at all
+    expect(verbCounts([{ tool: 'export_document', at: 't', ok: true }])).toEqual([])
+  })
+
+  it('covers every FILE_WRITER_TOOLS member — a new writer must pick a bucket', () => {
+    for (const tool of FILE_WRITER_TOOLS) {
+      const counts = verbCounts([{ tool, at: 't', ok: true }])
+      if (tool === 'export_document') expect(counts).toEqual([])
+      else expect(counts).toHaveLength(1)
+    }
   })
 })
 
@@ -189,6 +228,43 @@ describe('collectDeliverables', () => {
     const d = collectDeliverables(messages, { convId: 'sub_1' })
     expect(d.rows[0].fromConvIds).toEqual(['sub_1'])
     expect(d.sources).toEqual([{ convId: 'sub_1' }])
+  })
+
+  it('ONE row for a file the turn exported (absolute result path) AND edited (relative input)', () => {
+    // conv_20260925211304 regression: export_document keyed its row on the
+    // result's ABSOLUTE path while docx_edit keyed on the RELATIVE input —
+    // two rows, both displaying the same name. Relative inputs resolve
+    // against the workspace (the same resolution the click-preview uses),
+    // so the spellings collapse and the ops count in one row.
+    const exported = (path: string): ContentBlock =>
+      ({ type: 'tool_result', tool_use_id: 'u1', content: `Exported ${path} (12 KB)` })
+    const messages = [
+      msg('a1', 'assistant', T0, [
+        use('u1', 'export_document', { source: { format: 'docx' }, file_path: '成都旅游攻略-3天2晚.docx' }),
+        use('u2', 'docx_edit', { file_path: '成都旅游攻略-3天2晚.docx', ops: [] })
+      ]),
+      msg('u1', 'user', T1, [
+        exported('/Users/wangyuanjie/.pulsemind/workspace/20260925211304/成都旅游攻略-3天2晚.docx'),
+        result('u2')
+      ])
+    ]
+    const d = collectDeliverables(messages, {
+      workspaceDir: '/Users/wangyuanjie/.pulsemind/workspace/20260925211304'
+    })
+    expect(d.rows).toHaveLength(1)
+    expect(d.rows[0].path).toBe('/Users/wangyuanjie/.pulsemind/workspace/20260925211304/成都旅游攻略-3天2晚.docx')
+    expect(d.rows[0].ops.map((o) => o.tool)).toEqual(['export_document', 'docx_edit'])
+  })
+
+  it('resolves relative inputs against workspaceDir; without it they pass through raw', () => {
+    const messages = [
+      msg('a1', 'assistant', T0, [use('u1', 'write', { file_path: 'notes/a.md' })]),
+      msg('u1', 'user', T1, [result('u1')])
+    ]
+    const resolved = collectDeliverables(messages, { workspaceDir: '/home/u/.pulsemind/workspace/c1' })
+    expect(resolved.rows[0].path).toBe('/home/u/.pulsemind/workspace/c1/notes/a.md')
+    // Callers without a workspace (child hydration) keep the raw string.
+    expect(collectDeliverables(messages).rows[0].path).toBe('notes/a.md')
   })
 })
 

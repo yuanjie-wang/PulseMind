@@ -17,7 +17,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentStatus } from '../types/agent'
-import { collectDeliverables, spawnTargets, type Deliverable } from '../components/chat/deliverables'
+import { collectDeliverables, spawnTargets, type Deliverable, type DeliverableRow } from '../components/chat/deliverables'
 
 /** spawn depth cap — main → child → grand → great-grand. A defense line, not
  *  a semantic (spawn chains deeper than this are not a thing the product has). */

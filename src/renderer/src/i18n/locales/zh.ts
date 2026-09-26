@@ -305,6 +305,8 @@ const zh = {
     preview: '预览',
     from: '来自：{{name}}',
     honestBoundary: '仅统计直接写入/编辑的文件；命令行间接产物不在此列',
+    opCreate: '新增',
+    opEdit: '编辑',
   },
 
   htmlCard: {
