@@ -46,3 +46,33 @@ export function resolveTitleBarOverlayColors(theme: string): TitleBarOverlayColo
     ? { color: '#141414', symbolColor: '#CCCCCC' }
     : { color: '#FFFFFF', symbolColor: '#333333' }
 }
+
+/**
+ * Blend overlay colours as they would appear under a black mask of `alpha`
+ * painted over the header (a global modal's dim layer). The caption buttons are
+ * drawn by the OS ON TOP of the web content, so the mask can never dim them —
+ * without this they stay at full brightness over a dimmed header while a modal
+ * is open (Windows: the buttons 穿帮 through the 弹窗遮罩). The renderer is the
+ * one side that knows a mask is open; it reports the combined alpha and main
+ * repaints the overlay with these pre-dimmed colours. Masks are black in every
+ * case that matters (antd's colorBgMask `rgba(0,0,0,0.45)`, hand-rolled
+ * overlays like the image viewer's 0.85), so one alpha is the whole story.
+ * `alpha` is clamped to [0, 1]; 0 returns the input colours unchanged.
+ */
+export function dimTitleBarOverlayColors(
+  colors: TitleBarOverlayColors,
+  alpha: number,
+): TitleBarOverlayColors {
+  // Non-finite alpha (a bridge carrying garbage) must read as "no mask", not
+  // paint `NaN` hex onto the window chrome.
+  const a = Number.isFinite(alpha) ? Math.min(1, Math.max(0, alpha)) : 0
+  if (a === 0) return colors
+  const dim = (hex: string): string => {
+    const ch = (start: number): string =>
+      Math.round(Number.parseInt(hex.slice(start, start + 2), 16) * (1 - a))
+        .toString(16)
+        .padStart(2, '0')
+    return `#${ch(1)}${ch(3)}${ch(5)}`
+  }
+  return { color: dim(colors.color), symbolColor: dim(colors.symbolColor) }
+}

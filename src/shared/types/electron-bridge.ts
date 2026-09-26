@@ -272,6 +272,11 @@ export interface ElectronAPI {
   // App / Platform Info
   getPlatformInfo: () => Promise<PlatformInfo>
   getWindowControls: () => WindowControlsLayout
+  /** Combined alpha of the full-window masks currently open (0 = none), fed by
+   *  the renderer's mask watcher (utils/title-bar-mask.ts). The OS draws the
+   *  caption buttons above the web content, so main repaints them pre-dimmed —
+   *  otherwise they stay at full brightness over a modal's dimmed header. */
+  setTitleBarMaskAlpha: (alpha: number) => void
 
   // ── Projects / conversation bindings (PLAN-0.4.0 M3) ──
   projectList: () => Promise<Project[]>

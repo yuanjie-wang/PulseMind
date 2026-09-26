@@ -173,6 +173,14 @@ export class BrowserWindow {
   private windowOpenHandler: ((details: { url: string }) => { action: string }) | null = null
   private willNavigateListener: ((details: { url: string; preventDefault: () => void }) => void) | null = null
   readonly windowOpenDecisions: Array<{ url: string; action: string }> = []
+  /** Every `setTitleBarOverlay` repaint, in order — the caption-button
+   *  theme × mask blend asserts against this (tests/title-bar-mask.test.ts). */
+  readonly overlayUpdates: Array<{ color: string; symbolColor: string; height: number }> = []
+
+  setTitleBarOverlay(overlay: { color: string; symbolColor: string; height: number }): void {
+    this.overlayUpdates.push(overlay)
+  }
+
   readonly webContents = {
     setWindowOpenHandler: (handler: (details: { url: string }) => { action: string }): void => {
       this.windowOpenHandler = handler

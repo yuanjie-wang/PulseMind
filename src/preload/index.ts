@@ -31,6 +31,9 @@ const electronAPI = {
   // Window chrome. Static for the process lifetime, so the renderer can reserve room
   // for the native window controls synchronously on first paint.
   getWindowControls: (): WindowControlsLayout => resolveWindowControlsLayout(process.platform),
+  // Mask watcher → native caption buttons pre-dimmed while a global modal is
+  // open. Fire-and-forget: it is a visual state, not a request with a reply.
+  setTitleBarMaskAlpha: (alpha: number): void => ipcRenderer.send(IPC_CHANNELS.WINDOW_SET_TITLE_BAR_MASK, alpha),
 
   // Debug
   // ── Projects (welcome page picker; management UI removed) ──

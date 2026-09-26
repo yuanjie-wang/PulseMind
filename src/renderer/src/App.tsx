@@ -47,6 +47,7 @@ import { conversationKeyOf } from '../../shared/conversation-key'
 import { NotifyBridge } from './utils/notify'
 import { reportSilentFailure } from './utils/notify-core'
 import { installFileDropGuard } from './utils/file-drop-guard'
+import { startTitleBarMaskWatcher } from './utils/title-bar-mask'
 import { buildAntdTheme } from './theme/tokens'
 import { resolveThemePreference, type ThemePreference } from './theme/palette'
 import { applyThemeAttr, readThemeMirror, writeThemeMirror } from './theme/dom'
@@ -454,6 +455,14 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // The composer opts in itself (its dragover stopPropagates, so this guard's
   // later dropEffect='none' write never overwrites its 'copy').
   useEffect(() => installFileDropGuard(window), [])
+
+  // ── Caption buttons vs. modal masks ──
+  // The OS draws the Windows/Linux window buttons above every web surface, so a
+  // global modal's dim layer can never dim them (穿帮 over a dimmed header). The
+  // watcher reports the combined mask alpha; main repaints the overlay blended
+  // to the same darkness. Mounted once here so every antd Modal/Drawer/image
+  // preview in the tree is covered without per-dialog wiring.
+  useEffect(() => startTitleBarMaskWatcher(), [])
 
   // Plan panel scroll-to-message
   const [planScrollToMsgId, setPlanScrollToMsgId] = useState<string | null>(null)

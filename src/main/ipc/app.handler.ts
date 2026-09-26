@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process'
 import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR, TOOLS_DIR } from '../storage'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
 import { safeExternalUrl } from '../utils/external-url'
+import { setTitleBarMaskAlpha } from '../window-chrome'
 
 export interface PlatformInfo {
   platform: string
@@ -56,6 +57,14 @@ export function notifyResume(win: BrowserWindow, timeoutMs: number, fallback: ()
 }
 
 export function registerAppHandlers(): void {
+  // The renderer's mask watcher reports the combined alpha of the full-window
+  // masks currently open (fire-and-forget — a visual state has no reply). The
+  // blend itself lives in window-chrome (theme × alpha → overlay colours), so
+  // a theme save racing a modal open still repaints both halves correctly.
+  ipcMain.on(IPC_CHANNELS.WINDOW_SET_TITLE_BAR_MASK, (event, alpha: number) => {
+    setTitleBarMaskAlpha(alpha, BrowserWindow.fromWebContents(event.sender))
+  })
+
   ipcMain.handle(IPC_CHANNELS.APP_GET_PLATFORM_INFO, async (): Promise<PlatformInfo> => {
     const p = platform()
     const info: PlatformInfo = {

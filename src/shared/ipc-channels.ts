@@ -17,6 +17,11 @@ export const IPC_CHANNELS = {
   // 原生菜单/加速键 → 渲染层动作（菜单点击或 before-input fallback 命中后推送）
   MENU_ACTION: 'app:menu-action',
 
+  // ── Window chrome ──
+  // 渲染层遮罩观察器上报「当前全屏遮罩的合成 alpha」→ 主进程把原生窗口按钮
+  // 预混到同等暗度（OS 绘制的按钮在遮罩之上，遮罩盖不暗它们）
+  WINDOW_SET_TITLE_BAR_MASK: 'window:set-title-bar-mask',
+
   // ── LLM ──
   // 设置页「测试连接」：main 侧对 provider 发一次最小非流式请求
   LLM_TEST_CONNECTION: 'llm:test-connection',

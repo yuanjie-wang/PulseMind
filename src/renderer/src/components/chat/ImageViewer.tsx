@@ -123,6 +123,11 @@ export function ImageViewer({
 
   return (
     <div
+      // Marks this hand-rolled overlay to the caption-button mask watcher
+      // (utils/title-bar-mask.ts) — it dims the whole window like an antd mask
+      // does, so the native window buttons must pre-dim with it too. The 0.85
+      // above is read from computed style there; no alpha is duplicated.
+      data-pm-mask=""
       style={{
         position: 'fixed',
         inset: 0,
