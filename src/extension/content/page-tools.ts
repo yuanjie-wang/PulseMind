@@ -2,23 +2,27 @@
  * `page_*` action executors, content-script side (PLAN-browser-extension M2.3).
  *
  * Locates elements through the `selectorMap` that the last `page_get_content`
- * produced, then clicks / types / selects / scrolls them. Every write result
- * carries a staleness warning: indices are only rebuilt by `page_get_content`,
- * so acting twice in a row on stale indices is a real failure mode.
+ * produced, then clicks / types / selects / scrolls them. Indices are
+ * PERSISTENT refs (page-tree.ts page memory): an element keeps its number for
+ * the life of the page, so the model can chain actions across reads without
+ * re-reading, and a removed element fails loudly through the `isConnected`
+ * guard instead of silently doing nothing. `page_get_content` takes
+ * `delta: true` to print only what changed since the previous read.
  *
  * Ported from Anywhere `content/dom-tools.ts` with three additions: a real
  * pointer/mouse event sequence for clicks, `page_select` option matching by
  * value/text/label, and the truncation flag from the DOM pipeline.
  */
-import { buildDomTree } from './page-tree'
+import { buildDomTree, resetPageAnalysisState } from './page-tree'
 import { isCspEvalError, runInPage, serializeResult } from './page-js'
 import type { PageToolOutcome } from '../bridge'
 
 /** Elements of the most recent `page_get_content`, keyed by the page URL they
- *  were built for — a navigation invalidates them wholesale. */
+ *  were built for — an SPA URL change invalidates them wholesale; a real
+ *  navigation tears the content script (and the page memory) down with it. */
 let cached: { map: Map<number, Element>; url: string } | null = null
 
-const STALE_HINT = '（若页面上一步操作已改变布局，请重新调用 page_get_content 获取新索引）'
+const STALE_HINT = '（索引在页面存续期间保持稳定；如报错失效或想查看页面变化，请重新调用 page_get_content，传 delta:true 只返回增量）'
 
 function elementAt(index: unknown): HTMLElement {
   const i = Number(index)
@@ -26,8 +30,14 @@ function elementAt(index: unknown): HTMLElement {
   const el = getSelectorMap().get(i)
   if (!el) {
     throw new Error(
-      `索引 ${i} 不存在或已失效——请先调用 page_get_content 获取当前页面状态（索引会在每次分析后重建）`,
+      `索引 ${i} 不存在或已失效——请先调用 page_get_content 获取当前页面状态（索引在页面存续期间稳定，跳转后从新页面重新编号）`,
     )
+  }
+  // The map holds strong references, so a removed element would otherwise stay
+  // actionable: clicking a detached node is a silent no-op, which is exactly
+  // the "clicked and nothing happened" failure this guard turns loud.
+  if (!el.isConnected) {
+    throw new Error(`索引 ${i} 指向的元素已从页面移除——请重新调用 page_get_content 获取当前页面状态`)
   }
   return el as HTMLElement
 }
@@ -55,6 +65,7 @@ export function pageGetContent(args: Record<string, unknown>): string {
   const expansion = raw === undefined || raw === null ? 0 : Number(raw)
   const { text, selectorMap } = buildDomTree(document, {
     viewportExpansion: Number.isFinite(expansion) ? expansion : 0,
+    delta: args?.delta === true,
   })
   cached = { map: selectorMap, url: location.href }
   return text
@@ -78,7 +89,7 @@ export function pageScroll(args: Record<string, unknown>): string {
   } else {
     window.scrollBy({ top: delta, behavior: 'instant' as ScrollBehavior })
   }
-  return `已滚动 ${target} ${delta > 0 ? '向下' : '向上'} ${Math.abs(delta)}px。位置变化后请再次调用 page_get_content 查看新内容。`
+  return `已滚动 ${target} ${delta > 0 ? '向下' : '向上'} ${Math.abs(delta)}px。位置变化后请再次调用 page_get_content 查看新露出的元素（可传 delta:true 只取增量）。`
 }
 
 export function pageWait(args: Record<string, unknown>): Promise<string> {
@@ -220,8 +231,13 @@ async function dispatchPageTool(tool: string, args: Record<string, unknown>): Pr
   }
 }
 
-/** Drop the cached selectorMap — the worker calls this after a write so a
- *  detached-element reuse cannot silently act on a page that moved on. */
-export function invalidateSelectorMap(): void {
+/** Forget everything known about the current page: the cached index map and
+ *  the persistent ref / delta baseline in page-tree. A real navigation gives
+ *  the content script fresh module state; this is the explicit equivalent for
+ *  tests and probes. (The service worker needs no invalidate-after-write call:
+ *  stable indices across writes are the point, and a removed element fails
+ *  loudly through `elementAt`'s `isConnected` guard.) */
+export function resetPageToolState(): void {
   cached = null
+  resetPageAnalysisState()
 }

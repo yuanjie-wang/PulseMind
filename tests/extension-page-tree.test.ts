@@ -13,13 +13,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAX_NODES, buildDomTree } from '../src/extension/content/page-tree'
 import {
-  invalidateSelectorMap,
   pageBack,
   pageClick,
   pageGetContent,
   pageInput,
   pageSelect,
   pageWait,
+  resetPageToolState,
   runPageTool,
 } from '../src/extension/content/page-tools'
 import { isCspEvalError, normalizeFunctionBody, serializeResult } from '../src/extension/content/page-js'
@@ -34,10 +34,15 @@ function look(): string {
   return pageGetContent({})
 }
 
+/** The delta-flavoured read. */
+function lookDelta(): string {
+  return pageGetContent({ delta: true })
+}
+
 describe('page-tree', () => {
   beforeEach(() => {
     mount('')
-    invalidateSelectorMap()
+    resetPageToolState()
   })
 
   it('numbers interactive elements and exposes the selectorMap', () => {
@@ -113,6 +118,117 @@ describe('page-tree', () => {
   })
 })
 
+describe('page-tree stable indices and delta reads', () => {
+  beforeEach(() => {
+    mount('')
+    resetPageToolState()
+  })
+
+  /** Static filler so a delta stays below the too-large fallback ratio — the
+   *  ratio is its own test below; these cases need a delta to actually render. */
+  const filler = (n: number): string =>
+    `<div>${Array.from({ length: n }, (_, i) => `<button id="s${i}">静态${i}</button>`).join('')}</div>`
+
+  it('keeps an element index stable across reads, actions and insertions', () => {
+    mount('<button id="a">A</button>')
+    expect(look()).toContain('[1]<button')
+    document.body.insertAdjacentHTML('beforeend', '<button id="b">B</button>')
+    const second = look()
+    expect(second).toContain('[1]<button') // a keeps its number
+    expect(second).toContain('*[2]<button') // b is numbered for the first time
+    pageClick({ index: 1 }) // acting between reads changes nothing about refs
+    const third = look()
+    expect(third).toContain('[1]<button')
+    expect(third).toContain('[2]<button') // b is no longer new
+    expect(third).not.toContain('*[')
+  })
+
+  it('never hands a removed element number to a different element', () => {
+    mount('<button id="a">A</button>')
+    look()
+    mount('<button id="b">B</button>') // a is gone from the document entirely
+    const text = look()
+    expect(text).not.toMatch(/\[1\]</) // 1 was retired, not reused
+    expect(text).toContain('*[2]<button')
+  })
+
+  it('fails loudly when acting on a removed element instead of a silent no-op', () => {
+    mount('<button id="a">A</button>')
+    look()
+    document.getElementById('a')!.remove()
+    expect(() => pageClick({ index: 1 })).toThrow(/已从页面移除/)
+  })
+
+  it('resetPageToolState mints numbers from 1 again (the test-reset contract)', () => {
+    mount('<button id="a">A</button>')
+    look()
+    resetPageToolState()
+    mount('<button id="z">Z</button>')
+    expect(look()).toContain('[1]<button')
+  })
+
+  it('delta read on an unchanged page reports zero changes and valid indices', () => {
+    mount(`${filler(4)}<input id="q" type="text" placeholder="搜索"/>`)
+    look()
+    const delta = lookDelta()
+    expect(delta).toContain('[增量视图]')
+    expect(delta).toContain('无变化')
+    expect(delta).not.toMatch(/^[+~-] /m)
+  })
+
+  it('delta read lists added, changed and removed elements with markers', () => {
+    mount(`${filler(10)}<button id="a">A</button><button id="b">B</button>`)
+    look()
+    document.getElementById('b')!.remove()
+    document.getElementById('a')!.setAttribute('aria-expanded', 'true')
+    document.body.insertAdjacentHTML('beforeend', '<button id="c">C</button>')
+
+    const delta = lookDelta()
+    expect(delta).toContain('[增量视图]')
+    // Serialized lines carry their DOM-depth tab, exactly as in the full view.
+    expect(delta).toContain('~ \t[11]<button aria-expanded=true id=a') // attribute changed
+    expect(delta).toContain('+ \t*[13]<button id=c') // newly numbered
+    expect(delta).toContain('- \t[12]<button id=b>B />（已消失）') // removed
+    expect(delta).toContain('未变化的 10 个元素') // the filler is not listed
+    expect(delta).not.toContain('id=s0') // unchanged elements stay out of the body
+  })
+
+  it('delta lists new plain text that appeared outside interactive elements', () => {
+    mount(`${filler(10)}<button id="a">A</button><div id="feed">第一版</div>`)
+    look()
+    document.getElementById('feed')!.textContent = '第一版 第二版'
+
+    const delta = lookDelta()
+    expect(delta).toContain('[增量视图]')
+    expect(delta).toContain('+ \t第一版 第二版')
+    expect(delta).toContain('- \t第一版')
+  })
+
+  it('delta falls back to the full view after navigation or with different scoping', () => {
+    mount('<button id="a">A</button>')
+    look()
+    // SPA navigation: same document, different URL — the baseline cannot be trusted.
+    vi.spyOn(window, 'location', 'get').mockReturnValue({ href: 'https://elsewhere.test/' } as Location)
+    const afterNav = lookDelta()
+    expect(afterNav).not.toContain('[增量视图]')
+    expect(afterNav).toContain('[1]<button') // full view, a still holds its ref
+    vi.restoreAllMocks()
+
+    look() // re-baseline under the real URL
+    const otherScope = pageGetContent({ delta: true, viewportExpansion: -1 })
+    expect(otherScope).not.toContain('[增量视图]')
+  })
+
+  it('delta falls back to the full view when listing changes costs more than the full body', () => {
+    mount(`<div>${Array.from({ length: 5 }, (_, i) => `<button id="b${i}">按钮${i}</button>`).join('')}</div>`)
+    look()
+    mount(`<div>${Array.from({ length: 30 }, (_, i) => `<button id="n${i}">新按钮${i}</button>`).join('')}</div>`)
+    const flooded = lookDelta()
+    expect(flooded).not.toContain('[增量视图]')
+    expect(flooded).toContain('id=n29')
+  })
+})
+
 /** The rest of the jsdom suite runs with `hasLayout()` failing, i.e. every
  *  geometry check short-circuits. Stubbing just the probe (`offsetWidth`) and
  *  client rects turns the geometry path back on, which pins the two defects the
@@ -137,7 +253,7 @@ describe('page-tree geometry', () => {
 
   beforeEach(() => {
     mount('')
-    invalidateSelectorMap()
+    resetPageToolState()
   })
 
   afterEach(() => {
@@ -212,7 +328,7 @@ describe('page-tree geometry', () => {
 describe('page-tools', () => {
   beforeEach(() => {
     mount('')
-    invalidateSelectorMap()
+    resetPageToolState()
   })
 
   it('renders a compact text view and then acts on the returned indices', () => {

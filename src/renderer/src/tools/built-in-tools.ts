@@ -1078,7 +1078,7 @@ export const PAGE_BUILT_IN_TOOLS: ToolDefinition[] = [
   {
     name: 'page_get_content',
     description:
-      'Read the current page as compact text with [index] markers on interactive elements. Call this FIRST, and again whenever the page may have changed — indices are rebuilt on every call.',
+      'Read the current page as compact text with [index] markers on interactive elements. Call this FIRST. Indices are stable while the page lives — you do not need to re-read before acting on an index you already hold. Follow-up reads can pass delta:true to return only what changed.',
     category: 'page',
     input_schema: {
       type: 'object',
@@ -1087,6 +1087,11 @@ export const PAGE_BUILT_IN_TOOLS: ToolDefinition[] = [
           type: 'integer',
           description:
             'Extra pixels around the viewport to include (default 0). Set -1 to analyze the whole page instead of just the visible part.',
+        },
+        delta: {
+          type: 'boolean',
+          description:
+            'Return only the changes since the previous read (added/changed/removed elements, new text); unchanged elements keep their valid indices. Falls back to the full view on the first call, after navigation, or when the changes are too large.',
         },
       },
       required: [],

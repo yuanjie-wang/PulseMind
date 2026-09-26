@@ -4,10 +4,16 @@
  *
  * Flat-DOM-tree approach (after page-agent):
  *   - walk visible elements, build a flat DOM tree
- *   - number the interactive ones [n]
+ *   - number the interactive ones [n] — numbers are PERSISTENT refs: an element
+ *     keeps the index it was first numbered with for the life of the page
+ *     (content-script module state), so a follow-up read after a click does not
+ *     renumber the world and the model can act on indices it already holds
  *   - serialize to compact text (attribute whitelist + dedupe + descendant text)
  *   - selectorMap: index → element reference, so the action executors can act
  *     without xpath
+ *   - `delta: true` re-walks (geometry must be recomputed) but prints only what
+ *     changed since the last build — added/changed/removed refs plus new plain
+ *     text — falling back to the full view when there is no comparable baseline
  *
  * jsdom compatibility: when no layout engine is present (the probe fails) the
  * rect / elementFromPoint geometry checks are skipped and the pure DOM
@@ -90,11 +96,46 @@ const OWN_DOM_ATTR = 'data-pulsemind-panel'
 
 // ── WeakMap caches ───────────────────────────────────────────────────
 
-const rectCache = new WeakMap<Element, DOMRect | null>()
-const styleCache = new WeakMap<Element, CSSStyleDeclaration | null>()
-/** Elements already seen in a previous build of this document: anything absent
- *  from it is new. Keyed by element, so it cannot leak across page loads. */
-const seenElements = new WeakMap<Element, true>()
+// Reassigned at the top of every build (see buildDomTree): the caches exist to
+// dedupe the several rect/style reads one element gets within a single walk.
+// Kept across builds they go stale the moment the page scrolls or reflows, and
+// isTopElement then hit-tests OLD viewport coordinates against the live page —
+// elements silently lose (or keep) their numbers on every re-read after a
+// scroll. Found by the delta probe: an action → re-read is the common agent
+// loop, so per-build freshness is the contract.
+let rectCache = new WeakMap<Element, DOMRect | null>()
+let styleCache = new WeakMap<Element, CSSStyleDeclaration | null>()
+
+// ── Page memory: persistent refs + the delta baseline ────────────────
+
+/** One serialized output line. `ref` marks a line that carries an interactive
+ *  element's `[n]` marker — the delta compares those per-ref exactly and diffs
+ *  everything else as plain text. */
+interface SerializedLine {
+  text: string
+  ref?: number
+}
+
+/** What this content script remembers about the page it has analyzed: the
+ *  persistent ref registry (element → the index minted when first numbered)
+ *  and the baseline a `delta` read diffs against. Module state, so a real
+ *  navigation starts a fresh page; `resetPageAnalysisState` is the explicit
+ *  equivalent for tests and probes. */
+interface PageMemory {
+  refs: WeakMap<Element, number>
+  nextRefId: number
+  baseline: { url: string; expansion: number; lines: SerializedLine[] } | null
+}
+
+const newPageMemory = (): PageMemory => ({ refs: new WeakMap(), nextRefId: 0, baseline: null })
+let memory: PageMemory = newPageMemory()
+
+/** Drop the page memory (persistent refs + delta baseline). A real page gets
+ *  this for free when the content script is torn down on navigation; tests and
+ *  probes call it between cases. */
+export function resetPageAnalysisState(): void {
+  memory = newPageMemory()
+}
 
 // ── Layout probe ─────────────────────────────────────────────────────
 
@@ -357,13 +398,12 @@ function getAttributes(el: Element): Record<string, string> | undefined {
 
 interface BuildState {
   map: Record<string, DomNode>
-  counter: number
   visitedShadow: Set<ShadowRoot>
   truncated: boolean
 }
 
 function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: number): FlatDomTree {
-  const state: BuildState = { map: {}, counter: 0, visitedShadow: new Set(), truncated: false }
+  const state: BuildState = { map: {}, visitedShadow: new Set(), truncated: false }
   let nodeCounter = 0
 
   function addNode(el: Node, parentId: string | null): string {
@@ -399,9 +439,17 @@ function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: num
     const scroll = scrollableSize(element)
 
     if (highlight) {
-      state.counter += 1
-      const isNew = !seenElements.has(element)
-      if (isNew) seenElements.set(element, true)
+      // The ref is minted the first time this element is numbered and then
+      // never changes — the star marks exactly that minting. A later build
+      // reuses it, so indices survive DOM churn (and a removed element's
+      // number is retired, never handed to a different element).
+      let refId = memory.refs.get(element)
+      const isNew = refId === undefined
+      if (isNew) {
+        memory.nextRefId += 1
+        refId = memory.nextRefId
+        memory.refs.set(element, refId)
+      }
 
       state.map[id] = {
         type: 'interactive',
@@ -410,7 +458,7 @@ function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: num
         children: [],
         isVisible: true,
         isInteractive: true,
-        highlightIndex: state.counter,
+        highlightIndex: refId,
         isNew,
         parentId,
         scrollable: scroll ?? undefined,
@@ -468,8 +516,8 @@ function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: num
 
 // ── Serialization ────────────────────────────────────────────────────
 
-function flatTreeToString(tree: FlatDomTree): string {
-  const result: string[] = []
+function flatTreeToLines(tree: FlatDomTree): SerializedLine[] {
+  const result: SerializedLine[] = []
 
   /** An interactive ancestor already prints this text on its own `[n]` line. */
   function hasInteractiveAncestor(nodeId: string): boolean {
@@ -490,7 +538,7 @@ function flatTreeToString(tree: FlatDomTree): string {
       if (hasInteractiveAncestor(nodeId)) return
       const parent = node.parentId ? tree.map[node.parentId] : null
       if (parent && (parent.type === 'element' || parent.type === 'interactive') && parent.isVisible && parent.isTop !== false) {
-        result.push(`${'\t'.repeat(depth)}${node.text}`)
+        result.push({ text: `${'\t'.repeat(depth)}${node.text}` })
       }
       return
     }
@@ -500,15 +548,15 @@ function flatTreeToString(tree: FlatDomTree): string {
       const scrollAttr = node.scrollable ? ` data-scrollable="x=${node.scrollable.x},y=${node.scrollable.y}"` : ''
       const prefix = node.isNew ? `*[${node.highlightIndex}]` : `[${node.highlightIndex}]`
       const text = getAllTextTillNextClickable(nodeId, tree)
-      result.push(`${'\t'.repeat(depth)}${prefix}<${node.tagName}${attrs ? ' ' + attrs : ''}${scrollAttr}>${text} />`)
+      result.push({ text: `${'\t'.repeat(depth)}${prefix}<${node.tagName}${attrs ? ' ' + attrs : ''}${scrollAttr}>${text} />`, ref: node.highlightIndex })
       for (const childId of node.children) processNode(childId, depth + 1)
       return
     }
 
     if (SEMANTIC_TAGS.has(node.tagName)) {
-      result.push(`${'\t'.repeat(depth)}<${node.tagName}>`)
+      result.push({ text: `${'\t'.repeat(depth)}<${node.tagName}>` })
       for (const childId of node.children) processNode(childId, depth + 1)
-      result.push(`${'\t'.repeat(depth)}</${node.tagName}>`)
+      result.push({ text: `${'\t'.repeat(depth)}</${node.tagName}>` })
       return
     }
 
@@ -520,13 +568,96 @@ function flatTreeToString(tree: FlatDomTree): string {
 
     const attrs = formatAttrs(node.attributes)
     const scrollAttr = node.scrollable ? ` data-scrollable="x=${node.scrollable.x},y=${node.scrollable.y}"` : ''
-    result.push(`${'\t'.repeat(depth)}<${node.tagName}${attrs ? ' ' + attrs : ''}${scrollAttr}>`)
+    result.push({ text: `${'\t'.repeat(depth)}<${node.tagName}${attrs ? ' ' + attrs : ''}${scrollAttr}>` })
     for (const childId of node.children) processNode(childId, depth + 1)
-    result.push(`${'\t'.repeat(depth)}</${node.tagName}>`)
+    result.push({ text: `${'\t'.repeat(depth)}</${node.tagName}>` })
   }
 
   processNode(tree.rootId, 0)
-  return result.join('\n')
+  return result
+}
+
+// ── Delta reads ──────────────────────────────────────────────────────
+
+interface LineDiff {
+  /** Refs whose line is byte-identical to the baseline. */
+  unchanged: number
+  /** Refs absent from the baseline (minted since, or newly in scope). */
+  added: string[]
+  /** Refs present in both, with a different line (attribute or text changed). */
+  changed: string[]
+  /** Baseline refs that no longer serialize. */
+  removed: string[]
+  addedText: string[]
+  removedText: string[]
+}
+
+function diffLines(next: SerializedLine[], prev: SerializedLine[]): LineDiff {
+  const prevByRef = new Map<number, string>()
+  for (const l of prev) if (l.ref !== undefined) prevByRef.set(l.ref, l.text)
+  const nextByRef = new Map<number, string>()
+  for (const l of next) if (l.ref !== undefined) nextByRef.set(l.ref, l.text)
+
+  const diff: LineDiff = { unchanged: 0, added: [], changed: [], removed: [], addedText: [], removedText: [] }
+  for (const l of next) {
+    if (l.ref === undefined) continue
+    const before = prevByRef.get(l.ref)
+    if (before === undefined) diff.added.push(l.text)
+    else if (before === l.text) diff.unchanged += 1
+    else diff.changed.push(l.text)
+  }
+  for (const [ref, text] of prevByRef) {
+    if (!nextByRef.has(ref)) diff.removed.push(`${text}（已消失）`)
+  }
+
+  /** Lines of `next` beyond the shared multiset of `prev` — order kept,
+   *  duplicates counted, O(n). */
+  const surplus = (nextTexts: string[], prevTexts: string[]): string[] => {
+    const counts = new Map<string, number>()
+    for (const t of prevTexts) counts.set(t, (counts.get(t) ?? 0) + 1)
+    const out: string[] = []
+    for (const t of nextTexts) {
+      const left = counts.get(t) ?? 0
+      if (left > 0) counts.set(t, left - 1)
+      else out.push(t)
+    }
+    return out
+  }
+  const plain = (lines: SerializedLine[]): string[] => lines.filter((l) => l.ref === undefined).map((l) => l.text)
+  diff.addedText = surplus(plain(next), plain(prev))
+  diff.removedText = surplus(plain(prev), plain(next))
+  return diff
+}
+
+/** Past this share of the full body a delta stops being cheaper than the full
+ *  view, and the caller falls back — a diff that lists most of the page is the
+ *  full page plus overhead. */
+const DELTA_FULL_FALLBACK_RATIO = 0.6
+/** Per-section output cap, so one pathological change (a table re-rendering
+ *  row by row) cannot flood the model on its own. */
+const DELTA_MAX_LISTED = 40
+
+/** Render the diff as the delta view's body, or null when the caller should
+ *  print the full body instead. An empty diff still renders — "nothing
+ *  changed, your indices are valid" is exactly what saves the re-read. */
+function renderDelta(diff: LineDiff, totalLines: number): string | null {
+  const listed = diff.added.length + diff.changed.length + diff.removed.length + diff.addedText.length + diff.removedText.length
+  if (listed === 0) {
+    return `[增量视图] 页面自上次读取以来无变化（${diff.unchanged} 个元素一致）。已有索引全部有效，可直接继续操作。`
+  }
+  if (listed > totalLines * DELTA_FULL_FALLBACK_RATIO) return null
+
+  const capped = (lines: string[]): string[] =>
+    lines.length <= DELTA_MAX_LISTED ? lines : [...lines.slice(0, DELTA_MAX_LISTED), `…（其余 ${lines.length - DELTA_MAX_LISTED} 行省略）`]
+  const out: string[] = [
+    `[增量视图] 自上次读取以来的变化。未变化的 ${diff.unchanged} 个元素未列出，其索引仍然有效（首次读取、页面跳转或变化过大时返回全量）。`,
+  ]
+  out.push(...capped(diff.added).map((t) => `+ ${t}`))
+  out.push(...capped(diff.changed).map((t) => `~ ${t}`))
+  out.push(...capped(diff.removed).map((t) => `- ${t}`))
+  out.push(...capped(diff.addedText).map((t) => `+ ${t}`))
+  out.push(...capped(diff.removedText).map((t) => `- ${t}`))
+  return out.join('\n')
 }
 
 // ── Page info ────────────────────────────────────────────────────────
@@ -577,6 +708,12 @@ export interface BuildResult {
 export interface BuildDomTreeOptions {
   /** Viewport margin in px (default 0). -1 disables viewport scoping entirely. */
   viewportExpansion?: number
+  /** Diff against the previous build of the same page: the full walk still
+   *  runs (visibility, occlusion and scrollability are layout facts), but the
+   *  output lists only what changed. Falls back to the full view when there is
+   *  no comparable baseline — first read, URL or `viewportExpansion` changed,
+   *  the walk truncated — or when the diff would cost more than the full body. */
+  delta?: boolean
 }
 
 /**
@@ -592,12 +729,44 @@ export function buildDomTree(root: ParentNode = document, opts?: BuildDomTreeOpt
   const layout = hasLayout(doc)
   const viewportExpansion = opts?.viewportExpansion ?? 0
 
+  rectCache = new WeakMap()
+  styleCache = new WeakMap()
+
   const tree = buildFlatTree(root, layout, viewportExpansion)
-  const content = flatTreeToString(tree)
+  const lines = flatTreeToLines(tree)
+  const content = lines.map((l) => l.text).join('\n')
 
   const selectorMap = new Map<number, Element>()
   for (const node of Object.values(tree.map)) {
     if (node.type === 'interactive') selectorMap.set(node.highlightIndex, node.ref)
+  }
+
+  // The next delta's baseline — refreshed on every build, whatever this call
+  // ends up printing, so a delta always compares against the freshest view.
+  // The `*[n]` star is presentation (minted this build) and must not read as a
+  // change on the next diff, so the baseline stores lines without it.
+  const url = location.href
+  const prevBaseline = memory.baseline
+  memory.baseline = {
+    url,
+    expansion: viewportExpansion,
+    lines: lines.map((l) => (l.ref !== undefined ? { ...l, text: l.text.replace(/^(\t*)\*\[/, '$1[') } : l)),
+  }
+
+  // A delta is only attempted against a comparable baseline: same document,
+  // same scoping (a different expansion numbers a different set, which would
+  // read wholesale as "added"), and a walk not cut short by the node cap —
+  // against a truncated baseline everything past the cap would read as added.
+  let bodyText = content
+  if (
+    opts?.delta === true &&
+    prevBaseline !== null &&
+    !tree.truncated &&
+    prevBaseline.url === url &&
+    prevBaseline.expansion === viewportExpansion
+  ) {
+    const delta = renderDelta(diffLines(lines, prevBaseline.lines), lines.length)
+    if (delta !== null) bodyText = delta
   }
 
   const pi = getPageInfo()
@@ -623,5 +792,9 @@ export function buildDomTree(root: ParentNode = document, opts?: BuildDomTreeOpt
     footerParts.push('[hint] 视口外的元素不带编号——需要操作它们时先 page_scroll 滚动，再调用 page_get_content 取新索引')
   }
 
-  return { text: [header, content, ...footerParts].join('\n'), selectorMap, truncated: tree.truncated }
+  const text = bodyText === content
+    ? [header, content, ...footerParts].join('\n')
+    : [titleLine, pageInfoLine, '', bodyText, '', ...footerParts].join('\n')
+
+  return { text, selectorMap, truncated: tree.truncated }
 }

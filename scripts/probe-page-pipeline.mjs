@@ -194,6 +194,82 @@ check('page_scroll moves the window', scroll.y1 > scroll.y0, `${scroll.y0} → $
 const js = await page.evaluate(() => PMPage.runPageTool('page_execute_js', { script: '() => args.n + 1', args: { n: 41 } }))
 check('page_execute_js binds args by name', js.ok && js.result === '42', js.result ?? js.error)
 
+// ── stable indices + delta reads ─────────────────────────────────────
+// Must run before page_back (that may navigate away). Everything above this
+// point mutated the page only through properties and scrolls — no attribute
+// or text change — so the baseline below is a genuine unchanged snapshot.
+const base = await page.evaluate(() => PMPage.pageGetContent({ viewportExpansion: -1 }))
+const deltaUnchanged = await page.evaluate(() => PMPage.pageGetContent({ delta: true, viewportExpansion: -1 }))
+check(
+  'delta on an unchanged page reports zero changes',
+  deltaUnchanged.includes('[增量视图]') && deltaUnchanged.includes('无变化'),
+  deltaUnchanged.split('\n')[3] ?? '',
+)
+check(
+  'delta on an unchanged page omits every surviving element',
+  !deltaUnchanged.includes(`[${visibleIdx}]<button`),
+  `index [${visibleIdx}] stayed valid and unlisted`,
+)
+
+await page.evaluate(() => {
+  const btn = document.createElement('button')
+  btn.id = 'delta-new'
+  btn.textContent = '增量新按钮'
+  document.body.appendChild(btn)
+  document.getElementById('visible').setAttribute('aria-expanded', 'true')
+  document.getElementById('sel').remove()
+})
+
+// A removed element must fail loudly on its cached index — BEFORE any re-read
+// rebuilds the map and downgrades the failure to "index not found".
+const selOldIdx = indexOf(base, /\[(\d+)\]<select[^>]*id=sel/)
+const removedClick = selOldIdx === null ? { ok: true } : await page.evaluate((i) => PMPage.runPageTool('page_click', { index: i }), selOldIdx)
+check(
+  'a removed element index fails loudly',
+  selOldIdx !== null && !removedClick.ok && /已从页面移除/.test(removedClick.error ?? ''),
+  removedClick.error ?? 'select index not found in baseline',
+)
+
+const deltaChanged = await page.evaluate(() => PMPage.pageGetContent({ delta: true, viewportExpansion: -1 }))
+check('delta lists a newly added element', /\+\s+\*\[\d+\]<button[^>]*id=delta-new/.test(deltaChanged), '')
+check('delta lists a changed element', /~\s+\[\d+\]<button[^>]*aria-expanded=true/.test(deltaChanged), '')
+check(
+  'delta lists a removed element',
+  /-\s+\[\d+\]<select[^>]*id=sel/.test(deltaChanged) && deltaChanged.includes('已消失'),
+  '',
+)
+check(
+  'delta omits elements that did not change',
+  !/\[\d+\]<input[^>]*id=q/.test(deltaChanged),
+  'the untouched input stays out of the diff body',
+)
+
+// The stable-index payoff: act on an index from an OLD read without re-reading,
+// even though the DOM gained and lost elements since.
+const clickedAgain = await page.evaluate((i) => PMPage.runPageTool('page_click', { index: i }), visibleIdx)
+check(
+  'an index from an earlier read still acts after unrelated DOM changes',
+  clickedAgain.ok && (await page.evaluate(() => window.__clicks)) === 2,
+  clickedAgain.result ?? clickedAgain.error,
+)
+
+// Too-large changes fall back to the full view — a diff that lists most of the
+// page is the full page plus overhead.
+await page.evaluate(() => {
+  for (let i = 0; i < 40; i += 1) {
+    const b = document.createElement('button')
+    b.id = `flood-${i}`
+    b.textContent = `洪水按钮 ${i}`
+    document.body.appendChild(b)
+  }
+})
+const flooded = await page.evaluate(() => PMPage.pageGetContent({ delta: true, viewportExpansion: -1 }))
+check(
+  'a too-large delta falls back to the full view',
+  !flooded.includes('[增量视图]') && flooded.includes('id=flood-39'),
+  '',
+)
+
 const back = await page.evaluate(() => PMPage.runPageTool('page_back', {}))
 check('page_back reports the history call', back.ok && /history\.back\(\)/.test(back.result ?? ''), back.result ?? back.error)
 
@@ -210,9 +286,16 @@ await big.addScriptTag({ path: OUT })
 const bigWalk = await big.evaluate(() => {
   const started = performance.now()
   const out = PMPage.pageGetContent({})
-  return { ms: Math.round(performance.now() - started), hasCapWarning: out.includes('节点数超过'), chars: out.length }
+  const deltaOut = PMPage.pageGetContent({ delta: true })
+  return {
+    ms: Math.round(performance.now() - started),
+    hasCapWarning: out.includes('节点数超过'),
+    chars: out.length,
+    deltaIsFull: deltaOut.includes('节点数超过') && !deltaOut.includes('[增量视图]'),
+  }
 })
 check('over-cap page is truncated and labelled', bigWalk.hasCapWarning, `${bigWalk.ms}ms, ${bigWalk.chars} chars`)
+check('a truncated build never reports a delta', bigWalk.deltaIsFull, 'a partial baseline cannot support a diff')
 await big.close()
 
 await browser.close()
