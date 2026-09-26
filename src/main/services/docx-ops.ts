@@ -28,6 +28,7 @@ export interface DocxEditResult {
   error?: string
   results?: Array<{ index: number; op: string; ok: boolean; detail: string }>
   outline?: Array<{ index: number; style: string | null; text: string }>
+  tables?: Array<{ index: number; rows: number; cols: number }>
   warnings?: string[]
   backup?: string
   diff?: string
@@ -60,22 +61,32 @@ export async function svcEditDocx(input: { filePath: string; ops: DocxToolOp[]; 
       // without it the snapshot silently never happened on the main battlefield.
       const sandbox = currentSessionSandbox()
       await snapshotToWorkspace(safePath, sandbox?.workspaceDir ?? input.workspaceDir)
+      // M3 (PLAN-office-expressiveness): op 只带工作区路径，服务层读字节
+      // （IPC 载荷保持 JSON 安全）——扩展名白名单与 deck 同源。applyOps 的
+      // 读图回调是同步契约：异步 reader 会把 Promise 塞进打包器（insert_image
+      // 静默嵌不进图，TS2322 正是这件事的唯一目击者），所以字节在进入
+      // applyOps 前预读、回调里只查表。
+      const imageRequests = input.ops
+        .filter((op): op is Extract<DocxToolOp, { op: 'insert_image' }> => op.op === 'insert_image')
+        .map((op) => op.image)
+      const imageBytes = new Map<string, { ext: string; bytes: Buffer }>()
+      for (const imagePath of [...new Set(imageRequests)]) {
+        const ext = extname(imagePath).toLowerCase().replace('.', '')
+        if (!(DECK_IMAGE_EXTS as readonly string[]).includes('.' + ext)) continue
+        const imgGuard = await guardFsTarget(imagePath, 'read')
+        if (!imgGuard.ok) continue
+        try {
+          // @types/node 的 promise readFile 别名与 package.ts 契约里的宽
+          // Buffer 在新类型下不变式不兼容 —— 字节就是一个普通 Buffer。
+          imageBytes.set(imagePath, { ext, bytes: (await pReadFile(await resolveWritablePath(imagePath))) as Buffer })
+        } catch {
+          /* the sync resolver reports the miss */
+        }
+      }
       let outcome: EditDocxResult
       try {
         outcome = editDocx(original, input.ops, {
-          // M3 (PLAN-office-expressiveness): op 只带工作区路径，服务层读
-          // 字节（IPC 载荷保持 JSON 安全）——扩展名白名单与 deck 同源。
-          resolveImageBytes: async (path) => {
-            const ext = extname(path).toLowerCase().replace('.', '')
-            if (!(DECK_IMAGE_EXTS as readonly string[]).includes('.' + ext)) return null
-            const imgGuard = await guardFsTarget(path, 'read')
-            if (!imgGuard.ok) return null
-            try {
-              return { ext, bytes: await pReadFile(await resolveWritablePath(path)) }
-            } catch {
-              return null
-            }
-          },
+          resolveImageBytes: (path) => imageBytes.get(path) ?? null,
         })
       } catch (err) {
         if (err instanceof OpBatchError) {

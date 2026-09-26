@@ -263,10 +263,12 @@ export const mainHost: PulseHost = {
   knowledgeSetFileBase: async (id: string, baseId: string) => kq.svcSetFileBase(id, baseId),
   knowledgeSetFilesBase: async (ids: string[], baseId: string) => kq.svcSetFilesBase(ids, baseId),
   knowledgeReextract: (id: string) => kq.svcReextract(id),
-  editDocx: async (input: { filePath: string; ops: any[] }) => svcDocx.svcEditDocx(input as { filePath: string; ops: never[] }),
+  editDocx: async (input: { filePath: string; ops: any[] }) =>
+    svcDocx.svcEditDocx(input as { filePath: string; ops: never[] }) as Promise<import('../../shared/office/ops').DocxEditOutcome & { success: boolean; error?: string; backup?: string; diff?: string; changeSummary?: string }>,
   editPptx: async (input: { filePath: string; ops: any[] }) =>
     svcPptx.svcEditPptx(input as { filePath: string; ops: never[] }) as Promise<import('../../shared/office/ops').PptxEditOutcome & { success: boolean; error?: string; backup?: string; diff?: string; changeSummary?: string }>,
-  editXlsx: async (input: { filePath: string; ops: any[] }) => svcXlsx.svcEditXlsx(input as { filePath: string; ops: never[] }),
+  editXlsx: async (input: { filePath: string; ops: any[] }) =>
+    svcXlsx.svcEditXlsx(input as { filePath: string; ops: never[] }) as Promise<import('../../shared/office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>,
   inspectOffice: async (input: { filePath: string }) => (await import('../services/office-inspect')).svcInspectOffice(input),
   exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; deck?: unknown; fontSize?: number; filePath: string }) =>
     svcExport.svcExportDocument(input),

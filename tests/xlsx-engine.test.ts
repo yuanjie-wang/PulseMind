@@ -40,6 +40,21 @@ describe('scanXlsx (L6 precheck)', () => {
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('图表')
   })
+
+  // review 2026-09-26 中7: conditionalFormatting is an element INSIDE the
+  // sheet XML, never a zip entry name — the rule used to sit in the
+  // entry-name scan where it could never fire, and a dxf-carrying workbook
+  // sailed past the friendly refusal into the measured exceljs crash.
+  it('refuses a workbook whose sheet XML carries conditional formatting', () => {
+    const zip = new (require('adm-zip') as typeof import('adm-zip'))()
+    zip.addFile('xl/workbook.xml', Buffer.from('<workbook/>'))
+    zip.addFile('xl/worksheets/sheet1.xml', Buffer.from(
+      '<worksheet><conditionalFormatting sqref="A1:A2"><cfRule type="cellIs" dxfId="0" priority="1"/></conditionalFormatting></worksheet>'
+    ))
+    const result = scanXlsx(zip.toBuffer())
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('条件格式')
+  })
 })
 
 describe('editXlsx', () => {

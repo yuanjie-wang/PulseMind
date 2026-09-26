@@ -338,6 +338,7 @@ export class ToolExecutor implements ToolExecContext {
           error?: string
           results?: Array<{ index: number; op: string; ok: boolean; detail: string }>
           outline?: Array<Record<string, unknown>>
+          tables?: Array<{ index: number; rows: number; cols: number }>
           warnings?: string[]
           backup?: string
           diff?: string

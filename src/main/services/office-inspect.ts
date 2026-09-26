@@ -68,7 +68,9 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
         format: 'docx',
         summary,
         details: {
-          paragraphs: outline,
+          // inspect's contract reports LENGTHS, not the outline's full text
+          // (the outline-only edit call is the one that ships text).
+          paragraphs: outline.map((o) => ({ index: o.index, style: o.style, textLength: o.text.length })),
           textBudget,
           images: imageEntries.length,
         },

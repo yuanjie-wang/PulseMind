@@ -41,23 +41,30 @@ export function scanXlsx(buffer: Buffer): XlsxScanResult {
     // The rest of what an exceljs round-trip silently drops (M3):
     [/^xl\/threadedComments\//, '串联批注（exceljs 往返会丢失）'],
     [/^xl\/slicers\//, '切片器（exceljs 往返会丢失）'],
-    // M0 decision gate (PLAN-office-expressiveness, measured): a sheet whose
-    // conditionalFormatting references a styles dxf makes exceljs CRASH on
-    // load (styles-xform.getDxfStyle) — the whole edit dies. dataValidation,
-    // by contrast, round-trips losslessly and is deliberately NOT forbidden.
-    [/conditionalFormatting/, '条件格式（exceljs 加载含 dxf 引用的规则会直接崩溃）'],
+    // NOTE: conditionalFormatting is deliberately NOT in this table — it is
+    // an element INSIDE the sheet XML, never a zip entry name, so an
+    // entry-name rule could never fire (review 2026-09-26 中7). The measured
+    // M0 crash it guards against is caught by the content scan below.
   ]
   for (const [pattern, why] of forbidden) {
     if (names.some((n) => pattern.test(n))) {
       return { ok: false, reason: `工作簿包含${why}——拒绝编辑以避免静默损坏` }
     }
   }
-  // Sparklines live INSIDE the sheet XML (x14 extension), not in their own
-  // part — the entry-name scan above cannot see them.
+  // Conditional formatting and sparklines live INSIDE the sheet XML (CF as a
+  // plain element, sparklines in the x14 extension), not in their own part —
+  // the entry-name scan above cannot see either. CF carries the M0 measured
+  // crash (a sheet whose conditionalFormatting references a styles dxf makes
+  // exceljs CRASH on load — styles-xform.getDxfStyle), so it is refused here
+  // where it is actually visible. dataValidation, by contrast, round-trips
+  // losslessly and is deliberately NOT forbidden.
   for (const entry of zip.getEntries()) {
     if (!/^xl\/worksheets\/.*\.xml$/.test(entry.entryName)) continue
-    const head = (zip.readFile(entry.entryName) as Buffer).toString('utf8')
-    if (head.includes('sparklineGroup')) {
+    const xml = (zip.readFile(entry.entryName) as Buffer).toString('utf8')
+    if (xml.includes('conditionalFormatting')) {
+      return { ok: false, reason: `工作簿包含条件格式（${entry.entryName}，exceljs 加载含 dxf 引用的规则会直接崩溃）——拒绝编辑以避免静默损坏` }
+    }
+    if (xml.includes('sparklineGroup')) {
       return { ok: false, reason: `工作簿包含迷你图（${entry.entryName}，exceljs 往返会丢失）——拒绝编辑以避免静默损坏` }
     }
   }

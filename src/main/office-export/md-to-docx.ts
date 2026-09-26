@@ -62,7 +62,7 @@ type MarkedToken = {
 }
 type MarkedCell = { text: string; tokens?: MarkedToken[] }
 type DocxChild = Paragraph | Table
-type InlineChild = TextRun | ExternalHyperlink
+type InlineChild = TextRun | ImageRun | ExternalHyperlink
 
 /** Everything that got downgraded, for the closing honesty note.
  *  `noteSize` (half-points) rides the document's fontSize like the code block does. */
@@ -88,7 +88,7 @@ function plainText(tokens?: MarkedToken[]): string {
   return tokens.map((t) => (t.tokens && t.tokens.length > 0 ? plainText(t.tokens) : t.text ?? '')).join('')
 }
 
-function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, images: Map<string, Buffer> | undefined, bold = false): InlineChild[] {
+function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, images: Map<string, Buffer> | undefined = undefined, bold = false): InlineChild[] {
   if (!tokens) return []
   const out: InlineChild[] = []
   for (const token of tokens) {

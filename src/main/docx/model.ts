@@ -38,7 +38,9 @@ export interface ParagraphInfo {
 
 export interface TableRowsInfo {
   element: XmlElementNode
-  cells: Array<{ element: XmlElementNode }>
+  /** The row's <w:tc> nodes, full XML elements (start/end/children) — the
+   *  row-clone ops read their spans and tcPr children directly. */
+  cells: XmlElementNode[]
 }
 
 export interface TableInfo {
