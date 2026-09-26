@@ -202,6 +202,35 @@ describe('SettingsStore.get', () => {
     expect(raw.knowledge).toEqual({ autoCompile: true })
     expect(raw.theme).toBe('dark')
   })
+
+  // review 2026-09-26 中1: shortcuts rides doSet's ...rest onto disk, but was
+  // missing from get()'s field-by-field rebuild — rebinds never reached the
+  // menu, a restart dropped the override markers, and the next rebind's
+  // `{ ...undefined, 新键 }` erased the file's overrides wholesale. The
+  // round-trip below is the shape that catches every future missing key.
+  it('round-trips shortcut overrides through get() (a fresh registry = a restart)', async () => {
+    writeRaw({
+      ...RAW_BASE,
+      shortcuts: { 'new-task': 'CmdOrCtrl+Shift+T', 'open-settings': 'CmdOrCtrl+Alt+,' },
+    })
+    const store = await freshStore()
+    const s = await store.get()
+    expect(s.shortcuts).toEqual({ 'new-task': 'CmdOrCtrl+Shift+T', 'open-settings': 'CmdOrCtrl+Alt+,' })
+  })
+
+  it('drops junk shortcut values but keeps the real ones, and an unrelated save preserves the file', async () => {
+    writeRaw({
+      ...RAW_BASE,
+      shortcuts: { 'new-task': 'CmdOrCtrl+Shift+T', 'open-usage': 42 as unknown as string },
+    })
+    const store = await freshStore()
+    const rendererCopy = await store.get()
+    expect(rendererCopy.shortcuts).toEqual({ 'new-task': 'CmdOrCtrl+Shift+T' })
+    await store.set({ ...rendererCopy, theme: 'dark' } as AppSettings)
+    const raw = readRaw()
+    expect(raw.shortcuts).toEqual({ 'new-task': 'CmdOrCtrl+Shift+T' })
+    expect(raw.theme).toBe('dark')
+  })
 })
 
 describe('SettingsStore.set — placeholder preservation', () => {

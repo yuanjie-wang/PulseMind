@@ -428,6 +428,20 @@ function readProjectSortMode(raw: unknown): ProjectSortMode | undefined {
   return PROJECT_SORT_MODES.includes(raw as ProjectSortMode) ? (raw as ProjectSortMode) : undefined
 }
 
+/** 快捷键覆盖表（action id → accelerator）：get() 逐字段重建曾漏掉它 ——
+ *  写盘成功、菜单永远读默认值、重启后渲染端快照无 shortcuts 导致再次重绑
+ *  时把旧覆盖整体抹掉（review 2026-09-26 中1，b84b199 引入即坏）。只保留
+ *  string→string 条目；未知 action id 无害保留（effectiveAccelerators 只查
+ *  已知 id），非字符串值丢弃。 */
+function readShortcutOverrides(raw: unknown): AppSettings['shortcuts'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === 'string' && v) out[k] = v
+  }
+  return Object.keys(out).length > 0 ? (out as AppSettings['shortcuts']) : undefined
+}
+
 /**
  * The optional group keys (git / knowledge / browser) were added after `get()`
  * became a field-by-field rebuild and were missing from it: a value written to
@@ -584,6 +598,7 @@ export class SettingsStore {
           lastUsedProfileId: typeof parsed.lastUsedProfileId === 'string' && parsed.lastUsedProfileId
             ? parsed.lastUsedProfileId
             : undefined,
+          shortcuts: readShortcutOverrides(parsed.shortcuts),
           git: readGroup(parsed.git, readGitSettings),
           knowledge: readGroup(parsed.knowledge, readKnowledgeSettings),
           browser: readGroup(parsed.browser, readBrowserSettings),
