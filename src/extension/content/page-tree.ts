@@ -445,7 +445,7 @@ function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: num
       // number is retired, never handed to a different element).
       let refId = memory.refs.get(element)
       const isNew = refId === undefined
-      if (isNew) {
+      if (refId === undefined) {
         memory.nextRefId += 1
         refId = memory.nextRefId
         memory.refs.set(element, refId)
