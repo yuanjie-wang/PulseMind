@@ -29,6 +29,7 @@
     "src/shared/agent-session/**/*.ts",
     "src/shared/types/agent.ts",
     "src/shared/types/plan.ts",
+    "src/shared/types/expert.ts",
     "src/renderer/src/types/agent.ts",
     "src/shared/sandbox/policy.ts",
     "src/shared/tool-display/result-summary.ts"

@@ -68,15 +68,17 @@ function CommandPalette({ items }: { items: CommandItem[] }): React.ReactElement
 
   let lastGroup: string | null = null
 
+  // `content` was an antd-5 key this antd-6 Modal ignores at runtime —
+  // dropped rather than renamed, so today's rendering does not change.
   return (
     <Modal
-      open={open}
-      onCancel={() => setOpen(false)}
-      footer={null}
-      closable={false}
-      width={520}
-      styles={{ content: { padding: 8, top: 80 }, body: { padding: 0 } }}
-    >
+        open={open}
+        onCancel={() => setOpen(false)}
+        footer={null}
+        closable={false}
+        width={520}
+        styles={{ body: { padding: 0 } }}
+      >
       <Input
         autoFocus
         variant="borderless"

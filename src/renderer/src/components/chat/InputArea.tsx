@@ -391,7 +391,8 @@ export function InputArea({
   const addQuickFiles = async (files: File[]): Promise<void> => {
     const paths: string[] = []
     for (const file of files) {
-      const resolved = window.electronAPI.getPathForFile(file) || file.path
+      // `path` is Electron's addition to the DOM File — never in the lib types.
+      const resolved = window.electronAPI.getPathForFile(file) || (file as File & { path?: string }).path
       if (resolved) {
         paths.push(resolved)
         continue

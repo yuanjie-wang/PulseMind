@@ -28,7 +28,6 @@ import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { projectStore } from '../storage/project-store'
 import { expertStore } from '../storage/expert-store'
 import { serverManager } from '../mcp/MCPServerManager'
-import { getKnowledgeFilesByIds } from '../storage/knowledge.db'
 import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalogs, type ExpertRefCatalogs } from '../../shared/expert-context'
 import type { SummonedExpert } from '../../shared/expert-context'
 import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/expert'
@@ -808,16 +807,10 @@ export class AgentSessionManagerImpl {
       if (expertId) {
         const profile = expertStore.getById(expertId)
         if (profile && profile.enabled !== false) {
-          const knowledgeFiles = getKnowledgeFilesByIds(profile.knowledgeFileIds || []).map((f) => {
-            let wikiPages: string[] = []
-            try { wikiPages = f.wiki_outputs ? JSON.parse(f.wiki_outputs) : [] } catch { /* uncompiled */ }
-            return { id: f.id, title: f.title || f.file_path, filePath: f.file_path, wikiPages }
-          })
           next = {
             id: profile.id,
             name: profile.name,
-            instructions: composeExpertInstructions(profile, knowledgeFiles, this.resolveExpertRefCatalogs()),
-            knowledgeFiles,
+            instructions: composeExpertInstructions(profile, this.resolveExpertRefCatalogs()),
           }
         } else {
           console.warn(`[SessionManager] expert "${expertId}" missing or disabled — falling back to ordinary session`)
@@ -987,9 +980,9 @@ export class AgentSessionManagerImpl {
         this.messageStatsRegistry.delete(sessionId)
         this.sandboxContexts.delete(sessionId)
         // The disposed engine's last status may still read executing (dispose
-        // itself can notify), and no further event will ever arrive for this
-        // id — forget it explicitly or the wake lock pins forever.
-        keepAwake.forgetSession(sessionId)
+        // itself can notify), and no further status event will ever arrive for
+        // this id — forget it explicitly or the wake lock pins forever.
+        keepAwake.forget(sessionId)
         return undefined
       default: throw new Error(`engine method not allowed: ${method}`)
     }

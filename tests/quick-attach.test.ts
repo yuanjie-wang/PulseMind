@@ -252,7 +252,7 @@ describe('the getPathForFile bridge (Electron 33 dropped the runtime File.path)'
     // The order is the contract: on Electron 33 `.path` is always undefined,
     // so a `.path`-first reading would look green on the probe's legacy
     // cases while breaking in the real app.
-    expect(body).toMatch(/getPathForFile\(file\) \|\| file\.path/)
+    expect(body).toMatch(/getPathForFile\(file\) \|\| \(file as File & \{ path\?: string \}\)\.path/)
     // Pathless blobs (clipboard screenshots) must still reach the image branch.
     expect(body).toMatch(/isImageFile\(file\)/)
   })

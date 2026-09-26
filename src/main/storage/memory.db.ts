@@ -33,7 +33,7 @@ export function saveMemory(id: string, content: string, type: string, category: 
   // silently-by-log: the memory already exists and re-adding it is the exact
   // duplication this plan removes.
   const contentHash = memoryContentHash(content)
-  const existing = database.prepare('SELECT id FROM memories WHERE content_hash = ? LIMIT 1').get(contentHash)
+  const existing = database.prepare('SELECT id FROM memories WHERE content_hash = ? LIMIT 1').get(contentHash) as { id: string } | undefined
   if (existing) {
     console.log(`[memory] duplicate content skipped (already stored as ${existing.id})`)
     return

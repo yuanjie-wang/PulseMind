@@ -200,7 +200,7 @@ function ProjectSidebarList({
                 lineHeight: '20px',
                 opacity: dragId === project.id ? 0.4 : undefined,
                 boxShadow: dropAt?.id === project.id
-                  ? `inset 0 ${dropAt.after ? '-' : ''}2px 0 var(--pm-link)`
+                  ? `inset 0 ${dropAt?.after ? '-' : ''}2px 0 var(--pm-link)`
                   : undefined
               }}
               onMouseEnter={(e) => { setHoveredId(project.id); e.currentTarget.style.background = 'var(--pm-hover-weak)' }}

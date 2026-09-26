@@ -156,7 +156,7 @@ describe('keep-awake wiring', () => {
 
   it('forgets the session on dispose', () => {
     const src = source('src/main/agent/session-manager.ts')
-    expect(src).toContain('keepAwake.forgetSession(sessionId)')
+    expect(src).toContain('keepAwake.forget(sessionId)')
   })
 
   it('requests the system-level (not display) blocker', () => {

@@ -4,7 +4,7 @@
 // dropdown owns the *choice* (settings.projectSortMode); this file owns what
 // the choice means.
 
-import type { Project, ProjectSortMode } from '../../../shared/types/project'
+import type { Project, ProjectSortMode } from '../../../../shared/types/project'
 import type { ConversationListItem } from '../../types/conversation'
 
 export type { ProjectSortMode }

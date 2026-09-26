@@ -97,7 +97,7 @@ describe('desktop 模型 wiring (per conversation)', () => {
   })
 
   it('persists through the column, the same shape as approval', () => {
-    expect(persistenceSrc).toContain('setConversation(id, { profileId: profileId ?? undefined })')
+    expect(persistenceSrc).toContain('partialOf(id, { profileId: profileId ?? undefined })')
     expect(persistenceSrc).toContain('window.electronAPI.setConversationProfile?.(id, profileId)')
     expect(persistenceSrc).toContain('window.electronAPI.agentSessionRefreshOptions?.(id)')
     // The sidebar list carries the choice, or a reload resets the picker.

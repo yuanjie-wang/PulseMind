@@ -250,8 +250,11 @@ export function useChatController(options: UseChatControllerOptions) {
 
             // P1 #8: 回填统一走 extractAndSaveAll（memory 关、experience 开），
             // extractAndSaveExperiences 及 ExperienceAgent 独立路径已删除。
+            // 桥接的 Message.contentBlocks 可选，引擎的 AgentMessage 必填 ——
+            // 一个浅拷贝补齐空数组（toTextMessages 只读 text blocks）。
             const result = await managers.memoryManager.extractAndSaveAll(
-              conversation.messages, apiKey, options.baseURL, options.adapter, options.model,
+              conversation.messages.map((m) => ({ ...m, contentBlocks: m.contentBlocks ?? [] })),
+              apiKey, options.baseURL, options.adapter, options.model,
               conv.id, options.locale, { memory: false, experience: true }, { minDelta: 1 },
             )
 
@@ -468,7 +471,9 @@ export function useChatController(options: UseChatControllerOptions) {
   // deliver the same message twice.
   const stagedStatusRef = useRef<{ convId: string | null; status: string } | null>(null)
   useEffect(() => {
-    const convId = conversationKeyOf(persistence.activeConversationKey)
+    // conversationKeyOf answers string | undefined; the drain contract's
+    // observation type is string | null (「无会话」的拼写只有一个).
+    const convId = conversationKeyOf(persistence.activeConversationKey) ?? null
     const status = engine.agentStatus.status
     const prev = stagedStatusRef.current
     stagedStatusRef.current = { convId, status }

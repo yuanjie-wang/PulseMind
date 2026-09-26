@@ -275,13 +275,14 @@ function ScheduleSection({ draft, onChange }: { draft: RoutineDraftState; onChan
           </div>
           <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--pm-border-hairline)' }}>
             <FieldLabel text="错过计划时（应用没开着）" />
+            {/* antd 6 removed Select's `block`; width:100% is the documented equivalent */}
             <Select
-              block
+              style={{ width: '100%' }}
               value={draft.catchUp}
               onChange={(catchUp) => onChange({ ...draft, catchUp })}
               options={[
-                { value: 'once', label: '打开应用后补跑一次' },
-                { value: 'skip', label: '跳过，等下一个计划点' },
+                { value: 'once' as const, label: '打开应用后补跑一次' },
+                { value: 'skip' as const, label: '跳过，等下一个计划点' },
               ]}
             />
           </div>
@@ -558,7 +559,10 @@ export interface RoutineFormProps {
 export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssistantPatch, models, activeModelId }: RoutineFormProps): React.ReactElement {
   // The native <textarea> under antd's TextArea — insertion at the caret needs
   // the real element's selectionStart/selectionEnd.
-  const promptAreaRef = React.useRef<{ resizableTextArea?: { textArea?: HTMLTextAreaElement } } | null>(null)
+  // The antd TextAreaRef itself, not a hand-shaped subset — a narrower local
+  // shape is not assignable to the component's ref (TS2322) and antd may grow
+  // the real one.
+  const promptAreaRef = React.useRef<React.ComponentRef<typeof Input.TextArea> | null>(null)
   const declaredVars = draft.params
     .filter((p) => p.key.trim())
     .map((p) => ({ value: p.key, label: `${p.label || p.key} {{${p.key}}}` }))

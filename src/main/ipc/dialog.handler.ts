@@ -13,6 +13,21 @@ export interface ShowDialogResult {
   cancelled: boolean
 }
 
+/** The parented overloads demand a BaseWindow (never undefined), so pick the
+ *  parent-less overload when no window holds focus instead of feeding them
+ *  `win ?? undefined`. */
+function showDialogFor(win: BrowserWindow | null, options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
+  return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
+}
+
+function showSaveDialogFor(win: BrowserWindow | null, options: Electron.SaveDialogOptions): Promise<Electron.SaveDialogReturnValue> {
+  return win ? dialog.showSaveDialog(win, options) : dialog.showSaveDialog(options)
+}
+
+function showOpenDialogFor(win: BrowserWindow | null, options: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue> {
+  return win ? dialog.showOpenDialog(win, options) : dialog.showOpenDialog(options)
+}
+
 /**
  * Register IPC handler for showing native dialogs.
  *
@@ -28,7 +43,7 @@ export function registerDialogHandlers(): void {
       const win = BrowserWindow.getFocusedWindow()
 
       if (options.type === 'choice' && options.choices && options.choices.length > 0) {
-        const result = await dialog.showMessageBox(win ?? undefined, {
+        const result = await showDialogFor(win, {
           type: 'question',
           title: options.title,
           message: options.message,
@@ -46,7 +61,7 @@ export function registerDialogHandlers(): void {
       // Free-text prompt — Electron dialog has no native text input, so show
       // a simple OK / Cancel and return an empty string as a signal to the
       // caller that it needs to use an alternative input method.
-      const result = await dialog.showMessageBox(win ?? undefined, {
+      const result = await showDialogFor(win, {
         type: 'question',
         title: options.title,
         message: options.message,
@@ -68,7 +83,7 @@ export function registerDialogHandlers(): void {
       options: { defaultName?: string; filters?: Array<{ name: string; extensions: string[] }> }
     ): Promise<{ filePath: string | null; canceled: boolean }> => {
       const win = BrowserWindow.getFocusedWindow()
-      const result = await dialog.showSaveDialog(win ?? undefined, {
+      const result = await showSaveDialogFor(win, {
         defaultPath: options.defaultName,
         filters: options.filters
       })
@@ -86,7 +101,7 @@ export function registerDialogHandlers(): void {
       options: { properties?: Array<'openFile' | 'openDirectory' | 'multiSelections'>; filters?: Array<{ name: string; extensions: string[] }> }
     ): Promise<{ filePaths: string[]; canceled: boolean }> => {
       const win = BrowserWindow.getFocusedWindow()
-      const result = await dialog.showOpenDialog(win ?? undefined, {
+      const result = await showOpenDialogFor(win, {
         properties: options.properties ?? ['openFile'],
         filters: options.filters
       })

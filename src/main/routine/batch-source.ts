@@ -108,7 +108,7 @@ export async function loadBatchSource(routine: Routine): Promise<BatchSource> {
 async function parseXlsx(buf: Buffer): Promise<CsvTable> {
   const ExcelJS = (await import('exceljs')).default
   const wb = new ExcelJS.Workbook()
-  await wb.xlsx.load(buf)
+  await wb.xlsx.load(buf as unknown as ArrayBuffer)
   const ws = wb.worksheets[0]
   if (!ws) return { headers: [], rows: [] }
   const grid: string[][] = []

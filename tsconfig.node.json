@@ -31,6 +31,7 @@
     "src/renderer/src/knowledge/**/*.ts",
     "src/renderer/src/experiences/**/*.ts",
     "src/renderer/src/llm/**/*.ts",
+    "src/renderer/src/stores/htmlEditStore.ts",
     "src/renderer/src/utils/message-utils.ts",
     "src/renderer/src/utils/incremental-save.ts",
     "src/renderer/src/types/electron.d.ts",

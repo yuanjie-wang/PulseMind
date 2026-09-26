@@ -1,10 +1,21 @@
 import { join } from 'node:path'
 import { getDb } from './database'
 import { getBaseRawDir, KNOWLEDGE_RAW_DIR } from './index'
-import type { KnowledgeListOptions, KnowledgeListResult } from '../../shared/types/knowledge'
+import type { KnowledgeListOptions } from '../../shared/types/knowledge'
 import { chunkText } from '../../shared/knowledge/chunk'
 
 // ── Knowledge Files CRUD ──
+
+/** The list query returns RAW ROWS (snake_case columns); converting to the
+ *  camelCase KnowledgeFile shape is the store layer's job (toKnowledgeFile) —
+ *  this function used to claim `items: KnowledgeFile[]` while actually
+ *  returning rows, a lie two type errors were hiding. */
+export interface KnowledgeFileListResult {
+  items: KnowledgeFileRow[]
+  total: number
+  page: number
+  pageSize: number
+}
 
 export interface KnowledgeFileRow {
   id: string
@@ -22,7 +33,7 @@ export interface KnowledgeFileRow {
   base_id: string
 }
 
-export function listKnowledgeFiles(opts?: KnowledgeListOptions): KnowledgeListResult {
+export function listKnowledgeFiles(opts?: KnowledgeListOptions): KnowledgeFileListResult {
   const database = getDb()
   const conditions: string[] = []
   const params: any[] = []

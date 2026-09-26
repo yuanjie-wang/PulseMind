@@ -471,13 +471,13 @@ function readNumberOrDrop(group: Record<string, unknown>, key: string): void {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) delete group[key]
 }
 
-function readBrowserSettings(group: Record<string, unknown>): AppSettings['browser'] {
+function readBrowserSettings(group: Record<string, unknown>): NonNullable<AppSettings['browser']> {
   const out: Record<string, unknown> = { ...group }
   if (out.backend !== 'managed' && out.backend !== 'app-view') delete out.backend
   if (typeof out.headless !== 'boolean') delete out.headless
   readNumberOrDrop(out, 'timeoutMs')
   readNumberOrDrop(out, 'paneWidth')
-  return out as AppSettings['browser']
+  return out as NonNullable<AppSettings['browser']>
 }
 
 const FALLBACK_SETTINGS: AppSettings = {

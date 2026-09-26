@@ -60,6 +60,7 @@ export const HOST_METHOD_KEYS = [
   'saveExperienceRecord',
   'deleteExperienceRecord',
   'readExperienceRecord',
+  'readExperienceFile',
   'touchExperienceRecord',
   // memory / knowledge / conversation store
   'saveMemory',

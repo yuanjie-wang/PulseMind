@@ -10,7 +10,7 @@
 // conversation-teardown sweep), so every operation is also a plain function on
 // getState(), the takePendingApprovalMode shape.
 
-import { create } from 'zustand'
+import { create, type UseBoundStore, type StoreApi } from 'zustand'
 
 export interface StagedMessage {
   id: string
@@ -47,7 +47,10 @@ const newId = (): string => `staged_${Date.now()}_${(seq += 1)}`
  *  so text and [file:] markers ride the same string a direct send would use. */
 const normalize = (text: string): string => text.trim()
 
-export const usePendingMessageStore = create<PendingMessageState>((set) => ({
+// The explicit annotation breaks the inference cycle: takeHead/takeById read
+// `usePendingMessageStore.getState()` inside the initializer, and without it
+// the const's type depends on itself (TS7022 → implicit any on every member).
+export const usePendingMessageStore: UseBoundStore<StoreApi<PendingMessageState>> = create<PendingMessageState>((set) => ({
   queues: {},
   stage: (convId, text) => {
     const trimmed = normalize(text)

@@ -28,8 +28,13 @@ jobs:
       - name: Lint (zero errors; warnings are the documented any/deps tiers)
         run: npm run lint
 
+      # -b, not --noEmit: the root tsconfig is solution-style (files: [] +
+      # references) and tsc --noEmit does not enter references — it checked
+      # ZERO files and exited 0 (measured), so the gate was always green.
+      # -b typechecks all three projects (node/web/extension) and caches
+      # incrementally in .tsbuildinfo.
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npx tsc -b
 
       - name: Test
         run: npm test

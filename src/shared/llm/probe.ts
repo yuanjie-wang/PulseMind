@@ -58,7 +58,7 @@ export function probeMissingFields(input: LlmProbeInput): string | null {
 }
 
 /** HTTP status (plus the response body snippet) → human words. */
-export function describeHttpProbeFailure(status: number, bodyText: string): { message: string; hint?: string } {
+export function describeHttpProbeFailure(status: number, bodyText: string): { message: string; hint?: string; detail?: string } {
   const body = bodyText.slice(0, 500)
   const bodyLower = body.toLowerCase()
   switch (true) {
@@ -101,7 +101,7 @@ export function describeHttpProbeFailure(status: number, bodyText: string): { me
 
 /** fetch rejection → human words. Node's fetch wraps causes
  *  (`cause: Error`), so match against the whole chain's text. */
-export function describeNetworkProbeFailure(err: unknown): { message: string; hint?: string } {
+export function describeNetworkProbeFailure(err: unknown): { message: string; hint?: string; detail?: string } {
   const text = errorChainText(err)
   const t = text.toLowerCase()
   if (/timed?\s*out|timeout|etimedout|aborted/.test(t) || t.includes('socket connection timeout')) {

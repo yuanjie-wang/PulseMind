@@ -110,7 +110,7 @@ describe('desktop 授权 wiring (new conversation)', () => {
     // was sent — while the DB and the engine were at 全部允许 all along.
     // The sdk's per-item setConversation reads the store's live list, which
     // addConversation updated synchronously one statement earlier.
-    expect(persistenceSrc).toContain('setConversation(id, { approvalMode: mode })')
+    expect(persistenceSrc).toContain('partialOf(id, { approvalMode: mode })')
     // Non-vacuity: the stale derivation must be gone from this function, not
     // merely accompanied by the new one.
     const from = persistenceSrc.indexOf('const updateConversationApproval = useCallback')
@@ -153,7 +153,7 @@ describe('desktop 授权 wiring (new conversation)', () => {
     expect(body).toContain('getConversation(convId)')
     // The found-branch merges into that item; it may not rebuild the list from
     // the ref snapshot.
-    expect(body).toContain('setConversation(convId, { label: title')
+    expect(body).toContain('partialOf(convId, { label: title')
     // The genuinely-unknown branch stays, but the whole function must be free
     // of the stale derivation (non-vacuity: fails against the old ref map).
     expect(body).toContain('conversationsRef.current')

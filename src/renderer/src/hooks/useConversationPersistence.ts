@@ -7,7 +7,7 @@
 // Engine construction itself lives in useConversationEngine; this hook drives it.
 
 import { useEffect, useRef, useCallback, useState } from 'react'
-import useXConversations from '@ant-design/x-sdk/es/x-conversations'
+import useXConversations, { type ConversationData } from '@ant-design/x-sdk/es/x-conversations'
 import type { AgentMessage, AgentStatus } from '../types/agent'
 import type { SessionEngineHandle } from './useConversationEngine'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
@@ -50,7 +50,9 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setConversation,
     setConversations,
     getConversation
-  } = useXConversations()
+  // The sdk hook demands a config argument; the empty object is the
+  // default behaviour the zero-arg call always relied on.
+  } = useXConversations({})
 
   // This ref is a POST-COMMIT snapshot: it only syncs in an effect, after React
   // has rendered. The sdk store, by contrast, is updated synchronously by its
@@ -61,7 +63,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   useEffect(() => { conversationsRef.current = conversations }, [conversations])
 
   // Sort by pinned first, then by updatedAt descending
-  const sortConversations = (items: Array<{ key: string; label: string; pinned?: boolean; updatedAt?: string; projectId?: string }>) => {
+  const sortConversations = (items: ConversationData[]) => {
     return [...items].sort((a, b) => {
       if (a.pinned && !b.pinned) return -1
       if (!a.pinned && b.pinned) return 1
@@ -70,6 +72,12 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       return bTime.localeCompare(aTime)
     })
   }
+
+  /** The sdk's setConversation MERGES at runtime (Object.assign onto the
+   *  existing item); its type just demands the full shape, so every partial
+   *  update funnels through this one documented widening. */
+  const partialOf = (key: string, partial: Record<string, unknown>): ConversationData =>
+    ({ key, ...partial } as ConversationData)
 
   // ── Save state ──
   const convIdRef = useRef<string>('')
@@ -126,7 +134,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   const saveCurrentConversation = useCallback(
     () => saveConversationById(convIdRef.current, true), [saveConversationById]
   )
-  const saveNewRef = useRef<() => Promise<void>>(null as unknown as () => Promise<void>)
+  const saveNewRef = useRef<() => Promise<unknown>>(null as unknown as () => Promise<unknown>)
   // eslint-disable-next-line react-hooks/refs -- latest-conversation-id bridge for the sync saver; read only from callers after commit
   saveNewRef.current = () => saveConversationById(convIdRef.current)
 
@@ -194,7 +202,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       saveCurrentConversation()
       // Move active conversation to top of list
       if (activeConversationKey) {
-        const convId = String(activeConversationKey.description || activeConversationKey.toString())
+        const convId = String(activeConversationKey)
       // bumpConversation is declared later via useCallback; this effect body
       // runs after render when the binding is initialized. Stable identity
       // (empty deps), so it does not need to be in the dependency list.
@@ -332,7 +340,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   const updateConversationTitleInList = (convId: string, title: string) => {
     const stamp = new Date().toISOString()
     if (getConversation(convId)) {
-      setConversation(convId, { label: title, updatedAt: stamp })
+      setConversation(convId, partialOf(convId, { label: title, updatedAt: stamp }))
       return
     }
     setConversations(
@@ -387,7 +395,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setPlan(null)
     convIdRef.current = ''
     activeEngineIdRef.current = ''
-    setActiveConversationKey(undefined)
+    setActiveConversationKey('')
 
     // Then save previous conversation in the background (fire-and-forget).
     // Uses captured convId since convIdRef.current was already cleared; the
@@ -421,8 +429,8 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   const renameConversation = useCallback((key: string, newLabel: string) => {
     setConversations(
       conversationsRef.current.map(
-        (c: { key: string; label: string }) =>
-          c.key === key ? { ...c, label: newLabel } : c
+        (c) =>
+          String(c.key) === key ? { ...c, label: newLabel } : c
       )
     )
     window.electronAPI.updateConversationTitle(key, newLabel)
@@ -445,7 +453,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setStreamingBlocks([])
     setPlan(null)
     convIdRef.current = ''
-    setActiveConversationKey(undefined)
+    setActiveConversationKey('')
   }, [conversations, enginesRef, setConversations, setMessages,
       setAgentStatus, setStreamingBlocks, setPlan, setActiveConversationKey])
 
@@ -454,8 +462,8 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     setConversations(
       sortConversations(
         conversationsRef.current.map(
-          (c: { key: string; label: string; pinned?: boolean; updatedAt?: string }) =>
-            c.key === key ? { ...c, pinned } : c
+          (c) =>
+            String(c.key) === key ? { ...c, pinned } : c
         )
       )
     )
@@ -506,7 +514,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     // pre-add list back over the item it was meant to update. The conversation
     // lost its approvalMode (and projectId), and the composer fell back to
     // 按需确认 the moment the message was sent ("选了全部允许，发送后变成按需确认").
-    setConversation(id, { approvalMode: mode })
+    setConversation(id, partialOf(id, { approvalMode: mode }))
     // Refresh after the write lands: the session manager re-reads the column on
     // its own at the next ask, but this also applies a mid-loop change now.
     void (async () => {
@@ -533,7 +541,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     }
     // Store-live per-item setter, never a map over conversationsRef — the
     // same-tick-as-addConversation trap documented on updateConversationApproval.
-    setConversation(id, { profileId: profileId ?? undefined })
+    setConversation(id, partialOf(id, { profileId: profileId ?? undefined }))
     void (async () => {
       try {
         await window.electronAPI.setConversationProfile?.(id, profileId)
