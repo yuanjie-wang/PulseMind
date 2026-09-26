@@ -63,7 +63,11 @@ const RUNS_COLUMN_WIDTH = 300
  *  while no routine exists — with tasks, the same action is a plain button in
  *  the 我的任务 head (user ruling 2026-09-23). */
 const CENTER_STYLES = `
-  .routine-card { transition: box-shadow 0.2s, border-color 0.2s; cursor: pointer; }
+  /* min-width: 0 is load-bearing: a grid item's automatic minimum is its
+     content's min-content width, and the params pill below is one long
+     nowrap string of keys joined by mid-dot — without this the track grows
+     past the pane and the page grows a horizontal scrollbar. */
+  .routine-card { transition: box-shadow 0.2s, border-color 0.2s; cursor: pointer; min-width: 0; }
   .routine-card:hover { box-shadow: var(--pm-shadow-soft); border-color: var(--pm-border); }
   .routine-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; background: var(--pm-fill); color: var(--pm-text-secondary); font-size: 11px; line-height: 18px; white-space: nowrap; }
   .routine-run-row { transition: background 0.15s; cursor: pointer; }
@@ -364,7 +368,22 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                         <span className="routine-pill"><ClockCircleOutlined />{scheduleText}</span>
                         {lastRunText && <span className="routine-pill">{lastRunText}</span>}
                         {(routine.params?.length ?? 0) > 0 && (
-                          <span className="routine-pill">参数 {routine.params!.map((p) => p.key).join(' · ')}</span>
+                          /* Capped at the card and ellipsized, with the full
+                             key list on hover: the keys are user-named and
+                             unbounded, and a nowrap pill wider than the card
+                             is what used to blow the grid track out (see
+                             .routine-card above). Both halves are needed —
+                             minWidth: 0 on the pill (a flex item of the wrap
+                             row) drops its automatic minimum, overflow:hidden
+                             on the inner span drops its own. */
+                          <Tooltip title={routine.params!.map((p) => p.key).join(' · ')} styles={{ root: { maxWidth: 420 } }}>
+                            <span className="routine-pill" style={{ maxWidth: '100%', minWidth: 0 }}>
+                              参数
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {routine.params!.map((p) => p.key).join(' · ')}
+                              </span>
+                            </span>
+                          </Tooltip>
                         )}
                         {routine.batch?.csvPath && <span className="routine-pill"><DatabaseOutlined />批量数据</span>}
                       </div>
