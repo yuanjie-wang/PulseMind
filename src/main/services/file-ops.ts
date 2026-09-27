@@ -6,7 +6,7 @@
 import { readFile, writeFile, appendFile, stat, mkdir, readdir } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import * as path from 'node:path'
-import { patchContent } from '../utils/patch-utils'
+import { patchContent } from '../../shared/diff/patch-utils'
 import { DATA_DIR } from '../storage'
 import { getOrConvert } from '../storage/read-cache'
 import { guardFsTarget, checkFsTarget, expandTilde } from '../sandbox/guard'

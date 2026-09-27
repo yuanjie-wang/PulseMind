@@ -20,6 +20,7 @@ import type { ThinkingBlock as ThinkingBlockType, ToolUseBlock } from '../../sha
 import { Icon } from './icons'
 import { formatDuration, formatTokenCount, thinkingPreview, toolBlockSummary, toolDisplayName, toolObjectSummary } from './format'
 import { resultSummary } from '../../shared/tool-display/result-summary'
+import { buildEditDiffModel, countChangedLines, type EditDiffLine, type EditDiffModel } from '../../shared/tool-display/edit-diff'
 import { renderMarkdown } from './markdown'
 
 /** assistant/api text → the same `.x-markdown-light` wrapper the chat uses.
@@ -89,6 +90,69 @@ function ToolStatusIcon({ block, completedFromResult }: {
   return <Icon name="setting" style={{ color: '#999' }} />
 }
 
+/** The edit diff body — same shared model as the desktop's CommandCard
+ *  (P0-4 #19), folded the same way: a long diff shows its first lines plus an
+ *  explicit 「展开全部 N 行 · 共 M 行变更」 header, never a silent cut. Styling
+ *  mirrors CommandCard's palette inline (no new styles.css rules needed; the
+ *  old hand-slice did the same). */
+const DIFF_FOLD_PREVIEW_LINES = 6
+
+function EditDiffRow({ line }: { line: EditDiffLine }): React.JSX.Element {
+  const row: React.CSSProperties = { display: 'flex', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }
+  if (line.type === 'meta') return <div style={{ ...row, color: '#c8a04a' }}>{line.text}</div>
+  const gutter: React.CSSProperties = {
+    flexShrink: 0, width: 68, textAlign: 'right', paddingRight: 8, color: '#6e6e6e', userSelect: 'none', fontSize: 11
+  }
+  if (line.type === 'ctx') {
+    return (
+      <div style={{ ...row, color: '#9e9e9e' }}>
+        <span style={gutter}>{line.oldNo != null ? `${line.oldNo}\u2002${line.newNo ?? ''}` : ''}</span>
+        <span>{line.text}</span>
+      </div>
+    )
+  }
+  const isAdd = line.type === 'add'
+  return (
+    <div style={{
+      ...row,
+      color: isAdd ? '#4ec9b0' : '#f44747',
+      background: isAdd ? 'rgba(78,201,176,0.08)' : 'rgba(244,71,71,0.08)'
+    }}>
+      <span style={gutter}>{isAdd ? line.newNo : line.oldNo}</span>
+      <span>{`${isAdd ? '+' : '-'} ${line.text}`}</span>
+    </div>
+  )
+}
+
+function EditDiffBody({ model }: { model: EditDiffModel }): React.JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+  const { added, removed } = countChangedLines(model.lines)
+  const total = model.lines.length
+  const foldable = total > DIFF_FOLD_PREVIEW_LINES
+  const visible = foldable && !expanded ? model.lines.slice(0, DIFF_FOLD_PREVIEW_LINES) : model.lines
+  return (
+    <div className="pm-cmd-params">
+      {model.error ? (
+        <div style={{ color: '#c8a04a', fontSize: 12 }}>{model.error}</div>
+      ) : (
+        <>
+          {visible.map((line, i) => <EditDiffRow key={i} line={line} />)}
+          {total === 0 && <div style={{ color: '#8a8a8a', fontSize: 11 }}>（无变化）</div>}
+          {foldable && (
+            <button
+              className="pm-cmd-btn"
+              style={{ alignSelf: 'flex-start', fontSize: 11, color: '#8a8a8a', background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 4px' }}
+              onClick={() => setExpanded(!expanded)}
+            >
+              {expanded ? '收起' : `展开全部 ${total} 行 · 共 ${added + removed} 行变更（+${added} / −${removed}）`}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 /** The dark card the chat shows when a tool block is expanded (CommandCard). */
 function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
   block: ToolUseBlock
@@ -130,16 +194,14 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
         </pre>
       )}
 
-      {!streaming && block.name === 'edit' && typeof input?.old_str === 'string' && typeof input?.new_str === 'string' && (
-        <div className="pm-cmd-params">
-          {String(input.old_str).split('\n').slice(0, 8).map((l, i) => (
-            <div key={`o${i}`} style={{ color: '#f44747', background: 'rgba(244,71,71,0.08)' }}>{`- ${l}`}</div>
-          ))}
-          {String(input.new_str).split('\n').slice(0, 8).map((l, i) => (
-            <div key={`n${i}`} style={{ color: '#4ec9b0', background: 'rgba(78,201,176,0.08)' }}>{`+ ${l}`}</div>
-          ))}
-        </div>
-      )}
+      {!streaming && block.name === 'edit' && (() => {
+        // P0-4: the SAME shared model the desktop renders — both input modes
+        // (unified diff / search-replace), context lines, line numbers, and the
+        // explicit fold instead of the old silent 8-line slice.
+        const model = buildEditDiffModel(input || {})
+        if (model.lines.length === 0 && !model.error) return null
+        return <EditDiffBody model={model} />
+      })()}
       {!streaming && block.name === 'write' && typeof input?.content === 'string' && input.content && (
         <div className="pm-cmd-params">
           <div style={{ color: '#4ec9b0' }}>{`+${String(input.content).split('\n').length} 行`}</div>

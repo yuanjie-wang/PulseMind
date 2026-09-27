@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Button, Typography, Space, Spin, Tag, Input } from 'antd'
 import { PlayCircleOutlined, CloseCircleOutlined, StopOutlined, LoadingOutlined, CheckCircleOutlined, SendOutlined, CloseOutlined, CheckOutlined, CommentOutlined, SettingOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ToolUseBlock } from '../../types/agent'
 import { toolDisplayName, toolObjectSummary } from '../chat/tool-summary'
 import { resultSummary } from '../../../../shared/tool-display/result-summary'
+import { buildEditDiffModel, countChangedLines, type EditDiffModel, type EditDiffLine } from '../../../../shared/tool-display/edit-diff'
 
 // Keyframe animation for skeleton pulse effect (injected once)
 const pulseKeyframe = `@keyframes pulsemind-skeleton-pulse {
@@ -226,40 +227,114 @@ function AskUserChoices({
   )
 }
 
-// ── Edit diff / write preview (PLAN-tool-ux T3, D3-C) ────────────────
-// edit's old_str/new_str draws directly as red/green lines (no diff algorithm
-// needed — the inputs ARE the two sides); write shows a +N-line preview.
-// Colors reuse the card's existing palette (#f44747 / #4ec9b0) — no new skin.
+// ── Edit diff / write preview (PLAN-tool-ux T3, D3-C; rewritten P0-4) ──
+// The edit card renders a REAL diff via shared/tool-display/edit-diff.ts —
+// hunks with context and line numbers, both input modes (diff / search-replace) —
+// and never silently truncates: long diffs fold behind an explicit
+// 「共 N 行变更 (+a / −d)」 header that expands to the full text. Colors reuse
+// the card's existing palette (#f44747 / #4ec9b0) — no new skin. The extension
+// panel consumes the SAME shared model (ui/MessageBlocks.tsx); only styling
+// differs there.
 
-const MAX_DIFF_LINES = 8
+const DIFF_FOLD_PREVIEW_LINES = 6
 
-function EditDiff({ oldStr, newStr }: { oldStr: string; newStr: string }): React.ReactElement {
-  const oldLines = oldStr.split('\n')
-  const newLines = newStr.split('\n')
+/** Memoized model computation: the LCS guard bounds worst-case inputs, but the
+ *  generator must still not re-run on every parent render. The model is pure —
+ *  the raw strings are the only dependency. */
+const EditDiffCard = React.memo(function EditDiffCard({ input }: { input: Record<string, unknown> }): React.ReactElement | null {
+  const model = useMemo(
+    () => buildEditDiffModel(input),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity of the strings is the input
+    [input.diff, input.old_str, input.new_str]
+  )
+  if (model.lines.length === 0 && !model.error) return null
+  return <EditDiffView model={model} />
+})
+
+function EditDiffView({ model }: { model: EditDiffModel }): React.ReactElement {
+  const [expanded, setExpanded] = useState(false)
+  const { added, removed } = countChangedLines(model.lines)
+  if (model.error) {
+    return (
+      <div style={{ marginBottom: 8 }}>
+        <div style={sectionLabelStyle}>Diff</div>
+        <div style={{ background: '#252526', border: '1px solid #333', borderRadius: 4, padding: '6px 8px', fontSize: 12, color: '#c8a04a' }}>
+          {model.error}
+        </div>
+      </div>
+    )
+  }
+  const total = model.lines.length
+  const foldable = total > DIFF_FOLD_PREVIEW_LINES
+  const visible = foldable && !expanded ? model.lines.slice(0, DIFF_FOLD_PREVIEW_LINES) : model.lines
   return (
     <div style={{ marginBottom: 8 }}>
-      <div style={sectionLabelStyle}>Diff</div>
+      <div style={sectionLabelStyle}>
+        Diff{total > 0 && ` · ${added} 增 / ${removed} 删`}
+      </div>
       <div style={{ background: '#252526', border: '1px solid #333', borderRadius: 4, padding: '6px 8px', fontSize: 12 }}>
-        {oldLines.slice(0, MAX_DIFF_LINES).map((l, i) => (
-          <div key={`o${i}`} style={{ color: '#f44747', background: 'rgba(244,71,71,0.08)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-            {`- ${l}`}
-          </div>
+        {visible.map((line, i) => (
+          <EditDiffRow key={i} line={line} />
         ))}
-        {oldLines.length > MAX_DIFF_LINES && (
-          <div style={{ color: '#8a8a8a', fontSize: 11 }}>… {oldLines.length - MAX_DIFF_LINES} more</div>
-        )}
-        {newLines.slice(0, MAX_DIFF_LINES).map((l, i) => (
-          <div key={`n${i}`} style={{ color: '#4ec9b0', background: 'rgba(78,201,176,0.08)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-            {`+ ${l}`}
-          </div>
-        ))}
-        {newLines.length > MAX_DIFF_LINES && (
-          <div style={{ color: '#8a8a8a', fontSize: 11 }}>… {newLines.length - MAX_DIFF_LINES} more</div>
+        {total === 0 && (
+          <div style={{ color: '#8a8a8a', fontSize: 11 }}>（无变化）</div>
         )}
       </div>
+      {foldable && (
+        <Button
+          type="text"
+          size="small"
+          onClick={() => setExpanded(!expanded)}
+          style={{ color: '#8a8a8a', fontSize: 11, padding: '0 4px' }}
+        >
+          {expanded
+            ? '收起'
+            : `展开全部 ${total} 行 · 共 ${added + removed} 行变更（+${added} / −${removed}）`}
+        </Button>
+      )}
     </div>
   )
 }
+
+function EditDiffRow({ line }: { line: EditDiffLine }): React.ReactElement {
+  const rowStyle: React.CSSProperties = { display: 'flex', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }
+  if (line.type === 'meta') {
+    return <div style={{ ...rowStyle, color: '#c8a04a' }}>{line.text}</div>
+  }
+  const gutter: React.CSSProperties = {
+    flexShrink: 0,
+    width: 68,
+    textAlign: 'right',
+    paddingRight: 8,
+    color: '#6e6e6e',
+    userSelect: 'none',
+    fontSize: 11,
+    lineHeight: 'inherit'
+  }
+  if (line.type === 'ctx') {
+    return (
+      <div style={{ ...rowStyle, color: '#9e9e9e' }}>
+        <span style={gutter}>{line.oldNo != null ? `${line.oldNo}\u2002${line.newNo ?? ''}` : ''}</span>
+        <span>{line.text}</span>
+      </div>
+    )
+  }
+  const isAdd = line.type === 'add'
+  return (
+    <div style={{
+      ...rowStyle,
+      color: isAdd ? '#4ec9b0' : '#f44747',
+      background: isAdd ? 'rgba(78,201,176,0.08)' : 'rgba(244,71,71,0.08)'
+    }}>
+      <span style={gutter}>{isAdd ? line.newNo : line.oldNo}</span>
+      <span style={{ whiteSpace: 'pre-wrap' }}>{`${isAdd ? '+' : '-'} ${line.text}`}</span>
+    </div>
+  )
+}
+
+// Write preview keeps its own short cap (whole-file writes need no reviewable
+// history — the file itself is the artifact).
+const MAX_WRITE_PREVIEW_LINES = 8
 
 function WritePreview({ content }: { content: string }): React.ReactElement {
   const lines = content.split('\n')
@@ -267,13 +342,13 @@ function WritePreview({ content }: { content: string }): React.ReactElement {
     <div style={{ marginBottom: 8 }}>
       <div style={{ ...sectionLabelStyle, color: '#4ec9b0' }}>{`+${lines.length} 行`}</div>
       <div style={{ background: '#252526', border: '1px solid #333', borderRadius: 4, padding: '6px 8px', fontSize: 12 }}>
-        {lines.slice(0, MAX_DIFF_LINES).map((l, i) => (
+        {lines.slice(0, MAX_WRITE_PREVIEW_LINES).map((l, i) => (
           <div key={i} style={{ color: '#4ec9b0', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
             {`+ ${l}`}
           </div>
         ))}
-        {lines.length > MAX_DIFF_LINES && (
-          <div style={{ color: '#8a8a8a', fontSize: 11 }}>… {lines.length - MAX_DIFF_LINES} more</div>
+        {lines.length > MAX_WRITE_PREVIEW_LINES && (
+          <div style={{ color: '#8a8a8a', fontSize: 11 }}>… {lines.length - MAX_WRITE_PREVIEW_LINES} more</div>
         )}
       </div>
     </div>
@@ -480,11 +555,15 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
         </Text>
       )}
 
-      {/* Edit diff / write preview (T3/D3-C) — inputs are the two sides */}
-      {!isAskUser && !isStreaming && !isTruncatedWrite && block.name === 'edit' &&
-        typeof block.input?.old_str === 'string' && typeof block.input?.new_str === 'string' && (
-          <EditDiff oldStr={String(block.input.old_str)} newStr={String(block.input.new_str)} />
-        )}
+      {/* Edit diff / write preview (T3/D3-C, P0-4): a REAL diff — both edit
+          modes (unified diff / search-replace) produce hunks with context and
+          line numbers; long diffs fold behind an explicit header instead of the
+          old silent 8-line cut. Computed off the raw input strings, memoized:
+          the generator's LCS guard keeps inputs sane, and this must not re-run
+          per render. */}
+      {!isAskUser && !isStreaming && !isTruncatedWrite && block.name === 'edit' && (
+        <EditDiffCard input={block.input || {}} />
+      )}
       {!isAskUser && !isStreaming && !isTruncatedWrite && block.name === 'write' &&
         typeof block.input?.content === 'string' && (block.input.content as string).length > 0 && (
           <WritePreview content={String(block.input.content)} />

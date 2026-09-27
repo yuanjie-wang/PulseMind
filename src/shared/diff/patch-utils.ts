@@ -10,6 +10,12 @@
  * -removed
  * +added
  * ```
+ *
+ * Lives in shared/ (PLAN-coding-contract P0-4): the transcript diff views on
+ * both the desktop and the extension panel consume the parser, and it was
+ * already zero-import — moved verbatim from src/main/utils/, appliers
+ * (file-ops) included, so the edit tool's diff semantics and the renderers'
+ * read of those diffs can never drift.
  */
 
 export interface DiffHunk {
