@@ -19,6 +19,7 @@ import { app, session, WebContentsView, type WebContents } from 'electron'
 import type { Browser, BrowserContext, Page } from 'playwright-core'
 import { appViewDock } from '../app-view-dock'
 import { readDevToolsPort } from '../cdp-port'
+import { healOopifBlindPage } from '../oopif-heal'
 import { WORKSPACE_DIR } from '../../storage'
 import type { BackendAdapter, BackendTab } from './BackendAdapter'
 import type { BackendDescriptor } from '../../../shared/browser-client/protocol'
@@ -67,6 +68,11 @@ export class AppViewBackend implements BackendAdapter {
     // and BrowserService imports this module at launch.
     const { chromium } = await import('playwright-core')
     this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`)
+    // Views surviving into a (re)connect are the reconnect case — every view
+    // is created after a start(), so a non-empty map here means the previous
+    // connection died without stop(). Those tabs' cross-origin frames predate
+    // the new auto-attach and are invisible to it (see oopif-heal.ts).
+    if (this.views.size > 0) await this.healAdoptedViews()
   }
 
   async stop(): Promise<void> {
@@ -174,6 +180,47 @@ export class AppViewBackend implements BackendAdapter {
       await new Promise((r) => setTimeout(r, 100))
     }
     throw new Error(`未能通过 CDP 定位到新标签页（app=${app.isPackaged ? 'packaged' : 'dev'}）`)
+  }
+
+  /** Reconnect healing: reload each surviving tab whose cross-origin frames
+   *  the new connection cannot see (mechanism in oopif-heal.ts). Only proven-
+   *  blind pages pay the reload; a page mid-navigation or already gone is
+   *  skipped, and one failed reload leaves the tab exactly as it was. */
+  private async healAdoptedViews(): Promise<void> {
+    const context = this.browser?.contexts()[0]
+    if (!context) return
+    for (const [, view] of this.views) {
+      const wc = view.webContents
+      if (wc.isDestroyed()) continue
+      try {
+        // View ↔ page matching by a transient tag: written into the page's
+        // main world from the Electron side, read back through Playwright.
+        // (The newTab marker cannot be used here — it only lives until the
+        // tab's first navigation.)
+        const tag = `heal_${Math.random().toString(36).slice(2)}`
+        await wc.executeJavaScript(`window.__pmHealTag = ${JSON.stringify(tag)}`, true)
+        let page: Page | null = null
+        for (const candidate of context.pages()) {
+          const seen = await candidate.evaluate('window.__pmHealTag').catch(() => undefined)
+          if (seen === tag) {
+            page = candidate
+            break
+          }
+        }
+        void wc.executeJavaScript('delete window.__pmHealTag', true).catch(() => {})
+        if (!page) continue
+        const frameUrls = wc.mainFrame.frames.map((f) => f.url)
+        const reloaded = await healOopifBlindPage(page, frameUrls)
+        if (reloaded) {
+          console.warn(
+            '[browser] app-view 重连修复：标签页的跨域 iframe 对新 CDP 连接不可见，已重载页面恢复控制:',
+            wc.getURL(),
+          )
+        }
+      } catch (err) {
+        console.warn('[browser] app-view reconnect heal skipped a tab:', err instanceof Error ? err.message : err)
+      }
+    }
   }
 
   /** One session-level will-download handler routes every pane download by
