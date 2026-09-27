@@ -191,6 +191,8 @@ const electronAPI = {
   installSkill: (name: string): Promise<SkillDefinition | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_INSTALL, name),
   readSkillRaw: (name: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ_RAW, name),
   writeSkill: (skill: SkillDefinition): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_WRITE, skill),
+  writeSkillSource: (content: string, expectedName?: string): Promise<{ ok: true; skill: SkillDefinition } | { ok: false; error: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SKILLS_WRITE_SOURCE, content, expectedName),
   listSkillFiles: (name: string): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_FILES, name),
   readSkillFile: (name: string, relPath: string): Promise<string | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ_FILE, name, relPath),

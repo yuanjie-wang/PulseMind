@@ -48,9 +48,9 @@ Full system prompt instructions go here...
 ### Process
 1. Clarify what the user wants the skill to accomplish
 2. Draft the skill prompt content together
-3. Write the \`SKILL.md\` file using the \`write\` tool to \`~/.pulsemind/skills/<skill_name>/SKILL.md\`
-4. Verify the file was created correctly
-5. Install the skill using the \`install\` tool with \`type: "skill"\` and \`name\` set to the skill's name — this registers it in the skill system, enables it, and makes it appear in the Skills panel
+3. Write the file directly — the skills directory \`~/.pulsemind/skills/\` is writable with the \`write\`/\`edit\` tools: create \`~/.pulsemind/skills/<skill_name>/SKILL.md\` (frontmatter + body). **Revising an existing skill**: \`read\` its current SKILL.md FIRST, then apply targeted \`edit\` calls — several small edits beat one whole-file rewrite; reach for a whole-file \`write\` only when the structure itself changes. NEVER write over a skill file you have not read this session (that silently discards someone else's edit), and verify what landed (re-\`read\` the changed region, or \`diff\`/\`shasum\` against what you intended) before reporting done.
+4. Edits need NO re-enable and NO re-registration: \`pick_skill\` re-reads SKILL.md from disk on every call, so the next pick serves the new body immediately; only the registry's description/triggers (used for matching) wait for the next session. The Skills panel reads the file from disk, so it shows the edit on its next open. A NEWLY created skill does need one registration to take effect: call the \`install\` tool with \`type: "skill"\` and \`name\` set to the skill's name — this parses, registers and enables it, and it appears in the Skills panel. (Alternative for short skills: \`install\` with the full text as \`content\` does the write + registration in one step, but it never overwrites — revisions go through \`edit\`.)
+5. Built-in skills' files can be edited too, but a hand-edited built-in no longer receives the app's automatic seed upgrades — when diverging from a built-in, prefer creating a new skill under a new name.
 6. If the user wants to share or back up the skill, the skill directory is located at \`~/.pulsemind/skills/<skill_name>/\` — they can manually zip it or copy the \`SKILL.md\` file`,
   },
   {
@@ -64,36 +64,31 @@ Full system prompt instructions go here...
 
 When the user wants to configure and register an MCP server for PulseMind, follow this process:
 
-### Configuration File Format
+### Server Config Format
 
-MCP server configurations are stored in \`~/.pulsemind/mcp/mcp-servers.json\` as a JSON array:
+The \`install\` tool registers an MCP server straight from a config object — no config file is written or needed:
 
 \`\`\`json
-[
-  {
-    "config": {
-      "name": "my-server",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"],
-      "env": {}
-    }
-  }
-]
+{
+  "name": "my-server",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"],
+  "env": {}
+}
 \`\`\`
 
 ### Config Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| \`config.name\` | string | yes | Unique server identifier, used with \`install\` tool |
-| \`config.command\` | string | yes* | Executable to run (required for \`stdio\` transport) |
-| \`config.args\` | string[] | no | Command-line arguments |
-| \`config.env\` | object | no | Additional environment variables |
-| \`config.transportType\` | string | no | \`"stdio"\` (default, local subprocess), \`"sse"\` (remote HTTP server), or \`"streamable-http"\` (streamable HTTP) |
-| \`config.url\` | string | no* | Endpoint URL (required for \`sse\` / \`streamable-http\` transport) |
-| \`config.headers\` | object | no | Custom HTTP headers for SSE transport (e.g. \`{"Authorization": "Bearer xyz"}\`) |
-| \`id\` | string | no | Auto-generated if omitted |
-| \`autoStart\` | boolean | no | Whether to auto-start on app launch |
+| \`name\` | string | yes | Unique server identifier |
+| \`command\` | string | yes* | Executable to run (required for \`stdio\` transport) |
+| \`args\` | string[] | no | Command-line arguments |
+| \`env\` | object | no | Additional environment variables |
+| \`transportType\` | string | no | \`"stdio"\` (default, local subprocess), \`"sse"\` (remote HTTP server), or \`"streamable-http"\` (streamable HTTP) |
+| \`url\` | string | no* | Endpoint URL (required for \`sse\` / \`streamable-http\` transport) |
+| \`headers\` | object | no | Custom HTTP headers for SSE transport (e.g. \`{"Authorization": "Bearer xyz"}\`) |
+| \`requireApproval\` | boolean | no | When true, this server's tools wait for user approval each call |
 
 ### Process
 
@@ -102,18 +97,14 @@ MCP server configurations are stored in \`~/.pulsemind/mcp/mcp-servers.json\` as
    - **sse** — A remote HTTP server using Server-Sent Events. Requires \`url\`.
    - **streamable-http** — A remote HTTP server with streaming support. Requires \`url\`.
 
-2. **Read the existing config** — Use the \`read\` tool to load \`~/.pulsemind/mcp/mcp-servers.json\`. If the file doesn't exist yet, treat the config as an empty array \`[]\`.
+2. **Build the config object** — Assemble the fields per the table above. For stdio servers, verify the command is available (e.g. \`npx\`, \`node\`, \`python\` are common). Validate that \`name\` is unique among the user's servers.
 
-3. **Add the new server entry** — Parse the existing JSON, append the new server config object, preserving all existing entries. Never remove or modify other servers.
+3. **Install** — Call \`install({type: "mcp", config: <the object>})\` — the server is registered straight from the object and started in the same call. Do NOT write \`mcp-servers.json\` first: it lives inside the app's protected data root (\`~/.pulsemind\`), where the \`write\` tool is refused; existing servers are never touched by this path.
 
-4. **Write the config file** — Use the \`write\` tool to overwrite \`~/.pulsemind/mcp/mcp-servers.json\` with the updated array. Format it with 2-space indentation for readability.
-
-5. **Install** — Call \`install({type: "mcp", name: "<config.name>"})\` to register the server and start it. The system will read the config from \`mcp-servers.json\`, register it, and start the MCP server automatically.
+4. After installation, the MCP server's tools become available to the AI in the conversation.
 
 ### Important Notes
-- Always read the existing file first — do NOT overwrite existing server configurations
-- Validate that \`config.name\` is unique (not already in the file)
-- For stdio servers, verify the command is available (e.g. \`npx\`, \`node\`, \`python\` are common)
+- Validate that \`name\` is unique among the user's registered servers — registering the same name twice creates two server entries
 - After installation, the MCP server's tools become available to the AI in the conversation`,
   },
 

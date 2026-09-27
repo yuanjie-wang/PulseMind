@@ -32,6 +32,9 @@
     "src/shared/types/expert.ts",
     "src/renderer/src/types/agent.ts",
     "src/shared/sandbox/policy.ts",
-    "src/shared/tool-display/result-summary.ts"
+    "src/shared/sandbox/command-allowlist.ts",
+    "src/shared/tool-display/result-summary.ts",
+    "src/shared/tool-display/edit-diff.ts",
+    "src/shared/diff/**/*.ts"
   ]
 }

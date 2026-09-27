@@ -145,9 +145,14 @@ describe('the skill location reaches the model — the references read path', ()
   it('pick_skill names the SKILL.md location in its envelope, on both lookup paths', () => {
     const src = readSrc('src/renderer/src/agent/tool-executors.ts')
     expect(src).toContain('**Location:**')
-    // by-name and by-intent envelopes both go through the helper with skillsDir
-    expect(src).toContain('formatSelectedSkill(skill.definition.name, skill.definition, this.opts.skillsDir)')
-    expect(src).toContain('formatSelectedSkill(cleanName, skill.definition, this.opts.skillsDir)')
+    // by-name and by-intent envelopes both go through the disk-fresh read
+    // (freshSkillDefinition) and the helper with skillsDir — the envelope and
+    // the file its **Location:** line advertises must be the same text, not
+    // the never-refreshed registry copy.
+    expect(src).toContain('await this.freshSkillDefinition(skillName, skill.definition)')
+    expect(src).toContain('await this.freshSkillDefinition(cleanName, skill.definition)')
+    expect(src).toContain('formatSelectedSkill(skill.definition.name, def, this.opts.skillsDir)')
+    expect(src).toContain('formatSelectedSkill(cleanName, def, this.opts.skillsDir)')
   })
 
   it('spawn-tool passes the engine skillsDir, so sub-agent locations are absolute', () => {

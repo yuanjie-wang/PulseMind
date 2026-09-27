@@ -62,6 +62,15 @@ export function registerSkillHandlers(): void {
     await skillStore.write(skill)
   })
 
+  // Write a raw SKILL.md verbatim (the agent install tool's `content`). The
+  // sanctioned door into the deny-rooted skills dir — validation, the
+  // no-overwrite rule and the path anchoring all live in the store.
+  ipcMain.handle(IPC_CHANNELS.SKILLS_WRITE_SOURCE, async (event, content: string, expectedName?: string) => {
+    const res = await skillStore.writeRawSkill(content, expectedName)
+    if (res.ok) event.sender.send(IPC_CHANNELS.SKILLS_CHANGED)
+    return res
+  })
+
   // List a skill directory's files (skill-relative paths) for the browser view
   ipcMain.handle(IPC_CHANNELS.SKILLS_LIST_FILES, async (_event, name: string) => {
     return skillStore.listFiles(name)

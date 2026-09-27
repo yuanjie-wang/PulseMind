@@ -14,6 +14,12 @@
 //   read   — allowed everywhere except DENY_ROOTS (agent may look around, not
 //            into secrets or PulseMind's own data)
 //   write  — additionally jailed to workspaceDir
+//   extraWritableRoots — roots OUTSIDE the workspace that are writable anyway
+//            (2026-09-27: ~/.pulsemind/skills — the agent's sanctioned edit
+//            surface for skill files; everything else under ~/.pulsemind —
+//            settings, db, memory, logs, mcp, experiences — stays denied).
+//            Targets inside one are exempt from the deny roots AND from the
+//            workspace jail, reads and writes alike.
 //   baseline (no workspaceDir) — deny-roots only; user-initiated renderer
 //            utilities (knowledge import) run this way and must keep
 //            writing into ~/.pulsemind, so the baseline list excludes it
@@ -48,6 +54,22 @@ export interface GuardPathInput {
   /** Realpath-resolved target when the caller could resolve it (symlinks,
    *  `/tmp` → `/private/tmp`). Checked in addition to the lexical resolution. */
   realTarget?: string | null
+  /** Writable roots outside the workspace. A target inside one is exempt from
+   *  the deny roots and from the workspace write jail — the agent's sanctioned
+   *  edit surface for app-owned directories the model must be able to modify
+   *  (skills). Two coordinates per root, same discipline as the workspace:
+   *  both the lexical and the realpath spelling must sit inside, so a symlink
+   *  that leads out does not count. */
+  extraWritableRoots?: WritableRoot[]
+}
+
+/** A writable root outside the session workspace. `dir` is the lexical
+ *  spelling; `real` its realpath when the caller resolved it (null when the
+ *  root does not exist yet — the lexical judgment then stands alone, mirroring
+ *  how `workspaceReal` may be null). */
+export interface WritableRoot {
+  dir: string
+  real?: string | null
 }
 
 export function buildDenyRoots(home: string, platform: string): string[] {
@@ -120,7 +142,18 @@ export function guardPath(input: GuardPathInput): PathDecision {
     : null
   const inWorkspace = lexicalInside && realInside !== false
 
-  if (!inWorkspace && hitsDenyRoots({ denyRoots: input.denyRoots, resolved, ...extra })) {
+  // The same two-coordinate membership for the extra writable roots
+  // (~/.pulsemind/skills): lexical AND realpath must both sit inside, or the
+  // root grants nothing — a symlink inside skills pointing at ~/.ssh is judged
+  // by where it lands, not by where it is spelled.
+  const inExtraRoot = (root: WritableRoot): boolean => {
+    const lexical = isSubpath(root.dir, resolved)
+    const real = input.realTarget != null ? isSubpath(root.real ?? root.dir, input.realTarget) : null
+    return lexical && real !== false
+  }
+  const inExtra = (input.extraWritableRoots ?? []).some(inExtraRoot)
+
+  if (!inWorkspace && !inExtra && hitsDenyRoots({ denyRoots: input.denyRoots, resolved, ...extra })) {
     return { ok: false, resolved, reason: `Path is protected: ${resolved}` }
   }
 
@@ -131,12 +164,17 @@ export function guardPath(input: GuardPathInput): PathDecision {
 
   if (input.operation === 'read') return { ok: true, resolved }
 
-  // Writes are jailed to the workspace. Both spellings of the root are
-  // writable: `realTarget` judges against the canonical root (the default —
-  // a link inside the workspace pointing outside must not pass), while a
-  // caller with no `realTarget` resolves lexically and judges lexically.
+  // Writes are jailed to the workspace plus any extra writable roots. Both
+  // spellings of every root are writable: `realTarget` judges against the
+  // canonical spelling (the default — a link inside the workspace pointing
+  // outside must not pass), while a caller with no `realTarget` resolves
+  // lexically and judges lexically.
   const writableRoots: string[] = [input.workspaceDir]
   if (input.workspaceReal) writableRoots.push(input.workspaceReal)
+  for (const root of input.extraWritableRoots ?? []) {
+    writableRoots.push(root.dir)
+    if (root.real) writableRoots.push(root.real)
+  }
   const judgeTarget = input.realTarget ?? resolved
   const inside = writableRoots.some((root) => isSubpath(root, judgeTarget))
   if (!inside) {

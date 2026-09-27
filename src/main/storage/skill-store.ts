@@ -278,6 +278,50 @@ export class SkillStore {
     await writeFile(mdPath, formatSkillMd(skill), 'utf-8')
   }
 
+  /**
+   * The conversation-side write door for skill installation (the `install`
+   * tool's `content` parameter). ~/.pulsemind is a path-jail DENY ROOT, so the
+   * agent's write/edit tools can never prepare a SKILL.md themselves — the
+   * create_skill guide used to send the model there and the guard refused
+   * every step. This is the sanctioned door, the same shape as
+   * experience_save: the raw SKILL.md text arrives as a tool parameter, the
+   * frontmatter is parsed (its `name` is the authority for the directory),
+   * and the text lands on disk VERBATIM — pick_skill's freshSkillDefinition
+   * re-reads this exact file, so normalizing it here would make the envelope
+   * and the file its Location line advertises disagree. Never called through
+   * guardFsTarget; existing skills are never overwritten (built-ins seed into
+   * this same directory, so the refusal also protects them).
+   */
+  async writeRawSkill(content: string, expectedName?: string): Promise<{ ok: true; skill: SkillDefinition } | { ok: false; error: string }> {
+    if (!content || !content.trim()) return { ok: false, error: 'SKILL.md content is empty.' }
+    let parsed: ParsedFrontmatter
+    try {
+      parsed = parseSkillMarkdown(content, 'SKILL.md')
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'SKILL.md failed to parse' }
+    }
+    const name = parsed.name
+    if (expectedName && expectedName !== name) {
+      return { ok: false, error: `Field "name" ("${expectedName}") does not match the frontmatter name ("${name}"). Omit "name", or make them agree.` }
+    }
+    if (/[\\/]/.test(name) || name.startsWith('.')) {
+      return { ok: false, error: `Skill name "${name}" is not a valid directory name.` }
+    }
+    const skillDir = this.resolveSkillDir(name)
+    if (!skillDir) {
+      return { ok: false, error: `Skill name "${name}" escapes the skills directory.` }
+    }
+    const mdPath = join(skillDir, 'SKILL.md')
+    try {
+      await readFile(mdPath, 'utf-8')
+      return { ok: false, error: `Skill "${name}" already exists on disk — installing would overwrite it. Pick a different frontmatter name, or edit the existing skill from the Skills panel.` }
+    } catch { /* absent — good to proceed */ }
+    await this.ensureSkillsDir()
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(mdPath, content, 'utf-8')
+    return { ok: true, skill: toDefinition(parsed) }
+  }
+
   /** Read the raw content of a skill's SKILL.md file. */
   async readRawContent(name: string): Promise<string | null> {
     const mdPath = join(SKILLS_DIR, name, 'SKILL.md')
@@ -356,6 +400,18 @@ export class SkillStore {
    * unparseable file, a body from before the manifest — is kept: the check can
    * only ever fail towards keeping.
    *
+   * The same provenance arm also drives the live built-ins' seed UPGRADE: when
+   * the on-disk SKILL.md is exactly what a previous launch recorded seeding and
+   * the bundled text has moved on, the seed is overwritten in place. Without
+   * this branch a text change in any release leaves every upgraded install
+   * holding disk ≠ memory forever — the agent-side registry is built from the
+   * bundled definitions (the disk `listImported` no-ops on a live built-in's
+   * name), so pick_skill served the new body while the `**Location:**` line
+   * advertised the stale file. A user edit diverges from the recorded seed and
+   * can never enter the branch. A file from before the manifest has no recorded
+   * provenance and is still only ever kept — heal those by deleting the stale
+   * seed so the next launch re-seeds.
+   *
    * Stale preference entries (enabled/keywords) for a swept name are pruned by
    * the startup `calibrate()` once the directory is gone.
    */
@@ -375,17 +431,26 @@ export class SkillStore {
       const signature = skillContentSignature(skill)
       try {
         const existing = await readFile(mdPath, 'utf-8')
-        // Already exists, skip to avoid overwriting user changes — but adopt
-        // its provenance when it IS this built-in's own content: a copy seeded
-        // before the manifest existed has no other way to become recognizable
-        // at retirement, and semantic equality is the only claim that holds
-        // after the formatter has moved on.
+        let existingSig: string | null = null
         try {
-          if (skillContentSignature(parseSkillMarkdown(existing, `${skill.name}/SKILL.md`)) === signature) {
-            recordSeed(skill.name, signature)
-          }
+          existingSig = skillContentSignature(parseSkillMarkdown(existing, `${skill.name}/SKILL.md`))
         } catch {
           // Unparseable counts as user content: never adopted, never overwritten.
+        }
+        if (existingSig === signature) {
+          // Already exists and IS this built-in's own content: adopt its
+          // provenance — a copy seeded before the manifest existed has no other
+          // way to become recognizable at retirement, and semantic equality is
+          // the only claim that holds after the formatter has moved on.
+          recordSeed(skill.name, signature)
+        } else if (existingSig !== null && seeds[skill.name] === existingSig) {
+          // The manifest recorded seeding exactly this content and the user has
+          // not touched the file since — so when the bundled text has moved on,
+          // the seed upgrades in place. This is the one write over an existing
+          // file, and it is safe precisely because the provenance record is
+          // kept OUTSIDE the file a user would edit.
+          await writeFile(mdPath, formatSkillMd(skill), 'utf-8')
+          recordSeed(skill.name, signature)
         }
       } catch {
         // Doesn't exist — write it

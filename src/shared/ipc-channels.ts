@@ -104,6 +104,7 @@ export const IPC_CHANNELS = {
   SKILLS_DELETE_IMPORTED: 'skills:delete-imported',
   SKILLS_READ_RAW: 'skills:read-raw',
   SKILLS_WRITE: 'skills:write',
+  SKILLS_WRITE_SOURCE: 'skills:write-source',
   SKILLS_IMPORT: 'skills:import',
   SKILLS_INSTALL: 'skills:install',
   SKILLS_ENSURE_BUILT_IN: 'skills:ensure-built-in',

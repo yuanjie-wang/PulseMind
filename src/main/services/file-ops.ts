@@ -390,7 +390,10 @@ export async function svcFileStat(filePath: string): Promise<{ size: number; bir
   try {
     const guard = await checkFsTarget(filePath, 'read')
     if (!guard.ok) return null
-    const s = await stat(filePath)
+    // Stat the guard's resolved spelling, not the raw one: a `~/…` path is not
+    // a real fs path (the guard expands it; fs.stat does not, and the shell
+    // read path only works because the shell does) — it used to report 0 B.
+    const s = await stat(guard.resolved)
     return { size: s.size, birthtime: s.birthtime.toISOString(), mtime: s.mtime.toISOString(), isDirectory: s.isDirectory() }
   } catch {
     return null

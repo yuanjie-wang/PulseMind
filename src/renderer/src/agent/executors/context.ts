@@ -7,6 +7,7 @@
 import type { ToolUseBlock } from '../../types/agent'
 import type { AgentEngineOptions } from '../AgentEngine'
 import type { SpawnSubAgentFn } from '../tool-executors'
+import type { SkillKeywordAgent } from '../one-shot-agent'
 import type { Plan, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 
 /** Tool-block output preview cap shared by executors and the engine. */
@@ -45,6 +46,9 @@ export interface ToolExecContext {
   spawnBatchTotal?: () => number
   /** Long-running exec tools report the spawned pid (terminal card wiring). */
   onProcessStart?: (pid: string) => void
+  /** The one-shot agent behind install's fire-and-forget keyword backfill.
+   *  Optional: absent (tests) skips the extraction entirely. */
+  skillKeywordAgent?: SkillKeywordAgent
   /** Format exec tool result with exit code and stdout/stderr separation. */
   formatExecResult(exitCode: number | null, stdout: string, stderr: string): string
 }

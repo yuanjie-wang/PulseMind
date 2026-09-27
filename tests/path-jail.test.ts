@@ -164,3 +164,107 @@ describe('buildDenyRoots', () => {
     expect(buildDenyRoots(HOME, 'linux').some((r) => r.includes('Keychains'))).toBe(false)
   })
 })
+
+describe('guardPath — extra writable roots (~/.pulsemind/skills, 2026-09-27)', () => {
+  // The agent's sanctioned edit surface for skill files: skill text is content
+  // the model is SUPPOSED to revise (create_skill's premise), and `install`
+  // already lets it create arbitrary skill text — denying edit on the same
+  // files only broke the revision loop. Everything else under ~/.pulsemind
+  // stays denied.
+  const skills = `${HOME}/.pulsemind/skills`
+  const skillsBase = { denyRoots, workspaceDir: WORKSPACE, extraWritableRoots: [{ dir: skills, real: null }] }
+
+  it('allow writes to a SKILL.md inside the skills tree', () => {
+    expect(guardPath({ ...skillsBase, target: `${skills}/office/SKILL.md`, operation: 'write' }).ok).toBe(true)
+  })
+  it('allow writes deep in companion resources', () => {
+    expect(guardPath({ ...skillsBase, target: `${skills}/office/references/docx.md`, operation: 'write' }).ok).toBe(true)
+  })
+  it('allow svc reads inside the skills tree (the shell path could always)', () => {
+    expect(guardPath({ ...skillsBase, target: `${skills}/office/SKILL.md`, operation: 'read' }).ok).toBe(true)
+  })
+  it('the seed manifest dotfile rides the same exemption (accepted residual)', () => {
+    expect(guardPath({ ...skillsBase, target: `${skills}/.seed-hashes.json`, operation: 'write' }).ok).toBe(true)
+  })
+  it('still deny the rest of ~/.pulsemind — settings, db, memory, mcp, experiences', () => {
+    for (const p of [
+      `${HOME}/.pulsemind/settings.json`,
+      `${HOME}/.pulsemind/db/pulsemind.db`,
+      `${HOME}/.pulsemind/memory/MEMORY.md`,
+      `${HOME}/.pulsemind/mcp/mcp-servers.json`,
+      `${HOME}/.pulsemind/experiences/webmail-send/SKILL.md`,
+    ]) {
+      expect(guardPath({ ...skillsBase, target: p, operation: 'write' }).ok).toBe(false)
+      expect(guardPath({ ...skillsBase, target: p, operation: 'read' }).ok).toBe(false)
+    }
+  })
+  it('refuse a sibling that merely shares the prefix (skills-extra ≠ skills)', () => {
+    expect(guardPath({ ...skillsBase, target: `${HOME}/.pulsemind/skills-extra/x.md`, operation: 'write' }).ok).toBe(false)
+  })
+  it('deny a symlink inside skills that lands in a secrets root (realpath governs)', () => {
+    const d = guardPath({ ...skillsBase, target: `${skills}/office/link`, operation: 'write', realTarget: `${HOME}/.ssh/id_rsa` })
+    expect(d.ok).toBe(false)
+  })
+  it('deny a symlink from skills into the still-protected memory dir', () => {
+    const d = guardPath({ ...skillsBase, target: `${skills}/office/link`, operation: 'write', realTarget: `${HOME}/.pulsemind/memory/MEMORY.md` })
+    expect(d.ok).toBe(false)
+  })
+  it('deny a symlink spelled inside skills whose realpath escapes ~/.pulsemind entirely', () => {
+    const d = guardPath({ ...skillsBase, target: `${skills}/link.md`, operation: 'write', realTarget: '/Users/dev/Desktop/evil.txt' })
+    expect(d.ok).toBe(false)
+  })
+  it('judge the canonical spelling against the root\'s realpath (symlinked ancestor)', () => {
+    // The skills root itself reached through a symlinked ancestor: the lexical
+    // target spelling exempts the deny check, the canonical spelling passes
+    // the jail against the root's `real`.
+    const d = guardPath({
+      denyRoots,
+      workspaceDir: WORKSPACE,
+      extraWritableRoots: [{ dir: '/tmp/skills', real: '/private/tmp/skills' }],
+      target: '/tmp/skills/office/SKILL.md',
+      operation: 'write',
+      realTarget: '/private/tmp/skills/office/SKILL.md',
+    })
+    expect(d.ok).toBe(true)
+  })
+})
+
+describe('guardFsTarget — the glue passes the skills root (real fs, throwaway HOME)', () => {
+  it('adjudicates the exemption end-to-end inside a session context', async () => {
+    const { guardFsTarget } = await import('../src/main/sandbox/guard')
+    const { sessionSandbox } = await import('../src/main/sandbox/session-context')
+    const { homedir } = await import('node:os')
+    const { mkdirSync, symlinkSync, rmSync, writeFileSync } = await import('node:fs')
+    const home = homedir()
+    const skills = `${home}/.pulsemind/skills`
+    const workspace = `${home}/.pulsemind/workspace/glue-probe`
+    mkdirSync(`${skills}/office`, { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(`${skills}/office/SKILL.md`, 'seed text', 'utf-8')
+
+    const inside = sessionSandbox.run({ sessionId: 'conv_glue', workspaceDir: workspace }, async () => {
+      // the file tools' actual seam: write + edit into skills now pass
+      const w = await guardFsTarget(`${skills}/online-spreadsheet/SKILL.md`, 'write')
+      expect(w.ok).toBe(true)
+      const r = await guardFsTarget(`${skills}/office/SKILL.md`, 'read')
+      expect(r.ok).toBe(true)
+      // the rest of the data root is untouched
+      const settings = await guardFsTarget(`${home}/.pulsemind/settings.json`, 'write')
+      expect(settings.ok).toBe(false)
+      expect(settings.ok ? '' : settings.reason).toMatch(/Path is protected/)
+      const mcp = await guardFsTarget(`${home}/.pulsemind/mcp/mcp-servers.json`, 'write')
+      expect(mcp.ok).toBe(false)
+      // a symlink inside skills escaping the tree still fails closed
+      const link = `${skills}/office/escape-link`
+      try { rmSync(link) } catch { /* absent */ }
+      symlinkSync(`${home}/.ssh`, link)
+      const escape = await guardFsTarget(`${link}/id_rsa`, 'write')
+      expect(escape.ok).toBe(false)
+      // workspace behavior unchanged
+      const ws = await guardFsTarget(`${workspace}/notes.md`, 'write')
+      expect(ws.ok).toBe(true)
+    })
+    await inside
+    try { rmSync(`${skills}/office/escape-link`) } catch { /* already gone */ }
+  })
+})

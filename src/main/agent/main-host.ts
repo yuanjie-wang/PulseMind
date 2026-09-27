@@ -213,6 +213,7 @@ export const mainHost: PulseHost = {
   updateSkillPreferences: async (patch) => { skillStore.update(patch) },
   readSkillRaw: (name) => Promise.resolve(skillStore.readRawContent(name)),
   installSkill: (name) => Promise.resolve(skillStore.install(name)),
+  writeSkillSource: (content, expectedName) => Promise.resolve(skillStore.writeRawSkill(content, expectedName)),
   expertList: async () => expertStore.getAll(),
   listExperiences: async () => experienceStore.list(),
   saveExperienceRecord: async (draft) => experienceStore.save(draft),

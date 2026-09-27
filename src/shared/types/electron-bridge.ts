@@ -212,6 +212,14 @@ export interface ElectronAPI {
   installSkill: (name: string) => Promise<SkillDefinition | null>
   readSkillRaw: (name: string) => Promise<string | null>
   writeSkill: (skill: SkillDefinition) => Promise<void>
+  /**
+   * Write a raw SKILL.md verbatim (the agent install tool's `content`). The
+   * frontmatter `name` names the directory; refuses to overwrite an existing
+   * skill. This is the sanctioned door into the deny-rooted skills dir — it
+   * must never route through the fs guard. Resolves { ok:false, error } on
+   * any refusal.
+   */
+  writeSkillSource: (content: string, expectedName?: string) => Promise<{ ok: true; skill: SkillDefinition } | { ok: false; error: string }>
   /** Relative file paths of a skill directory (recursive), e.g. ['SKILL.md', 'scripts/run.py']. */
   listSkillFiles: (name: string) => Promise<string[]>
   /** Read one file inside the skill directory by its skill-relative path. */

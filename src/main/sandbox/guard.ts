@@ -72,6 +72,17 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
     workspaceReal = ws.status === 'resolved' ? ws.path : null
   }
 
+  // The skills directory is the agent's sanctioned edit surface (2026-09-27):
+  // skill files are content the model is supposed to revise (create_skill's
+  // whole premise), and `install` already lets it CREATE arbitrary skill text
+  // — denying `edit` on the same files only broke the revision loop. Everything
+  // else under ~/.pulsemind (settings, db, memory, logs, mcp, experiences)
+  // stays denied. Both spellings resolve like the workspace's, so a symlinked
+  // ancestor or a link escaping the tree still fails the judgment.
+  const skillsRoot = join(homedir(), '.pulsemind', 'skills')
+  const skillsResolved = await resolveRealTarget(skillsRoot)
+  const skillsReal = skillsResolved.status === 'resolved' ? skillsResolved.path : null
+
   const decision = guardPath({
     target,
     operation,
@@ -79,6 +90,7 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
     workspaceDir: ctx?.workspaceDir,
     workspaceReal,
     realTarget: real.path,
+    extraWritableRoots: [{ dir: skillsRoot, real: skillsReal }],
   })
 
   // Audit denials always; writes always (allowed writes are the interesting

@@ -62,6 +62,7 @@ export const HOST_METHOD_KEYS = [
   'updateSkillPreferences',
   'readSkillRaw',
   'installSkill',
+  'writeSkillSource',
   'expertList',
   'listExperiences',
   'saveExperienceRecord',

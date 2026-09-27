@@ -41,6 +41,7 @@ async function experienceLocationBlock(em: { list(): Promise<Array<{ name: strin
 }
 
 import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool } from './executors/domain-tools'
+import { execInstallTool } from './executors/install-tool'
 
 export type SpawnSubAgentFn = (config: SpawnSubAgentConfig) => SubAgentHandle
 export { UI_PREVIEW_MAX } from './executors/context'
@@ -54,12 +55,20 @@ export { UI_PREVIEW_MAX } from './executors/context'
 const READ_DEFAULT_LINE_LIMIT = 200        // read: default lines per page
 const READ_MAX_LINE_LIMIT = 500            // read: hard cap on lines per page (read bypasses the token guardrail, so this is its only bound)
 
+/** UTF-8 byte length of a string. `String.length` counts UTF-16 code units,
+ *  which for CJK-heavy content reads ~50% under the bytes actually hitting
+ *  the disk — a correct write reported as a truncated one (2026-09-27). */
+function utf8ByteLength(s: string): number {
+  return new TextEncoder().encode(s).length
+}
+
 /**
  * The pick_skill result envelope. The **Location:** line is what makes a body
- * that names companion files (the office skill's `references/`) usable:
- * pick_skill ships the in-memory body only, so the file path is the one anchor
- * the model has for deriving "same directory" paths. Omitted when the engine
- * has no skillsDir rather than printing a wrong absolute path.
+ * that names companion files (the office skill's `references/`) usable: it is
+ * the one anchor the model has for deriving "same directory" paths. The body is
+ * read from DISK at call time (see freshSkillDefinition), so the envelope and
+ * the file the Location line advertises are the same text. Omitted when the
+ * engine has no skillsDir rather than printing a wrong absolute path.
  */
 function formatSelectedSkill(name: string, definition: SkillDefinition, skillsDir?: string): string {
   const location = skillsDir ? `\n**Location:** ${skillsDir}/${name}/SKILL.md` : ''
@@ -71,7 +80,8 @@ export class ToolExecutor implements ToolExecContext {
     /** @internal shared with the executors/* modules via ToolExecContext */
     opts: AgentEngineOptions,
     private mcpToolOwner: Map<string, string>,
-    private skillKeywordAgent: SkillKeywordAgent,
+    /** @internal shared with the executors/* modules via ToolExecContext */
+    skillKeywordAgent: SkillKeywordAgent,
     private skillSelectionAgent: SkillSelectionAgent,
     /** @internal shared with the executors/* modules via ToolExecContext */
     addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void,
@@ -128,6 +138,24 @@ export class ToolExecutor implements ToolExecContext {
 
   // ── Private helpers ──────────────────────────────────────────────────
 
+  /**
+   * The disk-fresh definition for the pick_skill envelope. The registry holds
+   * launch-time definitions and never refreshes, but the envelope's
+   * **Location:** line points at the file — a SKILL.md hand-edited mid-session
+   * ("a user edit wins"), or seed-upgraded by ensureBuiltInSkills after an app
+   * update, must be the body the model reads, or the envelope and the file it
+   * advertises tell two different stories. Falls back to the registry copy
+   * when the read fails or the file is gone (deleted mid-session): the
+   * registry definition is then the only description there is.
+   */
+  private async freshSkillDefinition(name: string, fallback: SkillDefinition): Promise<SkillDefinition> {
+    try {
+      return (await getHost().installSkill(name)) ?? fallback
+    } catch {
+      return fallback
+    }
+  }
+
   /** Resolve relative file_path against workspaceDir when set. */
   private resolveWorkspacePath(filePath: string): string {
     const wd = this.opts.workspaceDir
@@ -161,17 +189,20 @@ export class ToolExecutor implements ToolExecContext {
     '.epub', '.msg', '.ipynb',
   ])
 
-  /** Format `read` tool output with file metadata header. */
+  /** Format `read` tool output with file metadata header. `fileSize` undefined
+   *  = the stat failed — shown as `?` so it can never read as an empty file. */
   private formatReadOutput(
-    filePath: string, fileSize: number, totalLines: number,
+    filePath: string, fileSize: number | undefined, totalLines: number,
     offset: number, limit: number, content: string,
     extraNote?: string,
   ): string {
-    const sizeStr = fileSize > 1024 * 1024
-      ? `${(fileSize / 1024 / 1024).toFixed(1)} MB`
-      : fileSize > 1024
-        ? `${(fileSize / 1024).toFixed(1)} KB`
-        : `${fileSize} B`
+    const sizeStr = fileSize === undefined
+      ? '?'
+      : fileSize > 1024 * 1024
+        ? `${(fileSize / 1024 / 1024).toFixed(1)} MB`
+        : fileSize > 1024
+          ? `${(fileSize / 1024).toFixed(1)} KB`
+          : `${fileSize} B`
     const readLen = totalLines ? Math.min(limit, Math.max(0, totalLines - offset + 1)) : limit
     const lines: string[] = [
       '--- File Metadata ---',
@@ -223,7 +254,7 @@ export class ToolExecutor implements ToolExecContext {
           const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase()
 
           const stat = await getHost().getFileStat(filePath)
-          const fileSize = stat?.size ?? 0
+          const fileSize = stat?.size
 
           let content: string
           let totalLines = 0
@@ -315,10 +346,12 @@ export class ToolExecutor implements ToolExecContext {
         let fp = String(t.input.file_path || ''); const content = String(t.input.content || ''); const append = t.input.append === true
         if (!fp) throw new Error('file_path is required')
         fp = this.resolveWorkspacePath(fp)
-        t.output = `Writing ${content.length} bytes to ${fp}...`; this.notify()
+        const bytes = utf8ByteLength(content)
+        const done = `Written ${bytes} bytes to ${fp}${append ? ' (appended)' : ''}`
+        t.output = `Writing ${bytes} bytes to ${fp}...`; this.notify()
         const result = await writeFileChunked(fp, content, append)
-        t.output = result.success ? `Written ${content.length} bytes to ${fp}${append ? ' (appended)' : ''}` : `Error: ${result.error || 'Write failed'}`
-        this.addToolResult(t.id, result.success ? `Written ${content.length} bytes to ${fp}${append ? ' (appended)' : ''}` : `Error: ${result.error || 'Write failed'}`, !result.success)
+        t.output = result.success ? done : `Error: ${result.error || 'Write failed'}`
+        this.addToolResult(t.id, result.success ? done : `Error: ${result.error || 'Write failed'}`, !result.success)
         t.exitCode = result.success ? 0 : 1
       } else if (t.name === 'docx_edit' || t.name === 'xlsx_edit' || t.name === 'pptx_edit') {
         let fp = String(t.input.file_path || '')
@@ -499,63 +532,7 @@ export class ToolExecutor implements ToolExecContext {
   }
 
   async execInstall(t: ToolUseBlock): Promise<void> {
-    t.status = 'running'; this.notify()
-    try {
-      const installType = String(t.input?.type || '').trim()
-      const name = String(t.input?.name || '').trim()
-      if (!installType) throw new Error('Field "type" is required: "skill" or "mcp".')
-      if (!name) throw new Error('Field "name" is required.')
-
-      if (installType === 'skill') {
-        // ── Install skill from ~/.pulsemind/skills/<name>/SKILL.md ──
-        t.output = `Installing skill "${name}"...`; this.notify()
-        const def = await getHost().installSkill(name)
-        if (!def) throw new Error(`Skill "${name}" not found on disk at ~/.pulsemind/skills/${name}/SKILL.md.`)
-        const sm = this.opts.skillManager; sm!.registerSkill(def); sm!.enable(def.name)
-        this.opts.onSkillStateChange?.()
-        t.exitCode = 0; t.status = 'completed'
-        this.addToolResult(t.id, `Skill "${def.name}" installed and enabled successfully.`, false)
-        // keyword extraction (fire-and-forget)
-        try {
-          const rawContent = await getHost().readSkillRaw(name)
-          if (rawContent) {
-            const keywords = await this.skillKeywordAgent.execute(
-              { rawContent },
-              {
-                llmConfig: { adapter: this.opts.adapter, apiKey: this.opts.apiKey || '', baseURL: this.opts.baseURL, model: this.opts.model },
-                maxTokens: 500
-              }
-            )
-            if (keywords.length > 0) {
-              // Patch-shaped atomic update (PLAN-parallel-experts T10): the old
-              // get→patch→whole-set raced two experts installing in one round —
-              // each shipped a full replacement and the later clobbered the
-              // earlier's keyword backfill.
-              await getHost().updateSkillPreferences({ setKeywordIfAbsent: { [def.name]: keywords } })
-            }
-          }
-        } catch (err) { console.warn(`[install] Failed to extract keywords for "${def.name}":`, err) }
-      } else if (installType === 'mcp') {
-        // ── Register MCP server from config file ─────────────────────
-        t.output = `Registering MCP server "${name}"...`; this.notify()
-        const configPath = '~/.pulsemind/mcp/mcp-servers.json'
-        const configStr = await getHost().readFile(configPath)
-        if (!configStr) throw new Error(`MCP config file not found at ${configPath}. Write the MCP server configuration first.`)
-        const records = JSON.parse(configStr)
-        const record = Array.isArray(records) ? records.find((r: { config?: { name?: string }; name?: string }) => r.config?.name === name || r.name === name) : null
-        if (!record) throw new Error(`MCP server "${name}" not found in ${configPath}.`)
-        const rawConfig = record.config || record
-        const result = await getHost().mcpRegisterServer(rawConfig)
-        const serverId = result.server?.id || ''
-        if (serverId) await getHost().mcpStartServer(serverId).catch(() => {})
-        window.dispatchEvent(new CustomEvent('mcp-state-changed'))
-        t.exitCode = 0; t.status = 'completed'
-        this.addToolResult(t.id, `MCP server "${name}" registered and started successfully.`, false)
-      } else {
-        throw new Error(`Unknown install type "${installType}". Must be "skill" or "mcp".`)
-      }
-    } catch (err) { this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'install failed'}`, true); t.exitCode = -1 }
-    this.notify()
+    return execInstallTool(this, t)
   }
 
   async execPickSkill(t: ToolUseBlock): Promise<void> {
@@ -574,7 +551,8 @@ export class ToolExecutor implements ToolExecContext {
         t.output = `Looking up skill: ${skillName}...`; this.notify()
         const skill = sm!.getSkill(skillName)
         if (skill) {
-          this.addToolResult(t.id, formatSelectedSkill(skill.definition.name, skill.definition, this.opts.skillsDir), false)
+          const def = await this.freshSkillDefinition(skillName, skill.definition)
+          this.addToolResult(t.id, formatSelectedSkill(skill.definition.name, def, this.opts.skillsDir), false)
           t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
         // Fall back to the experience library (skill-style progressive disclosure)
@@ -610,7 +588,8 @@ export class ToolExecutor implements ToolExecContext {
       }
       const skill = sm!.getSkill(cleanName)
       if (skill) {
-        this.addToolResult(t.id, formatSelectedSkill(cleanName, skill.definition, this.opts.skillsDir), false)
+        const def = await this.freshSkillDefinition(cleanName, skill.definition)
+        this.addToolResult(t.id, formatSelectedSkill(cleanName, def, this.opts.skillsDir), false)
         t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
       const em2 = this.opts.experienceManager
