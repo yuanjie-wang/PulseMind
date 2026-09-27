@@ -131,7 +131,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     dropActive,
     autoFocus,
   }: ComposerProps,
-  ref
+  ref,
 ): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null)
   const [isWin, setIsWin] = useState(false)
@@ -177,23 +177,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     <div
       ref={containerRef}
       className={dropActive ? 'pm-drop-active' : undefined}
-      style={
-        layout === 'floating'
-          ? { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, padding: '12px 24px 24px' }
-          : undefined
-      }
+      style={layout === 'floating' ? { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, padding: '12px 24px 24px' } : undefined}
     >
-      <div style={{ position: 'relative', ...(layout === 'floating' ? { maxWidth: 1000, margin: '0 auto' } : null) }}>
+      <div
+        style={{
+          position: 'relative',
+          // The footer's responsiveness reads THIS box's width: it hugs the
+          // Sender card in both layouts (the card is capped at 952 inside it),
+          // so the @container rule below sees the card's real width and the
+          // 授权/模型 selectors collapse to icons before the row overflows.
+          // Layout containment changes nothing here — the column is already
+          // the absolute containing block (position: relative) for aboveCard.
+          containerType: 'inline-size',
+          containerName: 'pm-composer',
+          ...(layout === 'floating' ? { maxWidth: 1000, margin: '0 auto' } : null),
+        }}
+      >
         {/* The above-card slot anchors here — this column hugs the Sender card
             exactly (the root adds 36px of floating padding around it), so
             `bottom: calc(100% + 8px)` lands 8px above the card in both
             layouts, and the card's growth (attachment chips, autosize rows)
             carries the slot up with it. */}
-        {aboveCard && (
-          <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, right: 0, zIndex: 100 }}>
-            {aboveCard}
-          </div>
-        )}
+        {aboveCard && <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, right: 0, zIndex: 100 }}>{aboveCard}</div>}
         <Sender
           ref={ref}
           autoSize={{ minRows: 1, maxRows }}
@@ -223,9 +228,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                       // an inline declaration per-state. It travels as a custom
                       // property instead, consumed by the !important rules below,
                       // which outrank every one of those states at once.
-                      ...(accent
-                        ? { '--pm-send-accent': accent.fill, '--pm-send-accent-hover': accent.hover }
-                        : null),
+                      ...(accent ? { '--pm-send-accent': accent.fill, '--pm-send-accent-hover': accent.hover } : null),
                     } as React.CSSProperties
                   }
                   onClick={send}
@@ -249,6 +252,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
       <style>{`
         .ant-sender-actions-btn { display: none !important; }
+        /* Responsive footer: the 授权/模型 selectors shed their labels before
+           the row can overflow the card. The classes are hung by InputArea —
+           the text+caret of both buttons (and the model picker's caret) carry
+           pm-collapse-compact, the model's robot glyph carries pm-collapse-only;
+           the breakpoint is the column's width (container pm-composer above),
+           which equals the card's width everywhere below its 952 cap. 600px
+           sits above the worst wide-mode row (labels + compaction chip + ring +
+           a 160px-capped model name ≈ 560px), so nothing overflows at any
+           width: above it everything fits, below it the buttons are 28px icons.
+           antd 6 paints the 8px inter-item gap on the button root, so the
+           hidden elements leave no phantom spacing and one visible icon leaves
+           no gap at all. */
+        .pm-collapse-only { display: none; }
+        @container pm-composer (max-width: 600px) {
+          .pm-collapse-compact { display: none; }
+          .pm-collapse-only { display: inline-block; }
+        }
         .ant-sender {
           background: ${isWin ? 'var(--pm-elevated)' : 'var(--pm-elevated-glass)'} !important;
           ${isWin ? '' : 'backdrop-filter: blur(12px);'}

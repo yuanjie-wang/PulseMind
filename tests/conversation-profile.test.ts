@@ -85,7 +85,7 @@ describe('desktop 模型 wiring (per conversation)', () => {
     const inputSrc = readFileSync(INPUT_AREA, 'utf-8')
     // The model menu is grouped by 供应商 now; the reset item is built inline
     // as the trailing entry — the conditional wiring is what the scan pins.
-    expect(inputSrc).toContain('(profilePinned && onResetProfile)')
+    expect(inputSrc).toContain('profilePinned && onResetProfile ?')
     expect(inputSrc).toContain("t('chatView.model.followDefault')")
   })
 

@@ -57,7 +57,7 @@ describe('InputArea: Enter mid-run stages instead of silently dropping', () => {
     expect(INPUT_AREA).toContain('data-staged-sendnow')
     expect(INPUT_AREA).toContain('staging.onSendNow(item.text).then(')
     // The send never left (ok=false or rejection) → the row comes back.
-    expect(INPUT_AREA).toContain('(ok) => { if (!ok) restore() }')
+    expect(INPUT_AREA).toContain('if (!ok) restore()')
     // The take IS the commit: removed before the send.
     expect(INPUT_AREA).toContain('.takeById(staging.convId, id)')
   })

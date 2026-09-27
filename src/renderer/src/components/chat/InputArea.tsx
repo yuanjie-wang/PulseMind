@@ -1,6 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Dropdown, Tooltip } from 'antd'
-import { PlusOutlined, FolderOutlined, FileOutlined, DownOutlined, CloseOutlined, UserOutlined, LockOutlined, SafetyOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import {
+  PlusOutlined,
+  FolderOutlined,
+  FileOutlined,
+  DownOutlined,
+  CloseOutlined,
+  UserOutlined,
+  LockOutlined,
+  SafetyOutlined,
+  ThunderboltOutlined,
+  RobotOutlined,
+} from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
@@ -184,14 +195,12 @@ export function InputArea({
   // Loaded once per mount; the list only changes in the capability center.
   const [experts, setExperts] = useState<ExpertProfile[]>([])
   useEffect(() => {
-    window.electronAPI.expertList?.()
+    window.electronAPI
+      .expertList?.()
       .then(setExperts)
       .catch(() => {})
   }, [])
-  const summonableExperts = useMemo(
-    () => experts.filter((e) => e.enabled ?? true),
-    [experts]
-  )
+  const summonableExperts = useMemo(() => experts.filter((e) => e.enabled ?? true), [experts])
   const boundExpert = experts.find((e) => e.id === boundExpertId)
 
   // ── @-mention popup ──
@@ -206,19 +215,15 @@ export function InputArea({
   // shut; any further edit produces a different string and re-arms normally.
   const [mentionDismissedValue, setMentionDismissedValue] = useState<string | null>(null)
   const atIdx = inputValue.lastIndexOf('@')
-  const mentionActive =
-    showExperts &&
-    atIdx >= 0 &&
-    (atIdx === 0 || /\s/.test(inputValue[atIdx - 1])) &&
-    inputValue !== mentionDismissedValue
+  const mentionActive = showExperts && atIdx >= 0 && (atIdx === 0 || /\s/.test(inputValue[atIdx - 1])) && inputValue !== mentionDismissedValue
   const mentionQuery = mentionActive ? inputValue.slice(atIdx + 1) : ''
   const mentionMatches = useMemo((): ExpertProfile[] => {
     if (!mentionActive) return []
     const q = mentionQuery.trim().toLowerCase()
-    return (q
-      ? summonableExperts.filter((e) => e.name.toLowerCase().includes(q) || (e.description || '').toLowerCase().includes(q))
-      : summonableExperts
-    ).slice(0, 8)
+    return (q ? summonableExperts.filter((e) => e.name.toLowerCase().includes(q) || (e.description || '').toLowerCase().includes(q)) : summonableExperts).slice(
+      0,
+      8,
+    )
   }, [mentionActive, mentionQuery, summonableExperts])
 
   const handleInputChange = (v: string): void => {
@@ -291,9 +296,7 @@ export function InputArea({
   // vs 下次请求生效 (post-turn prewarm / manual) — the drop rides the next
   // request build in both non-request sources, so the ring's projected
   // drop and the copy the model sees agree with what the label claims.
-  const compactionFreedK = lastCompaction
-    ? (Math.max(0, lastCompaction.tokensBefore - lastCompaction.tokensAfter) / 1024).toFixed(1)
-    : '0'
+  const compactionFreedK = lastCompaction ? (Math.max(0, lastCompaction.tokensBefore - lastCompaction.tokensAfter) / 1024).toFixed(1) : '0'
   const compactionLabel = !lastCompaction
     ? ''
     : lastCompaction.source === 'request'
@@ -349,8 +352,7 @@ export function InputArea({
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
 
-  const dragHasFiles = (e: React.DragEvent): boolean =>
-    Array.from(e.dataTransfer?.types ?? []).includes('Files')
+  const dragHasFiles = (e: React.DragEvent): boolean => Array.from(e.dataTransfer?.types ?? []).includes('Files')
 
   const readAsDataURL = (blob: Blob): Promise<string> =>
     new Promise((resolve, reject) => {
@@ -485,9 +487,7 @@ export function InputArea({
       label: modelLabel(p),
       provider: p.providerName ?? '',
     }))
-    const resetItem = (profilePinned && onResetProfile)
-      ? [{ key: '__follow_default__', label: t('chatView.model.followDefault'), onClick: onResetProfile }]
-      : []
+    const resetItem = profilePinned && onResetProfile ? [{ key: '__follow_default__', label: t('chatView.model.followDefault'), onClick: onResetProfile }] : []
     const toMenuItem = ({ key, label }: { key: string; label: string }) => ({
       key,
       label,
@@ -559,7 +559,10 @@ export function InputArea({
       staging &&
       isRequesting &&
       e.key === 'Enter' &&
-      !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
       !e.nativeEvent.isComposing &&
       inputValue.trim()
     ) {
@@ -577,10 +580,7 @@ export function InputArea({
 
   /** Compose the outgoing message: attachment refs first, then the typed text. */
   const buildMessage = (text: string): string => {
-    const parts = [
-      ...selectedFiles.map((p) => `[file:${p}]`),
-      ...selectedFolders.map((p) => `[folder:${p}]`),
-    ]
+    const parts = [...selectedFiles.map((p) => `[file:${p}]`), ...selectedFolders.map((p) => `[folder:${p}]`)]
     return parts.length > 0 ? parts.join('\n') + (text ? '\n' + text : '') : text
   }
 
@@ -590,10 +590,9 @@ export function InputArea({
   const sendStagedRow = (item: StagedMessage, index: number): void => {
     if (!staging) return
     const restore = (): void => usePendingMessageStore.getState().restore(staging.convId, item, index)
-    void staging.onSendNow(item.text).then(
-      (ok) => { if (!ok) restore() },
-      restore
-    )
+    void staging.onSendNow(item.text).then((ok) => {
+      if (!ok) restore()
+    }, restore)
   }
 
   const sendStagedRowById = (id: string): void => {
@@ -683,9 +682,7 @@ export function InputArea({
           // children stack in document order, popup closest to the card.
           (topSlot || stagedCount > 0 || (mentionActive && mentionMatches.length > 0) || dragActive) && (
             <>
-              {topSlot && (
-                <div style={{ display: 'flex', justifyContent: 'center' }}>{topSlot}</div>
-              )}
+              {topSlot && <div style={{ display: 'flex', justifyContent: 'center' }}>{topSlot}</div>}
               {stagedCount > 0 && staging && (
                 <div
                   data-staged-strip
@@ -719,11 +716,7 @@ export function InputArea({
                     {t(isRequesting || isAwaitingInput ? 'chatView.staged.hintBusy' : 'chatView.staged.hintSettled', { count: stagedCount })}
                   </div>
                   {(stagedQueue ?? []).map((item) => (
-                    <div
-                      key={item.id}
-                      data-staged-item
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px' }}
-                    >
+                    <div key={item.id} data-staged-item style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px' }}>
                       <div
                         title={item.text}
                         style={{
@@ -813,7 +806,9 @@ export function InputArea({
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.name}</div>
                         {expert.description && (
-                          <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expert.description}</div>
+                          <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {expert.description}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -975,13 +970,19 @@ export function InputArea({
                 <Button
                   size="small"
                   type="text"
+                  className="pm-chat-approval"
                   icon={APPROVAL_LEVELS.find((l) => l.mode === approvalLabel)?.icon}
                   title={approvalHint}
                   aria-label={approvalHint}
                   style={{ fontSize: 12, color: approvalButtonColor(approvalLabel) }}
                 >
-                  {t(`chatView.approval.${approvalLabel}`)}
-                  <DownOutlined style={{ fontSize: 10, color: 'var(--pm-text-faint)', marginLeft: 4 }} />
+                  {/* The level icon stays at every width — it is the compact
+                      form: Composer's container query (pm-collapse-compact)
+                      hides the label and caret once the card narrows past its
+                      breakpoint, leaving an icon-only button whose colour (the
+                      全部允许 amber) and tooltip still name the level. */}
+                  <span className="pm-collapse-compact">{t(`chatView.approval.${approvalLabel}`)}</span>
+                  <DownOutlined className="pm-collapse-compact" style={{ fontSize: 10, color: 'var(--pm-text-faint)', marginLeft: 4 }} />
                 </Button>
               </Dropdown>
             )}
@@ -992,9 +993,7 @@ export function InputArea({
             {/* Right cluster order: compaction chip, context ring, model picker, send button. */}
             {hasMessages && !!lastCompaction && (
               <Tooltip title={compactionHint}>
-                <span style={{ fontSize: 12, color: 'var(--pm-text-faint)', whiteSpace: 'nowrap' }}>
-                  {compactionLabel}
-                </span>
+                <span style={{ fontSize: 12, color: 'var(--pm-text-faint)', whiteSpace: 'nowrap' }}>{compactionLabel}</span>
               </Tooltip>
             )}
             {hasMessages && contextLength != null && contextLength > 0 && (
@@ -1007,11 +1006,28 @@ export function InputArea({
                 <Button
                   size="small"
                   type="text"
-                  icon={<DownOutlined />}
-                  iconPlacement="end"
+                  className="pm-chat-model"
+                  title={activeModelLabel}
+                  aria-label={activeModelLabel}
                   style={{ fontSize: 12, color: 'var(--pm-text-secondary)' }}
                 >
-                  {activeModelLabel}
+                  {/* Two width guards on the label: the 160px ellipsis cap keeps
+                      an unusually long model name from overflowing the row even
+                      above the collapse breakpoint (the full name rides the
+                      tooltip), and past the breakpoint the container query hides
+                      it with the caret — the robot glyph (pm-collapse-only)
+                      becomes the picker: a bare down-caret would not say
+                      "model". antd 6 owns the inter-item spacing (gap on the
+                      button root), so the margins here are only the ones the
+                      old markup measured: none. */}
+                  <span
+                    className="pm-collapse-compact"
+                    style={{ maxWidth: 160, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
+                    {activeModelLabel}
+                  </span>
+                  <DownOutlined className="pm-collapse-compact" style={{ fontSize: 10, color: 'var(--pm-text-faint)' }} />
+                  <RobotOutlined className="pm-collapse-only" style={{ fontSize: 14 }} />
                 </Button>
               </Dropdown>
             )}
@@ -1019,7 +1035,6 @@ export function InputArea({
         }
         onKeyDown={handleComposerKeyDown}
       />
-
     </div>
   )
 }
