@@ -102,6 +102,21 @@ export function setStubKeychainDenied(denied: boolean): void {
   denyEncrypt = denied
 }
 
+// ── clipboard (browser real-input primitives) ──
+// The main-process clipboard BrowserService reads/writes for tab.clipboard.
+// Module state stands in for the OS clipboard so a test can seed and inspect
+// what an agent "copied" without touching the developer's real clipboard.
+let stubClipboardText = ''
+export const clipboard = {
+  readText: (): string => stubClipboardText,
+  writeText: (text: string): void => {
+    stubClipboardText = text
+  },
+}
+export function resetStubClipboard(): void {
+  stubClipboardText = ''
+}
+
 // ── ipcMain / dialog / BrowserWindow (terminal gate, review 2026-09-25 P0-3) ──
 // `ipcMain.handle` registers into a Map so a test drives the REAL registered
 // handler with a synthetic invoke event — the gate under test is the
@@ -241,4 +256,15 @@ export function getStubBrowserWindows(): BrowserWindow[] {
 
 export function resetStubBrowserWindows(): void {
   stubBrowserWindows.length = 0
+}
+
+// ── Notification ──
+// routine-runner imports it at module load for its best-effort desktop
+// notify; the real class must never appear in a test, so `isSupported()` is
+// false and every path past it is a silent no-op shape.
+export class Notification {
+  static isSupported(): boolean { return false }
+  constructor(_options?: { title?: string; body?: string }) {}
+  show(): void {}
+  on(_event: string, _listener: () => void): this { return this }
 }

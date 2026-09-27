@@ -583,17 +583,33 @@ export class AgentSessionManagerImpl {
     return entry ? this.effectiveApprovalMode(sessionId, entry) : mode
   }
 
-  /** Drop a creation-time approval pin once its unattended window is over —
-   *  the routine runner calls this when a run settles, so post-run
-   *  continuations in the run transcript follow the conversation's own stored
-   *  choice (the 授权 button's column) instead of the run's frozen unattended
-   *  default. The pin exists to keep a run nobody is watching from widening;
-   *  a finished run has no such window left to protect. */
-  releaseApprovalPin(sessionId: string): void {
+  /** Drop the creation-time pins once the unattended window is over — the
+   *  routine runner calls this when a run settles, so post-run continuations
+   *  in the run transcript follow the conversation's own stored choices (the
+   *  授权 button's column and the 模型 picker's profile column, which the
+   *  runner seeded with the run's context at creation) instead of the run's
+   *  frozen values. The pins exist to keep a run nobody is watching from
+   *  widening or drifting; a finished run has no such window left to protect.
+   *  The profile pin must go with the approval one: while it held, the
+   *  composer's own model pick could not take effect (effectiveProfileId gave
+   *  the pin precedence), and unlike the approval pin nothing else ever
+   *  released it. */
+  releaseRunPins(sessionId: string): void {
     const entry = this.sessions.get(sessionId)
-    if (!entry || entry.pinned.approvalOverride === undefined) return
+    if (!entry) return
+    const hadProfilePin = entry.pinned.profileId !== undefined
     entry.pinned.approvalOverride = undefined
+    entry.pinned.profileId = undefined
     entry.engine.opts.approvalMode = this.effectiveApprovalMode(sessionId, entry)
+    // The approval re-resolution is a cheap synchronous column read; the model
+    // rides the full refresh (engine opts carry credentials). In the common
+    // case the column holds the very profile the pin did — the runner seeds it
+    // at creation — so this is a no-op rebuild, not a model switch.
+    if (hadProfilePin) {
+      void this.refreshOptions(sessionId).catch((err) => {
+        console.warn('[AgentSession] run-pin release: refresh failed', sessionId, err)
+      })
+    }
   }
 
   async createSession(sessionId: string, opts: AgentSessionCreateOptions = {}): Promise<{ sessionId: string; agentId: string; workspaceDir?: string }> {

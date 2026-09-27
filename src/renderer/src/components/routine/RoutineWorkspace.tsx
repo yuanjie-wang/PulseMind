@@ -463,7 +463,7 @@ interface RunTranscriptProps {
  *  shared useHostedAgentSession; this component only adds the run-specific
  *  view (unattended parking, empty hints). */
 function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): React.ReactElement {
-  const { settings, switchProfile } = useSettings()
+  const { settings } = useSettings()
   const title = routine ? `[日常] ${routine.name}` : '[日常] 任务'
   const session = useHostedAgentSession({
     convId: convId ?? null,
@@ -471,6 +471,30 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
     createOptions: { clientId: 'routine' },
   })
   const isBusy = session.isBusy
+
+  // The composer's model picker is the conversation's OWN choice, not the
+  // global default (user 2026-09-27: a run's continuation must show — and
+  // switch to — what the run ran with; this picker used to call switchProfile
+  // and so moved every NEW conversation's default instead). The runner seeds
+  // the row's profile_id at session creation, so a finished batch row shows
+  // its run's model here; a conversation that never chose falls back to the
+  // global default — the same resolution the engine's effectiveProfileId
+  // makes for it. Same fallback shape as the chat's picker (App.tsx
+  // effectiveProfileId).
+  // Same state shape as useConversationApprovalMode: the state carries its
+  // convId and the read is derived — switching runs (same mount, new convId)
+  // must not show the previous run's model while the next fetch is in flight;
+  // a mismatch reads as "never chose" and the global default stands.
+  const [profileState, setProfileState] = useState<{ convId: string | undefined; profileId: string | undefined }>({ convId: undefined, profileId: undefined })
+  const convProfileId = profileState.convId === convId ? profileState.profileId : undefined
+  useEffect(() => {
+    if (!convId) return
+    let alive = true
+    window.electronAPI.getConversation(convId)
+      .then((row) => { if (alive) setProfileState({ convId, profileId: row?.profileId }) })
+      .catch(() => { /* unreadable row — the default stands */ })
+    return () => { alive = false }
+  }, [convId])
 
   const emptyHint = session.restoring
     ? ''
@@ -487,7 +511,7 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
         isRequesting={isBusy}
         restoring={session.restoring}
         emptyHint={emptyHint}
-        onApproveTool={(id) => session.engineCall('approveTool', id)}
+        onApproveTool={(id, alwaysAllow) => session.engineCall('approveTool', id, alwaysAllow === true)}
         onRejectTool={(id) => session.engineCall('rejectTool', id)}
         onKillTool={(id) => session.engineCall('killTool', id)}
         onRespondToTool={(id, response) => session.engineCall('respondToTool', id, response)}
@@ -512,11 +536,17 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
               onSendMessage={(content) => session.send(content)}
               onCancel={session.cancel}
               profiles={settings.profiles}
-              activeProfileId={settings.activeProfileId}
+              activeProfileId={convProfileId ?? settings.activeProfileId}
               onSelectProfile={(profileId) => {
-                // The engine rebuilds its options main-side; signal the
-                // session so the next ask uses the newly selected model.
-                void switchProfile(profileId).then(() => session.refreshOptions())
+                // The conversation's own column — the same two steps the
+                // chat's picker makes (column write, then engine refresh) so
+                // the next ask runs on the picked model. Optimistic label
+                // first; a failed write leaves the label wrong only until the
+                // next mount re-reads the row.
+                setProfileState({ convId, profileId })
+                void window.electronAPI.setConversationProfile(convId, profileId)
+                  .then(() => session.refreshOptions())
+                  .catch((err) => console.warn('[RunTranscript] model switch failed:', err))
               }}
               features={{ modelPicker: true, authorization: true }}
               approvalMode={session.approvalMode}

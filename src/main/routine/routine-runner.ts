@@ -25,7 +25,7 @@ import { shortUuid } from '../utils/id'
 import { agentSessionManager } from '../agent/session-manager'
 import { routineStore } from '../storage/routine-store'
 import { auditStore } from '../storage/audit-store'
-import { saveConversation } from '../storage/conversation.db'
+import { saveConversation, setConversationApprovalMode, setConversationProfile } from '../storage/conversation.db'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
 import { assertRunnableParams, renderRoutinePrompt } from '../../shared/routine/params'
@@ -143,11 +143,13 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
     if (stopNet.t) clearTimeout(stopNet.t)
     unsubscribe?.()
     routineStore.finishRun(opts.runId, { status, conversationId: convId, error })
-    // The unattended window ends with the run: drop the create-time approval
-    // pin so post-run continuations in the run transcript follow the
-    // conversation's own stored level (the 授权 button's column). The pin
-    // held while nobody was watching; it must not outlive that.
-    agentSessionManager.releaseApprovalPin(convId)
+    // The unattended window ends with the run: drop the create-time pins
+    // (approval level AND model) so post-run continuations in the run
+    // transcript follow the conversation's own stored choices — the columns
+    // seeded above, so what the composer shows is what the run used. The pins
+    // held while nobody was watching; they must not outlive that (a surviving
+    // profile pin would also silence the user's own model pick until restart).
+    agentSessionManager.releaseRunPins(convId)
     // Persist before announcing: a click-through must find the conversation.
     void persistTranscript(convId, opts.transcriptLabel ?? `[日常] ${routine.name}`).then(() => {
       if (opts.notifyOnFinish !== false) {
@@ -230,6 +232,22 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
       const workspaceDir = opts.workspaceDir?.trim()
         || routine.workspaceDir?.trim()
         || await resolveConversationWorkspace(convId)
+      // Seed the conversation's OWN columns with the run context (user
+      // 2026-09-27: continuing a run's conversation must carry the 授权/模型
+      // the run ran with). The opts below pin the values only for the run's
+      // window — releaseRunPins drops them at settlement and a restart drops
+      // them with the process — while the run transcript's composer and every
+      // post-run resolution read these columns. The approval level is always
+      // recorded (the effective one); the model only when the routine pinned
+      // one (absent = the active profile at run time, a run-time resolution,
+      // not this conversation's choice). The setters stub-insert the row (the
+      // transcript itself is persisted only at settlement) and later saves
+      // never touch binding columns. Straight to the DB layer, NOT
+      // setApprovalMode/setSessionProfile — a scheduled run must not rewrite
+      // the global last-used values.
+      setConversationApprovalMode(convId, routine.approvalMode ?? 'outside-ask')
+      const pinnedProfileId = routine.profileId?.trim() || undefined
+      if (pinnedProfileId) setConversationProfile(convId, pinnedProfileId)
       await agentSessionManager.createSession(convId, {
         title: opts.transcriptLabel ?? `[日常] ${routine.name}`,
         clientId: 'routine',
@@ -245,7 +263,7 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
         // Model pin: the session pins the routine's profile, so a global 模型
         // switch mid-run cannot move it; a deleted profile falls back to the
         // active one inside resolveProfile.
-        profileId: routine.profileId?.trim() || undefined,
+        profileId: pinnedProfileId,
       })
       // A stop requested while createSession was still in flight never reached
       // the engine (the session did not exist yet, so the engineCall no-oped)

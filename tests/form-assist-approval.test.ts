@@ -166,25 +166,26 @@ describe('main-side support', () => {
     }
   })
 
-  it('releaseApprovalPin clears the override and re-resolves the engine', () => {
-    expect(SESSION_MGR).toContain('releaseApprovalPin(sessionId: string): void')
-    const from = SESSION_MGR.indexOf('releaseApprovalPin(sessionId: string): void')
+  it('releaseRunPins clears the run pins and re-resolves the engine', () => {
+    expect(SESSION_MGR).toContain('releaseRunPins(sessionId: string): void')
+    const from = SESSION_MGR.indexOf('releaseRunPins(sessionId: string): void')
     const body = SESSION_MGR.slice(from, from + 700)
     expect(body).toContain('entry.pinned.approvalOverride = undefined')
+    expect(body).toContain('entry.pinned.profileId = undefined')
     expect(body).toContain('this.effectiveApprovalMode(sessionId, entry)')
   })
 
-  it('the routine runner releases the pin when the run settles', () => {
+  it('the routine runner releases the pins when the run settles', () => {
     // Non-vacuity: the runner really pins its unattended runs. The level is
     // user-selectable per routine now (2026-09-21), but a routine that never
     // chose one must still pin the unattended default — as a literal, never
     // DEFAULT_APPROVAL_MODE, so a UI default move cannot widen a watched run.
     // (The finish shape is the batch-shared primitive's: 'success' | 'failed',
-    // with releaseApprovalPin inside, ahead of the transcript announce.)
+    // with releaseRunPins inside, ahead of the transcript announce.)
     expect(RUNNER).toContain("approvalMode: routine.approvalMode ?? 'outside-ask'")
     const finish = RUNNER.indexOf("const finish = (status: 'success' | 'failed', error?: string): void =>")
     expect(finish).toBeGreaterThan(-1)
-    const release = RUNNER.indexOf('agentSessionManager.releaseApprovalPin(convId)', finish)
+    const release = RUNNER.indexOf('agentSessionManager.releaseRunPins(convId)', finish)
     expect(release).toBeGreaterThan(finish)
     // Inside finish's body, before the transcript persist announces the run.
     const persist = RUNNER.indexOf('void persistTranscript(convId, opts.transcriptLabel', finish)
