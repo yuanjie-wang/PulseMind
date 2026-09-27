@@ -108,6 +108,22 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
             "THE selector engine (this is the executor; `agent.playwright` only BUILDS locators): one op — click/fill/count/textContent/… A bare number N addresses snapshot ref [N]. State-changing ops answer with a change signal: 「未检测到本页变化」 means the page did not react — check tabs.list() for a popup, then re-snapshot; never retry the old ref",
         },
         waitForTimeout: { signature: 'waitForTimeout(ms): Promise<void>', summary: 'Bounded sleep (≤30s). Prefer domSnapshot re-checks over waiting' },
+        mouse: {
+          signature:
+            'mouse: { click(x, y, { button?, clickCount?, delayMs? }?), move(x, y), wheel(deltaX, deltaY), drag({x,y}, {x,y}, { steps? }) }',
+          summary:
+            'REAL pointer input at viewport coordinates — trusted events, no locator, no focus needed. The one channel for canvas / custom-drawn apps (在线表格、白板：domSnapshot 只有工具栏壳，值在像素里). Derive coordinates from DOM anchors (evaluate + getBoundingClientRect), NEVER guess; right-click a cell = click(x, y, { button: \'right\' }) — the menu it pops IS in the DOM',
+        },
+        keyboard: {
+          signature: "keyboard: { press('Control+a' | 'Enter' | 'ArrowDown' | …), type(text, { delayMs? }?) }",
+          summary:
+            'REAL keyboard to whatever HAS FOCUS — reaches canvas editors that locator fill/press cannot (fill sets a value the canvas ignores; measured: it looks done and nothing happened). Click the target first, then type; Playwright key names, \'+\' composes modifiers',
+        },
+        clipboard: {
+          signature: 'clipboard: { read(): Promise<string>, write(text): Promise<void> }',
+          summary:
+            'System clipboard via the main process — THE read-back channel for canvas apps: select → press(\'Control+c\') → read() the TSV; write(text) + press(\'Control+v\') pastes into grid editors. read() sees the USER\u2019s system clipboard — call it only right after your own copy keystroke; every read is audited',
+        },
       },
     },
     'agent.playwright': {
@@ -127,7 +143,7 @@ export const BROWSER_API_MANIFEST: BrowserApiManifest = {
       summary: 'Callable: `documentation()` prints everything (effective API + workflow). Its `.list()` / `.get(name)` fetch one lookup document. Same object as `agent.browsers.documentation`.',
       members: {
         list: { signature: 'list(): Promise<Array<{name, mode, title}>>', summary: 'Available documents' },
-        get: { signature: 'get(name): Promise<string>', summary: 'Fetch one document (lookup: screenshots/app-view/troubleshooting)' },
+        get: { signature: 'get(name): Promise<string>', summary: 'Fetch one document (lookup: screenshots/app-view/real-input/troubleshooting)' },
       },
     },
     'agent.browsers.user': {

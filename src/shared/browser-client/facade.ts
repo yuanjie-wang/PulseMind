@@ -52,6 +52,31 @@ export interface TabApi {
    *  domSnapshot() is passed VERBATIM — frame prefix included (`"f7e74"`). */
   playwright: (selector: number | string | LocatorSugar, op: string, arg?: string, options?: { timeoutMs?: number }) => Promise<unknown>
   waitForTimeout: (ms: number) => Promise<void>
+  /** ── Real input (canvas apps) ── Trusted browser input for pages whose
+   *  working surface is pixels, not DOM (WPS/腾讯文档 grids, whiteboards):
+   *  locator ops focus elements and synthesize values, which such apps ignore.
+   *  Coordinates are viewport pixels — derive them from DOM anchors
+   *  (evaluate + getBoundingClientRect), never guess. */
+  mouse: {
+    click: (x: number, y: number, options?: { button?: 'left' | 'right' | 'middle'; clickCount?: number; delayMs?: number }) => Promise<void>
+    move: (x: number, y: number) => Promise<void>
+    wheel: (deltaX: number, deltaY: number) => Promise<void>
+    drag: (from: { x: number; y: number }, to: { x: number; y: number }, options?: { steps?: number }) => Promise<void>
+  }
+  /** Real keyboard to whatever HAS FOCUS — click the target first. Reaches
+   *  canvas editors that locator fill/press cannot. */
+  keyboard: {
+    press: (key: string) => Promise<void>
+    type: (text: string, options?: { delayMs?: number }) => Promise<void>
+  }
+  /** System clipboard via the main process — the read-back channel for canvas
+   *  apps (select → keyboard.press('Control+c') → read() the TSV). The
+   *  clipboard may hold the USER's own secrets: read only right after your
+   *  own copy keystroke; every read is audited. */
+  clipboard: {
+    read: () => Promise<string>
+    write: (text: string) => Promise<void>
+  }
 }
 
 /** A handle from open()/tabs.new(): what it did, said out loud. Reuse is the
@@ -180,6 +205,27 @@ export function createBrowserFacade(deps: BrowserFacadeDeps): BrowserFacade {
           PLAYWRIGHT_SURFACE_HINT,
         ),
         waitForTimeout: async (ms: number) => { await invoke({ method: 'playwrightWaitForTimeout', tabId: id, ms }) },
+        // Real input (canvas apps): every member is exactly one command; the
+        // objects are flattened in makeTab so guardMembers' unknown-member menu
+        // names tab.mouse.click etc. directly.
+        mouse: {
+          click: async (x, y, options) => {
+            await invoke({ method: 'mouseClick', tabId: id, x, y, button: options?.button, clickCount: options?.clickCount, delayMs: options?.delayMs })
+          },
+          move: async (x, y) => { await invoke({ method: 'mouseMove', tabId: id, x, y }) },
+          wheel: async (deltaX, deltaY) => { await invoke({ method: 'mouseWheel', tabId: id, deltaX, deltaY }) },
+          drag: async (from, to, options) => {
+            await invoke({ method: 'mouseDrag', tabId: id, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y, steps: options?.steps })
+          },
+        },
+        keyboard: {
+          press: async (key) => { await invoke({ method: 'keyboardPress', tabId: id, key }) },
+          type: async (text, options) => { await invoke({ method: 'keyboardType', tabId: id, text, delayMs: options?.delayMs }) },
+        },
+        clipboard: {
+          read: () => invoke({ method: 'clipboardRead' }) as Promise<string>,
+          write: async (text: string) => { await invoke({ method: 'clipboardWrite', text }) },
+        },
       },
       'tab',
       `（打开新页面：await agent.browsers.open(url)；重绑定：await agent.browsers.tabs.list() 再 .get(id)。）`,

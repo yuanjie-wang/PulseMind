@@ -10,7 +10,7 @@ import { prefixedId } from '../utils/id'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { shell, type WebContents, type WebContentsView } from 'electron'
+import { clipboard, shell, type WebContents, type WebContentsView } from 'electron'
 import {
   assertAllowedUrl,
   browserError,
@@ -47,8 +47,29 @@ import { takeDomSnapshot } from './snapshot-refs'
 import { browserFavoriteStore } from '../storage/browser-favorite-store'
 import { runBrowserCode, type BrowserRunOutput } from './kernel'
 
-/** Playwright ops that change page state — the audit-worthy subset. */
-const MUTATING_METHODS = new Set(['navigate', 'back', 'forward', 'reload', 'close', 'evaluate', 'newTab', 'playwright', 'setActiveBackend', 'claimTab'])
+/** Playwright ops that change page state — the audit-worthy subset. Real-input
+ *  clicks/drags/keys and BOTH clipboard directions are in: the clipboard may
+ *  hold the user's own copied secrets, so even `read` leaves an audit row.
+ *  mouseMove/mouseWheel stay out — hover/scroll are navigation gestures, not
+ *  state changes, and would flood the log. */
+const MUTATING_METHODS = new Set([
+  'navigate',
+  'back',
+  'forward',
+  'reload',
+  'close',
+  'evaluate',
+  'newTab',
+  'playwright',
+  'setActiveBackend',
+  'claimTab',
+  'mouseClick',
+  'mouseDrag',
+  'keyboardPress',
+  'keyboardType',
+  'clipboardRead',
+  'clipboardWrite',
+])
 
 interface ServiceTab {
   /** The tab's last AI-mode snapshot tree + its url (PLAN-browser-snapshot-ai
@@ -290,6 +311,13 @@ export class BrowserService {
           this.syncPane()
           return browserOk(await this.tabInfo(this.tabs.get(id)!))
         }
+        // System clipboard, main-process side — the read-back channel canvas
+        // apps need (select → Control+c → read the TSV they produced).
+        case 'clipboardRead':
+          return browserOk(clipboard.readText())
+        case 'clipboardWrite':
+          clipboard.writeText(cmd.text)
+          return browserOk()
         default:
           break
       }
@@ -347,6 +375,37 @@ export class BrowserService {
         }
         case 'playwrightWaitForTimeout':
           await page.waitForTimeout(Math.min(Math.max(cmd.ms, 0), 30_000))
+          return browserOk()
+        // ── Real input (canvas apps): page.mouse/keyboard dispatch TRUSTED
+        // events over the same CDP transport both backends use — no Electron
+        // sendInputEvent needed. Coordinates are the caller's duty (DOM
+        // anchors); these ops carry no locator safety net by design.
+        case 'mouseClick':
+          await page.mouse.click(cmd.x, cmd.y, {
+            button: cmd.button,
+            clickCount: cmd.clickCount,
+            delay: cmd.delayMs,
+          })
+          return browserOk()
+        case 'mouseMove':
+          await page.mouse.move(cmd.x, cmd.y)
+          return browserOk()
+        case 'mouseWheel':
+          await page.mouse.wheel(cmd.deltaX, cmd.deltaY)
+          return browserOk()
+        case 'mouseDrag': {
+          const steps = Math.min(Math.max(cmd.steps ?? 8, 2), 100)
+          await page.mouse.move(cmd.fromX, cmd.fromY)
+          await page.mouse.down()
+          await page.mouse.move(cmd.toX, cmd.toY, { steps })
+          await page.mouse.up()
+          return browserOk()
+        }
+        case 'keyboardPress':
+          await page.keyboard.press(cmd.key, { delay: cmd.delayMs })
+          return browserOk()
+        case 'keyboardType':
+          await page.keyboard.type(cmd.text, { delay: cmd.delayMs })
           return browserOk()
         default:
           return browserError('UNKNOWN_METHOD', `未知命令：${(cmd as { method: string }).method}`)
@@ -627,9 +686,15 @@ export class BrowserService {
           ? auditPreview(cmd.expression)
           : 'op' in cmd
             ? `${cmd.op} ${cmd.selector.slice(0, 80)}`
-            : 'tabId' in cmd
-              ? cmd.tabId
-              : cmd.method
+            : 'key' in cmd
+              ? cmd.key
+              : 'text' in cmd
+                ? auditPreview(cmd.text)
+                : 'x' in cmd
+                  ? `${cmd.x},${cmd.y}`
+                  : 'tabId' in cmd
+                    ? cmd.tabId
+                    : cmd.method
     auditStore.record({
       scope: 'browser',
       actor: scopeId,

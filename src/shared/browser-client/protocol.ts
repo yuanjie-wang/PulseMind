@@ -57,6 +57,23 @@ export type BrowserCommand =
   | { method: 'evaluate'; tabId: string; expression: PageExpression }
   | { method: 'playwright'; tabId: string; selector: string; op: string; arg?: string; timeoutMs?: number }
   | { method: 'playwrightWaitForTimeout'; tabId: string; ms: number }
+  // ── Real-input primitives (canvas apps) ──
+  // Locator ops focus an ELEMENT and synthesize values; canvas-rendered apps
+  // (WPS/腾讯文档 grids, whiteboards) have no per-cell DOM and ignore both.
+  // These dispatch TRUSTED input at viewport coordinates / to the focused
+  // target — the only channel such apps accept. Coordinates come from DOM
+  // anchors (evaluate + getBoundingClientRect), never guesses.
+  | { method: 'mouseClick'; tabId: string; x: number; y: number; button?: 'left' | 'right' | 'middle'; clickCount?: number; delayMs?: number }
+  | { method: 'mouseMove'; tabId: string; x: number; y: number }
+  | { method: 'mouseWheel'; tabId: string; deltaX: number; deltaY: number }
+  | { method: 'mouseDrag'; tabId: string; fromX: number; fromY: number; toX: number; toY: number; steps?: number }
+  | { method: 'keyboardPress'; tabId: string; key: string; delayMs?: number }
+  | { method: 'keyboardType'; tabId: string; text: string; delayMs?: number }
+  // System clipboard, read/written in the main process — the read-back
+  // channel for canvas apps (select → Control+c → read the TSV). `read` is
+  // audited: the clipboard may hold the USER's own copied secrets.
+  | { method: 'clipboardRead' }
+  | { method: 'clipboardWrite'; text: string }
 
 export type BrowserCommandResult =
   | { ok: true; value?: unknown }

@@ -61,6 +61,17 @@ const APP_VIEW_BODY = `## App-view backend (lookup, this backend only)
 
 Tabs dock into the pane on the right edge of the app window, bound to THIS conversation: the pane shows this conversation's tabs; other conversations' tabs stay invisible; switching to a settings page folds the pane — tabs keep running, nothing is destroyed. The USER browses there too (tab strip + address bar), and user-created tabs live in the SAME tabs.list() registry as yours — no claiming ceremony, just tabs.get(id). The pane appears when the conversation gains its first tab and folds when the user leaves the chat view.`
 
+const REAL_INPUT_BODY = `## Real input — canvas apps (lookup)
+
+Some apps render their working surface as PIXELS on a <canvas> (WPS/腾讯文档 online grids, whiteboards, diagram tools). There the DOM carries only the chrome (toolbars, menus, the cell-address box): domSnapshot shows no cell values, and locator value-ops MISFIRE — \`fill\` sets a property the canvas ignores (measured: it reports done and nothing happened). For those surfaces use the real-input primitives; everything they send is a TRUSTED browser event.
+
+- \`tab.mouse.click(x, y)\` / \`move\` / \`wheel\` / \`drag\` — viewport coordinates. Derive them from DOM anchors: \`tab.evaluate\` + \`getBoundingClientRect()\` of a known element (the cell-address input, a selection marker). NEVER guess coordinates.
+- \`tab.keyboard.press('Control+a')\` / \`type('text')\` — to whatever HAS FOCUS. Click the target first: focus is the state you are managing.
+- \`tab.clipboard.read()\` / \`write(text)\` — the read-back loop, and the ONLY way to read canvas content as text: click the anchor cell → type the address + Enter → \`press('Control+a')\` → \`press('Control+c')\` → \`read()\` returns the TSV. Big grids: select a range (address box accepts A1:E20) and copy in chunks — read() results are capped (~256KB).
+- Write loop: navigate (address box + Enter) → \`type('hello')\` → \`Enter\`. Read back the SAME way to verify — an input's displayed text can lie, the clipboard cannot.
+- The clipboard is the USER's system clipboard: call read() only right after your own copy keystroke, never unprompted; every read is audited.
+- Right-click menus it pops (cell context menu) ARE in the DOM — real-click, then re-snapshot and act by ref.`
+
 const TROUBLESHOOTING_BODY = `## Troubleshooting (lookup)
 
 - "Tab 不存在" → the tab was closed (by user or code). Re-run tabs.list(), rebind.
@@ -89,6 +100,7 @@ const DOCUMENTS: BrowserDocument[] = [
       body: `## Favorites (lookup)\n\n\`agent.browsers.favorites\` is the user's curated list of sites (收藏 — where they WANT to go; history is where they went).\n\n- The user mentions a saved site (「打开我收藏的知乎」) → \`favorites.list()\` FIRST, match by title/host, then \`open(url)\` with the STORED URL — NEVER reconstruct a URL from memory.\n- The user says 收藏/收藏一下 → \`favorites.add(url, title?)\`; the envelope says \`added: true\` or \`added: 'already'\` (tell the user it already existed). 取消收藏 → \`favorites.remove(url)\`.\n- Navigating NEVER auto-populates favorites — only explicit user requests write here.`,
     },
   { name: 'app-view', title: 'App-view backend', mode: 'lookup', when: (d) => d.type === 'app-view', body: APP_VIEW_BODY },
+  { name: 'real-input', title: 'Real input — canvas apps', mode: 'lookup', body: REAL_INPUT_BODY },
   { name: 'troubleshooting', title: 'Troubleshooting', mode: 'lookup', body: TROUBLESHOOTING_BODY },
 ]
 
