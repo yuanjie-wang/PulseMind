@@ -1,6 +1,8 @@
 import React, { Suspense } from 'react'
 import { CodeHighlight, resolveCodeLang } from '../common/CodeHighlight'
 import { HtmlArtifactCard, isHtmlFenceLang } from './HtmlArtifactCard'
+import { useThemeMode } from '../../theme/mode'
+import type { MermaidConfig } from 'mermaid'
 
 // The diagram renderer, lazily: @ant-design/x's Mermaid module imports mermaid
 // at its top level (~430 KB with js-yaml), and a static import here put that in
@@ -9,6 +11,18 @@ import { HtmlArtifactCard, isHtmlFenceLang } from './HtmlArtifactCard'
 // `exports` map, and going through the barrel (`import { Mermaid } from
 // '@ant-design/x'`) is exactly what dragged mermaid in.
 const LazyMermaid = React.lazy(() => import('@ant-design/x/es/mermaid/Mermaid'))
+
+// Mermaid runs on its own theme, chosen in JS like Prism's tokens above (a mode
+// flip must also re-render the diagram): without it the component initializes
+// `theme: 'default'` forever, and in dark mode the x-markdown dark theme's
+// `.x-markdown-dark p` (white, and it legitimately reaches the <p> inside the
+// SVG's foreignObject labels — mermaid's own rules only style span/text) paints
+// white text on the default theme's light #ECECFF nodes. Module constants so a
+// re-render hands the component a stable config identity.
+const MERMAID_CONFIG: Record<'light' | 'dark', MermaidConfig> = {
+  light: { theme: 'default' },
+  dark: { theme: 'dark' },
+}
 
 interface CodeBlockProps {
   children?: React.ReactNode
@@ -35,6 +49,7 @@ function childrenToText(children: React.ReactNode): string {
  * renderer, html keeps its artifact card); inline code and unknown languages
  * stay as plain `<code>`. */
 export function CodeBlock({ children, block, lang, className, streamStatus }: CodeBlockProps): React.ReactNode {
+  const mode = useThemeMode()
   const text = childrenToText(children)
 
   if (block && lang === 'mermaid') {
@@ -46,7 +61,7 @@ export function CodeBlock({ children, block, lang, className, streamStatus }: Co
       // is ready, so code-then-diagram is the shape the user sees either way.
       return (
         <Suspense fallback={<code className={className}>{children}</code>}>
-          <LazyMermaid>{sanitized}</LazyMermaid>
+          <LazyMermaid config={MERMAID_CONFIG[mode]}>{sanitized}</LazyMermaid>
         </Suspense>
       )
     }
