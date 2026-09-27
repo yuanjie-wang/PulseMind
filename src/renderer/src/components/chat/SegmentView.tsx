@@ -49,7 +49,7 @@ export interface SegmentViewProps {
    *  ChatView passes it for the conversation's last settled assistant message
    *  only; every other host leaves it off and renders as before. */
   onExtractRoutine?: () => void | Promise<void>
-  onApproveTool: (toolUseId: string) => void
+  onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool?: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void

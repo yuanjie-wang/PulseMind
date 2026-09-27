@@ -24,7 +24,7 @@ interface ExecutionSegmentProps {
   isLastSegment: boolean
   isRequesting: boolean
   isReceiving?: boolean
-  onApproveTool: (toolUseId: string) => void
+  onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void

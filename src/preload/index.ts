@@ -216,6 +216,15 @@ const electronAPI = {
   execCommandSync: (command: string, cwd?: string, timeoutMs?: number): Promise<{ output: string; code: number | null }> =>
     ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXEC_SYNC, command, cwd, timeoutMs),
   killCommand: (processId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_KILL, processId),
+  // Background process mode (P0-3) + session exec allowlist (P0-2) — see the
+  // channel comments in ipc-channels.ts.
+  executeBackground: (command: string, cwd?: string): Promise<{ pid: number }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXECUTE_BACKGROUND, command, cwd),
+  execLogs: (pid: number, tailBytes?: number): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXEC_LOGS, pid, tailBytes),
+  execKill: (pid: number): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_EXEC_KILL, pid),
+  getExecAllowlist: (): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.EXEC_ALLOWLIST_GET),
+  addExecAllowlist: (prefix: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXEC_ALLOWLIST_ADD, prefix),
   onTerminalOutput: (callback: (data: TerminalOutputEvent) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: TerminalOutputEvent) => callback(data)
     ipcRenderer.on(IPC_CHANNELS.TERMINAL_OUTPUT, handler)

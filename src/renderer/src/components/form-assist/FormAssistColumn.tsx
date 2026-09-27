@@ -111,7 +111,7 @@ export function FormAssistColumn<P extends object>({
         }
         emptyContent={emptyContent}
         contentInset={0}
-        onApproveTool={(id) => session.engineCall('approveTool', id)}
+        onApproveTool={(id, alwaysAllow) => session.engineCall('approveTool', id, alwaysAllow === true)}
         onRejectTool={(id) => session.engineCall('rejectTool', id)}
         onKillTool={(id) => session.engineCall('killTool', id)}
         onRespondToTool={(id, response) => session.engineCall('respondToTool', id, response)}

@@ -125,6 +125,16 @@ export const IPC_CHANNELS = {
   TERMINAL_EXECUTE: 'terminal:execute',
   TERMINAL_EXEC_SYNC: 'terminal:exec-sync',
   TERMINAL_KILL: 'terminal:kill',
+  // Background process mode (PLAN-coding-contract P0-3): spawn-now-return-pid,
+  // pid-keyed log tail and reap. Agent-only in practice — the renderer bridge
+  // implementations exist to satisfy the PulseHost shape.
+  TERMINAL_EXECUTE_BACKGROUND: 'terminal:execute-background',
+  TERMINAL_EXEC_LOGS: 'terminal:exec-logs',
+  TERMINAL_EXEC_KILL: 'terminal:exec-kill',
+  // Session exec allowlist (P0-2 #5): the 「本会话总是允许」 prefixes live in the
+  // main-process session context; these carry reads/writes over the bridge.
+  EXEC_ALLOWLIST_GET: 'exec:allowlist-get',
+  EXEC_ALLOWLIST_ADD: 'exec:allowlist-add',
   TERMINAL_OUTPUT: 'terminal:output',
   TERMINAL_EXIT: 'terminal:exit',
   TERMINAL_ERROR: 'terminal:error',

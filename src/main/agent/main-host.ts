@@ -36,7 +36,8 @@ import { invokeGitAction } from '../git/git.service'
 import { serverManager } from '../mcp/MCPServerManager'
 import { persistCustomServers, validateMcpConfig } from '../ipc/mcp.handler'
 import { performLlmStream, performSimpleFetch, abortLlmStream } from '../ipc/api-proxy.handler'
-import { svcExecuteCommand, svcKillCommand, svcExecSync } from '../services/terminal'
+import { svcExecuteCommand, svcKillCommand, svcExecSync, svcExecuteBackground, svcExecLogs, svcExecKill } from '../services/terminal'
+import { currentSessionSandbox } from '../sandbox/session-context'
 import * as fileOps from '../services/file-ops'
 import * as kq from '../services/knowledge-queries'
 import type { ElectronAPI } from '../../shared/types/electron-bridge'
@@ -129,6 +130,18 @@ export const mainHost: PulseHost = {
   }),
   execCommandSync: (command, cwd, timeoutMs) => svcExecSync(command, cwd, timeoutMs),
   killCommand: async (processId) => { svcKillCommand(processId) },
+  // Background process mode (P0-3) + session exec allowlist (P0-2). Both read
+  // the ALS session context wrapped around engine entry points, so they only
+  // answer inside one — outside a session the allowlist reads empty and pid
+  // channels refuse (no session → nothing is ours).
+  executeBackground: async (command, cwd) => svcExecuteBackground(command, cwd),
+  execLogs: async (pid, tailBytes) => svcExecLogs(pid, tailBytes),
+  execKill: async (pid) => svcExecKill(pid),
+  getExecAllowlist: async () => {
+    const ctx = currentSessionSandbox()
+    return ctx ? [...ctx.execAllowlist] : []
+  },
+  addExecAllowlist: async (prefix) => { currentSessionSandbox()?.execAllowlist.add(prefix) },
   onTerminalOutput: (callback) => {
     const listener = (e: TerminalEvent) => { if (e.channel === 'output') callback({ processId: e.processId, type: e.type, data: e.data }) }
     terminalListeners.add(listener)

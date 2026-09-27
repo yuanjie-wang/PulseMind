@@ -44,7 +44,7 @@ export interface SessionEngineHandle {
    *  turn's own answer), several enter plan mode. Main decides which — the
    *  renderer only reports who was mentioned. */
   startSummonedLoop(userMessage: string, experts: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null): Promise<void>
-  approveTool(toolUseId: string): void
+  approveTool(toolUseId: string, alwaysAllow?: boolean): void
   rejectTool(toolUseId: string): void
   killTool(toolUseId: string): void
   respondToTool(toolUseId: string, response: string): void
@@ -162,7 +162,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     startSummonedLoop(userMessage: string, experts: SummonedExpert[], knowledgeBase?: { id: string; name: string } | null) {
       return ask(userMessage, experts, knowledgeBase)
     },
-    approveTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId]) },
+    approveTool: (toolUseId, alwaysAllow) => { void window.electronAPI.agentSessionEngineCall(convId, 'approveTool', [toolUseId, alwaysAllow === true]) },
     rejectTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'rejectTool', [toolUseId]) },
     killTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'killTool', [toolUseId]) },
     respondToTool: (toolUseId, response) => { void window.electronAPI.agentSessionEngineCall(convId, 'respondToTool', [toolUseId, response]) },
@@ -308,7 +308,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     void window.electronAPI.agentSessionEngineCall(convId, method, args)
   }, [])
 
-  const approveTool = useCallback((toolUseId: string) => callActive('approveTool', toolUseId), [callActive])
+  const approveTool = useCallback((toolUseId: string, alwaysAllow?: boolean) => callActive('approveTool', toolUseId, alwaysAllow === true), [callActive])
   const rejectTool = useCallback((toolUseId: string) => callActive('rejectTool', toolUseId), [callActive])
   const killTool = useCallback((toolUseId: string) => callActive('killTool', toolUseId), [callActive])
   const respondToTool = useCallback((toolUseId: string, response: string) => callActive('respondToTool', toolUseId, response), [callActive])

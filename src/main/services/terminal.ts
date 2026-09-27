@@ -6,11 +6,13 @@
  */
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, createWriteStream, openSync, readSync, statSync, closeSync, type WriteStream } from 'node:fs'
+import { join } from 'node:path'
 import { ensureLaunchHooks, getHookEnv } from '../hooks-runner'
 import { currentSessionSandbox } from '../sandbox/session-context'
 import { isSubpath } from '../../shared/sandbox/path-jail'
 import { auditStore } from '../storage/audit-store'
+import { DATA_DIR } from '../storage/index'
 import { createStreamDecoder } from './stream-decoder'
 
 interface ProcessEntry {
@@ -19,12 +21,47 @@ interface ProcessEntry {
   createdAt: number
   stdout: string
   stderr: string
+  /** Set on background entries (PLAN-coding-contract P0-3): the OS pid is the
+   *  handle the model sees (exec_logs / exec_kill / the CommandCard kill). */
+  osPid?: number
+  background?: boolean
 }
 
 const processes = new Map<string, ProcessEntry>()
+/** Background entries indexed by OS pid — svcExecKill's lookup. Membership ends
+ *  when the process exits on its own; the SESSION's backgroundPids set (session
+ *  context) outlives that so exec_logs can still read the log and discover the
+ *  [exited code=N] line. */
+const backgroundByPid = new Map<number, ProcessEntry>()
 
 const OUTPUT_LIMIT = 1024 * 1024 // 1MB max output per process
-const DEFAULT_TIMEOUT = 60_000 // 60s
+const DEFAULT_TIMEOUT = 60_000 // 60s idle
+
+/**
+ * Absolute cap on a FOREGROUND command's total lifetime (PLAN-coding-contract
+ * #4, ruling D2). The idle timer resets on every stdout/stderr data event, so a
+ * chatty process (`npm run dev`, `watch`) never trips it and can hold a turn
+ * open forever — this timer is never reset, turning "hangs indefinitely" into
+ * "bounded failure". It deliberately does NOT apply to `background: true`
+ * processes (P0-3 #13): their whole point is to outlive the turn, and
+ * svcExecuteBackground sets no timers at all.
+ *
+ * Probe seam: PM_WALL_CLOCK_MAX_MS shortens the cap for
+ * scripts/probe-terminal-limits.mjs (a real 900s wait per case is not a
+ * runnable probe). Production never sets it, so the shipped cap is 900_000.
+ */
+export const WALL_CLOCK_MAX_MS = (() => {
+  const raw = Number(process.env.PM_WALL_CLOCK_MAX_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : 900_000
+})()
+
+/** Background process logs (P0-3 #12). Written under the app's own data dir —
+ *  a deny root for the agent's `read` — so access goes through the narrow
+ *  exec_logs(pid) channel, never through a path the model could guess. */
+const PROC_LOG_DIR = join(DATA_DIR, 'tmp', 'proc-logs')
+const PROC_LOG_MAX_BYTES = 8 * 1024 * 1024
+const PROC_LOG_DEFAULT_TAIL = 8 * 1024
+const PROC_LOG_MAX_TAIL = 64 * 1024
 
 // --- Windows PowerShell output encoding ---
 // PowerShell 5.1 writes piped output using [Console]::OutputEncoding, whose
@@ -170,6 +207,26 @@ export async function svcExecuteCommand(
 
   resetIdleTimer()
 
+  // Wall-clock cap (P0-2 #4, ruling D2): absolute, never reset, `timeout` cannot
+  // raise it. Distinct death reason so the model can tell a silent hang from a
+  // long-running job that outlived the cap.
+  const wallTimer: NodeJS.Timeout = setTimeout(() => {
+    if (!child.killed && child.exitCode === null) {
+      if (idleTimer) clearTimeout(idleTimer)
+      killProcess(entry, true)
+      const outTail = outDecoder.flush()
+      if (outTail) {
+        entry.stdout += outTail
+        emit.output(processId, 'stdout', outTail)
+      }
+      const errTail = errDecoder.flush()
+      if (errTail) emit.output(processId, 'stderr', errTail)
+      emit.output(processId, 'stderr', `\n[Command exceeded the ${WALL_CLOCK_MAX_MS / 1000}s wall-clock limit (total duration)]`)
+      emit.exit(processId, null, 'SIGKILL')
+      processes.delete(processId)
+    }
+  }, WALL_CLOCK_MAX_MS)
+
   // stdout
   if (child.stdout) {
     child.stdout.on('data', (chunk: Buffer) => {
@@ -201,6 +258,7 @@ export async function svcExecuteCommand(
   // Exit
   child.on('exit', (code, signal) => {
     if (idleTimer) clearTimeout(idleTimer)
+    clearTimeout(wallTimer)
     processes.delete(processId)
     const outTail = outDecoder.flush()
     if (outTail) {
@@ -215,6 +273,7 @@ export async function svcExecuteCommand(
   // Error (if process can't be spawned at all)
   child.on('error', (err) => {
     if (idleTimer) clearTimeout(idleTimer)
+    clearTimeout(wallTimer)
     processes.delete(processId)
     emit.error(processId, `Failed to spawn process: ${err.message}`)
     // Also emit exit so the renderer's tool result callback fires
@@ -261,8 +320,23 @@ export async function svcExecSync(command: string, cwd?: string, timeoutMs?: num
     let output = ''
     const outDecoder = createStreamDecoder()
     const errDecoder = createStreamDecoder()
+    // Output cap (P0-2 #4b): this path used to be a bare `output += text` with
+    // no OUTPUT_LIMIT check, so a chatty command accumulated memory without
+    // bound. Same 1MB behavior as svcExecuteCommand: slice, kill, say so.
+    let outputCapped = false
     const flushDecoders = (): void => {
+      if (outputCapped) return
       output += outDecoder.flush() + errDecoder.flush()
+    }
+    const appendOutput = (text: string): void => {
+      if (!text || outputCapped) return
+      output += text
+      if (output.length > OUTPUT_LIMIT) {
+        output = output.slice(0, OUTPUT_LIMIT)
+        output += '\n[Output limit exceeded: 1MB]'
+        outputCapped = true
+        killProcess({ process: child } as ProcessEntry, true)
+      }
     }
 
     // Idle timeout — resets on every stdout/stderr data event
@@ -279,27 +353,205 @@ export async function svcExecSync(command: string, cwd?: string, timeoutMs?: num
       }, effectiveTimeout)
     }
 
+    // Wall-clock cap — same absolute semantics as svcExecuteCommand above.
+    const wallTimer: NodeJS.Timeout = setTimeout(() => {
+      if (idleTimer) clearTimeout(idleTimer)
+      killProcess({ process: child } as ProcessEntry, true)
+      flushDecoders()
+      output += `\n[Command exceeded the ${WALL_CLOCK_MAX_MS / 1000}s wall-clock limit (total duration)]`
+      resolve({ output, code: null })
+    }, WALL_CLOCK_MAX_MS)
+
     resetIdleTimer()
 
     child.stdout?.on('data', (chunk: Buffer) => {
       resetIdleTimer()
-      const text = outDecoder.push(chunk)
-      if (text) output += text
+      appendOutput(outDecoder.push(chunk))
     })
     child.stderr?.on('data', (chunk: Buffer) => {
       resetIdleTimer()
-      const text = errDecoder.push(chunk)
-      if (text) output += text
+      appendOutput(errDecoder.push(chunk))
     })
     child.on('error', () => {
       if (idleTimer) clearTimeout(idleTimer)
+      clearTimeout(wallTimer)
       flushDecoders()
       resolve({ output, code: null })
     })
     child.on('exit', (code) => {
       if (idleTimer) clearTimeout(idleTimer)
+      clearTimeout(wallTimer)
       flushDecoders()
       resolve({ output, code })
     })
   })
+}
+
+// ── Background process mode (PLAN-coding-contract P0-3) ──────────────────────
+//
+// `exec background:true` settles its tool result IMMEDIATELY with the OS pid;
+// output streams to tmp/proc-logs/<pid>.log instead of any subscriber, and the
+// model polls with exec_logs(pid) / reaps with exec_kill(pid). Three contracts
+// matter here:
+//  - The log lives under ~/.pulsemind — a read DENY root for the agent — so the
+//    only door is the pid-keyed exec_logs channel (payload fact #8): never hand
+//    the model a path, and never widen the deny roots to make one readable.
+//  - The disk log carries its own size cap (~8MB): the renderer-side 1MB limit
+//    governs in-memory strings only, and a dev server inside a TTL window can
+//    write far more than that.
+//  - On exit the log tail gains `[exited code=N]`: the tool result already
+//    settled, so no tool_status event will ever fire — exec_logs doubles as the
+//    death-discovery channel (no exit push in v1).
+
+/** Append-only background log handle: content stops at the cap (with a marker
+ *  line), while the exit line below still lands — it is the death signal. */
+interface ProcLog {
+  write(text: string): void
+  writeExitLine(code: number | null): void
+  close(): void
+}
+
+function openProcLog(pid: number): ProcLog {
+  let stream: WriteStream
+  try {
+    mkdirSync(PROC_LOG_DIR, { recursive: true })
+    stream = createWriteStream(join(PROC_LOG_DIR, `${pid}.log`), { flags: 'a' })
+  } catch {
+    // An unwritable log must not lose the process — output is just dropped.
+    return { write: () => {}, writeExitLine: () => {}, close: () => {} }
+  }
+  let bytes = 0
+  let capped = false
+  const write = (text: string): void => {
+    if (!text || capped) return
+    bytes += Buffer.byteLength(text)
+    stream.write(text)
+    if (bytes >= PROC_LOG_MAX_BYTES) {
+      capped = true
+      stream.write(`\n[log truncated at ${PROC_LOG_MAX_BYTES} bytes — process still running, output no longer recorded]`)
+    }
+  }
+  return {
+    write,
+    writeExitLine: (code) => {
+      stream.write(`\n[exited code=${code ?? 'null'}]\n`)
+      stream.end()
+    },
+    close: () => stream.end(),
+  }
+}
+
+/** Spawn a command that outlives the turn. Resolves as soon as the process is
+ *  UP — no timers, no idle/wall-clock kills (P0-3 #13): longevity is the point.
+ *  The pid registers in the session's backgroundPids (exec_logs/exec_kill only
+ *  answer for those) and is deliberately NOT reported to the engine's
+ *  executingProcessId, whose five kill-on-cleanup sites must never reap it. */
+export async function svcExecuteBackground(command: string, cwd?: string): Promise<{ pid: number; processId: string }> {
+  await ensureLaunchHooks()
+  const isWin = process.platform === 'win32'
+  const [shell, shellArgs] = isWin
+    ? ['powershell.exe', ['-NoProfile', '-Command', `${WIN_PS_UTF8_PREFIX}${command}`]]
+    : [process.env.SHELL || '/bin/bash', ['-c', command]]
+
+  const sandboxCtx = currentSessionSandbox()
+  const effectiveCwd = cwd || sandboxCtx?.workspaceDir || getHomeDir()
+  ensureWorkspaceCwd(effectiveCwd)
+  if (sandboxCtx) {
+    auditStore.record({ scope: 'project', actor: sandboxCtx.sessionId, action: 'exec', target: `[background] ${command.slice(0, 150)}`, decision: 'allowed' })
+  }
+
+  const child = spawn(shell, shellArgs, {
+    cwd: effectiveCwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, ...getHookEnv(), ...(isWin ? WIN_UTF8_ENV : {}) },
+    windowsHide: true,
+  })
+
+  const processId = randomUUID()
+  const pid = child.pid ?? -1
+  const entry: ProcessEntry = { process: child, command, createdAt: Date.now(), stdout: '', stderr: '', osPid: pid, background: true }
+  processes.set(processId, entry)
+  if (pid > 0) {
+    backgroundByPid.set(pid, entry)
+    sandboxCtx?.backgroundPids.add(pid)
+  }
+  const log = openProcLog(pid)
+  log.write(`$ ${command}\n`)
+
+  const outDecoder = createStreamDecoder()
+  const errDecoder = createStreamDecoder()
+  child.stdout?.on('data', (chunk: Buffer) => log.write(outDecoder.push(chunk)))
+  child.stderr?.on('data', (chunk: Buffer) => log.write(errDecoder.push(chunk)))
+  child.on('error', (err) => {
+    log.write(`\n[spawn error: ${err.message}]`)
+    log.writeExitLine(null)
+    processes.delete(processId)
+    if (pid > 0) backgroundByPid.delete(pid)
+  })
+  child.on('exit', (code) => {
+    log.write(outDecoder.flush())
+    log.write(errDecoder.flush())
+    log.writeExitLine(code)
+    processes.delete(processId)
+    if (pid > 0) backgroundByPid.delete(pid)
+  })
+
+  return { pid, processId }
+}
+
+/** Tail a background process's log — authorized ONLY for pids this session
+ *  spawned (pid is an OS-global namespace; without the check exec_logs would be
+ *  a global log reader and sessions could read each other's output). Returns
+ *  null for a pid that is not ours; an own pid whose log does not exist yet is
+ *  an empty-output success, not a miss. */
+export function svcExecLogs(pid: number, tailBytes?: number): string | null {
+  const ctx = currentSessionSandbox()
+  if (!ctx || !ctx.backgroundPids.has(pid)) return null
+  const want = Math.max(1, Math.min(tailBytes ?? PROC_LOG_DEFAULT_TAIL, PROC_LOG_MAX_TAIL))
+  const logPath = join(PROC_LOG_DIR, `${pid}.log`)
+  let size: number
+  try {
+    size = statSync(logPath).size
+  } catch {
+    return '' // authorized, nothing written yet
+  }
+  const start = Math.max(0, size - want)
+  const length = size - start
+  const buffer = Buffer.alloc(length)
+  try {
+    const fd = openSync(logPath, 'r')
+    try {
+      const read = readSync(fd, buffer, 0, length, start)
+      return buffer.toString('utf8', 0, read)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return ''
+  }
+}
+
+/** Kill one background process by pid — same session-scoped authorization as
+ *  svcExecLogs. Returns false for a pid that is not ours or already exited. */
+export function svcExecKill(pid: number): boolean {
+  const ctx = currentSessionSandbox()
+  if (!ctx || !ctx.backgroundPids.has(pid)) return false
+  const entry = backgroundByPid.get(pid)
+  if (!entry) return false
+  killProcess(entry)
+  setTimeout(() => killProcess(entry, true), 3000)
+  return true
+}
+
+/** Session teardown: the engine's scalar cleanup never knew about these — reap
+ *  them explicitly when the session is disposed (plan #16: only an explicit
+ *  kill or the session end may collect a background process). */
+export function svcReapBackgroundPids(pids: Iterable<number>): void {
+  for (const pid of pids) {
+    const entry = backgroundByPid.get(pid)
+    if (!entry) continue
+    killProcess(entry)
+    setTimeout(() => killProcess(entry, true), 3000)
+    backgroundByPid.delete(pid)
+  }
 }

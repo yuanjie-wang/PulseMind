@@ -35,10 +35,15 @@ export function pageToolTier(name: string): SandboxToolTier | null {
  *  knowledge tools answer 'exec' here yet are never held, because they are
  *  dispatched as trusted groups rather than through the ladder (a pre-existing
  *  exemption — `browser` is one of them, see execution-flow's heldTools). Use
- *  this for page tools, which have no such exemption, and for display. */
+ *  this for page tools, which have no such exemption, and for display.
+ *  `exec_logs` answers 'read' for the same reason it is NOT in READ_TIER_TOOLS:
+ *  that set selects the *executor* (the native file reader), while its dispatch
+ *  goes through execOtherTool — the tier here is the approval/display answer
+ *  only (PLAN-coding-contract P0-3 #14). */
 export function tierOfTool(name: string): SandboxToolTier {
   const page = pageToolTier(name)
   if (page) return page
+  if (name === 'exec_logs') return 'read'
   if (READ_TIER_TOOLS.has(name)) return 'read'
   if (WRITE_TIER_TOOLS.has(name)) return 'write'
   return 'exec'

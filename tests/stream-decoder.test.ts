@@ -130,17 +130,20 @@ describe('terminal.ts wiring', () => {
   const TERMINAL = join(REPO, 'src', 'main', 'services', 'terminal.ts')
   const src = readFileSync(TERMINAL, 'utf-8')
 
-  it('decodes every pipe stream through createStreamDecoder (4 sites)', () => {
+  it('decodes every pipe stream through createStreamDecoder (6 sites)', () => {
     expect(src).toContain("from './stream-decoder'")
-    expect((src.match(/createStreamDecoder\(\)/g) ?? []).length).toBe(4)
+    // svcExecuteCommand, svcExecSync and svcExecuteBackground each decode
+    // stdout+stderr (PLAN-coding-contract P0-3 added the background pair).
+    expect((src.match(/createStreamDecoder\(\)/g) ?? []).length).toBe(6)
     // No raw per-chunk decode left anywhere in the service.
     expect(src).not.toMatch(/\.toString\(['"]utf-?8['"]\)/)
   })
 
-  it('spawns both shell paths with the Windows Python UTF-8 env', () => {
+  it('spawns every shell path with the Windows Python UTF-8 env', () => {
     expect(src).toContain('PYTHONUTF8')
-    // One definition + two spawn spreads (svcExecuteCommand, svcExecSync).
-    expect((src.match(/WIN_UTF8_ENV/g) ?? []).length).toBeGreaterThanOrEqual(3)
-    expect((src.match(/\.\.\.\(isWin \? WIN_UTF8_ENV : \{\}\)/g) ?? []).length).toBe(2)
+    // One definition + three spawn spreads (svcExecuteCommand, svcExecSync,
+    // svcExecuteBackground).
+    expect((src.match(/WIN_UTF8_ENV/g) ?? []).length).toBeGreaterThanOrEqual(4)
+    expect((src.match(/\.\.\.\(isWin \? WIN_UTF8_ENV : \{\}\)/g) ?? []).length).toBe(3)
   })
 })

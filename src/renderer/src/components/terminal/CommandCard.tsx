@@ -608,9 +608,29 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
         </>
       )}
 
+      {/* Background strip (PLAN-coding-contract P0-3 #16): the result settled at
+          spawn, so this is a STATIC status — whether the process is still alive
+          is discovered via exec_logs, not pushed here. kill routes through the
+          pid channel, never the foreground-process scalar. */}
+      {!isAskUser && block.backgroundPid != null && block.status === 'completed' && (
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Text style={{ color: '#4ec9b0', fontSize: 12 }}>
+            <CheckOutlined style={{ marginRight: 4 }} />
+            {t('commandCard.backgroundRunning', { pid: block.backgroundPid })}
+          </Text>
+          {onKill && (
+            <Button size="small" danger icon={<StopOutlined />} onClick={onKill}>
+              {t('commandCard.kill')}
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* Result badge (hidden for ask_user). Success shows no number (T3/D3-A);
-          the exit code value is only exposed on failure, where it means something. */}
-      {!isAskUser && block.exitCode !== undefined && block.exitCode !== null && (
+          the exit code value is only exposed on failure, where it means something.
+          A background block's exit code is the SPAWN's, not the process's end —
+          the strip above speaks for it instead. */}
+      {!isAskUser && block.backgroundPid == null && block.exitCode !== undefined && block.exitCode !== null && (
         <div style={{ marginTop: 4 }}>
           <Text
             style={{
@@ -666,7 +686,7 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
           {block.status === 'rejected' && (
             <Text style={{ color: '#f44747', fontSize: 12 }}><CloseOutlined style={{marginRight:4,fontSize:12}} />{t('commandCard.skippedByUser')}</Text>
           )}
-          {block.status === 'completed' && !isAskUser && (
+          {block.status === 'completed' && !isAskUser && block.backgroundPid == null && (
             <Text style={{ color: '#4ec9b0', fontSize: 12 }}>
               {(block.exitCode === 0 || block.exitCode == null) ? <><CheckOutlined style={{marginRight:4}} />{t('commandCard.completed')}</> : <><CloseOutlined style={{marginRight:4,fontSize:12}} />{t('commandCard.failed')}</>}
             </Text>

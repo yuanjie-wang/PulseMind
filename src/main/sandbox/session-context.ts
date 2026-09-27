@@ -10,6 +10,17 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 export interface SessionSandboxContext {
   sessionId: string
   workspaceDir: string
+  /** Exec prefixes the user approved with 「本会话总是允许」 (PLAN-coding-contract
+   *  #5/#6). Deliberately not in the DB: the exception is a promise about THIS
+   *  conversation, and a new session starting clean IS the feature. Keys are
+   *  produced/matched by shared/sandbox/command-allowlist.ts. */
+  execAllowlist: Set<string>
+  /** OS pids this session spawned with `background: true` (P0-3 #14/#15):
+   *  exec_logs / exec_kill answer ONLY for these, and session teardown reaps
+   *  the live ones (terminal.svcReapBackgroundPids). A pid stays here after the
+   *  process exits on its own — exec_logs must still read its log tail to
+   *  discover the `[exited code=N]` line. */
+  backgroundPids: Set<number>
 }
 
 export const sessionSandbox = new AsyncLocalStorage<SessionSandboxContext>()

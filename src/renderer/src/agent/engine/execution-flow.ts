@@ -16,7 +16,9 @@ import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, tierOfTool } from './tool-tiers'
 import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
 import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
+import { commandAllowlistKey, commandMatchesAllowlist } from '../../../../shared/sandbox/command-allowlist'
 import type { EngineCore } from './engine-core'
+import type { PulseHost } from '../host/types'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './subagent-limiter'
 import { beginTerminalSpan } from '../terminal-span'
 
@@ -49,7 +51,7 @@ export class ExecutionFlow {
   }
 
 
-  approveTool = async (toolUseId: string): Promise<void> => {
+  approveTool = async (toolUseId: string, alwaysAllow?: boolean): Promise<void> => {
     if (!this.engine.opts.apiKey) return
 
     let targetBlock: ToolUseBlock | undefined
@@ -117,6 +119,18 @@ export class ExecutionFlow {
     let outputBuffer = ''
     let terminalErrorReceived = false
 
+    // 「本会话总是允许」(P0-2 #7): the click that approves this call may also
+    // narrow the rest of the session — store the command's stable prefix in the
+    // session context so the ladder (handleToolUseResponse / dispatchToolExecution)
+    // stops holding matching commands. The allowlist lives main-side; failures
+    // degrade to a plain one-shot approval.
+    if (alwaysAllow) {
+      const key = commandAllowlistKey(resolvedCommand)
+      if (key) {
+        try { await getHost().addExecAllowlist(key) } catch { /* no session context or old host — plain approval */ }
+      }
+    }
+
     // Terminal events broadcast by channel, so another engine's concurrent
     // process delivers here too (PLAN-parallel-experts T7): the span filters
     // by processId and parks the pre-pid window instead of consuming it.
@@ -161,15 +175,38 @@ export class ExecutionFlow {
 
 
   killTool = (toolUseId: string): void => {
+    // A background block's kill goes through the pid channel (P0-3), NOT the
+    // scalar below — the block settled long ago, so killing must reach the
+    // session-registered pid instead of whatever foreground process (if any)
+    // happens to be running now.
+    const block = this.findToolBlock(toolUseId)
+    const backgroundPid = (block as { backgroundPid?: number } | undefined)?.backgroundPid
+    if (block && backgroundPid) {
+      getHost().execKill(backgroundPid).catch(() => { /* already gone */ })
+      const updated = `${block.output || ''}\n[killed by user]`
+      block.output = updated
+      this.engine.notify()
+      this.engine.addToolResult(toolUseId, updated, false)
+      return
+    }
     if (this.engine.executingProcessId) { getHost().killCommand(this.engine.executingProcessId); this.engine.executingProcessId = null }
     this.cleanup()
     for (const msg of this.engine.messages) {
-      for (const block of msg.contentBlocks) {
-        if (block.type === 'tool_use' && block.id === toolUseId) { block.status = 'completed'; block.exitCode = -1; block.output = '(killed by user)'; break }
+      for (const blk of msg.contentBlocks) {
+        if (blk.type === 'tool_use' && blk.id === toolUseId) { blk.status = 'completed'; blk.exitCode = -1; blk.output = '(killed by user)'; break }
       }
     }
     this.engine.notify()
     this.engine.addToolResult(toolUseId, 'Command execution was killed by the user.', true)
+  }
+
+  private findToolBlock(toolUseId: string): ToolUseBlock | undefined {
+    for (const msg of this.engine.messages) {
+      for (const block of msg.contentBlocks) {
+        if (block.type === 'tool_use' && block.id === toolUseId) return block
+      }
+    }
+    return undefined
   }
 
   /** Pause execution (cancel current work but DON'T resolve spawn completion) */
@@ -255,6 +292,28 @@ export class ExecutionFlow {
     return getCachedMcpServers().find(s => s.id === serverId)?.config?.requireApproval === true
   }
 
+  /**
+   * The session's exec allowlist (P0-2 #5), read fresh per batch — the user can
+   * add a prefix at any approval click, and this is the only channel the
+   * partition and the dispatch share. Test hosts without the method (or a
+   * call outside any session context) degrade to an empty allowlist.
+   */
+  private async execAllowlist(): Promise<string[]> {
+    try {
+      const host = this.engine.getHost() as PulseHost & { getExecAllowlist?: () => Promise<string[]> }
+      return (await host.getExecAllowlist?.()) ?? []
+    } catch {
+      return []
+    }
+  }
+
+  /** Whether a tool's resolved command carries a prefix from that allowlist. */
+  private commandAllowlisted(t: ToolUseBlock, allowlist: string[]): boolean {
+    if (allowlist.length === 0) return false
+    const command = buildCommandFromSkillInput(t.name, t.input || {}, this.engine.opts.platformInfo?.platform || '', this.engine.opts.platformInfo?.ripgrepPath)
+    return commandMatchesAllowlist(command, allowlist)
+  }
+
   /** Categorize and execute tool_use blocks. Shared by normal path and oversized-param skip path. */
   private async dispatchToolExecution(tools: ToolUseBlock[]): Promise<void> {
     const readOnlyTools = tools.filter(t => READ_TIER_TOOLS.has(t.name))
@@ -280,9 +339,15 @@ export class ExecutionFlow {
     const gatedMcpTools = tools.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const grouped = new Set([...readOnlyTools, ...writeEditTools, ...pageReadTools, ...pageWriteTools])
-    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user')
+    const procReadTools = tools.filter(t => t.name === 'exec_logs')
+    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user' && t.name !== 'exec_logs')
     const spawnTools = systemTools.filter(t => t.name === 'spawn_agent')
     const held = this.heldTiers()
+    // exec_logs is a read (P0-3 #14) dispatched through execOtherTool — never a
+    // ladder call. Other allowlisted exec commands (P0-2 #5) run despite the
+    // held tier: the user explicitly narrowed the ladder for their prefixes.
+    const allowlist = await this.execAllowlist()
+    const autoOther = otherTools.filter(t => !held.has('exec') || this.commandAllowlisted(t, allowlist))
     try {
       // spawn_agent hosts an independent engine per call, so a batch of them
       // runs CONCURRENTLY — that is multi-expert parallel delegation. They are
@@ -333,7 +398,8 @@ export class ExecutionFlow {
       if (memoryTools.length > 0) for (const t of memoryTools) await this.engine.toolExecutor.execOtherTool(t)
       if (knowledgeTools.length > 0) for (const t of knowledgeTools) await this.engine.toolExecutor.execOtherTool(t)
       if (experienceTools.length > 0) for (const t of experienceTools) await this.engine.toolExecutor.execOtherTool(t)
-      if (!held.has('exec') && otherTools.length > 0) { for (const t of otherTools) await this.engine.toolExecutor.execOtherTool(t) }
+      if (procReadTools.length > 0) for (const t of procReadTools) await this.engine.toolExecutor.execOtherTool(t)
+      if (autoOther.length > 0) { for (const t of autoOther) await this.engine.toolExecutor.execOtherTool(t) }
       if (spawnBatch) await spawnBatch
     } catch (err) {
       this.engine.isAutoExecuting = false
@@ -401,15 +467,28 @@ export class ExecutionFlow {
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
     const pageHeldTools = pageWriteTools.filter(t => requiresApproval(this.engine.opts.approvalMode ?? 'auto', tierOfTool(t.name)))
-    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user')
+    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs')
 
     // The approval ladder decides what waits: shell / ungrouped / gated MCP
     // calls at 'outside-ask' and above, file writes as well at 'always-ask',
     // and page writes by their own tier (reads are dispatched, never held).
+    // A session-allowlisted exec command (P0-2 #5) is NOT held at any level —
+    // the user already named its prefix with 本会话总是允许.
     const held = this.heldTiers()
+    const allowlist = await this.execAllowlist()
+    const otherHeld = otherTools.filter(t => !this.commandAllowlisted(t, allowlist))
+    if (held.has('exec')) {
+      // Stamp the stable prefix the third approval button (本会话总是允许) will
+      // store — computed here, off the same input the partition just matched,
+      // so the button and the ladder can never disagree about the key.
+      for (const t of otherHeld) {
+        const key = commandAllowlistKey(buildCommandFromSkillInput(t.name, t.input || {}, this.engine.opts.platformInfo?.platform || '', this.engine.opts.platformInfo?.ripgrepPath))
+        if (key) (t as { _allowKey?: string })._allowKey = key
+      }
+    }
     const heldTools = [
       ...(held.has('write') ? writeEditTools : []),
-      ...(held.has('exec') ? [...otherTools, ...mcpApprovalTools] : []),
+      ...(held.has('exec') ? [...otherHeld, ...mcpApprovalTools] : []),
       ...pageHeldTools,
     ]
 

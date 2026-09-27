@@ -32,6 +32,7 @@ import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalog
 import type { SummonedExpert } from '../../shared/expert-context'
 import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/expert'
 import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
+import { svcReapBackgroundPids as reapBackgroundPids } from '../services/terminal'
 import { agentClientRegistry } from './client-registry'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
 import { messageContentSignature } from '../../shared/agent-session/message-content'
@@ -756,8 +757,10 @@ export class AgentSessionManagerImpl {
     })
     // Per-session sandbox context: wrapped around every tool-executing entry
     // point (ask / engineCall) so the file-ops and terminal services can
-    // adjudicate against the right workspace (PLAN-0.4.0 M3.5).
-    this.sandboxContexts.set(sessionId, { sessionId, workspaceDir })
+    // adjudicate against the right workspace (PLAN-0.4.0 M3.5). The exec
+    // allowlist and background-pid registry are per-session mutable state that
+    // dies with this object — a new session never inherits either.
+    this.sandboxContexts.set(sessionId, { sessionId, workspaceDir, execAllowlist: new Set(), backgroundPids: new Set() })
     try { updateConversationOrigin(sessionId, opts.clientId ?? 'local') } catch { /* origin is best-effort */ }
     if (opts.projectId && opts.projectId !== DEFAULT_PROJECT_ID) {
       try { setConversationProject(sessionId, opts.projectId) } catch { /* best-effort */ }
@@ -950,7 +953,7 @@ export class AgentSessionManagerImpl {
   private dispatchEngineCall(sessionId: string, entry: { engine: AgentEngine }, method: string, args: unknown[]): unknown {
     const engine = entry.engine as unknown as Record<string, (...a: unknown[]) => unknown>
     switch (method) {
-      case 'approveTool': return engine.approveTool(args[0] as string)
+      case 'approveTool': return engine.approveTool(args[0] as string, args[1] as boolean | undefined)
       case 'rejectTool': return engine.rejectTool(args[0] as string)
       case 'killTool': return engine.killTool(args[0] as string)
       case 'respondToTool': return engine.respondToTool(args[0] as string, args[1] as string)
@@ -973,6 +976,10 @@ export class AgentSessionManagerImpl {
       case 'reset': entry.engine.reset(); return undefined
       case 'dispose':
         entry.engine.dispose()
+        // The engine's scalar process cleanup never covered background pids
+        // (by design — they must survive pause/abort/new-command), so the
+        // session's own teardown is their only remaining reaper.
+        reapBackgroundPids(this.sandboxContexts.get(sessionId)?.backgroundPids ?? [])
         this.sessions.delete(sessionId)
         this.lastSentLen.delete(sessionId)
         this.messageContentRegistry.delete(sessionId)

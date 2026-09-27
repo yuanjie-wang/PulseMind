@@ -360,6 +360,34 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
       }
       return true
     }
+    // Background-process channels (PLAN-coding-contract P0-3 #14/#15). Both
+    // key off the session's pid registry main-side; an unknown pid answers
+    // "not found" rather than opening the log reader / killer to the world.
+    if (t.name === 'exec_logs') {
+      const pid = Number(t.input?.pid)
+      const tail = Number.isFinite(pid) && pid > 0 ? await getHost().execLogs(pid, typeof t.input?.tail === 'number' ? t.input.tail : undefined) : null
+      let text: string
+      if (tail === null) text = `pid=${t.input?.pid ?? ''} not found: no background process with that pid was started by this session.`
+      else if (tail === '') text = `pid=${pid}: no output yet.`
+      else text = tail
+      t.exitCode = tail === null ? 1 : 0
+      t.output = text
+      ex.addToolResult(t.id, text, tail === null)
+      ex.notify()
+      return true
+    }
+    if (t.name === 'exec_kill') {
+      const pid = Number(t.input?.pid)
+      const ok = Number.isFinite(pid) && pid > 0 ? await getHost().execKill(pid) : false
+      const text = ok
+        ? `Kill signal sent to background process pid=${pid}. Confirm with exec_logs(pid=${pid}) — its log tail will report "[exited code=...]".`
+        : `pid=${t.input?.pid ?? ''} not found: no live background process with that pid was started by this session.`
+      t.exitCode = ok ? 0 : 1
+      t.output = text
+      ex.addToolResult(t.id, text, !ok)
+      ex.notify()
+      return true
+    }
     if (t.name === 'experience_read') {
       const name = String(t.input.name || '')
       if (!name) {
@@ -385,6 +413,30 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
       const command = buildCommandFromSkillInput(t.name, t.input || {}, platform, ex.opts.platformInfo?.ripgrepPath)
       const cwd = String(t.input?.cwd || '')
       t.output = ''; ex.notify()
+      // Background mode (PLAN-coding-contract P0-3 #11): settle NOW with the
+      // pid — no span, no exit subscription, and deliberately no
+      // onProcessStart, so the engine's foreground-process scalar (and its five
+      // kill-on-cleanup sites) never sees this process. Output rides the
+      // pid-keyed log; the model polls exec_logs / reaps with exec_kill.
+      if (t.input?.background === true) {
+        try {
+          const { pid } = await getHost().executeBackground(command, cwd || undefined)
+          t.exitCode = 0
+          t.status = 'completed'
+          t.backgroundPid = pid
+          const note = `Background process started: pid=${pid}\n\nThis result is immediate — the process keeps running beyond the turn. Read its output with exec_logs(pid=${pid}) (the log tail also reports "[exited code=N]" once it ends); stop it with exec_kill(pid=${pid}).`
+          t.output = note
+          ex.addToolResult(t.id, note, false)
+        } catch (err) {
+          t.exitCode = -1
+          t.status = 'completed'
+          const msg = `Error: ${err instanceof Error ? err.message : 'Failed to start background process'}`
+          t.output = msg
+          ex.addToolResult(t.id, msg, true)
+        }
+        ex.notify()
+        return true
+      }
       await new Promise<void>((resolve) => {
         let stdoutBuf = ''
         let stderrBuf = ''

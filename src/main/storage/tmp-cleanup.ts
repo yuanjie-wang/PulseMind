@@ -24,6 +24,11 @@ const BUCKETS: BucketSpec[] = [
   // frame; an in-use copy is freshly written and far from the TTL.
   { dir: 'html-cards', ext: '.html', ttlMs: 7 * DAY },
   { dir: 'tool-docs', ext: '.html', ttlMs: 7 * DAY },
+  // Background-process logs (PLAN-coding-contract P0-3): each is a
+  // conversation transcript of the command's output — same sensitivity class
+  // as the other short-lived transcript buckets. Writing is capped at 8MB per
+  // file in terminal.ts; this sweep bounds the pile of dead logs.
+  { dir: 'proc-logs', ext: '.log', ttlMs: 7 * DAY },
 ]
 
 /** Legacy files written to the tmp root before bucket subdivision. */

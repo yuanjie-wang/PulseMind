@@ -18,6 +18,10 @@ export interface ToolUseBlock {
   subConvId?: string
   /** spawn_agent only: the plan node this call implements (spawn_agent planNode=). */
   planNodeId?: string
+  /** exec only, background:true (PLAN-coding-contract P0-3): the OS pid the
+   *  result settled with. Drives the CommandCard's 后台 tag + kill and routes
+   *  killTool through execKill instead of the foreground-process scalar. */
+  backgroundPid?: number
 }
 
 export interface ToolResultBlock {

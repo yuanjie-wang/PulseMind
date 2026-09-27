@@ -46,7 +46,7 @@ export interface TranscriptViewProps {
    *  entrance wave) instead of a burst of animations. A host that remounts per
    *  conversation needs nothing. */
   entranceKey?: string
-  onApproveTool: (toolUseId: string) => void
+  onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool: (toolUseId: string) => void
   onRespondToTool: (toolUseId: string, response: string) => void

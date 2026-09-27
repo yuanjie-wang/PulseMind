@@ -1048,7 +1048,7 @@ export class AgentEngine implements EngineCore {
 
   // ── Tool execution lifecycle delegation (ExecutionFlow, split 4/5) ──
   private executionFlow = new ExecutionFlow(this)
-  approveTool = async (toolUseId: string): Promise<void> => this.executionFlow.approveTool(toolUseId)
+  approveTool = async (toolUseId: string, alwaysAllow?: boolean): Promise<void> => this.executionFlow.approveTool(toolUseId, alwaysAllow)
   rejectTool = (toolUseId: string): void => this.executionFlow.rejectTool(toolUseId)
   killTool = (toolUseId: string): void => this.executionFlow.killTool(toolUseId)
   pauseExecution = (): void => this.executionFlow.pauseExecution()

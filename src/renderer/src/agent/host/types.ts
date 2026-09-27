@@ -23,6 +23,13 @@ export const HOST_METHOD_KEYS = [
   'executeCommand',
   'execCommandSync',
   'killCommand',
+  // background process mode (PLAN-coding-contract P0-3) + session exec
+  // allowlist (P0-2) — main-host-only in practice, see main-host.ts
+  'executeBackground',
+  'execLogs',
+  'execKill',
+  'getExecAllowlist',
+  'addExecAllowlist',
   'onTerminalOutput',
   'onTerminalExit',
   'onTerminalError',

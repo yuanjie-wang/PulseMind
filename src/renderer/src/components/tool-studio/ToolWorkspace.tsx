@@ -128,7 +128,7 @@ function ToolWorkspaceView({ toolId }: { toolId: string }): React.ReactElement {
             isRequesting={session.isRunning}
             restoring={session.restoring}
             emptyHint={START_HINT}
-            onApproveTool={(id) => engineCall('approveTool', id)}
+            onApproveTool={(id, alwaysAllow) => engineCall('approveTool', id, alwaysAllow === true)}
             onRejectTool={(id) => engineCall('rejectTool', id)}
             onKillTool={(id) => engineCall('killTool', id)}
             onRespondToTool={(id, response) => engineCall('respondToTool', id, response)}

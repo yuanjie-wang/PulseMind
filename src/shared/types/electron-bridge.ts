@@ -232,6 +232,14 @@ export interface ElectronAPI {
   executeCommand: (command: string, cwd?: string, timeoutMs?: number) => Promise<string>
   execCommandSync: (command: string, cwd?: string, timeoutMs?: number) => Promise<{ output: string; code: number | null }>
   killCommand: (processId: string) => Promise<void>
+  // Background process mode (PLAN-coding-contract P0-3) + session exec
+  // allowlist (P0-2 #5). The agent graph reaches these only through the
+  // main-process host; the bridge implementations satisfy the PulseHost shape.
+  executeBackground: (command: string, cwd?: string) => Promise<{ pid: number }>
+  execLogs: (pid: number, tailBytes?: number) => Promise<string | null>
+  execKill: (pid: number) => Promise<boolean>
+  getExecAllowlist: () => Promise<string[]>
+  addExecAllowlist: (prefix: string) => Promise<void>
   onTerminalOutput: (callback: (data: TerminalOutputEvent) => void) => () => void
   onTerminalExit: (callback: (data: TerminalExitEvent) => void) => () => void
   onTerminalError: (callback: (data: { processId: string; message: string }) => void) => () => void

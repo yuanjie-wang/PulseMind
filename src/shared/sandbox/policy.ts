@@ -43,8 +43,16 @@ export type SandboxToolTier = 'read' | 'write' | 'exec'
 /** The approval ladder, as one decision the engine consults per tool:
  *  'auto' runs everything; 'outside-ask' holds calls that leave the workspace
  *  (shell, ungrouped tools, MCP tools declaring requireApproval); 'always-ask'
- *  also holds file writes and edits. */
-export function requiresApproval(mode: SandboxApprovalMode, tier: SandboxToolTier): boolean {
+ *  also holds file writes and edits.
+ *
+ *  `allowlisted` short-circuits the ladder (PLAN-coding-contract #5): the
+ *  command's stable prefix is in the session's 「本会话总是允许」 set, which the
+ *  USER narrowed it with — the session-scoped exception beats the mode, never
+ *  the other way around. The session set lives in the main process (not the DB,
+ *  so a new session starts clean) and is matched by
+ *  shared/sandbox/command-allowlist.ts. */
+export function requiresApproval(mode: SandboxApprovalMode, tier: SandboxToolTier, allowlisted?: boolean): boolean {
+  if (allowlisted) return false
   switch (mode) {
     case 'auto': return false
     case 'outside-ask': return tier === 'exec'

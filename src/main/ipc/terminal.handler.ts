@@ -15,7 +15,8 @@
 import { ipcMain, BrowserWindow, dialog } from 'electron'
 import { join, resolve as resolvePath } from 'node:path'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
-import { svcExecuteCommand, svcKillCommand, svcExecSync } from '../services/terminal'
+import { svcExecuteCommand, svcKillCommand, svcExecSync, svcExecLogs, svcExecKill } from '../services/terminal'
+import { currentSessionSandbox } from '../sandbox/session-context'
 import { auditStore } from '../storage/audit-store'
 import { getConversationWorkspaceDir } from '../storage/conversation.db'
 import { isSubpath } from '../../shared/sandbox/path-jail'
@@ -143,5 +144,25 @@ export function registerTerminalHandlers(): void {
     const gate = await gateRendererExecution(_event, command, cwd, opts)
     if (!gate.ok) throw new Error(gate.error)
     return svcExecSync(command, gate.cwd, timeoutMs)
+  })
+
+  // ── Background process mode + session exec allowlist (PLAN-coding-contract
+  // P0-2/P0-3). Same trust shape as the review note above: the agent graph
+  // reaches these through the main-process host, never through these channels —
+  // so the spawn and the allowlist-write REFUSE renderer origins outright (a
+  // reach-around here would be unattended RCE / an approval-ladder widening).
+  // The pid-keyed reads/kill are harmless for renderer calls: both key off the
+  // ALS session context, which a renderer invocation never has.
+  ipcMain.handle(IPC_CHANNELS.TERMINAL_EXECUTE_BACKGROUND, () => {
+    throw new Error('background execution is agent-only — this channel has no renderer path')
+  })
+  ipcMain.handle(IPC_CHANNELS.TERMINAL_EXEC_LOGS, (_event, pid: number, tailBytes?: number) => svcExecLogs(Number(pid), tailBytes))
+  ipcMain.handle(IPC_CHANNELS.TERMINAL_EXEC_KILL, (_event, pid: number) => svcExecKill(Number(pid)))
+  ipcMain.handle(IPC_CHANNELS.EXEC_ALLOWLIST_GET, () => {
+    const ctx = currentSessionSandbox()
+    return ctx ? [...ctx.execAllowlist] : []
+  })
+  ipcMain.handle(IPC_CHANNELS.EXEC_ALLOWLIST_ADD, () => {
+    throw new Error('the exec allowlist is engine-side — approve with alwaysAllow through the session engine instead')
   })
 }

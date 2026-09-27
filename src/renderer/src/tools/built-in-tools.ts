@@ -262,6 +262,10 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           type: 'integer',
           description: 'Idle timeout in seconds. Killed if no output for this duration.',
         },
+        background: {
+          type: 'boolean',
+          description: 'Run in the background: the result returns IMMEDIATELY with an OS pid; output goes to a log you read with exec_logs(pid), and you stop the process with exec_kill(pid). Use for dev servers, watchers and anything long-lived.',
+        },
         sudo: {
           type: 'boolean',
           description: 'Run with admin/root privileges (sudo/UAC).',
@@ -273,10 +277,51 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     builtIn: true,
   },
 
+  // ── background-process channels (PLAN-coding-contract P0-3) ──
+  {
+    name: 'exec_logs',
+    description: 'Read the output log of a background process you started (exec with background:true). Pass the pid the exec result gave you; call again later to follow progress. The log ends with "[exited code=N]" once the process has ended.',
+    category: 'system',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pid: {
+          type: 'integer',
+          description: 'The pid returned by the background exec result.',
+        },
+        tail: {
+          type: 'integer',
+          description: 'How many bytes of the log tail to return (default 8KB, max 64KB).',
+        },
+      },
+      required: ['pid'],
+    },
+    instructions: toolInstructions.exec_logs,
+    builtIn: true,
+  },
+
+  {
+    name: 'exec_kill',
+    description: 'Stop a background process you started (exec with background:true) by its pid.',
+    category: 'system',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pid: {
+          type: 'integer',
+          description: 'The pid returned by the background exec result.',
+        },
+      },
+      required: ['pid'],
+    },
+    instructions: toolInstructions.exec_kill,
+    builtIn: true,
+  },
+
   {
     name: 'install',
     description:
-      'Install a skill or register an MCP server. You MUST use the create_skill or create_mcp skill first to prepare the configuration files — do NOT call this tool directly without following those guides. Supports two modes via the "type" field: "skill" installs a skill from disk at ~/.pulsemind/skills/<name>/SKILL.md, "mcp" registers an MCP server from ~/.pulsemind/mcp/mcp-servers.json by matching the server name.',
+      'Install a skill or register an MCP server. Skills: the ~/.pulsemind/skills/ directory is writable with the write/edit tools — revise an existing SKILL.md directly (the next pick_skill serves the new text; no re-registration needed). THIS tool registers: "skill" with "content" (the complete SKILL.md) writes, registers and enables in one step — never overwriting an existing skill; "skill" with only "name" registers and enables an already-written ~/.pulsemind/skills/<name>/SKILL.md. "mcp" with "config" (the server config object) registers and starts the server in one call — mcp-servers.json itself stays protected. Activate the create_skill or create_mcp skill first for the authoring formats.',
     category: 'system',
     input_schema: {
       type: 'object',
@@ -285,15 +330,25 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
           type: 'string',
           enum: ['skill', 'mcp'],
           description:
-            '"skill" — install a skill from ~/.pulsemind/skills/<name>/SKILL.md (use create_skill first). "mcp" — register an MCP server from ~/.pulsemind/mcp/mcp-servers.json (use create_mcp first).',
+            '"skill" — register a skill from the SKILL.md text passed as "content", or an already-written file via "name". "mcp" — register an MCP server from the config object passed as "config".',
+        },
+        content: {
+          type: 'string',
+          description:
+            'type="skill" only: the COMPLETE SKILL.md — YAML frontmatter (name/description/category/triggers) plus the body. The frontmatter "name" becomes the skill\'s directory name. An existing skill is never overwritten — for revisions, edit ~/.pulsemind/skills/<name>/SKILL.md directly instead. Optional "name" must equal the frontmatter name.',
+        },
+        config: {
+          type: 'object',
+          description:
+            'type="mcp" only: the server config — { name, command, args, env } for stdio, { name, url, headers } for sse / streamable-http, optional requireApproval. Optional "name" must equal config.name.',
         },
         name: {
           type: 'string',
           description:
-            'For "skill": the skill directory name under ~/.pulsemind/skills/. For "mcp": the server name (config.name) in mcp-servers.json. Refer to the create_skill or create_mcp skill for full setup instructions.',
+            'For "skill" without "content": the directory name under ~/.pulsemind/skills/ whose SKILL.md should be registered and enabled (e.g. one you just wrote with the write tool). With "content": optional, must equal the frontmatter name. For "mcp": optional, must equal config.name.',
         },
       },
-      required: ['type', 'name'],
+      required: ['type'],
     },
     instructions: toolInstructions.install,
     builtIn: true,

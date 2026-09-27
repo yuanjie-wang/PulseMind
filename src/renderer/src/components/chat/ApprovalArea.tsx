@@ -15,7 +15,7 @@
  */
 import React from 'react'
 import { Button, Space } from 'antd'
-import { CloseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, CloseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons'
 import type { ToolUseBlock } from '../../types/agent'
 import { useTranslation } from '../../i18n/useTranslation'
 import { toolBlockSummary, toolDisplayName } from './tool-summary'
@@ -65,7 +65,10 @@ export function ApprovalArea({
   identity = false
 }: {
   blocks: ToolUseBlock[]
-  onApproveTool: (toolUseId: string) => void
+  /** alwaysAllow: store the command's stable prefix in the session's
+   *  本会话总是允许 list, then approve (PLAN-coding-contract P0-2 #7). Only the
+   *  shell ladder carries it — MCP/page blocks simply never pass true. */
+  onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   /** Repeat the tool name and its one-line summary in every row: the execution
    *  segment needs it (its collapsed header names nothing), the tool block's own
@@ -79,25 +82,37 @@ export function ApprovalArea({
     // amber background is shared with a held tool header, so counting "amber boxes"
     // cannot tell the two apart — this can.
     <div style={areaStyle} data-approval-area="">
-      {blocks.map((block, i) => (
-        <div key={block.id} style={{ ...rowStyle, marginTop: i === 0 ? 0 : 6 }}>
-          {identity && <span style={nameStyle}>{toolDisplayName(block.name, t)}</span>}
-          {identity && (
-            // The full description on hover: the summary is one line, truncated.
-            <span style={summaryStyle} title={String(block.input?.description ?? '')}>
-              {toolBlockSummary(block, t)}
-            </span>
-          )}
-          <Space size="small" style={{ marginLeft: 'auto', flexShrink: 0 }}>
-            <Button size="small" icon={<CloseCircleOutlined />} onClick={() => onRejectTool(block.id)}>
-              {t('commandCard.skip')}
-            </Button>
-            <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => onApproveTool(block.id)}>
-              {t('commandCard.run')}
-            </Button>
-          </Space>
-        </div>
-      ))}
+      {blocks.map((block, i) => {
+        // The engine stamps the stable prefix only when it actually HELD an
+        // exec call whose command can be allowlisted (ruling D3: desktop only —
+        // the extension panel's mirror deliberately ships neither the stamp
+        // nor this button).
+        const allowKey = (block as { _allowKey?: string })._allowKey
+        return (
+          <div key={block.id} style={{ ...rowStyle, marginTop: i === 0 ? 0 : 6 }}>
+            {identity && <span style={nameStyle}>{toolDisplayName(block.name, t)}</span>}
+            {identity && (
+              // The full description on hover: the summary is one line, truncated.
+              <span style={summaryStyle} title={String(block.input?.description ?? '')}>
+                {toolBlockSummary(block, t)}
+              </span>
+            )}
+            <Space size="small" style={{ marginLeft: 'auto', flexShrink: 0 }}>
+              <Button size="small" icon={<CloseCircleOutlined />} onClick={() => onRejectTool(block.id)}>
+                {t('commandCard.skip')}
+              </Button>
+              {!!allowKey && (
+                <Button size="small" icon={<CheckCircleOutlined />} onClick={() => onApproveTool(block.id, true)} title={allowKey}>
+                  {t('commandCard.alwaysAllow')}
+                </Button>
+              )}
+              <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => onApproveTool(block.id)}>
+                {t('commandCard.run')}
+              </Button>
+            </Space>
+          </div>
+        )
+      })}
     </div>
   )
 }

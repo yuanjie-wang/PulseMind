@@ -103,7 +103,7 @@ function CollapsibleToolBlock({
   awaitingApproval = true
 }: {
   block: ToolUseBlock
-  onApproveTool?: (toolUseId: string) => void
+  onApproveTool?: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool?: (toolUseId: string) => void
   onKillTool?: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
@@ -279,7 +279,10 @@ function CollapsibleToolBlock({
             onReject={() => onRejectTool(block.id)}
             onToolResponse={onRespondToTool}
           />
-        ) : block.status === 'running' && onKillTool ? (
+        ) : (block.status === 'running' || block.backgroundPid != null) && onKillTool ? (
+          // A background block carries its own kill: killTool routes
+          // backgroundPid blocks through execKill (P0-3), not the foreground
+          // scalar — that is why the button survives past 'completed'.
           <CommandCard
             block={block}
             onKill={() => onKillTool(block.id)}
@@ -324,7 +327,7 @@ export const MessageGroup = React.memo(function MessageGroup({
    *  shows 「本轮产物」 ABOVE its 对话工具条. Optional; a host passing nothing
    *  renders exactly as before. */
   aboveActions?: React.ReactNode
-  onApproveTool: (toolUseId: string) => void
+  onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onRespondToTool?: (toolUseId: string, response: string) => void
   onKillTool: (toolUseId: string) => void
