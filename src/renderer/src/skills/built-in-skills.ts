@@ -1,6 +1,7 @@
 import type { SkillDefinition } from './types'
 import { OFFICE_SKILL_PROMPT } from './built-in/office-route'
 import { OFFICE_SKILL_REFERENCES } from './built-in/office-references'
+import { CODING_WORKFLOW_PROMPT, CODING_WORKFLOW_REFERENCES } from './built-in/coding-workflow'
 
 /**
  * Built-in skills that ship with PulseMind.
@@ -180,6 +181,17 @@ Never mark a scenario passed because you ran out of budget — say 未覆盖. If
     // ~/.pulsemind/skills/office/references/ by ensureBuiltInSkills — pick_skill
     // only returns the body, so these have to be on disk for `read` to reach.
     resources: OFFICE_SKILL_REFERENCES,
+  },
+
+  {
+    name: 'coding-workflow',
+    description:
+      'Long-tail coding work organization (PLAN-coding-contract P2): routing for large refactors, code review and migrations, with the per-scenario discipline in reference files. The always-on engineering contract (read before write / verify before claim / no invented API) is NOT here — it ships in the frozen core; this skill adds how to stage work bigger than a few lines.',
+    category: 'pulsemind',
+    builtIn: true,
+    triggers: ['重构', '重构一下', '大改', '迁移', 'review 代码', '代码评审', 'code review'],
+    systemPrompt: CODING_WORKFLOW_PROMPT,
+    resources: CODING_WORKFLOW_REFERENCES,
   },
 ]
 

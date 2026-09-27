@@ -87,6 +87,9 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
         {toggle('gitContextInjection', settings.git?.contextInjection ?? false, (value) => {
           void save({ git: { ...settings.git, contextInjection: value } })
         })}
+        {toggle('projectCommandsInjection', settings.commands?.projectInjection ?? false, (value) => {
+          void save({ commands: { ...settings.commands, projectInjection: value } })
+        })}
         {toggle('autoCompile', settings.knowledge?.autoCompile ?? false, (value) => {
           void save({ knowledge: { ...settings.knowledge, autoCompile: value } })
         })}

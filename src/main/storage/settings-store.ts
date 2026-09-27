@@ -462,6 +462,11 @@ function readGitSettings(group: Record<string, unknown>): { contextInjection: bo
   return { ...group, contextInjection: group.contextInjection === true } as { contextInjection: boolean }
 }
 
+function readCommandsSettings(group: Record<string, unknown>): { projectInjection: boolean } {
+  // 同一 fail-closed 模板（PLAN-coding-contract P1 #22）：缺失/非布尔一律关闭。
+  return { ...group, projectInjection: group.projectInjection === true } as { projectInjection: boolean }
+}
+
 function readKnowledgeSettings(group: Record<string, unknown>): { autoCompile: boolean } {
   return { ...group, autoCompile: group.autoCompile === true } as { autoCompile: boolean }
 }
@@ -602,6 +607,7 @@ export class SettingsStore {
             : undefined,
           shortcuts: readShortcutOverrides(parsed.shortcuts),
           git: readGroup(parsed.git, readGitSettings),
+          commands: readGroup(parsed.commands, readCommandsSettings),
           knowledge: readGroup(parsed.knowledge, readKnowledgeSettings),
           browser: readGroup(parsed.browser, readBrowserSettings),
         }

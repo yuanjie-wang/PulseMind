@@ -148,6 +148,7 @@ You have a local knowledge base (compiled wiki) of project documents and past co
   // the cached prefix only moves when the tool schemas move anyway.
   if (toolProtocols) parts.push(toolProtocols)
 
+  parts.push(ENGINEERING_WORKFLOW)
   parts.push(SESSION_STATE_NOTICE)
   parts.push(TOOL_CALL_FORMAT)
   parts.push(COMPRESSED_TOOL_RESULTS)
@@ -215,6 +216,21 @@ async function buildStateBlock(params: {
   // default-project conversation ships no section at all (若无则忽略).
   const projectSection = buildProjectSection(opts.projectName, opts.projectOverview)
   if (projectSection) sections.push(projectSection)
+
+  // Project Commands (PLAN-coding-contract P1 #21): OPT-IN, the same shape as
+  // the git injection above. Read-only name strings — never executed — so the
+  // model verifies with the commands the project ALREADY defines (contract #2).
+  // A plain conversation's workspace is a deliberately minted empty dir, so the
+  // whole section stays out there; it exists for project conversations and
+  // pinned-workspace routines. Rarely-moving bytes sit early, per the ordering
+  // contract.
+  if (opts.workspaceDir) {
+    const commandsEnabled = await readProjectCommandsEnabled()
+    if (commandsEnabled) {
+      const commands = await buildProjectCommandsSection(opts.workspaceDir)
+      if (commands) sections.push(commands)
+    }
+  }
 
   const workspace = buildWorkspaceSection(opts.workspaceDir)
   if (workspace) sections.push(workspace)
@@ -286,6 +302,98 @@ async function readGitInjectionEnabled(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Whether project-command injection is on. OPT-IN with the exact fail-closed
+ * shape of readGitInjectionEnabled above (PLAN-coding-contract P1 #22): only
+ * an explicit `true` enables it, and a missing or unreadable value — or a
+ * stale preload without the field — falls back to OFF. The normalization
+ * source of truth is `readCommandsSettings` in settings-store.ts; keep the
+ * three (store, toggle, here) in step.
+ */
+async function readProjectCommandsEnabled(): Promise<boolean> {
+  try {
+    const settings = await getHost().getSettings()
+    return settings?.commands?.projectInjection === true
+  } catch {
+    return false
+  }
+}
+
+/** Cap on command names per source — the section is a hint, not a menu. */
+const MAX_PROJECT_COMMANDS = 30
+
+function parsePackageScripts(json: string): string[] {
+  try {
+    const parsed = JSON.parse(json) as { scripts?: Record<string, string> }
+    return Object.keys(parsed.scripts ?? {}).filter((n) => /^[A-Za-z0-9@/:._-]+$/.test(n)).slice(0, MAX_PROJECT_COMMANDS)
+  } catch {
+    return []
+  }
+}
+
+/** [project.scripts] entry names, best-effort — a regex walk, not a TOML
+ *  parser; anything it cannot see simply stays out. */
+function parsePyprojectScripts(toml: string): string[] {
+  const out: string[] = []
+  let inScripts = false
+  for (const raw of toml.split('\n')) {
+    const line = raw.trim()
+    const table = line.match(/^\[(.*)\]$/)
+    if (table) { inScripts = table[1] === 'project.scripts'; continue }
+    if (!inScripts) continue
+    const kv = line.match(/^([A-Za-z0-9_.-]+)\s*=/)
+    if (kv) { out.push(kv[1]); if (out.length >= MAX_PROJECT_COMMANDS) break }
+  }
+  return out
+}
+
+/** Makefile targets, best-effort: a line that looks like `name:` at column 0.
+ *  Dot-prefixed special targets (.PHONY) never match; variable-expanded or
+ *  pattern targets are exactly the "not guaranteed" part of the contract. */
+function parseMakefileTargets(makefile: string): string[] {
+  const out: string[] = []
+  for (const raw of makefile.split('\n')) {
+    const m = raw.match(/^([a-zA-Z0-9][a-zA-Z0-9_.-]*)\s*:/)
+    if (m && !out.includes(m[1])) {
+      out.push(m[1])
+      if (out.length >= MAX_PROJECT_COMMANDS) break
+    }
+  }
+  return out
+}
+
+async function buildProjectCommandsSection(workspaceDir: string): Promise<string | null> {
+  const read = async (name: string): Promise<string | null> => {
+    try {
+      return await getHost().readFile(`${workspaceDir}/${name}`)
+    } catch {
+      return null
+    }
+  }
+  const groups: string[] = []
+  const pkg = await read('package.json')
+  if (pkg) {
+    const names = parsePackageScripts(pkg)
+    if (names.length > 0) groups.push(`- npm scripts: ${names.map((n) => `\`npm run ${n}\``).join(', ')}`)
+  }
+  const pyproject = await read('pyproject.toml')
+  if (pyproject) {
+    const names = parsePyprojectScripts(pyproject)
+    if (names.length > 0) groups.push(`- pyproject scripts: ${names.map((n) => `\`${n}\``).join(', ')}`)
+  }
+  const makefile = await read('Makefile')
+  if (makefile) {
+    const names = parseMakefileTargets(makefile)
+    if (names.length > 0) groups.push(`- make targets (best-effort): ${names.map((n) => `\`make ${n}\``).join(', ')}`)
+  }
+  if (groups.length === 0) return null
+  return [
+    '## Project Commands',
+    'Command names this project already defines — read from package.json / pyproject.toml / Makefile, listed as strings only, none executed here. Prefer these for building, testing or linting over inventing your own.',
+    ...groups,
+  ].join('\n')
 }
 
 function buildClockSection(): string {
@@ -407,6 +515,28 @@ async function buildGitContext(cwd: string): Promise<string | null> {
     return null
   }
 }
+
+/**
+ * Coding behaviour contract (2026-09-27, PLAN-coding-contract P0-1). Lives in
+ * the FROZEN CORE on purpose: it never varies per turn, per workspace or per
+ * conversation, so it rides the cached prefix. Never read a value that can
+ * change while the app runs from here — that is what buildStateBlock is for.
+ * Do not make it conditional on the enabled toolset either: toggling `edit`
+ * off would fork the shared trunk (see engine/tool-collection.ts, the
+ * gated-manual ruling). Exported so the spawn path (executors/spawn-tool.ts)
+ * hangs the same contract on sub-agent prompts — sub-agents do the coding and
+ * must answer to the same rules; their prompts are per-session, so there the
+ * append costs no shared cache bytes.
+ */
+export const ENGINEERING_WORKFLOW = `\
+## Engineering Workflow
+
+These hold on every code change, in every turn.
+
+1. Read before you write. Only a \`read\` of the file in this session counts as having read it — a path seen only in \`list_dir\`, in \`search\` output, or in an earlier turn does not. \`edit\`'s \`old_str\` must be copied from bytes you just read, never reconstructed from memory.
+2. Verify before you claim done. An edit succeeding is not the change working. After editing, run the command this workspace already uses for building, testing or linting (check \`package.json\` scripts, \`Makefile\`, \`pyproject.toml\`, \`Cargo.toml\`). If none exists, say so — never invent one. Paste failures verbatim, fix, and re-run. If you could not run anything, state exactly what is unverified; never imply a check happened.
+3. Never invent an API. Do not call a function, import a module, pass a flag, or cite a config key that you have not seen in this workspace or in a tool result during this session. Confirm it first (\`search\` the dependency's source or types, \`webfetch\` the docs) or ask. A plausible-looking guess is still a guess — never present one as fact.
+4. Match the code around you. Follow the existing naming, error handling and comment style. Do not reformat, reorder or rename lines you were not asked to touch, and do not silently expand scope.`
 
 const WINDOWS_SHELL_NOTES = `\
 ## Windows Shell Notes

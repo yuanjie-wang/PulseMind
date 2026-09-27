@@ -81,6 +81,10 @@ export interface AppSettings {
   serviceEnabled?: boolean
   servicePort?: number
   git?: { contextInjection?: boolean }
+  /** 项目命令注入（PLAN-coding-contract P1）：把工作区 package.json scripts /
+   *  pyproject.toml / Makefile targets 的命令名字符串注入每轮状态块，模型
+   *  自测时用现成命令而不是编造。默认关闭（fail-closed 归一化同 git）。 */
+  commands?: { projectInjection?: boolean }
   /** 记忆系统总开关：会话后自动提取 + 记忆注入系统提示。默认开。手动记忆编辑不受影响。 */
   memoryEnabled?: boolean
   /** 经验系统总开关：会话后自动沉淀 + 经验索引注入系统提示。默认开。已有经验保留可查看。 */

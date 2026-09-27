@@ -3,6 +3,7 @@
 // ToolExecContext.spawnSubAgent, and result summarization for the parent.
 
 import { getHost } from '../host'
+import { ENGINEERING_WORKFLOW } from '../system-prompt-builder'
 import {
   composeExpertInstructions,
   GENERAL_SUBAGENT_PROMPT,
@@ -159,7 +160,11 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // so `spawnSystemPrompt` stays non-empty for every discriminator that
     // keys on it, and nothing volatile precedes the tool schemas.
     const taskMessage = `## 你的任务\n${taskText}${upstream ? `\n\n${upstream}` : ''}`
-    const systemPrompt = `${expertBlock}${skillsCtx}`
+    // The engineering contract rides here too (PLAN-coding-contract, ruling
+    // D1): sub-agents do the actual coding and must answer to the same
+    // read-before-write / verify-before-claim rules as the main agent. A spawn
+    // prompt is per-session with no shared cache prefix, so the append is free.
+    const systemPrompt = `${expertBlock}${skillsCtx}\n\n${ENGINEERING_WORKFLOW}`
 
     console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" system prompt length=${systemPrompt.length}, task message length=${taskMessage.length} first 200 chars:`, taskMessage.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
