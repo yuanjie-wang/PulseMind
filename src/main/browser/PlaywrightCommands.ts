@@ -48,6 +48,107 @@ export interface PlaywrightOpInput {
   timeoutMs?: number
 }
 
+// ── The roleSet tables (the ref verify's DOM-side half) ──
+// What the AI-mode ARIA snapshot can print for an element, derivable from the
+// DOM alone. NOT the HTML-AAM spec table — the MEASURED Playwright/Chromium
+// values: a spec-shaped entry false-rejects every action on that element
+// (review 2026-09-26 高1 killed tag-as-role; review 2026-09-27 中1 killed the
+// spec values that survived — AI mode prints `<summary>` as `generic`, an
+// `<input list>` as `combobox`, a `<dl>` as `generic`). Every set is the
+// UNION of observed printings: the ref check rejects a role OUTSIDE the set,
+// so a missing value is the dead loop while an extra one only weakens one
+// layer of swap detection. `scripts/probe-browser-role-table.mjs` re-measures
+// every entry against a live Chromium — run it after touching any set.
+// A `null` set = deliberately skipped: the role is context-composed (the
+// platform's date-picker internals) and a guess would be the tag name, which
+// is never what the snapshot printed; those verify by name/text alone. Tags
+// with NO entry (div, label, span…) skip the same way.
+export const IMPLICIT_ROLE_SETS: Record<string, string[]> = {
+  textarea: ['textbox'],
+  select: ['combobox', 'listbox'],
+  button: ['button'],
+  summary: ['button', 'generic'],
+  a: ['link', 'generic'],
+  img: ['img', 'generic'],
+  svg: ['img', 'generic'],
+  canvas: ['img', 'generic'],
+  h1: ['heading'], h2: ['heading'], h3: ['heading'], h4: ['heading'], h5: ['heading'], h6: ['heading'],
+  ul: ['list'], ol: ['list'], menu: ['list', 'toolbar'], dl: ['list', 'generic'],
+  li: ['listitem'],
+  dt: ['term', 'generic'],
+  dd: ['definition', 'generic'],
+  nav: ['navigation'],
+  main: ['main'],
+  header: ['banner', 'generic'],
+  footer: ['contentinfo', 'generic'],
+  section: ['region', 'generic'],
+  article: ['article'],
+  aside: ['complementary', 'generic'],
+  form: ['form', 'generic'],
+  fieldset: ['group'],
+  details: ['group'],
+  optgroup: ['group'],
+  dialog: ['dialog'],
+  p: ['paragraph'],
+  blockquote: ['blockquote'],
+  hr: ['separator'],
+  table: ['table'],
+  thead: ['rowgroup'], tbody: ['rowgroup'], tfoot: ['rowgroup'],
+  tr: ['row'],
+  td: ['cell'], th: ['columnheader', 'rowheader', 'generic'],
+  option: ['option'],
+  datalist: ['listbox'],
+  progress: ['progressbar'],
+  meter: ['meter'],
+  output: ['status'],
+  figure: ['figure'],
+  html: ['document'],
+  iframe: ['iframe'],
+}
+
+/** By `type` attribute; the text-like remainder (no type / text / tel / url /
+ *  email / password) rides TEXTLIKE_INPUT_ROLE_SET. `null` = skip (measured:
+ *  AI mode prints `textbox` for date-like inputs here, but the platform
+ *  composes those widgets — a cross-platform claim is exactly the guessing
+ *  this table refuses). */
+export const INPUT_TYPE_ROLE_SETS: Record<string, string[] | null> = {
+  checkbox: ['checkbox'],
+  radio: ['radio'],
+  submit: ['button'], button: ['button'], reset: ['button'], file: ['button'], image: ['button'],
+  range: ['slider'],
+  number: ['spinbutton'],
+  search: ['searchbox'],
+  color: null, date: null, 'datetime-local': null, month: null, time: null, week: null,
+}
+
+/** The same lookup for an input that carries a `list` attribute: AI mode
+ *  re-roles a text-like input to `combobox` (中1), and `type=search` with it
+ *  (measured) — every other typed input ignores the attribute (measured:
+ *  checkbox+list prints checkbox). Derived from INPUT_TYPE_ROLE_SETS, never
+ *  hand-edited: a new type lands in the base table and keeps its role here. */
+export const INPUT_TYPE_WITH_LIST_ROLE_SETS: Record<string, string[] | null> = {
+  ...INPUT_TYPE_ROLE_SETS,
+  search: ['combobox', ...(INPUT_TYPE_ROLE_SETS.search ?? [])],
+}
+
+/** Text-like inputs (no type / text / tel / url / email / password). The
+ *  +list set keeps `textbox` because both printings have been observed across
+ *  page shapes — the union is what makes the check safe either way. */
+export const TEXTLIKE_INPUT_ROLE_SET = ['textbox']
+export const TEXTLIKE_INPUT_LIST_ROLE_SET = ['combobox', 'textbox']
+
+/** The tables exactly as the verify callback consumes them — one payload
+ *  crossing the evaluate boundary (the callback runs in the PAGE realm and
+ *  cannot see module scope), and the one import the role-table probe asserts
+ *  against. */
+export const ROLE_SET_TABLES = {
+  implicit: IMPLICIT_ROLE_SETS,
+  inputTypes: INPUT_TYPE_ROLE_SETS,
+  inputTypesWithList: INPUT_TYPE_WITH_LIST_ROLE_SETS,
+  textLike: TEXTLIKE_INPUT_ROLE_SET,
+  textLikeWithList: TEXTLIKE_INPUT_LIST_ROLE_SET,
+}
+
 /** Find a node's entry in the service-side tree by its eN number. */
 function treeEntryOf(tree: AriaNode[] | null | undefined, ref: string): { role: string; name: string; text: string } | null {
   let found: { role: string; name: string; text: string } | null = null
@@ -116,74 +217,27 @@ export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput, last
     const entry = treeEntryOf(lastTree, refId)
     if (entry) {
       try {
-        const now = (await page.locator(selector).evaluate((el) => {
+        const now = (await page.locator(selector).evaluate((el, tables) => {
           const norm = (s: string | null): string => (s || '').replace(/\s+/g, ' ').trim()
           const tag = el.tagName.toLowerCase()
           const type = (el.getAttribute('type') || '').toLowerCase()
           // The role the SNAPSHOT would print for this element, and whether we
-          // can know it from the DOM alone. An explicit role= is authoritative;
-          // the implicit set below is what Chromium (hence Playwright's ARIA
-          // tree) derives context-independently. Anything else — generic
-          // containers, landmarks whose role depends on ancestors (header →
-          // banner vs generic), input types Chromium composes — must NOT be
-          // guessed: guessing yields the tag name, and tag ≠ ARIA role is
-          // exactly the false-rejection this table exists to prevent.
-          const IMPLICIT: Record<string, string[]> = {
-            textarea: ['textbox'],
-            select: ['combobox', 'listbox'],
-            button: ['button'],
-            summary: ['button'],
-            a: ['link', 'generic'],
-            img: ['img', 'generic'],
-            svg: ['img', 'generic'],
-            canvas: ['img', 'generic'],
-            h1: ['heading'], h2: ['heading'], h3: ['heading'], h4: ['heading'], h5: ['heading'], h6: ['heading'],
-            ul: ['list'], ol: ['list'], menu: ['list', 'toolbar'], dl: ['list'],
-            li: ['listitem'],
-            dt: ['term', 'generic'],
-            dd: ['definition', 'generic'],
-            nav: ['navigation'],
-            main: ['main'],
-            header: ['banner', 'generic'],
-            footer: ['contentinfo', 'generic'],
-            section: ['region', 'generic'],
-            article: ['article'],
-            aside: ['complementary', 'generic'],
-            form: ['form', 'generic'],
-            fieldset: ['group'],
-            details: ['group'],
-            optgroup: ['group'],
-            dialog: ['dialog'],
-            p: ['paragraph'],
-            blockquote: ['blockquote'],
-            hr: ['separator'],
-            table: ['table'],
-            thead: ['rowgroup'], tbody: ['rowgroup'], tfoot: ['rowgroup'],
-            tr: ['row'],
-            td: ['cell'], th: ['columnheader', 'rowheader'],
-            option: ['option'],
-            datalist: ['listbox'],
-            progress: ['progressbar'],
-            meter: ['meter'],
-            output: ['status'],
-            figure: ['figure'],
-            html: ['document'],
-            iframe: ['iframe'],
-          }
+          // can know it from the DOM alone: the measured tables arrive as the
+          // evaluate arg (`tables` — this callback runs in the page realm and
+          // cannot see module scope). An explicit role= is authoritative;
+          // anything the tables do not name must NOT be guessed — guessing
+          // yields the tag name, and tag ≠ ARIA role is exactly the
+          // false-rejection this check exists to prevent.
           let roleSet: string[] | null = null
           const explicit = (el.getAttribute('role') || '').toLowerCase()
           if (explicit) {
             roleSet = [explicit]
           } else if (tag === 'input') {
-            if (type === 'checkbox' || type === 'radio') roleSet = [type]
-            else if (type === 'submit' || type === 'button' || type === 'reset' || type === 'file' || type === 'image') roleSet = ['button']
-            else if (type === 'range') roleSet = ['slider']
-            else if (type === 'number') roleSet = ['spinbutton']
-            else if (type === 'search') roleSet = ['searchbox']
-            else if (type === 'color' || type === 'date' || type === 'datetime-local' || type === 'month' || type === 'time' || type === 'week') roleSet = null
-            else roleSet = ['textbox']
+            const withList = el.hasAttribute('list')
+            const byType = (withList ? tables.inputTypesWithList : tables.inputTypes)[type]
+            roleSet = byType !== undefined ? byType : withList ? tables.textLikeWithList : tables.textLike
           } else {
-            roleSet = IMPLICIT[tag] ?? null
+            roleSet = tables.implicit[tag] ?? null
           }
           let name = ''
           const al = el.getAttribute('aria-label')
@@ -194,7 +248,7 @@ export async function runPlaywrightOp(page: Page, input: PlaywrightOpInput, last
             else if (tag === 'input') { const v = (el as HTMLInputElement).value || ''; if (v.trim()) name = norm(v) }
           }
           return { roleSet, name, textHead: norm(el.textContent).slice(0, 60), tag }
-        })) as { roleSet: string[] | null; name: string; textHead: string; tag: string }
+        }, ROLE_SET_TABLES)) as { roleSet: string[] | null; name: string; textHead: string; tag: string }
         if (now.roleSet && entry.role) {
           const entryRole = String(entry.role).toLowerCase()
           if (entryRole && !now.roleSet.includes(entryRole)) {

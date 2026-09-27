@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { pmRefSelector, isRefLiteral, resolveSelectorArg, isPmRefSelector, pmRefOf, PM_REF_RECOVERY_HINT } from '../src/shared/browser-client/pm-refs'
 import { renderAriaTree, MAX_REF_NODES, type AriaNode } from '../src/shared/browser-client/snapshot-render'
 import { diffTrees, renderDiff } from '../src/shared/browser-client/snapshot-diff'
-import { runPlaywrightOp } from '../src/main/browser/PlaywrightCommands'
+import { runPlaywrightOp, ROLE_SET_TABLES, IMPLICIT_ROLE_SETS, INPUT_TYPE_ROLE_SETS, INPUT_TYPE_WITH_LIST_ROLE_SETS, TEXTLIKE_INPUT_LIST_ROLE_SET } from '../src/main/browser/PlaywrightCommands'
 import { sameDocumentUrl } from '../src/main/browser/snapshot-refs'
 import { playwrightSugar } from '../src/shared/browser-client/playwright-sugar'
 
@@ -324,6 +324,65 @@ describe('runPlaywrightOp — the ref fast-fail (fake page)', () => {
 
     const swapped = fakePage({ count: 1, probe: { roleSet: ['paragraph'], name: '', textHead: '换掉的内容', tag: 'p' } })
     await expect(runPlaywrightOp(swapped, { selector: 'aria-ref=e4', op: 'click' }, [{ role: 'paragraph', text: '段落正文内容', ref: 'e4' }])).rejects.toThrow(/已失效：现指向 "换掉的内容"（快照时是 "段落正文内容"）/)
+  })
+})
+
+// review 2026-09-27 中1: the roleSet tables are the MEASURED AI-snapshot
+// values, not the HTML-AAM spec ones — a spec value that the AI mode never
+// prints false-rejects every action on that element (the 高1/中1 dead loop).
+// The live re-measurement is scripts/probe-browser-role-table.mjs (real
+// Chromium); this file pins the table VALUES themselves so a source edit
+// cannot quietly drift them between probe runs.
+describe('ROLE_SET_TABLES — the measured values the verify passes on', () => {
+  it('the two drift cases review 2026-09-27 中1 caught are in their sets', () => {
+    // AI 模式不给 <summary> button role —— 快照打印 generic
+    expect(IMPLICIT_ROLE_SETS.summary).toContain('generic')
+    // <input list> 的快照 role 是 combobox，不是 textbox
+    expect(TEXTLIKE_INPUT_LIST_ROLE_SET).toContain('combobox')
+    expect(TEXTLIKE_INPUT_LIST_ROLE_SET).toContain('textbox') // 两种打印都实测出现过，并集两侧兜住
+  })
+
+  it('the two more the probe sweep caught（表提取时一并修正）', () => {
+    expect(IMPLICIT_ROLE_SETS.dl).toContain('generic') // 整页快照里 dl 打印 generic，不是 list
+    expect(IMPLICIT_ROLE_SETS.th).toContain('rowheader') // 无 scope 的 th 在整表语境打印 rowheader
+    expect(IMPLICIT_ROLE_SETS.th).toContain('generic') // 根语境（快照以 th 为根）打印 generic
+  })
+
+  it('the verify payload IS the tables, and survives the evaluate serialization', () => {
+    expect(ROLE_SET_TABLES.implicit).toBe(IMPLICIT_ROLE_SETS)
+    expect(ROLE_SET_TABLES.inputTypes).toBe(INPUT_TYPE_ROLE_SETS)
+    expect(ROLE_SET_TABLES.inputTypesWithList).toBe(INPUT_TYPE_WITH_LIST_ROLE_SETS)
+    // structuredClone 是 evaluate 跨界的序列化形状：一次往返后逐字节相等
+    expect(structuredClone(ROLE_SET_TABLES)).toEqual(ROLE_SET_TABLES)
+  })
+
+  it('every set is a nonempty array of aria-role tokens; the deliberate skips stay null', () => {
+    for (const [tag, set] of Object.entries(IMPLICIT_ROLE_SETS)) {
+      expect(set.length, tag).toBeGreaterThan(0)
+      for (const role of set) expect(role, `${tag}:${role}`).toMatch(/^[a-z]+$/)
+    }
+    // 平台合成的 date 族与 color 保持跳过（null = 永不比较，猜错即误拒）
+    for (const type of ['color', 'date', 'datetime-local', 'month', 'time', 'week']) {
+      expect(INPUT_TYPE_ROLE_SETS[type], type).toBeNull()
+    }
+    expect(INPUT_TYPE_ROLE_SETS.checkbox).toEqual(['checkbox'])
+  })
+
+  it('the +list table derives from the base one — no type gained or lost', () => {
+    expect(Object.keys(INPUT_TYPE_WITH_LIST_ROLE_SETS).sort()).toEqual(Object.keys(INPUT_TYPE_ROLE_SETS).sort())
+    for (const [type, set] of Object.entries(INPUT_TYPE_ROLE_SETS)) {
+      if (type === 'search') {
+        expect(INPUT_TYPE_WITH_LIST_ROLE_SETS.search).toEqual(['combobox', 'searchbox']) // 实测 search+list 打 combobox
+      } else {
+        expect(INPUT_TYPE_WITH_LIST_ROLE_SETS[type], type).toEqual(set) // list 对其余 type 是惰性的
+      }
+    }
+  })
+
+  it('untrusted tags stay OUT of the table（高1 的跳过契约）', () => {
+    expect(IMPLICIT_ROLE_SETS.div).toBeUndefined()
+    expect(IMPLICIT_ROLE_SETS.label).toBeUndefined()
+    expect(IMPLICIT_ROLE_SETS.span).toBeUndefined()
   })
 })
 
