@@ -10,6 +10,7 @@ import {
   contextTokensOf,
   estimateMessagesTokens,
   estimateTextTokens,
+  requestTokensOf,
 } from '../src/renderer/src/agent/engine/context-estimate'
 import { ContextCompactor } from '../src/renderer/src/agent/engine/context-compactor'
 import type { AgentMessage, ContentBlock } from '../src/renderer/src/types/agent'
@@ -76,7 +77,13 @@ describe('contextTokensOf', () => {
     expect(contextTokensOf(msgs)).toBe(4010)
   })
 
-  it('outputTokens counts as tokens; thinking and tool_use inputs are added on top', () => {
+  it('outputTokens covers the whole completion — thinking and tool args are NOT added on top', () => {
+    // conv_20260927170026 (2026-09-28): a thinking-only round reported
+    // output_tokens=14242 for a 29.5k-char thinking block and zero text —
+    // DeepSeek's completion report PRICES the reasoning. OpenAI details
+    // reasoning_tokens as a breakdown of completion_tokens; Anthropic bills
+    // thinking as output. The old per-block additions double-counted ~300k
+    // tokens of thinking in that one conversation.
     const msg: AgentMessage = {
       id: 'm0', role: 'assistant', createdAt: AT,
       contentBlocks: [
@@ -86,8 +93,41 @@ describe('contextTokensOf', () => {
       ] as ContentBlock[],
       outputTokens: 50
     }
-    // 50 + 100 (thinking) + ceil(('{}'+read)/4 = 6/4) = 152
-    expect(estimateMessagesTokens([msg])).toBe(152)
+    expect(estimateMessagesTokens([msg])).toBe(50)
+    // Report-less messages still estimate block by block.
+    const bare: AgentMessage = {
+      id: 'm1', role: 'assistant', createdAt: AT,
+      contentBlocks: [
+        { type: 'thinking', thinking: '很'.repeat(100) },
+        { type: 'tool_use', id: 'u', name: 'read', input: {} }
+      ] as ContentBlock[]
+    }
+    expect(estimateMessagesTokens([bare])).toBe(100 + 2) // thinking + ceil(('{}'+read)/4)
+  })
+})
+
+describe('requestTokensOf (the ring)', () => {
+  it('trusts the real report over the transcript heuristic — the 775K regression', () => {
+    // conv_20260927170026 shape: the last request priced 88,128 real tokens,
+    // but the append-only transcript estimates ~794k. contextTokensOf (the
+    // compactor's trigger input) takes the transcript pressure; the ring must
+    // not — it shows what the model actually sees.
+    const msgs: AgentMessage[] = []
+    for (let i = 0; i < 400; i++) msgs.push(...round(`u${i}`, 1800))
+    const anchor = textMsg('assistant', 'done', { inputTokens: 88_128 })
+    const full = [...msgs, anchor]
+    expect(contextTokensOf(full)).toBeGreaterThan(500_000)
+    expect(requestTokensOf(full)).toBe(88_128)
+  })
+
+  it('adds the tail appended since the report — the spawn-batch blind spot, ring side', () => {
+    const msgs = [textMsg('assistant', 'ok', { inputTokens: 1000 }), resultMsg('t1', '很'.repeat(4000))]
+    expect(requestTokensOf(msgs)).toBe(5000)
+  })
+
+  it('with no real report, estimates and adds the fixed overhead (fresh conversation)', () => {
+    const msgs = [textMsg('user', 'abcdefgh')]
+    expect(requestTokensOf(msgs, 10)).toBe(12)
   })
 })
 

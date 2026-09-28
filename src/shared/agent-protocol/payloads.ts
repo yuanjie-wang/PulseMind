@@ -220,6 +220,10 @@ export interface CompactionEvent {
   replayedUserMessages: number
   tokensBefore: number
   tokensAfter: number
+  /** The history-summary frontier: the id of the NEWEST message the summary
+   *  text covers (the last dropped one). Historical field name — light drops
+   *  holes (whole tool cycles), not a clean prefix, so "first kept message"
+   *  was never a stable key; every consumer treats this as an opaque id. */
   summary?: { firstKeptId: string; text: string } | null
 }
 

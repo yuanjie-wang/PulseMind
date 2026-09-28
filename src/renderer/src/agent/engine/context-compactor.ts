@@ -13,6 +13,16 @@ const LIGHT_COMPACT_MIN_REMAINING = 30_000
 const SUMMARY_TEXT_CAP = 2000
 const SUMMARY_INPUT_CAP = 40000
 const SUMMARY_RESULT_CAP = 400
+// Frontier-advance accrual line for the history-summary cache: a frontier that
+// moved forward re-summarizes only once the pending slice behind the cached
+// frontier is worth an LLM call. A fit-based lightCompact advances the frontier
+// on essentially every request of a long tool loop (the copy is re-derived from
+// the live transcript each time), so without this line the request path would
+// fire one summary call per request. Below the line the cached text is reused
+// as-is and the slice keeps accruing behind the cached frontier — an uncovered
+// hole bounded by the line itself, closed by the next crossing (the post-turn
+// prewarm absorbs most of them at idle).
+const SUMMARY_EXTEND_MIN_CHARS = 12_000
 // Shared by hardTruncate and emergencyTruncate's keep-window walk.
 const MIN_KEEP = 10
 const MIN_USER_TURNS = 2
@@ -148,7 +158,14 @@ export class ContextCompactor {
   static readonly HARD_TRUNCATE_MIN_REMAINING = 10_000
 
   private _compressedToolUseIds = new Set<string>()
-  private historySummary: { firstKeptId: string; text: string } | null = null
+  /** History-summary cache. `firstKeptId` is the persisted COVERAGE FRONTIER
+   *  (the newest message the text covers — historical field name, opaque to
+   *  every consumer). `covered` is the in-memory id set the text actually
+   *  covers: light drops HOLES (whole tool cycles) and protection releases
+   *  drop messages BEHIND the frontier later, so a position slice cannot tell
+   *  covered from new — only the set can. Not persisted (the frontier id is);
+   *  a rehydrate rebuilds it positionally from the frontier. */
+  private historySummary: { firstKeptId: string; text: string; covered?: Set<string> } | null = null
   /** User messages the last injectHistorySummary pass replayed verbatim —
    *  read by the engine to populate the compaction event's counter. */
   lastInjectReplayCount = 0
@@ -315,11 +332,14 @@ export class ContextCompactor {
   }
 
   getHistorySummary(): { firstKeptId: string; text: string } | null {
-    return this.historySummary
+    // The covered-id set is internal bookkeeping — never ships in the
+    // compaction event (Sets do not survive the IPC round-trip).
+    const cache = this.historySummary
+    return cache ? { firstKeptId: cache.firstKeptId, text: cache.text } : null
   }
 
   seedHistorySummary(text?: string, frontierId?: string): void {
-    this.historySummary = text && frontierId ? { firstKeptId: frontierId, text } : null
+    this.historySummary = text && frontierId ? { firstKeptId: frontierId, text, covered: undefined } : null
   }
 
   /** Request-path entry (prepareLoopRequest). If a prewarm is in flight, wait
@@ -346,17 +366,28 @@ export class ContextCompactor {
     truncated: AgentMessage[],
     instruction?: string
   ): Promise<AgentMessage[]> {
-    const droppedCount = lightCompacted.length - truncated.length
+    // The dropped region is the EXACT set difference: everything the pre-pipeline
+    // copy holds that the kept tail does not. The old arithmetic
+    // (lightCompacted.length - truncated.length) measured only hard's share, so
+    // whenever light was the active layer — every long tool session, where it
+    // dropped 618 of 806 messages per request while hard dropped 0 — the summary
+    // AND the user replays were both skipped wholesale: the model lost the region
+    // with zero compensation (conv_20260927170026, 2026-09-29).
+    const keptIds = new Set(truncated.map((m) => m.id))
+    const dropped = original.filter((m) => !keptIds.has(m.id))
     this.lastInjectReplayCount = 0
-    if (droppedCount <= 0) return truncated
+    if (dropped.length === 0) return truncated
 
-    const firstKeptId = truncated[0]?.id
-    if (!firstKeptId) return truncated
+    // The coverage frontier is the NEWEST dropped message: the cached text
+    // covers everything dropped so far, and the next pass's newly-dropped slice
+    // is whatever lands after this id. (light drops HOLES — whole tool cycles —
+    // not a clean prefix, so the old frontier = truncated[0].id pinned itself to
+    // the first surviving non-cycle message: the cache hit its reuse branch
+    // forever and never extended — the marathon's 683-char summary sat
+    // un-extended for 29h across ~300 drop passes. Serialized under the
+    // historical `firstKeptId` name; every consumer treats it as an opaque id.)
+    const frontierId = dropped[dropped.length - 1].id
 
-    // Slice the pre-compaction copy so the summarizer sees real tool results
-    // (success AND error content), not [tool_result_id:] placeholders.
-    // nanoCompact is a 1:1 map (no add/drop), so index alignment holds.
-    const dropped = original.slice(0, droppedCount)
     // The dropped region's user words ride the copy verbatim (budget-capped) —
     // the summary paraphrases, the intent stays quotable.
     const replays = collectUserReplays(dropped)
@@ -368,46 +399,56 @@ export class ContextCompactor {
     ]
     const cache = this.historySummary
 
-    // 1. Stable frontier → reuse verbatim.
-    if (cache?.firstKeptId === firstKeptId) {
-      return withReplays(cache.text)
-    }
-
-    // 2. Old frontier message still kept (dropped less) → cached summary covers a
-    //    superset of the dropped region. Reuse and re-key to the new frontier.
-    if (cache && truncated.some((m) => m.id === cache.firstKeptId)) {
-      this.historySummary = { firstKeptId, text: cache.text }
-      return withReplays(cache.text)
-    }
-
-    // 3. Old frontier message now dropped (frontier advanced) → summarize only the
-    //    newly-dropped slice after the old frontier and extend the cached text.
-    if (cache) {
-      const j = dropped.findIndex((m) => m.id === cache.firstKeptId)
-      if (j >= 0) {
-        const extraText = buildDroppedRegionText(dropped.slice(j))
-        if (extraText.trim()) {
-          const extra = await this.deps.runHistorySummary(extraText, instruction)
-          if (extra) {
-            const text = cache.text + '\n\n' + extra
-            this.historySummary = { firstKeptId, text }
-            return withReplays(text)
-          }
-        }
+    // No cache → summarize the full dropped region.
+    if (!cache) {
+      const regionText = buildDroppedRegionText(dropped)
+      if (!regionText.trim()) return withReplays(null)
+      const summary = await this.deps.runHistorySummary(regionText, instruction)
+      if (!summary) {
+        console.warn('[AgentEngine] history summary empty, using plain truncation')
+        return withReplays(null)
       }
+      this.historySummary = {
+        firstKeptId: frontierId,
+        text: summary,
+        covered: new Set(dropped.map((m) => m.id)),
+      }
+      console.log(`[AgentEngine] injected history summary (${summary.length} chars) for ${dropped.length} dropped messages`)
+      return withReplays(summary)
     }
 
-    // 4. No usable cache → summarize the full dropped region.
-    const regionText = buildDroppedRegionText(dropped)
-    if (!regionText.trim()) return withReplays(null)
-    const summary = await this.deps.runHistorySummary(regionText, instruction)
-    if (!summary) {
-      console.warn('[AgentEngine] history summary empty, using plain truncation')
-      return withReplays(null)
+    // Unified cache rule: uncovered = currently-dropped − already-covered.
+    // Positions cannot tell them apart — protection releases (the last text
+    // user message ceding to a newer turn, the hot zone sliding) drop messages
+    // BEHIND the frontier, and those must be absorbed like any other new drop.
+    const covered = cache.covered
+      ?? (() => {
+        // Rehydrated from persistence: coverage is unknown, rebuild it
+        // positionally — everything dropped at-or-before the persisted frontier.
+        const j = dropped.findIndex((m) => m.id === cache.firstKeptId)
+        return new Set(dropped.slice(0, j + 1).map((m) => m.id))
+      })()
+    const uncovered = dropped.filter((m) => !covered.has(m.id))
+    if (uncovered.length === 0) return withReplays(cache.text)
+
+    // Below the accrual line the cached text is reused WITHOUT absorbing, so
+    // the uncovered slice keeps accruing and one LLM call covers it all: a
+    // fit-based lightCompact drops new content on essentially every request of
+    // a long tool loop, and a summary call per request is exactly the cost this
+    // cache exists to avoid. The uncovered hole is bounded by the line (the
+    // replays carry the recent user intent across it).
+    const extraText = buildDroppedRegionText(uncovered)
+    if (extraText.length < SUMMARY_EXTEND_MIN_CHARS) return withReplays(cache.text)
+    const extra = await this.deps.runHistorySummary(extraText, instruction)
+    if (!extra) return withReplays(cache.text)
+    const text = cache.text + '\n\n' + extra
+    this.historySummary = {
+      firstKeptId: frontierId,
+      text,
+      covered: new Set([...covered, ...uncovered.map((m) => m.id)]),
     }
-    this.historySummary = { firstKeptId, text: summary }
-    console.log(`[AgentEngine] injected history summary (${summary.length} chars) for ${droppedCount} dropped messages`)
-    return withReplays(summary)
+    console.log(`[AgentEngine] extended history summary (+${extra.length} chars) for ${uncovered.length} newly-dropped messages`)
+    return withReplays(text)
   }
 
   estimateTokens(messages?: AgentMessage[]): number {
@@ -498,6 +539,25 @@ export class ContextCompactor {
     })
   }
 
+  /** Heuristic token contribution of ONE message — the same rule
+   *  estimateMessagesTokens applies, scoped to a single message so the drop
+   *  walk can subtract a cycle's weight without re-walking the whole list. */
+  private contributionOf(msg: AgentMessage): number {
+    return estimateMessagesTokens([msg])
+  }
+
+  /** Text-only contribution of ONE message — what a stripped user message
+   *  (tool_results removed, text kept) still weighs after the strip. Deliberately
+   *  NOT estimateMessagesTokens: that returns a real outputTokens report whole,
+   *  which would zero the strip's delta. */
+  private textContributionOf(msg: AgentMessage): number {
+    let total = 0
+    for (const b of msg.contentBlocks) {
+      if (b.type === 'text') total += estimateTextTokens(b.text)
+    }
+    return total
+  }
+
   lightCompact(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, force = false): AgentMessage[] {
     if (!contextLength) return messages
 
@@ -506,6 +566,24 @@ export class ContextCompactor {
     // light compaction still fires early on small model windows.
     const remainingWindow = contextLength - estimatedTokens
     if (!force && remainingWindow >= Math.max(contextLength * 0.3, LIGHT_COMPACT_MIN_REMAINING)) return messages
+
+    // Fit target, same units as the walk below (heuristic + fixed overhead):
+    // once triggered, drop only the OLDEST cycles needed to bring the kept copy
+    // back under the line that fired — passive target is exactly the trigger
+    // line, forced (/compact) aligns with hardTruncate's 0.6× window. The old
+    // shape had no target at all: one trigger wiped EVERY droppable cycle down
+    // to the 8K hot zone, and because the live transcript stays over the line
+    // forever (the copy is re-derived per request), a long tool session ran
+    // with the model seeing ~11-18% of its window (conv_20260927170026, 618 of
+    // 806 messages dropped per request).
+    const targetTokens = force
+      ? contextLength * 0.6
+      : contextLength - Math.max(contextLength * 0.3, LIGHT_COMPACT_MIN_REMAINING)
+
+    const contributions = messages.map((m) => this.contributionOf(m))
+    const totalH = contributions.reduce((a, b) => a + b, 0)
+    let droppedH = 0
+    const fits = (): boolean => totalH - droppedH + fixedOverhead <= targetTokens
 
     // Find the last text-containing user message (protected)
     let lastTextUserMsgId: string | null = null
@@ -529,6 +607,7 @@ export class ContextCompactor {
       const next = messages[i + 1]
 
       if (toDelete.has(i)) continue
+      if (fits()) break // the kept copy is back under the line — keep the rest
 
       if (current.role !== 'assistant' || next.role !== 'user') continue
       const hasToolUses = current.contentBlocks.some(b => b.type === 'tool_use')
@@ -549,7 +628,7 @@ export class ContextCompactor {
         for (const b of messages[j].contentBlocks) {
           if (b.type === 'text') remainingChars += b.text.length
           else if (b.type === 'tool_result') remainingChars += b.content.length
-          else if (b.type === 'thinking') remainingChars += (b as any).thinking.length
+          else if (b.type === 'thinking') remainingChars += (b as { thinking: string }).thinking.length
         }
       }
       if (remainingChars < 8000 * 3.5) continue
@@ -559,10 +638,12 @@ export class ContextCompactor {
       if (!userHasText) {
         toDelete.add(i)
         toDelete.add(i + 1)
+        droppedH += contributions[i] + contributions[i + 1]
         roundsDeleted++
       } else {
         toDelete.add(i)
         toStrip.set(i + 1, next.contentBlocks.filter(b => b.type === 'text'))
+        droppedH += contributions[i] + contributions[i + 1] - this.textContributionOf(next)
         roundsDeleted++
       }
     }
@@ -580,7 +661,10 @@ export class ContextCompactor {
       }
     }
 
-    console.log(`[AgentEngine] lightCompact: removed ${roundsDeleted} tool cycles (context tokens: ~${estimatedTokens})`)
+    console.log(
+      `[AgentEngine] lightCompact: dropped ${roundsDeleted} tool cycles ` +
+      `(context ~${Math.round(estimatedTokens)} → ~${Math.round(totalH - droppedH + fixedOverhead)}, target ${Math.round(targetTokens)} of ${contextLength})`
+    )
     return newMessages
   }
 
@@ -641,7 +725,10 @@ export class ContextCompactor {
       const nano = this.nanoCompact(original)
       const light = this.lightCompact(nano, contextLength, 0, source === 'manual')
       const truncated = this.hardTruncate(light, contextLength, 0, true)
-      const droppedCount = light.length - truncated.length
+      // Light's cycle drops count too — they are the main dropper once the
+      // transcript outgrows the window, and the summary exists to cover
+      // everything the copy loses, not just hard's share.
+      const droppedCount = nano.length - truncated.length
       if (droppedCount <= 0) return null
       const summaryBefore = this.historySummary ? { ...this.historySummary } : null
       marksAtSuspend = new Set(this._compressedToolUseIds)
@@ -668,7 +755,9 @@ export class ContextCompactor {
         replayedUserMessages: this.lastInjectReplayCount,
         tokensBefore,
         tokensAfter: contextTokensOf(final),
-        summary: summaryChanged ? (summary ? { ...summary } : null) : undefined,
+        // Pick the wire fields explicitly — the cache carries the internal
+        // covered-id Set, which must not ride the IPC event.
+        summary: summaryChanged ? (summary ? { firstKeptId: summary.firstKeptId, text: summary.text } : null) : undefined,
       }
     } finally {
       // Merge, not whole-restore: this prewarm's own nano marks are still

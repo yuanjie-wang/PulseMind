@@ -3,7 +3,7 @@ import { Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { AgentMessage } from '../../types/agent'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
-import { contextTokensOf, estimateMessagesTokens } from '../../agent/engine/context-estimate'
+import { requestTokensOf, estimateMessagesTokens } from '../../agent/engine/context-estimate'
 
 // ── Context usage ring ────────────────────────────────────────────────
 
@@ -61,19 +61,20 @@ export function ContextRing({ used, total, diameter }: { used: number; total: nu
 }
 
 /**
- * Estimate context usage for a message list. Delegates to the shared
- * engine/context-estimate contract — the SAME numbers the compactor's
- * triggers read. The old inline version returned the last message's raw
- * inputTokens and nothing else: a report only prices the context UP TO its
- * request, so the 11 spawn reports appended after it (and every later turn)
- * were invisible — the ring froze at 35% while the provider rejected the
- * request for exceeding its window. The shared version estimates that tail
- * (CJK-aware) and guards with a full-history estimate. Shared by the main
- * header and sub-agent preview.
+ * Estimate context usage for a message list. Delegates to `requestTokensOf` —
+ * the last REAL request's priced size (the `input_tokens` persisted on the
+ * message row, so the number survives a restart) plus the CJK-aware tail
+ * appended since. Deliberately NOT the compactor's `contextTokensOf`: that
+ * reader max-guards with the whole-transcript estimate, which is the copy
+ * pipeline's trigger input and pins at >100% forever once the append-only
+ * history outgrows the window — 775.2K shown against an 88K wire request
+ * (conv_20260927170026, 2026-09-28). The two readers now measure different
+ * quantities on purpose; the header of engine/context-estimate.ts carries the
+ * full contract.
  */
 export function estimateContextUsed(messages: AgentMessage[]): number {
   if (!messages.length) return 0
-  return contextTokensOf(messages)
+  return requestTokensOf(messages)
 }
 
 /**

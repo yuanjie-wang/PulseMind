@@ -1,15 +1,27 @@
 // ── Context-size estimation: one shared contract ──
-// Two readers hang off these numbers and they must never drift: the
-// compactor's trigger chain (lightCompact / hardTruncate decide whether the
-// next request fits) and the composer's context ring (what the user is shown).
-// Until the 0.4.1 fix the ring read the last request's raw prompt_tokens while
-// the compactor estimated chars/3.5 — both blind to everything appended AFTER
-// the last successful request (one 11-wide spawn batch appends up to ~44k
-// tokens in a single round, and a rejected request never stamps a new report,
-// so the ring froze at the pre-batch value), and both undercounting CJK text
-// ~3x (real Chinese is ~1-1.7 chars per token, not 3.5). The estimator is
-// therefore CJK-aware, and the tail after a real token report is estimated
-// with the same rule.
+// Two readers hang off these numbers and they measure DIFFERENT quantities on
+// purpose (conv_20260927170026, 2026-09-28): the compactor's trigger chain
+// (lightCompact / hardTruncate decide whether the outgoing copy fits) must
+// price the WHOLE transcript — it is the only thing standing between an
+// append-only history and a provider overflow — while the composer's ring
+// must show what the model actually sees, i.e. the last real request's priced
+// size plus whatever accumulated since. The old single answer served neither:
+// the ring took Math.max(report, full-transcript estimate), so once the
+// transcript outgrew the window the ring pinned at >100% forever (775.2K
+// shown against an 88K wire request) and stayed there across restarts, while
+// the compactor — which NEEDS that transcript-pressure number — kept working.
+// `contextTokensOf` remains the trigger-chain contract; `requestTokensOf` is
+// the ring's.
+//
+// The estimator itself is CJK-aware (the 0.4.1 ring froze at 35% on a
+// chars/3.5 estimate while real Chinese is ~1-1.7 chars per token). One more
+// correction from the same conversation: providers INCLUDE thinking and
+// tool-call arguments in their completion/output reports (DeepSeek's
+// completion_tokens covered a 29.5k-char thinking block as output_tokens=
+// 14242; OpenAI details reasoning_tokens as a breakdown of completion), so a
+// message carrying a real report contributes that report ALONE — the old
+// explicit per-block additions double-counted ~300k tokens of thinking in a
+// long reasoning session.
 
 import type { AgentMessage, ToolResultBlock, ThinkingBlock } from '../../types/agent'
 
@@ -25,18 +37,14 @@ export function estimateTextTokens(text: string): number {
 }
 
 /** Token estimate over a message list. A message carrying a real outputTokens
- *  report contributes it directly (providers exclude thinking / tool_use input
- *  from completion_tokens, so those blocks are still counted explicitly). */
+ *  report contributes it directly and ALONE — completion/output reports
+ *  already price the text, the thinking and the tool-call arguments (see the
+ *  header). Only report-less messages estimate block by block. */
 export function estimateMessagesTokens(messages: AgentMessage[]): number {
   let total = 0
   for (const msg of messages) {
     if (msg.outputTokens) {
       total += msg.outputTokens
-      for (const block of msg.contentBlocks) {
-        if (block.type === 'text') continue // outputTokens already covers text
-        if (block.type === 'tool_use') total += estimateTextTokens(JSON.stringify(block.input) + block.name)
-        else if (block.type === 'thinking') total += estimateTextTokens((block as ThinkingBlock).thinking)
-      }
       continue
     }
     for (const block of msg.contentBlocks) {
@@ -55,12 +63,37 @@ export function estimateMessagesTokens(messages: AgentMessage[]): number {
  *  — and guard with the full heuristic so a stale post-compaction report can
  *  never read smaller than the history actually holds. `fixedOverhead` (system
  *  prompt + tool schemas) only applies when no real report anchors the number,
- *  because a report already priced those bytes. */
+ *  because a report already priced those bytes.
+ *
+ *  This transcript-pressure reading is the COMPACTOR's contract, not the
+ *  ring's — the max-guard is what pins the number at "whole transcript" once
+ *  the history outgrows the window, which is exactly the pressure the copy
+ *  pipeline must react to. See `requestTokensOf` for the display-side reader. */
 export function contextTokensOf(messages: AgentMessage[], fixedOverhead = 0): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const t = messages[i].inputTokens
     if (t && t > 0) {
       return Math.max(t + estimateMessagesTokens(messages.slice(i + 1)), estimateMessagesTokens(messages))
+    }
+  }
+  return estimateMessagesTokens(messages) + fixedOverhead
+}
+
+/** What the model actually sees: the last REAL request's priced size plus the
+ *  CJK-aware estimate of whatever was appended since. The anchor is persisted
+ *  on the message row (`input_tokens`), so the number survives a restart — the
+ *  full-transcript fallback never kicks in for a conversation that has made
+ *  even one request. This is the context ring's reader; deliberately NOT the
+ *  max-guarded `contextTokensOf`, whose whole-transcript guard is the
+ *  compactor's trigger input and read 775K against an 88K wire request
+ *  (conv_20260927170026). Slightly over-reads between a big tail landing and
+ *  the next compaction pass — that is honest: it is the size the next request
+ *  WOULD have, before the copy pipeline cuts it. */
+export function requestTokensOf(messages: AgentMessage[], fixedOverhead = 0): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const t = messages[i].inputTokens
+    if (t && t > 0) {
+      return t + estimateMessagesTokens(messages.slice(i + 1))
     }
   }
   return estimateMessagesTokens(messages) + fixedOverhead

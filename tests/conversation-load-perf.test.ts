@@ -35,9 +35,15 @@ describe('opening a conversation reads the rows once', () => {
 })
 
 describe('the context ring reads the shared estimator', () => {
-  it('estimateContextUsed delegates to contextTokensOf — raw last-report reads are gone', () => {
+  it('estimateContextUsed delegates to requestTokensOf — the anchored reader', () => {
+    // The ring shows what the model sees: the last real request's priced size
+    // (persisted input_tokens) plus the tail since. The max-guarded
+    // contextTokensOf stayed the COMPACTOR's trigger input — taking it here
+    // pinned the ring at whole-transcript pressure forever (775.2K shown
+    // against an 88K wire request, conv_20260927170026, 2026-09-28).
     const ring = src('src/renderer/src/components/chat/ContextRing.tsx')
-    expect(ring).toContain('contextTokensOf(messages)')
+    expect(ring).toContain('requestTokensOf(messages)')
+    expect(ring).not.toContain('contextTokensOf(')
     expect(ring).not.toContain('text.length / 2')
     expect(ring).not.toContain('inputTokens != null')
   })

@@ -299,8 +299,13 @@ export class AgentEngine implements EngineCore {
   public selectedMcpTools: string[] = []
   /** Gated built-in tool names activated via pick_tool or keyword trigger — empty = all hidden */
   public selectedBuiltinTools: string[] = []
-  /** Cached history summary for the currently-dropped leading region. Keyed by the
-   *  id of the first kept message after hardTruncate; reused until the frontier advances. */
+  /** Cached history summary for the currently-dropped region. The id is the
+   *  COVERAGE FRONTIER — the newest message the summary text covers (the last
+   *  dropped one), not a kept-tail start: light drops holes (whole tool
+   *  cycles), so a kept-tail key pinned itself to the first surviving
+   *  non-cycle message and the cache never extended (conv_20260927170026:
+   *  one 683-char summary for 29h). Serialized/persisted under the historical
+   *  `firstKeptId` name; consumers treat it as opaque. */
   private historySummary: { firstKeptId: string; text: string } | null = null
   // Sub-agents for background LLM tasks (stateless singletons)
   private skillKeywordAgent = new SkillKeywordAgent()
@@ -935,12 +940,14 @@ export class AgentEngine implements EngineCore {
     const truncatedMessages = this.compactor.hardTruncate(lightCompacted, opts.contextLength || 128000, fixedOverhead, this.manualCompactActive)
     // After truncation, inject an LLM summary of the dropped region into the API
     // copy so the model keeps the gist. Synthetic message never leaves this scope.
-    // Pass the PRE-compaction copy as the summarizer source: nanoCompact has
-    // already replaced old tool_results with [tool_result_id:] placeholders, so
-    // summarizing lightCompacted would hide what the tools actually returned
-    // (incl. failures) and let the summary fabricate outcomes.
+    // The summarizer source is the PRE-PIPELINE copy (before emergency/nano):
+    // nanoCompact has already replaced old tool_results with [tool_result_id:]
+    // placeholders, so summarizing lightCompacted would hide what the tools
+    // actually returned (incl. failures) and let the summary fabricate outcomes;
+    // and the dropped-region arithmetic inside (original.length - truncated.length)
+    // must span emergency's drops too when the overflow flag is parked.
     const summaryBefore = this.compactor.getHistorySummary()
-    const finalMessages = await this.compactor.injectHistorySummary(pipelineMessages, lightCompacted, truncatedMessages)
+    const finalMessages = await this.compactor.injectHistorySummary(apiMessages, lightCompacted, truncatedMessages)
 
     // ── Compaction event: the pass is otherwise invisible ──
     // Detect per layer by reference/length (nano is 1:1, so reference identity
