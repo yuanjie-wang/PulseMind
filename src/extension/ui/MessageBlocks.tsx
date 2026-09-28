@@ -15,7 +15,7 @@
  *  renderer's own (i18n/locales/zh.ts) — the panel has no i18n layer, so they
  *  are written out here. */
 
-import { useRef, useState } from 'react'
+import { memo, useRef, useMemo, useState } from 'react'
 import type { ThinkingBlock as ThinkingBlockType, ToolUseBlock } from '../../shared/types/agent'
 import { Icon } from './icons'
 import { formatDuration, formatTokenCount, thinkingPreview, toolBlockSummary, toolDisplayName, toolObjectSummary } from './format'
@@ -154,6 +154,21 @@ function EditDiffBody({ model }: { model: EditDiffModel }): React.JSX.Element {
 }
 
 /** The dark card the chat shows when a tool block is expanded (CommandCard). */
+/** Memoized model computation — the panel mirror of the desktop's EditDiffCard
+ *  (CommandCard.tsx): the LCS guard bounds worst-case inputs, but the generator
+ *  must still not re-run on every parent render (mirror tool_status patches,
+ *  stream chunks). The model is pure — the raw strings are the only dependency. */
+const EditDiffSection = memo(function EditDiffSection({ input }: { input: Record<string, unknown> }): React.JSX.Element | null {
+  const model = useMemo(
+    () => buildEditDiffModel(input),
+    // The raw strings are the input — same deps as the desktop's EditDiffCard.
+    // (No exhaustive-deps lint here: the extension lint setup has no hooks rule.)
+    [input.diff, input.old_str, input.new_str]
+  )
+  if (model.lines.length === 0 && !model.error) return null
+  return <EditDiffBody model={model} />
+})
+
 function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
   block: ToolUseBlock
   awaitingApproval: boolean
@@ -194,14 +209,12 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
         </pre>
       )}
 
-      {!streaming && block.name === 'edit' && (() => {
+      {!streaming && block.name === 'edit' && (
         // P0-4: the SAME shared model the desktop renders — both input modes
         // (unified diff / search-replace), context lines, line numbers, and the
         // explicit fold instead of the old silent 8-line slice.
-        const model = buildEditDiffModel(input || {})
-        if (model.lines.length === 0 && !model.error) return null
-        return <EditDiffBody model={model} />
-      })()}
+        <EditDiffSection input={input || {}} />
+      )}
       {!streaming && block.name === 'write' && typeof input?.content === 'string' && input.content && (
         <div className="pm-cmd-params">
           <div style={{ color: '#4ec9b0' }}>{`+${String(input.content).split('\n').length} 行`}</div>

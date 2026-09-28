@@ -5,6 +5,7 @@ import { MessageGroup } from './MessageGroup'
 import { ApprovalArea } from './ApprovalArea'
 import { useTranslation } from '../../i18n/useTranslation'
 import { toolBlockSummary, toolDisplayName, type ToolTranslator } from './tool-summary'
+import { summarizeEditChanges, type EditChangesSummary } from '../../../../shared/tool-display/edit-diff'
 import { CollapseBody } from './motion'
 
 // Injected once into <head> to avoid creating a new <style> element on every render
@@ -15,6 +16,20 @@ if (typeof document !== 'undefined' && !keyframesInjected) {
   el.textContent = KEYFRAMES
   document.head.appendChild(el)
   keyframesInjected = true
+}
+
+// The header badge's per-block memo: buildEditDiffModel runs an LCS (bounded by
+// the generator's guards, but not free) and this memo re-runs on every commit of
+// the segment's messages while the block object itself persists across them —
+// the same discipline as CommandCard's string-keyed useMemo (P0-4).
+const editChangesCache = new WeakMap<ToolUseBlock, EditChangesSummary | null>()
+
+function editChangesOf(block: ToolUseBlock): EditChangesSummary | null {
+  const hit = editChangesCache.get(block)
+  if (hit !== undefined) return hit
+  const result = summarizeEditChanges([block])
+  editChangesCache.set(block, result)
+  return result
 }
 
 // --- Props ---
@@ -76,11 +91,16 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
     let toolCount = 0
     const toolNames = new Set<string>()
     // Activity narrative (PLAN-tool-ux T4): completed calls by family —
-    // files read / files modified / commands run.
+    // files read / files modified / commands run. The 修改 family also carries
+    // the edit-diff badge (user ruling 2026-09-29): 「修改 N 个文件（+a/−d）」,
+    // so a collapsed header gives the change magnitude without opening the
+    // two collapsed layers the real diffs live behind.
     let reads = 0
     let writes = 0
     let execs = 0
     let rejections = 0
+    let diffAdded = 0
+    let diffRemoved = 0
     // Last output line from any currently-running tool (e.g. sub-agent progress),
     // surfaced in the collapsed header so the user sees it move without expanding.
     let liveOutput: string | null = null
@@ -117,6 +137,16 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
             if (block.name === 'read') reads++
             else if (block.name === 'write' || block.name === 'edit') writes++
             else if (block.name === 'exec') execs++
+            // Badge input: completed edits only (rejected calls touched
+            // nothing — the rule the counts above already live by); write has
+            // no old side to diff against and rides the file count alone.
+            if (block.name === 'edit') {
+              const changes = editChangesOf(block)
+              if (changes) {
+                diffAdded += changes.added
+                diffRemoved += changes.removed
+              }
+            }
           }
         }
         if (block.type === 'tool_result') hasToolResults = true
@@ -125,7 +155,10 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
 
     const activityParts: string[] = []
     if (reads > 0) activityParts.push(`已读取 ${reads} 个文件`)
-    if (writes > 0) activityParts.push(`修改 ${writes} 个文件`)
+    // The badge rides the 修改 family: only edits with a countable diff move
+    // it off zero, so an all-write segment reads exactly as before.
+    const diffBadge = diffAdded > 0 || diffRemoved > 0 ? `（+${diffAdded}/−${diffRemoved}）` : ''
+    if (writes > 0) activityParts.push(`修改 ${writes} 个文件${diffBadge}`)
     if (execs > 0) activityParts.push(`运行 ${execs} 条命令`)
     if (rejections > 0) activityParts.push(`拒绝 ${rejections} 次`)
 

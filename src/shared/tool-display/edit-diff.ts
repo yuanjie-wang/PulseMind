@@ -58,6 +58,42 @@ export function buildEditDiffModel(input: { diff?: unknown; old_str?: unknown; n
   return { lines: [] }
 }
 
+export interface EditChangesSummary {
+  added: number
+  removed: number
+}
+
+/**
+ * Aggregates the changed-line counts of a tool batch's settled `edit` calls —
+ * the number behind the collapsed segment header's 「修改 N 个文件（+a/−d）」
+ * badge (ExecutionSegment's activity narrative; user ruling 2026-09-29: the
+ * header carries the magnitude, the real diffs stay in the expanded cards —
+ * the default-open-card and header-mini-diff alternatives were declined).
+ * Same admission rule the narrative counts by: completed only, a rejected
+ * call touched nothing. `write` has no old side to diff against, so its
+ * magnitude rides the file count only. Returns null when nothing counts —
+ * the header stays bare rather than reading +0/−0. The param is structural
+ * so the renderer can pass its ToolUseBlock directly.
+ */
+export function summarizeEditChanges(
+  blocks: ReadonlyArray<{ name?: unknown; status?: unknown; input?: unknown }>
+): EditChangesSummary | null {
+  let added = 0
+  let removed = 0
+  let counted = false
+  for (const block of blocks) {
+    if (block?.name !== 'edit' || block.status !== 'completed') continue
+    const model = buildEditDiffModel((block.input ?? {}) as { diff?: unknown; old_str?: unknown; new_str?: unknown })
+    if (model.error) continue
+    const counts = countChangedLines(model.lines)
+    if (counts.added === 0 && counts.removed === 0) continue
+    added += counts.added
+    removed += counts.removed
+    counted = true
+  }
+  return counted ? { added, removed } : null
+}
+
 function hunksToModel(hunks: ReturnType<typeof parseUnifiedDiff>, rawDiff: string): EditDiffModel {
   if (hunks.length === 0) {
     // Not parseable as a unified diff. The one expected case is the generator's

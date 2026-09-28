@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { parseUnifiedDiff, patchContent } from '../src/shared/diff/patch-utils'
 import { buildUnifiedDiff, MAX_LCS_CELLS, MAX_DIFF_LINES } from '../src/shared/diff/unified'
-import { buildEditDiffModel, countChangedLines } from '../src/shared/tool-display/edit-diff'
+import { buildEditDiffModel, countChangedLines, summarizeEditChanges } from '../src/shared/tool-display/edit-diff'
 
 // ── PLAN-coding-contract P0-4: the diff assets moved main → shared. First the
 // zero-behavior-change gate on the MOVED functions, then the new pure model
@@ -159,5 +161,68 @@ describe('buildEditDiffModel — diff mode', () => {
     expect(model.lines.length).toBeGreaterThan(0)
     expect(model.lines.every((l) => l.type === 'meta')).toBe(true)
     expect(model.lines[0].text).toContain('变更过大')
+  })
+})
+
+// ── The collapsed segment header's 「修改 N 个文件（+a/−d）」 badge (user
+// ruling 2026-09-29: header carries the magnitude, the diffs stay in the
+// expanded cards; the default-open and header-mini-diff alternatives were
+// declined — don't re-propose them).
+
+describe('summarizeEditChanges — the segment header badge', () => {
+  const edit = (input: Record<string, unknown>, status: unknown = 'completed') => ({
+    type: 'tool_use',
+    name: 'edit',
+    status,
+    input,
+  })
+
+  it('aggregates the settled edits across both input shapes', () => {
+    const summary = summarizeEditChanges([
+      edit({ file_path: '/a.java', old_str: 'a\nb', new_str: 'a\nB\nc' }),
+      edit({ diff: '@@ -5,1 +5,3 @@\n-old\n+n1\n+n2' }),
+    ])
+    // search/replace: +2/−1; diff mode: +2/−1
+    expect(summary).toEqual({ added: 4, removed: 2 })
+  })
+
+  it('admits completed edits only — the rule the activity narrative counts by', () => {
+    const summary = summarizeEditChanges([
+      edit({ old_str: 'a', new_str: 'b' }, 'rejected'), // touched nothing
+      edit({ old_str: 'x', new_str: 'y' }, 'pending'), // still held / streaming
+      { type: 'tool_use', name: 'read', status: 'completed', input: {} },
+      { type: 'tool_use', name: 'write', status: 'completed', input: { content: 'w\nw\nw' } }, // no old side
+      edit({ old_str: 'k', new_str: 'K' }), // the only admissible call
+    ])
+    expect(summary).toEqual({ added: 1, removed: 1 })
+  })
+
+  it('null when nothing counts — the header stays bare, never +0/−0', () => {
+    expect(summarizeEditChanges([])).toBeNull()
+    expect(summarizeEditChanges([edit({ old_str: 'same', new_str: 'same' })])).toBeNull() // identical sides
+    expect(summarizeEditChanges([edit({ diff: 'not a diff at all' })])).toBeNull() // error model
+    expect(summarizeEditChanges([{ type: 'tool_use', name: 'edit', status: 'completed' }])).toBeNull() // no input
+  })
+
+  it('one unparseable edit does not sink the batch — it is skipped, others count', () => {
+    const summary = summarizeEditChanges([
+      edit({ diff: 'garbage' }),
+      edit({ old_str: 'a\nb', new_str: 'a\nB' }),
+    ])
+    expect(summary).toEqual({ added: 1, removed: 1 })
+  })
+})
+
+describe('wiring — the badge reaches the collapsed header', () => {
+  const ROOT = join(__dirname, '..')
+  const read = (p: string) => readFileSync(join(ROOT, p), 'utf8')
+
+  it('ExecutionSegment consumes the shared model and rides the badge onto 修改', () => {
+    const source = read('src/renderer/src/components/chat/ExecutionSegment.tsx')
+    expect(source).toContain("from '../../../../shared/tool-display/edit-diff'")
+    expect(source).toContain('summarizeEditChanges')
+    // The badge composes into the 修改 family line — not a separate part, so
+    // the narrative stays 「修改 N 个文件（+a/−d）· 运行 M 条命令」.
+    expect(source).toContain('修改 ${writes} 个文件${diffBadge}')
   })
 })
