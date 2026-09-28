@@ -30,7 +30,7 @@
  */
 import { build } from 'esbuild'
 import { mkdtempSync, readFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -43,20 +43,71 @@ const { writeFileSync } = await import('node:fs')
 writeFileSync(
   entry,
   `export { buildSystemPrompt } from ${JSON.stringify(join(ROOT, 'src/renderer/src/agent/system-prompt-builder.ts'))}\n` +
-    `export { BUILT_IN_TOOLS } from ${JSON.stringify(join(ROOT, 'src/renderer/src/tools/built-in-tools.ts'))}\n`
+    `export { BUILT_IN_TOOLS } from ${JSON.stringify(join(ROOT, 'src/renderer/src/tools/built-in-tools.ts'))}\n` +
+    `export { settingsStore } from ${JSON.stringify(join(ROOT, 'src/main/storage/settings-store.ts'))}\n`
 )
-await build({ entryPoints: [entry], bundle: true, format: 'esm', platform: 'node', outfile: OUT, logLevel: 'silent' })
-const { buildSystemPrompt, BUILT_IN_TOOLS } = await import(pathToFileURL(OUT).href)
+const stripContract = {
+  name: 'strip-contract-control',
+  setup(b) {
+    // The A/B control for the coding contract (PLAN-coding-contract 验证门):
+    // same builder, same everything, with the ONE wiring line that injects
+    // ENGINEERING_WORKFLOW into the frozen core removed — so the hit-rate
+    // delta between variants is exactly the contract block's effect.
+    b.onLoad({ filter: /system-prompt-builder\.ts$/ }, (args) => ({
+      contents: readFileSync(args.path, 'utf8').replace('parts.push(ENGINEERING_WORKFLOW)', ';'),
+      loader: 'ts',
+    }))
+  },
+}
+await build({
+  entryPoints: [entry], bundle: true, format: 'esm', platform: 'node', outfile: OUT, logLevel: 'silent',
+  // settings-store imports electron for safeStorage; the store's own fallback
+  // (unavailable → plaintext) is exactly what a plaintext settings file needs.
+  plugins: [
+    {
+      name: 'electron-stub',
+      setup(b) {
+        b.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', namespace: 'pm-electron-stub' }))
+        b.onLoad({ filter: /.*/, namespace: 'pm-electron-stub' }, () => ({
+          contents: `module.exports = { app: { isPackaged: false, getAppPath: () => ${JSON.stringify(ROOT)} }, safeStorage: { isEncryptionAvailable: () => false, decryptString: (v) => v } }`, loader: 'js',
+        }))
+      },
+    },
+  ],
+})
+const { buildSystemPrompt, BUILT_IN_TOOLS, settingsStore } = await import(pathToFileURL(OUT).href)
+
+// Second bundle for the sans-contract control (a plugin is per-build, and the
+// first bundle must stay pristine).
+const OUT2 = join(OUT, '..', 'builder-sans.mjs')
+const entry2 = join(OUT, '..', 'entry-sans.ts')
+writeFileSync(
+  entry2,
+  `export { buildSystemPrompt } from ${JSON.stringify(join(ROOT, 'src/renderer/src/agent/system-prompt-builder.ts'))}\n`
+)
+await build({ entryPoints: [entry2], bundle: true, format: 'esm', platform: 'node', outfile: OUT2, logLevel: 'silent', plugins: [stripContract] })
+const { buildSystemPrompt: buildSystemPromptSans } = await import(pathToFileURL(OUT2).href)
 
 // ── Profile ───────────────────────────────────────────────────────────
-const settings = JSON.parse(readFileSync(join(homedir(), '.pulsemind/settings.json'), 'utf8'))
+// Through the REAL store: since the 2026-09-25 two-layer migration the file on
+// disk is provider-shaped and `settings.profiles` exists only in the store's
+// derived view — the old raw-JSON read finds nothing.
+const settings = await settingsStore.get()
 const profile = settings.profiles.find((p) => p.id === settings.activeProfileId)
+if (!profile) {
+  console.log('no active profile resolved from settings.json — nothing to probe')
+  process.exit(1)
+}
+if ((profile.provider ?? 'openai') !== 'openai') {
+  console.log(`active profile apiFormat is "${profile.provider}" — this probe speaks the OpenAI-compatible shape only`)
+  process.exit(1)
+}
 const url = profile.baseURL.replace(/\/+$/, '') + '/chat/completions'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const tools = BUILT_IN_TOOLS.map((t) => ({
   type: 'function',
-  function: { name: t.name, description: t.description, parameters: t.inputSchema },
+  function: { name: t.name, description: t.description, parameters: t.input_schema },
 }))
 console.log(`model: ${profile.model}  tools: ${tools.length} (${JSON.stringify(tools).length} chars)\n`)
 
@@ -84,7 +135,10 @@ const opts = (nonce, mem, workspace) => ({
   yourName: 'Pulse',
   locale: 'zh',
   workspaceDir: workspace,
-  memoryManager: { buildMemoryContext: async () => mem },
+  // 2026-09-26: the memory context rides the FROZEN CORE behind the two-clock
+  // TTL, delivered through getStableMemoryContext (the old buildMemoryContext
+  // stub silently produced a core with no memory section at all).
+  memoryManager: { getStableMemoryContext: async () => mem },
 })
 
 const U1 = '帮我看看现在上下文的格式，我想做下优化'
@@ -94,9 +148,10 @@ const planOf = (done) => ({
   objective: '提升缓存命中率',
   mode: 'auto',
   completed: false,
-  steps: [
-    { description: '测出 tools 是否参与缓存', status: 'completed' },
-    { description: '拆分 system prompt', status: done ? 'completed' : 'pending' },
+  version: 2,
+  nodes: [
+    { id: 'n1', description: '测出 tools 是否参与缓存', status: 'completed', dependsOn: [] },
+    { id: 'n2', description: '拆分 system prompt', status: done ? 'completed' : 'pending', dependsOn: ['n1'] },
   ],
 })
 
@@ -130,10 +185,10 @@ async function call(label, system, messages) {
 }
 
 /** Prime turn 1, confirm warmth, move the volatile state, then open a new conversation. */
-async function runVariant(name, nonce, layout) {
+async function runVariant(name, nonce, layout, builder = buildSystemPrompt) {
   console.log(`\n── ${name} ──`)
-  const t1 = await buildSystemPrompt({ opts: opts(nonce, MEMORY(''), '/Users/x/proj-a'), messages: [msg('u1', 'user', U1)], plan: planOf(false) })
-  const t2 = await buildSystemPrompt({ opts: opts(nonce, MEMORY(MEMORY_EXTRA), '/Users/x/proj-a'), messages: [msg('u1', 'user', U1)], plan: planOf(true) })
+  const t1 = await builder({ opts: opts(nonce, MEMORY(''), '/Users/x/proj-a'), messages: [msg('u1', 'user', U1)], plan: planOf(false) })
+  const t2 = await builder({ opts: opts(nonce, MEMORY(MEMORY_EXTRA), '/Users/x/proj-a'), messages: [msg('u1', 'user', U1)], plan: planOf(true) })
 
   const fold = (core, state) => `${core}\n\n${state.replace(/^<session-state>\n|\n<\/session-state>$/g, '')}`
   const sys = (r) => (layout === 'old' ? fold(r.systemPrompt, r.stateBlock) : r.systemPrompt)
@@ -154,7 +209,7 @@ async function runVariant(name, nonce, layout) {
 
   // Cross-conversation: different workspace, different first message, same app state.
   await sleep(2000)
-  const x = await buildSystemPrompt({ opts: opts(nonce, MEMORY(''), '/Users/x/proj-b'), messages: [msg('x1', 'user', XU1)], plan: null })
+  const x = await builder({ opts: opts(nonce, MEMORY(''), '/Users/x/proj-b'), messages: [msg('x1', 'user', XU1)], plan: null })
   await call('other conversation', sys(x), [msg('x1', 'user', XU1), ...(block(x) ? [block(x)] : [])])
 
   return t2msg
@@ -164,9 +219,11 @@ const n = Math.random().toString(36).slice(2, 8)
 const oldT2 = await runVariant('old — state inside the system prompt', 'o' + n, 'old')
 const shippedT2 = await runVariant('new — shipped (state rebuilt per request)', 's' + n, 'shipped')
 const persistedT2 = await runVariant('new — persisted (previous block replayed)', 'p' + n, 'persisted')
+const sansT2 = await runVariant('control — shipped WITHOUT the coding contract block', 'c' + n, 'shipped', buildSystemPromptSans)
 
 const rate = (u) => (u ? ((u.prompt_cache_hit_tokens / u.prompt_tokens) * 100).toFixed(1) + '%' : 'n/a')
 console.log('\n── turn 2 (a memory was saved, a plan step completed) ──')
 console.log(`  old layout             hit-rate ${rate(oldT2).padStart(6)}   uncached ${oldT2?.prompt_cache_miss_tokens ?? '-'}`)
 console.log(`  new (shipped)          hit-rate ${rate(shippedT2).padStart(6)}   uncached ${shippedT2?.prompt_cache_miss_tokens ?? '-'}`)
 console.log(`  new (block persisted)  hit-rate ${rate(persistedT2).padStart(6)}   uncached ${persistedT2?.prompt_cache_miss_tokens ?? '-'}`)
+console.log(`  shipped, no contract   hit-rate ${rate(sansT2).padStart(6)}   uncached ${sansT2?.prompt_cache_miss_tokens ?? '-'}`)
