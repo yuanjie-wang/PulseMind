@@ -38,6 +38,7 @@ const SCOPE_B = 'conv_pane_b'
 const SCOPE_C = 'conv_pane_c'
 const SCOPE_D = 'conv_pane_d'
 const SCOPE_E = 'conv_pane_e'
+const SCOPE_F = 'conv_pane_f'
 
 const results = []
 function check(name, pass, detail) {
@@ -100,6 +101,17 @@ function fakeSender(sink) {
   return {
     send: (_channel, update) => sink.push(update),
     isDestroyed: () => false,
+  }
+}
+
+/** handleWindowOpen is fire-and-forget (void async inside) — poll until the
+ *  registry settles rather than sleeping a magic number. */
+async function waitFor(cond, ms = 3000) {
+  const t0 = Date.now()
+  for (;;) {
+    if (cond()) return true
+    if (Date.now() - t0 > ms) return cond()
+    await new Promise((r) => setTimeout(r, 25))
   }
 }
 
@@ -368,6 +380,89 @@ async function phaseRun() {
   check('clear() empties the table', browserHistoryStore.query('example', 10).length === 0 && browserHistoryStore.query('flood', 10).length === 0, '')
   const clearedAudits = auditStore.list(50).filter((e) => e.action === 'browser.historyClear')
   check('…and the clear is audited', clearedAudits.length === auditBeforeClear + 1, `${auditBeforeClear}→${clearedAudits.length}`)
+
+  /* ── 11. A page's window.open / target=_blank lands as a pane tab of the
+     opener's own conversation — Electron's default (a real OS window
+     floating over the app) is denied in the backend's setWindowOpenHandler
+     and the classifier's survivors arrive here (2026-09-28) ──────────────── */
+  service.handlePaneState(paneState(SCOPE_F), sender)
+  await service.handlePaneAction({ op: 'newTab' }, sender)
+  const fTabs = tabsOf(SCOPE_F)
+  const openerId = fTabs[0]?.tabId
+  check('the popup section has a user opener tab to work from', !!openerId && fTabs[0]?.origin === 'user', JSON.stringify(fTabs))
+  service.handleWindowOpen(openerId, { action: 'tab', url: 'https://popup.example/a' })
+  await waitFor(() => tabsOf(SCOPE_F).length >= 2)
+  const popupTab = tabsOf(SCOPE_F).find((t) => t.tabId !== openerId)
+  check(
+    'a page window.open becomes a second tab in the SAME conversation',
+    tabsOf(SCOPE_F).length === 2,
+    JSON.stringify(tabsOf(SCOPE_F).map((t) => [t.tabId, t.origin, t.scopeId])),
+  )
+  check(
+    '…navigated to the popup url',
+    backend.navigations.some((n) => n.tabId === popupTab?.tabId && n.url === 'https://popup.example/a'),
+    JSON.stringify(backend.navigations.filter((n) => n.tabId === popupTab?.tabId)),
+  )
+  check('…origin inherited (a user opener keeps the ~/Downloads routing)', popupTab?.origin === 'user', String(popupTab?.origin))
+  check(
+    '…and it is foregrounded — the pane update renders it active',
+    lastUpdate()?.tabs?.find((t) => t.id === popupTab?.tabId)?.active === true,
+    JSON.stringify(lastUpdate()?.tabs),
+  )
+  check('…and the pane update still reports the pane visible', lastUpdate()?.visible === true, String(lastUpdate()?.visible))
+  check(
+    '…and the visit landed in address-bar history (a popup click is manual navigation)',
+    browserHistoryStore.query('popup.example', 10).some((r) => r.url === 'https://popup.example/a'),
+    JSON.stringify(browserHistoryStore.query('popup.example', 10)),
+  )
+
+  // An AGENT tab's popup: same conversation, origin stays agent (downloads
+  // jailed to the workspace), and no history row (L1).
+  await service.executeCommand({ method: 'newTab' }, SCOPE_F)
+  const fAgentTab = tabsOf(SCOPE_F)[2]
+  check('the section opened an agent tab too', !!fAgentTab && fAgentTab.origin === 'agent', JSON.stringify(tabsOf(SCOPE_F).map((t) => t.origin)))
+  service.handleWindowOpen(fAgentTab.tabId, { action: 'tab', url: 'https://popup-agent.example/' })
+  await waitFor(() => tabsOf(SCOPE_F).length >= 4)
+  const agentPopup = tabsOf(SCOPE_F)[3]
+  check('an agent tab\'s popup is also a pane tab — origin agent', agentPopup?.origin === 'agent', String(agentPopup?.origin))
+  check('…scoped to the opener\'s conversation', agentPopup?.scopeId === SCOPE_F, String(agentPopup?.scopeId))
+  check(
+    '…and NO history row (L1: the agent\'s moves write none)',
+    browserHistoryStore.query('popup-agent', 10).length === 0,
+    JSON.stringify(browserHistoryStore.query('popup-agent', 10)),
+  )
+
+  // An opener that is already gone has nothing to attach the popup to.
+  const beforeUnknown = tabsOf(SCOPE_F).length
+  service.handleWindowOpen('tab_missing', { action: 'tab', url: 'https://nowhere.example/' })
+  await new Promise((r) => setTimeout(r, 50))
+  check('a popup whose opener tab is gone opens nothing', tabsOf(SCOPE_F).length === beforeUnknown, `${beforeUnknown} → ${tabsOf(SCOPE_F).length}`)
+
+  // Other schemes ride the OS gate (safeExternalUrl) — the electron stub
+  // records openExternal calls so the hand-off is observable.
+  const externBefore = (globalThis.__pmExternalOpens || []).length
+  service.handleWindowOpen(openerId, { action: 'external', url: 'mailto:someone@example.com' })
+  await new Promise((r) => setTimeout(r, 50))
+  const externs = globalThis.__pmExternalOpens || []
+  check(
+    'a mailto popup is handed to the OS launcher, not opened as a tab',
+    externs.length === externBefore + 1 && externs[externs.length - 1] === 'mailto:someone@example.com',
+    JSON.stringify(externs),
+  )
+
+  // Defense in depth: routeWindowOpen only ships http(s) as 'tab', so a
+  // hand-crafted non-http tab route must die at assertAllowedUrl.
+  const beforeDeep = tabsOf(SCOPE_F).length
+  service.handleWindowOpen(openerId, { action: 'tab', url: 'file:///etc/passwd' })
+  await new Promise((r) => setTimeout(r, 50))
+  check('a tab-routed non-http url never opens a pane tab', tabsOf(SCOPE_F).length === beforeDeep, `${beforeDeep} → ${tabsOf(SCOPE_F).length}`)
+
+  const popupRows = auditStore.list(100).filter((e) => e.action === 'browser.panePopupTab')
+  check(
+    'each popup is audited against the url it opened',
+    popupRows.map((e) => e.target).sort().join(' ') === 'https://popup-agent.example/ https://popup.example/a',
+    JSON.stringify(popupRows.map((e) => e.target)),
+  )
 }
 
 // ── runner ─────────────────────────────────────────────────────────────────
@@ -402,7 +497,7 @@ async function launcher() {
           b.onLoad({ filter: /.*/, namespace: 'pm-electron-stub' }, () => ({
             contents: `module.exports = {
               app: { isPackaged: false, getAppPath: () => ${JSON.stringify(REPO_ROOT)}, getPath: () => ${JSON.stringify(work)}, commandLine: { appendSwitch() {} } },
-              shell: { openExternal: async () => {} },
+              shell: { openExternal: async (u) => { (globalThis.__pmExternalOpens = globalThis.__pmExternalOpens || []).push(u) } },
               BrowserWindow: class {},
               WebContentsView: class {},
             }`,

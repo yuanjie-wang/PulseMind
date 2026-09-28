@@ -29,10 +29,11 @@ import {
   type BrowserPaneState,
   type BrowserPaneUpdate,
   type PaneTabInfo,
+  type WindowOpenRoute,
 } from '../../shared/browser/pane'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
-import { WORKSPACE_DIR } from '../storage'
+import { DATA_DIR, WORKSPACE_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
 import { browserHistoryStore } from '../storage/browser-history-store'
 import { settingsStore } from '../storage/settings-store'
@@ -46,6 +47,7 @@ import { runPlaywrightOp } from './PlaywrightCommands'
 import { takeDomSnapshot } from './snapshot-refs'
 import { browserFavoriteStore } from '../storage/browser-favorite-store'
 import { runBrowserCode, type BrowserRunOutput } from './kernel'
+import { safeExternalUrl } from '../utils/external-url'
 
 /** Playwright ops that change page state — the audit-worthy subset. Real-input
  *  clicks/drags/keys and BOTH clipboard directions are in: the clipboard may
@@ -235,6 +237,57 @@ export class BrowserService {
       case 'openExternal':
         await shell.openExternal(assertAllowedUrl(action.url))
         return
+    }
+    this.syncPane()
+  }
+
+  /** A page's window.open / target=_blank (AppViewBackend's
+   *  setWindowOpenHandler denied the native window and routed the request
+   *  here): http(s) becomes a pane tab of the OPENER's own conversation —
+   *  same scope, same origin (an agent tab's popup stays jailed to the
+   *  workspace for downloads) — and other schemes go through the OS gate.
+   *  An opener that is already gone has nothing to attach the popup to. */
+  handleWindowOpen(openerTabId: string, route: WindowOpenRoute): void {
+    if (route.action === 'ignore') return
+    const opener = this.tabs.get(openerTabId)
+    if (!opener || opener.backendId !== 'app-view') return
+    if (route.action === 'external') {
+      const safe = safeExternalUrl(route.url, DATA_DIR)
+      auditStore.record({
+        scope: 'browser',
+        actor: opener.scopeId,
+        action: 'browser.paneOpenExternal',
+        target: safe ?? route.url,
+        decision: safe ? 'allowed' : 'denied',
+      })
+      if (safe) void shell.openExternal(safe)
+      return
+    }
+    void this.openPopupTab(opener, route.url)
+  }
+
+  /** The tab side of handleWindowOpen. Same shape as the address bar's
+   *  navigate — commit-or-give-up, remember the FINAL url — and history is
+   *  written for USER tabs only (L1: the agent's moves write no history). */
+  private async openPopupTab(opener: ServiceTab, url: string): Promise<void> {
+    let target: string
+    try {
+      target = assertAllowedUrl(url)
+    } catch {
+      return // routeWindowOpen only lets http(s) through; belt and braces
+    }
+    // NOT createUserPaneTab — its per-scope serialization exists so a second
+    // "+" AWAITS the first tab rather than duplicating it, while a popup
+    // always means a NEW tab; concurrent doCreatePaneTab calls are safe (the
+    // registry write is synchronous once newTab resolves).
+    const entry = await this.doCreatePaneTab(opener.scopeId, opener.origin)
+    auditStore.record({ scope: 'browser', actor: opener.scopeId, action: 'browser.panePopupTab', target, decision: 'allowed' })
+    const beforeUrl = entry.tab.page.url()
+    await entry.tab.page.goto(target, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
+    const finalUrl = entry.tab.page.url()
+    if (opener.origin === 'user' && finalUrl && finalUrl !== beforeUrl && !/^(about:|chrome-error:)/i.test(finalUrl)) {
+      const title = await entry.tab.page.title().catch(() => '')
+      browserHistoryStore.recordVisit(finalUrl, title || undefined)
     }
     this.syncPane()
   }
@@ -448,6 +501,7 @@ export class BrowserService {
       if (id === 'app-view') {
         const appView = new AppViewBackend()
         appView.onTabActivity = () => this.handleTabActivity()
+        appView.onWindowOpen = (tabId, route) => this.handleWindowOpen(tabId, route)
         backend = appView
         this.backends.set(id, backend)
       } else {
@@ -532,19 +586,19 @@ export class BrowserService {
   private createUserPaneTab(scope: string): Promise<ServiceTab> {
     const inFlight = this.paneTabCreation.get(scope)
     if (inFlight) return inFlight
-    const created = this.doCreateUserPaneTab(scope).finally(() => {
+    const created = this.doCreatePaneTab(scope, 'user').finally(() => {
       this.paneTabCreation.delete(scope)
     })
     this.paneTabCreation.set(scope, created)
     return created
   }
 
-  private async doCreateUserPaneTab(scope: string): Promise<ServiceTab> {
+  private async doCreatePaneTab(scope: string, origin: ServiceTab['origin']): Promise<ServiceTab> {
     const backend = this.backendFor('app-view') as AppViewBackend
     await backend.start()
     const id = prefixedId('tab')
-    const created = await backend.newTab({ tabId: id, origin: 'user', scopeId: scope })
-    const entry: ServiceTab = { id, backendId: 'app-view', scopeId: scope, origin: 'user', createdAt: new Date().toISOString(), tab: created }
+    const created = await backend.newTab({ tabId: id, origin, scopeId: scope })
+    const entry: ServiceTab = { id, backendId: 'app-view', scopeId: scope, origin, createdAt: new Date().toISOString(), tab: created }
     this.tabs.set(id, entry)
     this.paneActiveTab.set(scope, id)
     auditStore.record({ scope: 'browser', actor: scope, action: 'browser.paneNewTab', target: 'about:blank', decision: 'allowed' })

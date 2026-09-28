@@ -80,6 +80,48 @@ export interface PaneBox {
   height: number
 }
 
+// ── window.open routing (2026-09-28) ──
+// A page inside the pane that calls window.open — or a target=_blank link —
+// used to hit Electron's DEFAULT handler, which spawns a real OS window
+// floating over the app (user report 2026-09-28: 「会出现一个新窗口，而不是
+// 在内置浏览器中增加一个新页签」). The pane tab's setWindowOpenHandler
+// classifies every request through this pure function and denies it; the
+// survivors are re-opened by BrowserService as pane tabs of the OPENER's own
+// conversation. Discardable shapes (about:blank write-backs, downloads) die
+// here — one place, unit-covered, so the Electron side stays a thin pipe.
+
+export type WindowOpenRoute =
+  /** Open as a new pane tab in the opener's conversation. */
+  | { action: 'tab'; url: string }
+  /** Not pane content — the caller gates it through safeExternalUrl and
+   *  hands it to the OS launcher (mailto:, custom protocols). */
+  | { action: 'external'; url: string }
+  /** Deny and do nothing. */
+  | { action: 'ignore' }
+
+/** Classify one window-open request from a pane page. `disposition` is
+ *  Electron's own (this is only ever called from setWindowOpenHandler). */
+export function routeWindowOpen(rawUrl: string, disposition: string): WindowOpenRoute {
+  // A download is not a window: the session's will-download hook already
+  // routes it (user → ~/Downloads, agent → the conversation workspace).
+  // Minting a tab here would park an empty page next to the download.
+  if (disposition === 'save-to-disk') return { action: 'ignore' }
+  const url = typeof rawUrl === 'string' ? rawUrl.trim() : ''
+  // `window.open('')` + the opener writes into the window cannot be
+  // honoured: the denied window.open returns null to the page, so nothing
+  // can reach a tab we mint — a blank pane tab would be dead weight.
+  if (!url || /^about:/i.test(url)) return { action: 'ignore' }
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return { action: 'tab', url: parsed.toString() }
+    }
+  } catch {
+    return { action: 'ignore' }
+  }
+  return { action: 'external', url }
+}
+
 /** Clamp a desired pane width against the chat area. `chatAreaWidth` is the
  *  width of the chat column (window content minus sidebar), as measured by
  *  the renderer. */

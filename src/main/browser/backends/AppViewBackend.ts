@@ -20,6 +20,7 @@ import type { Browser, BrowserContext, Page } from 'playwright-core'
 import { appViewDock } from '../app-view-dock'
 import { readDevToolsPort } from '../cdp-port'
 import { healOopifBlindPage } from '../oopif-heal'
+import { routeWindowOpen, type WindowOpenRoute } from '../../../shared/browser/pane'
 import { WORKSPACE_DIR } from '../../storage'
 import type { BackendAdapter, BackendTab } from './BackendAdapter'
 import type { BackendDescriptor } from '../../../shared/browser-client/protocol'
@@ -40,6 +41,10 @@ export class AppViewBackend implements BackendAdapter {
   private downloadsWired = false
   /** Tab URL/title changes → BrowserService re-broadcasts the pane state. */
   onTabActivity: ((tabId: string) => void) | null = null
+  /** window.open / target=_blank from a pane page (its setWindowOpenHandler
+   *  below denies the native window): BrowserService turns the routed
+   *  survivors into pane tabs of the opener's conversation. */
+  onWindowOpen: ((openerTabId: string, route: WindowOpenRoute) => void) | null = null
 
   descriptor(): BackendDescriptor {
     return {
@@ -107,6 +112,15 @@ export class AppViewBackend implements BackendAdapter {
     view.webContents.on('did-navigate', notify)
     view.webContents.on('did-navigate-in-page', notify)
     view.webContents.on('page-title-updated', notify)
+    // Electron's default for window.open/target=_blank is a real OS window
+    // floating over the app (user report 2026-09-28). Every shape is denied
+    // here; the classifier's survivors are handed to BrowserService, which
+    // re-opens them as pane tabs of this tab's own conversation.
+    view.webContents.setWindowOpenHandler((details) => {
+      const route = routeWindowOpen(details.url, details.disposition)
+      if (route.action !== 'ignore') this.onWindowOpen?.(options.tabId, route)
+      return { action: 'deny' }
+    })
     await view.webContents.loadURL('about:blank')
     await view.webContents.executeJavaScript(`${MARKER_KEY} = ${JSON.stringify(token)}`, true)
     let page: Page
