@@ -1,9 +1,10 @@
 import { ipcMain, BrowserWindow } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { settingsStore } from '../storage/settings-store'
 import { isPrivateHost } from '../utils/ssrf'
 import { applyLlmRequestHook } from '../llm-hook'
-import { dumpLlmRequest } from '../llm/request-dump'
+import { dumpLlmRequest, dumpLlmResponse } from '../llm/request-dump'
 import { ensureLaunchHooks } from '../hooks-runner'
 import { resolveEnvVarsInString, findUnresolvedEnvVar } from '../../shared/env'
 
@@ -24,9 +25,33 @@ interface ApplyProfileHeadersOptions {
    * Profile id captured by the renderer when it froze the apiKey/baseURL
    * for a request loop. Merging headers from the *then-active* profile keeps
    * headers and credentials in sync even if the user switches profiles
-   * mid-loop. Falls back to the currently active profile when omitted.
+   * mid-loop. Falls back to URL matching (below), then the currently active
+   * profile when omitted.
    */
   profileId?: string
+  /**
+   * The request's target URL. One-shot calls (title, history summary, session
+   * review, memory extraction — the `callNonStreaming` path) never know a
+   * profileId, and the active profile is not necessarily the provider they
+   * post to: conv_20260927170026's summarizer calls hit the OpenCode gateway
+   * while the global default was another provider, got that provider's headers
+   * (i.e. no `x-opencode-session`), and the gateway 400'd every one of them —
+   * byte-identical retry pairs in logs/llm-requests, and a history summary
+   * that never once landed. When present, the URL is matched against each
+   * profile's baseURL BEFORE the active-profile fallback, so headers follow
+   * the provider actually being posted to.
+   */
+  url?: string
+}
+
+/** True when the request URL lives under the profile's baseURL (path-boundary
+ *  aligned, trailing slashes ignored): `…/v1/chat/completions` matches `…/v1`
+ *  but not `…/v11`. */
+export function urlMatchesProfileBaseURL(requestUrl: string, baseURL: string): boolean {
+  const base = baseURL.trim().replace(/\/+$/, '')
+  if (!base) return false
+  const url = requestUrl.trim().replace(/\/+$/, '')
+  return url === base || url.startsWith(`${base}/`)
 }
 
 /**
@@ -52,7 +77,19 @@ export async function applyProfileHeaders(headers?: Record<string, string>, opts
     result = Object.keys(base).length ? base : headers
   } else {
     const settings = await settingsStore.get()
-    const profile = settings.profiles.find(p => p.id === opts.profileId) ?? settings.profiles.find(p => p.id === settings.activeProfileId)
+    // Resolution order: explicit profileId (a loop's frozen binding) → the
+    // profile that owns the request URL (one-shot calls have no profileId and
+    // must follow the provider they post to) → the global default. When
+    // several providers sit on one host, the LONGEST baseURL wins — the more
+    // specific path prefix is the provider the URL actually belongs to.
+    const urlMatched = opts.url
+      ? settings.profiles
+          .filter(p => urlMatchesProfileBaseURL(opts.url!, p.baseURL ?? ''))
+          .sort((a, b) => (b.baseURL ?? '').length - (a.baseURL ?? '').length)[0]
+      : undefined
+    const profile = (opts.profileId ? settings.profiles.find(p => p.id === opts.profileId) : undefined)
+      ?? urlMatched
+      ?? settings.profiles.find(p => p.id === settings.activeProfileId)
     if (!profile?.headers) {
       result = Object.keys(base).length ? base : headers
     } else {
@@ -170,6 +207,10 @@ export interface LlmStreamOptions {
   profileId?: string
 }
 
+/** The response dump's capture cap: a runaway generation stops being recorded
+ *  (the log line says TRUNCATED) instead of ballooning the request path. */
+const RESPONSE_DUMP_MAX_CHARS = 20 * 1024 * 1024
+
 /**
  * Transport for one streaming LLM request (PLAN-0.3.5 M1.4): validate SSRF →
  * merge profile headers (env placeholders resolved) → llm-request hook → fetch
@@ -199,10 +240,21 @@ export async function performLlmStream(
     sinks.onRetry(attempt, maxRetries, delay, `${reason}，正在重试 (${attempt}/${maxRetries})…`)
   }
 
+  // Response capture for the dump, declared across the try/catch: a stream
+  // that dies midway still writes what arrived, paired with its request dump.
+  let requestDumpFile: string | null = null
+  const responseCapture = { body: '', truncated: false }
+  let responseDumpWritten = false
+  const writeResponseDump = async (status: string): Promise<void> => {
+    if (responseDumpWritten) return
+    responseDumpWritten = true
+    await dumpLlmResponse({ requestId, requestFile: requestDumpFile, status, body: responseCapture.body, truncated: responseCapture.truncated })
+  }
+
   try {
     // Stringify body in main process so the renderer isn't blocked on large JSON.
     const body = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
-    const mergedHeaders = await applyProfileHeaders(options.headers, { profileId: options.profileId })
+    const mergedHeaders = await applyProfileHeaders(options.headers, { profileId: options.profileId, url })
     // llm-request hook: the streaming channel is LLM-only (AgentEngine loop +
     // OpenAIAdapter.callNonStreaming). webfetch goes through the simple fetch
     // handler, so every request here is an LLM request — always run the hook.
@@ -221,7 +273,7 @@ export async function performLlmStream(
     // Full request dump (dev: always, packaged: `debugLlmRequests`). Placed here
     // on purpose — this is the last point where url/headers/body are the bytes
     // that go out, after the hook and after profile headers were merged.
-    await dumpLlmRequest({
+    requestDumpFile = await dumpLlmRequest({
       requestId,
       url: finalUrl,
       method: resolvedOptions.method || 'POST',
@@ -234,6 +286,8 @@ export async function performLlmStream(
 
     if (!response.ok) {
       const errText = await response.text().catch(() => 'Unknown error')
+      responseCapture.body = errText
+      await writeResponseDump(String(response.status))
       // Dump full request body for debugging 400 errors
       try {
         const reqBody = JSON.parse(resolvedOptions.body || '{}')
@@ -274,6 +328,13 @@ export async function performLlmStream(
         if (done) break
         resetReadTimeout()
         const text = decoder.decode(value, { stream: true })
+        // The dump captures the stream verbatim as the renderer receives it;
+        // past the cap it stops capturing (the log line says TRUNCATED) while
+        // the stream itself is untouched.
+        if (responseCapture.body.length < RESPONSE_DUMP_MAX_CHARS) {
+          responseCapture.body += text.slice(0, RESPONSE_DUMP_MAX_CHARS - responseCapture.body.length)
+          if (responseCapture.body.length >= RESPONSE_DUMP_MAX_CHARS) responseCapture.truncated = true
+        }
         sinks.onChunk(text)
       }
     } finally {
@@ -281,8 +342,13 @@ export async function performLlmStream(
     }
 
     sinks.onDone()
+    await writeResponseDump(String(response.status))
     console.log(`[API-Proxy] Stream complete: ${requestId}`)
   } catch (err) {
+    // Whatever killed the stream, the bytes that did arrive still go to the
+    // dump — an aborted or timed-out response is exactly what one wants to
+    // read. Nothing received yet skips inside dumpLlmResponse (empty body).
+    await writeResponseDump(controller.signal.aborted ? 'aborted' : 'interrupted')
     if (controller.signal.aborted) {
       const isTimeout = controller.signal.reason instanceof Error
         && controller.signal.reason.message === 'Stream idle timeout'
@@ -372,13 +438,19 @@ export async function performSimpleFetch(url: string, options: SimpleFetchOption
       const body2 = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
       const mergedHeaders2 = await applyProfileHeaders(options.headers, {
         mergeProfileHeaders: options.withProfileHeaders === true,
-        profileId: options.profileId
+        profileId: options.profileId,
+        url
       })
+      // Same opt-in as the hook below — only LLM calls (one-shots over the
+      // Anthropic wire, the connection probe) hook and dump. webfetch hits
+      // arbitrary public URLs with no credentials: no hook, no dump.
+      const isLlmCall = options.withProfileHeaders === true || options.profileId !== undefined
+      const simpleRequestId = `simple-${randomUUID().slice(0, 8)}`
       // llm-request hook: LLM requests opt in via withProfileHeaders (webfetch does not).
       let finalUrl2 = url
       let finalBody2 = body2 as string | undefined
       let finalHeaders2 = mergedHeaders2
-      if (options.withProfileHeaders === true || options.profileId !== undefined) {
+      if (isLlmCall) {
         const hookApplied = await applyLlmRequestHook(url, mergedHeaders2, body2, {
           profileId: options.profileId,
           requestId: 'simple',
@@ -392,9 +464,21 @@ export async function performSimpleFetch(url: string, options: SimpleFetchOption
         body: finalBody2,
         headers: finalHeaders2
       }
+      // This funnel used to leave no request trace at all (the documented
+      // one-shot dump blind spot) — with the response, both halves now land.
+      const requestDumpFile = isLlmCall
+        ? await dumpLlmRequest({
+            requestId: simpleRequestId,
+            url: finalUrl2,
+            method: resolvedOptions2.method || 'POST',
+            headers: finalHeaders2,
+            body: resolvedOptions2.body || ''
+          })
+        : null
       const response = await fetchWithRetry(finalUrl2, resolvedOptions2, controller.signal)
       if (!response.ok) {
         const errText = await response.text().catch(() => 'Unknown error')
+        if (isLlmCall) await dumpLlmResponse({ requestId: simpleRequestId, requestFile: requestDumpFile, status: String(response.status), body: errText })
         console.error(`[API-Proxy] Simple fetch error: HTTP ${response.status} - ${errText.slice(0, 200)}`)
         return null
       }
@@ -421,6 +505,9 @@ export async function performSimpleFetch(url: string, options: SimpleFetchOption
       }
       // Final decode flush
       result += decoder.decode()
+      if (isLlmCall && result) {
+        await dumpLlmResponse({ requestId: simpleRequestId, requestFile: requestDumpFile, status: String(response.status), body: result })
+      }
       return result
     } finally {
       clearTimeout(timeout)

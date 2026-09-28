@@ -752,4 +752,24 @@ export class SettingsStore {
   }
 }
 
+/**
+ * Tri-state read of one raw boolean flag straight from settings.json: true or
+ * false when the key is present, null when it is absent (or the file is
+ * unreadable). `get()` normalizes an absent key to its default, which erases
+ * "the user never touched this" — readers whose default differs by build (the
+ * request dump is ON in dev until the settings switch is used) need that
+ * distinction and read it here. One small file read per call; callers sit on
+ * the per-request diagnostic path, not a hot loop.
+ */
+export async function readRawBooleanFlag(key: string): Promise<boolean | null> {
+  try {
+    const parsed = JSON.parse(await readFile(SETTINGS_PATH, 'utf-8')) as unknown
+    if (!parsed || typeof parsed !== 'object') return null
+    const value = (parsed as Record<string, unknown>)[key]
+    return typeof value === 'boolean' ? value : null
+  } catch {
+    return null
+  }
+}
+
 export const settingsStore = new SettingsStore()

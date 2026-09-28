@@ -56,7 +56,7 @@ describe('SettingsPage data and runtime integration', () => {
     const root = await mountSettingsPage(container, save)
     try {
       await openTab(container, '高级')
-      const toggle = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="记录 LLM 请求报文"]')
+      const toggle = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="记录 LLM 请求与响应报文"]')
       expect(toggle).not.toBeNull()
       expect(toggle!.disabled).toBe(false)
       expect(toggle!.getAttribute('aria-checked')).toBe('false')

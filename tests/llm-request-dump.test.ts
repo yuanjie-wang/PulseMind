@@ -3,8 +3,8 @@ import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from 'electron'
-import { dumpLlmRequest, LLM_DUMP_DIR, LLM_DUMP_MAX_FILES } from '../src/main/llm/request-dump'
-import { performLlmStream } from '../src/main/ipc/api-proxy.handler'
+import { dumpLlmRequest, dumpLlmResponse, summarizeResponseUsage, LLM_DUMP_DIR, LLM_DUMP_MAX_FILES } from '../src/main/llm/request-dump'
+import { performLlmStream, performSimpleFetch } from '../src/main/ipc/api-proxy.handler'
 
 const HOME = process.env.HOME as string
 const SETTINGS_PATH = join(HOME, '.pulsemind', 'settings.json')
@@ -28,6 +28,15 @@ function dumpFiles(): string[] {
   }
 }
 
+/** The `.response.txt` siblings written by dumpLlmResponse. */
+function responseFiles(): string[] {
+  try {
+    return readdirSync(LLM_DUMP_DIR).filter(n => n.endsWith('.response.txt')).sort()
+  } catch {
+    return []
+  }
+}
+
 /** The console line carrying url/method/headers (the second of the pair). */
 function metaLine(spy: ReturnType<typeof vi.spyOn>): string {
   const line = spy.mock.calls.map(c => String(c[0])).filter(l => l.includes('headers=')).pop()
@@ -35,19 +44,19 @@ function metaLine(spy: ReturnType<typeof vi.spyOn>): string {
   return line as string
 }
 
-describe('LLM request dump', () => {
-  // A packaged process always has resourcesPath; plain Node does not, and
-  // storage/index.ts reads it to locate the bundled templates. Emulating
-  // "packaged" therefore means providing it, or the settings read throws and
-  // the gate — correctly — falls back to off.
-  const realResourcesPath = process.resourcesPath
-  const setPackaged = (packaged: boolean): void => {
-    app.isPackaged = packaged
-    if (packaged) process.resourcesPath = app.getAppPath()
-    else if (realResourcesPath === undefined) delete (process as { resourcesPath?: string }).resourcesPath
-    else process.resourcesPath = realResourcesPath
-  }
+// A packaged process always has resourcesPath; plain Node does not, and
+// storage/index.ts reads it to locate the bundled templates. Emulating
+// "packaged" therefore means providing it, or the settings read throws and
+// the gate — correctly — falls back to off. Shared by the sibling describes.
+const realResourcesPath = process.resourcesPath
+const setPackaged = (packaged: boolean): void => {
+  app.isPackaged = packaged
+  if (packaged) process.resourcesPath = app.getAppPath()
+  else if (realResourcesPath === undefined) delete (process as { resourcesPath?: string }).resourcesPath
+  else process.resourcesPath = realResourcesPath
+}
 
+describe('LLM request dump', () => {
   beforeEach(() => {
     rmSync(LLM_DUMP_DIR, { recursive: true, force: true })
     setPackaged(false)
@@ -161,6 +170,20 @@ describe('LLM request dump', () => {
     expect(dumpFiles()).toHaveLength(1)
   })
 
+  it('obeys the settings switch in dev — flipping it off stops dumping', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    // The switch writes the key; an explicit value is the user's call even in
+    // dev, whose untouched default stays on. get() cannot tell "never touched"
+    // from "off" (both read as false) — the gate reads the raw file's tri-state.
+    writeSettings({ debugLlmRequests: false })
+    await dumpLlmRequest({ requestId: 'api_dev_off', url: 'u', method: 'POST', body: '{"a":1}' })
+    expect(dumpFiles()).toHaveLength(0)
+
+    writeSettings({ debugLlmRequests: true })
+    await dumpLlmRequest({ requestId: 'api_dev_on', url: 'u', method: 'POST', body: '{"a":1}' })
+    expect(dumpFiles()).toHaveLength(1)
+  })
+
   it('stays off in a packaged build unless debugLlmRequests is set', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     setPackaged(true)
@@ -238,5 +261,163 @@ describe('LLM request dump wiring (performLlmStream)', () => {
     expect(line).toContain(url)
     expect(line).toContain(`bytes=${dumped.length}`)
     expect(logs.join('\n')).not.toContain('sk-shouldnotleak')
+
+    // The response half: the SSE events exactly as the server wrote them.
+    expect(responseFiles()).toHaveLength(1)
+    expect(readFileSync(join(LLM_DUMP_DIR, responseFiles()[0]), 'utf-8'))
+      .toBe('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n')
+  }, 20_000)
+})
+
+// dumpLlmResponse pairs each response with its request file and re-runs the
+// same gate; the pairing (and the sibling prune) is what keeps one call's two
+// halves together in a directory the next tool loop keeps churning.
+describe('LLM response dump', () => {
+  beforeEach(() => {
+    rmSync(LLM_DUMP_DIR, { recursive: true, force: true })
+    setPackaged(false)
+  })
+  afterEach(() => {
+    setPackaged(false)
+    vi.restoreAllMocks()
+  })
+
+  it('lands next to its request file, byte-identical to what was received', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const requestFile = await dumpLlmRequest({ requestId: 'api_pair', url: 'u', method: 'POST', body: '{"a":1}' })
+    const sse = 'data: {"choices":[{"delta":{"content":"你"}}]}\n\ndata: {"choices":[]}\n\ndata: [DONE]\n\n'
+    await dumpLlmResponse({ requestId: 'api_pair', requestFile, status: '200', body: sse })
+
+    const requests = dumpFiles()
+    const responses = responseFiles()
+    expect(requests).toHaveLength(1)
+    expect(responses).toHaveLength(1)
+    expect(responses[0]).toBe(requests[0]!.replace(/\.json$/, '.response.txt'))
+    expect(readFileSync(join(LLM_DUMP_DIR, responses[0]), 'utf-8')).toBe(sse)
+  })
+
+  it('carries the usage readout on the log line', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await dumpLlmResponse({
+      requestId: 'api_usage', requestFile: null, status: '200',
+      body: 'data: {"choices":[]}\n\ndata: {"usage":{"prompt_tokens":120,"completion_tokens":30,"prompt_cache_hit_tokens":80}}\n\ndata: [DONE]\n\n',
+    })
+    const line = spy.mock.calls.map(c => String(c[0])).find(l => l.includes('[LLM Dump] response'))
+    expect(line).toBeDefined()
+    expect(line).toContain('status=200')
+    expect(line).toContain('usage=in=120 cached=80 out=30')
+  })
+
+  it('obeys the same gate as the request dump', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    setPackaged(true)
+    writeSettings({})
+    await dumpLlmResponse({ requestId: 'api_gated', requestFile: null, status: '200', body: 'data: x\n\n' })
+    expect(responseFiles()).toHaveLength(0)
+  })
+
+  it('prunes a response together with its request', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const overflow = 3
+    for (let i = 0; i < LLM_DUMP_MAX_FILES + overflow; i++) {
+      const id = `api_${String(i).padStart(4, '0')}`
+      const requestFile = await dumpLlmRequest({ requestId: id, url: 'u', method: 'POST', body: `{"i":${i}}` })
+      await dumpLlmResponse({ requestId: id, requestFile, status: '200', body: 'data: [DONE]\n\n' })
+    }
+    expect(dumpFiles()).toHaveLength(LLM_DUMP_MAX_FILES)
+    expect(responseFiles()).toHaveLength(LLM_DUMP_MAX_FILES)
+    expect(dumpFiles().some(f => f.includes('api_0000'))).toBe(false)
+    expect(responseFiles().some(f => f.includes('api_0000'))).toBe(false)
+    const newest = `api_${String(LLM_DUMP_MAX_FILES + overflow - 1).padStart(4, '0')}`
+    expect(responseFiles().some(f => f.includes(newest))).toBe(true)
+  })
+})
+
+describe('summarizeResponseUsage', () => {
+  it('reads an OpenAI-style final usage chunk', () => {
+    expect(summarizeResponseUsage('data: {"choices":[]}\n\ndata: {"usage":{"prompt_tokens":120,"completion_tokens":30,"prompt_cache_hit_tokens":80}}\n\ndata: [DONE]\n\n'))
+      .toBe(' usage=in=120 cached=80 out=30')
+  })
+
+  it('reads Anthropic usage across message_start (head) and message_delta (tail)', () => {
+    const middle = 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n'.repeat(30)
+    const sse = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":25,"cache_read_input_tokens":100}}}\n\n'
+      + middle
+      + 'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":7}}\n\n'
+    expect(summarizeResponseUsage(sse)).toBe(' usage=in=25 cached=100 out=7')
+  })
+
+  it('reads a non-streaming body\'s top-level usage', () => {
+    expect(summarizeResponseUsage('{"id":"msg_1","usage":{"prompt_tokens":9,"completion_tokens":2}}'))
+      .toBe(' usage=in=9 out=2')
+  })
+
+  it('stays silent when nothing reports usage', () => {
+    expect(summarizeResponseUsage('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n')).toBe('')
+    expect(summarizeResponseUsage('not json at all')).toBe('')
+  })
+})
+
+// The simple-fetch funnel (Anthropic-format one-shots, the connection probe)
+// used to leave no trace at all — the documented dump blind spot. This drives
+// it against a loopback server and asserts both halves land, and that a
+// webfetch-shaped call (no withProfileHeaders) still writes nothing.
+describe('LLM dump wiring (performSimpleFetch)', () => {
+  beforeEach(() => {
+    rmSync(LLM_DUMP_DIR, { recursive: true, force: true })
+    setPackaged(false)
+  })
+  afterEach(() => {
+    setPackaged(false)
+    vi.restoreAllMocks()
+  })
+
+  it('dumps request and response for an LLM call, nothing for a webfetch-shaped one', async () => {
+    const responseBody = JSON.stringify({ id: 'msg_1', usage: { input_tokens: 10, output_tokens: 5 } })
+    let receivedBody = ''
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', c => chunks.push(c))
+      req.on('end', () => {
+        receivedBody = Buffer.concat(chunks).toString('utf-8')
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(responseBody)
+      })
+    })
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as { port: number }).port
+    const url = `http://127.0.0.1:${port}/v1/messages`
+
+    // Same SSRF shape as the streaming wiring test: a private host is admitted
+    // only when the configured profile points at it.
+    writeSettings({ profiles: [{ id: 'p1', name: 'loopback', baseURL: `http://127.0.0.1:${port}`, model: 'm', maxTokens: 16 }] })
+
+    const logs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args) => { logs.push(args.map(String).join(' ')) })
+
+    const body = JSON.stringify({ model: 'm', max_tokens: 16, messages: [{ role: 'user', content: 'hello' }] })
+    const result = await performSimpleFetch(url, {
+      method: 'POST',
+      headers: { 'x-api-key': 'sk-shouldnotleak1234', 'content-type': 'application/json' },
+      body,
+      withProfileHeaders: true,
+    })
+
+    expect(result).toBe(responseBody)
+    expect(dumpFiles()).toHaveLength(1)
+    expect(responseFiles()).toHaveLength(1)
+    expect(readFileSync(join(LLM_DUMP_DIR, dumpFiles()[0]), 'utf-8')).toBe(receivedBody)
+    expect(readFileSync(join(LLM_DUMP_DIR, responseFiles()[0]), 'utf-8')).toBe(responseBody)
+    const line = logs.find(l => l.includes('[LLM Dump] response'))
+    expect(line).toContain('usage=in=10 out=5')
+    expect(logs.join('\n')).not.toContain('sk-shouldnotleak')
+
+    // A webfetch-shaped call (no withProfileHeaders, no profileId) dumps
+    // nothing. The server must still be listening here: a refused connection
+    // would vanish into fetchWithRetry's backoff, not into a dump decision.
+    const before = dumpFiles().length + responseFiles().length
+    await performSimpleFetch(url, { method: 'POST', body: '{"ping":1}' })
+    expect(dumpFiles().length + responseFiles().length).toBe(before)
+    server.close()
   }, 20_000)
 })
