@@ -2,7 +2,7 @@
  * LLM stream runner (PLAN-0.3.5 refactor, split 7/5): parser wiring, chunk
  * pump, stream-done await and idle-retry, extracted from AgentEngine.
  */
-import { MAX_STREAM_IDLE_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS } from './engine-constants'
+import { MAX_STREAM_IDLE_RETRIES, MAX_THINKING_ONLY_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS } from './engine-constants'
 import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { isContextOverflowRejection, parseContextOverflowLimit } from './context-estimate'
 import { IncrementalJsonTracker } from '../json-stream'
@@ -126,11 +126,15 @@ export class StreamRunner {
           // Prefix-cache readout: the share of the prompt that reused the previous
           // request's cache. Watch it across turns — a drop to ~0 means something
           // ahead of the history changed (see system-prompt-builder's core vs
-          // state-block split and collectEnabledTools' tool ordering).
+          // state-block split and collectEnabledTools' tool ordering). The stop
+          // reason rides along: it is not persisted anywhere else, and telling
+          // `end_turn` from `max_tokens` after the fact is the difference
+          // between "model chose to stop" and "output budget exhausted"
+          // (conv_20260927170026 diagnosis cost an afternoon without it).
           if (usage?.inputTokens) {
             const hit = usage.promptCacheHitTokens ?? 0
             console.log(
-              `[LLM Cache] hit ${hit}/${usage.inputTokens} (${((hit / usage.inputTokens) * 100).toFixed(1)}%) out=${usage.outputTokens ?? '?'}`
+              `[LLM Cache] hit ${hit}/${usage.inputTokens} (${((hit / usage.inputTokens) * 100).toFixed(1)}%) out=${usage.outputTokens ?? '?'} stop=${stopReason ?? '?'}`
             )
           }
 
@@ -141,9 +145,56 @@ export class StreamRunner {
           // Execute tools even when the model finished with end_turn/stop but we
           // recovered XML `<invoke>` calls — otherwise they'd sit unexecuted.
           if ((stopReason === 'tool_use' || convertedInvoke) && toolUses.length > 0) {
+            this.engine.thinkingOnlyRetries = 0
             await this.engine.handleToolUseResponse(toolUses)
             return
           }
+
+          // Thinking-only round (conv_20260927170026, 2026-09-28): a reasoning
+          // model that ends with ONLY a thinking block — no text, no tool_use.
+          // The measured shape: it writes 「我停止思考，正式输出」 into the CoT
+          // and then loops 「好。发。（写）完成。」 hundreds of times until the
+          // stream closes with nothing on the canvas. The old dispatch treated
+          // the round as a normal turn end (and handleMaxTokensResponse closed
+          // the max_tokens variant on purpose), so the user saw the model go
+          // silently "unwilling" — the transcript held a collapsed thinking
+          // block and no hint. One re-issue per turn is the bounded fix: a
+          // fresh sampling chance that cannot reintroduce the 2026-09-20
+          // content-less-reissue loop. A round with ANY text is exempt — that
+          // is a real answer (or the "short visible reply cut by length" shape
+          // that ruling protects), and still flows to handleMaxTokensResponse.
+          const hasVisibleText = blocks.some((b) => b.type === 'text' && (b as { text?: string }).text?.trim())
+          if (toolUses.length === 0 && !hasVisibleText) {
+            if (this.engine.thinkingOnlyRetries < MAX_THINKING_ONLY_RETRIES) {
+              this.engine.thinkingOnlyRetries += 1
+              console.warn(`[AgentEngine] thinking-only round (stop=${stopReason}, no text/tool_use) — re-issuing (${this.engine.thinkingOnlyRetries}/${MAX_THINKING_ONLY_RETRIES})`)
+              this.engine.agentStatus = {
+                status: 'retrying',
+                message: `模型只输出了思考、没有产出内容或工具调用，自动重试 (${this.engine.thinkingOnlyRetries}/${MAX_THINKING_ONLY_RETRIES})…`,
+                attempt: this.engine.thinkingOnlyRetries,
+                maxRetries: MAX_THINKING_ONLY_RETRIES,
+                delay: 0
+              }
+              this.engine.notify()
+              await this.engine.continueLoop()
+              return
+            }
+            // Second consecutive degenerate round: re-issuing again is the
+            // trap the 2026-09-20 ruling closed. End the turn LOUDLY — an
+            // explicit error the user can retry or 继续 from — never the old
+            // silent close.
+            console.warn(`[AgentEngine] thinking-only round persisted after retry (stop=${stopReason}) — ending the turn with an explicit error`)
+            const hint = '模型连续两轮只输出了思考，没有生成正文或工具调用，回合已停止。可直接重试，或输入「继续」让其接着当前进度往下做。'
+            this.engine.agentStatus = { status: 'error', error: hint }
+            this.engine.notify()
+            safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'error', error: hint } }, 'afterLlmCall')
+            safeInvokeObserver(opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'error', error: hint } }, 'afterSession')
+            runTurnEndMemoryExtraction(this.engine)
+            this.engine.resolveCompletionIfSpawned('error')
+            this.engine.notify()
+            return
+          }
+          this.engine.thinkingOnlyRetries = 0
 
           if (stopReason === 'max_tokens') {
             await this.engine.handleMaxTokensResponse(toolUses)

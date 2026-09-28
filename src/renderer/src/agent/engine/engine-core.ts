@@ -53,6 +53,11 @@ export interface EngineCore {
    *  time parked on the user) — see engine/turn-clock.ts. */
   turnClock: TurnClock
   streamIdleRetries: number
+  /** Consecutive thinking-only rounds this turn (no text, no tool_use — a
+   *  reasoning model that burned its output on CoT and closed with nothing).
+   *  stream-runner re-issues once, then ends the turn as an explicit error.
+   *  Reset by prepareTurn and by any round that produced visible output. */
+  thinkingOnlyRetries: number
   /** The token limit parsed off a provider context-overflow rejection (null
    *  until one happens). prepareLoopRequest answers it with
    *  compactor.emergencyTruncate on the API copy; a successful request clears

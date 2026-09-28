@@ -11,6 +11,16 @@
 export const MAX_STREAM_IDLE_RETRIES = 2
 export const STREAM_IDLE_TIMEOUT_MARKERS = ['闲置超时', 'Stream idle timeout']
 
+// ── Thinking-only round retry ──────────────────────────────────────────
+// A reasoning model can end a round with ONLY a thinking block — no text, no
+// tool calls (conv_20260927170026: deepseek-v4.1-flash wrote 「我停止思考，正式
+// 输出」 then looped 「好。发。（写）完成。」 ~770 times, burned 14k output
+// tokens and closed with nothing). The engine re-issues ONCE per turn — a
+// fresh sampling chance, bounded so the 2026-09-20 content-less-reissue loop
+// can never return. A second consecutive degenerate round ends the turn as an
+// explicit error instead of the old silent close.
+export const MAX_THINKING_ONLY_RETRIES = 1
+
 // ── Tool parameter size limits ──────────────────────────────────────────
 // Prevents the LLM from passing overly large arguments (e.g. write content,
 // edit diffs) that would waste tokens or cause memory issues.

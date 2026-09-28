@@ -260,6 +260,11 @@ export class AgentEngine implements EngineCore {
   /** Consecutive idle-timeout retries for the current stream. Reset on success. */
   /** @internal */
   streamIdleRetries = 0
+  /** Consecutive thinking-only rounds this turn (engine/thinking-only retry):
+   *  stream-runner re-issues once, then errors the turn explicitly. Reset by
+   *  prepareTurn and by any round that produced text or tool calls. */
+  /** @internal */
+  thinkingOnlyRetries = 0
   /** Provider context-overflow state (0.4.1 fix). The limit is parsed off the
    *  provider's own rejection — the one ground truth the estimates answer to —
    *  and prepareLoopRequest answers it with compactor.emergencyTruncate on the
@@ -611,6 +616,9 @@ export class AgentEngine implements EngineCore {
     // The forced cut itself is still armed via contextOverflowLimit (cleared
     // only by an accepted request).
     this.contextOverflowRetries = 0
+    // A new send gets a fresh thinking-only rescue too: even if the previous
+    // turn exhausted its re-issue, the model gets one more sampling chance.
+    this.thinkingOnlyRetries = 0
     // Per-turn @-summon state belongs to the turn that opened it: a new send
     // starts with no delegated call to close verbatim and no summons to honor.
     this.delegatedToolUseId = null
