@@ -106,6 +106,16 @@ const SETTLED_HELD_MESSAGES = [user('继续2'), assistant('a3', [
   { type: 'tool_use', id: 's6', name: 'exec', status: 'pending', input: { command: 'rm -rf ./dist', description: '清理产物' } },
 ])]
 
+/** review_20260928 高1: the mirror's view of a held batch AFTER the stamped
+ *  messages_update lands. The storable call (rm -rf ./build -> key "rm") wears
+ *  the engine's _allowKey stamp; the interpreter+flag call (bash -c ...) keys as
+ *  null (高2) and must never grow the third button. */
+const HELD_STAMPED_CALLS = [
+  { type: 'tool_use', id: 't3', name: 'exec', status: 'pending', input: { command: 'rm -rf ./build', description: '清理构建目录' }, _allowKey: 'rm' },
+  { type: 'tool_use', id: 't4', name: 'exec', status: 'pending', input: { command: 'bash -c "echo hi"', description: '回声测试' } },
+]
+const HELD_STAMPED_MESSAGES = [user('再清一次'), assistant('a5', [{ type: 'text', text: '这一步也会删东西：' }, ...HELD_STAMPED_CALLS])]
+
 /** Mid-loop (PLAN-tool-ux T5): settled work behind a tool that is running with
  *  no output yet — the header falls to the last extracted text, which used to
  *  read as: exec + a space + the raw command, spliced locally. */
@@ -132,18 +142,19 @@ function Harness() {
   const settled = scenario === 'settled'
   const settledHeld = scenario === 'settledHeld'
   const executing = scenario === 'executing'
-  const scenarioMessages = settled ? SETTLED_MESSAGES : settledHeld ? SETTLED_HELD_MESSAGES : executing ? EXECUTING_MESSAGES : MESSAGES
+  const heldStaged = scenario === 'heldStaged'
+  const scenarioMessages = settled ? SETTLED_MESSAGES : settledHeld ? SETTLED_HELD_MESSAGES : executing ? EXECUTING_MESSAGES : heldStaged ? HELD_STAMPED_MESSAGES : MESSAGES
   return (
     <ConfigProvider theme={{ token: { colorPrimary: '#1677ff' } }}>
       <TranslationProvider>
         <div style={{ width: 1000, padding: '12px 0', background: '#fff', fontFamily: 'system-ui' }}>
           <TranscriptView
             messages={streaming ? [MESSAGES[0]] : scenarioMessages}
-            agentStatus={scenario === 'held' || settledHeld ? { status: 'awaiting_approval' } : { status: 'streaming' }}
+            agentStatus={scenario === 'held' || settledHeld || heldStaged ? { status: 'awaiting_approval' } : { status: 'streaming' }}
             streamingBlocks={streaming ? blocks : []}
             isRequesting={!settled}
             restoring={false}
-            onApproveTool={(id) => { window.__approved = id }}
+            onApproveTool={(id, alwaysAllow) => { window.__approved = id; window.__approvedAlways = alwaysAllow === true }}
             onRejectTool={(id) => { window.__rejected = id }}
             onKillTool={() => {}}
             onRespondToTool={() => {}}
@@ -381,6 +392,26 @@ const amberBoxes = () =>
   const text = await head.textContent()
   check('the executing header shows 动词 · 对象（运行命令 · npm run build）', !!text && text.includes('运行命令 · npm run build'), text?.slice(0, 80))
   check('the executing header no longer splices `exec` + command', !!text && !text.includes('exec npm run build'), text?.slice(0, 80))
+}
+
+// ── 4.7 The third button follows the stamp (review_20260928 高1): the mirror's
+//    blocks carry _allowKey only where the command has a storable key — there
+//    本会话总是允许 renders with zero clicks; the interpreter+flag call (null
+//    key, 高2) keeps the bare pair. ──
+{
+  console.log('== the 本会话总是允许 button follows the stamp ==')
+  await page.evaluate(() => window.__scenario('heldStaged'))
+  await page.locator('[data-segment-head]').waitFor()
+  await page.waitForTimeout(300)
+  const always = await buttonState('本会话总是允许')
+  check('the stamped call grew the third button with zero clicks', always.count === 1 && always.visible, `${always.count} button(s)`)
+  const keyTitle = always.count > 0 ? await button('本会话总是允许').first().getAttribute('title') : null
+  check('the button names the key it would store', keyTitle === 'rm', String(keyTitle))
+  check('the unstamped interpreter call keeps only 运行/跳过', (await buttonState('运行')).count === 2, `${(await buttonState('运行')).count} run buttons`)
+  await button('本会话总是允许').first().click()
+  await page.waitForTimeout(150)
+  const approved = await page.evaluate(() => ({ id: window.__approved, always: window.__approvedAlways }))
+  check('the click approves WITH alwaysAllow', approved.id === 't3' && approved.always === true, JSON.stringify(approved))
 }
 
 // ── 5. The composer's 授权 button: 全部允许 is the amber one ──

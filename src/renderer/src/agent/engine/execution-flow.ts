@@ -8,7 +8,7 @@ import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { getCachedMcpServers } from '../mcp-cache'
 import { addTruncatedResults, validateToolParams } from './result-ingestion'
 import { generateMsgId } from '../agent-utils'
-import type { ToolUseBlock, ContentBlock } from '../../types/agent'
+import type { ToolUseBlock, ContentBlock, AgentMessage } from '../../types/agent'
 import { buildCommandFromSkillInput } from '../command-builder'
 import { safeInvoke, safeInvokeObserver } from '../agent-utils'
 import { TOOL_PARAM_LIMITS } from './engine-constants'
@@ -26,6 +26,22 @@ import { beginTerminalSpan } from '../terminal-span'
  *  `built-in-tools.ts` holds the definitions; the approval ladder needs the
  *  membership test at three sites (dispatch, gate, approve). The sets
  *  themselves live in tool-tiers.ts, next to `tierOfTool`. */
+
+/** Swap one tool_use block for a restamped replacement inside the message that
+ *  owns it (the stream's just-appended assistant message). Engine-side the
+ *  contentBlocks array is edited in place — every diff consumer keys on message
+ *  id / block id, or on the content signature, and the BLOCK object swap is
+ *  exactly what makes that signature change. */
+function swapToolUseBlock(messages: AgentMessage[], oldBlock: ToolUseBlock, newBlock: ToolUseBlock): void {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const blocks = messages[i].contentBlocks
+    if (!blocks) continue
+    const idx = blocks.indexOf(oldBlock)
+    if (idx === -1) continue
+    blocks[idx] = newBlock
+    return
+  }
+}
 
 export class ExecutionFlow {
   constructor(private engine: EngineCore) {}
@@ -481,9 +497,23 @@ export class ExecutionFlow {
       // Stamp the stable prefix the third approval button (本会话总是允许) will
       // store — computed here, off the same input the partition just matched,
       // so the button and the ladder can never disagree about the key.
-      for (const t of otherHeld) {
+      //
+      // The stamp REPLACES the block object (the mirror identity contract — the
+      // same lesson as patchToolUse): the stream runner already appended these
+      // blocks to a message and notified, and the content signature caches by
+      // object identity, so an in-place write would never re-sign the message —
+      // no messages_update, and the third button would only ever appear through
+      // a snapshot re-hydration (切走会话再切回来). A fresh object re-signs,
+      // and this turn's next notify ships it to every mirror client.
+      for (let i = 0; i < otherHeld.length; i++) {
+        const t = otherHeld[i]
         const key = commandAllowlistKey(buildCommandFromSkillInput(t.name, t.input || {}, this.engine.opts.platformInfo?.platform || '', this.engine.opts.platformInfo?.ripgrepPath))
-        if (key) (t as { _allowKey?: string })._allowKey = key
+        if (!key) continue
+        const stamped = { ...t, _allowKey: key } as ToolUseBlock
+        otherHeld[i] = stamped
+        const ti = toolUses.indexOf(t)
+        if (ti !== -1) toolUses[ti] = stamped
+        swapToolUseBlock(this.engine.messages, t, stamped)
       }
     }
     const heldTools = [
