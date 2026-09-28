@@ -13,6 +13,33 @@ import type { OfficeInspectResult } from '../../shared/office/ops'
 /** Result-size caps: an inspect answer is a tool result, not a file dump. */
 const MAX_SLIDE_TEXT_CHARS = 4000
 const MAX_FORMULAS = 200
+/** Head-preview caps: the data a read-task wants first, not the whole grid —
+ *  the full content belongs to `read`, which pages and caches. */
+const MAX_HEAD_SHEETS = 5
+const MAX_HEAD_ROWS = 10
+const MAX_HEAD_COLS = 10
+
+/** Raw display text of one exceljs cell — formula cells report their cached
+ *  result (that is what a reader of the file sees; a result that is itself an
+ *  error object renders as the #CODE), rich text joins its runs, hyperlinks
+ *  collapse to their label, dates render as plain days. */
+function xlsxCellText(cell: { value: unknown }): string {
+  const v = cell.value
+  if (v === null || v === undefined) return ''
+  if (typeof v !== 'object') return String(v)
+  if (v instanceof Date) return v.toISOString().slice(0, 10)
+  const rec = v as Record<string, unknown>
+  if (Array.isArray(rec.richText)) return rec.richText.map((rt) => String((rt as { text?: unknown }).text ?? '')).join('')
+  if ('result' in rec) {
+    const r = rec.result
+    if (r === null || r === undefined) return ''
+    if (typeof r === 'object' && 'error' in (r as Record<string, unknown>)) return `#${String((r as Record<string, unknown>).error)}`
+    return String(r)
+  }
+  if ('text' in rec) return String(rec.text ?? '')
+  if ('error' in rec) return `#${String(rec.error)}`
+  return String(v)
+}
 
 export async function svcInspectOffice(input: { filePath: string }): Promise<OfficeInspectResult> {
   const { filePath } = input
@@ -68,9 +95,17 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
         format: 'docx',
         summary,
         details: {
-          // inspect's contract reports LENGTHS, not the outline's full text
-          // (the outline-only edit call is the one that ships text).
-          paragraphs: outline.map((o) => ({ index: o.index, style: o.style, textLength: o.text.length })),
+          // inspect ships PREVIEWS, not full bodies: `text` is outlineOf's
+          // 80-char slice — enough to identify each paragraph, while the full
+          // text belongs to `read` / the docx_edit outline call. textLength is
+          // the REAL paragraph length (outlineOf's copy is pre-sliced), so it
+          // stays consistent with the summary's total.
+          paragraphs: outline.map((o, i) => ({
+            index: o.index,
+            style: o.style,
+            textLength: model.paragraphs[i]?.text.length ?? o.text.length,
+            text: o.text,
+          })),
           textBudget,
           images: imageEntries.length,
         },
@@ -92,12 +127,29 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
       const workbook = new ExcelJS.Workbook()
       await workbook.xlsx.load(buffer as unknown as ArrayBuffer)
 
-      const sheets = workbook.worksheets.map(ws => ({
-        name: ws.name,
-        usedRange: ws.getCell(ws.rowCount, ws.columnCount).address || 'A1',
-        rowCount: ws.rowCount,
-        columnCount: ws.columnCount,
-      }))
+      const sheets = workbook.worksheets.map((ws, sheetIndex) => {
+        // Head rows: exceljs has the whole workbook loaded already, so the
+        // preview is nearly free. Capped to the first sheets × rows × cols.
+        let head: string[][] | undefined
+        if (sheetIndex < MAX_HEAD_SHEETS && ws.rowCount > 0 && ws.columnCount > 0) {
+          const rows = Math.min(ws.rowCount, MAX_HEAD_ROWS)
+          const cols = Math.min(ws.columnCount, MAX_HEAD_COLS)
+          head = []
+          for (let r = 1; r <= rows; r++) {
+            const row = ws.getRow(r)
+            const values: string[] = []
+            for (let c = 1; c <= cols; c++) values.push(xlsxCellText(row.getCell(c)))
+            head.push(values)
+          }
+        }
+        return {
+          name: ws.name,
+          usedRange: ws.getCell(ws.rowCount, ws.columnCount).address || 'A1',
+          rowCount: ws.rowCount,
+          columnCount: ws.columnCount,
+          head,
+        }
+      })
 
       // Collect formulas (capped — a model answer, not an inventory dump)
       const formulas: string[] = []
@@ -162,8 +214,10 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
       }
       collectText(root)
       // Truncate per slide — the full concatenation of a big deck was an
-      // unbounded payload riding one tool result (M2).
-      const fullText = texts.join('')
+      // unbounded payload riding one tool result (M2). Space-joined rather
+      // than ''-joined: separate a:t runs read as words, and the character
+      // count below is a display figure, not a byte-accurate one.
+      const fullText = texts.join(' ').replace(/\s+/g, ' ').trim()
       const slideText = fullText.length > MAX_SLIDE_TEXT_CHARS
         ? fullText.slice(0, MAX_SLIDE_TEXT_CHARS) + `…（截断，原 ${fullText.length} 字符）`
         : fullText

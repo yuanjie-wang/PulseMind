@@ -674,7 +674,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── office_inspect (PLAN-office-editing §P1) ─────────────────────
   {
     name: 'office_inspect',
-    description: 'Inspect an Office file (.docx/.xlsx/.pptx) and return a structured inventory: paragraphs/sheets/shapes, text budget, formulas, charts, images. Read-only — no modification.',
+    description: 'Edit-time triage for an Office file (.docx/.xlsx/.pptx): structural inventory (paragraph/sheet/slide list with text previews, text budget, formulas, charts, images) — NOT a full-content reader. To read or summarize the file, use `read` (auto-converts to markdown). Read-only — no modification.',
     category: 'file',
     triggers: ['inspect office', '检查文档', '盘点文档', 'office 清单'],
     input_schema: {

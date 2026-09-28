@@ -69,9 +69,14 @@ export interface OfficeInspectResult {
   format: 'docx' | 'xlsx' | 'pptx' | 'unknown'
   summary: string
   details: {
-    paragraphs?: Array<{ index: number; style: string | null; textLength: number }>
+    /** docx — one entry per outline paragraph (capped). `text` is the
+     *  first-80-chars preview (outlineOf's slice); `textLength` is the FULL
+     *  paragraph length, consistent with the summary's total. */
+    paragraphs?: Array<{ index: number; style: string | null; textLength: number; text?: string }>
     textBudget?: number
-    sheets?: Array<{ name: string; usedRange: string; rowCount: number; columnCount: number }>
+    /** xlsx — `head` is the leading rows × cols of the sheet as raw cell
+     *  text (formula cells report their cached result), absent when empty. */
+    sheets?: Array<{ name: string; usedRange: string; rowCount: number; columnCount: number; head?: string[][] }>
     formulas?: string[]
     charts?: number
     slides?: Array<{ index: number; text: string; shapeCount: number }>

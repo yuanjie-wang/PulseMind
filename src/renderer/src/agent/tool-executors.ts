@@ -24,6 +24,7 @@ import type { ToolExecContext } from './executors/context'
 import type { SkillDefinition } from '../skills/types'
 import { execPickTool as pickToolImpl } from './executors/pick-tool'
 import { execSpawnAgent as spawnAgentImpl } from './executors/spawn-tool'
+import { formatInspectResult, INSPECT_RESULT_TOKEN_BUDGET } from './office-inspect-format'
 
 /** 经验信封的位置段（PLAN-experience-scripts 1.4）：pick_skill 之前只回
  *  SKILL.md 原文，模型拿到正文也到不了盘上的脚本。与 formatSelectedSkill
@@ -434,7 +435,13 @@ export class ToolExecutor implements ToolExecContext {
         const result = await getHost().inspectOffice({ filePath: fp })
         if (result.success) {
           t.output = result.summary
-          this.addToolResult(t.id, result.summary, false)
+          // The details ARE the answer (2026-09-28): the old shape shipped the
+          // one-line summary and dropped the whole computed inventory — docx
+          // gave no paragraphs, xlsx not even sheet names — so every office
+          // read paid for inspect AND read/python. formatInspectResult
+          // self-caps under the token budget passed here, so its next-step
+          // envelope survives as the true last bytes.
+          this.addToolResult(t.id, formatInspectResult(result), false, undefined, INSPECT_RESULT_TOKEN_BUDGET)
           t.exitCode = 0
         } else {
           const msg = `Error: ${result.error || result.summary}`

@@ -281,17 +281,19 @@ Structured Excel (.xlsx) editing. The workbook is checked first: charts, pivot t
 
   office_inspect: `## office_inspect
 
-Read-only structured inventory for Office files (.docx/.xlsx/.pptx).
-
-### Output
-- **docx**: paragraph list (index, style, text length), total text budget (110% of current), image count.
-- **xlsx**: sheet names, used ranges, row/column counts, formula list, chart count.
-- **pptx**: per-slide shape list, text content, shape count, image count.
+Edit-time triage for Office files (.docx/.xlsx/.pptx) — a structural inventory WITH a content head preview. It is NOT a full-content reader.
 
 ### When to use
-- Before editing with docx_edit/xlsx_edit to understand the document structure.
-- To check text budget before large replacements.
-- To detect charts/pivot tables that would prevent xlsx_edit from working.
+- Reading / summarizing / answering from the file → call \`read\` instead (auto-converts to markdown, paged). Do NOT inspect first.
+- Before editing with docx_edit/xlsx_edit/pptx_edit → inspect first: the paragraph/sheet/slide indices and the text budget below are what you edit against.
+- To detect charts/pivot tables that would make xlsx_edit refuse.
+
+### Output
+- **docx**: paragraph list ([index] style: length — first-80-chars preview, capped), text budget (110% of current — the replacement ceiling), image count.
+- **xlsx**: sheet names with used ranges, head-rows preview per sheet, formula list, chart count.
+- **pptx**: per-slide shape count and text content (capped per slide), image count.
+
+Previews may be truncated on large files — the result says so and points at \`read\`; do not re-inspect to "get the rest".
 `,
 
   knowledge_read: `## knowledge_read
