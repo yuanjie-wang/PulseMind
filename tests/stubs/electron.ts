@@ -187,13 +187,26 @@ export class BrowserWindow {
    *  P0-2 gates the login window installs (review 2026-09-26 中3). */
   private windowOpenHandler: ((details: { url: string }) => { action: string }) | null = null
   private willNavigateListener: ((details: { url: string; preventDefault: () => void }) => void) | null = null
+  private pageTitleListener: ((event: { preventDefault: () => void }) => void) | null = null
   readonly windowOpenDecisions: Array<{ url: string; action: string }> = []
+  /** Every page <title> driven through page-title-updated, with whether the
+   *  window kept its own title (preventDefault called). */
+  readonly pageTitleUpdates: Array<{ title: string; keptOwn: boolean }> = []
   /** Every `setTitleBarOverlay` repaint, in order — the caption-button
    *  theme × mask blend asserts against this (tests/title-bar-mask.test.ts). */
   readonly overlayUpdates: Array<{ color: string; symbolColor: string; height: number }> = []
 
   setTitleBarOverlay(overlay: { color: string; symbolColor: string; height: number }): void {
     this.overlayUpdates.push(overlay)
+  }
+
+  /** What setMenu received, if it was ever called (the Win/Linux menu-strip
+   *  gate in hook-browser). Undefined on a platform that skips the call —
+   *  note tests running on darwin therefore cannot assert the call happened,
+   *  only that the option side carried autoHideMenuBar. */
+  lastSetMenu: unknown
+  setMenu(menu: unknown): void {
+    this.lastSetMenu = menu
   }
 
   readonly webContents = {
@@ -217,6 +230,19 @@ export class BrowserWindow {
     let blocked = false
     this.willNavigateListener?.({ url, preventDefault: () => { blocked = true } })
     return !blocked
+  }
+
+  on(event: string, listener: (event: { preventDefault: () => void }) => void): void {
+    if (event === 'page-title-updated') this.pageTitleListener = listener
+  }
+
+  /** Drive a page <title> through page-title-updated; true = the window kept
+   *  its own title (the listener preventDefault'd). */
+  pageTitleUpdated(title: string): boolean {
+    let prevented = false
+    this.pageTitleListener?.({ preventDefault: () => { prevented = true } })
+    this.pageTitleUpdates.push({ title, keptOwn: prevented })
+    return prevented
   }
 
   constructor(options: Record<string, unknown> = {}) {

@@ -26,10 +26,29 @@ const DEFAULT_HEIGHT = 768
  *  already moved on. */
 const openHookWindows = new Set<BrowserWindow>()
 
+/** Windows whose close was ordered by code (handle.close() or the watchdog),
+ *  marked BEFORE destroy() so the classification below is deterministic no
+ *  matter when the 'closed' event actually lands. */
+const programmaticCloses = new WeakSet<BrowserWindow>()
+
+/** Whether the most recent hook-window close was the USER's (title-bar X) as
+ *  opposed to a programmatic one. index.ts's gate escape (gate-escape.ts)
+ *  reads this as intent: with every window gone and the launch gate still
+ *  holding, a user-closed login window means 「stop waiting」 — the gate is
+ *  skipped silently instead of asking. Reset when a new hook window opens:
+ *  the judgement is about the window population that exists now, and a
+ *  user close of window A must not outlive a hook that moved on to window B. */
+let lastCloseFromUser = false
+
+export function wasLastHookWindowUserClosed(): boolean {
+  return lastCloseFromUser
+}
+
 /** Close every window openBuiltInWindow created. Idempotent; the hook's own
  *  late handle.close() is idempotent too (destroyed-window check). */
 export function closeAllHookWindows(): void {
   for (const win of openHookWindows) {
+    programmaticCloses.add(win)
     if (!win.isDestroyed()) win.destroy()
   }
   openHookWindows.clear()
@@ -63,17 +82,27 @@ export async function openBuiltInWindow(
   const target = assertAllowedUrl(url)
   await app.whenReady()
 
+  lastCloseFromUser = false
+
   const win = new BrowserWindow({
     width: options?.width ?? DEFAULT_WIDTH,
     height: options?.height ?? DEFAULT_HEIGHT,
     title: options?.title ?? '',
     show: true,
+    // The app-wide menu template (menu.ts installs one on every platform)
+    // paints a menu strip on any FRAMED window — the main window never shows
+    // it only because it is frameless. autoHideMenuBar covers the first
+    // paint; setMenu(null) below strips it outright so Alt doesn't resurrect
+    // it. Clipboard shortcuts in the page's own fields are Chromium
+    // built-ins, not menu roles, so the login form keeps copy/paste.
+    autoHideMenuBar: true,
     webPreferences: {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
     },
   })
+  if (process.platform !== 'darwin') win.setMenu(null)
   onWindowOpen?.()
 
   // The login window loads ARBITRARY remote content (third-party scripts
@@ -102,8 +131,27 @@ export async function openBuiltInWindow(
     console.warn(`[hook-browser] blocked in-window navigation to ${protocol || details.url}`)
   })
 
+  // The constructor `title` is only the window's INITIAL title: as soon as a
+  // page loads, Electron retitles the window to the page's <title> — which
+  // made the hook's `title` option silent decoration on every real login
+  // page. When the hook names the window, the name is load-bearing (it is
+  // what the taskbar / alt-tab show while the login page may itself be
+  // titled after the vendor's product), so it sticks for the window's whole
+  // life, across redirects and SPA title changes alike. No title option =
+  // no preference; the window keeps following the page title.
+  if (options?.title) {
+    win.on('page-title-updated', (event) => {
+      event.preventDefault()
+    })
+  }
+
   openHookWindows.add(win)
-  win.once('closed', () => { openHookWindows.delete(win) })
+  win.once('closed', () => {
+    openHookWindows.delete(win)
+    // Set.delete answers "was this a programmatic close?" — a user close
+    // leaves the set untouched and is recorded as intent.
+    if (!programmaticCloses.delete(win)) lastCloseFromUser = true
+  })
   win.loadURL(target).catch((err: unknown) => {
     // The window is already open and showing whatever it can (an error page
     // is a visible answer); failing open() here would tear down the flow.
@@ -120,6 +168,7 @@ export async function openBuiltInWindow(
         })
         // destroy, not close: the login page may hold an beforeunload prompt
         // and close()'s contract is "resolved once it is gone", not "asked".
+        programmaticCloses.add(win)
         win.destroy()
       }
       return closed

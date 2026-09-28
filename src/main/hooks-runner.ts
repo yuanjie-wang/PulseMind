@@ -35,7 +35,8 @@ let launchPromise: Promise<void> | null = null
 // 上曾没有任何上限或逃生面：模板示例的裸 fetch 对网络黑洞永不超时，启用即
 // 挂死启动；此时 splash 已销毁、用户关掉登录窗后 window-all-closed 因
 // startupComplete=false 直接 return——Windows 上留下无窗口、无托盘、任务栏
-// 不可见的常驻进程。看门狗 + skipLaunchHooks()（门期对话框的「跳过」按钮）
+// 不可见的常驻进程。看门狗 + skipLaunchHooks()（gate-escape.ts 的两个跳过
+// 入口：用户关掉登录窗后的静默跳过、兜底对话框的「跳过」按钮）
 // 是那两个逃生面；二者都不打断 hook 本身——被放弃的 promise 继续跑，只是
 // 没有人再等它。
 const DEFAULT_HOOK_TIMEOUT_MS = 10 * 60_000

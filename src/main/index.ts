@@ -14,7 +14,8 @@ import { cleanupExpiredConversations } from './services/conversation-retention'
 import { skillStore } from './storage/skill-store'
 import { runTmpCleanup, TMP_CLEANUP_INTERVAL_MS } from './storage/tmp-cleanup'
 import { ensureLaunchHooks, skipLaunchHooks } from './hooks-runner'
-import { setHookWindowOpenListener } from './hook-browser'
+import { setHookWindowOpenListener, wasLastHookWindowUserClosed } from './hook-browser'
+import { beginGateEscape, cancelGateEscape } from './gate-escape'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
 import { resolveThemePreference } from '../shared/theme'
@@ -591,12 +592,27 @@ if (gotTheLock) {
       // until after createWindow, so closing the login window — or every
       // window — during app-start's login flow never quits the app.
       if (!startupComplete) {
-        // Gate-period escape surface (review 2026-09-26 中4): with every
-        // window closed and the launch hook still pending, the process used
-        // to sit on with no window, no tray, no taskbar presence — killable
-        // only from task manager. Offer the minimal face instead: keep
-        // waiting, or skip the gate and start.
-        if (!hooksComplete) void offerGateSkipDialog()
+        // Gate-period escape surface (review 2026-09-26 中4, refined
+        // 2026-09-28 → gate-escape.ts): with every window closed and the
+        // launch hook still pending, the process used to sit on with no
+        // window, no tray, no taskbar presence — killable only from task
+        // manager. The decision is no longer instant: a short grace absorbs
+        // 「login completed right after the user closed the page」 and the
+        // watchdog race; a user-closed hook window then reads as 「stop
+        // waiting」 and skips the gate silently; the dialog remains only for
+        // a zero-window state no user close explains.
+        if (!hooksComplete) {
+          beginGateEscape({
+            gateHeld: () => !hooksComplete && !startupComplete,
+            lastHookWindowCloseFromUser: wasLastHookWindowUserClosed,
+            skipGate: () => {
+              writeLog('INFO', 'startup: gate escape skipped the launch gate (user closed the hook window)')
+              skipLaunchHooks()
+            },
+            showDialog: () => void offerGateSkipDialog(),
+            log: (message) => writeLog('INFO', `startup: ${message}`),
+          })
+        }
         return
       }
       app.quit()
@@ -692,6 +708,10 @@ if (gotTheLock) {
   // re-check isDestroyed(), and scheduleSplashFade's splash-less branch
   // carries the same gate hold and MAX_SPLASH_MS valve as the painted path.
   setHookWindowOpenListener(() => {
+    // A hook window opening also means the gate escape's zero-window premise
+    // is gone: a pending grace must not auto-skip the gate behind a live
+    // login window (it re-arms if that window closes again).
+    cancelGateEscape()
     if (splashWindow && !splashWindow.isDestroyed()) {
       splashWindow.destroy()
       splashWindow = null

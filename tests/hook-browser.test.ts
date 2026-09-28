@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getStubBrowserWindows, getStubExternalOpens, resetStubBrowserWindows, resetStubExternalOpens } from './stubs/electron'
-import { openBuiltInWindow } from '../src/main/hook-browser'
+import { closeAllHookWindows, openBuiltInWindow, wasLastHookWindowUserClosed } from '../src/main/hook-browser'
 
 // runLaunchHooks resolves the login-shell PATH for real otherwise — a spawned
 // login shell, slow and irrelevant to what's under test here.
@@ -38,12 +38,37 @@ describe('openBuiltInWindow', () => {
   it('passes window options through to the constructor', async () => {
     await openBuiltInWindow('https://example.com/', { title: '登录', width: 800, height: 600 })
     const [win] = getStubBrowserWindows()
-    expect(win.options).toMatchObject({ title: '登录', width: 800, height: 600, show: true })
+    // autoHideMenuBar is the first-paint half of the menu-strip removal; the
+    // setMenu(null) half is platform-gated (non-darwin) and cannot be
+    // asserted from a darwin test run — the stub records it as lastSetMenu.
+    expect(win.options).toMatchObject({ title: '登录', width: 800, height: 600, show: true, autoHideMenuBar: true })
     expect(win.options.webPreferences).toMatchObject({
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
     })
+  })
+
+  // Electron retitles the window to the page's <title> the moment it loads —
+  // the constructor title is only the initial value, which is why the hook's
+  // `title` option read as无效 on every real login page. A hook-provided
+  // title is load-bearing (taskbar / alt-tab identity) and must stick across
+  // page loads, redirects and SPA title changes.
+  it('a hook-provided title sticks: page <title> updates are refused', async () => {
+    await openBuiltInWindow('https://example.com/login', { title: '登录' })
+    const [win] = getStubBrowserWindows()
+    expect(win.pageTitleUpdated('某某统一登录平台')).toBe(true)
+    expect(win.pageTitleUpdated('登录成功')).toBe(true)
+    expect(win.pageTitleUpdates).toEqual([
+      { title: '某某统一登录平台', keptOwn: true },
+      { title: '登录成功', keptOwn: true },
+    ])
+  })
+
+  it('without a title option the window follows the page title', async () => {
+    await openBuiltInWindow('https://example.com/login')
+    const [win] = getStubBrowserWindows()
+    expect(win.pageTitleUpdated('某某统一登录平台')).toBe(false)
   })
 
   it('rejects non-http(s) URLs before creating any window', async () => {
@@ -226,5 +251,45 @@ describe('runLaunchHooks drives a real app-start.js', () => {
       process.env.HOME = prevHome
       rmSync(home, { recursive: true, force: true })
     }
+  })
+})
+
+// The gate escape (gate-escape.ts) reads the close's author as intent: with
+// every window gone and the launch gate still holding, a USER-closed login
+// window means 「别等了」 and the gate is skipped silently. The flag must
+// never misattribute a programmatic close — the classification is marked
+// before destroy() so the synchronous 'closed' emission in the stub (and the
+// real event whenever it lands) classify identically.
+describe('user-close tracking', () => {
+  it('reads a titlebar destroy as the user closing the window', async () => {
+    await openBuiltInWindow('https://example.com/')
+    const [win] = getStubBrowserWindows()
+    win.destroy()
+    expect(wasLastHookWindowUserClosed()).toBe(true)
+  })
+
+  it('the handle.close() path (the hook closing its own window) is not user intent', async () => {
+    const handle = await openBuiltInWindow('https://example.com/')
+    await handle.close()
+    expect(wasLastHookWindowUserClosed()).toBe(false)
+  })
+
+  it('the watchdog path (closeAllHookWindows) is not user intent either', async () => {
+    await openBuiltInWindow('https://example.com/')
+    closeAllHookWindows()
+    expect(wasLastHookWindowUserClosed()).toBe(false)
+  })
+
+  it('opening a new hook window re-baselines a previous user close', async () => {
+    const first = await openBuiltInWindow('https://example.com/a')
+    getStubBrowserWindows()[0].destroy()
+    expect(wasLastHookWindowUserClosed()).toBe(true)
+    // The hook moved on to window B: a user close of A must not outlive it,
+    // or the escape would auto-skip the gate behind a live login window.
+    const second = await openBuiltInWindow('https://example.com/b')
+    expect(wasLastHookWindowUserClosed()).toBe(false)
+    await second.close()
+    expect(wasLastHookWindowUserClosed()).toBe(false)
+    void first
   })
 })
