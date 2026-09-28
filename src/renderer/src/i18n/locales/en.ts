@@ -237,7 +237,7 @@ const en: TranslationDict = {
     },
     attachFile: 'Attach file',
     extensionPrompt: {
-      title: 'Reached {count} loop iterations (limit {limit})',
+      title: 'Reached {{count}} loop iterations (limit {{limit}})',
       description: 'The task is still in progress. Continue? This will add 50 more iterations.',
       continue: 'Continue',
       stop: 'Stop',
@@ -335,7 +335,7 @@ const en: TranslationDict = {
     executing: 'Executing, waiting for output...',
     skip: 'Skip',
     alwaysAllow: 'Always allow this session',
-    backgroundRunning: 'Running in background · pid {pid}',
+    backgroundRunning: 'Running in background · pid {{pid}}',
     run: 'Run',
     kill: 'Kill',
     skippedByUser: 'Skipped by user',

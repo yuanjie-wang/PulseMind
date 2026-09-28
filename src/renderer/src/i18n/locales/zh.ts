@@ -332,7 +332,7 @@ const zh = {
     executing: '正在执行，等待输出...',
     skip: '跳过',
     alwaysAllow: '本会话总是允许',
-    backgroundRunning: '后台运行中 pid={pid}',
+    backgroundRunning: '后台运行中 pid={{pid}}',
     run: '运行',
     kill: '终止',
     skippedByUser: '已由用户跳过',
