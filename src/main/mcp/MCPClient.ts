@@ -9,6 +9,12 @@ import { ensureLaunchHooks, getHookEnv } from '../hooks-runner'
 const HEARTBEAT_INTERVAL_MS = 30_000
 const HEARTBEAT_TIMEOUT_MS = 15_000
 
+// ── Tool-call budget ─────────────────────────────────────────────────
+// Data-heavy tools (search, DB queries, LLM-backed servers) regularly exceed
+// the generic 60s request budget; a hung tool call must still not hold a turn
+// forever. Per-server override: MCPClientConfig.toolCallTimeoutMs.
+export const TOOL_CALL_TIMEOUT_MS = 180_000
+
 // ── Types ────────────────────────────────────────────────────────────
 
 export interface MCPToolDefinition {
@@ -37,6 +43,10 @@ export interface MCPClientConfig {
   headers?: Record<string, string>
   /** When true, this server's tools wait for user approval unless the session's approval mode is 'auto'. */
   requireApproval?: boolean
+  /** Per tool-call timeout in ms (default TOOL_CALL_TIMEOUT_MS). The generic 60s
+   *  request budget is too tight for data-heavy servers; handshake/ping keep
+   *  their own shorter budgets regardless of this value. */
+  toolCallTimeoutMs?: number
 }
 
 interface PendingRequest {
@@ -248,7 +258,7 @@ export class MCPClient {
 
   async callTool(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<unknown> {
     this.ensureConnected()
-    return this.request('tools/call', { name, arguments: args }, signal)
+    return this.request('tools/call', { name, arguments: args }, signal, this.config.toolCallTimeoutMs ?? TOOL_CALL_TIMEOUT_MS)
   }
 
   // ── Internal MCP protocol ────────────────────────────────────────────

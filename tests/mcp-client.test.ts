@@ -6,13 +6,13 @@
 // outside — the child sees exactly the env the client handed it.
 //
 // Cost note: StdioTransport.disconnect() always waits out its 3s SIGTERM grace
-// period, so only TWO full start→stop cycles are used in this file (~6s).
+// period, so only THREE full start→stop cycles are used in this file (~9s).
 
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { MCPClient } from '../src/main/mcp/MCPClient'
+import { MCPClient, TOOL_CALL_TIMEOUT_MS } from '../src/main/mcp/MCPClient'
 
 const SERVER = join(mkdtempSync(join(tmpdir(), 'pm-mcp-fake-')), 'fake-server.mjs')
 
@@ -152,6 +152,30 @@ describe('env sanitization (security behavior)', () => {
       delete process.env.AWS_REGION
       delete process.env.CI_JOB_TOKEN
       delete process.env.CUSTOM_MARKER
+      await c.stop()
+    }
+  }, 30_000)
+})
+
+describe('tool-call budget (toolCallTimeoutMs)', () => {
+  it('the default budget is 180s — the generic 60s request budget is not the tool ceiling', () => {
+    expect(TOOL_CALL_TIMEOUT_MS).toBe(180_000)
+  })
+
+  it('a configured budget bounds a hung tool call well inside the generic request budget', async () => {
+    const c = new MCPClient(
+      { command: process.execPath, args: [SERVER], name: 'fake-budget', toolCallTimeoutMs: 1_500 },
+      `test-budget-${Math.random().toString(36).slice(2, 8)}`
+    )
+    try {
+      await c.start(20_000)
+      const t0 = Date.now()
+      await expect(c.callTool('hang')).rejects.toThrow('MCP request timed out: tools/call')
+      const elapsed = Date.now() - t0
+      expect(elapsed).toBeGreaterThanOrEqual(1_400)
+      // An ignored override would ride the generic 60s request budget and blow this bound.
+      expect(elapsed).toBeLessThan(15_000)
+    } finally {
       await c.stop()
     }
   }, 30_000)

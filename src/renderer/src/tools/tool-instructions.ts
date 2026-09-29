@@ -425,7 +425,7 @@ Register a skill or an MCP server. The skills directory \`~/.pulsemind/skills/\`
 
 - \`type: "skill"\` with \`content\` — the complete SKILL.md (YAML frontmatter + body): validated, written verbatim to \`~/.pulsemind/skills/<frontmatter name>/SKILL.md\`, registered and enabled in one step. An already-existing skill is NEVER overwritten — for revisions edit the file directly instead.
 - \`type: "skill"\` with only \`name\` — registers and enables an existing \`~/.pulsemind/skills/<name>/SKILL.md\` (e.g. one you just wrote yourself).
-- \`type: "mcp"\` with \`config\` — the server config object: \`{ name, command, args, env }\` for stdio, \`{ name, url, headers }\` for sse / streamable-http. Registered and started in the same call. \`mcp-servers.json\` itself stays sandbox-protected — never try to write it.
+- \`type: "mcp"\` with \`config\` — the server config object: \`{ name, command, args, env }\` for stdio, \`{ name, url, headers }\` for sse / streamable-http, optional \`toolCallTimeoutMs\` (per tool-call timeout in ms, default 180s — raise it for slow data sources). Registered and started in the same call. \`mcp-servers.json\` itself stays sandbox-protected — never try to write it.
 `,
 
   webfetch: `## webfetch

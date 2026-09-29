@@ -124,6 +124,9 @@ export interface MCPClientConfig {
   headers?: Record<string, string>
   /** When true, this server's tools wait for user approval unless the session's approval mode is 'auto'. */
   requireApproval?: boolean
+  /** Per tool-call timeout in ms (default 180s). The generic 60s request budget
+   *  is too tight for data-heavy servers; handshake/ping keep their own budgets. */
+  toolCallTimeoutMs?: number
 }
 
 export interface MCPManagedServer {
