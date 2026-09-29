@@ -167,10 +167,13 @@ function ProjectSidebarList({
 
   return (
     <div style={{ padding: '2px 8px 8px' }}>
-      {sorted.map(({ project, conversations: convs }) => {
+      {sorted.map(({ project, conversations: convs }, idx) => {
         const collapsed = collapsedIds.has(project.id)
         return (
           <div key={project.id}>
+            {/* 项目行的上下边距：组间留白是 marginTop 与上一组末行 2px
+                marginBottom 的折叠（取 max，不叠加），首组头不加——列表起点
+                须与对话 Tab 的 2px wrapper padding 对齐，切换 Tab 不跳动。 */}
             <div
               data-project-header={project.id}
               onClick={() => toggleCollapse(project.id)}
@@ -195,8 +198,8 @@ function ProjectSidebarList({
               onDrop={(e) => { e.preventDefault(); void handleDrop() }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8,
-                padding: '5px 8px', marginBottom: 2, borderRadius: 6, cursor: 'pointer',
-                fontSize: 14, fontWeight: 600, color: 'var(--pm-row-ink)', userSelect: 'none',
+                padding: '6px 8px', margin: idx === 0 ? '0 0 2px' : '8px 0 2px', borderRadius: 6, cursor: 'pointer',
+                fontSize: 12, fontWeight: 600, color: 'var(--pm-text-muted)', userSelect: 'none',
                 lineHeight: '20px',
                 opacity: dragId === project.id ? 0.4 : undefined,
                 boxShadow: dropAt?.id === project.id
