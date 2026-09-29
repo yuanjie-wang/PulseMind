@@ -55,6 +55,7 @@ function fakeAppView(dockCalls) {
   const navigations = []
   const views = new Map()
   const currents = new Map()
+  const pageRoutes = new Map() // tabId → registered one-shot route rewrites
   return {
     created,
     navigations,
@@ -69,8 +70,31 @@ function fakeAppView(dockCalls) {
         page: {
           url: () => currents.get(tabId) ?? '',
           title: async () => '',
-          goto: async (target) => {
-            navigations.push({ tabId, url: target })
+          route: async (match, handler, opts) => {
+            const pending = pageRoutes.get(tabId) ?? []
+            pending.push({ match, handler, opts })
+            pageRoutes.set(tabId, pending)
+          },
+          goto: async (target, opts) => {
+            // Simulate a one-shot route rewrite (the POST-replay mechanism):
+            // the first registered route matching this navigation runs its
+            // handler against a stub and its override lands on the recorded
+            // navigation; `times: 1` consumes it.
+            const pending = pageRoutes.get(tabId) ?? []
+            const hit = pending.find((r) => {
+              try { return typeof r.match === 'function' ? r.match(new URL(target)) : true } catch { return false }
+            })
+            let override = null
+            if (hit) {
+              await hit.handler({ request: () => ({ headers: async () => ({}) }), continue: async (o) => { override = o } })
+              pageRoutes.set(tabId, pending.filter((r) => r !== hit))
+            }
+            navigations.push({
+              tabId,
+              url: target,
+              ...(override?.method ? { method: override.method, postData: override.postData } : {}),
+              ...(opts?.referrer ? { referrer: opts.referrer } : {}),
+            })
             currents.set(tabId, target)
             return null
           },
@@ -433,6 +457,26 @@ async function phaseRun() {
   )
 
   // An opener that is already gone has nothing to attach the popup to.
+  // A form POST (the SAML HTTP-POST-binding shape) must replay as POST with
+  // its body — the deny-and-reopen round trip downgrading it to GET was
+  // review_20260929 中7.
+  const tabsBeforeSso = tabsOf(SCOPE_F).length
+  service.handleWindowOpen(openerId, {
+    action: 'tab',
+    url: 'https://saml.example/sso',
+    postBody: { data: 'SAMLResponse=abc&RelayState=tok', contentType: 'application/x-www-form-urlencoded' },
+    referrer: 'https://sp.example/app',
+  })
+  await waitFor(() => tabsOf(SCOPE_F).length >= tabsBeforeSso + 1)
+  const ssoPopup = tabsOf(SCOPE_F)[tabsBeforeSso]
+  const ssoNav = backend.navigations.filter((n) => n.tabId === ssoPopup?.tabId).at(-1)
+  check(
+    'a form POST popup replays as POST with its body — never downgraded to GET',
+    ssoNav?.method === 'POST' && ssoNav?.postData === 'SAMLResponse=abc&RelayState=tok',
+    JSON.stringify(ssoNav),
+  )
+  check('…and the referrer rides the navigation', ssoNav?.referrer === 'https://sp.example/app', String(ssoNav?.referrer))
+
   const beforeUnknown = tabsOf(SCOPE_F).length
   service.handleWindowOpen('tab_missing', { action: 'tab', url: 'https://nowhere.example/' })
   await new Promise((r) => setTimeout(r, 50))
@@ -460,7 +504,7 @@ async function phaseRun() {
   const popupRows = auditStore.list(100).filter((e) => e.action === 'browser.panePopupTab')
   check(
     'each popup is audited against the url it opened',
-    popupRows.map((e) => e.target).sort().join(' ') === 'https://popup-agent.example/ https://popup.example/a',
+    popupRows.map((e) => e.target).sort().join(' ') === 'https://popup-agent.example/ https://popup.example/a https://saml.example/sso',
     JSON.stringify(popupRows.map((e) => e.target)),
   )
 }

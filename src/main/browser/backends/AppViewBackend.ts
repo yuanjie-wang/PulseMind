@@ -117,7 +117,9 @@ export class AppViewBackend implements BackendAdapter {
     // here; the classifier's survivors are handed to BrowserService, which
     // re-opens them as pane tabs of this tab's own conversation.
     view.webContents.setWindowOpenHandler((details) => {
-      const route = routeWindowOpen(details.url, details.disposition)
+      // postBody/referrer ride the route: a form POST must survive the
+      // deny-and-reopen round trip as a POST (review_20260929 中7).
+      const route = routeWindowOpen(details.url, details.disposition, details.postBody, details.referrer?.url)
       if (route.action !== 'ignore') this.onWindowOpen?.(options.tabId, route)
       return { action: 'deny' }
     })

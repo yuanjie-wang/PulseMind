@@ -26,6 +26,41 @@ describe('routeWindowOpen — the pure classification', () => {
     expect(routeWindowOpen('http://A.example/', 'new-window')).toEqual({ action: 'tab', url: 'http://a.example/' })
   })
 
+  it('a form POST rides the route as a replayable string (review_20260929 中7)', () => {
+    // Electron's postBody.data is UploadData[] (rawData chunks); the route
+    // decodes it to one string so the service can POST-replay the navigation.
+    const payload = 'SAMLResponse=PD94bWw%2B&RelayState=tok42'
+    const bytes = new TextEncoder().encode(payload)
+    const route = routeWindowOpen('https://idp.example/sso', 'foreground-tab', {
+      data: [{ type: 'rawData', bytes }],
+      contentType: 'application/x-www-form-urlencoded',
+    }, 'https://sp.example/app')
+    expect(route).toEqual({
+      action: 'tab',
+      url: 'https://idp.example/sso',
+      postBody: { data: payload, contentType: 'application/x-www-form-urlencoded' },
+      referrer: 'https://sp.example/app',
+    })
+  })
+
+  it('a GET open carries no postBody key; multipart chunks join; empty data is dropped', () => {
+    expect(routeWindowOpen('https://a.example/', 'new-window')).toEqual({ action: 'tab', url: 'https://a.example/' })
+    const joined = routeWindowOpen('https://a.example/', 'new-window', {
+      data: [
+        { type: 'rawData', bytes: new TextEncoder().encode('a=1&') },
+        { type: 'rawData', bytes: new TextEncoder().encode('b=2') },
+      ],
+    })
+    expect(joined).toEqual({ action: 'tab', url: 'https://a.example/', postBody: { data: 'a=1&b=2', contentType: 'application/x-www-form-urlencoded' } })
+    // File-upload chunks (UploadFile) and empty bodies downgrade to a plain tab.
+    expect(routeWindowOpen('https://a.example/', 'new-window', { data: [{ type: 'file', file: 'x' }] })).toEqual({ action: 'tab', url: 'https://a.example/' })
+    // external/ignore shapes never carry a postBody.
+    expect(routeWindowOpen('mailto:someone@example.com', 'new-window', { data: [{ type: 'rawData', bytes: new TextEncoder().encode('a=1') }] })).toEqual({
+      action: 'external',
+      url: 'mailto:someone@example.com',
+    })
+  })
+
   it('about:blank and empty urls are ignored — the opener could never write into a denied window', () => {
     expect(routeWindowOpen('about:blank', 'new-window')).toEqual({ action: 'ignore' })
     expect(routeWindowOpen('ABOUT:BLANK', 'foreground-tab')).toEqual({ action: 'ignore' })
@@ -62,7 +97,7 @@ describe('wiring — deny on the Electron side, route on the service side', () =
   })
 
   it('the handler classifies through the shared pure function and hands survivors to the hook', () => {
-    expect(backend).toContain('routeWindowOpen(details.url, details.disposition)')
+    expect(backend).toContain('routeWindowOpen(details.url, details.disposition, details.postBody, details.referrer?.url)')
     expect(backend).toMatch(/route\.action !== 'ignore'\) this\.onWindowOpen\?\./)
   })
 
@@ -89,5 +124,21 @@ describe('wiring — deny on the Electron side, route on the service side', () =
   it('popups bypass the per-scope creation serialization — they always mean a NEW tab', () => {
     expect(service).toMatch(/const entry = await this\.doCreatePaneTab\(/)
     expect(service).not.toMatch(/createUserPaneTab\(opener/)
+  })
+
+  it('a form POST is replayed as POST, never downgraded to GET (review_20260929 中7)', () => {
+    // Playwright's goto has no method override — the one-shot route rewrite
+    // is the mechanism; pin its load-bearing pieces as source.
+    expect(service).toMatch(/method: 'POST'/)
+    expect(service).toMatch(/times: 1/)
+    expect(service).toMatch(/'content-type': post\.contentType \|\| 'application\/x-www-form-urlencoded'/)
+    expect(service).toMatch(/route\.referrer \? \{ referrer: route\.referrer \}/)
+  })
+
+  it('page-initiated popups sit behind flood gates; a denial is audited, not minted (review_20260929 中8)', () => {
+    expect(service).toMatch(/POPUP_TABS_PER_SCOPE/)
+    expect(service).toMatch(/POPUP_MIN_INTERVAL_MS/)
+    expect(service).toMatch(/popupInFlight/)
+    expect(service).toMatch(/action: 'browser\.panePopupTab', target, decision: 'denied'/)
   })
 })

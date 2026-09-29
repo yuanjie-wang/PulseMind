@@ -73,6 +73,16 @@ const MUTATING_METHODS = new Set([
   'clipboardWrite',
 ])
 
+/** Page-initiated popup flood gates (review_20260929 中8): every window.open
+ *  used to mint a real pane tab — backend.start + newTab + CDP polling each,
+ *  on top of unbounded audit rows, history rows and a full pane push — so one
+ *  hostile page (or an agent loop stuck on a popup site) could spin tabs
+ *  without limit. Cap per scope, throttle per scope, merge a same-URL popup
+ *  already in flight; a denied popup leaves an audit row, not a tab. User
+ *  gestures ("+" button, address bar) are deliberately NOT gated. */
+const POPUP_TABS_PER_SCOPE = 12
+const POPUP_MIN_INTERVAL_MS = 1000
+
 interface ServiceTab {
   /** The tab's last AI-mode snapshot tree + its url (PLAN-browser-snapshot-ai
    *  §1.3): the diff baseline AND the server-side sig source for action-time
@@ -263,19 +273,48 @@ export class BrowserService {
       if (safe) void shell.openExternal(safe)
       return
     }
-    void this.openPopupTab(opener, route.url)
+    void this.openPopupTab(opener, route)
   }
 
-  /** The tab side of handleWindowOpen. Same shape as the address bar's
-   *  navigate — commit-or-give-up, remember the FINAL url — and history is
-   *  written for USER tabs only (L1: the agent's moves write no history). */
-  private async openPopupTab(opener: ServiceTab, url: string): Promise<void> {
+  /** The tab side of handleWindowOpen, behind the popup flood gates: a
+   *  per-scope tab cap, a per-scope minimum interval, and a same-URL merge
+   *  for popups already being minted (review_20260929 中8). */
+  private async openPopupTab(opener: ServiceTab, route: Extract<WindowOpenRoute, { action: 'tab' }>): Promise<void> {
     let target: string
     try {
-      target = assertAllowedUrl(url)
+      target = assertAllowedUrl(route.url)
     } catch {
       return // routeWindowOpen only lets http(s) through; belt and braces
     }
+    const scope = opener.scopeId
+    const deny = (reason: string): void => {
+      auditStore.record({ scope: 'browser', actor: scope, action: 'browser.panePopupTab', target, decision: 'denied' })
+      console.warn(`[browser] popup tab denied (${reason}): ${target}`)
+    }
+    if (this.paneScopeEntries(scope).length >= POPUP_TABS_PER_SCOPE) return deny('tab cap reached')
+    // The same URL is already being minted into a tab → join it instead of
+    // duplicating (a double-fired window.open is one navigation, not two tabs).
+    const inFlightKey = `${scope}\u0000${target}`
+    const inFlight = this.popupInFlight.get(inFlightKey)
+    if (inFlight) return inFlight
+    // The minimum interval is per scope+URL — the shape it exists for is a
+    // page loop re-firing one URL (open → settle → open…); distinct-URL
+    // bursts are the cap's job, not the throttle's, or legitimate
+    // multi-link popups would drop (probe-pane-actions §11 opens two).
+    const now = Date.now()
+    if (now - (this.lastPopupAt.get(inFlightKey) ?? 0) < POPUP_MIN_INTERVAL_MS) return deny('rate limited')
+    this.lastPopupAt.set(inFlightKey, now)
+    const run = this.doOpenPopupTab(opener, target, route).finally(() => {
+      this.popupInFlight.delete(inFlightKey)
+    })
+    this.popupInFlight.set(inFlightKey, run)
+    return run
+  }
+
+  /** The mint itself. Same shape as the address bar's navigate —
+   *  commit-or-give-up, remember the FINAL url — and history is written for
+   *  USER tabs only (L1: the agent's moves write no history). */
+  private async doOpenPopupTab(opener: ServiceTab, target: string, route: Extract<WindowOpenRoute, { action: 'tab' }>): Promise<void> {
     // NOT createUserPaneTab — its per-scope serialization exists so a second
     // "+" AWAITS the first tab rather than duplicating it, while a popup
     // always means a NEW tab; concurrent doCreatePaneTab calls are safe (the
@@ -283,7 +322,36 @@ export class BrowserService {
     const entry = await this.doCreatePaneTab(opener.scopeId, opener.origin)
     auditStore.record({ scope: 'browser', actor: opener.scopeId, action: 'browser.panePopupTab', target, decision: 'allowed' })
     const beforeUrl = entry.tab.page.url()
-    await entry.tab.page.goto(target, { waitUntil: 'commit', timeout: 20_000 }).catch(() => {})
+    // A form POST must not downgrade to GET in the reopened tab — SAML
+    // HTTP-POST binding and gateway jumps land on 405s or broken flows when
+    // it does. Playwright's goto has no method override, so the navigation
+    // is rewritten through a one-shot route (`times: 1` unroutes itself
+    // after the first match — the URL predicate keeps the match exact).
+    if (route.postBody?.data) {
+      const post = route.postBody
+      await entry.tab.page.route(
+        (url) => url.toString() === target,
+        async (r) => {
+          // request().headers() is async (Playwright) — spread it AWAITED or
+          // the override ships with no cookies/user-agent and SSO breaks.
+          await r.continue({
+            method: 'POST',
+            headers: {
+              ...(await r.request().headers()),
+              'content-type': post.contentType || 'application/x-www-form-urlencoded',
+              'content-length': String(new TextEncoder().encode(post.data).length),
+            },
+            postData: post.data,
+          }).catch(() => {})
+        },
+        { times: 1 },
+      )
+    }
+    await entry.tab.page.goto(target, {
+      waitUntil: 'commit',
+      timeout: 20_000,
+      ...(route.referrer ? { referrer: route.referrer } : {}),
+    }).catch(() => {})
     const finalUrl = entry.tab.page.url()
     if (opener.origin === 'user' && finalUrl && finalUrl !== beforeUrl && !/^(about:|chrome-error:)/i.test(finalUrl)) {
       const title = await entry.tab.page.title().catch(() => '')
@@ -582,6 +650,12 @@ export class BrowserService {
    *  that window must await the same tab, not race a duplicate past the
    *  registry write — the reuse rule above can only see registered tabs. */
   private paneTabCreation = new Map<string, Promise<ServiceTab>>()
+
+  /** Popup flood-gate state (review_20260929 中8): one in-flight mint per
+   *  scope+URL (same-URL popups merge into it), and the last minted-at time
+   *  per scope+URL for the same-URL minimum-interval throttle. */
+  private popupInFlight = new Map<string, Promise<void>>()
+  private lastPopupAt = new Map<string, number>()
 
   private createUserPaneTab(scope: string): Promise<ServiceTab> {
     const inFlight = this.paneTabCreation.get(scope)

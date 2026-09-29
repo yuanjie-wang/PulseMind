@@ -90,9 +90,20 @@ export interface PaneBox {
 // conversation. Discardable shapes (about:blank write-backs, downloads) die
 // here — one place, unit-covered, so the Electron side stays a thin pipe.
 
+/** The form POST a `target=_blank` submission carries (Electron
+ *  HandlerDetails.postBody): the deny-and-reopen round trip must replay it,
+ *  or SSO / gateway jumps silently downgrade to GET in the pane tab
+ *  (review_20260929 中7). String payload only — Electron's UploadFile
+ *  chunks (file inputs) are dropped. */
+export interface WindowOpenPostBody {
+  data: string
+  contentType?: string
+}
+
 export type WindowOpenRoute =
-  /** Open as a new pane tab in the opener's conversation. */
-  | { action: 'tab'; url: string }
+  /** Open as a new pane tab in the opener's conversation. `postBody`/
+   *  `referrer` ride along only when the open carried them. */
+  | { action: 'tab'; url: string; postBody?: WindowOpenPostBody; referrer?: string }
   /** Not pane content — the caller gates it through safeExternalUrl and
    *  hands it to the OS launcher (mailto:, custom protocols). */
   | { action: 'external'; url: string }
@@ -100,8 +111,16 @@ export type WindowOpenRoute =
   | { action: 'ignore' }
 
 /** Classify one window-open request from a pane page. `disposition` is
- *  Electron's own (this is only ever called from setWindowOpenHandler). */
-export function routeWindowOpen(rawUrl: string, disposition: string): WindowOpenRoute {
+ *  Electron's own (this is only ever called from setWindowOpenHandler).
+ *  `postBody`/`referrer` are the HandlerDetails fields, passed through
+ *  structurally so this stays Electron-import-free: postBody.data is
+ *  Electron's UploadData[] (rawData chunks) and is decoded to one string. */
+export function routeWindowOpen(
+  rawUrl: string,
+  disposition: string,
+  postBody?: { data?: unknown; contentType?: string },
+  referrer?: string,
+): WindowOpenRoute {
   // A download is not a window: the session's will-download hook already
   // routes it (user → ~/Downloads, agent → the conversation workspace).
   // Minting a tab here would park an empty page next to the download.
@@ -114,7 +133,25 @@ export function routeWindowOpen(rawUrl: string, disposition: string): WindowOpen
   try {
     const parsed = new URL(url)
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      return { action: 'tab', url: parsed.toString() }
+      const chunks = Array.isArray(postBody?.data)
+        ? (postBody.data as Array<{ type?: string; bytes?: Uint8Array }>).filter(
+          (p): p is { type: string; bytes: Uint8Array } => p?.type === 'rawData' && p.bytes != null,
+        )
+        : []
+      const total = chunks.reduce((n, c) => n + c.bytes.byteLength, 0)
+      const merged = new Uint8Array(total)
+      let off = 0
+      for (const c of chunks) {
+        merged.set(c.bytes, off)
+        off += c.bytes.byteLength
+      }
+      const data = total > 0 ? new TextDecoder().decode(merged) : ''
+      return {
+        action: 'tab',
+        url: parsed.toString(),
+        ...(data ? { postBody: { data, contentType: postBody?.contentType || 'application/x-www-form-urlencoded' } } : {}),
+        ...(referrer ? { referrer } : {}),
+      }
     }
   } catch {
     return { action: 'ignore' }
