@@ -218,3 +218,48 @@ describe('background exec wiring (P0-3)', () => {
     expect(term).toContain('proc-logs')
   })
 })
+
+// ── PLAN-context-zcode-benchmarks P2: the context-management notice rides the
+// frozen core — it educates the model about compaction (summary + replays +
+// archived-reads reminder + tool_result_search retrieval) and must never move.
+
+describe('CONTEXT_MANAGEMENT_NOTICE (P2)', () => {
+  it('rides the system prompt core, never the state block', async () => {
+    const { systemPrompt, stateBlock } = await buildSystemPrompt({
+      opts: opts({ workspaceDir: '/tmp/ws-a' }),
+      messages: [userMsg('hello')],
+      plan: plan('ship it', false),
+    })
+    expect(systemPrompt).toContain('## Context Management')
+    expect(systemPrompt).toContain('tool_result_search')
+    expect(stateBlock).not.toContain('## Context Management')
+  })
+
+  it('is byte-stable when workspace, plan and messages all move', async () => {
+    const a = await buildSystemPrompt({
+      opts: opts({ workspaceDir: '/tmp/ws-a' }),
+      messages: [userMsg('do A')],
+      plan: plan('objective one', false),
+    })
+    const b = await buildSystemPrompt({
+      opts: opts({ workspaceDir: '/tmp/ws-b' }),
+      messages: [userMsg('do B')],
+      plan: plan('objective two', true),
+    })
+    expect(b.systemPrompt).toBe(a.systemPrompt)
+  })
+
+  it('sits right after the compressed-tool-results notice (same retrieval family)', async () => {
+    const { systemPrompt } = await buildSystemPrompt({
+      opts: opts(),
+      messages: [userMsg('hello')],
+      plan: null,
+    })
+    const compressedAt = systemPrompt.indexOf('## Compressed Tool Results')
+    const noticeAt = systemPrompt.indexOf('## Context Management')
+    const renderAt = systemPrompt.indexOf('## Render Reference')
+    expect(compressedAt).toBeGreaterThan(-1)
+    expect(noticeAt).toBeGreaterThan(compressedAt)
+    expect(renderAt).toBeGreaterThan(noticeAt)
+  })
+})

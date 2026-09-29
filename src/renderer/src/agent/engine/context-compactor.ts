@@ -13,6 +13,14 @@ const LIGHT_COMPACT_MIN_REMAINING = 30_000
 const SUMMARY_TEXT_CAP = 2000
 const SUMMARY_INPUT_CAP = 40000
 const SUMMARY_RESULT_CAP = 400
+// The dropped-read reminder (PLAN-context-zcode-benchmarks P0): at most this
+// many archived reads ride one reminder line-list — a pointer message costs
+// ~1.5K chars, where re-reading the files from disk costs a full tool round
+// each and ZCode's inline re-injection (5 files / 50K tokens) spends window.
+const DROPPED_READ_REMINDER_CAP = 10
+// nano's placeholder prefixes — a result already carrying one IS its own
+// retrieval pointer, so reminding about it would be pure duplication.
+const TOOL_RESULT_PLACEHOLDER_PREFIXES = ['[tool_result_id:', '[Tool Result:']
 // Frontier-advance accrual line for the history-summary cache: a frontier that
 // moved forward re-summarizes only once the pending slice behind the cached
 // frontier is worth an LLM call. A fit-based lightCompact advances the frontier
@@ -23,6 +31,17 @@ const SUMMARY_RESULT_CAP = 400
 // hole bounded by the line itself, closed by the next crossing (the post-turn
 // prewarm absorbs most of them at idle).
 const SUMMARY_EXTEND_MIN_CHARS = 12_000
+// The accumulated history-summary text is CAPPED, and past the cap it is
+// ROLLED (re-summarized) rather than concatenated forever: the summary message
+// is injected AFTER hardTruncate, so no pipeline layer ever compresses it and
+// an uncapped cache linearly eats the window over a marathon session
+// (review_20260929 低3). Sized to the same order as USER_REPLAY_BUDGET_TOKENS
+// (10K tokens ≈ 20K CJK chars), so the whole compensation region (summary +
+// replays) stays a few percent of a 200K window; a roll's input (cap + one
+// extension) stays well under SUMMARY_INPUT_CAP. A roll that still comes back
+// over the cap is accepted — looping would burn calls on a model that will
+// not compress.
+const HISTORY_SUMMARY_MAX_CHARS = 20_000
 // Shared by hardTruncate and emergencyTruncate's keep-window walk.
 const MIN_KEEP = 10
 const MIN_USER_TURNS = 2
@@ -41,6 +60,74 @@ const USER_REPLAY_BUDGET_TOKENS = 10_000
 // history summary at turn end, so the expensive LLM summary runs while the
 // engine is idle instead of blocking the next turn's first request.
 export const POST_TURN_COMPACT_USED_RATIO = 0.75
+
+// ── Refill breaker (PLAN-context-zcode-benchmarks P1) ───────────────────
+// The fit-based layers (light/hard) drop on the pass that crosses the line;
+// if the copy re-crosses within fewer than this many tool rounds, something
+// is refilling it faster than the turn consumes it (a large file or tool
+// output being re-read whole every round). REFILL_BREAKER_LIMIT consecutive
+// refills trip the breaker: summary absorption pauses until a request enters
+// with the rhythm normalized again. Deliberately NOT a hard error (ZCode's
+// ModelContextExceeded shape): nano/light/hard/emergency are zero-LLM and
+// keep every request fitted — the churn the breaker owns is the summary LLM
+// call and the byte-churn it injects, not overflow safety.
+export const REFILL_TOOL_TURN_THRESHOLD = 3
+export const REFILL_BREAKER_LIMIT = 3
+
+export interface CompactTracking {
+  /** Completed tool batches since the last compaction drop. */
+  toolRoundsSinceDrop: number
+  /** Consecutive drops that landed within REFILL_TOOL_TURN_THRESHOLD rounds
+   *  of the previous one. */
+  consecutiveRefills: number
+  /** Breaker state: the history-summary absorption (first build AND
+   *  extension) is paused while true; nano/light/hard/emergency keep running. */
+  summarySuspended: boolean
+}
+
+export function makeCompactTracking(): CompactTracking {
+  return { toolRoundsSinceDrop: 0, consecutiveRefills: 0, summarySuspended: false }
+}
+
+/** Pure transition of the refill breaker, run once per request build after
+ *  the compaction strategies are known. `droppedFit` = the fit-based layers
+ *  dropped this pass — nano never counts (1:1) and emergency never counts
+ *  (reactive overflow backstop, not the churning fit). `droppedAny` (an
+ *  emergency-only pass included) still restarts the round clock: any message
+ *  loss re-bases "within N rounds". Mutates `tracking` in place; returns
+ *  whether THIS call tripped the breaker so the caller emits exactly one
+ *  event per transition. */
+export function evaluateRefillBreaker(
+  tracking: CompactTracking,
+  roundsAtEntry: number,
+  droppedFit: boolean,
+  droppedAny: boolean = droppedFit
+): { transitionedToSuspended: boolean } {
+  let transitionedToSuspended = false
+  if (droppedFit) {
+    if (roundsAtEntry < REFILL_TOOL_TURN_THRESHOLD) {
+      tracking.consecutiveRefills++
+      if (tracking.consecutiveRefills >= REFILL_BREAKER_LIMIT && !tracking.summarySuspended) {
+        tracking.summarySuspended = true
+        transitionedToSuspended = true
+      }
+    } else {
+      // Enough tool rounds elapsed since the last drop — the rhythm has
+      // normalized, whether or not this pass dropped.
+      tracking.consecutiveRefills = 0
+      tracking.summarySuspended = false
+    }
+  }
+  if (droppedAny) {
+    // A drop restarts the round clock (ZCode's recordCompactSuccess shape):
+    // "within N rounds" is measured from the most recent compaction.
+    tracking.toolRoundsSinceDrop = 0
+  } else if (roundsAtEntry >= REFILL_TOOL_TURN_THRESHOLD) {
+    tracking.consecutiveRefills = 0
+    tracking.summarySuspended = false
+  }
+  return { transitionedToSuspended }
+}
 
 export function summarizeToolCall(name: string, input: Record<string, unknown>): string {
   const i = input || {}
@@ -70,8 +157,16 @@ export function summarizeToolCall(name: string, input: Record<string, unknown>):
   }
 }
 
-function buildDroppedRegionText(region: AgentMessage[]): string {
+/** The dropped region as summarizer input, oldest first, capped at
+ *  SUMMARY_INPUT_CAP chars. Also returns the ids ACTUALLY built into the
+ *  text: the coverage ledger may only absorb what the summary really saw —
+ *  stamping the capped-away tail as covered would permanently skip it
+ *  (the hot, nearest-the-tail content exactly, review_20260929 中3). A
+ *  message whose blocks hit the budget mid-way stays covered: its kept head
+ *  IS in the text, the same partial shape as the per-block caps. */
+function buildDroppedRegionText(region: AgentMessage[]): { text: string; coveredIds: string[] } {
   const parts: string[] = []
+  const coveredIds: string[] = []
   let budget = SUMMARY_INPUT_CAP
   for (const msg of region) {
     if (budget <= 0) break
@@ -95,9 +190,10 @@ function buildDroppedRegionText(region: AgentMessage[]): string {
     if (lines.length === 0) continue
     const text = `${roleLabel}: ${lines.join('\n')}`
     parts.push(text)
+    coveredIds.push(msg.id)
     budget -= text.length
   }
-  return parts.join('\n\n')
+  return { text: parts.join('\n\n'), coveredIds }
 }
 
 function makeHistorySummaryMessage(text: string): AgentMessage {
@@ -149,9 +245,96 @@ export function collectUserReplays(dropped: AgentMessage[], budgetTokens = USER_
 }
 
 
+/** The dropped region's successful `read` calls whose results are no longer
+ *  visible in the kept tail, as ONE synthetic reminder text (null = nothing
+ *  to remind). The summary prices tool results at SUMMARY_RESULT_CAP and the
+ *  replays carry only user words, so without this the model loses track of
+ *  which files it already read and re-probes them from disk (the
+ *  conv_20260927170026 re-probe). PulseMind's shape is pointer-only, NOT
+ *  ZCode's inline content replay: every production tool_result carries a
+ *  `tool_result_id` minted at creation (addToolResult) and the full text is
+ *  persisted to the tool_results table (persistUnsavedToolResults runs before
+ *  this pipeline), so `tool_result_search` resolves any id advertised here.
+ *  Newest first (the freshest reads are the ones the live work still needs);
+ *  deduped by file path with the newest read winning; results in the kept
+ *  tail — full or nano-placeholder form — are skipped, the placeholder being
+ *  its own pointer. */
+export function buildDroppedReadReminder(
+  dropped: AgentMessage[],
+  truncated: AgentMessage[],
+  cap = DROPPED_READ_REMINDER_CAP
+): string | null {
+  const visibleInTail = new Set<string>()
+  for (const msg of truncated) {
+    for (const block of msg.contentBlocks) {
+      if (block.type === 'tool_result') visibleInTail.add((block as ToolResultBlock).tool_use_id)
+    }
+  }
+  const resultsById = new Map<string, ToolResultBlock>()
+  for (const msg of dropped) {
+    if (msg.role !== 'user') continue
+    for (const block of msg.contentBlocks) {
+      if (block.type === 'tool_result') {
+        const tr = block as ToolResultBlock
+        resultsById.set(tr.tool_use_id, tr)
+      }
+    }
+  }
+  const picked = new Map<string, { path: string; resultId: string }>()
+  const seenPaths = new Set<string>()
+  let overflow = 0
+  for (let i = dropped.length - 1; i >= 0; i--) {
+    const msg = dropped[i]
+    if (msg.role !== 'assistant') continue
+    for (const block of msg.contentBlocks) {
+      if (block.type !== 'tool_use') continue
+      const tu = block as ToolUseBlock
+      if (tu.name !== 'read') continue
+      const tr = resultsById.get(tu.id)
+      if (!tr || tr.is_error) continue
+      if (TOOL_RESULT_PLACEHOLDER_PREFIXES.some((p) => tr.content.startsWith(p))) continue
+      if (!tr.tool_result_id) continue // no persisted key → the id would not resolve
+      if (visibleInTail.has(tu.id)) continue
+      const path = String(tu.input?.file_path || '').trim()
+      if (!path) continue
+      // Distinct reads only: a re-read of the same path is covered by the
+      // newest one's id and must not inflate the overflow note.
+      if (seenPaths.has(path)) continue
+      seenPaths.add(path)
+      if (picked.size >= cap) {
+        overflow++
+        continue
+      }
+      picked.set(path, { path, resultId: tr.tool_result_id })
+    }
+  }
+  if (picked.size === 0) return null
+  const lines = [...picked.values()].map((e) => `- ${e.path}（tool_result_id: ${e.resultId}）`)
+  if (overflow > 0) lines.push(`（另有 ${overflow} 个更早的已归档读取未列出）`)
+  return [
+    '【已归档读取提醒】以下文件此前读取成功，原文已随旧上下文归档。需要内容时用 tool_result_search 按 tool_result_id 取回，不要重新 read 整个文件：',
+    ...lines,
+  ].join('\n')
+}
+
+function makeDroppedReadReminderMessage(text: string): AgentMessage {
+  return {
+    id: `read_reminder_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    role: 'user',
+    contentBlocks: [{ type: 'text', text }],
+    createdAt: new Date().toISOString()
+  }
+}
+
+
 export interface ContextCompactorDeps {
   runHistorySummary(regionText: string, instruction?: string): Promise<string>
   getMessages(): AgentMessage[]
+  /** The refill breaker's state, read live per pass (the engine owns the
+   *  tracking object; the compactor only consumes the flag). While true the
+   *  summary absorption — first build AND extension — is skipped and the
+   *  cached text rides as-is; nano/light/hard/emergency are unaffected. */
+  isSummarySuspended?(): boolean
 }
 
 export class ContextCompactor {
@@ -169,6 +352,10 @@ export class ContextCompactor {
   /** User messages the last injectHistorySummary pass replayed verbatim —
    *  read by the engine to populate the compaction event's counter. */
   lastInjectReplayCount = 0
+  /** 1 when the last pass produced a dropped-read reminder message, 0
+   *  otherwise — the request path reads it to tag the compaction event's
+   *  strategies without re-derving the composition from array lengths. */
+  lastReminderCount = 0
   /** Guards overlapping prewarm runs (post-turn / manual): two concurrent LLM
    *  summaries for the same frontier are pure waste. */
   private prewarmInFlight = false
@@ -360,6 +547,20 @@ export class ContextCompactor {
     return this.injectHistorySummaryInto(original, lightCompacted, truncated, instruction)
   }
 
+  /** Land a summary text, rolling it (one re-summarization of the whole text)
+   *  when it exceeds HISTORY_SUMMARY_MAX_CHARS — the summary rides the API
+   *  copy after hardTruncate, so nothing else will ever compress it
+   *  (review_20260929 低3). Returns null when the roll fails: the caller keeps
+   *  its previous cache state and must NOT absorb the new coverage into the
+   *  ledger (the 中3 rule — the ledger may only claim what the landed text
+   *  really carries). */
+  private async cappedSummaryText(text: string, instruction?: string): Promise<string | null> {
+    if (text.length <= HISTORY_SUMMARY_MAX_CHARS) return text
+    console.log(`[AgentEngine] history summary over cap (${text.length} > ${HISTORY_SUMMARY_MAX_CHARS} chars) — rolling it`)
+    const rolled = await this.deps.runHistorySummary(text, instruction)
+    return rolled || null
+  }
+
   private async injectHistorySummaryInto(
     original: AgentMessage[],
     lightCompacted: AgentMessage[],
@@ -376,6 +577,7 @@ export class ContextCompactor {
     const keptIds = new Set(truncated.map((m) => m.id))
     const dropped = original.filter((m) => !keptIds.has(m.id))
     this.lastInjectReplayCount = 0
+    this.lastReminderCount = 0
     if (dropped.length === 0) return truncated
 
     // The coverage frontier is the NEWEST dropped message: the cached text
@@ -392,29 +594,53 @@ export class ContextCompactor {
     // the summary paraphrases, the intent stays quotable.
     const replays = collectUserReplays(dropped)
     this.lastInjectReplayCount = replays.length
-    const withReplays = (summaryText: string | null): AgentMessage[] => [
+    // The dropped region's successful reads ride back as pointer lines — the
+    // discovery half of the compensation (the retrieval half is the persisted
+    // tool_results table + tool_result_search).
+    const reminderText = buildDroppedReadReminder(dropped, truncated)
+    this.lastReminderCount = reminderText !== null ? 1 : 0
+    const withCompensation = (summaryText: string | null): AgentMessage[] => [
       ...replays,
       ...(summaryText !== null ? [makeHistorySummaryMessage(summaryText)] : []),
+      ...(reminderText !== null ? [makeDroppedReadReminderMessage(reminderText)] : []),
       ...truncated,
     ]
     const cache = this.historySummary
 
+    // Refill breaker active: reuse whatever summary state exists WITHOUT
+    // absorbing the uncovered slice (the ledger must not claim what no LLM
+    // saw — same discipline as a failed extension) and without firing a call.
+    // No cache yet → plain truncation until the rhythm normalizes; the first
+    // post-lift pass builds the full summary in one call.
+    if (this.deps.isSummarySuspended?.()) {
+      return withCompensation(cache ? cache.text : null)
+    }
+
     // No cache → summarize the full dropped region.
     if (!cache) {
-      const regionText = buildDroppedRegionText(dropped)
-      if (!regionText.trim()) return withReplays(null)
-      const summary = await this.deps.runHistorySummary(regionText, instruction)
+      const built = buildDroppedRegionText(dropped)
+      if (!built.text.trim()) return withCompensation(null)
+      const summary = await this.deps.runHistorySummary(built.text, instruction)
       if (!summary) {
         console.warn('[AgentEngine] history summary empty, using plain truncation')
-        return withReplays(null)
+        return withCompensation(null)
+      }
+      // An oversized FIRST summary is rolled like any extension — one call's
+      // output is bounded in practice, but the cap must be real, not nominal.
+      const text = await this.cappedSummaryText(summary, instruction)
+      if (!text) {
+        console.warn('[AgentEngine] history summary exceeded the cap and the roll failed — using plain truncation')
+        return withCompensation(null)
       }
       this.historySummary = {
         firstKeptId: frontierId,
-        text: summary,
-        covered: new Set(dropped.map((m) => m.id)),
+        text,
+        // Only what the summarizer really saw is covered — the 40K-capped
+        // tail stays uncovered so the next pass absorbs it (review_20260929 中3).
+        covered: new Set(built.coveredIds),
       }
-      console.log(`[AgentEngine] injected history summary (${summary.length} chars) for ${dropped.length} dropped messages`)
-      return withReplays(summary)
+      console.log(`[AgentEngine] injected history summary (${text.length} chars) for ${dropped.length} dropped messages`)
+      return withCompensation(text)
     }
 
     // Unified cache rule: uncovered = currently-dropped − already-covered.
@@ -429,7 +655,7 @@ export class ContextCompactor {
         return new Set(dropped.slice(0, j + 1).map((m) => m.id))
       })()
     const uncovered = dropped.filter((m) => !covered.has(m.id))
-    if (uncovered.length === 0) return withReplays(cache.text)
+    if (uncovered.length === 0) return withCompensation(cache.text)
 
     // Below the accrual line the cached text is reused WITHOUT absorbing, so
     // the uncovered slice keeps accruing and one LLM call covers it all: a
@@ -437,18 +663,28 @@ export class ContextCompactor {
     // a long tool loop, and a summary call per request is exactly the cost this
     // cache exists to avoid. The uncovered hole is bounded by the line (the
     // replays carry the recent user intent across it).
-    const extraText = buildDroppedRegionText(uncovered)
-    if (extraText.length < SUMMARY_EXTEND_MIN_CHARS) return withReplays(cache.text)
-    const extra = await this.deps.runHistorySummary(extraText, instruction)
-    if (!extra) return withReplays(cache.text)
-    const text = cache.text + '\n\n' + extra
+    const built = buildDroppedRegionText(uncovered)
+    if (built.text.length < SUMMARY_EXTEND_MIN_CHARS) return withCompensation(cache.text)
+    const extra = await this.deps.runHistorySummary(built.text, instruction)
+    if (!extra) return withCompensation(cache.text)
+    const text = await this.cappedSummaryText(cache.text + '\n\n' + extra, instruction)
+    if (!text) {
+      // Roll failed: the OLD text and OLD coverage stay landed — the new slice
+      // is not stamped covered (the ledger may only claim what the text really
+      // carries), so it retries on a later pass, exactly like a failed extension.
+      return withCompensation(cache.text)
+    }
     this.historySummary = {
       firstKeptId: frontierId,
       text,
-      covered: new Set([...covered, ...uncovered.map((m) => m.id)]),
+      // Same rule as the first pass: only the built prefix enters the ledger,
+      // so a slice capped away by SUMMARY_INPUT_CAP is retried next pass
+      // instead of being stamped covered and lost forever. On the roll path
+      // the roll saw the whole merged text, so absorbing everything is honest.
+      covered: new Set([...covered, ...built.coveredIds]),
     }
-    console.log(`[AgentEngine] extended history summary (+${extra.length} chars) for ${uncovered.length} newly-dropped messages`)
-    return withReplays(text)
+    console.log(`[AgentEngine] extended history summary (${text.length} chars) for ${uncovered.length} newly-dropped messages`)
+    return withCompensation(text)
   }
 
   estimateTokens(messages?: AgentMessage[]): number {
@@ -576,9 +812,16 @@ export class ContextCompactor {
     // forever (the copy is re-derived per request), a long tool session ran
     // with the model seeing ~11-18% of its window (conv_20260927170026, 618 of
     // 806 messages dropped per request).
-    const targetTokens = force
-      ? contextLength * 0.6
-      : contextLength - Math.max(contextLength * 0.3, LIGHT_COMPACT_MIN_REMAINING)
+    //
+    // Floored at half the window: on a small model the trigger's 30K headroom
+    // subtracts PAST zero (26K window → −4K), fits() went always-false and the
+    // walk degenerated back into the wipe-to-hot-zone this target exists to
+    // prevent (review_20260929 中2) — and the log printed a negative target.
+    // Half the window is the smallest number that still means "fit".
+    const targetTokens = Math.max(
+      force ? contextLength * 0.6 : contextLength - Math.max(contextLength * 0.3, LIGHT_COMPACT_MIN_REMAINING),
+      contextLength * 0.5,
+    )
 
     const contributions = messages.map((m) => this.contributionOf(m))
     const totalH = contributions.reduce((a, b) => a + b, 0)

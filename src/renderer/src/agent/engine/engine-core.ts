@@ -15,7 +15,7 @@ import type { AgentEngineOptions } from '../AgentEngine'
 import type { ToolExecutor } from '../tool-executors'
 import type { PlanManager } from '../plan-manager'
 import type { PlanScheduler } from './plan-scheduler'
-import type { ContextCompactor } from './context-compactor'
+import type { ContextCompactor, CompactTracking } from './context-compactor'
 import type { IncrementalJsonTracker } from '../json-stream'
 import type { TurnClock } from './turn-clock'
 import type { PulseHost } from '../host/types'
@@ -73,6 +73,11 @@ export interface EngineCore {
   /** One-shot guard for the automatic truncated retry after an overflow —
    *  reset by a successful request and by prepareTurn. */
   contextOverflowRetries: number
+  /** Refill-breaker state (PLAN-context-zcode-benchmarks P1): the pace
+   *  counter the refill evaluation reads and the suspended flag the
+   *  compactor consumes through its deps. See context-compactor.ts
+   *  `evaluateRefillBreaker`. */
+  compactTracking: CompactTracking
   pendingToolIds: Set<string>
   executingProcessId: string | null
   terminalCleanups: (() => void)[]
@@ -98,6 +103,9 @@ export interface EngineCore {
   notifyCoalesced: () => void
   notifyStreamingCoalesced: () => void
   addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void
+  /** One completed tool batch (a model round whose tool results landed).
+   *  Drives the refill breaker's rounds-since-drop counter. */
+  recordToolBatchComplete: () => void
   getHost(): PulseHost
   reportSpawnProgress: (msg: string, force?: boolean) => void
   resolveCompletionIfSpawned: (status: SubAgentResult['status']) => void

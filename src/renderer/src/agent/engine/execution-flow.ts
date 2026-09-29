@@ -464,6 +464,9 @@ export class ExecutionFlow {
       if (procReadTools.length > 0) for (const t of procReadTools) await this.engine.toolExecutor.execOtherTool(t)
       if (autoOther.length > 0) { for (const t of autoOther) await this.engine.toolExecutor.execOtherTool(t) }
       if (spawnBatch) await spawnBatch
+      // One completed tool batch (results landed, loop about to re-request) —
+      // the refill breaker's rounds-since-drop paces off this (P1).
+      this.engine.recordToolBatchComplete()
     } catch (err) {
       this.engine.isAutoExecuting = false
       const msg = err instanceof Error ? err.message : 'Tool execution failed'
@@ -482,6 +485,8 @@ export class ExecutionFlow {
     if (hasTruncated) {
       addTruncatedResults(this.engine.messages, toolUses)
       this.engine.notify()
+      // Synthetic error results landed — one batch by the same pacing contract.
+      this.engine.recordToolBatchComplete()
       this.engine.continueLoop()
       return
     }

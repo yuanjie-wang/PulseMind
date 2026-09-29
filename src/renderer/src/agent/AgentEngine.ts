@@ -34,7 +34,7 @@ import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
-import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO } from './engine/context-compactor'
+import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, type CompactTracking } from './engine/context-compactor'
 import { MAX_TOOL_RESULT_TOKENS } from './engine/engine-constants'
 import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
 import type { CompactionEvent } from '../../../shared/agent-protocol/payloads'
@@ -396,7 +396,23 @@ export class AgentEngine implements EngineCore {
   compactor = new ContextCompactor({
     runHistorySummary: (regionText, instruction) => this.runHistorySummary(regionText, instruction),
     getMessages: () => this.messages,
+    // Live view of the refill breaker (PLAN-context-zcode-benchmarks P1): the
+    // compactor consumes the flag per pass; the state itself lives here, next
+    // to the other request-loop knobs.
+    isSummarySuspended: () => this.compactTracking.summarySuspended,
   })
+
+  /** Refill-breaker state (PLAN-context-zcode-benchmarks P1): tool rounds
+   *  since the last compaction drop, consecutive fast refills, and whether
+   *  the breaker has suspended summary absorption. See
+   *  engine/context-compactor.ts `evaluateRefillBreaker`. */
+  compactTracking: CompactTracking = makeCompactTracking()
+
+  /** @internal — execution-flow counts one completed tool batch per model
+   *  round whose tool results landed; the refill breaker reads the pace. */
+  recordToolBatchComplete(): void {
+    this.compactTracking.toolRoundsSinceDrop++
+  }
 
   /** Current history-summary cache (persisted with the conversation). */
   getHistorySummary(): { firstKeptId: string; text: string } | null {
@@ -1001,7 +1017,44 @@ export class AgentEngine implements EngineCore {
     if (nanoCompacted.some((m, i) => m !== pipelineMessages[i])) compactStrategies.push('nano')
     if (lightCompacted.length !== nanoCompacted.length) compactStrategies.push('light')
     if (truncatedMessages.length !== lightCompacted.length) compactStrategies.push('hard')
-    if (finalMessages.length > truncatedMessages.length) compactStrategies.push('summary')
+    // The reminder's own synthetic message would read as a summary landed —
+    // exclude it so 'summary' keeps meaning "a summary message is in the copy".
+    const reminderInjected = this.compactor.lastReminderCount > 0
+    if (finalMessages.length > truncatedMessages.length + (reminderInjected ? 1 : 0)) compactStrategies.push('summary')
+    if (reminderInjected) compactStrategies.push('read_reminder')
+
+    // ── Refill breaker (PLAN-context-zcode-benchmarks P1) ──
+    // Runs on EVERY request build (the un-trip path needs it even when nothing
+    // was dropped): a fit-based drop landing within REFILL_TOOL_TURN_THRESHOLD
+    // tool rounds of the previous one is a refill; REFILL_BREAKER_LIMIT in a
+    // row suspends summary absorption until the rhythm normalizes. nano is 1:1
+    // and emergency is the reactive backstop — neither is a refill signal.
+    const roundsAtEntry = this.compactTracking.toolRoundsSinceDrop
+    const refill = evaluateRefillBreaker(
+      this.compactTracking,
+      roundsAtEntry,
+      compactStrategies.includes('light') || compactStrategies.includes('hard'),
+      // An emergency-only pass isn't a refill signal, but its drops still
+      // re-base the round clock (see evaluateRefillBreaker).
+      compactStrategies.includes('emergency') ||
+        compactStrategies.includes('light') || compactStrategies.includes('hard'),
+    )
+    if (refill.transitionedToSuspended) {
+      console.warn(
+        `[AgentEngine] refill breaker tripped (${this.compactTracking.consecutiveRefills} consecutive refills): the copy refilled within ` +
+        `<${REFILL_TOOL_TURN_THRESHOLD} tool rounds of each compaction — a file or tool output is likely too large. ` +
+        `Summary absorption suspended until the rhythm normalizes; nano/light/hard/emergency keep running.`
+      )
+      this.callbacks.onCompaction?.({
+        ts: Date.now(),
+        source: 'request',
+        strategies: ['refill_breaker'],
+        droppedMessages: 0,
+        replayedUserMessages: 0,
+        tokensBefore: contextTokensOf(apiMessages),
+        tokensAfter: contextTokensOf(finalMessages),
+      })
+    }
     if (compactStrategies.length > 0) {
       const summaryAfter = this.compactor.getHistorySummary()
       const summaryChanged =

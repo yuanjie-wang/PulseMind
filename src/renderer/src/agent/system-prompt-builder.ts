@@ -152,6 +152,7 @@ You have a local knowledge base (compiled wiki) of project documents and past co
   parts.push(SESSION_STATE_NOTICE)
   parts.push(TOOL_CALL_FORMAT)
   parts.push(COMPRESSED_TOOL_RESULTS)
+  parts.push(CONTEXT_MANAGEMENT_NOTICE)
   parts.push(RENDER_REFERENCE)
   parts.push(HTML_VISUAL_AIDS)
 
@@ -566,6 +567,11 @@ Very old tool execution results may be compressed to save context space. You may
 
 - \`[tool_result_id: <uuid>]\` — the original tool result content was removed to fit the context window. The result DID happen, but its full text is gone. Use the \`tool_result_search\` tool with the uuid to retrieve the original content if you need it.
 - \`[tool_result_error] ...\` — the tool call FAILED (timeout, truncated parameters, nonzero exit code, etc.). The tool did NOT complete its task. Do not claim the task was done; treat the remaining text as the error message and respond accordingly.`
+
+const CONTEXT_MANAGEMENT_NOTICE = `\
+## Context Management
+
+When the conversation grows long, older context is compacted automatically: a summary, verbatim key user messages, and an archived-reads reminder are injected into subsequent requests, and archived tool results stay retrievable in full via \`tool_result_search\` by their \`tool_result_id\`. Compaction needs nothing from you — continue the current task as if the break never happened; do not wrap up early, re-explore files the reminder already names, or change how you work because the context is long.`
 
 const RENDER_REFERENCE = `\
 ## Render Reference

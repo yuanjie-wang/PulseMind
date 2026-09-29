@@ -207,3 +207,163 @@ describe('history-summary cache: frontier accrual bounds the LLM call rate', () 
     void fourth
   })
 })
+
+// ── E：摘要输入撞 40K 上限时只盖戳真正构建进文本的前缀（review_20260929 中3）──
+// 旧形态把整个 dropped/uncovered 的 id 全数标进 covered，而摘文只装得下最旧
+// 40K 字符——被截掉的恰是贴近保留尾部的最热内容，且永远不再补偿。
+
+describe('history-summary coverage: the 40K input cap does not stamp what it never built', () => {
+  function pair(i: number): AgentMessage[] {
+    return [
+      { id: `cu${i}`, role: 'user', createdAt: AT, contentBlocks: [text(`用户指令 MARKER-${i}。` + '言'.repeat(2400))] },
+      { id: `ca${i}`, role: 'assistant', createdAt: AT, contentBlocks: [text(`回复 MARKER-${i}。` + '述'.repeat(2400))] },
+    ]
+  }
+  const build = (n: number): AgentMessage[] => Array.from({ length: n }, (_, i) => pair(i)).flat()
+
+  it('a capped region covers only the built prefix; the capped-away tail is absorbed by the next pass', async () => {
+    const msgs = build(20) // 40 messages ≈ 80K chars of region text — two passes at the 40K cap
+    const { compactor, runHistorySummary } = makeCompactor(msgs)
+
+    // 1st pass: only the oldest ~40K chars are built; the ledger must not
+    // claim coverage of the capped-away tail.
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    expect(runHistorySummary).toHaveBeenCalledTimes(1)
+    const first = runHistorySummary.mock.calls[0][0] as string
+    expect(first).toContain('MARKER-0')
+    expect(first).not.toContain('MARKER-19') // the tail was never built…
+    expect(first.length).toBeLessThanOrEqual(41_000) // …because the cap cut here
+    // The frontier stays the NEWEST dropped message — coverage truth lives
+    // in the covered set, the frontier stays the key.
+    expect(compactor.getHistorySummary()!.firstKeptId).toBe(msgs[39].id)
+
+    // 2nd pass: the capped-away tail is still uncovered → one call absorbs it.
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    expect(runHistorySummary).toHaveBeenCalledTimes(2)
+    const second = runHistorySummary.mock.calls[1][0] as string
+    expect(second).toContain('MARKER-19') // THE defect: the old shape stamped it covered and never summarized it
+
+    // 3rd pass: fully covered → cache reused, no further call.
+    const text = await compactor.injectHistorySummary(msgs, msgs, [])
+    expect(runHistorySummary).toHaveBeenCalledTimes(2)
+    expect(compactor.getHistorySummary()!.text).toBe('摘要内容\n\n摘要内容')
+    expect(text.some((m) => (m.contentBlocks[0] as { text?: string }).text?.includes('【历史对话摘要】'))).toBe(true)
+  })
+})
+
+// ── F：小窗口的 fit 目标有下限，不再把「拟合」静默退化成清仓（review_20260929 中2）──
+// 旧形态 target = contextLength − max(0.3×窗口, 30K)：26K 窗口 → −4000，fits()
+// 恒假 → 丢弃游标一路删到三条保护为止；30K–43K 区间目标不足窗口一半。
+
+describe('lightCompact: the fit target never goes negative or under half the window', () => {
+  /** ASCII-only cycles so tokens ≈ chars/4: an 8,000-char tool_result prices
+   *  ~2,000 tokens and the 8K-char hot zone prices ~7K tokens — comfortably
+   *  below the target, so the FIT (not the hot-zone protection) is the
+   *  binding stop and the assertion measures exactly the target change. */
+  function asciiCycle(i: number): AgentMessage[] {
+    return [
+      { id: `ba${++seq}`, role: 'assistant', createdAt: AT, contentBlocks: [{ type: 'tool_use', id: `btu${i}`, name: 'read', input: { file_path: `f-${i}.txt` } } as ContentBlock] },
+      { id: `bu${++seq}`, role: 'user', createdAt: AT, contentBlocks: [{ type: 'tool_result', tool_use_id: `btu${i}`, content: `result-${i}-` + 'x'.repeat(8000) } as ContentBlock] },
+    ]
+  }
+  const asciiCycles = (n: number): AgentMessage[] => Array.from({ length: n }, (_, i) => asciiCycle(i)).flat()
+
+  it('a 26K window keeps ~half the transcript instead of wiping to the protections', () => {
+    const msgs = asciiCycles(20) // ~40K tokens on a 26K window — the review's measured shape
+    const { compactor } = makeCompactor(msgs)
+    const compacted = compactor.lightCompact(msgs, 26_000, 0)
+    const keptH = estimateMessagesTokens(compacted)
+    // Old shape: target = 26000 − 30000 = −4000 → fits() never fired → the
+    // walk ran to the protections (~4 cycles ≈ 8K tokens = 31% of window).
+    // The 0.5×window floor makes the target 13K → ~6 cycles ≈ 12K = 46%.
+    expect(keptH).toBeGreaterThan(10_000)
+    expect(keptH).toBeLessThanOrEqual(15_000)
+    // The walk still drops the oldest cycles — the mechanism, just proportional.
+    expect(compacted.length).toBeLessThan(msgs.length)
+  })
+
+  it('a 50K window keeps at least half the window (the 30K floor no longer under-shoots)', () => {
+    const msgs = asciiCycles(30) // ~60K tokens
+    const { compactor } = makeCompactor(msgs)
+    const compacted = compactor.lightCompact(msgs, 50_000, 0)
+    const keptH = estimateMessagesTokens(compacted)
+    // Old target 50K − 30K = 20K (40% of window); floored to 25K (50%) → ~12 cycles.
+    expect(keptH).toBeGreaterThan(21_000)
+    expect(keptH).toBeLessThanOrEqual(28_000)
+  })
+})
+
+// ── G：累积摘要封顶，超限滚动（review_20260929 低3）──
+// 摘要消息注入在 hardTruncate 之后，任何压缩层都压不到它——无上限的累积线性
+// 吃窗口。超限后对整篇（旧文 + 新扩展）重摘要一次；滚动失败保持旧文与旧账，
+// 新片不盖戳（中3 纪律），留待后续 pass 重试。
+
+describe('history-summary cache: the accumulated text is capped and rolled (低3)', () => {
+  function pair(i: number): AgentMessage[] {
+    return [
+      { id: `ru${i}`, role: 'user', createdAt: AT, contentBlocks: [text(`用户指令 MARKER-${i}。` + '言'.repeat(2400))] },
+      { id: `ra${i}`, role: 'assistant', createdAt: AT, contentBlocks: [text(`回复 MARKER-${i}。` + '述'.repeat(2400))] },
+    ]
+  }
+  const build = (n: number): AgentMessage[] => Array.from({ length: n }, (_, i) => pair(i)).flat()
+
+  it('a merged text past the cap is re-summarized (rolled), not concatenated forever', async () => {
+    const msgs = build(20)
+    // Every summary call returns 12.5K chars: the first pass lands under the
+    // cap; the extension's merge (25K) crosses it → exactly one roll.
+    const runHistorySummary = vi.fn(async () => '滚'.repeat(12_500))
+    const compactor = new ContextCompactor({ runHistorySummary, getMessages: () => msgs })
+
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    expect(runHistorySummary).toHaveBeenCalledTimes(1)
+    expect(compactor.getHistorySummary()!.text).toBe('滚'.repeat(12_500))
+
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    // Call 2 = the extension (the newly-uncovered slice), call 3 = the roll.
+    expect(runHistorySummary).toHaveBeenCalledTimes(3)
+    expect(runHistorySummary.mock.calls[2][0]).toBe('滚'.repeat(12_500) + '\n\n' + '滚'.repeat(12_500))
+    // The cache holds the ROLLED text, never the merge.
+    expect(compactor.getHistorySummary()!.text).toBe('滚'.repeat(12_500))
+    // The roll saw the whole merge → the ledger absorbed everything → a third
+    // pass is a pure cache hit.
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    expect(runHistorySummary).toHaveBeenCalledTimes(3)
+  })
+
+  it('a failed roll keeps the old text and the old coverage — the new slice is not stamped covered', async () => {
+    const msgs = build(20)
+    const runHistorySummary = vi.fn()
+      .mockResolvedValueOnce('滚'.repeat(12_500)) // pass 1: the first summary
+      .mockResolvedValueOnce('滚'.repeat(12_500)) // pass 2: the extension…
+      .mockResolvedValueOnce('')                  // …whose roll fails
+    const compactor = new ContextCompactor({ runHistorySummary, getMessages: () => msgs })
+
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    // The merge never landed: the cache keeps the pass-1 state untouched.
+    expect(compactor.getHistorySummary()!.text).toBe('滚'.repeat(12_500))
+    expect(compactor.getHistorySummary()!.firstKeptId).toBe(msgs[39].id)
+
+    // The tail's ids were never covered — a third pass retries the extension
+    // (call 4) instead of declaring everything absorbed.
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    expect(runHistorySummary).toHaveBeenCalledTimes(4)
+    expect(runHistorySummary.mock.calls[3][0]).toContain('MARKER-10')
+  })
+
+  it('an oversized FIRST summary is rolled before landing too', async () => {
+    const msgs = build(8) // 16 messages — the whole region fits inside one 40K build
+    const runHistorySummary = vi.fn()
+      .mockResolvedValueOnce('滚'.repeat(25_000)) // the first pass returns over the cap
+      .mockResolvedValueOnce('滚'.repeat(12_500)) // the roll
+    const compactor = new ContextCompactor({ runHistorySummary, getMessages: () => msgs })
+
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    expect(runHistorySummary).toHaveBeenCalledTimes(2)
+    expect(runHistorySummary.mock.calls[1][0]).toBe('滚'.repeat(25_000))
+    expect(compactor.getHistorySummary()!.text).toBe('滚'.repeat(12_500))
+    // Coverage complete → the next pass is a pure cache hit.
+    await compactor.injectHistorySummary(msgs, msgs, [])
+    expect(runHistorySummary).toHaveBeenCalledTimes(2)
+  })
+})
