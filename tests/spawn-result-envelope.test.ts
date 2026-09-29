@@ -17,7 +17,7 @@ const subMessages = (text: string) => [
   { id: 'a1', role: 'assistant', contentBlocks: [{ type: 'text', text }], createdAt: '2026-09-16T12:00:00.000Z' },
 ]
 
-function makeContext(result: { status: string; messages: unknown[] }): {
+function makeContext(result: { status: string; messages: unknown[]; error?: string }): {
   ex: ToolExecContext
   /** Getter, not a destructured copy: the executor assigns the closure
    *  variable, and a plain destructure would snapshot `null` forever. */
@@ -122,5 +122,65 @@ describe('spawn result envelope: the last line tells the model what to do next',
     expect(content).toContain('advance_plan action="complete" node=1')
     expect(content).not.toContain('the scheduler settles it automatically')
     expect(content.indexOf('advance_plan action="complete"')).toBeLessThan(content.indexOf('**This result is the deliverable.**'))
+  })
+})
+
+/**
+ * 失败要带原因（2026-09-29）：SubAgentResult 此前没有 error 字段，运行期失败
+ * （循环上限 / 请求失败 / 流失败）的错误文本死在子引擎内存里，父级信封只有
+ * `Status: error` 一个词；且工具卡渲染的 t.output 在失败分支也被覆写成
+ * 「子代理已完成」——用户只能靠红叉知道出错了，看不到为什么。钉住两件事：
+ * 信封带 **Reason:** 行、卡片输出承认失败并写明原因。
+ */
+describe('spawn failure carries its reason (envelope + tool card output)', () => {
+  it('error result: the envelope names the Reason and the card stops claiming 已完成', async () => {
+    const { ex, getCaptured } = makeContext({
+      status: 'error',
+      error: 'Sub-agent reached its loop limit (40 rounds) without completing the task.',
+      messages: subMessages('做到一半的输出'),
+    })
+    const t = tool({ task: '会失败的任务' })
+    await execSpawnAgent(ex, t)
+
+    // The envelope (model-facing) carries the reason before the partial output.
+    const content = getCaptured()!.content
+    expect(content).toContain('### Sub-agent Status: error')
+    expect(content).toContain(`**Reason:** Sub-agent reached its loop limit (40 rounds) without completing the task.`)
+    expect(content).toContain('**Partial Output:**')
+    expect(content).toContain('**Report this outcome to the user.**')
+
+    // The card (user-facing, renders t.output) names the failure, not 已完成.
+    expect(t.output).toContain('子代理失败：Sub-agent reached its loop limit (40 rounds) without completing the task.')
+    expect(t.output).not.toContain('子代理已完成')
+    expect(t.exitCode).toBe(1)
+  })
+
+  it('error without an error field degrades to a bare 子代理失败 (no crash, no Reason line)', async () => {
+    const { ex, getCaptured } = makeContext({
+      status: 'error',
+      messages: subMessages('部分输出'),
+    })
+    const t = tool({ task: '会失败的任务' })
+    await execSpawnAgent(ex, t)
+
+    expect(getCaptured()!.content).not.toContain('**Reason:**')
+    expect(t.output).toContain('子代理失败')
+    expect(t.output).not.toContain('子代理已完成')
+  })
+
+  it('aborted result: the card says 已被停止, no Reason line, not an error result', async () => {
+    const { ex, getCaptured } = makeContext({
+      status: 'aborted',
+      messages: subMessages('停止前的输出'),
+    })
+    const t = tool({ task: '被停止的任务' })
+    await execSpawnAgent(ex, t)
+
+    expect(getCaptured()!.content).toContain('### Sub-agent Status: aborted')
+    expect(getCaptured()!.content).not.toContain('**Reason:**')
+    expect(getCaptured()!.isError).toBe(false)
+    expect(t.output).toContain('子代理已被停止')
+    expect(t.output).not.toContain('子代理已完成')
+    expect(t.exitCode).toBe(1)
   })
 })

@@ -7,6 +7,7 @@
 import { AgentEngine, type AgentEngineOptions } from '../AgentEngine'
 import type { SubAgentResult, SpawnSubAgentConfig, SubAgentHandle } from '../agent-utils'
 import { agentMessagesToConversation } from '../../utils/message-utils'
+import { getLoopIterationLimit } from '../agent-utils'
 import { getHost } from '../host'
 import type { EngineCore } from './engine-core'
 
@@ -126,7 +127,10 @@ export class SpawnManager {
   /** Simplified loop entry for spawned agents — skips session/hooks/userMsg setup. */
   startSpawnLoop(config: SpawnSubAgentConfig): void {
     this.engine.loopCount = 0
-    this.engine.maxLoopCount = config.maxLoopIterations ?? 10
+    // Same base the engine constructor already read (getLoopIterationLimit()):
+    // an omitted config used to silently cap a spawned agent at 10 rounds,
+    // clobbering that value here.
+    this.engine.maxLoopCount = config.maxLoopIterations ?? getLoopIterationLimit()
     this.engine.isCancelled = false
     this.engine.pendingToolIds = new Set()
     this.engine.opts.adapter.reconcileMessages?.(this.engine.messages)
@@ -168,7 +172,14 @@ export class SpawnManager {
       )
     }
 
-    this.engine.resolveCompletion({ messages: this.engine.messages, status, outputTokens, subConversationId: convId ?? undefined })
+    // The failure reason rides the result: every 'error' settle site writes
+    // agentStatus immediately before calling this, so reading it back is the
+    // message the turn actually closed with. 'aborted' has nothing to carry —
+    // the user stopped it.
+    const error = status === 'error' && this.engine.agentStatus.status === 'error'
+      ? this.engine.agentStatus.error
+      : undefined
+    this.engine.resolveCompletion({ messages: this.engine.messages, status, outputTokens, subConversationId: convId ?? undefined, error })
     this.engine.resolveCompletion = undefined
     // completionPromise deliberately stays: a settled promise is inert, and an
     // expert that settles while spawnSubAgent is still on its synchronous path

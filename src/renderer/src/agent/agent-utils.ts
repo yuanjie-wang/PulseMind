@@ -204,6 +204,12 @@ export interface SubAgentResult {
   messages: import('../types/agent').AgentMessage[]
   summary?: string
   status: 'completed' | 'error' | 'aborted'
+  /** Why the turn closed with 'error' (loop limit, request failure, thinking-only
+   *  repeat, stream failure) — the sub-engine's agentStatus.error at settlement
+   *  time. Without it the parent's envelope and tool card can only say
+   *  `Status: error`; the reason string used to die with the sub-engine's
+   *  in-memory state. Undefined for completed/aborted. */
+  error?: string
   outputTokens?: number
   subConversationId?: string
 }

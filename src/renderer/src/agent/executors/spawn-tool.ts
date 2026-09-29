@@ -24,6 +24,7 @@ import type { ToolExecContext } from './context'
 import type { ExpertProfile } from '../../../../shared/types/expert'
 import type { ToolUseBlock, TextBlock } from '../../types/agent'
 import { MAX_TOOL_RESULT_TOKENS, SPAWN_ROUND_ENVELOPE_BUDGET, MIN_SPAWN_ENVELOPE_BUDGET } from '../engine/engine-constants'
+import { getLoopIterationLimit } from '../agent-utils'
 
 /** spawn_agent: assistant text fed back to the parent. */
 const SUBAGENT_TEXT_MAX = 10_000
@@ -164,7 +165,22 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // D1): sub-agents do the actual coding and must answer to the same
     // read-before-write / verify-before-claim rules as the main agent. A spawn
     // prompt is per-session with no shared cache prefix, so the append is free.
-    const systemPrompt = `${expertBlock}${skillsCtx}\n\n${ENGINEERING_WORKFLOW}`
+    // The environment block rides here for the same reason: the spawnSystemPrompt
+    // branch returns stateBlock null (system-prompt-builder), so the `## Workspace`
+    // and `## System Info` sections never reach a sub-agent — runtime inheritance
+    // is fine (opts.workspaceDir rides the opts spread, relative paths resolve,
+    // the ALS sandbox lands on the parent's dir), but the MODEL never sees the
+    // path: it cannot name the directory in absolute paths, cannot say where its
+    // files landed, and guesses `~/…` (which hits the deny root). skillsCtx
+    // already fixed the identical problem for skill locations; this fixes it for
+    // the workspace. Without a workspaceDir the line just stays out.
+    const envLines: string[] = []
+    if (ex.opts.workspaceDir) envLines.push(`- Workspace: ${ex.opts.workspaceDir} (relative file paths resolve here; the shell starts here)`)
+    if (Number.isFinite(ex.opts.maxTokens)) {
+      envLines.push(`- Your maximum output limit: ${ex.opts.maxTokens} tokens per response. For large writes, split the content across multiple write calls.`)
+    }
+    const envBlock = envLines.length > 0 ? `\n\n# Running Environment\n${envLines.join('\n')}` : ''
+    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}\n\n${ENGINEERING_WORKFLOW}`
 
     console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" system prompt length=${systemPrompt.length}, task message length=${taskMessage.length} first 200 chars:`, taskMessage.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
@@ -212,11 +228,15 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         allowedSkills: profile ? profile.skillNames ?? [] : undefined,
         allowedMcpServers: profile ? profile.mcpServerIds ?? [] : undefined,
         maxTokens: ex.opts.maxTokens,
-        // An independent task's actual length (PLAN-parallel-experts T8/L12).
-        // The expert ERRORS at this limit instead of silently renewing — a
-        // never-ending expert burns tokens forever, the parent's batch never
-        // returns, and the FIFO slot queue wedges behind it.
-        maxLoopIterations: 40,
+        // The session's configurable loop base — the same getLoopIterationLimit()
+        // the host engine caps itself with (设置 → 助手设置 maxLoopIterations;
+        // main-hosted sessions get the saved value, a renderer-hosted session
+        // reads the same default its own engine does) — replacing the fixed 40
+        // (PLAN-parallel-experts T8/L12). The expert still ERRORS at this limit
+        // instead of silently renewing — a never-ending expert burns tokens
+        // forever, the parent's batch never returns, and the FIFO slot queue
+        // wedges behind it.
+        maxLoopIterations: getLoopIterationLimit(),
         onProgress: (summary) => {
           // Rolling activity log (cap 8 lines) so the user sees the sub-agent moving live.
           const lines = (t.output || '').split('\n')
@@ -288,7 +308,9 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         t.output = `子代理已完成. ${subText}`
       } else {
         const errorDetail = result.status !== 'completed'
-          ? `\n\n### Sub-agent Status: ${result.status}\n` + (subText ? `**Partial Output:**\n${subText}` : '') + (subTools ? `\n**Tool Calls Attempted:** ${subTools}` : '')
+          ? `\n\n### Sub-agent Status: ${result.status}\n`
+            + (result.error ? `**Reason:** ${result.error}\n` : '')
+            + (subText ? `**Partial Output:**\n${subText}` : '') + (subTools ? `\n**Tool Calls Attempted:** ${subTools}` : '')
           : ''
         let summary = result.status === 'completed'
           ? `## Sub-Agent Result (${result.status})\n\nThe sub-agent completed the delegated task.\n\n### Summary\n${subText}`
@@ -319,7 +341,15 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         t.exitCode = result.status === 'completed' ? 0 : 1
         t.status = 'completed'
         ex.addToolResult(t.id, summary, result.status === 'error', undefined, envelopeBudget)
-        t.output = `子代理已完成. ${subText}`
+        // The tool card renders t.output: a failure must say so and name the
+        // reason, not paint 已完成 over it. addToolResult mirrored the envelope
+        // into output above — this overwrite used to clobber it with a success
+        // string on every path, which is why a dead expert's card lied.
+        t.output = result.status === 'completed'
+          ? `子代理已完成. ${subText}`
+          : `子代理${result.status === 'aborted' ? '已被停止' : '失败'}`
+            + (result.error ? `：${result.error}` : '')
+            + (subText ? `\n\n${subText}` : '')
       }
     } finally {
       release()
