@@ -44,6 +44,13 @@ export interface EngineCore {
   opts: AgentEngineOptions
   abortController: AbortController | null
   currentRequestId: string | null
+  /** Request ids this engine aborted while freezing/stopping (pauseExecution /
+   *  stopExecution / prepareTurn). The stream-runner's catch must consult this
+   *  SET, not the mutable `isCancelled`: a resume that lands between the abort
+   *  and the rejection's microtask clears the flag, and the OLD request's death
+   *  would be misread as a fresh engine error — settling a sub-agent the user
+   *  just resumed (tests/stop-settles-subagents.test.ts pins the race). */
+  cancelledRequestIds: Set<string>
   loopCount: number
   maxLoopCount: number
   isCancelled: boolean

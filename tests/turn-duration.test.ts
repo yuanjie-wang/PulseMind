@@ -115,7 +115,7 @@ describe('turn duration: user send → last output character', () => {
     expect(final.processingMs).toBe(50_000)
   })
 
-  it('does not count the time spent paused (暂停按钮 → cancelLoop → awaiting_continue)', () => {
+  it('does not count the time spent paused (停止按钮 → cancelLoop → pauseExecution → awaiting_continue)', () => {
     const engine = makeEngine()
     const final = assistant('a2', 10_000)
     engine.messages = [user(), assistant('a1', 15_000), final]
@@ -125,13 +125,15 @@ describe('turn duration: user send → last output character', () => {
     try {
       engine.turnClock.start()
       clock = 15_000
-      // The real pause path: the composer's 取消 → cancelLoop, which parks the
-      // engine on awaiting_continue. (An earlier revision drove pauseExecution
-      // here — a method with no production caller — so the test was green while
-      // the actual button kept the clock running.)
-      engine.cancelLoop()
+      // The real pause path: the composer's 停止 → cancelLoop → (delegates to)
+      // pauseExecution, which holds the clock explicitly AND parks the engine
+      // on awaiting_continue behind the 继续执行/停止任务 strip.
+      engine.pauseExecution()
       clock = 315_000 // five minutes of not running
       expect(engine.turnClock.elapsed()).toBe(15_000)
+      // Resume the way resumeExecution does: the explicit hold lifts first,
+      // then the status flip releases the park — either alone keeps it held.
+      engine.turnClock.resume()
       engine.agentStatus = { status: 'executing' }
       engine.notify() // resumed — counting again
       clock = 325_000

@@ -540,6 +540,10 @@ export function useChatController(options: UseChatControllerOptions) {
     setActiveConversationKey: persistence.handleSelectConversation,
     handleRequest,
     sendStagedNow,
+    /** composer 的停止按钮（冻结语义，2026-09-29 体验回滚）：中止在飞请求、
+     *  整棵专家树一起冻结、回合停进 awaiting_continue，确认条的 继续执行/
+     *  停止任务 接手。真正结算旧树的是「停止任务」（stopExecution）和
+     *  「输入了新消息」（引擎 prepareTurn，所有客户端的新回合都经过它）。 */
     abort: engine.cancelLoop,
     saveCurrentConversation: persistence.saveCurrentConversation,
     saveConversationSync: persistence.saveConversationSync,

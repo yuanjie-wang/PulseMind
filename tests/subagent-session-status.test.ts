@@ -60,7 +60,7 @@ beforeEach(() => {
 })
 afterEach(() => { vi.unstubAllGlobals() })
 
-async function mount(live = false): Promise<{ container: HTMLElement; unmount: () => Promise<void> }> {
+async function mount(live = false, paused = false): Promise<{ container: HTMLElement; unmount: () => Promise<void> }> {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -69,7 +69,7 @@ async function mount(live = false): Promise<{ container: HTMLElement; unmount: (
       TranslationProvider,
       { initialLocale: 'zh' },
       React.createElement(SubAgentSessionView, {
-        subConvId: 'sub_1', title: '调研专家', live, onBack: () => {}
+        subConvId: 'sub_1', title: '调研专家', live, paused, onBack: () => {}
       })
     ))
     await flush()
@@ -135,6 +135,22 @@ describe('SubAgentSessionView run cursor', () => {
     const mounted = await mount(false)
     try {
       expect(mounted.container.querySelector('[data-streaming-cursor]')).toBeNull()
+    } finally {
+      await mounted.unmount()
+    }
+  })
+
+  // 冻结树（停止 → awaiting_continue）：spawn 块仍标 running、计划节点仍
+  // pending，App 侧的 live 因此仍为 true——但那是可恢复的在途工作，不是正在
+  // 运行。徽标翻 已暂停、光标熄灭（用户报告：子代理在完成任务后，光标还在 —
+  // 按下停止后钻入视图的光标永远闪烁的正是这个洞）。继续执行离开
+  // awaiting_continue 后 paused 变 false，live 光标原样恢复（上面第一例）。
+  it('a frozen tree shows 已暂停 and no cursor even though the blocks still read running', async () => {
+    const mounted = await mount(true, true)
+    try {
+      expect(mounted.container.querySelector('[data-streaming-cursor]')).toBeNull()
+      expect(mounted.container.textContent).toContain('已暂停')
+      expect(mounted.container.textContent).not.toContain('子代理运行中')
     } finally {
       await mounted.unmount()
     }

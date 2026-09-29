@@ -507,6 +507,13 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
       )
     )
   }, [subAgentView, plan, messages])
+  // 冻结树（awaiting_continue，2026-09-29 停止语义）里的 spawn 块仍标 running、
+  // 计划节点仍 pending——那是「可恢复的在途工作」，不是「正在运行」：钻入视图的
+  // 闪烁光标与「子代理运行中」徽标若照旧点亮，用户按下停止后它们会永远闪烁
+  // （用户报告：子代理在完成任务后，光标还在）。冻结是会话级事实，active
+  // conversation 的 agentStatus 就是它；继续执行离开 awaiting_continue 后这里
+  // 自动恢复 live。
+  const subAgentPaused = subAgentView !== null && agentStatus.status === 'awaiting_continue'
   // The docked workbench's own open state — the drill-in overlay must stop at
   // its left edge instead of covering it (user ruling 2026-09-25: 主对话打开了
   // 侧边窗口，进入子对话也要打开). Same key expression ChatView/WorkbenchPane
@@ -713,6 +720,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                     subConvId={subAgentView.subConvId}
                     title={subAgentView.title}
                     live={subAgentLive}
+                    paused={subAgentPaused}
                     onBack={() => setSubAgentView(null)}
                   />
                 </div>

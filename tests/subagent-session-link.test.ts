@@ -199,10 +199,12 @@ describe('the spawn card opens the one sub-agent session view', () => {
 
   // The other ruling: 子对话需要和主对话一样有个闪烁光标. TranscriptView blinks
   // StreamingCursor on isRequesting alone (agentStatus stays idle — no engine
-  // handle here), so the view must thread live into it.
+  // handle here), so the view must thread live into it — minus the frozen-tree
+  // gate: 停止 → awaiting_continue keeps the blocks reading running, and the
+  // cursor must NOT blink over paused work (App derives `paused`).
   it('threads the live flag into the transcript as isRequesting', () => {
     expect(read(R('components', 'subagent', 'SubAgentSessionView.tsx')))
-      .toContain('isRequesting={live && !loading}')
+      .toContain('isRequesting={live && !paused && !loading}')
     // The hook the DOM tests/probe key on (the keyframe name carries a uid).
     expect(read(R('components', 'chat', 'StreamingCursor.tsx')))
       .toContain('data-streaming-cursor=')

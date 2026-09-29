@@ -259,3 +259,41 @@ describe('prepareTurn gives a new send a fresh re-issue budget', () => {
     expect(engine.thinkingOnlyRetries).toBe(0)
   })
 })
+
+// review_20260929 中4: the error hint promises 「可直接重试」 — the button must
+// actually re-buy the sampling chance. retryLastTurn does NOT pass through
+// prepareTurn (it drives continueLoop directly), so the counter the error
+// close left at 1 must be reset by the retry itself: without that the first
+// degenerate round after the retry fails `1 < 1` and the button re-errores
+// with zero sampling (the main affordance dead for exactly this error).
+
+describe('retryLastTurn re-arms the thinking-only re-issue', () => {
+  it('a retry after the error close gets its own bounded re-issue, not an instant re-error', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine } = makeEngine(host)
+
+    const degenerateLoop = async (): Promise<void> => {
+      host.pump(thinkingOnlyStream())
+      await runnerOf(engine).run(engine.opts, REQ)
+      await tick()
+    }
+    engine.continueLoop = degenerateLoop
+
+    // Turn 1: two degenerate rounds → the explicit error, counter parked at 1.
+    host.pump(thinkingOnlyStream())
+    await runnerOf(engine).run(engine.opts, REQ)
+    await tick()
+    expect(engine.agentStatus.status).toBe('error')
+    expect(engine.thinkingOnlyRetries).toBe(1)
+    const assistantsAfterTurn1 = engine.messages.filter((m) => m.role === 'assistant').length
+
+    // The retry: same degenerate stream, but the counter was re-armed → one
+    // re-issue happens before the bounded close (old code: zero — the button
+    // re-errored on the first round, continueCalls would stay 2).
+    await engine.retryLastTurn()
+    expect(engine.thinkingOnlyRetries).toBe(1) // spent again, then bounded — no loop
+    expect(engine.agentStatus.status).toBe('error')
+    expect(engine.messages.filter((m) => m.role === 'assistant')).toHaveLength(assistantsAfterTurn1 + 2)
+  })
+})

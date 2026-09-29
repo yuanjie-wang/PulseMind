@@ -222,7 +222,7 @@ export class StreamRunner {
         this.engine.notify()
       })
 
-      cleanupListeners = () => { unsubChunk(); unsubError(); unsubDone(); unsubRetry(); if (this.engine.currentRequestId === requestId) this.engine.currentRequestId = null }
+      cleanupListeners = () => { unsubChunk(); unsubError(); unsubDone(); unsubRetry(); if (this.engine.currentRequestId === requestId) this.engine.currentRequestId = null; this.engine.cancelledRequestIds.delete(requestId) }
 
       // console.log(`[AgentEngine] POST body: ${(resolvedBody as any).messages?.length ?? 0} messages`)
 
@@ -244,11 +244,16 @@ export class StreamRunner {
       this.engine.contextOverflowLimit = null
       this.engine.contextOverflowRetries = 0
     } catch (err) {
-      cleanupListeners?.()
       const message = err instanceof Error ? err.message : 'Unknown error'
-      const isCancel = this.engine.isCancelled
+      // Was THIS request cancelled? The request-id set, not the mutable
+      // isCancelled: a resume (or retry) that lands between the abort and this
+      // rejection's microtask clears the flag, and the old request's death
+      // would be misread as a fresh engine error — erroring/settling an engine
+      // the user just resumed (tests/stop-settles-subagents.test.ts pins it).
+      const isCancel = this.engine.isCancelled || this.engine.cancelledRequestIds.has(requestId)
+      cleanupListeners?.()
 
-      // Auto-retry on stream idle timeout (main-process aborts after 120s idle):
+      // Auto-retry on stream idle timeout (main-process aborts after 60s idle):
       // the connection stalled mid-stream (long silent thinking, network blip).
       // this.engine.messages is untouched until onStreamComplete, so discard the partial
       // streaming state and re-issue the request from scratch.

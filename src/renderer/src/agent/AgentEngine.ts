@@ -251,6 +251,10 @@ export class AgentEngine implements EngineCore {
   executingProcessId: string | null = null
   /** @internal */
   isCancelled = false
+  /** @internal — request ids aborted while freezing/stopping (see the field's
+   *  comment on EngineCore for why the stream-runner consults this set instead
+   *  of the mutable isCancelled). */
+  cancelledRequestIds = new Set<string>()
   /** @internal */
   requestStartTime = 0
   /** @internal — the turn's duration accumulator: user send → last output
@@ -582,6 +586,7 @@ export class AgentEngine implements EngineCore {
     this.abortController?.abort()
     this.cleanupTerminalListeners()
     if (this.currentRequestId) {
+      this.cancelledRequestIds.add(this.currentRequestId)
       getHost().apiAbortStream(this.currentRequestId)
       this.currentRequestId = null
     }
@@ -614,6 +619,19 @@ export class AgentEngine implements EngineCore {
 
     this.loopCount = 0
     this.maxLoopCount = getLoopIterationLimit()
+    // 输入了新消息 = 旧回合终止（user ruling 2026-09-29）：停在 awaiting_continue
+    // 的旧回合里可能还冻着一棵专家树（用户没点确认条的 停止任务，而是直接发送
+    // 了新消息），新回合开始前把整棵树真实结算——completion 落 'aborted'、并行
+    // 槽位归还、排队者判 null（「子代理未启动」）。这是引擎侧权威的收口：桌面 /
+    // 插件面板 / 托管会话 / 例行任务的新回合全部经过 prepareTurn，树为空时两者
+    // 都是 no-op。
+    this.executionFlow.settleSubAgentTree(this)
+    releaseQueuedSubAgents(subAgentBudgetKey(this.opts))
+    // 排空结算续延：completion 的 resolve、排队者的拒绝都是微任务，它们经
+    // addToolResult 回调 continueLoop，而唯一的闸门是 isCancelled——必须趁它
+    // 还关着让这些续延跑完（一个宏任务保证所有微任务排空），否则它们会与下面的
+    // 新回合并发各开一条循环（两条循环写同一份转写，sendStagedNow 注释里那口锅）。
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
     this.isCancelled = false
     this.pendingToolIds = new Set()
     // A new send gets a fresh overflow rescue: if a PREVIOUS turn ended in the
@@ -636,6 +654,7 @@ export class AgentEngine implements EngineCore {
     // Cancel any in-flight request so two don't write to this.messages concurrently
     this.abortController?.abort()
     if (this.currentRequestId) {
+      this.cancelledRequestIds.add(this.currentRequestId)
       getHost().apiAbortStream(this.currentRequestId)
       this.currentRequestId = null
     }
@@ -1035,25 +1054,15 @@ export class AgentEngine implements EngineCore {
   // ── Public methods ──────────────────────────────────────────────────
 
   cancelLoop = (): void => {
-    this.isCancelled = true
-    this.abortController?.abort()
-    if (this.currentRequestId) { getHost().apiAbortStream(this.currentRequestId); this.currentRequestId = null }
-    this.cleanupTerminalListeners()
-    if (this.executingProcessId) { getHost().killCommand(this.executingProcessId); this.executingProcessId = null }
-
-    // Pause all active sub-agents (stop streams but keep data + unresolved promises)
-    for (const subEngine of this.activeSubAgents.values()) {
-      subEngine.pauseExecution()
-    }
-
-    // Enter pause state — user decides whether to resume or fully stop
-    this.agentStatus = {
-      status: 'awaiting_continue',
-      ...(this.activeSubAgents.size > 0 ? { subAgentCount: this.activeSubAgents.size } : {})
-    }
-    this.streamingBlocks = []
-    this.pendingToolIds = new Set()
-    this.notify()
+    // The stop button (agentSessionCancel 落点：composer 的 ⏹、工具台/托管会话/
+    // 插件侧的停止，以及 reset/loadConversation 的内部调用)——**冻结，不是结算**
+    // （user ruling 2026-09-29 体验回滚：回到单停止钮；用户分不清暂停和终止该
+    // 何时按）。中止在飞的请求/进程、整棵专家树一起冻结（递归 pauseExecution），
+    // 回合停进 awaiting_continue，确认条的 继续执行/停止任务 接手。completion
+    // 一律不结算、槽位仍被持有、排队者不排空——真正结算的是确认条的「停止任务」
+    // （stopExecution）和「输入了新消息」（prepareTurn，引擎侧权威：桌面/插件/
+    // 托管会话的新回合全部经过它）。
+    this.executionFlow.pauseExecution()
   }
 
   clearError = (): void => {
@@ -1089,8 +1098,19 @@ export class AgentEngine implements EngineCore {
     this.isCancelled = false
     this.pendingToolIds = new Set()
     this.streamIdleRetries = 0
+    // The thinking-only error's hint says 「可直接重试」 — the retry must buy a
+    // fresh sampling chance: the counter survives the error close (it is what
+    // ended the turn) and continueLoop() bypasses prepareTurn's reset, so
+    // without this the button re-errored on the first degenerate round
+    // (review_20260929 中4).
+    this.thinkingOnlyRetries = 0
+    // Same shape for the overflow rescue: a manual retry earns one more
+    // automatic truncation + re-issue. The forced cut itself stays armed via
+    // contextOverflowLimit (cleared only by an accepted request).
+    this.contextOverflowRetries = 0
     this.abortController?.abort()
     if (this.currentRequestId) {
+      this.cancelledRequestIds.add(this.currentRequestId)
       getHost().apiAbortStream(this.currentRequestId)
       this.currentRequestId = null
     }

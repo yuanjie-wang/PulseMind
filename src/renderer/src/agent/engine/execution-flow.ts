@@ -225,19 +225,42 @@ export class ExecutionFlow {
     return undefined
   }
 
-  /** Pause execution (cancel current work but DON'T resolve spawn completion) */
+  /**
+   * 冻结回合（cancelLoop——停止按钮的引擎落点——委托到这里；user ruling
+   * 2026-09-29 体验回滚：单停止钮，不再有独立的 ⏸）。主循环与整棵专家树一起
+   * 冻结——各自中止在飞的请求/进程、`isCancelled` 关闸、递归进入自己的子树——
+   * 但 **completion 一律不结算**：派发方的 `await waitForCompletion()` 还挂着，
+   * 并行槽位因此仍被持有，5s 存档定时器还在跑，排队等槽位的专家也不排空——
+   * 恢复（resumeExecution）时它们照旧续跑/起跑。回合停进 `awaiting_continue`，
+   * 确认条（SubAgentStopPrompt）的 继续执行 / 停止任务 从这里接手；真正结算
+   * 整棵树的是 stopExecution 和 prepareTurn（输入了新消息）。
+   */
   pauseExecution = (): void => {
-    // A manual pause is the same category as a held approval: the turn is still
-    // in flight, the user is the one not answering. It has no status of its own
-    // (the engine keeps reporting `executing`), so it pauses the clock here.
+    // The clock gets BOTH holds — the explicit pause() (user hold, survives a
+    // status that would release it) and the awaiting_continue park via notify's
+    // sync — because the pause now HAS a status of its own and both must agree.
     this.engine.turnClock.pause()
     this.engine.isCancelled = true
     this.engine.abortController?.abort()
-    if (this.engine.currentRequestId) { getHost().apiAbortStream(this.engine.currentRequestId); this.engine.currentRequestId = null }
+    if (this.engine.currentRequestId) {
+      // 记账到请求 id（不是只靠 isCancelled）：恢复若在本 rejection 的微任务
+      // 之前清了旗，stream-runner 的 catch 仍能认出这是被冻结杀掉的旧请求
+      // （见 EngineCore 的 cancelledRequestIds 注释与 stop-settles 测试钉住的竞态）。
+      this.engine.cancelledRequestIds.add(this.engine.currentRequestId)
+      getHost().apiAbortStream(this.engine.currentRequestId)
+      this.engine.currentRequestId = null
+    }
     this.cleanup()
     if (this.engine.executingProcessId) { getHost().killCommand(this.engine.executingProcessId); this.engine.executingProcessId = null }
+    for (const subEngine of this.engine.activeSubAgents.values()) {
+      subEngine.pauseExecution()
+    }
     this.engine.streamingBlocks = []
     this.engine.pendingToolIds = new Set()
+    this.engine.agentStatus = {
+      status: 'awaiting_continue',
+      ...(this.engine.activeSubAgents.size > 0 ? { subAgentCount: this.engine.activeSubAgents.size } : {}),
+    }
     this.engine.notify()
   }
 
@@ -258,15 +281,22 @@ export class ExecutionFlow {
     setTimeout(() => { if (!this.engine.planScheduler.kick()) this.engine.continueLoop() }, 0)
   }
 
-  /** Fully stop execution (main agent + abort all sub-agents) */
+  /** Fully stop execution — 确认条的「停止任务」（dispose 走同一结算）。与
+   *  cancelLoop（冻结）相反：结算整棵专家树（completion 落 aborted、槽位归还、
+   *  排队者判 null）并以 idle 关闭回合。用户裁定 2026-09-29：停止先冻结出确认
+   *  条，这里是不可逆出口之一（另一个是 prepareTurn 里输入了新消息）。 */
   stopExecution = (): void => {
     this.engine.isCancelled = true
     this.engine.abortController?.abort()
-    if (this.engine.currentRequestId) { getHost().apiAbortStream(this.engine.currentRequestId); this.engine.currentRequestId = null }
+    if (this.engine.currentRequestId) {
+      this.engine.cancelledRequestIds.add(this.engine.currentRequestId)
+      getHost().apiAbortStream(this.engine.currentRequestId)
+      this.engine.currentRequestId = null
+    }
     this.cleanup()
     if (this.engine.executingProcessId) { getHost().killCommand(this.engine.executingProcessId); this.engine.executingProcessId = null }
     this.settleSubAgentTree(this.engine)
-    // 排队等槽位的专家不能在用户按停止之后再起一个（暂停不排空——恢复时还要用）。
+    // 排队等槽位的专家不能在用户按停止之后再起一个。
     releaseQueuedSubAgents(subAgentBudgetKey(this.engine.opts))
     this.engine.agentStatus = { status: 'idle' }
     this.engine.streamingBlocks = []
@@ -276,20 +306,18 @@ export class ExecutionFlow {
   }
 
   /**
-   * 停止（不是暂停）时把整棵专家树的 completion 结算掉。
+   * 把整棵专家树的 completion 结算掉。cancelLoop（停止主对话，user ruling
+   * 2026-09-29）与 stopExecution、dispose 都走这里。
    *
-   * `cancelLoop` 故意不结算 completion——那是「暂停」，用户还可以恢复，而恢复要靠
-   * 同一个 promise 把结果交回给派发方的 `waitForCompletion`。所以终止路径必须自己
-   * 结算，否则每个被中止的专家都会留下三样东西：永远不清理的 5s 存档定时器、永远
-   * 不放回的并行槽位（本会话的五个槽位就此永久占死，之后所有专家只能排队）、以及
-   * 最后一次 tick 之后没有落库的尾部消息。
+   * 每个被中止的专家若不结算 completion，会留下三样东西：永远不清理的 5s 存档
+   * 定时器、永远不放回的并行槽位（本会话的五个槽位就此永久占死，之后所有专家
+   * 只能排队）、以及最后一次 tick 之后没有落库的尾部消息。结算把 'aborted' 交
+   * 回派发方的 `waitForCompletion`，三样一起清掉。
    *
    * 递归是必需的而不是保险：专家的 spawn 不受工具白名单限制，专家可以再派专家，
    * 而孙辈的派发挂在**子引擎**的 execSpawnAgent 上——只结算直接子代，孙辈的槽位
-   * 照样泄漏。
-   *
-   * `@internal` — dispose() 走同一条路：dispose 没有「恢复」，只 cancelLoop 的话
-   * 被删除会话的专家树同样槽位不归还、定时器不停（见上）。
+   * 照样泄漏。子引擎的 cancelLoop 是冻结（委托 pauseExecution，递归冻它自己的
+   * 子树）且幂等，被遍历第二次时是安全的 no-op。
    */
   settleSubAgentTree(engine: EngineCore): void {
     for (const subEngine of [...engine.activeSubAgents.values()]) {

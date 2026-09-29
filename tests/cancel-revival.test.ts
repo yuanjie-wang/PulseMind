@@ -94,9 +94,12 @@ describe('cancelled engines are not revived by late tool results (T12)', () => {
     plantPendingTool(engine, 't1')
 
     engine.pauseExecution()
+    // 停止按钮（cancelLoop → pauseExecution）把回合停进 awaiting_continue：
+    // 冻结不结算，恢复靠 resumeExecution。
+    expect(engine.agentStatus.status).toBe('awaiting_continue')
     engine.addToolResult('t1', 'late MCP output', false)
     await tick()
-    expect(engine.agentStatus.status).toBe('idle') // 暂停中不复活
+    expect(engine.agentStatus.status).toBe('awaiting_continue') // 暂停中不复活
 
     engine.resumeExecution()
     await tick()

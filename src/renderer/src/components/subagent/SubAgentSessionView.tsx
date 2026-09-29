@@ -23,6 +23,11 @@ export interface SubAgentSessionViewProps {
   title: string
   /** Still open — poll the stored transcript for new turns while it runs. */
   live: boolean
+  /** The tree is frozen (停止 → awaiting_continue): the spawn blocks still read
+   *  running and the plan node still reads pending, but nothing is moving —
+   *  the badge says 已暂停 and the blinking cursor stays off until 继续执行
+   *  (App derives this from the conversation's agentStatus). */
+  paused?: boolean
   onBack: () => void
 }
 
@@ -64,7 +69,7 @@ const MAX_POLL_MS = 30 * 60_000
  *  head is lost — it is only not rendered until asked for. */
 const INITIAL_VISIBLE = 60
 
-export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgentSessionViewProps): React.ReactElement {
+export function SubAgentSessionView({ subConvId, title, live, paused = false, onBack }: SubAgentSessionViewProps): React.ReactElement {
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -161,11 +166,11 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
             padding: '2px 8px',
             borderRadius: 9,
             flexShrink: 0,
-            color: live ? 'var(--pm-link)' : 'var(--pm-text-muted)',
-            background: live ? 'var(--pm-link-bg)' : 'var(--pm-fill)',
+            color: paused ? 'var(--pm-warn)' : live ? 'var(--pm-link)' : 'var(--pm-text-muted)',
+            background: paused ? 'var(--pm-warn-bg)' : live ? 'var(--pm-link-bg)' : 'var(--pm-fill)',
           }}
         >
-          {live ? '子代理运行中' : '已结束'}
+          {paused ? '已暂停' : live ? '子代理运行中' : '已结束'}
         </span>
       </div>
 
@@ -193,13 +198,15 @@ export function SubAgentSessionView({ subConvId, title, live, onBack }: SubAgent
           While the node is still open the tail carries the blinking cursor,
           exactly like the main chat during a run (user ruling 2026-09-25:
           子对话需要和主对话一样有个闪烁光标). `live` is the App-derived node
-          state (no engine handle here), `loading` keeps the first hydrate from
+          state (no engine handle here), `paused` gates it off again for a
+          frozen tree (停止 → awaiting_continue — the blocks still read running
+          but nothing is moving), and `loading` keeps the first hydrate from
           blinking over an empty transcript. */}
       <TranscriptView
         messages={messages.slice(-visibleLimit)}
         agentStatus={{ status: 'idle' }}
         streamingBlocks={[] as ContentBlock[]}
-        isRequesting={live && !loading}
+        isRequesting={live && !paused && !loading}
         restoring={loading}
         emptyHint={loadError ?? '暂无对话内容'}
         actions={live ? 'viewOnly' : 'full'}
