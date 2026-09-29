@@ -9,6 +9,7 @@ import {
   resetSubAgentLimiter,
   setSubAgentParallelLimit,
   subAgentBudgetKey,
+  tryAcquireSubAgentSlot,
   type ReleaseSubAgentSlot,
 } from '../src/renderer/src/agent/engine/subagent-limiter'
 
@@ -159,6 +160,72 @@ describe('parallel expert cap: five per session', () => {
     releaseQueuedSubAgents('conv_left')
     expect(activeSubAgentCount('conv_right')).toBe(MAX_PARALLEL_SUBAGENTS)
     for (const r of [...heldA, ...heldB]) r()
+  })
+})
+
+describe('nested dispatch never queues (deadlock fix 2026-09-29)', () => {
+  it('fails a nested acquire immediately at cap — the holder never waits for a slot', () => {
+    // 用户报告的场景（另一台电脑，plan 波次锁死全会话）：所有槽位被「持槽等
+    // 子代理」的 dispatch 占着，子代理再派生。修复前这个嵌套 acquire 会挂进
+    // 队列永等；修复后立即拒绝，持槽者得以自行收尾、把槽位还出来。
+    const key = 'conv_deadlock'
+    const held = [...Array.from({ length: MAX_PARALLEL_SUBAGENTS }, () => tryAcquireSubAgentSlot(key))]
+    expect(held.every((r): r is ReleaseSubAgentSlot => typeof r === 'function')).toBe(true)
+
+    expect(tryAcquireSubAgentSlot(key)).toBeNull()
+    expect(activeSubAgentCount(key)).toBe(MAX_PARALLEL_SUBAGENTS)
+    expect(queuedSubAgentCount(key)).toBe(0)
+    for (const r of held) r!()
+  })
+
+  it('still grants a nested acquire when a slot is free (nesting works, only the wait is gone)', () => {
+    const key = 'conv_nested_ok'
+    const held = [...Array.from({ length: MAX_PARALLEL_SUBAGENTS - 1 }, () => tryAcquireSubAgentSlot(key))]
+    const nested = tryAcquireSubAgentSlot(key)
+    expect(nested).toBeTypeOf('function')
+    expect(activeSubAgentCount(key)).toBe(MAX_PARALLEL_SUBAGENTS)
+    nested!()
+    for (const r of held) r!()
+  })
+
+  it('a freed slot goes to the top-level FIFO first — a late nested acquire never jumps the queue', async () => {
+    const key = 'conv_no_jump'
+    const held = await takeSlots(key, MAX_PARALLEL_SUBAGENTS)
+    const waiter = queueWaiter(key)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(waiter.resolved).toBe(false)
+
+    held[0]() // 槽位转交给队首：running 仍在上限，嵌套此刻必须还是被拒。
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(waiter.resolved).toBe(true)
+    expect(tryAcquireSubAgentSlot(key)).toBeNull()
+    expect(queuedSubAgentCount(key)).toBe(0)
+
+    waiter.release!()
+    expect(tryAcquireSubAgentSlot(key)).toBeTypeOf('function')
+    for (const r of held.slice(1)) r()
+  })
+
+  it('the deadlock cycle resolves end-to-end: holders fail their nested spawns, settle, and the queue drains', async () => {
+    // 复现用户场景的机制层：5 个节点波次占满槽位 → 每个子代理尝试嵌套派生
+    // （修复前：全部进队列 → 循环等待）。修复后嵌套全数被拒 → 持槽者做自己的
+    // 工作、结算释放 → 排队/后续派发照常推进。
+    const key = 'conv_wave'
+    const wave = await takeSlots(key, MAX_PARALLEL_SUBAGENTS)
+    const nested = Array.from({ length: MAX_PARALLEL_SUBAGENTS }, () => tryAcquireSubAgentSlot(key))
+    expect(nested.every((r) => r === null)).toBe(true)
+    expect(queuedSubAgentCount(key)).toBe(0)
+
+    const followUp = queueWaiter(key)
+    for (const r of wave) r()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(followUp.resolved).toBe(true)
+    expect(followUp.release).toBeTypeOf('function')
+    followUp.release!()
+    expect(activeSubAgentCount(key)).toBe(0)
   })
 })
 

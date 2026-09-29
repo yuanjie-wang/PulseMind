@@ -19,6 +19,7 @@ import {
   activeSubAgentCount,
   queuedSubAgentCount,
   subAgentBudgetKey,
+  tryAcquireSubAgentSlot,
 } from '../engine/subagent-limiter'
 import type { ToolExecContext } from './context'
 import type { ExpertProfile } from '../../../../shared/types/expert'
@@ -193,22 +194,41 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // dispatch — i.e. across `waitForCompletion` below. See the header of
     // engine/subagent-limiter.ts for why that is the shape that survives
     // pause/resume and stop.
+    // 嵌套派生（本引擎自身就是子代理）走 tryAcquireSubAgentSlot——永不排队
+    // （死锁修复 2026-09-29，用户报告：一个 plan 波次把全会话锁死）：持槽的
+    // dispatch 若还能等槽位，「持槽者等子代理完成、子代理等嵌套槽位」就成环。
+    // 顶层派生（主代理 / 调度器，自身零持槽）维持 FIFO 排队不变。
     const budgetKey = subAgentBudgetKey(ex.opts)
     const busy = activeSubAgentCount(budgetKey)
     const queued = queuedSubAgentCount(budgetKey)
     const parallelLimit = getSubAgentParallelLimit()
-    if (busy >= parallelLimit || queued > 0) {
+    const nested = ex.isSpawnedSubAgent?.() ?? false
+    if (!nested && (busy >= parallelLimit || queued > 0)) {
       t.output = `排队中：本会话已有 ${busy} 个专家在运行（上限 ${parallelLimit} 个），前面还有 ${queued} 个等待空位…`
       ex.notify()
     }
-    const release = await acquireSubAgentSlot(budgetKey)
+    const release = nested ? tryAcquireSubAgentSlot(budgetKey) : await acquireSubAgentSlot(budgetKey)
     if (!release) {
-      // The session was stopped while this expert waited in line. Starting it
-      // now would run work the user just cancelled.
-      execution('stopped')
       t.exitCode = -1
       t.status = 'completed'
-      ex.addToolResult(t.id, '子代理未启动：本次执行已被停止。', true)
+      if (nested) {
+        // At cap and not allowed to wait: hand the work back — the caller
+        // holds every tool needed to do it itself. execution('failed') is a
+        // no-op unless a planNode attempt started (plan-node spawns are
+        // top-level only; kept for defense in depth).
+        execution('failed')
+        ex.addToolResult(
+          t.id,
+          `并行槽位已满：本会话已有 ${busy} 个子代理在运行（上限 ${parallelLimit} 个），嵌套派生不排队等待。` +
+            '不要继续派生子代理——请直接用你自己的工具完成这项工作，或把无法完成的部分如实报告。',
+          true,
+        )
+      } else {
+        // The session was stopped while this expert waited in line. Starting it
+        // now would run work the user just cancelled.
+        execution('stopped')
+        ex.addToolResult(t.id, '子代理未启动：本次执行已被停止。', true)
+      }
       ex.notify()
       return
     }

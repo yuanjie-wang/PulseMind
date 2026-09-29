@@ -44,6 +44,14 @@ export interface ToolExecContext {
    *  denominator (see executors/spawn-tool.ts spawnEnvelopeBudget). Absent
    *  reads as a single-dispatch round. */
   spawnBatchTotal?: () => number
+  /** Whether THIS engine is itself a spawned sub-agent — i.e. a spawn_agent
+   *  call here is a NESTED dispatch. A getter, not a snapshot: the flag is set
+   *  on the engine AFTER its ToolExecutor exists (spawn-manager), so a
+   *  constructor-time boolean would read false on every sub-agent. A nested
+   *  dispatch takes the no-queue slot path (tryAcquireSubAgentSlot) — a
+   *  slot-holder waiting for a slot is the circular wait that deadlocked a
+   *  whole session (2026-09-29); absent reads as top-level. */
+  isSpawnedSubAgent?: () => boolean
   /** Long-running exec tools report the spawned pid (terminal card wiring). */
   onProcessStart?: (pid: string) => void
   /** The one-shot agent behind install's fire-and-forget keyword backfill.

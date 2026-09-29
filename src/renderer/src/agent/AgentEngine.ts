@@ -509,6 +509,10 @@ export class AgentEngine implements EngineCore {
       (ref, attemptId, status, subConvId) => this.planManager.updateNodeExecution(ref, attemptId, status, subConvId),
       () => this.countRoundSpawnCalls(),
       (ref, attemptId, text) => this.planManager.recordNodeHandoff(ref, attemptId, text),
+      // Read at call time, never snapshotted: the flag flips AFTER this
+      // constructor on a spawned engine (spawn-manager), and the nested
+      // dispatch branch in execSpawnAgent must see the live value.
+      () => this.isSpawnedSubAgent,
     )
   }
 

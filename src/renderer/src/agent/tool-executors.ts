@@ -105,6 +105,9 @@ export class ToolExecutor implements ToolExecContext {
     spawnBatchTotal?: () => number,
     /** @internal CAS the delivered node's output onto the plan as its handoff */
     recordNodeHandoff?: ToolExecContext['recordNodeHandoff'],
+    /** @internal nested-dispatch discriminator, read at call time (the engine
+     *  flag is set after this constructor runs — see ToolExecContext) */
+    isSpawnedSubAgent?: () => boolean,
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
@@ -118,6 +121,7 @@ export class ToolExecutor implements ToolExecContext {
     this.updatePlanNodeExecution = updatePlanNodeExecution
     this.spawnBatchTotal = spawnBatchTotal
     this.recordNodeHandoff = recordNodeHandoff
+    this.isSpawnedSubAgent = isSpawnedSubAgent
   }
 
   opts: AgentEngineOptions
@@ -132,6 +136,7 @@ export class ToolExecutor implements ToolExecContext {
   updatePlanNodeExecution?: ToolExecContext['updatePlanNodeExecution']
   spawnBatchTotal?: () => number
   recordNodeHandoff?: ToolExecContext['recordNodeHandoff']
+  isSpawnedSubAgent?: () => boolean
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts

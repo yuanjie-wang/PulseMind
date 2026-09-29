@@ -23,6 +23,11 @@
 //   * 停止会话时排队者不会在停止之后再起一个专家 — `releaseQueuedSubAgents`
 //     resolves the waiters with `null`, and the caller bails out instead of
 //     starting work the user just cancelled.
+//   * 嵌套派生永不排队（死锁修复 2026-09-29）— a dispatch whose caller is
+//     itself holding a slot uses `tryAcquireSubAgentSlot` and fails fast at
+//     cap; letting it wait would close the circular wait described there.
+//     Queueing stays a top-level-only privilege (main agent / scheduler hold
+//     no slot of their own).
 //
 // The count is module state on purpose: engines of one session are separate
 // `AgentEngine` instances (they share nothing else), so a per-engine counter
@@ -79,9 +84,33 @@ export function subAgentBudgetKey(opts: { sessionRootId?: string; conversationId
 }
 
 /**
+ * Take a slot only if one is free RIGHT NOW — never queues. For NESTED
+ * dispatches (the caller engine is itself a spawned sub-agent): the caller's
+ * own dispatch holds a slot and is parked on `waitForCompletion`, so letting
+ * it wait for another slot closes a circular wait — holders wait for their
+ * engines, engines wait for the nested spawn's tool result, the nested spawn
+ * waits for a held slot; nothing can move (user report 2026-09-29: a plan
+ * wave deadlocked the whole session exactly so). A slot-holder must never
+ * wait for a slot: at cap this resolves `null` and the caller fails the
+ * dispatch with a do-it-yourself message instead. The width cap still holds
+ * (running is only incremented under the limit) and a freed slot still goes
+ * to the FIFO queue first — a late nested acquire never jumps it, because
+ * while the queue is non-empty `running` is at the limit by invariant.
+ */
+export function tryAcquireSubAgentSlot(key: string): ReleaseSubAgentSlot | null {
+  const budget = budgetOf(key)
+  if (budget.running >= getSubAgentParallelLimit()) return null
+  budget.running += 1
+  return makeRelease(key, budget)
+}
+
+/**
  * Take a slot, waiting in line when the session is at its cap.
  * Resolves with a release function, or `null` when the session was stopped
  * while this dispatch was queued (the caller must not start the expert).
+ * TOP-LEVEL dispatches only (main agent / plan scheduler — they hold no slot
+ * themselves, so queueing is safe); a nested dispatch must use
+ * `tryAcquireSubAgentSlot` and never wait.
  */
 export function acquireSubAgentSlot(key: string): Promise<ReleaseSubAgentSlot | null> {
   const budget = budgetOf(key)
