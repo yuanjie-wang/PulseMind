@@ -188,9 +188,13 @@ function ChatView({
   // Staged-message queue wiring for both InputArea sites: keyed by the open
   // conversation — absent with none (the first message IS the row's
   // materialization, so nothing can be staged ahead of it) or when the
-  // controller didn't hand us the interrupt path (feature off).
-  const staging =
-    onSendStaged && conversationId ? { convId: conversationId, onSendNow: onSendStaged } : undefined
+  // controller didn't hand us the interrupt path (feature off). Memoized so
+  // the identity survives the streaming ticks — InputArea is React.memo and
+  // one unstable prop would defeat it wholesale.
+  const staging = useMemo(
+    () => (onSendStaged && conversationId ? { convId: conversationId, onSendNow: onSendStaged } : undefined),
+    [onSendStaged, conversationId],
+  )
   // Context usage for the input area's ring: the projected size once a
   // compaction pass ran (the copy the model actually sees, plus everything
   // appended since), otherwise the same live estimate the compactor reads.
@@ -206,6 +210,12 @@ function ChatView({
   // component never remounts and the draft survives — wiggles once per click.
   const composerShakeRef = useRef<HTMLDivElement | null>(null)
   useWelcomeShake('composer', composerShakeRef)
+  // 两个 InputArea 挂载点共用的发送包装（先钉回底部跟随再上抛）——稳定引用是
+  // InputArea 的 memo 生效的前提。
+  const sendMessageAndPin = useCallback((content: string) => {
+    isNearBottomRef.current = true
+    onSendMessage(content)
+  }, [onSendMessage])
 
   // ── Windowed rendering ──
   // Only the latest PAGE_SIZE segments render initially; older segments are
@@ -301,7 +311,8 @@ function ChatView({
   // the full DAG — this only reminds that a plan is running while folded.
   const planSettled = plan ? plan.nodes.filter((n) => n.status !== 'pending').length : 0
   const planTotal = plan?.nodes.length ?? 0
-  const planStrip = plan && !plan.completed && planTotal > 0 && !workbenchOpen ? (
+  // topSlot 也是 InputArea 的 memo 入参，同样必须引用稳定。
+  const planStrip = useMemo(() => plan && !plan.completed && planTotal > 0 && !workbenchOpen ? (
     <div
       onClick={() => useWorkbenchStore.getState().openTab(wbKey, 'plan')}
       style={{
@@ -315,7 +326,7 @@ function ChatView({
       <span>计划进行中 · {planSettled}/{planTotal}</span>
       <span style={{ color: 'var(--pm-link)' }}>查看</span>
     </div>
-  ) : null
+  ) : null, [plan, planTotal, planSettled, workbenchOpen, wbKey])
   const pendingScrollRef = useRef(false)
   const scrollRafRef = useRef<number>(0)
   // Cancel handle for the bottom-pinner started after a conversation switch —
@@ -724,10 +735,7 @@ function ChatView({
             isAwaitingApproval={agentStatus.status === 'awaiting_approval'}
             isAwaitingInput={agentStatus.status === 'awaiting_user_input'}
             hasMessages={hasMessages}
-            onSendMessage={(content: string) => {
-              isNearBottomRef.current = true
-              onSendMessage(content)
-            }}
+            onSendMessage={sendMessageAndPin}
             onCancel={onCancel}
             profiles={profiles}
             activeProfileId={activeProfileId}
@@ -899,10 +907,7 @@ function ChatView({
         // No rightInset: the root's paddingRight already ends the in-flow
         // wrapper at the pane's left edge, and the composer is absolute
         // INSIDE that wrapper — an inset here would deduct the pane twice.
-        onSendMessage={(content: string) => {
-          isNearBottomRef.current = true
-          onSendMessage(content)
-        }}
+        onSendMessage={sendMessageAndPin}
         onCancel={onCancel}
         profiles={profiles}
         activeProfileId={activeProfileId}

@@ -53,7 +53,7 @@ function approvalButtonColor(mode: SandboxApprovalMode): string {
   return mode === 'auto' ? UNRESTRICTED_COLOR : 'var(--pm-text-secondary)'
 }
 
-export function InputArea({
+function InputAreaImpl({
   isRequesting,
   isStreaming,
   isAwaitingApproval,
@@ -1038,3 +1038,8 @@ export function InputArea({
     </div>
   )
 }
+
+// 流式期 ChatView 每 tick 重渲染，输入框（1000+ 行的 antd 树）没有必要跟一次：
+// memo 生效的前提是宿主侧所有 props 引用稳定 —— ChatView 的 staging/planStrip/
+// 发送包装与 App 的三个 change* 回调都已 useCallback/useMemo（2026-09-29 perf）。
+export const InputArea = React.memo(InputAreaImpl)

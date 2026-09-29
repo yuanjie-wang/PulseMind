@@ -336,12 +336,14 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   const approvalMode: SandboxApprovalMode = activeConvKey
     ? (conversations.find((c: any) => c.key === activeConvKey)?.approvalMode ?? DEFAULT_APPROVAL_MODE)
     : (pendingApprovalMode ?? settings.lastUsedApprovalMode ?? DEFAULT_APPROVAL_MODE)
-  const changeApprovalMode = (mode: SandboxApprovalMode): void => {
+  // useCallback 不是风格洁癖：App 随引擎的每个流式 tick 重渲染，这三个回调
+  // 一旦每次重建，ChatView → InputArea 的 React.memo 就被整体击穿。
+  const changeApprovalMode = useCallback((mode: SandboxApprovalMode): void => {
     // With no conversation yet the click has nothing to write to — hold it for
     // the one the first message will create (useChatController consumes it).
     if (activeConvKey) updateConversationApproval(activeConvKey, mode)
     else usePendingApprovalStore.getState().setMode(mode)
-  }
+  }, [activeConvKey, updateConversationApproval])
 
   // ── 模型 (composer's model picker) ──
   // The same per-conversation shape as the 授权 block above: a conversation
@@ -369,14 +371,14 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     ? (activeConvProfileId ?? settings.activeProfileId)
     : (pendingProfileId ?? settings.lastUsedProfileId ?? settings.activeProfileId)
   const profilePinned = activeConvKey ? activeConvProfileId != null : false
-  const changeProfile = (profileId: string): void => {
+  const changeProfile = useCallback((profileId: string): void => {
     if (activeConvKey) updateConversationProfile(activeConvKey, profileId)
     else usePendingProfileStore.getState().setProfileId(profileId)
-  }
-  const resetProfile = (): void => {
+  }, [activeConvKey, updateConversationProfile])
+  const resetProfile = useCallback((): void => {
     if (activeConvKey) updateConversationProfile(activeConvKey, null)
     else usePendingProfileStore.getState().clearProfileId()
-  }
+  }, [activeConvKey, updateConversationProfile])
 
   // 进入 welcome（没有任何会话打开）时刷新一次设置快照：welcome composer 的
   // 授权/模型回退读 settings.lastUsed*，而插件面板等其他表面的修改只落在主

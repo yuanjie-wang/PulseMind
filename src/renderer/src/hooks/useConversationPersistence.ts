@@ -182,6 +182,11 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   useEffect(() => {
     const timer = setInterval(() => {
       for (const [id, engine] of enginesRef.current.entries()) {
+        // 流式中的会话整个跳过 —— 与上方防抖路径的 streaming 守卫同一口径。
+        // 流式期 messages 数组每 tick 重建，sweepKey 必然失配，sweep 只会白付
+        // 一次 O(全部消息) 的快照组装 + 逐条 stringify 脏检测；落库等流结束的
+        // 防抖（streaming→completed 迁移）与下一个 10s 拍。
+        if (engine.agentStatus.status === 'streaming') continue
         const key = sweepKeyOf(engine)
         if (sweepKeysMatch(sweepCleanKeysRef.current.get(id), key)) continue
         void saveConversationById(id).then((ok) => {
