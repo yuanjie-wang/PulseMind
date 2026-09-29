@@ -14,13 +14,21 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Typography, Spin, Empty } from 'antd'
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
+import { BarChart } from 'echarts/charts'
+import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useThemeMode } from '../../theme/mode'
 import CenteredPage from './CenteredPage'
 import type { TokenStats } from '../../types/conversation'
 
 const { Text, Title } = Typography
+
+// 该页只画堆叠柱图（bar + grid/tooltip/legend + canvas）——echarts/core 按需
+// 注册把 chunk 从全量 echarts 的 ~1.13MB 砍到实际用到的内核。页面路由本就
+// 懒加载，这砍的是「打开统计页」的首开，不是应用启动。
+echarts.use([BarChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
 /** ZCode usage-chart-1/2 (sky/teal). Output is the page's lead series. */
 const OUTPUT_COLOR = { light: '#0284c7', dark: '#0ea5e9' }
@@ -184,7 +192,7 @@ interface ChartSectionProps {
 
 function ChartSection({ title, data, inputLabel, outputLabel, isDark }: ChartSectionProps): React.ReactElement {
   const chartRef = useRef<HTMLDivElement>(null)
-  const instanceRef = useRef<echarts.ECharts | null>(null)
+  const instanceRef = useRef<echarts.EChartsType | null>(null)
 
   useEffect(() => {
     if (!chartRef.current) return
