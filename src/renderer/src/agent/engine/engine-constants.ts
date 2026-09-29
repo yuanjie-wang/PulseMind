@@ -3,8 +3,18 @@
 // concrete AgentEngine class; plain consts break that edge. Nothing outside
 // agent/engine/ referenced the old statics.
 
+// ── Client-side mirror sync coalescing ────────────────────────────────
+// NOTIFY_COALESCE_MS bounds the engine→mirror leg; SYNC_COALESCE_MS applies
+// the same cadence to the mirror→React leg (useConversationEngine /
+// useHostedAgentSession). The mirror replaces every slice BY REFERENCE, so
+// the client can also skip slices an event never touched — without both, a
+// streaming_blocks-only tick rebuilds the messages/plan identity and every
+// [messages, …] useMemo downstream (turnRows' "not re-paid per token"
+// contract, the ring's estimate) re-pays per tick anyway.
+export const SYNC_COALESCE_MS = 80
+
 // ── Stream idle-timeout retry ──────────────────────────────────────────
-// The main-process proxy aborts streams that stay idle for 120s (long silent
+// The main-process proxy aborts streams that stay idle for 60s (long silent
 // thinking, network blips). Instead of failing, re-issue the request a few
 // times — the messages array is untouched until onStreamComplete, so a retry
 // simply re-generates from scratch.

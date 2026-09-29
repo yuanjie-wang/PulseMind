@@ -121,8 +121,10 @@ describe('session lifecycle wiring (source scan)', () => {
 
   it('the resetKey channel re-restores the mirror and clears the ledger', () => {
     // A bumped resetKey must re-run the subscription effect (a restore cycle
-    // under the SAME convId) — not just the caller's local state.
-    expect(hostedSrc).toContain('[convId, sync, resetKey]')
+    // under the SAME convId) — not just the caller's local state. applySync
+    // joined the deps with the 2026-09-29 perf rework (the coalesced sync's
+    // stable apply step; resetKey 的语义不变).
+    expect(hostedSrc).toContain('[convId, sync, applySync, resetKey]')
     // The auto-apply ledger and the undo bar belong to the discarded thread.
     expect(assistHookSrc).toContain('}, [resetKey])')
   })

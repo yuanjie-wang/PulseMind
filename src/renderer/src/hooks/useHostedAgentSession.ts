@@ -20,6 +20,7 @@ import type { SessionState } from '../../../shared/agent-session/mirror'
 import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../../../shared/agent-session/mirror'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
 import { useConversationApprovalMode } from './useConversationApprovalMode'
+import { SYNC_COALESCE_MS } from '../agent/engine/engine-constants'
 
 /** agentSessionCreate options this hook hands through (title is owned by the
  *  `title` option; the rest of AgentSessionCreateOptions stays out of scope). */
@@ -82,11 +83,40 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
   // Nothing to restore without a conversation (fixed per keyed mount).
   const [restoring, setRestoring] = useState(convId != null)
 
-  const sync = useCallback((state: SessionState): void => {
-    setMessages([...state.messages])
-    setAgentStatus(state.agentStatus)
-    setStreamingBlocks([...state.streamingBlocks])
+  // ── Coalesced, slice-aware sync ──
+  // Same contract as useConversationEngine's active sync (2026-09-29): the
+  // mirror replaces every slice BY REFERENCE, so reference comparison is the
+  // exact change test, and the rAF/80ms schedule caps mirror→React at the
+  // cadence the engine leg already uses. Cold paths (restore, send's
+  // catch-up, the error setter) call `sync` directly — immediate, and it
+  // updates the ledger the scheduled flush compares against.
+  const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[] }>({})
+  const pendingSyncRef = useRef<SessionState | null>(null)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const lastSyncAtRef = useRef(0)
+
+  const applySync = useCallback((state: SessionState): void => {
+    const last = lastSyncedRef.current
+    if (state.messages !== last.messages) {
+      last.messages = state.messages
+      setMessages([...state.messages])
+    }
+    if (state.agentStatus !== last.agentStatus) {
+      last.agentStatus = state.agentStatus
+      setAgentStatus(state.agentStatus)
+    }
+    if (state.streamingBlocks !== last.streamingBlocks) {
+      last.streamingBlocks = state.streamingBlocks
+      setStreamingBlocks([...state.streamingBlocks])
+    }
   }, [])
+
+  const sync = useCallback((state: SessionState): void => {
+    if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = undefined }
+    pendingSyncRef.current = null
+    lastSyncAtRef.current = Date.now()
+    applySync(state)
+  }, [applySync])
 
   // Fold the session's events into the mirror. The main-side bridge broadcasts
   // every session; this per-mount subscription filters by id (convId is fixed
@@ -96,6 +126,25 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
     let alive = true
     const state = freshSessionState()
     stateRef.current = state
+    // A re-subscription is a restore cycle — the ledger must describe THIS
+    // mirror, not the previous conversation's slices.
+    lastSyncedRef.current = {}
+
+    const scheduleSync = (next: SessionState): void => {
+      pendingSyncRef.current = next
+      if (syncTimerRef.current) return
+      const since = Date.now() - lastSyncAtRef.current
+      syncTimerRef.current = setTimeout(() => {
+        syncTimerRef.current = undefined
+        const pending = pendingSyncRef.current
+        pendingSyncRef.current = null
+        if (!pending || !alive) return
+        lastSyncAtRef.current = Date.now()
+        // rAF never fires in a hidden window — flush directly there.
+        if (document.hidden) { applySync(pending); return }
+        requestAnimationFrame(() => applySync(pending))
+      }, since >= SYNC_COALESCE_MS ? 0 : SYNC_COALESCE_MS - since)
+    }
 
     // A re-subscription IS a restore cycle (convId switched live): the mirror
     // was just wiped and is about to be reseeded from snapshot or DB. Downstream
@@ -107,7 +156,7 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
     const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
       if (sessionId !== convId) return
       if (!applySessionEvent(state, raw as AgentEventData)) return
-      if (alive) sync(state)
+      if (alive) scheduleSync(state)
     })
 
     // Attach: a live main-side session seeds the mirror from its snapshot; an
@@ -132,8 +181,9 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
     return () => {
       alive = false
       unsub()
+      if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = undefined }
     }
-  }, [convId, sync, resetKey])
+  }, [convId, sync, applySync, resetKey])
 
   // Keep the persisted conversation in sync once an exchange settles — the
   // user's continuation (and the automated run's tail, idempotently) must

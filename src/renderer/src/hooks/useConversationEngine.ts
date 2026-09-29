@@ -13,6 +13,7 @@ import type { HooksConfig } from '../types/hooks'
 import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../../../shared/agent-session/mirror'
 import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { SummonedExpert } from '../../../shared/expert-context'
+import { SYNC_COALESCE_MS } from '../agent/engine/engine-constants'
 
 // ── Client-side session state ────────────────────────────────────────
 // Engines are hosted in the main process (M1.4 session manager); this hook is
@@ -190,8 +191,65 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     return handle
   }, [ensureSession, makeHandle])
 
+  // ── Coalesced, slice-aware sync of the ACTIVE conversation ──
+  // The mirror replaces every slice BY REFERENCE on the events that touch it
+  // (shared/agent-session/mirror), so reference comparison is the exact
+  // "did this slice change" test. Copying all four slices on every mirrored
+  // event — the shape before 2026-09-29 — made a streaming_blocks-only tick
+  // (~12.5/s under the engine's NOTIFY_COALESCE_MS) rebuild the messages/plan
+  // identity too, and every [messages, …] useMemo downstream (allSegments,
+  // turnRows'「not re-paid per token」contract, the ring's estimate) re-paid
+  // per tick anyway. The rAF/80ms schedule caps this leg at the cadence the
+  // engine leg already uses; document.hidden skips rAF, which never fires in
+  // a hidden window.
+  const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[]; plan?: Plan | null }>({})
+  const pendingSyncRef = useRef<SessionState | null>(null)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const lastSyncAtRef = useRef(0)
+
+  const flushActiveSync = useCallback(() => {
+    if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = undefined }
+    const st = pendingSyncRef.current
+    pendingSyncRef.current = null
+    if (!st) return
+    lastSyncAtRef.current = Date.now()
+    const last = lastSyncedRef.current
+    if (st.messages !== last.messages) {
+      last.messages = st.messages
+      setMessages([...st.messages])
+    }
+    if (st.streamingBlocks !== last.streamingBlocks) {
+      last.streamingBlocks = st.streamingBlocks
+      setStreamingBlocks([...st.streamingBlocks])
+    }
+    if (st.agentStatus !== last.agentStatus) {
+      last.agentStatus = st.agentStatus
+      setAgentStatus(st.agentStatus)
+    }
+    if (st.plan !== last.plan) {
+      last.plan = st.plan
+      setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
+    }
+  }, [])
+
+  const scheduleActiveSync = useCallback((st: SessionState) => {
+    pendingSyncRef.current = st
+    if (syncTimerRef.current) return
+    const since = Date.now() - lastSyncAtRef.current
+    syncTimerRef.current = setTimeout(() => {
+      syncTimerRef.current = undefined
+      if (document.hidden) { flushActiveSync(); return }
+      requestAnimationFrame(() => flushActiveSync())
+    }, since >= SYNC_COALESCE_MS ? 0 : SYNC_COALESCE_MS - since)
+  }, [flushActiveSync])
+
   // ── Global session event subscription ──
   useEffect(() => {
+    // History-summary poll throttle: this refresh rode EVERY mirrored event
+    // (~12.5 IPC round-trips/s during streaming) for a cache only the 10s
+    // sweep and the turn-end saves read. Compaction events carry the summary
+    // in-band, so 2s staleness here is invisible.
+    const summaryPolledAt = new Map<string, number>()
     const unsub = window.electronAPI.onAgentSessionEvent(({ sessionId, data: raw }) => {
       const data = raw as AgentEventData
       const st = statesRef.current.get(sessionId)
@@ -220,21 +278,27 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
         }
       }
 
-      // Best-effort refresh of the cached history summary (fire-and-forget).
-      void window.electronAPI.agentSessionEngineCall(sessionId, 'getHistorySummary', [])
-        .then((v) => { st.historySummary = (v as SessionState['historySummary']) ?? null })
-        .catch(() => {})
+      // Best-effort refresh of the cached history summary (fire-and-forget,
+      // per-session 2s throttle).
+      const now = Date.now()
+      if (now - (summaryPolledAt.get(sessionId) ?? 0) > 2000) {
+        summaryPolledAt.set(sessionId, now)
+        void window.electronAPI.agentSessionEngineCall(sessionId, 'getHistorySummary', [])
+          .then((v) => { st.historySummary = (v as SessionState['historySummary']) ?? null })
+          .catch(() => {})
+      }
 
-      // React state follows only the ACTIVE conversation.
+      // React state follows only the ACTIVE conversation — coalesced and
+      // slice-aware (see scheduleActiveSync above).
       if (activeEngineIdRef.current === sessionId) {
-        setMessages([...st.messages])
-        setAgentStatus(st.agentStatus)
-        setStreamingBlocks([...st.streamingBlocks])
-        setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
         if (data.type === 'compaction') setLastCompaction(data.event)
+        scheduleActiveSync(st)
       }
     })
-    return unsub
+    return () => {
+      unsub()
+      if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = undefined }
+    }
     // options.onBackgroundComplete is bridged through a ref below — not a dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -246,6 +310,12 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   /** Mark a conversation as the active one (keeps the ref in sync with callers). */
   const activateEngine = useCallback((convId: string) => {
     activeEngineIdRef.current = convId
+    // A pending coalesced flush belongs to the PREVIOUS conversation — drop it,
+    // and seed the sync ledger from what this activation delivers so the first
+    // post-switch event doesn't re-push slices React already has.
+    if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = undefined }
+    pendingSyncRef.current = null
+    lastSyncedRef.current = {}
     // Rehydrate React state from the mirrored session (events keep it fresh).
     const st = statesRef.current.get(convId)
     if (st) {
@@ -253,6 +323,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       setAgentStatus(st.agentStatus)
       setStreamingBlocks([...st.streamingBlocks])
       setPlan(st.plan ? { ...st.plan, nodes: st.plan.nodes.map((n) => ({ ...n })) } : null)
+      lastSyncedRef.current = { messages: st.messages, agentStatus: st.agentStatus, streamingBlocks: st.streamingBlocks, plan: st.plan }
       setLastCompaction(st.lastCompaction)
     } else {
       // A conversation this app-run never touched has no mirror — every piece
