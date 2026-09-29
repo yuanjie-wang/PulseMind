@@ -434,8 +434,11 @@ export const openaiAdapter: LlmAdapter = {
       if (toolUses.length === 0) continue
 
       const resolvedIds = new Set<string>()
+      // Wide scan (see AnthropicAdapter.reconcileToolResults): a result
+      // landing after an interleaved assistant message still resolves its
+      // call — breaking at the first non-user message fabricated synthetic
+      // errors for live chained spawns.
       for (let j = i + 1; j < messages.length; j++) {
-        if (messages[j].role !== 'user') break
         for (const block of messages[j].contentBlocks) {
           if (block.type === 'tool_result') resolvedIds.add(block.tool_use_id)
         }

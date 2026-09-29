@@ -352,6 +352,16 @@ export class ExecutionFlow {
   }
 
   /** Whether a tool's resolved command carries a prefix from that allowlist. */
+  /** Sub-agent boundary (PLAN-plan-split v2 R2): a spawned sub-agent must not
+   *  plan, settle or delegate. Collection hides the schemas; this catches an
+   *  out-of-schema hallucinated call, since dispatch is by NAME. */
+  private subAgentDeniedTool(t: ToolUseBlock): void {
+    t.exitCode = -1
+    t.status = 'completed'
+    this.engine.addToolResult(t.id, '子代理无权使用该工具：创建/推进计划与派生子代理都属于主 Agent。请完成你自己的节点工作并如实报告；若任务超出能力，使用 create_sub_plan（如可用）。', true)
+    this.engine.notify()
+  }
+
   private commandAllowlisted(t: ToolUseBlock, allowlist: string[]): boolean {
     if (allowlist.length === 0) return false
     const command = buildCommandFromSkillInput(t.name, t.input || {}, this.engine.opts.platformInfo?.platform || '', this.engine.opts.platformInfo?.ripgrepPath)
@@ -369,7 +379,7 @@ export class ExecutionFlow {
     // never acted on twice from a single batch.
     const pageReadTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) === 'read')
     const pageWriteTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) !== 'read')
-    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
+    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = tools.filter(t => isSystemTool(t.name))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
     const memoryTools = tools.filter(t => isMemoryTool(t.name))
@@ -436,8 +446,17 @@ export class ExecutionFlow {
         else if (t.name === 'spawn_agent') await this.engine.toolExecutor.execSpawnAgent(t)
         else if (t.name === 'webfetch') await this.engine.toolExecutor.execWebFetch(t)
         else if (t.name === 'browser') await this.engine.toolExecutor.execBrowser(t)
-        else if (t.name === 'create_plan') await this.engine.planManager.execCreatePlan(t)
-        else if (t.name === 'advance_plan') await this.engine.planManager.execAdvancePlan(t)
+        else if (t.name === 'create_plan') {
+          // Sub-agent boundary (v2 R2): the schema is denied at collection;
+          // this catches an out-of-schema hallucinated call (dispatch is by NAME).
+          if (this.engine.opts.spawnedToolset) this.subAgentDeniedTool(t)
+          else await this.engine.planManager.execCreatePlan(t)
+        }
+        else if (t.name === 'advance_plan') {
+          if (this.engine.opts.spawnedToolset) this.subAgentDeniedTool(t)
+          else await this.engine.planManager.execAdvancePlan(t)
+        }
+        else if (t.name === 'create_sub_plan') await this.engine.toolExecutor.execCreateSubPlan(t)
       }
       if (memoryTools.length > 0) for (const t of memoryTools) await this.engine.toolExecutor.execOtherTool(t)
       if (knowledgeTools.length > 0) for (const t of knowledgeTools) await this.engine.toolExecutor.execOtherTool(t)
@@ -499,7 +518,7 @@ export class ExecutionFlow {
     // (`page_execute_js` = 'exec', the rest = 'write').
     const pageTools = toolUses.filter(t => isPageTool(t.name))
     const pageWriteTools = pageTools.filter(t => tierOfTool(t.name) !== 'read')
-    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'webfetch' || name === 'browser'
+    const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = toolUses.filter(t => isSystemTool(t.name))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
@@ -600,6 +619,12 @@ export class ExecutionFlow {
         // re-enters here — painting `completed` over it would report the turn
         // finished while experts are still running.
         if (!this.engine.planScheduler.kick()) this.engine.continueLoop()
+      } else if (this.engine.planScheduler.kick()) {
+        // Chained attempts (2026-09-30) are still registered in the pending
+        // set: the scheduler owns the turn — its kick settles, chains more or
+        // waits, and the chained spawns' own addToolResult tail closes the
+        // loop. Falling through to `completed` here used to end the turn
+        // under live experts.
       } else { this.engine.agentStatus = { status: 'completed' }; this.engine.resolveCompletionIfSpawned('completed') }
       this.engine.notify()
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'tool_use', status: this.engine.agentStatus }, 'afterLlmCall')

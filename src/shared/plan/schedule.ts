@@ -7,11 +7,15 @@
  * second decision path.
  *
  * Priority is the contract: settle what already delivered (so a wave's results
- * land before anything reads them), then wait out in-flight attempts (a drain
- * that isn't clean yet), then consult the model on failures BEFORE dispatching
- * anything else (user ruling 2026-09-25: 失败立即拉回 LLM — a failure stops the
- * world, it does not queue behind the next wave), then dispatch the ready set,
- * then fall through to the ordinary LLM round.
+ * land before anything reads them), then — while attempts are still live —
+ * CHAIN every node their settlement just made ready alongside the drain
+ * (user ruling 2026-09-30: 不应该浪费槽 — a freed slot goes back to work the
+ * moment its node settles, instead of idling behind a whole-wave barrier;
+ * this reverses the 2026-06 wave-at-a-time shape). A failure still stops the
+ * world: no chain past an unanswered failure (user ruling 2026-09-25: 失败
+ * 立即拉回 LLM) — those waves wait for the clean-drain consult, which is why
+ * consult-before-dispatch keeps its old precedence on a clean drain. Then
+ * dispatch the ready set, then fall through to the ordinary LLM round.
  */
 import type { Plan, PlanNode } from '../types/plan'
 import { readyNodes } from './graph'
@@ -25,6 +29,12 @@ export type ScheduleAction =
   | { type: 'consult'; nodes: PlanNode[] }
   /** Ready nodes with no attempt yet — this wave's synthetic spawn batch. */
   | { type: 'dispatch'; nodes: PlanNode[] }
+  /** Ready nodes whose dependencies settled while OTHER attempts are still
+   *  live — chain them alongside the drain through the freed slots, never as
+   *  a second `handleToolUseResponse` batch (that call owns the engine's
+   *  whole batch state; the concurrent channel registers into the live
+   *  accounting instead — see PlanScheduler.dispatchConcurrent). */
+  | { type: 'chain'; nodes: PlanNode[]; live: PlanNode[] }
   /** Nothing to do: closed plan, direct mode, or everything blocked → normal LLM round. */
   | { type: 'none' }
 
@@ -55,7 +65,19 @@ export function nextScheduleAction(plan: Plan | null): ScheduleAction {
   if (delivered.length > 0) return { type: 'settle', nodes: delivered }
 
   const live = pending.filter(hasLiveExecution)
-  if (live.length > 0) return { type: 'wait', nodes: live }
+
+  // The chain (2026-09-30): a settled node can unblock a dependent while its
+  // wave-mates still run. Only when NOTHING has failed — a failure pulls the
+  // model in at the clean drain before any new work goes out, so a mid-wave
+  // failure defers to `wait` exactly like it always did.
+  if (live.length > 0) {
+    const failedNow = pending.filter(n => n.execution?.status === 'failed' || n.execution?.status === 'stopped')
+    if (failedNow.length === 0) {
+      const chainable = dispatchableNodes(plan)
+      if (chainable.length > 0) return { type: 'chain', nodes: chainable, live }
+    }
+    return { type: 'wait', nodes: live }
+  }
 
   const failed = pending.filter(n => n.execution?.status === 'failed' || n.execution?.status === 'stopped')
   if (failed.length > 0) return { type: 'consult', nodes: failed }

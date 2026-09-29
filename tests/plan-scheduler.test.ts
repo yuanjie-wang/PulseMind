@@ -11,24 +11,32 @@ import {
 import { nextScheduleAction, dispatchableNodes, hasLiveExecution } from '../src/shared/plan/schedule'
 import { NODE_HANDOFF_MAX, UPSTREAM_RESULTS_MAX } from '../src/shared/plan/graph'
 import { PlanManager } from '../src/renderer/src/agent/plan-manager'
+import { PlanScheduler } from '../src/renderer/src/agent/engine/plan-scheduler'
+import type { EngineCore } from '../src/renderer/src/agent/engine/engine-core'
+import type { AgentMessage, ToolUseBlock } from '../src/renderer/src/types/agent'
 import type { Plan } from '../src/shared/types/plan'
 
 /**
  * The auto-scheduler's decision function and its two PlanManager channels
  * (PLAN-plan-scheduler). Three layers, mirroring plan-dispatch-gate:
  *
- *  1. `nextScheduleAction` — the four actions and their PRIORITY order, which
- *     is the whole contract: settle what delivered, wait out live attempts,
- *     consult failures BEFORE dispatching anything else (用户裁定：失败立即拉回
- *     LLM), then dispatch the ready set. Every LLM round the plan still needs
- *     falls out of a `false`/none answer rather than a second decision path.
+ *  1. `nextScheduleAction` — the five actions and their PRIORITY order, which
+ *     is the whole contract: settle what delivered, then — while attempts are
+ *     still live — CHAIN every node their settlement just made ready alongside
+ *     the drain (user ruling 2026-09-30: 不应该浪费槽; reverses the old
+ *     one-wave-at-a-time barrier), consult failures BEFORE dispatching anything
+ *     else (用户裁定：失败立即拉回 LLM — no chain past an unanswered failure
+ *     either; those wait for the clean-drain consult), then dispatch the ready
+ *     set. Every LLM round the plan still needs falls out of a `false`/none
+ *     answer rather than a second decision path.
  *  2. The writer channels — autoSettle (delivery → completed, summary from the
  *     handoff's first line, auto-close on the last settle) and
  *     recordNodeHandoff (attemptId CAS, 6k cap).
- *  3. Wiring scans — the four kick() hook sites exist and the pre-scheduler
- *     ritual copy ("NEVER auto-advances", "dispatch them ALL yourself") is
- *     gone from every prompt surface, while direct mode keeps its lowercase
- *     "never advances on its own" (it still doesn't).
+ *  3. Wiring scans — the kick() hook sites exist, the mid-drain chaining entry
+ *     is wired, and the pre-scheduler ritual copy ("NEVER auto-advances",
+ *     "dispatch them ALL yourself") is gone from every prompt surface, while
+ *     direct mode keeps its lowercase "never advances on its own" (it still
+ *     doesn't).
  */
 
 /** diamond: n1 → (n2, n3) → n4. */
@@ -88,14 +96,54 @@ describe('nextScheduleAction — the four actions and their priority', () => {
     expect(nextScheduleAction(plan)).toEqual({ type: 'none' })
   })
 
-  it('waits on a live attempt even while another node is dispatchable — one wave at a time', () => {
+  it('chains a ready node alongside a live attempt — the freed slot goes back to work (2026-09-30)', () => {
     const plan = diamond()
     markNode(plan, 1, 'completed')
     attempt(plan, 2, 'a2', 'running') // queued/running = live
-    // n3 is ready with no attempt, but n2's attempt is in flight: dispatching
-    // n3 now would fork the wave mid-drain.
-    expect(nextScheduleAction(plan)).toMatchObject({ type: 'wait' })
-    expect((nextScheduleAction(plan) as { nodes: Array<{ id: string }> }).nodes.map(n => n.id)).toEqual(['n2'])
+    // n3 became ready while n2 still runs: it chains into the freed slot
+    // instead of idling behind the whole-wave barrier (user ruling 2026-09-30
+    // 「不应该浪费槽」 — this reverses the old one-wave-at-a-time wait).
+    const action = nextScheduleAction(plan)
+    expect(action.type).toBe('chain')
+    expect((action as { nodes: Array<{ id: string }> }).nodes.map(n => n.id)).toEqual(['n3'])
+    expect((action as { live: Array<{ id: string }> }).live.map(n => n.id)).toEqual(['n2'])
+  })
+
+  it('does not chain past an unanswered failure — the wave waits for the consult (失败立即拉回 LLM)', () => {
+    // diamond + an independent fifth child: without the failure guard this
+    // plan would chain n5 while n2 runs — the failure must stop the world.
+    const plan = createPlanDag('ship it', [
+      { description: '调研' },
+      { description: '前端', dependsOn: [1] },
+      { description: '后端', dependsOn: [1] },
+      { description: '发布', dependsOn: [2, 3] },
+      { description: '文档', dependsOn: [1] },
+    ])
+    markNode(plan, 1, 'completed')
+    attempt(plan, 2, 'a2', 'running')
+    attempt(plan, 3, 'a3', 'failed')
+    // n5 is ready and dispatchable, n2 is live, n3 failed: the consult owns
+    // the decision — nothing new dispatches until the model has answered.
+    expect(nextScheduleAction(plan)).toMatchObject({ type: 'wait', nodes: [{ id: 'n2' }] })
+  })
+
+  it('a settled node unblocks its dependent mid-wave: settle, then chain in the same re-evaluation', () => {
+    const plan = createPlanDag('pipe', [
+      { description: 'a' },                 // n1
+      { description: 'b', dependsOn: [1] }, // n2
+      { description: 'c' },                 // n3
+    ])
+    attempt(plan, 1, 'a1', 'running')
+    attempt(plan, 3, 'a3', 'running')
+    // n1 delivers first: settle lands before anything reads it…
+    attempt(plan, 1, 'a1', 'delivered')
+    expect(nextScheduleAction(plan)).toMatchObject({ type: 'settle' })
+    markNode(plan, 1, 'completed')
+    // …and the same re-evaluation chains n2 alongside the still-running n3.
+    const action = nextScheduleAction(plan)
+    expect(action.type).toBe('chain')
+    expect((action as { nodes: Array<{ id: string }> }).nodes.map(n => n.id)).toEqual(['n2'])
+    expect((action as { live: Array<{ id: string }> }).live.map(n => n.id)).toEqual(['n3'])
   })
 
   it('consults a failure BEFORE dispatching the next wave (失败立即拉回 LLM)', () => {
@@ -162,6 +210,94 @@ describe('nextScheduleAction — the four actions and their priority', () => {
     expect(hasLiveExecution(plan.nodes[0])).toBe(true)
     updateNodeExecution(plan, 1, 'a1', 'delivered')
     expect(hasLiveExecution(plan.nodes[0])).toBe(false)
+  })
+})
+
+// ── PlanScheduler.settleAndChain — the mid-drain entry ─────────────────────
+
+describe('PlanScheduler.settleAndChain — settle now, chain alongside the drain', () => {
+  function chainFixture(mgr: PlanManager) {
+    const spawned: ToolUseBlock[] = []
+    const engine = {
+      isCancelled: false,
+      isSpawnedSubAgent: false,
+      pendingVerbatimReply: null,
+      opts: { apiKey: 'k' },
+      planManager: mgr,
+      messages: [] as AgentMessage[],
+      toolUseBlocks: [] as ToolUseBlock[],
+      pendingToolIds: new Set<string>(),
+      agentStatus: { status: 'executing' },
+      notify: () => {},
+      addToolResult: () => {},
+      toolExecutor: { execSpawnAgent: async (call: ToolUseBlock) => { spawned.push(call) } },
+    }
+    return { engine, scheduler: new PlanScheduler(engine as unknown as EngineCore), spawned }
+  }
+
+  function pipePlan(): Plan {
+    return createPlanDag('pipe', [
+      { description: 'a' },                 // n1
+      { description: 'b', dependsOn: [1] }, // n2
+      { description: 'c' },                 // n3
+    ])
+  }
+
+  it('settles the delivered node and chains its dependent into the live accounting', () => {
+    const { mgr } = makeManager()
+    mgr.plan = pipePlan()
+    mgr.beginNodeExecution(1, 'a1')
+    mgr.updateNodeExecution(1, 'a1', 'delivered')
+    mgr.recordNodeHandoff(1, 'a1', 'n1 out')
+    mgr.beginNodeExecution(3, 'a3') // n3 still running = the live drain
+    const { engine, scheduler, spawned } = chainFixture(mgr)
+
+    scheduler.settleAndChain()
+
+    // The delivered node settled without an LLM round…
+    expect(mgr.plan!.nodes[0].status).toBe('completed')
+    // …and n2 chained: one synthetic spawn batch, registered INTO the live
+    // batch's accounting (pendingToolIds / toolUseBlocks), never a second
+    // handleToolUseResponse.
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0].input.planNode).toBe('n2')
+    expect(engine.pendingToolIds.has(spawned[0].id)).toBe(true)
+    expect(engine.toolUseBlocks).toContain(spawned[0])
+    expect(engine.messages).toHaveLength(1)
+    expect(engine.messages[0].role).toBe('assistant')
+    expect(engine.messages[0].contentBlocks[0]).toBe(spawned[0])
+  })
+
+  it('is a no-op when nothing delivered and nothing became ready', () => {
+    const { mgr } = makeManager()
+    // Two nodes, only the root running: nothing delivered, and n2 is blocked
+    // on n1 — there is nothing to settle and nothing to chain.
+    mgr.plan = createPlanDag('pipe2', [
+      { description: 'a' },
+      { description: 'b', dependsOn: [1] },
+    ])
+    mgr.beginNodeExecution(1, 'a1') // running, not delivered
+    const { engine, scheduler, spawned } = chainFixture(mgr)
+
+    scheduler.settleAndChain()
+    expect(spawned).toHaveLength(0)
+    expect(engine.messages).toHaveLength(0)
+    expect(engine.pendingToolIds.size).toBe(0)
+  })
+
+  it('never fires the clean-dispatch channel mid-drain — that stays the batch tail\'s kick', () => {
+    const { mgr } = makeManager()
+    mgr.plan = pipePlan()
+    // n1 already settled, n2 ready, nothing live → nextScheduleAction answers
+    // `dispatch` (clean). settleAndChain must leave it for the drain's kick:
+    // handleToolUseResponse here would clobber the live batch's accounting.
+    markNode(mgr.plan!, 1, 'completed')
+    const { engine, scheduler, spawned } = chainFixture(mgr)
+
+    scheduler.settleAndChain()
+    expect(spawned).toHaveLength(0)
+    expect(engine.messages).toHaveLength(0)
+    expect(mgr.plan!.nodes[1].status).toBe('pending')
   })
 })
 
@@ -325,14 +461,19 @@ describe('formatUpstreamResults — what a downstream spawn receives', () => {
 
 describe('scheduler wiring (source scans)', () => {
   it('carries the kick() at all four hook sites', () => {
-    // resume, batch drain decision, handleEndTurnResponse entry.
+    // resume, batch drain decision, the tail's live-chained branch, and the
+    // handleEndTurnResponse entry.
     const flow = src('src/renderer/src/agent/engine/execution-flow.ts')
-    expect((flow.match(/planScheduler\.kick\(\)/g) ?? []).length).toBe(3)
-    // addToolResult's async straggler tail.
+    expect((flow.match(/planScheduler\.kick\(\)/g) ?? []).length).toBe(4)
+    // addToolResult's async straggler tail — plus the mid-drain chaining entry
+    // that fires on every result which did NOT close the drain.
     const engine = src('src/renderer/src/agent/AgentEngine.ts')
     expect((engine.match(/planScheduler\.kick\(\)/g) ?? []).length).toBe(1)
-    // The kick itself lives in its engine module.
-    expect(src('src/renderer/src/agent/engine/plan-scheduler.ts')).toContain('kick(): boolean')
+    expect(engine).toContain('planScheduler.settleAndChain()')
+    // The kick and the concurrent chain channel live in the engine module.
+    const scheduler = src('src/renderer/src/agent/engine/plan-scheduler.ts')
+    expect(scheduler).toContain('kick(): boolean')
+    expect(scheduler).toContain('dispatchConcurrent')
   })
 
   it('has scrubbed the ritual-round copy from every prompt surface', () => {

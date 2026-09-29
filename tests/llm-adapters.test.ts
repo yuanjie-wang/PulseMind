@@ -760,3 +760,55 @@ describe('openaiAdapter.callNonStreaming', () => {
     expect(out).toBe('headtail')
   })
 })
+
+// ── Wide reconcile scan (chained plan dispatch, 2026-09-30) ────────────
+// Chained dispatch lands an assistant message BETWEEN a live batch and its
+// still-arriving results. The old scans broke at the first non-user message,
+// so a call answered AFTER that interleaved assistant read as orphaned — the
+// reconciler fabricated "interrupted" results for spawns that were merely
+// still running, and addToolResult's duplicate guard then swallowed their
+// real outputs. The scan now walks ALL later messages.
+
+describe('reconcile wide scan — a result past an interleaved assistant still resolves its call', () => {
+  /** A(1,2) → U(r1) → B(3) → U(r3, r2): r2 lands after the interleaved B. */
+  function interleaved(): AgentMessage[] {
+    return [
+      msg('assistant', [toolUse('c1', 'spawn_agent'), toolUse('c2', 'spawn_agent')], 'mA'),
+      msg('user', [toolResult('c1', 'a done')], 'mU1'),
+      msg('assistant', [toolUse('c3', 'spawn_agent')], 'mB'),
+      msg('user', [toolResult('c3', 'b done'), toolResult('c2', 'a2 done')], 'mU2'),
+    ]
+  }
+
+  it('openaiAdapter.reconcileMessages injects nothing for the chained shape', () => {
+    const messages = interleaved()
+    const before = JSON.stringify(messages)
+    openaiAdapter.reconcileMessages!(messages)
+    expect(JSON.stringify(messages)).toBe(before)
+  })
+
+  it('anthropicAdapter.reconcileMessages injects nothing for the chained shape', () => {
+    const messages = interleaved()
+    const before = JSON.stringify(messages)
+    anthropicAdapter.reconcileMessages!(messages)
+    expect(JSON.stringify(messages)).toBe(before)
+  })
+
+  it('a genuinely orphaned call still gets its synthetic result (both adapters)', () => {
+    for (const adapter of [openaiAdapter, anthropicAdapter]) {
+      const messages = [
+        msg('assistant', [toolUse('c1', 'spawn_agent'), toolUse('c9', 'spawn_agent')], 'mA'),
+        msg('user', [toolResult('c1', 'a done')], 'mU1'),
+        msg('assistant', [toolUse('c3', 'spawn_agent')], 'mB'),
+        msg('user', [toolResult('c3', 'b done')], 'mU2'),
+      ]
+      adapter.reconcileMessages!(messages)
+      // c9 has no result anywhere later → synthetic, adjacent to A.
+      const synthetic = messages[1].contentBlocks.filter(b => b.type === 'tool_result' && (b as { tool_use_id: string }).tool_use_id === 'c9')
+      expect(synthetic).toHaveLength(1)
+      expect((synthetic[0] as { is_error: boolean }).is_error).toBe(true)
+      // The other calls were not touched.
+      expect(messages.filter(m => m.contentBlocks.some(b => b.type === 'tool_result' && (b as { tool_use_id: string }).tool_use_id === 'c9'))).toHaveLength(1)
+    }
+  })
+})

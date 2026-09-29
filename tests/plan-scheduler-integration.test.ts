@@ -247,3 +247,60 @@ describe('plan scheduler integration — upstream results reach the sub-agent', 
     expect(engine.planManager.plan?.nodes[0].summary).toBe('调研产出：竞品 X 定价 99 元')
   })
 })
+
+describe('plan scheduler integration — a split proposal merges and the wave continues (PLAN-plan-split v2)', () => {
+  const PROPOSAL = [
+    '调研范围确实过大，建议拆分。',
+    '### Split Proposal',
+    'Reason: 调研范围过大',
+    '1. 拆子任务A',
+    '2. 拆子任务B [deps: 1]',
+  ].join('\n')
+
+  it('merges the proposal, settles the node NORMALLY, dispatches the remainder — still zero intermediate rounds', async () => {
+    const engine = makeEngine('conv_sched_split')
+    const llm = vi.spyOn(engine, 'continueLoop').mockResolvedValue(undefined)
+    const { order, counts, taskMessages } = stubSpawns(engine, {
+      '调研': { delayMs: 10, text: PROPOSAL },
+      '拆子任务A': { delayMs: 10, text: 'A 的产出' },
+      '拆子任务B': { delayMs: 10, text: 'B 的产出' },
+      '前端': { delayMs: 10 },
+      '后端': { delayMs: 10 },
+      '发布': { delayMs: 10 },
+    })
+    engine.planManager.plan = diamond()
+
+    startTurn(engine)
+    await vi.waitFor(() => expect(engine.planManager.plan?.completed).toBe(true), { timeout: 5000 })
+
+    // The plan grew append-only; X settled NORMALLY (v2 midprocess shape) and
+    // its children carried the remainder.
+    const plan = engine.planManager.plan!
+    expect(plan.nodes.map(n => n.id)).toEqual(['n1', 'n2', 'n3', 'n4', 'n5', 'n6'])
+    expect(plan.nodes.map(n => n.status)).toEqual(['completed', 'completed', 'completed', 'completed', 'completed', 'completed'])
+    expect(plan.nodes[1].dependsOn).toEqual(['n1', 'n5', 'n6']) // downstream union KEEPS X
+    expect(plan.nodes[4].dependsOn).toEqual(['n1']) // children wait on X
+    expect(plan.nodes[5].dependsOn).toEqual(['n1', 'n5']) // proposal's internal dep
+
+    // Wave structure: n1 → n5 (n6 waits on n5) → n6 → {n2, n3} → n4.
+    expect(order.slice(0, 1)).toEqual(['调研'])
+    expect(order.slice(1, 3)).toEqual(['拆子任务A', '拆子任务B'])
+    expect(new Set(order.slice(3, 5))).toEqual(new Set(['前端', '后端']))
+    expect(order.slice(5)).toEqual(['发布'])
+    expect(counts).toEqual({ '调研': 1, '拆子任务A': 1, '拆子任务B': 1, '前端': 1, '后端': 1, '发布': 1 })
+
+    // Zero intermediate LLM rounds — the merge rode the drains; the only
+    // round is the final synthesis.
+    expect(llm).toHaveBeenCalledTimes(1)
+
+    // The gen gate: a split child (gen 1) never sees the split gate, an
+    // original node still does — the structural half of termination.
+    expect(taskMessages['拆子任务A']).not.toContain('create_sub_plan')
+    expect(taskMessages['前端']).toContain('create_sub_plan')
+
+    // The children read X's handoff as upstream input (the midprocess payoff:
+    // X's delivered output — here the proposal text — reaches the remainder).
+    expect(taskMessages['拆子任务A']).toContain('### n1: 调研')
+    expect(taskMessages['拆子任务A']).toContain('调研范围确实过大')
+  })
+})

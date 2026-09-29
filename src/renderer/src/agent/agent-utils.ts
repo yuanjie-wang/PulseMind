@@ -194,6 +194,13 @@ export interface SpawnSubAgentConfig {
    *  expert pack, i.e. a general sub-agent) = no restriction. */
   allowedSkills?: string[]
   allowedMcpServers?: string[]
+  /** PLAN-plan-split v2 R6: set ONLY for spawns of splittable plan nodes.
+   *  Arms create_sub_plan in the sub-engine's toolset and carries the
+   *  parent-plan bridge constants; `createdIds` is filled by spawn-manager's
+   *  bridge callback so the parent's spawn executor can report the split in
+   *  its envelope. attemptId is the parent-minted dispatch id the merge
+   *  CASes on. */
+  planSplit?: { nodeRef: string; attemptId: string; createdIds: string[] }
   maxTokens?: number
   maxLoopIterations?: number
   onProgress?: (summary: string) => void

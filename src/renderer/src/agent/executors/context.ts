@@ -9,6 +9,7 @@ import type { AgentEngineOptions } from '../AgentEngine'
 import type { SpawnSubAgentFn } from '../tool-executors'
 import type { SkillKeywordAgent } from '../one-shot-agent'
 import type { Plan, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
+import type { SplitChildSpec } from '../../../../shared/plan/split-proposal'
 
 /** Tool-block output preview cap shared by executors and the engine. */
 export const UI_PREVIEW_MAX = 3000
@@ -31,6 +32,21 @@ export interface ToolExecContext {
    *  downstream hand-off medium (PLAN-plan-scheduler S8). Routed through
    *  PlanManager like every other plan write. */
   recordNodeHandoff?: (ref: string | number, attemptId: string, text: string) => boolean
+  /** Merge a validated split proposal into the live plan (PLAN-plan-split
+   *  P3/P8) — the plan's third write policy. The graph layer gates CAS on
+   *  attemptId / gen cap / node budget and rejects whole-unit; `ok: false`
+   *  carries the model-facing rejection reason for the failure envelope. */
+  mergeSplitProposal?: (
+    ref: string | number, attemptId: string, children: SplitChildSpec[], reason?: string,
+  ) => { ok: true; nodeIds: string[] } | { ok: false; reason: string }
+  /** create_sub_plan's channel (PLAN-plan-split v2 R6): merge the sub-agent's
+   *  proposed subtasks into the PARENT plan via spawn-manager's bridge.
+   *  Implemented on ToolExecutor (opts.spawnPlanSplit gate + parentPlanMerge);
+   *  absent on engines without the opt — the tool isn't in their toolset
+   *  anyway. */
+  createSubPlan?: (
+    children: SplitChildSpec[], reason?: string,
+  ) => { ok: true; nodeIds: string[] } | { ok: false; reason: string }
   /** 单专家 @召唤的结论原文交付：the executor hands the finished expert's text to
    *  the engine, which delivers it as the turn's own assistant message instead
    *  of letting another LLM round re-summarize it (which loses information).

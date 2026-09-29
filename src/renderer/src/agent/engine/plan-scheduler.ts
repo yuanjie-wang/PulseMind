@@ -8,14 +8,16 @@
 // settle through PlanManager (still the plan's only writer), dispatch as a
 // synthetic spawn batch shaped exactly like AgentEngine.startDelegatedLoop's
 // (byte-for-byte the blocks a model emits, so the spawn machinery — slot
-// limiter, approvals, stop/pause — applies unchanged).
+// limiter, approvals, stop/pause — applies unchanged), and since 2026-09-30
+// CHAIN a settled node's ready dependents alongside the still-draining wave
+// (user ruling 「不应该浪费槽」) through dispatchConcurrent.
 //
 // The contract with its callers is one boolean:
-//   true  → the scheduler owns the turn: it dispatched (or an attempt is in
-//           flight). The caller must NOT continueLoop / close the turn; the
-//           next kick arrives from the batch's own drain (event-driven loop,
-//           no running flag — JS is single-threaded and the dispatch's sync
-//           prefix sets pendingToolIds before kick returns).
+//   true  → the scheduler owns the turn: it dispatched/chained (or an attempt
+//           is in flight). The caller must NOT continueLoop / close the turn;
+//           the next kick arrives from the batch's own drain (event-driven
+//           loop, no running flag — JS is single-threaded and the dispatch's
+//           sync prefix sets pendingToolIds before kick returns).
 //   false → not the scheduler's turn: the caller runs the ordinary LLM round.
 //           That is where every remaining consult naturally lands — a failed
 //           node (decision round) and the closed plan (final synthesis).
@@ -25,7 +27,7 @@
 // and a cancelled engine all fall straight through to normal LLM behaviour.
 
 import type { EngineCore } from './engine-core'
-import { nextScheduleAction } from '../../../../shared/plan/schedule'
+import { nextScheduleAction, type ScheduleAction } from '../../../../shared/plan/schedule'
 import type { PlanNode } from '../../../../shared/types/plan'
 import type { ToolUseBlock } from '../../types/agent'
 import { generateMsgId } from '../agent-utils'
@@ -48,28 +50,14 @@ export class PlanScheduler {
     if (engine.pendingVerbatimReply !== null) return false
     if (!engine.opts.apiKey) return false
 
-    let action = nextScheduleAction(engine.planManager.plan)
-    // Settle re-evaluates in place: it is synchronous and its outcome (a wave
-    // unblocked, the plan closed) changes what comes next, and no external
-    // event fires between now and then. The loop cannot spin — autoSettle only
-    // accepts delivered+pending nodes, so each pass retires at least one; the
-    // settledAny guard makes even a hypothetical no-op pass fall through to a
-    // normal LLM round rather than loop.
-    while (action.type === 'settle') {
-      let settledAny = false
-      for (const node of action.nodes) {
-        if (engine.planManager.autoSettle(node.id)) {
-          settledAny = true
-          console.log(`[PlanScheduler] settled ${node.id} (delivered, no LLM round)`)
-        }
-      }
-      if (!settledAny) break
-      action = nextScheduleAction(engine.planManager.plan)
-    }
+    const action = this.settleAll(nextScheduleAction(engine.planManager.plan))
 
     switch (action.type) {
       case 'dispatch':
         this.dispatch(action.nodes)
+        return true
+      case 'chain':
+        this.dispatchConcurrent(action.nodes)
         return true
       case 'wait': {
         // In-flight attempt owns the turn only while something really is
@@ -95,6 +83,46 @@ export class PlanScheduler {
     }
   }
 
+  /** Mid-drain entry, fired from addToolResult after EVERY result that did not
+   *  close the drain (2026-09-30): a delivered node settles immediately and
+   *  its ready dependents chain into the freed slots instead of idling behind
+   *  the whole-wave barrier. Deliberately NEVER drives a continuation — the
+   *  live drain owns the turn, and consult/wait/dispatch need a clean drain,
+   *  which is the batch tail's kick. Cheap when no plan is in play: the
+   *  applicability gates no-op the whole call. */
+  settleAndChain(): void {
+    const engine = this.engine
+    if (engine.isCancelled || engine.isSpawnedSubAgent) return
+    if (engine.pendingVerbatimReply !== null) return
+    if (!engine.opts.apiKey) return
+    const action = this.settleAll(nextScheduleAction(engine.planManager.plan))
+    // chain only — a clean `dispatch` here would re-enter handleToolUseResponse
+    // while an engine batch is still live and clobber its drain accounting.
+    if (action.type === 'chain') this.dispatchConcurrent(action.nodes)
+  }
+
+  /** Settle re-evaluates in place: it is synchronous and its outcome (a wave
+   *  unblocked, the plan closed) changes what comes next, and no external
+   *  event fires between now and then. The loop cannot spin — autoSettle only
+   *  accepts delivered+pending nodes, so each pass retires at least one; the
+   *  settledAny guard makes even a hypothetical no-op pass fall through to a
+   *  normal LLM round rather than loop. */
+  private settleAll(action: ScheduleAction): ScheduleAction {
+    const engine = this.engine
+    while (action.type === 'settle') {
+      let settledAny = false
+      for (const node of action.nodes) {
+        if (engine.planManager.autoSettle(node.id)) {
+          settledAny = true
+          console.log(`[PlanScheduler] settled ${node.id} (delivered, no LLM round)`)
+        }
+      }
+      if (!settledAny) break
+      action = nextScheduleAction(engine.planManager.plan)
+    }
+    return action
+  }
+
   /** True while a node attempt has a spawn behind it: a running or queued
    *  sub-engine, a slot queue wait, or the parent's own batch still draining. */
   private hasLiveWork(): boolean {
@@ -105,15 +133,10 @@ export class PlanScheduler {
       || queuedSubAgentCount(subAgentBudgetKey(engine.opts)) > 0
   }
 
-  /** Mint this wave's spawn_agent blocks and run them through the same
-   *  choke point model-emitted calls take — handleToolUseResponse — so the
-   *  batch's drain re-enters kick and the loop closes without an LLM round
-   *  between waves. The assistant message is part of the shape: the collector
-   *  expects results to follow a tool_use message, and the transcript should
-   *  show who dispatched what. */
-  private dispatch(nodes: PlanNode[]): void {
-    const engine = this.engine
-    const calls: ToolUseBlock[] = nodes.map((node, i) => ({
+  /** Mint this wave's spawn_agent blocks — the same shape the clean-drain
+   *  dispatch and the mid-drain chain both send through the spawn machinery. */
+  private mintCalls(nodes: PlanNode[]): ToolUseBlock[] {
+    return nodes.map((node, i) => ({
       id: `toolu_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 9)}`,
       type: 'tool_use',
       name: 'spawn_agent',
@@ -124,6 +147,17 @@ export class PlanScheduler {
       },
       status: 'pending',
     }))
+  }
+
+  /** Mint this wave's spawn_agent blocks and run them through the same
+   *  choke point model-emitted calls take — handleToolUseResponse — so the
+   *  batch's drain re-enters kick and the loop closes without an LLM round
+   *  between waves. The assistant message is part of the shape: the collector
+   *  expects results to follow a tool_use message, and the transcript should
+   *  show who dispatched what. */
+  private dispatch(nodes: PlanNode[]): void {
+    const engine = this.engine
+    const calls = this.mintCalls(nodes)
     console.log(`[PlanScheduler] dispatching ${nodes.map(n => n.id).join(', ')} (auto, no LLM round)`)
     engine.messages = [...engine.messages, {
       id: generateMsgId(),
@@ -138,5 +172,45 @@ export class PlanScheduler {
       engine.agentStatus = { status: 'error', error: err instanceof Error ? err.message : 'Plan dispatch failed' }
       engine.notify()
     })
+  }
+
+  /** Chain ready nodes alongside the LIVE drain (2026-09-30, 「不应该浪费槽」):
+   *  same synthetic spawn_agent shape as dispatch(), but deliberately NOT
+   *  through handleToolUseResponse — that call assigns the engine's whole
+   *  batch state (pendingToolIds / toolUseBlocks / isAutoExecuting) and a
+   *  second live batch would clobber the drain still in progress. The chained
+   *  calls register INTO the live accounting and run detached through the
+   *  same executor a batch uses (the approveTool path is the precedent), so
+   *  the slot limiter, the plan-node CAS and the stop/pause settle all apply
+   *  unchanged; at the width cap the dispatch queues FIFO exactly like a
+   *  wide wave does. Their results drain through addToolResult's ordinary
+   *  tail — which re-enters here and closes the turn when the last one
+   *  lands. The transcript interleaves with the parent batch's results;
+   *  prepareLoopRequest's regroup repairs the wire shape per request. */
+  private dispatchConcurrent(nodes: PlanNode[]): void {
+    const engine = this.engine
+    const calls = this.mintCalls(nodes)
+    console.log(`[PlanScheduler] chaining ${nodes.map(n => n.id).join(', ')} alongside the live drain (auto, no LLM round)`)
+    engine.messages = [...engine.messages, {
+      id: generateMsgId(),
+      role: 'assistant',
+      contentBlocks: calls,
+      createdAt: new Date().toISOString(),
+    }]
+    for (const call of calls) {
+      // The live batch owns agentStatus — do not clobber its toolUseId.
+      call.status = 'running'
+      engine.toolUseBlocks.push(call)
+      engine.pendingToolIds.add(call.id)
+    }
+    engine.notify()
+    for (const call of calls) {
+      void engine.toolExecutor.execSpawnAgent(call).catch((err: unknown) => {
+        console.error('[PlanScheduler] chained spawn failed:', err)
+        call.status = 'completed'
+        call.exitCode = -1
+        engine.addToolResult(call.id, `Error: ${err instanceof Error ? err.message : 'spawn_agent failed'}`, true)
+      })
+    }
   }
 }

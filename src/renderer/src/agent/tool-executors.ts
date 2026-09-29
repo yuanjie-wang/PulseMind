@@ -43,6 +43,8 @@ async function experienceLocationBlock(em: { list(): Promise<Array<{ name: strin
 
 import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool } from './executors/domain-tools'
 import { execInstallTool } from './executors/install-tool'
+import { execCreateSubPlanTool } from './executors/create-sub-plan-tool'
+import type { SplitChildSpec } from '../../../shared/plan/split-proposal'
 
 export type SpawnSubAgentFn = (config: SpawnSubAgentConfig) => SubAgentHandle
 export { UI_PREVIEW_MAX } from './executors/context'
@@ -108,6 +110,9 @@ export class ToolExecutor implements ToolExecContext {
     /** @internal nested-dispatch discriminator, read at call time (the engine
      *  flag is set after this constructor runs — see ToolExecContext) */
     isSpawnedSubAgent?: () => boolean,
+    /** @internal PLAN-plan-split P3: the plan's third write policy, from the
+     *  spawn choke point's proposal branch */
+    mergeSplitProposal?: ToolExecContext['mergeSplitProposal'],
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
@@ -122,6 +127,7 @@ export class ToolExecutor implements ToolExecContext {
     this.spawnBatchTotal = spawnBatchTotal
     this.recordNodeHandoff = recordNodeHandoff
     this.isSpawnedSubAgent = isSpawnedSubAgent
+    this.mergeSplitProposal = mergeSplitProposal
   }
 
   opts: AgentEngineOptions
@@ -137,6 +143,12 @@ export class ToolExecutor implements ToolExecContext {
   spawnBatchTotal?: () => number
   recordNodeHandoff?: ToolExecContext['recordNodeHandoff']
   isSpawnedSubAgent?: () => boolean
+  mergeSplitProposal?: ToolExecContext['mergeSplitProposal']
+  /** create_sub_plan's bridge to the PARENT plan (v2 R6), assigned by
+   *  spawn-manager AFTER construction — the executor is built before the
+   *  sub-engine knows its parent. Present only when opts.spawnPlanSplit is
+   *  set; createSubPlan gates on both. */
+  parentPlanMerge?: ToolExecContext['createSubPlan']
 
   updateOptions(opts: AgentEngineOptions): void {
     this.opts = opts
@@ -545,6 +557,20 @@ export class ToolExecutor implements ToolExecContext {
 
   async execInstall(t: ToolUseBlock): Promise<void> {
     return execInstallTool(this, t)
+  }
+
+  /** PLAN-plan-split v2 R1: the sub-agent's one growth channel — merge its
+   *  proposed subtasks into the PARENT plan. Gated on opts.spawnPlanSplit
+   *  (toolset gate) AND the spawn-manager bridge (parentPlanMerge); absent
+   *  either, the tool is not in the toolset anyway and the call is rejected
+   *  with an actionable error. */
+  createSubPlan(children: SplitChildSpec[], reason?: string): { ok: true; nodeIds: string[] } | { ok: false; reason: string } {
+    if (!this.opts.spawnPlanSplit) return { ok: false, reason: 'create_sub_plan is not available for this dispatch' }
+    return this.parentPlanMerge?.(children, reason) ?? { ok: false, reason: 'no parent plan channel — the bridge was not wired' }
+  }
+
+  async execCreateSubPlan(t: ToolUseBlock): Promise<void> {
+    return execCreateSubPlanTool(this, t)
   }
 
   async execPickSkill(t: ToolUseBlock): Promise<void> {

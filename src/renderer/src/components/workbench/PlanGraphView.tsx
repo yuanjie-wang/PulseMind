@@ -46,6 +46,10 @@ const CARD: Record<PlanNodeStatus, CardStyle> = {
   completed: { border: 'var(--pm-border-soft)', num: 'var(--pm-graph-ink)', desc: 'var(--pm-graph-ink-dim)', icon: 'check', iconColor: 'var(--pm-graph-ink-dim)' },
   failed: { border: 'var(--pm-border-soft)', num: 'var(--pm-text)', desc: 'var(--pm-graph-ink)', icon: 'cross', iconColor: FAILED_RED },
   skipped: { border: 'var(--pm-graph-border-skip)', dash: '5 3', num: 'var(--pm-graph-ink-hollow)', desc: 'var(--pm-graph-ink-hollow)', icon: 'minus', iconColor: 'var(--pm-graph-ink-faint)' },
+  // Split (PLAN-plan-split): the work moved INTO the graph (its children sit
+  // downstream), so the node stays legible — no strikethrough, no hollow ink;
+  // only the fork glyph and the 已拆分 word tell it apart from completed.
+  split: { border: 'var(--pm-border-soft)', num: 'var(--pm-graph-ink)', desc: 'var(--pm-graph-ink-dim)', icon: 'fork', iconColor: 'var(--pm-graph-ink-dim)' },
 }
 /** The node in flight: darkest border and darkest words in the graph, and the
  *  only moving thing — the spinner carries it, the card border stays still. */
@@ -58,9 +62,12 @@ const EDGE: Record<PlanNodeStatus, { stroke: string; dash?: string; width: numbe
   failed: { stroke: 'var(--pm-border)', dash: '5 3', width: 1.3 },
   skipped: { stroke: 'var(--pm-frame)', dash: '5 3', width: 1.3 },
   pending: { stroke: 'var(--pm-border)', width: 1.2 },
+  // A split node's own incoming edges read like completed ones — its work
+  // continues in the children downstream, not in this card.
+  split: { stroke: 'var(--pm-text-ghost)', width: 1.5 },
 }
 
-type IconKind = 'spinner' | 'check' | 'cross' | 'minus' | 'circle' | 'ban'
+type IconKind = 'spinner' | 'check' | 'cross' | 'minus' | 'circle' | 'ban' | 'fork'
 
 /** Status glyphs, drawn by hand in a 12×12 box: no icon dependency, and no
  *  <text> either — the words on a card stay words, so the probe's
@@ -96,6 +103,11 @@ function StatusIcon({ kind, x, y, color }: { kind: IconKind; x: number; y: numbe
         </>
       )}
       {kind === 'minus' && <line x1="3" y1="6" x2="9" y2="6" {...line} />}
+      {kind === 'fork' && (
+        // One stem forking into two branches — the split node's work became
+        // two (or more) downstream nodes.
+        <path d="M3 6 H5.6 M5.6 6 V3.4 H8.6 M5.6 6 V8.6 H8.6" {...line} />
+      )}
       {kind === 'circle' && <circle cx="6" cy="6" r="3.4" {...line} strokeDasharray="2.2 2.2" />}
       {kind === 'ban' && (
         <>

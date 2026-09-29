@@ -10,7 +10,8 @@ import {
   toExpertRefCatalogs,
   type ExpertRefCatalogs,
 } from '../../../../shared/expert-context'
-import { formatUpstreamResults, nodeNumberOf, resolveReadyNode } from '../../../../shared/plan/graph'
+import { formatUpstreamResults, MAX_PLAN_NODES, MAX_SPLIT_GEN, nodeNumberOf, resolveReadyNode } from '../../../../shared/plan/graph'
+import { parseSplitProposal } from '../../../../shared/plan/split-proposal'
 import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 import { getCachedMcpServers } from '../mcp-cache'
 import {
@@ -69,6 +70,17 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     }
   }
   try {
+    // Sub-agent boundary (PLAN-plan-split v2 R2): a spawned sub-agent cannot
+    // delegate. The schema is denied at collection (SUB_AGENT_DENY_TOOLS);
+    // this catches an out-of-schema hallucinated call — dispatch is by NAME,
+    // so an undeclared tool_use would still reach this executor.
+    if (ex.opts.spawnedToolset) {
+      t.exitCode = -1
+      t.status = 'completed'
+      ex.addToolResult(t.id, '子代理不能再派生子代理：派生属于主 Agent。请完成你自己的工作并如实报告；若任务过重，使用 create_sub_plan（如可用）把剩余工作拆回父计划。', true)
+      ex.notify()
+      return
+    }
     const subAgentId = String(t.input?.subAgentId || '').trim()
     const task = String(t.input?.task || '')
     if (!task.trim()) throw new Error('task is required')
@@ -143,8 +155,20 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
 
     // The sub-agent gets its node's scope spelled out so it does not drift
     // into the rest of the plan.
+    // Split gate (PLAN-plan-split v2 R5/R7): only a splittable node gets the
+    // one-line pointer — gen < MAX_SPLIT_GEN AND ≥2 slots of node budget —
+    // and only such a spawn also arms create_sub_plan (the planSplit config
+    // below). A gen-1 child sees neither: structurally it cannot split. The
+    // full protocol lives on the tool's own manual (both channels).
+    let splitHint = ''
+    if (planNode && dispatchPlan) {
+      const headroom = MAX_PLAN_NODES - dispatchPlan.nodes.length
+      if ((planNode.gen ?? 0) < MAX_SPLIT_GEN && headroom >= 2) {
+        splitHint = '\n\n(If this task — or its remainder once you start — clearly exceeds one sub-agent, call create_sub_plan to split it back into the parent plan; see that tool\'s manual for the rules and the text alternative. Split before starting or mid-way, never after finishing.)'
+      }
+    }
     const taskText = planNode
-      ? `${task}\n\n(You are executing plan node ${planNode.id} of a larger plan — scope your work to this node only.)`
+      ? `${task}\n\n(You are executing plan node ${planNode.id} of a larger plan — scope your work to this node only.)${splitHint}`
       : task
     // Upstream hand-off (PLAN-plan-scheduler S8): the direct dependencies'
     // recorded output rides the prompt as data — the sub-agent has no state
@@ -234,9 +258,20 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     }
 
     try {
+      // PLAN-plan-split v2 R6: arm create_sub_plan for splittable nodes —
+      // the same gate as the tail hint above. The bridge (spawn-manager)
+      // fills createdIds as merges land; read after waitForCompletion for
+      // the envelope note, since the tool path leaves no trailing proposal
+      // in the sub-agent's text.
+      const planSplitConfig = planNode && dispatchPlan
+        && (planNode.gen ?? 0) < MAX_SPLIT_GEN
+        && MAX_PLAN_NODES - dispatchPlan.nodes.length >= 2
+        ? { nodeRef: planNode.id, attemptId, createdIds: [] as string[] }
+        : undefined
       // 可用能力白名单：有专家包就原样给出（空数组 = 一个都不许用）；
       // 没有专家包（通用子代理）才留 undefined，表示不限制。
       const handle = ex.spawnSubAgent!({
+        ...(planSplitConfig ? { planSplit: planSplitConfig } : {}),
         systemPrompt,
         initialMessages: [{
           id: `spawn_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -286,19 +321,59 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       ex.notify()
 
       const result = await handle.waitForCompletion()
-      execution(result.status === 'completed' ? 'delivered' : result.status === 'aborted' ? 'stopped' : 'failed')
       const subAssistantTexts = result.messages
         .filter(m => m.role === 'assistant')
         .flatMap(m => m.contentBlocks)
       const subText = subAssistantTexts.filter(b => b.type === 'text').map(b => (b as TextBlock).text).join('\n\n').slice(0, SUBAGENT_TEXT_MAX)
       const subTools = subAssistantTexts.filter(b => b.type === 'tool_use').map(b => `[tool_use: ${(b as ToolUseBlock).name}]`).join(', ')
+      // Split handling (PLAN-plan-split v2 R3/R5): a merge NO LONGER replaces
+      // settlement — X keeps its own work and settles naturally; the merge
+      // only appends remainder-carrying children. Two channels, one merge:
+      // a trailing `### Split Proposal` in the final text (parsed here,
+      // before the settle marking, out of CAS discipline) and mid-run
+      // create_sub_plan calls (visible via planSplitConfig.createdIds, filled
+      // by the spawn-manager bridge). A rejected/malformed proposal no longer
+      // fails the node — X's own delivered work stands.
+      const deliverableNode = planNode && result.status === 'completed' && attemptStarted && ex.getPlan?.() === dispatchPlan
+      const delegatedPlan = (dispatchPlan?.mode ?? 'delegated') === 'delegated'
+      let splitNote: string | null = null
+      if (deliverableNode) {
+        const parsed = parseSplitProposal(subText)
+        if (parsed.kind === 'valid') {
+          const merged = ex.mergeSplitProposal?.(planNode.id, attemptId, parsed.proposal.children, parsed.proposal.reason)
+          if (merged?.ok) {
+            const ids = merged.nodeIds
+            const range = ids.length > 1 ? `${ids[0]}..${ids[ids.length - 1]}` : ids[0]
+            splitNote = `its remainder was split into new plan nodes ${range}`
+              + (parsed.proposal.reason ? ` (${parsed.proposal.reason})` : '')
+              + (delegatedPlan
+                ? ` — the scheduler dispatches them once this node settles; do NOT execute or re-dispatch them yourself.`
+                : ` — execute them yourself in dependency order after this node settles (direct mode: no scheduler).`)
+          } else {
+            splitNote = `its trailing Split Proposal was REJECTED (${merged && !merged.ok ? merged.reason : 'no merge channel — the plan changed mid-run'}); its own work above still stands — decide on the remainder yourself.`
+          }
+        } else if (parsed.kind === 'invalid') {
+          splitNote = `its trailing Split Proposal was malformed (${parsed.reason}); its own work above still stands — decide on the remainder yourself.`
+        }
+      }
+      if (!splitNote && planSplitConfig?.createdIds.length && deliverableNode) {
+        // The tool path: create_sub_plan merged mid-run, so the final text
+        // carries no trailing section. The bridge recorded the created ids.
+        const ids = planSplitConfig.createdIds
+        const range = ids.length > 1 ? `${ids[0]}..${ids[ids.length - 1]}` : ids[0]
+        splitNote = `mid-run it called create_sub_plan: its remainder was split into new plan nodes ${range}`
+          + (delegatedPlan
+            ? ` — the scheduler dispatches them once this node settles; do NOT execute or re-dispatch them yourself.`
+            : ` — execute them yourself in dependency order after this node settles (direct mode: no scheduler).`)
+      }
+      execution(result.status === 'completed' ? 'delivered' : result.status === 'aborted' ? 'stopped' : 'failed')
       // Hand-off capture (PLAN-plan-scheduler S8): a successful node's output
       // becomes the plan's carrier for its dependents — recorded HERE, at the
-      // one choke point every spawn's result flows through, before any
-      // summarization for the parent. CAS on attemptId (via PlanManager) means
-      // a straggler from a superseded retry can't overwrite a newer attempt.
-      // Failures record nothing: their dependents are blocked anyway.
-      if (planNode && result.status === 'completed' && attemptStarted && ex.getPlan?.() === dispatchPlan) {
+      // one choke point every spawn's result flows through. Under the v2
+      // midprocess shape this INCLUDES a split: X's handoff (partial work
+      // included) is what its split children read as upstream input, and the
+      // downstream union (X + children) sees everything.
+      if (deliverableNode) {
         ex.recordNodeHandoff?.(planNode.id, attemptId, subText)
       }
       const expertName = profile?.name || subAgentId || '(general sub-agent)'
@@ -312,8 +387,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       // model-emitted spawn_agent can never close a turn verbatim; on
       // acceptance it travels as the turn's own assistant message, which is
       // why the tool result stays short here — the full text in both places
-      // would be a duplicate 10k chars in every later request.
-      const verbatim = result.status === 'completed' && !!subText.trim()
+      // would be a duplicate 10k chars in every later request. A split's
+      // proposal text is not a user-facing conclusion — never deliver it
+      // verbatim.
+      const verbatim = !splitNote && result.status === 'completed' && !!subText.trim()
         && ex.deliverExpertConclusion?.(t.id, subText) === true
       if (verbatim) {
         t.exitCode = 0
@@ -348,6 +425,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
             ? `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — its output has been recorded as the node's handoff for downstream nodes; the scheduler settles it automatically.`
             : `\n\n**Plan node ${planNode.id}** ("${planNode.description}") — settle it now with advance_plan action="complete" node=${nodeNumberOf(planNode)} (or "fail" / "skip" if it did not succeed).`
         }
+        // The split note rides AFTER the settle line: the parent model must
+        // read "this node delivered AND its remainder moved to new nodes" as
+        // one fact — otherwise the new nodes look like someone else's mistake.
+        if (splitNote) summary += `\n\n**Split:** ${splitNote}`
         // Close-out instruction, deliberately the LAST bytes of the envelope:
         // the envelope reads like an intermediate artifact, and a weak model
         // answers it by delegating again — measured loop (2026-09-16, mimo):
@@ -370,6 +451,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
           : `子代理${result.status === 'aborted' ? '已被停止' : '失败'}`
             + (result.error ? `：${result.error}` : '')
             + (subText ? `\n\n${subText}` : '')
+        if (splitNote) t.output += '\n\n（剩余工作已拆分回父计划）'
       }
     } finally {
       release()

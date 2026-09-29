@@ -383,10 +383,31 @@ n1 first; n2 and n3 run together once n1 settles; n4 waits for both. Written WIT
 
   advance_plan: `## advance_plan
 
-The plan's decision tool. A delegated plan — the default — runs itself: the scheduler dispatches READY nodes and settles each delivery (recording the node's output as its handoff for downstream nodes). Do NOT call this tool for those. Reach for it when a node FAILED, to hand-correct a status, or to close the plan early.
+The plan's decision tool. A delegated plan — the default — runs itself: the scheduler dispatches READY nodes and settles each delivery (recording the node's output as its handoff for downstream nodes). Do NOT call this tool for those. Your legitimate uses are exactly three: decide on a FAILED node, close the plan early, or hand-correct a status.
 
 ### When a node fails
 The scheduler stops and pulls you in for one decision: re-dispatch the node with \`spawn_agent planNode=…\` to retry it, or settle it with \`fail\`/\`skip\` so the remaining graph can continue.
+`,
+
+  create_sub_plan: `## create_sub_plan
+
+Split YOUR node's remaining work back into the parent plan when it clearly exceeds one sub-agent — many independent sub-parts, far too long-running, or more output than one session can produce. Call it the moment you know: before starting, or mid-way when the remainder has outgrown you. NEVER after finishing your scope, and never split work you intend to do yourself.
+
+### Rules
+- 2–5 sub-tasks; every description must stand alone (its reader sees only that text plus its dependencies' outputs)
+- \`depends_on\` names EARLIER subtasks in your list (1-based, forward references only) whose output a subtask consumes; omit it for independent work — without it everything runs in parallel
+- A 20-node plan budget applies; a rejected call names the reason — correct it and call again immediately
+
+### After a successful call
+The new nodes (e.g. n8..n10) are NOT yours — the parent's scheduler dispatches them once your node settles. Continue only YOUR remaining scope and deliver normally. You may call this tool again if the remainder still exceeds you.
+
+### Text alternative
+If you decide to split before doing any work, you may instead end your reply with exactly this section (same 2–5 / self-contained / forward-deps rules) — never use both for the same split:
+
+### Split Proposal
+Reason: <one line>
+1. <first sub-task, self-contained>
+2. <second sub-task, self-contained> [deps: 1]
 `,
 
   pick_tool: `## pick_tool

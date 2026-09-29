@@ -6,7 +6,7 @@ import type { AgentMessage, TextBlock } from '../../types/agent'
 import type { ToolManager } from '../../tools/ToolManager'
 import type { ToolInputSchema } from '../../tools/types'
 import { BUILTIN_CATEGORY_SUMMARIES, builtinCategoryServerId } from '../../tools/builtin-gate'
-import { PAGE_BUILT_IN_TOOLS } from '../../tools/built-in-tools'
+import { PAGE_BUILT_IN_TOOLS, SUB_AGENT_DENY_TOOLS, SUB_PLAN_BUILT_IN_TOOLS } from '../../tools/built-in-tools'
 import { sanitizeSchema } from '../agent-utils'
 import type { AgentEngineOptions } from '../AgentEngine'
 import { ensureCache, getCachedExpertProfiles, getCachedMcpServers, refreshMcpServers } from '../mcp-cache'
@@ -29,6 +29,29 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   await ensureCache()
 
   let enabledTools = toolManager.getEnabledTools().map((t) => t.definition)
+
+  // ── Sub-agent tool boundary (PLAN-plan-split v2 R2, user ruling 2026-09-29) ──
+  // A spawned sub-agent plans nothing, settles nothing and delegates nothing:
+  // create_plan / advance_plan (private-plan scratch, invisible to the parent)
+  // and spawn_agent (nested dispatch — the recursive fan-out the slot limiter
+  // could only BOUND) are removed at the source. The executors keep matching
+  // early-return guards: collection hides the schema, the guard catches an
+  // out-of-schema hallucinated call (dispatch is by NAME).
+  if (deps.opts.spawnedToolset) {
+    enabledTools = enabledTools.filter((t) => !SUB_AGENT_DENY_TOOLS.includes(t.name))
+  }
+
+  // ── Sub-agent-only growth channel: create_sub_plan (v2 R6) ──
+  // One-way door like the page_* family above: merged ONLY for a spawned
+  // engine (spawnedToolset) dispatched for a SPLITTABLE plan node —
+  // `opts.spawnPlanSplit` carries the bridge constants (nodeRef + attemptId)
+  // its executor needs to reach the PARENT plan through spawn-manager's
+  // callback. Both flags together: a sub-agent-only tool must never leak into
+  // a main-engine toolset, however the opts were assembled.
+  if (deps.opts.spawnedToolset && deps.opts.spawnPlanSplit) {
+    const known = new Set(enabledTools.map((t) => t.name))
+    enabledTools = [...enabledTools, ...SUB_PLAN_BUILT_IN_TOOLS.filter((t) => !known.has(t.name))]
+  }
 
   // ── Hosted page tools: only while a browser client is bound (M2.4) ──
   // The page_* family is extension-only and NOT in the tool registry at all

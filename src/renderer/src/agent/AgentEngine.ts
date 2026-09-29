@@ -40,6 +40,7 @@ import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/
 import type { CompactionEvent } from '../../../shared/agent-protocol/payloads'
 import type { EngineCore } from './engine/engine-core'
 import { stripToolResultImages } from './strip-tool-results'
+import { regroupToolResults } from '../llm/regroup-tool-results'
 
 // ── Tool-result guardrail ─────────────────────────────────────────────
 // Every tool result funnels through addToolResult; executors do NOT truncate
@@ -154,6 +155,18 @@ export interface AgentEngineOptions {
    *  bound there is nothing to execute them, so they must not appear in the
    *  tool list at all rather than fail one call at a time. */
   hostedAvailable?: boolean
+  /** Set by spawn-manager on every spawned sub-engine's opts (PLAN-plan-split
+   *  v2 R2): the toolset drops SUB_AGENT_DENY_TOOLS (create_plan /
+   *  advance_plan / spawn_agent) — a sub-agent plans nothing, settles nothing
+   *  and delegates nothing; its only growth channel is create_sub_plan (when
+   *  `spawnPlanSplit` is also set). Execution keeps matching early-return
+   *  guards: collection hides the schema, the guard catches an out-of-schema
+   *  hallucinated call (dispatch is by NAME). */
+  spawnedToolset?: boolean
+  /** Set for spawns of SPLITTABLE plan nodes (v2 R6/R7): arms
+   *  create_sub_plan in the toolset and carries the parent-plan bridge
+   *  constants — nodeRef + the parent-minted attemptId the merge CASes on. */
+  spawnPlanSplit?: { nodeRef: string; attemptId: string }
 }
 
 // ── AgentEngine Callbacks ───────────────────────────────────────────
@@ -513,6 +526,7 @@ export class AgentEngine implements EngineCore {
       // constructor on a spawned engine (spawn-manager), and the nested
       // dispatch branch in execSpawnAgent must see the live value.
       () => this.isSpawnedSubAgent,
+      (ref, attemptId, children, reason) => this.planManager.mergeSplitProposal(ref, attemptId, children, reason),
     )
   }
 
@@ -932,7 +946,12 @@ export class AgentEngine implements EngineCore {
     // for UI). The transform itself lives in `./strip-tool-results` — extracted
     // verbatim so this per-iteration O(tool_result bytes) cost is measurable on
     // the real function (scripts/probe-loop-iteration-perf.mjs).
-    const apiMessages = this.messages.map(stripToolResultImages)
+    // Then repair adjacency for the wire (2026-09-30): chained plan dispatch
+    // interleaves assistant messages with a live batch's results, and both
+    // providers require each tool_result next to its own tool_use message.
+    // Identity on legal histories, so sessions that never chain are
+    // byte-identical and the compaction pipeline below sees a legal shape.
+    const apiMessages = regroupToolResults(this.messages.map(stripToolResultImages))
 
     // ── Compaction pipeline (operates on API copy; this.messages untouched) ──
     // Fixed overhead the char heuristic never sees: system prompt + tool schemas.
@@ -1296,15 +1315,25 @@ export class AgentEngine implements EngineCore {
     // first refusal — a delivered wave settles and the next dispatches here,
     // with no LLM round in between. false → the ordinary continuation.
     if (this.pendingToolIds.size === 0 && !this.isAutoExecuting && !this.planScheduler.kick()) this.continueLoop()
-    else if (this.pendingToolIds.size > 0) {
-      const remaining = this.toolUseBlocks.filter(t => this.pendingToolIds.has(t.id))
-      // Park only for a call the ladder is actually holding ('pending'). This
-      // branch fires after EVERY result in a batch and the rest usually are just
-      // still running — repainting the park then would flip the approval UI on
-      // (and pause the turn clock as waiting-on-user) for a decision nobody owes.
-      if (remaining.some(t => t.status === 'pending')) {
-        this.agentStatus = { status: 'awaiting_approval', tools: remaining }
-        this.notify()
+    else {
+      // Mid-drain chaining (2026-09-30, 「不应该浪费槽」): a spawn result that
+      // lands while its batch-mates still run settles immediately and its
+      // ready dependents chain into the freed slots, instead of idling behind
+      // the whole-wave barrier. Never drives a continuation — the live drain
+      // owns the turn; consult/wait still wait for the batch tail's kick.
+      this.planScheduler.settleAndChain()
+      // settleAndChain may have registered chained calls above, so the
+      // remaining set is re-read after it.
+      if (this.pendingToolIds.size > 0) {
+        const remaining = this.toolUseBlocks.filter(t => this.pendingToolIds.has(t.id))
+        // Park only for a call the ladder is actually holding ('pending'). This
+        // branch fires after EVERY result in a batch and the rest usually are just
+        // still running — repainting the park then would flip the approval UI on
+        // (and pause the turn clock as waiting-on-user) for a decision nobody owes.
+        if (remaining.some(t => t.status === 'pending')) {
+          this.agentStatus = { status: 'awaiting_approval', tools: remaining }
+          this.notify()
+        }
       }
     }
   }

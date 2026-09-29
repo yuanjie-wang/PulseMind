@@ -5,8 +5,15 @@
  * rules (ready / blocked / layers) exist in exactly one place.
  */
 import type { Plan, PlanNode, PlanNodeStatus, PlanNodeExecutionStatus } from '../types/plan'
+import type { SplitChildSpec } from './split-proposal'
 
 export const MAX_PLAN_NODES = 20
+
+/** Split generations (PLAN-plan-split P5): 0 = an original node (splittable),
+ *  1 = the product of a split (not splittable). One level only — the bound
+ *  that makes dynamic splitting determinately terminating; the spawn prompt
+ *  gate is the structural half, this constant backs the merge-time re-check. */
+export const MAX_SPLIT_GEN = 1
 
 /** Per-node handoff cap (PLAN-plan-scheduler S8/S9): the completed node's
  *  output text stored on `PlanNode.handoff` and persisted with plan_json.
@@ -93,13 +100,19 @@ export function readyNodes(plan: Plan): PlanNode[] {
 }
 
 /** Pending but a dependency failed or was skipped — dead until the model
- *  retries or skips upstream (D4: failure never cascades by itself). */
+ *  retries or skips upstream (D4: failure never cascades by itself). `split`
+ *  is in the dead set DEFENSIVELY only: after a merge no node still references
+ *  the split node (the rewire removes every such edge), so this arm exists
+ *  for hand-edited/破 invariant JSON — the dependent shows blocked instead of
+ *  silently waiting forever. */
+const DEAD_DEP_STATUSES: PlanNodeStatus[] = ['failed', 'skipped', 'split']
+
 export function blockedNodes(plan: Plan): PlanNode[] {
   const byId = idMap(plan)
   return plan.nodes.filter(n =>
     n.status === 'pending' && n.dependsOn.some(d => {
       const s = byId.get(d)?.status
-      return s === 'failed' || s === 'skipped'
+      return s !== undefined && DEAD_DEP_STATUSES.includes(s)
     }),
   )
 }
@@ -240,8 +253,100 @@ export function updateNodeExecution(
   return true
 }
 
+// ── Split merge (PLAN-plan-split v2 R3, midprocess shape) ────────────────
+
+export interface SplitMergeOk { ok: true; source: PlanNode; children: PlanNode[] }
+export interface SplitMergeFail { ok: false; reason: string }
+
+/** Merge a split proposal (create_sub_plan tool or a trailing `### Split
+ *  Proposal`) into the live plan. MIDPROCESS shape: node X keeps doing its own
+ *  work and settles naturally — the merge only APPENDS children that carry
+ *  X's remainder. Whole-unit: every rejection leaves the plan untouched.
+ *
+ *  - CAS on attemptId: a straggler proposal from a superseded retry can never
+ *    mutate the plan (same discipline as updateNodeExecution).
+ *  - append-only: children take n{max+1}..; nothing is renumbered.
+ *  - child deps = [X] ∪ the proposal's internal deps: the children carry X's
+ *    REMAINDER, so they wait for X to settle — and X's handoff (partial work
+ *    included) reaches them through formatUpstreamResults with no extra
+ *    mechanism. X's own deps are long completed and add nothing.
+ *  - downstream: every node that depended on X now ALSO depends on all
+ *    children (union kept — X's partial output plus the remainder). X itself
+ *    is untouched: it keeps executing and settles completed (or failed —
+ *    which blocks the children into the existing consult path; a successful
+ *    retry unblocks them with zero new machinery).
+ *  - gates: X pending, live attemptId, X.gen < MAX_SPLIT_GEN (children get
+ *    X's + 1), 2..5 children, non-empty descriptions, and the
+ *    MAX_PLAN_NODES budget wall — exceeding it rejects the whole proposal.
+ *  - Multiple splits of one node are allowed (each covers work X will NOT
+ *    do); the budget wall bounds the total.
+ */
+export function mergeSplitProposal(
+  plan: Plan,
+  ref: string | number,
+  attemptId: string,
+  children: SplitChildSpec[],
+  // Accepted for protocol symmetry (both channels carry one); the midprocess
+  // shape deliberately does NOT stamp X with it — the reason travels in the
+  // parent-facing envelope note instead.
+  _reason?: string,
+): SplitMergeOk | SplitMergeFail {
+  const node = resolveNodeRef(plan, ref)
+  if (!node) return { ok: false, reason: `Unknown node "${ref}".` }
+  if (node.status !== 'pending') return { ok: false, reason: `Plan node ${node.id} is already ${node.status}.` }
+  if (!attemptId || node.execution?.attemptId !== attemptId) {
+    return { ok: false, reason: `Attempt mismatch on ${node.id} — the proposal came from a superseded (or unknown) attempt.` }
+  }
+  if ((node.gen ?? 0) >= MAX_SPLIT_GEN) {
+    return { ok: false, reason: `Plan node ${node.id} is itself a split product — split products are not splittable.` }
+  }
+  if (children.length < 2 || children.length > 5) {
+    return { ok: false, reason: `a split carries 2..5 sub-tasks, got ${children.length}` }
+  }
+  for (let i = 0; i < children.length; i++) {
+    const d = String(children[i].description ?? '').trim()
+    if (!d || d.length > 500) return { ok: false, reason: `sub-task ${i + 1}: description must be 1–500 characters` }
+  }
+  if (plan.nodes.length + children.length > MAX_PLAN_NODES) {
+    return {
+      ok: false,
+      reason: `splitting ${node.id} into ${children.length} would exceed the ${MAX_PLAN_NODES}-node budget (${plan.nodes.length} existing + ${children.length} new)`,
+    }
+  }
+
+  // Append-only ids: continue after the highest number ever used.
+  const nextNum = plan.nodes.reduce((max, n) => Math.max(max, nodeNumberOf(n)), 0) + 1
+  const childIds = children.map((_, i) => `n${nextNum + i}`)
+  const newNodes: PlanNode[] = children.map((c, i) => ({
+    id: childIds[i],
+    description: String(c.description ?? '').trim(),
+    status: 'pending',
+    dependsOn: [...new Set([node.id, ...(c.dependsOn ?? []).map(d => childIds[d - 1])])],
+    gen: (node.gen ?? 0) + 1,
+  }))
+
+  // Built off-line, mutated only after every gate passes — a rejected merge
+  // must leave the caller's plan exactly as it was. X is NOT in the map
+  // branch: its row moves to the candidate unchanged.
+  const candidate: PlanNode[] = [
+    ...plan.nodes.map(n => n.dependsOn.includes(node.id)
+      ? { ...n, dependsOn: [...new Set([...n.dependsOn, ...childIds])] }
+      : n),
+    ...newNodes,
+  ]
+
+  try {
+    assertAcyclic(candidate)
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : 'the split would create a dependency cycle' }
+  }
+
+  plan.nodes = candidate
+  return { ok: true, source: node, children: newNodes }
+}
+
 export function planNodeExecutionLabel(node: PlanNode): string {
-  if (node.status !== 'pending') return { completed: '已完成', failed: '失败', skipped: '跳过' }[node.status]
+  if (node.status !== 'pending') return { completed: '已完成', failed: '失败', skipped: '跳过', split: '已拆分' }[node.status]
   switch (node.execution?.status) {
     case 'queued': return '排队中'
     case 'running': return '执行中'
@@ -279,14 +384,17 @@ export function migrateLinearPlan(old: unknown): Plan | null {
 
 // ── Text rendering (prompt section + tool snapshot) ──────────────────────
 
-const STATUS_MARKER: Record<PlanNodeStatus, string> = { pending: '[ ]', completed: '[done]', failed: '[fail]', skipped: '[skip]' }
+const STATUS_MARKER: Record<PlanNodeStatus, string> = { pending: '[ ]', completed: '[done]', failed: '[fail]', skipped: '[skip]', split: '[split]' }
 
 /** One node line, shared by the prompt section and the snapshot so the model
  *  sees the same node vocabulary in both places. */
 function describeNode(node: PlanNode, byId: Map<string, PlanNode>, ready: Set<string>): string {
   let line = `${STATUS_MARKER[node.status]} n${nodeNumberOf(node)}: ${node.description}`
   if (node.status === 'pending') {
-    const failedOrSkipped = node.dependsOn.filter(d => { const s = byId.get(d)?.status; return s === 'failed' || s === 'skipped' })
+    const failedOrSkipped = node.dependsOn.filter(d => {
+      const s = byId.get(d)?.status
+      return s !== undefined && DEAD_DEP_STATUSES.includes(s)
+    })
     const open = node.dependsOn.filter(d => byId.get(d)?.status === 'pending')
     if (ready.has(node.id)) line += ' — READY'
     else if (failedOrSkipped.length > 0) line += ` — blocked (waiting on: ${failedOrSkipped.join(', ')})`

@@ -10,7 +10,7 @@
  * alone — via advance_plan or (since PLAN-plan-scheduler) the auto-scheduler.
  */
 
-export type PlanNodeStatus = 'pending' | 'completed' | 'failed' | 'skipped'
+export type PlanNodeStatus = 'pending' | 'completed' | 'failed' | 'skipped' | 'split'
 
 export type PlanNodeExecutionStatus = 'queued' | 'running' | 'delivered' | 'failed' | 'stopped'
 
@@ -42,6 +42,13 @@ export interface PlanNode {
    *  restart, whereas the tool block's own copy rides the live status diff and
    *  can disappear with the assistant message when history is compacted. */
   subConvId?: string
+  /** Split generation (PLAN-plan-split P5): 0/absent = an original node —
+   *  splittable; 1 = itself the product of a split — NOT splittable
+   *  (MAX_SPLIT_GEN). The termination bound for dynamic splitting: the spawn
+   *  prompt only carries the proposal protocol for gen-0 nodes, so a gen-1
+   *  child structurally cannot propose, and mergeSplitProposal re-checks at
+   *  runtime. */
+  gen?: number
   /** The completed node's output text (capped at NODE_HANDOFF_MAX), captured
    *  at the spawn choke point (PLAN-plan-scheduler S8) — the downstream
    *  hand-off medium. Written only on successful delivery (CAS on attemptId,

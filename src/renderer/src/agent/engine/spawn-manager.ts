@@ -61,9 +61,32 @@ export class SpawnManager {
       allowedSkills: config.allowedSkills,
       systemPromptOverride: undefined,
       expert: undefined,
+      // Sub-agent tool boundary (PLAN-plan-split v2 R2): the toolset drops
+      // SUB_AGENT_DENY_TOOLS (create_plan / advance_plan / spawn_agent).
+      // Every spawn gets this — the ruling covers the general sub-agent,
+      // expert packs and plan-node spawns alike.
+      spawnedToolset: true,
+      // v2 R6/R7: ONLY a splittable plan-node spawn arms create_sub_plan —
+      // the opt is both the toolset gate and the bridge constants' carrier.
+      ...(config.planSplit ? { spawnPlanSplit: { nodeRef: config.planSplit.nodeRef, attemptId: config.planSplit.attemptId } } : {}),
     }
 
     const engine = new AgentEngine(subOpts)
+
+    // The narrow parent-plan bridge (v2 R6): the executor is built before the
+    // sub-engine knows its parent, so spawn-manager — the one module that sees
+    // both — wires the merge callback here. S2 discipline holds: the sub-agent
+    // gains exactly this one mouth to the parent plan, nothing else.
+    // createdIds feeds the parent's spawn envelope ("this node split its
+    // remainder into …") after waitForCompletion.
+    if (config.planSplit) {
+      const split = config.planSplit
+      engine.toolExecutor.parentPlanMerge = (children, reason) => {
+        const result = this.engine.planManager.mergeSplitProposal(split.nodeRef, split.attemptId, children, reason)
+        if (result.ok) split.createdIds.push(...result.nodeIds)
+        return result
+      }
+    }
 
     // Set spawn state (consumed by continueLoop)
     engine.spawnSystemPrompt = config.systemPrompt

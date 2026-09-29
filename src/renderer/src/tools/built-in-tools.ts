@@ -1262,3 +1262,60 @@ export const PAGE_BUILT_IN_TOOLS: ToolDefinition[] = [
     builtIn: true,
   },
 ]
+
+// ── create_sub_plan（PLAN-plan-split v2 R1/R5/R6）────────────────────────
+// Sub-agent-ONLY: the tool writes the PARENT plan, so it exists in a spawned
+// engine's toolset alone, and only for spawns of SPLITTABLE plan nodes
+// (`opts.spawnPlanSplit` — the same opt carries the bridge constants the
+// executor needs). Like PAGE_BUILT_IN_TOOLS, collectEnabledTools is its one
+// door into a toolset; never registered in the desktop registry.
+export const SUB_PLAN_BUILT_IN_TOOLS: ToolDefinition[] = [
+  {
+    name: 'create_sub_plan',
+    description:
+      'Split YOUR node\'s remaining work back into the parent plan when it clearly exceeds one sub-agent — many independent sub-parts, far too long-running, or more output than one session can produce. Call it the moment you know: before starting, or mid-way when the remainder has outgrown you — never after finishing your scope. The parent\'s scheduler dispatches the new nodes once your node settles; they are NOT yours to execute.',
+    category: 'system',
+    triggers: ['split', 'too big', '拆分', '任务太重'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'One line: why one sub-agent cannot do this (or the remainder of it).',
+        },
+        subtasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              description: {
+                type: 'string',
+                description: 'Self-contained sub-task description — its reader sees only this text plus its dependencies\' outputs.',
+              },
+              depends_on: {
+                type: 'array',
+                items: { type: 'integer' },
+                description: '1-based indexes of EARLIER subtasks in this list whose output this one consumes. Omit for independent subtasks; forward references are rejected.',
+              },
+            },
+            required: ['description'],
+          },
+          description: '2–5 sub-tasks, in list order. Array order does not sequence them — without depends_on they run in parallel.',
+        },
+      },
+      required: ['subtasks'],
+    },
+    instructions: toolInstructions.create_sub_plan,
+    builtIn: true,
+  },
+]
+
+// ── 子代理工具边界（PLAN-plan-split v2 R2，用户裁定 2026-09-29）──────────
+// A spawned sub-agent plans nothing, settles nothing and delegates nothing:
+// these three are REMOVED from every spawned toolset. This supersedes the
+// PLAN-plan-scheduler S11 premise (「子代理内建图维持模型驱动」assumed the
+// tools existed); the scheduler gate and the nested-spawn slot guard stay as
+// defense in depth. The one legitimate growth channel left is
+// create_sub_plan — which writes the PARENT plan through a narrow bridge,
+// where the structure is visible, scheduled and bounded.
+export const SUB_AGENT_DENY_TOOLS = ['create_plan', 'advance_plan', 'spawn_agent']

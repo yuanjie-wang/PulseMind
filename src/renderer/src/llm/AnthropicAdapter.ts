@@ -116,8 +116,14 @@ function reconcileToolResults(messages: AgentMessage[]): void {
     if (toolUses.length === 0) continue
 
     const resolvedIds = new Set<string>()
+    // Scan ALL later messages, not just the contiguous user run: chained plan
+    // dispatch (2026-09-30) lands an assistant message between a live batch
+    // and its still-arriving results, and a call answered AFTER that
+    // interleaved assistant is answered all the same. Breaking at the first
+    // non-user message once fabricated "interrupted" results for spawns that
+    // were merely still running — whose real outputs the duplicate guard in
+    // addToolResult then swallowed.
     for (let j = i + 1; j < messages.length; j++) {
-      if (messages[j].role !== 'user') break
       for (const block of messages[j].contentBlocks) {
         if (block.type === 'tool_result') {
           resolvedIds.add(block.tool_use_id)

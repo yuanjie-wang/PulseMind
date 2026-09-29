@@ -13,6 +13,7 @@ import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../shared/ty
 import type { SummonedExpert } from '../../../shared/expert-context'
 import {
   beginNodeExecution,
+  mergeSplitProposal as applySplitMerge,
   updateNodeExecution,
   completeAllNodes,
   createPlanDag,
@@ -24,6 +25,7 @@ import {
   resolveNodeRef,
   type RawPlanNode,
 } from '../../../shared/plan/graph'
+import type { SplitChildSpec } from '../../../shared/plan/split-proposal'
 
 const SETTLE_STATUS = { complete: 'completed', fail: 'failed', skip: 'skipped' } as const
 
@@ -110,6 +112,21 @@ export class PlanManager {
     node.handoff = trimmed
     this.notifyPlanChange()
     return true
+  }
+
+  /** Split merge (PLAN-plan-split P3/P8) — the plan's THIRD write policy, next
+   *  to advance_plan and autoSettle. The graph function owns every gate (CAS
+   *  on attemptId, gen cap, node budget, acyclicity) and rejects whole-unit;
+   *  the plan is notified only on a real merge — a rejection changed nothing
+   *  and must not mark the plan mutated. */
+  mergeSplitProposal(
+    ref: string | number, attemptId: string, children: SplitChildSpec[], reason?: string,
+  ): { ok: true; nodeIds: string[] } | { ok: false; reason: string } {
+    if (!this.plan) return { ok: false, reason: 'no active plan' }
+    const result = applySplitMerge(this.plan, ref, attemptId, children, reason)
+    if (!result.ok) return result
+    this.notifyPlanChange()
+    return { ok: true, nodeIds: result.children.map(c => c.id) }
   }
 
   /** First non-empty line of the handoff, ≤120 chars — autoSettle's default
