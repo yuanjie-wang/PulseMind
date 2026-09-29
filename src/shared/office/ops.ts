@@ -71,8 +71,11 @@ export interface OfficeInspectResult {
   details: {
     /** docx — one entry per outline paragraph (capped). `text` is the
      *  first-80-chars preview (outlineOf's slice); `textLength` is the FULL
-     *  paragraph length, consistent with the summary's total. */
+     *  paragraph length, consistent with the summary's total.
+     *  `paragraphCount` is the REAL document total (outlineOf caps the list
+     *  itself at 200) — the formatter reports THIS as 共 N 段. */
     paragraphs?: Array<{ index: number; style: string | null; textLength: number; text?: string }>
+    paragraphCount?: number
     textBudget?: number
     /** xlsx — `head` is the leading rows × cols of the sheet as raw cell
      *  text (formula cells report their cached result), absent when empty. */

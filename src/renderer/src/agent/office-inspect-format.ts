@@ -65,7 +65,13 @@ export function formatInspectResult(result: OfficeInspectResult): string {
         if (!push(`[${p.index}] ${p.style ?? '-'}: ${p.textLength}字 — ${p.text || '(空段落)'}`)) break
       }
       if (!truncated && d.paragraphs.length > shown.length) {
-        push(`…（共 ${d.paragraphs.length} 段，已列前 ${shown.length} 段）`)
+        // paragraphCount is the service's REAL total (outlineOf caps the list
+        // at 200): printing the capped list length as 共 N 段 told every
+        // >200-paragraph document a false boundary in an authoritative tone —
+        // the summary line above reported the true count, so the two lines
+        // contradicted each other (review_20260929 中6).
+        const total = d.paragraphCount ?? d.paragraphs.length
+        push(`…（共 ${total} 段，仅列前 ${shown.length} 段${total > d.paragraphs.length ? '，清单被截断' : ''}）`)
       }
     }
     if (d.textBudget !== undefined) push(`文本预算: ${d.textBudget} 字符（替换文案的上限，超出会溢出）`)

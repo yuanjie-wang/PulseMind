@@ -27,7 +27,17 @@ function xlsxCellText(cell: { value: unknown }): string {
   const v = cell.value
   if (v === null || v === undefined) return ''
   if (typeof v !== 'object') return String(v)
-  if (v instanceof Date) return v.toISOString().slice(0, 10)
+  if (v instanceof Date) {
+    // exceljs loads date cells as LOCAL-midnight Dates; toISOString() reads
+    // the UTC calendar day and shifted every date one day early in UTC+
+    // zones (2026-09-29 written in Asia/Shanghai read back 2026-09-28 —
+    // review_20260929 中5). Format from the local components: the day the
+    // spreadsheet actually shows.
+    const y = v.getFullYear()
+    const m = String(v.getMonth() + 1).padStart(2, '0')
+    const d = String(v.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
   const rec = v as Record<string, unknown>
   if (Array.isArray(rec.richText)) return rec.richText.map((rt) => String((rt as { text?: unknown }).text ?? '')).join('')
   if ('result' in rec) {
@@ -99,13 +109,16 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
           // 80-char slice — enough to identify each paragraph, while the full
           // text belongs to `read` / the docx_edit outline call. textLength is
           // the REAL paragraph length (outlineOf's copy is pre-sliced), so it
-          // stays consistent with the summary's total.
+          // stays consistent with the summary's total. paragraphCount is the
+          // REAL total: outlineOf caps its list at 200, and the formatter must
+          // never print the cap as the document's boundary (review_20260929 中6).
           paragraphs: outline.map((o, i) => ({
             index: o.index,
             style: o.style,
             textLength: model.paragraphs[i]?.text.length ?? o.text.length,
             text: o.text,
           })),
+          paragraphCount: model.paragraphs.length,
           textBudget,
           images: imageEntries.length,
         },

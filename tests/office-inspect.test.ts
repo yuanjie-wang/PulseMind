@@ -53,7 +53,25 @@ describe('formatInspectResult — docx', () => {
     const text = formatInspectResult(big)
     expect(text).toContain('[119] -: 10字')
     expect(text).not.toContain('[120]')
-    expect(text).toContain('…（共 150 段，已列前 120 段）')
+    expect(text).toContain('…（共 150 段，仅列前 120 段）')
+  })
+
+  it('reports the REAL paragraph total when the service list itself is capped (>200 段)', () => {
+    // review_20260929 中6: outlineOf caps at 200; printing the capped list
+    // length told a 500-paragraph document 「共 200 段」 while the summary line
+    // said 500 — an authoritative false boundary that made the model believe
+    // paragraph 201+ do not exist.
+    const capped: OfficeInspectResult = {
+      ...result,
+      summary: 'Word 文档: 500 段落, 约 10000 字符（预算 11000）',
+      details: {
+        paragraphCount: 500,
+        paragraphs: Array.from({ length: 200 }, (_, i) => ({ index: i, style: null, textLength: 10, text: `段${i}` })),
+      },
+    }
+    const text = formatInspectResult(capped)
+    expect(text).toContain('…（共 500 段，仅列前 120 段，清单被截断）')
+    expect(text).not.toContain('共 200 段')
   })
 })
 
@@ -181,12 +199,15 @@ describe('svcInspectOffice — real fixtures', () => {
     const docxPath = path.join(dir, '报告.docx')
     fs.writeFileSync(docxPath, docxZip.toBuffer())
 
-    // xlsx: two sheets, values + one formula with a cached result
+    // xlsx: two sheets, values + one formula with a cached result + a DATE
+    // cell — the fixture gap that let the UTC+ date drift ship (review_20260929
+    // 中5): exceljs round-trips a local-midnight Date, and the preview must
+    // read back the same calendar day the sheet shows.
     const ExcelJS = (await import('exceljs')).default
     const wb = new ExcelJS.Workbook()
     const ws = wb.addWorksheet('数据')
-    ws.addRow(['名称', '数量', '合计'])
-    ws.addRow(['甲', 10, null])
+    ws.addRow(['名称', '数量', '合计', '日期'])
+    ws.addRow(['甲', 10, null, new Date(2026, 8, 29)])
     ws.getCell('C2').value = { formula: 'SUM(B2:B2)', result: 10 }
     ws.addRow(['乙', 20, 30])
     const ws2 = wb.addWorksheet('说明')
@@ -218,6 +239,7 @@ describe('svcInspectOffice — real fixtures', () => {
       expect(paras[0]).toMatchObject({ index: 0, style: 'Heading1', textLength: 9, text: '2026 年度报告' })
       expect(paras[1].textLength).toBe(200) // real length, not the 80-char preview
       expect(paras[1].text).toHaveLength(80) // preview is outlineOf's plain slice — no ellipsis marker
+      expect(docx.details.paragraphCount).toBe(2) // the REAL total the formatter reports
       expect(docx.details.textBudget).toBe(Math.ceil((9 + 200) * 1.1))
 
       const xlsx = await svcInspectOffice({ filePath: xlsxPath })
@@ -226,9 +248,9 @@ describe('svcInspectOffice — real fixtures', () => {
       const sheets = xlsx.details.sheets!
       expect(sheets).toHaveLength(2)
       expect(sheets[0].head).toEqual([
-        ['名称', '数量', '合计'],
-        ['甲', '10', '10'],
-        ['乙', '20', '30'],
+        ['名称', '数量', '合计', '日期'],
+        ['甲', '10', '10', '2026-09-29'], // the LOCAL calendar day — toISOString read 09-28 in UTC+ zones
+        ['乙', '20', '30', ''],
       ])
       expect(xlsx.details.formulas).toEqual(['C2: SUM(B2:B2)'])
       expect(sheets[1].head).toEqual([['备注']])
