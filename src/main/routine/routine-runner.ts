@@ -198,12 +198,22 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
       void findPendingToolUseId(convId).then((toolUseId) => {
         if (toolUseId) void agentSessionManager.engineCall(convId, 'respondToTool', [toolUseId, '（无人值守运行：已自动跳过此提问）'])
       })
-    } else if (data.type === 'status' && (data.status === 'awaiting_continue' || data.status === 'awaiting_extension')) {
-      // Unattended: nobody will click 继续. stopExecution only parks the
-      // engine at idle — it emits no done/error — so the run must be settled
-      // here or it hangs 'running' until the timeout marks it failed.
+    } else if (data.type === 'status' && data.status === 'awaiting_extension') {
+      // Unattended: nobody will click 继续. stopExecution only parks the engine
+      // at idle — it emits no done/error — so the run must be settled HERE;
+      // removing the settlement hangs the row 'running' until the timeout
+      // marks it failed. The settlement itself is a FAILURE (2026-09-29): the
+      // old finish('success') made a task that burned its whole loop budget
+      // read as 成功 in run history — the one arm of this switch that left no
+      // trace, while the timeout arm settles as failed.
       void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
-      finish('success')
+      finish('failed', `任务触及单回合轮次上限（${data.currentCount ?? '?'}/${data.limit ?? '?'} 轮）仍未完成`)
+    } else if (data.type === 'status' && data.status === 'awaiting_continue') {
+      // Same settlement discipline; the wording names the actual park — the
+      // engine stopped to wait for a user decision (pause / plan confirmation)
+      // that nobody in an unattended run will make.
+      void agentSessionManager.engineCall(convId, 'stopExecution', []).catch(() => {})
+      finish('failed', '任务在无人值守运行中等待用户决策（暂停或计划确认），已停止')
     } else if (data.type === 'status' && data.status === 'completed') {
       // A finished loop is reported as a status, not a 'done' event — the
       // main-hosted session manager never emits 'done'/'error' (only the ws

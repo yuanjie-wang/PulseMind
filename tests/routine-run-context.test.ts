@@ -271,6 +271,8 @@ vi.mock('../src/main/storage/conversation-workspace', () => ({
   resolveConversationWorkspace: vi.fn(async () => '/tmp/run-context-ws'),
 }))
 
+import { agentSessionManager } from '../src/main/agent/session-manager'
+import { routineStore } from '../src/main/storage/routine-store'
 import { executeUnattended } from '../src/main/routine/routine-runner'
 
 describe('the runner seeds the run context (driven for real)', () => {
@@ -364,5 +366,62 @@ describe('wiring: the run transcript inherits via the columns', () => {
     // The old surface moved the GLOBAL default on every pick; no call site
     // may remain (the header comment's mention of the name is the point).
     expect(WORKSPACE).not.toContain('switchProfile(')
+  })
+})
+
+describe('unattended settlement: loop-limit and decision parks are failures (2026-09-29)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    createSessionMock.mockResolvedValue({ sessionId: 'routine_x', agentId: 'default' })
+    askMock.mockResolvedValue(undefined)
+    // The settlement arms fire-and-forget a stopExecution — the mock must
+    // answer with a promise or the runner's .catch explodes the event handler.
+    vi.mocked(agentSessionManager.engineCall).mockResolvedValue(undefined)
+  })
+
+  const fire = (): void => {
+    executeUnattended({
+      runId: 'run_cap',
+      routine: {
+        id: 'rtn_cap',
+        name: '长任务',
+        description: '',
+        prompt: '做一个很长的任务',
+        enabled: true,
+        createdAt: '2026-09-29T00:00:00.000Z',
+        updatedAt: '2026-09-29T00:00:00.000Z',
+      },
+      convId: 'routine_x',
+      notifyOnFinish: false,
+    })
+  }
+
+  it('awaiting_extension settles the row failed with the loop counts — never success', async () => {
+    fire()
+    await vi.waitFor(() => expect(askMock).toHaveBeenCalled())
+
+    sinks.current?.('routine_x', { type: 'status', status: 'awaiting_extension', currentCount: 50, limit: 50 } as AgentEventData)
+
+    await vi.waitFor(() => expect(vi.mocked(routineStore.finishRun)).toHaveBeenCalled())
+    const patch = vi.mocked(routineStore.finishRun).mock.calls[0][1]
+    expect(patch.status).toBe('failed')
+    expect(patch.error).toContain('轮次上限')
+    expect(patch.error).toContain('50')
+    // The park must still be answered — without the stop the engine would sit
+    // parked forever and the row would hang 'running' until the timeout.
+    expect(vi.mocked(agentSessionManager.engineCall)).toHaveBeenCalledWith('routine_x', 'stopExecution', [])
+  })
+
+  it('awaiting_continue settles failed with the decision-park wording, distinct from the loop limit', async () => {
+    fire()
+    await vi.waitFor(() => expect(askMock).toHaveBeenCalled())
+
+    sinks.current?.('routine_x', { type: 'status', status: 'awaiting_continue' } as AgentEventData)
+
+    await vi.waitFor(() => expect(vi.mocked(routineStore.finishRun)).toHaveBeenCalled())
+    const patch = vi.mocked(routineStore.finishRun).mock.calls[0][1]
+    expect(patch.status).toBe('failed')
+    expect(patch.error).toContain('等待用户决策')
+    expect(patch.error).not.toContain('轮次上限')
   })
 })

@@ -103,7 +103,9 @@ const TERMINAL_SWEEP_STATUSES = new Set(['completed', 'error', 'idle'])
 
 /** Project an engine status onto the wire's status carrier — the ONE place the
  *  live event and the re-attach snapshot agree on which optional fields a word
- *  carries (`error`'s reason; `retrying`'s count, delay and message). */
+ *  carries (`error`'s reason; `retrying`'s count, delay and message;
+ *  `awaiting_extension`'s reached/cap loop counts — the unattended routine
+ *  runner settles on this word and records the numbers in the run row). */
 function statusSnapshotOf(status: AgentStatus): StatusSnapshot {
   return {
     status: status.status,
@@ -111,6 +113,7 @@ function statusSnapshotOf(status: AgentStatus): StatusSnapshot {
     ...(status.status === 'retrying'
       ? { attempt: status.attempt, maxRetries: status.maxRetries, delayMs: status.delay, message: status.message }
       : {}),
+    ...(status.status === 'awaiting_extension' ? { currentCount: status.currentCount, limit: status.limit } : {}),
   }
 }
 
