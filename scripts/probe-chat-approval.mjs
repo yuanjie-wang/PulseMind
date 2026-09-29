@@ -522,7 +522,10 @@ await page.locator('[data-segment-head]').waitFor()
   const text = await head.textContent()
   check(
     'the done header narrates the activity by family',
-    !!text && text.includes('已完成 · 已读取 2 个文件 · 修改 1 个文件 · 运行 2 条命令'),
+    // ffc25e0 gave the 修改 family a diff-magnitude badge (「修改 N 个文件
+    // （+a/−d）」) — the fixture's settled edit is 'a'→'b', so the badge must
+    // read （+1/−1） right there in the narrative (review_20260929 中9).
+    !!text && text.includes('已完成 · 已读取 2 个文件 · 修改 1 个文件（+1/−1） · 运行 2 条命令'),
     text?.slice(0, 80),
   )
   const areas = await page.locator('[data-approval-area]').count()
