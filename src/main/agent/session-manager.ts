@@ -161,7 +161,17 @@ export class AgentSessionManagerImpl {
   }
 
   private emit(sessionId: string, data: AgentEventData): void {
-    for (const sink of this.eventSinks) sink(sessionId, data)
+    // 逐 sink 隔离：一个 sink 抛异常（webContents 正在销毁、ws send 失败）不得
+    // 中断兄弟 sink，更不得把异常沿 notify() 掷回引擎——notify 在引擎的结算
+    // 路径上被同步调用（handleEndTurnResponse），一个坏 sink 曾因此吞掉
+    // resolveCompletionIfSpawned，派发方的 `await waitForCompletion()` 永远
+    // 挂起，整回合停在 busy（conv_20260929224057，5 专家评审 4 个不结算、
+    // 光标常亮数小时）。
+    for (const sink of this.eventSinks) {
+      try { sink(sessionId, data) } catch (err) {
+        console.warn(`[AgentSession] event sink failed (${sessionId} ${String((data as { type?: string }).type)}):`, err)
+      }
+    }
   }
 
   /** Approval precedence, in one place: an explicit per-session override (derived

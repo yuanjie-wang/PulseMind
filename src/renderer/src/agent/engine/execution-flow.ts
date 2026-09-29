@@ -690,14 +690,28 @@ export class ExecutionFlow {
       if (lastMsg?.role === 'assistant') lastMsg.processingMs = totalMs
     }
     this.engine.agentStatus = { status: 'completed' }
-    this.engine.notify()
-    safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'completed' } }, 'afterLlmCall')
-    safeInvokeObserver(this.engine.opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'completed' } }, 'afterSession')
-    // Turn-end memory salvage (PLAN-memory-extraction-dedup): the loop itself
-    // no longer spends LLM calls on memory; old tool pairs at compaction risk
-    // are mined HERE, once, capped. Fire-and-forget.
-    runTurnEndMemoryExtraction(this.engine)
-    this.engine.resolveCompletionIfSpawned('completed')
+    try {
+      this.engine.notify()
+      safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason, status: { status: 'completed' } }, 'afterLlmCall')
+      safeInvokeObserver(this.engine.opts.hooks?.afterSession, { messages: this.engine.messages, status: { status: 'completed' } }, 'afterSession')
+      // Turn-end memory salvage (PLAN-memory-extraction-dedup): the loop itself
+      // no longer spends LLM calls on memory; old tool pairs at compaction risk
+      // are mined HERE, once, capped. Fire-and-forget.
+      runTurnEndMemoryExtraction(this.engine)
+    } catch (err) {
+      // 回合收尾面上的异常就地吞掉：onStreamComplete 对本函数是同步调用且无
+      // await 方，一个逃逸的 rejection 就是静默死亡——终局消息已入库、状态已
+      // 写 completed，唯独结算没跑，用户看到的就是「专家做完了、光标还在」。
+      console.warn('[AgentEngine] turn-end notify/hook failed (settle continues):', err)
+    } finally {
+      // 结算是引擎对派发方的契约，不依赖 notify 的健康（conv_20260929224057：
+      // 5 专家并行评审，4 个的终局消息带完整 stats 入库，但结算从未到达父代理
+      // ——派发方的 `await waitForCompletion()` 永远挂起，回合停在 busy，光标
+      // 常亮数小时）。notify 链路上任何一个 session 事件 sink 抛异常（webContents
+      // 正在销毁、ws send 失败）都不能吞掉它；sink 侧另有逐个隔离（session-manager
+      // 的 emit），这里是最后一道。
+      this.engine.resolveCompletionIfSpawned('completed')
+    }
     // Post-turn compaction prewarm (fire-and-forget): the turn is closed, the
     // engine idle — if usage is high, the expensive history-summary LLM call
     // runs NOW instead of blocking the next turn's first request. Compacting

@@ -476,10 +476,22 @@ export async function startAgentService(
 
   // ── Session events → subscribed clients ──
   const unsubEvents = sessions.onEvent((sessionId, data: AgentEventData) => {
-    const payload = JSON.stringify({ jsonrpc: '2.0', method: Notifications.agentEvent, params: { sessionId, data } })
+    let payload: string
+    try {
+      payload = JSON.stringify({ jsonrpc: '2.0', method: Notifications.agentEvent, params: { sessionId, data } })
+    } catch (err) {
+      // One unserializable event must not kill the engine's notify chain — the
+      // caller (session-manager emit) isolates sinks, but the throw would
+      // otherwise land here first and abort every sink after this one.
+      console.warn(`[AgentWS] event serialize failed (${sessionId}):`, err)
+      return
+    }
     for (const conn of conns) {
       if (conn.sessions.has(sessionId) && conn.socket.readyState === WebSocket.OPEN) {
-        conn.socket.send(payload)
+        // A socket can close between the readyState check and the send; ws then
+        // throws synchronously (or emits a session-killing 'error'). Drop the
+        // event for that client only — the poll/re-subscribe path heals it.
+        try { conn.socket.send(payload) } catch { /* client vanishing mid-send */ }
       }
     }
   })
