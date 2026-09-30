@@ -1253,11 +1253,17 @@ export class AgentEngine implements EngineCore {
     this.loopCount = 0
     this.maxLoopCount = getLoopIterationLimit()
     this.streamingBlocks = []
+    // 恢复不是冻结：上面清场把 isCancelled 关上（防御性，恢复时刻并没有活回合），
+    // 但恢复后的第一个用户决定——回答 ask_user 卡片 / 审批放行——经 addToolResult
+    // → continueLoop 续跑，而那是唯一不经过 prepareTurn 复位闸门的入口（新消息 /
+    // 重试 / 继续执行都各自复位）。不复位 = 回答静默落空：卡片翻成已选择，任务
+    // 永远不再继续（应用在 ask_user 挂起时退出、重进后点击卡片，2026-09-30）。
+    this.isCancelled = false
     this.notify()
   }
 
   extendLoop = (): void => {
-    // 续期一次加的是配置的 base（默认 50），不是写死的常量——用户改了上限后，
+    // 续期一次加的是配置的 base（默认 200），不是写死的常量——用户改了上限后，
     // 「继续」给出的增量与第一次配额一致。
     this.maxLoopCount += getLoopIterationLimit()
     this.loopCount = 0

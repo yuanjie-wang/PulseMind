@@ -140,4 +140,29 @@ describe('ask_user: hosted sessions park, spawned agents refuse', () => {
     expect(results[0].content).toBe('cron 表达式')
     expect(engine.agentStatus).toEqual({ status: 'error', error: 'API key not configured' })
   })
+
+  it('answering a RESTORED ask_user card continues the loop (app exited mid-park)', async () => {
+    // The reported shape (2026-09-30): the app exits while the turn is parked
+    // on ask_user; on re-entry hydrate seeds the parked turn into a fresh
+    // engine via loadConversation — which freezes through cancelLoop/
+    // stopExecution and used to leave isCancelled raised. The card stayed
+    // interactive (the block is whatever the DB kept), but the answer's
+    // addToolResult → continueLoop hit the cancelled guard and died silently:
+    // the card flipped to 已选择 and the task never continued. Every other
+    // re-entry (new message / retry / 继续执行) resets the flag itself; the
+    // card-answer entry is the one that does not pass through prepareTurn.
+    const engine = makeAssistantEngine()
+    engine.loadConversation([
+      { id: 'msg_a', role: 'user', contentBlocks: [{ type: 'text', text: '帮我配置定时任务' }], createdAt: new Date().toISOString() },
+      { id: 'msg_b', role: 'assistant', contentBlocks: [makeAskUser('tu_restored')], createdAt: new Date().toISOString() },
+    ])
+
+    engine.respondToTool('tu_restored', '自然语言描述')
+    const results = toolResults(engine)
+    expect(results).toHaveLength(1)
+    expect(results[0].content).toBe('自然语言描述')
+    // The loop re-issued and landed on the assertable no-key guard — with the
+    // gate still raised this stays `{ status: 'idle' }` (the silent no-op).
+    expect(engine.agentStatus).toEqual({ status: 'error', error: 'API key not configured' })
+  })
 })
