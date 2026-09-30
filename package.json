@@ -15,6 +15,7 @@
     "format:fix": "prettier --write src/",
     "preview": "vite preview",
     "postinstall": "electron-builder install-app-deps",
+    "pretest": "tsc -b",
     "test": "vitest run",
     "browsers:install": "playwright-core install chromium",
     "browsers:ensure": "node scripts/ensure-chromium.js",
