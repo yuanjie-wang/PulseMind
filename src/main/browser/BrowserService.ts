@@ -79,7 +79,11 @@ const MUTATING_METHODS = new Set([
  *  hostile page (or an agent loop stuck on a popup site) could spin tabs
  *  without limit. Cap per scope, throttle per scope, merge a same-URL popup
  *  already in flight; a denied popup leaves an audit row, not a tab. User
- *  gestures ("+" button, address bar) are deliberately NOT gated. */
+ *  gestures ("+" button, address bar) are deliberately NOT gated. The cap
+ *  counts the POPUP-minted tabs of a scope (review_20260930 中8) — the flood
+ *  channel the gate exists for — never the user's own tabs: a scope where the
+ *  user opened 12 tabs themselves must not deny every later popup (including
+ *  their own target=_blank clicks) silently. */
 const POPUP_TABS_PER_SCOPE = 12
 const POPUP_MIN_INTERVAL_MS = 1000
 
@@ -291,7 +295,7 @@ export class BrowserService {
       auditStore.record({ scope: 'browser', actor: scope, action: 'browser.panePopupTab', target, decision: 'denied' })
       console.warn(`[browser] popup tab denied (${reason}): ${target}`)
     }
-    if (this.paneScopeEntries(scope).length >= POPUP_TABS_PER_SCOPE) return deny('tab cap reached')
+    if (this.popupTabsInScope(scope) >= POPUP_TABS_PER_SCOPE) return deny('tab cap reached')
     // The same URL is already being minted into a tab → join it instead of
     // duplicating (a double-fired window.open is one navigation, not two tabs).
     const inFlightKey = `${scope}\u0000${target}`
@@ -320,18 +324,36 @@ export class BrowserService {
     // always means a NEW tab; concurrent doCreatePaneTab calls are safe (the
     // registry write is synchronous once newTab resolves).
     const entry = await this.doCreatePaneTab(opener.scopeId, opener.origin)
+    this.popupTabIds.add(entry.id)
     auditStore.record({ scope: 'browser', actor: opener.scopeId, action: 'browser.panePopupTab', target, decision: 'allowed' })
     const beforeUrl = entry.tab.page.url()
     // A form POST must not downgrade to GET in the reopened tab — SAML
     // HTTP-POST binding and gateway jumps land on 405s or broken flows when
     // it does. Playwright's goto has no method override, so the navigation
-    // is rewritten through a one-shot route (`times: 1` unroutes itself
-    // after the first match — the URL predicate keeps the match exact).
-    if (route.postBody?.data) {
-      const post = route.postBody
+    // is rewritten through a one-shot route (the URL predicate keeps the
+    // match exact).
+    const post = route.postBody?.data ? route.postBody : null
+    const postRoute = post ? (url: URL) => url.toString() === target : null
+    if (post && postRoute) {
+      let replayed = false
       await entry.tab.page.route(
-        (url) => url.toString() === target,
+        postRoute,
         async (r) => {
+          // One-shot rewrite BY HAND, gated to the main-frame navigation: the
+          // URL predicate alone also matches same-URL subresource/iframe
+          // requests (Playwright routes them all), and Playwright's own
+          // `times: 1` counts EVERY match — a subresource arriving before
+          // goto would consume the rewrite (the navigation ships as GET), and
+          // a goto whose URL normalization never matches would leave the
+          // route armed to overwrite a LATER same-URL request with the stale
+          // body (review_20260930 中9; a SAML one-time token would replay an
+          // old assertion). Everything else passes through untouched.
+          const req = r.request()
+          if (replayed || !req.isNavigationRequest() || req.frame() !== entry.tab.page.mainFrame()) {
+            await r.continue().catch(() => {})
+            return
+          }
+          replayed = true
           // request().headers() is async (Playwright) — spread it AWAITED or
           // the override ships with no cookies/user-agent and SSO breaks.
           await r.continue({
@@ -344,14 +366,20 @@ export class BrowserService {
             postData: post.data,
           }).catch(() => {})
         },
-        { times: 1 },
       )
     }
-    await entry.tab.page.goto(target, {
-      waitUntil: 'commit',
-      timeout: 20_000,
-      ...(route.referrer ? { referrer: route.referrer } : {}),
-    }).catch(() => {})
+    try {
+      await entry.tab.page.goto(target, {
+        waitUntil: 'commit',
+        timeout: 20_000,
+        ...(route.referrer ? { referrer: route.referrer } : {}),
+      }).catch(() => {})
+    } finally {
+      // The rewrite never outlives this mint: a route left armed by a
+      // failed or never-matching goto would keep rewriting later same-URL
+      // requests with the stale body — the review's case (b).
+      if (postRoute) await entry.tab.page.unroute(postRoute).catch(() => {})
+    }
     const finalUrl = entry.tab.page.url()
     if (opener.origin === 'user' && finalUrl && finalUrl !== beforeUrl && !/^(about:|chrome-error:)/i.test(finalUrl)) {
       const title = await entry.tab.page.title().catch(() => '')
@@ -653,9 +681,20 @@ export class BrowserService {
 
   /** Popup flood-gate state (review_20260929 中8): one in-flight mint per
    *  scope+URL (same-URL popups merge into it), and the last minted-at time
-   *  per scope+URL for the same-URL minimum-interval throttle. */
+   *  per scope+URL for the same-URL minimum-interval throttle. popupTabIds
+   *  remembers the tabs POPUPS minted — the population POPUP_TABS_PER_SCOPE
+   *  caps (review_20260930 中8): counting every app-view tab made the user's
+   *  own "+" tabs spend the popup budget. */
   private popupInFlight = new Map<string, Promise<void>>()
   private lastPopupAt = new Map<string, number>()
+  private popupTabIds = new Set<string>()
+
+  /** The scope's popup-minted tab count — what the cap is about. */
+  private popupTabsInScope(scope: string): number {
+    let n = 0
+    for (const t of this.paneScopeEntries(scope)) if (this.popupTabIds.has(t.id)) n++
+    return n
+  }
 
   private createUserPaneTab(scope: string): Promise<ServiceTab> {
     const inFlight = this.paneTabCreation.get(scope)
@@ -798,6 +837,7 @@ export class BrowserService {
     const entry = this.tabs.get(id)
     if (!entry) return
     this.tabs.delete(id)
+    this.popupTabIds.delete(id)
     try {
       await entry.tab.close()
     } catch {

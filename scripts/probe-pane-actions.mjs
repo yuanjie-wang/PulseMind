@@ -39,6 +39,7 @@ const SCOPE_C = 'conv_pane_c'
 const SCOPE_D = 'conv_pane_d'
 const SCOPE_E = 'conv_pane_e'
 const SCOPE_F = 'conv_pane_f'
+const SCOPE_G = 'conv_pane_g'
 
 const results = []
 function check(name, pass, detail) {
@@ -55,56 +56,72 @@ function fakeAppView(dockCalls) {
   const navigations = []
   const views = new Map()
   const currents = new Map()
-  const pageRoutes = new Map() // tabId → registered one-shot route rewrites
-  return {
-    created,
-    navigations,
-    currentUrl: (tabId) => currents.get(tabId) ?? '',
-    descriptor: () => ({ id: 'app-view', type: 'app-view', capabilities: { browser: ['open', 'tabs', 'user'], tab: ['navigate'] } }),
-    async start() {},
-    async stop() {},
-    async newTab({ tabId, origin, scopeId, url }) {
-      created.push({ tabId, origin, scopeId, url: url ?? null })
-      currents.set(tabId, url ?? 'about:blank') // a real page.url() follows navigations
+  const pageRoutes = new Map() // tabId → armed route registrations (match fn → {match, handler})
       return {
-        page: {
-          url: () => currents.get(tabId) ?? '',
-          title: async () => '',
-          route: async (match, handler, opts) => {
-            const pending = pageRoutes.get(tabId) ?? []
-            pending.push({ match, handler, opts })
-            pageRoutes.set(tabId, pending)
-          },
-          goto: async (target, opts) => {
-            // Simulate a one-shot route rewrite (the POST-replay mechanism):
-            // the first registered route matching this navigation runs its
-            // handler against a stub and its override lands on the recorded
-            // navigation; `times: 1` consumes it.
-            const pending = pageRoutes.get(tabId) ?? []
-            const hit = pending.find((r) => {
-              try { return typeof r.match === 'function' ? r.match(new URL(target)) : true } catch { return false }
-            })
-            let override = null
-            if (hit) {
-              await hit.handler({ request: () => ({ headers: async () => ({}) }), continue: async (o) => { override = o } })
-              pageRoutes.set(tabId, pending.filter((r) => r !== hit))
-            }
-            navigations.push({
-              tabId,
-              url: target,
-              ...(override?.method ? { method: override.method, postData: override.postData } : {}),
-              ...(opts?.referrer ? { referrer: opts.referrer } : {}),
-            })
-            currents.set(tabId, target)
-            return null
-          },
-          goBack: async () => {},
-          goForward: async () => {},
-          reload: async () => {},
+        created,
+        navigations,
+        pageRoutes,
+        currentUrl: (tabId) => currents.get(tabId) ?? '',
+        descriptor: () => ({ id: 'app-view', type: 'app-view', capabilities: { browser: ['open', 'tabs', 'user'], tab: ['navigate'] } }),
+        async start() {},
+        async stop() {},
+        async newTab({ tabId, origin, scopeId, url }) {
+          created.push({ tabId, origin, scopeId, url: url ?? null })
+          currents.set(tabId, url ?? 'about:blank') // a real page.url() follows navigations
+          return {
+            page: {
+              url: () => currents.get(tabId) ?? '',
+              title: async () => '',
+              mainFrame: () => 'main',
+              route: async (match, handler, opts) => {
+                const pending = pageRoutes.get(tabId) ?? []
+                pending.push({ match, handler, opts })
+                pageRoutes.set(tabId, pending)
+              },
+              unroute: async (match) => {
+                pageRoutes.set(tabId, (pageRoutes.get(tabId) ?? []).filter((r) => r.match !== match))
+              },
+              goto: async (target, opts) => {
+                // Simulate the route pass a real navigation goes through
+                // (review_20260930 中9's case (a)): a same-URL SUBRESOURCE
+                // request reaches the route FIRST (the handler must fall it
+                // through — no override, no consumption), then the main-frame
+                // navigation itself (the rewrite applies). The route is NOT
+                // consumed here any more — production unroutes in its own
+                // finally, and `backend.pageRoutes` makes that observable.
+                const pending = pageRoutes.get(tabId) ?? []
+                const hit = pending.find((r) => {
+                  try { return typeof r.match === 'function' ? r.match(new URL(target)) : true } catch { return false }
+                })
+                let override = null
+                let subresourceOverride = null
+                if (hit) {
+                  await hit.handler({
+                    request: () => ({ headers: async () => ({}), isNavigationRequest: () => false, frame: () => 'iframe' }),
+                    continue: async (o) => { if (o) subresourceOverride = o },
+                  })
+                  await hit.handler({
+                    request: () => ({ headers: async () => ({}), isNavigationRequest: () => true, frame: () => 'main' }),
+                    continue: async (o) => { if (o) override = o },
+                  })
+                }
+                navigations.push({
+                  tabId,
+                  url: target,
+                  ...(override?.method ? { method: override.method, postData: override.postData } : {}),
+                  ...(subresourceOverride ? { subresourceRewrote: true } : {}),
+                  ...(opts?.referrer ? { referrer: opts.referrer } : {}),
+                })
+                currents.set(tabId, target)
+                return null
+              },
+              goBack: async () => {},
+              goForward: async () => {},
+              reload: async () => {},
+            },
+            close: async () => {},
+          }
         },
-        close: async () => {},
-      }
-    },
     // One stable fake view per tab, so the dock's mounting decisions are
     // observable: addChildView must fire once per view, never per switch.
     viewOf: (tabId) => {
@@ -507,6 +524,106 @@ async function phaseRun() {
     popupRows.map((e) => e.target).sort().join(' ') === 'https://popup-agent.example/ https://popup.example/a https://saml.example/sso',
     JSON.stringify(popupRows.map((e) => e.target)),
   )
+
+  /* ── 12. The popup flood gates as BEHAVIOR (review_20260930 中7): the cap,
+     the same-URL throttle, the in-flight merge, and the gate maps' hygiene.
+     All three gates are service-private state machines — until this section
+     they had only source-string scans, so deleting a gate kept every test
+     green (the exact shape 中8's regression would have taken) ─────────────── */
+  const popupAudit = () => auditStore.list(300).filter((e) => e.action === 'browser.panePopupTab')
+  const deniedFor = (url) => popupAudit().filter((e) => e.decision === 'denied' && e.target === url)
+
+  // Cap (POPUP_TABS_PER_SCOPE = 12), minted SEQUENTIALLY so each mint is
+  // registered before the next open is gated (a synchronous burst would race
+  // the cap past the registry write). The opener is a USER tab: the cap
+  // counts only POPUP-minted tabs (中8), so all 12 popups must mint DESPITE
+  // the scope already holding the opener — under the old all-tabs count the
+  // 12th popup would have been denied.
+  service.handlePaneState(paneState(SCOPE_G), sender)
+  await service.handlePaneAction({ op: 'newTab' }, sender)
+  const gOpener = tabsOf(SCOPE_G)[0]?.tabId
+  const POPUP_CAP = 12
+  for (let i = 0; i <= POPUP_CAP; i++) {
+    const url = `https://cap.example/${i}`
+    const before = tabsOf(SCOPE_G).length
+    service.handleWindowOpen(gOpener, { action: 'tab', url })
+    await waitFor(() => tabsOf(SCOPE_G).length > before || deniedFor(url).length > 0)
+  }
+  const gPopups = tabsOf(SCOPE_G).length - 1
+  check(
+    `the first ${POPUP_CAP} popups mint — the user's own opener tab spends NO popup budget (中8)`,
+    gPopups === POPUP_CAP,
+    `${gPopups} popup tabs for ${POPUP_CAP + 1} opens`,
+  )
+  check(
+    `…so the scope holds ${POPUP_CAP + 1} app-view tabs in total (opener included)`,
+    tabsOf(SCOPE_G).length === POPUP_CAP + 1,
+    String(tabsOf(SCOPE_G).length),
+  )
+  check(
+    `…and the over-cap open (https://cap.example/${POPUP_CAP}) is denied with an audit row`,
+    deniedFor(`https://cap.example/${POPUP_CAP}`).length === 1,
+    JSON.stringify(popupAudit().filter((e) => e.decision === 'denied').map((e) => e.target)),
+  )
+
+  // Same-URL throttle: the second open for a JUST-minted url (in-flight is
+  // empty again, the 1s stamp is fresh) is denied, not duplicated.
+  const throttleUrl = 'https://popup-throttle.example/'
+  const fBeforeThrottle = tabsOf(SCOPE_F).length
+  service.handleWindowOpen(openerId, { action: 'tab', url: throttleUrl })
+  await waitFor(() => tabsOf(SCOPE_F).length === fBeforeThrottle + 1)
+  service.handleWindowOpen(openerId, { action: 'tab', url: throttleUrl })
+  await new Promise((r) => setTimeout(r, 80))
+  check(
+    'a same-URL re-open inside the 1s window is denied with an audit row, not minted',
+    tabsOf(SCOPE_F).length === fBeforeThrottle + 1 && deniedFor(throttleUrl).length === 1,
+    `tabs ${fBeforeThrottle}→${tabsOf(SCOPE_F).length}, denied rows: ${deniedFor(throttleUrl).length}`,
+  )
+
+  // In-flight merge: two synchronous same-URL opens join ONE mint — one tab,
+  // and the in-flight map is observable carrying exactly it, then drained.
+  const mergeUrl = 'https://popup-merge.example/'
+  const fBeforeMerge = tabsOf(SCOPE_F).length
+  service.handleWindowOpen(openerId, { action: 'tab', url: mergeUrl })
+  const inFlightDuring = service.popupInFlight.size
+  service.handleWindowOpen(openerId, { action: 'tab', url: mergeUrl })
+  await waitFor(() => tabsOf(SCOPE_F).length === fBeforeMerge + 1)
+  await waitFor(() => service.popupInFlight.size === 0)
+  check(
+    'a same-URL double-fire merges into the ONE in-flight mint (one tab, not two)',
+    tabsOf(SCOPE_F).length === fBeforeMerge + 1 && inFlightDuring === 1,
+    `in-flight=${inFlightDuring}, tabs ${fBeforeMerge}→${tabsOf(SCOPE_F).length}`,
+  )
+  check('…and the in-flight map drains once the mint settles', service.popupInFlight.size === 0, String(service.popupInFlight.size))
+
+  // The cap ledger follows the tab: minted → tracked, closed → freed.
+  const mergeTab = tabsOf(SCOPE_F).at(-1)
+  check('a minted popup is tracked for the cap ledger', !!mergeTab && service.popupTabIds.has(mergeTab.tabId), String(mergeTab?.tabId))
+  service.handlePaneState(paneState(SCOPE_F), sender)
+  await service.handlePaneAction({ op: 'closeTab', tabId: mergeTab?.tabId }, sender)
+  check('…and closing it frees the slot (ledger cleaned in closeTab)', !service.popupTabIds.has(mergeTab?.tabId), '')
+
+  // review_20260930 中9's case (a), behaviorally: a same-URL SUBRESOURCE
+  // request that reaches the route before the goto must NOT consume the POST
+  // rewrite — the fake's goto now fires every matching handler as a
+  // subresource first, so a rewrite-happy handler would show up as
+  // `subresourceRewrote` on the recorded navigation.
+  const sso2Url = 'https://saml2.example/sso'
+  service.handleWindowOpen(openerId, {
+    action: 'tab',
+    url: sso2Url,
+    postBody: { data: 'SAMLResponse=2&RelayState=t2', contentType: 'application/x-www-form-urlencoded' },
+  })
+  await waitFor(() => backend.navigations.some((n) => n.url === sso2Url))
+  const sso2Nav = backend.navigations.filter((n) => n.url === sso2Url).at(-1)
+  check(
+    'a same-URL subresource request falls through — it does not consume the POST rewrite',
+    !!sso2Nav && !sso2Nav.subresourceRewrote,
+    JSON.stringify(sso2Nav),
+  )
+  check('…and the navigation itself still ships as POST with its body', sso2Nav?.method === 'POST' && sso2Nav?.postData === 'SAMLResponse=2&RelayState=t2', JSON.stringify(sso2Nav))
+  const armedRoutes = [...backend.pageRoutes.values()].reduce((n, list) => n + list.length, 0)
+  check('…and no rewrite route outlives its mint (unrouted in the finally, even on failure)', armedRoutes === 0, `${armedRoutes} route(s) still armed`)
 }
 
 // ── runner ─────────────────────────────────────────────────────────────────
