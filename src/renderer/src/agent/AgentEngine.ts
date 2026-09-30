@@ -1316,10 +1316,12 @@ export class AgentEngine implements EngineCore {
 
     // Auto-mark tool_use as completed — ensures React.memo re-renders ExecutionSegment
     // with the correct status, since addToolResult creates a new messages reference
-    // that includes the updated block status.
+    // that includes the updated block status. 'queued' is covered as a safety net:
+    // a result landing on a not-yet-started call still settles it (executors mark
+    // 'running' at entry, so the normal path arrives here via 'running').
     for (const msg1 of this.messages) {
       for (const block1 of msg1.contentBlocks) {
-        if (block1.type === 'tool_use' && block1.id === toolUseId && block1.status === 'running') {
+        if (block1.type === 'tool_use' && block1.id === toolUseId && (block1.status === 'running' || block1.status === 'queued')) {
           block1.status = 'completed'
         }
       }

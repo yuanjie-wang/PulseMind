@@ -590,7 +590,12 @@ export class ExecutionFlow {
     // 权限审批框也会先出现，再自动消失」). ask_user is not held either and runs
     // through the same marking.
     const heldIds = new Set(heldTools.map(t => t.id))
-    for (const t of toolUses) if (!heldIds.has(t.id)) t.status = 'running'
+    // A non-held call is ACCEPTED here, but the serial groups below start
+    // tools one at a time — so it rides 'queued' (hourglass in the tool
+    // header) until its own executor's entry mark flips it to 'running'
+    // (loading). The blanket-'running' marking this replaced made every
+    // batch-mate wear the executing glyph while actually waiting its turn.
+    for (const t of toolUses) if (!heldIds.has(t.id)) t.status = 'queued'
     // What the ladder holds stays pending until the user approves it.
     for (const t of heldTools) t.status = 'pending'
     this.engine.notify()

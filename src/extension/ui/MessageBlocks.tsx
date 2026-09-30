@@ -78,16 +78,17 @@ function ToolStatusIcon({ block, completedFromResult }: {
     return <Icon name="check" style={{ color: '#4ec9b0' }} />
   }
   if (block.status === undefined) return <Icon name="arrowDown" style={{ color: '#999' }} />
-  if (block.status === 'running') return <Icon name="hourglass" spin />
+  if (block.status === 'running') return <Icon name="loading" spin />
   if (block.status === 'completed') {
     return block.exitCode === 0 || block.exitCode === undefined
       ? <Icon name="check" style={{ color: '#4ec9b0' }} />
       : <Icon name="close" style={{ color: '#f44747' }} />
   }
   if (block.status === 'rejected') return <Icon name="close" style={{ color: '#f44747' }} />
-  // 'pending': either still being generated or held for approval — the header
-  // gear is the chat's glyph for both.
-  return <Icon name="setting" style={{ color: '#999' }} />
+  // 'pending' (still being generated or held for approval) and 'queued'
+  // (waiting its turn in a batch): the hourglass is the chat's glyph for
+  // not-yet-executing — the spinner above means actually running.
+  return <Icon name="hourglass" style={{ color: '#999' }} />
 }
 
 /** The edit diff body — same shared model as the desktop's CommandCard
@@ -190,6 +191,10 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
             <Icon name="loading" spin style={{ color: '#1677ff' }} />
           ) : block.status === 'running' ? (
             <Icon name="loading" spin style={{ color: '#1677ff' }} />
+          ) : block.status === 'queued' ? (
+            // Queued behind batch-mates — hourglass, not the executing spinner
+            // (mirrors the chat CommandCard's queued branch).
+            <Icon name="hourglass" style={{ color: '#999' }} />
           ) : (
             <Icon name="setting" style={{ color: '#999' }} />
           )}

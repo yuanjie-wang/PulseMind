@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Button, Typography, Space, Spin, Tag, Input } from 'antd'
-import { PlayCircleOutlined, CloseCircleOutlined, StopOutlined, LoadingOutlined, CheckCircleOutlined, SendOutlined, CloseOutlined, CheckOutlined, CommentOutlined, SettingOutlined } from '@ant-design/icons'
+import { PlayCircleOutlined, CloseCircleOutlined, StopOutlined, LoadingOutlined, CheckCircleOutlined, SendOutlined, CloseOutlined, CheckOutlined, CommentOutlined, SettingOutlined, HourglassOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ToolUseBlock } from '../../types/agent'
 import { toolDisplayName, toolObjectSummary } from '../chat/tool-summary'
@@ -420,7 +420,10 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
   )
 
   const isAskUser = block.name === 'ask_user'
-  const isAskUserRunning = isAskUser && (block.status === 'running' || block.status === 'pending' && onApprove)
+  // ask_user waits for the user's choices, not for a process — 'queued' (its
+  // dispatch-time state since the 排队中/执行中 split) must count as live here,
+  // or the empty action row renders an 8px gap under the waiting card.
+  const isAskUserRunning = isAskUser && (block.status === 'running' || block.status === 'queued' || block.status === 'pending' && onApprove)
 
   // 对象行（T3）: the parsed object half of the input, one mono line.
   const objectLine = toolObjectSummary(block)
@@ -451,6 +454,10 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
             <LoadingOutlined style={{ color: '#1677ff' }} />
           ) : block.status === 'running' && !isAskUser ? (
             <Spin indicator={<LoadingOutlined style={{ fontSize: 16, color: '#1677ff' }} />} />
+          ) : block.status === 'queued' && !isAskUser ? (
+            // Queued behind batch-mates — hourglass, not the executing spinner
+            // (user 2026-09-30: hourglass 明确为排队中). Same grey as the gear.
+            <HourglassOutlined style={{ color: '#999' }} />
           ) : isAskUser ? (
             <CommentOutlined style={{color:'var(--pm-text-secondary)'}} />
           ) : (

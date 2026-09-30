@@ -505,7 +505,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
         (b) =>
           b.type === 'tool_use' &&
           b.subConvId === subAgentView.subConvId &&
-          (b.status === 'running' || b.status === 'pending')
+          (b.status === 'running' || b.status === 'queued' || b.status === 'pending')
       )
     )
   }, [subAgentView, plan, messages])

@@ -15,7 +15,6 @@ import {
   ArrowUpOutlined,
   HourglassOutlined,
   CloseOutlined,
-  SettingOutlined,
   LockOutlined,
   AimOutlined,
   EyeOutlined,
@@ -181,7 +180,10 @@ function CollapsibleToolBlock({
         onMouseEnter={(e) => { e.currentTarget.style.background = needsAction ? 'var(--pm-warn-bg-hover)' : 'var(--pm-fill-hover)' }}
         onMouseLeave={(e) => { e.currentTarget.style.background = needsAction ? 'var(--pm-warn-bg)' : 'var(--pm-fill)' }}
       >
-        {/* Status indicator. The pair is the terminal family's own status
+        {/* Status indicator. Glyph ladder (user 2026-09-30): hourglass = not
+            yet executing ('pending' — generating or held — and 'queued'),
+            spinner = actually executing, check/close = settled. The pair is
+            the terminal family's own status
             palette (#4ec9b0 / #f44747, CommandCard's skin) and stays literal on
             purpose — that family is dark in both modes and is not part of the
             theme migration; both values already read on a light or dark fill. */}
@@ -194,7 +196,7 @@ function CollapsibleToolBlock({
             animation: settleFx === 'pop' ? POP_ANIM : settleFx === 'shake' ? SHAKE_ANIM : undefined
           }}
         >
-          {block.status === undefined && completedFromResult ? <CheckOutlined style={{color:'#4ec9b0'}} /> : block.status === undefined ? <ArrowDownOutlined style={{color:'var(--pm-text-muted)'}} /> : block.status === 'running' ? <HourglassOutlined /> : block.status === 'completed' ? (block.exitCode === 0 ? <CheckOutlined style={{color:'#4ec9b0'}} /> : <CloseOutlined style={{color:'#f44747'}} />) : block.status === 'rejected' ? <CloseOutlined style={{color:'#f44747'}} /> : <SettingOutlined />}
+          {block.status === undefined && completedFromResult ? <CheckOutlined style={{color:'#4ec9b0'}} /> : block.status === undefined ? <ArrowDownOutlined style={{color:'var(--pm-text-muted)'}} /> : block.status === 'running' ? <LoadingOutlined spin /> : block.status === 'completed' ? (block.exitCode === 0 ? <CheckOutlined style={{color:'#4ec9b0'}} /> : <CloseOutlined style={{color:'#f44747'}} />) : block.status === 'rejected' ? <CloseOutlined style={{color:'#f44747'}} /> : <HourglassOutlined />}
         </span>
         {/* Tool name — the human verb (PLAN-tool-ux T1); the object stays in the summary */}
         <span style={{ fontWeight: 600, color: 'var(--pm-text-strong)', flexShrink: 0, fontSize: 12 }}>{toolDisplayName(block.name, t)}</span>

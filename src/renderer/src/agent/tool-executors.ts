@@ -253,6 +253,10 @@ export class ToolExecutor implements ToolExecContext {
   async execReadOnlyTools(tools: ToolUseBlock[]): Promise<void> {
     const platform = this.opts.platformInfo?.platform || ''
     await Promise.all(tools.map(async (t) => {
+      // Reads fan out concurrently — every tool here is genuinely executing,
+      // so all enter 'running' at once (dispatch no longer blanket-marks; the
+      // other executors carry their own entry mark).
+      t.status = 'running'; this.notify()
       try {
         // ── office_inspect: a workspace tool living on the read tier ──
         // (H10: READ_TIER_TOOLS routes it HERE; without this branch it fell

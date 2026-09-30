@@ -102,7 +102,10 @@ describe('ask_user: hosted sessions park, spawned agents refuse', () => {
     await engine.handleToolUseResponse([ask])
 
     expect(engine.agentStatus).toMatchObject({ status: 'awaiting_user_input' })
-    expect(ask.status).toBe('running')
+    // 'queued' since the 排队中/执行中 split (2026-09-30): nothing dispatches
+    // ask_user — it parks accepted-but-waiting until respondToTool settles it.
+    // The header glyph is the hourglass either way.
+    expect(ask.status).toBe('queued')
     // Nothing settles the call — respondToTool (the chips) owns it from here.
     expect(toolResults(engine)).toHaveLength(0)
   })

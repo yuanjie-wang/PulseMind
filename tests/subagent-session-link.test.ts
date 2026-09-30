@@ -175,7 +175,7 @@ describe('the spawn card opens the one sub-agent session view', () => {
     expect(appSrc).not.toContain('const [subAgentLive')
     expect(appSrc).toContain('?.status === \'pending\'')
     expect(appSrc).toMatch(/b\.subConvId === subAgentView\.subConvId/)
-    expect(appSrc).toMatch(/b\.status === 'running' \|\| b\.status === 'pending'/)
+    expect(appSrc).toMatch(/b\.status === 'running' \|\| b\.status === 'queued' \|\| b\.status === 'pending'/)
   })
 
   // User ruling 2026-09-25: 主对话打开了侧边窗口，进入子对话中也要打开 —

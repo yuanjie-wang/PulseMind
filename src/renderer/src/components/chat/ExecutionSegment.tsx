@@ -83,8 +83,8 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
   // Single traversal for all derived state — replaces 4 separate useMemo calls
   const { texts, initial, done, toolCount, activityText, receivingText, liveOutput, heldCalls } = useMemo(() => {
     let hasTools = false
-    let anyNonPending = false // any tool has a status beyond 'pending' (running, completed, rejected)
-    let anyRunning = false
+    let anyNonPending = false // any tool has a status beyond 'pending' (queued, running, completed, rejected)
+    let anyInFlight = false // 'running' or 'queued' — the batch is not settled yet
     let hasToolResults = false // presence of tool_result indicates completion (used when status stripped on save)
     const heldCalls: ToolUseBlock[] = [] // calls this segment holds for the user's approval
     const texts: string[] = []
@@ -114,8 +114,11 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
           toolCount++
           hasTools = true
           if (block.name) toolNames.add(block.name)
-          if (block.status === 'running') {
-            anyRunning = true
+          if (block.status === 'running' || block.status === 'queued') {
+            // 'queued' too: a slot-waiting expert's last output line is the
+            // 「排队中：本会话已有 N 个专家在运行…」 note — exactly the live
+            // progress a collapsed header should surface.
+            anyInFlight = true
             const out = (block as ToolUseBlock).output
             if (out) {
               const line = out.split('\n').filter(Boolean).pop() ?? ''
@@ -165,10 +168,9 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
     return {
       texts,
       initial: !anyNonPending && !hasToolResults,
-      done: hasTools && !anyRunning && (anyNonPending || hasToolResults),
+      done: hasTools && !anyInFlight && (anyNonPending || hasToolResults),
       toolCount,
       activityText: activityParts.join(' · '),
-      anyRunning,
       anyNonPending,
       liveOutput,
       heldCalls,

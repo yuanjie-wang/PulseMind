@@ -58,7 +58,11 @@ function resolveRefCatalogs(ex: ToolExecContext): ExpertRefCatalogs {
 // ── Spawn agent tool ───────────────────────────────────────────────────
 
 export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Promise<void> {
-  t.status = 'running'; ex.notify()
+  // 'queued', not 'running': a top-level spawn WAITS inside acquireSubAgentSlot's
+  // FIFO below while earlier experts hold their slots (10 dispatched / 5-slot
+  // cap = 5 loading + 5 hourglass, user 2026-09-30), and it must not wear the
+  // executing glyph there. The flip to 'running' happens after the slot lands.
+  t.status = 'queued'; ex.notify()
   let planNode: PlanNode | null = null
   let dispatchPlan: Plan | null = null
   // Tool ids can be replayed on retry; each executor invocation gets a new id.
@@ -256,6 +260,8 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       ex.notify()
       return
     }
+    // Slot in hand — the expert is now actually executing.
+    t.status = 'running'; ex.notify()
 
     try {
       // PLAN-plan-split v2 R6: arm create_sub_plan for splittable nodes —

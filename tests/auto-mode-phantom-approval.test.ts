@@ -73,13 +73,17 @@ describe('auto mode must never paint the approval ladder mid-batch', () => {
     return { engine, seen, readBlock, execBlock }
   }
 
-  it('auto: the exec call is running from the first notify and the engine never parks', async () => {
+  it('auto: the exec call leaves pending from the first notify and the engine never parks', async () => {
     const { engine, seen, execBlock } = await runBatch('auto')
 
     expect(seen.length).toBeGreaterThan(0)
     // The pre-dispatch marking owns the status now — a call that executes
     // immediately must not sit at the stream's 'pending' for even one notify.
-    expect(seen[0].exec).toBe('running')
+    // It is marked 'queued' (accepted, hourglass) rather than 'running':
+    // the executor's own entry mark is what flips it to actually executing
+    // (2026-09-30, 排队中/执行中 split) — the stub below writes 'running'
+    // exactly where the real execOtherTool entry does.
+    expect(seen[0].exec).toBe('queued')
     // No result landing mid-batch may flip the park on in unrestricted mode.
     expect(seen.every(s => s.status !== 'awaiting_approval')).toBe(true)
     expect(engine.agentStatus.status).not.toBe('awaiting_approval')
