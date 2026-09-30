@@ -83,7 +83,8 @@ describe('contextTokensOf', () => {
     // DeepSeek's completion report PRICES the reasoning. OpenAI details
     // reasoning_tokens as a breakdown of completion_tokens; Anthropic bills
     // thinking as output. The old per-block additions double-counted ~300k
-    // tokens of thinking in that one conversation.
+    // tokens of thinking in that one conversation. The fixture's report sits
+    // above the block price (103), the way an honest report must.
     const msg: AgentMessage = {
       id: 'm0', role: 'assistant', createdAt: AT,
       contentBlocks: [
@@ -91,9 +92,9 @@ describe('contextTokensOf', () => {
         { type: 'thinking', thinking: '很'.repeat(100) },
         { type: 'tool_use', id: 'u', name: 'read', input: {} }
       ] as ContentBlock[],
-      outputTokens: 50
+      outputTokens: 150
     }
-    expect(estimateMessagesTokens([msg])).toBe(50)
+    expect(estimateMessagesTokens([msg])).toBe(150)
     // Report-less messages still estimate block by block.
     const bare: AgentMessage = {
       id: 'm1', role: 'assistant', createdAt: AT,
@@ -103,6 +104,24 @@ describe('contextTokensOf', () => {
       ] as ContentBlock[]
     }
     expect(estimateMessagesTokens([bare])).toBe(100 + 2) // thinking + ceil(('{}'+read)/4)
+  })
+
+  it('a report that provably excludes its own content loses to the block floor', () => {
+    // 模块11 replay (2026-09-30): the gateway's completion_tokens excludes
+    // reasoning — 126 reported for blocks holding ~2K of thinking. The old
+    // unconditional substitution blessed that report, the heuristic read
+    // ~26K low over 50 rounds, and lightCompact's fit believed the copy
+    // already fit while the real wire climbed to 161K. Below 1.5x the report
+    // still wins (tokenizer variance), at 16x the blocks do.
+    const blocks: ContentBlock[] = [
+      { type: 'thinking', thinking: '很'.repeat(2000) },
+      { type: 'tool_use', id: 'u', name: 'read', input: {} }
+    ] as ContentBlock[]
+    const stripped: AgentMessage = { id: 'm2', role: 'assistant', createdAt: AT, contentBlocks: blocks, outputTokens: 126 }
+    expect(estimateMessagesTokens([stripped])).toBe(2002) // block floor, not 126
+    // 1.5x 以内的汇报差仍是汇报赢（启发式读高是正常方差；2900 > 2002×1.5 不成立）
+    const plausible: AgentMessage = { id: 'm3', role: 'assistant', createdAt: AT, contentBlocks: blocks, outputTokens: 2000 }
+    expect(estimateMessagesTokens([plausible])).toBe(2000)
   })
 })
 

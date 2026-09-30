@@ -825,8 +825,20 @@ export class ContextCompactor {
 
     const contributions = messages.map((m) => this.contributionOf(m))
     const totalH = contributions.reduce((a, b) => a + b, 0)
+    // hardTruncate/emergencyTruncate's own rule: the char heuristic never sees
+    // the fixed overhead, and when a real report anchors `estimatedTokens` the
+    // gap also carries every token the heuristic mis-priced — a gateway whose
+    // completion_tokens excludes reasoning underprices each assistant message
+    // (模块11 replay: 126 reported vs ~1.5K of thinking+tool_use per message,
+    // ~26K accumulated over 50 rounds). Deriving the overhead from that gap is
+    // what makes fits() speak the units the trigger above fired in. Without it
+    // the walk believed the copy already fit (112K heuristic + assumed overhead
+    // ≤ 140K) and dropped nothing for several requests while the real wire
+    // climbed 140K → 161K with zero compaction events. Unanchored, the gap is
+    // exactly fixedOverhead, so honest-reporting sessions are byte-identical.
+    const overhead = Math.max(0, estimatedTokens - totalH)
     let droppedH = 0
-    const fits = (): boolean => totalH - droppedH + fixedOverhead <= targetTokens
+    const fits = (): boolean => totalH - droppedH + overhead <= targetTokens
 
     // Find the last text-containing user message (protected)
     let lastTextUserMsgId: string | null = null
@@ -906,7 +918,7 @@ export class ContextCompactor {
 
     console.log(
       `[AgentEngine] lightCompact: dropped ${roundsDeleted} tool cycles ` +
-      `(context ~${Math.round(estimatedTokens)} → ~${Math.round(totalH - droppedH + fixedOverhead)}, target ${Math.round(targetTokens)} of ${contextLength})`
+      `(context ~${Math.round(estimatedTokens)} → ~${Math.round(totalH - droppedH + overhead)}, target ${Math.round(targetTokens)} of ${contextLength})`
     )
     return newMessages
   }

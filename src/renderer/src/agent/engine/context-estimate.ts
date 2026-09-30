@@ -39,20 +39,35 @@ export function estimateTextTokens(text: string): number {
 /** Token estimate over a message list. A message carrying a real outputTokens
  *  report contributes it directly and ALONE — completion/output reports
  *  already price the text, the thinking and the tool-call arguments (see the
- *  header). Only report-less messages estimate block by block. */
+ *  header) — UNLESS the report provably excludes content: a gateway that
+ *  strips reasoning out of completion_tokens reports 126 for a message
+ *  carrying ~2K of thinking+tool_use (模块11 replay, 2026-09-30; DeepSeek's
+ *  honest shape is the opposite — output 567K for 597K block-priced, 1.05x).
+ *  Tokenizer variance cannot open a >1.5x gap (the measured heuristic slope is
+ *  0.972), so beyond that the blocks are the honest floor and the report is
+ *  ignored. Report-less messages estimate block by block. */
+const REPORT_UNDERPRICE_FACTOR = 1.5
+
+function estimateBlocksTokens(blocks: AgentMessage['contentBlocks']): number {
+  let total = 0
+  for (const block of blocks) {
+    if (block.type === 'text') total += estimateTextTokens(block.text)
+    else if (block.type === 'tool_use') total += estimateTextTokens(JSON.stringify(block.input) + block.name)
+    else if (block.type === 'tool_result') total += estimateTextTokens((block as ToolResultBlock).content)
+    else if (block.type === 'thinking') total += estimateTextTokens((block as ThinkingBlock).thinking)
+  }
+  return total
+}
+
 export function estimateMessagesTokens(messages: AgentMessage[]): number {
   let total = 0
   for (const msg of messages) {
+    const blockEstimate = estimateBlocksTokens(msg.contentBlocks)
     if (msg.outputTokens) {
-      total += msg.outputTokens
+      total += blockEstimate > msg.outputTokens * REPORT_UNDERPRICE_FACTOR ? blockEstimate : msg.outputTokens
       continue
     }
-    for (const block of msg.contentBlocks) {
-      if (block.type === 'text') total += estimateTextTokens(block.text)
-      else if (block.type === 'tool_use') total += estimateTextTokens(JSON.stringify(block.input) + block.name)
-      else if (block.type === 'tool_result') total += estimateTextTokens((block as ToolResultBlock).content)
-      else if (block.type === 'thinking') total += estimateTextTokens((block as ThinkingBlock).thinking)
-    }
+    total += blockEstimate
   }
   return total
 }
@@ -60,10 +75,10 @@ export function estimateMessagesTokens(messages: AgentMessage[]): number {
 /** Whole-context estimate: prefer the latest real inputTokens report (it covers
  *  everything up to the message carrying it), estimate just the tail after it —
  *  a spawn batch or a new user turn appended since is invisible to that report
- *  — and guard with the full heuristic so a stale post-compaction report can
- *  never read smaller than the history actually holds. `fixedOverhead` (system
- *  prompt + tool schemas) only applies when no real report anchors the number,
- *  because a report already priced those bytes.
+ *  — and guard with the full heuristic (overhead included — the anchor is a
+ *  wire report, so the guard must bid in wire units too) so a stale
+ *  post-compaction report can never read smaller than the history actually
+ *  holds.
  *
  *  This transcript-pressure reading is the COMPACTOR's contract, not the
  *  ring's — the max-guard is what pins the number at "whole transcript" once
@@ -73,7 +88,14 @@ export function contextTokensOf(messages: AgentMessage[], fixedOverhead = 0): nu
   for (let i = messages.length - 1; i >= 0; i--) {
     const t = messages[i].inputTokens
     if (t && t > 0) {
-      return Math.max(t + estimateMessagesTokens(messages.slice(i + 1)), estimateMessagesTokens(messages))
+      // The guard must bid in the units it is compared against. The anchor is
+      // a WIRE report (overhead included), so a bare content heuristic always
+      // lost the max() by exactly the fixed overhead — and after a compaction
+      // pass the report prices the COMPACTED copy while the live history
+      // still holds the just-dropped region, which is how the next no-drop
+      // request silently re-inflated 10-20K past the fit target (模块11
+      // replay pass 24: estimate read 139K, the wire carried 151K).
+      return Math.max(t + estimateMessagesTokens(messages.slice(i + 1)), estimateMessagesTokens(messages) + fixedOverhead)
     }
   }
   return estimateMessagesTokens(messages) + fixedOverhead
