@@ -507,7 +507,7 @@ const FALLBACK_SETTINGS: AppSettings = {
   routineRunRetentionDays: 0,
   conversationRetentionDays: 0,
   backupRetentionDays: 30,
-  maxLoopIterations: 50,
+  maxLoopIterations: 200,
   maxParallelSubAgents: 5,
   debugLlmRequests: false,
   debugPerfLogs: false
@@ -585,7 +585,7 @@ export class SettingsStore {
           keepAwakeEnabled: parsed.keepAwakeEnabled ?? false,
           routineRunRetentionDays: readRetentionDays(parsed.routineRunRetentionDays),
           conversationRetentionDays: readRetentionDays(parsed.conversationRetentionDays),
-          maxLoopIterations: readIntInRange(parsed.maxLoopIterations, 50, 1, 500),
+          maxLoopIterations: readIntInRange(parsed.maxLoopIterations, 200, 1, 500),
           maxParallelSubAgents: readIntInRange(parsed.maxParallelSubAgents, 5, 1, 10),
           debugLlmRequests: parsed.debugLlmRequests === true,
           debugPerfLogs: parsed.debugPerfLogs === true,
@@ -655,7 +655,7 @@ export class SettingsStore {
       experienceEnabled: true,
       keepAwakeEnabled: false,
       routineRunRetentionDays: 0,
-      maxLoopIterations: 50,
+      maxLoopIterations: 200,
       maxParallelSubAgents: 5,
       debugLlmRequests: false,
       debugPerfLogs: false

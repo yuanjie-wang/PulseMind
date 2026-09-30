@@ -167,8 +167,8 @@ const runLimitRow = (label) => page.locator('.settings-scroll div')
 check('两个运行上限字段在常规面板上（循环次数 / 并行专家）',
   await runLimitRow('单次任务循环次数上限').locator('input').count() === 1 &&
   await runLimitRow('并行专家数量上限').locator('input').count() === 1)
-check('字段未配置的旧 settings 显示回退默认（50 / 5）',
-  (await runLimitRow('单次任务循环次数上限').locator('input').inputValue()) === '50' &&
+check('字段未配置的旧 settings 显示回退默认（200 / 5）',
+  (await runLimitRow('单次任务循环次数上限').locator('input').inputValue()) === '200' &&
   (await runLimitRow('并行专家数量上限').locator('input').inputValue()) === '5')
 await runLimitRow('单次任务循环次数上限').locator('input').fill('80')
 await page.getByRole('button', { name: '保存常规设置' }).click()

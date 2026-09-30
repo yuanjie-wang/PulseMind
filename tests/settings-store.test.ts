@@ -116,8 +116,8 @@ describe('SettingsStore.get', () => {
   })
 
   // 助手设置的两项运行上限（循环次数 / 并行专家）直接喂给引擎的边界判断：
-  // 合法值原样通过，缺失 / 非法 / 越界一律回落默认（50 / 5），不放行坏值。
-  it('normalizes the agent run limits, falling back to 50 / 5', async () => {
+  // 合法值原样通过，缺失 / 非法 / 越界一律回落默认（200 / 5），不放行坏值。
+  it('normalizes the agent run limits, falling back to 200 / 5', async () => {
     const saved = await freshStore()
     writeRaw({ ...RAW_BASE, maxLoopIterations: 80, maxParallelSubAgents: 3 })
     const s = await saved.get()
@@ -127,19 +127,19 @@ describe('SettingsStore.get', () => {
     const absent = await freshStore()
     writeRaw({ ...RAW_BASE })
     const s2 = await absent.get()
-    expect(s2.maxLoopIterations).toBe(50)
+    expect(s2.maxLoopIterations).toBe(200)
     expect(s2.maxParallelSubAgents).toBe(5)
 
     const junk = await freshStore()
     writeRaw({ ...RAW_BASE, maxLoopIterations: 'lots', maxParallelSubAgents: 99 })
     const s3 = await junk.get()
-    expect(s3.maxLoopIterations).toBe(50)
+    expect(s3.maxLoopIterations).toBe(200)
     expect(s3.maxParallelSubAgents).toBe(5)
 
     const bounds = await freshStore()
     writeRaw({ ...RAW_BASE, maxLoopIterations: 501, maxParallelSubAgents: 2.9 })
     const s4 = await bounds.get()
-    expect(s4.maxLoopIterations).toBe(50) // over the 500 ceiling → default
+    expect(s4.maxLoopIterations).toBe(200) // over the 500 ceiling → default
     expect(s4.maxParallelSubAgents).toBe(2) // in range → floored
   })
 

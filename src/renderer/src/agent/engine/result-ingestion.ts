@@ -6,7 +6,30 @@
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import { generateMsgId } from '../agent-utils'
 import { TOOL_PARAM_LIMITS, MAX_TOOL_INPUT_JSON_BYTES } from './engine-constants'
+import { estimateTextTokens } from './context-estimate'
 import type { AgentEngineOptions } from '../AgentEngine'
+
+
+  /** The tool-result guardrail's context shape (MAX_TOOL_RESULT_TOKENS /
+   *  MAX_READ_RESULT_TOKENS): errors pass whole; anything else over the token
+   *  budget is head+tail truncated (75%/25%) with a marker pointing at the
+   *  offload file — the CALLER writes the original to that file when
+   *  `truncated` is true. Pure so the budget is testable without an engine.
+   *  The length short-circuit skips estimation when even worst-case (all CJK)
+   *  fits the budget. */
+  export function applyToolResultBudget(
+    content: string, isError: boolean, budget: number, offloadDest: string
+  ): { text: string; truncated: boolean } {
+    if (isError || content.length <= budget) return { text: content, truncated: false }
+    const estTokens = estimateTextTokens(content)
+    if (estTokens <= budget) return { text: content, truncated: false }
+    const perChar = estTokens / content.length
+    const head = Math.floor((budget * 0.75) / perChar)
+    const tail = Math.floor((budget * 0.25) / perChar)
+    const hidden = content.length - head - tail
+    const text = `${content.slice(0, head)}\n\n… [Tool result truncated: ~${estTokens.toLocaleString()} tokens, ${hidden.toLocaleString()} chars omitted — full text saved at ${offloadDest}, use \`read\` to page through it] …\n\n${content.slice(-tail)}`
+    return { text, truncated: true }
+  }
 
 
   export function addTruncatedResults(messages: AgentMessage[], tools: ToolUseBlock[]): void {

@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   workspaceDir: '',
   autoCleanup: false,
   locale: 'zh',
-  maxLoopIterations: 50,
+  maxLoopIterations: 200,
   maxParallelSubAgents: 5
 }
 

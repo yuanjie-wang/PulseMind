@@ -61,6 +61,21 @@ export const TOOL_PARAM_LIMITS: Record<string, Record<string, number>> = {
 }
 export const MAX_TOOL_INPUT_JSON_BYTES = 1_000_000 // 1 MB safety net for any tool
 
+// ── User input cap ──────────────────────────────────────────────────────
+// User ruling 2026-09-30: 「给输入框一个4k的上限」. 4000 chars ≈ 4000 tokens in
+// the worst case (all CJK at the estimator's ~1 token/char) — a huge paste
+// used to ride the conversation forever (lightCompact only drops tool cycles;
+// a pure-text user message is only cut by hardTruncate past the 0.9× window
+// line). Enforced at two depths: the desktop composer's onChange wrapper
+// (feedback: the near-limit counter), and prepareTurn as the protocol-level
+// backstop for clients without the UI clamp — staged rows restored from old
+// drafts, the extension panel, hosted sessions. This lives in engine-constants
+// (not Composer.tsx) because AgentEngine is de-facto shared code and must not
+// import a component module. Attachments stay out of this budget: they ride
+// as [file:path] refs, and content only enters via read's own
+// MAX_READ_RESULT_TOKENS.
+export const MAX_USER_INPUT_CHARS = 4_000
+
 // ── Turn-end memory salvage (PLAN-memory-extraction-dedup) ──────────────
 // In-loop extraction is GONE (scheduleMemoryExtraction deleted — the loop no
 // longer spends LLM calls on memory). The only salvage path runs at TURN END,
@@ -77,6 +92,17 @@ export const MEM_SALVAGE_CONTEXT_RATIO = 0.9
 // it, and importing AgentEngine from an executor would close a cycle
 // (AgentEngine → tool-executors → executors/spawn-tool → AgentEngine).
 export const MAX_TOOL_RESULT_TOKENS = 4_000
+
+// read's dedicated budget (every read branch passes it as addToolResult's
+// maxTokens): read pages are line-bounded (500/call) but NOT byte-bounded, and
+// reading a file IS the task — so read skips the 4K default for this higher
+// line, where every normal page lands whole. It only bites pathological
+// shapes: files with very long lines (minified bundles, single-line JSON,
+// base64) turn one 500-line page into up to ~1MB ≈ hundreds of K tokens,
+// which would exceed the entire window in a single result; past the line the
+// standard head+tail truncation + tmp/trunc/ offload applies, same as any
+// other tool result.
+export const MAX_READ_RESULT_TOKENS = 30_000
 
 // spawn_agent envelopes share ONE budget per assistant round: 11 parallel
 // experts each returning up to 4k tokens would append ~44k tokens in a single

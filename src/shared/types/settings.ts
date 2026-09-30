@@ -103,7 +103,7 @@ export interface AppSettings {
   /** 侧边栏项目列表的排序方式（未设 = 'created'，即创建时间倒序）。 */
   projectSortMode?: ProjectSortMode
   /** 单次任务内 agent loop 的循环次数上限（每次 LLM 请求计一轮；达到上限会询问
-   *  用户是否继续）。保存后从下一个回合生效。默认 50。 */
+   *  用户是否继续）。保存后从下一个回合生效。默认 200。 */
   maxLoopIterations?: number
   /** 同一会话内并行运行的子代理（专家）数量上限，超出的排队等待。保存后对
    *  下一次 spawn 生效。默认 5。 */

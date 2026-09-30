@@ -158,7 +158,7 @@ export async function safeInvokeObserver<T>(hook: ((ctx: T) => void | Promise<vo
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
-export const MAX_LOOP_ITERATIONS = 50
+export const MAX_LOOP_ITERATIONS = 200
 
 /** The loop cap's effective base: MAX_LOOP_ITERATIONS until 设置 → 助手设置
  *  applies a saved `maxLoopIterations` (session-manager at startup/save for
@@ -167,7 +167,7 @@ export const MAX_LOOP_ITERATIONS = 50
  *  in startLoop/reset/loadConversation read it per turn — a settings change
  *  lands from the next turn on without touching live engines mid-turn.
  *  `null`/invalid falls back to the constant, so a settings object that
- *  predates the field keeps today's 50. */
+ *  predates the field keeps the constant's value. */
 let loopIterationLimit: number | null = null
 
 export function getLoopIterationLimit(): number {

@@ -14,6 +14,7 @@ import { Sender } from '@ant-design/x'
 import { Button } from 'antd'
 import { ArrowUpOutlined, LoadingOutlined } from '@ant-design/icons'
 import { hsvToCss } from '../../../../shared/hash-color'
+import { MAX_USER_INPUT_CHARS } from '../../agent/engine/engine-constants'
 
 /** The Sender's imperative handle. Derived from the component itself because the
  *  package root exports `SenderProps` but not `SenderRef`. */
@@ -23,6 +24,27 @@ export type ComposerHandle = React.ElementRef<typeof Sender>
  *  content column everywhere. InputArea's @-mention selector mirrors it so
  *  the popup is exactly as wide as the input box it belongs to. */
 export const COMPOSER_MAX_WIDTH = 952
+
+/** Hard character cap of the composer input (user ruling 2026-09-30: 「给输入框
+ *  一个4k的上限」). The number lives in engine-constants (MAX_USER_INPUT_CHARS)
+ *  because prepareTurn clamps at the same line as the protocol backstop and
+ *  AgentEngine must not import a component module. Enforcement lives in the
+ *  onChange wrapper below, NOT in an antd maxLength prop: @ant-design/x's
+ *  Sender does not declare maxLength, and its imperative insert() (the
+ *  @-mention path) writes the DOM value directly — but that insert still
+ *  reports through the context onChange, which lands on this prop (verified
+ *  against the package source), so every mutation of the box (typing, paste,
+ *  mention insert, history recall) funnels through here. A paste past the cap
+ *  is CLIPPED, not rejected; the counter tells the user the cap is real. */
+export const COMPOSER_MAX_CHARS = MAX_USER_INPUT_CHARS
+
+/** The counter shows once the box is this full, so a long paste sees what
+ *  happened to it instead of silently losing its tail. */
+export const COMPOSER_COUNT_VISIBLE_AT = Math.floor(COMPOSER_MAX_CHARS * 0.8)
+
+export function clampComposerInput(value: string): string {
+  return value.length > COMPOSER_MAX_CHARS ? value.slice(0, COMPOSER_MAX_CHARS) : value
+}
 
 /** How dim the send button goes while it cannot be pressed.
  *  antd's own disabled styling is not available to it: AppLayout's stylesheet
@@ -161,6 +183,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // what makes the color arriving read as "this task now belongs to Alpha".
   const accent = sendAccentHue === undefined ? null : sendAccent(sendAccentHue)
 
+  const nearLimit = value.length >= COMPOSER_COUNT_VISIBLE_AT
+
   const send = (): void => {
     if (isRequesting) {
       onCancel()
@@ -212,6 +236,27 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   gap between the two instead. The button is antd's 24px size="small"
                   circle; the ring is deliberately drawn a touch smaller than that. */}
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+                {/* Near the character cap the count shows in the footer, amber at
+                    the line: the honest companion of the onChange clamp — a big
+                    paste that got clipped reads what happened instead of
+                    discovering it in the transcript. #d46b08 is the composer's
+                    own amber (InputArea's UNRESTRICTED_COLOR, rgb(212,107,8) —
+                    not imported, that would cycle); #999 is the app's muted
+                    ink. */}
+                {nearLimit && (
+                  <span
+                    className="pm-composer-count"
+                    style={{
+                      fontSize: 11,
+                      lineHeight: 1,
+                      color: value.length >= COMPOSER_MAX_CHARS ? '#d46b08' : '#999',
+                      fontVariantNumeric: 'tabular-nums',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {value.length}/{COMPOSER_MAX_CHARS}
+                  </span>
+                )}
                 {trailing}
                 <Button
                   size="small"
@@ -237,7 +282,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             </div>
           }
           value={value}
-          onChange={(v) => onChange(v as string)}
+          onChange={(v) => onChange(clampComposerInput(v as string))}
           loading={loading}
           placeholder={placeholder}
           disabled={disabled}

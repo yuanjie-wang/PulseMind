@@ -8,7 +8,9 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
     case 'read': {
       const filePath = String(input.file_path || '')
       const offset = Number(input.offset) || 1
-      // Hard cap: read bypasses the token guardrail, so a page is bounded at 500 lines.
+      // Hard cap: a page is bounded at 500 lines — the structural bound;
+      // token-level overflow is read's dedicated budget's job
+      // (MAX_READ_RESULT_TOKENS in engine-constants).
       const limit = Math.min(Number(input.limit) || 500, 500)
       if (isWin) {
         if (input.binary === true) {

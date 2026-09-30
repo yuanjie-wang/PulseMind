@@ -34,7 +34,7 @@ function EnvironmentSettings({ open, onClose, inline, onReloadConversations }: E
   const [modal, modalHolder] = Modal.useModal()
   const [dataPaths, setDataPaths] = useState<DataPaths | null>(null)
   const [localWorkspaceDir, setLocalWorkspaceDir] = useState(settings.workspaceDir || '')
-  const [localLoopLimit, setLocalLoopLimit] = useState(settings.maxLoopIterations ?? 50)
+  const [localLoopLimit, setLocalLoopLimit] = useState(settings.maxLoopIterations ?? 200)
   const [localParallelLimit, setLocalParallelLimit] = useState(settings.maxParallelSubAgents ?? 5)
   const [busy, setBusy] = useState(false)
   const disabled = loading || saving || busy
@@ -44,7 +44,7 @@ function EnvironmentSettings({ open, onClose, inline, onReloadConversations }: E
     if (open) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- modal-open reset: re-seeds the draft fields from props; the async path load follows
       setLocalWorkspaceDir(settings.workspaceDir || '')
-      setLocalLoopLimit(settings.maxLoopIterations ?? 50)
+      setLocalLoopLimit(settings.maxLoopIterations ?? 200)
       setLocalParallelLimit(settings.maxParallelSubAgents ?? 5)
       window.electronAPI
         .getDataPaths()
@@ -203,7 +203,7 @@ function EnvironmentSettings({ open, onClose, inline, onReloadConversations }: E
             max={500}
             step={10}
             value={localLoopLimit}
-            onChange={(val) => setLocalLoopLimit(val ?? 50)}
+            onChange={(val) => setLocalLoopLimit(val ?? 200)}
             style={{ width: '100%' }}
           />
         </div>

@@ -35,8 +35,9 @@ import { StreamRunner } from './engine/stream-runner'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
 import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, type CompactTracking } from './engine/context-compactor'
-import { MAX_TOOL_RESULT_TOKENS } from './engine/engine-constants'
+import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-constants'
 import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
+import { applyToolResultBudget } from './engine/result-ingestion'
 import type { CompactionEvent } from '../../../shared/agent-protocol/payloads'
 import type { EngineCore } from './engine/engine-core'
 import { stripToolResultImages } from './strip-tool-results'
@@ -51,8 +52,12 @@ import { regroupToolResults } from '../llm/regroup-tool-results'
 // char cap would be far too generous for CJK-heavy output (30K chars ≈ 7.5K
 // tokens in English but ≈ 30K tokens in Chinese). The DB persists whatever
 // lives in this.messages, so this also keeps oversized results out of the
-// tool_results table. The read tool is exempt (passes Infinity as maxTokens):
-// reading a file IS the task, so read results always land in full.
+// tool_results table. The read tool rides a dedicated higher budget
+// (MAX_READ_RESULT_TOKENS, 30K) instead of the 4K default: reading a file IS
+// the task, so a normal page lands in full — but a pathological long-line page
+// (500 lines of minified code, single-line JSON) is head+tail truncated and
+// offloaded like any other result instead of exceeding the whole window in one
+// call.
 // MAX_TOOL_RESULT_TOKENS lives in engine/engine-constants.ts — spawn-tool
 // sizes the batch-split envelope budget from it and must not import this
 // module (cycle: AgentEngine → tool-executors → executors/spawn-tool).
@@ -659,6 +664,16 @@ export class AgentEngine implements EngineCore {
     const beforeSessionCtx = await safeInvoke(opts.hooks?.beforeSession, { userMessage, messages: this.messages }, 'beforeSession')
     userMessage = beforeSessionCtx.userMessage
     if (!userMessage.trim()) return null
+    // 4K input cap backstop (2026-09-30 「给输入框一个4k的上限」): the desktop
+    // composer clamps in its onChange, but EVERY client funnels through
+    // prepareTurn — a staged row restored from an old draft, the extension
+    // panel, a hosted session — and the hook's rewrite is clamped here too.
+    // Clip, warn, keep going: the transcript is the one place oversize text
+    // never becomes permanent.
+    if (userMessage.length > MAX_USER_INPUT_CHARS) {
+      console.warn(`[AgentEngine] user message clipped to ${MAX_USER_INPUT_CHARS} chars (was ${userMessage.length})`)
+      userMessage = userMessage.slice(0, MAX_USER_INPUT_CHARS)
+    }
 
     this.loopCount = 0
     this.maxLoopCount = getLoopIterationLimit()
@@ -1279,24 +1294,15 @@ export class AgentEngine implements EngineCore {
   addToolResult = (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number): void => {
     // Global guardrail (see MAX_TOOL_RESULT_TOKENS above): errors are kept whole,
     // anything else over the token budget is head+tail truncated and the full text
-    // is offloaded to ~/.pulsemind/tmp/trunc/ for the model to `read` back. The length
-    // short-circuit skips estimation when even worst-case (all CJK) fits the budget.
-    // `maxTokens` overrides the default — the read tool passes Infinity to bypass
-    // the guardrail entirely (reading a file IS the task, so results always land
-    // in full; nothing is offloaded for it).
+    // is offloaded to ~/.pulsemind/tmp/trunc/ for the model to `read` back. read
+    // rides the same mechanism with its own higher budget (MAX_READ_RESULT_TOKENS)
+    // instead of the old blanket Infinity exemption — the truncation math lives in
+    // result-ingestion.applyToolResultBudget.
     const budget = maxTokens ?? MAX_TOOL_RESULT_TOKENS
-    let text = content
-    if (!isError && text.length > budget) {
-      const estTokens = estimateTokens(text)
-      if (estTokens > budget) {
-        const perChar = estTokens / text.length
-        const head = Math.floor((budget * 0.75) / perChar)
-        const tail = Math.floor((budget * 0.25) / perChar)
-        const hidden = text.length - head - tail
-        const dest = `~/.pulsemind/tmp/trunc/trunc_${toolUseId.slice(0, 8)}_${Date.now()}.txt`
-        getHost().writeFile({ filePath: dest, content: text }).catch(() => {})
-        text = `${text.slice(0, head)}\n\n… [Tool result truncated: ~${estTokens.toLocaleString()} tokens, ${hidden.toLocaleString()} chars omitted — full text saved at ${dest}, use \`read\` to page through it] …\n\n${text.slice(-tail)}`
-      }
+    const offloadDest = `~/.pulsemind/tmp/trunc/trunc_${toolUseId.slice(0, 8)}_${Date.now()}.txt`
+    const { text, truncated } = applyToolResultBudget(content, isError, budget, offloadDest)
+    if (truncated) {
+      getHost().writeFile({ filePath: offloadDest, content }).catch(() => {})
     }
 
     // Guard against duplicate

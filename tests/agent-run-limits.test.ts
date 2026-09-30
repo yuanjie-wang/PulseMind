@@ -90,8 +90,8 @@ describe('settings-configured loop limit (设置 → 助手设置 · 单次任�
   })
 
   it('falls back to the pinned default when nothing is configured', () => {
-    expect(getLoopIterationLimit()).toBe(50)
+    expect(getLoopIterationLimit()).toBe(200)
     const engine = makeEngine()
-    expect(engine.maxLoopCount).toBe(50)
+    expect(engine.maxLoopCount).toBe(200)
   })
 })
