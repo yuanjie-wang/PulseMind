@@ -510,6 +510,10 @@ export class ExecutionFlow {
       const validTools = toolUses.filter(t => !oversizedIds.has(t.id))
       if (validTools.length > 0) {
         await this.dispatchToolExecution(validTools)
+      } else {
+        // 纯合成批：全部被拒，结果已着陆、循环即将重请求 —— 与下方截断批同一
+        // 计数口径；混批由 dispatchToolExecution 收尾的那一次打点覆盖，不重复。
+        this.engine.recordToolBatchComplete()
       }
       this.engine.notify()
       this.engine.continueLoop()
@@ -624,12 +628,15 @@ export class ExecutionFlow {
         // re-enters here — painting `completed` over it would report the turn
         // finished while experts are still running.
         if (!this.engine.planScheduler.kick()) this.engine.continueLoop()
-      } else if (this.engine.planScheduler.kick()) {
+      } else if (this.engine.planScheduler.kick({ midDrain: true })) {
         // Chained attempts (2026-09-30) are still registered in the pending
         // set: the scheduler owns the turn — its kick settles, chains more or
         // waits, and the chained spawns' own addToolResult tail closes the
         // loop. Falling through to `completed` here used to end the turn
-        // under live experts.
+        // under live experts. midDrain additionally forbids the clean
+        // 'dispatch' — re-entering handleToolUseResponse from here would
+        // clobber the in-flight chained ids out of pendingToolIds
+        // (review_20260930 中5).
       } else { this.engine.agentStatus = { status: 'completed' }; this.engine.resolveCompletionIfSpawned('completed') }
       this.engine.notify()
       safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'tool_use', status: this.engine.agentStatus }, 'afterLlmCall')
@@ -659,6 +666,9 @@ export class ExecutionFlow {
       return
     }
     addTruncatedResults(this.engine.messages, toolUses); this.engine.notify()
+    // 合成错误批着陆、循环即将重请求 —— 与 handleToolUseResponse 截断分支的
+    // 打点同款批同款计数（review_20260930 中2：此前同形状一个计一个不计）。
+    this.engine.recordToolBatchComplete()
     safeInvokeObserver(this.engine.opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'max_tokens', status: { status: 'streaming' } }, 'afterLlmCall')
     this.engine.continueLoop()
   }

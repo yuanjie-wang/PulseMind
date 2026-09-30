@@ -195,6 +195,13 @@ function ChatView({
     () => (onSendStaged && conversationId ? { convId: conversationId, onSendNow: onSendStaged } : undefined),
     [onSendStaged, conversationId],
   )
+  // Same memo discipline as `staging`: an inline arrow here hands memoized
+  // InputArea a fresh prop every streaming tick and re-renders the whole
+  // composer ~12.5×/s for nothing (review_20260930 中3).
+  const handleUnbindExpert = useCallback(
+    () => { if (conversationId) onUnbindExpert?.(conversationId) },
+    [conversationId, onUnbindExpert],
+  )
   // Context usage for the input area's ring: the projected size once a
   // compaction pass ran (the copy the model actually sees, plus everything
   // appended since), otherwise the same live estimate the compactor reads.
@@ -922,7 +929,7 @@ function ChatView({
         // first message — the color belongs to the task, not to the welcome form.
         sendAccentHue={composerProjectHue}
         staging={staging}
-        onUnbindExpert={() => conversationId && onUnbindExpert?.(conversationId)}
+        onUnbindExpert={handleUnbindExpert}
         approvalMode={approvalMode}
         onChangeApprovalMode={onChangeApprovalMode}
       />

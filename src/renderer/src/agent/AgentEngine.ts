@@ -409,7 +409,15 @@ export class AgentEngine implements EngineCore {
   compactTracking: CompactTracking = makeCompactTracking()
 
   /** @internal — execution-flow counts one completed tool batch per model
-   *  round whose tool results landed; the refill breaker reads the pace. */
+   *  round whose tool results landed; the refill breaker reads the pace.
+   *  Tick sites (all of them, review_20260930 中2): dispatchToolExecution's
+   *  tail (auto/sync batches — and held batches, whose results land after the
+   *  user clicks; the only reader, evaluateRefillBreaker, runs at the NEXT
+   *  request build, by which time they have), the truncated-param synthetic
+   *  batch, the max_tokens synthetic batch, and the all-oversized synthetic
+   *  batch. An ask_user answer / rejection / approval release lands through
+   *  addToolResult and is covered by its round's dispatch tick — do NOT add
+   *  another tick inside addToolResult, that would double-count the round. */
   recordToolBatchComplete(): void {
     this.compactTracking.toolRoundsSinceDrop++
   }

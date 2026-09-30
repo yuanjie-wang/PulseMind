@@ -37,8 +37,16 @@ export class PlanScheduler {
   constructor(private engine: EngineCore) {}
 
   /** One scheduler step. Returns true when the caller must not run its own
-   *  continuation (LLM round / turn close) — see the header. */
-  kick(): boolean {
+   *  continuation (LLM round / turn close) — see the header. `midDrain` marks
+   *  the batch-tail call: chained calls are still registered in the engine's
+   *  pending set, so a clean `dispatch` is FORBIDDEN — it would re-enter
+   *  handleToolUseResponse and clobber the live accounting
+   *  (`pendingToolIds = new Set(新批 ids)`), the exact hazard
+   *  settleAndChain's comment warns about (review_20260930 中5; today the
+   *  claim lands in the same microtask so 'dispatch' is unreachable here,
+   *  but a future host whose expertList does real I/O opens the window).
+   *  The drain's own tail re-kicks when the in-flight calls settle. */
+  kick(opts?: { midDrain?: boolean }): boolean {
     const engine = this.engine
     // Applicability gates. A cancelled engine (stop/pause) must not be revived
     // by a synthetic dispatch; a spawned sub-agent's plan stays model-driven
@@ -54,6 +62,7 @@ export class PlanScheduler {
 
     switch (action.type) {
       case 'dispatch':
+        if (opts?.midDrain) return true
         this.dispatch(action.nodes)
         return true
       case 'chain':

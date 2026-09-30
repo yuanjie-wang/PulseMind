@@ -122,6 +122,12 @@ export interface EngineCore {
   continueLoop: () => Promise<void>
   cancelLoop: () => void
   resumeExecution: () => void
+  /** Freeze the turn (recursive: sub-engines freeze their own subtrees) without
+   *  settling completions — the stop button's engine landing point since the
+   *  2026-09-29 single-stop-button ruling. execution-flow's pauseExecution
+   *  recurses into activeSubAgents, so the freeze needs to cross the Core
+   *  boundary (f8c4f7d). */
+  pauseExecution: () => void
   /** Post-turn compaction prewarm (fire-and-forget): called from
    *  handleEndTurnResponse once the turn is closed. Skips spawned sub-agents,
    *  in-flight prewarms, and usage below the post-turn ratio. */

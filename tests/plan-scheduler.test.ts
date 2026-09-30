@@ -461,18 +461,20 @@ describe('formatUpstreamResults — what a downstream spawn receives', () => {
 
 describe('scheduler wiring (source scans)', () => {
   it('carries the kick() at all four hook sites', () => {
-    // resume, batch drain decision, the tail's live-chained branch, and the
-    // handleEndTurnResponse entry.
+    // resume, batch drain decision, the tail's live-chained branch (midDrain —
+    // review_20260930 中5: the tail's kick must not re-enter a clean dispatch
+    // over live chained ids), and the handleEndTurnResponse entry.
     const flow = src('src/renderer/src/agent/engine/execution-flow.ts')
-    expect((flow.match(/planScheduler\.kick\(\)/g) ?? []).length).toBe(4)
-    // addToolResult's async straggler tail — plus the mid-drain chaining entry
+    expect((flow.match(/planScheduler\.kick\(/g) ?? []).length).toBe(4)
+    expect(flow).toContain('planScheduler.kick({ midDrain: true })')
+    // addToolResult's async straggler tail — plus the mid-drain chain entry
     // that fires on every result which did NOT close the drain.
     const engine = src('src/renderer/src/agent/AgentEngine.ts')
-    expect((engine.match(/planScheduler\.kick\(\)/g) ?? []).length).toBe(1)
+    expect((engine.match(/planScheduler\.kick\(/g) ?? []).length).toBe(1)
     expect(engine).toContain('planScheduler.settleAndChain()')
     // The kick and the concurrent chain channel live in the engine module.
     const scheduler = src('src/renderer/src/agent/engine/plan-scheduler.ts')
-    expect(scheduler).toContain('kick(): boolean')
+    expect(scheduler).toContain('kick(opts?: { midDrain?: boolean })')
     expect(scheduler).toContain('dispatchConcurrent')
   })
 
