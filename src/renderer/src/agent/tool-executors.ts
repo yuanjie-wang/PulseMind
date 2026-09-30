@@ -42,6 +42,7 @@ async function experienceLocationBlock(em: { list(): Promise<Array<{ name: strin
 }
 
 import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool } from './executors/domain-tools'
+import { MAX_READ_RESULT_TOKENS } from './engine/engine-constants'
 import { execInstallTool } from './executors/install-tool'
 import { execCreateSubPlanTool } from './executors/create-sub-plan-tool'
 import type { SplitChildSpec } from '../../../shared/plan/split-proposal'
@@ -51,12 +52,14 @@ export { UI_PREVIEW_MAX } from './executors/context'
 
 // ── Remaining per-tool limits ───────────────────────────────────────
 // Executors no longer truncate tool results for context — the global guardrail
-// in AgentEngine (MAX_TOOL_RESULT_TOKENS) is the single backstop. These limits
-// stay only where they serve a non-context purpose: UI previews (see
+// in AgentEngine (MAX_TOOL_RESULT_TOKENS) is the single backstop, and read
+// rides it with a dedicated higher budget (MAX_READ_RESULT_TOKENS) instead of
+// the 4K default, since reading a file IS the task. These limits stay only
+// where they serve a non-context purpose: UI previews (see
 // executors/context.ts) and the read tool's paging (an intrinsic part of how
 // the model reads large files).
 const READ_DEFAULT_LINE_LIMIT = 200        // read: default lines per page
-const READ_MAX_LINE_LIMIT = 500            // read: hard cap on lines per page (read bypasses the token guardrail, so this is its only bound)
+const READ_MAX_LINE_LIMIT = 500            // read: hard cap on lines per page (the structural bound; the token-level net is MAX_READ_RESULT_TOKENS)
 
 /** UTF-8 byte length of a string. `String.length` counts UTF-16 code units,
  *  which for CJK-heavy content reads ~50% under the bytes actually hitting
@@ -274,7 +277,8 @@ export class ToolExecutor implements ToolExecContext {
         if (t.name === 'read') {
           const filePath = String(t.input?.file_path || '')
           const offset = Number(t.input?.offset) || 1
-          // read bypasses the token guardrail, so bound its page size here: the LLM's
+          // read rides a dedicated budget (MAX_READ_RESULT_TOKENS) instead of
+          // the 4K default, so still bound its page size here: the LLM's
           // limit (or the 200-line default) never exceeds 500 lines per call.
           const limit = Math.min(Number(t.input?.limit) || READ_DEFAULT_LINE_LIMIT, READ_MAX_LINE_LIMIT)
           const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase()
@@ -298,7 +302,7 @@ export class ToolExecutor implements ToolExecContext {
                 : 'Content converted from original file to markdown.'
               this.addToolResult(t.id, this.formatReadOutput(
                 filePath, fileSize, totalLines, offset, limit, content, note,
-              ), false, undefined, Infinity)
+              ), false, undefined, MAX_READ_RESULT_TOKENS)
               return
             }
             // markitdown failed, fall through to shell
@@ -310,7 +314,7 @@ export class ToolExecutor implements ToolExecContext {
             const fmt = ext === '.doc' ? 'Word' : 'PowerPoint'
             this.addToolResult(t.id,
               `「${ext}」是旧版 ${fmt} 格式，无法直接读取。请先在 Office/WPS 中另存为 .docx/.pptx，再用 docx_edit 编辑或 read 查看。`,
-              true, undefined, Infinity)
+              true, undefined, MAX_READ_RESULT_TOKENS)
             return
           }
 
@@ -330,7 +334,7 @@ export class ToolExecutor implements ToolExecContext {
           this.addToolResult(t.id, isError
             ? (content || `Command failed (exit: ${result.code})`)
             : this.formatReadOutput(filePath, fileSize, totalLines, offset, limit, content),
-            isError, undefined, Infinity)
+            isError, undefined, MAX_READ_RESULT_TOKENS)
           return
         }
 
