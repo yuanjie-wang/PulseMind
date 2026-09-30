@@ -83,8 +83,13 @@ const PACKAGE_RUN_SUBCOMMANDS = new Set(['exec', 'dlx', 'x'])
  *  sits behind the wrapper re-binds what runs, so no prefix of the line
  *  narrows anything. Keying them as wrapper + first tail token (`env bash`,
  *  `sudo bash`, `timeout 10`) meant one approval exempted the wrapper family
- *  whole — quote-shielded payloads included (review_20260929 高1). */
-const WRAPPER_PREFIXES = new Set(['env', 'sudo', 'nohup', 'nice', 'stdbuf', 'timeout', 'command', 'xargs', 'corepack'])
+ *  whole — quote-shielded payloads included (review_20260929 高1).
+ *  `script`/`su`/`doas`/`pkexec` ride the same list (review_20260930 高1):
+ *  `script session.log` keys as a depth-2 prefix, and its `-c` lands in slot 2
+ *  where the eval-flag and interpreter guards never look — one approval then
+ *  exempted `script … -c "<arbitrary>"` for the session. `su`/`doas`/`pkexec`
+ *  take a command (often `-c …` or bare) the same way. */
+const WRAPPER_PREFIXES = new Set(['env', 'sudo', 'nohup', 'nice', 'stdbuf', 'timeout', 'command', 'xargs', 'corepack', 'script', 'su', 'doas', 'pkexec'])
 
 function baseCommandName(token: string): string {
   const last = token.split(/[\\/]/).pop() ?? token
