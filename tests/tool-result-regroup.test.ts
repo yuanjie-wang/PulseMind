@@ -69,6 +69,18 @@ describe('isToolResultAdjacencyLegal', () => {
       msg('user', [result('b1', 'y'), result('a1', 'p'), result('a3', 'q')]),
     ])).toBe(false)
   })
+
+  it('rejects adjacent assistant messages (review_20260930 中6)', () => {
+    // The clean-dispatch shape: a turn ends with text while the plan is open,
+    // and the scheduler appends the synthetic dispatch assistant right after
+    // the model's own closing text — a same-role run Anthropic 400s on.
+    expect(isToolResultAdjacencyLegal([
+      msg('user', [text('hi')]),
+      msg('assistant', [text('on it')]),
+      msg('assistant', [use('a1')]),
+      msg('user', [result('a1', 'x')]),
+    ])).toBe(false)
+  })
 })
 
 describe('regroupToolResults — identity on legal histories', () => {
@@ -185,5 +197,43 @@ describe('regroupToolResults — repair of the interleaved shape', () => {
     const second = regroupToolResults(interleaved)
     expect(first.find(m => m.id.startsWith('regroup_'))!.id)
       .toBe(second.find(m => m.id.startsWith('regroup_'))!.id)
+  })
+})
+
+describe('regroupToolResults — merge of adjacent assistants (review_20260930 中6)', () => {
+  it('merges the text-ending turn with the synthetic dispatch into one assistant run', () => {
+    const out = regroupToolResults([
+      msg('user', [text('hi')]),
+      msg('assistant', [text('on it')], 'msgText'),
+      msg('assistant', [use('a1')], 'msgDispatch'),
+      msg('user', [result('a1', 'x')]),
+    ])
+    // Roles alternate and the two assistant messages are one.
+    expect(out.map(m => m.role)).toEqual(['user', 'assistant', 'user'])
+    const merged = out[1]
+    expect(merged.id).toBe('msgText') // the survivor is the FIRST message
+    expect(merged.contentBlocks.map(b => b.type)).toEqual(['text', 'tool_use'])
+    // The result still hangs off its call, in the user run right after.
+    expect(out[2].id).toBe('regroup_msgText')
+    expect(out[2].contentBlocks.map(b => (b as ToolResultBlock).tool_use_id)).toEqual(['a1'])
+    expect(isToolResultAdjacencyLegal(out)).toBe(true)
+  })
+
+  it('merges a three-assistant run and keeps later waves intact', () => {
+    const out = regroupToolResults([
+      msg('assistant', [text('a')], 'mA'),
+      msg('assistant', [text('b'), use('w1')], 'mB'),
+      msg('assistant', [use('w2')], 'mC'),
+      msg('user', [result('w1', 'x'), result('w2', 'y')]),
+    ])
+    expect(out.map(m => m.role)).toEqual(['assistant', 'user'])
+    expect(out[0].contentBlocks.map(b => b.type)).toEqual(['text', 'text', 'tool_use', 'tool_use'])
+    expect(out[1].contentBlocks.map(b => (b as ToolResultBlock).tool_use_id)).toEqual(['w1', 'w2'])
+    expect(isToolResultAdjacencyLegal(out)).toBe(true)
+  })
+
+  it('without adjacent assistants the identity contract is untouched', () => {
+    const history = [msg('user', [text('hi')]), msg('assistant', [text('hello')])]
+    expect(regroupToolResults(history)).toBe(history)
   })
 })

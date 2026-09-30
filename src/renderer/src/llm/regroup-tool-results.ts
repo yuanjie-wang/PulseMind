@@ -9,8 +9,10 @@
 // otherwise, and the adapters' reconcilers read the same adjacency and would
 // inject phantom "interrupted" results for spawns that are merely still
 // running. This pass rebuilds the API copy so every result hangs off its own
-// call. The live transcript keeps its chronological shape — only the request
-// is repaired.
+// call, and merges adjacent assistant messages into one (the clean plan
+// dispatch lands right after a text-ending turn — a same-role run Anthropic
+// 400s on). The live transcript keeps its chronological shape — only the
+// request is repaired.
 //
 // Identity is the cache contract: on an already-legal history the function
 // returns the SAME array reference (byte-identical request, zero re-bill —
@@ -19,18 +21,25 @@
 // requests. Compaction runs downstream of this and sees the legal shape.
 
 import type { AgentMessage } from '../types/agent'
-import type { ContentBlock, ToolResultBlock } from '../../shared/types/agent'
+import type { ContentBlock, ToolResultBlock } from '../../../shared/types/agent'
 
 const isToolResult = (b: ContentBlock): b is ToolResultBlock => b.type === 'tool_result'
 
 /** Wire-legal: every tool_result sits inside the user run that immediately
- *  follows the assistant message declaring its tool_use id. Results with no
- *  preceding assistant at all are orphans — the reconcilers own those, not
- *  this pass. */
+ *  follows the assistant message declaring its tool_use id, AND no two
+ *  assistant messages are adjacent — Anthropic/Bedrock 400 on same-role runs
+ *  (`roles must alternate`), and the oldest offender is not the chained
+ *  dispatch but the plan scheduler's clean one: a turn that ends with text
+ *  while the plan is still open appends the synthetic dispatch assistant
+ *  right after the model's own closing text (review_20260930 中6). Results
+ *  with no preceding assistant at all are orphans — the reconcilers own
+ *  those, not this pass. */
 export function isToolResultAdjacencyLegal(messages: AgentMessage[]): boolean {
   let openIds: Set<string> | null = null
+  let lastRole: 'user' | 'assistant' | null = null
   for (const msg of messages) {
     if (msg.role === 'assistant') {
+      if (lastRole === 'assistant') return false
       const uses = msg.contentBlocks.filter(b => b.type === 'tool_use')
       openIds = uses.length > 0 ? new Set(uses.map(b => (b as { id: string }).id)) : null
     } else {
@@ -38,6 +47,7 @@ export function isToolResultAdjacencyLegal(messages: AgentMessage[]): boolean {
         if (isToolResult(b) && openIds !== null && !openIds.has(b.tool_use_id)) return false
       }
     }
+    lastRole = msg.role
   }
   return true
 }
@@ -48,17 +58,33 @@ export function isToolResultAdjacencyLegal(messages: AgentMessage[]): boolean {
 export function regroupToolResults(messages: AgentMessage[]): AgentMessage[] {
   if (isToolResultAdjacencyLegal(messages)) return messages
 
+  // Merge adjacent assistant messages first (review_20260930 中6): the
+  // [assistant(text), assistant(tool_use)] pair the scheduler's clean dispatch
+  // produces must not reach the wire as a same-role run. The survivor is the
+  // FIRST message (its id keeps naming the turn's own text), and the merge
+  // happens before bucketing so a tool_use's parent — and the carrier id
+  // derived from it — is the merged message the request actually carries.
+  const merged: AgentMessage[] = []
+  for (const msg of messages) {
+    const last = merged[merged.length - 1]
+    if (msg.role === 'assistant' && last?.role === 'assistant') {
+      merged[merged.length - 1] = { ...last, contentBlocks: [...last.contentBlocks, ...msg.contentBlocks] }
+    } else {
+      merged.push(msg)
+    }
+  }
+
   // Bucket every result under the LATEST earlier assistant declaring its id
   // (results always follow their call; ids are unique per dispatch).
   const parentOf = new Map<string, AgentMessage>()
-  for (const msg of messages) {
+  for (const msg of merged) {
     if (msg.role !== 'assistant') continue
     for (const b of msg.contentBlocks) {
       if (b.type === 'tool_use') parentOf.set(b.id, msg)
     }
   }
   const buckets = new Map<AgentMessage, ToolResultBlock[]>()
-  for (const msg of messages) {
+  for (const msg of merged) {
     if (msg.role !== 'user') continue
     for (const b of msg.contentBlocks) {
       if (!isToolResult(b)) continue
@@ -71,7 +97,7 @@ export function regroupToolResults(messages: AgentMessage[]): AgentMessage[] {
   }
 
   const out: AgentMessage[] = []
-  for (const msg of messages) {
+  for (const msg of merged) {
     if (msg.role === 'assistant') {
       out.push(msg)
       const bucket = buckets.get(msg)
