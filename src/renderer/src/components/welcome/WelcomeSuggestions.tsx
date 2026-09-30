@@ -31,6 +31,7 @@ import {
 } from '../../utils/welcome-slices'
 import type { Routine, RoutineRun, RoutineRunStatus } from '../../../../shared/types/routine'
 import type { KnowledgeFile } from '../../../../shared/types/knowledge'
+import type { ConversationLight } from '../../hooks/useConversationEngine'
 
 /** Recent runs to inspect — only the newest matters, the rest is slack for filtering. */
 const RUN_FETCH_LIMIT = 5
@@ -173,9 +174,9 @@ interface ChatSlice {
   quote: string | null
 }
 
-export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation }: {
-  /** Conversations with a running loop get a status light, like the sidebar. */
-  activeLoopConvIds?: string[]
+export function WelcomeSuggestions({ convLights = {}, onOpenConversation }: {
+  /** Per-conversation sidebar light — the card badge lights while running. */
+  convLights?: Record<string, ConversationLight>
   onOpenConversation: (key: string) => void
 }): React.ReactElement {
   const { t } = useTranslation()
@@ -241,9 +242,12 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
 
   return (
     <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* The card badge's pulse keyframes live here (they used to be borrowed from
+          ConversationRows' style block, which no longer defines them). */}
+      <style>{`@keyframes ant-status-processing { 0% { transform: scale(0.8); opacity: 0.5; } 100% { transform: scale(2.4); opacity: 0; } }`}</style>
       {runModal}
       <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', minHeight: 158 }}>
-        <ChatCard chat={chat} now={now} activeLoopConvIds={activeLoopConvIds} onOpenConversation={onOpenConversation} />
+        <ChatCard chat={chat} now={now} running={convLights[chat?.key ?? ''] === 'running'} onOpenConversation={onOpenConversation} />
         <RoutineCard routines={routines} runs={runs} now={now} onRunNow={runNow} />
         <KnowledgeCard files={knowledge} now={now} />
       </div>
@@ -256,10 +260,10 @@ export function WelcomeSuggestions({ activeLoopConvIds = [], onOpenConversation 
 
 // ── 继续对话 ──
 
-function ChatCard({ chat, now, activeLoopConvIds, onOpenConversation }: {
+function ChatCard({ chat, now, running, onOpenConversation }: {
   chat: ChatSlice | null | undefined
   now: number
-  activeLoopConvIds: string[]
+  running: boolean
   onOpenConversation: (key: string) => void
 }): React.ReactElement | null {
   const { t } = useTranslation()
@@ -268,7 +272,6 @@ function ChatCard({ chat, now, activeLoopConvIds, onOpenConversation }: {
   // Nothing to resume: the composer and starter prompts already say "start here".
   if (!chat) return null
 
-  const running = activeLoopConvIds.includes(chat.key)
   const elapsed = relativeText(chat.updatedAt, now, t)
 
   return (

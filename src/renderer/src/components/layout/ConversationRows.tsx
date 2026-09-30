@@ -26,6 +26,7 @@ import {
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { CLOCK_TICK_MS, bucketDayByDate, describeRelativeTimeText, type DayBucket } from '../../utils/relative-time'
+import type { ConversationLight } from '../../hooks/useConversationEngine'
 import type { ConversationListItem } from '../../types/conversation'
 
 /** Gutter reserved for the task-status light, so titles line up whether or not one is lit. */
@@ -81,8 +82,8 @@ function ShowMoreBlock({
 interface ConversationRowsProps {
   conversations: ConversationListItem[]
   activeKey: string | undefined
-  activeLoopConvIds?: string[]
-  retryingConvIds?: string[]
+  /** Per-conversation sidebar light, keyed by conversation id (statusToLight). */
+  lights?: Record<string, ConversationLight>
   /** Wrap the rows in 置顶 / 今天 / 昨天 / 更早 sections instead of one flat
    *  list. The 对话 tab turns this on; the project tab keeps the flat order. */
   groupByDate?: boolean
@@ -133,6 +134,19 @@ export function groupConversationsByDate(
   return groups
 }
 
+/** The solid dots. Running keeps the link blue but is the only animated state —
+ *  a slow opacity blink (no scale, no ripple); the other three are static:
+ *  the approval/ask amber (`--pm-warn`, the held-approval family — not the gold
+ *  accent, which marked the retired retrying state), the api-exception red and
+ *  the completed-unread green (the status pair from the palette: antd red-5 /
+ *  green-6). */
+const LIGHT_DOT_COLOR: Record<ConversationLight, string> = {
+  running: 'var(--pm-link)',
+  waiting: 'var(--pm-warn)',
+  error: 'var(--pm-error-status)',
+  unread: 'var(--pm-success-status)'
+}
+
 interface ConversationRowProps {
   /** The conversation's list key, re-declared so the row root can carry it as
    *  the `data-conv-row` probe hook (`key` is React's own, never a prop). */
@@ -140,8 +154,10 @@ interface ConversationRowProps {
   label: string
   timeText: string | null
   active: boolean
-  /** null = idle; the row's task is running (pulsing) or retrying (static amber). */
-  light: 'running' | 'retrying' | null
+  /** null = unlit; the light state derives from the conversation's mirrored
+   *  agentStatus (statusToLight): running is the slow-blinking blue dot, the
+   *  other three are static solid dots — waiting amber, error red, green. */
+  light: ConversationLight | null
   pinned: boolean
   /** Pointer is over the row: reveal the row menu, hide the pin. */
   hovered: boolean
@@ -187,13 +203,15 @@ function ConversationRow({
       }}
     >
       {/* The light sits in a reserved gutter rather than in the flow, so a running task
-          never shifts the title sideways. */}
+          never shifts the title sideways. One dot shape for every state; only the
+          running dot animates (user ruling 2026-09-30: the ring read badly — a slow
+          opacity blink on the link-blue dot instead, same 6px as the rest). */}
       <span style={{ width: STATUS_GUTTER_WIDTH, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
         {light && (
           <span style={{
             width: 6, height: 6, borderRadius: '50%',
-            background: light === 'retrying' ? 'var(--pm-gold-accent)' : 'var(--pm-link)',
-            animation: light === 'retrying' ? 'none' : 'ant-status-processing 1.2s infinite ease-in-out'
+            background: LIGHT_DOT_COLOR[light],
+            animation: light === 'running' ? 'conv-dot-blink 2s ease-in-out infinite' : undefined
           }} />
         )}
       </span>
@@ -232,8 +250,7 @@ function ConversationRow({
 function ConversationRows({
   conversations,
   activeKey,
-  activeLoopConvIds = [],
-  retryingConvIds = [],
+  lights = {},
   groupByDate = false,
   onSelect,
   onDelete,
@@ -306,11 +323,7 @@ function ConversationRows({
       label={conv.label}
       timeText={describeRelativeTimeText(conv.updatedAt, now, t)}
       active={conv.key === activeKey}
-      light={
-        activeLoopConvIds.includes(conv.key)
-          ? 'running'
-          : retryingConvIds.includes(conv.key) ? 'retrying' : null
-      }
+      light={lights[conv.key] ?? null}
       pinned={!!conv.pinned}
       hovered={hoveredKey === conv.key}
       menuOpen={openMenuKey === conv.key}
@@ -335,9 +348,9 @@ function ConversationRows({
   return (
     <>
       <style>{`
-        @keyframes ant-status-processing {
-          0% { transform: scale(0.8); opacity: 0.5; }
-          100% { transform: scale(2.4); opacity: 0; }
+        @keyframes conv-dot-blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.35; }
         }
         .conv-show-more {
           display: block; width: 100%; text-align: left;

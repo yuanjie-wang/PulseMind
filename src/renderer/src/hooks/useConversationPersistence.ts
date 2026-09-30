@@ -27,6 +27,10 @@ interface UseConversationPersistenceOptions {
   enginesRef: React.MutableRefObject<Map<string, SessionEngineHandle>>
   activeEngineIdRef: React.MutableRefObject<string>
   getOrCreateEngine: (convId: string) => SessionEngineHandle
+  /** Read receipt for the sidebar status light — this hook's switch path drives
+   *  activeEngineIdRef directly and never routes through activateEngine, so the
+   *  未读 clear has to ride here (useConversationEngine's markConversationRead). */
+  markConversationRead: (convId: string) => void
   setMessages: React.Dispatch<React.SetStateAction<AgentMessage[]>>
   setAgentStatus: React.Dispatch<React.SetStateAction<AgentStatus>>
   setStreamingBlocks: React.Dispatch<React.SetStateAction<any[]>>
@@ -36,7 +40,7 @@ interface UseConversationPersistenceOptions {
 export function useConversationPersistence(options: UseConversationPersistenceOptions) {
   const {
     autoCleanup, messages, agentStatus,
-    enginesRef, activeEngineIdRef, getOrCreateEngine,
+    enginesRef, activeEngineIdRef, getOrCreateEngine, markConversationRead,
     setMessages, setAgentStatus, setStreamingBlocks, setPlan
   } = options
 
@@ -267,6 +271,9 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
     const prevConvId = convIdRef.current
     if (prevConvId) void saveConversationById(prevConvId, true)
     activeEngineIdRef.current = key
+    // Opening the conversation is the read receipt (status lights): the clear
+    // rides HERE, not activateEngine — this switch path never routes through it.
+    markConversationRead(key)
 
     if (key) {
       if (enginesRef.current.has(key)) {
@@ -331,7 +338,7 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
 
     setActiveConversationKey(key)
     convIdRef.current = key
-  }, [saveConversationById, setActiveConversationKey, getOrCreateEngine,
+  }, [saveConversationById, setActiveConversationKey, getOrCreateEngine, markConversationRead,
       enginesRef, activeEngineIdRef, setMessages, setAgentStatus, setStreamingBlocks, setPlan])
 
   // ── Helper: update title in list ──

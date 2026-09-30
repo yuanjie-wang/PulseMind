@@ -7,6 +7,7 @@
 import React from 'react'
 import { useTranslation } from '../../i18n/useTranslation'
 import ConversationRows from './ConversationRows'
+import type { ConversationLight } from '../../hooks/useConversationEngine'
 import type { ConversationListItem } from '../../types/conversation'
 
 interface ConversationSidebarProps {
@@ -16,8 +17,7 @@ interface ConversationSidebarProps {
   onDelete: (key: string) => void
   onRename: (key: string, newLabel: string) => void
   onTogglePin: (key: string, pinned: boolean) => void
-  activeLoopConvIds?: string[]
-  retryingConvIds?: string[]
+  convLights?: Record<string, ConversationLight>
 }
 
 function ConversationSidebar({
@@ -27,8 +27,7 @@ function ConversationSidebar({
   onDelete,
   onRename,
   onTogglePin,
-  activeLoopConvIds,
-  retryingConvIds
+  convLights
 }: ConversationSidebarProps): React.ReactElement {
   const { t } = useTranslation()
 
@@ -45,8 +44,7 @@ function ConversationSidebar({
       <ConversationRows
         conversations={conversations}
         activeKey={activeKey}
-        activeLoopConvIds={activeLoopConvIds}
-        retryingConvIds={retryingConvIds}
+        lights={convLights}
         groupByDate
         onSelect={onSelect}
         onDelete={onDelete}

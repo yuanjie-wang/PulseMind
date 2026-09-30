@@ -12,6 +12,7 @@ import {
 import ConversationSidebar from './ConversationSidebar'
 import ProjectSidebarList from './ProjectSidebarList'
 import SidebarNav from './SidebarNav'
+import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { ViewHost } from './ViewHost'
 import { ProjectModal } from '../project/ProjectModal'
 import CommandPalette from './CommandPalette'
@@ -141,8 +142,9 @@ interface AppLayoutProps {
   importError?: string | null
   memoryManager?: MemoryManager
   knowledgeManager?: KnowledgeManager
-  activeLoopConvIds?: string[]
-  retryingConvIds?: string[]
+  /** Per-conversation sidebar light, keyed by conversation id (see
+   *  useConversationEngine's statusToLight). Absent = unlit. */
+  convLights?: Record<string, ConversationLight>
 }
 
 function AppLayout({
@@ -166,8 +168,7 @@ function AppLayout({
   importError,
   memoryManager,
   knowledgeManager,
-  activeLoopConvIds,
-  retryingConvIds,
+  convLights,
   children
 }: AppLayoutProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
@@ -561,16 +562,14 @@ function AppLayout({
                   onDelete={onDeleteConversation}
                   onRename={onRenameConversation}
                   onTogglePin={onTogglePinConversation}
-                  activeLoopConvIds={activeLoopConvIds}
-                  retryingConvIds={retryingConvIds}
+                  convLights={convLights}
                 />
               )
             ) : (
               <ProjectSidebarList
                 conversations={conversations}
                 activeKey={activeChatKey}
-                activeLoopConvIds={activeLoopConvIds}
-                retryingConvIds={retryingConvIds}
+                convLights={convLights}
                 sortMode={projectSortMode}
                 onManualOrder={() => changeProjectSort('manual')}
                 onCreateTask={handleProjectNewTask}

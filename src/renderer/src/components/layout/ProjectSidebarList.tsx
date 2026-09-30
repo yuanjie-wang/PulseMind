@@ -20,6 +20,7 @@ import { notify } from '../../utils/notify'
 import { useProjectStore } from '../../stores/projectStore'
 import ConversationRows from './ConversationRows'
 import { sortProjectGroups } from './project-sort'
+import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { DEFAULT_PROJECT_ID } from '../../../../shared/types/project'
 import type { Project, ProjectSortMode } from '../../../../shared/types/project'
 import type { ConversationListItem } from '../../types/conversation'
@@ -27,8 +28,7 @@ import type { ConversationListItem } from '../../types/conversation'
 interface ProjectSidebarListProps {
   conversations: ConversationListItem[]
   activeKey: string | undefined
-  activeLoopConvIds?: string[]
-  retryingConvIds?: string[]
+  convLights?: Record<string, ConversationLight>
   /** Group order — the AppLayout dropdown writes it to settings.projectSortMode. */
   sortMode?: ProjectSortMode
   /** A drop committed a new visual order — AppLayout flips
@@ -47,8 +47,7 @@ interface ProjectSidebarListProps {
 function ProjectSidebarList({
   conversations,
   activeKey,
-  activeLoopConvIds,
-  retryingConvIds,
+  convLights,
   sortMode = 'created',
   onManualOrder,
   onCreateTask,
@@ -263,8 +262,7 @@ function ProjectSidebarList({
               <ConversationRows
                 conversations={convs}
                 activeKey={activeKey}
-                activeLoopConvIds={activeLoopConvIds}
-                retryingConvIds={retryingConvIds}
+                lights={convLights}
                 onSelect={onOpenConversation}
                 onDelete={onDelete}
                 onRename={onRename}

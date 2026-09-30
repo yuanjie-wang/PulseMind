@@ -12,6 +12,7 @@ import { useNavigationStore } from '../../stores/navigationStore'
 import { useNewTaskStore } from '../../stores/newTaskStore'
 import { WelcomeSuggestions } from '../welcome/WelcomeSuggestions'
 import { ProjectCards } from '../welcome/ProjectCards'
+import type { ConversationLight } from '../../hooks/useConversationEngine'
 import type { ConversationListItem } from '../../types/conversation'
 import pulsemindLogo from '../../assets/pulseMind-black.png'
 
@@ -49,15 +50,15 @@ export function WelcomeContent({
   hasApiKey,
   animName,
   conversations,
-  activeLoopConvIds = [],
+  convLights = {},
   onOpenConversation,
 }: {
   greeting?: string | null
   hasApiKey: boolean
   animName: string
   conversations: ConversationListItem[]
-  /** Conversations with a running loop get a status light in the recent list. */
-  activeLoopConvIds?: string[]
+  /** Per-conversation sidebar light — the recent list's status lights. */
+  convLights?: Record<string, ConversationLight>
   onOpenConversation: (key: string) => void
 }): React.ReactElement {
   const { t } = useTranslation()
@@ -129,7 +130,7 @@ export function WelcomeContent({
         {mode === 'chat' ? (
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
             <div style={{ maxWidth: QUICK_AREA_MAX_WIDTH, margin: '0 auto' }}>
-              <WelcomeSuggestions activeLoopConvIds={activeLoopConvIds} onOpenConversation={onOpenConversation} />
+              <WelcomeSuggestions convLights={convLights} onOpenConversation={onOpenConversation} />
             </div>
           </div>
         ) : (

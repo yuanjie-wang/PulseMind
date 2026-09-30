@@ -10,7 +10,7 @@ import type { ExperienceManager } from '../experiences/ExperienceManager'
 import type { LlmAdapter } from '../llm/adapter'
 import type { PlatformInfo } from '../types/electron'
 import type { HooksConfig } from '../types/hooks'
-import { applySessionEvent, freshSessionState, isActiveStatus, type SessionState } from '../../../shared/agent-session/mirror'
+import { applySessionEvent, freshSessionState, type SessionState } from '../../../shared/agent-session/mirror'
 import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { SummonedExpert } from '../../../shared/expert-context'
 import { SYNC_COALESCE_MS } from '../agent/engine/engine-constants'
@@ -20,6 +20,43 @@ import { SYNC_COALESCE_MS } from '../agent/engine/engine-constants'
 // a protocol client that mirrors their observable state (see
 // shared/agent-session/mirror) and forwards commands over the agent-session IPC
 // channels.
+
+// ── Sidebar status light (user ruling 2026-09-30) ──
+/** The four lights a conversation's mirrored status can paint in the sidebar.
+ *  All of them derive from the ONE agentStatus, so they can never disagree:
+ *  自动执行中 spins, waiting parks are the orange dot, API-level exceptions the
+ *  red dot, and a turn completed unread the green dot. */
+export type ConversationLight = 'running' | 'waiting' | 'error' | 'unread'
+
+/** Map a session's mirrored status onto its sidebar light (null = unlit).
+ *  自动执行中 = streaming/executing/awaiting_extension → the spinning ring.
+ *  等待用户反馈 = awaiting_approval / awaiting_user_input / awaiting_continue
+ *  (the 暂停 park — 继续执行/停止任务 is also a user decision) → orange dot.
+ *  异常 = retrying backoff and the turn's error end (api 请求异常、网络及非
+ *  正常响应) → red dot, tied to the status: it clears when the next turn moves
+ *  the status, not when the conversation is opened. 任务完成未读 → green dot,
+ *  lit when the completed status lands while the conversation is NOT the
+ *  active one (watching the turn finish is the read), cleared by
+ *  activateEngine (clearUnreadLight). */
+export function statusToLight(status: AgentStatus['status'], isRead: boolean): ConversationLight | null {
+  switch (status) {
+    case 'streaming':
+    case 'executing':
+    case 'awaiting_extension':
+      return 'running'
+    case 'awaiting_approval':
+    case 'awaiting_user_input':
+    case 'awaiting_continue':
+      return 'waiting'
+    case 'retrying':
+    case 'error':
+      return 'error'
+    case 'completed':
+      return isRead ? null : 'unread'
+    default:
+      return null
+  }
+}
 
 /**
  * Facade returned by getOrCreateEngine — preserves the AgentEngine surface the
@@ -88,6 +125,33 @@ export interface UseConversationEngineOptions {
   onSkillStateChange?: () => void
 }
 
+/** Opening a conversation is the read receipt: only the 未读 light goes out —
+ *  error/waiting/running lights track the status, not the reading. Returns the
+ *  SAME object when nothing changed so the setState can bail out. */
+export function clearUnreadLight(
+  prev: Record<string, ConversationLight>,
+  convId: string
+): Record<string, ConversationLight> {
+  if (prev[convId] !== 'unread') return prev
+  const next = { ...prev }
+  delete next[convId]
+  return next
+}
+
+/** Fold one conversation's light into the map (null = unlit). Returns the SAME
+ *  object when nothing changed so the setState can bail out. */
+export function foldConvLight(
+  prev: Record<string, ConversationLight>,
+  convId: string,
+  light: ConversationLight | null
+): Record<string, ConversationLight> {
+  if ((prev[convId] ?? null) === light) return prev
+  const next = { ...prev }
+  if (light) next[convId] = light
+  else delete next[convId]
+  return next
+}
+
 export function useConversationEngine(options: UseConversationEngineOptions) {
   const statesRef = useRef<Map<string, SessionState>>(new Map())
   const enginesRef = useRef<Map<string, SessionEngineHandle>>(new Map())
@@ -97,8 +161,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
   const [plan, setPlan] = useState<Plan | null>(null)
   const [lastCompaction, setLastCompaction] = useState<CompactionEvent | null>(null)
-  const [activeLoopConvIds, setActiveLoopConvIds] = useState<string[]>([])
-  const [retryingConvIds, setRetryingConvIds] = useState<string[]>([])
+  const [convLights, setConvLights] = useState<Record<string, ConversationLight>>({})
 
   // ── Session registry ──
   const ensureSession = useCallback((convId: string): SessionState => {
@@ -259,20 +322,14 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       if (!applySessionEvent(st, data)) return
 
       if (data.type === 'status') {
-        setActiveLoopConvIds((prev) => {
-          const isActive = isActiveStatus(st.agentStatus)
-          const tracked = prev.includes(sessionId)
-          if (isActive && !tracked) return [...prev, sessionId]
-          if (!isActive && tracked) return prev.filter((id) => id !== sessionId)
-          return prev
-        })
-        setRetryingConvIds((prev) => {
-          const isRetrying = st.agentStatus.status === 'retrying'
-          const tracked = prev.includes(sessionId)
-          if (isRetrying && !tracked) return [...prev, sessionId]
-          if (!isRetrying && tracked) return prev.filter((id) => id !== sessionId)
-          return prev
-        })
+        // The light IS the mirrored status, read through statusToLight. 已读 is
+        // judged AT EVENT TIME — watching the conversation when the status
+        // lands — never "opened it once" (that marking ate every background
+        // completion: a conversation you had sent a message in and left stayed
+        // read forever, so its green dot could never light).
+        const isRead = activeEngineIdRef.current === sessionId
+        const light = statusToLight(st.agentStatus.status, isRead)
+        setConvLights((prev) => foldConvLight(prev, sessionId, light))
         if (st.agentStatus.status === 'completed' && activeEngineIdRef.current !== sessionId) {
           options.onBackgroundComplete?.(sessionId)
         }
@@ -307,9 +364,21 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   // eslint-disable-next-line react-hooks/refs -- latest-callback mirror bridged into the mount-only subscription above
   onBackgroundCompleteRef.current = options.onBackgroundComplete
 
+  /** The read receipt, callable from BOTH activation paths: this hook's
+   *  activateEngine (the send path's activator) and persistence's
+   *  handleSelectConversation (every sidebar/welcome switch — it drives
+   *  activeEngineIdRef directly and never routes through activateEngine). */
+  const markConversationRead = useCallback((convId: string) => {
+    setConvLights((prev) => clearUnreadLight(prev, convId))
+  }, [])
+
   /** Mark a conversation as the active one (keeps the ref in sync with callers). */
   const activateEngine = useCallback((convId: string) => {
     activeEngineIdRef.current = convId
+    // Opening the conversation is the read receipt: its 未读 light goes out.
+    // Later completions judge 已读 against the new active id — watching a turn
+    // finish stays dark, walking away and letting it finish lights green.
+    markConversationRead(convId)
     // A pending coalesced flush belongs to the PREVIOUS conversation — drop it,
     // and seed the sync ledger from what this activation delivers so the first
     // post-switch event doesn't re-push slices React already has.
@@ -331,7 +400,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       // conversation's compaction chip survives the switch.
       setLastCompaction(null)
     }
-  }, [])
+  }, [markConversationRead])
 
   // ── Signal option changes to the main-hosted engines ──
   const prevOptionsRef = useRef<Partial<typeof options>>({})
@@ -405,8 +474,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     agentStatus,
     streamingBlocks,
     plan,
-    activeLoopConvIds,
-    retryingConvIds,
+    convLights,
+    markConversationRead,
     getOrCreateEngine,
     activateEngine,
     getWorkspaceDir,
@@ -415,7 +484,6 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     setAgentStatus,
     setStreamingBlocks,
     setPlan,
-    setActiveLoopConvIds,
     // Last compaction pass of the active conversation (composer chip + ring
     // projection); null until the engine compacts something.
     lastCompaction,

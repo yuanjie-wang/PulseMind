@@ -14,6 +14,7 @@ import { ErrorDisplay } from '../chat/ErrorDisplay'
 import { ExtensionPrompt, SubAgentStopPrompt } from '../chat/ExtensionPrompt'
 import { TurnDeliverablesCard } from '../chat/TurnDeliverablesCard'
 import { useDeliverables } from '../../hooks/useDeliverables'
+import type { ConversationLight } from '../../hooks/useConversationEngine'
 import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverables'
 import { InputArea } from '../chat/InputArea'
 import { projectContextUsed } from '../chat/ContextRing'
@@ -102,8 +103,8 @@ interface ChatViewProps {
   workspaceDir?: string
   /** Conversation list feeding the welcome page's quick entries. */
   conversations: ConversationListItem[]
-  /** Conversations with a running loop — status lights in the quick entries. */
-  activeLoopConvIds?: string[]
+  /** Per-conversation sidebar light — the quick entries' status lights. */
+  convLights?: Record<string, ConversationLight>
   /** Switch to a conversation picked from the welcome page's quick entries. */
   onOpenConversation: (key: string) => void
   /** The active conversation's bound expert id (legacy @-summon binding);
@@ -160,7 +161,7 @@ function ChatView({
   contextLength,
   workspaceDir,
   conversations,
-  activeLoopConvIds,
+  convLights,
   onOpenConversation,
   activeExpertId,
   onUnbindExpert,
@@ -717,7 +718,7 @@ function ChatView({
             hasApiKey={hasApiKey}
             animName={animName}
             conversations={conversations}
-            activeLoopConvIds={activeLoopConvIds}
+            convLights={convLights}
             onOpenConversation={onOpenConversation}
           />
         </div>

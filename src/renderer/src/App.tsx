@@ -258,8 +258,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     memoryManager,
     knowledgeManager,
     experienceManager,
-    activeLoopConvIds,
-    retryingConvIds,
+    convLights,
     togglePin,
     reloadConversations,
     updateConversationExpert,
@@ -641,8 +640,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
             importError={importError}
             memoryManager={memoryManager}
             knowledgeManager={knowledgeManager}
-            activeLoopConvIds={activeLoopConvIds}
-            retryingConvIds={retryingConvIds}
+            convLights={convLights}
           >
             {/* The drill-in is a display layer over the chat pane, not a
                 replacement for it (AppLayout's own view swap is the precedent):
@@ -704,7 +702,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                 projectId: c.projectId,
                 expertId: c.expertId
               }))}
-              activeLoopConvIds={activeLoopConvIds}
+              convLights={convLights}
               onOpenConversation={setActiveConversationKey}
               activeExpertId={
                 activeConvKey
