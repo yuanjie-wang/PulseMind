@@ -19,6 +19,9 @@ import { conversationKeyOf } from '../../../shared/conversation-key'
 
 // ── Hook ──
 
+/** 流式会话的粗粒度检查点窗口：流式期每个会话至多每 60s 落一次库。 */
+const STREAMING_CHECKPOINT_MS = 60_000
+
 interface UseConversationPersistenceOptions {
   autoCleanup?: boolean
   messages: AgentMessage[]
@@ -183,18 +186,28 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // the write runs rebuilds the array, the recorded reference goes stale, and
   // the next tick re-checks; a failed save records nothing and retries.
   const sweepCleanKeysRef = useRef(new Map<string, SweepKey>())
+  // 流式检查点的「上次落库时刻」——只记验证成功的保存，保证两次流式落库
+  // 间隔 ≥ STREAMING_CHECKPOINT_MS。
+  const streamingCheckpointAtRef = useRef(new Map<string, number>())
   useEffect(() => {
     const timer = setInterval(() => {
+      const now = Date.now()
       for (const [id, engine] of enginesRef.current.entries()) {
-        // 流式中的会话整个跳过 —— 与上方防抖路径的 streaming 守卫同一口径。
-        // 流式期 messages 数组每 tick 重建，sweepKey 必然失配，sweep 只会白付
-        // 一次 O(全部消息) 的快照组装 + 逐条 stringify 脏检测；落库等流结束的
-        // 防抖（streaming→completed 迁移）与下一个 10s 拍。
-        if (engine.agentStatus.status === 'streaming') continue
+        // 流式会话走粗粒度检查点（窗口见 streamingCheckpointAtRef）；防抖路径
+        // 的 streaming 守卫维持原样——1s 级的流式期重复写没有必要，回合收尾的
+        // streaming→completed 迁移另有立即保存。纯流式段（delta 只进
+        // streamingBlocks，messages 数组引用不变）仍被下方 sweepKey 引用相等
+        // 短路，不白付快照 + 逐条 stringify；被窗口真正放行的只是 append 后
+        // 的增量保存。
+        const streaming = engine.agentStatus.status === 'streaming'
+        if (streaming && now - (streamingCheckpointAtRef.current.get(id) ?? 0) < STREAMING_CHECKPOINT_MS) continue
         const key = sweepKeyOf(engine)
         if (sweepKeysMatch(sweepCleanKeysRef.current.get(id), key)) continue
         void saveConversationById(id).then((ok) => {
-          if (ok) sweepCleanKeysRef.current.set(id, key)
+          if (ok) {
+            sweepCleanKeysRef.current.set(id, key)
+            if (streaming) streamingCheckpointAtRef.current.set(id, Date.now())
+          }
         })
       }
     }, 10000)
