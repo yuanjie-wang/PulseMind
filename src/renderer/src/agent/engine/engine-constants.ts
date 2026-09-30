@@ -19,7 +19,17 @@ export const SYNC_COALESCE_MS = 80
 // times — the messages array is untouched until onStreamComplete, so a retry
 // simply re-generates from scratch.
 export const MAX_STREAM_IDLE_RETRIES = 2
-export const STREAM_IDLE_TIMEOUT_MARKERS = ['闲置超时', 'Stream idle timeout']
+export const STREAM_IDLE_TIMEOUT_MARKERS = ['闲置超时', 'Stream idle timeout', 'stream done watchdog']
+
+// ── Stream-done watchdog ───────────────────────────────────────────────
+// done/error are emitted synchronously inside performLlmStream before its
+// promise resolves, so a still-pending streamDonePromise after that resolve
+// means the resolver was dropped somewhere below — the exact shape that
+// parked two plan sub-agents of conv_20260930091135 mid-run for hours (no
+// error, no settlement, no socket). Bounded wait, then a loud retryable
+// error instead of an eternal await.
+export const STREAM_DONE_WATCHDOG_MS = 30_000
+export const STREAM_DONE_WATCHDOG_ERROR = 'stream done watchdog: 请求已结束但 done/error 事件未到达（疑似内部挂起），已按闲置超时处理'
 
 // ── Thinking-only round retry ──────────────────────────────────────────
 // A reasoning model can end a round with ONLY a thinking block — no text, no

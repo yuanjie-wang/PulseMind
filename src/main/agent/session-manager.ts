@@ -1002,6 +1002,25 @@ export class AgentSessionManagerImpl {
       case 'retryLastTurn': return engine.retryLastTurn()
       case 'getHistorySummary': return engine.getHistorySummary()
       case 'compactNow': return engine.compactNow(args[0] as string | undefined)
+      case 'debugSubAgents':
+        // Read-only diagnostic (conv_20260930091135: two plan sub-agents parked
+        // mid-run for hours and nothing in the system could even SEE their
+        // state — spawned engines are not hosted sessions, so snapshot/ask
+        // paths return null for them). Surfaces the live stall signature:
+        // a wedged sub reads status=executing, pendingToolIds=[], request=null.
+        return [...(entry.engine.activeSubAgents ?? new Map()).entries()].map(([spawnId, sub]) => ({
+          spawnId,
+          subConvId: sub.opts.conversationId,
+          title: sub.spawnTitle,
+          status: sub.agentStatus,
+          currentRequestId: sub.currentRequestId,
+          pendingToolIds: sub.pendingToolIds ? [...sub.pendingToolIds] : [],
+          isAutoExecuting: sub.isAutoExecuting,
+          isCancelled: sub.isCancelled,
+          loopCount: sub.loopCount,
+          msgCount: sub.messages.length,
+          lastMsgAt: sub.messages.length ? sub.messages[sub.messages.length - 1].createdAt : null,
+        }))
       case 'reset': entry.engine.reset(); return undefined
       case 'dispose':
         entry.engine.dispose()

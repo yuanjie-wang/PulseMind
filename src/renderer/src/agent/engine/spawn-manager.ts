@@ -115,21 +115,15 @@ export class SpawnManager {
     // Appends only messages newer than the last tick (plus a small re-saved tail
     // for in-place block updates like exitCode) — a full-conversation rewrite
     // every 5s stalls the main process once a sub-agent's history grows long.
-    const SUB_SAVE_INTERVAL = 5000
-    const SUB_SAVE_TAIL = 8
-    let savedCount = 0
-    const saveTimer = setInterval(() => {
-      const msgs = engine.messages
-      if (msgs.length <= savedCount) return
-      const fromIdx = Math.max(0, savedCount - SUB_SAVE_TAIL)
-      const conv = agentMessagesToConversation(msgs.slice(fromIdx), subConvId, 'Sub-agent')
-      getHost().appendConversationMessages(subConvId, 'Sub-agent', conv.messages).catch(() => {})
-      savedCount = msgs.length
-    }, SUB_SAVE_INTERVAL)
+    const detachSaver = attachSubConversationSaver(engine, subConvId)
+    // Liveness watchdog: a wedged sub-engine must settle loudly instead of
+    // parking the parent's spawn batch (and the whole plan wave) forever.
+    const detachWatchdog = attachSubAgentWatchdog(engine, subConvId)
 
     // Track for cancellation when the (parent) main agent is stopped
     const cleanup = (): void => {
-      clearInterval(saveTimer)
+      detachSaver()
+      detachWatchdog()
       this.engine.activeSubAgents.delete(id)
     }
     engine.completionPromise!.then(cleanup, cleanup)
@@ -210,4 +204,86 @@ export class SpawnManager {
     // `.then(cleanup)` below a real promise — nulling here crashed both (T8).
   }
 
+}
+
+// ── Sub-agent lifecycle timers (extracted for testability) ──────────────
+
+export const SUB_SAVE_INTERVAL = 5000
+export const SUB_SAVE_TAIL = 8
+export const SUB_WATCHDOG_INTERVAL = 30_000
+export const SUB_WATCHDOG_STALL = 10 * 60_000
+
+/** Periodic save during sub-agent execution so progress survives crashes.
+ *  Appends only messages newer than the last tick (plus a small re-saved tail
+ *  for in-place block updates like exitCode) — a full-conversation rewrite
+ *  every 5s stalls the main process once a sub-agent's history grows long.
+ *  savedCount advances ONLY on success: the append is an upsert (idempotent
+ *  over the re-saved tail), so a failed tick is simply retried next tick.
+ *  Advancing unconditionally (the old shape) made ONE transient failure
+ *  permanently drop that window — conv_20260930091135 lost both stuck
+ *  sub-agents' final rounds this way, silently, via the swallowed rejection. */
+export function attachSubConversationSaver(
+  engine: EngineCore,
+  subConvId: string,
+  host: Pick<ReturnType<typeof getHost>, 'appendConversationMessages'> = getHost(),
+): () => void {
+  let savedCount = 0
+  let saveInFlight = false
+  const saveTimer = setInterval(() => {
+    const msgs = engine.messages
+    if (saveInFlight || msgs.length <= savedCount) return
+    const fromIdx = Math.max(0, savedCount - SUB_SAVE_TAIL)
+    const conv = agentMessagesToConversation(msgs.slice(fromIdx), subConvId, 'Sub-agent')
+    saveInFlight = true
+    host.appendConversationMessages(subConvId, 'Sub-agent', conv.messages)
+      .then(() => { savedCount = Math.max(savedCount, msgs.length) })
+      .catch((err: unknown) => {
+        console.warn(`[SpawnManager] sub-agent save failed for ${subConvId} (will retry):`, err instanceof Error ? err.message : err)
+      })
+      .finally(() => { saveInFlight = false })
+  }, SUB_SAVE_INTERVAL)
+  return () => clearInterval(saveTimer)
+}
+
+/** Liveness watchdog (conv_20260930091135): a spawned engine that wedges on a
+ *  dropped-resolver await below the request path parks forever — no in-flight
+ *  request, no pending tool, no progress — and the parent's
+ *  `await waitForCompletion()` plus the whole plan wave freeze with it. The
+ *  settle signature cannot fire on legitimate work: a long tool run holds
+ *  pendingToolIds, a long request holds currentRequestId (main-side retry
+ *  sleeps included), and every other phase reports progress or grows
+ *  messages. After SUB_WATCHDOG_STALL of neither, settle the spawn as an
+ *  error so the envelope reaches the parent, the slots free up and the
+ *  scheduler moves on; the zombie engine is frozen so a late-resolving await
+ *  cannot revive it invisibly. */
+export function attachSubAgentWatchdog(
+  engine: EngineCore,
+  subConvId: string,
+  opts?: { intervalMs?: number; stallMs?: number },
+): () => void {
+  const intervalMs = opts?.intervalMs ?? SUB_WATCHDOG_INTERVAL
+  const stallMs = opts?.stallMs ?? SUB_WATCHDOG_STALL
+  let lastLiveness = Date.now()
+  let lastMsgCount = engine.messages.length
+  const prevProgress = engine.onSpawnProgress
+  engine.onSpawnProgress = (msg: string) => {
+    lastLiveness = Date.now()
+    prevProgress?.(msg)
+  }
+  const watchdogTimer = setInterval(() => {
+    if (engine.messages.length !== lastMsgCount) {
+      lastMsgCount = engine.messages.length
+      lastLiveness = Date.now()
+      return
+    }
+    if (Date.now() - lastLiveness < stallMs) return
+    if (engine.isCancelled || engine.pendingToolIds.size > 0 || engine.currentRequestId) return
+    console.error(`[SpawnManager] sub-agent ${subConvId} stalled ${Math.round(stallMs / 60_000)}min with no in-flight request, no pending tools and no progress — settling as error`)
+    engine.isCancelled = true
+    engine.abortController?.abort()
+    engine.agentStatus = { status: 'error', error: `子代理超过 ${Math.round(stallMs / 60_000)} 分钟无任何产出且无在途请求/工具，疑似内部卡死，已自动结算（可基于子会话已有进度重试）。` }
+    engine.notify()
+    engine.resolveCompletionIfSpawned('error')
+  }, intervalMs)
+  return () => clearInterval(watchdogTimer)
 }

@@ -158,6 +158,46 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+/** Per-attempt cap: DNS/TLS/request-write/response-headers must land within
+ *  CONNECT_TIMEOUT_MS or the attempt aborts with a distinguishable error.
+ *  The 60s idle watchdog below only arms AFTER `fetch()` resolves — before
+ *  that line a black-holed connection awaited forever with no socket-level
+ *  timeout to save it (conv_20260930091135: two sub-agents parked mid-plan on
+ *  exactly such an await, no error, no done, for hours). The inner controller
+ *  keeps the outer signal's cancel semantics intact: a user/entry abort still
+ *  kills the attempt mid-flight, and an attempt timeout propagates as a
+ *  retriable network error through fetchWithRetry's normal retry loop. */
+const CONNECT_TIMEOUT_MS = 120_000
+
+export async function fetchWithAttemptTimeout(
+  url: string,
+  options: { method?: string; headers?: Record<string, string>; body?: string },
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<Response> {
+  if (signal?.aborted) throw signal.reason ?? new Error('Aborted')
+  const attemptController = new AbortController()
+  const abortFromOuter = () => attemptController.abort(signal?.reason)
+  signal?.addEventListener('abort', abortFromOuter, { once: true })
+  const timer = setTimeout(() => attemptController.abort(new Error(`Connect timeout: no response headers within ${Math.round(timeoutMs / 1000)}s`)), timeoutMs)
+  try {
+    return await fetch(url, {
+      method: options.method || 'POST',
+      headers: { ...options.headers },
+      body: options.body,
+      signal: attemptController.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+    // The outer-signal link deliberately stays attached past the headers: the
+    // body stream runs on the attempt controller, so the 60s idle abort and a
+    // user/entry cancel must still reach it. Unlinking here (the tempting
+    // finally) would orphan the body — an idle abort would stop breaking
+    // reader.read() and the stream would hang again. The listener dies with
+    // the request's controllers; no unbounded accumulation.
+  }
+}
+
 async function fetchWithRetry(
   url: string,
   options: { method?: string; headers?: Record<string, string>; body?: string },
@@ -167,12 +207,7 @@ async function fetchWithRetry(
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const response = await fetch(url, {
-        method: options.method || 'POST',
-        headers: { ...options.headers },
-        body: options.body,
-        signal,
-      })
+      const response = await fetchWithAttemptTimeout(url, options, signal, CONNECT_TIMEOUT_MS)
       if (response.ok || !isRetryable(response.status) || attempt >= maxRetries) {
         return response
       }

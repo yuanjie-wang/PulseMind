@@ -2,7 +2,7 @@
  * LLM stream runner (PLAN-0.3.5 refactor, split 7/5): parser wiring, chunk
  * pump, stream-done await and idle-retry, extracted from AgentEngine.
  */
-import { MAX_STREAM_IDLE_RETRIES, MAX_THINKING_ONLY_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS } from './engine-constants'
+import { MAX_STREAM_IDLE_RETRIES, MAX_THINKING_ONLY_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS, STREAM_DONE_WATCHDOG_MS, STREAM_DONE_WATCHDOG_ERROR } from './engine-constants'
 import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { isContextOverflowRejection, parseContextOverflowLimit } from './context-estimate'
 import { IncrementalJsonTracker } from '../json-stream'
@@ -25,8 +25,11 @@ export class StreamRunner {
   async run(opts: AgentEngineOptions, req: PreparedRequest): Promise<void> {
     const { apiUrl, headers, resolvedBody } = req
 
-    // Variables for cleanup — hoisted outside try so catch can access them
-    let requestId: string
+    // Variables for cleanup — hoisted outside try so catch can access them.
+    // requestId is generated here too: it's side-effect-free, and the catch's
+    // cancelledRequestIds check must see a definite string even if the try
+    // body throws before the engine ever saw the id.
+    const requestId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
     let streamError: string | null = null
     let unsubChunk: () => void
     let unsubError: () => void
@@ -38,7 +41,6 @@ export class StreamRunner {
     let streamDone = false
 
     try {
-      requestId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
       this.engine.currentRequestId = requestId
 
       const dispatcher = opts.adapter.createStreamParser({
@@ -230,9 +232,17 @@ export class StreamRunner {
 
       // Await the stream-done IPC event. The main process always sends either
       // API_STREAM_DONE or API_STREAM_ERROR, and both resolve streamDonePromise.
-      // No timeout needed — IPC event arrives in the next event loop tick.
+      // The watchdog is the "always" insurance: done/error fire synchronously
+      // before the invoke resolves, so a still-pending deferred here means a
+      // resolver was dropped below — bounded wait, then a retryable error that
+      // settles the turn instead of parking the engine forever
+      // (conv_20260930091135: two plan sub-agents hung exactly here-shaped).
       if (!streamDone && !streamError) {
-        await streamDonePromise
+        await Promise.race([
+          streamDonePromise,
+          new Promise<void>((resolve) => setTimeout(resolve, STREAM_DONE_WATCHDOG_MS)),
+        ])
+        if (!streamDone && !streamError) throw new Error(STREAM_DONE_WATCHDOG_ERROR)
       }
       if (streamError) { cleanupListeners(); throw new Error(streamError) }
       cleanupListeners()
