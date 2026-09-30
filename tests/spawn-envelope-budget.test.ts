@@ -51,10 +51,11 @@ describe('envelope budget wiring (source scans)', () => {
   it('spawn-tool passes the budget as addToolResult\'s maxTokens override', () => {
     const spawn = src('src/renderer/src/agent/executors/spawn-tool.ts')
     expect(spawn).toContain('spawnEnvelopeBudget(ex.spawnBatchTotal?.() ?? 1)')
-    // both envelope calls (verbatim + full) carry the budget — v2 removed the
-    // separate split envelopes (the split rides the standard envelope as a
-    // note); create_sub_plan's own envelope is small and fixed-shaped.
-    expect(spawn.match(/undefined,\s*\n?\s*envelopeBudget/g)?.length).toBe(2)
+    // three envelope calls carry the budget: verbatim + full + the
+    // report-contract violation envelope (PLAN-plan-exchange E3). The split
+    // rides the standard envelope as a note; create_sub_plan's own envelope
+    // is small and fixed-shaped.
+    expect(spawn.match(/undefined,\s*\n?\s*envelopeBudget/g)?.length).toBe(3)
     expect(spawn).toContain(', undefined, envelopeBudget)')
   })
 })

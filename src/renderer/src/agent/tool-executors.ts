@@ -113,6 +113,8 @@ export class ToolExecutor implements ToolExecContext {
     /** @internal PLAN-plan-split P3: the plan's third write policy, from the
      *  spawn choke point's proposal branch */
     mergeSplitProposal?: ToolExecContext['mergeSplitProposal'],
+    /** @internal PLAN-plan-exchange E3: stamp the node's delivered report */
+    recordNodeReport?: ToolExecContext['recordNodeReport'],
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
@@ -128,6 +130,7 @@ export class ToolExecutor implements ToolExecContext {
     this.recordNodeHandoff = recordNodeHandoff
     this.isSpawnedSubAgent = isSpawnedSubAgent
     this.mergeSplitProposal = mergeSplitProposal
+    this.recordNodeReport = recordNodeReport
   }
 
   opts: AgentEngineOptions
@@ -144,6 +147,7 @@ export class ToolExecutor implements ToolExecContext {
   recordNodeHandoff?: ToolExecContext['recordNodeHandoff']
   isSpawnedSubAgent?: () => boolean
   mergeSplitProposal?: ToolExecContext['mergeSplitProposal']
+  recordNodeReport?: ToolExecContext['recordNodeReport']
   /** create_sub_plan's bridge to the PARENT plan (v2 R6), assigned by
    *  spawn-manager AFTER construction — the executor is built before the
    *  sub-engine knows its parent. Present only when opts.spawnPlanSplit is

@@ -379,6 +379,7 @@ n1 first; n2 and n3 run together once n1 settles; n4 waits for both. Written WIT
 - **If a node consumes another node's output, you MUST list that node in its depends_on — array order does not sequence nodes, and a plan of dependent steps with no edges is a fully parallel plan.**
 - Never call advance_plan to report a delivery — the scheduler settles those; it is for fail/skip/finish and hand correction, always with node=<number>
 - A failed node blocks only its own downstream — retry it (re-dispatch, or \`complete\`), or \`skip\` it and re-plan
+- **Every node owes a report** to the plan's exchange area (the spawn prompt carries the exact path and the standard skeleton: 状态/结论/关键数据/产物清单). Use \`report_spec\` when a node's consumers need a specific structure — the report is what downstream nodes actually read, so the format is the data contract
 `,
 
   advance_plan: `## advance_plan
@@ -397,6 +398,7 @@ Split YOUR node's remaining work back into the parent plan when it clearly excee
 - 2–5 sub-tasks; every description must stand alone (its reader sees only that text plus its dependencies' outputs)
 - \`depends_on\` names EARLIER subtasks in your list (1-based, forward references only) whose output a subtask consumes; omit it for independent work — without it everything runs in parallel
 - A 20-node plan budget applies; a rejected call names the reason — correct it and call again immediately
+- Each subtask inherits the report contract (standard skeleton + its \`report_spec\`) — give a \`report_spec\` when a subtask's consumers need a specific structure
 
 ### After a successful call
 The new nodes (e.g. n8..n10) are NOT yours — the parent's scheduler dispatches them once your node settles. Continue only YOUR remaining scope and deliver normally. You may call this tool again if the remainder still exceeds you.

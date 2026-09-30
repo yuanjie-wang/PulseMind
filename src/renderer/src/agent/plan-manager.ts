@@ -26,6 +26,7 @@ import {
   type RawPlanNode,
 } from '../../../shared/plan/graph'
 import type { SplitChildSpec } from '../../../shared/plan/split-proposal'
+import { mintPlanId } from '../../../shared/plan/exchange'
 
 const SETTLE_STATUS = { complete: 'completed', fail: 'failed', skip: 'skipped' } as const
 
@@ -70,9 +71,33 @@ export class PlanManager {
   }
 
   /** Parent-only execution channel. Beginning is explicit so a late queued
-   *  update cannot reclaim a node from a newer dispatch. */
+   *  update cannot reclaim a node from a newer dispatch. Also the lazy mint
+   *  point for `plan.id` (PLAN-plan-exchange E1): a plan persisted before the
+   *  exchange spec has no id, and every dispatch saves the plan anyway — so
+   *  minting here gives legacy plans an exchange area with zero extra
+   *  persistence paths. Single writer preserved (this is PlanManager). */
   beginNodeExecution(ref: string | number, attemptId: string): void {
-    if (this.plan && beginNodeExecution(this.plan, ref, attemptId)) this.notifyPlanChange()
+    if (!this.plan) return
+    if (!this.plan.id) this.plan.id = mintPlanId()
+    if (beginNodeExecution(this.plan, ref, attemptId)) this.notifyPlanChange()
+  }
+
+  /** Record a node's delivered report file (PLAN-plan-exchange E3) — CAS on
+   *  attemptId like recordNodeHandoff: a straggler from a superseded retry
+   *  cannot stamp the newer attempt's node. declaredStatus is advisory data
+   *  for downstream readers, never plan state. */
+  recordNodeReport(
+    ref: string | number, attemptId: string, reportPath: string, declaredStatus?: 'success' | 'partial' | 'failed',
+  ): boolean {
+    const plan = this.plan
+    if (!plan || !attemptId || !reportPath) return false
+    const node = resolveNodeRef(plan, ref)
+    if (!node || node.execution?.attemptId !== attemptId) return false
+    if (node.reportPath === reportPath && node.declaredStatus === declaredStatus) return false
+    node.reportPath = reportPath
+    node.declaredStatus = declaredStatus
+    this.notifyPlanChange()
+    return true
   }
 
   updateNodeExecution(ref: string | number, attemptId: string, status: PlanNodeExecutionStatus, subConvId?: string): void {
@@ -151,7 +176,7 @@ export class PlanManager {
     const arr = Array.isArray(input) ? input : []
     return arr.map((s, i) => {
       if (typeof s === 'string') return { description: s, ...(i > 0 ? { dependsOn: [i] } : {}) }
-      const o = (s ?? {}) as { description?: unknown; depends_on?: unknown; assignee?: unknown }
+      const o = (s ?? {}) as { description?: unknown; depends_on?: unknown; assignee?: unknown; report_spec?: unknown }
       const dependsOn = Array.isArray(o.depends_on)
         ? o.depends_on.map(d => Number(d)).filter(d => Number.isFinite(d))
         : undefined
@@ -159,6 +184,7 @@ export class PlanManager {
         description: String(o.description ?? ''),
         ...(dependsOn && dependsOn.length > 0 ? { dependsOn } : {}),
         ...(o.assignee ? { assignee: String(o.assignee) } : {}),
+        ...(o.report_spec ? { reportSpec: String(o.report_spec) } : {}),
       }
     })
   }

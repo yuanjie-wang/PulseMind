@@ -32,6 +32,11 @@ export interface ToolExecContext {
    *  downstream hand-off medium (PLAN-plan-scheduler S8). Routed through
    *  PlanManager like every other plan write. */
   recordNodeHandoff?: (ref: string | number, attemptId: string, text: string) => boolean
+  /** Stamp a node's delivered report file + self-declared outcome onto the
+   *  plan (PLAN-plan-exchange E3) — CAS on attemptId, same discipline. */
+  recordNodeReport?: (
+    ref: string | number, attemptId: string, reportPath: string, declaredStatus?: 'success' | 'partial' | 'failed',
+  ) => boolean
   /** Merge a validated split proposal into the live plan (PLAN-plan-split
    *  P3/P8) — the plan's third write policy. The graph layer gates CAS on
    *  attemptId / gen cap / node budget and rejects whole-unit; `ok: false`

@@ -23,13 +23,14 @@ export async function execCreateSubPlanTool(ex: ToolExecContext, t: ToolUseBlock
     const raw = Array.isArray(t.input?.subtasks) ? t.input.subtasks : []
     const children: SplitChildSpec[] = raw.map((s) => {
       if (typeof s === 'string') return { description: s.trim() }
-      const o = (s ?? {}) as { description?: unknown; depends_on?: unknown }
+      const o = (s ?? {}) as { description?: unknown; depends_on?: unknown; report_spec?: unknown }
       const dependsOn = Array.isArray(o.depends_on)
         ? o.depends_on.map(Number).filter(d => Number.isFinite(d))
         : undefined
       return {
         description: String(o.description ?? '').trim(),
         ...(dependsOn && dependsOn.length > 0 ? { dependsOn } : {}),
+        ...(o.report_spec ? { reportSpec: String(o.report_spec) } : {}),
       }
     })
     const reason = String(t.input?.reason || '').trim() || undefined

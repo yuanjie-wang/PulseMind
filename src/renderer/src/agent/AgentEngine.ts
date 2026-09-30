@@ -551,6 +551,7 @@ export class AgentEngine implements EngineCore {
       // dispatch branch in execSpawnAgent must see the live value.
       () => this.isSpawnedSubAgent,
       (ref, attemptId, children, reason) => this.planManager.mergeSplitProposal(ref, attemptId, children, reason),
+      (ref, attemptId, path, status) => this.planManager.recordNodeReport(ref, attemptId, path, status),
     )
   }
 

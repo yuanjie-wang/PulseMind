@@ -12,6 +12,7 @@ import {
 } from '../../../../shared/expert-context'
 import { formatUpstreamResults, MAX_PLAN_NODES, MAX_SPLIT_GEN, nodeNumberOf, resolveReadyNode } from '../../../../shared/plan/graph'
 import { parseSplitProposal } from '../../../../shared/plan/split-proposal'
+import { extractDeclaredStatus, formatReportContract, resolvePlanExchange } from '../../../../shared/plan/exchange'
 import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../../shared/types/plan'
 import { getCachedMcpServers } from '../mcp-cache'
 import {
@@ -171,8 +172,16 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
         splitHint = '\n\n(If this task — or its remainder once you start — clearly exceeds one sub-agent, call create_sub_plan to split it back into the parent plan; see that tool\'s manual for the rules and the text alternative. Split before starting or mid-way, never after finishing.)'
       }
     }
+    // Report contract (PLAN-plan-exchange E2): every plan-node spawn owes a
+    // report at the system-minted path. The admission text is composed at
+    // dispatch; the exit is verified mechanically at the choke point below.
+    // plan.id was lazily minted by beginPlanNodeExecution above, so a legacy
+    // plan gets its exchange area from its very first dispatch. No
+    // workspaceDir (tool-studio-like sessions) → no contract, legacy behavior.
+    const exchange = planNode && dispatchPlan ? resolvePlanExchange(ex.opts.workspaceDir, dispatchPlan) : null
+    const reportContract = planNode && exchange ? `\n\n${formatReportContract(exchange, planNode)}` : ''
     const taskText = planNode
-      ? `${task}\n\n(You are executing plan node ${planNode.id} of a larger plan — scope your work to this node only.)${splitHint}`
+      ? `${task}\n\n(You are executing plan node ${planNode.id} of a larger plan — scope your work to this node only.)${splitHint}${reportContract}`
       : task
     // Upstream hand-off (PLAN-plan-scheduler S8): the direct dependencies'
     // recorded output rides the prompt as data — the sub-agent has no state
@@ -340,10 +349,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       // create_sub_plan calls (visible via planSplitConfig.createdIds, filled
       // by the spawn-manager bridge). A rejected/malformed proposal no longer
       // fails the node — X's own delivered work stands.
-      const deliverableNode = planNode && result.status === 'completed' && attemptStarted && ex.getPlan?.() === dispatchPlan
+      const deliverableNode = planNode !== null && result.status === 'completed' && attemptStarted && ex.getPlan?.() === dispatchPlan
       const delegatedPlan = (dispatchPlan?.mode ?? 'delegated') === 'delegated'
       let splitNote: string | null = null
-      if (deliverableNode) {
+      if (deliverableNode && planNode) {
         const parsed = parseSplitProposal(subText)
         if (parsed.kind === 'valid') {
           const merged = ex.mergeSplitProposal?.(planNode.id, attemptId, parsed.proposal.children, parsed.proposal.reason)
@@ -372,20 +381,60 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
             ? ` — the scheduler dispatches them once this node settles; do NOT execute or re-dispatch them yourself.`
             : ` — execute them yourself in dependency order after this node settles (direct mode: no scheduler).`)
       }
-      execution(result.status === 'completed' ? 'delivered' : result.status === 'aborted' ? 'stopped' : 'failed')
+      // Exit check (PLAN-plan-exchange E3): a merged split skips it — the
+      // proposal IS the splitter's deliverable and the children carry the
+      // remainder. Everyone else owes a report at the minted path; missing or
+      // empty fails the contract (the deliverable IS the report), and the
+      // declared status is extracted as advisory data only.
+      let reportViolation: string | null = null
+      let declaredStatus: 'success' | 'partial' | 'failed' | undefined
+      if (planNode && deliverableNode && exchange && !splitNote) {
+        const expectedPath = exchange.reportPath(planNode.id)
+        let size = 0
+        try {
+          const stat = await getHost().getFileStat(expectedPath)
+          size = stat?.size ?? 0
+        } catch { size = 0 }
+        if (size <= 0) reportViolation = expectedPath
+        else declaredStatus = extractDeclaredStatus(subText)
+      }
+      if (reportViolation) execution('failed') // from 'running' — the CAS allows running→failed
+      else execution(result.status === 'completed' ? 'delivered' : result.status === 'aborted' ? 'stopped' : 'failed')
       // Hand-off capture (PLAN-plan-scheduler S8): a successful node's output
       // becomes the plan's carrier for its dependents — recorded HERE, at the
       // one choke point every spawn's result flows through. Under the v2
       // midprocess shape this INCLUDES a split: X's handoff (partial work
       // included) is what its split children read as upstream input, and the
       // downstream union (X + children) sees everything.
-      if (deliverableNode) {
+      if (deliverableNode && planNode && !reportViolation) {
         ex.recordNodeHandoff?.(planNode.id, attemptId, subText)
+        // The report stamp (E3): CAS on attemptId, same discipline as the
+        // handoff — downstream reads it from the node row, never from prose.
+        // A merged split skipped the check on purpose: no report was owed.
+        if (exchange && !splitNote) {
+          ex.recordNodeReport?.(planNode.id, attemptId, exchange.reportPath(planNode.id), declaredStatus)
+        }
       }
       const expertName = profile?.name || subAgentId || '(general sub-agent)'
       // Shared round budget: this batch's envelopes split one allowance so a
       // wide parallel dispatch cannot append a window-busting collector message.
       const envelopeBudget = spawnEnvelopeBudget(ex.spawnBatchTotal?.() ?? 1)
+
+      // Contract-violation envelope (PLAN-plan-exchange E3): the sub-agent's
+      // engine completed, but the plan's deliverable — the report — is
+      // missing, so this reads as a FAILURE for the consult round.
+      if (reportViolation && planNode) {
+        const summary = `## Sub-Agent Result (failed — report contract)\n\n`
+          + `**Report contract violated:** no report file at ${reportViolation} (missing or empty). The plan treats the report as the deliverable, so the node is marked FAILED.\n\n`
+          + (subText ? `**What the sub-agent said it did (unverified):**\n${subText}\n\n` : '')
+          + `**Decide next:** re-dispatch it with spawn_agent planNode=${nodeNumberOf(planNode)} — the retry sees the same contract and must write its report to that path — or settle it with advance_plan action="fail" / "skip".`
+        t.exitCode = 1
+        t.status = 'completed'
+        ex.addToolResult(t.id, summary, true, undefined, envelopeBudget)
+        t.output = `报告契约未满足：${reportViolation} 缺失或为空`
+        ex.notify()
+        return
+      }
 
       // 单专家 @召唤的结论原文进对话（用户裁定 2026-09-17：「能不能在主对话中直接
       // 输出专家的结论」——主 Agent 转述一遍会丢信息）。The engine accepts the

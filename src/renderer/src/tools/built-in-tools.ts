@@ -894,6 +894,10 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
                 type: 'string',
                 description: 'Expert id (from the capability center) to delegate this node to via spawn_agent. Omit for a general sub-agent.',
               },
+              report_spec: {
+                type: 'string',
+                description: 'Optional extra report-format requirements for this node, injected on top of the standard report skeleton (状态/结论/关键数据/产物清单) its sub-agent must write to the plan exchange area. Use it when downstream nodes need a specific structure or fields.',
+              },
             },
             required: ['description'],
           },
@@ -1296,6 +1300,10 @@ export const SUB_PLAN_BUILT_IN_TOOLS: ToolDefinition[] = [
                 type: 'array',
                 items: { type: 'integer' },
                 description: '1-based indexes of EARLIER subtasks in this list whose output this one consumes. Omit for independent subtasks; forward references are rejected.',
+              },
+              report_spec: {
+                type: 'string',
+                description: 'Optional extra report-format requirements for this subtask, injected on top of the standard report skeleton it must write to the plan exchange area.',
               },
             },
             required: ['description'],

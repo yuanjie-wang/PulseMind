@@ -57,6 +57,17 @@ export interface PlanNode {
    *  Absent = nothing to hand over (legacy/manual completion), where
    *  consumers fall back to `summary`. */
   handoff?: string
+  /** Authored at plan creation (PLAN-plan-exchange E2): the node's extra
+   *  report-format requirements, injected into its spawn's admission
+   *  contract on top of the standard skeleton. */
+  reportSpec?: string
+  /** The system-minted report file this node delivered (PLAN-plan-exchange
+   *  E3), recorded by the spawn choke point after the mechanical existence
+   *  check; downstream spawns receive it verbatim and `read` it themselves. */
+  reportPath?: string
+  /** The sub-agent's self-declared outcome (E4) — advisory DATA for the
+   *  downstream reader, never plan state: delivery still settles completed. */
+  declaredStatus?: 'success' | 'partial' | 'failed'
 }
 
 export interface Plan {
@@ -67,4 +78,8 @@ export interface Plan {
   version: 2
   /** delegated (default): ready nodes spawn to experts; direct: the main agent executes them itself. */
   mode?: 'direct' | 'delegated'
+  /** Exchange-area identity (PLAN-plan-exchange E1): `<workspace>/.plan/<id>/`.
+   *  Minted at create/migrate, lazily on legacy plans by PlanManager at
+   *  dispatch (which always saves the plan). Absent on plans never dispatched. */
+  id?: string
 }

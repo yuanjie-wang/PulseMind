@@ -25,6 +25,10 @@ export interface SplitChildSpec {
    *  sub-DAG is a DAG by construction (mergeSplitProposal still re-runs
    *  assertAcyclic as defense). */
   dependsOn?: number[]
+  /** PLAN-plan-exchange E2: authored report-format requirements for this
+   *  child's admission contract (tool channel only — the text protocol keeps
+   *  to description + deps). */
+  reportSpec?: string
 }
 
 export interface SplitProposal {

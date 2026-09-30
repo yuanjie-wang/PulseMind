@@ -6,6 +6,7 @@
  */
 import type { Plan, PlanNode, PlanNodeStatus, PlanNodeExecutionStatus } from '../types/plan'
 import type { SplitChildSpec } from './split-proposal'
+import { mintPlanId } from './exchange'
 
 export const MAX_PLAN_NODES = 20
 
@@ -31,6 +32,9 @@ export interface RawPlanNode {
   /** 1-based indexes into the input array — the tool protocol form (D3). */
   dependsOn?: number[]
   assignee?: string
+  /** PLAN-plan-exchange E2: authored report-format requirements, injected on
+   *  top of the standard skeleton in this node's admission contract. */
+  reportSpec?: string
 }
 
 // ── Creation ─────────────────────────────────────────────────────────────
@@ -59,10 +63,11 @@ export function createPlanDag(
       status: 'pending',
       dependsOn: deps.map(d => `n${d}`),
       ...(r.assignee ? { assignee: r.assignee } : {}),
+      ...(r.reportSpec ? { reportSpec: r.reportSpec } : {}),
     }
   })
 
-  const plan: Plan = { objective: objective.trim(), nodes, completed: false, version: 2, mode }
+  const plan: Plan = { id: mintPlanId(), objective: objective.trim(), nodes, completed: false, version: 2, mode }
   assertAcyclic(nodes)
   return plan
 }
@@ -323,6 +328,7 @@ export function mergeSplitProposal(
     status: 'pending',
     dependsOn: [...new Set([node.id, ...(c.dependsOn ?? []).map(d => childIds[d - 1])])],
     gen: (node.gen ?? 0) + 1,
+    ...(c.reportSpec ? { reportSpec: c.reportSpec } : {}),
   }))
 
   // Built off-line, mutated only after every gate passes — a rejected merge
@@ -379,7 +385,7 @@ export function migrateLinearPlan(old: unknown): Plan | null {
     dependsOn: i === 0 ? [] : [`n${i}`],
   }))
   const completed = legacy.completed === true || nodes.every(n => isTerminal(n.status))
-  return { objective: String(legacy.objective ?? ''), nodes, completed, version: 2, mode: legacy.mode ?? 'delegated' }
+  return { id: mintPlanId(), objective: String(legacy.objective ?? ''), nodes, completed, version: 2, mode: legacy.mode ?? 'delegated' }
 }
 
 // ── Text rendering (prompt section + tool snapshot) ──────────────────────
@@ -498,11 +504,14 @@ export function formatUpstreamResults(plan: Plan | null, node: PlanNode): string
   const deps = node.dependsOn.map(id => byId.get(id)).filter((d): d is PlanNode => !!d)
   if (deps.length === 0) return null
 
-  const sections: string[] = ['## 前序节点处理结果']
-  let used = sections[0].length
+  const sections: string[] = ['## 前序节点处理结果', '', '每个小节的 Report 文件可用 read 直接读取——那里面是全量数据，下面的小节只是交接摘要。']
+  let used = sections.join('\n\n').length
   for (const dep of deps) {
     const body = (dep.handoff ?? dep.summary ?? '').trim() || '(no recorded output — see its node session)'
-    let block = `### ${dep.id}: ${dep.description}\n${body}`
+    const report = dep.reportPath
+      ? `\nReport: ${dep.reportPath}${dep.declaredStatus ? `（声明状态: ${ { success: '成功', partial: '部分成功', failed: '失败' }[dep.declaredStatus] }）` : ''}`
+      : ''
+    let block = `### ${dep.id}: ${dep.description}\n${body}${report}`
     if (used + block.length + 2 > UPSTREAM_RESULTS_MAX) {
       const room = UPSTREAM_RESULTS_MAX - used - 2
       if (room > 0) block = block.slice(0, Math.max(0, room)) + '\n[... truncated — the full output is in this node\'s sub-conversation]'
