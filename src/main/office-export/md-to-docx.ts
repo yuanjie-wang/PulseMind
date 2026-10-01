@@ -18,6 +18,7 @@ import {
   HeadingLevel,
   ImageRun,
   LevelFormat,
+  LineRuleType,
   Packer,
   Paragraph,
   ShadingType,
@@ -29,16 +30,39 @@ import {
 } from 'docx'
 
 const NUMBERING_REFERENCE = 'pm-export-ordered'
+const BULLET_REFERENCE = 'pm-export-bullet'
 const CODE_FONT = 'Courier New'
-// ── fontSize (export_document, 磅) ── Word's default body size is the
-// baseline the built-in Heading1–3 sizes (16/13/12pt) and the 9pt code block
-// are proportioned against: a caller-set fontSize rescales all of them by
-// fontSize / BODY_BASE_PT, so a 四号 (14pt) body never outgrows its own
-// headings (Heading2 would otherwise sit at 13pt, BELOW the body).
+// ── 文档样式系统（2026-10-01 样式移植，取代 docx 库的出厂默认观感）──
+// 视觉语言对齐 markdowner 的导出 CSS（墨色标题/浅灰细线表格/蓝边浅底引用/
+// 1.5 倍行距），全部走 OOXML 表达——预览、PDF、Word 三端同一份字节。
+// 字体：Word 端 Calibri + 微软雅黑；PDF 端 docx-preview 映射 font-family，
+// Chromium 对缺失字体回退到系统苹方，CJK 不会开天窗。
+const BODY_FONT = { ascii: 'Calibri', hAnsi: 'Calibri', eastAsia: '微软雅黑', cs: 'Calibri' }
+const HEADING_INK = '1F2329' // 墨色标题（GitHub ink；不再是 docx 库默认蓝）
+const HEADING_HALF_BASE = [44, 32, 28, 24, 22, 22] // Heading1–6 半磅 @ 基准正文：22/16/14/12/11/11pt
+// ── fontSize（export_document, 磅）── BODY_BASE_PT 是标题/代码比例的基准：
+// 调用方传 fontSize 时全部按 fontSize / BODY_BASE_PT 缩放，四号（14pt）正文
+// 不会大于自己的 Heading2。
 const BODY_BASE_PT = 11
 const CODE_HALF_BASE = 18 // code block + degradation note at the base body
-const HEADING_HALF_BASE = [32, 26, 24] // Heading1–3 at the base body, half-points
-const HEADING_COLOR = ['2E74B5', '2E74B5', '1F4D78'] // the docx lib's defaults — re-stated in fontStyles()
+// 行距：正文 1.5 倍，代码/表格 1.15 倍（markdowner 的 1.8 在打印件里太飘）。
+// 正文行距/段距显式写在每个段落上（docx-preview 对 docDefaults 的段落部分
+// 支持不完整），字号/颜色走 styles——两条渲染路径都确定。
+const LINE_BODY = { line: 360, lineRule: LineRuleType.AUTO }
+const LINE_TIGHT = { line: 276, lineRule: LineRuleType.AUTO }
+// 列表阶梯：左缩进 480/960/1440、悬挂 240。替换掉两个出厂默认——有序编号
+// 原本没有任何缩进定义（编号顶格、无悬挂），无序子弹是库默认 720/1440/2160
+// 阶梯（嵌套子弹跳到一英寸外，视觉孤儿）。
+const LIST_INDENTS = [480, 960, 1440]
+const LIST_HANGING = 240
+const BULLET_GLYPHS = ['•', '◦', '▪']
+// 引用块：应用链接蓝（palette.ts LINK #1677ff）+ --pm-link-bg（8% 蓝）落白底的实色。
+const BLOCKQUOTE_BORDER = { left: { style: BorderStyle.SINGLE, size: 24, color: '1677FF', space: 4 } }
+const BLOCKQUOTE_FILL = 'ECF4FF'
+const CODE_FILL = 'F5F5F5'
+// 表格：0.5pt 浅灰细线（docx 库默认是 color=auto 的黑框）。
+const TABLE_BORDER = { style: BorderStyle.SINGLE, size: 4, color: 'C9CBD1' } as const
+const CELL_MARGIN = { top: 80, bottom: 80, left: 120, right: 120 }
 const HEADING_LEVELS = [
   HeadingLevel.HEADING_1,
   HeadingLevel.HEADING_2,
@@ -162,8 +186,6 @@ function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, im
   return out
 }
 
-const BLOCKQUOTE_BORDER = { left: { style: BorderStyle.SINGLE, size: 18, color: 'C9CBD1', space: 8 } }
-
 function blockChildren(tokens: MarkedToken[], degrade: Degradations, images: Map<string, Buffer> | undefined, codeSize: number): DocxChild[] {
   const out: DocxChild[] = []
   for (const token of tokens) {
@@ -177,21 +199,23 @@ function blockChildren(tokens: MarkedToken[], degrade: Degradations, images: Map
         break
       }
       case 'paragraph':
-        out.push(new Paragraph({ children: inlineRuns(token.tokens, degrade, images) }))
+        out.push(new Paragraph({ spacing: { after: 120, ...LINE_BODY }, children: inlineRuns(token.tokens, degrade, images) }))
         break
       case 'blockquote': {
-        for (const child of token.tokens ?? []) {
-          // The quote's own shape (缩进 + 左边框) wraps each quoted paragraph;
-          // a quoted table renders as itself — quoting a grid is not a Word
-          // concept.
+        const quoted = token.tokens ?? []
+        for (const [i, child] of quoted.entries()) {
+          // The quote's own shape (缩进 + 左边框 + 浅蓝底) wraps each quoted
+          // paragraph; a quoted table renders as itself — quoting a grid is
+          // not a Word concept. 连续引用段之间零间距，底色才是一整块。
           if (child.type === 'table') {
             out.push(tableChild(child, degrade, images))
             continue
           }
           out.push(new Paragraph({
-            indent: { left: 480 },
+            indent: { left: 240 },
             border: BLOCKQUOTE_BORDER,
-            spacing: { before: 80, after: 80 },
+            shading: { type: ShadingType.CLEAR, fill: BLOCKQUOTE_FILL },
+            spacing: { before: i === 0 ? 160 : 0, after: i === quoted.length - 1 ? 160 : 0, ...LINE_BODY },
             children: inlineRuns(child.tokens ?? [child], degrade, images),
           }))
         }
@@ -200,17 +224,28 @@ function blockChildren(tokens: MarkedToken[], degrade: Degradations, images: Map
       case 'code': {
         const lines = String(token.text ?? '').split('\n')
         if (lines[lines.length - 1] === '') lines.pop()
-        for (const line of lines) {
+        for (const [i, line] of lines.entries()) {
+          // 灰底色块没有内边距概念——文字会贴着底色边缘。经典 OOXML 手法：
+          // 每行画与底色同色的边框，w:space 撑出 padding（Word 会把底色填到
+          // 边框为止，docx-preview 把 space 映射为 padding），行间边框同色
+          // 相接不可见。首行补 top、末行补 bottom，四边 padding 就齐了。
+          const pad = (space: number) => ({ style: BorderStyle.SINGLE, size: 8, color: CODE_FILL, space })
           out.push(new Paragraph({
-            shading: { type: ShadingType.CLEAR, fill: 'F5F5F5' },
-            spacing: { before: 0, after: 0 },
+            shading: { type: ShadingType.CLEAR, fill: CODE_FILL },
+            border: {
+              left: pad(8),
+              right: pad(8),
+              ...(i === 0 ? { top: pad(4) } : {}),
+              ...(i === lines.length - 1 ? { bottom: pad(4) } : {}),
+            },
+            spacing: { before: i === 0 ? 120 : 0, after: i === lines.length - 1 ? 120 : 0, ...LINE_TIGHT },
             children: [new TextRun({ text: line === '' ? ' ' : line, font: CODE_FONT, size: codeSize })],
           }))
         }
         break
       }
       case 'hr':
-        out.push(new Paragraph({ border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: 'C9CBD1', space: 1 } }, spacing: { before: 120, after: 120 } }))
+        out.push(new Paragraph({ border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: 'C9CBD1', space: 1 } }, spacing: { before: 200, after: 200 } }))
         break
       case 'list':
         out.push(...listChildren(token, 0, degrade, images))
@@ -243,17 +278,20 @@ function listChildren(token: MarkedToken, level: number, degrade: Degradations, 
       }
       runs.push(...inlineRuns([child], degrade, images))
     }
-    out.push(new Paragraph(
-      token.ordered
-        ? { numbering: { reference: NUMBERING_REFERENCE, level: capped }, children: runs }
-        : { bullet: { level: capped }, children: runs }
-    ))
+    out.push(new Paragraph({
+      // 缩进直接挂在段落上（Word 与 docx-preview 都以段落级 ind 为准），
+      // 编号/子弹落在 left - hanging 处，正文对齐 left。
+      indent: { left: LIST_INDENTS[capped], hanging: LIST_HANGING },
+      spacing: { after: 80, ...LINE_BODY },
+      ...(token.ordered
+        ? { numbering: { reference: NUMBERING_REFERENCE, level: capped } }
+        : { numbering: { reference: BULLET_REFERENCE, level: capped } }),
+      children: runs,
+    }))
     out.push(...nested)
   }
   return out
 }
-
-const CELL_MARGIN = { top: 60, bottom: 60, left: 100, right: 100 }
 
 function tableChild(token: MarkedToken, degrade: Degradations, images: Map<string, Buffer> | undefined): Table {
   const headerRow = new TableRow({
@@ -261,16 +299,30 @@ function tableChild(token: MarkedToken, degrade: Degradations, images: Map<strin
     children: (token.header ?? []).map((cell) => new TableCell({
       shading: { type: ShadingType.CLEAR, fill: 'F2F3F5' },
       margins: CELL_MARGIN,
-      children: [new Paragraph({ children: inlineRuns(cell.tokens, degrade, images, true) })],
+      children: [new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 0, after: 0, ...LINE_TIGHT },
+        children: inlineRuns(cell.tokens, degrade, images, true),
+      })],
     })),
   })
   const bodyRows = (token.rows ?? []).map((row) => new TableRow({
     children: row.map((cell) => new TableCell({
       margins: CELL_MARGIN,
-      children: [new Paragraph({ children: inlineRuns(cell.tokens, degrade, images) })],
+      children: [new Paragraph({
+        spacing: { before: 0, after: 0, ...LINE_TIGHT },
+        children: inlineRuns(cell.tokens, degrade, images),
+      })],
     })),
   }))
-  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...bodyRows] })
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: TABLE_BORDER, bottom: TABLE_BORDER, left: TABLE_BORDER, right: TABLE_BORDER,
+      insideHorizontal: TABLE_BORDER, insideVertical: TABLE_BORDER,
+    },
+    rows: [headerRow, ...bodyRows],
+  })
 }
 
 /** href paths referenced by ![...](href) — workspace-relative or absolute,
@@ -296,8 +348,9 @@ export function mdImagePaths(md: string): Array<{ href: string }> {
  *  resolved bytes (M2): a hit embeds the real image, a miss keeps the
  *  degradation placeholder — the resolver decides, never the network.
  *  `options.fontSize` (磅) sets the document-wide body size; headings and the
- *  code block scale with it (BODY_BASE_PT), and WITHOUT it no styles part is
- *  emitted — the output stays byte-identical to a fontSize-less export. */
+ *  code block scale with it (BODY_BASE_PT). 样式部分无条件生成（字体栈/标题
+ *  体系/编号定义就是文档设计的一部分），fontSize 只改尺寸——缩放因子 1 时
+ *  输出即基准设计。 */
 export async function markdownToDocxBuffer(
   md: string,
   images?: Map<string, Buffer>,
@@ -311,32 +364,48 @@ export async function markdownToDocxBuffer(
   const children = blockChildren(tokens, degrade, images, codeSize)
   const note = degrade.note()
   if (note) children.push(note)
+  const headingRun = (halfBase: number) => ({ bold: true, color: HEADING_INK, size: Math.round(halfBase * scale) })
+  // H1/H2 带浅灰底线（markdowner 的 h1,h2 border-bottom）；keepNext 让标题
+  // 不会孤悬在页底。样式对象是整体替换语义——run 必须把 bold/color/size 写全。
+  const headingPara = (before: number, after: number, rule: boolean) => ({
+    keepNext: true,
+    keepLines: true,
+    spacing: { before, after, ...LINE_BODY },
+    ...(rule ? { border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: 'E1E4E8', space: 4 } } } : {}),
+  })
   const doc = new Document({
-    // The docx lib shallow-merges each `default` key over its own `{ run }`,
-    // so a heading override must re-state the default color — size alone
-    // would silently drop the headings to black.
-    ...(fontSize !== undefined
-      ? {
-          styles: {
-            default: {
-              document: { run: { size: Math.round(fontSize * 2) } },
-              heading1: { run: { color: HEADING_COLOR[0], size: Math.round(HEADING_HALF_BASE[0] * scale) } },
-              heading2: { run: { color: HEADING_COLOR[1], size: Math.round(HEADING_HALF_BASE[1] * scale) } },
-              heading3: { run: { color: HEADING_COLOR[2], size: Math.round(HEADING_HALF_BASE[2] * scale) } },
-            },
-          },
-        }
-      : {}),
+    styles: {
+      default: {
+        document: { run: { font: BODY_FONT, size: Math.round((fontSize ?? BODY_BASE_PT) * 2) } },
+        heading1: { run: headingRun(HEADING_HALF_BASE[0]), paragraph: headingPara(400, 160, true) },
+        heading2: { run: headingRun(HEADING_HALF_BASE[1]), paragraph: headingPara(360, 120, true) },
+        heading3: { run: headingRun(HEADING_HALF_BASE[2]), paragraph: headingPara(280, 100, false) },
+        heading4: { run: headingRun(HEADING_HALF_BASE[3]), paragraph: headingPara(240, 80, false) },
+        heading5: { run: headingRun(HEADING_HALF_BASE[4]), paragraph: headingPara(240, 80, false) },
+        heading6: { run: headingRun(HEADING_HALF_BASE[5]), paragraph: headingPara(240, 80, false) },
+      },
+    },
     numbering: {
-      config: [{
-        reference: NUMBERING_REFERENCE,
-        levels: [0, 1, 2].map((level) => ({
-          level,
-          format: LevelFormat.DECIMAL,
-          text: `%${level + 1}.`,
-          alignment: AlignmentType.START,
-        })),
-      }],
+      config: [
+        {
+          reference: NUMBERING_REFERENCE,
+          levels: [0, 1, 2].map((level) => ({
+            level,
+            format: LevelFormat.DECIMAL,
+            text: `%${level + 1}.`,
+            alignment: AlignmentType.START,
+          })),
+        },
+        {
+          reference: BULLET_REFERENCE,
+          levels: [0, 1, 2].map((level) => ({
+            level,
+            format: LevelFormat.BULLET,
+            text: BULLET_GLYPHS[level],
+            alignment: AlignmentType.START,
+          })),
+        },
+      ],
     },
     sections: [{ children }],
   })

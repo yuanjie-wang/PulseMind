@@ -253,10 +253,11 @@ describe('docx fontSize (generation-side font control)', () => {
   const headingBlock = (styles: string, id: string): string =>
     styles.match(new RegExp(`w:styleId="${id}"[\\s\\S]*?</w:style>`))?.[0] ?? ''
 
-  it('without fontSize the document defaults stay EMPTY — Word renders its own default', async () => {
+  it('the document defaults always carry the design: font stack + 11pt base body', async () => {
     const { docDefaults } = await stylesFor()
-    expect(docDefaults).toContain('<w:rPrDefault/>')
-    expect(docDefaults).not.toContain('<w:sz')
+    expect(docDefaults).toContain('Calibri')
+    expect(docDefaults).toContain('微软雅黑')
+    expect(docDefaults).toContain('<w:sz w:val="22"/>') // BODY_BASE_PT pinned explicitly, not Word's ambient default
   })
 
   it('fontSize lands as the body default in half-points (10.5pt → 21)', async () => {
@@ -265,16 +266,18 @@ describe('docx fontSize (generation-side font control)', () => {
     expect(docDefaults).toContain('<w:szCs w:val="21"/>')
   })
 
-  it('Heading1–3 scale off the 11pt baseline and KEEP their default colors (the lib replaces the whole run)', async () => {
-    const { styles, docDefaults } = await stylesFor(14)
-    expect(docDefaults).toContain('<w:sz w:val="28"/>')
-    expect(headingBlock(styles, 'Heading1')).toContain('<w:sz w:val="41"/>') // 16pt × 14/11
-    expect(headingBlock(styles, 'Heading1')).toContain('w:val="2E74B5"')
-    expect(headingBlock(styles, 'Heading2')).toContain('<w:sz w:val="33"/>') // 13pt × 14/11
-    expect(headingBlock(styles, 'Heading3')).toContain('<w:sz w:val="31"/>') // 12pt × 14/11
-    expect(headingBlock(styles, 'Heading3')).toContain('w:val="1F4D78"')
-    // Heading4+ carry no size in Word's defaults — they inherit the body size
-    expect(headingBlock(styles, 'Heading4')).not.toContain('<w:sz')
+  it('Heading1–6 scale off the 11pt baseline in the near-black ink (the lib replaces the whole run)', async () => {
+    const { styles } = await stylesFor(14)
+    expect(headingBlock(styles, 'Heading1')).toContain('<w:sz w:val="56"/>') // 22pt × 14/11
+    expect(headingBlock(styles, 'Heading1')).toContain('w:val="1F2329"')
+    expect(headingBlock(styles, 'Heading1')).toContain('<w:b/>')
+    expect(headingBlock(styles, 'Heading2')).toContain('<w:sz w:val="41"/>') // 16pt × 14/11
+    expect(headingBlock(styles, 'Heading3')).toContain('<w:sz w:val="36"/>') // 14pt × 14/11
+    expect(headingBlock(styles, 'Heading4')).toContain('<w:sz w:val="31"/>') // 12pt × 14/11
+    // H1/H2 carry the light bottom rule; H3+ do not
+    expect(headingBlock(styles, 'Heading1')).toContain('w:pBdr')
+    expect(headingBlock(styles, 'Heading2')).toContain('w:pBdr')
+    expect(headingBlock(styles, 'Heading3')).not.toContain('w:pBdr')
   })
 
   it('body runs carry NO explicit size — they inherit the document default', async () => {
@@ -291,5 +294,52 @@ describe('docx fontSize (generation-side font control)', () => {
     expect(new AdmZip(plainCode).readAsText('word/document.xml')).toContain('<w:sz w:val="18"/>')
     const note = await markdownToDocxBuffer('![x](a.png)', undefined, { fontSize: 14 })
     expect(new AdmZip(note).readAsText('word/document.xml')).toContain('<w:sz w:val="23"/>')
+  })
+})
+
+describe('docx style system (2026-10-01: markdowner export-CSS ported into OOXML)', () => {
+  it('lists ride the custom ladder — paragraph indents replace the lib defaults (orphan nested bullets)', async () => {
+    const md = '- 项目一\n  - 嵌套\n\n1. 第一\n2. 第二'
+    const xml = await docxDocumentXml(md)
+    // bullet at 240→text 480; the nested level at 720→960 (the old lib default
+    // jumped nested bullets to 1440+ with the ordered parent at 0)
+    expect(xml).toContain('<w:ind w:left="480" w:hanging="240"/>')
+    expect(xml).toContain('<w:ind w:left="960" w:hanging="240"/>')
+    const numbering = await docxPart(md, 'word/numbering.xml')
+    expect(numbering).toContain('w:val="bullet"')
+    expect(numbering).toContain('w:val="•"')
+    expect(numbering).toContain('w:val="◦"')
+    expect(numbering).toContain('w:val="▪"')
+    expect(numbering).toContain('w:val="decimal"')
+    expect(numbering).toContain('w:val="%1."')
+  })
+
+  it('tables: light-grey hairline grid (no black auto borders), roomier padding, centered header', async () => {
+    const xml = await docxDocumentXml('| 名称 | 数量 |\n|---|---|\n| **甲** | 12 |')
+    expect(xml.toUpperCase()).toContain('C9CBD1')
+    expect(xml).not.toContain('w:color="auto"')
+    // cell margins land per-cell (w:tcMar 80/120), not as a table-level default
+    expect(xml).toContain('<w:tcMar>')
+    expect(xml).toContain('<w:jc w:val="center"/>')
+  })
+
+  it('blockquote: app-link-blue left bar over the link-bg wash', async () => {
+    const xml = await docxDocumentXml('> 引用文字')
+    expect(xml).toContain('w:color="1677FF"')
+    expect(xml.toUpperCase()).toContain('ECF4FF')
+  })
+
+  it('code block: fill-coloured border box supplies the padding the shading lacks', async () => {
+    const xml = await docxDocumentXml('```js\nconst a = 1;\n```')
+    expect(xml.toUpperCase()).toContain('F5F5F5')
+    // the padding hack: paragraph borders painted in the fill colour
+    expect(xml).toContain('w:pBdr')
+    expect(xml.toUpperCase()).toContain('W:COLOR="F5F5F5"')
+  })
+
+  it('body paragraphs carry the 1.5× line rhythm and a 6pt after-gap', async () => {
+    const xml = await docxDocumentXml('正文内容。')
+    expect(xml).toContain('w:line="360"')
+    expect(xml).toContain('w:after="120"')
   })
 })
