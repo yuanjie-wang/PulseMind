@@ -94,6 +94,25 @@ describe('sub-agent stall watchdog', () => {
     expect(engine.resolveCompletionIfSpawned).not.toHaveBeenCalled()
   })
 
+  it('a frozen engine accrues no stall debt — a long pause then resume is not mis-settled', async () => {
+    // review_20261001 中1: pauseExecution parks the engine on awaiting_continue
+    // (isCancelled=true) while the tick keeps running; the clock used to stay at
+    // the pre-freeze moment, so a ≥stallMs freeze pre-charged the debt and the
+    // first tick in the post-resume gap (isCancelled cleared, new request not
+    // yet attached) settled a healthy expert as wedged.
+    const engine = makeFakeEngine()
+    attachSubAgentWatchdog(engine, 'sub_x', { intervalMs: 1_000, stallMs: 5_000 })
+    engine.isCancelled = true // pauseExecution
+    await vi.advanceTimersByTimeAsync(60_000) // frozen far past the stall window
+    expect(engine.resolveCompletionIfSpawned).not.toHaveBeenCalled()
+    engine.isCancelled = false // resumeExecution: the async gap before the new request attaches
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(engine.resolveCompletionIfSpawned).not.toHaveBeenCalled()
+    // the clock genuinely restarted — a real post-resume stall still settles
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(engine.resolveCompletionIfSpawned).toHaveBeenCalledWith('error')
+  })
+
   it('detach stops the sweep', async () => {
     const engine = makeFakeEngine()
     const detach = attachSubAgentWatchdog(engine, 'sub_x', { intervalMs: 1_000, stallMs: 5_000 })

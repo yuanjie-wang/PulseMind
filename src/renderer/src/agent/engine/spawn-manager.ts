@@ -255,7 +255,9 @@ export function attachSubConversationSaver(
  *  messages. After SUB_WATCHDOG_STALL of neither, settle the spawn as an
  *  error so the envelope reaches the parent, the slots free up and the
  *  scheduler moves on; the zombie engine is frozen so a late-resolving await
- *  cannot revive it invisibly. */
+ *  cannot revive it invisibly. A frozen engine (pauseExecution's
+ *  awaiting_continue) accrues no stall debt — it is under human supervision,
+ *  and a long pause must not pre-charge the clock for the post-resume gap. */
 export function attachSubAgentWatchdog(
   engine: EngineCore,
   subConvId: string,
@@ -276,8 +278,16 @@ export function attachSubAgentWatchdog(
       lastLiveness = Date.now()
       return
     }
+    if (engine.isCancelled) {
+      // 冻结期（pauseExecution 的 awaiting_continue）= 人为监护中，停摆债不
+      // 累积：钟随 tick 刷新。否则冻结 ≥ stallMs 后旧债满额，解冻到新请求挂上
+      // currentRequestId 之间的异步间隙被一个 tick 命中就会把健康专家误结算
+      // 为卡死（review_20261001 中1）。结算路径里的 isCancelled 卫兵语义不变。
+      lastLiveness = Date.now()
+      return
+    }
     if (Date.now() - lastLiveness < stallMs) return
-    if (engine.isCancelled || engine.pendingToolIds.size > 0 || engine.currentRequestId) return
+    if (engine.pendingToolIds.size > 0 || engine.currentRequestId) return
     console.error(`[SpawnManager] sub-agent ${subConvId} stalled ${Math.round(stallMs / 60_000)}min with no in-flight request, no pending tools and no progress — settling as error`)
     engine.isCancelled = true
     engine.abortController?.abort()
