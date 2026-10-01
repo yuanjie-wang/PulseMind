@@ -48,15 +48,25 @@ describe('resolvePlanExchange: system-minted paths', () => {
     expect(resolvePlanExchange('/tmp/ws', bare)).toBeNull()
   })
 
-  it('extractDeclaredStatus: failed > partial > success, English counts', () => {
+  it('extractDeclaredStatus: structured 状态 line first; prose fallback worst-wins; prose error is not a verdict', () => {
+    // prose fallback (no structured line anywhere)
     expect(extractDeclaredStatus('任务完成，一切成功')).toBe('success')
     expect(extractDeclaredStatus('部分成功：A 平台限流')).toBe('partial')
     expect(extractDeclaredStatus('抓取失败，原因见下')).toBe('failed')
-    // priority: a text mentioning BOTH reads as failed; a negation ("not a
-    // failure") does not flip a mostly-partial report
+    // worst declaration wins when several appear at one layer
     expect(extractDeclaredStatus('整体失败，A 部分成功')).toBe('failed')
-    expect(extractDeclaredStatus('not a failure, mostly done — partial')).toBe('partial')
     expect(extractDeclaredStatus('no verdict here')).toBeUndefined()
+    // the skeleton's own shapes are read verbatim — prose digressions cannot vote
+    expect(extractDeclaredStatus('## 状态\n\n成功 —— 全部落库\n\n## 结论\n期间 error 重试两次后成功')).toBe('success')
+    expect(extractDeclaredStatus('## 状态：部分成功')).toBe('partial')
+    expect(extractDeclaredStatus('状态：部分成功（A 平台限流）')).toBe('partial')
+    expect(extractDeclaredStatus('- 状态: 失败（网络不可达）')).toBe('failed')
+    expect(extractDeclaredStatus('**Status**: error — upstream 500')).toBe('failed')
+    // prose `error` is a topic word, not a verdict — a clean report mentioning
+    // it stays clean (these all read 失败 under the old full-text substring)
+    expect(extractDeclaredStatus('全部成功。error handling 已加固，0 errors。')).toBe('success')
+    expect(extractDeclaredStatus('全部抓取成功，error 日志为空')).toBe('success')
+    expect(extractDeclaredStatus('error handling 已加固')).toBeUndefined()
   })
 
   it('the admission contract names the minted path, the skeleton, and the node spec', () => {

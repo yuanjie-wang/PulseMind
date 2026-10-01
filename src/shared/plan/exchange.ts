@@ -51,15 +51,68 @@ export function mintPlanId(): string {
 
 export type DeclaredStatus = 'success' | 'partial' | 'failed'
 
-/** Extract the sub-agent's self-declared outcome from its reply — advisory
- *  data for the downstream reader, never plan state. Priority failed > partial
- *  > success so a negation in passing ("不是失败") cannot flip a mostly-clean
- *  report, and English synonyms count (weak models mix). */
-export function extractDeclaredStatus(text: string): DeclaredStatus | undefined {
-  if (/失败|failed|error/i.test(text)) return 'failed'
-  if (/部分成功|部分完成|partial/i.test(text)) return 'partial'
-  if (/成功|success|completed/i.test(text)) return 'success'
+/** Verdict keywords per extraction layer, worst-first: when several match at
+ *  one layer the most pessimistic declaration wins (see
+ *  extractDeclaredStatus). */
+const STATUS_KEYWORDS: Array<[DeclaredStatus, RegExp]> = [
+  ['failed', /失败|\bfailed\b/i],
+  ['partial', /部分成功|部分完成|\bpartial\b/i],
+  ['success', /成功|\bsuccess(?:ful)?\b|\bcompleted\b/i],
+]
+
+function scanStatus(layer: string, includeError: boolean): DeclaredStatus | undefined {
+  for (const [status, re] of STATUS_KEYWORDS) {
+    if (re.test(layer)) return status
+  }
+  // `error` is a verdict only where a verdict is being stated; in running
+  // prose it is a topic word ("error handling", "0 errors") and a clean
+  // report mentioning it must not read as failed (the digit lookbehind keeps
+  // "0 errors"/"2 errors" counts out even in a status line).
+  if (includeError && /(?<!\d )\berrors?\b/i.test(layer)) return 'failed'
   return undefined
+}
+
+/** The one line a reply states its verdict on: the report skeleton's `## 状态`
+ *  section (verdict on the heading itself or on the first line under it), or
+ *  a `状态：…` / `执行结果：…` / `Status: …` label line. */
+function statusLineOf(text: string): string | undefined {
+  const lines = text.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const heading = lines[i].match(/^[ \t]*#{1,6}[ \t]*(?:状态|status)[ \t]*(?:[：:][ \t]*(.*))?$/i)
+    if (heading) {
+      const inline = (heading[1] ?? '').trim()
+      if (inline) return inline
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim()) return lines[j].trim()
+      }
+      return undefined
+    }
+  }
+  for (const line of lines) {
+    const labelled = line.match(/^[ \t]*(?:[-*+][ \t]+)?(?:\*\*)?(?:执行|任务|最终)?(?:状态|结果|status|result)(?:\*\*)?[：:][ \t]*(.+)$/i)
+    if (labelled) return labelled[1].trim()
+  }
+  return undefined
+}
+
+/** Extract the sub-agent's self-declared outcome from its reply — advisory
+ *  data for the downstream reader, never plan state. The structured status
+ *  line (the report skeleton's own `## 状态` shape, or a `状态：` label) is
+ *  matched first and wins outright — log lines and prose digressions cannot
+ *  vote; without one the whole text is keyword-scanned. Within a layer the
+ *  WORST match wins (failed before partial before success): a reply naming
+ *  several reads pessimistic, and a passing negation (「不是失败」) is priced
+ *  in — the model states its verdict plainly, the scan only reads it, and a
+ *  spurious 失败 costs the downstream node one re-check while a hidden one
+ *  costs a re-run. English synonyms count (weak models mix); prose `error`
+ *  is a topic, not a verdict. */
+export function extractDeclaredStatus(text: string): DeclaredStatus | undefined {
+  const line = statusLineOf(text)
+  if (line) {
+    const declared = scanStatus(line, true)
+    if (declared) return declared
+  }
+  return scanStatus(text, false)
 }
 
 /** The 准入 contract injected into a plan-node spawn's task message (E2):
