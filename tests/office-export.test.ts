@@ -12,13 +12,27 @@ import {
   sanitizeSheetName,
   dedupeSheetNames,
 } from '../src/main/office-export/md-tables'
-import { markdownToDocxBuffer } from '../src/main/office-export/md-to-docx'
+import { markdownToDocxBuffer, mdImagePaths } from '../src/main/office-export/md-to-docx'
 import { csvFromSheet, csvToSheet } from '../src/main/office-export/csv-io'
 
 async function docxDocumentXml(md: string): Promise<string> {
   const buf = await markdownToDocxBuffer(md)
   expect(buf.length).toBeGreaterThan(1000)
   return new AdmZip(buf).readAsText('word/document.xml')
+}
+
+/** Paragraph texts in document order — a mapper that emits the right runs in
+ *  the wrong <w:p> order still passes a contains() check, so order needs its
+ *  own reader. */
+async function docxParagraphTexts(md: string): Promise<string[]> {
+  const xml = await docxDocumentXml(md)
+  return xml.split('<w:p>').slice(1).map((chunk) => {
+    let text = ''
+    const re = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(chunk))) text += m[1]
+    return text
+  })
 }
 
 async function docxPart(md: string, part: string): Promise<string> {
@@ -176,6 +190,16 @@ describe('markdown → real docx (附录 A mapping)', () => {
     expect(xml).toContain('第一')
   })
 
+  it('nested list: every child renders AFTER its own parent item (document order)', async () => {
+    const paras = await docxParagraphTexts('# T\n\n- parent one\n  - child A\n  - child B\n- parent two\n')
+    const idx = (needle: string) => paras.findIndex((t) => t.includes(needle))
+    const [iParent, iChildA, iChildB, iParentTwo] = [idx('parent one'), idx('child A'), idx('child B'), idx('parent two')]
+    expect(iParent).toBeGreaterThanOrEqual(0)
+    expect(iChildA).toBeGreaterThan(iParent)
+    expect(iChildB).toBeGreaterThan(iChildA)
+    expect(iParentTwo).toBeGreaterThan(iChildB)
+  })
+
   it('tables: bold header with shading, typed cells keep inline bold', async () => {
     const xml = await docxDocumentXml('| 名称 | 数量 |\n|---|---|\n| **甲** | 12 |')
     expect(xml).toContain('<w:tbl>')
@@ -203,6 +227,14 @@ describe('markdown → real docx (附录 A mapping)', () => {
     const xml = await docxDocumentXml('前言\n\n![流程图](assets/flow.png)')
     expect(xml).toContain('[图片:流程图，正文不支持]')
     expect(stripTags(xml)).toContain('图片在 Word 导出中不支持')
+  })
+
+  it('an image href with a bare "%" is not valid percent-encoding: degrade, never crash', async () => {
+    // decodeURI("img/50%.png") throws URIError — the export must degrade the
+    // image to its placeholder, not fail the whole document.
+    const xml = await docxDocumentXml('![pic](img/50%.png)\n')
+    expect(xml).toContain('[图片:pic，正文不支持]')
+    expect(mdImagePaths('![pic](img/50%.png)\n')).toEqual([{ href: 'img/50%.png' }])
   })
 
   it('Chinese and mixed CJK/Latin survive the round trip', async () => {

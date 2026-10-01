@@ -88,6 +88,13 @@ function plainText(tokens?: MarkedToken[]): string {
   return tokens.map((t) => (t.tokens && t.tokens.length > 0 ? plainText(t.tokens) : t.text ?? '')).join('')
 }
 
+/** decodeURI that keeps the raw href when it is not valid percent-encoding —
+ *  a bare "%" ("img/50%.png") throws URIError, which must degrade the image
+ *  to its placeholder, never crash the whole export. */
+function decodeHref(href: string): string {
+  try { return decodeURI(href) } catch { return href }
+}
+
 function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, images: Map<string, Buffer> | undefined = undefined, bold = false): InlineChild[] {
   if (!tokens) return []
   const out: InlineChild[] = []
@@ -116,8 +123,7 @@ function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, im
         out.push(new TextRun({ text: token.text ?? '', font: CODE_FONT, shading: { type: ShadingType.CLEAR, fill: 'F0F0F0' } }))
         break
       case 'link': {
-        let href = String(token.raw ?? '').match(/\]\(\s*([^)\s]+)/)?.[1] ?? ''
-        try { href = decodeURI(href) } catch { /* keep raw */ }
+        const href = decodeHref(String(token.raw ?? '').match(/\]\(\s*([^)\s]+)/)?.[1] ?? '')
         out.push(new ExternalHyperlink({
           link: href,
           children: [new TextRun({ text: plainText(token.tokens), style: 'Hyperlink' })],
@@ -128,7 +134,7 @@ function inlineRuns(tokens: MarkedToken[] | undefined, degrade: Degradations, im
         // M2 (PLAN-office-expressiveness): a resolvable WORKSPACE href embeds
         // the real image; http(s)/data:/unreadable keeps today's degradation —
         // never silent, never fetched over the network.
-        const href = decodeURI(String(token.raw ?? '').match(/!\[.*?\]\(\s*([^)\s]+)/)?.[1] ?? '').replace(/^['"]|['"]$/g, '')
+        const href = decodeHref(String(token.raw ?? '').match(/!\[.*?\]\(\s*([^)\s]+)/)?.[1] ?? '').replace(/^['"]|['"]$/g, '')
         const buf = images?.get(href)
         if (buf) {
           const dims = imageDims(buf)
@@ -227,9 +233,12 @@ function listChildren(token: MarkedToken, level: number, degrade: Degradations, 
   const out: Paragraph[] = []
   for (const item of token.items ?? []) {
     const runs: InlineChild[] = []
+    // 嵌套子表缓存在自己的缓冲里：父项自己的段落必须先于它落地，否则
+    // 子项全部渲染到父项之前（文档顺序倒置）。
+    const nested: Paragraph[] = []
     for (const child of item.tokens ?? []) {
       if (child.type === 'list') {
-        out.push(...listChildren(child, level + 1, degrade, images))
+        nested.push(...listChildren(child, level + 1, degrade, images))
         continue
       }
       runs.push(...inlineRuns([child], degrade, images))
@@ -239,6 +248,7 @@ function listChildren(token: MarkedToken, level: number, degrade: Degradations, 
         ? { numbering: { reference: NUMBERING_REFERENCE, level: capped }, children: runs }
         : { bullet: { level: capped }, children: runs }
     ))
+    out.push(...nested)
   }
   return out
 }
@@ -272,7 +282,7 @@ export function mdImagePaths(md: string): Array<{ href: string }> {
   const visit = (list: MarkedToken[]): void => {
     for (const t of list) {
       if (t.type === 'image') {
-        const href = decodeURI(String(t.raw ?? '').match(/!\[.*?\]\(\s*([^)\s]+)/)?.[1] ?? '').replace(/^['"]|['"]$/g, '')
+        const href = decodeHref(String(t.raw ?? '').match(/!\[.*?\]\(\s*([^)\s]+)/)?.[1] ?? '').replace(/^['"]|['"]$/g, '')
         if (href && !seen.has(href)) { seen.add(href); out.push({ href }) }
       }
       if (t.tokens) visit(t.tokens as unknown as MarkedToken[])
