@@ -23,7 +23,7 @@ import type { Plan } from '../src/shared/types/plan'
 
 /**
  * 计划节点数据交换规范（PLAN-plan-exchange）：每个 plan 一个工作区交换区
- * `<workspace>/.plan/<planId>/`；准入 = 派发时注入系统铸造的报告路径 + 标准
+ * `<workspace>/.pulsemind/plans/<planId>/`；准入 = 派发时注入系统铸造的报告路径 + 标准
  * 骨架 + 节点 reportSpec；准出 = 收口点机械校验（存在/非空）后落
  * reportPath/declaredStatus，缺报告按失败结算；下游经 formatUpstreamResults
  * 拿到报告路径自行 read。这里钉四层：exchange 纯函数、graph 透传/注入、
@@ -36,9 +36,9 @@ describe('resolvePlanExchange: system-minted paths', () => {
   it('mints the exchange dir and per-node report paths', () => {
     const plan = createPlanDag('x', [{ description: 'a' }])
     const ex = resolvePlanExchange('/tmp/ws', plan)!
-    expect(ex.dir).toBe(`/tmp/ws/.plan/${plan.id}`)
-    expect(ex.reportPath('n3')).toBe(`/tmp/ws/.plan/${plan.id}/3-report.md`)
-    expect(ex.reportPath('n12')).toBe(`/tmp/ws/.plan/${plan.id}/12-report.md`)
+    expect(ex.dir).toBe(`/tmp/ws/.pulsemind/plans/${plan.id}`)
+    expect(ex.reportPath('n3')).toBe(`/tmp/ws/.pulsemind/plans/${plan.id}/3-report.md`)
+    expect(ex.reportPath('n12')).toBe(`/tmp/ws/.pulsemind/plans/${plan.id}/12-report.md`)
   })
 
   it('null without a workspace or a plan id (legacy, never dispatched)', () => {
@@ -112,10 +112,10 @@ describe('plan identity and reportSpec through the graph', () => {
     const plan = createPlanDag('x', [{ description: '调研' }, { description: '撰写', dependsOn: [1] }])
     plan.nodes[0].status = 'completed'
     plan.nodes[0].handoff = '调研完成'
-    plan.nodes[0].reportPath = '/tmp/ws/.plan/p1/1-report.md'
+    plan.nodes[0].reportPath = '/tmp/ws/.pulsemind/plans/p1/1-report.md'
     plan.nodes[0].declaredStatus = 'partial'
     const section = formatUpstreamResults(plan, resolveReadyNode(plan, 2))
-    expect(section).toContain('Report: /tmp/ws/.plan/p1/1-report.md')
+    expect(section).toContain('Report: /tmp/ws/.pulsemind/plans/p1/1-report.md')
     expect(section).toContain('（声明状态: 部分成功）')
     expect(section).toContain('read 直接读取')
     expect(section).toContain('调研完成')
@@ -224,12 +224,12 @@ describe('spawn choke point: admission in, exit verified', () => {
 
     expect(plan.id).toMatch(/^plan_/)
     expect(calls.tasks[0]).toContain('## 报告契约')
-    expect(calls.tasks[0]).toContain(`/tmp/ws_ex/.plan/${plan.id}/1-report.md`)
+    expect(calls.tasks[0]).toContain(`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`)
     expect(calls.tasks[0]).toContain('## 关键数据')
-    expect(calls.statPaths).toEqual([`/tmp/ws_ex/.plan/${plan.id}/1-report.md`])
+    expect(calls.statPaths).toEqual([`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`])
     expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
     expect(calls.reports).toHaveLength(1)
-    expect(calls.reports[0]).toEqual({ ref: 'n1', path: `/tmp/ws_ex/.plan/${plan.id}/1-report.md`, status: 'success' })
+    expect(calls.reports[0]).toEqual({ ref: 'n1', path: `/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`, status: 'success' })
     expect(calls.handoffs).toHaveLength(1)
     expect(block.exitCode).toBe(0)
   })
@@ -247,7 +247,7 @@ describe('spawn choke point: admission in, exit verified', () => {
     const result = calls.results[0]
     expect(result.isError).toBe(true)
     expect(result.content).toContain('Report contract violated')
-    expect(result.content).toContain(`/tmp/ws_ex/.plan/${plan.id}/1-report.md`)
+    expect(result.content).toContain(`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`)
     expect(result.content).toContain('spawn_agent planNode=1')
     expect(block.exitCode).toBe(1)
   })

@@ -78,7 +78,7 @@ export interface Plan {
   version: 2
   /** delegated (default): ready nodes spawn to experts; direct: the main agent executes them itself. */
   mode?: 'direct' | 'delegated'
-  /** Exchange-area identity (PLAN-plan-exchange E1): `<workspace>/.plan/<id>/`.
+  /** Exchange-area identity (PLAN-plan-exchange E1): `<workspace>/.pulsemind/plans/<id>/`.
    *  Minted at create/migrate, lazily on legacy plans by PlanManager at
    *  dispatch (which always saves the plan). Absent on plans never dispatched. */
   id?: string

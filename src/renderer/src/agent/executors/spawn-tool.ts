@@ -213,7 +213,14 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // already fixed the identical problem for skill locations; this fixes it for
     // the workspace. Without a workspaceDir the line just stays out.
     const envLines: string[] = []
-    if (ex.opts.workspaceDir) envLines.push(`- Workspace: ${ex.opts.workspaceDir} (relative file paths resolve here; the shell starts here)`)
+    if (ex.opts.workspaceDir) {
+      envLines.push(`- Workspace: ${ex.opts.workspaceDir} (relative file paths resolve here; the shell starts here)`)
+      // Same hygiene rule the main agent's `## Workspace` state-block section
+      // carries (system-prompt-builder.buildWorkspaceSection): throwaway files
+      // go under the workspace's own .pulsemind/ so a project workspace (the
+      // user's real directory) does not collect the model's scratch.
+      envLines.push(`- Scratch: ${ex.opts.workspaceDir}/.pulsemind/tmp — put throwaway/intermediate files here, never loose in the workspace root`)
+    }
     if (Number.isFinite(ex.opts.maxTokens)) {
       envLines.push(`- Your maximum output limit: ${ex.opts.maxTokens} tokens per response. For large writes, split the content across multiple write calls.`)
     }

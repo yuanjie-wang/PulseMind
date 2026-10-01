@@ -1,6 +1,11 @@
 /**
  * Plan data-exchange scaffolding (PLAN-plan-exchange). Every plan owns a
- * dedicated exchange directory under the conversation workspace; report PATHS
+ * dedicated exchange directory under the conversation workspace's `.pulsemind/`
+ * hygiene dir (2026-10-01: plans and scratch share one dot-dir so a project
+ * workspace — the user's own files — stays unpolluted; plans minted before the
+ * move keep their `.plan/` dirs on disk AND their `.plan/` paths in persisted
+ * `node.reportPath`, which is what downstream reads go through, so nothing is
+ * migrated); report PATHS
  * are minted by the system (never parsed from model prose), the admission
  * contract text is composed here next to the skeleton it enforces, and the
  * declared-status extraction is the one bounded bit of natural-language
@@ -41,7 +46,7 @@ export interface PlanExchange {
  *  been given an id yet; PlanManager lazily mints ids at dispatch). */
 export function resolvePlanExchange(workspaceDir: string | undefined, plan: Plan): PlanExchange | null {
   if (!workspaceDir || !plan.id) return null
-  const dir = `${workspaceDir.replace(/[/\\]+$/, '')}/.plan/${plan.id}`
+  const dir = `${workspaceDir.replace(/[/\\]+$/, '')}/.pulsemind/plans/${plan.id}`
   return { dir, reportPath: (nodeId: string) => `${dir}/${nodeId.replace(/^n/, '')}-report.md` }
 }
 

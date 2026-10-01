@@ -275,7 +275,11 @@ async function buildStateBlock(params: {
 
 function buildWorkspaceSection(workspaceDir?: string): string | null {
   if (!workspaceDir) return null
-  return `## Workspace\n- Workspace: ${workspaceDir}`
+  // The Scratch line is per-conversation (it names this workspace), so it lives
+  // here and NOT in the frozen core; the spawn env block carries the same rule
+  // for sub-agents (they get no state block). Throwaway files under one
+  // dot-dir keep a project workspace — the user's own files — unpolluted.
+  return `## Workspace\n- Workspace: ${workspaceDir}\n- Scratch: ${workspaceDir}/.pulsemind/tmp — put throwaway/intermediate files here, never loose in the workspace root`
 }
 
 function buildProjectSection(name?: string, overview?: string): string | null {
