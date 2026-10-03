@@ -7,10 +7,84 @@ import { beginTerminalSpan } from '../terminal-span'
 import type { ToolUseBlock } from '../../types/agent'
 import type { KnowledgeFile } from '../../../../shared/types/knowledge'
 import { EXPERIENCE_CATEGORIES, type ExperienceDraft } from '../../../../shared/types/experience-types'
-import { UI_PREVIEW_MAX, type ToolExecContext } from './context'
+import { UI_PREVIEW_MAX, type ToolExecContext, type CompactToolOutcome } from './context'
 
 /** memory_search: tool block .output preview. */
 const MEMORY_PREVIEW_MAX = 2000
+
+/** context_compact 结果信封（PLAN-context-compact-tool §3）：最后字节点名
+ *  下一步——模型靠工具结果的最后字节决定下一个动作，压缩成功的收尾必须
+ *  明确「继续任务，不要收尾」。 */
+function formatCompactOutcome(o: CompactToolOutcome, hadNotes: boolean): string {
+  if (!o.ok) {
+    switch (o.reason) {
+      case 'request_in_flight':
+        return '当前有请求在飞，无法压缩。等当前回合的这一轮结束后再调用。'
+      case 'already_this_turn':
+        return '本回合已压缩过（每回合至多一次主动压缩）。继续当前任务。'
+      case 'not_worthwhile': {
+        const pct = o.window ? Math.round(((o.tokens ?? 0) / o.window) * 100) : 0
+        const k = (n?: number) => `${Math.round((n ?? 0) / 1024)}K`
+        return `当前上下文约占窗口的 ${pct}%（~${k(o.tokens)} / ${k(o.window)} tokens），无需压缩。请在真正的阶段边界（探索完成/话题切换）再调用。`
+      }
+      case 'nothing_to_drop':
+        return '没有可归档的工具循环——剩余重量是文本消息，只有自动层在窗口紧张时才会裁剪，你无法强制。'
+      default:
+        return '压缩未执行。'
+    }
+  }
+  const lines: string[] = []
+  if (o.droppedMessages != null) {
+    const pct = o.window && o.tokensAfter != null ? Math.round((o.tokensAfter / o.window) * 100) : null
+    const pctNote = pct != null ? `，现为窗口的 ${pct}%` : ''
+    lines.push(`已压缩：归档 ${o.droppedMessages} 条旧消息（估算 ~${Math.round((o.tokensBefore ?? 0) / 1024)}K → ~${Math.round((o.tokensAfter ?? 0) / 1024)}K tokens${pctNote}）。`)
+    const notesNote = hadNotes ? (o.notesKept ? '摘要+交接笔记' : '摘要（注意：交接笔记未能落地）') : '摘要'
+    lines.push(
+      o.summaryLanded
+        ? `${notesNote}已注入后续请求；被归档原文仍可用 tool_result_search 按 tool_result_id 取回。`
+        : `历史摘要未生成（${hadNotes && o.notesKept ? '交接笔记已保留' : '纯截断'}）；被归档原文仍可用 tool_result_search 按 tool_result_id 取回。`
+    )
+  }
+  if (o.freedResults?.length) {
+    lines.push(`已压缩 ${o.freedResults.length} 条点名结果为占位符（下一请求生效），原文经 tool_result_search 取回。`)
+  }
+  if (o.skippedIds?.length) {
+    const label: Record<string, string> = {
+      tier3_protected: '受保护类别，永不压缩',
+      recent_protected: '最近 4 轮保护内',
+      unknown_id: '查无此 id',
+    }
+    const rows = o.skippedIds.map((s) => `- ${s.id}（${label[s.reason] ?? s.reason}）`)
+    lines.push(`跳过 ${o.skippedIds.length} 条点名：\n${rows.join('\n')}`)
+  }
+  lines.push('继续当前任务——不要因压缩收尾，不要重新探索提醒中已列出的文件。')
+  return lines.join('\n')
+}
+
+/** context_compact — the model's own compaction handle. All mechanics live
+ *  engine-side (ex.compactContext); this branch only formats the structured
+ *  outcome into the envelope. */
+export async function execContextCompactTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
+  if (t.name !== 'context_compact') return false
+  const fail = (msg: string): void => { t.output = msg; t.exitCode = 1; ex.addToolResult(t.id, msg, true) }
+  if (!ex.compactContext) { fail('Context compaction is not available in this session.'); return true }
+  const input = (t.input || {}) as Record<string, unknown>
+  const hadNotes = typeof input.notes === 'string' && input.notes.trim().length > 0
+  try {
+    const outcome = await ex.compactContext({
+      instruction: typeof input.instruction === 'string' ? input.instruction : undefined,
+      notes: hadNotes ? input.notes as string : undefined,
+      freeResults: Array.isArray(input.free_results) ? input.free_results.map((v) => String(v)) : undefined,
+    })
+    const text = formatCompactOutcome(outcome, hadNotes)
+    t.exitCode = outcome.ok ? 0 : 1
+    t.output = text.slice(0, UI_PREVIEW_MAX)
+    ex.addToolResult(t.id, text, !outcome.ok)
+  } catch (err) {
+    fail(`压缩执行失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+  return true
+}
 
 /** Create-path title default (the first meaningful line, heading markers
  *  stripped) when the model supplies neither a title nor a target to keep. */

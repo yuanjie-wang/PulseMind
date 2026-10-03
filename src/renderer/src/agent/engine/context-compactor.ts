@@ -89,6 +89,24 @@ export function makeCompactTracking(): CompactTracking {
   return { toolRoundsSinceDrop: 0, consecutiveRefills: 0, summarySuspended: false }
 }
 
+// ── nanoCompact's shared classification (PLAN-context-compact-tool D3b) ──
+// Exported so the engine's free_results resolution applies the SAME rules at
+// mandate time that nanoCompact applies at compress time — a pick the model
+// makes must not be accepted here and silently skipped there (or vice versa).
+const NANO_TIER_MAP: Record<string, number> = {
+  exec: 1, search: 1, find: 1, list_dir: 1,
+  read: 2, knowledge_read: 2, knowledge_search: 2, experience_read: 2, experience_save: 2,
+  memory_search: 2, memory_save: 2, conversation_search: 2, tool_result_search: 2,
+  spawn_agent: 2, edit: 2, write: 2, install: 2, pick_skill: 2, pick_tool: 2, webfetch: 2
+}
+/** Never compressed — not by the quota walk, not even by an explicit
+ *  `context_compact` free_results pick. Their results ARE the interaction. */
+export const NANO_TIER3_NAMES = new Set(['ask_user', 'create_plan', 'advance_plan'])
+/** The newest N user messages carrying tool_results keep those results whole —
+ *  the current turn's batch may still need to read them verbatim. Beats even a
+ *  mandated pick. */
+export const NANO_PROTECTION_WINDOW = 4
+
 /** Pure transition of the refill breaker, run once per request build after
  *  the compaction strategies are known. `droppedFit` = the fit-based layers
  *  dropped this pass — nano never counts (1:1) and emergency never counts
@@ -341,6 +359,23 @@ export class ContextCompactor {
   static readonly HARD_TRUNCATE_MIN_REMAINING = 10_000
 
   private _compressedToolUseIds = new Set<string>()
+  /** The model's own nano picks (context_compact's `free_results`,
+   *  PLAN-context-compact-tool D3b). Independently persistent — a mandated id
+   *  compresses EVERY request regardless of the tier quotas, so the placeholder
+   *  the model asked for is stable. Deliberately NOT the marks set below: marks
+   *  mean "compressed once → allowed to re-inflate"; a mandated id entering it
+   *  would pop back to full text on the very next request. Cleared with the
+   *  conversation (engine reset). */
+  private mandatedCompressIds = new Set<string>()
+  /** Record the model's picks (already validated by the engine against TIER3 /
+   *  protection window / existence — see AgentEngine.compactForTool). */
+  mandateToolResultIds(ids: string[]): void {
+    for (const id of ids) this.mandatedCompressIds.add(id)
+  }
+  /** Conversation reset — new history has no old ids to name. */
+  clearMandatedToolResultIds(): void {
+    this.mandatedCompressIds.clear()
+  }
   /** History-summary cache. `firstKeptId` is the persisted COVERAGE FRONTIER
    *  (the newest message the text covers — historical field name, opaque to
    *  every consumer). `covered` is the in-memory id set the text actually
@@ -356,6 +391,10 @@ export class ContextCompactor {
    *  otherwise — the request path reads it to tag the compaction event's
    *  strategies without re-derving the composition from array lengths. */
   lastReminderCount = 0
+  /** Whether the last inject pass landed the model's handover note
+   *  (context_compact's `notes`) — read by the engine for the tool envelope's
+   *  notesKept. Reset at every inject; a `notes`-less pass always reads false. */
+  lastNotesLanded = false
   /** Guards overlapping prewarm runs (post-turn / manual): two concurrent LLM
    *  summaries for the same frontier are pure waste. */
   private prewarmInFlight = false
@@ -561,12 +600,35 @@ export class ContextCompactor {
     return rolled || null
   }
 
+  /** Compose the model's handover note (context_compact's `notes`,
+   *  PLAN-context-compact-tool D5) onto a summary text BEFORE the cap: the
+   *  merged text is what gets rolled, so a roll re-writes note and summary
+   *  together. `notes` lands VERBATIM (【交接笔记】 section) — never through
+   *  the summarizer. The cap applies with or without a note (an oversized
+   *  FIRST summary rolls exactly as before); null = nothing to land (roll
+   *  failure): the caller keeps its previous state. */
+  private async composeWithNotes(
+    base: string | null,
+    notesSection: string | null,
+    instruction?: string
+  ): Promise<string | null> {
+    if (base === null && notesSection === null) return null
+    const merged = notesSection ? (base ? `${base}\n\n${notesSection}` : notesSection) : base
+    return this.cappedSummaryText(merged as string, instruction)
+  }
+
   private async injectHistorySummaryInto(
     original: AgentMessage[],
     lightCompacted: AgentMessage[],
     truncated: AgentMessage[],
-    instruction?: string
+    instruction?: string,
+    notes?: string,
+    opts?: { bypassBreaker?: boolean }
   ): Promise<AgentMessage[]> {
+    const notesSection = notes?.trim() ? `【交接笔记】\n${notes.trim()}` : null
+    // Read by the engine's compactForTool envelope (notesKept): did the note
+    // actually ride the landed text?
+    this.lastNotesLanded = false
     // The dropped region is the EXACT set difference: everything the pre-pipeline
     // copy holds that the kept tail does not. The old arithmetic
     // (lightCompacted.length - truncated.length) measured only hard's share, so
@@ -611,33 +673,35 @@ export class ContextCompactor {
     // absorbing the uncovered slice (the ledger must not claim what no LLM
     // saw — same discipline as a failed extension) and without firing a call.
     // No cache yet → plain truncation until the rhythm normalizes; the first
-    // post-lift pass builds the full summary in one call.
-    if (this.deps.isSummarySuspended?.()) {
+    // post-lift pass builds the full summary in one call. The model's own
+    // context_compact bypasses this (D6): the call is an explicit paid
+    // decision, and the once-per-turn cap already bounds its churn.
+    if (this.deps.isSummarySuspended?.() && !opts?.bypassBreaker) {
       return withCompensation(cache ? cache.text : null)
     }
 
-    // No cache → summarize the full dropped region.
+    // No cache → summarize the full dropped region. A failed/empty summarizer
+    // no longer voids the whole landing when the model handed over notes (D5):
+    // the notes-only text lands with an EMPTY coverage claim (nothing may be
+    // stamped covered — no LLM saw the region), and `firstKeptId: ''` keeps
+    // the frontier unpinned (the falsy guard in seedHistorySummary drops the
+    // cache at persistence, so a rehydrate re-summarizes honestly).
     if (!cache) {
       const built = buildDroppedRegionText(dropped)
-      if (!built.text.trim()) return withCompensation(null)
-      const summary = await this.deps.runHistorySummary(built.text, instruction)
-      if (!summary) {
+      if (!built.text.trim() && !notesSection) return withCompensation(null)
+      const summary = built.text.trim() ? await this.deps.runHistorySummary(built.text, instruction) : null
+      const text = await this.composeWithNotes(summary, notesSection, instruction)
+      if (!text) {
         console.warn('[AgentEngine] history summary empty, using plain truncation')
         return withCompensation(null)
       }
-      // An oversized FIRST summary is rolled like any extension — one call's
-      // output is bounded in practice, but the cap must be real, not nominal.
-      const text = await this.cappedSummaryText(summary, instruction)
-      if (!text) {
-        console.warn('[AgentEngine] history summary exceeded the cap and the roll failed — using plain truncation')
-        return withCompensation(null)
-      }
+      if (notesSection) this.lastNotesLanded = true
       this.historySummary = {
-        firstKeptId: frontierId,
+        firstKeptId: summary ? frontierId : '',
         text,
         // Only what the summarizer really saw is covered — the 40K-capped
         // tail stays uncovered so the next pass absorbs it (review_20260929 中3).
-        covered: new Set(built.coveredIds),
+        covered: new Set(summary ? built.coveredIds : []),
       }
       console.log(`[AgentEngine] injected history summary (${text.length} chars) for ${dropped.length} dropped messages`)
       return withCompensation(text)
@@ -655,33 +719,52 @@ export class ContextCompactor {
         return new Set(dropped.slice(0, j + 1).map((m) => m.id))
       })()
     const uncovered = dropped.filter((m) => !covered.has(m.id))
-    if (uncovered.length === 0) return withCompensation(cache.text)
+    if (uncovered.length === 0) {
+      // Everything currently dropped is already covered — the cached text rides
+      // as-is. The one exception: a tool call's notes still land (D5 — the model
+      // paid for this pass), joined onto the cached text without moving the
+      // frontier or the coverage ledger.
+      if (!notesSection) return withCompensation(cache.text)
+      const text = await this.composeWithNotes(cache.text, notesSection, instruction)
+      if (!text) return withCompensation(cache.text)
+      this.lastNotesLanded = true
+      this.historySummary = { ...cache, text }
+      return withCompensation(text)
+    }
 
     // Below the accrual line the cached text is reused WITHOUT absorbing, so
     // the uncovered slice keeps accruing and one LLM call covers it all: a
     // fit-based lightCompact drops new content on essentially every request of
     // a long tool loop, and a summary call per request is exactly the cost this
     // cache exists to avoid. The uncovered hole is bounded by the line (the
-    // replays carry the recent user intent across it).
+    // replays carry the recent user intent across it). A tool call's notes
+    // land regardless — they are not coverage, only the merged text is.
     const built = buildDroppedRegionText(uncovered)
-    if (built.text.length < SUMMARY_EXTEND_MIN_CHARS) return withCompensation(cache.text)
-    const extra = await this.deps.runHistorySummary(built.text, instruction)
-    if (!extra) return withCompensation(cache.text)
-    const text = await this.cappedSummaryText(cache.text + '\n\n' + extra, instruction)
+    const wantsExtension = built.text.length >= SUMMARY_EXTEND_MIN_CHARS
+    if (!wantsExtension && !notesSection) return withCompensation(cache.text)
+    const extra = wantsExtension ? await this.deps.runHistorySummary(built.text, instruction) : null
+    if (!extra && !notesSection) return withCompensation(cache.text)
+    const parts = [cache.text]
+    if (extra) parts.push(extra)
+    if (notesSection) parts.push(notesSection)
+    const text = await this.cappedSummaryText(parts.join('\n\n'), instruction)
     if (!text) {
       // Roll failed: the OLD text and OLD coverage stay landed — the new slice
       // is not stamped covered (the ledger may only claim what the text really
       // carries), so it retries on a later pass, exactly like a failed extension.
       return withCompensation(cache.text)
     }
+    if (notesSection) this.lastNotesLanded = true
     this.historySummary = {
-      firstKeptId: frontierId,
+      // The frontier only advances when an extension REALLY ran: a notes-only
+      // landing must not pin the frontier onto slices no summary text covers.
+      firstKeptId: extra ? frontierId : cache.firstKeptId,
       text,
       // Same rule as the first pass: only the built prefix enters the ledger,
       // so a slice capped away by SUMMARY_INPUT_CAP is retried next pass
       // instead of being stamped covered and lost forever. On the roll path
       // the roll saw the whole merged text, so absorbing everything is honest.
-      covered: new Set([...covered, ...built.coveredIds]),
+      covered: new Set([...covered, ...(extra ? built.coveredIds : [])]),
     }
     console.log(`[AgentEngine] extended history summary (${text.length} chars) for ${uncovered.length} newly-dropped messages`)
     return withCompensation(text)
@@ -695,15 +778,10 @@ export class ContextCompactor {
   }
 
   nanoCompact(messages: AgentMessage[]): AgentMessage[] {
-    const TIER_MAP: Record<string, number> = {
-      exec: 1, search: 1, find: 1, list_dir: 1,
-      read: 2, knowledge_read: 2, knowledge_search: 2, experience_read: 2, experience_save: 2,
-      memory_search: 2, memory_save: 2, conversation_search: 2, tool_result_search: 2,
-      spawn_agent: 2, edit: 2, write: 2, install: 2, pick_skill: 2, pick_tool: 2, webfetch: 2
-    }
+    const TIER_MAP = NANO_TIER_MAP
     const TIER_SIZES: Record<number, number> = { 1: 10, 2: 20 }
-    const TIER3_NAMES = new Set(['ask_user', 'create_plan', 'advance_plan'])
-    const PROTECTION_WINDOW = 4
+    const TIER3_NAMES = NANO_TIER3_NAMES
+    const PROTECTION_WINDOW = NANO_PROTECTION_WINDOW
 
     // Protect last N user messages with tool_results
     const protectedMsgIds = new Set<string>()
@@ -743,7 +821,7 @@ export class ContextCompactor {
       if (fullTiers >= 2) compressTargets[tier] = (fullTiers - 1) * size
     }
 
-    if (Object.keys(compressTargets).length === 0) return messages
+    if (Object.keys(compressTargets).length === 0 && this.mandatedCompressIds.size === 0) return messages
 
     // Build compressed copy
     const compressed: Record<number, number> = {}
@@ -757,18 +835,26 @@ export class ContextCompactor {
         const name = toolUseToName.get(block.tool_use_id)
         if (!name) return block
         if (TIER3_NAMES.has(name)) return block
-        // Skip already-compressed blocks from previous iterations
-        if (this._compressedToolUseIds.has(block.tool_use_id)) return block
-        const tier = TIER_MAP[name] ?? 2
-        const target = compressTargets[tier]
-        if (!target || target <= 0) return block
-        if ((compressed[tier] || 0) >= target) return block
+        // Check order IS the semantics (D3b): a mandated id compresses
+        // regardless of the tier quotas and never enters the marks set (the
+        // marks' "compressed once → skip → the block re-inflates" bounce is
+        // the opposite of what the model asked for); a marked id skips so the
+        // one-shot nano compression can re-inflate; the quota walk applies to
+        // everything else.
+        const mandated = this.mandatedCompressIds.has(block.tool_use_id)
+        if (!mandated && this._compressedToolUseIds.has(block.tool_use_id)) return block
         const tr = block as ToolResultBlock
         if (tr.content.startsWith('[tool_result_id:') || tr.content.startsWith('[Tool Result:')) return block
+        if (!mandated) {
+          const tier = TIER_MAP[name] ?? 2
+          const target = compressTargets[tier]
+          if (!target || target <= 0) return block
+          if ((compressed[tier] || 0) >= target) return block
+          compressed[tier] = (compressed[tier] || 0) + 1
+        }
         if (!tr.tool_result_id) tr.tool_result_id = crypto.randomUUID()
-        compressed[tier] = (compressed[tier] || 0) + 1
         modified = true
-        this._compressedToolUseIds.add(tr.tool_use_id)
+        if (!mandated) this._compressedToolUseIds.add(tr.tool_use_id)
         return { ...tr, content: `[tool_result_id: ${tr.tool_result_id}]` }
       })
       return modified ? { ...msg, contentBlocks: newBlocks } : msg
@@ -941,15 +1027,24 @@ export class ContextCompactor {
    */
   async prewarm(options: {
     contextLength: number
-    source: 'post-turn' | 'manual'
+    source: 'post-turn' | 'manual' | 'tool'
     instruction?: string
+    /** The model's handover note (context_compact), composed verbatim onto the
+     *  summary text and into the cache — see injectHistorySummaryInto. */
+    notes?: string
+    /** hardTruncate's force bit INSIDE the simulation. manual/post-turn keep
+     *  the historical always-true (the cache only exists when hard drops, and
+     *  the re-key branch absorbs the drift); the tool source passes false so
+     *  the simulation matches what the next request will actually build
+     *  (PLAN-context-compact-tool D3: the tool force bypasses ONLY light). */
+    hardForce?: boolean
   }): Promise<CompactionEvent | null> {
-    const { contextLength, source, instruction } = options
+    const { contextLength, source, instruction, notes, hardForce = true } = options
     if (!contextLength || this.prewarmInFlight) return null
     const original = this.deps.getMessages()
     if (original.length <= MIN_KEEP) return null
     this.prewarmInFlight = true
-    const run = this.prewarmBody(original, contextLength, source, instruction).finally(() => {
+    const run = this.prewarmBody(original, contextLength, source, instruction, notes, hardForce).finally(() => {
       this.prewarmInFlight = false
       this.prewarmPromise = null
     })
@@ -965,8 +1060,10 @@ export class ContextCompactor {
   private async prewarmBody(
     original: AgentMessage[],
     contextLength: number,
-    source: 'post-turn' | 'manual',
-    instruction?: string
+    source: 'post-turn' | 'manual' | 'tool',
+    instruction?: string,
+    notes?: string,
+    hardForce = true
   ): Promise<CompactionEvent | null> {
     const savedMarks = new Set(this._compressedToolUseIds)
     // Marks snapshot at the suspension point (assigned just before the await):
@@ -978,8 +1075,14 @@ export class ContextCompactor {
     try {
       const tokensBefore = contextTokensOf(original)
       const nano = this.nanoCompact(original)
-      const light = this.lightCompact(nano, contextLength, 0, source === 'manual')
-      const truncated = this.hardTruncate(light, contextLength, 0, true)
+      // The simulation must run the SAME force bits the next real request will:
+      // manual sticks (manualCompactActive on both layers), tool's one-shot
+      // force bypasses ONLY light (hard stays passive, its 0.9× trigger
+      // untouched), post-turn runs fully passive on light. A mismatched
+      // simulation would promise a drop the request never materializes (or
+      // cover ids the real copy keeps).
+      const light = this.lightCompact(nano, contextLength, 0, source === 'manual' || source === 'tool')
+      const truncated = this.hardTruncate(light, contextLength, 0, hardForce)
       // Light's cycle drops count too — they are the main dropper once the
       // transcript outgrows the window, and the summary exists to cover
       // everything the copy loses, not just hard's share.
@@ -987,7 +1090,7 @@ export class ContextCompactor {
       if (droppedCount <= 0) return null
       const summaryBefore = this.historySummary ? { ...this.historySummary } : null
       marksAtSuspend = new Set(this._compressedToolUseIds)
-      const final = await this.injectHistorySummaryInto(original, light, truncated, instruction)
+      const final = await this.injectHistorySummaryInto(original, light, truncated, instruction, notes, { bypassBreaker: source === 'tool' })
       const summary = this.historySummary
       const summaryChanged =
         !summary || !summaryBefore ||

@@ -206,12 +206,15 @@ export interface StatusToolInfo {
 /** One compaction pass over the outgoing API copy. Emitted by the engine when
  *  a request build actually changed the copy ('request'), when the post-turn
  *  prewarm ran ('post-turn' — the summary is warmed, the drop lands on the
- *  next request) and on an explicit /compact ('manual'). `summary` rides only
- *  when the cached history summary changed, so the mirror's persisted copy
- *  stays fresh without re-shipping the text every request. */
+ *  next request), on an explicit /compact ('manual') and on the model's own
+ *  `context_compact` tool call ('tool' — same landing semantics as 'manual':
+ *  the summary is warmed mid-task, the drop rides the next request build).
+ *  `summary` rides only when the cached history summary changed, so the
+ *  mirror's persisted copy stays fresh without re-shipping the text every
+ *  request. */
 export interface CompactionEvent {
   ts: number
-  source: 'request' | 'post-turn' | 'manual'
+  source: 'request' | 'post-turn' | 'manual' | 'tool'
   /** Pipeline layers that changed the copy, in order. */
   strategies: string[]
   /** Messages the copy shed (light + hard truncation; nano is 1:1). */

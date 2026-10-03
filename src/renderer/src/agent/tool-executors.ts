@@ -41,7 +41,7 @@ async function experienceLocationBlock(em: { list(): Promise<Array<{ name: strin
   }
 }
 
-import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool } from './executors/domain-tools'
+import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool, execContextCompactTool } from './executors/domain-tools'
 import { MAX_READ_RESULT_TOKENS } from './engine/engine-constants'
 import { execInstallTool } from './executors/install-tool'
 import { execCreateSubPlanTool } from './executors/create-sub-plan-tool'
@@ -118,6 +118,10 @@ export class ToolExecutor implements ToolExecContext {
     mergeSplitProposal?: ToolExecContext['mergeSplitProposal'],
     /** @internal PLAN-plan-exchange E3: stamp the node's delivered report */
     recordNodeReport?: ToolExecContext['recordNodeReport'],
+    /** @internal PLAN-context-compact-tool: context_compact's engine channel
+     *  (guards + prewarm + mandate) — absent on test stubs, where the tool
+     *  refuses rather than half-works */
+    compactContext?: ToolExecContext['compactContext'],
   ) {
     this.opts = opts
     this.addToolResult = addToolResult
@@ -134,6 +138,7 @@ export class ToolExecutor implements ToolExecContext {
     this.isSpawnedSubAgent = isSpawnedSubAgent
     this.mergeSplitProposal = mergeSplitProposal
     this.recordNodeReport = recordNodeReport
+    this.compactContext = compactContext
   }
 
   opts: AgentEngineOptions
@@ -151,6 +156,7 @@ export class ToolExecutor implements ToolExecContext {
   isSpawnedSubAgent?: () => boolean
   mergeSplitProposal?: ToolExecContext['mergeSplitProposal']
   recordNodeReport?: ToolExecContext['recordNodeReport']
+  compactContext?: ToolExecContext['compactContext']
   /** create_sub_plan's bridge to the PARENT plan (v2 R6), assigned by
    *  spawn-manager AFTER construction — the executor is built before the
    *  sub-engine knows its parent. Present only when opts.spawnPlanSplit is
@@ -752,6 +758,7 @@ export class ToolExecutor implements ToolExecContext {
     t.status = 'running'; this.notify()
     try {
       if (await execMemoryTool(this, t)) return
+      if (await execContextCompactTool(this, t)) return
       if (await execConversationTool(this, t)) return
       if (await execKnowledgeTool(this, t)) return
       if (await execExperienceTool(this, t)) return

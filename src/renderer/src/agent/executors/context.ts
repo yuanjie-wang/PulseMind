@@ -14,6 +14,38 @@ import type { SplitChildSpec } from '../../../../shared/plan/split-proposal'
 /** Tool-block output preview cap shared by executors and the engine. */
 export const UI_PREVIEW_MAX = 3000
 
+// ── context_compact (PLAN-context-compact-tool) ──────────────────────
+/** The tool's parsed call: the main action (instruction / notes / bare) and
+ *  the orthogonal light action (freeResults = tool_use ids to compress to
+ *  placeholders), both optional and combinable. */
+export interface CompactToolRequest {
+  instruction?: string
+  notes?: string
+  freeResults?: string[]
+}
+
+/** Structured outcome — the executor turns it into the model-facing envelope;
+ *  guards never throw. */
+export interface CompactToolOutcome {
+  ok: boolean
+  /** Why the main action was refused (absent on success). */
+  reason?: 'request_in_flight' | 'already_this_turn' | 'not_worthwhile' | 'nothing_to_drop'
+  /** free_results ids accepted for mandated compression. */
+  freedResults?: string[]
+  /** free_results ids skipped, with the guard that skipped them. */
+  skippedIds?: Array<{ id: string; reason: string }>
+  droppedMessages?: number
+  tokensBefore?: number
+  tokensAfter?: number
+  /** A history summary rides the upcoming requests. */
+  summaryLanded?: boolean
+  /** The model's own note verbatim-made it into the landed summary text. */
+  notesKept?: boolean
+  /** Live readings for the not_worthwhile refusal message. */
+  tokens?: number
+  window?: number
+}
+
 export interface ToolExecContext {
   opts: AgentEngineOptions
   addToolResult: (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number) => void
@@ -75,6 +107,11 @@ export interface ToolExecContext {
   isSpawnedSubAgent?: () => boolean
   /** Long-running exec tools report the spawned pid (terminal card wiring). */
   onProcessStart?: (pid: string) => void
+  /** context_compact's channel into the engine (PLAN-context-compact-tool):
+   *  guards, the prewarm with the model's instruction/notes, and the
+   *  free_results mandate all live engine-side — the executor only formats
+   *  the outcome into the envelope. Absent (test stubs) = the tool refuses. */
+  compactContext?: (call: CompactToolRequest) => Promise<CompactToolOutcome>
   /** The one-shot agent behind install's fire-and-forget keyword backfill.
    *  Optional: absent (tests) skips the extraction entirely. */
   skillKeywordAgent?: SkillKeywordAgent

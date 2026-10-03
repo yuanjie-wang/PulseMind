@@ -26,6 +26,7 @@ import { PlanManager } from './plan-manager'
 import { migrateLinearPlan } from '../../../shared/plan/graph'
 import { ensureCache } from './mcp-cache'
 import { ToolExecutor, UI_PREVIEW_MAX } from './tool-executors'
+import type { CompactToolRequest, CompactToolOutcome } from './executors/context'
 import { SpawnManager } from './engine/spawn-manager'
 import { collectEnabledTools, buildToolProtocols } from './engine/tool-collection'
 import { runTurnEndMemoryExtraction, persistUnsavedToolResults } from './engine/memory-extraction'
@@ -34,7 +35,7 @@ import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
-import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, type CompactTracking } from './engine/context-compactor'
+import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, NANO_TIER3_NAMES, NANO_PROTECTION_WINDOW, type CompactTracking } from './engine/context-compactor'
 import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-constants'
 import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
 import { applyToolResultBudget } from './engine/result-ingestion'
@@ -493,6 +494,132 @@ export class AgentEngine implements EngineCore {
       .finally(() => { this.postTurnPrewarmInFlight = false })
   }
 
+  // ── Model-initiated compaction (PLAN-context-compact-tool) ──────────
+
+  /** context_compact's one-shot force: the NEXT request build's lightCompact
+   *  bypasses its threshold (0.6× target) so the drop the tool's prewarm
+   *  promised actually materializes in that copy. Consumed by
+   *  prepareLoopRequest right after the build and deliberately separate from
+   *  manualCompactActive (which sticks until reset) — the model asked for ONE
+   *  slimming, then the passive fit-based rhythm takes over. NOT cleared by
+   *  prepareTurn: the drop must land on the next built copy whenever it comes.
+   *  @internal */
+  pendingToolCompactForce = false
+  /** Per-turn cap on the main compaction action (user ruling 2026-10-01):
+   *  a compacted copy whose live-history estimate did not change invites an
+   *  identical retry — one call per turn is the bound. prepareTurn clears it;
+   *  the free_results light action is exempt (idempotent, zero-LLM). @internal */
+  toolCompactUsedThisTurn = false
+
+  /** The `context_compact` tool's engine side (D2/D3/D3b/D4): guards return
+   *  structured outcomes and never throw; the main action (bare/instruction/
+   *  notes) runs the prewarm pipeline with source 'tool' and arms the one-shot
+   *  light force; free_results resolves ids against the same nano rules the
+   *  compressor applies (TIER3 / protection window / existence) and mandates
+   *  the rest. Guards ②③ bind the main action only. */
+  compactForTool = async (call: CompactToolRequest): Promise<CompactToolOutcome> => {
+    const instruction = call.instruction?.trim() || undefined
+    const notes = call.notes?.trim() || undefined
+    const freeResults = (call.freeResults ?? []).map((s) => String(s).trim()).filter(Boolean)
+
+    // ① A request actually in flight stays un-raceable: the prewarm mutates the
+    // shared summary cache. Tool execution happens BETWEEN requests (status
+    // 'executing' with none in flight) and is exactly the sanctioned moment —
+    // compactNow's blanket guard was the over-conservative one (D4).
+    const status = this.agentStatus.status
+    if (status === 'streaming' || status === 'retrying') {
+      return { ok: false, reason: 'request_in_flight' }
+    }
+
+    // ── free_results: the orthogonal light action (D3b). Exempt from ②③ —
+    // idempotent, zero-LLM, bounded only by the nano rules themselves. ──
+    const freedResults: string[] = []
+    const skippedIds: Array<{ id: string; reason: string }> = []
+    if (freeResults.length > 0) {
+      // Same walk nanoCompact runs: the newest N result-bearing user messages
+      // are protected even from a mandated pick.
+      const protectedMsgIds = new Set<string>()
+      let found = 0
+      for (let i = this.messages.length - 1; i >= 0 && found < NANO_PROTECTION_WINDOW; i--) {
+        const msg = this.messages[i]
+        if (msg.role !== 'user') continue
+        if (msg.contentBlocks.some(b => b.type === 'tool_result')) {
+          protectedMsgIds.add(msg.id)
+          found++
+        }
+      }
+      const ownerOf = new Map<string, { name: string; resultMsgId: string | null }>()
+      for (const msg of this.messages) {
+        for (const block of msg.contentBlocks) {
+          if (block.type !== 'tool_use') continue
+          ownerOf.set(block.id, { name: block.name, resultMsgId: null })
+        }
+      }
+      for (const msg of this.messages) {
+        if (msg.role !== 'user') continue
+        for (const block of msg.contentBlocks) {
+          if (block.type !== 'tool_result') continue
+          const owner = ownerOf.get(block.tool_use_id)
+          if (owner) owner.resultMsgId = msg.id
+        }
+      }
+      for (const id of freeResults) {
+        const owner = ownerOf.get(id)
+        if (!owner) { skippedIds.push({ id, reason: 'unknown_id' }); continue }
+        if (NANO_TIER3_NAMES.has(owner.name)) { skippedIds.push({ id, reason: 'tier3_protected' }); continue }
+        if (owner.resultMsgId && protectedMsgIds.has(owner.resultMsgId)) {
+          skippedIds.push({ id, reason: 'recent_protected' }); continue
+        }
+        freedResults.push(id)
+      }
+      this.compactor.mandateToolResultIds(freedResults)
+    }
+
+    // The main action is a bare call or one carrying instruction/notes;
+    // free_results-only is the light action alone.
+    const mainAction = Boolean(instruction || notes) || freeResults.length === 0
+    if (!mainAction) {
+      return { ok: true, freedResults, skippedIds, summaryLanded: false, notesKept: false }
+    }
+
+    // ② once per turn
+    if (this.toolCompactUsedThisTurn) {
+      return { ok: false, reason: 'already_this_turn', freedResults, skippedIds }
+    }
+    // ③ cheap pre-check: the force target is 0.6× the window — below 0.55×
+    // there is provably nothing to drop and the pipeline would idle.
+    const contextLength = this.opts.contextLength || 128_000
+    const tokens = this.compactor.contextTokens()
+    if (tokens < contextLength * 0.55) {
+      return { ok: false, reason: 'not_worthwhile', tokens, window: contextLength, freedResults, skippedIds }
+    }
+    const event = await this.compactor.prewarm({
+      contextLength,
+      source: 'tool',
+      instruction,
+      notes,
+      hardForce: false, // D3 two-powers split: the model's force bypasses ONLY light
+    })
+    // ④ nothing droppable (light-only semantics: what remains is text the
+    // automatic layers only cut under real pressure)
+    if (!event) {
+      return { ok: false, reason: 'nothing_to_drop', freedResults, skippedIds }
+    }
+    this.pendingToolCompactForce = true
+    this.toolCompactUsedThisTurn = true
+    this.callbacks.onCompaction?.(event)
+    return {
+      ok: true,
+      freedResults,
+      skippedIds,
+      droppedMessages: event.droppedMessages,
+      tokensBefore: event.tokensBefore,
+      tokensAfter: event.tokensAfter,
+      summaryLanded: this.getHistorySummary() != null,
+      notesKept: notes ? this.compactor.lastNotesLanded : false,
+    }
+  }
+
   constructor(opts: AgentEngineOptions, callbacks?: AgentEngineCallbacks) {
     this.opts = opts
     this.callbacks = callbacks || {}
@@ -557,6 +684,9 @@ export class AgentEngine implements EngineCore {
       () => this.isSpawnedSubAgent,
       (ref, attemptId, children, reason) => this.planManager.mergeSplitProposal(ref, attemptId, children, reason),
       (ref, attemptId, path, status) => this.planManager.recordNodeReport(ref, attemptId, path, status),
+      // context_compact's channel into the engine (PLAN-context-compact-tool):
+      // guards + prewarm + mandate all live here; the executor only formats.
+      (call) => this.compactForTool(call),
     )
   }
 
@@ -700,6 +830,10 @@ export class AgentEngine implements EngineCore {
     // A new send gets a fresh thinking-only rescue too: even if the previous
     // turn exhausted its re-issue, the model gets one more sampling chance.
     this.thinkingOnlyRetries = 0
+    // Same for context_compact's per-turn cap: every turn gets one main
+    // compaction back. (pendingToolCompactForce is deliberately NOT touched —
+    // the drop it arms belongs to the next built copy, whenever that comes.)
+    this.toolCompactUsedThisTurn = false
     // Per-turn @-summon state belongs to the turn that opened it: a new send
     // starts with no delegated call to close verbatim and no summons to honor.
     this.delegatedToolUseId = null
@@ -1014,12 +1148,17 @@ export class AgentEngine implements EngineCore {
       }
     }
     const nanoCompacted = this.compactor.nanoCompact(pipelineMessages)
-    // `force` (explicit /compact): the passive thresholds stay bypassed until
-    // reset() — the user asked for a slim window, and the triggers are
-    // stateless per request, so an un-forced follow-up would re-inflate the
-    // copy to the same live-history estimate.
-    const lightCompacted = this.compactor.lightCompact(nanoCompacted, opts.contextLength || 128000, fixedOverhead, this.manualCompactActive)
+    // Two force sources, two scopes (keep them separate — see the field
+    // comments): manualCompactActive (/compact) sticks until reset and drives
+    // BOTH layers; pendingToolCompactForce (context_compact) is one-shot for
+    // THIS copy and bypasses ONLY light — hard's passive 0.9× trigger stays
+    // armed against the model's own misjudgement (D3 two-powers split).
+    const lightForce = this.manualCompactActive || this.pendingToolCompactForce
+    const lightCompacted = this.compactor.lightCompact(nanoCompacted, opts.contextLength || 128000, fixedOverhead, lightForce)
     const truncatedMessages = this.compactor.hardTruncate(lightCompacted, opts.contextLength || 128000, fixedOverhead, this.manualCompactActive)
+    // The tool force armed the drop this copy just materialized — consume it
+    // here, after the build, so exactly one request runs slimmed.
+    this.pendingToolCompactForce = false
     // After truncation, inject an LLM summary of the dropped region into the API
     // copy so the model keeps the gist. Synthetic message never leaves this scope.
     // The summarizer source is the PRE-PIPELINE copy (before emergency/nano):
@@ -1243,6 +1382,12 @@ export class AgentEngine implements EngineCore {
     // inject to re-key against.
     this.manualCompactActive = false
     this.compactor.seedHistorySummary(undefined, undefined)
+    // context_compact's state dies with the conversation too: the one-shot
+    // force has no next copy to slim, the per-turn cap has no turn, and the
+    // mandated ids named messages this history no longer holds.
+    this.pendingToolCompactForce = false
+    this.toolCompactUsedThisTurn = false
+    this.compactor.clearMandatedToolResultIds()
     this.notify()
   }
 

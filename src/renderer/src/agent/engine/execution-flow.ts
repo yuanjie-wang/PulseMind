@@ -381,7 +381,11 @@ export class ExecutionFlow {
     const pageWriteTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) !== 'read')
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = tools.filter(t => isSystemTool(t.name))
-    const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
+    // context_compact rides the memory group on purpose (PLAN-context-compact-tool
+    // D7): the trusted-group exemption is name-based HERE, not category-based —
+    // leaving it out drops the tool into otherTools and puts a compaction behind
+    // the approval ladder. Both isMemoryTool sites must list it.
+    const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search' || name === 'context_compact'
     const memoryTools = tools.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
     const knowledgeTools = tools.filter(t => isKnowledgeTool(t.name))
@@ -529,7 +533,7 @@ export class ExecutionFlow {
     const pageWriteTools = pageTools.filter(t => tierOfTool(t.name) !== 'read')
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
     const systemTools = toolUses.filter(t => isSystemTool(t.name))
-    const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search'
+    const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search' || name === 'context_compact'
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
     const knowledgeTools = toolUses.filter(t => isKnowledgeTool(t.name))
