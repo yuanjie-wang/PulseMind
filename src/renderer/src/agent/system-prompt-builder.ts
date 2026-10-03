@@ -575,7 +575,7 @@ Very old tool execution results may be compressed to save context space. You may
 const CONTEXT_MANAGEMENT_NOTICE = `\
 ## Context Management
 
-When the conversation grows long, older context is compacted automatically: a summary, verbatim key user messages, and an archived-reads reminder are injected into subsequent requests, and archived tool results stay retrievable in full via \`tool_result_search\` by their \`tool_result_id\`. Compaction needs nothing from you — continue the current task as if the break never happened; do not wrap up early, re-explore files the reminder already names, or change how you work because the context is long.`
+When the conversation grows long, older context is compacted automatically: a summary, verbatim key user messages, and an archived-reads reminder are injected into subsequent requests, and archived tool results stay retrievable in full via \`tool_result_search\` by their \`tool_result_id\`. Compaction needs nothing from you — continue the current task as if the break never happened; do not wrap up early, re-explore files the reminder already names, or change how you work because the context is long. When you judge a phase boundary reached in a long session and want window space freed immediately, you may call the \`context_compact\` tool yourself — attaching a handover note (notes) markedly improves what the summary preserves for the work ahead; calls with plenty of window left are refused.`
 
 const RENDER_REFERENCE = `\
 ## Render Reference

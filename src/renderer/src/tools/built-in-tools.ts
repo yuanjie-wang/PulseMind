@@ -488,6 +488,44 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     availability: 'always',
   },
 
+  // ── context_compact (PLAN-context-compact-tool) ──────────────────────
+  {
+    name: 'context_compact',
+    description:
+      'Manually compact the conversation context at a phase boundary you judge right (exploration finished, topic switch, before a large new stage): older context is archived into a summary injected into later requests, freeing window space. Attach a handover note (notes) to carry your progress and next steps verbatim. Rejected when the context is below ~55% of the window, when already used this turn, or while a request is streaming.',
+    category: 'memory',
+    input_schema: {
+      type: 'object',
+      properties: {
+        instruction: {
+          type: 'string',
+          description:
+            'Focus instruction for the summarizer: what this summary must preserve for the work ahead (key decisions / file paths / open items).',
+        },
+        notes: {
+          type: 'string',
+          description:
+            'Your handover note, injected verbatim into later requests (never rewritten). State current progress, next steps, and pitfalls to remember.',
+        },
+        free_results: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'tool_use ids of YOUR earlier calls whose results should be compressed to placeholders right away. Content stays retrievable via tool_result_search; results inside the last few turns are protected and will be skipped. Usable on its own.',
+        },
+      },
+      required: [],
+    },
+    instructions: toolInstructions.context_compact,
+    builtIn: true,
+    // Always (user ruling 2026-10-01): proactivity first — the model must SEE the
+    // tool to reach for it at a semantic boundary. Precedent = tool_result_search
+    // (same category, always). The `triggers` field is inert on non-gated tools,
+    // so none are set; the manual below rides buildToolProtocols like every
+    // other always tool's.
+    availability: 'always',
+  },
+
   // ── pick_skill ──────────────────────────────────────────────────────
   {
     name: 'pick_skill',

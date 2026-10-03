@@ -153,3 +153,36 @@ describe('source shape', () => {
     expect(src).toContain('selectedBuiltinTools: string[]')
   })
 })
+
+describe('context_compact is an ALWAYS base tool (PLAN-context-compact-tool, user ruling 2026-10-01)', () => {
+  it('defined always + memory — the assertion direction is the REVERSE of the gated pins', () => {
+    const def = BUILT_IN_TOOLS.find((t) => t.name === 'context_compact')
+    expect(def).toBeDefined()
+    expect(def?.availability).toBe('always')
+    expect(def?.category).toBe('memory')
+    // An always tool needs no triggers — the keyword door is inert for it.
+    expect(def?.triggers).toBeUndefined()
+  })
+
+  it('ships in the dormant base toolset with no activation, and its manual rides Tool Protocols', async () => {
+    const names = (await collectEnabledTools(deps(), fullToolManager())).map((t) => t.name)
+    expect(names).toContain('context_compact')
+    const protocols = buildToolProtocols(await collectEnabledTools(deps(), fullToolManager()))
+    expect(protocols).toContain('## context_compact')
+  })
+
+  it('the manual is byte-stable across activation states (it sits in the shared trunk)', async () => {
+    const activated = await collectEnabledTools(deps({ selectedBuiltinTools: GATED_NAMES }), fullToolManager())
+    const dormant = await collectEnabledTools(deps(), fullToolManager())
+    expect(buildToolProtocols(activated)).toBe(buildToolProtocols(dormant))
+  })
+
+  it('the new member did not move the gated tail shape: activated gated schemas still ride last', async () => {
+    const names = (await collectEnabledTools(
+      deps({ selectedBuiltinTools: ['git_status'] }),
+      fullToolManager(),
+    )).map((t) => t.name)
+    const lastBase = Math.max(...names.map((n, i) => (BUILT_IN_TOOLS.some((d) => d.name === n && d.availability !== 'gated') ? i : -1)))
+    expect(names.indexOf('git_status')).toBeGreaterThan(lastBase)
+  })
+})

@@ -203,6 +203,25 @@ Search past conversations by keyword (\`query\`) or look one up directly by \`id
 Look up the original content of compressed tool results: when nanoCompact compresses a tool result its content is replaced by \`[tool_result_id: <uuid>]\` — pass one or more of those ids here to get the full original content back, including which conversation and tool_use it belongs to. An unknown id is omitted from the results with a note.
 `,
 
+  context_compact: `## context_compact
+
+Compact the conversation context yourself at a phase boundary — automatic compaction still runs on its own thresholds and needs nothing from you; this tool is for when YOU know the moment is right.
+
+### When to call
+- A long exploration just finished and its dead ends no longer matter (before writing/reporting)
+- A topic switch: the previous thread is closed
+- Before a large new stage that will need the whole window
+- Do NOT call speculatively: below ~55% window usage the call is refused, and at most once per turn. Never instead of finishing the task — compacting does not end anything.
+
+### How
+- \`notes\` — write it like a note to your successor: current progress, the next step, pitfalls discovered. It is injected VERBATIM into later requests and is the highest-value thing you can attach. Plain timing-only calls (no arguments) are legal but weaker.
+- \`instruction\` — steer the summarizer: what must survive for the work ahead (decisions, file paths, open items).
+- \`free_results\` — tool_use ids of your own earlier calls whose results are now dead weight; they compress to placeholders immediately (one by one retrievable via \`tool_result_search\`). Recent results are protected and skipped. This light action works alone and ignores the once-per-turn cap of the main compaction.
+
+### After a successful call
+Continue the current task exactly where you left off — do not wrap up, do not re-explore files the archived-reads reminder already names.
+`,
+
   pick_skill: `## pick_skill
 
 Selects and activates a skill. Two modes: \`name\` activates a known skill directly (no LLM matching); \`intent\` has a sub-agent LLM pick the best match. Follow the returned skill instructions carefully; no match returns "No matching skill found".
