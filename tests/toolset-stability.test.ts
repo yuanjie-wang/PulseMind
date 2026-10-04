@@ -81,7 +81,7 @@ describe('the gate: gated built-ins are hidden until activated', () => {
   it('no activation → no gated tools in the toolset', async () => {
     const names = (await collectEnabledTools(deps(), fullToolManager())).map((t) => t.name)
     expect(names).toContain('read')
-    for (const gated of ['git_status', 'docx_edit', 'memory_save', 'experience_save']) {
+    for (const gated of ['git_status', 'office_edit', 'memory_save', 'experience_save']) {
       expect(names).not.toContain(gated)
     }
   })
@@ -89,11 +89,11 @@ describe('the gate: gated built-ins are hidden until activated', () => {
   it('pick_tool activation (selectedBuiltinTools) surfaces them — appended AFTER the base toolset', async () => {
     const tm = fullToolManager()
     const names = (await collectEnabledTools(
-      deps({ selectedBuiltinTools: ['git_status', 'docx_edit'] }),
+      deps({ selectedBuiltinTools: ['git_status', 'office_edit'] }),
       tm,
     )).map((t) => t.name)
     expect(names).toContain('git_status')
-    expect(names).toContain('docx_edit')
+    expect(names).toContain('office_edit')
     // 尾部追加：gated 的位置必须晚于所有非 gated —— 主干不被切断
     const lastBase = Math.max(...names.map((n, i) => (BUILT_IN_TOOLS.some((d) => d.name === n && d.availability !== 'gated') ? i : -1)))
     const firstGated = names.indexOf('git_status')
@@ -106,7 +106,7 @@ describe('the gate: gated built-ins are hidden until activated', () => {
       fullToolManager(),
     )).map((t) => t.name)
     expect(names).toContain('git_status')
-    expect(names).not.toContain('docx_edit') // 别的类别不沾光
+    expect(names).not.toContain('office_edit') // 别的类别不沾光
   })
 })
 
@@ -124,7 +124,7 @@ describe('the trunk: activation must not move the shared prefix', () => {
   })
 
   it('the exclusion is load-bearing: gated definitions really do carry manuals', () => {
-    const docx = BUILT_IN_TOOLS.find((t) => t.name === 'docx_edit')
+    const docx = BUILT_IN_TOOLS.find((t) => t.name === 'office_edit')
     expect(docx?.instructions?.trim().length ?? 0).toBeGreaterThan(100)
   })
 

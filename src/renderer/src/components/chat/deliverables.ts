@@ -20,13 +20,17 @@ import { resolvePreviewPath } from '../../../../shared/preview/file-kind'
 /** Tools whose success writes/edits a file at an input path we can name.
  *  Deliberately NOT `exec` — shell redirections and scripts leave no
  *  recoverable target path, and a summary that guesses lies. When
- *  PLAN-office-export's export_document lands, it joins here (one line). */
+ *  PLAN-office-export's export_document lands, it joins here (one line).
+ *  docx_edit/xlsx_edit/pptx_edit are the RETIRED office tool names — they
+ *  stay because persisted transcripts carry them forever and hydration must
+ *  keep counting; office_edit is their merged successor (2026-10-04). */
 export const FILE_WRITER_TOOLS: ReadonlySet<string> = new Set([
   'write',
   'edit',
   'docx_edit',
   'xlsx_edit',
   'pptx_edit',
+  'office_edit',
   'export_document',
 ])
 
@@ -72,6 +76,7 @@ const OP_VERB: Partial<Record<string, 'create' | 'edit'>> = {
   docx_edit: 'edit',
   xlsx_edit: 'edit',
   pptx_edit: 'edit',
+  office_edit: 'edit',
 }
 
 export interface DeliverableVerbCount {

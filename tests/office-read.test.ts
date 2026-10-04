@@ -39,7 +39,7 @@ describe('formatOfficeReadResult — docx', () => {
     expect(text).toContain('表 0：2 行 × 2 列')
     expect(text).toContain('R1: 名称 | 数量')
     expect(text).toContain('R2: 甲 \\| 乙 | 10') // pipes escaped for the row display
-    expect(lastLine(text)).toBe('下一步：继续读 → offset=3；编辑 → 对照段落索引调 docx_edit（表格行用 表/行 号）。')
+    expect(lastLine(text)).toBe('下一步：继续读 → offset=3；编辑 → 对照段落索引调 office_edit（表格行用 表/行 号）。')
   })
 
   it('ends with the envelope even when the budget truncates mid-page', () => {
@@ -79,7 +79,7 @@ describe('formatOfficeReadResult — xlsx', () => {
     expect(text).toContain('| 11 | 甲 |')
     expect(text).toContain('| 12 | 乙 |')
     expect(text).not.toContain('| 1 | 甲 |') // window offset ≠ row number
-    expect(lastLine(text)).toBe('下一步：继续读 → sheet="数据" offset=13；编辑 → xlsx_edit 的单元格地址 = 行号 + 列字母（公式显示为 =式 → 结果，set_cell 重写表达式）。')
+    expect(lastLine(text)).toBe('下一步：继续读 → sheet="数据" offset=13；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母（公式显示为 =式 → 结果，set_cell 重写表达式）。')
   })
 
   it('sheet inventory ends with the sheet-then-read hint', () => {
@@ -116,7 +116,7 @@ describe('formatOfficeReadResult — pptx', () => {
     expect(text).toContain('[3](title) Title 1: 第二页标题')
     expect(text).toContain('[7] 文本框 4: 第一段')
     expect(text).toContain('    第二段') // continuation paragraphs indented
-    expect(lastLine(text)).toBe('下一步：编辑 → 对照 shape id 调 pptx_edit（set_shape_text 整形状重写，replace_text 跨形状查替换）。')
+    expect(lastLine(text)).toBe('下一步：编辑 → 对照 shape id 调 office_edit 的 pptx 算子（set_shape_text 整形状重写，replace_text 跨形状查替换）。')
   })
 })
 

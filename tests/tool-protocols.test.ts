@@ -97,7 +97,7 @@ describe('tool protocols: enabled tools carry their manuals into the system prom
 describe('export_document manual reaches the model without entering the shared trunk', () => {
   it('gated manuals stay out of buildToolProtocols even for an all-gated toolset', async () => {
     const protocols = buildToolProtocols(BUILT_IN_TOOLS.filter((t) => allEnabled.has(t.name)))
-    expect(protocols).toBe('') // export_document + pptx_edit 都是 gated —— 手册一个都不进主干
+    expect(protocols).toBe('') // export_document + office_edit 都是 gated —— 手册一个都不进主干
   })
 
   it('the manual rides the pick_tool activation result instead (source-scanned)', () => {
@@ -107,4 +107,4 @@ describe('export_document manual reaches the model without entering the shared t
   })
 })
 
-const allEnabled = new Set(['export_document', 'pptx_edit'])
+const allEnabled = new Set(['export_document', 'office_edit'])

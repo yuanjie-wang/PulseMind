@@ -1,4 +1,4 @@
-// ── docx_edit service (PLAN-office-editing M3, T8) ──
+// ── office_edit · docx service (PLAN-office-editing M3, T8) ──
 // The same security sequence as every other write: sandbox guard → writable
 // path → per-path FIFO lock → first-edit backup (L10) → engine (in memory,
 // gates on) → atomic tmp+rename. The engine already refuses .doc/encrypted/

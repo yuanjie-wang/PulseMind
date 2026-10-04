@@ -109,7 +109,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 ## Office 文档
 
-- **字节级保真编辑** — docx_edit / xlsx_edit / pptx_edit 只改要改的，未触碰的部分逐字节不变，最大程度保留原文档的格式与兼容性
+- **字节级保真编辑** — office_edit 只改要改的（docx / xlsx / pptx），未触碰的部分逐字节不变，最大程度保留原文档的格式与兼容性
 - **表达力完整** — Word 生成可嵌图、编辑可增删表格行；Excel 可设样式、列宽与冻结窗格，生成端表头加粗、列宽自适应
 - **结构化版式** — PPT 生成走版式引擎：模型只选版式、给内容，每个坐标由引擎绘制，预览同步
 - **结构先行** — office_inspect 让 AI 编辑前先看清文档结构
@@ -256,7 +256,7 @@ Hand the repetitive work to a schedule and let it run itself.
 
 ## Office Documents
 
-- **Byte-faithful editing** — docx_edit / xlsx_edit / pptx_edit change only what you change; untouched parts stay byte-identical, preserving the original document's formatting and compatibility
+- **Byte-faithful editing** — office_edit (docx / xlsx / pptx) changes only what you change; untouched parts stay byte-identical, preserving the original document's formatting and compatibility
 - **Full expressiveness** — Word generation embeds images and edits table rows; Excel gains styles, column widths, and freeze panes, and generated sheets get bold headers with fitted widths
 - **Structured layouts** — PPT generation runs through a layout engine: the model picks a layout and supplies content; the engine draws every coordinate, preview in sync
 - **Inspect first** — office_inspect shows the document's structure before editing

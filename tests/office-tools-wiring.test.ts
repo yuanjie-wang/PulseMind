@@ -43,7 +43,7 @@ describe('office tools five-point wiring', () => {
 })
 
 describe('tool surface', () => {
-  it('both tools are declared, gated into the write tier, dispatched, and labelled', () => {
+  it('the merged office tool is declared, gated into the write tier, dispatched, and labelled', () => {
     const tools = read('src/renderer/src/tools/built-in-tools.ts')
     const tiers = read('src/renderer/src/agent/engine/tool-tiers.ts')
     const executors = read('src/renderer/src/agent/tool-executors.ts')
@@ -53,16 +53,32 @@ describe('tool surface', () => {
     const zh = read('src/renderer/src/i18n/locales/zh.ts')
     const en = read('src/renderer/src/i18n/locales/en.ts')
 
-    for (const name of ['docx_edit', 'xlsx_edit']) {
-      expect(tools).toContain(`name: '${name}'`)
-      expect(tiers).toContain(`'${name}'`)                    // WRITE_TIER_TOOLS → approval hold
-      expect(executors).toContain(`'${name}'`)                // execWorkspaceTool case
-      expect(summary).toContain(`'${name}'`)                  // card label family
-      expect(instructions).toContain(`${name}: \``)           // static instructions (cache contract)
-      expect(limits).toContain(`${name}:`)                    // ops payload cap
-      expect(zh).toContain(`${name}: '`)                      // i18n label zh
-      expect(en).toContain(`${name}: '`)                      // i18n label en
-    }
+    const name = 'office_edit'
+    expect(tools).toContain(`name: '${name}'`)
+    expect(tiers).toContain(`'${name}'`)                    // WRITE_TIER_TOOLS → approval hold
+    expect(executors).toContain(`'${name}'`)                // execWorkspaceTool case
+    expect(summary).toContain(`'${name}'`)                  // card label family
+    expect(instructions).toContain(`${name}: \``)           // static instructions (cache contract)
+    expect(limits).toContain(`${name}:`)                    // ops payload cap
+    expect(zh).toContain(`${name}: '`)                      // i18n label zh
+    expect(en).toContain(`${name}: '`)                      // i18n label en
+    // The three retired names survive ONLY where hydrated history needs them
+    // (deliverables' writer sets + i18n labels) — nowhere as a live tool.
+    expect(tools).not.toContain("name: 'docx_edit'")
+    expect(tools).not.toContain("name: 'xlsx_edit'")
+    expect(tools).not.toContain("name: 'pptx_edit'")
+    expect(zh).toContain("docx_edit: '") // old transcripts keep human labels
+  })
+
+  it('reading no longer rides the edit tool (office_read owns it)', () => {
+    const tools = read('src/renderer/src/tools/built-in-tools.ts')
+    // The read ops are gone from office_edit's vocabulary — office_read took
+    // them over; a stale {"op":"outline"} gets a migration hint, not a backup.
+    expect(tools).toContain("name: 'office_read'")
+    const officeEdit = tools.slice(tools.indexOf("name: 'office_edit'"))
+    const schema = officeEdit.slice(0, officeEdit.indexOf('instructions:'))
+    expect(schema).not.toContain("'outline'")
+    expect(schema).not.toContain("'inspect'")
   })
 
   it('the text write tools refuse office binaries (L11)', () => {

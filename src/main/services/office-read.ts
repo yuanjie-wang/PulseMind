@@ -3,7 +3,7 @@
 // (the outline's 80-char slice was why models probed *_edit for real info),
 // xlsx cell values by sheet/range, pptx shapes with shape ids and full text.
 // Coordinates are the edit tools' own (paragraph index / cell address /
-// shape id; pptx slides in sldIdLst order — the same order pptx_edit counts),
+// shape id; pptx slides in sldIdLst order — the same order the edit tool's slide
 // so what a read shows is what an edit addresses. Read-only: no backup, no
 // write — but behind the same read guard as every other read mouth (M2).
 
@@ -255,7 +255,7 @@ export async function svcReadOffice(input: OfficeReadInput): Promise<OfficeReadR
   // ── pptx ──
   if (names.includes('ppt/presentation.xml')) {
     try {
-      // sldIdLst order — the order pptx_edit's `slide` counts (D3: never guess
+      // sldIdLst order — the order office_edit's `slide` counts (D3: never guess
       // slide identity from filenames). A deck whose rels cannot resolve is
       // refused, not silently reordered: coordinates that would not survive
       // an edit are not coordinates.

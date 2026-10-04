@@ -108,7 +108,7 @@ export async function svcInspectOffice(input: { filePath: string }): Promise<Off
         details: {
           // inspect ships PREVIEWS, not full bodies: `text` is outlineOf's
           // 80-char slice — enough to identify each paragraph, while the full
-          // text belongs to `read` / the docx_edit outline call. textLength is
+          // text belongs to `read` / the office_read page. textLength is
           // the REAL paragraph length (outlineOf's copy is pre-sliced), so it
           // stays consistent with the summary's total. paragraphCount is the
           // REAL total: outlineOf caps its list at 200, and the formatter must

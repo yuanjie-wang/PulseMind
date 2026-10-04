@@ -15,13 +15,13 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 
 交付真实的 Office 文件（Word / Excel / PPT / PDF）：从零生成、修改已有文件、按模板填充。
 
-**本技能不重复算子清单。** \`export_document\` / \`docx_edit\` / \`xlsx_edit\` / \`pptx_edit\` / \`office_inspect\` / \`office_read\` 各自的工具手册随每次请求下发，算子、参数、拒绝条件是那里的唯一权威。本技能只补手册没有的东西：**生成与编辑之间怎么选**、跨两者的配方、交付前的自检。
+**本技能不重复算子清单。** \`export_document\` / \`office_edit\` / \`office_inspect\` / \`office_read\` 各自的工具手册随每次请求下发，算子、参数、拒绝条件是那里的唯一权威。本技能只补手册没有的东西：**生成与编辑之间怎么选**、跨两者的配方、交付前的自检。
 
 ### 1. 先判定任务形状
 
 用户诉求落在哪一格，决定走哪条路线：
 
-- **改已有文件**（附件或工作区里的 .docx/.xlsx/.pptx）→ **编辑路线**：\`office_inspect\` 拿清单与文本预算 → 需要精确原文 / 单元格值 / shape 全文时 \`office_read\` 分页精读 → \`docx_edit\` / \`xlsx_edit\` / \`pptx_edit\`。字节保真，未触及的部件逐字节不变。
+- **改已有文件**（附件或工作区里的 .docx/.xlsx/.pptx）→ **编辑路线**：\`office_inspect\` 拿清单与文本预算 → 需要精确原文 / 单元格值 / shape 全文时 \`office_read\` 分页精读 → \`office_edit\`。字节保真，未触及的部件逐字节不变。
 - **从零做一个**（"给我一份""整理成 Excel"）→ **生成路线**：\`export_document\`。PPT 一律给结构化 \`deck\`（版式化生成，详见 \`references/pptx.md\`），纯文字 markdown 只当兜底。
 - **用户给了模板要套**（公司 PPT 模板、合同模板）→ **模板继承**：先 \`office_inspect\` 看结构，再用编辑工具逐形状 / 逐段填入内容。**不要**用 \`export_document\` 重建——那会丢掉模板的母版与样式，而模板的价值全在那里。
 - **格式转换**（docx→PDF、CSV→xlsx）→ \`export_document\`：\`sourcePath\` 指已有文件，或 \`content\` 给内容。
@@ -43,18 +43,18 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 **A. 表格：先生成值，再补格式与公式。**
 生成端不产任何样式与公式（详见 \`references/xlsx.md\`）。所以标准两步是：
 1. \`export_document\`（format xlsx）把数据落成表——类型已经正确，前导零会按意图留在文本；
-2. \`xlsx_edit\` 用 \`set_cell\` 给需要的单元格补 \`number_format\`（如 \`0.00%\`、\`yyyy-mm-dd\`）或 \`formula\`（派生值用活公式）。
+2. \`office_edit\` 用 \`set_cell\` 给需要的单元格补 \`number_format\`（如 \`0.00%\`、\`yyyy-mm-dd\`）或 \`formula\`（派生值用活公式）。
 先 \`inspect\` 一次拿 used range，再按列批量给算子。
 
 **B. 模板填充：只换文本，别动样式。**
-- PPT：\`pptx_edit\` \`outline\` 拿每页 shape_id → \`set_shape_text\` 逐形状重写。段落样式继承自母版，**不要**顺手 \`format_text\` 覆盖字体字号。
-- Word：\`docx_edit\` \`outline\` 拿段落索引 → \`replace_text\` 定点替换。
+- PPT：\`office_read\`（slide=N 按页）拿每页 shape_id → \`office_edit\` \`set_shape_text\` 逐形状重写。段落样式继承自母版，**不要**顺手 \`format_text\` 覆盖字体字号。
+- Word：\`office_read\` 拿段落索引与精确原文 → \`office_edit\` \`replace_text\` 定点替换。
 - 新内容比占位符长很多时，先按铁律 3 的数字判断要不要换页 / 加页，再落笔。
 
 **C. 生成后微调结构。**
 生成端表达不了的版式用编辑补：
-- 需要"封面 / 落款"这类独立段落 → \`docx_edit\` \`insert_paragraph\` + \`set_paragraph_style\`（样式名如 \`Heading1\`）。
-- 需要调整位置尺寸（PPT）→ \`pptx_edit\` \`set_shape_geometry\`（单位英寸）。
+- 需要"封面 / 落款"这类独立段落 → \`office_edit\` \`insert_paragraph\` + \`set_paragraph_style\`（样式名如 \`Heading1\`）。
+- 需要调整位置尺寸（PPT）→ \`office_edit\` \`set_shape_geometry\`（单位英寸）。
 - 补不了的（页眉页脚、页码、目录）就直说，别硬凑；插图给工作区图片路径（png/jpg/jpeg/gif）即可嵌入，网络图 v1 不嵌。
 
 ### 4. 交付前自检

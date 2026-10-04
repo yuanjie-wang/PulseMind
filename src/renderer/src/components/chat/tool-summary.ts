@@ -24,7 +24,10 @@ const LABEL_KEYS: ReadonlySet<string> = new Set([
   'read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec', 'install', 'webfetch',
   'memory_search', 'memory_save', 'conversation_search', 'tool_result_search',
   'pick_skill', 'pick_tool', 'knowledge_search', 'knowledge_read', 'experience_read', 'experience_save',
-  'spawn_agent', 'create_plan', 'advance_plan', 'docx_edit', 'xlsx_edit', 'pptx_edit', 'office_read', 'export_document',
+  'spawn_agent', 'create_plan', 'advance_plan', 'office_edit', 'office_read', 'export_document',
+  // Retired office tool names (merged into office_edit, 2026-10-04) — they
+  // stay so hydrated transcripts' old cards keep their human labels.
+  'docx_edit', 'xlsx_edit', 'pptx_edit',
   'git_status', 'git_diff', 'git_log', 'git_commit', 'git_restore',
   'page_get_content', 'page_scroll', 'page_wait', 'page_click', 'page_input', 'page_select', 'page_back', 'page_execute_js',
   'browser', 'ask_user',
@@ -61,12 +64,15 @@ export function toolObjectSummary(block: ToolUseBlock): string {
   if (!input) return ''
   switch (block.name) {
     case 'exec': return ((input.command as string) || '').slice(0, 80)
+    // docx_edit/xlsx_edit/pptx_edit: retired names still riding persisted
+    // transcripts — the object row keeps resolving for hydrated history.
     case 'read':
     case 'edit':
+    case 'office_edit':
+    case 'office_read':
     case 'docx_edit':
     case 'xlsx_edit':
     case 'pptx_edit':
-    case 'office_read':
       return (input.file_path as string) || ''
     case 'write':
       return `${input.file_path || ''} (${((input.content as string) || '').length > 0 ? `${((input.content as string).length / 1024).toFixed(1)} KB` : '0 KB'})`

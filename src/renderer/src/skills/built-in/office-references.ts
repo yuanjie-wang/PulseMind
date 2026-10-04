@@ -24,7 +24,7 @@
 export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
   'references/docx.md': `# Word 交付规范（docx）
 
-生成走 \`export_document\`（format docx，输入 markdown）；改已有文件走 \`docx_edit\`。
+生成走 \`export_document\`（format docx，输入 markdown）；改已有文件走 \`office_edit\`。
 
 ## 一、版式只能用 markdown 表达
 
@@ -45,17 +45,17 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
 行内样式只取**最外层**一层：\`***加粗且斜体***\` 只落加粗或斜体中的一层，不会组合成两者兼有。这是既定的保真口径，不是 bug。
 
-整份文档的字号用 \`export_document\` 的 \`fontSize\`（磅，6–72 可带 0.5：10.5=五号、12=小四、14=四号、16=三号）：它设的是**正文基准**，标题与代码块按同一比例缩放，层级不塌（不给就是 Word 默认 11 磅）。要让某一两处不一样：先导出，再用 \`docx_edit\` 的 \`format_text\` 带 \`font_size\` 单点改。
+整份文档的字号用 \`export_document\` 的 \`fontSize\`（磅，6–72 可带 0.5：10.5=五号、12=小四、14=四号、16=三号）：它设的是**正文基准**，标题与代码块按同一比例缩放，层级不塌（不给就是 Word 默认 11 磅）。要让某一两处不一样：先导出，再用 \`office_edit\` 的 \`format_text\` 带 \`font_size\` 单点改。
 
 ## 二、表达不了的（别硬凑，如实说）
 
 - **封面页、页眉页脚、页码、目录**：生成端没有这些概念。
 - **插入图片（网络/内联地址）**：\`http(s)://\` 与 \`data:\` 的图片不嵌图，保持占位文字（形如 \`[图片:xxx.png,正文不支持]\`）——工作区里的图片文件才会真正嵌入。
 - **公式、脚注、内嵌 HTML**：原文照抄 + 文末一行说明。
-- **字体与局部字号**：字体从不指定，Word / WPS 按自己的默认样式渲染（CJK 由打开端替换；只有代码块固定等宽 Courier New）。字号只有 \`fontSize\` 这一个全文基准，**没有逐段字号**——逐段的先导出，再用 \`docx_edit\` 的 \`format_text\` 改。
+- **字体与局部字号**：字体从不指定，Word / WPS 按自己的默认样式渲染（CJK 由打开端替换；只有代码块固定等宽 Courier New）。字号只有 \`fontSize\` 这一个全文基准，**没有逐段字号**——逐段的先导出，再用 \`office_edit\` 的 \`format_text\` 改。
 - **首行缩进、行距、分节、页面设置**：无。
 
-用户明确要封面 / 页眉页脚 / 页码时：告诉他生成端做不到，但可以用 \`docx_edit\` 补一个封面段落，其余的建议他在 Word 里手动加一次（加完就是模板，之后可复用）。
+用户明确要封面 / 页眉页脚 / 页码时：告诉他生成端做不到，但可以用 \`office_edit\` 补一个封面段落，其余的建议他在 Word 里手动加一次（加完就是模板，之后可复用）。
 
 ## 三、四种高频场景的结构
 
@@ -84,7 +84,7 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 - 每段经历用 \`###\` 或加粗行写"公司 · 职位 · 时间"，下面用无序列表列成果；成果尽量带数字。
 - 日期写成文本（如 \`2024.03 — 2026.09\`）。不能右对齐，也别指望。
 
-## 四、编辑要点（docx_edit）
+## 四、编辑要点（office_edit·docx）
 
 - **先 \`outline\`**：拿段落索引 + 样式 + 文本长度。索引是后续 op 的定位依据。
 - **索引随批次变化**：同一批里前面的 \`insert_paragraph\` / \`delete_paragraph\` 会改变后面段落的编号。按你对最终形态的意图排列顺序。
@@ -96,11 +96,11 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
   'references/xlsx.md': `# Excel 交付规范（xlsx）
 
-生成走 \`export_document\`（format xlsx，输入 markdown 表格）；改已有文件走 \`xlsx_edit\`。
+生成走 \`export_document\`（format xlsx，输入 markdown 表格）；改已有文件走 \`office_edit\`。
 
 ## 一、四条公式原则
 
-生成端**不产任何公式**。需要公式时用 \`xlsx_edit\` 的 \`set_cell\` 补——补的时候守住这四条：
+生成端**不产任何公式**。需要公式时用 \`office_edit\` 的 \`set_cell\` 补——补的时候守住这四条：
 
 1. **派生值用活公式。** 交付给用户看和改的表，合计、占比、差额要写成公式而不是算好的数字；用户改一行，全表跟着变，这才是表格该有的样子。
 2. **公式零错误容忍。** 除法一律包 \`IFERROR\`（如 \`=IFERROR(B2/C2,"")\`）；引用的区域不要把可能为空的单元格算进去。
@@ -119,7 +119,7 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
 - 只有**严格往返**才转数值：\`123\` 是数字，\`007\`、\`13800138000\`、\`310101199001011234\`、\`2026001\` 保持文本。
   **这是有意为之，不是缺陷**——工号、手机号、身份证、订单号一旦变成数字就会丢前导零或被科学计数法截断。
-- **日期保持文本**（如 \`2026-09\`）。要真日期得用 \`xlsx_edit set_cell\` 写日期序列值 + \`number_format: "yyyy-mm-dd"\`，多一步，但能被排序和做差值。
+- **日期保持文本**（如 \`2026-09\`）。要真日期得用 \`office_edit set_cell\` 写日期序列值 + \`number_format: "yyyy-mm-dd"\`，多一步，但能被排序和做差值。
 - 空值统一口径：留空 / \`0\` / \`—\` 选一个，全表一致。
 
 ## 四、生成端的边界（如实告知）
@@ -129,9 +129,9 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 - **csv 只导第一张表**，带 UTF-8 BOM（防 WPS / Excel 中文乱码）。
 - 内容超 100KB 时先 \`write\` 成 .md 再走 \`sourcePath\`。
 
-需要格式时的做法就是配方 A：生成 → \`xlsx_edit\` 按列补 \`number_format\`。其余样式（加粗、底纹、颜色、对齐、列宽、冻结窗格）用 \`set_style\` / \`set_column_width\` / \`freeze_panes\` 一批补齐——生成端已自带表头加粗与自适应列宽。含图表/绘图/主题的工作簿上样式算子会被拒绝（如实说明）。
+需要格式时的做法就是配方 A：生成 → \`office_edit\` 按列补 \`number_format\`。其余样式（加粗、底纹、颜色、对齐、列宽、冻结窗格）用 \`set_style\` / \`set_column_width\` / \`freeze_panes\` 一批补齐——生成端已自带表头加粗与自适应列宽。含图表/绘图/主题的工作簿上样式算子会被拒绝（如实说明）。
 
-## 五、编辑要点（xlsx_edit）
+## 五、编辑要点（office_edit·xlsx）
 
 - **先 \`inspect\`** 拿 sheet 名与 used range，再按列批量给算子。
 - **含图表、透视表、VBA 的工作簿会被直接拒绝**（引擎无法保真它们）。这时不要硬试：如实说明，给两个替代——另建一张只含数据的表（\`export_document\`），或请用户在原文件里手动改这几格。
@@ -144,7 +144,7 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
   'references/pptx.md': `# PPT 交付规范（pptx）
 
-生成走 \`export_document\`（format pptx）：**默认给结构化 \`deck\`**（版式化生成，有设计感），纯文字大纲也可以给 markdown \`content\`（堆文字的兜底）。改已有文件或套模板走 \`pptx_edit\`。
+生成走 \`export_document\`（format pptx）：**默认给结构化 \`deck\`**（版式化生成，有设计感），纯文字大纲也可以给 markdown \`content\`（堆文字的兜底）。改已有文件或套模板走 \`office_edit\`。
 
 ## 一、deck：版式化生成（默认路线）
 
@@ -177,9 +177,9 @@ deck 是一个 JSON 对象：\`{ title, theme?: { accent }, slides: [...] }\`。
 
 - **deck 路线**：图表改数据需重新导出（形状不是活图表）；无母版/动画/切换；不指定中文字体（打开端自行替换）；slides 上限 200 页。
 - **markdown 路线**：图片降级成文字（末尾追加「备注」页列损失）；无图表、无版式变化，固定 16:9。
-- **两路线都没有**：母版定制、动画、切换。用户给的公司模板价值在母版——那走 \`pptx_edit\`（见下）。
+- **两路线都没有**：母版定制、动画、切换。用户给的公司模板价值在母版——那走 \`office_edit\`（见下）。
 
-## 四、套模板（pptx_edit 的主场）
+## 四、套模板（office_edit 的主场）
 
 用户给的公司模板，价值全在母版。做法：
 
@@ -194,7 +194,7 @@ deck 是一个 JSON 对象：\`{ title, theme?: { accent }, slides: [...] }\`。
 ## 五、配色与字号
 
 - deck 的配色由 \`theme.accent\` 一处驱动（引擎派生浅底、卡片、图表主色）；默认 2F54EB。
-- \`pptx_edit\` 手工样式时：颜色写 6 位 \`RRGGBB\` 不带 \`#\`；字号阶梯（pt）封面主标题 40–44 / 页标题 28–32 / 要点 18–22 / 注释与来源 12–14；一套 deck 最多 2–3 个强调色，正文近黑（\`262626\`），强调色只给标题或关键数字。
+- \`office_edit\` 手工样式时：颜色写 6 位 \`RRGGBB\` 不带 \`#\`；字号阶梯（pt）封面主标题 40–44 / 页标题 28–32 / 要点 18–22 / 注释与来源 12–14；一套 deck 最多 2–3 个强调色，正文近黑（\`262626\`），强调色只给标题或关键数字。
 - 底色 / 形状色用 \`set_shape_fill\`（\`"none"\` 表示无填充）、\`set_slide_background\`；位置尺寸用 \`set_shape_geometry\`（单位**英寸**）。
 - 样式类算子不允许改变可见文字——引擎会在文字被改动时拒绝整批。这是防"改样式顺手把内容改没了"的护栏，不是限制。
 

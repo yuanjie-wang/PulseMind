@@ -83,10 +83,10 @@ describe('docx_edit service', () => {
     const { svcWriteFile } = await import('../src/main/services/file-ops')
     const result = await svcWriteFile({ filePath: '/tmp/w/report.docx', content: '<html>' })
     expect(result.success).toBe(false)
-    expect((result as { error?: string }).error).toContain('docx_edit')
+    expect((result as { error?: string }).error).toContain('office_edit')
     const patch = await import('../src/main/services/file-ops')
     const result2 = await patch.svcPatchFile({ filePath: '/tmp/w/book.xlsx', diff: '' })
-    expect((result2 as { error?: string }).error).toContain('xlsx_edit')
+    expect((result2 as { error?: string }).error).toContain('office_edit')
   })
 })
 

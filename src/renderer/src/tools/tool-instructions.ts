@@ -17,7 +17,7 @@ export const toolInstructions: Record<string, string> = {
 Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can take away — use it when the user wants a file, not a table pasted in chat.
 
 ### Decision tree — read this FIRST
-- 用户要 PPT / 幻灯片 / slides → **本工具 format pptx**。从零创建一律走这里；要精修/填充一个已有 .pptx 模板才用 pptx_edit。
+- 用户要 PPT / 幻灯片 / slides → **本工具 format pptx**。从零创建一律走这里；要精修/填充一个已有 .pptx 模板才用 office_edit。
 - 用户要 Word 文档 → format docx；表格交付 → format xlsx / csv。
 - 用户要 PDF（合同/公文/不可改版交付）→ **本工具 format pdf**：工作区已有 .docx 就给 sourcePath 指向它（docx→PDF 转换，保真最好）；否则给 markdown content（先按 docx 排版再转 PDF）。修改已有 PDF 的内容不在本工具能力内。
 - **永远不要**用 exec 跑 python-pptx / python-docx / libreoffice / office 脚本之类来生成 Office 文件——那绕开了沙箱护栏、备份与回读门禁，且没有预览联动。本工具就是原生路径，直接用它。
@@ -26,7 +26,7 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 - content: inline source. docx/pptx/pdf take the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet. For pptx the first \`# \` heading is the cover and every later \`# \`/\`## \` heading starts a new slide.
 - deck: (format pptx only, and the DEFAULT for PPT) 结构化幻灯片对象，版式见 input schema 的 deck 描述。何时用：只要 PPT 里有图表、KPI 数字卡、双栏对比、引用页或图片，就用 deck；纯文字大纲用 content 也能出，但效果弱一档。一页只讲一件事：bullets 3–8 条每条 ≤20 字；table ≤12 行超了拆页；chart 的 categories 2–12 个；数据来源写在该页的 note 里。
 - sourcePath: convert an existing workspace file instead — large sources avoid re-sending content.
-- fontSize: (docx/pdf only) 正文基准字号，磅，6–72 可带 0.5（10.5=五号、12=小四、14=四号、16=三号），标题与代码块按基准等比缩放，层级不塌。**format pdf + sourcePath（既有 .docx）拒绝 fontSize**——那条路是字节转换不重新生成，字号请先用 \`docx_edit\` 改好再转。只改某几处字号：先导出，再用 \`docx_edit\` 的 \`format_text\` 带 \`font_size\` 补。
+- fontSize: (docx/pdf only) 正文基准字号，磅，6–72 可带 0.5（10.5=五号、12=小四、14=四号、16=三号），标题与代码块按基准等比缩放，层级不塌。**format pdf + sourcePath（既有 .docx）拒绝 fontSize**——那条路是字节转换不重新生成，字号请先用 \`office_edit\` 改好再转。只改某几处字号：先导出，再用 \`office_edit\` 的 \`format_text\` 带 \`font_size\` 补。
 
 ### Rules
 - file_path is workspace-relative; omit it to land \`export-<timestamp>.<format>\` in the workspace root. Existing files are NEVER overwritten — \`报告.xlsx\` taken → \`报告-2.xlsx\`.
@@ -34,36 +34,12 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 - Failure refuses the WHOLE call with a readable reason (nothing is written) — fix the cause and retry.
 
 ### Honest capability limits
-- docx: images / math / footnotes degrade to raw text with a closing note; no cover pages, headers or footers; generation-side font control is the one document-wide \`fontSize\` (no per-paragraph sizes — those go through \`docx_edit\` after export).
+- docx: images / math / footnotes degrade to raw text with a closing note; no cover pages, headers or footers; generation-side font control is the one document-wide \`fontSize\` (no per-paragraph sizes — those go through \`office_edit\` after export).
 - pdf: 由 docx 渲染而来（无原生 markdown 排版引擎）——docx 的降级边界在这里同样适用；文本框、页眉页脚、SmartArt 等渲染器不支持的元素会缺失；分页尺寸按文档首页；转换失败整批拒绝，不写半成品。
 - xlsx: NO formulas are generated, dates stay text, numbers convert only when the exact round-trip is safe (leading zeros like 工号 007 stay text on purpose).
 - csv: exports the FIRST table/sheet only.
 - pptx (content/markdown): images / inline HTML degrade to text with a closing 备注 page; one table per page; NO charts, fixed 16:9 layout.
-- pptx (deck): 图表是矢量形状（在 PowerPoint 里可改色改字，改数据需重新导出）；图片真实嵌入（须已存在于工作区）；不指定中文字体（打开端替换）；无母版/动画——要母版请走 pptx_edit 套用户模板。 deck.slides 最多 200 页。
-`,
-
-  pptx_edit: `## pptx_edit
-
-Edit a .pptx with byte-faithful operations. Masters/layouts/media/theme are preserved exactly; only slide text changes.
-
-分工：从零做一个新 PPT 用 export_document（format pptx）；本工具只负责修改已有文件——尤其是用户提供的公司模板（字节保真是它对生成器的全部优势）。
-
-### Ops (run in order; a failed op refuses the WHOLE batch — nothing is written)
-- {"op":"outline"} — slides with shape ids/names/placeholder types/text. Run this FIRST.
-- {"op":"replace_text","slide":N,"find":"旧文本","replace":"新文本","expected_count":1} — visible-text replace across runs. slide is 1-based presentation order (default 1). expected_count must match the hit count exactly or the batch refuses.
-- {"op":"set_shape_text","slide":N,"shape_id":"2","text":"第一段\n第二段"} — rewrite ALL paragraphs of one shape (from outline ids; table cells are cell:r:c). Paragraph styling comes from the layout/master — template-safe.
-- {"op":"format_text","slide":N,"find":"旧文本","color":"FF0000","font_size":28,"bold":true} — style the matched runs (colour/size/bold/italic/underline/strike/font). Whole-run matches restyle in place; partial matches SPLIT the run. Optional shape_id scopes the match to one shape.
-- {"op":"set_shape_fill","slide":N,"shape_id":"3","color":"4472C4"} — shape fill (or "none"), optional line_color for the outline.
-- {"op":"set_slide_background","slide":N,"color":"F5F1E8"} — page background.
-- {"op":"set_shape_geometry","slide":N,"shape_id":"2","x":1.5,"y":0.5,"w":8,"h":1} — position/size in INCHES.
-Styling ops NEVER change visible text — the engine refuses the batch if they do. Colours are 6-hex RRGGBB.
-
-### Rules
-- Slide numbers are PRESENTATION order, not filename order.
-- Text lives across runs arbitrarily — find uses the concatenated visible text, so match what a reader sees, not the XML.
-- Cached autofit scales are left as-is (PowerPoint recomputes when the user edits the box).
-- Slide-number/date fields (a:fld) are never matched — PowerPoint recomputes them.
-- Backups: the first edit of a file saves the original automatically (backup path in the result).
+- pptx (deck): 图表是矢量形状（在 PowerPoint 里可改色改字，改数据需重新导出）；图片真实嵌入（须已存在于工作区）；不指定中文字体（打开端替换）；无母版/动画——要母版请走 office_edit 套用户模板。 deck.slides 最多 200 页。
 `,
 
   read: `## read
@@ -250,17 +226,16 @@ Search across the local knowledge base. Returns a list of knowledge files with t
 4. Wiki pages often contain markdown links to related pages — follow them for deeper exploration
 `,
 
-  docx_edit: `## docx_edit
+  office_edit: `## office_edit
 
-Byte-faithful Word (.docx) editing through structured operations.
+Byte-faithful in-place editing of .docx / .xlsx / .pptx through structured write ops — the file's extension picks the editor. Untouched parts of the file are preserved exactly.
 
 ### Workflow
-1. FIRST call with {"op":"outline"} to get paragraph indexes + styles + text summaries.
-2. THEN send the edit batch. Ops apply in order; indexes refer to the CURRENT state.
+1. READ FIRST with \`office_read\`: paragraph indexes / cell addresses / shape ids are what these ops consume (its docx text is the exact match space; \`read\`'s markdown is reflowed and will mis-aim replace_text).
+2. THEN send the write batch. Ops apply in order; every write is read back and verified. Batches are ATOMIC — any failed op writes nothing.
 3. Prefer ONE call with a batch of ops over many small calls.
 
-### Ops
-- outline - list paragraphs (no edit).
+### docx ops
 - replace_text - find/replace in the visible text; crosses style runs automatically. Default expects EXACTLY 1 hit; give expected_count or paragraph to widen/narrow. No hit = whole batch refused, nothing written. Add track_changes: true to wrap in revision marks (<w:del>/<w:ins>) so Word/WPS shows the edit as a tracked change — user can accept/reject later. The tracked replacement text is inserted once (at the match's first run) and the deleted marks carry only the matched text.
 - insert_paragraph - paragraph + position (before/after) + text; optional style.
 - delete_paragraph - refuses paragraphs carrying a section break, and refuses a table cell's only paragraph (an empty cell is invalid).
@@ -269,33 +244,29 @@ Byte-faithful Word (.docx) editing through structured operations.
 - insert_image - paragraph + position + image (a WORKSPACE image path: png/jpg/jpeg/gif; http(s)/data: are not embedded) + optional width_px/height_px (max width 600px, ratio kept). The image lands inline as its own paragraph.
 - insert_table_row - table + after_row + optional cells[] (one text per cell; missing = empty). Clones the anchor row's cell formatting (borders/widths). Refuses rows with vertical merges (vMerge) or nested tables.
 - delete_table_row - table + row. Refuses the last remaining row and rows carrying vMerge.
+- Never: .doc / encrypted files (ask to save as .docx); vMerge, nested tables, add/remove COLUMN; headers/footers, TOC/fields — refuse and explain.
 
-### Never
-- .doc / encrypted files: ask the user to save as .docx.
-- Tables: replace_text works inside cell text; rows can be inserted/deleted (see insert_table_row/delete_table_row) — but vertical merges (vMerge), nested tables and add/remove COLUMN are not supported - refuse and explain.
-- Headers/footers, TOC/fields are out of scope - refuse and explain.
-`,
-
-  xlsx_edit: `## xlsx_edit
-
-Structured Excel (.xlsx) editing. The workbook is checked first: charts, pivot tables, VBA or legacy .xls are REFUSED (the engine cannot preserve them).
-
-### Workflow
-1. FIRST call with {"op":"inspect"} for sheet names and used ranges.
-2. Send the edit batch; ops apply in order. Every write is read back and verified.
-
-### Ops
-- inspect - list sheets (+ used range).
-- set_cell - cell ("B3") + value OR formula, optional number_format (e.g. "0.00%", "yyyy-mm-dd").
+### xlsx ops
+- set_cell - cell ("B3") + value OR formula, optional number_format (e.g. "0.00%", "yyyy-mm-dd"); optional sheet (defaults to first).
 - find_replace - replaces in VALUES only. include_formulas: true extends matching to formula cells, whose cached RESULT text gets replaced — the formula expression itself is never rewritten. Rich-text/hyperlink cells that match are refused (whole-cell replacement would destroy their formatting). expected_count defaults to actual.
-- add_row - after_row (0-based index) + values array. Inserts a new row and shifts existing rows down. Optional sheet (defaults to first).
+- add_row - after_row (0-based index) + values array. Inserts a new row and shifts existing rows down.
 - set_style - cells ("B3" or "A1:C10") + bold/italic/font_size/color/fill/font/align(left|center|right)/wrap_text. Colors are 6-digit RRGGBB without #. One op covers up to 50,000 cells. Not available on workbooks with charts/drawings/themes (refused).
 - set_column_width - columns ("A" or "A:C", comma-stacks groups) + width (number).
 - freeze_panes - cell ("B2") freezes rows above and columns left of it; "A2" freezes the first row.
+- Never: workbooks with charts/pivot tables/VBA or legacy .xls are REFUSED (the engine cannot preserve them); structural changes (insert/delete columns) — formulas would not re-aim; chart data editing, pivot refresh. Use office_read first to detect charts.
 
-### Never
-- Structural changes (insert/delete columns): formulas would not re-aim; refuse and explain.
-- Chart data editing, pivot refresh - refuse.
+### pptx ops
+- replace_text - find/replace in the visible text; crosses runs automatically; optional slide (default 1). expected_count must match the hit count exactly or the batch refuses.
+- set_shape_text - slide + shape_id + text: rewrites ALL paragraphs of one shape, one paragraph per line (shape ids from office_read; table cells use cell:r:c). Placeholder styles inherit from the master — template-safe; do NOT add format_text on top unless asked.
+- format_text - find + optional bold/italic/underline/strike/color/font_size/font; optional slide/shape_id to scope. Whole-run matches restyle in place; partial matches SPLIT the run.
+- set_shape_fill - slide + shape_id + color (+ line_color): fill/outline colours, 6-hex RRGGBB or the literal none.
+- set_slide_background - slide + color.
+- set_shape_geometry - slide + shape_id + x/y/w/h in INCHES.
+- Styling ops NEVER change visible text — the engine refuses the batch if they do. Slide numbers are PRESENTATION order (office_read's), never filename order. Slide-number/date fields (a:fld) are never matched — PowerPoint recomputes them. Cached autofit scales are left as-is (PowerPoint recomputes on user edit). Text boxes do not reflow — a much longer replacement can overflow the shape.
+- Byte-faithful — masters, layouts, media and theme are preserved exactly. Backups: the first edit of a file saves the original automatically (backup path in the result).
+
+### Backups (all formats)
+The first edit of a file saves the original automatically (the backup path rides the result); every edit snapshots into the workspace's .versions/ before writing.
 `,
 
   office_inspect: `## office_inspect
@@ -304,8 +275,8 @@ Edit-time triage for Office files (.docx/.xlsx/.pptx) — a structural inventory
 
 ### When to use
 - Reading / summarizing / answering from the file → call \`read\` instead (auto-converts to markdown, paged). Do NOT inspect first.
-- Before editing with docx_edit/xlsx_edit/pptx_edit → inspect first: the paragraph/sheet/slide indices and the text budget below are what you edit against.
-- To detect charts/pivot tables that would make xlsx_edit refuse.
+- Before editing with office_edit → inspect first: the paragraph/sheet/slide indices and the text budget below are what you edit against.
+- To detect charts/pivot tables that would make office_edit's xlsx ops refuse.
 
 ### Output
 - **docx**: paragraph list ([index] style: length — first-80-chars preview, capped), text budget (110% of current — the replacement ceiling), image count.
@@ -322,7 +293,7 @@ Paged, structure-faithful reads in the file's OWN address space (.docx/.xlsx/.pp
 ### When to use (vs the other readers)
 - Human-readable summary / answering from the file → \`read\` (markdown conversion).
 - One-shot structural inventory (what's inside, sizes, budget) → \`office_inspect\`.
-- Targeting an edit — exact paragraph text for replace_text, cell values beyond the head preview, a shape's full text, table cell contents → \`office_read\`. Its paragraph indexes / cell addresses / shape ids are what docx_edit/xlsx_edit/pptx_edit consume.
+- Targeting an edit — exact paragraph text for replace_text, cell values beyond the head preview, a shape's full text, table cell contents → \`office_read\`. Its paragraph indexes / cell addresses / shape ids are what office_edit consumes.
 
 ### Per format
 - **docx**: \`offset\`/\`limit\` page paragraphs (default 40, max 200) with FULL text + style; \`tables: true\` adds cell text as "R1: c0 | c1 | ...". Gap chars (tab/line break) render as spaces — a find string copied from here matches.

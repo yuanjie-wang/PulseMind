@@ -62,6 +62,16 @@ export { UI_PREVIEW_MAX } from './executors/context'
 const READ_DEFAULT_LINE_LIMIT = 200        // read: default lines per page
 const READ_MAX_LINE_LIMIT = 500            // read: hard cap on lines per page (the structural bound; the token-level net is MAX_READ_RESULT_TOKENS)
 
+/** office_edit's write ops per format — the validator runs BEFORE the host
+ *  call (the services back up + snapshot before applying, so a batch that
+ *  could never apply is refused here), and the read-shaped ops office_read
+ *  took over get their migration hint instead of a backup for nothing. */
+const OFFICE_EDIT_OPS: Record<'docx' | 'xlsx' | 'pptx', ReadonlySet<string>> = {
+  docx: new Set(['replace_text', 'insert_paragraph', 'delete_paragraph', 'set_paragraph_style', 'format_text', 'insert_image', 'insert_table_row', 'delete_table_row']),
+  xlsx: new Set(['set_cell', 'find_replace', 'add_row', 'set_style', 'set_column_width', 'freeze_panes']),
+  pptx: new Set(['replace_text', 'set_shape_text', 'format_text', 'set_shape_fill', 'set_slide_background', 'set_shape_geometry']),
+}
+
 /** UTF-8 byte length of a string. `String.length` counts UTF-16 code units,
  *  which for CJK-heavy content reads ~50% under the bytes actually hitting
  *  the disk — a correct write reported as a truncated one (2026-09-27). */
@@ -325,7 +335,7 @@ export class ToolExecutor implements ToolExecContext {
           if (ext === '.doc' || ext === '.ppt') {
             const fmt = ext === '.doc' ? 'Word' : 'PowerPoint'
             this.addToolResult(t.id,
-              `「${ext}」是旧版 ${fmt} 格式，无法直接读取。请先在 Office/WPS 中另存为 .docx/.pptx，再用 docx_edit 编辑或 read 查看。`,
+              `「${ext}」是旧版 ${fmt} 格式，无法直接读取。请先在 Office/WPS 中另存为 .docx/.pptx，再用 office_edit 编辑或 read 查看。`,
               true, undefined, MAX_READ_RESULT_TOKENS)
             return
           }
@@ -395,18 +405,39 @@ export class ToolExecutor implements ToolExecContext {
         t.output = result.success ? done : `Error: ${result.error || 'Write failed'}`
         this.addToolResult(t.id, result.success ? done : `Error: ${result.error || 'Write failed'}`, !result.success)
         t.exitCode = result.success ? 0 : 1
-      } else if (t.name === 'docx_edit' || t.name === 'xlsx_edit' || t.name === 'pptx_edit') {
+      } else if (t.name === 'office_edit') {
         let fp = String(t.input.file_path || '')
         if (!fp) throw new Error('file_path is required')
         fp = this.resolveWorkspacePath(fp)
+        // One tool, three formats: the file's extension picks the service
+        // (the three main-side editors are unchanged behind the router).
+        const ext = fp.slice(fp.lastIndexOf('.')).toLowerCase()
+        const format = ext === '.docx' ? 'docx' : ext === '.pptx' ? 'pptx' : ext === '.xlsx' ? 'xlsx' : null
+        if (!format) {
+          throw new Error(`office_edit 支持 .docx / .xlsx / .pptx，收到「${ext || '无扩展名'}」——读取用 office_read，生成新文件用 export_document`)
+        }
         const ops = Array.isArray(t.input.ops) ? t.input.ops : []
-        if (ops.length === 0) throw new Error('ops is required (至少一个操作；先 outline 了解文档)')
+        if (ops.length === 0) throw new Error('ops is required (至少一个写入算子；读取 / 定位用 office_read)')
+        // Validated BEFORE the service on purpose: the editors back up and
+        // snapshot before applying ops, so a batch that could never apply
+        // must be refused here — and the read-shaped ops this tool used to
+        // carry (docx/pptx outline, xlsx inspect) get their migration hint
+        // instead of a backup for nothing (office_read owns reading now).
+        for (const op of ops) {
+          const kind = String((op as { op?: unknown })?.op ?? '')
+          if (kind === 'outline' || kind === 'inspect') {
+            throw new Error(`op「${kind}」已由 office_read 承担——office_edit 只做写入。先用 office_read（分页、带段落索引/单元格地址/shape id）再回来编辑。`)
+          }
+          if (!OFFICE_EDIT_OPS[format].has(kind)) {
+            throw new Error(`未知 op「${kind || '(缺失)'}」（${format} 的写入算子: ${[...OFFICE_EDIT_OPS[format]].join(', ')}）`)
+          }
+        }
         t.output = `Editing ${fp} (${ops.length} op)...`; this.notify()
         // The three office editors share one result shape; the bridge unions
         // them, so the consumer reads through this common view.
-        const result = (t.name === 'docx_edit'
+        const result = (format === 'docx'
           ? await getHost().editDocx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })
-          : t.name === 'pptx_edit'
+          : format === 'pptx'
             ? await getHost().editPptx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })
             : await getHost().editXlsx({ filePath: fp, ops: ops as never, workspaceDir: this.opts.workspaceDir })) as {
           success: boolean
@@ -421,25 +452,21 @@ export class ToolExecutor implements ToolExecContext {
         }
         if (result.success) {
           const allResults = (result.results ?? []) as Array<{ index: number; op: string; ok: boolean; detail: string }>
-          const outlineOnly = allResults.length === 1 && allResults[0]?.op === 'outline'
           const detail = allResults.filter((r) => r.ok).map((r) => r.detail).join('; ')
-          const summary = outlineOnly
-            ? `Inspected ${fp}`
-            : `Edited ${fp}: ${detail || 'done'}${result.backup ? ` (备份: ${result.backup})` : ''}`
+          const summary = `Edited ${fp}: ${detail || 'done'}${result.backup ? ` (备份: ${result.backup})` : ''}`
           // P2.5: append change summary and diff preview
           const parts = [summary]
           if (result.changeSummary) parts.push(`变更摘要:\n${result.changeSummary}`)
-          // M1: the outline is the payload of an outline-only call — without
-          // it in the tool result the manual's "FIRST call with outline" was
-          // unusable (index-based ops had nothing to index into).
+          // The post-edit outline rides every write batch (indexes of the
+          // CURRENT state — what the next op batch edits against).
           const tables = (result.tables ?? []) as Array<{ index: number; rows: number; cols: number }>
-          if (t.name === 'docx_edit' && tables.length > 0) {
+          if (format === 'docx' && tables.length > 0) {
             parts.push(`表格:\n${tables.map((tb) => `表 ${tb.index}：${tb.rows} 行 × ${tb.cols} 列`).join('\n')}`)
           }
           const outline = (result.outline ?? []) as Array<Record<string, unknown>>
           if (outline.length > 0) {
-            const isDocx = t.name === 'docx_edit'
-            const isPptx = t.name === 'pptx_edit'
+            const isDocx = format === 'docx'
+            const isPptx = format === 'pptx'
             const lines = outline.map((o) =>
               isDocx
                 ? `[${o.index}] ${o.style ?? '-'}: ${String(o.text ?? '').slice(0, 80)}`

@@ -60,11 +60,11 @@ export function formatOfficeReadResult(result: OfficeReadResult): string {
     }
     if (truncated) {
       parts.push(`…（超出预算被截断——用更小的 limit 或 range 重读）`)
-      parts.push(`下一步：重读 → offset=${d.paragraphs[0]?.index ?? 0} limit=<更小>；编辑 → 对照段落索引调 docx_edit。`)
+      parts.push(`下一步：重读 → offset=${d.paragraphs[0]?.index ?? 0} limit=<更小>；编辑 → 对照段落索引调 office_edit。`)
     } else if (d.nextOffset) {
-      parts.push(`下一步：继续读 → offset=${d.nextOffset}；编辑 → 对照段落索引调 docx_edit（表格行用 表/行 号）。`)
+      parts.push(`下一步：继续读 → offset=${d.nextOffset}；编辑 → 对照段落索引调 office_edit（表格行用 表/行 号）。`)
     } else {
-      parts.push(`下一步：已到文档末尾（共 ${d.paragraphCount ?? 0} 段）；编辑 → 对照段落索引调 docx_edit。`)
+      parts.push(`下一步：已到文档末尾（共 ${d.paragraphCount ?? 0} 段）；编辑 → 对照段落索引调 office_edit。`)
     }
   } else if (result.format === 'xlsx' && (d.cells || d.sheets)) {
     if (d.sheets && !d.cells) {
@@ -96,11 +96,11 @@ export function formatOfficeReadResult(result: OfficeReadResult): string {
       }
       if (truncated) {
         parts.push(`…（超出预算被截断——用更小的 limit 或 range 重读）`)
-        parts.push(`下一步：重读 → sheet="${d.sheet}" offset=${d.startRow ?? 1} limit=<更小>；编辑 → xlsx_edit 的单元格地址 = 行号 + 列字母。`)
+        parts.push(`下一步：重读 → sheet="${d.sheet}" offset=${d.startRow ?? 1} limit=<更小>；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母。`)
       } else if (d.nextOffset) {
-        parts.push(`下一步：继续读 → sheet="${d.sheet}" offset=${d.nextOffset}；编辑 → xlsx_edit 的单元格地址 = 行号 + 列字母（公式显示为 =式 → 结果，set_cell 重写表达式）。`)
+        parts.push(`下一步：继续读 → sheet="${d.sheet}" offset=${d.nextOffset}；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母（公式显示为 =式 → 结果，set_cell 重写表达式）。`)
       } else {
-        parts.push(`下一步：已到「${d.sheet}」末尾；编辑 → xlsx_edit 的单元格地址 = 行号 + 列字母。`)
+        parts.push(`下一步：已到「${d.sheet}」末尾；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母。`)
       }
     }
   } else if (result.format === 'pptx' && d.slides) {
@@ -126,9 +126,9 @@ export function formatOfficeReadResult(result: OfficeReadResult): string {
     }
     if (truncated) {
       parts.push(`…（超出预算被截断——用 slide=N 逐页读）`)
-      parts.push(`下一步：读单页 → slide=N；编辑 → 对照 shape id 调 pptx_edit。`)
+      parts.push(`下一步：读单页 → slide=N；编辑 → 对照 shape id 调 office_edit。`)
     } else {
-      parts.push(`下一步：编辑 → 对照 shape id 调 pptx_edit（set_shape_text 整形状重写，replace_text 跨形状查替换）。`)
+      parts.push(`下一步：编辑 → 对照 shape id 调 office_edit 的 pptx 算子（set_shape_text 整形状重写，replace_text 跨形状查替换）。`)
     }
   }
 

@@ -216,7 +216,7 @@ describe('svcExportDocument fontSize contract (docx/pdf generation only)', () =>
     const before = vi.mocked(docxToPdfBuffer).mock.calls.length
     const result = await svcExportDocument({ format: 'pdf', sourcePath: src, fontSize: 14, filePath: join(dir, 'out.pdf') })
     expect(result.success).toBe(false)
-    expect(result.error).toContain('docx_edit')
+    expect(result.error).toContain('office_edit')
     expect(vi.mocked(docxToPdfBuffer).mock.calls.length).toBe(before)
   })
 })

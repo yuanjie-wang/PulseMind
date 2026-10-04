@@ -1,4 +1,4 @@
-// ── pptx_edit service (PLAN-pptx-editing, svcEditDocx's slide twin) ── The
+// ── office_edit · pptx service (PLAN-pptx-editing, svcEditDocx's slide twin) ── The
 //  same security sequence: sandbox guard → writable path → per-path FIFO lock
 //  → first-edit backup → workspace snapshot → engine (in memory, gates on) →
 //  atomic tmp+rename. The engine already refuses .ppt/encrypted/wrong-

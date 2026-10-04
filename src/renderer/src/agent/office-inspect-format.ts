@@ -18,7 +18,7 @@ export const INSPECT_RESULT_CHAR_BUDGET = 6000
 /** Token ceiling passed to addToolResult for inspect results (see above). */
 export const INSPECT_RESULT_TOKEN_BUDGET = 8000
 
-const NEXT_STEP = '下一步：读全文或继续翻页 → read（自动转 markdown）；要编辑 → 对照上面的清单调 docx_edit / xlsx_edit / pptx_edit。'
+const NEXT_STEP = '下一步：读全文或继续翻页 → read（自动转 markdown）；要精确定位（段落/单元格/shape）→ office_read；要编辑 → 对照上面的清单调 office_edit。'
 
 /** Escape one cell for a markdown table row (pipes and line breaks break it). */
 function escCell(s: string): string {
@@ -104,7 +104,7 @@ export function formatInspectResult(result: OfficeInspectResult): string {
         }
       }
     }
-    if (d.charts) push(`图表: ${d.charts} 个（含图表的工作簿，部分 xlsx_edit 算子会被拒绝）`)
+    if (d.charts) push(`图表: ${d.charts} 个（含图表的工作簿，office_edit 的部分 xlsx 算子会被拒绝）`)
   } else if (result.format === 'pptx' && d.slides?.length) {
     if (push('幻灯片:')) {
       for (const s of d.slides) {

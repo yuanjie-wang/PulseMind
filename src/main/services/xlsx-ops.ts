@@ -1,4 +1,4 @@
-// ── xlsx_edit service (PLAN-office-editing M5, T15) ──
+// ── office_edit · xlsx service (PLAN-office-editing M5, T15) ──
 // Same security sequence as docx-ops; the engine is the exceljs wrapper with
 // precheck + read-back (L6). Backups share the docx backup directory (they
 // are "office originals", the same restore story).

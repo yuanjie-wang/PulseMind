@@ -82,13 +82,13 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
     // so there is no size to set there either (say so, don't drop it silently).
     if (input.fontSize !== undefined) {
       if (input.format !== 'docx' && input.format !== 'pdf') {
-        return { success: false, error: `fontSize 仅支持 format docx / pdf，收到「${input.format}」——xlsx 用 set_style、pptx 用 deck 或 pptx_edit 调字号` }
+        return { success: false, error: `fontSize 仅支持 format docx / pdf，收到「${input.format}」——xlsx 用 set_style、pptx 用 deck 或 office_edit 的 format_text 调字号` }
       }
       if (typeof input.fontSize !== 'number' || !Number.isFinite(input.fontSize) || input.fontSize < 6 || input.fontSize > 72) {
         return { success: false, error: `fontSize 需是 6–72 的数字（磅，可带 0.5，如 10.5=五号、12=小四、16=三号），收到「${input.fontSize}」` }
       }
       if (hasSource && extname(String(input.sourcePath)).toLowerCase() === '.docx') {
-        return { success: false, error: 'format pdf 的 sourcePath 是既有 .docx 的转换，不重新生成，字号改不了——先用 docx_edit 的 format_text 调字号，再转 PDF' }
+        return { success: false, error: 'format pdf 的 sourcePath 是既有 .docx 的转换，不重新生成，字号改不了——先用 office_edit 的 format_text（docx）调字号，再转 PDF' }
       }
     }
     if (hasContent && (input.content as string).length > CONTENT_LIMIT) {

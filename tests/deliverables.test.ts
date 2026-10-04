@@ -31,11 +31,13 @@ describe('FILE_WRITER_TOOLS', () => {
   // export_document joins here as one line (PLAN-office-export §五).
   it('is exactly the path-naming writer tools, exec excluded', () => {
     // export_document joined when PLAN-office-export landed (its tool result
-    // names the path it wrote, just like write/edit do); pptx_edit likewise
-    // (PLAN-pptx-editing).
-    expect([...FILE_WRITER_TOOLS].sort()).toEqual(['docx_edit', 'edit', 'export_document', 'pptx_edit', 'write', 'xlsx_edit'])
+    // names the path it wrote, just like write/edit do); office_edit joined
+    // as the three retired edit tools merged (2026-10-04) — the old names
+    // STAY, persisted transcripts carry them forever and hydration counts on.
+    expect([...FILE_WRITER_TOOLS].sort()).toEqual(['docx_edit', 'edit', 'export_document', 'office_edit', 'pptx_edit', 'write', 'xlsx_edit'])
     expect(FILE_WRITER_TOOLS.has('exec')).toBe(false)
     expect(FILE_WRITER_TOOLS.has('read')).toBe(false)
+    expect(FILE_WRITER_TOOLS.has('office_read')).toBe(false) // a read is not a deliverable
   })
 })
 
@@ -57,9 +59,10 @@ describe('verbCounts', () => {
         { tool: 'edit', at: 't', ok: true },
         { tool: 'docx_edit', at: 't', ok: true },
         { tool: 'xlsx_edit', at: 't', ok: true },
-        { tool: 'pptx_edit', at: 't', ok: true }
+        { tool: 'pptx_edit', at: 't', ok: true },
+        { tool: 'office_edit', at: 't', ok: true }
       ])
-    ).toEqual([{ verb: 'edit', count: 4 }])
+    ).toEqual([{ verb: 'edit', count: 5 }])
     expect(verbCounts([{ tool: 'write', at: 't', ok: true }, { tool: 'edit', at: 't', ok: true }])).toEqual([
       { verb: 'create', count: 1 },
       { verb: 'edit', count: 1 }

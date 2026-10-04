@@ -108,7 +108,7 @@ export interface OfficeReadResult {
     cells?: string[][]
     columnCount?: number
     /** pptx — shapes with FULL text (paragraphs joined by \n), presentation
-     *  order (sldIdLst — the same order pptx_edit's `slide` counts). */
+     *  order (sldIdLst — the same order the edit tool's `slide` counts). */
     slides?: Array<{ index: number; shapes: Array<{ shapeId: string; name: string; phType?: string; text: string }> }>
     error?: string
   }
