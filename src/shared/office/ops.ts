@@ -62,6 +62,58 @@ export interface XlsxEditOutcome {
   warnings: string[]
 }
 
+// ── office_read (PLAN-office-read) ── paged, structure-faithful reads in the
+// file's own address space. One input shape, three format views: the fields a
+// format ignores stay absent. Coordinates (paragraph index / cell address /
+// shape id) are the SAME ones the edit tools consume — that consistency is
+// the tool's reason to exist; `read` (markitdown) serves the human view.
+
+export interface OfficeReadInput {
+  filePath: string
+  /** docx: 1-based first paragraph of the page; xlsx: 1-based first row. */
+  offset?: number
+  /** docx: paragraphs per page; xlsx: rows per page. */
+  limit?: number
+  /** docx only: also return body-level tables with per-cell text. */
+  tables?: boolean
+  /** xlsx only: sheet name; absent → the sheet inventory is returned. */
+  sheet?: string
+  /** xlsx only: explicit range "A1:J50" or single cell "B3" (overrides
+   *  offset/limit). */
+  range?: string
+  /** pptx only: 1-based slide (presentation order); absent → every slide. */
+  slide?: number
+}
+
+export interface OfficeReadResult {
+  success: boolean
+  format: 'docx' | 'xlsx' | 'pptx' | 'unknown'
+  summary: string
+  details: {
+    /** docx — FULL paragraph text in the replace/format match space (gap
+     *  chars rendered as spaces), paged. `nextOffset` is present when more
+     *  paragraphs remain. */
+    paragraphs?: Array<{ index: number; style: string | null; text: string }>
+    paragraphCount?: number
+    nextOffset?: number
+    /** docx — body-level tables; `cells` (present when the call asked for
+     *  tables) holds per-cell text, row-major. */
+    tables?: Array<{ index: number; rows: number; cols: number; cells?: string[][] }>
+    /** xlsx — the inventory returned when `sheet` was omitted. */
+    sheets?: Array<{ name: string; rowCount: number; columnCount: number }>
+    /** xlsx — a cell window: the sheet it came from, the 1-based first row,
+     *  the rendered cells, and the column span actually read. */
+    sheet?: string
+    startRow?: number
+    cells?: string[][]
+    columnCount?: number
+    /** pptx — shapes with FULL text (paragraphs joined by \n), presentation
+     *  order (sldIdLst — the same order pptx_edit's `slide` counts). */
+    slides?: Array<{ index: number; shapes: Array<{ shapeId: string; name: string; phType?: string; text: string }> }>
+    error?: string
+  }
+}
+
 // ── office_inspect outcome (PLAN-office-editing §P1) ──
 
 export interface OfficeInspectResult {

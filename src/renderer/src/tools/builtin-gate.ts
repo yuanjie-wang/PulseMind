@@ -21,7 +21,7 @@ export const BUILTIN_CATEGORY_SUMMARIES: Record<string, string> = {
   // `file` is the one MIXED category: read/write/edit/list_dir/search/find stay
   // always in the tool list; this summary describes only the gated office subset
   // that activating `builtin:file` actually surfaces.
-  file: 'Office documents: inspect/edit .docx/.xlsx/.pptx in place, export deliverables (.docx/.xlsx/.csv/.pptx/.pdf)',
+  file: 'Office documents: read/inspect/edit .docx/.xlsx/.pptx in place, export deliverables (.docx/.xlsx/.csv/.pptx/.pdf)',
   browser: 'Real browser automation: open URLs, AI/ARIA snapshots, click/type via locators, screenshots — one JS-code tool (agent.browsers)',
 }
 

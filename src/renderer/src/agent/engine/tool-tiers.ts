@@ -16,7 +16,7 @@ import type { SandboxToolTier } from '../../../../shared/sandbox/policy'
 import { PAGE_READ_TOOL_NAMES, isPageTool } from '../../../../shared/agent-protocol/page-tools'
 
 /** Built-in tools that only look — the file-read family. */
-export const READ_TIER_TOOLS = new Set(['read', 'list_dir', 'find', 'search', 'git_status', 'git_diff', 'git_log', 'office_inspect'])
+export const READ_TIER_TOOLS = new Set(['read', 'list_dir', 'find', 'search', 'git_status', 'git_diff', 'git_log', 'office_inspect', 'office_read'])
 /** Built-in tools that change the workspace on disk. */
 export const WRITE_TIER_TOOLS = new Set(['write', 'edit', 'git_commit', 'git_restore', 'docx_edit', 'xlsx_edit', 'pptx_edit', 'export_document'])
 

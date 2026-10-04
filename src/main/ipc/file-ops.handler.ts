@@ -23,6 +23,7 @@ import { svcEditDocx } from '../services/docx-ops'
 import { svcEditPptx } from '../services/pptx-ops'
 import { svcEditXlsx } from '../services/xlsx-ops'
 import { svcInspectOffice } from '../services/office-inspect'
+import { svcReadOffice } from '../services/office-read'
 import { registerPreviewNonce } from '../preview/nonce-registry'
 import type {
   EditFileInput,
@@ -94,5 +95,6 @@ export function registerFileOpsHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_PPTX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditPptx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
   ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_XLSX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditXlsx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
   ipcMain.handle(IPC_CHANNELS.UTIL_INSPECT_OFFICE, withRawResponse(async (input: { filePath: string }) => svcInspectOffice(input)))
+  ipcMain.handle(IPC_CHANNELS.UTIL_READ_OFFICE, withRawResponse(async (input: import('../../shared/office/ops').OfficeReadInput) => svcReadOffice(input)))
   ipcMain.handle(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, withRawResponse(async (input: import('../services/office-export').ExportDocumentInput) => svcExportDocument(input)))
 }

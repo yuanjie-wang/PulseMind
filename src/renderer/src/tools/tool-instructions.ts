@@ -315,6 +315,23 @@ Edit-time triage for Office files (.docx/.xlsx/.pptx) — a structural inventory
 Previews may be truncated on large files — the result says so and points at \`read\`; do not re-inspect to "get the rest".
 `,
 
+  office_read: `## office_read
+
+Paged, structure-faithful reads in the file's OWN address space (.docx/.xlsx/.pptx) — the read whose coordinates are the edit tools' coordinates.
+
+### When to use (vs the other readers)
+- Human-readable summary / answering from the file → \`read\` (markdown conversion).
+- One-shot structural inventory (what's inside, sizes, budget) → \`office_inspect\`.
+- Targeting an edit — exact paragraph text for replace_text, cell values beyond the head preview, a shape's full text, table cell contents → \`office_read\`. Its paragraph indexes / cell addresses / shape ids are what docx_edit/xlsx_edit/pptx_edit consume.
+
+### Per format
+- **docx**: \`offset\`/\`limit\` page paragraphs (default 40, max 200) with FULL text + style; \`tables: true\` adds cell text as "R1: c0 | c1 | ...". Gap chars (tab/line break) render as spaces — a find string copied from here matches.
+- **xlsx**: omit \`sheet\` → sheet inventory; then \`sheet="名称"\` + \`range="A1:J50"\` (or \`offset\`/\`limit\` rows). Formula cells render \`expression → result\`; the address of any cell = row number + column letter of the table header.
+- **pptx**: \`slide=N\` for one page, omit for all; shapes carry shapeId (+ placeholder type) and full text — set_shape_text takes one paragraph per line.
+
+The result ends with the next offset/slide/sheet; page through instead of re-reading the whole file. Read-only — never writes.
+`,
+
   knowledge_read: `## knowledge_read
 
 Read a knowledge base file or compiled wiki page — the read side of \`knowledge_search\`.

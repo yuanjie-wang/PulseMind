@@ -159,6 +159,7 @@ export const IPC_CHANNELS = {
   UTIL_EDIT_PPTX: 'util:edit-pptx',
   UTIL_EDIT_XLSX: 'util:edit-xlsx',
   UTIL_INSPECT_OFFICE: 'util:inspect-office',
+  UTIL_READ_OFFICE: 'util:read-office',
   UTIL_EXPORT_DOCUMENT: 'util:export-document',
   UTIL_SAVE_BASE64_IMAGE: 'util:save-base64-image',
   UTIL_COPY_FILE_TO_TMP: 'util:copy-file-to-tmp',

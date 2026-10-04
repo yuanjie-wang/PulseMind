@@ -726,6 +726,29 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     builtIn: true,
     availability: 'gated',
   },
+  // ── office_read (PLAN-office-read) ───────────────────────────────
+  {
+    name: 'office_read',
+    description: "Read .docx/.xlsx/.pptx content in the file's own address space: docx paragraphs with FULL text + style + index (and table cell text), xlsx cell values by sheet/range (formulas shown as =expression → result), pptx shapes with shape ids and full text. The read to use before editing — `read` gives reflowed markdown for humans; office_read gives the exact indices/coordinates that docx_edit/xlsx_edit/pptx_edit consume. Paged; the result states the next offset.",
+    category: 'file',
+    triggers: ['read docx', 'read xlsx', 'read pptx', '读取文档', '读表格', '读取 office'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Path to the .docx/.xlsx/.pptx file (absolute or workspace-relative).' },
+        offset: { type: 'number', description: 'docx: 1-based first paragraph of the page; xlsx: 1-based first row. The previous result states the next offset.' },
+        limit: { type: 'number', description: 'docx: paragraphs per page (default 40, max 200); xlsx: rows per page (default 50, max 500).' },
+        tables: { type: 'boolean', description: 'docx only: also return body-level tables with per-cell text (rows "R1: c0 | c1 | ...").' },
+        sheet: { type: 'string', description: 'xlsx only: sheet name. Omit it to get the sheet inventory (names + sizes) first.' },
+        range: { type: 'string', description: 'xlsx only: explicit range "A1:J50" or single cell "B3" (overrides offset/limit).' },
+        slide: { type: 'number', description: 'pptx only: 1-based slide in presentation order; omit to read every slide.' },
+      },
+      required: ['file_path'],
+    },
+    instructions: toolInstructions.office_read,
+    builtIn: true,
+    availability: 'gated',
+  },
   // ── export_document (PLAN-office-export) ───────────────────────────
   {
     name: 'export_document',

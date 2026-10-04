@@ -38,10 +38,39 @@ describe('office_inspect — registration ⊆ dispatch (H10)', () => {
   })
 
   it('an approval release can never reach the shell default', () => {
-    expect(flow).toMatch(/if \(targetBlock\.name === 'office_inspect'\) \{\s*\n\s*await this\.engine\.toolExecutor\.execWorkspaceTool\(targetBlock\)/)
+    // The release guard names BOTH read-tier workspace tools in one branch —
+    // a member added without updating it would strand on the shell default.
+    expect(flow).toMatch(/if \(targetBlock\.name === 'office_inspect' \|\| targetBlock\.name === 'office_read'\) \{\s*\n\s*await this\.engine\.toolExecutor\.execWorkspaceTool\(targetBlock\)/)
   })
 
   it('the workspace executor keeps its inspect case (the implementation)', () => {
     expect(executors).toMatch(/else if \(t\.name === 'office_inspect'\) \{/)
+  })
+})
+
+describe('office_read — same three dispatch surfaces (PLAN-office-read)', () => {
+  it('non-vacuity: the scans read real sources', () => {
+    expect(builtins).toContain("name: 'office_read'")
+  })
+
+  it('office_read sits on the read tier next to office_inspect', () => {
+    expect(tiers).toMatch(/READ_TIER_TOOLS = new Set\(\[[^\]]*'office_read'[^\]]*\]\)/)
+  })
+
+  it('the read-tier executor dispatches it to the workspace executor', () => {
+    expect(executors).toMatch(/execReadOnlyTools[\s\S]*?if \(t\.name === 'office_read'\) \{\s*\n\s*await this\.execWorkspaceTool\(t\)/)
+  })
+
+  it('shares the release guard above (never the shell default)', () => {
+    expect(flow).toMatch(/if \(targetBlock\.name === 'office_inspect' \|\| targetBlock\.name === 'office_read'\) \{\s*\n\s*await this\.engine\.toolExecutor\.execWorkspaceTool\(targetBlock\)/)
+  })
+
+  it('the workspace executor keeps its read case (the implementation)', () => {
+    expect(executors).toMatch(/else if \(t\.name === 'office_read'\) \{/)
+  })
+
+  it('it is a read, not a writer: absent from the deliverables derivation', () => {
+    const deliverables = read('src/renderer/src/components/chat/deliverables.ts')
+    expect(deliverables).not.toContain("'office_read'")
   })
 })

@@ -15,17 +15,17 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 
 交付真实的 Office 文件（Word / Excel / PPT / PDF）：从零生成、修改已有文件、按模板填充。
 
-**本技能不重复算子清单。** \`export_document\` / \`docx_edit\` / \`xlsx_edit\` / \`pptx_edit\` / \`office_inspect\` 各自的工具手册随每次请求下发，算子、参数、拒绝条件是那里的唯一权威。本技能只补手册没有的东西：**生成与编辑之间怎么选**、跨两者的配方、交付前的自检。
+**本技能不重复算子清单。** \`export_document\` / \`docx_edit\` / \`xlsx_edit\` / \`pptx_edit\` / \`office_inspect\` / \`office_read\` 各自的工具手册随每次请求下发，算子、参数、拒绝条件是那里的唯一权威。本技能只补手册没有的东西：**生成与编辑之间怎么选**、跨两者的配方、交付前的自检。
 
 ### 1. 先判定任务形状
 
 用户诉求落在哪一格，决定走哪条路线：
 
-- **改已有文件**（附件或工作区里的 .docx/.xlsx/.pptx）→ **编辑路线**：\`office_inspect\` 拿清单与文本预算 → \`docx_edit\` / \`xlsx_edit\` / \`pptx_edit\`。字节保真，未触及的部件逐字节不变。
+- **改已有文件**（附件或工作区里的 .docx/.xlsx/.pptx）→ **编辑路线**：\`office_inspect\` 拿清单与文本预算 → 需要精确原文 / 单元格值 / shape 全文时 \`office_read\` 分页精读 → \`docx_edit\` / \`xlsx_edit\` / \`pptx_edit\`。字节保真，未触及的部件逐字节不变。
 - **从零做一个**（"给我一份""整理成 Excel"）→ **生成路线**：\`export_document\`。PPT 一律给结构化 \`deck\`（版式化生成，详见 \`references/pptx.md\`），纯文字 markdown 只当兜底。
 - **用户给了模板要套**（公司 PPT 模板、合同模板）→ **模板继承**：先 \`office_inspect\` 看结构，再用编辑工具逐形状 / 逐段填入内容。**不要**用 \`export_document\` 重建——那会丢掉模板的母版与样式，而模板的价值全在那里。
 - **格式转换**（docx→PDF、CSV→xlsx）→ \`export_document\`：\`sourcePath\` 指已有文件，或 \`content\` 给内容。
-- **只是要看内容** → 不要动用这些工具，\`read\` 会自动把 Office 文件转成 markdown。
+- **只是要看内容 / 做总结** → \`read\`（自动转 markdown）。要**编辑定位**——精确段落原文、10×10 头部预览之外的单元格值、某形状的全文与 shape id——走 \`office_read\`：它给的是编辑工具消费的坐标（段落索引 / 单元格地址 / shape id），\`read\` 的 markdown 是重排过的，抄进 replace_text 会错位。
 
 两条路线的结果完全不同（一个保留原格式，一个重新排版）。判断不清时问一句："你是要改这份，还是要一份新的？"
 

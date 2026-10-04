@@ -25,6 +25,7 @@ import type { SkillDefinition } from '../skills/types'
 import { execPickTool as pickToolImpl } from './executors/pick-tool'
 import { execSpawnAgent as spawnAgentImpl } from './executors/spawn-tool'
 import { formatInspectResult, INSPECT_RESULT_TOKEN_BUDGET } from './office-inspect-format'
+import { formatOfficeReadResult } from './office-read-format'
 
 /** 经验信封的位置段（PLAN-experience-scripts 1.4）：pick_skill 之前只回
  *  SKILL.md 原文，模型拿到正文也到不了盘上的脚本。与 formatSelectedSkill
@@ -279,6 +280,11 @@ export class ToolExecutor implements ToolExecContext {
           await this.execWorkspaceTool(t)
           return
         }
+        // ── office_read: the edit tools' read sibling, same tier ──
+        if (t.name === 'office_read') {
+          await this.execWorkspaceTool(t)
+          return
+        }
         // ── `read` tool: metadata header + content ────────────────────
         if (t.name === 'read') {
           const filePath = String(t.input?.file_path || '')
@@ -477,6 +483,34 @@ export class ToolExecutor implements ToolExecContext {
           // self-caps under the token budget passed here, so its next-step
           // envelope survives as the true last bytes.
           this.addToolResult(t.id, formatInspectResult(result), false, undefined, INSPECT_RESULT_TOKEN_BUDGET)
+          t.exitCode = 0
+        } else {
+          const msg = `Error: ${result.error || result.summary}`
+          t.output = msg
+          this.addToolResult(t.id, msg, true)
+          t.exitCode = 1
+        }
+      } else if (t.name === 'office_read') {
+        let fp = String(t.input.file_path || '')
+        if (!fp) throw new Error('file_path is required')
+        fp = this.resolveWorkspacePath(fp)
+        t.output = `Reading ${fp}...`; this.notify()
+        const result = await getHost().readOffice({
+          filePath: fp,
+          offset: t.input.offset != null ? Number(t.input.offset) : undefined,
+          limit: t.input.limit != null ? Number(t.input.limit) : undefined,
+          tables: t.input.tables === true,
+          sheet: typeof t.input.sheet === 'string' && t.input.sheet !== '' ? t.input.sheet : undefined,
+          range: typeof t.input.range === 'string' && t.input.range !== '' ? t.input.range : undefined,
+          slide: t.input.slide != null ? Number(t.input.slide) : undefined,
+        })
+        if (result.success) {
+          t.output = result.summary
+          // The formatted read IS the answer (the inspect lesson, 2026-09-28):
+          // the executor never ships the summary alone. formatOfficeReadResult
+          // self-caps under the budget passed here, so the next-step envelope
+          // (offset/slide/sheet) survives as the true last bytes.
+          this.addToolResult(t.id, formatOfficeReadResult(result), false, undefined, MAX_READ_RESULT_TOKENS)
           t.exitCode = 0
         } else {
           const msg = `Error: ${result.error || result.summary}`

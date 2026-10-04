@@ -287,6 +287,7 @@ const zh = {
     git_restore: '还原改动',
     docx_edit: '编辑 Word 文档',
     xlsx_edit: '编辑 Excel 表格',
+    office_read: '读取 Office 文档',
     export_document: '导出文档',
     page_get_content: '阅读页面',
     page_scroll: '滚动页面',

@@ -22,8 +22,9 @@ const MAX_HEAD_COLS = 10
 /** Raw display text of one exceljs cell — formula cells report their cached
  *  result (that is what a reader of the file sees; a result that is itself an
  *  error object renders as the #CODE), rich text joins its runs, hyperlinks
- *  collapse to their label, dates render as plain days. */
-function xlsxCellText(cell: { value: unknown }): string {
+ *  collapse to their label, dates render as plain days. Exported for
+ *  office-read, whose cell windows render the same value space. */
+export function xlsxCellText(cell: { value: unknown }): string {
   const v = cell.value
   if (v === null || v === undefined) return ''
   if (typeof v !== 'object') return String(v)
