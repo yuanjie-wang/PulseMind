@@ -320,6 +320,36 @@ describe('wiring — the scans that keep the channel honest', () => {
     expect(read('src/renderer/src/agent/executors/domain-tools.ts')).toContain("t.name !== 'context_compact'")
   })
 
+  it('the refusal envelope still receipts freed/skipped picks (review 2026-10-04 中1)', async () => {
+    // Combined call (free_results + notes) whose main action guard ② refuses:
+    // the mandate is written BEFORE the guards run (free_results is exempt),
+    // so the failure outcome carries freedResults/skippedIds — and the envelope
+    // the model reads must carry them too, or the picks that DID take effect
+    // land with no receipt.
+    const engine = makeEngine({ cycles: 8 })
+    engine.toolCompactUsedThisTurn = true
+    const added: Array<{ content: string; isError: boolean }> = []
+    const { execContextCompactTool } = await import('../src/renderer/src/agent/executors/domain-tools')
+    await execContextCompactTool(
+      {
+        compactContext: (call) => engine.compactForTool(call),
+        addToolResult: (_id: string, content: string, isError: boolean) => { added.push({ content, isError }) },
+      } as never,
+      { name: 'context_compact', id: 'call_receipt', input: { free_results: ['tu_0', 'tu_7'], notes: '交接笔记' } } as never,
+    )
+    expect(added).toHaveLength(1)
+    expect(added[0]!.isError).toBe(true) // the refusal still marks the block — the main action did not run
+    const text = added[0]!.content
+    // The refusal text comes first…
+    expect(text.indexOf('本回合已压缩过')).toBeGreaterThan(-1)
+    // …followed by the receipt: tu_0 was mandated (tu_7 sits inside the
+    // last-4 protection window), and both facts are on the envelope.
+    expect(text).toContain('已压缩 1 条点名结果为占位符')
+    expect(text.indexOf('本回合已压缩过')).toBeLessThan(text.indexOf('已压缩 1 条点名结果为占位符'))
+    expect(text).toContain('跳过 1 条点名')
+    expect(text).toContain('tu_7（最近 4 轮保护内）')
+  })
+
   it('both isMemoryTool sites list context_compact — the trusted-group exemption is name-based', () => {
     const flow = read('src/renderer/src/agent/engine/execution-flow.ts')
     const sites = flow.match(/isMemoryTool = \(name: string\): boolean =>/g) ?? []

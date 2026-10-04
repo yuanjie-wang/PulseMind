@@ -12,26 +12,52 @@ import { UI_PREVIEW_MAX, type ToolExecContext, type CompactToolOutcome } from '.
 /** memory_search: tool block .output preview. */
 const MEMORY_PREVIEW_MAX = 2000
 
+/** freed/skipped 点名回执段——成功与拒绝信封共用。free_results 豁免主动作的
+ *  全部守卫，mandate 在拒绝返回前已写入（下一请求即压缩）：拒绝信封若丢回执，
+ *  模型点名的压缩就「生效了却没有凭据」（review 2026-10-04 中1）。 */
+function formatFreeResultsReceipt(o: CompactToolOutcome): string[] {
+  const lines: string[] = []
+  if (o.freedResults?.length) {
+    lines.push(`已压缩 ${o.freedResults.length} 条点名结果为占位符（下一请求生效），原文经 tool_result_search 取回。`)
+  }
+  if (o.skippedIds?.length) {
+    const label: Record<string, string> = {
+      tier3_protected: '受保护类别，永不压缩',
+      recent_protected: '最近 4 轮保护内',
+      unknown_id: '查无此 id',
+    }
+    const rows = o.skippedIds.map((s) => `- ${s.id}（${label[s.reason] ?? s.reason}）`)
+    lines.push(`跳过 ${o.skippedIds.length} 条点名：\n${rows.join('\n')}`)
+  }
+  return lines
+}
+
 /** context_compact 结果信封（PLAN-context-compact-tool §3）：最后字节点名
  *  下一步——模型靠工具结果的最后字节决定下一个动作，压缩成功的收尾必须
- *  明确「继续任务，不要收尾」。 */
+ *  明确「继续任务，不要收尾」。拒绝路径同样回执已生效的 free_results 点名。 */
 function formatCompactOutcome(o: CompactToolOutcome, hadNotes: boolean): string {
   if (!o.ok) {
+    let refusal: string
     switch (o.reason) {
       case 'request_in_flight':
-        return '当前有请求在飞，无法压缩。等当前回合的这一轮结束后再调用。'
+        refusal = '当前有请求在飞，无法压缩。等当前回合的这一轮结束后再调用。'
+        break
       case 'already_this_turn':
-        return '本回合已压缩过（每回合至多一次主动压缩）。继续当前任务。'
+        refusal = '本回合已压缩过（每回合至多一次主动压缩）。继续当前任务。'
+        break
       case 'not_worthwhile': {
         const pct = o.window ? Math.round(((o.tokens ?? 0) / o.window) * 100) : 0
         const k = (n?: number) => `${Math.round((n ?? 0) / 1024)}K`
-        return `当前上下文约占窗口的 ${pct}%（~${k(o.tokens)} / ${k(o.window)} tokens），无需压缩。请在真正的阶段边界（探索完成/话题切换）再调用。`
+        refusal = `当前上下文约占窗口的 ${pct}%（~${k(o.tokens)} / ${k(o.window)} tokens），无需压缩。请在真正的阶段边界（探索完成/话题切换）再调用。`
+        break
       }
       case 'nothing_to_drop':
-        return '没有可归档的工具循环——剩余重量是文本消息，只有自动层在窗口紧张时才会裁剪，你无法强制。'
+        refusal = '没有可归档的工具循环——剩余重量是文本消息，只有自动层在窗口紧张时才会裁剪，你无法强制。'
+        break
       default:
-        return '压缩未执行。'
+        refusal = '压缩未执行。'
     }
+    return [refusal, ...formatFreeResultsReceipt(o)].join('\n')
   }
   const lines: string[] = []
   if (o.droppedMessages != null) {
@@ -45,18 +71,7 @@ function formatCompactOutcome(o: CompactToolOutcome, hadNotes: boolean): string 
         : `历史摘要未生成（${hadNotes && o.notesKept ? '交接笔记已保留' : '纯截断'}）；被归档原文仍可用 tool_result_search 按 tool_result_id 取回。`
     )
   }
-  if (o.freedResults?.length) {
-    lines.push(`已压缩 ${o.freedResults.length} 条点名结果为占位符（下一请求生效），原文经 tool_result_search 取回。`)
-  }
-  if (o.skippedIds?.length) {
-    const label: Record<string, string> = {
-      tier3_protected: '受保护类别，永不压缩',
-      recent_protected: '最近 4 轮保护内',
-      unknown_id: '查无此 id',
-    }
-    const rows = o.skippedIds.map((s) => `- ${s.id}（${label[s.reason] ?? s.reason}）`)
-    lines.push(`跳过 ${o.skippedIds.length} 条点名：\n${rows.join('\n')}`)
-  }
+  lines.push(...formatFreeResultsReceipt(o))
   lines.push('继续当前任务——不要因压缩收尾，不要重新探索提醒中已列出的文件。')
   return lines.join('\n')
 }
