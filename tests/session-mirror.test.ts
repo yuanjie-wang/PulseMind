@@ -124,6 +124,36 @@ describe('applySessionEvent → tool_status', () => {
   })
 })
 
+describe('applySessionEvent → plan_update', () => {
+  it('folds the full plan object, the report fields included (B3 表达面)', () => {
+    // recordNodeReport 落的 reportPath/declaredStatus 是报告表达面的全部数据
+    // 源：plan_update 携带的就是 Plan 本体（payloads 的 type alias，无投影）。
+    // 折叠若做字段挑选就会在这里丢字段——画布的声明徽标与「查看报告」永远
+    // 无米下锅，且没有任何报错。
+    const state = freshSessionState()
+    applySessionEvent(state, {
+      type: 'plan_update',
+      plan: {
+        id: 'plan_x', objective: '出一份竞品报告', completed: false, version: 2, mode: 'delegated',
+        nodes: [{
+          id: 'n1', description: '调研并产出报告', status: 'completed', dependsOn: [],
+          reportPath: '/ws/.pulsemind/plans/plan_x/n1-report.md',
+          declaredStatus: 'partial',
+        }],
+      },
+    } as never)
+    expect(state.plan?.nodes[0]).toMatchObject({
+      reportPath: '/ws/.pulsemind/plans/plan_x/n1-report.md',
+      declaredStatus: 'partial',
+    })
+
+    // 快照种子同路径：重连（renderer 重载/会话重开）后报告字段仍在。
+    const reattached = freshSessionState()
+    seedSessionState(reattached, { messages: [], status: { status: 'idle' }, streamingBlocks: [], plan: state.plan })
+    expect(reattached.plan?.nodes[0]?.reportPath).toBe('/ws/.pulsemind/plans/plan_x/n1-report.md')
+  })
+})
+
 describe('status folding — the reason rides with the status word', () => {
   it('carries the error text the wire sent', () => {
     // The regression this pins: the fold kept only `status`, so every client fell

@@ -87,6 +87,8 @@ interface ChatViewProps {
   onOpenPlanNode?: (nodeId: string) => void
   /** Which plan nodes open something (cursor + tooltip affordance). */
   canOpenNode?: (nodeId: string) => boolean
+  /** Open a plan node's delivered report file (PLAN-plan-exchange 表达面). */
+  onOpenNodeReport?: (nodeId: string) => void
   /** spawn_agent card's 查看子代理会话 icon → open that sub-agent's session in
    *  the same view the DAG drill-in uses (`SubAgentSessionView`). The chat is
    *  the other entry point: a spawn with no plan node (a plain loop, or a single
@@ -174,6 +176,7 @@ function ChatView({
   onOpenSubAgent,
   onExtractRoutine,
   canOpenNode,
+  onOpenNodeReport,
 }: ChatViewProps): React.ReactElement {
   const uid = useId()
   const { t } = useTranslation()
@@ -898,6 +901,7 @@ function ChatView({
         onPlanJump={onPlanJump}
         onOpenPlanNode={onOpenPlanNode}
         canOpenNode={canOpenNode}
+        onOpenNodeReport={onOpenNodeReport}
         browserPane={browserPane}
         onBrowserAction={browserPaneBinding.action}
         onBrowserWidth={(w) => browserPaneBinding.pushWidth(w, browserPaneBinding.chatAreaWidth)}

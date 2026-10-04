@@ -363,6 +363,20 @@ export function planNodeExecutionLabel(node: PlanNode): string {
   }
 }
 
+/** The sub-agent's OWN declared outcome (PLAN-plan-exchange 准出) — one
+ *  vocabulary for every reader of it: formatUpstreamResults' handoff line and
+ *  the UI's declared-status chip must not drift apart, and 「声明状态可对照」
+ *  is only meaningful when both sides use the same words. */
+export const DECLARED_STATUS_LABEL: Record<NonNullable<PlanNode['declaredStatus']>, string> = {
+  success: '成功',
+  partial: '部分成功',
+  failed: '失败',
+}
+
+/** The declared label, or null when the node never filed a report. */
+export const planNodeDeclaredLabel = (node: PlanNode): string | null =>
+  (node.declaredStatus && DECLARED_STATUS_LABEL[node.declaredStatus]) || null
+
 // ── Migration (v1 linear → v2 DAG) ───────────────────────────────────────
 
 interface LegacyPlan {
@@ -509,7 +523,7 @@ export function formatUpstreamResults(plan: Plan | null, node: PlanNode): string
   for (const dep of deps) {
     const body = (dep.handoff ?? dep.summary ?? '').trim() || '(no recorded output — see its node session)'
     const report = dep.reportPath
-      ? `\nReport: ${dep.reportPath}${dep.declaredStatus ? `（声明状态: ${ { success: '成功', partial: '部分成功', failed: '失败' }[dep.declaredStatus] }）` : ''}`
+      ? `\nReport: ${dep.reportPath}${dep.declaredStatus ? `（声明状态: ${DECLARED_STATUS_LABEL[dep.declaredStatus]}）` : ''}`
       : ''
     let block = `### ${dep.id}: ${dep.description}\n${body}${report}`
     if (used + block.length + 2 > UPSTREAM_RESULTS_MAX) {

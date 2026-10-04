@@ -28,7 +28,7 @@ import ChatView from './components/layout/ChatView'
 import { useWorkbenchStore } from './stores/workbenchStore'
 import { SubAgentSessionView } from './components/subagent/SubAgentSessionView'
 import { resolvePlanNodeTarget } from './agent/plan-node-target'
-import { DRAFT_CONVERSATION_KEY } from './stores/previewPaneStore'
+import { DRAFT_CONVERSATION_KEY, usePreviewPaneStore } from './stores/previewPaneStore'
 import { InstallNotifier } from './components/chat/InstallNotifier'
 import ErrorBoundary from './components/ErrorBoundary'
 import { useChatController } from './hooks/useChatController'
@@ -44,6 +44,7 @@ import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
 import { usePendingProfileStore } from './stores/pendingProfileStore'
 import { conversationKeyOf } from '../../shared/conversation-key'
+import { resolvePreviewPath } from '../../shared/preview/file-kind'
 import { NotifyBridge } from './utils/notify'
 import { reportSilentFailure } from './utils/notify-core'
 import { installFileDropGuard } from './utils/file-drop-guard'
@@ -515,6 +516,12 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // conversation 的 agentStatus 就是它；继续执行离开 awaiting_continue 后这里
   // 自动恢复 live。
   const subAgentPaused = subAgentView !== null && agentStatus.status === 'awaiting_continue'
+  // The drilled-in plan node, read live off the plan: its report fields drive
+  // the drill-in header's 查看报告 entry (B3 前半), so a report that lands
+  // while the view is open appears without re-opening the view.
+  const subAgentPlanNode = subAgentView?.kind === 'plan'
+    ? plan?.nodes.find(n => n.id === subAgentView.nodeId)
+    : null
   // The docked workbench's own open state — the drill-in overlay must stop at
   // its left edge instead of covering it (user ruling 2026-09-25: 主对话打开了
   // 侧边窗口，进入子对话也要打开). Same key expression ChatView/WorkbenchPane
@@ -547,6 +554,16 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     }
     setPlanScrollToMsgId(target.msgId)
   }, [messages, plan])
+  /** 报告契约表达面（PLAN-plan-exchange B3 前半）：节点交付的报告在预览窗格
+   *  打开——与产物行 DeliverableRows.openRow 同一通道（previewPaneStore.
+   *  openFile），报告的行为与其他交付物完全一致；reportPath 由系统铸造，
+   *  resolvePreviewPath 只做 workspace 相对 → 绝对的一步。 */
+  const onOpenNodeReport = useCallback((nodeId: string) => {
+    const node = plan?.nodes.find(n => n.id === nodeId)
+    if (!node?.reportPath) return
+    const wsDir = activeConvKey ? getWorkspaceDir(activeConvKey) : undefined
+    usePreviewPaneStore.getState().openFile(activeConvKey ?? null, resolvePreviewPath(node.reportPath, wsDir ?? null))
+  }, [plan, activeConvKey, getWorkspaceDir])
   /** The spawn card's own entry into the same view. The card composes the title
    *  from the tool input it holds; liveness is read back off the card, above. */
   const onOpenSubAgent = useCallback((subConvId: string, title: string) => {
@@ -664,6 +681,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               hasApiKey={hasApiKey}
               contextLength={contextLength}
               onOpenPlanNode={onOpenPlanNode}
+              onOpenNodeReport={onOpenNodeReport}
               onOpenSubAgent={onOpenSubAgent}
               hideComposer={!!subAgentView}
               onExtractRoutine={extractRoutine}
@@ -721,6 +739,11 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
                     title={subAgentView.title}
                     live={subAgentLive}
                     paused={subAgentPaused}
+                    reportPath={subAgentPlanNode?.reportPath}
+                    declaredStatus={subAgentPlanNode?.declaredStatus}
+                    onOpenReport={() => {
+                      if (subAgentView.kind === 'plan') onOpenNodeReport(subAgentView.nodeId)
+                    }}
                     onBack={() => setSubAgentView(null)}
                   />
                 </div>

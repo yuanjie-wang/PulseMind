@@ -196,6 +196,37 @@ function CanvasMount() {
   )
 }
 
+// Report fixture (PLAN-plan-exchange 表达面): delivered cards carrying a
+// system-minted reportPath. n1 declares 部分成功 against a completed
+// acceptance — the divergence is exactly what the chip exists to name — and
+// carries a LONG expert name so the row-2 clip (15 → 11 glyphs) is the real
+// collision case. n2 declares 成功: link only, no chip (the acceptance word
+// already says it). The link's click must open the report and NOT the session
+// drill-down behind it.
+const reportPlan = createPlanDag('报告契约表达面', [
+  { description: '产出数据分析报告', assignee: 'exp_docs' },
+  { description: '汇总为执行简报', dependsOn: [1] },
+])
+reportPlan.nodes[0].status = 'completed'
+reportPlan.nodes[0].reportPath = '/ws/.pulsemind/plans/plan_r/n1-report.md'
+reportPlan.nodes[0].declaredStatus = 'partial'
+reportPlan.nodes[1].status = 'completed'
+reportPlan.nodes[1].reportPath = '/ws/.pulsemind/plans/plan_r/n2-report.md'
+reportPlan.nodes[1].declaredStatus = 'success'
+
+function ReportMount() {
+  return (
+    <div id="report" style={{ width: 760, height: 420, border: '1px solid #ccc', position: 'relative' }}>
+      <PlanGraphView
+        plan={reportPlan}
+        onJumpToStep={() => {}}
+        onOpenPlanNode={(id) => { (window.__clicks = window.__clicks || []).push(['open', id]) }}
+        onOpenNodeReport={(id) => { (window.__clicks = window.__clicks || []).push(['report', id]) }}
+      />
+    </div>
+  )
+}
+
 createRoot(document.getElementById('app')).render(
   <ConfigProvider theme={{ token: { colorPrimary: '#1677ff' } }}>
     <div style={{ display: 'flex', gap: 16, padding: 16, background: '#fff', flexWrap: 'wrap' }}>
@@ -205,6 +236,7 @@ createRoot(document.getElementById('app')).render(
       <ZoomMount p={plan} />
       <HeadMount p={longObjective} />
       <ClickMount />
+      <ReportMount />
       <NarrowMount />
       <CanvasMount />
     </div>
@@ -746,6 +778,90 @@ await page.locator('#click g[data-node="__start__"]').click()
 await page.waitForTimeout(80)
 const afterAnchor = await page.evaluate(() => window.__clicks)
 check('[click] the 开始/结束 anchors are not click targets', afterAnchor.length === 0, JSON.stringify(afterAnchor))
+
+// ── Report expression surface (PLAN-plan-exchange B3 前半) ──
+// 声明状态可对照 + 报告可打开：徽标只画在能和验收词读出落差的地方，链接
+// 长在每张带报告的卡上，且链接的点击只是报告的（卡片背后的会话下钻必须
+// 保持沉默——stopPropagation 是这条信封的一半）。
+await page.waitForSelector('#report [data-node="n1"]', { timeout: 10000 })
+const reportTexts = await page.evaluate(() => {
+  const out = {}
+  for (const g of document.querySelectorAll('#report g[data-node]')) {
+    out[g.dataset.node] = [...g.querySelectorAll('text')].map(t => t.textContent)
+  }
+  return out
+})
+check('[report] a partial declaration chips the completed card; success does not chip',
+  reportTexts.n1.includes('部分成功') && !reportTexts.n1.includes('声明失败')
+    && !reportTexts.n2.includes('部分成功') && !reportTexts.n2.includes('声明失败'),
+  JSON.stringify(reportTexts))
+check('[report] every report-bearing card carries the 查看报告 link',
+  reportTexts.n1.includes('查看报告') && reportTexts.n2.includes('查看报告'),
+  JSON.stringify(reportTexts))
+
+const reportBoxes = await page.evaluate(() => {
+  const rows = []
+  for (const g of document.querySelectorAll('#report g[data-node]')) {
+    const r = g.querySelector('rect')
+    const rect = { x: +r.getAttribute('x'), y: +r.getAttribute('y'), w: +r.getAttribute('width'), h: +r.getAttribute('height') }
+    for (const t of g.querySelectorAll('text')) {
+      const b = t.getBBox()
+      rows.push({ node: g.dataset.node, text: (t.textContent || '').slice(0, 6),
+        left: +(b.x - rect.x).toFixed(1), over: +(b.x + b.width - (rect.x + rect.w)).toFixed(1) })
+    }
+  }
+  return rows
+})
+const chipBox = reportBoxes.find(r => r.node === 'n1' && r.text === '部分成功')
+const linkBoxes = reportBoxes.filter(r => r.text === '查看报告')
+check('[report] chip and links sit INSIDE their card with margin',
+  !!chipBox && chipBox.left >= 2 && chipBox.over <= 0
+    && linkBoxes.length === 2 && linkBoxes.every(l => l.left >= 2 && l.over <= -2),
+  JSON.stringify({ chipBox, linkBoxes }))
+
+// Row 2 shares its line between the assignee and the link — measured bboxes,
+// because the clip exists precisely so the two never touch.
+const row2 = await page.evaluate(() => {
+  const g = document.querySelector('#report g[data-node="n1"]')
+  const top = +g.querySelector('rect').getAttribute('y')
+  const boxes = [...g.querySelectorAll('text')]
+    .map(t => ({ text: t.textContent || '', b: t.getBBox() }))
+    .filter(x => x.b.y + x.b.height / 2 > top + 20 && x.b.y + x.b.height / 2 < top + 40)
+    .sort((a, b) => a.b.x - b.b.x)
+  let minGap = Infinity
+  for (let i = 1; i < boxes.length; i++) {
+    minGap = Math.min(minGap, +(boxes[i].b.x - (boxes[i - 1].b.x + boxes[i - 1].b.width)).toFixed(1))
+  }
+  return { texts: boxes.map(x => x.text), minGap }
+})
+check('[report] row 2: the link never touches the (clipped) assignee text',
+  row2.texts.includes('查看报告') && row2.minGap >= 4,
+  JSON.stringify(row2))
+
+const reportHints = await page.evaluate(() => {
+  const out = {}
+  for (const g of document.querySelectorAll('#report g[data-node]')) {
+    out[g.dataset.node] = g.querySelector('title')?.textContent || ''
+  }
+  return out
+})
+check('[report] the tooltip carries the declared state and names the report affordance',
+  reportHints.n1.includes('声明 部分成功') && reportHints.n1.includes('点击「查看报告」打开交付报告')
+    && reportHints.n2.includes('声明 成功') && reportHints.n2.includes('点击「查看报告」打开交付报告'),
+  JSON.stringify(reportHints))
+
+// A real mouse on the link: the report opens, the card's session click stays
+// out of it (stopPropagation), and a pan that crossed the threshold would
+// swallow it like any card click (covered by the canvas D3 guard above).
+await page.evaluate(() => { window.__clicks = [] })
+await page.locator('#report').scrollIntoViewIfNeeded()
+await page.waitForTimeout(120)
+await page.locator('#report g[data-node="n1"] text.pm-node-report').click()
+await page.waitForTimeout(80)
+const reportClicks = await page.evaluate(() => window.__clicks)
+check('[report] clicking 查看报告 opens the report — and not the session behind it',
+  JSON.stringify(reportClicks) === JSON.stringify([['report', 'n1']]),
+  JSON.stringify(reportClicks))
 
 
 // ── Canvas (PLAN-plan-graph-canvas M4): 100% floor + drag-to-scroll + click

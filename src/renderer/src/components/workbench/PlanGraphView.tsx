@@ -11,7 +11,7 @@ import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } fro
 import { AimOutlined } from '@ant-design/icons'
 import type { Plan, PlanNodeStatus } from '../../types/agent'
 import { layoutPlanGraph, type LayoutNode } from '../../../../shared/plan/layout'
-import { blockedNodes, planNodeExecutionLabel } from '../../../../shared/plan/graph'
+import { blockedNodes, planNodeDeclaredLabel, planNodeExecutionLabel } from '../../../../shared/plan/graph'
 import { DRAG_THRESHOLD_PX, planTopologySignature, viewScale } from '../../../../shared/plan/view'
 import { expertLabel } from '../../../../shared/expert-context'
 import { getCachedExpertProfiles, subscribeCache } from '../../agent/mcp-cache'
@@ -27,6 +27,10 @@ import { getCachedExpertProfiles, subscribeCache } from '../../agent/mcp-cache'
 // the migration moved the NEUTRAL ladder onto the sheet, not the status hues.
 const DONE_GREEN = '#34a853'
 const FAILED_RED = '#b4453c'
+/** 声明「部分成功」的警示琥珀 — the app-wide warn ink (InputArea's
+ *  UNRESTRICTED_COLOR, the panel's --pm-warn), a literal like the two status
+ *  hues above: it is the third color a reader has to find at a glance. */
+const PARTIAL_AMBER = '#d46b08'
 
 interface CardStyle {
   border: string
@@ -160,9 +164,14 @@ interface Props {
    *  every card is dressed as a link — including the ones whose click the caller
    *  silently drops. */
   canOpenNode?: (nodeId: string) => boolean
+  /** Open the node's delivered report file (PLAN-plan-exchange 表达面). The
+   *  caller owns the opener (preview pane, the same channel as the deliverable
+   *  rows); the card advertises 「查看报告」 only when it carries a reportPath,
+   *  so a node the report never reached says nothing. */
+  onOpenNodeReport?: (nodeId: string) => void
 }
 
-export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode }: Props): React.ReactElement {
+export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode, onOpenNodeReport }: Props): React.ReactElement {
   // The viewport div renders only past the empty-state return, so the observed
   // element arrives (and leaves) with the plan itself. Holding it in state —
   // via the callback ref — is what re-runs the observer effect on that
@@ -300,16 +309,34 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
     const statusWord = planNodeExecutionLabel(node)
     // The plan stores the expert ID, a person reads the name (expertLabel).
     const who = n.assignee ? expertLabel(experts, n.assignee) : '通用子代理'
-    const tooltip = [statusWord, n.summary, `负责人 ${who}`].filter(Boolean).join(' · ')
+    // 声明状态可对照（PLAN-plan-exchange 表达面）：declaredStatus 是子代理自己
+    // 申报的结果，row 1 右侧的词是主对话的验收裁定——两者可以不一致，卡片只
+    // 在这段落差读得出来的地方补一个词：completed/delivered 卡上 partial →
+    // 部分成功（琥珀）、failed → 声明失败（红）。failed/skipped 卡的验收词本
+    // 身就是失败，再画一遍只是重复。
+    const declared = planNodeDeclaredLabel(node)
+    const declaredChip =
+      !node.declaredStatus || node.declaredStatus === 'success' || n.status === 'failed' || n.status === 'skipped'
+        ? null
+        : node.declaredStatus === 'failed' ? `声明${declared}` : declared
+    const tooltip = [
+      statusWord,
+      declared ? `声明 ${declared}` : null,
+      n.summary,
+      `负责人 ${who}`,
+    ].filter(Boolean).join(' · ')
     // Click affordance in the tooltip: a node that can be opened names what it
     // opens, so the drill-down is discoverable without a legend — and a node
     // that opens nothing says nothing, instead of promising a jump it drops.
     const openable = canOpenNode ? canOpenNode(n.id) : (!!n.subConvId || !!n.msgId || !!onOpenPlanNode)
-    const hint = !openable
-      ? undefined
-      : onOpenPlanNode || n.subConvId
-        ? '点击查看子代理会话'
-        : '点击定位到对话'
+    // Same honesty for the report link: only a card that carries a reportPath
+    // AND a handler names it.
+    const reportOpenable = !!node.reportPath && !!onOpenNodeReport
+    const hints = [
+      openable ? (onOpenPlanNode || n.subConvId ? '点击查看子代理会话' : '点击定位到对话') : null,
+      reportOpenable ? '点击「查看报告」打开交付报告' : null,
+    ].filter(Boolean)
+    const hint = hints.length > 0 ? hints.join('；') : undefined
     const title = [tooltip, hint].filter(Boolean).join('\n')
     return (
       <g key={n.id} data-node={n.id} onClick={() => {
@@ -333,17 +360,46 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
         <text x={n.x + n.w - 28} y={n.y + ROW_NUM} fontSize={9} fill={card.num} textAnchor="end">
           {statusWord}
         </text>
+        {declaredChip && (
+          // Row 1 left, after the 编号: the settled words (已完成/已交付，待验收)
+          // end-anchored at n.w−28 leave this slot free at every status the chip
+          // can coexist with.
+          <text x={n.x + 30} y={n.y + ROW_NUM} fontSize={9} fontWeight={600}
+            fill={node.declaredStatus === 'failed' ? FAILED_RED : PARTIAL_AMBER}>
+            {declaredChip}
+          </text>
+        )}
         <StatusIcon
           kind={card.icon} x={n.x + n.w - 10 - ICON_SIZE} y={n.y + ROW_NUM - 7.5}
           color={card.iconColor}
         />
-        {/* Row 2: 执行者 — who runs it, lighter than the 编号 that names it. */}
+        {/* Row 2: 执行者 — who runs it, lighter than the 编号 that names it. A
+            delivered report owns the row's right end, so the clip shortens to
+            keep the two from ever touching (NODE_W = 180: 11 CJK glyphs + the
+            38px link leave an 12px gap). */}
         <text
           x={n.x + 10} y={n.y + ROW_ASSIGNEE} fontSize={10}
           fill={n.assignee ? 'var(--pm-graph-ink-blocked)' : 'var(--pm-graph-ink-hollow)'}
         >
-          {clip(n.assignee ? `@${who}` : who, 15)}
+          {clip(n.assignee ? `@${who}` : who, reportOpenable ? 11 : 15)}
         </text>
+        {reportOpenable && (
+          <text
+            className="pm-node-report"
+            x={n.x + n.w - 10} y={n.y + ROW_ASSIGNEE} fontSize={9.5}
+            fill="var(--pm-link)" textAnchor="end"
+            onClick={(e) => {
+              // The link is its own click target inside a clickable card: the
+              // stop keeps the session drill-down out of it, and a real drag
+              // (pan) swallows it exactly like a card click (D3).
+              e.stopPropagation()
+              if (swallowClickRef.current) return
+              onOpenNodeReport?.(n.id)
+            }}
+          >
+            查看报告
+          </text>
+        )}
         {/* Rows 3+: 任务内容, up to two wrapped lines */}
         {lines.map((line, li) => (
           <text
@@ -480,6 +536,8 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode 
                 transform-origin: center;
               }
               @media (prefers-reduced-motion: reduce) { .pm-spin { animation: none; } }
+              .pm-node-report { cursor: pointer; }
+              .pm-node-report:hover { text-decoration: underline; }
             `}</style>
             <defs>
               {(['pending', 'completed', 'failed', 'skipped'] as PlanNodeStatus[]).map((s) => (

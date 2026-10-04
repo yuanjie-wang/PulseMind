@@ -31,6 +31,8 @@ interface Props {
   onOpenPlanNode?: (nodeId: string) => void
   /** Which nodes open something (cursor + tooltip affordance). */
   canOpenNode?: (nodeId: string) => boolean
+  /** Open the node's delivered report file (PLAN-plan-exchange 表达面). */
+  onOpenNodeReport?: (nodeId: string) => void
   browserPane: BrowserPaneUpdate
   onBrowserAction: (action: BrowserPaneAction) => void
   /** While the browser tab is frontmost, width drags must reach the
@@ -38,7 +40,7 @@ interface Props {
   onBrowserWidth: (width: number) => void
 }
 
-export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump = () => {}, onOpenPlanNode, canOpenNode, browserPane, onBrowserAction, onBrowserWidth }: Props): React.ReactElement {
+export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump = () => {}, onOpenPlanNode, canOpenNode, onOpenNodeReport, browserPane, onBrowserAction, onBrowserWidth }: Props): React.ReactElement {
   const width = useWorkbenchStore((s) => s.width)
   // A persisted activeTab naming a removed tab (the one-day deliverables
   // aggregate) would otherwise render a pane body with no view.
@@ -185,7 +187,7 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
         {activeTab === 'files' && <PreviewPane conversationId={conversationId} />}
         {activeTab === 'workspace' && <WorkspaceTree conversationId={conversationId} />}
         {activeTab === 'browser' && <BrowserPaneChrome pane={browserPane} onAction={onBrowserAction} />}
-        {activeTab === 'plan' && <PlanGraphView plan={plan} onJumpToStep={onPlanJump} onOpenPlanNode={onOpenPlanNode} canOpenNode={canOpenNode} />}
+        {activeTab === 'plan' && <PlanGraphView plan={plan} onJumpToStep={onPlanJump} onOpenPlanNode={onOpenPlanNode} canOpenNode={canOpenNode} onOpenNodeReport={onOpenNodeReport} />}
       </div>
     </div>
   )

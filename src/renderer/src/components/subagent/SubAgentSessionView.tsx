@@ -15,6 +15,7 @@ import { ArrowLeftOutlined } from '@ant-design/icons'
 import type { AgentMessage, ContentBlock } from '../../types/agent'
 import { storedMessagesToAgentMessages } from '../../utils/message-utils'
 import { TranscriptView } from '../chat/TranscriptView'
+import { DECLARED_STATUS_LABEL } from '../../../../shared/plan/graph'
 
 export interface SubAgentSessionViewProps {
   /** The sub-conversation this session runs in (plan node / spawn block link). */
@@ -28,6 +29,12 @@ export interface SubAgentSessionViewProps {
    *  the badge says 已暂停 and the blinking cursor stays off until 继续执行
    *  (App derives this from the conversation's agentStatus). */
   paused?: boolean
+  /** The node's delivered report (PLAN-plan-exchange 表达面): the drill-in view
+   *  is where the run's full story lives, so its header carries the same
+   *  「查看报告」 entry the DAG card does — null when no report was filed. */
+  reportPath?: string
+  declaredStatus?: 'success' | 'partial' | 'failed'
+  onOpenReport?: () => void
   onBack: () => void
 }
 
@@ -69,7 +76,7 @@ const MAX_POLL_MS = 30 * 60_000
  *  head is lost — it is only not rendered until asked for. */
 const INITIAL_VISIBLE = 60
 
-export function SubAgentSessionView({ subConvId, title, live, paused = false, onBack }: SubAgentSessionViewProps): React.ReactElement {
+export function SubAgentSessionView({ subConvId, title, live, paused = false, reportPath, declaredStatus, onOpenReport, onBack }: SubAgentSessionViewProps): React.ReactElement {
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -160,6 +167,29 @@ export function SubAgentSessionView({ subConvId, title, live, paused = false, on
           {title}
         </div>
         <div style={{ flex: 1 }} />
+        {reportPath && onOpenReport && (
+          // 报告契约表达面：下钻视图是这场运行完整故事所在的地方，头部给与
+          // DAG 卡同一入口；title 带申报状态（成功/部分成功/失败），对照的
+          // 事实随身携带。
+          <button
+            type="button"
+            data-sub-report
+            onClick={onOpenReport}
+            title={`${reportPath}${declaredStatus ? `（声明状态：${DECLARED_STATUS_LABEL[declaredStatus]}）` : ''}`}
+            style={{
+              flexShrink: 0,
+              background: 'none',
+              border: 'none',
+              padding: '4px 8px',
+              borderRadius: 6,
+              fontSize: 12,
+              color: 'var(--pm-link)',
+              cursor: 'pointer',
+            }}
+          >
+            查看报告
+          </button>
+        )}
         <span
           style={{
             fontSize: 11,
