@@ -194,6 +194,11 @@ const en: TranslationDict = {
     promptCacheHit: 'Cache hit',
     error: 'Error',
     dismiss: 'Dismiss',
+    navigator: {
+      toBottom: 'Back to bottom',
+      prev: 'My previous message',
+      next: 'My next message',
+    },
     sender: {
       approving: 'Approve or skip the command above...',
       awaitingInput: 'Select an option above...',

@@ -191,6 +191,11 @@ const zh = {
     promptCacheHit: '缓存命',
     error: '错误',
     dismiss: '关闭',
+    navigator: {
+      toBottom: '回到底部',
+      prev: '上一条我的消息',
+      next: '下一条我的消息',
+    },
     sender: {
       approving: '请批准或跳过上述命令...',
       awaitingInput: '请选择上述选项...',
