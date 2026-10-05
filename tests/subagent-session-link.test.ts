@@ -229,8 +229,10 @@ describe('the spawn card opens the one sub-agent session view', () => {
     const inputSrc = read(R('components', 'chat', 'InputArea.tsx'))
     expect(inputSrc).toContain('display: hidden ? \'none\' : undefined')
     // The reason the hide exists at all: pin the floating root's z-index, the
-    // fact that made the composer paint over a z-auto overlay.
-    expect(read(R('components', 'chat', 'Composer.tsx')))
-      .toContain("position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10")
+    // fact that made the composer paint over a z-auto overlay. Whitespace-
+    // tolerant: the object went multi-line when the root went click-through.
+    expect(read(R('components', 'chat', 'Composer.tsx'))).toMatch(
+      /position:\s*'absolute',\s*bottom:\s*0,\s*left:\s*0,\s*right:\s*0,\s*zIndex:\s*10/,
+    )
   })
 })

@@ -201,11 +201,38 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     <div
       ref={containerRef}
       className={dropActive ? 'pm-drop-active' : undefined}
-      style={layout === 'floating' ? { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, padding: '12px 24px 24px' } : undefined}
+      style={
+        layout === 'floating'
+          ? {
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              right: 0,
+              zIndex: 10,
+              padding: '12px 24px 24px',
+              // The root spans the pane's full width and floats OVER the
+              // transcript scroller's lower band — the chat scroller is
+              // height:100% — so this transparent padding box covered the
+              // scrollbar track for the composer's whole height and every grab
+              // there hit the composer instead of the track (user report
+              // 2026-10-05: 与消息发送区同高的位置滚动条拖不动). Nothing
+              // interactive lives in the band — the card is inset ≥24px from
+              // both pane edges by this very padding, wider than any
+              // scrollbar — so the root goes click-through and the inner
+              // column below opts back in. Accepted cost: a file drag over the
+              // padding band no longer opens the drop highlight; the card
+              // itself remains the drop target.
+              pointerEvents: 'none',
+            }
+          : undefined
+      }
     >
       <div
         style={{
           position: 'relative',
+          // The click-through root hands events back here — the card and the
+          // above-card slot are the composer's whole interactive surface.
+          ...(layout === 'floating' ? { pointerEvents: 'auto' } : null),
           // The footer's responsiveness reads THIS box's width: it hugs the
           // Sender card in both layouts (the card is capped at 952 inside it),
           // so the @container rule below sees the card's real width and the
