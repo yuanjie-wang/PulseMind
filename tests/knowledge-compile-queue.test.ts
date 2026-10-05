@@ -31,7 +31,19 @@ async function mount() {
   }
   return { module, queue, manager, render }
 }
+// Bounded flush is for NEGATIVE assertions only —「还没有发生」无法被等待.
+// Positive waits go through `until`, which parks on the production state itself:
+// the old fixed 12-turn flush was a guess at scheduling depth, and a loop whose
+// promise chain ran deeper read as a stale assertion (the intermittent red this
+// file carried until 2026-10-05, see AGENTS.md 工作节奏 rule 5).
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
+const until = async (ready: () => boolean, what: string) => {
+  for (let i = 0; i < 500; i++) {
+    if (ready()) return
+    await Promise.resolve()
+  }
+  throw new Error(`compile queue never reached: ${what}`)
+}
 
 beforeEach(() => { vi.resetModules(); hooks.effects.length = 0 })
 describe('real KnowledgePanel compile queue', () => {
@@ -46,7 +58,7 @@ describe('real KnowledgePanel compile queue', () => {
       queue.enqueueCompileForFile('before-mount')
       expect(manager.compileFile).not.toHaveBeenCalled()
       const cleanups = render()
-      await flush()
+      await until(() => manager.compileFile.mock.calls.length === 1, 'first compile after mount')
       expect(manager.compileFile.mock.calls).toEqual([['before-mount']])
       manager.listFilesAdvanced.mockClear()
       let complete!: (value: unknown) => void
@@ -59,15 +71,21 @@ describe('real KnowledgePanel compile queue', () => {
       expect(manager.listFilesAdvanced).not.toHaveBeenCalled()
       // …and the burst's last ask still lands one reload on the trailing edge.
       await vi.advanceTimersByTimeAsync(500)
-      await flush()
+      await until(() => manager.listFilesAdvanced.mock.calls.length === 1, 'trailing-edge reload')
       expect(manager.listFilesAdvanced).toHaveBeenCalledTimes(1)
       complete({ ok: true, written: 1 })
-      await flush()
+      // The negative below (unmount → enqueue must NOT compile) is only sound
+      // once the loop has fully parked: wait on production state, not on a
+      // flush guess — a still-draining loop could shift the enqueued id.
+      await until(
+        () => !queue.compileQueue.running && queue.compileQueue.compilingFileId === null,
+        'loop parked after complete'
+      )
       cleanups.forEach(cleanup => cleanup())
       queue.enqueueCompileForFile('after-unmount')
       expect(manager.compileFile).toHaveBeenCalledTimes(2)
       render()
-      await flush()
+      await until(() => manager.compileFile.mock.calls.length === 3, 'post-remount compile')
       expect(manager.compileFile).toHaveBeenLastCalledWith('after-unmount')
     } finally {
       vi.useRealTimers()
@@ -83,7 +101,7 @@ describe('real KnowledgePanel compile queue', () => {
     cleanups.forEach(cleanup => cleanup())
     manager.canCompile = true
     render()
-    await flush()
+    await until(() => manager.compileFile.mock.calls.length === 1, 'compile after key arrives')
     expect(manager.compileFile.mock.calls).toEqual([['no-key']])
   })
 })
