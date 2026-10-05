@@ -574,8 +574,14 @@ export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssi
     onChange({ ...draft, prompt: draft.prompt.slice(0, start) + token + draft.prompt.slice(end) })
     const caret = start + token.length
     requestAnimationFrame(() => {
-      area?.focus()
-      area?.setSelectionRange(caret, caret)
+      if (!area) return
+      // Selection BEFORE focus: React's controlled write has already parked
+      // the caret at the end of the new value, and focus() scrolls to the
+      // caret — focusing first drags a long prompt's viewport to the tail,
+      // and the later setSelectionRange moves the caret back without
+      // bringing the view with it (probe-routine-var-insert).
+      area.setSelectionRange(caret, caret)
+      area.focus()
     })
   }
   return (
@@ -589,7 +595,7 @@ export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssi
         <FieldLabel text="描述" />
         <Input value={draft.description} onChange={(e) => onChange({ ...draft, description: e.target.value })} placeholder="可选，一句话说明这个任务做什么" />
       </div>
-      <div>
+      <div data-routine-field="prompt">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} data-routine-field="prompt-head">
           <FieldLabel text="提示词" />
           {/* An action, not a state: the value stays unset so the control
