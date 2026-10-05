@@ -169,9 +169,15 @@ interface Props {
    *  rows); the card advertises 「查看报告」 only when it carries a reportPath,
    *  so a node the report never reached says nothing. */
   onOpenNodeReport?: (nodeId: string) => void
+  /** The node whose sub-agent session is open in the drill-in (the caller owns
+   *  the resolution — App over agent/plan-node-target.ts): that card wears the
+   *  accent so the graph answers 「我在读哪个模块」. Additive only — status
+   *  vocabulary (dash, glyph, ink ladder) stays, and at most one card carries
+   *  it. */
+  highlightNodeId?: string | null
 }
 
-export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode, onOpenNodeReport }: Props): React.ReactElement {
+export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode, onOpenNodeReport, highlightNodeId }: Props): React.ReactElement {
   // The viewport div renders only past the empty-state return, so the observed
   // element arrives (and leaves) with the plan itself. Holding it in state —
   // via the callback ref — is what re-runs the observer effect on that
@@ -300,6 +306,10 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
     const node = plan.nodes.find(node => node.id === n.id)!
     const isReady = n.status === 'pending' && node.execution?.status === 'running'
     const isBlocked = n.status === 'pending' && blockedIds.has(n.id)
+    // 查看子代理会话时的「你在这里」标记：描边与底色走 --pm-link / --pm-link-bg
+    // ——查看报告链接已经在这张卡上用了这支墨，高亮只是把它挪到边框上，不是
+    // 引入第四种色相；虚线、字形、文字灰阶照旧，高亮是加法不是替换。
+    const highlighted = n.id === highlightNodeId
     const card = n.status !== 'pending' ? CARD[n.status]
       : isReady ? READY_CARD
       : node.execution?.status === 'failed' ? CARD.failed
@@ -333,13 +343,14 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
     // AND a handler names it.
     const reportOpenable = !!node.reportPath && !!onOpenNodeReport
     const hints = [
+      highlighted ? '正在查看该模块的子代理会话' : null,
       openable ? (onOpenPlanNode || n.subConvId ? '点击查看子代理会话' : '点击定位到对话') : null,
       reportOpenable ? '点击「查看报告」打开交付报告' : null,
     ].filter(Boolean)
     const hint = hints.length > 0 ? hints.join('；') : undefined
     const title = [tooltip, hint].filter(Boolean).join('\n')
     return (
-      <g key={n.id} data-node={n.id} onClick={() => {
+      <g key={n.id} data-node={n.id} data-highlighted={highlighted || undefined} onClick={() => {
         // A drag that crossed the threshold swallows exactly one click (D3).
         if (swallowClickRef.current) return
         if (onOpenPlanNode) { onOpenPlanNode(n.id); return }
@@ -348,10 +359,10 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
         <title>{title}</title>
         <rect
           x={n.x} y={n.y} width={n.w} height={n.h} rx={9}
-          fill="var(--pm-elevated)"
-          stroke={card.border}
+          fill={highlighted ? 'var(--pm-link-bg)' : 'var(--pm-elevated)'}
+          stroke={highlighted ? 'var(--pm-link)' : card.border}
           strokeDasharray={card.dash}
-          strokeWidth={isReady ? 1.6 : 1.2}
+          strokeWidth={highlighted ? 1.8 : isReady ? 1.6 : 1.2}
         />
         {/* Row 1: 编号 left, execution/acceptance status and glyph right. */}
         <text x={n.x + 10} y={n.y + ROW_NUM} fontSize={10} fontWeight={600} fill={card.num}>

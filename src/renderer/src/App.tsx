@@ -27,7 +27,7 @@ import AppLayout from './components/layout/AppLayout'
 import ChatView from './components/layout/ChatView'
 import { useWorkbenchStore } from './stores/workbenchStore'
 import { SubAgentSessionView } from './components/subagent/SubAgentSessionView'
-import { resolvePlanNodeTarget } from './agent/plan-node-target'
+import { resolvePlanNodeTarget, planNodeIdForSession } from './agent/plan-node-target'
 import { DRAFT_CONVERSATION_KEY, usePreviewPaneStore } from './stores/previewPaneStore'
 import { InstallNotifier } from './components/chat/InstallNotifier'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -570,6 +570,14 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   const onOpenSubAgent = useCallback((subConvId: string, title: string) => {
     setSubAgentView({ kind: 'spawn', subConvId, title })
   }, [])
+  /** 查看子代理会话时，工作计划面板对应模块的高亮键：plan 路由持有点击的
+   *  节点 id（会话打开期间节点重派也不丢高亮）；卡片路由（spawn 卡进入，
+   *  无节点可点）按节点点击的同一解析反查——纯循环 spawn 无节点，不高亮。 */
+  const highlightPlanNodeId = useMemo(() => {
+    if (!subAgentView) return null
+    if (subAgentView.kind === 'plan') return subAgentView.nodeId
+    return planNodeIdForSession(plan, messages, subAgentView.subConvId)
+  }, [subAgentView, plan, messages])
   // PLAN-workbench W5: a freshly created plan opens the workbench on its tab
   // (the write→auto-open-preview precedent). Completing a plan does not close
   // it — the user reads the finished graph. The ref is keyed to the
@@ -684,6 +692,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               onOpenPlanNode={onOpenPlanNode}
               onOpenNodeReport={onOpenNodeReport}
               onOpenSubAgent={onOpenSubAgent}
+              highlightPlanNodeId={highlightPlanNodeId}
               hideComposer={!!subAgentView}
               onExtractRoutine={extractRoutine}
               canOpenNode={canOpenNode}

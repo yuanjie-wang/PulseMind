@@ -25,9 +25,10 @@ import type { Plan } from '../src/shared/types/plan'
  * 计划节点数据交换规范（PLAN-plan-exchange）：每个 plan 一个工作区交换区
  * `<workspace>/.pulsemind/plans/<planId>/`；准入 = 派发时注入系统铸造的报告路径 + 标准
  * 骨架 + 节点 reportSpec；准出 = 收口点机械校验（存在/非空）后落
- * reportPath/declaredStatus，缺报告按失败结算；下游经 formatUpstreamResults
- * 拿到报告路径自行 read。这里钉四层：exchange 纯函数、graph 透传/注入、
- * PlanManager CAS、spawn 收口点两端。
+ * reportPath/declaredStatus，缺报告按失败结算；declaredStatus 只取判定行——
+ * 报告文件先说、回复状态行兜底、散文永不投票（2026-10-05，n8 误报改源）；
+ * 下游经 formatUpstreamResults 拿到报告路径自行 read。这里钉四层：exchange 纯函数、
+ * graph 透传/注入、PlanManager CAS、spawn 收口点两端。
  */
 
 // ── 1. exchange 纯函数 ───────────────────────────────────────────────────
@@ -48,13 +49,14 @@ describe('resolvePlanExchange: system-minted paths', () => {
     expect(resolvePlanExchange('/tmp/ws', bare)).toBeNull()
   })
 
-  it('extractDeclaredStatus: structured 状态 line first; prose fallback worst-wins; prose error is not a verdict', () => {
-    // prose fallback (no structured line anywhere)
-    expect(extractDeclaredStatus('任务完成，一切成功')).toBe('success')
-    expect(extractDeclaredStatus('部分成功：A 平台限流')).toBe('partial')
-    expect(extractDeclaredStatus('抓取失败，原因见下')).toBe('failed')
-    // worst declaration wins when several appear at one layer
-    expect(extractDeclaredStatus('整体失败，A 部分成功')).toBe('failed')
+  it('extractDeclaredStatus: verdict lines only — prose never votes (2026-10-05 contract)', () => {
+    // prose WITHOUT a verdict line declares nothing — the old full-text scan
+    // read subject matter as verdicts (n8: a code-review reply's 「写入无失败
+    // 兜底」 declared a node whose report said 成功)
+    expect(extractDeclaredStatus('任务完成，一切成功')).toBeUndefined()
+    expect(extractDeclaredStatus('部分成功：A 平台限流')).toBeUndefined()
+    expect(extractDeclaredStatus('抓取失败，原因见下')).toBeUndefined()
+    expect(extractDeclaredStatus('整体失败，A 部分成功')).toBeUndefined()
     expect(extractDeclaredStatus('no verdict here')).toBeUndefined()
     // the skeleton's own shapes are read verbatim — prose digressions cannot vote
     expect(extractDeclaredStatus('## 状态\n\n成功 —— 全部落库\n\n## 结论\n期间 error 重试两次后成功')).toBe('success')
@@ -62,10 +64,17 @@ describe('resolvePlanExchange: system-minted paths', () => {
     expect(extractDeclaredStatus('状态：部分成功（A 平台限流）')).toBe('partial')
     expect(extractDeclaredStatus('- 状态: 失败（网络不可达）')).toBe('failed')
     expect(extractDeclaredStatus('**Status**: error — upstream 500')).toBe('failed')
-    // prose `error` is a topic word, not a verdict — a clean report mentioning
-    // it stays clean (these all read 失败 under the old full-text substring)
-    expect(extractDeclaredStatus('全部成功。error handling 已加固，0 errors。')).toBe('success')
-    expect(extractDeclaredStatus('全部抓取成功，error 日志为空')).toBe('success')
+    // the reply duty's own vocabulary: 「执行结果」 as a heading or a label
+    expect(extractDeclaredStatus('## 执行结果\n\n**成功** —— 已完成全量审查')).toBe('success')
+    expect(extractDeclaredStatus('执行结果：失败（网络不可达）')).toBe('failed')
+    // worst declaration wins within ONE verdict line
+    expect(extractDeclaredStatus('状态：整体失败，A 部分成功')).toBe('failed')
+    // the n8 incident, file-side: the body reviews failure modes, the 状态
+    // line is the declaration — body 失败 words must not vote
+    expect(extractDeclaredStatus('# n8 报告\n\n## 状态\n成功 —— 32 条问题清单已产出\n\n## 结论\nOffice 写入无失败兜底；withPathLock 失败不毒化')).toBe('success')
+    // prose `error` stays a topic word — without a verdict line, nothing
+    expect(extractDeclaredStatus('全部成功。error handling 已加固，0 errors。')).toBeUndefined()
+    expect(extractDeclaredStatus('全部抓取成功，error 日志为空')).toBeUndefined()
     expect(extractDeclaredStatus('error handling 已加固')).toBeUndefined()
   })
 
@@ -167,14 +176,16 @@ const subMessages = (text: string) => [
 
 interface Captured { content: string; isError: boolean }
 
-function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number | null }) {
+function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number | null; reportBody?: string }) {
   const calls = {
     results: [] as Captured[],
     executions: [] as string[],
     handoffs: [] as unknown[],
     reports: [] as Array<{ ref: string | number; path: string; status?: string }>,
     tasks: [] as string[],
+    prompts: [] as string[],
     statPaths: [] as string[],
+    readPaths: [] as string[],
   }
   const state: { resultText?: string } = {}
   const host = {
@@ -182,14 +193,19 @@ function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number 
       calls.statPaths.push(filePath)
       return Promise.resolve(opts.reportSize === null || opts.reportSize === undefined ? null : { size: opts.reportSize, birthtime: '', mtime: '', isDirectory: false })
     },
+    readFile: (filePath: string) => {
+      calls.readPaths.push(filePath)
+      return Promise.resolve(opts.reportBody ?? '')
+    },
   }
   setHost(host as unknown as PulseHost)
   const ex = {
     opts: { conversationId: 'conv_ex', maxTokens: 1024, ...(opts.workspaceDir ? { workspaceDir: opts.workspaceDir } : {}) },
     notify: () => {},
     addToolResult: (_id: string, content: string, isError: boolean) => { calls.results.push({ content, isError }) },
-    spawnSubAgent: (config: { initialMessages: Array<{ contentBlocks: Array<{ type: string; text?: string }> }> }) => {
+    spawnSubAgent: (config: { systemPrompt?: string; initialMessages: Array<{ contentBlocks: Array<{ type: string; text?: string }> }> }) => {
       calls.tasks.push(config.initialMessages[0]?.contentBlocks?.find(b => b.type === 'text')?.text ?? '')
+      calls.prompts.push(config.systemPrompt ?? '')
       return {
         id: 'h1', subConvId: 'sub_ex', messages: [], agentStatus: { status: 'completed' }, abort: () => {},
         waitForCompletion: async () => ({ status: 'completed', messages: subMessages(state.resultText ?? '完成') }),
@@ -215,23 +231,75 @@ function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number 
 describe('spawn choke point: admission in, exit verified', () => {
   beforeEach(() => { setHost({} as unknown as PulseHost) })
 
-  it('the task message carries the admission contract; a delivered report is stamped', async () => {
-    const { ex, calls, tool, state, plan } = makeExchangeContext({ workspaceDir: '/tmp/ws_ex', reportSize: 120 })
+  it('the admission contract rides the spawn system prompt, invisible in the first message', async () => {
+    const { ex, calls, tool, state, plan } = makeExchangeContext({
+      workspaceDir: '/tmp/ws_ex', reportSize: 120,
+      reportBody: '# 调研节点 报告\n\n## 状态\n成功 —— 全部落库\n',
+    })
     state.resultText = '任务成功，报告已写入指定路径'
 
     const block = tool({ task: '调研节点', planNode: 1 })
     await execSpawnAgent(ex, block)
 
     expect(plan.id).toMatch(/^plan_/)
-    expect(calls.tasks[0]).toContain('## 报告契约')
-    expect(calls.tasks[0]).toContain(`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`)
-    expect(calls.tasks[0]).toContain('## 关键数据')
+    // 2026-10-05 user ruling: the contract is the model's business, not the
+    // user's — the drill-in transcript shows the task, the prompt carries the
+    // admission terms. Same bytes, different carrier.
+    expect(calls.prompts[0]).toContain('## 报告契约')
+    expect(calls.prompts[0]).toContain(`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`)
+    expect(calls.prompts[0]).toContain('## 关键数据')
+    expect(calls.tasks[0]).not.toContain('报告契约')
+    expect(calls.tasks[0]).not.toContain('关键数据')
     expect(calls.statPaths).toEqual([`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`])
+    expect(calls.readPaths).toEqual([`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`])
     expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
     expect(calls.reports).toHaveLength(1)
     expect(calls.reports[0]).toEqual({ ref: 'n1', path: `/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`, status: 'success' })
     expect(calls.handoffs).toHaveLength(1)
     expect(block.exitCode).toBe(0)
+  })
+
+  it('declared status: the report file speaks first — reply prose 失败 cannot override a 成功 状态 line (n8 regression)', async () => {
+    const { ex, calls, tool, state, plan } = makeExchangeContext({
+      workspaceDir: '/tmp/ws_ex', reportSize: 120,
+      reportBody: '# 调研节点 报告\n\n## 状态\n成功 —— 32 条问题清单\n\n## 结论\nOffice 写入无失败兜底；withPathLock 失败不毒化。',
+    })
+    // the reply narrates the review's failure-mode subject matter AND its
+    // verdict sits under a 执行结果 heading — under the old reply-only prose
+    // scan this node recorded 'failed' off the body words
+    state.resultText = '## 执行结果\n\n**成功** —— 全量审查完成。\n\n本次复查覆盖：写入失败路径、失败重试、失败不毒化等题材。'
+
+    await execSpawnAgent(ex, tool({ task: '调研节点', planNode: 1 }))
+
+    expect(calls.reports[0]).toEqual({ ref: 'n1', path: `/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`, status: 'success' })
+    expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
+  })
+
+  it('declared status: the reply status line is the fallback when the report states no verdict', async () => {
+    const { ex, calls, tool, state } = makeExchangeContext({
+      workspaceDir: '/tmp/ws_ex', reportSize: 120,
+      reportBody: '# 调研节点 报告\n\n## 结论\n做了事，但忘了写状态节。',
+    })
+    state.resultText = '## 执行结果\n\n部分成功 —— 依赖模块只查了一半。'
+
+    await execSpawnAgent(ex, tool({ task: '调研节点', planNode: 1 }))
+
+    expect(calls.reports).toHaveLength(1)
+    expect(calls.reports[0]?.status).toBe('partial')
+  })
+
+  it('declared status: no verdict line anywhere → recorded as undefined (honest no-declaration), delivery unaffected', async () => {
+    const { ex, calls, tool, state } = makeExchangeContext({
+      workspaceDir: '/tmp/ws_ex', reportSize: 120,
+      reportBody: '# 调研节点 报告\n\n## 结论\n任务完成，一切顺利，产出已落盘。',
+    })
+    state.resultText = '任务完成，一切成功，报告已写入。'
+
+    await execSpawnAgent(ex, tool({ task: '调研节点', planNode: 1 }))
+
+    expect(calls.reports).toHaveLength(1)
+    expect(calls.reports[0]?.status).toBeUndefined()
+    expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
   })
 
   it('a missing report fails the contract: failed settle, violation envelope, no handoff stamp', async () => {
@@ -271,6 +339,7 @@ describe('spawn choke point: admission in, exit verified', () => {
     await execSpawnAgent(ex, tool({ task: '调研节点', planNode: 1 }))
 
     expect(calls.tasks[0]).not.toContain('报告契约')
+    expect(calls.prompts[0]).not.toContain('报告契约')
     expect(calls.statPaths).toEqual([])
     expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
     expect(calls.reports).toHaveLength(0)

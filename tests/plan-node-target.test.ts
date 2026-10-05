@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { resolvePlanNodeTarget } from '../src/renderer/src/agent/plan-node-target'
+import { planNodeIdForSession, resolvePlanNodeTarget } from '../src/renderer/src/agent/plan-node-target'
 import type { AgentMessage, ToolUseBlock } from '../src/renderer/src/types/agent'
-import type { PlanNode } from '../src/shared/types/plan'
+import type { Plan, PlanNode } from '../src/shared/types/plan'
 
 /**
  * The DAG's node click (PLAN-workbench W12) — the reported 「点击任务模块，没有
@@ -86,5 +86,46 @@ describe('resolvePlanNodeTarget', () => {
   it('returns nothing for a node that was never dispatched and never settled', () => {
     expect(resolvePlanNodeTarget(node(), [])).toBeNull()
     expect(resolvePlanNodeTarget(undefined, [])).toBeNull()
+  })
+})
+
+/**
+ * The drill-in's highlight key (查看子代理会话时工作计划面板对应模块高亮):
+ * the reverse of resolvePlanNodeTarget's session arm, so a card lights up
+ * exactly when clicking it would open the session being viewed.
+ */
+describe('planNodeIdForSession', () => {
+  const planWith = (...nodes: PlanNode[]): Plan => ({
+    objective: 'obj',
+    nodes,
+    completed: false,
+    version: 2,
+  })
+
+  it('names the node whose persisted link is the viewed session', () => {
+    const plan = planWith(node({ id: 'n1' }), node({ id: 'n2', subConvId: 'sub_abc' }))
+    expect(planNodeIdForSession(plan, [], 'sub_abc')).toBe('n2')
+  })
+
+  it('falls back to the spawn block link the click path would use', () => {
+    // Same window as resolvePlanNodeTarget's own fallback: the plan mirror has
+    // no subConvId yet, but the live spawn block carries it.
+    const plan = planWith(node({ id: 'n2' }))
+    const messages = messagesWith(spawn({ subConvId: 'sub_live', planNodeId: 'n2' }))
+    expect(planNodeIdForSession(plan, messages, 'sub_live')).toBe('n2')
+  })
+
+  it('does not light a re-dispatched node for its superseded session', () => {
+    // The node now points at the newest attempt; the old conversation's card
+    // must go dark instead of claiming a link it no longer has.
+    const plan = planWith(node({ id: 'n2', subConvId: 'sub_new' }))
+    expect(planNodeIdForSession(plan, [], 'sub_old')).toBeNull()
+  })
+
+  it('returns nothing for a session no node claims (a plain spawn)', () => {
+    const plan = planWith(node({ id: 'n2', subConvId: 'sub_abc' }))
+    expect(planNodeIdForSession(plan, [], 'sub_plain')).toBeNull()
+    expect(planNodeIdForSession(null, [], 'sub_abc')).toBeNull()
+    expect(planNodeIdForSession(plan, [], '')).toBeNull()
   })
 })

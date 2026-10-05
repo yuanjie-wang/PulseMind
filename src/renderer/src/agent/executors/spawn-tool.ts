@@ -32,6 +32,18 @@ import { getLoopIterationLimit } from '../agent-utils'
 /** spawn_agent: assistant text fed back to the parent. */
 const SUBAGENT_TEXT_MAX = 10_000
 
+/** Head slice of the delivered report scanned for its 状态 verdict — the
+ *  skeleton mandates the section as the report's first, so the head carries
+ *  it; the cap only bounds a pathological file. */
+const REPORT_STATUS_HEAD_CHARS = 65_536
+
+async function readReportHead(path: string): Promise<string> {
+  try {
+    const text = await getHost().readFile(path)
+    return (text ?? '').slice(0, REPORT_STATUS_HEAD_CHARS)
+  } catch { return '' }
+}
+
 /** Per-envelope token budget for a round that dispatched `batchTotal`
  *  spawn_agent calls. A round's envelopes all land in ONE collector user
  *  message (addToolResult's collector shape), and that message sits inside
@@ -178,10 +190,15 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // plan.id was lazily minted by beginPlanNodeExecution above, so a legacy
     // plan gets its exchange area from its very first dispatch. No
     // workspaceDir (tool-studio-like sessions) → no contract, legacy behavior.
+    // The contract rides the spawn SYSTEM PROMPT (user ruling 2026-10-05:
+    // 对用户不可见——下钻读子会话时第一条消息只剩任务本身；效果不变，模型
+    // 照样逐字读到契约), and the prompt is per-session with no shared cache
+    // prefix, so the placement costs nothing. The task itself stays in the
+    // first user message per the ruling below.
     const exchange = planNode && dispatchPlan ? resolvePlanExchange(ex.opts.workspaceDir, dispatchPlan) : null
     const reportContract = planNode && exchange ? `\n\n${formatReportContract(exchange, planNode)}` : ''
     const taskText = planNode
-      ? `${task}\n\n(You are executing plan node ${planNode.id} of a larger plan — scope your work to this node only.)${splitHint}${reportContract}`
+      ? `${task}\n\n(You are executing plan node ${planNode.id} of a larger plan — scope your work to this node only.)${splitHint}`
       : task
     // Upstream hand-off (PLAN-plan-scheduler S8): the direct dependencies'
     // recorded output rides the prompt as data — the sub-agent has no state
@@ -197,7 +214,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // and buried the task in an invisible prompt. The system prompt keeps the
     // invariant half — expert identity/methodology + the skills appendix —
     // so `spawnSystemPrompt` stays non-empty for every discriminator that
-    // keys on it, and nothing volatile precedes the tool schemas.
+    // keys on it, and nothing volatile precedes the tool schemas. (The report
+    // contract is deliberately NOT part of that visible half — 2026-10-05
+    // ruling above — but the delegated TASK is exactly what the user should
+    // see, so it stays here.)
     const taskMessage = `## 你的任务\n${taskText}${upstream ? `\n\n${upstream}` : ''}`
     // The engineering contract rides here too (PLAN-coding-contract, ruling
     // D1): sub-agents do the actual coding and must answer to the same
@@ -225,7 +245,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       envLines.push(`- Your maximum output limit: ${ex.opts.maxTokens} tokens per response. For large writes, split the content across multiple write calls.`)
     }
     const envBlock = envLines.length > 0 ? `\n\n# Running Environment\n${envLines.join('\n')}` : ''
-    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}\n\n${ENGINEERING_WORKFLOW}`
+    // Report contract lands between the environment and the engineering
+    // workflow: 谁在干活 → 能用什么 → 在哪干活 → 要交付什么 → 怎么干活. The
+    // `## 报告契约` heading keeps its text verbatim — only the carrier moved.
+    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}${reportContract}\n\n${ENGINEERING_WORKFLOW}`
 
     console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" system prompt length=${systemPrompt.length}, task message length=${taskMessage.length} first 200 chars:`, taskMessage.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`
@@ -392,7 +415,10 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       // proposal IS the splitter's deliverable and the children carry the
       // remainder. Everyone else owes a report at the minted path; missing or
       // empty fails the contract (the deliverable IS the report), and the
-      // declared status is extracted as advisory data only.
+      // declared status is extracted as advisory data only — the report FILE
+      // speaks first (2026-10-05 ruling: trust the contract artifact, not the
+      // prose), the reply's status line is the fallback, and prose never
+      // votes (see extractDeclaredStatus).
       let reportViolation: string | null = null
       let declaredStatus: 'success' | 'partial' | 'failed' | undefined
       if (planNode && deliverableNode && exchange && !splitNote) {
@@ -403,7 +429,7 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
           size = stat?.size ?? 0
         } catch { size = 0 }
         if (size <= 0) reportViolation = expectedPath
-        else declaredStatus = extractDeclaredStatus(subText)
+        else declaredStatus = extractDeclaredStatus(await readReportHead(expectedPath)) ?? extractDeclaredStatus(subText)
       }
       if (reportViolation) execution('failed') // from 'running' — the CAS allows running→failed
       else execution(result.status === 'completed' ? 'delivered' : result.status === 'aborted' ? 'stopped' : 'failed')

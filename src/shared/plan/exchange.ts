@@ -56,8 +56,8 @@ export function mintPlanId(): string {
 
 export type DeclaredStatus = 'success' | 'partial' | 'failed'
 
-/** Verdict keywords per extraction layer, worst-first: when several match at
- *  one layer the most pessimistic declaration wins (see
+/** Verdict keywords on a verdict line, worst-first: when several match the
+ *  same line the most pessimistic declaration wins (see
  *  extractDeclaredStatus). */
 const STATUS_KEYWORDS: Array<[DeclaredStatus, RegExp]> = [
   ['failed', /失败|\bfailed\b/i],
@@ -65,25 +65,27 @@ const STATUS_KEYWORDS: Array<[DeclaredStatus, RegExp]> = [
   ['success', /成功|\bsuccess(?:ful)?\b|\bcompleted\b/i],
 ]
 
-function scanStatus(layer: string, includeError: boolean): DeclaredStatus | undefined {
+function scanStatus(line: string): DeclaredStatus | undefined {
   for (const [status, re] of STATUS_KEYWORDS) {
-    if (re.test(layer)) return status
+    if (re.test(line)) return status
   }
-  // `error` is a verdict only where a verdict is being stated; in running
-  // prose it is a topic word ("error handling", "0 errors") and a clean
-  // report mentioning it must not read as failed (the digit lookbehind keeps
-  // "0 errors"/"2 errors" counts out even in a status line).
-  if (includeError && /(?<!\d )\berrors?\b/i.test(layer)) return 'failed'
+  // `error` is a verdict only ON a verdict line (a line the writer framed as
+  // the status); the digit lookbehind keeps "0 errors"/"2 errors" counts out
+  // even there.
+  if (/(?<!\d )\berrors?\b/i.test(line)) return 'failed'
   return undefined
 }
 
-/** The one line a reply states its verdict on: the report skeleton's `## 状态`
- *  section (verdict on the heading itself or on the first line under it), or
- *  a `状态：…` / `执行结果：…` / `Status: …` label line. */
+/** The one line a text states its verdict on: a 状态-family heading (the
+ *  report skeleton's `## 状态`, the reply duty's `## 执行结果` — verdict on
+ *  the heading itself or on the first line under it) or a `状态：…` /
+ *  `执行结果：…` / `Status: …` label line. Same word family both forms —
+ *  one vocabulary, so a model cannot be compliant in one shape and unread
+ *  in the other. */
 function statusLineOf(text: string): string | undefined {
   const lines = text.split(/\r?\n/)
   for (let i = 0; i < lines.length; i++) {
-    const heading = lines[i].match(/^[ \t]*#{1,6}[ \t]*(?:状态|status)[ \t]*(?:[：:][ \t]*(.*))?$/i)
+    const heading = lines[i].match(/^[ \t]*#{1,6}[ \t]*(?:执行|任务|最终)?(?:状态|结果|status)[ \t]*(?:[：:][ \t]*(.*))?$/i)
     if (heading) {
       const inline = (heading[1] ?? '').trim()
       if (inline) return inline
@@ -100,24 +102,25 @@ function statusLineOf(text: string): string | undefined {
   return undefined
 }
 
-/** Extract the sub-agent's self-declared outcome from its reply — advisory
- *  data for the downstream reader, never plan state. The structured status
- *  line (the report skeleton's own `## 状态` shape, or a `状态：` label) is
- *  matched first and wins outright — log lines and prose digressions cannot
- *  vote; without one the whole text is keyword-scanned. Within a layer the
- *  WORST match wins (failed before partial before success): a reply naming
+/** Extract the self-declared outcome from a verdict-bearing text — advisory
+ *  data for the downstream reader, never plan state. The CALLER owns the
+ *  source order (spawn-tool: the delivered report's head first, the reply's
+ *  status line second); this function reads the verdict LINE and nothing
+ *  else — prose never votes. A code-review reply describing 「Office 写入无
+ *  失败兜底」 is stating its subject, not its verdict, and the old full-text
+ *  keyword scan declared a fully-successful node failed off exactly that
+ *  (conv_20261005114823 n8: the report said 成功, the prose scan overrode
+ *  it). No verdict line → undefined: an honest "no declaration" (no chip) —
+ *  a hidden failure surfaces when the downstream reader opens the report,
+ *  which the exchange contract already makes it do. Within the line the
+ *  WORST match wins (failed before partial before success): a line naming
  *  several reads pessimistic, and a passing negation (「不是失败」) is priced
- *  in — the model states its verdict plainly, the scan only reads it, and a
- *  spurious 失败 costs the downstream node one re-check while a hidden one
- *  costs a re-run. English synonyms count (weak models mix); prose `error`
- *  is a topic, not a verdict. */
+ *  in — the model states its verdict plainly, the scan only reads it.
+ *  English synonyms count (weak models mix); `error` on a verdict line is a
+ *  verdict, "0 errors" is a count. */
 export function extractDeclaredStatus(text: string): DeclaredStatus | undefined {
   const line = statusLineOf(text)
-  if (line) {
-    const declared = scanStatus(line, true)
-    if (declared) return declared
-  }
-  return scanStatus(text, false)
+  return line ? scanStatus(line) : undefined
 }
 
 /** The 准入 contract injected into a plan-node spawn's task message (E2):

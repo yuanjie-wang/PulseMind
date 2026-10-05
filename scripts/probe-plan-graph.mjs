@@ -227,6 +227,18 @@ function ReportMount() {
   )
 }
 
+// Highlight fixture (查看子代理会话时面板对应模块高亮): the drill-in is open on
+// n2's session, so n2's card wears the accent while its neighbours keep the
+// grey sheet — and the null mount is the closed-drill-in control, where no
+// card may carry it.
+function HighlightMount({ highlightNodeId }: { highlightNodeId: string | null }) {
+  return (
+    <div id={highlightNodeId ? 'highlight' : 'nohighlight'} style={{ width: 420, height: 420, border: '1px solid #ccc', position: 'relative' }}>
+      <PlanGraphView plan={fresh} onJumpToStep={() => {}} highlightNodeId={highlightNodeId} />
+    </div>
+  )
+}
+
 createRoot(document.getElementById('app')).render(
   <ConfigProvider theme={{ token: { colorPrimary: '#1677ff' } }}>
     <div style={{ display: 'flex', gap: 16, padding: 16, background: '#fff', flexWrap: 'wrap' }}>
@@ -237,6 +249,8 @@ createRoot(document.getElementById('app')).render(
       <HeadMount p={longObjective} />
       <ClickMount />
       <ReportMount />
+      <HighlightMount highlightNodeId="n2" />
+      <HighlightMount highlightNodeId={null} />
       <NarrowMount />
       <CanvasMount />
     </div>
@@ -863,6 +877,60 @@ check('[report] clicking 查看报告 opens the report — and not the session b
   JSON.stringify(reportClicks) === JSON.stringify([['report', 'n1']]),
   JSON.stringify(reportClicks))
 
+// ── Drill-in highlight (查看子代理会话时面板对应模块高亮) ──
+// The card the sub-agent session view is open on wears the accent ink the
+// report link already carries on these cards (--pm-link / --pm-link-bg);
+// everything else — dash, glyph, ink ladder, sibling cards — stays untouched,
+// and a closed drill-in paints no accent at all.
+await page.waitForSelector('#highlight [data-node="n2"]', { timeout: 10000 })
+const highlightFacts = await page.evaluate(() => {
+  const res = (raw) => {
+    if (!raw || raw.indexOf('var(') < 0) return raw
+    const d = document.createElement('div')
+    d.style.color = raw
+    document.body.appendChild(d)
+    const v = getComputedStyle(d).color
+    d.remove()
+    return v
+  }
+  const cards = [...document.querySelectorAll('#highlight g[data-node]')]
+    .filter((g) => !g.dataset.node.startsWith('__'))
+    .map((g) => {
+      const r = g.querySelector('rect')
+      return {
+        node: g.dataset.node,
+        marked: g.dataset.highlighted === 'true',
+        stroke: res(r.getAttribute('stroke')),
+        fill: res(r.getAttribute('fill')),
+        title: g.querySelector('title')?.textContent ?? '',
+      }
+    })
+  return { cards, linkInk: res('var(--pm-link)'), linkTint: res('var(--pm-link-bg)') }
+})
+const hlCard = highlightFacts.cards.find((c) => c.node === 'n2')
+const hlSiblings = highlightFacts.cards.filter((c) => c.node !== 'n2')
+check('[highlight] exactly the viewed node carries the mark, one card at most',
+  hlCard?.marked === true && hlSiblings.every((c) => !c.marked) && highlightFacts.cards.length === 3,
+  JSON.stringify(highlightFacts.cards.map((c) => [c.node, c.marked])))
+check('[highlight] the highlighted card wears the link ink over the link tint',
+  hlCard?.stroke === highlightFacts.linkInk && hlCard?.fill === highlightFacts.linkTint,
+  `stroke=${hlCard?.stroke} vs ${highlightFacts.linkInk}; fill=${hlCard?.fill} vs ${highlightFacts.linkTint}`)
+check('[highlight] sibling cards keep the grey sheet (white fill, grey stroke)',
+  hlSiblings.every((c) => (c.fill === '#ffffff' || c.fill === 'rgb(255, 255, 255)') && isGrey(c.stroke)),
+  hlSiblings.map((c) => `${c.node}:${c.fill}/${c.stroke}`).join('; '))
+check('[highlight] the tooltip names what is being viewed',
+  !!hlCard && hlCard.title.includes('正在查看该模块的子代理会话'),
+  hlCard?.title)
+const noHl = await page.evaluate(() => ({
+  marked: document.querySelectorAll('#nohighlight [data-highlighted]').length,
+  fills: [...document.querySelectorAll('#nohighlight g[data-node] rect')]
+    .filter((r) => !r.closest('g[data-node]').dataset.node.startsWith('__'))
+    .map((r) => r.getAttribute('fill')),
+}))
+check('[nohighlight] a closed drill-in paints no accent and no tinted fill',
+  noHl.marked === 0 && noHl.fills.every((f) => f === 'var(--pm-elevated)'),
+  JSON.stringify(noHl))
+
 
 // ── Canvas (PLAN-plan-graph-canvas M4): 100% floor + drag-to-scroll + click
 // guard + reset — all with a real pointer, never dispatched events. ──
@@ -950,6 +1018,7 @@ for (const id of ['mid', 'fresh', 'chain']) {
   await page.locator(`#${id}`).screenshot({ path: join(SHOTS, `plan-${id}.png`) })
 }
 await page.locator('#click').screenshot({ path: join(SHOTS, 'plan-click.png') })
+await page.locator('#highlight').screenshot({ path: join(SHOTS, 'plan-highlight.png') })
 // The full-size shot is only worth looking at if it really is 1:1 — one CSS
 // pixel per layout unit here, rendered into the PNG at deviceScaleFactor 2.
 const zoomScale = await page.evaluate(() => {

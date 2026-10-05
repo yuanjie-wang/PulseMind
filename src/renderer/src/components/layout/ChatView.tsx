@@ -99,6 +99,11 @@ interface ChatViewProps {
    *  the other entry point: a spawn with no plan node (a plain loop, or a single
    *  @expert summon) has no node to click, so the card is the only way in. */
   onOpenSubAgent?: (subConvId: string, title: string) => void
+  /** The plan node whose sub-agent session the host is showing in the drill-in
+   *  (App owns subAgentView) — the work-plan panel highlights that card, so the
+   *  graph answers 「我在读哪个模块」. Null = no drill-in open, or the viewed
+   *  session belongs to no node (a plain spawn). */
+  highlightPlanNodeId?: string | null
   /** 存为日常任务: distill the whole conversation into a routine draft and jump
    *  to the routine editor (see useChatController.extractRoutine). Main-chat
    *  only — every other host renders the transcript without this, so the
@@ -180,6 +185,7 @@ function ChatView({
   onPlanJump,
   onOpenPlanNode,
   onOpenSubAgent,
+  highlightPlanNodeId,
   onExtractRoutine,
   canOpenNode,
   onOpenNodeReport,
@@ -993,6 +999,7 @@ function ChatView({
         onOpenPlanNode={onOpenPlanNode}
         canOpenNode={canOpenNode}
         onOpenNodeReport={onOpenNodeReport}
+        highlightPlanNodeId={highlightPlanNodeId}
         browserPane={browserPane}
         onBrowserAction={browserPaneBinding.action}
         onBrowserWidth={(w) => browserPaneBinding.pushWidth(w, browserPaneBinding.chatAreaWidth)}

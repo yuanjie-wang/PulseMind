@@ -15,7 +15,7 @@
  *    node's own status that decides whether the view keeps polling.
  */
 import type { AgentMessage, ToolUseBlock } from '../types/agent'
-import type { PlanNode } from '../../../shared/types/plan'
+import type { Plan, PlanNode } from '../../../shared/types/plan'
 
 export type PlanNodeTarget =
   /** Open the sub-agent session; `live` means the run is still open. */
@@ -59,5 +59,24 @@ export function resolvePlanNodeTarget(
     return { kind: 'session', subConvId, live }
   }
   if (node.msgId) return { kind: 'message', msgId: node.msgId }
+  return null
+}
+
+/** The plan node whose linked session is `subConvId` — the drill-in's highlight
+ *  key for the work-plan panel (查看子代理会话时面板对应模块高亮). Resolution
+ *  runs in the click's own direction (resolvePlanNodeTarget), so a node
+ *  highlights exactly when clicking it would open the session being viewed;
+ *  a spawn with no plan node (a plain loop) highlights nothing, and after a
+ *  re-dispatch the node follows its newest session, not the superseded one. */
+export function planNodeIdForSession(
+  plan: Plan | null | undefined,
+  messages: AgentMessage[],
+  subConvId: string,
+): string | null {
+  if (!plan || !subConvId) return null
+  for (const node of plan.nodes) {
+    const target = resolvePlanNodeTarget(node, messages)
+    if (target?.kind === 'session' && target.subConvId === subConvId) return node.id
+  }
   return null
 }
