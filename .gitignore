@@ -40,3 +40,6 @@ scripts/.tmp/
 # behind by manual export/deck testing; never part of the repo.
 /test/
 /test.pdf
+
+# Vitest coverage report output (`npm run test:coverage`)
+coverage/
