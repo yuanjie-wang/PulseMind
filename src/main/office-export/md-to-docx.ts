@@ -326,7 +326,7 @@ function tableChild(token: MarkedToken, degrade: Degradations, images: Map<strin
 }
 
 /** href paths referenced by ![...](href) — workspace-relative or absolute,
- *  in document order (the service resolves + reads them, mirroring deckImagePaths). */
+ *  in document order (the service resolves + reads them, same discipline as the pptx generators). */
 export function mdImagePaths(md: string): Array<{ href: string }> {
   const out: Array<{ href: string }> = []
   const seen = new Set<string>()

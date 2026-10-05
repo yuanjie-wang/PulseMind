@@ -6,7 +6,7 @@
 //  Fidelity contract (v1): headings PAGINATE (D2) — the first h1 is the cover,
 //  every later h1/h2 starts a slide, deeper headings are bold body lines.
 //  Inline styling takes the OUTERMOST token only, like md-to-docx; anything
-//  the deck cannot express (images, inline HTML, a second table on one page,
+//  the design route is overkill for (images, inline HTML, a second table on one page,
 //  slides past the cap) degrades to text PLUS a closing 备注 page naming the
 //  loss — never silent.
 
@@ -153,7 +153,7 @@ export function markdownToSlideSpecs(md: string): PptxSpecs {
     slides.push(slide)
     return slide
   }
-  // A deck with no leading heading still renders — everything rides one page.
+  // An outline with no leading heading still renders — everything rides one page.
   let current = newSlide('content', '')
 
   for (const token of tokens) {

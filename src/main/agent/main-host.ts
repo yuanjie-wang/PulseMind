@@ -285,7 +285,7 @@ export const mainHost: PulseHost = {
     svcXlsx.svcEditXlsx(input as { filePath: string; ops: never[] }) as Promise<import('../../shared/office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>,
   inspectOffice: async (input: { filePath: string }) => (await import('../services/office-inspect')).svcInspectOffice(input),
   readOffice: async (input: import('../../shared/office/ops').OfficeReadInput) => (await import('../services/office-read')).svcReadOffice(input),
-  exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; deck?: unknown; fontSize?: number; filePath: string }) =>
+  exportDocument: async (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; htmlPath?: string; fontSize?: number; filePath: string }) =>
     svcExport.svcExportDocument(input),
   knowledgeWriteExperience: (data) => Promise.resolve(kq.svcWriteExperience(data)),
 

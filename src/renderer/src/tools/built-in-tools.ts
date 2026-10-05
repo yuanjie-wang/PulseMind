@@ -714,7 +714,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── export_document (PLAN-office-export) ───────────────────────────
   {
     name: 'export_document',
-    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading), .csv, .pptx (PowerPoint slides — structured `deck` with real layouts/charts/KPI cards, or markdown outline), or .pdf (converted from docx — inline markdown, or sourcePath pointing at an existing .docx). For ANY make-a-PPT request use format pptx — never shell out to python-pptx. Give inline `content`, a structured `deck` (pptx only), or a workspace `sourcePath` — exactly one. The file lands in the conversation workspace and opens in the preview pane.',
+    description: 'Export content as a real deliverable file: .docx (Word, from markdown), .xlsx (Excel, one sheet per `## ` heading), .csv, .pptx (PowerPoint slides — ALWAYS via the HTML design route `htmlPath`: align style with the user first, then tokens.css + deck.html + convert; a markdown outline via `content` is only a plain-text fallback), or .pdf (converted from docx — inline markdown, or sourcePath pointing at an existing .docx). For ANY make-a-PPT request use format pptx — never shell out to python-pptx. Give inline `content`, a workspace `htmlPath` (pptx design route), or a workspace `sourcePath` — exactly one. The file lands in the conversation workspace and opens in the preview pane.',
     category: 'file',
     triggers: ['export', '导出', '生成 excel', '生成 word', '生成 ppt', '生成 pdf', '转成表格', '转成文档', '转成 pdf'],
     input_schema: {
@@ -722,16 +722,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         format: { type: 'string', enum: ['docx', 'xlsx', 'csv', 'pptx', 'pdf'], description: 'Target format.' },
         content: { type: 'string', description: 'Inline source: full markdown for docx/pptx/pdf; a markdown table (or `## Sheet` sections) or CSV data for xlsx/csv. Soft cap 100KB — larger sources go through sourcePath.' },
-        deck: {
-          type: 'object',
-          description: '(pptx only) 结构化幻灯片，替代 markdown content——每一页选一个版式，引擎负责排版、配色与图表绘制：{ title: string, theme?: { accent: "RRGGBB" }, slides: [...] }。slides[].layout 取值：cover(封面: title+subtitle) / section(章节页: title+subtitle) / bullets(要点页: title+bullets, 每项为字符串或{text,sub}) / two-col(双栏: title+columns=[{heading,bullets},{heading,bullets}]) / kpi(大数字卡: title+items=[{value,label}] 2-4个) / chart(图表页: title+chart={type:"column"|"bar"|"line"|"pie", categories:[…], series:[{name, values:[…]}]}) / table(表格页: title+header+rows≤12行) / quote(引用页: quote+author) / image(图片页: image=工作区图片路径, caption?, bullets?)。任意页可加 note(页底来源行)。需要图表/数据卡片/双栏对比/配图的 PPT 一律用 deck。',
-          properties: {
-            title: { type: 'string', description: 'Deck 标题（写入文档元数据）。' },
-            theme: { type: 'object', properties: { accent: { type: 'string', description: '主题强调色，6 位 RRGGBB 不带 #（如 2F54EB）' } } },
-            slides: { type: 'array', description: '逐页的版式与内容。', items: { type: 'object' } },
-          },
-          required: ['title', 'slides'],
-        },
+        htmlPath: { type: 'string', description: '(pptx only) 设计路线：工作区 deck.html 的路径（与 content/sourcePath 互斥）。从零做 PPT 唯一生成路线——流程：①先与用户对齐风格（给 1–3 个方向：主色/明暗/字体/气质，确认后才动手，不跳过）→ ②write tokens.css（14 个主题变量：7 色 + font-zh/latin/mono + 字号阶 fs-cover/title/body/note，落定即锁）→ ③write deck.html（每页一个 960×540 的 .slide，受限 profile；font-size 引用 var(--pm-fs-*)，font-family 只许 var(--pm-font-*)）→ ④传 htmlPath 转换。图表用 <div data-chart=\'{"type":…}\'> 标注（引擎画成原生可编辑形状），禁 @font-face/渐变/网络资源。profile 全文见 office 技能 references/pptx.md 设计路线节。' },
         sourcePath: { type: 'string', description: 'Path to an existing workspace file to convert instead of inline content: .md/.csv for the generators, .docx for format pdf.' },
         fontSize: { type: 'number', description: '(docx/pdf only) 正文基准字号，单位磅，6–72 可带 0.5（10.5=五号、12=小四、16=三号）——标题与代码块按比例缩放。只调局部字号：先导出，再用 office_edit 的 format_text 改。' },
         file_path: { type: 'string', description: 'Relative target path (default: export-<timestamp>.<format> in the workspace root). Existing files are never overwritten — a -2 suffix is added.' },

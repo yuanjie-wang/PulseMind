@@ -437,7 +437,7 @@ export interface ElectronAPI {
   editXlsx: (input: { filePath: string; ops: import('../office/ops').XlsxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>
   inspectOffice: (input: { filePath: string }) => Promise<import('../office/ops').OfficeInspectResult>
   readOffice: (input: import('../office/ops').OfficeReadInput) => Promise<import('../office/ops').OfficeReadResult>
-  exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; deck?: unknown; fontSize?: number; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number }>
+  exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; htmlPath?: string; fontSize?: number; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number; report?: string }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
   /** M10: register the per-mount element-edit nonce in the main process —
    *  the served picker copy reads it there, never the frame URL. */

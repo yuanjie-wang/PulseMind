@@ -22,7 +22,8 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 用户诉求落在哪一格，决定走哪条路线：
 
 - **改已有文件**（附件或工作区里的 .docx/.xlsx/.pptx）→ **编辑路线**：\`office_inspect\` 拿清单与文本预算 → 需要精确原文 / 单元格值 / shape 全文时 \`office_read\` 分页精读 → \`office_edit\`。字节保真，未触及的部件逐字节不变。
-- **从零做一个**（"给我一份""整理成 Excel"）→ **生成路线**：\`export_document\`。PPT 一律给结构化 \`deck\`（版式化生成，详见 \`references/pptx.md\`），纯文字 markdown 只当兜底。
+- **从零做一个**（"给我一份""整理成 Excel"）→ **生成路线**：\`export_document\`（Word / Excel / PDF 用 content 或 sourcePath）。**从零做一个 PPT 一律走设计路线**（下一格）。
+- **从零做一个 PPT**（无论有没有明说设计要求）→ **设计路线**：**先对齐风格、落定 tokens.css，再写 HTML**——①给用户 1–3 个风格方向（主色/辅色/明暗/字体/气质，用具体 hex 与场景理由；用户说不清就用方向对比帮他说清，给了明确品牌色就复述确认），②确认后 \`write\` tokens.css 落定主题——**tokens 即锁**，之后改风格只改它；不要跳过对齐自作主张套默认主题。③写 deck.html（受限 HTML profile，每页一个 960×540 的 .slide），④\`export_document\`（format pptx + \`htmlPath\`）。用户明确只要纯文字大纲页时才退 markdown content（兜底）。**profile 与流程全文见 \`references/pptx.md\` 设计路线节**。
 - **用户给了模板要套**（公司 PPT 模板、合同模板）→ **模板继承**：先 \`office_inspect\` 看结构，再用编辑工具逐形状 / 逐段填入内容。**不要**用 \`export_document\` 重建——那会丢掉模板的母版与样式，而模板的价值全在那里。
 - **格式转换**（docx→PDF、CSV→xlsx）→ \`export_document\`：\`sourcePath\` 指已有文件，或 \`content\` 给内容。
 - **只是要看内容 / 做总结** → \`read\`（自动转 markdown）。要**编辑定位**——精确段落原文、10×10 头部预览之外的单元格值、某形状的全文与 shape id——走 \`office_read\`：它给的是编辑工具消费的坐标（段落索引 / 单元格地址 / shape id），\`read\` 的 markdown 是重排过的，抄进 replace_text 会错位。
@@ -66,6 +67,7 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 - **降级项**：图片、公式、脚注、内嵌 HTML 这类被降级的内容，有没有在回复里如实说明？
 - **数字与格式**：表头字段名是否自解释；百分比 / 日期要不要 \`number_format\`；公式有没有 \`#REF!\` / \`#DIV/0!\` 风险（除法包 \`IFERROR\`）。
 - **长度**：有没有超预算的替换、有没有一页塞七八条要点。
+- **设计路线（htmlPath）**：保真报告里的降级项已在回复里如实说明；deck.html / tokens.css 留在工作区并在回复里告知（用户改版式的入口）；改过 HTML 重新导出前，确认没有丢掉用户在 pptx 上做过的 office_edit 修改。
 - **交付指引**：\`export_document\` 会自动在预览面板打开产物——用户关心的重点如果在里面，指给他看。
 
 自检发现的问题，能修就修一轮再交付；修不了的写进回复说明，不要沉默交付。
@@ -78,7 +80,7 @@ export const OFFICE_SKILL_PROMPT = `## Active Skill: Office Deliverables
 |---|---|
 | \`references/docx.md\` | 出 Word：报告 / 公文 / 合同 / 简历各自的版式规范、markdown 能表达与不能表达什么、编辑要点 |
 | \`references/xlsx.md\` | 出 Excel：四条公式原则、表结构与类型规范、生成端的边界、编辑要点 |
-| \`references/pptx.md\` | 出 PPT：deck 版式库（cover/bullets/kpi/chart/table/image…）、每页信息量、配色与字号、模板填充与文本预算 |
+| \`references/pptx.md\` | 出 PPT：设计路线全文（风格对齐 → tokens.css → deck.html 的 profile 与图表标注）、每页信息量、配色与字号、模板填充与文本预算 |
 
 只有需要判断"这份交付该长什么样"时才读；一次性的小任务不必读。
 `

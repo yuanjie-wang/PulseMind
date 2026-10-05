@@ -715,7 +715,7 @@ function geometryOf(spPr: XNode | undefined, skipped: PptxSkipped): PptxGeometry
   if (prst === 'rect' || prst === 'flowChartProcess' || prst === 'textBox') return { prst: 'rect' }
   if (prst === 'line' || prst === 'straightConnector1') return { prst, isLine: true }
   if (prst === 'pie') {
-    // OOXML defaults: 0°→270° (a three-quarter wedge); deck-to-pptx always
+    // OOXML defaults: 0°→270° (a three-quarter wedge); the chart painter always
     // writes both adj values, so the fallback only guards hand-made files.
     return { prst, startAngleDeg: adjValue(prstGeom as XNode, 'adj1', 0) / 60000, endAngleDeg: adjValue(prstGeom as XNode, 'adj2', 16200000) / 60000 }
   }

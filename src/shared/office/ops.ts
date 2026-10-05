@@ -112,6 +112,7 @@ export interface OfficeReadResult {
     slides?: Array<{ index: number; shapes: Array<{ shapeId: string; name: string; phType?: string; text: string }> }>
     error?: string
   }
+  error?: string
 }
 
 // ── office_inspect outcome (PLAN-office-editing §P1) ──

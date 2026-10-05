@@ -13,8 +13,10 @@
  *     no styles, no formulas)
  *   - markdown → pptx: office-export/md-to-pptx.ts (slide limit 200, bullet
  *     level capped at 2, one table per page, fixed 16:9)
- *   - deck spec → pptx: office-export/deck-to-pptx.ts (9 layouts, vector-shape
- *     charts, accent theme; the model picks layouts, never coordinates)
+ *   - html design route → pptx: office-export/html-measure.ts + html-to-pptx.ts
+ *     (Chromium-measured layout facts → positioned shapes; profile rules below
+ *     are checked by the engine, not aspirational; charts draw via
+ *     chart-draw.ts from data-chart annotations)
  *   - edit operators and refusals: shared/office/ops.ts + each tool's manual
  *   - pptx `format_text` font writes BOTH a:latin and a:ea (pptx/ops.ts), so a
  *     CJK face name takes effect on Chinese text — that is why the recipe below
@@ -144,29 +146,15 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
   'references/pptx.md': `# PPT 交付规范（pptx）
 
-生成走 \`export_document\`（format pptx）：**默认给结构化 \`deck\`**（版式化生成，有设计感），纯文字大纲也可以给 markdown \`content\`（堆文字的兜底）。改已有文件或套模板走 \`office_edit\`。
+生成一律走**设计路线**（§七）：风格对齐 → tokens.css → deck.html → \`export_document\`（format pptx + \`htmlPath\`）；markdown \`content\` 只是纯文字大纲的兜底（§三）。改已有文件或套模板走 \`office_edit\`（§四）。
 
-## 一、deck：版式化生成（默认路线）
+## 一、从零生成只走设计路线
 
-deck 是一个 JSON 对象：\`{ title, theme?: { accent }, slides: [...] }\`。**你选版式、填内容；排版、配色、图表全部由引擎完成**——你给出的不是坐标和字号，而是「这一页是什么类型的页」。
+从零做 PPT **只有一条生成路线**：设计路线（§七）——风格对齐 → \`write\` tokens.css → \`write\` deck.html → \`export_document\`（format pptx + \`htmlPath\`）。你给的是「这一页长什么样」的 CSS，引擎用 Chromium 实测布局后输出**原生可编辑形状**（不是截图）。
 
-| layout | 用途 | 必填槽位 |
-|---|---|---|
-| \`cover\` | 封面 | title（+subtitle） |
-| \`section\` | 章节隔页（整页浅色底） | title（+subtitle） |
-| \`bullets\` | 要点页 | title + bullets（1–10 条，字符串或 {text, sub:[…]}） |
-| \`two-col\` | 双栏对比 | title + columns=[{heading, bullets}, {heading, bullets}] |
-| \`kpi\` | 大数字卡 | title + items=[{value, label}]（2–4 个） |
-| \`chart\` | 图表页 | title + chart={type, categories, series} |
-| \`table\` | 表格页 | title + header + rows（≤12 行） |
-| \`quote\` | 引用页 | quote（+author） |
-| \`image\` | 图片页 | image=工作区图片路径（png/jpg/gif；caption、bullets 可选，有 bullets 时图左文右） |
+流程总览与 profile 全文见 §七；本文件 §二（每页信息量）、§五（配色与字号）两条路线通用。
 
-图表 \`chart\`：\`type\` 取 \`column\`（柱状）/ \`bar\`（条形）/ \`line\`（折线）/ \`pie\`（饼图，只吃一组 series 且值非负）；\`categories\` 2–12 个；\`series\` 1–4 组，每组 \`{ name, values }\` 与 categories 等长。图表以矢量形状绘制——PowerPoint 里可以改色改字，**改数据要重新导出**（如实告知用户）。
-
-一套 deck 的标准骨架：cover → （section…）→ 内容页若干 → 结尾不要空「谢谢」页。用户给了品牌色就写进 \`theme.accent\`（RRGGBB 不带 #），引擎会派生整套配色。
-
-## 二、每页信息量（两种路线都适用）
+## 二、每页信息量（设计路线与 markdown 兜底都适用）
 
 - 标题 ≤ 20 字；要点 **3–8 条**；每条 ≤ 20 字。
 - 超了就**拆页**，不要指望压缩字号——16:9 的页面塞不下就是塞不下。
@@ -175,9 +163,9 @@ deck 是一个 JSON 对象：\`{ title, theme?: { accent }, slides: [...] }\`。
 
 ## 三、表达不了的（如实告知）
 
-- **deck 路线**：图表改数据需重新导出（形状不是活图表）；无母版/动画/切换；不指定中文字体（打开端自行替换）；slides 上限 200 页。
-- **markdown 路线**：图片降级成文字（末尾追加「备注」页列损失）；无图表、无版式变化，固定 16:9。
-- **两路线都没有**：母版定制、动画、切换。用户给的公司模板价值在母版——那走 \`office_edit\`（见下）。
+- **设计路线**：颜色只收不透明（半透明被点名拒绝）；渐变/CSS 变换/动画进不了 pptx；图表改数据 = 改 \`data-chart\` 标注后重转（形状不是活图表）；无母版/动画——用户公司模板的价值在母版，那走 \`office_edit\`（§四）。
+- **markdown 兜底路线**：图片降级成文字（末尾追加「备注」页列损失）；无图表、无版式变化，固定 16:9。
+- **两条路线都没有**：母版定制、动画、切换。
 
 ## 四、套模板（office_edit 的主场）
 
@@ -193,7 +181,7 @@ deck 是一个 JSON 对象：\`{ title, theme?: { accent }, slides: [...] }\`。
 
 ## 五、配色与字号
 
-- deck 的配色由 \`theme.accent\` 一处驱动（引擎派生浅底、卡片、图表主色）；默认 2F54EB。
+- 设计路线的配色由 tokens.css 一处驱动（§七 §1）；图表主色取 \`--pm-accent\`，先骑系列色首位。
 - \`office_edit\` 手工样式时：颜色写 6 位 \`RRGGBB\` 不带 \`#\`；字号阶梯（pt）封面主标题 40–44 / 页标题 28–32 / 要点 18–22 / 注释与来源 12–14；一套 deck 最多 2–3 个强调色，正文近黑（\`262626\`），强调色只给标题或关键数字。
 - 底色 / 形状色用 \`set_shape_fill\`（\`"none"\` 表示无填充）、\`set_slide_background\`；位置尺寸用 \`set_shape_geometry\`（单位**英寸**）。
 - 样式类算子不允许改变可见文字——引擎会在文字被改动时拒绝整批。这是防"改样式顺手把内容改没了"的护栏，不是限制。
@@ -201,8 +189,105 @@ deck 是一个 JSON 对象：\`{ title, theme?: { accent }, slides: [...] }\`。
 ## 六、交付前
 
 - 封面有信息（标题 / 副标题）；每页都有标题，没有一页只剩一行；结尾不要留空「谢谢」页。
-- deck 路线的图片必须先存在于工作区（没有就先画 SVG/PNG 存进去或如实说明）；图片页记得写 caption。
-- markdown 路线追加的「备注」页（列降级损失）在回复里提一句，别让它莫名出现在成品末尾。
-- 数字页（kpi / chart / table）的口径与来源写在 \`note\` 里，或在回复里说明。
+- 设计路线的图片必须先存在于工作区（html 里相对路径引用，png/jpg/gif）；转换成功结果带保真报告，交付时如实转述降级项。
+- markdown 兜底路线追加的「备注」页（列降级损失）在回复里提一句，别让它莫名出现在成品末尾。
+- 数字页（图表/表格/大数字）的口径与来源写在页脚或回复里说明。
+
+## 七、设计路线（htmlPath：HTML → pptx）
+
+这是从零做 PPT 的**唯一生成路线**。四步：**风格对齐**（与用户确认，不要跳过）→ \`write\` tokens.css（主题落定）→ \`write\` deck.html（版式与内容）→ \`export_document\`（format pptx + \`htmlPath\`）。引擎用 Chromium 实测布局后输出**原生可编辑形状**（不是截图），产物预览与 HTML 一致。
+
+### 0. 风格对齐：先定调，再动手
+
+写任何文件之前，先和用户完成一次风格确认——**设计路线没有「默认主题兜底」这回事**：引擎内置的默认变量只是防止预览坏掉的技术兜底，不是你的设计起点，跳过对齐直接动手是这条路线的第一错误。做法：
+
+1. 依据用户给的品牌色 / 参考图 / 场景（汇报？路演？课程？），整理 **1–3 个风格方向**，每个方向给：主色 + 面板/辅助色（具体 hex）、明暗倾向、中文字体、一句话气质（如「深蓝 + 灰白的稳重商务」「暖米 + 砖红的杂志感」）。
+2. 用户说不清想要什么时，用**方向对比**帮他说清（「A 更稳重、B 更年轻，偏哪个？」）；用户已给明确品牌色板时直接复述确认即可，不必硬造三个方向。
+3. **用户确认即落定**：把确认结果写进 tokens.css。落定之后这套变量就是本 deck 的唯一主题——改风格 = 改 tokens.css 重转，HTML 与内容零改动；不要在 HTML 里另起炉灶硬写颜色。
+
+### 1. tokens.css：把确认的风格落成 14 个变量
+
+固定 schema 的 14 个变量（7 色 + 3 字体 + 4 字号阶），别写别的：
+
+\`\`\`css
+:root {
+  /* 色 */
+  --pm-accent: #C2483B;       /* 强调色：短条、编号、关键数字、图表主色——只给焦点，禁大面积铺色 */
+  --pm-accent-soft: #F5DDD9;  /* 强调色的浅色层：徽标底、浅色强调块（替代半透明的唯一做法） */
+  --pm-ink: #1F1F1F;          /* 正文墨色 */
+  --pm-muted: #8A8A8A;        /* 次要文字 */
+  --pm-panel: #F6F1EA;        /* 卡片/面板底 */
+  --pm-bg: #FFFFFF;           /* 页面底色 */
+  --pm-line: #E0DAD2;         /* 发丝线/分割线（配 1px 高的色块，不用 border 也行） */
+  /* 字体 */
+  --pm-font-zh: '微软雅黑';     /* 中文字体 */
+  --pm-font-latin: 'Arial';   /* 西文字体 */
+  --pm-font-mono: 'Menlo';    /* 等宽：数字、页码（3 / 14）、技术标注——数字用它，气质立刻不同 */
+  /* 字号阶（html 里引用 var(--pm-fs-*)；改阶 = 改这里，HTML 零改动） */
+  --pm-fs-cover: 48px;        /* 封面巨标 */
+  --pm-fs-title: 30px;        /* 页标题 */
+  --pm-fs-body: 18px;         /* 正文 */
+  --pm-fs-note: 13px;         /* 注释/页脚 */
+}
+\`\`\`
+
+- 颜色一律 \`#RRGGBB\`（或 #RGB）**不透明**；字号阶是 8–200 的整像素数。
+- 字体白名单：微软雅黑 / Microsoft YaHei / PingFang SC / 苹方-简 / 黑体 / 宋体 / 等线 / 楷体 / 仿宋 / Arial / Helvetica / Calibri / Segoe UI / Georgia / Times New Roman / Verdana / Tahoma / Trebuchet MS / Courier New / Consolas / Menlo / Monaco / SF Mono / JetBrains Mono / Source Code Pro / Roboto Mono。一次一个名字。
+- **字号阶必须被引用**：html 里的 font-size 写 \`var(--pm-fs-title)\` 这类引用（页标题/正文/页脚一律如此，个别特殊字号才直接写 px）——这是「换主题字号跟着变」的机制。
+- **设计路线总是先有 tokens.css 再有 deck.html**——上一节风格对齐确认了才写，不要靠引擎默认变量出片；改主题 = 改这一个文件重转，HTML 零改动。
+- tokens.css 与 deck.html 同目录，html 里 \`<link rel="stylesheet" href="./tokens.css">\`（唯一允许的 link）。
+
+### 2. deck.html：受限 profile（白名单之外整单拒绝、点名页码与元素）
+
+每页一个 \`<div class="slide">\`（必须 \`width:960px; height:540px\`，按文档顺序成页，≤200 页）：
+
+\`\`\`html
+<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="./tokens.css">
+<style>
+  body { margin: 0 }
+  .slide { width: 960px; height: 540px; position: relative; background: var(--pm-bg) }
+</style></head><body>
+  <div class="slide">
+    <div style="position:absolute; left:64px; top:200px; width:600px">
+      <h1 style="font-size:var(--pm-fs-cover); color:var(--pm-ink)">季度经营回顾</h1>
+    </div>
+    <div style="position:absolute; left:64px; top:320px; width:600px">
+      <p style="font-size:var(--pm-fs-body); color:var(--pm-muted)">2026 Q3 · 增长与效率</p>
+    </div>
+    <div style="position:absolute; left:760px; top:0; width:200px; height:540px; background:var(--pm-accent)"></div>
+  </div>
+</body></html>
+\`\`\`
+
+**能用**：h1–h6、p、ul/ol/li（真项目符号，嵌套 ≤2 层）、table（th/td，逐格底色字号生效）、img（工作区 png/jpg/gif，相对路径）、div/span（色块卡片：background/border/border-radius 都映射）、b/strong/i/em/u/s、布局用 absolute 或流式 + flex；字号（引用 var(--pm-fs-*)）字色、行高、对齐、等宽（font-family 只许 var(--pm-font-mono) 等三个字体变量）按浏览器实测落。960×540 @96dpi ≡ 10×5.625 英寸，浏览器里的 1px 在 pptx 里是 0.75pt。
+
+**禁用（会整单拒绝）**：\`<script>\`、@font-face、svg/iframe/video/canvas 等白名单外元素；渐变（背景只收纯色）；半透明色（rgba α<1——需要浅色给 --pm-accent-soft 或调淡后的 hex）；transform / position:fixed / CSS 动画；在 HTML 里写字体名（font-family 只允许 var(--pm-font-…) 引用）；网络或内联资源（src 只能工作区文件）；表格 colspan/rowspan。**内容超出 960×540 也拒绝**——装不下就缩小或拆页。**两段文字的框相交也会拒绝**并点名两个元素——绝对定位按实际渲染高度排，拿不准就把下方元素多留一行高。box-shadow / opacity / 虚线边框映射不了，会在保真报告里如实列出，不静默丢弃。转换器已把文本框内边距清零并按对齐方向加了少量安全余量（右对齐向左扩、左对齐向右扩，锚点不动）——html 里量出的位置就是 pptx 里的位置，页码这类窄文本框不会因此折行。
+
+**图表用标注，不要画 SVG**——引擎按 deck 同款词汇画原生形状（PowerPoint 里可改色改字，改数据 = 改标注后重转）：
+
+\`\`\`html
+<div data-chart='{"type":"column","categories":["Q1","Q2","Q3"],"series":[{"name":"营收","values":[120,135,158]}]}'
+     style="position:absolute; left:64px; top:120px; width:600px; height:360px"></div>
+\`\`\`
+
+图表 JSON 与 deck 的 chart 字段同一 schema：type 取 column/bar/line/pie；categories 2–12 个；series 1–4 组与 categories 等长；pie 只吃一组且非负。
+
+### 3. 转换与交付
+
+- \`export_document\`（format pptx、htmlPath 指向 deck.html、file_path 给成品名）。**先 write 完 tokens 与 html 再调用**；profile 校验拒绝残缺 HTML 时按报错修完重试。
+- 成功结果带**保真报告**（每页块数 + 降级清单）——交付时如实转述给用户。
+- **双源契约**：HTML 是创作源——改版式/换主题 = 改 tokens.css 或 deck.html 重新导出；**交付后的小改走 office_edit**，不要改了 HTML 就重转（会丢掉已在 pptx 上做过的 office_edit 修改）。
+
+### 4. 设计 checklist（交付前）
+
+- 每页一个视觉重心：大标题 / 大数字 / 一张图；不要三栏小字挤一页。
+- 取色一律 var(--pm-*)，别硬写 hex——用户换品牌色才不用重写 HTML。
+- **强调色纪律**：accent 只给焦点元素（标题短条、章节编号、关键数字、图表主色），单页面积 ≤10%，禁止大面积铺色；浅色强调用 --pm-accent-soft。
+- **节奏**：全篇至少 2–3 页显著不同（满版反白/大图 vs 常规白底），别 14 页一个模子；章节扉页、封面、结束页可以放开做满版。
+- **密度与呼吸**：视觉锚点周围 ≥40px 空白；卡片内容占满容器（别只有半截字吊着）；横向并排的卡片标题基线对齐。
+- 字号走 var(--pm-fs-*) 阶梯（改阶不改 HTML）；页脚/页码惯例：右下 \`var(--pm-font-mono)\` + \`--pm-fs-note\`，写 \`3 / 14\` 样式；封面与结束页不放页码。
+- 逐元素 absolute 时留页边距（建议 ≥64px）；页码页脚自己排（引擎不自动加）。
+- 用户给了设计参考图时，先用预览面板核对 HTML 与参考的差距再转换——改 HTML 便宜，重转也快，但一次到位最好。
 `,
 }

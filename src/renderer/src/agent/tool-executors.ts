@@ -15,7 +15,6 @@ import type { ToolUseBlock } from '../types/agent'
 import type { AgentEngineOptions } from './AgentEngine'
 import type { SpawnSubAgentConfig, SubAgentHandle } from './agent-utils'
 import type { Plan } from '../../../shared/types/plan'
-import { parseDeckSpec } from '../../../shared/deck/spec'
 import { writeFileChunked } from './agent-utils'
 import { buildCommandFromSkillInput } from './command-builder'
 import { shSingleQuote } from './agent-utils'
@@ -554,15 +553,11 @@ export class ToolExecutor implements ToolExecContext {
         if (!['docx', 'xlsx', 'csv', 'pptx', 'pdf'].includes(format)) throw new Error(`format 必须是 docx / xlsx / csv / pptx / pdf 之一`)
         const content = typeof t.input.content === 'string' && t.input.content.trim() !== '' ? t.input.content : undefined
         const sourcePath = typeof t.input.sourcePath === 'string' && t.input.sourcePath.trim() !== '' ? t.input.sourcePath : undefined
-        const hasDeck = t.input.deck !== undefined && t.input.deck !== null
-        if (!content && !sourcePath && !hasDeck) throw new Error('content / sourcePath / deck 三选一')
-        if (hasDeck && format !== 'pptx') throw new Error('deck 仅支持 format pptx——其他格式请给 content 或 sourcePath')
-        // validate HERE, not just in main: a malformed spec fails before the
-        // IPC roundtrip with the same readable message the service would give
-        if (hasDeck) {
-          const parsed = parseDeckSpec(t.input.deck)
-          if (!parsed.ok) throw new Error(parsed.error)
-        }
+        const htmlPath = typeof t.input.htmlPath === 'string' && t.input.htmlPath.trim() !== '' ? t.input.htmlPath : undefined
+        if (!content && !sourcePath && !htmlPath) throw new Error('content / sourcePath / htmlPath 三选一')
+        if (htmlPath && format !== 'pptx') throw new Error('htmlPath 仅支持 format pptx——设计路线只产幻灯片')
+        if (htmlPath && content) throw new Error('htmlPath 与 content 二选一：设计路线的 HTML 先 write 成文件再走 htmlPath')
+        if (htmlPath && sourcePath) throw new Error('htmlPath 与 sourcePath 二选一')
         const fontSize = t.input.fontSize
         if (fontSize !== undefined) {
           if (typeof fontSize !== 'number' || !Number.isFinite(fontSize)) throw new Error(`fontSize 需是 6–72 的数字（磅），收到「${fontSize}」`)
@@ -572,9 +567,9 @@ export class ToolExecutor implements ToolExecContext {
         const rawPath = String(t.input.file_path || '') || `export-${stamp}.${format}`
         const fp = this.resolveWorkspacePath(rawPath)
         t.output = `Exporting ${format.toUpperCase()} → ${fp}...`; this.notify()
-        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf', content, sourcePath, deck: hasDeck ? t.input.deck : undefined, fontSize, filePath: fp })
+        const result = await getHost().exportDocument({ format: format as 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf', content, sourcePath, htmlPath, fontSize, filePath: fp })
         if (result.success) {
-          const summary = `Exported ${result.path} (${Math.round((result.bytes ?? 0) / 1024)} KB)`
+          const summary = `Exported ${result.path} (${Math.round((result.bytes ?? 0) / 1024)} KB)${result.report ? `\n${result.report}` : ''}`
           t.output = summary
           this.addToolResult(t.id, summary, false)
           t.exitCode = 0

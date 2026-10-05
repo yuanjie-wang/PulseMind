@@ -221,68 +221,32 @@ describe('svcExportDocument fontSize contract (docx/pdf generation only)', () =>
   })
 })
 
-describe('svcExportDocument deck path (structured slides)', () => {
-  const DECK = {
-    title: '季度经营回顾',
-    theme: { accent: 'AA33CC' },
-    slides: [
-      { layout: 'cover', title: '季度经营回顾', subtitle: '2026 Q3' },
-      { layout: 'kpi', title: '核心指标', items: [{ value: '98.2%', label: '达成率' }, { value: '3天', label: '交付周期' }] },
-      { layout: 'chart', title: '营收', chart: { type: 'column', categories: ['一月', '二月'], series: [{ name: '营收', values: [12, 30] }] } },
-    ],
-  }
+describe('svcExportDocument pptx generation (design route only)', () => {
+  const DECK = { title: '旧调用', slides: [{ layout: 'kpi', title: '指标', items: [{ value: '1', label: 'x' }] }] }
 
-  it('a structured deck exports real slides with the accent theme applied', async () => {
+  it('the retired deck parameter refuses with the design-route pointer, nothing written', async () => {
     const dir = tempDir()
-    const result = await svcExportDocument({ format: 'pptx', deck: DECK, filePath: join(dir, '回顾.pptx') })
-    expect(result.success).toBe(true)
-    expect(result.bytes).toBeGreaterThan(1000)
-    const zip = new AdmZip(readFileSync(result.path!))
-    const kpi = zip.readAsText('ppt/slides/slide2.xml')
-    expect(kpi).toContain('<a:t>98.2%</a:t>')
-    expect(kpi).toContain('val="AA33CC"')
-    const chart = zip.readAsText('ppt/slides/slide3.xml')
-    expect(chart).toContain('prst="rect"') // vector bars, not a chart placeholder
-  })
-
-  it('input contract: deck is pptx-only and exclusive of content/sourcePath', async () => {
-    const dir = tempDir()
-    const wrongFormat = await svcExportDocument({ format: 'docx', deck: DECK, filePath: join(dir, 'a.docx') })
-    expect(wrongFormat.success).toBe(false)
-    expect(wrongFormat.error).toContain('deck 仅支持 format pptx')
-    const withContent = await svcExportDocument({ format: 'pptx', deck: DECK, content: '# 冲突', filePath: join(dir, 'b.pptx') })
-    expect(withContent.success).toBe(false)
-    expect(withContent.error).toContain('deck 与 content 二选一')
-    writeFileSync(join(dir, 'x.md'), '# 大纲')
-    const withSource = await svcExportDocument({ format: 'pptx', deck: DECK, sourcePath: join(dir, 'x.md'), filePath: join(dir, 'c.pptx') })
-    expect(withSource.success).toBe(false)
-    expect(withSource.error).toContain('deck 与 sourcePath 二选一')
-  })
-
-  it('a malformed spec refuses with the validator message, nothing written', async () => {
-    const dir = tempDir()
-    const bad = { ...DECK, slides: [{ layout: 'kpi', title: '指标', items: [{ value: '1' }] }] }
-    const result = await svcExportDocument({ format: 'pptx', deck: bad, filePath: join(dir, 'bad.pptx') })
+    const result = await svcExportDocument({ format: 'pptx', deck: DECK, filePath: join(dir, 'a.pptx') })
     expect(result.success).toBe(false)
-    expect(result.error).toContain('slides[0]（kpi）')
-    expect(existsSync(join(dir, 'bad.pptx'))).toBe(false)
+    expect(result.error).toContain('deck 参数已退役')
+    expect(result.error).toContain('htmlPath')
+    expect(existsSync(join(dir, 'a.pptx'))).toBe(false)
   })
 
-  it('a referenced image is resolved from the workspace and embedded; a missing one names the slide', async () => {
+  it('htmlPath is pptx-only and exclusive of content/sourcePath', async () => {
     const dir = tempDir()
-    writeFileSync(join(dir, 'shot.png'), PNG_1PX)
-    const withImage = {
-      ...DECK,
-      slides: [{ layout: 'image', image: join(dir, 'shot.png'), caption: '后台截图' }],
-    }
-    const ok = await svcExportDocument({ format: 'pptx', deck: withImage, filePath: join(dir, '图.pptx') })
-    expect(ok.success).toBe(true)
-    expect(new AdmZip(readFileSync(ok.path!)).readAsText('ppt/slides/slide1.xml')).toContain('<p:pic>')
-
-    const missing = { ...DECK, slides: [{ layout: 'image', image: join(dir, 'nope.png') }] }
-    const fail = await svcExportDocument({ format: 'pptx', deck: missing, filePath: join(dir, 'bad2.pptx') })
-    expect(fail.success).toBe(false)
-    expect(fail.error).toContain('deck.slides[0].image')
+    const html = join(dir, 'deck.html')
+    writeFileSync(html, '<div class="slide"></div>')
+    const wrongFormat = await svcExportDocument({ format: 'docx', htmlPath: html, filePath: join(dir, 'a.docx') })
+    expect(wrongFormat.success).toBe(false)
+    expect(wrongFormat.error).toContain('htmlPath 仅支持 format pptx')
+    const withContent = await svcExportDocument({ format: 'pptx', htmlPath: html, content: '# 冲突', filePath: join(dir, 'b.pptx') })
+    expect(withContent.success).toBe(false)
+    expect(withContent.error).toContain('htmlPath 与 content 二选一')
+    writeFileSync(join(dir, 'x.md'), '# 大纲')
+    const withSource = await svcExportDocument({ format: 'pptx', htmlPath: html, sourcePath: join(dir, 'x.md'), filePath: join(dir, 'c.pptx') })
+    expect(withSource.success).toBe(false)
+    expect(withSource.error).toContain('htmlPath 与 sourcePath 二选一')
   })
 })
 
@@ -365,24 +329,23 @@ describe('export_document wiring (source scans; the unit halves live in their ow
     expect(read('src/main/services/file-ops.ts')).toContain('export_document')
   })
 
-  it('the deck path is wired end to end: schema → executor pre-validation → IPC → service → engine', () => {
+  it('the design route is wired end to end and the deck route stays retired', () => {
     const fs = require('node:fs') as typeof import('node:fs')
     const read = (p: string) => fs.readFileSync(p, 'utf8')
-    // the tool schema carries the deck parameter (a model that never sees it never sends it)
-    expect(read('src/renderer/src/tools/built-in-tools.ts')).toContain('deck: {')
-    // the executor validates BEFORE the IPC roundtrip (same dialect, shared module)
+    // the tool schema carries htmlPath (a model that never sees it never sends it)
+    expect(read('src/renderer/src/tools/built-in-tools.ts')).toMatch(/htmlPath: \{ type: 'string'/)
+    // the executor pre-validates the mutex BEFORE the IPC roundtrip
     const executor = read('src/renderer/src/agent/tool-executors.ts')
-    expect(executor).toContain("from '../../../shared/deck/spec'")
-    expect(executor).toContain('parseDeckSpec')
-    expect(executor).toContain('deck: hasDeck ? t.input.deck : undefined')
+    expect(executor).toContain('content / sourcePath / htmlPath 三选一')
+    expect(executor).toContain('htmlPath, fontSize')
     // the payload crosses preload + bridge untouched
-    expect(read('src/preload/index.ts')).toMatch(/exportDocument: \(input: \{ format: string; content\?: string; sourcePath\?: string; deck\?: unknown/)
-    expect(read('src/shared/types/electron-bridge.ts')).toContain('deck?: unknown')
-    // the service routes to the layout engine only through parseDeckSpec
+    expect(read('src/preload/index.ts')).toMatch(/exportDocument: \(input: \{ format: string; content\?: string; sourcePath\?: string; htmlPath\?: string/)
+    expect(read('src/shared/types/electron-bridge.ts')).toContain('htmlPath?: string')
+    // the service refuses the retired parameter and carries no deck engine
     const service = read('src/main/services/office-export.ts')
-    expect(service).toContain("from '../../shared/deck/spec'")
-    expect(service).toContain('deckToPptxBuffer')
-    expect(service).toContain('deckImagePaths')
+    expect(service).toContain('deck 参数已退役')
+    expect(service).not.toContain('deck-to-pptx')
+    expect(service).toContain('htmlDeckToPptxBuffer')
   })
 
   it('fontSize is wired end to end: schema → manual → executor → bridges → service → generator', () => {
@@ -394,7 +357,7 @@ describe('export_document wiring (source scans; the unit halves live in their ow
     // the executor refuses before the IPC roundtrip, and passes the value through
     const executor = read('src/renderer/src/agent/tool-executors.ts')
     expect(executor).toContain('fontSize 仅支持 format docx / pdf')
-    expect(executor).toMatch(/deck: hasDeck \? t\.input\.deck : undefined, fontSize/)
+    expect(executor).toMatch(/sourcePath, htmlPath, fontSize, filePath: fp/)
     // the payload crosses preload + bridge + host with the same field
     expect(read('src/preload/index.ts')).toContain('fontSize?: number')
     expect(read('src/shared/types/electron-bridge.ts')).toContain('fontSize?: number')

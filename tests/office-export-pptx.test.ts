@@ -175,7 +175,7 @@ describe('pptx buffer', () => {
     // failure, not an engine one — the manual is what reaches the model every
     // request (buildToolProtocols), so the prohibition must live there.
     const manual = readFileSync(join(__dirname, '../src/renderer/src/tools/tool-instructions.ts'), 'utf8')
-    expect(manual).toContain('docx/pptx/pdf take the FULL markdown document')
+    expect(manual).toContain('docx/pdf take the FULL markdown document')
     expect(manual).toContain('python-pptx')
     expect(manual).toContain('format pptx')
     const defs = readFileSync(join(__dirname, '../src/renderer/src/tools/built-in-tools.ts'), 'utf8')

@@ -1,0 +1,221 @@
+// @vitest-environment jsdom
+// PLAN-pptx-html-route — the in-page collector under jsdom. jsdom has NO
+// layout engine: every getBoundingClientRect returns zeros, so fixtures stub
+// rects per element (the extension-page-tree precedent) and inline-group Range
+// rects degrade to "none" (the collector's own guard) — text hidden inside
+// mixed-content containers is therefore NOT testable here; leaf blocks are.
+// What this pins: the walk (tags, blocks, runs, bullets, decoration,
+// refusals). The real measurement lives in the probe.
+
+import { describe, expect, it } from 'vitest'
+import { collectDeckLayout } from '../src/main/office-export/html-measure-script'
+
+type Rect = { x: number; y: number; w: number; h: number }
+
+/** Mount html into body, then stub getBoundingClientRect from the prepared
+ *  map (elements are looked up AFTER mounting, so selectors stay simple). */
+function mount(html: string, prepare?: (doc: Document) => Map<Element, Rect>): Document {
+  document.body.innerHTML = html
+  const doc = document
+  const rects = prepare ? prepare(doc) : new Map<Element, Rect>()
+  for (const [el, r] of rects) {
+    ;(el as HTMLElement).getBoundingClientRect = () =>
+      ({ left: r.x, top: r.y, right: r.x + r.w, bottom: r.y + r.h, width: r.w, height: r.h, x: r.x, y: r.y, toJSON: () => ({}) }) as DOMRect
+  }
+  return doc
+}
+
+const at = (doc: Document, selector: string, index = 0): Element => {
+  const el = doc.querySelectorAll(selector)[index]
+  if (!el) throw new Error(`fixture missing element: ${selector}[${index}]`)
+  return el
+}
+
+const wrap = (content: string) =>
+  `<!doctype html><html><head><meta charset="utf-8"></head><body><div class="slide" style="width:960px;height:540px">${content}</div></body></html>`
+
+const SLIDE_ONLY = (doc: Document) => new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+
+describe('collectDeckLayout (jsdom, stubbed rects)', () => {
+  it('collects one fact-set per .slide in document order', () => {
+    mount(`<div class="slide" style="width:960px;height:540px"></div><div class="slide" style="width:960px;height:540px"></div>`, (doc) => {
+      const m = new Map<Element, Rect>()
+      doc.querySelectorAll('.slide').forEach((s) => m.set(s, { x: 0, y: 0, w: 960, h: 540 }))
+      return m
+    })
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    expect(result.slides).toHaveLength(2)
+    expect(result.slides.every((s) => s.blocks.length === 0)).toBe(true)
+  })
+
+  it('refuses a slide that is not 960×540', () => {
+    mount(`<div class="slide" style="width:900px;height:540px"></div>`, (doc) =>
+      new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 900, h: 540 }]]))
+    const result = collectDeckLayout()
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/960×540/)
+    expect(result.slides).toHaveLength(0)
+  })
+
+  it('a leaf text block lands with runs, computed styles, and its content rect', () => {
+    // <p>, not <h1>: h1 carries a UA bold the run assertion would read as vacuous
+    const doc = mount(wrap(`<p style="font-size:32px;color:#1F1F1F">季度<strong>回顾</strong></p>`), (doc) =>
+      new Map<Element, Rect>([
+        [at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }],
+        [at(doc, 'p'), { x: 64, y: 80, w: 600, h: 44 }],
+      ]))
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const block = result.slides[0].blocks[0]
+    expect(block.kind).toBe('text')
+    if (block.kind !== 'text') return
+    expect(block.x).toBe(64)
+    expect(block.y).toBe(80)
+    expect(block.runs.map((r) => r.text).join('')).toBe('季度回顾')
+    expect(block.runs[0].bold).toBe(false)
+    expect(block.runs[1].bold).toBe(true) // <strong> splits the run
+    expect(block.runs[0].color).toBe('1F1F1F')
+    expect(block.runs[0].fontSizePx).toBe(32)
+  })
+
+  it('a painted div becomes a box block (fill / border / radius)', () => {
+    const doc = mount(wrap(`<div style="background:#C2483B;border:2px solid #7A241C;border-top-left-radius:12px;width:200px;height:100px"></div>`), (doc) =>
+      new Map<Element, Rect>([
+        [at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }],
+        [at(doc, '.slide > div'), { x: 40, y: 40, w: 200, h: 100 }],
+      ]))
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    expect(result.slides[0].blocks).toHaveLength(1)
+    const block = result.slides[0].blocks[0]
+    expect(block.kind).toBe('box')
+    if (block.kind !== 'box') return
+    expect(block.fill).toBe('C2483B')
+    expect(block.border).toEqual({ color: '7A241C', widthPx: 2 })
+    expect(block.radiusPx).toBe(12)
+  })
+
+  it('li text blocks carry bullet level and ordered kind (nesting counted)', () => {
+    const doc = mount(wrap(`<ul><li>要点甲</li><ol><li>子项</li></ol></li></ul>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      doc.querySelectorAll('li').forEach((li, i) => m.set(li, { x: 64, y: 100 + i * 30, w: 300, h: 24 }))
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    // 要点乙 mixes loose text with a block child — jsdom has no line boxes for
+    // its anonymous group, so only the two LEAF li blocks are expected here
+    expect(result.errors).toEqual([])
+    const bullets = result.slides[0].blocks
+      .filter((b) => b.kind === 'text')
+      .map((b) => (b.kind === 'text' ? b.bullet : undefined))
+    expect(bullets).toContainEqual({ level: 1, ordered: false })
+    expect(bullets).toContainEqual({ level: 2, ordered: true })
+  })
+
+  it('data-chart annotations become chart blocks carrying the raw JSON', () => {
+    const raw = JSON.stringify({ type: 'column', categories: ['Q1'], series: [{ name: 's', values: [1] }] })
+    const doc = mount(wrap(`<div data-chart='${raw}' style="width:600px;height:360px"></div>`), (doc) =>
+      new Map<Element, Rect>([
+        [at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }],
+        [at(doc, '[data-chart]'), { x: 64, y: 120, w: 600, h: 360 }],
+      ]))
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const block = result.slides[0].blocks[0]
+    expect(block.kind).toBe('chart')
+    if (block.kind !== 'chart') return
+    expect(JSON.parse(block.raw)).toEqual(JSON.parse(raw))
+  })
+
+  it('refuses out-of-bounds blocks naming the page and element', () => {
+    const doc = mount(wrap(`<p style="width:500px">超界文本</p>`), (doc) =>
+      new Map<Element, Rect>([
+        [at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }],
+        [at(doc, 'p'), { x: 700, y: 500, w: 500, h: 100 }],
+      ]))
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors[0].page).toBe(1)
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/超出页面/)
+  })
+
+  it('refuses whitelisted-out elements and nested .slide', () => {
+    mount(`<div class="slide" style="width:960px;height:540px"><svg width="10"></svg><div class="slide" style="width:960px;height:540px"></div></div>`, (doc) =>
+      new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]]))
+    const result = collectDeckLayout()
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/不允许的元素/)
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/嵌套/)
+  })
+
+  it('refuses translucent text color and colspan tables', () => {
+    const doc = mount(wrap(`<p style="color:rgba(0,0,0,0.5)">浅字</p><table><tr><td colspan="2">合并</td></tr></table>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p'), { x: 10, y: 10, w: 100, h: 20 })
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/半透明/)
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/colspan/)
+  })
+
+  it('tables report per-row heights, per-col widths, and cell styles', () => {
+    const doc = mount(
+      wrap(`<table style="border-collapse:collapse"><tr><th style="background:#C2483B;color:#FFFFFF;font-size:16px">名称</th><th>数量</th></tr><tr><td>甲</td><td>12</td></tr></table>`),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        m.set(at(doc, 'table'), { x: 64, y: 120, w: 600, h: 80 })
+        doc.querySelectorAll('tr').forEach((tr, i) => m.set(tr, { x: 64, y: 120 + i * 40, w: 600, h: 40 }))
+        doc.querySelectorAll('th').forEach((th, i) => m.set(th, { x: 64 + i * 300, y: 120, w: 300, h: 40 }))
+        doc.querySelectorAll('td').forEach((td, i) => m.set(td, { x: 64 + i * 300, y: 160, w: 300, h: 40 }))
+        return m
+      })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const block = result.slides[0].blocks[0]
+    expect(block.kind).toBe('table')
+    if (block.kind !== 'table') return
+    expect(block.colWidthsPx).toEqual([300, 300])
+    expect(block.rowHeightsPx).toEqual([40, 40])
+    expect(block.cells[0][0]).toMatchObject({ text: '名称', header: true, bold: true, color: 'FFFFFF', fill: 'C2483B', fontSizePx: 16 })
+    expect(block.cells[1][1]).toMatchObject({ text: '12', header: false })
+  })
+
+  it('refuses overlapping text blocks naming both elements', () => {
+    const doc = mount(wrap(`<p style="position:absolute">上方标题标题标题</p><p style="position:absolute">下方文本文本文本</p>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p', 0), { x: 100, y: 100, w: 400, h: 60 })
+      m.set(at(doc, 'p', 1), { x: 100, y: 130, w: 400, h: 60 })
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    const msg = result.errors.map((e) => e.message).join(' ')
+    expect(msg).toMatch(/文字区域重叠/)
+    expect(msg).toMatch(/下方文本文本文本/)
+    expect(result.errors[0].page).toBe(1)
+  })
+
+  it('tolerates edge-touching text boxes (≤3px or sliver overlaps)', () => {
+    const doc = mount(wrap(`<p>甲</p><p>乙</p>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p', 0), { x: 100, y: 100, w: 400, h: 60 })
+      m.set(at(doc, 'p', 1), { x: 100, y: 158, w: 400, h: 60 }) // 2px touch
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors.map((e) => e.message).join(' ')).not.toMatch(/重叠/)
+  })
+
+  it('reports zero slides with the .slide hint when none exist', () => {
+    mount('<div class="not-slide"></div>')
+    const result = collectDeckLayout()
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/没有找到任何 \.slide/)
+  })
+})

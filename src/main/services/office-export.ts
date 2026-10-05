@@ -13,7 +13,13 @@ import { guardFsTarget } from '../sandbox/guard'
 import { withPathLock } from '../sandbox/write-lock'
 import { resolveWritablePath } from './file-ops'
 import type { SheetModel } from '../office-export/md-tables'
-import { parseDeckSpec, deckImagePaths, DECK_IMAGE_EXTS, type DeckSpec } from '../../shared/deck/spec'
+import { DECK_IMAGE_EXTS } from '../../shared/deck/spec'
+import {
+  collectImageSrcs, collectLinkedCss, extractHtmlTitle,
+  measureLayout, parseTokensCss, resolveTokenTheme, scanHtmlProfile,
+} from '../office-export/html-measure'
+import { HTML_SOURCE_LIMIT, type TokenKey } from '../office-export/html-route-types'
+import { htmlDeckToPptxBuffer } from '../office-export/html-to-pptx'
 
 // Every generator and read-back parser is loaded on demand: this module is
 // reached at launch (ipc → file-ops → here), while the engines behind it are the
@@ -39,9 +45,12 @@ export interface ExportDocumentInput {
   format: ExportFormat
   content?: string
   sourcePath?: string
-  /** format pptx alternative to content: a structured deck spec
-   *  (shared/deck/spec) — the model picks layouts, the engine draws. */
-  deck?: unknown
+  /** format pptx only, mutually exclusive with content/sourcePath: the
+   *  design route (PLAN-pptx-html-route) — a workspace .html written against
+   *  the constrained profile (one .slide per page, 960×540) plus an optional
+   *  tokens.css link. Chromium measures the real layout; the engine emits
+   *  positioned shapes. */
+  htmlPath?: string
   /** docx/pdf only: the body font size in 磅 (6–72, .5 steps). Headings and
    *  the code block scale with it; a pdf converted from an EXISTING .docx
    *  refuses it (nothing re-generates on that path). */
@@ -55,6 +64,9 @@ export interface ExportDocumentResult {
   /** The absolute path the export landed on (post-suffix). */
   path?: string
   bytes?: number
+  /** Design route only: the per-slide census + degradation list (SKILL 铁律 5
+   *  — the model tells the user what got rendered and what was approximated). */
+  report?: string
 }
 
 export async function svcExportDocument(input: ExportDocumentInput): Promise<ExportDocumentResult> {
@@ -62,19 +74,23 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
     if (!EXPORT_FORMATS.includes(input.format)) {
       return { success: false, error: `format 必须是 ${EXPORT_FORMATS.join(' / ')} 之一，收到「${input.format}」` }
     }
+    const legacyDeck = (input as { deck?: unknown }).deck
+    if (legacyDeck !== undefined && legacyDeck !== null) {
+      return { success: false, error: 'deck 参数已退役——从零做 PPT 一律走设计路线：write tokens.css + deck.html 后给 htmlPath（见 office 技能 references/pptx.md）' }
+    }
     const hasContent = typeof input.content === 'string' && input.content.trim() !== ''
     const hasSource = typeof input.sourcePath === 'string' && input.sourcePath.trim() !== ''
-    const hasDeck = input.deck !== undefined && input.deck !== null
-    if (hasDeck && input.format !== 'pptx') {
-      return { success: false, error: `deck 仅支持 format pptx，收到「${input.format}」——其他格式请给 content 或 sourcePath` }
+    const hasHtml = typeof input.htmlPath === 'string' && input.htmlPath.trim() !== ''
+    if (hasHtml && input.format !== 'pptx') {
+      return { success: false, error: `htmlPath 仅支持 format pptx，收到「${input.format}」——设计路线只产幻灯片` }
     }
-    if (hasContent && hasDeck) {
-      return { success: false, error: 'deck 与 content 二选一：结构化幻灯片给 deck，markdown 大纲给 content，不要同时给' }
+    if (hasHtml && hasContent) {
+      return { success: false, error: 'htmlPath 与 content 二选一：设计路线的 HTML 先 write 成文件再走 htmlPath，不要内联' }
     }
-    if (hasSource && hasDeck) {
-      return { success: false, error: 'deck 与 sourcePath 二选一：结构化幻灯片直接内联给 deck，不要同时给文件路径' }
+    if (hasHtml && hasSource) {
+      return { success: false, error: 'htmlPath 与 sourcePath 二选一——都指向文件，但语义不同：htmlPath 走设计路线，sourcePath 走 markdown/格式转换' }
     }
-    if (hasContent === hasSource && !hasDeck) {
+    if (hasContent === hasSource && !hasHtml) {
       return { success: false, error: 'content 与 sourcePath 二选一：内联内容直接给 content；导出工作区已有文件给 sourcePath，不要同时给或都不给' }
     }
     // fontSize: docx/pdf generation only. The pdf target fed an EXISTING
@@ -94,39 +110,80 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
     if (hasContent && (input.content as string).length > CONTENT_LIMIT) {
       return { success: false, error: `内联 content 超过 100KB（${Math.round((input.content as string).length / 1024)}KB）——请先用 write 把内容写入工作区文件，再通过 sourcePath 导出` }
     }
-    // Deck path: validate the spec and resolve every referenced image up
-    // front — a deck export either lands complete or refuses with the slide
-    // number that caused the refusal.
-    let deckSpec: DeckSpec | undefined
-    let deckImages: Map<string, Buffer> | undefined
-    if (hasDeck) {
-      const parsed = parseDeckSpec(input.deck)
-      if (!parsed.ok) return { success: false, error: parsed.error }
-      deckSpec = parsed.spec
-      const deckJson = JSON.stringify(input.deck)
-      if (deckJson.length > CONTENT_LIMIT) {
-        return { success: false, error: `deck 序列化后超过 100KB（${Math.round(deckJson.length / 1024)}KB）——slides 太多了，拆成多份导出` }
+    // Design-route plan: read + scan the html, enforce the single tokens.css
+    // link, resolve every referenced image — the export either lands complete
+    // or refuses before Chromium ever launches (deck-path discipline).
+    let htmlPlan: { absolutePath: string; images: Map<string, Buffer>; title: string; accent: string; fontZh: string; fontLatin: string; fontMono: string } | undefined
+    if (hasHtml) {
+      const rawHtml = String(input.htmlPath)
+      const htmlGuard = await guardFsTarget(rawHtml, 'read')
+      if (!htmlGuard.ok) return { success: false, error: `htmlPath：${htmlGuard.reason}` }
+      const htmlAbs = await resolveWritablePath(rawHtml)
+      let htmlText: string
+      try {
+        htmlText = await pReadFile(htmlAbs, 'utf8')
+      } catch (err) {
+        return { success: false, error: `htmlPath：读取失败（${err instanceof Error ? err.message : String(err)}）——先确认文件在工作区里` }
       }
-      deckImages = new Map()
-      for (const { slide, path } of deckImagePaths(deckSpec)) {
-        if (deckImages.has(path)) continue
-        const ext = extname(path).toLowerCase()
-        if (!(DECK_IMAGE_EXTS as readonly string[]).includes(ext)) {
-          return { success: false, error: `deck.slides[${slide}].image：不支持的图片格式「${ext || '无扩展名'}」（支持 ${DECK_IMAGE_EXTS.join(' / ')}）` }
+      if (Buffer.byteLength(htmlText, 'utf8') > HTML_SOURCE_LIMIT) {
+        return { success: false, error: `deck.html 超过 ${Math.round(HTML_SOURCE_LIMIT / 1024)}KB——拆成多份导出` }
+      }
+      const profileErrs = scanHtmlProfile(htmlText)
+      if (profileErrs.length > 0) return { success: false, error: `设计路线 profile 校验未通过：\n${profileErrs.join('\n')}` }
+      // one theme surface: every stylesheet link must be tokens.css
+      const links = collectLinkedCss(htmlText)
+      for (const href of links) {
+        if (!/^(\.\/)?tokens\.css$/i.test(href.trim())) {
+          return { success: false, error: `<link rel="stylesheet" href="${href}">——设计路线只允许链接一个 tokens.css（相对路径），其余样式写进 html 的 <style>` }
         }
-        const imgGuard = await guardFsTarget(path, 'read')
-        if (!imgGuard.ok) return { success: false, error: `deck.slides[${slide}].image：${imgGuard.reason}` }
+      }
+      let tokens: Partial<Record<TokenKey, string>> = {}
+      if (links.length > 0) {
+        const tokensPath = join(dirname(htmlAbs), links[0].trim())
+        const tokensGuard = await guardFsTarget(tokensPath, 'read')
+        if (!tokensGuard.ok) return { success: false, error: `tokens.css：${tokensGuard.reason}` }
+        let tokensText: string
         try {
-          deckImages.set(path, await pReadFile(await resolveWritablePath(path)))
+          tokensText = await pReadFile(tokensPath, 'utf8')
         } catch (err) {
-          return { success: false, error: `deck.slides[${slide}].image：读取失败（${err instanceof Error ? err.message : String(err)}）——先确认文件在工作区里` }
+          return { success: false, error: `tokens.css：读取失败（${err instanceof Error ? err.message : String(err)}）` }
         }
+        const parsed = parseTokensCss(tokensText)
+        if (parsed.errors.length > 0) return { success: false, error: `tokens.css 校验未通过：\n${parsed.errors.join('\n')}` }
+        tokens = parsed.values
+      }
+      const theme = resolveTokenTheme(tokens)
+      const images = new Map<string, Buffer>()
+      for (const src of collectImageSrcs(htmlText)) {
+        if (images.has(src)) continue
+        const ext = extname(src.split('?')[0].toLowerCase())
+        if (!(DECK_IMAGE_EXTS as readonly string[]).includes(ext)) {
+          return { success: false, error: `<img src="${src}">：不支持的图片格式「${ext || '无扩展名'}」（支持 ${DECK_IMAGE_EXTS.join(' / ')}）` }
+        }
+        const imgPath = join(dirname(htmlAbs), src)
+        const imgGuard = await guardFsTarget(imgPath, 'read')
+        if (!imgGuard.ok) return { success: false, error: `<img src="${src}">：${imgGuard.reason}` }
+        try {
+          images.set(src, await pReadFile(await resolveWritablePath(imgPath)))
+        } catch (err) {
+          return { success: false, error: `<img src="${src}">：读取失败（${err instanceof Error ? err.message : String(err)}）——先确认图片在工作区里` }
+        }
+      }
+      htmlPlan = {
+        absolutePath: htmlAbs,
+        images,
+        title: extractHtmlTitle(htmlText) ?? basename(htmlAbs, extname(htmlAbs)),
+        accent: theme.accent,
+        fontZh: theme.fontZh,
+        fontLatin: theme.fontLatin,
+        fontMono: theme.fontMono,
       }
     }
 
     const guard = await guardFsTarget(input.filePath, 'write')
     if (!guard.ok) return { success: false, error: guard.reason }
     const safePath = await resolveWritablePath(input.filePath)
+    let exportReport: string | undefined
 
     return await withPathLock(safePath, async (): Promise<ExportDocumentResult> => {
       // Source input (D3): md/csv text for the generators; a real .docx when
@@ -191,10 +248,34 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
 
       // Build entirely in memory — a failure here has written nothing.
       let buffer: Buffer
-      try {
-        buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, deck: deckSpec, deckImages, mdImages, fontSize: input.fontSize })
-      } catch (err) {
-        return { success: false, error: `导出内容构建失败：${err instanceof Error ? err.message : String(err)}` }
+      if (htmlPlan) {
+        // design route: measure then emit, both inside the lock. Errors from
+        // either half are already model-readable refusals — surface them raw,
+        // NOT behind the 导出内容构建失败 prefix (that prefix is for generator
+        // internals; a profile refusal names its page and element).
+        try {
+          const measured = await measureLayout(htmlPlan.absolutePath)
+          const built = await htmlDeckToPptxBuffer({
+            facts: { slides: measured.slides },
+            images: htmlPlan.images,
+            accent: htmlPlan.accent,
+            fontZh: htmlPlan.fontZh,
+            fontLatin: htmlPlan.fontLatin,
+            fontMono: htmlPlan.fontMono,
+            title: htmlPlan.title,
+            degradations: measured.degradations,
+          })
+          buffer = built.buffer
+          exportReport = built.report
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) }
+        }
+      } else {
+        try {
+          buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, mdImages, fontSize: input.fontSize })
+        } catch (err) {
+          return { success: false, error: `导出内容构建失败：${err instanceof Error ? err.message : String(err)}` }
+        }
       }
 
       // Read-back gate: the generated bytes must parse before they land.
@@ -209,7 +290,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
       const tmpPath = join(dirname(finalPath), `.${basename(finalPath)}.pm-tmp`)
       await pWriteFile(tmpPath, buffer)
       await pRename(tmpPath, finalPath)
-      return { success: true, path: finalPath, bytes: buffer.length }
+      return { success: true, path: finalPath, bytes: buffer.length, report: exportReport }
     })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
@@ -218,7 +299,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
 
 async function buildBuffer(
   format: ExportFormat,
-  source: { md?: string; csv?: string; docx?: Buffer; deck?: DeckSpec; deckImages?: Map<string, Buffer>; mdImages?: Map<string, Buffer>; fontSize?: number }
+  source: { md?: string; csv?: string; docx?: Buffer; mdImages?: Map<string, Buffer>; fontSize?: number }
 ): Promise<Buffer> {
   if (format === 'pdf') {
     // pdf is a CONVERSION, not a native layout: an existing docx, or markdown
@@ -234,11 +315,7 @@ async function buildBuffer(
     return markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages, { fontSize: source.fontSize })
   }
   if (format === 'pptx') {
-    if (source.deck) {
-      const { deckToPptxBuffer } = await import('../office-export/deck-to-pptx')
-      return deckToPptxBuffer(source.deck, source.deckImages ?? new Map())
-    }
-    if (source.md === undefined) throw new Error('pptx 需要 deck 或 markdown 内容；CSV 数据请导出 xlsx 或 csv')
+    if (source.md === undefined) throw new Error('pptx 需要 htmlPath（设计路线）或 markdown 内容；CSV 数据请导出 xlsx 或 csv')
     const { markdownToPptxBuffer } = await import('../office-export/md-to-pptx')
     return markdownToPptxBuffer(source.md)
   }

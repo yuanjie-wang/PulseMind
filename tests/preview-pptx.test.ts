@@ -442,7 +442,7 @@ describe('shapes', () => {
           '</spTree></cSld></sld>'
       )
     )
-    // 270°→0° = a 90° wedge wrapping past 12 o'clock (deck-to-pptx's start)
+    // 270°→0° = a 90° wedge wrapping past 12 o'clock (chart-draw's start)
     expect(shapes[0].geometry).toMatchObject({ prst: 'pie', startAngleDeg: 270, endAngleDeg: 0 })
   })
 

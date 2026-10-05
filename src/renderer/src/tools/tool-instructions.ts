@@ -17,14 +17,14 @@ export const toolInstructions: Record<string, string> = {
 Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can take away — use it when the user wants a file, not a table pasted in chat.
 
 ### Decision tree — read this FIRST
-- 用户要 PPT / 幻灯片 / slides → **本工具 format pptx**。从零创建一律走这里；要精修/填充一个已有 .pptx 模板才用 office_edit。
+- 用户要 PPT / 幻灯片 / slides → **本工具 format pptx 走设计路线（htmlPath）**：①先与用户对齐风格（给 1–3 个方向：主色/明暗/字体/气质，确认后才动手——不要自作主张直接出片）→ ②write tokens.css → ③write deck.html → ④本工具转换。这是从零做 PPT 的唯一生成路线；用户明确只要纯文字大纲页时才退 content。要精修/填充一个已有 .pptx 模板才用 office_edit。
 - 用户要 Word 文档 → format docx；表格交付 → format xlsx / csv。
 - 用户要 PDF（合同/公文/不可改版交付）→ **本工具 format pdf**：工作区已有 .docx 就给 sourcePath 指向它（docx→PDF 转换，保真最好）；否则给 markdown content（先按 docx 排版再转 PDF）。修改已有 PDF 的内容不在本工具能力内。
 - **永远不要**用 exec 跑 python-pptx / python-docx / libreoffice / office 脚本之类来生成 Office 文件——那绕开了沙箱护栏、备份与回读门禁，且没有预览联动。本工具就是原生路径，直接用它。
 
-### Inputs (exactly one of content / deck / sourcePath)
-- content: inline source. docx/pptx/pdf take the FULL markdown document; xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet. For pptx the first \`# \` heading is the cover and every later \`# \`/\`## \` heading starts a new slide.
-- deck: (format pptx only, and the DEFAULT for PPT) 结构化幻灯片对象，版式见 input schema 的 deck 描述。何时用：只要 PPT 里有图表、KPI 数字卡、双栏对比、引用页或图片，就用 deck；纯文字大纲用 content 也能出，但效果弱一档。一页只讲一件事：bullets 3–8 条每条 ≤20 字；table ≤12 行超了拆页；chart 的 categories 2–12 个；数据来源写在该页的 note 里。
+### Inputs (exactly one of content / htmlPath / sourcePath)
+- content: inline source. docx/pdf take the FULL markdown document; pptx takes a markdown outline ONLY as a plain-text fallback (the design route is the real path); xlsx/csv take a markdown table (or CSV data). A \`## 标题\` heading in front of a table names that sheet. For pptx the first \`# \` heading is the cover and every later \`# \`/\`## \` heading starts a new slide.
+- htmlPath: (format pptx only) **设计路线**——从零做 PPT 的唯一生成路线。四步：① **先与用户对齐风格**——给 1–3 个方向（主色/明暗/字体/气质，具体 hex），确认后才动手；不要自作主张套默认主题 → ② write tokens.css（把确认的风格落成 14 个主题变量：色 7 个 --pm-accent/--pm-accent-soft/--pm-ink/--pm-muted/--pm-panel/--pm-bg/--pm-line，字 3 个 --pm-font-zh/--pm-font-latin/--pm-font-mono，字号阶 4 个 --pm-fs-cover/--pm-fs-title/--pm-fs-body/--pm-fs-note；颜色 #RRGGBB、字体限系统字体白名单、字号 8–200px；落定即锁，改风格/换字号阶只改它）→ ③ write deck.html（受限 profile：每页一个 960×540 的 .slide；元素/样式白名单，font-size 引用 var(--pm-fs-*)、font-family 只许 var(--pm-font-*)，禁 script/@font-face/渐变/网络资源/CSS 动画；图表用 <div data-chart='{…deck 图表 JSON…}'> 标注，不要画 SVG 图表）→ ④ 本工具 format pptx + htmlPath 指向 deck.html。转换在引擎里完成：Chromium 实测布局 → 原生可编辑形状，产物与预览面板里看到的 HTML 一致。**profile 全文与流程细节见 office 技能 references/pptx.md 的设计路线节**。交付后双源契约：HTML 是创作源，改版式改它重新导出；交付后的小改走 office_edit，不要回头改 HTML 除非用户明确要重转。
 - sourcePath: convert an existing workspace file instead — large sources avoid re-sending content.
 - fontSize: (docx/pdf only) 正文基准字号，磅，6–72 可带 0.5（10.5=五号、12=小四、14=四号、16=三号），标题与代码块按基准等比缩放，层级不塌。**format pdf + sourcePath（既有 .docx）拒绝 fontSize**——那条路是字节转换不重新生成，字号请先用 \`office_edit\` 改好再转。只改某几处字号：先导出，再用 \`office_edit\` 的 \`format_text\` 带 \`font_size\` 补。
 
@@ -39,7 +39,7 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 - xlsx: NO formulas are generated, dates stay text, numbers convert only when the exact round-trip is safe (leading zeros like 工号 007 stay text on purpose).
 - csv: exports the FIRST table/sheet only.
 - pptx (content/markdown): images / inline HTML degrade to text with a closing 备注 page; one table per page; NO charts, fixed 16:9 layout.
-- pptx (deck): 图表是矢量形状（在 PowerPoint 里可改色改字，改数据需重新导出）；图片真实嵌入（须已存在于工作区）；不指定中文字体（打开端替换）；无母版/动画——要母版请走 office_edit 套用户模板。 deck.slides 最多 200 页。
+- pptx (htmlPath): 每页一个 960×540 的 .slide（超界整单拒绝并点名页码；两段文字的框相交同样拒绝并点名元素——按实际渲染高度排布）；图表是原生形状（改数据 = 改 data-chart 后重转）；颜色只收不透明色（半透明会被点名拒绝）；box-shadow/opacity/虚线边框按降级如实报告，不静默丢弃；转换结果的保真报告（各页块数 + 降级清单）随成功结果返回——交付时转述给用户。
 `,
 
   read: `## read
