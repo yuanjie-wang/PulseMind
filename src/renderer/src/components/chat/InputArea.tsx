@@ -15,6 +15,7 @@ import {
 import { useTranslation } from '../../i18n/useTranslation'
 import { ContextRing } from './ContextRing'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
+import type { SteerOutcome } from '../../types/agent'
 import { Composer, useInputHistory, COMPOSER_MAX_WIDTH } from './Composer'
 import type { ComposerHandle } from './Composer'
 import { useComposerDraftStore } from '../../stores/composerDraftStore'
@@ -62,6 +63,7 @@ function InputAreaImpl({
   topSlot,
   hidden,
   onSendMessage,
+  onSteer,
   onCancel,
   profiles,
   activeProfileId,
@@ -99,6 +101,12 @@ function InputAreaImpl({
    *  cover its tail (the sub-agent drill-in's streaming cursor). */
   hidden?: boolean
   onSendMessage: (content: string) => void
+  /** 流中转向（PLAN-mid-stream-steer M1，B7 方案 A）：streaming 相位下提交
+   *  语义改为转向——Enter 承担（antd-x Sender 在 loading 态吞 Enter，但
+   *  onKeyDown 会透传进 textarea），提交钮保持停止钮（2026-09-29 单停止按钮
+   *  裁定不破）。resolve false = 引擎拒绝（回合恰好收尾/相位已变），文本
+   *  回落暂存/发送，不丢字。 */
+  onSteer?: (text: string) => Promise<SteerOutcome>
   onCancel: () => void
   profiles?: LlmProfile[]
   activeProfileId?: string
@@ -513,6 +521,38 @@ function InputAreaImpl({
 
   const hasAttachments = selectedFiles.length + selectedFolders.length > 0
 
+  // ── 流中转向（PLAN-mid-stream-steer M1，B7 方案 A）── streaming 相位下提交
+  // 语义改为转向。触发面是 Enter 而不是提交钮：antd-x Sender 在 loading 态把
+  // 提交钮换成停止钮（2026-09-29 单停止按钮裁定保持），其内部 Enter-submit 有
+  // `!loading` 门（Enter 此刻被吞）；但 onKeyDown 的 veto（return false）在
+  // Sender 自己的 Enter 路径之前——暂存条分支正是靠它在 loading 态工作的——
+  // 转向分支走同一扇门（见 handleComposerKeyDown）。引擎拒绝时文本回落
+  // 暂存/发送，不丢字。
+  const canSteer = Boolean(onSteer) && isStreaming
+  const submitSteer = async (text: string): Promise<void> => {
+    const outgoing = buildMessage(text)
+    history.push(outgoing)
+    const clear = (): void => {
+      setInputValue('')
+      setSelectedFiles([])
+      setSelectedFolders([])
+    }
+    const outcome = onSteer ? await onSteer(outgoing) : { ok: false as const, reason: 'not_streaming' as const }
+    if (outcome?.ok) {
+      clear()
+      return
+    }
+    // 竞态回落：按键与引擎调用之间回合恰好收尾（或相位已变）——文本不许丢，
+    // 走今天的中途提交路径（暂存条在场进暂存，否则作为新消息发送）。
+    if (staging) {
+      usePendingMessageStore.getState().stage(staging.convId, outgoing)
+      clear()
+      return
+    }
+    onSendMessage(outgoing)
+    clear()
+  }
+
   const handleComposerKeyDown = (e: React.KeyboardEvent<Element>): false | void => {
     // @-popup owns the navigation keys while it's open — including Enter, which
     // picks the highlighted expert instead of sending — and the input-history
@@ -575,10 +615,25 @@ function InputAreaImpl({
       setSelectedFolders([])
       return false
     }
+    // 流中转向（B7 方案 A，PLAN-mid-stream-steer M1）：veto（return false）让
+    // 分支在 Sender 自己的 !loading 门之前生效——与暂存分支同一扇门，暂存分支
+    // 在前（staging 行为不变）。IME 确认的 Enter 属于输入法，不是转向意图。
+    if (
+      canSteer &&
+      e.key === 'Enter' &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !e.nativeEvent.isComposing &&
+      inputValue.trim()
+    ) {
+      e.preventDefault()
+      void submitSteer(inputValue.trim())
+      return false
+    }
     history.onKeyDown(e, inputValue, setInputValue)
-  }
-
-  /** Compose the outgoing message: attachment refs first, then the typed text. */
+  }  /** Compose the outgoing message: attachment refs first, then the typed text. */
   const buildMessage = (text: string): string => {
     const parts = [...selectedFiles.map((p) => `[file:${p}]`), ...selectedFolders.map((p) => `[folder:${p}]`)]
     return parts.length > 0 ? parts.join('\n') + (text ? '\n' + text : '') : text
@@ -667,9 +722,11 @@ function InputAreaImpl({
             ? t('chatView.sender.approving')
             : isAwaitingInput
               ? t('chatView.sender.awaitingInput')
-              : isStreaming
-                ? t('chatView.sender.streaming')
-                : t('chatView.sender.default'))
+              : canSteer
+                ? t('chatView.sender.steer')
+                : isStreaming
+                  ? t('chatView.sender.streaming')
+                  : t('chatView.sender.default'))
         }
         aboveCard={
           // The @-mention selector, the staged-message strip and the caller's

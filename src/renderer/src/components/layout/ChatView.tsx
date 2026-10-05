@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useMemo, useId, useState } from 'react'
-import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock, Plan } from '../../types/agent'
+import type { AgentStatus, AgentMessage, ContentBlock, SteerOutcome, ToolUseBlock, Plan } from '../../types/agent'
 import type { LlmProfile } from '../../types/settings'
 import { Segmented } from 'antd'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
@@ -54,6 +54,9 @@ interface ChatViewProps {
    *  turn; false = the send never left (the row restores itself). Absent (or
    *  no conversationId) = the staged queue is off for this view. */
   onSendStaged?: (text: string) => Promise<boolean>
+  /** 流中转向（PLAN-mid-stream-steer M1，B7 方案 A）：streaming 相位下提交
+   *  语义改为转向；resolve 的 outcome 为 false 时 InputArea 回落暂存/发送。 */
+  onSteer?: (text: string) => Promise<SteerOutcome>
   onCancel: () => void
   onApproveTool: (toolUseId: string) => void
   onRejectTool: (toolUseId: string) => void
@@ -140,6 +143,7 @@ function ChatView({
   streamingBlocks,
   onSendMessage,
   onSendStaged,
+  onSteer,
   onCancel,
   onApproveTool,
   onRejectTool,
@@ -1007,6 +1011,7 @@ function ChatView({
         // wrapper at the pane's left edge, and the composer is absolute
         // INSIDE that wrapper — an inset here would deduct the pane twice.
         onSendMessage={sendMessageAndPin}
+        onSteer={onSteer}
         onCancel={onCancel}
         profiles={profiles}
         activeProfileId={activeProfileId}

@@ -16,6 +16,13 @@ export type AgentStatus =
   | { status: 'awaiting_extension'; currentCount: number; limit: number }
   | { status: 'awaiting_continue'; subAgentCount?: number }
 
+/** Mid-stream steering outcome (PLAN-mid-stream-steer M1): the engine's answer
+ *  to a steer attempt. Rejections are structured so the UI can fall back to
+ *  the staging path instead of losing the text. */
+export type SteerOutcome =
+  | { ok: true }
+  | { ok: false; reason: 'not_streaming' | 'no_active_stream' | 'empty'; status?: AgentStatus['status'] }
+
 // --- Agent Message ---
 
 export interface AgentMessage {

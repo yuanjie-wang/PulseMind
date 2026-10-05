@@ -199,6 +199,7 @@ const zh = {
     sender: {
       approving: '请批准或跳过上述命令...',
       awaitingInput: '请选择上述选项...',
+      steer: '输入新指示，回车转向当前任务...',
       streaming: 'AI 正在生成...',
       default: '输入消息...',
       dropHint: '松开添加为引用',

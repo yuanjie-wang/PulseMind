@@ -202,6 +202,7 @@ const en: TranslationDict = {
     sender: {
       approving: 'Approve or skip the command above...',
       awaitingInput: 'Select an option above...',
+      steer: 'Type to redirect the current task, Enter to steer...',
       streaming: 'AI is generating...',
       default: 'Type a message...',
       dropHint: 'Drop files to attach',

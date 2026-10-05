@@ -236,6 +236,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     handleRequest,
     sendStagedNow,
     abort,
+    steer,
     saveCurrentConversation,
     saveAllConversationsSync,
     agentStatus,
@@ -688,6 +689,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               canOpenNode={canOpenNode}
               onSendMessage={handleRequest}
               onSendStaged={sendStagedNow}
+              onSteer={steer}
               onCancel={abort}
               onApproveTool={approveTool}
               onRejectTool={rejectTool}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AgentMessage, AgentStatus, ContentBlock, Plan } from '../types/agent'
+import type { AgentMessage, AgentStatus, ContentBlock, Plan, SteerOutcome } from '../types/agent'
 import type { AgentEngineOptions } from '../agent/AgentEngine'
 import type { AgentEventData } from '../../../shared/agent-protocol'
 import type { ToolManager } from '../tools/ToolManager'
@@ -87,6 +87,9 @@ export interface SessionEngineHandle {
   killTool(toolUseId: string): void
   respondToTool(toolUseId: string, response: string): void
   extendLoop(): void
+  /** Mid-stream steering (PLAN-mid-stream-steer M1): resolve with the engine's
+   *  structured outcome — false means the caller must fall back (stage/send). */
+  steer(text: string): Promise<SteerOutcome>
   stopExecution(): void
   resumeExecution(): void
   clearError(): void
@@ -231,6 +234,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     killTool: (toolUseId) => { void window.electronAPI.agentSessionEngineCall(convId, 'killTool', [toolUseId]) },
     respondToTool: (toolUseId, response) => { void window.electronAPI.agentSessionEngineCall(convId, 'respondToTool', [toolUseId, response]) },
     extendLoop: () => { void window.electronAPI.agentSessionEngineCall(convId, 'extendLoop', []) },
+    steer: (text: string) =>
+      window.electronAPI.agentSessionEngineCall(convId, 'steer', [text]) as Promise<SteerOutcome>,
     stopExecution: () => { void window.electronAPI.agentSessionEngineCall(convId, 'stopExecution', []) },
     resumeExecution: () => { void window.electronAPI.agentSessionEngineCall(convId, 'resumeExecution', []) },
     clearError: () => { void window.electronAPI.agentSessionEngineCall(convId, 'clearError', []) },
@@ -453,6 +458,13 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const killTool = useCallback((toolUseId: string) => callActive('killTool', toolUseId), [callActive])
   const respondToTool = useCallback((toolUseId: string, response: string) => callActive('respondToTool', toolUseId, response), [callActive])
   const extendLoop = useCallback(() => callActive('extendLoop'), [callActive])
+  /** Mid-stream steering needs the OUTCOME back (the UI stages the text when
+   *  the engine rejected), so it cannot ride the fire-and-forget callActive. */
+  const steer = useCallback((text: string): Promise<SteerOutcome> => {
+    const convId = activeEngineIdRef.current
+    if (!convId) return Promise.resolve({ ok: false, reason: 'not_streaming' })
+    return window.electronAPI.agentSessionEngineCall(convId, 'steer', [text]) as Promise<SteerOutcome>
+  }, [activeEngineIdRef])
   const stopExecution = useCallback(() => callActive('stopExecution'), [callActive])
   const resumeExecution = useCallback(() => callActive('resumeExecution'), [callActive])
   const clearError = useCallback(() => callActive('clearError'), [callActive])
@@ -494,6 +506,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     respondToTool,
     cancelLoop,
     extendLoop,
+    steer,
     stopExecution,
     resumeExecution,
     clearError,

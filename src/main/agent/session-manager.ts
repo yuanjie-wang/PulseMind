@@ -987,6 +987,13 @@ export class AgentSessionManagerImpl {
       case 'killTool': return engine.killTool(args[0] as string)
       case 'respondToTool': return engine.respondToTool(args[0] as string, args[1] as string)
       case 'extendLoop': return engine.extendLoop()
+      case 'steer':
+        // Mid-stream steering (PLAN-mid-stream-steer M1) deliberately does NOT
+        // go through sendUserMessage: the loop semaphore would park the ask
+        // behind the very turn it is trying to redirect. The engine's own
+        // phase guard rejects what it cannot steer, so a stale client cannot
+        // double-dispatch a turn here.
+        return engine.steer(args[0] as string)
       case 'stopExecution':
         // A stop aimed at a turn still parked on the loop queue cannot cancel
         // a loop — there is none yet — so mark the parked ask instead: when

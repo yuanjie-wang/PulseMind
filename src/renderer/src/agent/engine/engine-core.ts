@@ -9,7 +9,7 @@
 // Adding a member here means a strategy module genuinely needs it — prefer
 // passing data through method parameters over widening this surface.
 
-import type { AgentMessage, AgentStatus, ContentBlock, ToolUseBlock } from '../../types/agent'
+import type { AgentMessage, AgentStatus, ContentBlock, SteerOutcome, ToolUseBlock } from '../../types/agent'
 import type { SubAgentResult } from '../agent-utils'
 import type { AgentEngineOptions } from '../AgentEngine'
 import type { ToolExecutor } from '../tool-executors'
@@ -128,6 +128,10 @@ export interface EngineCore {
    *  recurses into activeSubAgents, so the freeze needs to cross the Core
    *  boundary (f8c4f7d). */
   pauseExecution: () => void
+  /** Mid-stream steering (PLAN-mid-stream-steer M1): redirect the LIVE LLM
+   *  stream with a new user instruction. Accepts only in the streaming phase;
+   *  structured rejection otherwise so the UI can fall back to staging. */
+  steer: (text: string) => Promise<SteerOutcome>
   /** Post-turn compaction prewarm (fire-and-forget): called from
    *  handleEndTurnResponse once the turn is closed. Skips spawned sub-agents,
    *  in-flight prewarms, and usage below the post-turn ratio. */

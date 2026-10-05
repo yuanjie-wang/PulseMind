@@ -560,6 +560,9 @@ saveAllConversationsSync: persistence.saveAllConversationsSync,
     clearError: engine.clearError,
     retryLast: engine.retryLast,
     extendLoop: engine.extendLoop,
+    /** 流中转向（PLAN-mid-stream-steer M1，B7 方案 A）：resolve 引擎的结构化
+     *  outcome，false = 调用方回落暂存/发送，文本不许丢。 */
+    steer: engine.steer,
     stopExecution: engine.stopExecution,
     resumeExecution: engine.resumeExecution,
     tools: managers.tools,

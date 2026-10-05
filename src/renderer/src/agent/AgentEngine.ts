@@ -4,6 +4,7 @@ import type {
   AgentMessage,
   AgentStatus,
   ContentBlock,
+  SteerOutcome,
   ToolUseBlock,
   ToolResultBlock,
   Plan
@@ -1309,6 +1310,91 @@ export class AgentEngine implements EngineCore {
     // （stopExecution）和「输入了新消息」（prepareTurn，引擎侧权威：桌面/插件/
     // 托管会话的新回合全部经过它）。
     this.executionFlow.pauseExecution()
+  }
+
+  /**
+   * Mid-stream steering (PLAN-mid-stream-steer M1, B7 方案 A): redirect the
+   * LIVE LLM stream with a new user instruction instead of stopping or
+   * queueing. The abort seam is prepareTurn's own request-level one —
+   * cancelledRequestIds + apiAbortStream — NOT pauseExecution: the stream-runner
+   * catch walks its isCancel arm and returns without awaiting_continue, without
+   * freezing the sub-agent tree, without settling spawn completions, without
+   * touching the retry counters. What the round already said rides into the
+   * transcript as an ordinary assistant message ("the model was halfway
+   * through, the user cut in"); thinking blocks only with a COMPLETE signature
+   * (an unsigned one would 400 the next Anthropic request); tool_use is dropped
+   * wholesale — the steer re-asks, the aborted call never executes. The steer
+   * CONSUMES a loop (continueLoop's loopCount++), so the 200 cap governs it
+   * like any other round — steering is not a free renewal.
+   *
+   * Guard → abort → solidify → append are one synchronous block: no await, so
+   * no IPC event (stream-done → onStreamComplete) can interleave and
+   * double-append the round.
+   */
+  steer = async (text: string): Promise<SteerOutcome> => {
+    const trimmed = (text ?? '').trim()
+    // Phase guard: only a live LLM stream can be steered. Every other status
+    // keeps today's semantics — executing tools are committed, awaiting_* has
+    // the composer disabled anyway, and a settled turn is a normal send.
+    if (this.agentStatus.status !== 'streaming') {
+      return { ok: false, reason: 'not_streaming', status: this.agentStatus.status }
+    }
+    if (!trimmed) return { ok: false, reason: 'empty' }
+    const requestId = this.currentRequestId
+    if (!requestId) return { ok: false, reason: 'no_active_stream' }
+
+    // 4K input cap backstop — the same clip prepareTurn applies to every
+    // client's input; the steer text is a user message like any other.
+    const clipped = trimmed.length > MAX_USER_INPUT_CHARS
+      ? trimmed.slice(0, MAX_USER_INPUT_CHARS)
+      : trimmed
+
+    const solidBlocks: ContentBlock[] = []
+    for (const b of this.currentAssistantBlocks) {
+      if (!b) continue
+      if (b.type === 'text' && b.text.trim()) solidBlocks.push(b)
+      else if (b.type === 'thinking' && (b as { signature?: string }).signature) solidBlocks.push(b)
+      else if (b.type === 'redacted_thinking') solidBlocks.push(b)
+    }
+    if (solidBlocks.length > 0) {
+      this.messages = [...this.messages, {
+        id: generateMsgId(),
+        role: 'assistant',
+        contentBlocks: solidBlocks,
+        createdAt: new Date().toISOString()
+      } satisfies AgentMessage]
+    }
+
+    this.cancelledRequestIds.add(requestId)
+    try { this.abortController?.abort() } catch { /* already aborted */ }
+    getHost().apiAbortStream(requestId)
+    this.currentRequestId = null
+    // Drop the in-flight canvas — the same reset shape the stream-runner's
+    // idle-retry and overflow paths use before re-issuing.
+    this.currentAssistantBlocks = []
+    this.streamingBlocks = []
+    this.jsonAccumulators = new Map()
+    this.toolUseBlocks = []
+
+    this.messages = [...this.messages, {
+      id: generateMsgId(),
+      role: 'user',
+      contentBlocks: [{ type: 'text', text: clipped }],
+      createdAt: new Date().toISOString()
+    } satisfies AgentMessage]
+    // The steer opens a fresh sampling window (the same reset a new turn gets).
+    this.thinkingOnlyRetries = 0
+    this.agentStatus = { status: 'streaming' }
+    this.notify()
+    // continueLoop is not awaited: the IPC response is the outcome, the next
+    // request is the turn's business. Its own catch settles failures.
+    void this.continueLoop().catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[AgentEngine] steer re-dispatch failed:', message)
+      this.agentStatus = { status: 'error', error: message }
+      this.notify()
+    })
+    return { ok: true }
   }
 
   clearError = (): void => {
