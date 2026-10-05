@@ -401,7 +401,7 @@ export class AgentEngine implements EngineCore {
   reportSpawnProgress = (msg: string, force = false): void => { this.spawnManager.reportProgress(msg, force) }
   /** @internal */
   compactor = new ContextCompactor({
-    runHistorySummary: (regionText, instruction) => this.runHistorySummary(regionText, instruction),
+    runHistorySummary: (regionText, instruction, mode) => this.runHistorySummary(regionText, instruction, mode),
     getMessages: () => this.messages,
     // Live view of the refill breaker (PLAN-context-zcode-benchmarks P1): the
     // compactor consumes the flag per pass; the state itself lives here, next
@@ -1679,12 +1679,15 @@ export class AgentEngine implements EngineCore {
     this.terminalCleanups = []
   }
 
-  /** Run the HistorySummaryAgent non-streaming. Returns '' on LLM failure/empty. */
-  private async runHistorySummary(regionText: string, instruction?: string): Promise<string> {
+  /** Run the HistorySummaryAgent non-streaming. Returns '' on LLM failure/empty.
+   *  mode: 'region' = first build / extension over a raw region; 'roll' = the
+   *  accumulated summary chain past the 20K cap is being consolidated
+   *  (PLAN-context-summary-structure). */
+  private async runHistorySummary(regionText: string, instruction?: string, mode?: 'region' | 'roll'): Promise<string> {
     const summaryAgent = new HistorySummaryAgent()
     try {
       return await summaryAgent.execute(
-        { regionText, instruction, locale: this.opts.locale },
+        { regionText, instruction, mode, locale: this.opts.locale },
         {
           llmConfig: {
             adapter: this.opts.adapter,
@@ -1692,7 +1695,10 @@ export class AgentEngine implements EngineCore {
             baseURL: this.opts.baseURL,
             model: this.opts.model
           },
-          maxTokens: 500
+          // A structured body (three sections) needs more room than the old
+          // 500-token prose paragraph — one-shot cost is negligible next to the
+          // conversation it serves.
+          maxTokens: 900
         }
       )
     } catch (err) {

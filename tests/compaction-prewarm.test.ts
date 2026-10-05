@@ -79,7 +79,7 @@ describe('compactor.prewarm: the summary moves off the request path', () => {
     const messages = makeConversation()
     const { compactor, runHistorySummary } = makeCompactor(messages)
     await compactor.prewarm({ contextLength: 500, source: 'manual', instruction: '重点保留所有决策与理由' })
-    expect(runHistorySummary).toHaveBeenCalledWith(expect.any(String), '重点保留所有决策与理由')
+    expect(runHistorySummary).toHaveBeenCalledWith(expect.any(String), '重点保留所有决策与理由', 'region')
   })
 
   it('restores nanoCompact marks: the prewarmed copy is discarded', async () => {

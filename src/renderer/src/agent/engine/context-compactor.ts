@@ -50,8 +50,8 @@ const MIN_USER_TURNS = 2
 const OVERFLOW_STRIP_PREFIX = 1500
 // Token budget for replaying the dropped region's USER messages verbatim into
 // the compacted copy (P0 of the 2026-09-23 gap analysis). The summary is a
-// 500-token paraphrase; the user's own words are the intent record and used to
-// survive only inside it. Codex replays real user messages wholesale
+// ~900-token structured paraphrase; the user's own words are the intent record
+// and used to survive only inside it. Codex replays real user messages wholesale
 // (COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000) and Claude Code's compact prompt
 // reserves a dedicated "All User Messages" section — same judgement: user
 // intent is the one thing a lossy summary must not own alone.
@@ -214,11 +214,12 @@ function buildDroppedRegionText(region: AgentMessage[]): { text: string; covered
   return { text: parts.join('\n\n'), coveredIds }
 }
 
-function makeHistorySummaryMessage(text: string): AgentMessage {
+function makeHistorySummaryMessage(text: string, coverageLine?: string | null): AgentMessage {
+  const body = coverageLine ? `${coverageLine}\n${text}` : text
   return {
     id: `summary_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     role: 'user',
-    contentBlocks: [{ type: 'text', text: `【历史对话摘要】\n${text}` }],
+    contentBlocks: [{ type: 'text', text: `【历史对话摘要】\n${body}` }],
     createdAt: new Date().toISOString()
   }
 }
@@ -344,9 +345,45 @@ function makeDroppedReadReminderMessage(text: string): AgentMessage {
   }
 }
 
+/** MM-DD HH:mm in local time — the shape the rest of the app speaks. */
+function formatStamp(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** The mechanical coverage line for the history-summary message
+ *  (PLAN-context-summary-structure): the covered span's first/last timestamp
+ *  plus message / user-turn counts — facts computed in code, never trusted to
+ *  the summarizer LLM. Rendered per-pass from the covered set and injected
+ *  into the summary MESSAGE only, never into the cached text: the cache stays
+ *  pure LLM output (the 20K cap, the roll input, the persisted shape and
+ *  event.summary.text are untouched), and a line frozen inside it would go
+ *  stale as coverage grows. Cache-stable by construction: covered growth is
+ *  exactly what already breaks the request prefix at the user replays, which
+ *  sit BEFORE the summary message; passes with an unchanged covered set
+ *  render the identical line. `covered` is always a subset of `dropped` (it
+ *  is the ledger of what was dropped and summarized); ids outside it are
+ *  ignored, so an empty or foreign set renders no line (the notes-only
+ *  landing). */
+export function buildSummaryCoverageHeader(dropped: AgentMessage[], covered: Set<string>): string | null {
+  if (covered.size === 0) return null
+  const msgs = dropped.filter((m) => covered.has(m.id))
+  if (msgs.length === 0) return null
+  const userTurns = msgs.filter((m) => m.role === 'user').length
+  const start = formatStamp(msgs[0].createdAt)
+  const end = formatStamp(msgs[msgs.length - 1].createdAt)
+  const span = start === end ? start : `${start} – ${end}`
+  return `〔覆盖〕${span} · 已压缩 ${msgs.length} 条消息（用户发言 ${userTurns} 条）`
+}
+
 
 export interface ContextCompactorDeps {
-  runHistorySummary(regionText: string, instruction?: string): Promise<string>
+  /** mode: 'region' = first build / extension (the input is a raw conversation
+   *  region); 'roll' = the accumulated text past the 20K cap is being
+   *  consolidated (PLAN-context-summary-structure). */
+  runHistorySummary(regionText: string, instruction?: string, mode?: 'region' | 'roll'): Promise<string>
   getMessages(): AgentMessage[]
   /** The refill breaker's state, read live per pass (the engine owns the
    *  tracking object; the compactor only consumes the flag). While true the
@@ -596,7 +633,9 @@ export class ContextCompactor {
   private async cappedSummaryText(text: string, instruction?: string): Promise<string | null> {
     if (text.length <= HISTORY_SUMMARY_MAX_CHARS) return text
     console.log(`[AgentEngine] history summary over cap (${text.length} > ${HISTORY_SUMMARY_MAX_CHARS} chars) — rolling it`)
-    const rolled = await this.deps.runHistorySummary(text, instruction)
+    // mode 'roll': the input is the accumulated summary chain, not a raw
+    // region — the roll prompt consolidates sections instead of re-compressing.
+    const rolled = await this.deps.runHistorySummary(text, instruction, 'roll')
     return rolled || null
   }
 
@@ -661,13 +700,27 @@ export class ContextCompactor {
     // tool_results table + tool_result_search).
     const reminderText = buildDroppedReadReminder(dropped, truncated)
     this.lastReminderCount = reminderText !== null ? 1 : 0
-    const withCompensation = (summaryText: string | null): AgentMessage[] => [
+    const withCompensation = (summaryText: string | null, covered?: Set<string>): AgentMessage[] => [
       ...replays,
-      ...(summaryText !== null ? [makeHistorySummaryMessage(summaryText)] : []),
+      ...(summaryText !== null
+        ? [makeHistorySummaryMessage(summaryText, covered ? buildSummaryCoverageHeader(dropped, covered) : null)]
+        : []),
       ...(reminderText !== null ? [makeDroppedReadReminderMessage(reminderText)] : []),
       ...truncated,
     ]
     const cache = this.historySummary
+
+    // The coverage the CACHED text claims (PLAN-context-summary-structure):
+    // the in-memory ledger when present, else the same positional rebuild a
+    // rehydrated cache derives below — the coverage line must never state more
+    // than the landed text really covers. An empty set (the notes-only
+    // landing, firstKeptId '') renders no line.
+    const cacheCovered = (): Set<string> | undefined => {
+      if (!cache) return undefined
+      if (cache.covered) return cache.covered
+      const j = dropped.findIndex((m) => m.id === cache.firstKeptId)
+      return new Set(dropped.slice(0, j + 1).map((m) => m.id))
+    }
 
     // Refill breaker active: reuse whatever summary state exists WITHOUT
     // absorbing the uncovered slice (the ledger must not claim what no LLM
@@ -677,7 +730,7 @@ export class ContextCompactor {
     // context_compact bypasses this (D6): the call is an explicit paid
     // decision, and the once-per-turn cap already bounds its churn.
     if (this.deps.isSummarySuspended?.() && !opts?.bypassBreaker) {
-      return withCompensation(cache ? cache.text : null)
+      return withCompensation(cache ? cache.text : null, cacheCovered())
     }
 
     // No cache → summarize the full dropped region. A failed/empty summarizer
@@ -689,47 +742,42 @@ export class ContextCompactor {
     if (!cache) {
       const built = buildDroppedRegionText(dropped)
       if (!built.text.trim() && !notesSection) return withCompensation(null)
-      const summary = built.text.trim() ? await this.deps.runHistorySummary(built.text, instruction) : null
+      const summary = built.text.trim() ? await this.deps.runHistorySummary(built.text, instruction, 'region') : null
       const text = await this.composeWithNotes(summary, notesSection, instruction)
       if (!text) {
         console.warn('[AgentEngine] history summary empty, using plain truncation')
         return withCompensation(null)
       }
       if (notesSection) this.lastNotesLanded = true
+      const covered = new Set(summary ? built.coveredIds : [])
       this.historySummary = {
         firstKeptId: summary ? frontierId : '',
         text,
         // Only what the summarizer really saw is covered — the 40K-capped
         // tail stays uncovered so the next pass absorbs it (review_20260929 中3).
-        covered: new Set(summary ? built.coveredIds : []),
+        covered,
       }
       console.log(`[AgentEngine] injected history summary (${text.length} chars) for ${dropped.length} dropped messages`)
-      return withCompensation(text)
+      return withCompensation(text, covered)
     }
 
     // Unified cache rule: uncovered = currently-dropped − already-covered.
     // Positions cannot tell them apart — protection releases (the last text
     // user message ceding to a newer turn, the hot zone sliding) drop messages
     // BEHIND the frontier, and those must be absorbed like any other new drop.
-    const covered = cache.covered
-      ?? (() => {
-        // Rehydrated from persistence: coverage is unknown, rebuild it
-        // positionally — everything dropped at-or-before the persisted frontier.
-        const j = dropped.findIndex((m) => m.id === cache.firstKeptId)
-        return new Set(dropped.slice(0, j + 1).map((m) => m.id))
-      })()
+    const covered = cache.covered ?? cacheCovered() ?? new Set<string>()
     const uncovered = dropped.filter((m) => !covered.has(m.id))
     if (uncovered.length === 0) {
       // Everything currently dropped is already covered — the cached text rides
       // as-is. The one exception: a tool call's notes still land (D5 — the model
       // paid for this pass), joined onto the cached text without moving the
       // frontier or the coverage ledger.
-      if (!notesSection) return withCompensation(cache.text)
+      if (!notesSection) return withCompensation(cache.text, covered)
       const text = await this.composeWithNotes(cache.text, notesSection, instruction)
-      if (!text) return withCompensation(cache.text)
+      if (!text) return withCompensation(cache.text, covered)
       this.lastNotesLanded = true
       this.historySummary = { ...cache, text }
-      return withCompensation(text)
+      return withCompensation(text, covered)
     }
 
     // Below the accrual line the cached text is reused WITHOUT absorbing, so
@@ -741,9 +789,9 @@ export class ContextCompactor {
     // land regardless — they are not coverage, only the merged text is.
     const built = buildDroppedRegionText(uncovered)
     const wantsExtension = built.text.length >= SUMMARY_EXTEND_MIN_CHARS
-    if (!wantsExtension && !notesSection) return withCompensation(cache.text)
-    const extra = wantsExtension ? await this.deps.runHistorySummary(built.text, instruction) : null
-    if (!extra && !notesSection) return withCompensation(cache.text)
+    if (!wantsExtension && !notesSection) return withCompensation(cache.text, covered)
+    const extra = wantsExtension ? await this.deps.runHistorySummary(built.text, instruction, 'region') : null
+    if (!extra && !notesSection) return withCompensation(cache.text, covered)
     const parts = [cache.text]
     if (extra) parts.push(extra)
     if (notesSection) parts.push(notesSection)
@@ -752,9 +800,10 @@ export class ContextCompactor {
       // Roll failed: the OLD text and OLD coverage stay landed — the new slice
       // is not stamped covered (the ledger may only claim what the text really
       // carries), so it retries on a later pass, exactly like a failed extension.
-      return withCompensation(cache.text)
+      return withCompensation(cache.text, covered)
     }
     if (notesSection) this.lastNotesLanded = true
+    const landed = new Set([...covered, ...(extra ? built.coveredIds : [])])
     this.historySummary = {
       // The frontier only advances when an extension REALLY ran: a notes-only
       // landing must not pin the frontier onto slices no summary text covers.
@@ -764,10 +813,10 @@ export class ContextCompactor {
       // so a slice capped away by SUMMARY_INPUT_CAP is retried next pass
       // instead of being stamped covered and lost forever. On the roll path
       // the roll saw the whole merged text, so absorbing everything is honest.
-      covered: new Set([...covered, ...(extra ? built.coveredIds : [])]),
+      covered: landed,
     }
     console.log(`[AgentEngine] extended history summary (${text.length} chars) for ${uncovered.length} newly-dropped messages`)
-    return withCompensation(text)
+    return withCompensation(text, landed)
   }
 
   estimateTokens(messages?: AgentMessage[]): number {
