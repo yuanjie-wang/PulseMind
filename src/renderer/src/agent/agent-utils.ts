@@ -127,6 +127,15 @@ export function shEscape(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')
 }
 
+/** POSIX '…' quoting: inside single quotes NOTHING is special except ' itself,
+ *  closed as `'\''`. shEscape targets "…" contexts and does not escape ' — used
+ *  inside '…' it let one raw ' close the quoting and inject (review_20261005
+ *  P1-02: "a'; rm -rf ~;'" became two commands). Pair every '…' interpolation
+ *  with THIS, never with shEscape. */
+export function shSingleQuote(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'"
+}
+
 export function psEscape(s: string): string {
   return s.replace(/'/g, "''")
 }

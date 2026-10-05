@@ -13,7 +13,7 @@ const { ToolManager } = await import('../src/renderer/src/tools/ToolManager')
 const { SkillManager } = await import('../src/renderer/src/skills/SkillManager')
 
 import type { AgentEngineOptions } from '../src/renderer/src/agent/AgentEngine'
-import type { AgentMessage, ContentBlock, ToolUseBlock } from '../src/renderer/src/types/agent'
+import type { AgentMessage, ContentBlock, ToolResultBlock, ToolUseBlock } from '../src/renderer/src/types/agent'
 
 /** Construction-time cache warming pokes the host; nothing in this file needs
  *  it to answer, so every method is a generic async no-op. */
@@ -89,6 +89,41 @@ describe('no phantom rounds: a turn must not continue without new content', () =
     // Truncated tool params get synthetic error results and the loop turns once
     // more so the model can retry — that half of the old behavior is the point.
     expect(continueLoop).toHaveBeenCalledTimes(1)
+    // …and the synthetic error result must actually LAND in engine.messages.
+    // The pre-fix addTruncatedResults returned void and rebuilt a dead local
+    // array, so the wire carried the assistant tool_use with no paired
+    // tool_result (review_20261005 P1-01); the adapters' reconcile skips the
+    // LAST message — exactly where that orphan sat — so nothing repaired it.
+    expect(engine.messages).toHaveLength(3)
+    const synthetic = engine.messages[2]
+    expect(synthetic.role).toBe('user')
+    const block = synthetic.contentBlocks.find(b => b.type === 'tool_result') as ToolResultBlock
+    expect(block.tool_use_id).toBe('tu_1')
+    expect(block.is_error).toBe(true)
+    expect(block.content).toMatch(/max_tokens/)
+  })
+
+  it('the tool_use truncated branch (handleToolUseResponse) lands its synthetic results too', async () => {
+    const engine = makeEngine([
+      { id: 'u1', role: 'user', contentBlocks: [text('跑一下')], createdAt: NOW },
+      { id: 'a1', role: 'assistant', contentBlocks: [
+        { type: 'tool_use', id: 'tu_trunc', name: 'write', status: 'pending', input: {}, _jsonTruncated: true },
+      ], createdAt: NOW },
+    ] as AgentMessage[])
+    const continueLoop = vi.spyOn(engine, 'continueLoop').mockImplementation(async () => {})
+
+    await engine.handleToolUseResponse(engine.messages[1].contentBlocks.filter(b => b.type === 'tool_use') as ToolUseBlock[])
+
+    expect(continueLoop).toHaveBeenCalledTimes(1)
+    expect(engine.messages).toHaveLength(3)
+    const synthetic = engine.messages[2]
+    expect(synthetic.role).toBe('user')
+    const block = synthetic.contentBlocks.find(b => b.type === 'tool_result') as ToolResultBlock
+    expect(block.tool_use_id).toBe('tu_trunc')
+    expect(block.is_error).toBe(true)
+    // The truncated calls were marked completed in place so the UI cards settle.
+    const use = engine.messages[1].contentBlocks.find(b => b.type === 'tool_use') as ToolUseBlock
+    expect(use.status).toBe('completed')
   })
 
   it('a duplicate tool_result (ask_user answered twice) never re-drives the loop', () => {

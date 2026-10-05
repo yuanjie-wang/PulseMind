@@ -18,6 +18,7 @@ import type { Plan } from '../../../shared/types/plan'
 import { parseDeckSpec } from '../../../shared/deck/spec'
 import { writeFileChunked } from './agent-utils'
 import { buildCommandFromSkillInput } from './command-builder'
+import { shSingleQuote } from './agent-utils'
 import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
 import { saveImagesInText } from './image-utils'
 import type { ToolExecContext } from './executors/context'
@@ -261,9 +262,12 @@ export class ToolExecutor implements ToolExecContext {
   private async getLineCount(filePath: string): Promise<number> {
     try {
       const isWin = this.opts.platformInfo?.platform === 'win32'
+      // The POSIX branch used to escape only `"` while riding a DOUBLE-quoted
+      // context — `$( )`/backtick in the path executed as command substitution
+      // (review_20261005 P1-03). '…' + shSingleQuote leaves nothing to escape.
       const cmd = isWin
         ? `(Get-Content '${filePath.replace(/'/g, "''")}' -Encoding utf8 | Measure-Object -Line).Lines`
-        : `wc -l "${filePath.replace(/"/g, '\\"')}"`
+        : `wc -l ${shSingleQuote(filePath)}`
       const r = await getHost().execCommandSync(cmd)
       if (r.code === 0) {
         const trimmed = r.output.trim()

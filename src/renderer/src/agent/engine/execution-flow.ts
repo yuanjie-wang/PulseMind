@@ -488,7 +488,7 @@ export class ExecutionFlow {
 
     const hasTruncated = toolUses.some(t => (t as { _jsonTruncated?: boolean })._jsonTruncated === true)
     if (hasTruncated) {
-      addTruncatedResults(this.engine.messages, toolUses)
+      this.engine.messages = addTruncatedResults(this.engine.messages, toolUses)
       this.engine.notify()
       // Synthetic error results landed — one batch by the same pacing contract.
       this.engine.recordToolBatchComplete()
@@ -675,7 +675,7 @@ export class ExecutionFlow {
       this.engine.handleEndTurnResponse('max_tokens')
       return
     }
-    addTruncatedResults(this.engine.messages, toolUses); this.engine.notify()
+    this.engine.messages = addTruncatedResults(this.engine.messages, toolUses); this.engine.notify()
     // 合成错误批着陆、循环即将重请求 —— 与 handleToolUseResponse 截断分支的
     // 打点同款批同款计数（review_20260930 中2：此前同形状一个计一个不计）。
     this.engine.recordToolBatchComplete()

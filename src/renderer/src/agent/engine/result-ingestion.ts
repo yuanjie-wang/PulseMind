@@ -32,7 +32,14 @@ import type { AgentEngineOptions } from '../AgentEngine'
   }
 
 
-  export function addTruncatedResults(messages: AgentMessage[], tools: ToolUseBlock[]): void {
+  /** Returns the message list WITH the synthetic user message appended — the
+   *  caller must assign it back (`engine.messages = addTruncatedResults(...)`).
+   *  The pre-fix signature returned void and rebuilt a dead local array, so the
+   *  assistant tool_use rode to the gateway with no paired tool_result
+   *  (review_20261005 P1-01: adapter reconcile skips the LAST message, exactly
+   *  where that orphan sits, so nothing repaired it). Also marks every truncated
+   *  call completed in place — that mutation is on the caller's block objects. */
+  export function addTruncatedResults(messages: AgentMessage[], tools: ToolUseBlock[]): AgentMessage[] {
     const combinedBlocks: ContentBlock[] = tools.map(tool => {
       tool.status = 'completed'
       const wasTruncated = (tool as any)._jsonTruncated === true
@@ -48,7 +55,7 @@ import type { AgentEngineOptions } from '../AgentEngine'
       // the live renderer block), producing duplicate tool_results rows.
       return { type: 'tool_result' as const, tool_use_id: tool.id, content: msg, is_error: true, tool_result_id: crypto.randomUUID() }
     })
-    messages = [...messages, { id: generateMsgId(), role: 'user' as const, contentBlocks: combinedBlocks, createdAt: new Date().toISOString() }]
+    return [...messages, { id: generateMsgId(), role: 'user' as const, contentBlocks: combinedBlocks, createdAt: new Date().toISOString() }]
   }
 
   export function extractInvokeToolCalls(opts: AgentEngineOptions, blocks: ContentBlock[]): { blocks: ContentBlock[]; converted: boolean } {

@@ -1,4 +1,4 @@
-import { shEscape, psEscape } from './agent-utils'
+import { shEscape, shSingleQuote, psEscape } from './agent-utils'
 
 export function buildCommandFromSkillInput(toolName: string, input: Record<string, unknown>, platform: string, ripgrepPath?: string | null): string {
   const isWin = platform === 'win32' || (
@@ -83,14 +83,14 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       }
 
       if (ripgrepPath) {
-        let cmd = `"${shEscape(ripgrepPath)}" -n --no-heading -i --max-columns 200 '${shEscape(query)}' '${shEscape(searchDir)}'`
-        cmd += includePatterns.map(p => ` -g '${shEscape(p)}'`).join('')
-        cmd += excludePatterns.map(p => ` -g '!${shEscape(p)}'`).join('')
+        let cmd = `"${shEscape(ripgrepPath)}" -n --no-heading -i --max-columns 200 ${shSingleQuote(query)} ${shSingleQuote(searchDir)}`
+        cmd += includePatterns.map(p => ` -g ${shSingleQuote(p)}`).join('')
+        cmd += excludePatterns.map(p => ` -g ${shSingleQuote('!' + p)}`).join('')
         return cmd + ' 2>/dev/null | head -100'
       }
-      let cmd = `if command -v rg >/dev/null 2>&1; then rg -n --no-heading -i --max-columns 200 '${shEscape(query)}' '${shEscape(searchDir)}'`
-      cmd += includePatterns.map(p => ` -g '${shEscape(p)}'`).join('')
-      cmd += excludePatterns.map(p => ` -g '!${shEscape(p)}'`).join('')
+      let cmd = `if command -v rg >/dev/null 2>&1; then rg -n --no-heading -i --max-columns 200 ${shSingleQuote(query)} ${shSingleQuote(searchDir)}`
+      cmd += includePatterns.map(p => ` -g ${shSingleQuote(p)}`).join('')
+      cmd += excludePatterns.map(p => ` -g ${shSingleQuote('!' + p)}`).join('')
       cmd += ` 2>/dev/null; else grep -rn "${shEscape(query)}" "${shEscape(searchDir)}"`
       cmd += mkGrepInclude(includePatterns) + mkGrepExclude(excludePatterns)
       cmd += ` 2>/dev/null; fi | head -100`
@@ -107,9 +107,9 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
         return `Get-ChildItem -Path '${psEscape(searchDir)}' -Recurse -Depth ${Math.min(maxDepth, 10)}${typeParam} -Force${pattern ? ` -Filter '${psEscape(pattern)}'` : ''} -ErrorAction SilentlyContinue | Where-Object { !$_.PSPath.Contains('\\.git\\') -and !$_.PSPath.Contains('\\node_modules\\') } | Select-Object -ExpandProperty FullName | Select-Object -First 100 | Out-String`
       }
       const typeExpr = type ? `-type ${type}` : ''
-      const nameExpr = pattern ? `-iname '${shEscape(pattern)}'` : ''
+      const nameExpr = pattern ? `-iname ${shSingleQuote(pattern)}` : ''
       const cond = [typeExpr, nameExpr, extraArgs].filter(Boolean).join(' ')
-      return `find '${shEscape(searchDir)}' -maxdepth ${Math.min(maxDepth, 10)} ${cond} -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | head -100`
+      return `find ${shSingleQuote(searchDir)} -maxdepth ${Math.min(maxDepth, 10)} ${cond} -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | head -100`
     }
     case 'ask_user': {
       const prompt = String(input.prompt || 'Ask the user')
@@ -126,10 +126,10 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
 
       if (platform === 'linux') {
         if (choiceList.length > 0) {
-          const items = choiceList.map(c => `'${shEscape(c)}'`).join(' ')
-          return `zenity --list --title='${shEscape(prompt)}' --column='' ${items} --print-column=1 2>/dev/null || kdialog --menu '${shEscape(prompt)}' ${items} 2>/dev/null || echo "CANCELLED"`
+          const items = choiceList.map(c => shSingleQuote(c)).join(' ')
+          return `zenity --list --title=${shSingleQuote(prompt)} --column='' ${items} --print-column=1 2>/dev/null || kdialog --menu ${shSingleQuote(prompt)} ${items} 2>/dev/null || echo "CANCELLED"`
         }
-        return `zenity --entry --title='${shEscape(prompt)}' --text='${shEscape(prompt)}' 2>/dev/null || kdialog --inputbox '${shEscape(prompt)}' '' 2>/dev/null || echo "CANCELLED"`
+        return `zenity --entry --title=${shSingleQuote(prompt)} --text=${shSingleQuote(prompt)} 2>/dev/null || kdialog --inputbox ${shSingleQuote(prompt)} '' 2>/dev/null || echo "CANCELLED"`
       }
 
       // macOS (default)
@@ -138,7 +138,12 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
         const items = choiceList.map(c => `"${c.replace(/"/g, '\\"')}"`).join(', ')
         return `osascript << 'OSAEOF'\nset theChoices to {${items}}\nset theSelection to choose from list theChoices with prompt "${shEscape(prompt)}"${multiFlag}\nif theSelection is false then\n  return "CANCELLED"\nelse\n  set AppleScript's text item delimiters to ", "\n  return theSelection as text\nend if\nOSAEOF`
       }
-      return `osascript -e 'display dialog "${shEscape(prompt)}" default answer ""' -e 'text returned of result'`
+      // The -e payload rides a SINGLE-quoted shell arg, so a raw ' in the prompt
+      // closed it — same injection class as the '…' contexts above (found while
+      // fixing review_20261005 P1-02). Escape for the AppleScript "…" string
+      // first, then hand the whole payload to shSingleQuote.
+      const dialogScript = `display dialog "${prompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" default answer ""`
+      return `osascript -e ${shSingleQuote(dialogScript)} -e 'text returned of result'`
     }
     case 'exec': {
       const command = String(input.command || '')

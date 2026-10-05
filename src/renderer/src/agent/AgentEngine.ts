@@ -830,6 +830,13 @@ export class AgentEngine implements EngineCore {
     // A new send gets a fresh thinking-only rescue too: even if the previous
     // turn exhausted its re-issue, the model gets one more sampling chance.
     this.thinkingOnlyRetries = 0
+    // Same for the stream idle-timeout budget. The cancel path already resets
+    // it in the runner's catch (stream-runner, unconditional before the
+    // isCancel return), so this is DEFENSE, not a bug fix: the "a new turn
+    // starts with a fresh retry budget" invariant now holds no matter which
+    // exit a previous turn took (review_20261005 P2-08 claimed a skipped reset
+    // that the current control flow does not have).
+    this.streamIdleRetries = 0
     // Same for context_compact's per-turn cap: every turn gets one main
     // compaction back. (pendingToolCompactForce is deliberately NOT touched —
     // the drop it arms belongs to the next built copy, whenever that comes.)
