@@ -11,17 +11,30 @@ import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types
  */
 
 /**
- * Wire-side reasoning allowance added to `callNonStreaming`'s max_tokens.
- * Thinking gateways settle reasoning_tokens INSIDE max_tokens (measured on all
- * three wires 2026-10-06: DeepSeek zen/openai, api.deepseek.com openai and
- * anthropic), so a cap set as a visible-content budget gets eaten by thinking
- * before any content is emitted — memory consolidation and session review
- * length-finished with ~zero visible text on deepseek-v4.1-flash. The caller's
- * number stays the content budget; the wire gets this much headroom on top.
- * Non-thinking models never reach the raised ceiling (strict mechanical
- * prompts finish at `stop`), so their behavior and cost are unchanged.
+ * One-shot calls disable thinking outright via `thinking:{type:'disabled'}`:
+ * thinking gateways settle reasoning_tokens INSIDE wire max_tokens (measured
+ * on all three wires 2026-10-06: DeepSeek zen/openai, api.deepseek.com openai
+ * and anthropic), which ate one-shot content caps before any text appeared —
+ * memory consolidation and session review length-finished with ~zero visible
+ * output. With thinking off, `maxTokens` means exactly the final-output cap.
+ *
+ * Gateways that reject the unknown param (real OpenAI treats it as an
+ * unrecognized argument, real Anthropic only accepts thinking.type 'enabled')
+ * are discovered at runtime: when a param'd call fails and the plain retry
+ * succeeds, the baseURL lands here and later calls skip the param — one failed
+ * round-trip per gateway, ever, per process. Keyed by baseURL because param
+ * rejection is a gateway-level contract; a baseURL is only memoized after a
+ * SUCCESSFUL plain retry, so transient errors never poison the set.
  */
-export const NON_STREAMING_REASONING_ALLOWANCE = 8192
+const thinkingParamUnsupportedBaseURLs = new Set<string>()
+
+export function thinkingParamUnsupported(baseURL: string): boolean {
+  return thinkingParamUnsupportedBaseURLs.has(baseURL)
+}
+
+export function markThinkingParamUnsupported(baseURL: string): void {
+  thinkingParamUnsupportedBaseURLs.add(baseURL)
+}
 export interface LlmAdapter {
   readonly provider: LLMProvider
 
@@ -65,10 +78,10 @@ export interface LlmAdapter {
    * | 'max_tokens' | …) before the promise settles — compilation (K1) treats a
    * truncated completion as a failure and must be able to see it.
    *
-   * `maxTokens` is the VISIBLE-CONTENT budget. Thinking gateways count
-   * reasoning into wire max_tokens, so the adapters send it plus
-   * `NON_STREAMING_REASONING_ALLOWANCE` — callers' numbers mean content, not
-   * the wire ceiling.
+   * `maxTokens` is the final-output cap, sent as-is on the wire. Thinking is
+   * disabled for these background calls (`thinking:{type:'disabled'}` — see
+   * the memo above); gateways that reject the param fall back to a plain
+   * request after one failed attempt.
    */
   callNonStreaming(
     apiKey: string,

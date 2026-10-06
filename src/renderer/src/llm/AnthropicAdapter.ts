@@ -2,7 +2,7 @@ import { getHost } from '../agent/host'
 import type { AgentMessage, ToolUseBlock, ContentBlock } from '../types/agent'
 import type { ToolDefinition } from '../tools/types'
 import type { LlmAdapter } from './adapter'
-import { NON_STREAMING_REASONING_ALLOWANCE } from './adapter'
+import { thinkingParamUnsupported, markThinkingParamUnsupported } from './adapter'
 import type { LlmRequestParams } from './types'
 import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 import { createStreamParser } from './stream-utils'
@@ -333,40 +333,54 @@ export const anthropicAdapter: LlmAdapter = {
       'anthropic-version': '2023-06-01',
       'anthropic-beta': 'tools-2024-04-04'
     }
-    const body: Record<string, unknown> = {
-      model,
-      // maxTokens is the visible-content budget; thinking gateways settle
-      // reasoning_tokens inside wire max_tokens, so the cap gets the
-      // allowance on top (see NON_STREAMING_REASONING_ALLOWANCE).
-      max_tokens: maxTokens + NON_STREAMING_REASONING_ALLOWANCE,
-      system: systemPrompt,
-      messages: userMessages
-    }
-
-    try {
-      const responseText = await getHost().apiFetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        withProfileHeaders: true
-      })
-      if (!responseText) return null
-
-      const parsed = JSON.parse(responseText)
-      if (onUsage) {
-        onUsage({
-          inputTokens: parsed?.usage?.input_tokens,
-          outputTokens: parsed?.usage?.output_tokens,
-          promptCacheHitTokens: parsed?.usage?.cache_read_input_tokens
-        })
+    const sendOnce = async (disableThinking: boolean): Promise<string | null> => {
+      const body: Record<string, unknown> = {
+        model,
+        max_tokens: maxTokens,
+        system: systemPrompt,
+        messages: userMessages
       }
-      if (onFinishReason) onFinishReason(parsed?.stop_reason ?? null)
-      const textBlock = parsed?.content?.find((b: { type: string }) => b.type === 'text')
-      return textBlock?.text || null
-    } catch (err) {
-      console.log(`[AnthropicAdapter] callNonStreaming failed:`, err)
-      return null
+      if (disableThinking) body.thinking = { type: 'disabled' }
+
+      try {
+        const responseText = await getHost().apiFetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          withProfileHeaders: true
+        })
+        if (!responseText) return null
+
+        const parsed = JSON.parse(responseText)
+        if (onUsage) {
+          onUsage({
+            inputTokens: parsed?.usage?.input_tokens,
+            outputTokens: parsed?.usage?.output_tokens,
+            promptCacheHitTokens: parsed?.usage?.cache_read_input_tokens
+          })
+        }
+        if (onFinishReason) onFinishReason(parsed?.stop_reason ?? null)
+        const textBlock = parsed?.content?.find((b: { type: string }) => b.type === 'text')
+        return textBlock?.text || null
+      } catch (err) {
+        console.log(`[AnthropicAdapter] callNonStreaming failed:`, err)
+        return null
+      }
     }
+
+    // One-shot calls disable thinking: thinking gateways settle reasoning
+    // INSIDE max_tokens, which ate one-shot caps before any content appeared
+    // (three wires measured 2026-10-06 — see adapter.ts). The simple-fetch
+    // transport reports every failure as null, so the memo is gated on the
+    // plain retry SUCCEEDING — transient errors never poison the set.
+    const tryThinkingOff = !thinkingParamUnsupported(baseURL)
+    const first = await sendOnce(tryThinkingOff)
+    if (first === null && tryThinkingOff) {
+      const plain = await sendOnce(false)
+      if (plain !== null) markThinkingParamUnsupported(baseURL)
+      return plain
+    }
+    return first
   },
 
   extractTextContent(response: string | null): string | null {

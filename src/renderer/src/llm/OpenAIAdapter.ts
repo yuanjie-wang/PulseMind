@@ -1,7 +1,7 @@
 import type { AgentMessage, TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../types/agent'
 import type { ToolDefinition } from '../tools/types'
 import type { LlmAdapter } from './adapter'
-import { NON_STREAMING_REASONING_ALLOWANCE } from './adapter'
+import { thinkingParamUnsupported, markThinkingParamUnsupported } from './adapter'
 import type { LlmRequestParams } from './types'
 import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 import { createStreamParser, fetchStreamChunks } from './stream-utils'
@@ -511,89 +511,103 @@ export const openaiAdapter: LlmAdapter = {
     const apiMessages = systemPrompt
       ? [{ role: 'system', content: systemPrompt }, ...userMessages]
       : userMessages
-    const body: Record<string, unknown> = {
-      model,
-      // maxTokens is the visible-content budget; thinking gateways settle
-      // reasoning_tokens inside wire max_tokens, so the cap gets the
-      // allowance on top (see NON_STREAMING_REASONING_ALLOWANCE).
-      max_tokens: maxTokens + NON_STREAMING_REASONING_ALLOWANCE,
-      stream: true,
-      stream_options: { include_usage: true },
-      messages: apiMessages
-    }
-
-    try {
-      console.warn(`[OpenAIAdapter] callNonStreaming: url=${url} model=${model} maxTokens=${maxTokens} messages=${apiMessages.length}`)
-      const rawChunks: string[] = await fetchStreamChunks(requestId, url, headers, body)
-
-      // Parse SSE chunks, accumulating only visible content text.
-      // reasoning_content is internal thinking that must NOT be passed to
-      // OneShotAgent parsers — they expect clean responses (title, JSON, keywords).
-      let buffer = ''
-      let contentText = ''
-      // `stream_options.include_usage` makes the endpoint send one final chunk
-      // carrying the totals; it has no choices, so it is read on its own.
-      let usage: LlmUsage | undefined
-      let streamFinishReason: string | null = null
-      for (const chunk of rawChunks) {
-        buffer += chunk
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6).trim()
-          if (data === '[DONE]') continue
-          try {
-            const parsed = JSON.parse(data)
-            if (parsed.usage) usage = openAiUsage(parsed.usage)
-            const chunkFinish = parsed.choices?.[0]?.finish_reason
-            if (chunkFinish) streamFinishReason = chunkFinish
-            const delta = parsed.choices?.[0]?.delta
-            if (delta?.content) contentText += delta.content
-          } catch { /* skip malformed JSON */ }
-        }
+    const sendOnce = async (disableThinking: boolean): Promise<string | null> => {
+      const body: Record<string, unknown> = {
+        model,
+        max_tokens: maxTokens,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: apiMessages
       }
-      // Flush remaining buffer
-      if (buffer) {
-        const line = buffer
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim()
-          if (data && data !== '[DONE]') {
+      if (disableThinking) body.thinking = { type: 'disabled' }
+
+      try {
+        console.warn(`[OpenAIAdapter] callNonStreaming: url=${url} model=${model} maxTokens=${maxTokens} messages=${apiMessages.length}${disableThinking ? ' thinking=off' : ''}`)
+        const rawChunks: string[] = await fetchStreamChunks(requestId, url, headers, body)
+
+        // Parse SSE chunks, accumulating only visible content text.
+        // reasoning_content is internal thinking that must NOT be passed to
+        // OneShotAgent parsers — they expect clean responses (title, JSON, keywords).
+        let buffer = ''
+        let contentText = ''
+        // `stream_options.include_usage` makes the endpoint send one final chunk
+        // carrying the totals; it has no choices, so it is read on its own.
+        let usage: LlmUsage | undefined
+        let streamFinishReason: string | null = null
+        for (const chunk of rawChunks) {
+          buffer += chunk
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6).trim()
+            if (data === '[DONE]') continue
             try {
               const parsed = JSON.parse(data)
               if (parsed.usage) usage = openAiUsage(parsed.usage)
+              const chunkFinish = parsed.choices?.[0]?.finish_reason
+              if (chunkFinish) streamFinishReason = chunkFinish
               const delta = parsed.choices?.[0]?.delta
               if (delta?.content) contentText += delta.content
             } catch { /* skip malformed JSON */ }
           }
         }
-      }
-
-      if (usage && onUsage) onUsage(usage)
-      if (onFinishReason) onFinishReason(streamFinishReason)
-
-      if (!contentText) {
-        console.warn(`[OpenAIAdapter] callNonStreaming: contentText empty, rawChunks.length=${rawChunks.length}`)
-        if (rawChunks.length > 0) {
-          const preview = rawChunks.slice(0, 5).map(c => c.slice(0, 300)).join('\\n')
-          console.warn(`[OpenAIAdapter] callNonStreaming: chunks preview:`, preview)
-          for (const chunk of rawChunks.slice(0, 10)) {
-            const m = chunk.match(/data:\s*(\{.+\})/)?.[1]
-            if (m) try {
-              const p = JSON.parse(m)
-              const rc = p.choices?.[0]?.delta?.reasoning_content
-              if (rc) { console.warn(`[OpenAIAdapter] Found reasoning_content (len=${rc.length}):`, rc.slice(0, 200)); break }
-              const finish = p.choices?.[0]?.finish_reason
-              if (finish) { console.warn(`[OpenAIAdapter] finish_reason=${finish}`); break }
-            } catch {}
+        // Flush remaining buffer
+        if (buffer) {
+          const line = buffer
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6).trim()
+            if (data && data !== '[DONE]') {
+              try {
+                const parsed = JSON.parse(data)
+                if (parsed.usage) usage = openAiUsage(parsed.usage)
+                const delta = parsed.choices?.[0]?.delta
+                if (delta?.content) contentText += delta.content
+              } catch { /* skip malformed JSON */ }
+            }
           }
         }
+
+        if (usage && onUsage) onUsage(usage)
+        if (onFinishReason) onFinishReason(streamFinishReason)
+
+        if (!contentText) {
+          console.warn(`[OpenAIAdapter] callNonStreaming: contentText empty, rawChunks.length=${rawChunks.length}`)
+          if (rawChunks.length > 0) {
+            const preview = rawChunks.slice(0, 5).map(c => c.slice(0, 300)).join('\\n')
+            console.warn(`[OpenAIAdapter] callNonStreaming: chunks preview:`, preview)
+            for (const chunk of rawChunks.slice(0, 10)) {
+              const m = chunk.match(/data:\s*(\{.+\})/)?.[1]
+              if (m) try {
+                const p = JSON.parse(m)
+                const rc = p.choices?.[0]?.delta?.reasoning_content
+                if (rc) { console.warn(`[OpenAIAdapter] Found reasoning_content (len=${rc.length}):`, rc.slice(0, 200)); break }
+                const finish = p.choices?.[0]?.finish_reason
+                if (finish) { console.warn(`[OpenAIAdapter] finish_reason=${finish}`); break }
+              } catch {}
+            }
+          }
+        }
+        return contentText || null
+      } catch (err) {
+        console.log(`[OpenAIAdapter] callNonStreaming failed:`, err)
+        return null
       }
-      return contentText || null
-    } catch (err) {
-      console.log(`[OpenAIAdapter] callNonStreaming failed:`, err)
-      return null
     }
+
+    // One-shot calls disable thinking: thinking gateways settle reasoning
+    // INSIDE max_tokens, which ate one-shot caps before any content appeared
+    // (three wires measured 2026-10-06 — see adapter.ts). A gateway that
+    // rejects the param gets exactly one plain retry; only a SUCCESSFUL plain
+    // retry memoizes the baseURL, so transient errors never poison the set.
+    const tryThinkingOff = !thinkingParamUnsupported(baseURL)
+    const first = await sendOnce(tryThinkingOff)
+    if (first === null && tryThinkingOff) {
+      const plain = await sendOnce(false)
+      if (plain !== null) markThinkingParamUnsupported(baseURL)
+      return plain
+    }
+    return first
   },
 
   extractTextContent(response: string | null): string | null {
