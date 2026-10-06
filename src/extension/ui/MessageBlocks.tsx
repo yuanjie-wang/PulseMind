@@ -331,7 +331,7 @@ export function AskUserBlock({ block, onAnswer }: {
       {done ? (
         block.status === 'completed' ? (
           <div className="pm-ask-note">
-            <Icon name="checkCircle" style={{ marginRight: 6 }} />
+            <Icon name="checkCircle" style={{ marginRight: 6, color: '#389e0d' }} />
             已选择：{block.output ?? ''}
           </div>
         ) : (
@@ -342,12 +342,13 @@ export function AskUserBlock({ block, onAnswer }: {
         )
       ) : answered !== null ? (
         <div className="pm-ask-note">
-          <Icon name="checkCircle" style={{ marginRight: 6 }} />
+          <Icon name="checkCircle" style={{ marginRight: 6, color: '#389e0d' }} />
           已选择：{answered}
         </div>
       ) : (
         <>
-          <div className="pm-ask-choices">
+          {multi && <div className="pm-ask-multi-hint">可多选</div>}
+          <div className={`pm-ask-choices${multi ? ' pm-ask-multi' : ''}`}>
             {choices.map((choice) =>
               multi ? (
                 <button
@@ -366,13 +367,20 @@ export function AskUserBlock({ block, onAnswer }: {
               ),
             )}
           </div>
-          {multi && selected.length > 0 && (
-            <button className="pm-cmd-btn pm-cmd-btn-primary" onClick={() => answer(selected.join(', '))}>
+          {/* 确认常驻（桌面 2026-10-06：选前禁用；计数已从标签上去掉——勾选
+              的行本身就是计数） */}
+          {multi && (
+            <button
+              className="pm-cmd-btn pm-cmd-btn-primary"
+              disabled={selected.length === 0}
+              onClick={() => answer(selected.join(', '))}
+            >
               <Icon name="checkCircle" style={{ marginRight: 4 }} />
-              确认（{selected.length} 项已选）
+              确认
             </button>
           )}
           <div className="pm-ask-custom">
+            <Icon name="edit" style={{ fontSize: 13, color: '#bfbfbf', flexShrink: 0 }} />
             <input
               className="pm-ask-input"
               placeholder="输入自定义回答..."

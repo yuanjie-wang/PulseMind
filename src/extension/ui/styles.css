@@ -891,10 +891,13 @@ button {
 
 /* ── ask_user（CommandCard 的 AskUserChoices）────────────────────────── */
 
-/* ask_user 在桌面端用浅色卡（cardStyle + background #f5f5f5），不是终端黑卡 */
+/* ask_user 在桌面端是消息层浅色卡（cardStyle 覆盖：background #f5f5f5 =
+   var(--pm-fill)、padding 14、radius 8、字体 inherit——非终端黑卡）。
+   2026-10-06 重设计：对齐 ZCode / Claude Code AskUserQuestion、Cline follow-up
+   的行式选项——全宽选项行 + 单选圆点/多选方框示能 + 自定义回答作为同形末行。 */
 .pm-ask {
   margin: 8px 0 4px;
-  padding: 12px;
+  padding: 14px;
   border-radius: 8px;
   background: #f5f5f5;
   color: #000;
@@ -902,74 +905,148 @@ button {
   line-height: var(--pm-lh);
 }
 
+/* 桌面 askPromptStyle：14px / 500 / var(--pm-ink)，marginBottom 10 */
 .pm-ask-prompt {
   margin-bottom: 10px;
+  font-weight: 500;
 }
 
+/* 多选提示（桌面画在 CommandCard 头部：11px / var(--pm-text-quiet) 徽标；
+   面板无头部，落在 prompt 与选项行之间） */
+.pm-ask-multi-hint {
+  margin: -4px 0 8px;
+  color: #999;
+  font-size: 11px;
+}
+
+/* 选项列（桌面 .pm-ask-rows）：纵向 6px 间距。桌面在聊天列内 maxWidth 420，
+   面板列内容宽 ~340px，无需帽 */
 .pm-ask-choices {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   margin-bottom: 8px;
 }
 
-/* 选项：antd size="small" 的 default 按钮（白底 / #d9d9d9 边）；
-   多选选中态取 Tag.CheckableTag 的 #1677ff 实心（与桌面一致） */
+/* 选项行（桌面 .pm-ask-row）：padding 7px 12px / border #d9d9d9 =
+   var(--pm-border-soft) / radius 8 / bg #fff = var(--pm-elevated) / 13px。
+   示能画在 ::before（单选圆点，多选换方块），按钮文本保持纯选项文案——
+   probe-panel-ask-user 的 allTextContents 逐字断言标签 */
 .pm-chip-choice {
-  padding: 4px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 12px;
   border: 1px solid #d9d9d9;
-  border-radius: var(--pm-radius-code);
+  border-radius: 8px;
   background: #fff;
   color: #000;
   font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  font-family: inherit;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.pm-chip-choice::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border: 1.5px solid #bfbfbf; /* 桌面 var(--pm-text-faint) */
+  border-radius: 50%;
+  transition: border-color 0.15s, background 0.15s;
 }
 
 .pm-chip-choice:hover {
   border-color: var(--pm-primary);
-  color: var(--pm-primary);
+  background: rgba(22, 119, 255, 0.08); /* 桌面 var(--pm-link-bg) */
 }
 
+.pm-chip-choice:hover::before {
+  border-color: var(--pm-primary);
+}
+
+/* 多选：示能圆点换方块（桌面 .pm-ask-afford-check 的 radius 4） */
+.pm-ask-multi .pm-chip-choice::before {
+  border-radius: 4px;
+}
+
+/* 选中（桌面 .pm-ask-row-on）：边框主题色 + 链接底色，示能实心主题色并画
+   同一枚白勾 data-URI（桌面直接放在示能 span 的 background 上） */
 .pm-chip-choice-on,
 .pm-chip-choice-on:hover {
   border-color: var(--pm-primary);
-  background: var(--pm-primary);
-  color: #fff;
+  background: rgba(22, 119, 255, 0.08);
 }
 
-/* 自定义回答：antd Input size="small" + 发送按钮 */
+.pm-chip-choice-on::before,
+.pm-chip-choice-on:hover::before {
+  border-color: var(--pm-primary);
+  background: var(--pm-primary) center / 8px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* 自定义回答（桌面 .pm-ask-customrow）：与选项行同形的一整行——padding
+   '5px 8px 5px 12px' / radius 8 / bg #fff；输入框无内边框，聚焦整行走
+   focus-within（桌面 box-shadow 0 0 0 3px var(--pm-link-bg)） */
 .pm-ask-custom {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-top: 8px;
+  padding: 5px 8px 5px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.pm-ask-custom:focus-within {
+  border-color: var(--pm-primary);
+  box-shadow: 0 0 0 3px rgba(5, 145, 255, 0.1); /* antd controlOutline */
 }
 
 .pm-ask-input {
   flex: 1;
   min-width: 0;
   height: 24px;
-  padding: 0 7px;
-  border: 1px solid #d9d9d9;
-  border-radius: var(--pm-radius-code);
-  background: #fff;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: rgba(0, 0, 0, 0.85);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   outline: none;
 }
 
-.pm-ask-input:focus {
-  border-color: var(--pm-primary);
-  box-shadow: 0 0 0 2px rgba(5, 145, 255, 0.1); /* antd controlOutline */
+.pm-ask-input::placeholder {
+  color: #bfbfbf; /* 桌面 var(--pm-text-quiet) */
 }
 
+/* 发送钮（桌面 .pm-ask-send）：无边框 24px 方钮，可用时主题色 */
 .pm-ask-custom .pm-cmd-btn {
-  border-color: #d9d9d9;
-  background: #fff;
-  color: rgba(0, 0, 0, 0.85);
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #bfbfbf; /* 桌面 var(--pm-text-faint) */
 }
 
+.pm-ask-custom .pm-cmd-btn:not(:disabled) {
+  color: var(--pm-primary);
+}
+
+.pm-ask-custom .pm-cmd-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 回显（桌面 CheckCircleOutlined 取 var(--pm-success) #389e0d +
+   var(--pm-text-body) 13px；文本保持单节点，探针逐字断言） */
 .pm-ask-note {
   display: flex;
   align-items: center;

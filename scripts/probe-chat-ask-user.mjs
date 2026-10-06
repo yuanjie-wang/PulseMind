@@ -34,6 +34,14 @@
  *   2. the click reports that call's id and the chosen text (the wire half)
  *   3. the answer lands → chips and input are gone, the card reads 已选择：生产
  *   4. a second question skipped → the same card reads 已由用户跳过 and offers nothing
+ *   5. a multi-select question (2026-10-06 row redesign): rows toggle without
+ *      reporting, the checked rows carry .pm-ask-row-on, the persistent 确认
+ *      reports the join
+ *   6. dark: rows lift to --pm-sunk with --pm-border edges; a selected row
+ *      keeps the link border
+ *   7. two ask_user calls in ONE batch merge into one [data-ask-batch] card:
+ *      progress badge, settled questions collapse to summaries, the rows hand
+ *      over question by question, and a double click answers exactly once
  *
  * No Electron, no LLM calls, no extension: `window.electronAPI` is stubbed and the
  * page is plain, so this cannot touch a real PulseMind session.
@@ -86,7 +94,10 @@ const handlers = {
   approve: () => {},
   reject: () => {},
   kill: () => {},
-  respond: (toolUseId, response) => { window.__respondedWith = [toolUseId, response] },
+  respond: (toolUseId, response) => {
+    window.__respondedWith = [toolUseId, response]
+    window.__respondLog = [...(window.__respondLog ?? []), [toolUseId, response]]
+  },
   clearError: () => {},
   retry: () => {},
 }
@@ -107,6 +118,23 @@ function Harness() {
     const msg = { id: 'a2', role: 'assistant', contentBlocks: [question('aq2', prompt)], createdAt: NOW }
     state.messages = [...state.messages, msg]
     state.agentStatus = { status: 'awaiting_user_input', tools: [msg.contentBlocks[0]] }
+    rerender()
+  }
+  // A multi-select question (2026-10-06 row redesign: rows toggle, 确认 joins).
+  window.__askedMulti = () => {
+    const msg = { id: 'a3', role: 'assistant', contentBlocks: [{ type: 'tool_use', id: 'aq3', name: 'ask_user', status: 'running', input: { prompt: '要迁移哪些库？', choices: '用户, 订单, 日志', multi: true } }], createdAt: NOW }
+    state.messages = [...state.messages, msg]
+    state.agentStatus = { status: 'awaiting_user_input', tools: [msg.contentBlocks[0]] }
+    rerender()
+  }
+  // Two ask_user calls in ONE batch (one message) — the merge case.
+  window.__askedBatch = () => {
+    const msg = { id: 'a4', role: 'assistant', contentBlocks: [
+      { type: 'tool_use', id: 'bq1', name: 'ask_user', status: 'running', input: { prompt: '先发哪个环境？', choices: '生产, 预发' } },
+      { type: 'tool_use', id: 'bq2', name: 'ask_user', status: 'running', input: { prompt: '要不要打 tag？', choices: '要, 不要' } },
+    ], createdAt: NOW }
+    state.messages = [...state.messages, msg]
+    state.agentStatus = { status: 'awaiting_user_input', tools: msg.contentBlocks }
     rerender()
   }
   window.__skipped = () => {
@@ -192,6 +220,20 @@ const skipped = () => page.getByText('已由用户跳过', { exact: false })
   check('三个选项都可点', (await chips().count()) === 3, `${await chips().count()} chips`)
   check('自定义回答框在', (await customBox().count()) === 1)
   check('还没回答，卡片上没有结论', (await page.getByText('已选择：', { exact: false }).count()) === 0)
+
+  // The skin lives in CommandCard's one injected sheet — the behavior checks
+  // here cannot see it fail (an unstyled row still reads and clicks fine), so
+  // pin its application on computed styles.
+  const row = chips().first()
+  check('选项行带行式皮肤（radius 8）', await row.evaluate((el) => getComputedStyle(el).borderRadius) === '8px')
+  check('行首示能是 14px 圆盒', await row.locator('.pm-ask-afford').evaluate((el) => {
+    const s = getComputedStyle(el)
+    return s.width === '14px' && s.height === '14px' && s.borderRadius === '50%'
+  }))
+  await row.hover()
+  await page.waitForTimeout(100)
+  check('hover 走主题色', await row.evaluate((el) => getComputedStyle(el).borderColor) === 'rgb(22, 119, 255)')
+  await page.mouse.move(0, 0)
 }
 
 // ── 2. The click reports the call it answers, with the chosen text ──
@@ -225,6 +267,103 @@ const skipped = () => page.getByText('已由用户跳过', { exact: false })
   const left = await chips().count()
   check('跳过后的选项消失', left === 0, `还剩 ${left} 个选项`)
   check('卡片改读 已由用户跳过', await skipped().first().isVisible().catch(() => false))
+  check('跳过只写一次结论', (await skipped().count()) === 1, `${await skipped().count()} 条 已由用户跳过`)
+}
+
+// ── 5. Multi-select: rows toggle, 确认 joins, nothing reports before it ──
+{
+  console.log('== 多选 ==')
+  const multiRows = () => page.locator('button', { hasText: /^(用\s*户|订\s*单|日\s*志)$/ })
+  await page.evaluate(() => window.__askedMulti())
+  await page.waitForTimeout(300)
+  // 确认常驻（2026-10-06）：未选时禁用在场，而不是首_pick 才出现
+  const confirmBtn = page.getByRole('button', { name: /确\s*认/ })
+  check('确认按钮常驻，未选时禁用', (await confirmBtn.count()) === 1 && (await confirmBtn.isEnabled().catch(() => false)) === false)
+  const before = await page.evaluate(() => window.__respondedWith)
+  await multiRows().first().click()
+  await multiRows().nth(2).click()
+  await page.waitForTimeout(150)
+  const after = await page.evaluate(() => window.__respondedWith)
+  check('多选点击只切换勾选，不上报', JSON.stringify(after) === JSON.stringify(before), JSON.stringify(after))
+  check('选中行带勾选标记', (await page.locator('.pm-ask-row-on').count()) === 2, `${await page.locator('.pm-ask-row-on').count()} rows on`)
+  const onRow = page.locator('.pm-ask-row-on').first()
+  const skin = await onRow.evaluate((el) => {
+    const afford = el.querySelector('.pm-ask-afford')
+    const s = getComputedStyle(el)
+    const sa = afford ? getComputedStyle(afford) : null
+    return {
+      rowBorder: s.borderColor,
+      affordBg: sa?.backgroundColor,
+      affordImg: sa?.backgroundImage.slice(0, 32),
+    }
+  })
+  check('选中行画主题色边 + 示能画白勾', skin.rowBorder === 'rgb(22, 119, 255)' && skin.affordBg === 'rgb(22, 119, 255)' && (skin.affordImg ?? '').includes('data:image/svg+xml'), JSON.stringify(skin))
+  check('选中后确认按钮可用且不带计数', (await confirmBtn.isEnabled()) && !(/项已选/.test(await confirmBtn.textContent() ?? '')))
+  await confirmBtn.click()
+  await page.waitForTimeout(150)
+  const reported = await page.evaluate(() => window.__respondedWith)
+  check('确认后上报拼接答案', Array.isArray(reported) && reported[0] === 'aq3' && reported[1] === '用户, 日志', JSON.stringify(reported))
+  check('多选卡片同样带着自定义回答行', (await customBox().count()) === 1)
+}
+
+// ── 6. Dark: rows must lift off the card (--pm-sunk), not dissolve into it ──
+// In dark, --pm-elevated and --pm-fill are both #1f1f1f; the sheet carries an
+// html[data-theme='dark'] override to the documented one-step-up rung.
+{
+  console.log('== 暗色 ==')
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+  await page.waitForTimeout(100)
+  // The only question still on screen is aq3 (multi) — address its rows by the
+  // sheet's own class, not the single-choice label regex above. The FIRST row
+  // is selected (用户 was picked in §5), and a selected row keeps the link
+  // border in dark by design — the lift is asserted on an unselected row.
+  const darkRow = page.locator('.pm-ask-row:not(.pm-ask-row-on)').first()
+  const darkBg = await darkRow.evaluate((el) => getComputedStyle(el).backgroundColor)
+  check('暗色选项行用 sunk 台阶色', darkBg === 'rgb(51, 51, 51)', darkBg)
+  const darkBorder = await darkRow.evaluate((el) => getComputedStyle(el).borderColor)
+  check('暗色行边框同步提亮', darkBorder === 'rgb(66, 66, 66)', darkBorder)
+  const darkOnBorder = await page.locator('.pm-ask-row-on').first().evaluate((el) => getComputedStyle(el).borderColor)
+  check('暗色选中行保持主题色边', darkOnBorder === 'rgb(64, 150, 255)', darkOnBorder)
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light' })
+}
+
+// ── 7. Two questions in one batch merge into ONE card, walked in order ──
+// Multiple ask_user calls in a single turn used to render as N separate cards;
+// the batch card merges them, collapses settled ones to summaries and walks
+// the user through the rest one at a time.
+{
+  console.log('== 一轮多问合并 ==')
+  const batch = () => page.locator('[data-ask-batch]')
+  await page.evaluate(() => window.__askedBatch())
+  await page.waitForTimeout(300)
+
+  check('两个问题合并为一张卡', (await batch().count()) === 1)
+  check('只渲染当前题的选项行', (await batch().locator('.pm-ask-rows').count()) === 1)
+  check('第一题的行可见', (await batch().locator('button', { hasText: /^(生\s*产|预\s*发)$/ }).count()) === 2)
+  check('第二题的行尚未出现', (await batch().locator('button', { hasText: /^(要|不\s*要)$/ }).count()) === 0)
+  check('进度徽标显示第 1/2 题', await batch().getByText('第 1/2 题').isVisible())
+
+  await batch().locator('button', { hasText: cjk('生产') }).click()
+  await page.waitForTimeout(150)
+  let reported = await page.evaluate(() => window.__respondedWith)
+  check('第一题点击即上报', Array.isArray(reported) && reported[0] === 'bq1' && reported[1] === '生产', JSON.stringify(reported))
+  check('进度推进到第 2/2 题', await batch().getByText('第 2/2 题').isVisible())
+  check('第一题折为已选摘要', await batch().getByText('已选择：生产').isVisible())
+  check('第二题的行接棒出现', (await batch().locator('button', { hasText: /^(要|不\s*要)$/ }).count()) === 2)
+
+  // The advance re-renders under the pointer — a double click on the last
+  // question must answer it exactly once, never bleed into the next rows.
+  // (The 350ms post-answer click lock has expired by now — a real user is
+  // still reading the next question; the probe waits it out explicitly.)
+  await page.waitForTimeout(450)
+  const logBefore = await page.evaluate(() => window.__respondLog.length)
+  await batch().locator('button', { hasText: /^(不\s*要)$/ }).dblclick()
+  await page.waitForTimeout(200)
+  reported = await page.evaluate(() => window.__respondLog)
+  const last = reported[reported.length - 1]
+  check('双击最后一题只上报一次', reported.length === logBefore + 1 && last[0] === 'bq2' && last[1] === '不要', JSON.stringify(reported))
+  check('全部答完后选项行收场', (await batch().locator('.pm-ask-rows').count()) === 0)
+  check('两题各留一条摘要', (await batch().getByText('已选择：', { exact: false }).count()) === 2)
 }
 
 await browser.close()

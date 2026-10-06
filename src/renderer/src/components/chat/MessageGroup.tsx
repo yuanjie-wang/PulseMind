@@ -24,7 +24,7 @@ import {
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
-import CommandCard from '../terminal/CommandCard'
+import CommandCard, { AskUserBatchCard } from '../terminal/CommandCard'
 import { ApprovalArea } from './ApprovalArea'
 import { toolBlockSummary, toolDisplayName, subAgentSessionTitle } from './tool-summary'
 import { CodeBlock } from './CodeBlock'
@@ -457,6 +457,18 @@ export const MessageGroup = React.memo(function MessageGroup({
     transition: 'color 0.2s, background 0.15s'
   }
 
+  // ask_user batch merge (2026-10-06): several asks dispatched in ONE turn all
+  // land in this message, and N separate cards bury the guidance. When there
+  // are 2+, they render as ONE AskUserBatchCard at the first ask block's
+  // position (the map returns null for the rest); a single ask keeps the plain
+  // CommandCard.
+  const askBlocks = isUser
+    ? []
+    : (msg.contentBlocks.filter((b) => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user') as ToolUseBlock[])
+  const firstAskIdx = askBlocks.length > 1
+    ? msg.contentBlocks.findIndex((b) => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user')
+    : -1
+
   return (
     <div
       style={{
@@ -532,9 +544,12 @@ export const MessageGroup = React.memo(function MessageGroup({
             if (block.type === 'tool_use') {
               const tb = block as ToolUseBlock
               if (tb.name === 'ask_user') {
+                if (firstAskIdx >= 0 && i !== firstAskIdx) return null
                 return (
                   <div key={i}>
-                    <CommandCard block={tb} onToolResponse={onRespondToTool} />
+                    {askBlocks.length > 1
+                      ? <AskUserBatchCard blocks={askBlocks} onToolResponse={onRespondToTool} />
+                      : <CommandCard block={tb} onToolResponse={onRespondToTool} />}
                   </div>
                 )
               }

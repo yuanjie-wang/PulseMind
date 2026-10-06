@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
-import { Button, Typography, Space, Spin, Tag, Input } from 'antd'
-import { PlayCircleOutlined, CloseCircleOutlined, StopOutlined, LoadingOutlined, CheckCircleOutlined, SendOutlined, CloseOutlined, CheckOutlined, CommentOutlined, SettingOutlined, HourglassOutlined } from '@ant-design/icons'
+import { Button, Typography, Space, Spin } from 'antd'
+import { PlayCircleOutlined, CloseCircleOutlined, StopOutlined, LoadingOutlined, CheckCircleOutlined, SendOutlined, CloseOutlined, CheckOutlined, CommentOutlined, SettingOutlined, HourglassOutlined, EditOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ToolUseBlock } from '../../types/agent'
 import { toolDisplayName, toolObjectSummary } from '../chat/tool-summary'
@@ -85,6 +85,101 @@ const sectionLabelStyle: React.CSSProperties = {
 }
 
 // ── ask_user inline interaction ──────────────────────────────────────
+// 2026-10-06 redesign after the AskUserQuestion line of agent UIs (ZCode /
+// Claude Code's AskUserQuestion, Cline's follow-up suggestions): choices are
+// full-width option ROWS with a radio (single) / checkbox (multi) affordance
+// instead of loose antd buttons, and the custom answer is the list's last row
+// (same shape) instead of a detached 300px input. The skin is one injected
+// sheet — inline styles cannot hover, and antd Buttons cannot take a
+// per-instance hover accent. Rows are plain buttons carrying ONLY the choice
+// text: both ask probes read textContent verbatim (chat `^(生产|…)$`,
+// panel `allTextContents`), so the affordance must stay a childless span.
+const askUserSheet = `
+.pm-ask-rows { display: flex; flex-direction: column; gap: 6px; }
+.pm-ask-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 7px 12px; border: 1px solid var(--pm-border-soft);
+  border-radius: 8px; background: var(--pm-elevated); color: var(--pm-ink);
+  font-size: 13px; line-height: 1.5; text-align: left; font-family: inherit;
+  cursor: pointer; transition: border-color 0.15s, background 0.15s;
+}
+.pm-ask-row:hover { border-color: var(--pm-link); background: var(--pm-link-bg); }
+.pm-ask-row:focus-visible { outline: 2px solid var(--pm-link); outline-offset: 1px; }
+.pm-ask-afford { width: 14px; height: 14px; flex-shrink: 0; border: 1.5px solid var(--pm-text-faint); position: relative; transition: border-color 0.15s, background 0.15s; }
+.pm-ask-afford-radio { border-radius: 50%; }
+.pm-ask-afford-check { border-radius: 4px; }
+.pm-ask-row:hover .pm-ask-afford { border-color: var(--pm-link); }
+.pm-ask-row:hover .pm-ask-afford-radio::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--pm-link); }
+.pm-ask-row-on, .pm-ask-row-on:hover { border-color: var(--pm-link); background: var(--pm-link-bg); }
+.pm-ask-row-on .pm-ask-afford {
+  border-color: var(--pm-link);
+  background: var(--pm-link) center / 8px no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+/* Dark: --pm-elevated and --pm-fill are both #1f1f1f, so an elevated row on
+   the fill card would vanish into it — light's white-on-grey step needs the
+   dark counterpart of the same role. --pm-sunk (#333) is that documented rung
+   ("one step off the surface it sits on — darker in light, lighter in dark"),
+   with --pm-border (#424242) above it or the #333 border-soft would dissolve
+   into the row's own ground. */
+html[data-theme='dark'] .pm-ask-row,
+html[data-theme='dark'] .pm-ask-customrow { background: var(--pm-sunk); border-color: var(--pm-border); }
+html[data-theme='dark'] .pm-ask-row-on, html[data-theme='dark'] .pm-ask-row-on:hover { border-color: var(--pm-link); }
+.pm-ask-customrow {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 12px;
+  border: 1px solid var(--pm-border-soft); border-radius: 8px;
+  background: var(--pm-elevated); transition: border-color 0.15s, box-shadow 0.15s;
+}
+.pm-ask-customrow:focus-within { border-color: var(--pm-link); box-shadow: 0 0 0 3px var(--pm-link-bg); }
+.pm-ask-customrow .pm-ask-editicon { color: var(--pm-text-faint); font-size: 13px; flex-shrink: 0; }
+.pm-ask-customrow input { flex: 1; min-width: 0; height: 24px; border: none; outline: none; background: transparent; color: var(--pm-ink); font-family: inherit; font-size: 13px; }
+.pm-ask-customrow input::placeholder { color: var(--pm-text-quiet); }
+.pm-ask-send {
+  flex-shrink: 0; width: 24px; height: 24px; display: flex; align-items: center;
+  justify-content: center; border: none; border-radius: 6px; background: transparent;
+  color: var(--pm-text-faint); font-size: 13px; cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.pm-ask-send:not(:disabled):hover { background: var(--pm-link-bg); color: var(--pm-link); }
+.pm-ask-send:disabled { opacity: 0.45; cursor: default; }
+`
+let askSheetInjected = false
+if (typeof document !== 'undefined' && !askSheetInjected) {
+  const el = document.createElement('style')
+  el.textContent = askUserSheet
+  document.head.appendChild(el)
+  askSheetInjected = true
+}
+
+const askPromptStyle: React.CSSProperties = {
+  color: 'var(--pm-ink)',
+  marginBottom: 10,
+  fontSize: 14,
+  lineHeight: 1.6,
+  fontWeight: 500
+}
+
+// The ask card shell: message-layer surfaces (PLAN-dark-mode M2/T2 — the
+// terminal body does not follow the theme), and the font with them —
+// cardStyle's monospace family is the terminal's, not the ask card's.
+const askCardStyle: React.CSSProperties = {
+  ...cardStyle,
+  background: 'var(--pm-fill)',
+  color: 'var(--pm-ink)',
+  fontFamily: 'inherit',
+  padding: 14
+}
+
+// Small header badge (可多选 / 第 x/y 题): 11px quiet ink on a fill-hover pill.
+const askBadgeStyle: React.CSSProperties = {
+  color: 'var(--pm-text-quiet)',
+  fontSize: 11,
+  fontWeight: 400,
+  background: 'var(--pm-fill-hover)',
+  padding: '1px 8px',
+  borderRadius: 4,
+  lineHeight: '16px'
+}
 
 function AskUserChoices({
   block,
@@ -105,13 +200,13 @@ function AskUserChoices({
     return (
       <>
         {/* Prompt */}
-        <div style={{ color: 'var(--pm-ink)', marginBottom: 10, fontSize: 14, lineHeight: 1.6 }}>
+        <div style={askPromptStyle}>
           {prompt}
         </div>
         {block.output && (
-          <div style={{ color: 'var(--pm-text-muted)', marginBottom: 4, fontSize: 13 }}>
-            <CheckCircleOutlined style={{ marginRight: 6 }} />
-            {t('commandCard.selected', { value: block.output })}
+          <div style={{ color: 'var(--pm-text-body)', marginBottom: 4, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <CheckCircleOutlined style={{ color: 'var(--pm-success)', fontSize: 14 }} />
+            <span>{t('commandCard.selected', { value: block.output })}</span>
           </div>
         )}
       </>
@@ -121,109 +216,206 @@ function AskUserChoices({
   if (block.status === 'rejected') {
     return (
       <>
-        <div style={{ color: 'var(--pm-ink)', marginBottom: 10, fontSize: 14, lineHeight: 1.6 }}>
+        <div style={askPromptStyle}>
           {prompt}
         </div>
-        <Text style={{ color: '#f44747', fontSize: 12 }}><CloseOutlined style={{marginRight:4,fontSize:12}} />{t('commandCard.skippedByUser')}</Text>
+        <Text style={{ color: 'var(--pm-error)', fontSize: 12 }}><CloseOutlined style={{marginRight:4,fontSize:12}} />{t('commandCard.skippedByUser')}</Text>
       </>
     )
   }
 
-  // Running / awaiting user input
+  // Running / awaiting user input. Single choice answers on click (established
+  // behavior, both probes pin the immediate report); multi toggles rows and
+  // confirms explicitly. The column is capped at 420px — full chat-column
+  // width would stretch one-word options into bars.
+  const submitCustom = () => {
+    const val = customInput.trim()
+    if (val) onToolResponse?.(block.id, val)
+  }
   return (
     <>
       {/* Prompt */}
-      <div style={{ color: 'var(--pm-ink)', marginBottom: 12, fontSize: 14, lineHeight: 1.6 }}>
+      <div style={{ ...askPromptStyle, marginBottom: 12 }}>
         {prompt}
       </div>
 
-      {/* Choices */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-        {choices.map((choice) =>
-          multi ? (
-            <Tag.CheckableTag
-              key={choice}
-              checked={selected.has(choice)}
-              onChange={(checked) => {
-                const next = new Set(selected)
-                if (checked) {
-                  next.add(choice)
-                } else {
-                  next.delete(choice)
-                }
-                setSelected(next)
-              }}
-              style={{
-                padding: '4px 16px',
-                fontSize: 13,
-                borderRadius: 4,
-                border: '1px solid var(--pm-border)',
-                cursor: 'pointer',
-                color: selected.has(choice) ? 'var(--pm-ink-contrast)' : 'var(--pm-ink)',
-                background: selected.has(choice) ? 'var(--pm-link)' : 'var(--pm-elevated)'
-              }}
-            >
-              {choice}
-            </Tag.CheckableTag>
-          ) : (
-            <Button
-              key={choice}
-              size="small"
-              style={{
-                color: 'var(--pm-ink)',
-                borderColor: 'var(--pm-border)',
-                background: 'var(--pm-elevated)'
-              }}
-              onClick={() => onToolResponse?.(block.id, choice)}
-            >
-              {choice}
-            </Button>
-          )
-        )}
-      </div>
+      <div style={{ maxWidth: 420 }}>
+        {/* Option rows */}
+        <div className="pm-ask-rows">
+          {choices.map((choice) =>
+            multi ? (
+              <button
+                key={choice}
+                type="button"
+                className={`pm-ask-row${selected.has(choice) ? ' pm-ask-row-on' : ''}`}
+                onClick={() => {
+                  const next = new Set(selected)
+                  if (next.has(choice)) {
+                    next.delete(choice)
+                  } else {
+                    next.add(choice)
+                  }
+                  setSelected(next)
+                }}
+              >
+                <span className="pm-ask-afford pm-ask-afford-check" />
+                <span>{choice}</span>
+              </button>
+            ) : (
+              <button
+                key={choice}
+                type="button"
+                className="pm-ask-row"
+                onClick={() => onToolResponse?.(block.id, choice)}
+              >
+                <span className="pm-ask-afford pm-ask-afford-radio" />
+                <span>{choice}</span>
+              </button>
+            )
+          )}
+        </div>
 
-      {/* Confirm button for multi-select */}
-      {multi && selected.size > 0 && (
-        <Space size="small">
+        {/* Confirm button for multi-select — persistent (user 2026-10-06:
+            appear-on-first-pick made the button's location jump right as the
+            user started clicking), disabled until a pick, and the count is
+            gone from the label — the checked rows ARE the count. */}
+        {multi && (
           <Button
             size="small"
             type="primary"
             icon={<CheckCircleOutlined />}
-            onClick={() => {
-              const result = Array.from(selected).join(', ')
-              onToolResponse?.(block.id, result)
-            }}
+            style={{ marginTop: 8 }}
+            disabled={selected.size === 0}
+            onClick={() => onToolResponse?.(block.id, Array.from(selected).join(', '))}
           >
-            {t('commandCard.confirm', { count: selected.size })}
+            {t('commandCard.confirm')}
           </Button>
-        </Space>
-      )}
+        )}
 
-      {/* Custom text input */}
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Input
-          size="small"
-          placeholder={t('commandCard.customInputPlaceholder')}
-          value={customInput}
-          onChange={(e) => setCustomInput(e.target.value)}
-          onPressEnter={() => {
-            const val = customInput.trim()
-            if (val) onToolResponse?.(block.id, val)
-          }}
-          style={{ flex: 1, maxWidth: 300 }}
-        />
-        <Button
-          size="small"
-          type="default"
-          icon={<SendOutlined />}
-          disabled={!customInput.trim()}
-          onClick={() => {
-            const val = customInput.trim()
-            if (val) onToolResponse?.(block.id, val)
-          }}
-        />
+        {/* Custom answer — the list's last row, same shape as the options */}
+        <div className="pm-ask-customrow" style={{ marginTop: 8 }}>
+          <EditOutlined className="pm-ask-editicon" />
+          <input
+            placeholder={t('commandCard.customInputPlaceholder')}
+            value={customInput}
+            onChange={(e) => setCustomInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submitCustom()
+            }}
+          />
+          <button
+            type="button"
+            className="pm-ask-send"
+            disabled={!customInput.trim()}
+            onClick={submitCustom}
+          >
+            <SendOutlined />
+          </button>
+        </div>
       </div>
     </>
+  )
+}
+
+// ── merged multi-question card (2026-10-06) ──────────────────────────
+// One turn can dispatch several ask_user calls in a single batch; N separate
+// cards scatter the decision surface and bury the 「还有下一题」 signal. The
+// batch card merges them into ONE card (MessageGroup mounts it at the first
+// ask block's position) that walks the user through the questions in dispatch
+// order: settled questions collapse to a summary line each, the first
+// unsettled one carries the rows. Two load-bearing behaviors: the advance
+// latches LOCALLY (`localAnswers`) — the engine's tool_status patch lands a
+// beat later and the stepper must not wait for it (the extension panel's
+// answeredRef lesson) — and the card swallows clicks for a beat after each
+// answer, because the auto-advance re-renders under the pointer and the
+// second click of a double click would land on the NEXT question's rows.
+// Desktop-only: the extension panel lists tool blocks individually by design
+// and keeps its per-block cards.
+
+export function AskUserBatchCard({ blocks, onToolResponse }: {
+  blocks: ToolUseBlock[]
+  onToolResponse?: (toolUseId: string, response: string) => void
+}): React.ReactElement {
+  const { t } = useTranslation()
+  const [localAnswers, setLocalAnswers] = useState<Record<string, string>>({})
+  const lockUntilRef = useRef(0)
+
+  const settled = (b: ToolUseBlock): boolean =>
+    b.status === 'completed' || b.status === 'rejected' || localAnswers[b.id] != null
+  const firstUnsettled = blocks.findIndex((b) => !settled(b))
+  const allSettled = firstUnsettled === -1
+  const current = allSettled ? null : blocks[firstUnsettled]
+  // 'pending' is the stream still building this call's input (the dispatch-
+  // time 'running' means the question is live — CommandCard's isAskUserRunning
+  // reads the same distinction).
+  const currentStreaming = current != null && (current.status === 'pending' || current.status === undefined)
+
+  const answer = (id: string, response: string): void => {
+    if (localAnswers[id] != null) return
+    lockUntilRef.current = Date.now() + 350
+    setLocalAnswers((prev) => ({ ...prev, [id]: response }))
+    onToolResponse?.(id, response)
+  }
+
+  return (
+    <div
+      data-ask-batch=""
+      style={askCardStyle}
+      onClickCapture={(e) => {
+        if (Date.now() < lockUntilRef.current) {
+          e.stopPropagation()
+          e.preventDefault()
+        }
+      }}
+    >
+      <div style={headerStyle}>
+        <span style={{ fontSize: 16 }}>
+          <CommentOutlined style={{ color: 'var(--pm-text-secondary)' }} />
+        </span>
+        <Text strong style={{ color: 'var(--pm-ink)', fontSize: 13 }}>
+          {t('commandCard.question')}
+        </Text>
+        {blocks.length > 1 && (
+          <span style={askBadgeStyle}>
+            {t('commandCard.questionProgress', { current: allSettled ? blocks.length : firstUnsettled + 1, total: blocks.length })}
+          </span>
+        )}
+        {current?.input?.multi === true && (
+          <span style={askBadgeStyle}>{t('commandCard.multiSelectHint')}</span>
+        )}
+      </div>
+
+      {/* Settled questions: one summary line each */}
+      {blocks.filter(settled).map((b) => {
+        const rejected = b.status === 'rejected'
+        return (
+          <div key={b.id} style={{ marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--pm-ink)' }}>
+              {rejected
+                ? <CloseOutlined style={{ color: 'var(--pm-error)', fontSize: 12 }} />
+                : <CheckCircleOutlined style={{ color: 'var(--pm-success)', fontSize: 13 }} />}
+              <span>{String(b.input?.prompt || '')}</span>
+            </div>
+            <div style={{ marginLeft: 19, fontSize: 12, color: rejected ? 'var(--pm-error)' : 'var(--pm-text-muted)' }}>
+              {rejected
+                ? t('commandCard.skippedByUser')
+                : t('commandCard.selected', { value: b.output || localAnswers[b.id] || '' })}
+            </div>
+          </div>
+        )
+      })}
+
+      {/* The first unsettled question carries the rows */}
+      {current && (
+        currentStreaming ? (
+          <Text style={{ color: 'var(--pm-text-muted)', fontSize: 12, fontStyle: 'italic' }}>
+            {t('commandCard.askGenerating')}
+          </Text>
+        ) : (
+          <AskUserChoices key={current.id} block={current} onToolResponse={answer} />
+        )
+      )}
+    </div>
   )
 }
 
@@ -445,7 +637,7 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
     // voice, so it takes the message layer's surfaces while every other tool
     // keeps the terminal skin (PLAN-dark-mode M2/T2 — the terminal body does
     // not follow the theme).
-    <div style={isAskUser ? { ...cardStyle, background: 'var(--pm-fill)', color: 'var(--pm-ink)' } : cardStyle}>
+    <div style={isAskUser ? askCardStyle : cardStyle}>
 
       {/* Header */}
       <div style={headerStyle}>
@@ -466,13 +658,20 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
         </span>
         <Text strong style={{ color: isAskUser ? 'var(--pm-ink)' : '#e0e0e0', fontSize: 13 }}>
           {isStreaming
-            ? t('commandCard.generating')
+            ? (isAskUser ? t('commandCard.askGenerating') : t('commandCard.generating'))
             : block.status === 'running' && !isAskUser
               ? t('commandCard.running')
               : isAskUser
                 ? t('commandCard.question')
                 : toolDisplayName(block.name, t)}
         </Text>
+        {/* Multi-select hint — the checkbox rows say it too; the label says it
+            before the first hover (ZCode marks multiSelect in its header). */}
+        {isAskUser && block.input?.multi === true && (
+          <span style={askBadgeStyle}>
+            {t('commandCard.multiSelectHint')}
+          </span>
+        )}
       </div>
 
       {/* Command — show skeleton pulse while streaming (hidden for ask_user) */}
@@ -690,7 +889,10 @@ const CommandCard = React.memo(function CommandCard({ block, onApprove, onReject
               {t('commandCard.kill')}
             </Button>
           )}
-          {block.status === 'rejected' && (
+          {/* ask_user's own body already renders 已由用户跳过 — the duplicated
+              line here showed it twice (completed carries !isAskUser; this
+              branch was missing it). */}
+          {block.status === 'rejected' && !isAskUser && (
             <Text style={{ color: '#f44747', fontSize: 12 }}><CloseOutlined style={{marginRight:4,fontSize:12}} />{t('commandCard.skippedByUser')}</Text>
           )}
           {block.status === 'completed' && !isAskUser && block.backgroundPid == null && (

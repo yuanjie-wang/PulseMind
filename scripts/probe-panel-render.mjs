@@ -844,14 +844,18 @@ check('the strip hands the pair back to the open card', approval.stripGone, appr
 
 const asking = await page.evaluate(() => {
   const root = window.__panels()[2]
+  const confirm = root.querySelector('.pm-ask .pm-cmd-btn-primary')
   return {
     chips: [...root.querySelectorAll('.pm-chip-choice')].map((c) => c.textContent.trim()),
-    confirmHidden: !root.querySelector('.pm-ask .pm-cmd-btn-primary'),
+    confirmText: confirm?.textContent.trim() ?? null,
+    confirmDisabledBeforePick: confirm?.disabled ?? null,
     hasCustomInput: !!root.querySelector('.pm-ask-input'),
   }
 })
 check('ask_user renders its choices as chips with a custom-answer box', asking.chips.length === 4 && asking.hasCustomInput, asking.chips.join('/'))
-check('multi-select confirm appears only after a pick', asking.confirmHidden)
+// 确认常驻（2026-10-06）：出现于首_pick 会让按钮的位置在用户开始点击时跳变——
+// 未选时禁用而非隐藏，标签不带计数。
+check('multi-select confirm is persistent, disabled before a pick, count-free', asking.confirmText === '确认' && asking.confirmDisabledBeforePick === true, JSON.stringify(asking))
 
 const last = await page.evaluate(() => {
   const root = window.__panels()[3]
