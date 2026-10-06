@@ -77,7 +77,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 ## @召唤专家
 
 - **@一位专家** — 结论原文直接进入对话，不再被主代理转述稀释
-- **@多位专家** — 自动进入计划模式：主代理为每位专家分配任务节点，并行执行（同一会话最多 5 位同时运行），节点逐一验收
+- **@多位专家** — 自动进入计划模式：主代理为每位专家分配任务节点，并行执行（同一会话默认最多 5 位同时运行，可在「设置 → 常规」调整），节点逐一验收
 - **会话下钻** — 点开专家卡片，子代理的完整会话尽收眼底
 - **同源能力** — 专家与全局共用工具、连接器与技能，差异只体现在身份与知识上
 
@@ -89,7 +89,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 ## 工具系统
 
-41 个内置工具，默认全部启用：
+36 个内置工具，默认全部启用：
 
 - 文件读写 / 编辑 / 搜索 / 修补，目录浏览
 - 终端命令执行，实时输出
@@ -119,7 +119,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 ## 数据安全
 
 - **目录权限收紧** — 数据目录默认仅本用户可读（0700/0600），启动时自动修复历史遗留权限
-- **密钥加密（可选启用）** — 在设置中开启「加密密钥」后，API 密钥经系统钥匙串加密落盘（enc:v1:）；默认明文落盘，靠目录权限（0600）与磁盘加密防护；环境变量占位符两种模式下照常可用
+- **密钥加密（可选启用）** — 在 settings.json 中把 encryptSecrets 设为 true 后生效：API 密钥经系统钥匙串加密落盘（enc:v1:）；默认明文落盘，靠目录权限（0600）与磁盘加密防护；环境变量占位符两种模式下照常可用
 - **备份与残留治理** — 数据库备份默认保留 30 天，调试请求转储 7 天过期；压缩或删除会话后的残留数据行自动对账清除
 - **数据不出机** — 对话、记忆、知识、经验全部存本地 SQLite，不依赖任何云端
 
@@ -143,10 +143,10 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 专家 / 连接器 / 技能 / 内置工具，四个分区一个页面：
 
-- **专家** — 人设、方法论、输出规范、边界约束，再绑上一份私有知识
+- **专家** — 人设、方法论、输出规范、边界约束，外加可用技能与连接器的白名单
 - **连接器** — 注册任意 MCP 服务器，扩展 AI 的能力边界
 - **技能** — ZIP 技能包，SKILL.md 深度塑造行为，关键词自动触发
-- **内置工具** — 41 个默认全开，用不上的可以按需关掉
+- **内置工具** — 36 个默认全开，用不上的可以按需关掉
 
 ## 创作中心
 
@@ -224,7 +224,7 @@ Hand the repetitive work to a schedule and let it run itself.
 ## @-Summon Experts
 
 - **Summon one expert** — the conclusion lands in the conversation verbatim, never diluted by a second-hand summary
-- **Summon several** — plan mode kicks in automatically: the main agent assigns plan nodes to each expert and they run in parallel (up to 5 per session), each node accepted in turn
+- **Summon several** — plan mode kicks in automatically: the main agent assigns plan nodes to each expert and they run in parallel (up to 5 per session by default, adjustable in Settings → General), each node accepted in turn
 - **Session drill-in** — open an expert's card to read its sub-agent session in full
 - **Shared capability** — experts use the global tools, connectors, and skills; identity and knowledge are the only difference
 
@@ -236,7 +236,7 @@ Hand the repetitive work to a schedule and let it run itself.
 
 ## Tool System
 
-41 built-in tools, all enabled by default:
+36 built-in tools, all enabled by default:
 
 - file read/write/edit/search/patch and directory listing
 - terminal commands with live output
@@ -266,7 +266,7 @@ Hand the repetitive work to a schedule and let it run itself.
 ## Data Security
 
 - **Tightened permissions** — the data directory is readable only by your user (0700/0600); startup repairs any legacy modes
-- **Secret encryption (opt-in)** — with 「加密密钥」 enabled in settings, API keys are encrypted through the OS keychain (enc:v1:); the default is plaintext on disk, protected by file permissions (0600) and disk encryption; env-var placeholders keep working in either mode
+- **Secret encryption (opt-in)** — active once encryptSecrets is set to true in settings.json: API keys are encrypted through the OS keychain (enc:v1:); the default is plaintext on disk, protected by file permissions (0600) and disk encryption; env-var placeholders keep working in either mode
 - **Backup & residue governance** — database backups default to 30 days and debug request dumps expire after 7; rows left behind by compaction or deletion are reconciled away
 - **Data stays local** — conversations, memories, knowledge, and experiences live in local SQLite, with no cloud dependency
 
@@ -290,10 +290,10 @@ At the end of every turn, a deliverables card lists every file written in that t
 
 Experts / connectors / skills / built-in tools — four sections, one page:
 
-- **Experts** — persona, methodology, output conventions, boundaries, plus a bound private knowledge pack
+- **Experts** — persona, methodology, output conventions, boundaries, plus allow-lists of usable skills and connectors
 - **Connectors** — register any MCP server to extend what the AI can reach
 - **Skills** — ZIP skill packs; SKILL.md shapes behavior deeply, trigger keywords fire automatically
-- **Built-in tools** — all 41 on by default; switch off the ones you do not need
+- **Built-in tools** — all 36 on by default; switch off the ones you do not need
 
 ## Studio
 
