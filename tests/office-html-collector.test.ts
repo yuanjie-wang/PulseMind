@@ -186,6 +186,27 @@ describe('collectDeckLayout (jsdom, stubbed rects)', () => {
     expect(block.cells[1][1]).toMatchObject({ text: '12', header: false })
   })
 
+  it('refuses ragged rows — gridCol count would fall short of a row\'s tc count (review_20261006 中8)', () => {
+    // 浏览器照常渲染行间 cell 数不齐的表格；发射器按首行定列宽，参差行会
+    // 产出 gridCol 数 < 行内 <a:tc> 数的非法 OOXML（PowerPoint 打开要修复）。
+    const doc = mount(
+      wrap(`<table style="border-collapse:collapse"><tr><td>甲</td><td>12</td></tr><tr><td>乙</td><td>13</td><td>多出的格子</td></tr></table>`),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        m.set(at(doc, 'table'), { x: 64, y: 120, w: 600, h: 80 })
+        doc.querySelectorAll('tr').forEach((tr, i) => m.set(tr, { x: 64, y: 120 + i * 40, w: 600, h: 40 }))
+        return m
+      })
+    void doc
+    const result = collectDeckLayout()
+    const msg = result.errors.map((e) => e.message).join(' ')
+    expect(msg).toMatch(/列数必须一致/)
+    expect(msg).toMatch(/第 2 行/)          // 点名行号
+    expect(result.errors[0].page).toBe(1)  // 点名页码（与 colspan 拒绝同款）
+    // 参差表格不发射——blocks 里没有 table
+    expect(result.slides[0].blocks.filter((b) => b.kind === 'table')).toHaveLength(0)
+  })
+
   it('refuses overlapping text blocks naming both elements', () => {
     const doc = mount(wrap(`<p style="position:absolute">上方标题标题标题</p><p style="position:absolute">下方文本文本文本</p>`), (doc) => {
       const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])

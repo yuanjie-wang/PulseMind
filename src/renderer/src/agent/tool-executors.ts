@@ -549,6 +549,15 @@ export class ToolExecutor implements ToolExecContext {
           t.exitCode = 1
         }
       } else if (t.name === 'export_document') {
+        // deck 参数已退役（设计路线，PLAN-pptx-html-route）：executor 是
+        // export_document 的唯一生产调用方，不转发 deck——旧会话的模型必须
+        // 在这里就得到指引，而不是 deck 被静默丢弃后按 content 走 markdown
+        // 兜底，或 deck 单独出现时只收到通用的「三选一」报错（服务层的同款
+        // 消息只有测试能触达，review_20261006 中9）。文案与
+        // svcExportDocument 的退役分支逐字一致。
+        if (t.input.deck !== undefined && t.input.deck !== null) {
+          throw new Error('deck 参数已退役——从零做 PPT 一律走设计路线：write tokens.css + deck.html 后给 htmlPath（见 office 技能 references/pptx.md）')
+        }
         const format = String(t.input.format || '')
         if (!['docx', 'xlsx', 'csv', 'pptx', 'pdf'].includes(format)) throw new Error(`format 必须是 docx / xlsx / csv / pptx / pdf 之一`)
         const content = typeof t.input.content === 'string' && t.input.content.trim() !== '' ? t.input.content : undefined

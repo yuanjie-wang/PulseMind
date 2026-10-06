@@ -267,6 +267,17 @@ export function collectDeckLayout(): CollectResult {
           widths.push(cell.getBoundingClientRect().width)
         }
         if (cells.length === 0) colWidthsPx = widths
+        // Ragged rows: the browser renders them fine, but the emitter sizes
+        // columns from row 1 (`colWidthsPx`) and hands pptxgenjs one colW per
+        // FIRST-ROW cell — a row with more cells than that produced
+        // gridCol-count < tc-count, an OOXML shape PowerPoint offers to
+        // "repair" (review_20261006 中8; the old deck route's rows≈header
+        // check shrank away with spec.ts). Refuse at the collector, named by
+        // row, same as the colspan refusal above.
+        if (cells.length > 0 && rowCells.length !== cells[0].length) {
+          errors.push({ page, message: `${desc(el)} 第 ${cells.length + 1} 行是 ${rowCells.length} 个单元格，与第 1 行的 ${cells[0].length} 个不一致——行间列数必须一致（列宽按首行取），补齐或删掉多余格子。` })
+          return
+        }
         cells.push(rowCells)
       }
       const block = { kind: 'table' as const, x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, colWidthsPx, rowHeightsPx, cells, positioned }

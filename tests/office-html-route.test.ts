@@ -193,6 +193,51 @@ describe('htmlDeckToPptxBuffer (facts → pptx)', () => {
     expect(slide2).toContain('甲 · 60')
   })
 
+  // review_20261006 中7: the box-parameterization refactor (fixed coordinates →
+  // ChartBox) rewrote the column/bar/line geometry and retired the deck route's
+  // five chart tests with it — the new route only tested pie. These three pin
+  // each branch's shape vocabulary through the real zip, at a NON-default box.
+  const chartFacts = (raw: unknown) => ({
+    slides: [{ blocks: [{ kind: 'chart', x: 120, y: 80, w: 520, h: 300, raw: JSON.stringify(raw) }] }],
+  })
+  const emitChart = async (raw: unknown) => {
+    const { buffer } = await htmlDeckToPptxBuffer({
+      facts: chartFacts(raw), images: new Map(), accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    return new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+  }
+
+  it('column: grouped bars per series, legend, value + category labels (arbitrary box)', async () => {
+    const xml = await emitChart({ type: 'column', categories: ['Q1', 'Q2'], series: [{ name: '营收', values: [120, 80] }, { name: '成本', values: [60, 90] }] })
+    // 每系列色出现 3 次 = 2 根柱 + 1 个图例色块（文本框也带 rect 几何，
+    // 数 prst 区分不出柱子，数系列填充色才行）
+    expect(xml.match(/val="C2483B"/g)).toHaveLength(3)
+    expect(xml.match(/val="13C2C2"/g)).toHaveLength(3)
+    expect(xml).toContain('<a:t>营收</a:t>') // legend entry
+    expect(xml).toContain('<a:t>成本</a:t>')
+    for (const v of ['120', '80', '60', '90']) expect(xml).toContain(`<a:t>${v}</a:t>`) // value labels (≤24 cells)
+    expect(xml).toContain('<a:t>Q1</a:t>') // category labels
+  })
+
+  it('bar: horizontal bars with a class-label column and a darker zero line for negatives', async () => {
+    const xml = await emitChart({ type: 'bar', categories: ['一月', '二月', '三月'], series: [{ name: '净额', values: [120, -30, 80] }] })
+    // 1 series → no legend；系列色恰好 3 次 = 3 根横条
+    expect(xml.match(/val="C2483B"/g)).toHaveLength(3)
+    expect(xml).toContain('<a:t>三月</a:t>') // the class-label column
+    expect(xml).toContain('val="BFBFBF"') // the vertical zero line (minV < 0)
+    for (const v of ['120', '-30', '80']) expect(xml).toContain(`<a:t>${v}</a:t>`)
+  })
+
+  it('line: polyline segments + point dots, flipV on the rising leg, value labels', async () => {
+    const xml = await emitChart({ type: 'line', categories: ['甲', '乙', '丙'], series: [{ name: '走势', values: [1, 3, 2] }] })
+    // 3 points → 2 segments; the chart's own bottom axis adds 1 more line
+    expect(xml.match(/prst="line"/g)).toHaveLength(3)
+    expect(xml.match(/prst="ellipse"/g)).toHaveLength(3) // one dot per point
+    expect(xml.match(/val="C2483B"/g)).toHaveLength(5) // 3 dot fills + 2 segment strokes ride the accent
+    expect(xml.match(/flipV="1"/g)).toHaveLength(1) // 甲→乙 rises, 乙→丙 falls
+    for (const c of ['甲', '乙', '丙']) expect(xml).toContain(`<a:t>${c}</a:t>`)
+  })
+
   it('tables map to native <a:tbl> with per-cell styles', async () => {
     const { buffer } = await htmlDeckToPptxBuffer({
       facts: EMIT_FACTS, images: EMIT_IMAGES, accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
