@@ -43,3 +43,7 @@ scripts/.tmp/
 
 # Vitest coverage report output (`npm run test:coverage`)
 coverage/
+
+# Runtime data a stray app instance wrote at the repo root (plans/, tmp/) —
+# the real runtime dir is ~/.pulsemind/; anything landing here is local debris.
+/.pulsemind/
