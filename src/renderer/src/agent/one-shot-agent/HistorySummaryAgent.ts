@@ -103,9 +103,31 @@ export class HistorySummaryAgent extends OneShotAgent<HistorySummaryInput, strin
     // runaway output — the old 800-char slice was sized for one prose
     // paragraph, not a structured body.
     let cleaned = raw.trim()
-    const fenced = cleaned.match(/^```[^\n]*\n([\s\S]*?)\n?```$/)
-    cleaned = (fenced ? fenced[1] : cleaned.replace(/```[\s\S]*?(?:```|$)/g, '')).trim()
+    // The fence we rescue is the one carrying the fixed section header: the
+    // structured template makes the model MORE likely to wrap the summary in
+    // ```…```, and a lead-in line (「好的，以下是摘要：」) or a trailer
+    // (「以上是摘要」) defeats the old `^```…```$` anchor — the blanket rule
+    // then ate the whole body and the surviving 9-char announcement LANDED as
+    // the summary, stamping the dropped region covered with a ghost
+    // (review_20261006 中6). A fenced CODE snippet beside an unfenced summary
+    // must not be mistaken for the body, so the header fence wins over mere
+    // position; a headerless fenced body keeps the old anchored path; no
+    // qualifying fence → blanket strip (old behavior).
+    const fencedBlocks = [...cleaned.matchAll(/```[^\n]*\n([\s\S]*?)\n?\s*```/g)]
+    const withHeader = fencedBlocks.map((m) => m[1]).find((b) => b.includes('【用户诉求与决策】'))
+    const anchored = cleaned.match(/^```[^\n]*\n([\s\S]*?)\n?```$/)
+    if (withHeader) cleaned = withHeader
+    else if (anchored) cleaned = anchored[1]
+    else cleaned = cleaned.replace(/```[\s\S]*?(?:```|$)/g, '')
+    cleaned = cleaned.trim()
     cleaned = cleaned.replace(/^(?:摘要(?:为|是)?|总结(?:为|是)?|历史摘要)[:：]?\s*/i, '').trim()
+    // A fragment too short to hold the three fixed sections (the headers alone
+    // are 24+ chars) and carrying none of them is not a summary — it is what
+    // survives when the fence handling above could not rescue the body. Return
+    // '' so the caller treats the call as failed: the honest fallback keeps the
+    // old text and the one-shot retry re-asks, instead of covering the region
+    // with a ghost. (A valid body always names 【用户诉求与决策】.)
+    if (cleaned.length < 20 && !cleaned.includes('【用户诉求与决策】')) return ''
     return cleaned.slice(0, 2000)
   }
 

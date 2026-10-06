@@ -371,7 +371,12 @@ export function buildSummaryCoverageHeader(dropped: AgentMessage[], covered: Set
   if (covered.size === 0) return null
   const msgs = dropped.filter((m) => covered.has(m.id))
   if (msgs.length === 0) return null
-  const userTurns = msgs.filter((m) => m.role === 'user').length
+  // 用户发言 = 带正文的用户消息——与 collectUserReplays 的口径一致。
+  // addToolResult 给每个工具批铸造 role:'user'、只含 tool_result 块的收集
+  // 消息，按 role 计数会把它们全算成发言：压实最重的会话收集消息落得最多，
+  // 虚报可达 10 倍（review_20261006 中5）——这一行的存在意义是机械事实，
+  // 口径必须与转写其他地方对齐。
+  const userTurns = msgs.filter((m) => m.role === 'user' && m.contentBlocks.some((b) => b.type === 'text')).length
   const start = formatStamp(msgs[0].createdAt)
   const end = formatStamp(msgs[msgs.length - 1].createdAt)
   const span = start === end ? start : `${start} – ${end}`

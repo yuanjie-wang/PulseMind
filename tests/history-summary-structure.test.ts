@@ -59,6 +59,30 @@ describe('HistorySummaryAgent: the structured template', () => {
     expect(parse('摘要：' + body)).toBe(body)
     expect(parse('长'.repeat(2500))).toHaveLength(2000)
   })
+
+  it('a fenced body with lead-in or trailer prose keeps the body, not the prose (review_20261006 中6)', () => {
+    const parse = (raw: string): string =>
+      (agent as unknown as { parseResponse: (r: string) => string }).parseResponse(raw)
+    const body = '【用户诉求与决策】\n- 用 pnpm\n【任务执行情况】\n- 已完成 X\n【文件与产物】\n- a.ts — 已改'
+    // 前导语 / 尾随语击破了旧的 ^```…```$ 锚——整段正文被毯式规则吃掉，
+    // 剩下的残句非空、照常落地并把整区盖 covered 章。
+    expect(parse('好的，以下是摘要：\n```markdown\n' + body + '\n```')).toBe(body)
+    expect(parse('```markdown\n' + body + '\n```\n以上是摘要')).toBe(body)
+  })
+
+  it('a sub-20-char fragment without section headers fails the parse — honest retry, not a ghost summary (review_20261006 中6)', () => {
+    const parse = (raw: string): string =>
+      (agent as unknown as { parseResponse: (r: string) => string }).parseResponse(raw)
+    // 围栏救不回的无节标题正文：毯式规则吃掉正文后残句非空——旧行为把残句
+    // 当摘要落地。返回 '' 走诚实兜底 + 一次性重试。
+    expect(parse('好的，以下是摘要：\n```markdown\n真实正文在这里但被吃了\n```')).toBe('')
+    expect(parse('```markdown\n真实正文在这里但被吃了\n```\n以上是摘要')).toBe('')
+    // 三个节标题本身就超过 20 字——合法结构化摘要绝不会触发该门槛。
+    const body = '【用户诉求与决策】\n- 用 pnpm\n【任务执行情况】\n- 已完成 X\n【文件与产物】\n- a.ts — 已改'
+    expect(parse(body)).toBe(body)
+    // 无节标题但长度足够的散文体（锚定围栏路径）不回退。
+    expect(parse('```\n这是一段超过二十字的、无节标题的散文体摘要，不应被失败门槛误伤。\n```')).toBe('这是一段超过二十字的、无节标题的散文体摘要，不应被失败门槛误伤。')
+  })
 })
 
 // ── buildSummaryCoverageHeader：机械覆盖行 ───────────────────────────────
@@ -92,6 +116,26 @@ describe('buildSummaryCoverageHeader: the mechanical coverage line', () => {
     const dropped = [msg('d1', 'user', '2026-09-27T06:02:00.000Z')]
     expect(buildSummaryCoverageHeader(dropped, new Set())).toBeNull()
     expect(buildSummaryCoverageHeader(dropped, new Set(['ghost-id']))).toBeNull()
+  })
+
+  it('tool-result collector messages (role user, tool_result only) are NOT user turns (review_20261006 中5)', () => {
+    // addToolResult 给每个工具批铸造 role:'user'、只含 tool_result 块的收集
+    // 消息——按 role 计数会把它算成发言，工具重型会话的「用户发言」可虚报
+    // 约 10 倍。口径与 collectUserReplays 一致：必须带 text 块。
+    const collector = (id: string, createdAt: string): AgentMessage => ({
+      id, role: 'user', createdAt,
+      contentBlocks: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' } as ContentBlock],
+    })
+    const dropped = [
+      msg('d1', 'user', '2026-09-27T06:02:00.000Z'),
+      collector('c1', '2026-09-27T06:03:00.000Z'),
+      msg('d2', 'assistant', '2026-09-28T02:30:00.000Z'),
+      collector('c2', '2026-09-28T02:31:00.000Z'),
+      collector('c3', '2026-09-28T02:32:00.000Z'),
+      msg('d3', 'user', '2026-09-29T12:11:00.000Z'),
+    ]
+    const line = buildSummaryCoverageHeader(dropped, new Set(['d1', 'c1', 'd2', 'c2', 'c3', 'd3']))!
+    expect(line).toContain('已压缩 6 条消息（用户发言 2 条）')
   })
 })
 
