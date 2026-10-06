@@ -4,7 +4,7 @@
  */
 import { MEM_SALVAGE_MAX_PER_SESSION, MEM_SALVAGE_CONTEXT_RATIO } from './engine-constants'
 import type { EngineCore } from './engine-core'
-import { enforceMaxOutputTokens } from '../one-shot-agent/OneShotAgent'
+import { enforceMaxOutputTokens, withNoThinkingDirective } from '../one-shot-agent/OneShotAgent'
 import { getHost } from '../host'
 import type { AgentMessage, TextBlock, ToolUseBlock, ToolResultBlock } from '../../types/agent'
 
@@ -63,7 +63,9 @@ export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promi
         engine.opts.apiKey || '',
         engine.opts.baseURL || '',
         engine.opts.model || '',
-        prompt,
+        // Direct callNonStreaming site — the no-thinking directive that the
+        // OneShotAgent funnel appends must be added by hand here.
+        withNoThinkingDirective(prompt),
         [{ role: 'user' as const, content: summary }],
         // Wire budget = the model's output limit: thinking gateways settle
         // reasoning INSIDE max_tokens, so the old 500-token cap produced

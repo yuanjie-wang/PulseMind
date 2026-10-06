@@ -12,7 +12,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { OneShotAgent, enforceMaxOutputTokens } from '../src/renderer/src/agent/one-shot-agent/OneShotAgent'
+import { OneShotAgent, enforceMaxOutputTokens, withNoThinkingDirective } from '../src/renderer/src/agent/one-shot-agent/OneShotAgent'
 import type { LlmConfig } from '../src/renderer/src/agent/one-shot-agent/LlmConfig'
 import { openaiAdapter } from '../src/renderer/src/llm/OpenAIAdapter'
 import { anthropicAdapter } from '../src/renderer/src/llm/AnthropicAdapter'
@@ -32,14 +32,15 @@ class ProbeAgent extends OneShotAgent<string, string> {
   protected getDefaultOutput(): string { return '' }
 }
 
-function fakeLlmConfig(opts: { captured?: number[]; reply?: string; modelMaxTokens?: number } = {}) {
+function fakeLlmConfig(opts: { captured?: number[]; systems?: string[]; reply?: string; modelMaxTokens?: number } = {}) {
   const adapter = {
     provider: 'openai',
     callNonStreaming: async (
-      _apiKey: string, _baseURL: string, _model: string, _system: string,
+      _apiKey: string, _baseURL: string, _model: string, system: string,
       _messages: { role: string; content: string }[], maxTokens?: number,
     ) => {
       opts.captured?.push(maxTokens ?? 0)
+      opts.systems?.push(system)
       return opts.reply ?? 'ok'
     },
   } as unknown as LlmConfig['adapter']
@@ -99,6 +100,29 @@ describe('the scenario cap controls the final output length', () => {
     expect(enforceMaxOutputTokens('hello', 100)).toBe('hello')
     expect(enforceMaxOutputTokens('', 100)).toBe('')
     expect(enforceMaxOutputTokens('hello', undefined)).toBe('hello')
+  })
+})
+
+describe('the no-thinking prompt directive rides every one-shot call', () => {
+  it('execute appends the directive to the subclass system prompt', async () => {
+    const systems: string[] = []
+    const { config } = fakeLlmConfig({ systems })
+    const out = await new ProbeAgent().execute('in', { llmConfig: config })
+    expect(out).toBe('ok')
+    expect(systems).toHaveLength(1)
+    expect(systems[0]).toContain('sys')
+    expect(systems[0]).toContain('不要思考')
+    expect(systems[0].indexOf('sys')).toBeLessThan(systems[0].indexOf('不要思考'))
+  })
+
+  it('withNoThinkingDirective handles the empty prompt', () => {
+    expect(withNoThinkingDirective('')).toBe(withNoThinkingDirective(''))
+    expect(withNoThinkingDirective('')).toContain('不要思考')
+  })
+
+  it('the direct callNonStreaming site is wrapped too', () => {
+    const src = readFileSync(join(ROOT, 'src/renderer/src/agent/engine/memory-extraction.ts'), 'utf-8')
+    expect(src).toMatch(/withNoThinkingDirective\(prompt\)/)
   })
 })
 

@@ -24,6 +24,22 @@ export function enforceMaxOutputTokens(raw: string, maxOutputTokens?: number): s
   return raw.slice(0, lo)
 }
 
+/**
+ * 裁定五：prompt 层的弱兜底——部分混合思考模型（Qwen3、DeepSeek 混合版等）
+ * 会对「不要思考」类指令生效、直接跳过思考阶段。这是请求参数之外的第二层
+ * 缓解，不承诺任何网关行为（关思考的参数形状跨模型家族不统一，见
+ * LlmConfig.modelMaxTokens 的注释）；wire 预算仍装得下 reasoning，模型不听
+ * 这句话也不损失内容。中英双语覆盖中英文 system prompt 的家族。
+ */
+export const ONE_SHOT_NO_THINKING_DIRECTIVE =
+  '直接输出最终结果，不要思考，不要输出思考过程。Output the final result directly — do not think or reason step by step, and do not emit any thinking process.'
+
+/** Append the directive to a one-shot system prompt (idempotent-shape: the
+ *  directive is a fixed suffix, never interpolated into the caller's text). */
+export function withNoThinkingDirective(systemPrompt: string): string {
+  return systemPrompt ? `${systemPrompt}\n\n${ONE_SHOT_NO_THINKING_DIRECTIVE}` : ONE_SHOT_NO_THINKING_DIRECTIVE
+}
+
 export abstract class OneShotAgent<TInput, TOutput> {
   abstract readonly name: string
 
@@ -48,7 +64,7 @@ export abstract class OneShotAgent<TInput, TOutput> {
           options.llmConfig.apiKey,
           options.llmConfig.baseURL,
           options.llmConfig.model,
-          this.buildSystemPrompt(input),
+          withNoThinkingDirective(this.buildSystemPrompt(input)),
           this.buildUserMessages(input),
           wireMaxTokens,
           options.onUsage,
