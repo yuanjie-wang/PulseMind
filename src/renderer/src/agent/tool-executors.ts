@@ -703,7 +703,7 @@ export class ToolExecutor implements ToolExecContext {
       const combinedList = [skillsList, expList].filter(Boolean).join('\n')
       const selectedName = await this.skillSelectionAgent.execute(
         { intent, skillsList: combinedList },
-        { llmConfig: { adapter: this.opts.adapter, apiKey: this.opts.apiKey || '', baseURL: this.opts.baseURL, model: this.opts.model, modelMaxTokens: this.opts.maxTokens }, maxTokens: 200 }
+        { llmConfig: { adapter: this.opts.adapter, apiKey: this.opts.apiKey || '', baseURL: this.opts.baseURL, model: this.opts.model, modelMaxTokens: this.opts.maxTokens }, maxOutputTokens: 200 }
       )
       if (!selectedName) { this.addToolResult(t.id, 'No matching skill found.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
       const cleanName = selectedName.trim()

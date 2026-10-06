@@ -154,7 +154,7 @@ export class KnowledgeManager {
       { schema, rawFile: { filePath: file.filePath, title: file.title, content: file.content.slice(0, 20000) } },
       {
         llmConfig: { apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, adapter: this.adapter!, modelMaxTokens: this.modelMaxTokens },
-        maxTokens: 800,
+        maxOutputTokens: 800,
         onFinishReason: (reason) => {
           if (reason === 'length' || reason === 'max_tokens') throw new Error('页面规划被截断（finish=' + reason + '）')
         },
@@ -222,7 +222,7 @@ export class KnowledgeManager {
           adapter: this.adapter,
           modelMaxTokens: this.modelMaxTokens
         },
-        maxTokens: 4000,
+        maxOutputTokens: 4000,
         // K1: a truncated completion is a FAILURE — the old code guessed and
         //固化 half a JSON blob as a "source page".
         onFinishReason: (reason) => {

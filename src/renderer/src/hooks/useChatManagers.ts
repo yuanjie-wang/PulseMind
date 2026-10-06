@@ -27,7 +27,7 @@ async function backfillSkillKeywords(
 
     const keywords = await agent.execute(
       { rawContent },
-      { llmConfig, maxTokens: 4096 }
+      { llmConfig, maxOutputTokens: 4096 }
     )
 
     if (keywords.length > 0) {
@@ -48,6 +48,7 @@ interface UseChatManagersOptions {
   baseURL: string
   model: string
   adapter: LlmAdapter
+  maxTokens?: number
 }
 
 export function useChatManagers(options: UseChatManagersOptions) {
@@ -140,7 +141,7 @@ export function useChatManagers(options: UseChatManagersOptions) {
             backfillSkillKeywords(
               skill.definition.name,
               skillKeywordAgentRef.current,
-              { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model }
+              { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens }
             )
           }
         }
@@ -210,7 +211,7 @@ export function useChatManagers(options: UseChatManagersOptions) {
             backfillSkillKeywords(
               def.name,
               skillKeywordAgentRef.current,
-              { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model }
+              { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens }
             )
           }
         }
@@ -265,7 +266,7 @@ export function useChatManagers(options: UseChatManagersOptions) {
               backfillSkillKeywords(
                 def.name,
                 skillKeywordAgentRef.current,
-                { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model }
+                { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens }
               )
             }
           }

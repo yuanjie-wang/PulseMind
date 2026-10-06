@@ -140,7 +140,7 @@ ${records.map((r) => r.name).join(', ')}`
         { rawContent: raw },
         {
           llmConfig: { adapter: llm.adapter, apiKey: llm.apiKey, baseURL: llm.baseURL, model: llm.model, modelMaxTokens: llm.modelMaxTokens },
-          maxTokens: 500
+          maxOutputTokens: 500
         }
       )
       const trimmed = keywords

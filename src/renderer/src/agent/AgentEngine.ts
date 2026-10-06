@@ -1699,7 +1699,7 @@ export class AgentEngine implements EngineCore {
           // A structured body (three sections) needs more room than the old
           // 500-token prose paragraph — one-shot cost is negligible next to the
           // conversation it serves.
-          maxTokens: 900
+          maxOutputTokens: 900
         }
       )
     } catch (err) {

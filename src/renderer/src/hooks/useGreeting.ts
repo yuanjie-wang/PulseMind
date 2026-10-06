@@ -23,7 +23,7 @@ export function useGreeting(
     const timer = setTimeout(async () => {
       const text = await agentRef.current.execute(undefined, {
         llmConfig: { apiKey, baseURL, model, adapter, modelMaxTokens },
-        maxTokens: 4096
+        maxOutputTokens: 4096
       })
       if (!cancelled && text) setGreeting(text)
     }, 100)
@@ -36,7 +36,7 @@ export function useGreeting(
     setGreeting(null)
     agentRef.current.execute(undefined, {
       llmConfig: { apiKey, baseURL, model, adapter, modelMaxTokens },
-      maxTokens: 4096
+      maxOutputTokens: 4096
     }).then((text) => {
       if (text) setGreeting(text)
     })

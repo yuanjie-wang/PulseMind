@@ -143,7 +143,7 @@ export function useChatController(options: UseChatControllerOptions) {
 
     const result = await titleAgentRef.current.execute(
       { userMessage: raw, conversationContext, locale: options.locale },
-      { llmConfig: { adapter: options.adapter, apiKey: apiKey ?? '', baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens }, maxTokens: 4096 }
+      { llmConfig: { adapter: options.adapter, apiKey: apiKey ?? '', baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens }, maxOutputTokens: 4096 }
     )
     const fallback = doStrip ? stripFileMarkers(opts.llmFallback) : opts.llmFallback
     const finalTitle = result || fallback

@@ -67,7 +67,7 @@ export async function generateMcpSummaries(llmCfg: LlmConfig, force?: boolean): 
           tools: server.tools.map(t => ({ name: t.name, description: t.description })),
           locale: llmCfg.locale,
         },
-        { llmConfig: { adapter: llmCfg.adapter, apiKey: llmCfg.apiKey, baseURL: llmCfg.baseURL, model: llmCfg.model, modelMaxTokens: llmCfg.modelMaxTokens }, maxTokens: 150 }
+        { llmConfig: { adapter: llmCfg.adapter, apiKey: llmCfg.apiKey, baseURL: llmCfg.baseURL, model: llmCfg.model, modelMaxTokens: llmCfg.modelMaxTokens }, maxOutputTokens: 150 }
       )
       // Only persist LLM-generated summaries (not fallback from getDefaultOutput).
       // Fallback summaries match the `isFallbackSummary` pattern — skip persistence

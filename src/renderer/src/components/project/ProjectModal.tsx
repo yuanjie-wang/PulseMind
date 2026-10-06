@@ -149,7 +149,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
             model: activeProfile.model,
             modelMaxTokens: activeProfile.maxTokens,
           },
-          maxTokens: 2048,
+          maxOutputTokens: 2048,
         },
       )
       if (token !== summarizeTokenRef.current) return // modal closed/reopened mid-flight

@@ -278,7 +278,7 @@ export class MemoryManager {
 
       const merged = await this.compressionAgent.execute(
         { memoriesText },
-        { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, modelMaxTokens: this.modelMaxTokens }, maxTokens: 4000 }
+        { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, modelMaxTokens: this.modelMaxTokens }, maxOutputTokens: 4000 }
       )
       if (merged.length === 0) {
         // The model ran and consolidated nothing — or its output did not parse
@@ -505,7 +505,7 @@ export class MemoryManager {
     try {
       const result = await this.sessionReviewAgent.execute(
         { sessionSummary: summary, existingExperiencesText, existingMemoriesText, locale },
-        { llmConfig: { adapter, apiKey, baseURL, model, modelMaxTokens: this.modelMaxTokens }, maxTokens: 4000 }
+        { llmConfig: { adapter, apiKey, baseURL, model, modelMaxTokens: this.modelMaxTokens }, maxOutputTokens: 4000 }
       )
 
       // --- Save conversation summary ---

@@ -49,7 +49,7 @@ export async function execInstallTool(ex: ToolExecContext, t: ToolUseBlock): Pro
               { rawContent },
               {
                 llmConfig: { adapter: ex.opts.adapter, apiKey: ex.opts.apiKey || '', baseURL: ex.opts.baseURL, model: ex.opts.model, modelMaxTokens: ex.opts.maxTokens },
-                maxTokens: 500
+                maxOutputTokens: 500
               }
             )
             if (keywords.length > 0) {

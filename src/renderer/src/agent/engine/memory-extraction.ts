@@ -4,6 +4,7 @@
  */
 import { MEM_SALVAGE_MAX_PER_SESSION, MEM_SALVAGE_CONTEXT_RATIO } from './engine-constants'
 import type { EngineCore } from './engine-core'
+import { enforceMaxOutputTokens } from '../one-shot-agent/OneShotAgent'
 import { getHost } from '../host'
 import type { AgentMessage, TextBlock, ToolUseBlock, ToolResultBlock } from '../../types/agent'
 
@@ -75,6 +76,10 @@ export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promi
     }
 
     if (!raw) return
+    // The scenario's own output-length requirement (was the old wire cap —
+    // thinking ate that). Over-cap JSON truncates and fails its parse into
+    // `memories = []`, the honest degradation (PLAN-one-shot-reasoning-budget).
+    raw = enforceMaxOutputTokens(raw, 500)
 
     // The call succeeded — mine these pairs once and never again, even when
     // the model comes back with an empty set (a no-op answer ends the pair's
