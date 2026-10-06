@@ -60,8 +60,12 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       const excludePatterns = exclude ? exclude.split(',').map(s => s.trim()).filter(Boolean) : []
       const mkIncludeFlags = (ps: string[]) => ps.map(p => ` -g '${psEscape(p)}'`).join('')
       const mkExcludeFlags = (ps: string[]) => ps.map(p => ` -g '!${psEscape(p)}'`).join('')
-      const mkGrepInclude = (ps: string[]) => ps.map(p => ` --include="${p}"`).join('')
-      const mkGrepExclude = (ps: string[]) => ps.map(p => ` --exclude="${p}"`).join('')
+      // The grep fallback rides the same `sh -c` channel as every arm above —
+      // a double-quoted glob let `$( )` substitute (review_20261006 高1, the
+      // P1-02 fix took the rg arms and missed these two). `--include=GLOB` is
+      // a single argv word either way, so POSIX quoting is equivalent.
+      const mkGrepInclude = (ps: string[]) => ps.map(p => ` --include=${shSingleQuote(p)}`).join('')
+      const mkGrepExclude = (ps: string[]) => ps.map(p => ` --exclude=${shSingleQuote(p)}`).join('')
       if (isWin) {
         if (ripgrepPath) {
           let cmd = `& '${psEscape(ripgrepPath)}' -n --no-heading -i --max-columns 200 '${psEscape(query)}' '${psEscape(searchDir)}'`

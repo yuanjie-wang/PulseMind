@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { shEscape, shSingleQuote } from '../src/renderer/src/agent/agent-utils'
 import { buildCommandFromSkillInput } from '../src/renderer/src/agent/command-builder'
 
@@ -80,6 +83,42 @@ describe('buildCommandFromSkillInput: payloads stay inside single quotes', () =>
   it('search — fallback branch (no ripgrepPath)', () => {
     const cmd = buildCommandFromSkillInput('search', { query: PAYLOAD, search_dir: '/tmp/w' }, 'darwin', null)
     expect(needleQuoting(cmd, NEEDLE)).toEqual({ occurred: true, allInside: true })
+  })
+
+  // review_20261006 高1: the P1-02 fix took the rg arms and missed the grep
+  // fallback's --include/--exclude — double-quoted globs let `$( )` substitute
+  // (real /bin/sh PoC: touch executed). And the fallback is the DEFAULT path on
+  // a macOS box without ripgrep, not a corner.
+  it('search — grep fallback: include/exclude globs stay inside single quotes', () => {
+    const payload2 = `x'; ${NEEDLE}2; 'y`
+    const cmd = buildCommandFromSkillInput('search', {
+      query: 'x', search_dir: '/tmp/w',
+      include: `${PAYLOAD}, *.ts`,
+      exclude: payload2,
+    }, 'darwin', null)
+    expect(needleQuoting(cmd, NEEDLE)).toEqual({ occurred: true, allInside: true })
+    expect(needleQuoting(cmd, `${NEEDLE}2`)).toEqual({ occurred: true, allInside: true })
+    expect(cmd).toContain(`--include='*.ts'`)
+  })
+
+  it.runIf(process.platform !== 'win32')('search — grep fallback: $() in --include does not substitute (real /bin/sh, rg forced absent)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-shq-grep-'))
+    const marker = join(dir, 'pwned')
+    const cmd = buildCommandFromSkillInput('search', {
+      query: 'x', search_dir: dir, include: `$(${NEEDLE} ${marker})`,
+    }, 'darwin', null)
+    try {
+      // Strip PATH so `command -v rg` fails and the grep arm actually runs.
+      const noRgEnv = { PATH: '/usr/bin:/bin' }
+      spawnSync('/bin/sh', ['-c', cmd], { env: noRgEnv })
+      expect(existsSync(marker)).toBe(false)
+      // Non-vacuity: the pre-fix double-quoted form really did substitute.
+      const oldCmd = `grep -rn "x" '${dir}' --include="$(${NEEDLE} ${marker})" 2>/dev/null`
+      spawnSync('/bin/sh', ['-c', oldCmd], { env: noRgEnv })
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('find — pattern and search_dir', () => {
