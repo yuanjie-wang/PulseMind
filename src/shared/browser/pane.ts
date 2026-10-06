@@ -24,6 +24,20 @@ export const PANE_DRAG_HANDLE_WIDTH = 6
  *  divider. */
 export const PANE_BORDER_WIDTH = 1
 
+// ── Pane session contract ──
+// Pane tabs ride their own persistent session, never defaultSession. The
+// reason is zoom (2026-10-06: 整体界面被缩放): Electron's setZoomFactor
+// persists PER HOST NAME (scheme and port ignored) into the session's
+// per_host_zoom_levels, and the dock stamps every pane page at
+// zoomForWidth(width) ≈ 0.33×. While the pane shared the default session,
+// any host it visited — including localhost — carried that stamp, and the
+// main window loading a different port on the same host inherited it: the
+// whole app UI rendered at a third of its size, surviving restarts. The
+// persist: prefix keeps the pane's own cookies/storage across restarts, so
+// the pane trades login-state sharing with the app session for zoom (and
+// storage) isolation — that trade was the point.
+export const PANE_SESSION_PARTITION = 'persist:pane'
+
 // ── Pane state contract (A-M5) ──
 // Renderer → main: what is on screen (drives fold/restore and width clamping).
 export interface BrowserPaneState {

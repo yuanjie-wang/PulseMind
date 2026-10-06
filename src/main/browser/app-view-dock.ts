@@ -86,6 +86,17 @@ class AppViewDock {
     this.layout()
   }
 
+  /** Re-apply the pane-width zoom to `view` — the did-navigate hook. Chromium
+   *  loads each navigation at the target host's OWN persisted zoom level, so
+   *  without a re-stamp a new page renders at the previous host's scale (or
+   *  1.0) until the next layout event. No-op unless the view is the visible
+   *  one: hidden views are 0×0 and get stamped by layout() when shown. */
+  restampZoom(view: WebContentsView): void {
+    if (this.visible && this.attached === view && this.width > 0) {
+      view.webContents.setZoomFactor(zoomForWidth(this.width))
+    }
+  }
+
   private layout(): void {
     const win = this.window
     if (!win) return

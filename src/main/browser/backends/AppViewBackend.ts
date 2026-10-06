@@ -20,7 +20,7 @@ import type { Browser, BrowserContext, Page } from 'playwright-core'
 import { appViewDock } from '../app-view-dock'
 import { readDevToolsPort } from '../cdp-port'
 import { healOopifBlindPage } from '../oopif-heal'
-import { routeWindowOpen, type WindowOpenRoute } from '../../../shared/browser/pane'
+import { routeWindowOpen, PANE_SESSION_PARTITION, type WindowOpenRoute } from '../../../shared/browser/pane'
 import { WORKSPACE_DIR } from '../../storage'
 import type { BackendAdapter, BackendTab } from './BackendAdapter'
 import type { BackendDescriptor } from '../../../shared/browser-client/protocol'
@@ -102,6 +102,11 @@ export class AppViewBackend implements BackendAdapter {
         sandbox: true,
         // Folded panes keep executing agent tasks — no timer throttling.
         backgroundThrottling: false,
+        // Own persistent session (see PANE_SESSION_PARTITION): Chromium
+        // persists the dock's width zoom per host name, and a shared session
+        // let a pane stamp at ≈0.33× rescale the main window on a port
+        // collision (localhost:8899 pane vs localhost:5173 renderer).
+        partition: PANE_SESSION_PARTITION,
       },
     })
     const token = prefixedId('tok', 12)
@@ -109,7 +114,13 @@ export class AppViewBackend implements BackendAdapter {
     this.wireDownloadRouting()
     this.downloadMeta.set(view.webContents, { origin, scopeId })
     const notify = () => this.onTabActivity?.(options.tabId)
-    view.webContents.on('did-navigate', notify)
+    view.webContents.on('did-navigate', () => {
+      notify()
+      // Chromium applies the destination host's own persisted zoom at commit;
+      // the dock's width zoom must ride again or the new page renders at the
+      // previous host's scale until the next layout event.
+      appViewDock.restampZoom(view)
+    })
     view.webContents.on('did-navigate-in-page', notify)
     view.webContents.on('page-title-updated', notify)
     // Electron's default for window.open/target=_blank is a real OS window
@@ -179,12 +190,19 @@ export class AppViewBackend implements BackendAdapter {
     }
   }
 
+  /** Every page across all CDP contexts — pane pages live in the pane
+   *  partition's context while the default session's windows (main, splash,
+   *  hook login) live in another, and the mapping/order is Playwright's
+   *  business, so token matching sweeps all of them. */
+  private allPages(): Page[] {
+    return this.browser?.contexts().flatMap((context) => context.pages()) ?? []
+  }
+
   private async findPageByToken(token: string) {
-    const context = this.browser?.contexts()[0]
-    if (!context) throw new Error('CDP 连接没有可用的浏览器上下文')
+    if ((this.browser?.contexts().length ?? 0) === 0) throw new Error('CDP 连接没有可用的浏览器上下文')
     const deadline = Date.now() + 10_000
     while (Date.now() < deadline) {
-      for (const page of context.pages()) {
+      for (const page of this.allPages()) {
         try {
           // Evaluated as PAGE JavaScript — plain JS only, no TS syntax here.
           const marker = await page.evaluate(`window[${JSON.stringify(MARKER_KEY)}]`)
@@ -203,8 +221,7 @@ export class AppViewBackend implements BackendAdapter {
    *  blind pages pay the reload; a page mid-navigation or already gone is
    *  skipped, and one failed reload leaves the tab exactly as it was. */
   private async healAdoptedViews(): Promise<void> {
-    const context = this.browser?.contexts()[0]
-    if (!context) return
+    if ((this.browser?.contexts().length ?? 0) === 0) return
     for (const [, view] of this.views) {
       const wc = view.webContents
       if (wc.isDestroyed()) continue
@@ -216,7 +233,7 @@ export class AppViewBackend implements BackendAdapter {
         const tag = `heal_${Math.random().toString(36).slice(2)}`
         await wc.executeJavaScript(`window.__pmHealTag = ${JSON.stringify(tag)}`, true)
         let page: Page | null = null
-        for (const candidate of context.pages()) {
+        for (const candidate of this.allPages()) {
           const seen = await candidate.evaluate('window.__pmHealTag').catch(() => undefined)
           if (seen === tag) {
             page = candidate
@@ -241,11 +258,14 @@ export class AppViewBackend implements BackendAdapter {
 
   /** One session-level will-download handler routes every pane download by
    *  the owning tab's origin: user → ~/Downloads, agent → the conversation
-   *  workspace. Downloads from webContents we don't own are left untouched. */
+   *  workspace. Downloads from webContents we don't own are left untouched.
+   *  Wired on the pane's own session — will-download fires on the downloading
+   *  webContents' session, and pane views stopped riding defaultSession when
+   *  the zoom isolation moved them to PANE_SESSION_PARTITION. */
   private wireDownloadRouting(): void {
     if (this.downloadsWired) return
     this.downloadsWired = true
-    session.defaultSession.on('will-download', (_event, item, webContents) => {
+    session.fromPartition(PANE_SESSION_PARTITION).on('will-download', (_event, item, webContents) => {
       const meta = this.downloadMeta.get(webContents)
       if (!meta) return
       const dir = meta.origin === 'agent' ? join(WORKSPACE_DIR, 'downloads', meta.scopeId) : app.getPath('downloads')
