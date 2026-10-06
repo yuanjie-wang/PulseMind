@@ -1,6 +1,7 @@
 import type { AgentMessage, TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../types/agent'
 import type { ToolDefinition } from '../tools/types'
 import type { LlmAdapter } from './adapter'
+import { NON_STREAMING_REASONING_ALLOWANCE } from './adapter'
 import type { LlmRequestParams } from './types'
 import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 import { createStreamParser, fetchStreamChunks } from './stream-utils'
@@ -512,7 +513,10 @@ export const openaiAdapter: LlmAdapter = {
       : userMessages
     const body: Record<string, unknown> = {
       model,
-      max_tokens: maxTokens,
+      // maxTokens is the visible-content budget; thinking gateways settle
+      // reasoning_tokens inside wire max_tokens, so the cap gets the
+      // allowance on top (see NON_STREAMING_REASONING_ALLOWANCE).
+      max_tokens: maxTokens + NON_STREAMING_REASONING_ALLOWANCE,
       stream: true,
       stream_options: { include_usage: true },
       messages: apiMessages
