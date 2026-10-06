@@ -114,6 +114,19 @@ function rowToRecord(r: any): ExperienceRecord {
       if (Array.isArray(parsed)) files = parsed.filter((f: unknown) => typeof f === 'string')
     } catch { /* malformed → treated as absent; the SKILL.md body still carries the docs */ }
   }
+  let outcome: ExperienceRecord['outcome'] | undefined
+  if (typeof r.outcome_json === 'string' && r.outcome_json) {
+    try {
+      const parsed = JSON.parse(r.outcome_json)
+      if (parsed && typeof parsed === 'object' && (Number.isFinite(parsed.ok) || Number.isFinite(parsed.fail))) {
+        outcome = {
+          ok: Number.isFinite(parsed.ok) ? parsed.ok : 0,
+          fail: Number.isFinite(parsed.fail) ? parsed.fail : 0,
+          lastOutcomeAt: typeof parsed.lastOutcomeAt === 'string' ? parsed.lastOutcomeAt : null,
+        }
+      }
+    } catch { /* malformed → absent; counters are advisory */ }
+  }
   return {
     id: r.id,
     name: r.name,
@@ -127,7 +140,8 @@ function rowToRecord(r: any): ExperienceRecord {
     triggers: parseTriggers(r.triggers),
     files: files && files.length > 0 ? files : undefined,
     dir: join(EXPERIENCES_DIR, r.name), // computed, never stored
-    updatedAt: r.updated_at ?? null
+    updatedAt: r.updated_at ?? null,
+    outcome
   }
 }
 
@@ -394,11 +408,37 @@ export class ExperienceStore {
     return rows.length
   }
 
-  /** Record a trigger of an experience (called when the LLM reads it). */
-  async touch(name: string): Promise<void> {
-    getDb()
-      .prepare('UPDATE experiences SET last_used_at = ?, use_count = use_count + 1 WHERE name = ?')
-      .run(localTimestamp(), name)
+  /** Record a trigger of an experience (called when the LLM reads it).
+   *  `outcome` (PLAN-experience-outcome M1) rides the SAME touch — a script
+   *  run observed by the exec settlement's static matcher books its exit
+   *  verdict alongside the usage count, so one row update carries both. */
+  async touch(name: string, outcome?: 'ok' | 'fail'): Promise<void> {
+    if (!outcome) {
+      getDb()
+        .prepare('UPDATE experiences SET last_used_at = ?, use_count = use_count + 1 WHERE name = ?')
+        .run(localTimestamp(), name)
+      return
+    }
+    const db = getDb()
+    const row = db.prepare('SELECT outcome_json FROM experiences WHERE name = ?').get(name) as { outcome_json?: string | null } | undefined
+    if (!row) return
+    let data: { ok: number; fail: number; lastOutcomeAt?: string | null } = { ok: 0, fail: 0, lastOutcomeAt: null }
+    if (typeof row.outcome_json === 'string' && row.outcome_json) {
+      try {
+        const parsed = JSON.parse(row.outcome_json)
+        if (parsed && typeof parsed === 'object') {
+          data = {
+            ok: Number.isFinite(parsed.ok) ? parsed.ok : 0,
+            fail: Number.isFinite(parsed.fail) ? parsed.fail : 0,
+            lastOutcomeAt: typeof parsed.lastOutcomeAt === 'string' ? parsed.lastOutcomeAt : null,
+          }
+        }
+      } catch { /* malformed → start fresh; the counters are advisory */ }
+    }
+    data[outcome] += 1
+    data.lastOutcomeAt = localTimestamp()
+    db.prepare('UPDATE experiences SET last_used_at = ?, use_count = use_count + 1, outcome_json = ? WHERE name = ?')
+      .run(data.lastOutcomeAt, JSON.stringify(data), name)
   }
 }
 

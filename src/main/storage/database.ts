@@ -292,6 +292,11 @@ function createTables(): void {
   // is the save-layer gate that skips a no-op SKILL.md rewrite.
   try { database.exec('ALTER TABLE experiences ADD COLUMN updated_at TEXT') } catch {}
   try { database.exec('ALTER TABLE experiences ADD COLUMN content_hash TEXT') } catch {}
+  // PLAN-experience-outcome M1: real-execution outcome counters {ok, fail,
+  // lastOutcomeAt} — written by the exec settlement's static script matcher,
+  // read by the envelope tail / panel. Never touched by save() (the upsert's
+  // column list omits it, so revisions preserve the counters).
+  try { database.exec('ALTER TABLE experiences ADD COLUMN outcome_json TEXT') } catch {}
 
   // ── PLAN-0.4.0 M3/M6: projects, routine-run history, audit log ──
   // Projects are named fixed workspaces picked on the welcome page (the

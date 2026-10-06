@@ -220,7 +220,7 @@ export const mainHost: PulseHost = {
   deleteExperienceRecord: async (name) => { experienceStore.delete(name) },
   readExperienceRecord: (name) => Promise.resolve(experienceStore.read(name)),
   readExperienceFile: (name, relPath) => experienceStore.readFileContent(name, relPath),
-  touchExperienceRecord: async (name) => { experienceStore.touch(name) },
+  touchExperienceRecord: async (name, outcome) => { experienceStore.touch(name, outcome) },
 
   // ── Memory / knowledge / conversation store ──
   saveMemory: async (data) => {

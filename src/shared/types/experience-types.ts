@@ -1,3 +1,12 @@
+/** Outcome counters fed by real executions (PLAN-experience-outcome M1): the
+ *  static matcher on the exec settlement records a script run's exit verdict —
+ *  never an LLM's self-assessment. DB column: outcome_json. */
+export interface ExperienceOutcome {
+  ok: number
+  fail: number
+  lastOutcomeAt?: string | null
+}
+
 export interface ExperienceRecord {
   id: string
   name: string
@@ -20,6 +29,11 @@ export interface ExperienceRecord {
    *  the last time a save overwrote its content with a different hash.
    *  Absent/null = created only, never revised. */
   updatedAt?: string | null
+  /** Real-execution outcome counters (PLAN-experience-outcome M1). Absent =
+   *  never matched by the exec script matcher; advisory data for the envelope
+   *  tail, the panel and (later) the pool's self-iteration input — NOT an
+   *  eviction weight (the 20-LRU discipline stays). */
+  outcome?: ExperienceOutcome
 }
 
 /** A script file that ships with an experience. `path` is relative to the

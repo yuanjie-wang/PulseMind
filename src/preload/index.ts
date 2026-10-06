@@ -204,7 +204,7 @@ const electronAPI = {
   deleteExperienceRecord: (name: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_DELETE, name),
   readExperienceRecord: (name: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_READ, name),
   readExperienceFile: (name: string, relPath: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_READ_FILE, name, relPath),
-  touchExperienceRecord: (name: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_TOUCH, name),
+  touchExperienceRecord: (name: string, outcome?: 'ok' | 'fail'): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_TOUCH, name, outcome),
   clearExperiences: (): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_CLEAR),
   onExperiencesChanged: (callback: () => void): (() => void) => {
     const handler = () => callback()

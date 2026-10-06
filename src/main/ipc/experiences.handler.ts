@@ -23,8 +23,8 @@ export function registerExperienceHandlers(): void {
     return experienceStore.read(name)
   })
 
-  ipcMain.handle(IPC_CHANNELS.EXPERIENCES_TOUCH, async (_event, name: string) => {
-    experienceStore.touch(name)
+  ipcMain.handle(IPC_CHANNELS.EXPERIENCES_TOUCH, async (_event, name: string, outcome?: 'ok' | 'fail') => {
+    experienceStore.touch(name, outcome)
   })
 
   ipcMain.handle(IPC_CHANNELS.EXPERIENCES_READ_FILE, async (_event, name: string, relPath: string) => {

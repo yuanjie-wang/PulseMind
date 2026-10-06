@@ -235,7 +235,7 @@ export interface ElectronAPI {
   readExperienceFile: (name: string, relPath: string) => Promise<string | null>
   deleteExperienceRecord: (name: string) => Promise<void>
   readExperienceRecord: (name: string) => Promise<string | null>
-  touchExperienceRecord: (name: string) => Promise<void>
+  touchExperienceRecord: (name: string, outcome?: 'ok' | 'fail') => Promise<void>
   clearExperiences: () => Promise<number>
   onExperiencesChanged: (callback: () => void) => () => void
 

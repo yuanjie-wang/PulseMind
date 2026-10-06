@@ -205,6 +205,11 @@ const ExperiencePanel = function ExperiencePanel(): React.ReactElement {
                 {exp.updatedAt && <span>更新 {exp.updatedAt}</span>}
                 <span>{exp.lastUsedAt ? `最近触发 ${exp.lastUsedAt}` : '从未触发'}</span>
                 <span>触发 {exp.useCount} 次</span>
+                {exp.outcome && (
+                  <span>
+                    脚本成功 {exp.outcome.ok} / 失败 {exp.outcome.fail}
+                  </span>
+                )}
               </div>
               {exp.triggers && exp.triggers.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
