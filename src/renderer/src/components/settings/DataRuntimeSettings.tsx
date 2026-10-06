@@ -4,7 +4,7 @@
 // moved to 常规 (2026-09-21); the read-only directory rows are gone entirely —
 // the workspace picker on 常规 is the one path surface left.
 import React, { useEffect, useState } from 'react'
-import {Button, Drawer, Space, Switch, Typography } from 'antd'
+import {Button, Drawer, Input, Space, Switch, Typography } from 'antd'
 import { FolderOpenOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -60,6 +60,19 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
     }
   }
 
+  // The webhook fields are text, so they commit on blur — a save per keystroke
+  // would write the whole settings file per character (the toggles above flip
+  // once; text does not).
+  const [webhookUrl, setWebhookUrl] = useState(settings.notifications?.webhookUrl ?? '')
+  const [webhookSecret, setWebhookSecret] = useState(settings.notifications?.webhookSecret ?? '')
+  useEffect(() => {
+    setWebhookUrl(settings.notifications?.webhookUrl ?? '')
+    setWebhookSecret(settings.notifications?.webhookSecret ?? '')
+  }, [settings.notifications?.webhookUrl, settings.notifications?.webhookSecret])
+  const commitWebhook = (patch: { webhookUrl?: string; webhookSecret?: string }): void => {
+    void save({ notifications: { ...settings.notifications, ...patch } })
+  }
+
   const toggle = (key: string, checked: boolean, onChange: (checked: boolean) => void) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
       <div>
@@ -93,6 +106,27 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
         {toggle('autoCompile', settings.knowledge?.autoCompile ?? false, (value) => {
           void save({ knowledge: { ...settings.knowledge, autoCompile: value } })
         })}
+        <div style={{ marginBottom: 16 }}>
+          <Text strong style={{ display: 'block', fontSize: 13 }}>{t('dataRuntime.routineWebhook')}</Text>
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>{t('dataRuntime.routineWebhookHelp')}</Text>
+          <Input
+            size="small"
+            placeholder="https://…"
+            value={webhookUrl}
+            disabled={disabled}
+            onChange={(e) => setWebhookUrl(e.target.value)}
+            onBlur={() => { if (webhookUrl !== (settings.notifications?.webhookUrl ?? '')) commitWebhook({ webhookUrl }) }}
+          />
+          <Input.Password
+            size="small"
+            style={{ marginTop: 6 }}
+            placeholder={t('dataRuntime.routineWebhookSecret')}
+            value={webhookSecret}
+            disabled={disabled}
+            onChange={(e) => setWebhookSecret(e.target.value)}
+            onBlur={() => { if (webhookSecret !== (settings.notifications?.webhookSecret ?? '')) commitWebhook({ webhookSecret }) }}
+          />
+        </div>
       </Space>
     </>
   )

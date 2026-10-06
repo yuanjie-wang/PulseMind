@@ -10,10 +10,9 @@
 
 import React from 'react'
 import { Button, Checkbox, Input, InputNumber, Segmented, Select, Space, Switch, Tag, TimePicker } from 'antd'
-import { ClockCircleOutlined, DeleteOutlined, FileTextOutlined, PlusOutlined } from '@ant-design/icons'
+import { ClockCircleOutlined, DeleteOutlined, FileTextOutlined, PlusOutlined, RedoOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import customParseFormat from 'dayjs/plugin/customParseFormat'
-
 // dayjs(string, format) needs the parser plugin registered before any
 // TimeInput converts its "HH:mm" draft value — module scope, once.
 dayjs.extend(customParseFormat)
@@ -28,6 +27,7 @@ import { AppliedPatchBar } from '../form-assist/AppliedPatchBar'
 import { SCHED_DEFAULTS } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import type { RoutineAssistantPatch } from './routine-assist'
+import type { RoutineTrigger, RoutineWebhookTrigger } from '../../../../shared/types/routine'
 
 /** Schedule kinds in Segmented order; short labels — the block control splits
  *  the row evenly, the friendly detail lives in the row below it. */
@@ -541,6 +541,151 @@ function RunContextSection({ draft, onChange, models, activeModelId }: {
   )
 }
 
+/** The 事件触发 block (PLAN-routine-triggers M1): local event sources that run
+ *  the task outside the cron schedule — a watched file/folder, or a loopback
+ *  webhook POST. The form manages AT MOST ONE of each; the stored type allows
+ *  more but the UI has no reason to. The webhook token is displayed from the
+ *  stored value; 重铸 just blanks it — the STORE mints the replacement at
+ *  save, the UI never invents secrets. */
+function TriggersSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
+  const fileTrigger = draft.triggers?.find((t): t is Extract<RoutineTrigger, { type: 'file' }> => t.type === 'file')
+  const webhookTrigger = draft.triggers?.find((t): t is RoutineWebhookTrigger => t.type === 'webhook')
+  const setTriggers = (next: RoutineTrigger[]): void => onChange({ ...draft, triggers: next.length > 0 ? next : undefined })
+
+  // The loopback port resolves once per mount; 0 = the endpoint is dormant —
+  // the URL line then says so instead of showing a dead address.
+  const [port, setPort] = React.useState(0)
+  React.useEffect(() => {
+    let cancelled = false
+    void window.electronAPI.routineTriggersInfo()
+      .then((info) => { if (!cancelled) setPort(info.port) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  const fireUrl = draft.id && webhookTrigger?.token && port > 0
+    ? `http://127.0.0.1:${port}/routine/${draft.id}/fire?token=${webhookTrigger.token}`
+    : null
+
+  const browsePath = async (): Promise<void> => {
+    try {
+      const res = await window.electronAPI.showOpenDialog({ properties: ['openDirectory', 'openFile'] })
+      const p = res.filePaths[0]
+      if (!res.canceled && p && fileTrigger && !fileTrigger.paths.includes(p)) {
+        setTriggers((draft.triggers ?? []).map((t) => (t.type === 'file' ? { ...t, paths: [...t.paths, p] } : t)))
+      }
+    } catch { /* dialog is best-effort; the section stays as it was */ }
+  }
+
+  const patchFile = (patch: (t: Extract<RoutineTrigger, { type: 'file' }>) => RoutineTrigger): void => {
+    setTriggers((draft.triggers ?? []).map((t) => (t.type === 'file' ? patch(t) : t)))
+  }
+
+  return (
+    <div data-routine-field="triggers">
+      <FieldLabel text="事件触发" />
+      <div style={CAPTION}>除定时外，以下事件也会自动运行这个任务；应用关闭期间发生的事件不会补跑。</div>
+      <div style={SCHED_ROW}>
+        <Switch
+          size="small"
+          checked={!!fileTrigger}
+          onChange={(on) => {
+            setTriggers(on
+              ? [...(draft.triggers ?? []).filter((t) => t.type !== 'file'), { type: 'file', paths: fileTrigger && fileTrigger.paths.length > 0 ? fileTrigger.paths : [''] }]
+              : (draft.triggers ?? []).filter((t) => t.type !== 'file'))
+          }}
+        />
+        <span style={ROW_LABEL}>文件变化时运行</span>
+      </div>
+      {fileTrigger && (
+        <div style={{ marginTop: 8 }}>
+          {fileTrigger.paths.map((p, i) => (
+            <Space key={i} style={{ display: 'flex', marginBottom: 6 }}>
+              <Input
+                style={{ width: 330 }}
+                value={p}
+                placeholder="要监听的文件或文件夹（绝对路径）"
+                onChange={(e) => {
+                  const paths = [...fileTrigger.paths]
+                  paths[i] = e.target.value
+                  patchFile((t) => ({ ...t, paths }))
+                }}
+              />
+              <Button size="small" onClick={browsePath}>浏览…</Button>
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={() => {
+                  const paths = fileTrigger.paths.filter((_, j) => j !== i)
+                  if (paths.length > 0) patchFile((t) => ({ ...t, paths }))
+                  else setTriggers((draft.triggers ?? []).filter((t) => t.type !== 'file'))
+                }}
+              />
+            </Space>
+          ))}
+          <Space style={{ marginBottom: 6 }}>
+            <Button
+              size="small"
+              type="dashed"
+              icon={<PlusOutlined />}
+              onClick={() => patchFile((t) => ({ ...t, paths: [...t.paths, ''] }))}
+            >
+              添加路径
+            </Button>
+            <span style={ROW_LABEL}>变化停止</span>
+            <InputNumber
+              size="small"
+              min={1}
+              max={60}
+              value={Math.round((fileTrigger.debounceMs ?? 5000) / 1000)}
+              onChange={(v) => patchFile((t) => ({ ...t, debounceMs: Number.isFinite(v) ? Number(v) * 1000 : undefined }))}
+            />
+            <span style={ROW_LABEL}>秒后运行</span>
+          </Space>
+        </div>
+      )}
+      <div style={SCHED_ROW}>
+        <Switch
+          size="small"
+          checked={!!webhookTrigger}
+          onChange={(on) => {
+            setTriggers(on
+              ? [...(draft.triggers ?? []).filter((t) => t.type !== 'webhook'), { type: 'webhook', token: webhookTrigger?.token ?? '' }]
+              : (draft.triggers ?? []).filter((t) => t.type !== 'webhook'))
+          }}
+        />
+        <span style={ROW_LABEL}>Webhook 触发</span>
+      </div>
+      {webhookTrigger && (
+        <div style={{ marginTop: 8 }}>
+          <div style={CAPTION}>向下面的地址发一个 POST 即运行一次任务（仅本机回环；外部服务的 webhook 请用你自己的桥转发到本机）。</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+            {fireUrl ? (
+              <>
+                <Input size="small" readOnly value={fireUrl} style={{ maxWidth: 430, fontSize: 11 }} />
+                <Button size="small" onClick={() => { void navigator.clipboard.writeText(fireUrl).catch(() => {}) }}>复制</Button>
+              </>
+            ) : (
+              <span style={CAPTION}>
+                {draft.id ? (port > 0 ? '令牌尚未生成，保存任务后即可复制完整地址。' : '本会话的触发端点未启动。') : '保存任务后此处显示完整的触发地址。'}
+              </span>
+            )}
+            <Button
+              size="small"
+              icon={<RedoOutlined />}
+              onClick={() => setTriggers((draft.triggers ?? []).map((t) => (t.type === 'webhook' ? { ...t, token: '' } : t)))}
+            >
+              重铸令牌
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export interface RoutineFormProps {
   draft: RoutineDraftState
   onChange: (draft: RoutineDraftState) => void
@@ -654,6 +799,7 @@ export function RoutineForm({ draft, onChange, appliedAssistantPatch, onUndoAssi
       <BatchSection draft={draft} onChange={onChange} />
       <RunContextSection draft={draft} onChange={onChange} models={models} activeModelId={activeModelId} />
       <ScheduleSection draft={draft} onChange={onChange} />
+      <TriggersSection draft={draft} onChange={onChange} />
     </div>
   )
 }

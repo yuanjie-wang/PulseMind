@@ -155,4 +155,14 @@ export interface AppSettings {
    *  靠它跨重启仍然有效。主进程的 session-manager 在合并后回写这里，重启后
    *  水位不丢。 */
   memoryMergeWatermark?: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string }
+  /** 例行任务结算的 webhook 触达（PLAN-routine-triggers M1）：run 结算时向
+   *  webhookUrl POST 一条 JSON 摘要（HMAC 签名，fire-and-forget，失败只落
+   *  日志）。payload 只含 ids 与状态，不含转写正文。secret 支持 ${ENV}
+   *  占位符（与供应商密钥同惯例，发送时解析）。桌面通知不受本节控制。 */
+  notifications?: {
+    webhookUrl?: string
+    webhookSecret?: string
+    /** Default true. */
+    onSettled?: boolean
+  }
 }

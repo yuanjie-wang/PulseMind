@@ -18,6 +18,7 @@ import { auditStore } from '../storage/audit-store'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { shortUuid } from '../utils/id'
 import { notify, executeUnattended } from './routine-runner'
+import { postSettlementEvent } from './webhook-out'
 import { BatchQueue } from './batch-queue'
 import { loadBatchSource } from './batch-source'
 import { rowParamsAt, planResumeRows, progressFromAttempts, DEFAULT_BATCH_CONCURRENCY, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, effectiveTimeoutMinutes } from '../../shared/routine/batch'
@@ -39,6 +40,9 @@ interface BatchState {
   queue: BatchQueue
   stopped: boolean
   settled: { success: number; failed: number; skipped: number }
+  /** Auto-handled approvals/questions aggregated from the rows'
+   *  onSettled — the parent's one settlement webhook carries the totals. */
+  skippedCalls: { approvals: number; questions: number }
   /** Per-row hard ceiling in minutes — every row of this run executes under
    *  it (executeUnattended's timeoutMs). Frozen at start/resume so a config
    *  edit mid-batch cannot move a running row's goalposts. */
@@ -179,6 +183,7 @@ class BatchRunner {
       queue: new BatchQueue(rows, concurrency, (index) => this.executeRowAt(state, index)),
       stopped: false,
       settled: { success: 0, failed: 0, skipped: 0 },
+      skippedCalls: { approvals: 0, questions: 0 },
       timeoutMinutes,
       inFlightHandles: new Map(),
       parentSettled: false,
@@ -267,9 +272,13 @@ class BatchRunner {
           notifyOnFinish: false,
           workspaceDir: dir,
           timeoutMs: state.timeoutMinutes * 60_000,
-          onSettled: (status) => {
+          onSettled: (status, _error, skipped) => {
             state.inFlightHandles.delete(convId)
             state.settled[status]++
+            if (skipped) {
+              state.skippedCalls.approvals += skipped.approvals
+              state.skippedCalls.questions += skipped.questions
+            }
             this.maybeSettleParent(state)
             resolve()
           },
@@ -311,12 +320,24 @@ class BatchRunner {
     routineStore.finishRun(state.parentRun.id, { status, error: status === 'success' ? undefined : summary })
     // One notification per BATCH, never per row (a hundred rows would be a
     // hundred toasts); a batch stopped before it ran anything stays silent —
-    // the user pressed the stop themselves.
+    // the user pressed the stop themselves. The settlement webhook follows
+    // the same shape: ONE event for the parent, with the rows' aggregated
+    // auto-handled counts (PLAN-routine-triggers M1).
     if (status !== 'skipped') {
       notify(
         status === 'success' ? `批量任务完成：${state.routine.name}` : status === 'failed' ? `批量任务失败：${state.routine.name}` : `批量任务部分完成：${state.routine.name}`,
         status === 'success' ? `全部 ${total} 行执行成功` : summary,
       )
+      void postSettlementEvent({
+        event: 'routine.settled',
+        routineId: state.routine.id,
+        runId: state.parentRun.id,
+        conversationId: '',
+        status: status === 'success' ? 'success' : 'failed',
+        error: status === 'success' ? undefined : summary,
+        skipped: { ...state.skippedCalls },
+        finishedAt: new Date().toISOString(),
+      })
     }
   }
 }

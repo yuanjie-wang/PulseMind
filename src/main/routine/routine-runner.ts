@@ -30,6 +30,7 @@ import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { agentMessagesToConversation } from '../../renderer/src/utils/message-utils'
 import { assertRunnableParams, renderRoutinePrompt } from '../../shared/routine/params'
 import { DEFAULT_BATCH_TIMEOUT_MINUTES, effectiveTimeoutMinutes } from '../../shared/routine/batch'
+import { postSettlementEvent } from './webhook-out'
 import type { AgentEventData } from '../../shared/agent-protocol'
 import type { AgentMessage } from '../../renderer/src/types/agent'
 import type { Routine, RoutineRun } from '../../shared/types/routine'
@@ -117,8 +118,11 @@ export interface UnattendedRunOptions {
    *  config bounds both shapes of run. */
   timeoutMs?: number
   /** The batch pool's slot-release point: fires after the run row is finished
-   *  AND the transcript is persisted (both halves of "this row is inspectable"). */
-  onSettled?: (status: 'success' | 'failed', error?: string) => void
+   *  AND the transcript is persisted (both halves of "this row is inspectable").
+   *  `skipped` (PLAN-routine-triggers M1) carries this run's auto-handled
+   *  approval/question counts — the batch parent aggregates them for the one
+   *  settlement webhook. Optional params keep every existing consumer valid. */
+  onSettled?: (status: 'success' | 'failed', error?: string, skipped?: { approvals: number; questions: number }) => void
 }
 
 export interface UnattendedRunHandle {
@@ -136,6 +140,11 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
   let stopRequested = false
   let unsubscribe: (() => void) | null = null
   const stopNet: { t?: NodeJS.Timeout } = {}
+  // D13 auto-handled calls the user never saw (PLAN-routine-triggers M1):
+  // approvals rejected + questions skipped. They ride the settlement
+  // notification and the webhook event — an unattended run must be able to
+  // tell the user afterwards WHAT nobody approved.
+  const skipped = { approvals: 0, questions: 0 }
   const finish = (status: 'success' | 'failed', error?: string): void => {
     if (settled) return
     settled = true
@@ -153,12 +162,25 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
     // Persist before announcing: a click-through must find the conversation.
     void persistTranscript(convId, opts.transcriptLabel ?? `[日常] ${routine.name}`).then(() => {
       if (opts.notifyOnFinish !== false) {
+        const skippedNote = skipped.approvals + skipped.questions > 0
+          ? `（审批跳过 ${skipped.approvals} · 提问跳过 ${skipped.questions}）`
+          : ''
         notify(
           status === 'success' ? `日常任务完成：${routine.name}` : `日常任务失败：${routine.name}`,
-          status === 'success' ? '点击查看结果' : (error ?? '').slice(0, 120),
+          (status === 'success' ? '点击查看结果' : (error ?? '').slice(0, 120)) + skippedNote,
         )
+        void postSettlementEvent({
+          event: 'routine.settled',
+          routineId: routine.id,
+          runId: opts.runId,
+          conversationId: convId,
+          status,
+          error,
+          skipped: { ...skipped },
+          finishedAt: new Date().toISOString(),
+        })
       }
-      opts.onSettled?.(status, error)
+      opts.onSettled?.(status, error, { ...skipped })
     })
   }
   // Production values are whole minutes (normalizeBatchTimeoutMinutes), so the
@@ -183,6 +205,7 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
       return
     }
     if (data.type === 'status' && data.status === 'awaiting_approval') {
+      skipped.approvals += 1
       auditStore.record({
         scope: 'routine',
         actor: routine.id,
@@ -195,6 +218,7 @@ export function executeUnattended(opts: UnattendedRunOptions): UnattendedRunHand
         if (toolUseId) void agentSessionManager.engineCall(convId, 'rejectTool', [toolUseId])
       })
     } else if (data.type === 'status' && data.status === 'awaiting_user_input') {
+      skipped.questions += 1
       void findPendingToolUseId(convId).then((toolUseId) => {
         if (toolUseId) void agentSessionManager.engineCall(convId, 'respondToTool', [toolUseId, '（无人值守运行：已自动跳过此提问）'])
       })

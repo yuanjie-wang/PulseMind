@@ -10,6 +10,7 @@ import { routineRunHistory } from '../routine/routine-run-history'
 import { checkCron } from '../../shared/schedule/cron'
 import { checkWorkspacePathFormat } from '../../shared/workspace-path'
 import { normalizeBatchConcurrency, normalizeBatchTimeoutMinutes } from '../../shared/routine/batch'
+import { routineTriggerManager } from '../routine/routine-triggers'
 import type { Routine, RoutineBatchConfig, RoutineParam } from '../../shared/types/routine'
 
 /** The three approval levels a routine may pin (same ladder as the composer's
@@ -23,7 +24,9 @@ export function registerRoutineHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ROUTINE_CREATE, (_event, input: Partial<Routine>) => {
     assertCron(input)
     assertRunContext(input)
-    return routineStore.create(normalizeInput(input))
+    const created = routineStore.create(normalizeInput(input))
+    routineTriggerManager.sync()
+    return created
   })
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_UPDATE, (_event, id: string, patch: Partial<Routine>) => {
@@ -36,7 +39,10 @@ export function registerRoutineHandlers(): void {
     if (existing && normalized.schedule?.cron && normalized.schedule.cron !== existing.schedule?.cron) {
       normalized.nextRunAt = undefined
     }
-    return routineStore.update(id, normalized)
+    const updated = routineStore.update(id, normalized)
+    // Triggers may have changed shape (paths / token / enabled) — reconcile.
+    routineTriggerManager.sync()
+    return updated
   })
 
   // The card grid's delete dialog promises 「运行历史会一并删除」 — the task's
@@ -44,12 +50,18 @@ export function registerRoutineHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ROUTINE_DELETE, (_event, id: string) => {
     routineStore.remove(id)
     routineRunHistory.clearRoutine(id, true)
+    routineTriggerManager.sync()
   })
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_TOGGLE, (_event, id: string, enabled: boolean) => {
     const routine = routineStore.update(id, { enabled })
+    routineTriggerManager.sync()
     return routine
   })
+
+  // PLAN-routine-triggers M1: the resolved loopback port (0 = dormant) so the
+  // editor can show the full fire URL for a webhook trigger.
+  ipcMain.handle(IPC_CHANNELS.ROUTINE_TRIGGERS_INFO, () => ({ port: routineTriggerManager.port }))
 
   ipcMain.handle(IPC_CHANNELS.ROUTINE_RUN, (_event, id: string, params?: Record<string, string>) => {
     const routine = routineStore.get(id)
@@ -175,5 +187,6 @@ function normalizeInput(input: Partial<Routine>): Omit<Routine, 'id' | 'createdA
     profileId: input.profileId?.trim() || undefined,
     sourceConversationId: input.sourceConversationId,
     batch: normalizeBatchConfig(input.batch),
+    triggers: input.triggers,
   }
 }

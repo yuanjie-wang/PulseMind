@@ -71,6 +71,7 @@ const electronAPI = {
   routineBatchStop: (parentRunId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_STOP, parentRunId),
   routineBatchResume: (parentRunId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_RESUME, parentRunId),
   routineBatchItems: (parentRunId: string) => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_BATCH_ITEMS, parentRunId),
+  routineTriggersInfo: (): Promise<{ port: number }> => ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_TRIGGERS_INFO),
   routineCsvPreview: (filePath: string, params?: Array<{ key: string; label: string; required?: boolean; default?: string }>) =>
     ipcRenderer.invoke(IPC_CHANNELS.ROUTINE_CSV_PREVIEW, filePath, params),
   toolList: () => ipcRenderer.invoke(IPC_CHANNELS.TOOL_LIST),

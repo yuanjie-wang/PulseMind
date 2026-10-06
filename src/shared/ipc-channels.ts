@@ -269,6 +269,9 @@ export const IPC_CHANNELS = {
   ROUTINE_BATCH_RESUME: 'routine:batch-resume',
   ROUTINE_BATCH_ITEMS: 'routine:batch-items',
   ROUTINE_CSV_PREVIEW: 'routine:csv-preview',
+  /** PLAN-routine-triggers M1: the resolved loopback port of the webhook
+   *  endpoint (0 = dormant), for the editor's fire-URL display. */
+  ROUTINE_TRIGGERS_INFO: 'routine:triggers-info',
 
   // ── PLAN-0.4.0 M5: user tools (tool studio; presets per M5R) ──
   TOOL_LIST: 'tool:list',

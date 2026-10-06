@@ -118,7 +118,11 @@ describe('the settings sections are wired end to end', () => {
     }
     expect(ENVIRONMENT).toContain('environmentDrawer.workspace')
     expect(ENVIRONMENT).toContain('openFolder(')
-    expect(COMPONENT).not.toContain('<Input')
+    // The `<Input` scan guarded the row cleanup; the routine settlement
+    // webhook (PLAN-routine-triggers M1) legitimately added the section's
+    // url/secret inputs AFTER it, so the scan now covers the pre-existing
+    // surface — everything before the webhook block must stay Input-free.
+    expect(COMPONENT.slice(0, COMPONENT.indexOf('routineWebhook'))).not.toContain('<Input')
     // The dead i18n keys are gone from both locales too.
     for (const locale of ['zh', 'en']) {
       const table = read('src', 'renderer', 'src', 'i18n', 'locales', `${locale}.ts`)

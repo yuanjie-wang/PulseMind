@@ -11,6 +11,7 @@ import { routineStore } from '../storage/routine-store'
 import { decideScheduleFire } from '../../shared/schedule/schedule-decision'
 import { routineRunner, notify } from './routine-runner'
 import { routineBatchRunner } from './batch-runner'
+import { routineTriggerManager } from './routine-triggers'
 import { routineRunHistory } from './routine-run-history'
 import { auditStore } from '../storage/audit-store'
 import { migrateRoutineConversationTypes } from '../storage/conversation.db'
@@ -32,6 +33,9 @@ class RoutineScheduler {
     if (this.timer) return
     this.bootedAt = new Date().toISOString()
     this.timer = setInterval(() => this.tick(), TICK_MS)
+    // Event triggers live with the scheduler (PLAN-routine-triggers M1): the
+    // webhook endpoint binds and file watchers rebuild from the store here.
+    routineTriggerManager.start()
     // First tick after a short delay so app startup (DB init, settings) settles.
     // Stale 'running' rows from a previous process must be settled before any
     // fire decision — otherwise the overlap guard blocks the routine forever.
@@ -48,6 +52,7 @@ class RoutineScheduler {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    routineTriggerManager.stop()
   }
 
   /** Enforce the saved 运行历史保留策略 (never the in-flight run). Fire and

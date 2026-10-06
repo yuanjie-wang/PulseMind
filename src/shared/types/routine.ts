@@ -59,14 +59,36 @@ export interface Routine {
   sourceConversationId?: string
   /** Batch mode over a CSV; absent = single-run routine. */
   batch?: RoutineBatchConfig
+  /** Event triggers (PLAN-routine-triggers M1): local sources that start the
+   *  routine outside the cron schedule. Absent = cron/manual only. Triggers
+   *  are LIVE-ONLY — events while the app is closed are not replayed. */
+  triggers?: RoutineTrigger[]
   /** Persisted by the scheduler for catch-up decisions across restarts. */
   nextRunAt?: string
   createdAt: string
   updatedAt: string
 }
 
+/** Watch declared paths (files or directories) for changes; a debounced
+ *  change fires the routine. */
+export interface RoutineFileTrigger {
+  type: 'file'
+  paths: string[]
+  /** Trailing-debounce window in ms, clamped 1_000-60_000; absent = 5_000. */
+  debounceMs?: number
+}
+
+/** A loopback HTTP POST (with the token) fires the routine. The token is
+ *  minted main-side at save — the UI never invents secrets. */
+export interface RoutineWebhookTrigger {
+  type: 'webhook'
+  token: string
+}
+
+export type RoutineTrigger = RoutineFileTrigger | RoutineWebhookTrigger
+
 export type RoutineRunStatus = 'running' | 'success' | 'failed' | 'skipped' | 'partial'
-export type RoutineRunTrigger = 'manual' | 'schedule'
+export type RoutineRunTrigger = 'manual' | 'schedule' | 'file' | 'webhook'
 
 /** Progress of a batch parent run, derived from its child rows at read time
  *  (never stored — a stored copy would always be stale). */

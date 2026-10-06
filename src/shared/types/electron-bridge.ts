@@ -349,6 +349,9 @@ export interface ElectronAPI {
   /** 一次批量运行的行记录：按 CSV 行折叠到最新一次尝试（续跑会为同一行追加
    *  attempt 行），attempts>1 时携带该行的总尝试次数。 */
   routineBatchItems: (parentRunId: string) => Promise<RoutineRun[]>
+  /** PLAN-routine-triggers M1: the resolved loopback port of the webhook
+   *  endpoint (0 = dormant this session). */
+  routineTriggersInfo: () => Promise<{ port: number }>
   /** CSV/Excel 映射预览（.csv/.txt 走 GBK 回退解析，.xlsx 走首张工作表）。
    *  解析失败不抛错，返回 { ok: false, error } 由界面就地展示。 */
   routineCsvPreview: (filePath: string, params?: RoutineParam[]) => Promise<CsvPreviewResult>

@@ -467,6 +467,14 @@ function readCommandsSettings(group: Record<string, unknown>): { projectInjectio
   return { ...group, projectInjection: group.projectInjection === true } as { projectInjection: boolean }
 }
 
+function readNotificationsSettings(group: Record<string, unknown>): NonNullable<AppSettings['notifications']> {
+  return {
+    webhookUrl: typeof group.webhookUrl === 'string' && group.webhookUrl.trim() ? group.webhookUrl : undefined,
+    webhookSecret: typeof group.webhookSecret === 'string' ? group.webhookSecret : undefined,
+    onSettled: group.onSettled !== false,
+  }
+}
+
 function readKnowledgeSettings(group: Record<string, unknown>): { autoCompile: boolean } {
   return { ...group, autoCompile: group.autoCompile === true } as { autoCompile: boolean }
 }
@@ -610,6 +618,9 @@ export class SettingsStore {
           commands: readGroup(parsed.commands, readCommandsSettings),
           knowledge: readGroup(parsed.knowledge, readKnowledgeSettings),
           browser: readGroup(parsed.browser, readBrowserSettings),
+          // 例行结算 webhook（PLAN-routine-triggers M1）：url/secret 逐字保留
+          // （${ENV} 占位符在发送时解析，与供应商密钥同惯例），onSettled 缺省开。
+          notifications: readGroup(parsed.notifications, readNotificationsSettings),
         }
         cache = { mtimeMs: stats.mtimeMs, settings: result }
         return structuredClone(result)

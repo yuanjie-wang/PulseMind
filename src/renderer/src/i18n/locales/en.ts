@@ -695,6 +695,9 @@ const en: TranslationDict = {
     projectCommandsInjectionHelp: "Inject the command names already defined in the workspace (package.json / pyproject.toml / Makefile) into each turn, so the model verifies with real commands (names only, nothing executed). Off by default.",
     autoCompile: 'Auto-compile after import',
     autoCompileHelp: 'Queue newly imported sources for compilation automatically (costs LLM calls). Off by default.',
+    routineWebhook: "Routine settlement webhook",
+    routineWebhookHelp: "When a routine run settles, a JSON summary is POSTed to this URL (HMAC-signed header) — run ids and status only, never conversation content. Send failures are logged and never affect the run.",
+    routineWebhookSecret: "Signing secret (optional, ${ENV} placeholders supported)",
   },
   extensionSettings: {
     title: 'Browser Extension',

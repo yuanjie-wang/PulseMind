@@ -688,6 +688,9 @@ const zh = {
     projectCommandsInjectionHelp: "把工作区 package.json / pyproject.toml / Makefile 里现成的命令名注入每轮上下文，供模型自测时使用（只列名字，不执行）。默认关闭。",
     autoCompile: '导入后自动编译',
     autoCompileHelp: '导入完成后自动把新源送入编译队列（消耗 LLM 调用）。默认关闭，手动编译为主。',
+    routineWebhook: '例行任务结算 Webhook',
+    routineWebhookHelp: '日常任务（单次或批量）结算时向该地址 POST 一条 JSON 摘要（带 HMAC 签名头），只含任务与运行的 id 和结果状态，不含对话内容。发送失败只记日志，不影响任务本身。',
+    routineWebhookSecret: '签名密钥（可选，支持 ${ENV} 占位符）',
   },
   extensionSettings: {
     title: '浏览器插件',

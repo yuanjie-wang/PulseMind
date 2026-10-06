@@ -10,7 +10,7 @@ import { configToCron, parseCronToConfig } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
 import type { RoutineAssistantPatch } from './routine-assist'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
-import type { Routine, RoutineBatchConfig } from '../../../../shared/types/routine'
+import type { Routine, RoutineBatchConfig, RoutineTrigger } from '../../../../shared/types/routine'
 
 export interface RoutineDraftState {
   id?: string
@@ -34,6 +34,10 @@ export interface RoutineDraftState {
    *  Like the run context, the assistant never touches it, and its patches
    *  never blank it (applyAssistantPatch spreads the current draft). */
   batch?: RoutineBatchConfig
+  /** Event triggers (PLAN-routine-triggers M1). Webhook tokens NEVER ride the
+   *  draft from the user — the store mints/keeps them main-side; the form
+   *  reads the stored value back for display after save. */
+  triggers?: RoutineTrigger[]
 }
 
 const DEFAULT_TIME = '09:00'
@@ -72,6 +76,7 @@ export function routineToDraft(routine: Routine): RoutineDraftState {
     approvalMode: routine.approvalMode,
     profileId: routine.profileId,
     batch: routine.batch,
+    triggers: routine.triggers,
   }
 }
 
@@ -82,6 +87,8 @@ export function validateDraft(draft: RoutineDraftState): string | null {
     const pathError = checkWorkspacePathFormat(dir)
     if (pathError) return pathError
   }
+  const fileTrigger = draft.triggers?.find((t) => t.type === 'file')
+  if (fileTrigger && fileTrigger.paths.every((p) => !p.trim())) return '文件触发已启用，但监听路径为空'
   if (!draft.scheduleEnabled) return null
   if (draft.sched.kind === 'custom' && !checkCron(draft.sched.cron).valid) return 'cron 表达式无效'
   if (draft.sched.kind === 'weekly' && draft.sched.weekdays.length === 0) return '请至少选择一个星期'
@@ -105,6 +112,10 @@ export function draftToRoutineInput(draft: RoutineDraftState): Partial<Routine> 
     // csvPath is trimmed/blank-dropped main-side (normalizeBatchConfig); an
     // empty path here simply saves as "not configured".
     batch: draft.batch?.csvPath?.trim() ? draft.batch : undefined,
+    // Token minting/clamping happen in the store's write normalizer; the form
+    // passes triggers through verbatim (an unsaved webhook trigger arrives
+    // without a token and gets one on create).
+    triggers: draft.triggers?.length ? draft.triggers : undefined,
   }
 }
 
