@@ -12,6 +12,11 @@ export abstract class OneShotAgent<TInput, TOutput> {
   protected abstract getDefaultOutput(input: TInput): TOutput
 
   async execute(input: TInput, options: ExecuteOptions): Promise<TOutput> {
+    // Wire budget = the model's own output limit when known (thinking shares
+    // it — see LlmConfig.modelMaxTokens); the consumer's maxTokens is a
+    // content expectation, not the wire ceiling. Un-plumbed callers keep
+    // their historical wire budget.
+    const wireMaxTokens = options.llmConfig.modelMaxTokens ?? options.maxTokens ?? 4096
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const raw = await options.llmConfig.adapter.callNonStreaming(
@@ -20,7 +25,7 @@ export abstract class OneShotAgent<TInput, TOutput> {
           options.llmConfig.model,
           this.buildSystemPrompt(input),
           this.buildUserMessages(input),
-          options.maxTokens ?? 4096,
+          wireMaxTokens,
           options.onUsage,
           options.onFinishReason,
         )

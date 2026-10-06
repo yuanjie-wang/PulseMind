@@ -147,6 +147,7 @@ export function ProjectModal({ open, editing, onClose, onSaved }: {
             apiKey: activeProfile.apiKey ?? '',
             baseURL: activeProfile.baseURL,
             model: activeProfile.model,
+            modelMaxTokens: activeProfile.maxTokens,
           },
           maxTokens: 2048,
         },

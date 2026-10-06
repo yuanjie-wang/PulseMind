@@ -64,7 +64,10 @@ export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promi
         engine.opts.model || '',
         prompt,
         [{ role: 'user' as const, content: summary }],
-        500
+        // Wire budget = the model's output limit: thinking gateways settle
+        // reasoning INSIDE max_tokens, so the old 500-token cap produced
+        // empty extractions on every thinking model (LlmConfig.modelMaxTokens).
+        engine.opts.maxTokens
       )
     } catch (err) {
       console.warn('[AgentEngine] Memory extraction LLM call failed:', err)

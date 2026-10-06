@@ -15,6 +15,7 @@ export class KnowledgeManager {
   private baseURL = ''
   private adapter: LlmAdapter | null = null
   private model = ''
+  private modelMaxTokens: number | undefined = undefined
   private _wikiVersion = 0
 
   /** Incremented each time compileFile() succeeds. AgentEngine
@@ -22,11 +23,12 @@ export class KnowledgeManager {
   get wikiVersion(): number { return this._wikiVersion }
 
   /** Store LLM config so compilation can call the API. */
-  setConfig(apiKey: string, baseURL: string, adapter: LlmAdapter, model: string): void {
+  setConfig(apiKey: string, baseURL: string, adapter: LlmAdapter, model: string, modelMaxTokens?: number): void {
     this.apiKey = apiKey
     this.baseURL = baseURL
     this.adapter = adapter
     this.model = model
+    this.modelMaxTokens = modelMaxTokens
   }
 
   /** Whether the manager has enough config to compile. */
@@ -151,7 +153,7 @@ export class KnowledgeManager {
     const result = await planAgent.execute(
       { schema, rawFile: { filePath: file.filePath, title: file.title, content: file.content.slice(0, 20000) } },
       {
-        llmConfig: { apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, adapter: this.adapter! },
+        llmConfig: { apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, adapter: this.adapter!, modelMaxTokens: this.modelMaxTokens },
         maxTokens: 800,
         onFinishReason: (reason) => {
           if (reason === 'length' || reason === 'max_tokens') throw new Error('页面规划被截断（finish=' + reason + '）')
@@ -217,7 +219,8 @@ export class KnowledgeManager {
           apiKey: this.apiKey,
           baseURL: this.baseURL,
           model: this.model,
-          adapter: this.adapter
+          adapter: this.adapter,
+          modelMaxTokens: this.modelMaxTokens
         },
         maxTokens: 4000,
         // K1: a truncated completion is a FAILURE — the old code guessed and

@@ -48,7 +48,7 @@ export async function execInstallTool(ex: ToolExecContext, t: ToolUseBlock): Pro
             const keywords = await kwAgent.execute(
               { rawContent },
               {
-                llmConfig: { adapter: ex.opts.adapter, apiKey: ex.opts.apiKey || '', baseURL: ex.opts.baseURL, model: ex.opts.model },
+                llmConfig: { adapter: ex.opts.adapter, apiKey: ex.opts.apiKey || '', baseURL: ex.opts.baseURL, model: ex.opts.model, modelMaxTokens: ex.opts.maxTokens },
                 maxTokens: 500
               }
             )

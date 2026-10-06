@@ -366,6 +366,7 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId, routineDraft 
           apiKey: profile.apiKey,
           baseURL: profile.baseURL || '',
           model: profile.model || '',
+          modelMaxTokens: profile.maxTokens,
         },
         settings.locale === 'en' ? 'en' : 'zh',
       )

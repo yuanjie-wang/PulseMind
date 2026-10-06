@@ -143,7 +143,7 @@ export function useChatController(options: UseChatControllerOptions) {
 
     const result = await titleAgentRef.current.execute(
       { userMessage: raw, conversationContext, locale: options.locale },
-      { llmConfig: { adapter: options.adapter, apiKey: apiKey ?? '', baseURL: options.baseURL, model: options.model }, maxTokens: 4096 }
+      { llmConfig: { adapter: options.adapter, apiKey: apiKey ?? '', baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens }, maxTokens: 4096 }
     )
     const fallback = doStrip ? stripFileMarkers(opts.llmFallback) : opts.llmFallback
     const finalTitle = result || fallback
@@ -171,7 +171,7 @@ export function useChatController(options: UseChatControllerOptions) {
     try {
       const draft = await extractRoutineFromConversation(
         convId,
-        { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model },
+        { adapter: options.adapter, apiKey, baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens },
         options.locale === 'en' ? 'en' : 'zh',
       )
       if (!draft) {
@@ -273,7 +273,7 @@ export function useChatController(options: UseChatControllerOptions) {
               })
               if (rejectedFiles?.length) console.warn('[experience] rejected script files:', rejectedFiles.join(', '))
               managers.experienceManager.ensureTriggers(record.name, {
-                adapter: options.adapter, apiKey: apiKey || '', baseURL: options.baseURL, model: options.model
+                adapter: options.adapter, apiKey: apiKey || '', baseURL: options.baseURL, model: options.model, modelMaxTokens: options.maxTokens
               }, Boolean(result.experienceTarget)).catch((e: unknown) => console.warn('[experience] Trigger extraction failed:', e))
             }
           } catch (convErr) {

@@ -2,7 +2,6 @@ import { getHost } from '../agent/host'
 import type { AgentMessage, ToolUseBlock, ContentBlock } from '../types/agent'
 import type { ToolDefinition } from '../tools/types'
 import type { LlmAdapter } from './adapter'
-import { thinkingParamUnsupported, markThinkingParamUnsupported } from './adapter'
 import type { LlmRequestParams } from './types'
 import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 import { createStreamParser } from './stream-utils'
@@ -333,54 +332,41 @@ export const anthropicAdapter: LlmAdapter = {
       'anthropic-version': '2023-06-01',
       'anthropic-beta': 'tools-2024-04-04'
     }
-    const sendOnce = async (disableThinking: boolean): Promise<string | null> => {
-      const body: Record<string, unknown> = {
-        model,
-        max_tokens: maxTokens,
-        system: systemPrompt,
-        messages: userMessages
-      }
-      if (disableThinking) body.thinking = { type: 'disabled' }
+    const body: Record<string, unknown> = {
+      model,
+      // maxTokens IS the wire budget — callers pass the model's configured
+      // output limit because thinking gateways settle reasoning_tokens
+      // INSIDE it and one-shot calls do not suppress thinking (see
+      // LlmConfig.modelMaxTokens).
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: userMessages
+    }
 
-      try {
-        const responseText = await getHost().apiFetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-          withProfileHeaders: true
+    try {
+      const responseText = await getHost().apiFetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        withProfileHeaders: true
+      })
+      if (!responseText) return null
+
+      const parsed = JSON.parse(responseText)
+      if (onUsage) {
+        onUsage({
+          inputTokens: parsed?.usage?.input_tokens,
+          outputTokens: parsed?.usage?.output_tokens,
+          promptCacheHitTokens: parsed?.usage?.cache_read_input_tokens
         })
-        if (!responseText) return null
-
-        const parsed = JSON.parse(responseText)
-        if (onUsage) {
-          onUsage({
-            inputTokens: parsed?.usage?.input_tokens,
-            outputTokens: parsed?.usage?.output_tokens,
-            promptCacheHitTokens: parsed?.usage?.cache_read_input_tokens
-          })
-        }
-        if (onFinishReason) onFinishReason(parsed?.stop_reason ?? null)
-        const textBlock = parsed?.content?.find((b: { type: string }) => b.type === 'text')
-        return textBlock?.text || null
-      } catch (err) {
-        console.log(`[AnthropicAdapter] callNonStreaming failed:`, err)
-        return null
       }
+      if (onFinishReason) onFinishReason(parsed?.stop_reason ?? null)
+      const textBlock = parsed?.content?.find((b: { type: string }) => b.type === 'text')
+      return textBlock?.text || null
+    } catch (err) {
+      console.log(`[AnthropicAdapter] callNonStreaming failed:`, err)
+      return null
     }
-
-    // One-shot calls disable thinking: thinking gateways settle reasoning
-    // INSIDE max_tokens, which ate one-shot caps before any content appeared
-    // (three wires measured 2026-10-06 — see adapter.ts). The simple-fetch
-    // transport reports every failure as null, so the memo is gated on the
-    // plain retry SUCCEEDING — transient errors never poison the set.
-    const tryThinkingOff = !thinkingParamUnsupported(baseURL)
-    const first = await sendOnce(tryThinkingOff)
-    if (first === null && tryThinkingOff) {
-      const plain = await sendOnce(false)
-      if (plain !== null) markThinkingParamUnsupported(baseURL)
-      return plain
-    }
-    return first
   },
 
   extractTextContent(response: string | null): string | null {

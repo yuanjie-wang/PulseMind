@@ -113,6 +113,7 @@ function AppContent(): React.ReactElement {
         apiKey: activeProfile!.apiKey!,
         baseURL: activeProfile!.baseURL || '',
         model: activeProfile!.model || '',
+        modelMaxTokens: activeProfile!.maxTokens,
         locale: settings.locale,
       }).catch((err: unknown) => reportSilentFailure('mcp-summary', err))
     }
@@ -149,7 +150,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   const adapter = useMemo(() => createLlmAdapter(activeProfile?.provider ?? 'anthropic'), [activeProfile?.provider])
 
   // ── Greeting (regenerated on each new conversation) ──
-  const { greeting, regenerateGreeting } = useGreeting(adapter, apiKey, baseURL, model)
+  const { greeting, regenerateGreeting } = useGreeting(adapter, apiKey, baseURL, model, maxTokens)
 
   // Stable refs for memory and knowledge managers (set after useChatController is instantiated)
   const memoryManagerRef = useRef<MemoryManager | null>(null)
@@ -197,7 +198,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               }).then(({ record }) => {
                 console.log('[SessionReview] Experience saved to experience skill library')
                 experienceManagerRef.current?.ensureTriggers(record.name, {
-                  adapter, apiKey: apiKey || '', baseURL, model
+                  adapter, apiKey: apiKey || '', baseURL, model, modelMaxTokens: maxTokens
                 }, Boolean(result.experienceTarget)).catch((err: unknown) => console.warn('[SessionReview] Trigger extraction failed:', err))
               }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
             }
@@ -392,8 +393,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
 
   // Set MemoryManager and KnowledgeManager config so background tasks can call the API
   if (apiKey) {
-    memoryManager.setConfig(apiKey, baseURL, adapter, model)
-    knowledgeManager.setConfig(apiKey, baseURL, adapter, model)
+    memoryManager.setConfig(apiKey, baseURL, adapter, model, maxTokens)
+    knowledgeManager.setConfig(apiKey, baseURL, adapter, model, maxTokens)
   }
 
   // Check if memory compression is needed on startup and when API key becomes available.

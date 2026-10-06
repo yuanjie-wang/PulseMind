@@ -258,6 +258,7 @@ export function ElementEditPanel({ path }: { path: string }): React.ReactElement
         baseURL: profile.baseURL || '',
         model: profile.model || '',
         adapter: createLlmAdapter(profile.provider ?? 'anthropic'),
+        modelMaxTokens: profile.maxTokens,
       },
     })
     if (result.ok) {

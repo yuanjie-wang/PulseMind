@@ -9,6 +9,9 @@ export interface ExperienceLlmConfig {
   apiKey: string
   baseURL: string
   model: string
+  /** The model's configured output limit — the one-shot wire budget (thinking
+   *  shares it; see LlmConfig.modelMaxTokens). */
+  modelMaxTokens?: number
 }
 
 export class ExperienceManager {
@@ -136,7 +139,7 @@ ${records.map((r) => r.name).join(', ')}`
       const keywords = await this.skillKeywordAgent.execute(
         { rawContent: raw },
         {
-          llmConfig: { adapter: llm.adapter, apiKey: llm.apiKey, baseURL: llm.baseURL, model: llm.model },
+          llmConfig: { adapter: llm.adapter, apiKey: llm.apiKey, baseURL: llm.baseURL, model: llm.model, modelMaxTokens: llm.modelMaxTokens },
           maxTokens: 500
         }
       )

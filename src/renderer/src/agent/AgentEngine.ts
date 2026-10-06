@@ -1693,7 +1693,8 @@ export class AgentEngine implements EngineCore {
             adapter: this.opts.adapter,
             apiKey: this.opts.apiKey || '',
             baseURL: this.opts.baseURL,
-            model: this.opts.model
+            model: this.opts.model,
+            modelMaxTokens: this.opts.maxTokens
           },
           // A structured body (three sections) needs more room than the old
           // 500-token prose paragraph — one-shot cost is negligible next to the

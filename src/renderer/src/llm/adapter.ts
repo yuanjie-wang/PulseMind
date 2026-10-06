@@ -9,32 +9,6 @@ import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types
  * Each provider (Anthropic, OpenAI, etc.) implements this interface to
  * translate between PulseMind's internal types and the provider's API format.
  */
-
-/**
- * One-shot calls disable thinking outright via `thinking:{type:'disabled'}`:
- * thinking gateways settle reasoning_tokens INSIDE wire max_tokens (measured
- * on all three wires 2026-10-06: DeepSeek zen/openai, api.deepseek.com openai
- * and anthropic), which ate one-shot content caps before any text appeared —
- * memory consolidation and session review length-finished with ~zero visible
- * output. With thinking off, `maxTokens` means exactly the final-output cap.
- *
- * Gateways that reject the unknown param (real OpenAI treats it as an
- * unrecognized argument, real Anthropic only accepts thinking.type 'enabled')
- * are discovered at runtime: when a param'd call fails and the plain retry
- * succeeds, the baseURL lands here and later calls skip the param — one failed
- * round-trip per gateway, ever, per process. Keyed by baseURL because param
- * rejection is a gateway-level contract; a baseURL is only memoized after a
- * SUCCESSFUL plain retry, so transient errors never poison the set.
- */
-const thinkingParamUnsupportedBaseURLs = new Set<string>()
-
-export function thinkingParamUnsupported(baseURL: string): boolean {
-  return thinkingParamUnsupportedBaseURLs.has(baseURL)
-}
-
-export function markThinkingParamUnsupported(baseURL: string): void {
-  thinkingParamUnsupportedBaseURLs.add(baseURL)
-}
 export interface LlmAdapter {
   readonly provider: LLMProvider
 
@@ -78,10 +52,10 @@ export interface LlmAdapter {
    * | 'max_tokens' | …) before the promise settles — compilation (K1) treats a
    * truncated completion as a failure and must be able to see it.
    *
-   * `maxTokens` is the final-output cap, sent as-is on the wire. Thinking is
-   * disabled for these background calls (`thinking:{type:'disabled'}` — see
-   * the memo above); gateways that reject the param fall back to a plain
-   * request after one failed attempt.
+   * `maxTokens` IS the wire budget — one-shot callers pass the model's
+   * configured output limit (LlmConfig.modelMaxTokens) because thinking
+   * gateways settle reasoning into wire max_tokens and thinking is not
+   * suppressed; consumer-level content caps are enforced after the call.
    */
   callNonStreaming(
     apiKey: string,

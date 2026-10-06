@@ -15,6 +15,9 @@ interface LlmConfig {
   apiKey: string
   baseURL: string
   model: string
+  /** The model's configured output limit — the one-shot wire budget (thinking
+   *  shares it; see one-shot-agent/LlmConfig.modelMaxTokens). */
+  modelMaxTokens?: number
   locale?: string
 }
 
@@ -64,7 +67,7 @@ export async function generateMcpSummaries(llmCfg: LlmConfig, force?: boolean): 
           tools: server.tools.map(t => ({ name: t.name, description: t.description })),
           locale: llmCfg.locale,
         },
-        { llmConfig: { adapter: llmCfg.adapter, apiKey: llmCfg.apiKey, baseURL: llmCfg.baseURL, model: llmCfg.model }, maxTokens: 150 }
+        { llmConfig: { adapter: llmCfg.adapter, apiKey: llmCfg.apiKey, baseURL: llmCfg.baseURL, model: llmCfg.model, modelMaxTokens: llmCfg.modelMaxTokens }, maxTokens: 150 }
       )
       // Only persist LLM-generated summaries (not fallback from getDefaultOutput).
       // Fallback summaries match the `isFallbackSummary` pattern — skip persistence

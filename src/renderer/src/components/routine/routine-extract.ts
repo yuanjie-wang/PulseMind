@@ -18,6 +18,9 @@ export interface RoutineExtractLlmConfig {
   apiKey: string
   baseURL: string
   model: string
+  /** The model's configured output limit — the one-shot wire budget (thinking
+   *  shares it; see LlmConfig.modelMaxTokens). */
+  modelMaxTokens?: number
 }
 
 export interface ExtractedRoutineDraft extends RoutineDraft {
@@ -51,7 +54,7 @@ export async function extractRoutineFromConversation(
   if (!conversationText.trim()) return null
   const draft = await new RoutineExtractionAgent().execute(
     { conversationText, locale },
-    { llmConfig: { apiKey: llm.apiKey, baseURL: llm.baseURL, model: llm.model, adapter: llm.adapter } },
+    { llmConfig: { apiKey: llm.apiKey, baseURL: llm.baseURL, model: llm.model, adapter: llm.adapter, modelMaxTokens: llm.modelMaxTokens } },
   )
   if (!draft) return null
   return { ...draft, sourceConversationId: convId }

@@ -380,6 +380,7 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
           apiKey: activeProfile.apiKey,
           baseURL: activeProfile.baseURL || '',
           model: activeProfile.model || '',
+          modelMaxTokens: activeProfile.maxTokens,
           locale: settings.locale,
         }).catch(() => {})
       }

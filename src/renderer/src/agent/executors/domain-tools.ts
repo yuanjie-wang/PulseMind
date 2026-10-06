@@ -6,7 +6,8 @@ import { buildCommandFromSkillInput } from '../command-builder'
 import { beginTerminalSpan } from '../terminal-span'
 import type { ToolUseBlock } from '../../types/agent'
 import type { KnowledgeFile } from '../../../../shared/types/knowledge'
-import { EXPERIENCE_CATEGORIES, type ExperienceDraft } from '../../../../shared/types/experience-types'
+import { EXPERIENCE_CATEGORIES, type ExperienceDraft, type ExperienceRecord } from '../../../../shared/types/experience-types'
+import { matchExperienceScript } from '../../../../shared/experience/script-usage'
 import { UI_PREVIEW_MAX, type ToolExecContext, type CompactToolOutcome } from './context'
 
 /** memory_search: tool block .output preview. */
@@ -385,6 +386,24 @@ export async function execKnowledgeTool(ex: ToolExecContext, t: ToolUseBlock): P
   return false
 }
 
+/** PLAN-experience-outcome M1: usage/outcome tail appended to an experience
+ *  envelope (experience_read + pick_skill). The system prompt's Name Index
+ *  must stay byte-stable (cache contract), so stats ride the TOOL RESULT —
+ *  the model decides its next move off the last bytes of a tool result. */
+export async function experienceStatsLine(em: { list(): Promise<ExperienceRecord[]> } | undefined, name: string): Promise<string> {
+  if (!em) return ''
+  try {
+    const rec = (await em.list())?.find((e) => e.name === name)
+    if (!rec) return ''
+    const parts = [`使用 ${rec.useCount} 次`]
+    if (rec.outcome) parts.push(`脚本 成 ${rec.outcome.ok} / 败 ${rec.outcome.fail}`)
+    if (rec.lastUsedAt) parts.push(`最近 ${rec.lastUsedAt.slice(0, 10)}`)
+    return `\n\n---\n${parts.join(' · ')}`
+  } catch {
+    return ''
+  }
+}
+
 export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): Promise<boolean> {
     // experience_save — the pool's ONE sanctioned writer. The records live under
     // ~/.pulsemind, a path-jail deny root, so neither file ops nor the shell can
@@ -441,7 +460,7 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
         // on a revision (its old keywords may no longer describe the body).
         if (!draft.triggers?.length && ex.opts.apiKey) {
           em.ensureTriggers(record.name, {
-            adapter: ex.opts.adapter, apiKey: ex.opts.apiKey, baseURL: ex.opts.baseURL, model: ex.opts.model,
+            adapter: ex.opts.adapter, apiKey: ex.opts.apiKey, baseURL: ex.opts.baseURL, model: ex.opts.model, modelMaxTokens: ex.opts.maxTokens,
           }, Boolean(targetName)).catch((e: unknown) => console.warn('[experience_save] trigger extraction failed:', e))
         }
       } catch (err) {
@@ -487,7 +506,8 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
           if (content) {
             // Touching records that the experience was actually used — feeds the LRU eviction
             getHost().touchExperienceRecord(name).catch(() => {})
-            t.output = content.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, content, false)
+            const tail = await experienceStatsLine(ex.opts.experienceManager, name)
+            t.output = content.slice(0, UI_PREVIEW_MAX); ex.addToolResult(t.id, content + tail, false)
           } else {
             t.output = `Experience "${name}" not found.`; ex.addToolResult(t.id, `Experience "${name}" not found.`, false)
           }
@@ -513,6 +533,10 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
           t.exitCode = 0
           t.status = 'completed'
           t.backgroundPid = pid
+          // Background scripts book USAGE only — no exit code exists at this
+          // settlement point, so no verdict is guessed (PLAN-experience-outcome).
+          const bgExp = matchExperienceScript(command)
+          if (bgExp) getHost().touchExperienceRecord(bgExp).catch(() => {})
           const note = `Background process started: pid=${pid}\n\nThis result is immediate — the process keeps running beyond the turn. Read its output with exec_logs(pid=${pid}) (the log tail also reports "[exited code=N]" once it ends); stop it with exec_kill(pid=${pid}).`
           t.output = note
           ex.addToolResult(t.id, note, false)
@@ -548,6 +572,11 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
           if (settled) return; settled = true
           span.stop()
           t.exitCode = exitCode
+          // PLAN-experience-outcome M1: a command invoking a companion script
+          // books usage + its real exit verdict on the record (fire-and-forget;
+          // the verdict is the process's own, never a self-assessment).
+          const runExp = matchExperienceScript(command)
+          if (runExp) getHost().touchExperienceRecord(runExp, exitCode === 0 ? 'ok' : 'fail').catch(() => {})
           const formatted = ex.formatExecResult(exitCode, stdoutBuf, stderrBuf)
           t.output = formatted
           ex.addToolResult(t.id, formatted, isError)

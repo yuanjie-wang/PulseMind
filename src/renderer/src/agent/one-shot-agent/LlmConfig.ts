@@ -6,6 +6,19 @@ export interface LlmConfig {
   baseURL: string
   model: string
   adapter: LlmAdapter
+  /**
+   * The model's configured per-response output limit (settings `maxTokens`,
+   * the same number the main loop sends). Thinking gateways settle
+   * reasoning_tokens INSIDE wire max_tokens (measured on three wires
+   * 2026-10-06 — and the off-switch itself is NOT portable across model
+   * families: Anthropic/GLM-style `thinking:{type:'disabled'}`, Qwen
+   * `enable_thinking`, OpenRouter `reasoning:{enabled}`, …), so one-shot
+   * calls do not try to suppress thinking: the wire budget is this number —
+   * reasoning and content both live inside it — and the consumer cap
+   * (ExecuteOptions.maxTokens) degrades to a content expectation enforced
+   * after the call (e.g. the summary's 800-char truncation).
+   */
+  modelMaxTokens?: number
 }
 
 export interface ExecuteOptions {

@@ -42,7 +42,7 @@ async function experienceLocationBlock(em: { list(): Promise<Array<{ name: strin
   }
 }
 
-import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool, execContextCompactTool } from './executors/domain-tools'
+import { execMemoryTool, execConversationTool, execKnowledgeTool, execExperienceTool, execContextCompactTool, experienceStatsLine } from './executors/domain-tools'
 import { MAX_READ_RESULT_TOKENS } from './engine/engine-constants'
 import { execInstallTool } from './executors/install-tool'
 import { execCreateSubPlanTool } from './executors/create-sub-plan-tool'
@@ -686,7 +686,7 @@ export class ToolExecutor implements ToolExecContext {
           const raw = await em.read(skillName)
           if (raw) {
             em.touch(skillName).catch(() => {})
-            this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}${await experienceLocationBlock(em, skillName)}`, false)
+            this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}${await experienceLocationBlock(em, skillName)}${await experienceStatsLine(em, skillName)}`, false)
             t.exitCode = 0; t.status = 'completed'; this.notify(); return
           }
         }
@@ -703,7 +703,7 @@ export class ToolExecutor implements ToolExecContext {
       const combinedList = [skillsList, expList].filter(Boolean).join('\n')
       const selectedName = await this.skillSelectionAgent.execute(
         { intent, skillsList: combinedList },
-        { llmConfig: { adapter: this.opts.adapter, apiKey: this.opts.apiKey || '', baseURL: this.opts.baseURL, model: this.opts.model }, maxTokens: 200 }
+        { llmConfig: { adapter: this.opts.adapter, apiKey: this.opts.apiKey || '', baseURL: this.opts.baseURL, model: this.opts.model, modelMaxTokens: this.opts.maxTokens }, maxTokens: 200 }
       )
       if (!selectedName) { this.addToolResult(t.id, 'No matching skill found.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
       const cleanName = selectedName.trim()
@@ -722,7 +722,7 @@ export class ToolExecutor implements ToolExecContext {
         const raw2 = await em2.read(cleanName)
         if (raw2) {
           em2.touch(cleanName).catch(() => {})
-          this.addToolResult(t.id, `## Selected Experience: ${cleanName}\n\n${raw2}${await experienceLocationBlock(em2, cleanName)}`, false)
+          this.addToolResult(t.id, `## Selected Experience: ${cleanName}\n\n${raw2}${await experienceLocationBlock(em2, cleanName)}${await experienceStatsLine(em2, cleanName)}`, false)
           t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
       }

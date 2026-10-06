@@ -37,6 +37,7 @@ export class MemoryManager {
   private baseURL: string = ''
   private adapter: LlmAdapter | null = null
   private model: string = ''
+  private modelMaxTokens: number | undefined = undefined
 
   private compressionAgent = new MemoryCompressionAgent()
   private sessionReviewAgent = new SessionReviewAgent()
@@ -154,11 +155,12 @@ export class MemoryManager {
   }
 
   /** Store LLM config so background tasks (compression) can call the API. */
-  setConfig(apiKey: string, baseURL: string, adapter: LlmAdapter, model: string): void {
+  setConfig(apiKey: string, baseURL: string, adapter: LlmAdapter, model: string, modelMaxTokens?: number): void {
     this.apiKey = apiKey
     this.baseURL = baseURL
     this.adapter = adapter
     this.model = model
+    this.modelMaxTokens = modelMaxTokens
   }
 
   // ===================================================================
@@ -276,7 +278,7 @@ export class MemoryManager {
 
       const merged = await this.compressionAgent.execute(
         { memoriesText },
-        { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model }, maxTokens: 4000 }
+        { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, modelMaxTokens: this.modelMaxTokens }, maxTokens: 4000 }
       )
       if (merged.length === 0) {
         // The model ran and consolidated nothing — or its output did not parse
@@ -503,7 +505,7 @@ export class MemoryManager {
     try {
       const result = await this.sessionReviewAgent.execute(
         { sessionSummary: summary, existingExperiencesText, existingMemoriesText, locale },
-        { llmConfig: { adapter, apiKey, baseURL, model }, maxTokens: 4000 }
+        { llmConfig: { adapter, apiKey, baseURL, model, modelMaxTokens: this.modelMaxTokens }, maxTokens: 4000 }
       )
 
       // --- Save conversation summary ---

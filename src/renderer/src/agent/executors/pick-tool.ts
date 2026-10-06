@@ -191,7 +191,7 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
     const svAgent = new ServerSelectionAgent()
     const selectedServerIds = await svAgent.execute(
       { intent, serverList },
-      { llmConfig: { adapter: ex.opts.adapter, apiKey: ex.opts.apiKey || '', baseURL: ex.opts.baseURL, model: ex.opts.model }, maxTokens: 200 }
+      { llmConfig: { adapter: ex.opts.adapter, apiKey: ex.opts.apiKey || '', baseURL: ex.opts.baseURL, model: ex.opts.model, modelMaxTokens: ex.opts.maxTokens }, maxTokens: 200 }
     )
 
     if (selectedServerIds.length === 0) {
