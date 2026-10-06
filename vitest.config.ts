@@ -46,13 +46,19 @@ export default defineConfig({
         'src/renderer/src/components/**',
         'src/renderer/src/App.tsx',
         'src/renderer/src/main.tsx',
-        // Electron 宿主面：contextBridge / 窗口与生命周期 / IPC 薄注册层
+        // Electron 宿主面：contextBridge / 窗口与生命周期 / IPC 薄注册层。
+        // main/ipc 不整体排除：api-proxy.handler 装着真逻辑（SSE 代理 /
+        // env 占位符 / hook / 请求转储），由 oneshot-proxy-funnel 式本地
+        // HTTP 服务器直驱、照常计量——裸 glob 曾把它排除在外，与 AGENTS.md
+        // 「单测纪律」节的判据相反（review_20261006 中10）。新 handler 仍按
+        // 薄注册层默认排除；装了真逻辑就照 api-proxy 的先例在这里加 ! 例外。
         'src/preload/**',
         'src/main/index.ts',
         'src/main/menu.ts',
         'src/main/tray.ts',
         'src/main/service-runtime.ts',
         'src/main/ipc/*.handler.ts',
+        '!src/main/ipc/api-proxy.handler.ts',
         'src/main/ipc/index.ts',
         // better-sqlite3 是 Electron ABI，plain Node 加载即崩（probe-project-color-db 式探针的 territory）
         'src/main/storage/routine-store.ts',

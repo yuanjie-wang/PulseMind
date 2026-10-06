@@ -10,7 +10,8 @@
 // No filter = every provider × model. Each probe keeps max_tokens tiny.
 // Keys are never printed; ${ENV} placeholders resolve from process.env; `enc:`
 // secrets cannot be decrypted outside the app and are reported as SKIPPED.
-// Exit code 1 on any FAIL (gate-able), 0 otherwise (WARN/SKIP allowed).
+// Exit code 1 on any FAIL (gate-able), 0 otherwise (WARN/SKIP allowed), 2 when
+// nothing matched the filter — a typo must not read as a green gate.
 
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -305,6 +306,13 @@ for (const prov of providers) {
   }
 }
 
+if (results.length === 0) {
+  // A filter that matched nothing (typo, or every provider has no models)
+  // must not read as a green gate: zero checks ran, and "0 smoked, 0 FAIL"
+  // exiting 0 would bless the config untouched (review_20261006 中11).
+  console.log('\n── 0 model(s) matched — nothing was smoked. Check the filter arguments (or the providers/models list in settings.json). ──')
+  process.exit(2)
+}
 console.log(`\n── ${results.length} model(s) smoked, ${failures} FAIL(s) ──`)
 console.log('note: app-level 对账（llm-requests/ 当日转储对）仍需在 App 内跑一轮真实会话取得；本探针是 wire 层四项的直证。')
 process.exit(failures > 0 ? 1 : 0)
