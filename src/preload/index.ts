@@ -386,6 +386,8 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_CONVERT_TO_MARKDOWN, filePath),
   registerPreviewNonce: (input: { filePath: string; nonce: string }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, input),
+  measurePreviewFrame: (frameName: string, centerX?: boolean): Promise<{ width: number; height: number } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_MEASURE_PREVIEW_FRAME, frameName, centerX === true),
   saveBase64Image: (data: string): Promise<{ success: boolean; path: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_SAVE_BASE64_IMAGE, data),
   copyFileToTmp: (sourcePath: string): Promise<{ success: boolean; path: string }> => ipcRenderer.invoke(IPC_CHANNELS.UTIL_COPY_FILE_TO_TMP, sourcePath),
   copyFile: (input: { sourceUrl?: string; destination: string }): Promise<{ success: boolean; error?: string }> =>

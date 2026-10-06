@@ -30,6 +30,7 @@ import { FallbackCard } from './FallbackCard'
 import { FileInfoBar } from './FileInfoBar'
 import { ZoomControls, MIN_ZOOM, ZOOM_STEP_FACTOR, zoomByFactor } from './ZoomControls'
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
+import { visualCenterPaddingX } from './visual-center'
 import { useTranslation } from '../../i18n/useTranslation'
 
 /** Width of the row-number gutter column, in px (fits "888").
@@ -38,6 +39,8 @@ import { useTranslation } from '../../i18n/useTranslation'
  *  kind tints for formula/error below) stays a literal, because it is the
  *  file's own content, not UI. probe-xlsx-preview pins those data colors. */
 const GUTTER_WIDTH = 36
+/** Breathing room 适应宽度 reserves on BOTH edges (the pptx/image idiom). */
+const PANE_PADDING = 16
 const GRID_LINE = 'var(--pm-border-soft)'
 const HEADER_BG = 'var(--pm-wash-cool)'
 const HEADER_INK = 'var(--pm-text-muted)'
@@ -103,9 +106,16 @@ export function XlsxPreview({
 
   const applyZoom = useCallback(() => {
     const wrapper = containerRef.current?.querySelector<HTMLElement>('.pm-xlsx-zoom')
-    if (!wrapper) return
+    if (!containerRef.current || !wrapper) return
+    const container = containerRef.current
     const scale = manualZoomRef.current ?? 1
     wrapper.style.zoom = String(scale)
+    // Horizontal centering that splits the classic-scrollbar strip
+    // (visual-center.ts), measured off the live grid so switching to a sheet
+    // of a different width recenters on its own. The grid used to sit
+    // left-anchored the moment its painted width dropped under the pane.
+    const grid = container.querySelector<HTMLElement>('[data-xlsx-grid]')
+    if (grid) container.style.paddingLeft = `${visualCenterPaddingX(container, grid.getBoundingClientRect().width)}px`
     appliedZoomRef.current = scale
     setAppliedZoom((prev) => (Math.abs(prev - scale) < 0.0001 ? prev : scale))
   }, [])
@@ -123,7 +133,7 @@ export function XlsxPreview({
     const natural = wrapper.scrollWidth
     wrapper.style.zoom = prev
     if (natural <= 0) return 1
-    return Math.min(1, Math.max(MIN_ZOOM, container.clientWidth / natural))
+    return Math.min(1, Math.max(MIN_ZOOM, (container.clientWidth - PANE_PADDING * 2) / natural))
   }, [])
 
   const zoomTo = useCallback(
@@ -152,6 +162,16 @@ export function XlsxPreview({
     manualZoomRef.current = fitZoom()
     applyZoom()
   }, [applyZoom, fitZoom])
+
+  // The centering padding rides every pane resize too — a scrollbar can
+  // appear or disappear without a zoom change, and the split follows it.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const observer = new ResizeObserver(() => applyZoom())
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [applyZoom])
 
   useWheelZoom(containerRef, zoomBy)
 
@@ -375,7 +395,7 @@ export function XlsxPreview({
       )}
       <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
-        <ZoomControls zoom={appliedZoom} fitKey="fitWidth" onFit={resetZoom} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />
+        <ZoomControls zoom={appliedZoom} fitKey="fitWidth" onFit={resetZoom} onZoomSet={(value) => zoomTo(value)} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />
       </div>
     </div>
   )

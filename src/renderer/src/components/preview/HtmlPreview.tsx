@@ -11,8 +11,20 @@
 // protocol into htmlEditStore. Every inbound frame message is trusted only
 // when `event.source === iframe.contentWindow`; the frame is opaque-origin,
 // so this is the only channel it has.
+//
+// The footer's zoom keeps the frame's PHYSICAL width pinned to the pane and
+// varies the rendering viewport it provides to the page instead: zoom z means
+// the page lays out against pane/z and is painted z× smaller — the browser's
+// own Ctrl+± model, which CSS `zoom` implements for an iframe directly
+// (probed: inner viewport 800→1600 at zoom 0.5, the element keeps filling the
+// pane). Zooming out therefore ENLARGES the viewport, so fixed-width content
+// (a 960px slide deck) becomes fully visible once pane/z reaches its width —
+// that is what 缩小 is for. The price is that a page wider than its viewport
+// anchors left (LTR auto margins collapse on overflow); the
+// measurePreviewFrame channel below re-parks the frame's own scroll at the
+// middle after every zoom command so that case gets a center anchor too.
 
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   isFrameToParentMessage,
   type ParentToFrameMessage,
@@ -27,6 +39,8 @@ import {
 } from '../../stores/htmlEditStore'
 import { usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { notify } from '../../utils/notify'
+import { FileInfoBar } from './FileInfoBar'
+import { ZoomControls, ZOOM_STEP_FACTOR, zoomByFactor, clampZoom } from './ZoomControls'
 
 /** A per-mount secret the served picker echoes on every pm:* message (M9):
  *  the frame's page scripts share the picker's realm and event.source, so
@@ -47,6 +61,35 @@ interface Props {
 
 export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Props): React.ReactElement {
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  const paneRef = useRef<HTMLDivElement | null>(null)
+  // Unique per mount: the main process finds THIS frame by name among the
+  // renderer's child frames (the sandboxed frame's DOM is unreachable from
+  // here — the name is the only handle the measure channel needs).
+  const frameName = useId()
+  // The zoom actually on screen — 1 until a footer command changes it, and it
+  // survives a reloadTick (only the iframe remounts, this component doesn't).
+  const [zoom, setZoom] = useState(1)
+
+  // 适应宽度: the pane's width over the page's natural width — the provided
+  // viewport (pane/zoom) then equals the content and nothing is cut. No
+  // measurement (frame gone, still loading, page answered garbage) falls back
+  // to 100%.
+  const fitWidth = useCallback(() => {
+    const paneWidth = paneRef.current?.clientWidth
+    if (!paneWidth) return
+    void window.electronAPI
+      .measurePreviewFrame(frameName)
+      .then((metrics) => setZoom(metrics && metrics.width > 0 ? clampZoom(paneWidth / metrics.width) : 1))
+      .catch(() => setZoom(1))
+  }, [frameName])
+
+  // Every zoom command re-parks the frame's own horizontal scroll at the
+  // middle of its overflow — the one centering lever that works across the
+  // opaque-origin frame — so an overflowing page stays center-anchored. A
+  // scroll the user made is not fought until the next command.
+  useEffect(() => {
+    void window.electronAPI.measurePreviewFrame(frameName, true).catch(() => {})
+  }, [zoom, frameName])
   // Stable per (path, elementMode) so a reload tick (key={reloadTick} remount
   // of the iframe) re-serves the SAME nonce; a different file gets a fresh one.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- generateNonce reads neither dep ON PURPOSE: the deps are the reset contract, not data
@@ -167,14 +210,30 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
   }, [elementMode, path, nonce])
 
   return (
-    <iframe
-      ref={iframeRef}
-      key={holdFrame ? `hold-${reloadTick}` : `go-${reloadTick}`}
-      src={holdFrame ? undefined : src}
-      sandbox="allow-scripts"
-      title="preview"
-      style={{ display: 'block', width: '100%', height: '100%', border: 'none', background: '#fff' }}
-    />
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div ref={paneRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <iframe
+          ref={iframeRef}
+          name={frameName}
+          key={holdFrame ? `hold-${reloadTick}` : `go-${reloadTick}`}
+          src={holdFrame ? undefined : src}
+          sandbox="allow-scripts"
+          title="preview"
+          style={{ display: 'block', width: '100%', height: '100%', border: 'none', background: '#fff', zoom }}
+        />
+      </div>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
+        <FileInfoBar path={path} />
+        <ZoomControls
+          zoom={zoom}
+          fitKey="fitWidth"
+          onFit={fitWidth}
+          onZoomSet={setZoom}
+          onZoomOut={() => setZoom((z) => zoomByFactor(z, 1 / ZOOM_STEP_FACTOR))}
+          onZoomIn={() => setZoom((z) => zoomByFactor(z, ZOOM_STEP_FACTOR))}
+        />
+      </div>
+    </div>
   )
 }
 

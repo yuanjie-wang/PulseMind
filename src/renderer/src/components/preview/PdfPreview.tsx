@@ -55,9 +55,15 @@ import { FallbackCard } from './FallbackCard'
 import { FileInfoBar } from './FileInfoBar'
 import { ZoomControls, MIN_ZOOM, ZOOM_BUTTON, ZOOM_STEP_FACTOR, clampZoom } from './ZoomControls'
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
+import { visualCenterPaddingX } from './visual-center'
 import { useTranslation } from '../../i18n/useTranslation'
 
 type PdfStatus = 'loading' | 'ready' | 'error' | 'encrypted' | 'oversized'
+
+/** Breathing room the fit reserves on BOTH edges of the desk (the pptx/image
+ *  idiom) — without it the fitted page block lands flush against the pane's
+ *  left edge with only the scrollbar strip grey on the right. */
+const PANE_PADDING = 16
 
 /** One page's raster. Backing store at zoom × DPR (1:1 with display pixels),
  *  CSS size 100% of the placeholder box. Re-runs when the settled zoom
@@ -198,7 +204,7 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
         setPages(metas)
         setTotalPages(loaded.numPages)
         setStatus('ready')
-        const fit = pdfFitScale(containerRef.current?.clientWidth ?? 0, metas.map((m) => m.width), MIN_ZOOM)
+        const fit = pdfFitScale((containerRef.current?.clientWidth ?? 0) - PANE_PADDING * 2, metas.map((m) => m.width), MIN_ZOOM)
         zoomRef.current = fit
         setZoom(fit)
         setRenderZoom(fit)
@@ -290,10 +296,28 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
   const fitZoom = useCallback(() => {
     const container = containerRef.current
     if (!container || !pages) return
-    zoomTo(pdfFitScale(container.clientWidth, pages.map((p) => p.width), MIN_ZOOM))
+    zoomTo(pdfFitScale(container.clientWidth - PANE_PADDING * 2, pages.map((p) => p.width), MIN_ZOOM))
   }, [pages, zoomTo])
 
   useWheelZoom(containerRef, zoomBy)
+
+  // Horizontal centering that splits the classic-scrollbar strip
+  // (visual-center.ts) — applied on layout/zoom changes and on pane resizes,
+  // where a scrollbar can appear or disappear without a zoom change. Replaces
+  // the old `margin: 0 auto`, which only balanced inside the content box and
+  // left the scrollbar strip lopsided onto the right.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const apply = () => {
+      const doc = container.querySelector<HTMLElement>('[data-pdf-doc]')
+      if (doc) container.style.paddingLeft = `${visualCenterPaddingX(container, doc.getBoundingClientRect().width)}px`
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [layout])
 
   useEffect(() => {
     const timer = setTimeout(() => setRenderZoom(zoom), 120)
@@ -330,7 +354,7 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
           style={{ position: 'absolute', inset: 0, overflow: 'auto', background: 'var(--pm-desk)' }}
         >
           {pages && doc && (
-            <div data-pdf-doc style={{ width: 'fit-content', margin: '0 auto', padding: PDF_PAGE_GAP }}>
+            <div data-pdf-doc style={{ width: 'fit-content', padding: PDF_PAGE_GAP }}>
               {layout.map((box, i) => {
                 const inWindow = i >= win.first && i <= win.last
                 return (
@@ -410,7 +434,7 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
       <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
         <span style={{ flex: 1 }} />
-        <ZoomControls zoom={zoom} fitKey="fitWidth" onFit={fitZoom} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />
+        <ZoomControls zoom={zoom} fitKey="fitWidth" onFit={fitZoom} onZoomSet={(value) => zoomTo(value)} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />
       </div>
     </div>
   )

@@ -15,6 +15,7 @@ import { useTranslation } from '../../i18n/useTranslation'
 import { FileInfoBar } from './FileInfoBar'
 import { ZoomControls, ZOOM_STEP_FACTOR, zoomByFactor } from './ZoomControls'
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
+import { visualCenterPaddingX, visualCenterPaddingY } from './visual-center'
 
 /** Breathing room between the image and the pane's edges. */
 const PADDING = 16
@@ -48,8 +49,17 @@ export function ImagePreview({ path }: { path: string }): React.ReactElement {
     // fit, a small icon is shown at its own size instead of blown up.
     const fitScale = Math.min(1, paneWidth / natural.width, paneHeight / natural.height)
     const scale = manualZoomRef.current ?? (fitScale > 0 ? fitScale : 1)
-    img.style.width = `${Math.round(natural.width * scale)}px`
+    const width = Math.round(natural.width * scale)
+    img.style.width = `${width}px`
     img.style.height = 'auto'
+    // Manual centering on BOTH axes (visual-center.ts): flex centering only
+    // balances inside the content box, so under a classic scrollbar the right
+    // gutter read wider than the left. The helper's answer is the FULL edge
+    // padding — it overrides the PADDING shorthand's top/left sides; on
+    // overflow it lands 0 and the pane becomes a panning surface.
+    const height = Math.round((width * natural.height) / natural.width)
+    container.style.paddingLeft = `${visualCenterPaddingX(container, width)}px`
+    container.style.paddingTop = `${visualCenterPaddingY(container, height)}px`
     appliedZoomRef.current = scale
     // Guarded so a resize storm does not re-render on every observer tick.
     setAppliedZoom((prev) => (Math.abs(prev - scale) < 0.0001 ? prev : scale))
@@ -112,13 +122,12 @@ export function ImagePreview({ path }: { path: string }): React.ReactElement {
           minHeight: 0,
           overflow: 'auto',
           padding: PADDING,
+          // Centering is manual (paddingLeft/paddingTop from visual-center.ts,
+          // applied in applyZoom) — flex-start so nothing re-centers behind
+          // the computed padding, and because the default stretch would pull
+          // the height:auto image to the pane's full height.
           display: 'flex',
-          // `safe` start-aligns instead of centering once the zoomed image
-          // overflows — a plain center would put the image's left/top edge
-          // past the reachable scroll area (the flex-overflow trap
-          // DocxPreview meets by left-anchoring its wrapper).
-          alignItems: 'safe center',
-          justifyContent: 'safe center',
+          alignItems: 'flex-start',
         }}
       >
         <img
@@ -146,6 +155,7 @@ export function ImagePreview({ path }: { path: string }): React.ReactElement {
           zoom={appliedZoom}
           fitKey="fitWindow"
           onFit={resetZoom}
+          onZoomSet={(value) => { manualZoomRef.current = value; applyZoom() }}
           onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)}
           onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)}
         />

@@ -168,6 +168,7 @@ const en: TranslationDict = {
     dirtyDot: 'Unsaved changes',
     fitWidth: 'Fit to width',
     fitWindow: 'Fit to window',
+    zoomInput: 'Click to type a zoom level',
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
     pdfEncrypted: 'This PDF is password-protected — in-app preview is not available; open it in your system instead.',

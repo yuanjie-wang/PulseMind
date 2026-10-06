@@ -19,6 +19,7 @@ import { FallbackCard } from './FallbackCard'
 import { FileInfoBar } from './FileInfoBar'
 import { officeFontFaceCss } from './docx-fonts'
 import { ZoomControls, MIN_ZOOM, ZOOM_STEP_FACTOR, zoomByFactor } from './ZoomControls'
+import { visualCenterPaddingX } from './visual-center'
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
 import { useTranslation } from '../../i18n/useTranslation'
 
@@ -30,6 +31,10 @@ import { useTranslation } from '../../i18n/useTranslation'
  *  its own edge, and the docx desk must stay in lockstep with the wrapper
  *  docx-preview paints itself. */
 const BACKDROP = '#808080'
+/** Breathing room between the slide and the pane's edges, reserved by the fit
+ *  and mirrored by the centered gutters at every zoom — one value so the fit
+ *  state and the manual-zoom states read as the same desk. */
+const PANE_PADDING = 16
 /** Gap between slide pages, px. */
 const PAGE_GAP = 16
 
@@ -376,21 +381,34 @@ export function PptxPreview({
   const loadEpochRef = useRef(0)
 
   /** 适应宽度 is analytic here — the slide width is exact, not measured. A
-   *  wide slide only shrinks to fit the pane, never blows past 100%. */
+   *  wide slide only shrinks to fit the pane, never blows past 100%. The fit
+   *  reserves PANE_PADDING on BOTH edges (ImagePreview's PADDING idiom): fit
+   *  against the raw clientWidth lands the slide flush against the pane's
+   *  left edge with only the scrollbar strip showing grey on the right — an
+   *  asymmetry the user reads as missing margins. */
   const fitScaleRef = useRef(1)
   const recomputeFit = useCallback((): number => {
     const container = containerRef.current
     const d = deckRef.current
     if (!container || !d || d.widthPx <= 0) return 1
-    fitScaleRef.current = Math.min(1, Math.max(MIN_ZOOM, container.clientWidth / d.widthPx))
+    const available = Math.max(0, container.clientWidth - PANE_PADDING * 2)
+    fitScaleRef.current = Math.min(1, Math.max(MIN_ZOOM, available / d.widthPx))
     return fitScaleRef.current
   }, [])
 
   const applyZoom = useCallback(() => {
-    const wrapper = containerRef.current?.querySelector<HTMLElement>('.pm-pptx-zoom')
-    if (!wrapper) return
+    const container = containerRef.current
+    const wrapper = container?.querySelector<HTMLElement>('.pm-pptx-zoom')
+    if (!container || !wrapper) return
+    const d = deckRef.current
     const scale = manualZoomRef.current ?? fitScaleRef.current
     wrapper.style.zoom = String(scale)
+    // Horizontal centering is manual (flex-start + measured padding) — see
+    // visual-center.ts for why flex centering reads lopsided under a classic
+    // scrollbar. Padding on the scroller rather than a margin on the wrapper:
+    // the wrapper is zoomed, its own margins would scale with it.
+    const painted = d ? d.widthPx * scale : container.clientWidth
+    container.style.paddingLeft = `${visualCenterPaddingX(container, painted)}px`
     appliedZoomRef.current = scale
     setAppliedZoom((prev) => (Math.abs(prev - scale) < 0.0001 ? prev : scale))
   }, [])
@@ -528,7 +546,11 @@ export function PptxPreview({
         <div
           ref={containerRef}
           className="pm-pptx-scroll"
-          style={{ position: 'absolute', inset: 0, overflow: 'auto', background: BACKDROP, display: 'flex', justifyContent: 'center' }}
+          // Horizontal centering lives in applyZoom (padding-left there), which
+          // is also what keeps it correct under a classic scrollbar — a flex
+          // `justify-content: center` here would balance only inside the
+          // content box and leave the scrollbar strip lopsided onto the right.
+          style={{ position: 'absolute', inset: 0, overflow: 'auto', background: BACKDROP, display: 'flex' }}
         >
           {deck && (
             <div className="pm-pptx-zoom" style={{ zoom: appliedZoom, fontFamily: defaultFontStack, color: '#000' }}>
@@ -548,7 +570,7 @@ export function PptxPreview({
       </div>
       <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '4px 12px', borderTop: '1px solid var(--pm-border-hairline)' }}>
         <FileInfoBar path={path} />
-        <ZoomControls zoom={appliedZoom} fitKey="fitWidth" onFit={resetZoom} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />
+        <ZoomControls zoom={appliedZoom} fitKey="fitWidth" onFit={resetZoom} onZoomSet={(value) => zoomTo(value)} onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)} onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)} />
       </div>
     </div>
   )

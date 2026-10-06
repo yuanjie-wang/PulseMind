@@ -8,8 +8,12 @@
 //  instead of snapping to a ladder of stops, so a fitted 56% grows to 101% and
 //  42% shrinks to 23% — the pane keeps whatever scale the user has arrived at
 //  rather than jumping to a value someone else picked.
+//
+//  The percentage is click-to-type: a viewer that passes onZoomSet turns the
+//  label into an input; a typed value parses through parseZoomInput and clamps
+//  to the same range the buttons respect.
 
-import React from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Minus, Plus, Scaling } from 'lucide-react'
 import { useTranslation } from '../../i18n/useTranslation'
 
@@ -23,6 +27,15 @@ export const MAX_ZOOM = 8
 /** Clamp a scale into the supported range. */
 export function clampZoom(scale: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale))
+}
+
+/** Parse a typed zoom percent ('75', '75%', ' 12.5 ') into a clamped scale;
+ *  null when it does not parse (the editor then just closes, keeping the
+ *  current scale). Out-of-range numbers clamp — the same wall the buttons
+ *  hit, never an error. */
+export function parseZoomInput(text: string): number | null {
+  const parsed = Number.parseFloat(text)
+  return Number.isFinite(parsed) ? clampZoom(parsed / 100) : null
 }
 
 export const ZOOM_BUTTON: React.CSSProperties = {
@@ -46,21 +59,91 @@ export function zoomByFactor(current: number, factor: number): number {
 
 /** The three buttons and the percentage read-out. `fitKey` names the fit
  *  button's tooltip: a paged document fills the pane's width, an image fits
- *  inside it. */
+ *  inside it, and an html page measures its content width through the
+ *  main-process frame channel (fitWidth). */
 export function ZoomControls({
   zoom,
   fitKey,
   onFit,
   onZoomIn,
   onZoomOut,
+  onZoomSet,
 }: {
   zoom: number
   fitKey: 'fitWidth' | 'fitWindow'
   onFit: () => void
   onZoomIn: () => void
   onZoomOut: () => void
+  /** Commit a hand-typed scale (already parsed and clamped). Absent = the
+   *  percentage stays a plain read-out. */
+  onZoomSet?: (zoom: number) => void
 }): React.ReactElement {
   const { t } = useTranslation()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Focus and pre-select when the editor opens, so typing replaces the whole
+  // current value the way a browser's own zoom field behaves.
+  useEffect(() => {
+    if (editing) inputRef.current?.select()
+  }, [editing])
+
+  const beginEdit = () => {
+    if (!onZoomSet) return
+    setDraft(String(Math.round(zoom * 100)))
+    setEditing(true)
+  }
+  const commit = () => {
+    if (onZoomSet) {
+      const parsed = parseZoomInput(draft)
+      if (parsed !== null) onZoomSet(parsed)
+    }
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <>
+        <div style={ZOOM_BUTTON} onClick={onFit} title={t(`previewPane.${fitKey}`)}>
+          <Scaling size={12} />
+        </div>
+        <div style={ZOOM_BUTTON} onClick={onZoomOut} title={t('previewPane.zoomOut')}>
+          <Minus size={12} />
+        </div>
+        <input
+          ref={inputRef}
+          value={draft}
+          inputMode="decimal"
+          title={t('previewPane.zoomInput')}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') commit()
+            else if (event.key === 'Escape') setEditing(false)
+          }}
+          style={{
+            width: 46,
+            minWidth: 0,
+            padding: '0 2px',
+            textAlign: 'center',
+            fontSize: 11,
+            color: 'var(--pm-text-secondary)',
+            fontVariantNumeric: 'tabular-nums',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: '1px solid var(--pm-border-hairline)',
+            outline: 'none',
+            borderRadius: 0,
+          }}
+        />
+        <div style={ZOOM_BUTTON} onClick={onZoomIn} title={t('previewPane.zoomIn')}>
+          <Plus size={12} />
+        </div>
+      </>
+    )
+  }
+
   return (
     <>
       <div style={ZOOM_BUTTON} onClick={onFit} title={t(`previewPane.${fitKey}`)}>
@@ -69,7 +152,19 @@ export function ZoomControls({
       <div style={ZOOM_BUTTON} onClick={onZoomOut} title={t('previewPane.zoomOut')}>
         <Minus size={12} />
       </div>
-      <div data-zoom-label style={{ minWidth: 40, textAlign: 'center', fontSize: 11, color: 'var(--pm-text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+      <div
+        data-zoom-label
+        onClick={beginEdit}
+        title={onZoomSet ? t('previewPane.zoomInput') : undefined}
+        style={{
+          minWidth: 40,
+          textAlign: 'center',
+          fontSize: 11,
+          color: 'var(--pm-text-secondary)',
+          fontVariantNumeric: 'tabular-nums',
+          cursor: onZoomSet ? 'text' : 'default',
+        }}
+      >
         {Math.round(zoom * 100)}%
       </div>
       <div style={ZOOM_BUTTON} onClick={onZoomIn} title={t('previewPane.zoomIn')}>

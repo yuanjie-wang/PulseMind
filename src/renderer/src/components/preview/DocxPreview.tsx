@@ -23,10 +23,13 @@ import { ZoomControls, MIN_ZOOM, ZOOM_STEP_FACTOR, zoomByFactor } from './ZoomCo
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
 import { paginateDocxPages } from './docx-paginate'
 import { docxFontCss } from './docx-fonts'
+import { visualCenterPaddingX } from './visual-center'
 
 /** Below this pane width the document stops shrinking (it would become
  *  unreadable) and the pane scrolls horizontally instead. */
 const MIN_SCALED_WIDTH = 400
+/** Breathing room 适应宽度 reserves on BOTH edges (the pptx/image idiom). */
+const PANE_PADDING = 16
 /** docx-preview's own `.docx-wrapper` padding (see its renderDefaultStyle) —
  *  it scales with the zoom, so it counts toward the width the page must fit. */
 const WRAPPER_PADDING = 30
@@ -105,7 +108,7 @@ export function DocxPreview({
     const wrapper = container?.querySelector<HTMLElement>(`.${DOCX_CLASS}-wrapper`)
     if (!container || !wrapper || !pageWidthRef.current) return
     const total = pageWidthRef.current + WRAPPER_PADDING * 2
-    const fitScale = Math.max(container.clientWidth, MIN_SCALED_WIDTH) / total
+    const fitScale = Math.max(container.clientWidth - PANE_PADDING * 2, MIN_SCALED_WIDTH) / total
     const scale = manualZoomRef.current ?? fitScale
     // The wrapper's width is what carries the grey backdrop: docx-preview
     // gives it `display:flex` with an automatic width, so at a scale < 1 it
@@ -114,6 +117,16 @@ export function DocxPreview({
     // grey covers the whole scroll extent.
     wrapper.style.width = `${pageWidthRef.current}px`
     wrapper.style.zoom = String(scale)
+    // Horizontal centering that splits the classic-scrollbar strip
+    // (visual-center.ts), applied to the wrapper as a whole — docx-preview's
+    // own 30px wrapper padding rides inside it and reads as part of the grey
+    // desk, so both edges measure the same. The docx pane used to
+    // left-anchor its wrapper unconditionally; past the fit the helper lands
+    // 0 and that start-anchoring returns (the overflow trap, dodged).
+    container.style.paddingLeft = `${visualCenterPaddingX(
+      container,
+      (pageWidthRef.current + WRAPPER_PADDING * 2) * scale,
+    )}px`
     appliedZoomRef.current = scale
     // Guarded so a resize storm does not re-render on every observer tick.
     setAppliedZoom((prev) => (Math.abs(prev - scale) < 0.0001 ? prev : scale))
@@ -153,6 +166,18 @@ export function DocxPreview({
         container.scrollLeft = target.left
         container.scrollTop = target.top
       }
+    },
+    [applyZoom, minZoomScale]
+  )
+
+  // A hand-typed scale lands here: the same floor wall the − button respects,
+  // but no ratio arithmetic and no anchor to honour.
+  const zoomToValue = useCallback(
+    (value: number) => {
+      const from = manualZoomRef.current ?? appliedZoomRef.current
+      const floor = minZoomScale()
+      manualZoomRef.current = from >= floor ? Math.max(floor, value) : value
+      applyZoom()
     },
     [applyZoom, minZoomScale]
   )
@@ -297,6 +322,7 @@ export function DocxPreview({
           zoom={appliedZoom}
           fitKey="fitWidth"
           onFit={resetZoom}
+          onZoomSet={zoomToValue}
           onZoomOut={() => zoomBy(1 / ZOOM_STEP_FACTOR)}
           onZoomIn={() => zoomBy(ZOOM_STEP_FACTOR)}
         />

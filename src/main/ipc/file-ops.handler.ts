@@ -25,6 +25,7 @@ import { svcEditXlsx } from '../services/xlsx-ops'
 import { svcInspectOffice } from '../services/office-inspect'
 import { svcReadOffice } from '../services/office-read'
 import { registerPreviewNonce } from '../preview/nonce-registry'
+import { measurePreviewFrame } from '../preview/frame-measure'
 import type {
   EditFileInput,
   EditFileResult,
@@ -88,6 +89,12 @@ export function registerFileOpsHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.UTIL_REGISTER_PREVIEW_NONCE, (_event, input: { filePath: string; nonce: string }) => {
     registerPreviewNonce(input.filePath, input.nonce)
   })
+
+  // ── Preview-frame measurement (sandboxed iframe size, optionally
+  //    re-centered) — the real logic lives in main/preview/frame-measure.ts ──
+  ipcMain.handle(IPC_CHANNELS.UTIL_MEASURE_PREVIEW_FRAME, (event, frameName: string, centerX?: boolean) =>
+    measurePreviewFrame(event.sender, String(frameName), centerX === true),
+  )
 
   // ── Write file (direct IPC, bypasses shell heredoc) ──────────────
   ipcMain.handle(IPC_CHANNELS.UTIL_WRITE_FILE, (_event, input: WriteFileInput): Promise<WriteFileResult> => svcWriteFile(input))

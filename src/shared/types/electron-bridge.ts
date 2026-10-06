@@ -442,6 +442,11 @@ export interface ElectronAPI {
   /** M10: register the per-mount element-edit nonce in the main process —
    *  the served picker copy reads it there, never the frame URL. */
   registerPreviewNonce: (input: { filePath: string; nonce: string }) => Promise<void>
+  /** Measure a named sandboxed preview iframe from the main process — the
+   *  frame's DOM is unreachable from the renderer (opaque origin). `centerX`
+   *  also parks the frame's own horizontal scroll at the middle of its
+   *  overflow. Null = frame not found or the in-frame read failed. */
+  measurePreviewFrame: (frameName: string, centerX?: boolean) => Promise<{ width: number; height: number } | null>
   saveBase64Image: (data: string) => Promise<{ success: boolean; path: string }>
   copyFileToTmp: (sourcePath: string) => Promise<{ success: boolean; path: string }>
   copyFile: (input: { source?: string; sourceUrl?: string; destination: string }) => Promise<{ success: boolean; error?: string }>

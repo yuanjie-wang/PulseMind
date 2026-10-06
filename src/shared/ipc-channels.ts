@@ -169,6 +169,10 @@ export const IPC_CHANNELS = {
   // main-process registry, never the frame URL (the edited page can read
   // location.search).
   UTIL_REGISTER_PREVIEW_NONCE: 'util:register-preview-nonce',
+  // Preview-frame measurement: the sandboxed preview iframe's DOM is unreadable
+  // from the renderer (opaque origin) — the main process reads it over
+  // WebFrameMain instead (see main/preview/frame-measure.ts).
+  UTIL_MEASURE_PREVIEW_FRAME: 'util:measure-preview-frame',
   FILE_STAT: 'file:stat',
 
   // ── Agent sessions (PLAN-0.3.5 M1.4④): engines hosted in main ──

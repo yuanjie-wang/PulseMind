@@ -165,6 +165,7 @@ const zh = {
     dirtyDot: '未保存的修改',
     fitWidth: '适应宽度',
     fitWindow: '适应窗口',
+    zoomInput: '点击输入缩放比例',
     zoomIn: '放大',
     zoomOut: '缩小',
     pdfEncrypted: '该 PDF 已加密，暂不支持应用内预览，可在系统中打开。',
