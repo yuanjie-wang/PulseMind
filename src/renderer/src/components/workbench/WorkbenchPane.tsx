@@ -46,6 +46,11 @@ interface Props {
 
 export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump = () => {}, onOpenPlanNode, canOpenNode, onOpenNodeReport, highlightPlanNodeId, browserPane, onBrowserAction, onBrowserWidth }: Props): React.ReactElement {
   const width = useWorkbenchStore((s) => s.width)
+  // The persisted width predates every window it renders into (a drag under
+  // one monitor survives onto a smaller one; this instance also predates the
+  // 2026-10-06 zoom fix, whose 3× CSS viewport stored an 1854px drag) — the
+  // drag clamp is not enough, every consumption of the stored value clamps.
+  const effWidth = clampPaneWidth(width, chatAreaWidth)
   // A persisted activeTab naming a removed tab (the one-day deliverables
   // aggregate) would otherwise render a pane body with no view.
   const activeTab = useWorkbenchStore((s) => (WORKBENCH_TAB_IDS.has(s.activeTab) ? s.activeTab : 'files'))
@@ -64,7 +69,7 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
   if (!open) return <></>
 
   const onDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
-    drag.current = { startX: e.clientX, startWidth: width, lastSent: 0 }
+    drag.current = { startX: e.clientX, startWidth: effWidth, lastSent: 0 }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
   const onDragMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -98,7 +103,7 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
         top: 0,
         right: 0,
         bottom: 0,
-        width,
+        width: effWidth,
         background: 'var(--pm-bg)',
         borderLeft: '1px solid var(--pm-pop-border)',
         display: 'flex',

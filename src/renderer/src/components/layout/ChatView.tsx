@@ -21,6 +21,7 @@ import { projectContextUsed } from '../chat/ContextRing'
 import { MessageNavControls } from '../chat/MessageNavigator'
 import { listUserPrompts, isUserPromptMessage } from '../chat/message-navigator'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
+import { clampPaneWidth } from '../../../../shared/browser/pane'
 import { WelcomeContent } from '../chat/WelcomeContent'
 import { startBottomPin } from '../../utils/bottom-pin'
 import { useWelcomeShake } from '../../utils/welcome-shake'
@@ -948,8 +949,11 @@ function ChatView({
         // Reserve the workbench strip so chat content never flows under the
         // docked pane (PLAN-workbench W1: one width, one reserve — the old
         // browser+preview additive stack is gone). Transitions off — the
-        // drag handle needs 1:1 tracking.
-        paddingRight: workbenchOpen ? workbenchWidth : 0,
+        // drag handle needs 1:1 tracking. The reserve clamps the stored
+        // width like the pane itself does: a persisted width larger than
+        // today's chat area (window moved/shrunk, or the 2026-10-06 zoom era
+        // 3× viewport drag) must not eat the whole column.
+        paddingRight: workbenchOpen ? clampPaneWidth(workbenchWidth, chatAreaWidth) : 0,
       }}
     >
       <div
