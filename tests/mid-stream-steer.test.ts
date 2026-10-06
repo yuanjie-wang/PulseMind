@@ -44,10 +44,12 @@ const REQ = { apiUrl: 'https://example.invalid/v1/chat/completions', headers: {}
 const runnerOf = (engine: InstanceType<typeof AgentEngine>): Runner =>
   (engine as unknown as { streamRunner: Runner }).streamRunner
 
-function makeSteerHost(): PulseHost & {
-  pump(chunks: string[]): void
+function makeSteerHost(opts: { deferAbortMs?: number } = {}): PulseHost & {
+  pump(chunks: string[], requestId?: string): void
   complete(): void
+  doneFor(requestId: string): void
   aborted: string[]
+  requestIds: string[]
 } {
   const chunkListeners = new Set<(d: { requestId: string; data: string }) => void>()
   const doneListeners = new Set<(d: { requestId: string }) => void>()
@@ -61,12 +63,19 @@ function makeSteerHost(): PulseHost & {
     onApiStreamRetry: () => () => {},
     apiFetchStream: (requestId: string) => {
       liveId = requestId
+      ;(host as unknown as { requestIds: string[] }).requestIds.push(requestId)
       return new Promise<void>((resolve, reject) => { pending.set(requestId, { resolve, reject }) })
     },
     apiAbortStream: (requestId: string) => {
       ;(host as unknown as { aborted: string[] }).aborted.push(requestId)
       const p = pending.get(requestId)
-      if (p) { pending.delete(requestId); p.reject(new Error('aborted')) }
+      if (!p) return
+      pending.delete(requestId)
+      // deferAbortMs mimics the real IPC window (review_20261006 中1): the
+      // abort's transport rejection lands AFTER a DONE that was already queued,
+      // so the old runner's listeners are still subscribed when it arrives.
+      if (opts.deferAbortMs) setTimeout(() => p.reject(new Error('aborted')), opts.deferAbortMs)
+      else p.reject(new Error('aborted'))
     },
     onTerminalOutput: () => () => {},
     onTerminalExit: () => () => {},
@@ -77,12 +86,26 @@ function makeSteerHost(): PulseHost & {
     expertList: noop,
     getSkillPreferences: () => Promise.resolve({}),
     getSettings: () => Promise.resolve({ locale: 'zh' }),
-  } as unknown as PulseHost & { pump(chunks: string[]): void; complete(): void; aborted: string[] }
-  const h = host as unknown as { pump(chunks: string[]): void; complete(): void; aborted: string[] }
+  } as unknown as PulseHost & {
+    pump(chunks: string[], requestId?: string): void
+    complete(): void
+    doneFor(requestId: string): void
+    aborted: string[]
+    requestIds: string[]
+  }
+  const h = host as unknown as {
+    pump(chunks: string[], requestId?: string): void
+    complete(): void
+    doneFor(requestId: string): void
+    aborted: string[]
+    requestIds: string[]
+  }
   h.aborted = []
-  h.pump = (chunks: string[]) => {
-    if (!liveId) throw new Error('pump before any request')
-    for (const c of chunks) for (const fn of [...chunkListeners]) fn({ requestId: liveId, data: c })
+  h.requestIds = []
+  h.pump = (chunks: string[], requestId?: string) => {
+    const id = requestId ?? liveId
+    if (!id) throw new Error('pump before any request')
+    for (const c of chunks) for (const fn of [...chunkListeners]) fn({ requestId: id, data: c })
   }
   h.complete = () => {
     if (!liveId) throw new Error('complete before any request')
@@ -92,6 +115,9 @@ function makeSteerHost(): PulseHost & {
     const p = pending.get(liveId)
     if (p) { pending.delete(liveId); p.resolve() }
     liveId = null
+  }
+  h.doneFor = (requestId: string) => {
+    for (const fn of [...doneListeners]) fn({ requestId })
   }
   return host
 }
@@ -326,6 +352,101 @@ describe('steer: redirect the live stream (the 方案 A core)', () => {
 
     const steerMsg = engine.messages[2]
     expect((steerMsg.contentBlocks[0] as { text: string }).text).toHaveLength(4000)
+  })
+})
+
+// ── The DONE-in-flight race (review_20261006 中1) ──
+// The round ends naturally; API_STREAM_DONE is already in the IPC queue when
+// the user's steer runs. The steer clears the canvas, aborts R1 and dispatches
+// R2; the stale DONE must then be a dead letter — the old guard (requestId
+// equality alone) let it flush the just-cleared canvas into a contentless
+// assistant message and — no text, no tool_use — walk the thinking-only branch
+// into a second continueLoop beside the steered one. The same guard keeps late
+// CHUNKS of the dead request off the canvas R2's completion will read. (The
+// two faces are mutually exclusive on the wire — a late chunk would concatenate
+// into a newline-less final line and destroy it — so they get one test each.)
+describe('steer: DONE-in-flight race (dead-letter the aborted request)', () => {
+  /** The stale round's wire tail: finish_reason arrived (pendingFinishReason
+   *  set) but the final `data: [DONE]` line had no trailing newline — it sits
+   *  in the parser buffer, and the DONE IPC event's flush() is what would fire
+   *  onStreamComplete. */
+  const staleWireTail = (): string[] => [
+    sse({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+    'data: [DONE]', // no trailing newline — the flush-only line
+  ]
+
+  const setup = (host: ReturnType<typeof makeSteerHost>, engine: InstanceType<typeof AgentEngine>, continueCalls: { n: number }) => {
+    engine.continueLoop = async (): Promise<void> => {
+      continueCalls.n += 1
+      const second = runnerOf(engine).run(engine.opts, REQ)
+      await tick()
+      host.pump(steeredReplyStream())
+      host.complete()
+      await second
+      await tick()
+    }
+    engine.thinkingOnlyRetries = 0
+    engine.agentStatus = { status: 'streaming' }
+    const firstRun = runnerOf(engine).run(engine.opts, REQ)
+    host.pump(partialTextStream())
+    return firstRun
+  }
+
+  it('a stale DONE flushes nothing: no empty message, no second loop', async () => {
+    // The transport rejection must land AFTER the stale DONE — that ordering
+    // is the whole point, so the old runner's listeners are still subscribed.
+    const host = makeSteerHost({ deferAbortMs: 60 })
+    setHost(host)
+    const { engine } = makeEngine(host)
+    const calls = { n: 0 }
+    const firstRun = setup(host, engine, calls)
+    host.pump(staleWireTail())
+    await tick()
+
+    const outcome = await engine.steer('转向：改做搜索')
+    host.doneFor(host.requestIds[0]) // the stale DONE
+    await firstRun                   // settles via the deferred isCancel arm
+    await tick()
+    await tick()                     // let the 60ms deferred rejection drain
+
+    expect(outcome).toEqual({ ok: true })
+    expect(engine.isCancelled).toBe(false)
+    // One steer round, one steered round — no contentless assistant message.
+    expect(engine.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    expect(engine.messages.every((m) => m.contentBlocks.length > 0)).toBe(true)
+    const final = engine.messages[3]
+    const finalText = final.contentBlocks.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('')
+    expect(finalText).toContain('新指示')
+    // The stale DONE must not have walked the thinking-only branch into a
+    // second concurrent loop.
+    expect(calls.n).toBe(1)
+    expect(engine.agentStatus).toEqual({ status: 'completed' })
+  })
+
+  it('a late block_start chunk of the dead request cannot repopulate the canvas', async () => {
+    const host = makeSteerHost({ deferAbortMs: 60 })
+    setHost(host)
+    const { engine } = makeEngine(host)
+    const calls = { n: 0 }
+    const firstRun = setup(host, engine, calls)
+    await tick()
+
+    await engine.steer('转向：改做搜索')
+    // The dead round's SECOND block (a tool_use) starts after the canvas was
+    // cleared: without the guard it lands at canvas[1] — beside the steered
+    // round's own block — and rides into R2's completion as a ghost tool call.
+    const r1 = host.requestIds[0]
+    host.pump([sse({ choices: [{ delta: { tool_calls: [{ index: 1, id: 'call_ghost', type: 'function', function: { name: 'webfetch', arguments: '{"url":"https://x"}' } }] } }] })], r1)
+    expect(engine.currentAssistantBlocks.filter(Boolean)).toHaveLength(0)
+    await firstRun
+    await tick()
+    await tick()
+
+    // The steered round closes cleanly, with no ghost tool in its message.
+    expect(engine.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    expect(engine.messages[3].contentBlocks.some((b) => b.type === 'tool_use')).toBe(false)
+    expect(calls.n).toBe(1)
+    expect(engine.agentStatus).toEqual({ status: 'completed' })
   })
 })
 

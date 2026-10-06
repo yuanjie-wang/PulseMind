@@ -213,13 +213,23 @@ export class StreamRunner {
         }
       })
 
-      // Register IPC listeners
-      unsubChunk = this.engine.getHost().onApiStreamChunk(data => { if (data.requestId === requestId) dispatcher.processChunk(data.data) })
+      // Register IPC listeners. Every listener carries the same
+      // cancelledRequestIds guard (review_20261006 中1): once steer/prepareTurn/
+      // retry/dispose aborted THIS request, events already queued in the IPC
+      // channel must be dead letters. Without it a DONE that was in flight when
+      // the steer ran flushes the just-cleared canvas into an empty assistant
+      // message and — no text, no tool_use — walks the thinking-only branch into
+      // a second continueLoop running beside the steered one. The guard is the
+      // same source the catch's isCancel check reads, so one line covers every
+      // cancel entrance. cleanupListeners deletes the id only AFTER
+      // unsubscribing, so a guarded id can never belong to a live request.
+      const isDeadRequest = () => this.engine.cancelledRequestIds.has(requestId)
+      unsubChunk = this.engine.getHost().onApiStreamChunk(data => { if (data.requestId === requestId && !isDeadRequest()) dispatcher.processChunk(data.data) })
 
-      unsubError = this.engine.getHost().onApiStreamError(data => { if (data.requestId !== requestId) return; streamError = data.error; streamDeferredResolve() })
-      unsubDone = this.engine.getHost().onApiStreamDone(data => { if (data.requestId !== requestId) return; streamDone = true; dispatcher.flush(); streamDeferredResolve() })
+      unsubError = this.engine.getHost().onApiStreamError(data => { if (data.requestId !== requestId || isDeadRequest()) return; streamError = data.error; streamDeferredResolve() })
+      unsubDone = this.engine.getHost().onApiStreamDone(data => { if (data.requestId !== requestId || isDeadRequest()) return; streamDone = true; dispatcher.flush(); streamDeferredResolve() })
       unsubRetry = this.engine.getHost().onApiStreamRetry(data => {
-        if (data.requestId !== requestId) return
+        if (data.requestId !== requestId || isDeadRequest()) return
         this.engine.agentStatus = { status: 'retrying', message: data.message, attempt: data.attempt, maxRetries: data.maxRetries, delay: data.delay }
         this.engine.notify()
       })
