@@ -156,6 +156,35 @@ describe('接线扫描 — ChatView × 悬浮导航组', () => {
     expect(chatView).toContain('setNavJump(null)')
   })
 
+  it('跳转 effect 依赖只挂两个跳转请求——流式 token 不再逐个重跑（review_20261006 中2）', () => {
+    // 旧依赖携带 allSegments/windowTop/extraTop：每个流式 token 重跑一次，
+    // 清掉再重排 100ms 定时器、同步置 suppress——连续流下步进跳转被无限推迟，
+    // 迟到的落点还把用户已滚走的视口拽回来。现在扩窗续跳走 rAF。
+    expect(chatView).toContain('}, [planScrollToMsgId, navJump])')
+    expect(chatView).toContain('jumpSegsRef.current = allSegments')
+    expect(chatView).toContain('requestAnimationFrame(() => attempt(widenRetries - 1))')
+  })
+
+  it('userPrompts 的 memo key 是 ids 签名而非 messages 引用——不击穿 InputArea 的 memo（review_20261006 中3）', () => {
+    // 每条 messages_update 都换新 messages；锚点数组必须只在「哪些用户消息」
+    // 变化时才换新引用。签名谓词与 listUserPrompts 同源，不漂移。
+    expect(chatView).toContain('.filter(isUserPromptMessage).map((m) => m.id).join(')
+    expect(chatView).toContain('[promptIdsKey]')
+    const nav = readFileSync(join(ROOT, 'src/renderer/src/components/chat/message-navigator.ts'), 'utf8')
+    expect(nav).toContain('export function isUserPromptMessage')
+    expect(nav).toContain('if (!isUserPromptMessage(msg)) continue')
+  })
+
+  it('回到底部落地后复用 bottom-pinner——流式追高不再停在旧底部脱钩跟随（review_20261006 中4）', () => {
+    // 平滑滚动的落点固定于点击瞬间；落地后必须由 pinner 钉回真实底部，
+    // 否则流式追高时最后一次滚动事件把 isNearBottomRef 翻回 false、跟随脱钩。
+    expect(chatView).toContain("el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })")
+    expect(chatView).toContain('jumpPinCancelRef.current = startBottomPin(() => scrollRef.current, {})')
+    // 切会话与卸载都要收掉这枚 pinner（与 landing 的 cancelPinRef 并列）
+    expect(chatView.match(/jumpPinCancelRef\.current\?\.\(\)/g)?.length).toBe(3)
+    expect(chatView).toContain('review_20261006 中4')
+  })
+
   it('第一轮的浮层交互已移除（⌘F 监听与阈值不再存在）', () => {
     expect(chatView).not.toContain("e.key.toLowerCase() !== 'f'")
     expect(chatView).not.toContain('NAVIGATOR_MIN_MESSAGES')

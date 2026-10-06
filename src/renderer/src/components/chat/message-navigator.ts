@@ -18,14 +18,20 @@ export interface UserPromptAnchor {
   anchorId: string
 }
 
+/** 哪些消息算「我发送的」——listUserPrompts 的谓词。单独导出：宿主
+ * （ChatView）用它做锚点列表的廉价 ids 签名（memo key），两处共用一份
+ * 判据，不会漂移。 */
+export function isUserPromptMessage(msg: AgentMessage): boolean {
+  if (msg.role !== 'user') return false
+  if (msg.contentBlocks.some((b) => b.type === 'tool_result')) return false
+  if (msg.autoSummary) return false
+  return msg.contentBlocks.some((b) => b.type === 'text' && b.text.trim() !== '')
+}
+
 export function listUserPrompts(messages: AgentMessage[]): UserPromptAnchor[] {
   const anchors: UserPromptAnchor[] = []
   for (const msg of messages) {
-    if (msg.role !== 'user') continue
-    if (msg.contentBlocks.some((b) => b.type === 'tool_result')) continue
-    if (msg.autoSummary) continue
-    const hasText = msg.contentBlocks.some((b) => b.type === 'text' && b.text.trim() !== '')
-    if (!hasText) continue
+    if (!isUserPromptMessage(msg)) continue
     anchors.push({ id: msg.id, anchorId: msg.id.replace(/__\w+$/, '') })
   }
   return anchors

@@ -19,7 +19,7 @@ import { collectTurnDeliverables, segmentTurnPlacement } from '../chat/deliverab
 import { InputArea } from '../chat/InputArea'
 import { projectContextUsed } from '../chat/ContextRing'
 import { MessageNavControls } from '../chat/MessageNavigator'
-import { listUserPrompts } from '../chat/message-navigator'
+import { listUserPrompts, isUserPromptMessage } from '../chat/message-navigator'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
 import { WelcomeContent } from '../chat/WelcomeContent'
 import { startBottomPin } from '../../utils/bottom-pin'
@@ -293,8 +293,22 @@ function ChatView({
   const browserPaneBinding = useBrowserPaneBinding(conversationId, paneRootRef)
 
   // ── Message navigator (定位我的消息, PLAN-message-navigator) ──
-  // 用户消息的有序锚点：上/下一条步进按钮的数据源。
-  const userPrompts = useMemo(() => listUserPrompts(messages), [messages])
+  // 用户消息的有序锚点：上/下一条步进按钮的数据源。memo key 是廉价 ids 签名
+  // 而非 messages 引用：每条 messages_update（工具状态翻转、消息提交）都换
+  // 新 messages，锚点数组若随之换新，navTopSlot（InputArea 的 memo 入参）就
+  // 被击穿，MessageNavControls 的滚动监听反复解绑/重绑——正是 :423 声明的
+  // 「topSlot 必须引用稳定」契约要防的事（review_20261006 中3）。签名 =
+  // 候选消息的 id 串，谓词与 listUserPrompts 同源（isUserPromptMessage）；
+  // deps 相等时 React 原样返回上一个数组，引用天然稳定。
+  const promptIdsKey = useMemo(
+    () => messages.filter(isUserPromptMessage).map((m) => m.id).join('\u0000'),
+    [messages],
+  )
+  const userPrompts = useMemo(
+    () => listUserPrompts(messages),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the ids signature above: the anchors change only when the user-prompt set changes
+    [promptIdsKey],
+  )
   // 导航器发起的跳转请求：{id, seq} 而非裸 id——连续点同一条也要逐次触发
   // 跳转 effect（plan 面板靠父级清 prop 达成同一效果，这里用 seq 自持）。
   const [navJump, setNavJump] = useState<{ id: string; seq: number } | null>(null)
@@ -381,6 +395,10 @@ function ChatView({
   // 守卫计时器独立一枚：与统一跳转 effect 的 scrollTimerRef 分开，避免
   // useCallback 捕获同一个 ref 后被编译器判成跨 hook 变异。
   const bottomSuppressTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  // 回到底部的 pinner 句柄独立一枚：cancelPinRef（切会话 landing）只在
+  // effect 里写入，这里若共用，工厂体内的写入会改变 ref 值的出处建模，
+  // 殃及切会话 effect 里同字段的合法写入（react-hooks/immutability 误报）。
+  const jumpPinCancelRef = useRef<(() => void) | null>(null)
   const jumpToBottom = useCallback(() => {
     isNearBottomRef.current = true
     const el = scrollRef.current
@@ -392,6 +410,16 @@ function ChatView({
       suppressJumpScrollRef.current = false
     }, 700)
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    // 平滑滚动的落点在点击瞬间就固定为当时的 scrollHeight，而流式输出期间
+    // 尾部还在长——动画（300-700ms）走完时落点距真实底部可超 100px 阈值，
+    // 最后一次滚动事件把 isNearBottomRef 翻回 false，append effect 从此不再
+    // 跟随、悬浮组不消失（review_20261006 中4；现场注释「落点的最后一帧回
+    // 到 true」只在动画期间尾部不增长时成立）。复用切会话 landing 的
+    // bottom-pinner：动画结束后持续把视口钉回真实底部，高度稳定或用户真滚
+    // （wheel/触摸/按键）即让位。landingRef 不置——这里没有先同步跳再钉的
+    // 塌缩对抗面，suppress 守卫已覆盖动画期。
+    jumpPinCancelRef.current?.()
+    jumpPinCancelRef.current = startBottomPin(() => scrollRef.current, {})
   }, [])
   // topSlot 也是 InputArea 的 memo 入参，同样必须引用稳定：计划条与悬浮导
   // 航组合一个 slot——回到底部居中、步进对右侧。planStrip 包一层居中 flex
@@ -436,6 +464,8 @@ function ChatView({
       prevConvIdRef.current = conversationId
       cancelPinRef.current?.()
       cancelPinRef.current = null
+      jumpPinCancelRef.current?.()
+      jumpPinCancelRef.current = null
       setExtraTop(0)
       // 切会话 = 离开导航器的上下文：收回悬浮导航组、弃未完成的跳转请求
       // （与 landing 复位同一个块——这个 effect 本来就是会话切换的总复位点）。
@@ -494,6 +524,7 @@ function ChatView({
     return () => {
       cancelAnimationFrame(scrollRafRef.current)
       cancelPinRef.current?.()
+      jumpPinCancelRef.current?.()
     }
   }, [])
 
@@ -698,53 +729,90 @@ function ChatView({
   // transcript if the target isn't mounted, then smooth-scroll it to center;
   // the plan source additionally pulse-highlights the target (the stepper's
   // landing is its own feedback — no highlight, user 2026-10-04).
+  //
+  // Latest-value mirrors for the effect below: its deps are ONLY the two jump
+  // requests. The old deps carried allSegments/windowTop/extraTop — each of
+  // which changes per streamed token — so every token re-ran the effect,
+  // clearing + re-arming the 100ms timer and re-setting the suppress guard:
+  // a stepper click during streaming was deferred for as long as tokens kept
+  // coming, and a landing that fired late yanked the viewport back after the
+  // user had scrolled away (review_20261006 中2, the behavior face of P2-41).
+  // The widen continuation re-checks via rAF instead of effect re-runs.
+  const jumpSegsRef = useRef(allSegments)
+  const jumpWindowTopRef = useRef(windowTop)
+  const jumpExtraTopRef = useRef(extraTop)
+  useEffect(() => {
+    jumpSegsRef.current = allSegments
+    jumpWindowTopRef.current = windowTop
+    jumpExtraTopRef.current = extraTop
+  })
   useEffect(() => {
     const isPlan = !!planScrollToMsgId
     const requested = planScrollToMsgId ?? navJump?.id
     if (!requested) return
-    const targetId = msgIdToAnchorRef.current.get(requested) ?? requested
-    // If the target segment is above the rendered window, widen it so the target's
-    // anchor mounts; the effect re-runs after windowTop settles, then scrolls below.
-    const anchor = document.getElementById(`chat-msg-${targetId}`)
-    if (!anchor) {
-      const targetIdx = allSegments.findIndex((seg) => getSegmentAnchorId(seg) === targetId)
-      if (targetIdx >= 0 && targetIdx < windowTop) {
-        setExtraTop(Math.max(extraTop, allSegments.length - PAGE_SIZE - targetIdx))
+    let disposed = false
+    let raf = 0
+    // attempt(widenRetries): mount check → widen → scroll, re-checked after the
+    // widen's render commits. WIDEN_RETRIES is slack for the commit, not a poll:
+    // one frame is the normal case (React commits before the next paint).
+    const WIDEN_RETRIES = 20
+    const attempt = (widenRetries: number): void => {
+      if (disposed) return
+      const segs = jumpSegsRef.current
+      const winTop = jumpWindowTopRef.current
+      const extra = jumpExtraTopRef.current
+      const targetId = msgIdToAnchorRef.current.get(requested) ?? requested
+      // If the target segment is above the rendered window, widen it so the target's
+      // anchor mounts; the retry below re-checks once the DOM catches up, then scrolls.
+      const anchor = document.getElementById(`chat-msg-${targetId}`)
+      if (!anchor) {
+        const targetIdx = segs.findIndex((seg) => getSegmentAnchorId(seg) === targetId)
+        if (targetIdx >= 0 && targetIdx < winTop) {
+          setExtraTop(Math.max(extra, segs.length - PAGE_SIZE - targetIdx))
+          if (widenRetries > 0) {
+            raf = requestAnimationFrame(() => attempt(widenRetries - 1))
+            return
+          }
+        }
+        // Target segment isn't loaded and can't be widened to — stop retrying.
+        if (isPlan) onPlanScrollHandledRef.current?.()
+        else setNavJump(null)
         return
       }
-      // Target segment isn't loaded and can't be widened to — stop retrying.
-      if (isPlan) onPlanScrollHandledRef.current?.()
-      else setNavJump(null)
-      return
+      // 高亮脉冲只属于计划面板的节点跳转（用户裁定：步进定位到消息后不用
+      // 高亮——落点本身已经是反馈）。设置与 2s 清除必须在同一个门里：上一版
+      // 只门住了清除，nav 跳转仍会置高亮且永不清除。
+      if (isPlan) {
+        setHighlightedMsgId(targetId)
+        highlightTimerRef.current = setTimeout(() => setHighlightedMsgId(null), 2000)
+      }
+      clearTimeout(scrollTimerRef.current)
+      // Suppress near-bottom collapse while the smooth scroll runs. Must be set
+      // synchronously (not in a timeout) so handleScroll never fires mid-scroll.
+      // (attempt runs from the effect, outside render — no immutability gate here.)
+      suppressJumpScrollRef.current = true
+      scrollTimerRef.current = setTimeout(() => {
+        document.getElementById(`chat-msg-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        // Let handleScroll resume normal near-bottom collapse / lazy-load once the
+        // smooth scroll has settled, and clear the request so this effect stops
+        // re-running on later message/window changes (lazy-load, new messages,
+        // approval dialogs) — which previously yanked the viewport back to the step
+        // after the user scrolled away and re-widened the window after it was
+        // collapsed to the tail. Clearing also lets the same target be re-clicked
+        // later to jump again.
+        setTimeout(() => {
+          suppressJumpScrollRef.current = false
+        }, 700)
+        if (isPlan) onPlanScrollHandledRef.current?.()
+        else setNavJump(null)
+      }, 100)
     }
-    // 高亮脉冲只属于计划面板的节点跳转（用户裁定：步进定位到消息后不用
-    // 高亮——落点本身已经是反馈）。设置与 2s 清除必须在同一个门里：上一版
-    // 只门住了清除，nav 跳转仍会置高亮且永不清除。
-    if (isPlan) {
-      setHighlightedMsgId(targetId)
-      highlightTimerRef.current = setTimeout(() => setHighlightedMsgId(null), 2000)
+    attempt(WIDEN_RETRIES)
+    return () => {
+      disposed = true
+      cancelAnimationFrame(raf)
     }
-    clearTimeout(scrollTimerRef.current)
-    // Suppress near-bottom collapse while the smooth scroll runs. Must be set
-    // synchronously (not in a timeout) so handleScroll never fires mid-scroll.
-    // eslint-disable-next-line react-hooks/immutability
-    suppressJumpScrollRef.current = true
-    scrollTimerRef.current = setTimeout(() => {
-      document.getElementById(`chat-msg-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      // Let handleScroll resume normal near-bottom collapse / lazy-load once the
-      // smooth scroll has settled, and clear the request so this effect stops
-      // re-running on later message/window changes (lazy-load, new messages,
-      // approval dialogs) — which previously yanked the viewport back to the step
-      // after the user scrolled away and re-widened the window after it was
-      // collapsed to the tail. Clearing also lets the same target be re-clicked
-      // later to jump again.
-      setTimeout(() => {
-        suppressJumpScrollRef.current = false
-      }, 700)
-      if (isPlan) onPlanScrollHandledRef.current?.()
-      else setNavJump(null)
-    }, 100)
-  }, [planScrollToMsgId, navJump, allSegments, windowTop, extraTop])
+  }, [planScrollToMsgId, navJump])
 
   // ── Render helpers ──
 
