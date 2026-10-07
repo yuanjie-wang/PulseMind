@@ -2,11 +2,15 @@
 // Formerly AboutSettings (a drawer), a standard view since PLAN-0.4.0. Renders
 // the product intro markdown; the window header carries the page title, so the
 // drawer chrome is gone. Content re-featured per release rather than drifting
-// back to an era-stale feature list — the 0.4.2 pass carries the 0.4.1 rewrite
-// plus the 0925 waves (security hardening, the browser observation engine and
-// favorites, script-type experiences, Office expressiveness, memory dedup),
-// and the two intro paragraphs name the SHIPPING version (the footer's
-// __APP_VERSION__ already follows package.json on its own).
+// back to an era-stale feature list — the 0.4.2 pass carries the 0.4.1 rewrite,
+// the 0925 waves (security hardening, the browser observation engine and
+// favorites, script-type experiences, Office expressiveness, memory dedup) and
+// the 1007 pass (routine file triggers, PPT slides preview + the design-route
+// generation, project-commands injection), and the two intro paragraphs name
+// the SHIPPING version (the footer's __APP_VERSION__ already follows
+// package.json on its own). Deliberately NOT mentioned: the routine webhook
+// trigger and the settlement webhook — ROUTINE_WEBHOOK_UI keeps both surfaces
+// hidden (backend keeps working), so the fact sheet hides them with it.
 // NOTE: the markdown lives in JS template literals — never emit a backtick or
 // an interpolation (a `${`) into the strings below.
 
@@ -49,7 +53,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 - **欢迎页** — 「试试」快捷提示词一键开聊；对话 / 项目两个视角；项目、日常、知识三类卡片把下一步放在眼前
 - **侧栏** — 新建任务 / 搜索 / 日常任务 / 能力 • 知识 • 创作
-- **设置页** — 常规（语言、外观、开机自启、数据清理、运行上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 经验 / 高级（阻止休眠、调试、Git 状态注入、知识自动编译）/ 关于；界面浅色 / 深色 / 跟随系统
+- **设置页** — 常规（语言、外观、开机自启、数据清理、运行上限、默认工作区）/ 模型设置 / 浏览器插件 / 快捷键 / 助手设置 / 记忆 / 经验 / 高级（阻止休眠、调试、Git 状态注入、项目命令注入、知识自动编译）/ 关于；界面浅色 / 深色 / 跟随系统
 - **⌘K 命令面板与原生菜单** — 常用动作键入即达，快捷键可自定义
 - **全局搜索** — 会话、消息、记忆、知识，一处直达
 - **会话列表** — 置顶 / 今天 / 昨天 / 更早 自动分组
@@ -67,7 +71,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 把重复的事交给日程，到点自动执行。
 
-- **例行任务** — 定时（cron）或手动触发，独立会话运行，完成后通知你
+- **例行任务** — 定时（cron）、手动或文件变化触发（监听指定文件 / 文件夹），独立会话运行，完成后通知你
 - **CSV/Excel 批量运行** — 给任务挂一个 CSV 或 Excel（首张工作表），每行数据用独立会话执行一次任务；并发与单次超时可调，中断可续跑，运行历史按行展示，点击钻入该行的会话
 - **运行历史** — 按天分桶，可删除、清理、设置保留期限
 - **推荐模板** — 五个职场常用任务，点击带入编辑器，改改就能用
@@ -111,7 +115,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 - **字节级保真编辑** — office_edit 只改要改的（docx / xlsx / pptx），未触碰的部分逐字节不变，最大程度保留原文档的格式与兼容性
 - **表达力完整** — Word 生成可嵌图、编辑可增删表格行；Excel 可设样式、列宽与冻结窗格，生成端表头加粗、列宽自适应
-- **结构化版式** — PPT 生成走版式引擎：模型只选版式、给内容，每个坐标由引擎绘制，预览同步
+- **设计路线生成** — PPT 从零生成走设计路线：模型先落主题（tokens.css）再写版式（deck.html），引擎用 Chromium 实测布局，输出原生可编辑形状（不是截图）并附保真报告；Markdown 大纲是纯文字的兜底路线
 - **结构先行** — office_inspect 让 AI 编辑前先看清文档结构
 - **安全护栏** — 每次编辑展示结果 diff；结构校验不过，整批拒绝、一字不写；首次编辑自动备份
 - **一键导出** — export_document 从 Markdown 生成 Word / Excel / PPT / PDF，永不覆盖已有文件，成品在预览面板即点即看
@@ -125,7 +129,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 ## 富预览与预览即编辑
 
-- **开箱即看** — Markdown / 文本 / 代码 / CSV / HTML（沙箱隔离）/ 图片 / Word 分页 / Excel 网格 / PDF
+- **开箱即看** — Markdown / 文本 / 代码 / CSV / HTML（沙箱隔离）/ 图片 / Word 分页 / PPT 幻灯片 / Excel 网格 / PDF
 - **预览即编辑** — 文件面板不只是渲染，还能直接改
 - **HTML 元素编辑** — 元素面板按类型编辑，双击就地改文字，逐步撤销，或一句话让 AI 改
 
@@ -196,7 +200,7 @@ Then hit Test Connection: one click, and it tells you in plain words whether the
 
 - **Welcome page** — one-click starters under Try these; a chats view and a projects view; project, routine, and knowledge cards keep the next step within reach
 - **Sidebar** — New Task / Search / Routines / Capability · Knowledge · Studio
-- **Settings** — General (language, appearance, launch at login, data cleanup, run limits, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Experiences / Advanced (keep-awake, debugging, Git injection, knowledge auto-compile) / About; light / dark / system appearance
+- **Settings** — General (language, appearance, launch at login, data cleanup, run limits, default workspace) / Models / Extension / Shortcuts / Assistant / Memory / Experiences / Advanced (keep-awake, debugging, Git injection, project-commands injection, knowledge auto-compile) / About; light / dark / system appearance
 - **⌘K command palette & native menu** — type to reach any common action, with rebindable shortcuts
 - **Global search** — conversations, messages, memories, knowledge: one place
 - **Conversation list** — auto-grouped into Pinned / Today / Yesterday / Earlier
@@ -214,7 +218,7 @@ Give the AI a folder of its own, and it can read, write, and keep pushing the wo
 
 Hand the repetitive work to a schedule and let it run itself.
 
-- **Routines** — cron-scheduled or manual, each run in its own session, with a notification when it finishes
+- **Routines** — cron-scheduled, manual, or fired by file changes (watching files or folders you name), each run in its own session, with a notification when it finishes
 - **CSV/Excel batch runs** — point a routine at a CSV or an Excel sheet (first worksheet) and each data row runs the task in its own session; concurrency and the per-row timeout are adjustable, interrupted batches resume, and the run history lists every row, clickable into its session
 - **Run history** — bucketed by day; delete, clear, or set a retention window
 - **Starter templates** — five workplace templates, one click into the editor
@@ -258,7 +262,7 @@ Hand the repetitive work to a schedule and let it run itself.
 
 - **Byte-faithful editing** — office_edit (docx / xlsx / pptx) changes only what you change; untouched parts stay byte-identical, preserving the original document's formatting and compatibility
 - **Full expressiveness** — Word generation embeds images and edits table rows; Excel gains styles, column widths, and freeze panes, and generated sheets get bold headers with fitted widths
-- **Structured layouts** — PPT generation runs through a layout engine: the model picks a layout and supplies content; the engine draws every coordinate, preview in sync
+- **The design route** — PPT generation from scratch goes through the design route: the model pins a theme (tokens.css) and writes the layout (deck.html); the engine measures the real layout with Chromium and emits native editable shapes (not screenshots) with a fidelity report; a Markdown outline stays as the plain-text fallback
 - **Inspect first** — office_inspect shows the document's structure before editing
 - **Safety rails** — every edit shows a result diff; a failed structural check refuses the whole batch and writes nothing; the first edit is backed up automatically
 - **One-step export** — export_document generates Word / Excel / PPT / PDF from Markdown, never overwriting an existing file; results open straight into the preview pane
@@ -272,7 +276,7 @@ Hand the repetitive work to a schedule and let it run itself.
 
 ## Rich Previews & In-Place Editing
 
-- **Opens everything** — Markdown / text / code / CSV / HTML (sandboxed) / images / Word pages / Excel grid / PDF
+- **Opens everything** — Markdown / text / code / CSV / HTML (sandboxed) / images / Word pages / PPT slides / Excel grid / PDF
 - **Preview becomes editing** — the file pane does not just render, it edits
 - **HTML element editing** — a type-aware element panel, double-click to edit text in place, step-by-step undo, or one sentence for the AI to do it
 
