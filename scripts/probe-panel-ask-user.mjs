@@ -287,6 +287,42 @@ const sent = (page, type) => page.evaluate((t) => window.__sent.filter((m) => m.
   await page.close()
 }
 
+// ── 8. 循环上限续跑卡 ──────────────────────────────────────────────────
+// 引擎停在 awaiting_extension（循环次数达上限）时，桌面显示 ExtensionPrompt 的
+// 继续执行/停止；面板此前只有「等待扩展」标签加忙碌指针，用户唯一的出路是停止。
+// 两个按钮各发出一条 panel/iteration-response（approved true/false），桥把它
+// 透传成 iteration_limit.response —— 通道本身由 extension-panel-bridge 测试
+// 钉住，这里钉的是「真点击 → 正确消息」这一段。
+{
+  console.log('== 循环上限续跑卡 ==')
+  const { page, root } = await open(fixture({ choices: ['北京'], status: 'awaiting_extension' }))
+
+  check('等待扩展时渲染续跑卡', (await root.locator('.pm-iterate').count()) === 1)
+  check('标题是桌面的文案', (await root.locator('.pm-iterate-title').textContent()) === '循环次数已达上限')
+  const buttons = root.locator('.pm-iterate-btn')
+  check('两个按钮：继续执行 + 停止', JSON.stringify(await buttons.allTextContents()) === JSON.stringify(['继续执行', '停止']), JSON.stringify(await buttons.allTextContents()))
+
+  await buttons.first().click()
+  await page.waitForTimeout(300)
+  const decisions = await sent(page, 'panel/iteration-response')
+  check('继续执行发出 approved:true', decisions.length === 1 && decisions[0]?.approved === true, JSON.stringify(decisions))
+
+  await buttons.nth(1).click()
+  await page.waitForTimeout(300)
+  const both = await sent(page, 'panel/iteration-response')
+  check('停止发出 approved:false', both[1]?.approved === false, JSON.stringify(both[1]))
+  await page.close()
+}
+
+// ── 9. 续跑卡不越权出现 ────────────────────────────────────────────────
+{
+  console.log('== 续跑卡不越权出现 ==')
+  const { page, root } = await open(fixture({ choices: ['北京'], status: 'awaiting_user_input' }))
+  check('等待回答时不渲染续跑卡', (await root.locator('.pm-iterate').count()) === 0)
+  check('此形态没有发出任何 iteration 消息', (await sent(page, 'panel/iteration-response')).length === 0)
+  await page.close()
+}
+
 await browser.close()
 
 const failed = results.filter((r) => !r.ok)

@@ -674,9 +674,12 @@ const modelMenu = await page.evaluate(() => {
   const rect = menu.getBoundingClientRect()
   const btn = root.querySelector('.pm-model').getBoundingClientRect()
   const items = [...root.querySelectorAll('.pm-model-item')]
+  const activeIdx = items.findIndex((i) => i.classList.contains('pm-model-item-active'))
   const long = items[1]
   return {
     labels: items.map((i) => i.textContent.trim()),
+    activeIdx,
+    activeBg: activeIdx >= 0 ? getComputedStyle(items[activeIdx]).backgroundColor : null,
     insidePanel: Math.round(rect.left) >= Math.round(panel.left) - 1 && Math.round(rect.right) <= Math.round(panel.right) + 1,
     aboveButton: rect.bottom <= btn.top + 1,
     // The long label is clipped by CSS, not by the panel.
@@ -691,6 +694,13 @@ check(
 )
 check('模型菜单整个落在面板内、并朝上展开', modelMenu.insidePanel && modelMenu.aboveButton, `inside=${modelMenu.insidePanel}, above=${modelMenu.aboveButton}`)
 check('过长的模型名在菜单项里截断而不是撑破面板', modelMenu.longClipped && !modelMenu.longOverflowsPanel, `clipped=${modelMenu.longClipped}, overflow=${modelMenu.longOverflowsPanel}`)
+// 打开时当前档位带选中态（pm-model-item-active 与授权菜单同款 #e6f4ff）——
+// 当前位置先于第一次点击可见。
+check(
+  '打开时当前档位恰一行带选中态，底色 = antd controlItemBgActive',
+  modelMenu.activeIdx === 0 && modelMenu.activeBg === 'rgb(230, 244, 255)',
+  `idx=${modelMenu.activeIdx}, bg=${modelMenu.activeBg}`,
+)
 
 // 选中后按钮文案跟着换：两边同一个 modelLabel，不能一处显示 name、另一处显示 id。
 await page.evaluate(() => window.__panels()[0].querySelectorAll('.pm-model-item')[1].click())
@@ -700,6 +710,16 @@ const afterSwitch = await page.evaluate(() => ({
   menuGone: !window.__panels()[0].querySelector('.pm-model-menu'),
 }))
 check('选中后按钮文案换成同一个 label，且菜单关闭', afterSwitch.label === FALLBACK_LABEL && afterSwitch.menuGone, `${afterSwitch.label} / menuGone=${afterSwitch.menuGone}`)
+
+// 选中态跟着状态走，不是钉在第一行：换档后重开菜单，active 行换到新档位上。
+await page.evaluate(() => window.__panels()[0].querySelector('.pm-model').click())
+await page.waitForTimeout(150)
+const activeAfter = await page.evaluate(() => {
+  const items = [...window.__panels()[0].querySelectorAll('.pm-model-item')]
+  return items.findIndex((i) => i.classList.contains('pm-model-item-active'))
+})
+check('换档后重开菜单，选中行跟着换到新档位', activeAfter === 1, `idx=${activeAfter}`)
+await page.evaluate(() => window.__panels()[0].querySelector('.pm-model').click())
 
 // 最挤的静止态：最长模型名生效时，页脚是 授权 + 弹性空白 + 模型 + 发送 抢同一行
 // 324px（面板 380 − composer 2×16 − 输入卡 2×12）。回归过一次：标签上限 160px
@@ -880,6 +900,38 @@ check(
 
 await page.screenshot({ path: join(SHOTS, 'panels.png'), fullPage: true })
 await page.locator('[data-pulsemind-panel]').first().screenshot({ path: join(SHOTS, 'panel-main.png') })
+
+// ── 输入帽（4K，桌面裁定的面板镜像）────────────────────────────────────
+// 面板此前没有 UI 钳，超限粘贴走 prepareTurn 的静默裁切——用户永远不知道尾巴
+// 没了。现在钳在 onChange 上、计数器说明发生了什么。这里用真输入事件驱动真实
+// Composer：4500 字的 fill 必须被裁到 4000，计数器八成满（3200）出现、到线变
+// 琥珀 #d46b08（与桌面同值）、回落即消失。面板 0（主对话对齐）承载本节。
+// 位置：紧接夹具截图之后——后面的拖拽/放大段会让夹具宿主塌成 0×0（既有现象，
+// 与本节无关），fill 的可见性判定在那里会假死。
+{
+  console.log('== 输入帽（4K） ==')
+  const panel0 = page.locator('[data-pulsemind-panel]').first()
+  const input = panel0.locator('.pm-input')
+  const counter = panel0.locator('.pm-composer-count')
+  const counterColor = () => counter.evaluate((el) => getComputedStyle(el).color)
+
+  await input.fill('字'.repeat(3300))
+  await page.waitForTimeout(200)
+  check('八成满（≥3200）计数器出现', (await counter.count()) === 1)
+  check('未到线时计数是弱化墨色 #999', (await counterColor()) === 'rgb(153, 153, 153)', await counterColor())
+  check('计数值如实反映字数', (await counter.textContent()) === '3300/4000', await counter.textContent())
+
+  await input.fill('x'.repeat(4500))
+  await page.waitForTimeout(200)
+  const value = await input.inputValue()
+  check('4500 字的粘贴被钳到 4000（头保留）', value.length === 4000, String(value.length))
+  check('到线计数是琥珀 #d46b08', (await counterColor()) === 'rgb(212, 107, 8)', await counterColor())
+  check('计数器文本是 4000/4000', (await counter.textContent()) === '4000/4000', await counter.textContent())
+
+  await input.fill('短文本')
+  await page.waitForTimeout(200)
+  check('回落后计数器消失', (await counter.count()) === 0)
+}
 
 // ── 启动球（收起态）：浅灰毛玻璃圆盘 + 品牌标记 ─────────────────────────
 // 用户裁定 2026-09-16：「把 pulsemind_extension.png 作为植入到页面中的悬浮球
@@ -1282,9 +1334,9 @@ const clickWrites = await writes()
 // 这是面板唯一会改自身尺寸的地方，而尺寸一变就有三件只有真浏览器能证的事：
 // 四道边距是否都还在（右 20、上 20、下 20，与常态同一个数）、放大后有没有被顶出
 // 视口（高度写成 100vh 会让上边沿落在 -20、头部被裁 19px），以及**长会话的"跟随
-// 底部"是否还在** —— 视口变大后
-// maxScrollTop 会变，跟随逻辑只在提交时对齐，所以这条要么当场成立，要么就一直差着，
-// 直到下一条流式分片才回正。
+// 底部"是否还在** —— 尺寸带 200ms 补间（用户 2026-10-07），过渡期间 React 不
+// 提交，跟随靠 Transcript 的 ResizeObserver 逐帧吸底顶住：那条检查现在是该 RO
+// 的回归钉（摘掉它，动画跑完尾巴会停在离底差几像素的位置，直到下一条分片）。
 console.log('== 放大（高度 100% / 宽度 40%，上下留固定边距）==')
 await page.evaluate(() => {
   window.__openPanel = true
@@ -1324,6 +1376,61 @@ const readPanel = () =>
 
 // 高度是「尽可能高」还是「刚好铺满」由一条界定：上下各留同一道固定边距。
 const gaps = (p) => (p ? { top: p.rect.y, bottom: VH - (p.rect.y + p.rect.h), right: VW - (p.rect.x + p.rect.w) } : null)
+
+// 尺寸补间的三个读取助手。中间宽度用轮询而非固定睡 N ms：读早了还在起点、读晚
+// 了已经到位，轮询到「已离开起点且未到终点」才算观测到补间；超时交由 check 判
+// 负，不让探针直接崩掉。settle 后才做几何断言——旧的固定 150ms 会量到补间中途。
+const midFlightWidth = (from, to, timeout = 2000) =>
+  page
+    .waitForFunction(
+      ([a, b]) => {
+        const el = document.querySelector('#wide-panel')?.shadowRoot?.querySelector('.pm-panel')
+        if (!el) return false
+        const w = el.getBoundingClientRect().width
+        const lo = Math.min(a, b)
+        const hi = Math.max(a, b)
+        return w > lo + 0.5 && w < hi - 0.5
+      },
+      [from, to],
+      { timeout },
+    )
+    .then(
+      () => true,
+      () => false,
+    )
+
+const waitSettled = (w, h) =>
+  page
+    .waitForFunction(
+      ([ew, eh]) => {
+        const el = document.querySelector('#wide-panel')?.shadowRoot?.querySelector('.pm-panel')
+        if (!el) return false
+        const r = el.getBoundingClientRect()
+        return Math.abs(r.width - ew) < 0.5 && Math.abs(r.height - eh) < 0.5
+      },
+      [w, h],
+      { timeout: 2000 },
+    )
+    .then(
+      () => true,
+      () => false,
+    )
+
+const waitAnimatingClassGone = () =>
+  page
+    .waitForFunction(
+      () => {
+        const el = document.querySelector('#wide-panel')?.shadowRoot?.querySelector('.pm-panel')
+        return !!el && !el.classList.contains('pm-panel-animating')
+      },
+      undefined,
+      { timeout: 2000 },
+    )
+    .then(
+      () => true,
+      () => false,
+    )
+
 const normal = await readPanel()
 const normalGaps = gaps(normal)
 check(
@@ -1343,7 +1450,9 @@ check(
 )
 
 await page.locator('#wide-panel button[title="放大"]').click()
-await page.waitForTimeout(150)
+check('放大是补间不是瞬跳（中途量到过中间宽度）', await midFlightWidth(380, VW * 0.4))
+check('动画结束后过渡类被摘掉（残留会让窗口缩放跟着 tween）', await waitAnimatingClassGone())
+check('尺寸到位后再做下面的几何断言', await waitSettled(VW * 0.4, VH - 40))
 const wide = await readPanel()
 const wideGaps = gaps(wide)
 check(
@@ -1417,13 +1526,26 @@ await page.setViewportSize({ width: VW, height: VH })
 await page.waitForTimeout(150)
 
 await page.locator('#wide-panel button[title="还原"]').click()
-await page.waitForTimeout(150)
+check('还原同样是补间（中途量到过中间宽度）', await midFlightWidth(380, VW * 0.4))
+check('还原后过渡类也被摘掉', await waitAnimatingClassGone())
+check('尺寸到位', await waitSettled(380, 600))
 const backToNormal = await readPanel()
 check(
   '点还原后回到常态尺寸与「放大」字样',
   Math.abs(backToNormal.rect.w - 380) < 0.5 && Math.abs(backToNormal.rect.h - 600) < 0.5 && backToNormal.title === '放大',
   `${backToNormal.rect.w}x${backToNormal.rect.h}, title=${backToNormal.title}`,
 )
+
+// reduced-motion：媒体查询把补间整个关掉——放大必须瞬跳（量不到中间宽度），
+// transitionend 永不到来，摘类落在 App 的兜底定时器（400ms）上。
+await page.emulateMedia({ reducedMotion: 'reduce' })
+await page.locator('#wide-panel button[title="放大"]').click()
+check('prefers-reduced-motion 下没有补间（量不到中间宽度）', !(await midFlightWidth(380, VW * 0.4, 600)))
+check('reduced-motion 下瞬跳到位', await waitSettled(VW * 0.4, VH - 40))
+check('reduced-motion 下兜底定时器摘掉过渡类', await waitAnimatingClassGone())
+await page.emulateMedia({ reducedMotion: 'no-preference' })
+await page.locator('#wide-panel button[title="还原"]').click()
+check('还原回常态（reduced-motion 往返不留尾巴）', await waitSettled(380, 600))
 
 await browser.close()
 

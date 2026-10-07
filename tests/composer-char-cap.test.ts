@@ -19,6 +19,11 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { COMPOSER_MAX_CHARS, COMPOSER_COUNT_VISIBLE_AT, clampComposerInput } from '../src/renderer/src/components/chat/Composer'
 import { MAX_USER_INPUT_CHARS } from '../src/renderer/src/agent/engine/engine-constants'
+import {
+  COMPOSER_MAX_CHARS as panelCap,
+  COMPOSER_COUNT_VISIBLE_AT as panelCountAt,
+  clampComposerInput as panelClamp,
+} from '../src/extension/ui/Composer'
 
 const ROOT = join(__dirname, '..')
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8')
@@ -83,5 +88,35 @@ describe('wiring — the clamp rides the one funnel, the backstop rides prepareT
     expect(clampIdx).toBeGreaterThan(-1)
     expect(hookIdx).toBeGreaterThan(-1)
     expect(clampIdx).toBeGreaterThan(hookIdx)
+  })
+})
+
+// The extension panel used to have no UI clamp (AGENTS.md: 「插件面板这轮未镜像
+// 此帽」) — its users hit prepareTurn's silent clip. The panel now mirrors the
+// desktop surface against the SAME constant, so a panel paste past 4K reads its
+// own counter instead of losing its tail silently.
+describe('the extension panel mirrors the cap (ui/Composer)', () => {
+  it('aliases the same engine constant — never its own number', () => {
+    expect(panelCap).toBe(MAX_USER_INPUT_CHARS)
+    expect(panelCap).toBe(4_000)
+    expect(panelCountAt).toBe(3_200)
+  })
+
+  it('clamps the same way: head kept, tail cut', () => {
+    expect(panelClamp('你好')).toBe('你好')
+    const clamped = panelClamp('a'.repeat(4_001))
+    expect(clamped.length).toBe(4_000)
+    expect(panelClamp('a'.repeat(4_000)).length).toBe(4_000)
+  })
+
+  it('wiring — the clamp rides onChange, the counter rides the footer', () => {
+    const composer = read('src/extension/ui/Composer.tsx')
+    expect(composer).toContain('MAX_USER_INPUT_CHARS')
+    expect(composer).toContain('setText(clampComposerInput(e.target.value))')
+    expect(composer).toContain('COMPOSER_COUNT_VISIBLE_AT')
+    expect(composer).toContain('pm-composer-count')
+    // the attribute is not the mechanism (the desktop Sender scan pins the same
+    // absence) — the onChange clamp is
+    expect(composer).not.toMatch(/maxLength/i)
   })
 })

@@ -72,6 +72,10 @@ export type PanelRequest =
   | { type: 'panel/approval-response'; callId: string; approved: boolean }
   /** Answer the model's ask_user question. */
   | { type: 'panel/answer'; callId: string; response: string }
+  /** Answer the loop-limit prompt (`awaiting_extension`): continue extends the
+   *  engine's loop budget, stop ends the run. Session-scoped — no callId, the
+   *  bridge injects the tab's session id. */
+  | { type: 'panel/iteration-response'; approved: boolean }
 
 /** service worker → content script. */
 export type PanelNotification =
@@ -133,6 +137,7 @@ export const PANEL_REQUEST_TYPES: ReadonlySet<string> = new Set<PanelRequest['ty
   'panel/set-model',
   'panel/approval-response',
   'panel/answer',
+  'panel/iteration-response',
 ])
 
 export function isPanelRequest(msg: unknown): msg is PanelRequest {

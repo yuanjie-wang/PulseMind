@@ -46,6 +46,9 @@ export interface PanelApi {
   respondToApproval: (toolUseId: string, approved: boolean) => void
   /** The model's ask_user question. */
   answerQuestion: (toolUseId: string, response: string) => void
+  /** The loop-limit prompt (awaiting_extension): continue extends the engine's
+   *  loop budget, stop ends the run. */
+  respondIteration: (approved: boolean) => void
 }
 
 export function usePanel(): PanelApi {
@@ -228,6 +231,15 @@ export function usePanel(): PanelApi {
     })
   }, [])
 
+  /** Same fire-and-forget shape as the two above: the engine parks on the
+   *  loop-limit decision until it arrives, and the resulting status event (not
+   *  this reply) is what updates the panel. */
+  const respondIteration = useCallback((approved: boolean) => {
+    void request({ type: 'panel/iteration-response', approved }).then((res) => {
+      if (!res.ok) setError(res.error ?? '提交续跑决定失败')
+    })
+  }, [])
+
   return {
     sessionId,
     connection,
@@ -250,5 +262,6 @@ export function usePanel(): PanelApi {
     setModel,
     respondToApproval,
     answerQuestion,
+    respondIteration,
   }
 }

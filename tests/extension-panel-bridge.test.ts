@@ -375,6 +375,28 @@ describe('extension panel bridge', () => {
     expect(client.notifications).toHaveLength(0)
   })
 
+  it('relays the loop-limit decision with the tab session id (iteration_limit.response)', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+
+    const res = await bridge.handleRequest({ type: 'panel/iteration-response', approved: true }, TAB)
+    expect(res.ok).toBe(true)
+    expect(client.notificationsTo('iteration_limit.response')).toEqual([{ sessionId: 'ws_1', approved: true }])
+
+    await bridge.handleRequest({ type: 'panel/iteration-response', approved: false }, TAB)
+    expect(client.notificationsTo('iteration_limit.response')).toEqual([
+      { sessionId: 'ws_1', approved: true },
+      { sessionId: 'ws_1', approved: false },
+    ])
+  })
+
+  it('refuses the loop-limit decision without a bound session', async () => {
+    const bridge = makeBridge(client)
+    const res = await bridge.handleRequest({ type: 'panel/iteration-response', approved: true }, TAB)
+    expect(res.ok).toBe(false)
+    expect(client.notifications).toHaveLength(0)
+  })
+
   // ── 模型 (per conversation, like 授权) ──────────────────────────────
 
   it('keeps a pre-session model choice on the tab and replays it onto the session', async () => {

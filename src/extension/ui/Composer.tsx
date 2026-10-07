@@ -12,11 +12,26 @@
  * the M4 side panel is where they land. */
 
 import { useEffect, useRef, useState } from 'react'
+import { MAX_USER_INPUT_CHARS } from '../../renderer/src/agent/engine/engine-constants'
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { fullModelLabel, type ModelState } from '../../shared/agent-protocol'
 import { Icon } from './icons'
 
 const MAX_HEIGHT_PX = 160
+
+// ── 输入帽（2026-09-30 桌面裁定「给输入框一个4k的上限」）的面板镜像 ──
+// 同一个常量：桌面 Composer 也从 engine-constants 取（AgentEngine 是 de-facto
+// 共享代码，常量必须住在引擎侧才两边都够得着）。引擎端 prepareTurn 本来就会
+// 对没有 UI 钳的客户端兜底裁切——但那是静默的：这里钳在 onChange 上，超限粘
+// 贴被裁头，计数器告诉用户发生了什么。剪裁而非拒绝，与桌面同款。
+export const COMPOSER_MAX_CHARS = MAX_USER_INPUT_CHARS
+
+/** 计数器八成满时出现（桌面 COMPOSER_COUNT_VISIBLE_AT 同款算式）。 */
+export const COMPOSER_COUNT_VISIBLE_AT = Math.floor(COMPOSER_MAX_CHARS * 0.8)
+
+export function clampComposerInput(value: string): string {
+  return value.length > COMPOSER_MAX_CHARS ? value.slice(0, COMPOSER_MAX_CHARS) : value
+}
 
 /** Approval levels, most restrictive first — the chat's order and wording
  *  (InputArea's APPROVAL_LEVELS + 授权文案). */
@@ -116,7 +131,7 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
           placeholder={disabled ? '未连接桌面端' : '问点什么…（Enter 发送，Shift+Enter 换行）'}
           value={text}
           disabled={disabled}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => setText(clampComposerInput(e.target.value))}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
@@ -186,7 +201,7 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
                   {profiles.map((profile) => (
                     <button
                       key={profile.id}
-                      className="pm-model-item"
+                      className={`pm-model-item${profile.id === model?.activeId ? ' pm-model-item-active' : ''}`}
                       title={profile.model}
                       onClick={() => {
                         modelMenu.close()
@@ -198,6 +213,23 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
                   ))}
                 </div>
               )}
+            </span>
+          )}
+          {/* 到线计数（桌面 Composer 的 nearLimit 计数器，同款 inline 样式与
+              值）：#d46b08 是到线琥珀（InputArea 的 UNRESTRICTED_COLOR），
+              #999 是弱化墨色。八成满才出现，粘贴被裁头时它就是那个说明。 */}
+          {text.length >= COMPOSER_COUNT_VISIBLE_AT && (
+            <span
+              className="pm-composer-count"
+              style={{
+                fontSize: 11,
+                lineHeight: 1,
+                color: text.length >= COMPOSER_MAX_CHARS ? '#d46b08' : '#999',
+                fontVariantNumeric: 'tabular-nums',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {text.length}/{COMPOSER_MAX_CHARS}
             </span>
           )}
           {busy ? (

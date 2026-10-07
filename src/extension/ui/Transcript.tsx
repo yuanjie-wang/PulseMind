@@ -24,7 +24,7 @@
  * *held* on the client: a tool call waiting for approval, and an ask_user
  * question. Both are answered from here over the extension's reverse RPC. */
 
-import { useCallback, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { ContentBlock, ToolResultBlock, ToolUseBlock } from '../../shared/types/agent'
 import type { SessionState } from '../../shared/agent-session/mirror'
 import { ActionRow, CursorRow, ErrorCard, MarkdownBlock, ThinkingBlock, ToolBlock } from './MessageBlocks'
@@ -254,6 +254,22 @@ export function Transcript({ session, busy, onApprovalResponse, onAnswer, onClea
     if (!el || !followRef.current) return
     el.scrollTop = el.scrollHeight
   })
+
+  // 尺寸切换的补间（App 的 .pm-panel-animating）逐帧改变滚动区的盒子，而过渡
+  // 期间 React 不提交——上面那次提交时的吸底会停在中间态，尾巴一直差着直到下
+  // 一条流式分片。ResizeObserver 把跟随补齐到每一帧：只在跟随态动作，尺寸不
+  // 变时它不触发，没有常驻成本。observe 的首次回调和上面的初始吸底等价，无害。
+  // 回调里写 scrollTop 会触发一次 scroll 事件，handleScroll 重算后仍是跟随态，
+  // 不会成环（RO 只看盒子尺寸，不看滚动位置）。
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      if (followRef.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   const hasContent = session.messages.length > 0 || session.streamingBlocks.length > 0
   const rowIds = actionRowIds(session.messages, busy)

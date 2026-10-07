@@ -163,6 +163,18 @@ export class PanelBridge {
           return { ok: true }
         }
 
+        case 'panel/iteration-response': {
+          // Fire-and-forget like the approval answer: the engine is parked on
+          // the loop-limit decision (status awaiting_extension — no callId,
+          // the status event itself is the prompt) and the resulting status
+          // event updates the panel. The service's hosted router maps the
+          // decision to extendLoop / stopExecution.
+          const sessionId = await getSessionForTab(tabId)
+          if (!sessionId) return { ok: false, error: 'no session' }
+          this.requireClient().notify(Methods.iterationLimitResponse, { sessionId, approved: msg.approved })
+          return { ok: true }
+        }
+
         default:
           return { ok: false, error: `unknown request: ${(msg as { type: string }).type}` }
       }

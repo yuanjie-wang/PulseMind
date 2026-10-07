@@ -209,12 +209,27 @@ button {
  * 面板是 fixed + `bottom: 20px`，高度写成 100vh 时上边沿会跑到视口外 20px、头部那排
  * 按钮被裁掉一截（负向对照实测 rect.y = -20、header -19..22，19px 没了）。
  * `max(380px, 40vw)` 是刻意的：窄窗口上半屏宽会小于 380，照 40vw 写会让"放大"
- * 把面板变**窄**。尺寸切换不做补间 —— 面板里只有这一个会改自身尺寸的东西，而补间
- * 期间每帧都在重排，transcript 的"跟随底部"只在提交时对齐，动画跑完会停在离底差
- * 一点的位置，直到下一条流式分片才回正。 */
+ * 把面板变**窄**。 */
 .pm-panel.pm-panel-wide {
   width: max(380px, 40vw);
   height: calc(100vh - var(--pm-panel-inset) * 2);
+}
+
+/* 尺寸切换的补间（用户 2026-10-07：放大/缩小要有动画；推翻本条最初「不做补间」
+ * 的裁定——那个裁定防的「跟随底部漂移」已由 Transcript 的 ResizeObserver 逐帧
+ * 吸底解决）。过渡只活在切换的瞬间：`.pm-panel-animating` 由 App.tsx 在点击时
+ * 挂上、面板自身的 width/height transitionend 时摘掉（reduced-motion 下媒体查询
+ * 把过渡整个关掉、transitionend 永不来，由 App 的兜底定时器摘）。**不能常驻**
+ * 在 .pm-panel 上——上面两条尺寸表达式里含 40vw / 100vh，常驻过渡会把每一次
+ * 浏览器窗口缩放都变成逐帧 tween，面板追着窗口跑。 */
+.pm-panel.pm-panel-animating {
+  transition: width 0.2s ease-out, height 0.2s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pm-panel.pm-panel-animating {
+    transition: none;
+  }
 }
 
 .pm-header {
@@ -307,6 +322,68 @@ button {
   font-size: 12px;
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* 循环上限续跑卡（桌面 chat/ExtensionPrompt 的 PromptBox，镜像它的金色系）。
+   色值取应用 palette.ts 的 --pm-gold 字面值——面板不带应用变量：底 #fffbe6 /
+   边 #ffe58f / 墨 #ad6f00 / 实心 #d48806（antd gold ramp）。 */
+.pm-iterate {
+  margin: 8px 16px 0;
+  padding: 10px 12px;
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+  border-radius: var(--pm-radius-card);
+  color: #ad6f00;
+  font-size: 13px;
+}
+
+.pm-iterate-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.pm-iterate-desc {
+  margin-bottom: 8px;
+}
+
+/* 按钮沿用 .pm-approve-btn 的 antd size="small" 度量（24px 高 / 0 7 内边距 /
+   12px 字号）；实心 = 桌面的 gold-solid 主按钮（字色 antd ink-contrast 白），
+   danger = antd 的 #ff4d4f 描边钮。 */
+.pm-iterate-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.pm-iterate-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #ffe58f;
+  border-radius: var(--pm-radius-card);
+  background: #fff;
+  color: #ad6f00;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.pm-iterate-btn-primary {
+  border-color: #d48806;
+  background: #d48806;
+  color: #fff;
+}
+
+.pm-iterate-btn-danger {
+  border-color: #ff4d4f;
+  color: #ff4d4f;
+}
+
+.pm-iterate-btn-danger:hover {
+  border-color: #ff7875;
+  color: #ff7875;
 }
 
 /* ── transcript ───────────────────────────────────────────────────────── */
@@ -1303,7 +1380,10 @@ button {
   background: rgba(0, 0, 0, 0.04);
 }
 
-.pm-approval-item-active {
+/* 当前项着色：桌面 antd 菜单的 selected 底就是 controlItemBgActive #e6f4ff，
+   授权与模型两个菜单共用 —— 打开时当前位置先于第一次点击可见。 */
+.pm-approval-item-active,
+.pm-model-item-active {
   background: #e6f4ff; /* antd controlItemBgActive */
   font-weight: 600;
 }
