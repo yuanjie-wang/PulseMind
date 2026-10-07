@@ -237,8 +237,30 @@ function scanFootnotes(body: string): { body: string; footnotes: Map<string, num
   const texts = new Map<string, string>()
   if (!body.includes('[^')) return { body, footnotes, texts }
   const defRe = /^ {0,3}\[\^([^\]\s]+)\]:[ \t]*(.*)$/
+  // Fence state walks the body the way CommonMark does: a ```/~~~ line (≤3
+  // leading spaces) opens, the same char at ≥ the same length closes. A
+  // `[^id]:` line INSIDE a fence is code text — keep it verbatim, never strip
+  // it and never register it as a definition (review_20261008 中1: a
+  // ```markdown sample's documented footnote line was silently eaten, and
+  // worse, registered — an unrelated `[^1]` in the body then resolved to a
+  // live footnote sourced from inside a code block). Indented code blocks
+  // need no state: their lines carry ≥4 leading spaces, which defRe (≤3)
+  // never matches.
+  const openRe = /^ {0,3}(`{3,}|~{3,})(.*)$/
+  let fence: { ch: string; len: number } | null = null
   const kept: string[] = []
   for (const line of body.split('\n')) {
+    if (fence) {
+      if (new RegExp(`^ {0,3}\\${fence.ch}{${fence.len},}[ \t]*$`).test(line)) fence = null
+      kept.push(line)
+      continue
+    }
+    const open = openRe.exec(line)
+    if (open && !(open[1][0] === '`' && open[2].includes('`'))) {
+      fence = { ch: open[1][0], len: open[1].length }
+      kept.push(line)
+      continue
+    }
     const m = defRe.exec(line)
     if (m) {
       if (!texts.has(m[1])) texts.set(m[1], m[2])

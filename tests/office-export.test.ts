@@ -515,6 +515,40 @@ describe('docx frontmatter design (PLAN-docx-native-styles)', () => {
     expect(plain).not.toContain('footnoteReference')
     expect(stripTags(plain)).not.toContain('未定义的脚注引用')
   })
+
+  // review_20261008 中1: the scan had no fence state — a ```markdown sample's
+  // documented `[^1]: …` line was silently eaten AND registered, so an
+  // unrelated `[^1]` in the body resolved to a live footnote whose text came
+  // from inside a code block. Fence lines are code: kept verbatim, never
+  // definitions.
+  it('footnote definition lines inside fenced code blocks are kept verbatim and never registered', async () => {
+    const md = [
+      '引用正文的[^real]。',
+      '',
+      '```markdown',
+      '脚注语法示例：[^1]',
+      '[^1]: 这行在代码块里，是示例不是定义',
+      '```',
+      '',
+      '~~~',
+      '[^tilde]: 波浪围栏里同样不算',
+      '~~~',
+      '',
+      '[^real]: 真定义内容',
+    ].join('\n')
+    const buf = await markdownToDocxBuffer(md)
+    const zip = new AdmZip(buf)
+    const xml = zip.readAsText('word/document.xml')
+    // 围栏内的定义行原样保留在代码块里
+    expect(xml).toContain('这行在代码块里，是示例不是定义')
+    expect(xml).toContain('波浪围栏里同样不算')
+    // 只有围栏外的真定义成为活脚注
+    expect(countOf('footnoteReference', xml)).toBe(1)
+    const footnotesXml = zip.readAsText('word/footnotes.xml')
+    expect(footnotesXml).toContain('真定义内容')
+    expect(footnotesXml).not.toContain('是示例不是定义')
+    expect(footnotesXml).not.toContain('波浪围栏里同样不算')
+  })
 })
 
 describe('docx chart fences (PLAN-docx-native-styles M9)', () => {

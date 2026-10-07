@@ -253,7 +253,11 @@ function applyCoverCrops(buffer: Buffer, cropsBySlide: string[][]): Buffer {
     const crops = cropsBySlide[Number(m[1]) - 1]
     if (!crops || crops.length === 0) continue
     let i = 0
-    const xml = zip.readAsText(entry).replace(SRCRECT_MARKER, () => (i < crops.length ? crops[i++] : SRCRECT_MARKER))
+    // replaceAll, never replace: a slide with TWO+ cover images emits two
+    // markers, and string-mode replace swaps only the first — the rest land
+    // as zero srcRects, i.e. stretch instead of crop, silently
+    // (review_20261008 高1).
+    const xml = zip.readAsText(entry).replaceAll(SRCRECT_MARKER, () => (i < crops.length ? crops[i++] : SRCRECT_MARKER))
     zip.updateFile(entry, Buffer.from(xml, 'utf8'))
   }
   return zip.toBuffer()

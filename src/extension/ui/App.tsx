@@ -146,12 +146,14 @@ export function App(): React.JSX.Element {
       {/* Loop-limit decision (desktop chat/ExtensionPrompt, same zh strings):
           the engine parks on awaiting_extension until answered — without this
           card the panel's only way out was 停止. The zh strings are the
-          renderer's own (i18n/locales/zh.ts extensionPrompt) — no counts, the
-          desktop's title template carries no placeholders either. */}
+          renderer's own (i18n/locales/zh.ts extensionPrompt); the description
+          deliberately carries NO count — the renewal adds the user-configured
+          loop limit (default 200), so any literal number here would be wrong
+          (review_20261008 中2). */}
       {session.agentStatus.status === 'awaiting_extension' && (
         <div className="pm-iterate">
           <div className="pm-iterate-title">循环次数已达上限</div>
-          <div className="pm-iterate-desc">任务仍在进行中，是否继续执行？继续将额外增加 50 次循环限制。</div>
+          <div className="pm-iterate-desc">任务仍在进行中，是否继续执行？继续将按当前上限额外增加一轮循环额度。</div>
           <div className="pm-iterate-actions">
             <button className="pm-iterate-btn pm-iterate-btn-primary" onClick={() => panel.respondIteration(true)}>
               继续执行

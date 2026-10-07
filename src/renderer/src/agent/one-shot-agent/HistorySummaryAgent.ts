@@ -95,11 +95,11 @@ export class HistorySummaryAgent extends OneShotAgent<HistorySummaryInput, strin
 
   protected parseResponse(raw: string): string {
     // Strip markdown fences and lead-ins, keep the plain summary body. The
-    // strategy is layered (details at each layer below): a fence carrying the
-    // fixed section header IS the body (greedy span first — a wrapped body may
-    // quote inner ``` snippets); else a fully-fenced response keeps its body
-    // minus the markers; else stray fences strip with the old blanket rule.
-    // The 2000-char ceiling gives the roll's 800-char consolidated target
+    // strategy is layered (details at each layer below): fences are paired
+    // line-wise into regions; a region carrying the fixed section header IS
+    // the body; else a fully-fenced response keeps its body minus the
+    // markers; else stray fences strip with the old blanket rule. The
+    // 2000-char ceiling gives the roll's 800-char consolidated target
     // headroom while still bounding a runaway output — the old 800-char slice
     // was sized for one prose paragraph, not a structured body.
     let cleaned = raw.trim()
@@ -114,26 +114,54 @@ export class HistorySummaryAgent extends OneShotAgent<HistorySummaryInput, strin
     // position; a headerless fenced body keeps the old anchored path; no
     // qualifying fence → blanket strip (old behavior).
     //
-    // The per-block scan is LAZY and closes at the FIRST inner fence — a
-    // structured body that quotes a ```bash snippet (【文件与产物】 quoting a
-    // command is the norm) was cut at that snippet's closer, dropping its
-    // entire tail while the surviving head still named the header, so the
-    // ghost passed the honesty gate AND stamped the region covered
-    // (review_20261007 中2, real parseResponse run). The greedy sweep runs
-    // first: first opener → LAST closer, which is exactly a wrapping fence's
-    // span; when it names the header it IS the wrapped body. Independent
-    // sibling fences keep the lazy per-block path.
-    const greedyFence = cleaned.match(/```[^\n]*\n([\s\S]*)\n?\s*```/)
-    if (greedyFence && greedyFence[1].includes('【用户诉求与决策】')) {
-      cleaned = greedyFence[1]
-    } else {
-      const fencedBlocks = [...cleaned.matchAll(/```[^\n]*\n([\s\S]*?)\n?\s*```/g)]
-      const withHeader = fencedBlocks.map((m) => m[1]).find((b) => b.includes('【用户诉求与决策】'))
-      const anchored = cleaned.match(/^```[^\n]*\n([\s\S]*?)\n?```$/)
-      if (withHeader) cleaned = withHeader
-      else if (anchored) cleaned = anchored[1]
-      else cleaned = cleaned.replace(/```[\s\S]*?(?:```|$)/g, '')
+    // Regions come from LINE-WISE fence pairing, never a regex sweep. The
+    // 20261007 greedy arm (first opener → LAST closer) is exactly a wrapping
+    // fence's span — but only when the LAST closer belongs to the wrapper: a
+    // response whose header fence closes properly and is FOLLOWED by an
+    // independent sibling fence got glued — bare ``` lines, the prose between
+    // and the whole sibling block rode INTO the summary past the header check
+    // (review_20261008 中3). Pairing walks the shapes these responses take:
+    // inside an open fence an INFO-carrying marker (```bash …) opens a NESTED
+    // level whose lines — markers included — stay verbatim in the wrapper's
+    // body (review_20261007 中2), while a bare same-char marker closes the
+    // innermost level. A closed header fence + sibling block therefore yields
+    // TWO top-level regions and only the header one is the summary; a wrapper
+    // quoting snippets yields ONE; lead-in/trailer prose lives outside every
+    // region. An unclosed fence yields no region and falls through to the
+    // anchored/blanket fallbacks, as before.
+    const regions: string[] = []
+    const open: { ch: string; len: number }[] = []
+    let buf: string[] = []
+    for (const line of cleaned.split('\n')) {
+      if (open.length > 0) {
+        const top = open[open.length - 1]
+        if (new RegExp(`^ {0,3}\\${top.ch}{${top.len},}[ \t]*$`).test(line)) {
+          open.pop()
+          if (open.length === 0) {
+            regions.push(buf.join('\n'))
+            buf = []
+          } else {
+            buf.push(line) // an inner level's closer is body text of its wrapper
+          }
+          continue
+        }
+        const nested = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+        if (nested && !(nested[1][0] === '`' && nested[2].includes('`'))) {
+          open.push({ ch: nested[1][0], len: nested[1].length })
+        }
+        buf.push(line)
+        continue
+      }
+      const openM = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+      if (openM && !(openM[1][0] === '`' && openM[2].includes('`'))) {
+        open.push({ ch: openM[1][0], len: openM[1].length })
+      }
     }
+    const withHeader = regions.find((b) => b.includes('【用户诉求与决策】'))
+    const anchored = cleaned.match(/^```[^\n]*\n([\s\S]*?)\n?```$/)
+    if (withHeader) cleaned = withHeader
+    else if (anchored) cleaned = anchored[1]
+    else cleaned = cleaned.replace(/```[\s\S]*?(?:```|$)/g, '')
     cleaned = cleaned.trim()
     cleaned = cleaned.replace(/^(?:摘要(?:为|是)?|总结(?:为|是)?|历史摘要)[:：]?\s*/i, '').trim()
     // A fragment too short to hold the three fixed sections (the headers alone

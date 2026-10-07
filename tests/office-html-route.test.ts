@@ -238,6 +238,32 @@ describe('htmlDeckToPptxBuffer (facts → pptx)', () => {
     expect(report).not.toContain('object-fit')
   })
 
+  // review_20261008 高1: the post-pass used string-mode replace — only the
+  // FIRST marker per slide was swapped, so the 2nd+ cover image on one slide
+  // kept its zero srcRect (stretch, not crop) with no degradation line. The
+  // contract is k-th marker → k-th crop in emission order, ALL of them.
+  it('two cover images on one slide both get their crops (k-th marker → k-th crop)', async () => {
+    const facts = {
+      slides: [
+        {
+          blocks: [
+            { kind: 'image', x: 0, y: 0, w: 480, h: 540, src: 'assets/logo.png', objectFit: 'cover' as const, naturalW: 2000, naturalH: 1500, coverCrop: { l: 0.1, r: 0.1, t: 0.125, b: 0.125 } },
+            { kind: 'image', x: 480, y: 0, w: 480, h: 540, src: 'assets/logo.png', objectFit: 'cover' as const, naturalW: 1500, naturalH: 2000, coverCrop: { l: 0.2, r: 0.2, t: 0, b: 0 } },
+          ],
+        },
+      ],
+    }
+    const { buffer, report } = await htmlDeckToPptxBuffer({
+      facts, images: EMIT_IMAGES, accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    const xml = new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+    // BOTH real crops landed, in emission order — no zero marker survives
+    expect(xml).toContain('<a:srcRect l="10000" r="10000" t="12500" b="12500"/>')
+    expect(xml).toContain('<a:srcRect l="20000" r="20000" t="0" b="0"/>')
+    expect(xml).not.toContain('<a:srcRect l="0" r="0" t="0" b="0"/>')
+    expect(report).not.toContain('object-fit')
+  })
+
   it('a cover image without a computable crop degrades to stretch, by name', async () => {
     const facts = {
       slides: [

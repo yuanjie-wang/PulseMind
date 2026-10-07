@@ -245,7 +245,10 @@ const en: TranslationDict = {
     attachFile: 'Attach file',
     extensionPrompt: {
       title: 'Reached {{count}} loop iterations (limit {{limit}})',
-      description: 'The task is still in progress. Continue? This will add 50 more iterations.',
+      // No hard-coded count: the renewal increment is the user-configured loop
+      // limit (getLoopIterationLimit, default 200) — a literal number is wrong
+      // the moment anyone customizes it (review_20261008 中2).
+      description: 'The task is still in progress. Continue? This will add another round of iterations at the current limit.',
       continue: 'Continue',
       stop: 'Stop',
     },

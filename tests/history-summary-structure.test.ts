@@ -96,6 +96,24 @@ describe('HistorySummaryAgent: the structured template', () => {
     expect(parse(raw)).toContain('b.ts — 待办')
   })
 
+  // review_20261008 中3: the greedy sweep ran first opener → LAST closer —
+  // correct only when the last closer IS the wrapper's. A response whose
+  // header fence closes properly and is FOLLOWED by an independent sibling
+  // fence got glued: bare ``` lines, the prose between and the whole sibling
+  // block rode into the summary past the header check. The header region
+  // alone is the summary; the sibling is not.
+  it('a properly closed header fence followed by an independent sibling fence keeps only the header body (review_20261008 中3)', () => {
+    const parse = (raw: string): string =>
+      (agent as unknown as { parseResponse: (r: string) => string }).parseResponse(raw)
+    const headerBody = '【用户诉求与决策】\n- 要求补齐回归测试\n【任务执行情况】\n- 已完成\n【文件与产物】\n- a.ts — 已改'
+    const raw = ['```markdown', headerBody, '```', '附：回归命令备查', '```bash', 'npm test -- a.test.ts', '```'].join('\n')
+    const out = parse(raw)
+    expect(out).toBe(headerBody)
+    expect(out).not.toContain('npm test')
+    expect(out).not.toContain('备查')
+    expect(out).not.toContain('```')
+  })
+
   it('a sub-20-char fragment without section headers THROWS the parse — one-shot retry re-asks (review_20261006 中6, 中3)', () => {
     const parse = (raw: string): string =>
       (agent as unknown as { parseResponse: (r: string) => string }).parseResponse(raw)

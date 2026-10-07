@@ -242,7 +242,10 @@ const zh = {
     attachFile: '附件',
     extensionPrompt: {
       title: '循环次数已达上限',
-      description: '任务仍在进行中，是否继续执行？继续将额外增加 50 次循环限制。',
+      // 续期增量是用户配置的循环上限（agent-utils getLoopIterationLimit，默认
+      // 200）——文案不写具体数字，写死必错（「50」自 2026-08-05 错到
+      // 2026-10-08 才被 review_20261008 中2 揪出；扩展面板 App.tsx 手工镜像本串）。
+      description: '任务仍在进行中，是否继续执行？继续将按当前上限额外增加一轮循环额度。',
       continue: '继续执行',
       stop: '停止',
     },
