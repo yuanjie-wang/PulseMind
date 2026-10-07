@@ -158,7 +158,13 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
           return `Start-Process -Verb RunAs -Wait -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-Command','${escapedCmd}'`
         }
         if (platform === 'darwin') {
-          const fullCmd = cwd ? `cd '${cwd.replace(/'/g, "\\'")}' && ${command}` : command
+          // cwd rides POSIX '…' (review_20261007 高1: the old "\\'" was NOT an
+          // escape inside single quotes — one raw ' in cwd closed the wrap and
+          // the rest executed with administrator privileges). shSingleQuote's
+          // '\'' dance survives the AppleScript layer below: its \' is doubled
+          // to \\' by the escape pass and do shell script un-doubles it before
+          // handing the string to /bin/sh.
+          const fullCmd = cwd ? `cd ${shSingleQuote(cwd)} && ${command}` : command
           const escaped = fullCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
           return `osascript << 'OSAEOF'\ndo shell script "${escaped}" with administrator privileges\nOSAEOF`
         }

@@ -70,13 +70,42 @@ describe('HistorySummaryAgent: the structured template', () => {
     expect(parse('```markdown\n' + body + '\n```\n以上是摘要')).toBe(body)
   })
 
-  it('a sub-20-char fragment without section headers fails the parse — honest retry, not a ghost summary (review_20261006 中6)', () => {
+  // review_20261007 中2: the header-fence layer matched LAZILY and closed at
+  // the FIRST inner fence — a structured body quoting a ```bash snippet (the
+  // 【文件与产物】 norm) lost everything after that snippet while the surviving
+  // head still named the header, so the ghost passed the honesty gate AND
+  // stamped the region covered. Real parseResponse old-vs-new run in the review.
+  it('a wrapped body quoting an inner fenced snippet keeps its whole body (review_20261007 中2)', () => {
+    const parse = (raw: string): string =>
+      (agent as unknown as { parseResponse: (r: string) => string }).parseResponse(raw)
+    const wrapped = [
+      '【用户诉求与决策】',
+      '- 要求补齐回归测试',
+      '【任务执行情况】',
+      '- 已完成中2修复',
+      '【文件与产物】',
+      '- a.ts 修复完成，验证命令：',
+      '```bash',
+      'npm test -- a.test.ts',
+      '```',
+      '- b.ts — 待办，下一轮处理',
+    ].join('\n')
+    const raw = '好的，以下是摘要：\n```markdown\n' + wrapped + '\n```\n以上是摘要'
+    expect(parse(raw)).toBe(wrapped)
+    // Tail beyond the inner snippet survives verbatim — the lazy cut dropped it.
+    expect(parse(raw)).toContain('b.ts — 待办')
+  })
+
+  it('a sub-20-char fragment without section headers THROWS the parse — one-shot retry re-asks (review_20261006 中6, 中3)', () => {
     const parse = (raw: string): string =>
       (agent as unknown as { parseResponse: (r: string) => string }).parseResponse(raw)
     // 围栏救不回的无节标题正文：毯式规则吃掉正文后残句非空——旧行为把残句
-    // 当摘要落地。返回 '' 走诚实兜底 + 一次性重试。
-    expect(parse('好的，以下是摘要：\n```markdown\n真实正文在这里但被吃了\n```')).toBe('')
-    expect(parse('```markdown\n真实正文在这里但被吃了\n```\n以上是摘要')).toBe('')
+    // 当摘要落地。THROW（不再返回 ''）：OneShotAgent 只对 falsy raw 与抛错
+    // 重试，返回值原样穿透——旧注释承诺的「重问」从未发生，区域零补偿直落
+    // 纯截断（review_20261007 中3）。抛错借道既有 catch → 重试一次，第二次
+    // 失败才落 getDefaultOutput('')。
+    expect(() => parse('好的，以下是摘要：\n```markdown\n真实正文在这里但被吃了\n```')).toThrow()
+    expect(() => parse('```markdown\n真实正文在这里但被吃了\n```\n以上是摘要')).toThrow()
     // 三个节标题本身就超过 20 字——合法结构化摘要绝不会触发该门槛。
     const body = '【用户诉求与决策】\n- 用 pnpm\n【任务执行情况】\n- 已完成 X\n【文件与产物】\n- a.ts — 已改'
     expect(parse(body)).toBe(body)

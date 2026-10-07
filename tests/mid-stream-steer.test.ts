@@ -48,17 +48,19 @@ function makeSteerHost(opts: { deferAbortMs?: number } = {}): PulseHost & {
   pump(chunks: string[], requestId?: string): void
   complete(): void
   doneFor(requestId: string): void
+  errorFor(requestId: string, message: string): void
   aborted: string[]
   requestIds: string[]
 } {
   const chunkListeners = new Set<(d: { requestId: string; data: string }) => void>()
+  const errorListeners = new Set<(d: { requestId: string; error: string }) => void>()
   const doneListeners = new Set<(d: { requestId: string }) => void>()
   const pending = new Map<string, { resolve: () => void; reject: (e: Error) => void }>()
   let liveId: string | null = null
   const noop = () => Promise.resolve([] as unknown[])
   const host = {
     onApiStreamChunk: (fn: (d: { requestId: string; data: string }) => void) => { chunkListeners.add(fn); return () => { chunkListeners.delete(fn) } },
-    onApiStreamError: () => () => {},
+    onApiStreamError: (fn: (d: { requestId: string; error: string }) => void) => { errorListeners.add(fn); return () => { errorListeners.delete(fn) } },
     onApiStreamDone: (fn: (d: { requestId: string }) => void) => { doneListeners.add(fn); return () => { doneListeners.delete(fn) } },
     onApiStreamRetry: () => () => {},
     apiFetchStream: (requestId: string) => {
@@ -71,11 +73,20 @@ function makeSteerHost(opts: { deferAbortMs?: number } = {}): PulseHost & {
       const p = pending.get(requestId)
       if (!p) return
       pending.delete(requestId)
+      // The REAL abort wire (api-proxy.handler, review_20261007 中1):
+      // sinks.onError('Request aborted') then `return` — an ERROR IPC event
+      // plus a RESOLVED invoke, never a rejection. The old fake (p.reject)
+      // exercised only the catch's isCancel arm and could not see the
+      // dead-letter/watchdog path the real wire takes.
+      const fire = () => {
+        for (const fn of [...errorListeners]) fn({ requestId, error: 'Request aborted' })
+        p.resolve()
+      }
       // deferAbortMs mimics the real IPC window (review_20261006 中1): the
-      // abort's transport rejection lands AFTER a DONE that was already queued,
-      // so the old runner's listeners are still subscribed when it arrives.
-      if (opts.deferAbortMs) setTimeout(() => p.reject(new Error('aborted')), opts.deferAbortMs)
-      else p.reject(new Error('aborted'))
+      // abort's ERROR event lands AFTER a DONE that was already queued, so the
+      // old runner's listeners are still subscribed when it arrives.
+      if (opts.deferAbortMs) setTimeout(fire, opts.deferAbortMs)
+      else fire()
     },
     onTerminalOutput: () => () => {},
     onTerminalExit: () => () => {},
@@ -90,6 +101,7 @@ function makeSteerHost(opts: { deferAbortMs?: number } = {}): PulseHost & {
     pump(chunks: string[], requestId?: string): void
     complete(): void
     doneFor(requestId: string): void
+    errorFor(requestId: string, message: string): void
     aborted: string[]
     requestIds: string[]
   }
@@ -97,6 +109,7 @@ function makeSteerHost(opts: { deferAbortMs?: number } = {}): PulseHost & {
     pump(chunks: string[], requestId?: string): void
     complete(): void
     doneFor(requestId: string): void
+    errorFor(requestId: string, message: string): void
     aborted: string[]
     requestIds: string[]
   }
@@ -118,6 +131,9 @@ function makeSteerHost(opts: { deferAbortMs?: number } = {}): PulseHost & {
   }
   h.doneFor = (requestId: string) => {
     for (const fn of [...doneListeners]) fn({ requestId })
+  }
+  h.errorFor = (requestId: string, message: string) => {
+    for (const fn of [...errorListeners]) fn({ requestId, error: message })
   }
   return host
 }
@@ -236,7 +252,7 @@ describe('steer: redirect the live stream (the 方案 A core)', () => {
     expect(engine.agentStatus.status).toBe('streaming')
 
     const outcome = await engine.steer('转向：改做搜索')
-    await firstRun // the aborted request settles through the isCancel arm
+    await firstRun // the aborted request settles through the dead-request gate (real wire: ERROR + resolved invoke)
     await tick()
 
     expect(outcome).toEqual({ ok: true })
@@ -393,7 +409,7 @@ describe('steer: DONE-in-flight race (dead-letter the aborted request)', () => {
   }
 
   it('a stale DONE flushes nothing: no empty message, no second loop', async () => {
-    // The transport rejection must land AFTER the stale DONE — that ordering
+    // The abort's ERROR event must land AFTER the stale DONE — that ordering
     // is the whole point, so the old runner's listeners are still subscribed.
     const host = makeSteerHost({ deferAbortMs: 60 })
     setHost(host)
@@ -405,9 +421,9 @@ describe('steer: DONE-in-flight race (dead-letter the aborted request)', () => {
 
     const outcome = await engine.steer('转向：改做搜索')
     host.doneFor(host.requestIds[0]) // the stale DONE
-    await firstRun                   // settles via the deferred isCancel arm
+    await firstRun                   // settles via the dead-request gate
     await tick()
-    await tick()                     // let the 60ms deferred rejection drain
+    await tick()                     // let the 60ms deferred abort drain
 
     expect(outcome).toEqual({ ok: true })
     expect(engine.isCancelled).toBe(false)
@@ -447,6 +463,39 @@ describe('steer: DONE-in-flight race (dead-letter the aborted request)', () => {
     expect(engine.messages[3].contentBlocks.some((b) => b.type === 'tool_use')).toBe(false)
     expect(calls.n).toBe(1)
     expect(engine.agentStatus).toEqual({ status: 'completed' })
+  })
+
+  // review_20261007 中1: the dead-letter guard dropped the ERROR's deferred
+  // resolve, so the REAL cancel wire (ERROR event + resolved invoke — what
+  // api-proxy actually sends) left the old runner waiting out the full 30s
+  // watchdog per steer/stop, and the catch's isCancel arm then fired the
+  // turn-end hooks over a transcript the replacement round already owns. The
+  // fake host now pumps the real wire shape; the dead runner must settle
+  // PROMPTLY through the gate, and no turn-end hook may fire for it.
+  it('a real-shape abort settles the dead runner promptly, firing no turn-end hooks', async () => {
+    const host = makeSteerHost()
+    setHost(host)
+    const { engine } = makeEngine(host)
+    const afterLlmCall = vi.fn()
+    const afterSession = vi.fn()
+    ;(engine.opts as unknown as { hooks: Record<string, unknown> }).hooks = { afterLlmCall, afterSession }
+    engine.continueLoop = async (): Promise<void> => {} // the steer's re-dispatch is not this test's subject
+
+    engine.agentStatus = { status: 'streaming' }
+    const firstRun = runnerOf(engine).run(engine.opts, REQ)
+    host.pump(partialTextStream())
+    await tick()
+
+    const outcome = await engine.steer('转向：改做搜索')
+    expect(outcome).toEqual({ ok: true })
+    const t0 = Date.now()
+    await firstRun
+    const settleMs = Date.now() - t0
+    expect(settleMs).toBeLessThan(2000) // the broken shape waited STREAM_DONE_WATCHDOG_MS (30s) here
+    expect(afterLlmCall).not.toHaveBeenCalled()
+    expect(afterSession).not.toHaveBeenCalled()
+    expect(engine.isCancelled).toBe(false)
+    await tick()
   })
 })
 

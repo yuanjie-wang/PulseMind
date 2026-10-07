@@ -156,6 +156,64 @@ describe('buildCommandFromSkillInput: payloads stay inside single quotes', () =>
   })
 })
 
+// review_20261007 高1: the exec sudo-darwin arm put cwd into '…' via
+// replace(/'/g, "\\'") — POSIX single quotes do not honor \', so one raw ' in
+// cwd closed the wrap and the rest ran with administrator privileges (real
+// /bin/sh PoC in the review). The command is built in two layers: fullCmd is
+// sh-quoted, then the whole line is re-escaped for the AppleScript "…" literal
+// (\\ → \\\\, " → \"), which `do shell script` un-escapes before handing the
+// string to /bin/sh. Lexing therefore happens on the UN-escaped sh-level
+// string, not on the heredoc bytes.
+describe('buildCommandFromSkillInput: exec sudo darwin — cwd stays one shell word', () => {
+  function shLevelOf(built: string): string {
+    const m = built.match(/do shell script "([\s\S]*)" with administrator privileges/)
+    expect(m).toBeTruthy()
+    return m![1].replace(/\\\\/g, '\\').replace(/\\"/g, '"')
+  }
+
+  it('cwd payload stays inside single quotes at the sh layer', () => {
+    const cmd = buildCommandFromSkillInput('exec', { command: 'echo SAFE_MARKER_ONLY', cwd: `/tmp/a${PAYLOAD}`, sudo: true }, 'darwin', null)
+    expect(needleQuoting(shLevelOf(cmd), NEEDLE)).toEqual({ occurred: true, allInside: true })
+    expect(cmd).toContain('with administrator privileges')
+  })
+
+  it.runIf(process.platform !== 'win32')('cwd injection does not execute (real /bin/sh)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-shq-sudo-'))
+    const marker = join(dir, 'pwned')
+    // The payload balances itself with a trailing comment: once the early-closed
+    // wrap puts `; touch …;` in command position, `#` eats the leftover wrap
+    // quote so /bin/sh parses to completion (an unbalanced payload aborts the
+    // whole -c string before anything runs).
+    const cwd = `${dir}/a'; touch ${marker}; #'`
+    const cmd = buildCommandFromSkillInput('exec', { command: `echo SAFE_MARKER_ONLY > ${join(dir, 'out')}`, cwd, sudo: true }, 'darwin', null)
+    try {
+      const r = spawnSync('/bin/sh', ['-c', shLevelOf(cmd)], { encoding: 'utf-8' })
+      // The whole payload is one word: cd fails (no such dir), && short-circuits,
+      // and the smuggled touch never reaches command position.
+      expect(existsSync(marker)).toBe(false)
+      expect(r.stderr).not.toContain('command not found')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('negative control: the old backslash-quote build really executes the smuggled command', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-shq-sudo-old-'))
+    const marker = join(dir, 'pwned')
+    const cwd = `${dir}/a'; touch ${marker}; #'`
+    // The pre-fix construction, reduced to the sh level it ran at: the \'
+    // "escape" is a literal backslash inside single quotes, so the raw '
+    // still closes the wrap and the rest becomes shell grammar.
+    const oldFullCmd = `cd '${cwd.replace(/'/g, "\\'")}' && echo SAFE`
+    try {
+      spawnSync('/bin/sh', ['-c', oldFullCmd], { encoding: 'utf-8' })
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('getLineCount (read tool metadata)', () => {
   it.runIf(process.platform !== 'win32')('wc path single-quotes the file path — $() can no longer substitute', async () => {
     const { setHost } = await import('../src/renderer/src/agent/host')

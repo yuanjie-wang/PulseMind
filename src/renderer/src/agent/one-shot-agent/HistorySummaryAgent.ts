@@ -94,14 +94,14 @@ export class HistorySummaryAgent extends OneShotAgent<HistorySummaryInput, strin
   }
 
   protected parseResponse(raw: string): string {
-    // Strip markdown fences and lead-ins, keep the plain summary body. A fully
-    // fenced response keeps its body — only the markers go (the old blanket
-    // regex deleted the fenced content whole, so a model wrapping the
-    // structured summary in ```…``` produced an empty summary); stray fences
-    // elsewhere still strip with the blanket rule. The 2000-char ceiling gives
-    // the roll's 800-char consolidated target headroom while still bounding a
-    // runaway output — the old 800-char slice was sized for one prose
-    // paragraph, not a structured body.
+    // Strip markdown fences and lead-ins, keep the plain summary body. The
+    // strategy is layered (details at each layer below): a fence carrying the
+    // fixed section header IS the body (greedy span first — a wrapped body may
+    // quote inner ``` snippets); else a fully-fenced response keeps its body
+    // minus the markers; else stray fences strip with the old blanket rule.
+    // The 2000-char ceiling gives the roll's 800-char consolidated target
+    // headroom while still bounding a runaway output — the old 800-char slice
+    // was sized for one prose paragraph, not a structured body.
     let cleaned = raw.trim()
     // The fence we rescue is the one carrying the fixed section header: the
     // structured template makes the model MORE likely to wrap the summary in
@@ -113,21 +113,40 @@ export class HistorySummaryAgent extends OneShotAgent<HistorySummaryInput, strin
     // must not be mistaken for the body, so the header fence wins over mere
     // position; a headerless fenced body keeps the old anchored path; no
     // qualifying fence → blanket strip (old behavior).
-    const fencedBlocks = [...cleaned.matchAll(/```[^\n]*\n([\s\S]*?)\n?\s*```/g)]
-    const withHeader = fencedBlocks.map((m) => m[1]).find((b) => b.includes('【用户诉求与决策】'))
-    const anchored = cleaned.match(/^```[^\n]*\n([\s\S]*?)\n?```$/)
-    if (withHeader) cleaned = withHeader
-    else if (anchored) cleaned = anchored[1]
-    else cleaned = cleaned.replace(/```[\s\S]*?(?:```|$)/g, '')
+    //
+    // The per-block scan is LAZY and closes at the FIRST inner fence — a
+    // structured body that quotes a ```bash snippet (【文件与产物】 quoting a
+    // command is the norm) was cut at that snippet's closer, dropping its
+    // entire tail while the surviving head still named the header, so the
+    // ghost passed the honesty gate AND stamped the region covered
+    // (review_20261007 中2, real parseResponse run). The greedy sweep runs
+    // first: first opener → LAST closer, which is exactly a wrapping fence's
+    // span; when it names the header it IS the wrapped body. Independent
+    // sibling fences keep the lazy per-block path.
+    const greedyFence = cleaned.match(/```[^\n]*\n([\s\S]*)\n?\s*```/)
+    if (greedyFence && greedyFence[1].includes('【用户诉求与决策】')) {
+      cleaned = greedyFence[1]
+    } else {
+      const fencedBlocks = [...cleaned.matchAll(/```[^\n]*\n([\s\S]*?)\n?\s*```/g)]
+      const withHeader = fencedBlocks.map((m) => m[1]).find((b) => b.includes('【用户诉求与决策】'))
+      const anchored = cleaned.match(/^```[^\n]*\n([\s\S]*?)\n?```$/)
+      if (withHeader) cleaned = withHeader
+      else if (anchored) cleaned = anchored[1]
+      else cleaned = cleaned.replace(/```[\s\S]*?(?:```|$)/g, '')
+    }
     cleaned = cleaned.trim()
     cleaned = cleaned.replace(/^(?:摘要(?:为|是)?|总结(?:为|是)?|历史摘要)[:：]?\s*/i, '').trim()
     // A fragment too short to hold the three fixed sections (the headers alone
     // are 24+ chars) and carrying none of them is not a summary — it is what
-    // survives when the fence handling above could not rescue the body. Return
-    // '' so the caller treats the call as failed: the honest fallback keeps the
-    // old text and the one-shot retry re-asks, instead of covering the region
-    // with a ghost. (A valid body always names 【用户诉求与决策】.)
-    if (cleaned.length < 20 && !cleaned.includes('【用户诉求与决策】')) return ''
+    // survives when the fence handling above could not rescue the body. THROW
+    // rather than return '': OneShotAgent retries a thrown parse (its catch →
+    // attempt 2), but a returned value is passed through untouched — the
+    // promised "one-shot retry re-asks" never ran and the region fell to plain
+    // truncation with zero compensation (review_20261007 中3). Only a second
+    // failure lands in getDefaultOutput('').
+    if (cleaned.length < 20 && !cleaned.includes('【用户诉求与决策】')) {
+      throw new Error(`[${this.name}] summary parse produced no structured body (${cleaned.length} chars) — re-asking`)
+    }
     return cleaned.slice(0, 2000)
   }
 

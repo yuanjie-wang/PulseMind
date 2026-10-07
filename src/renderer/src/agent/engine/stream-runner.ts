@@ -226,8 +226,13 @@ export class StreamRunner {
       const isDeadRequest = () => this.engine.cancelledRequestIds.has(requestId)
       unsubChunk = this.engine.getHost().onApiStreamChunk(data => { if (data.requestId === requestId && !isDeadRequest()) dispatcher.processChunk(data.data) })
 
-      unsubError = this.engine.getHost().onApiStreamError(data => { if (data.requestId !== requestId || isDeadRequest()) return; streamError = data.error; streamDeferredResolve() })
-      unsubDone = this.engine.getHost().onApiStreamDone(data => { if (data.requestId !== requestId || isDeadRequest()) return; streamDone = true; dispatcher.flush(); streamDeferredResolve() })
+      // Dead letters drop the PAYLOAD but still resolve the deferred: the real
+      // cancel wire is an ERROR event plus the invoke RESOLVING (api-proxy
+      // aborts via sinks.onError + return, never a reject), so nothing else
+      // would ever settle the stream-done await below
+      // (review_20261007 中1).
+      unsubError = this.engine.getHost().onApiStreamError(data => { if (data.requestId !== requestId) return; if (isDeadRequest()) { streamDeferredResolve(); return } streamError = data.error; streamDeferredResolve() })
+      unsubDone = this.engine.getHost().onApiStreamDone(data => { if (data.requestId !== requestId) return; if (isDeadRequest()) { streamDeferredResolve(); return } streamDone = true; dispatcher.flush(); streamDeferredResolve() })
       unsubRetry = this.engine.getHost().onApiStreamRetry(data => {
         if (data.requestId !== requestId || isDeadRequest()) return
         this.engine.agentStatus = { status: 'retrying', message: data.message, attempt: data.attempt, maxRetries: data.maxRetries, delay: data.delay }
@@ -239,6 +244,14 @@ export class StreamRunner {
       // console.log(`[AgentEngine] POST body: ${(resolvedBody as any).messages?.length ?? 0} messages`)
 
       await this.engine.getHost().apiFetchStream(requestId, apiUrl, { method: 'POST', headers, body: resolvedBody as string | object, profileId: this.engine.opts.profileId })
+
+      // A dead request (steer/stop/retry/dispose aborted it) exits HERE: its
+      // ERROR event was a dead letter above, and the invoke resolved normally —
+      // without this gate the old runner sat out the full 30s watchdog per
+      // steer/stop, and its catch's isCancel arm then fired afterSession's
+      // memory extraction over a transcript the replacement round already owns
+      // (review_20261007 中1).
+      if (isDeadRequest()) { cleanupListeners(); return }
 
       // Await the stream-done IPC event. The main process always sends either
       // API_STREAM_DONE or API_STREAM_ERROR, and both resolve streamDonePromise.
