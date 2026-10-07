@@ -24,20 +24,75 @@ const MUTED = '8C8C8C'
 const AXIS = 'D9D9D9'
 const ZERO_LINE = 'BFBFBF'
 
-/** Series colours: the accent rides first, then fixed companions (≤4 series). */
-const SERIES_FRIENDS = ['13C2C2', 'FAAD14', 'F5222D', '52C41A', '722ED1']
-/** Pie needs more slices than a 4-series chart — a 6-hue categorical set. */
-const PIE_PALETTE = ['13C2C2', 'FAAD14', 'F5222D', '52C41A', '722ED1']
+// ── Series colours derive FROM the accent (2026-10-07) ── the old fixed antd
+//  five broke theme unity the moment a deck's accent wasn't red-family: a teal
+//  deck's second series still came out antd-cyan. Companions now walk the
+//  golden angle (137.5° — the classic uniform-hue spread) off the accent's own
+//  hue, with S/L clamped to chart-legible mid bands; the accent itself rides
+//  first VERBATIM (the recolor-the-primary-series contract). Near-neutral
+//  accents (S < 0.08) have no hue to rotate — they walk a lightness ladder
+//  instead, because monochrome themes read series by shade.
+const GOLDEN_ANGLE = 137.5
+
+function hexToHsl(hex: string): { h: number; s: number; l: number } {
+  const r = parseInt(hex.slice(0, 2), 16) / 255
+  const g = parseInt(hex.slice(2, 4), 16) / 255
+  const b = parseInt(hex.slice(4, 6), 16) / 255
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  const d = max - min
+  if (d === 0) return { h: 0, s: 0, l }
+  const s = d / (1 - Math.abs(2 * l - 1))
+  let h: number
+  if (max === r) h = 60 * (((g - b) / d) % 6)
+  else if (max === g) h = 60 * ((b - r) / d + 2)
+  else h = 60 * ((r - g) / d + 4)
+  return { h: (h + 360) % 360, s, l }
+}
+
+function hslToHex({ h, s, l }: { h: number; s: number; l: number }): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const hp = (h % 360) / 60
+  const x = c * (1 - Math.abs((hp % 2) - 1))
+  const m = l - c / 2
+  const [r0, g0, b0] = hp < 1 ? [c, x, 0] : hp < 2 ? [x, c, 0] : hp < 3 ? [0, c, x] : hp < 4 ? [0, x, c] : hp < 5 ? [x, 0, c] : [c, 0, x]
+  const byte = (v: number): string => Math.round((v + m) * 255).toString(16).padStart(2, '0').toUpperCase()
+  return byte(r0) + byte(g0) + byte(b0)
+}
+
+/** [accent verbatim, then derived companions] — the palette every painter
+ *  (column/bar/line/pie) reads. `count` = series or slice count. */
+export function seriesPalette(accent: string, count: number): string[] {
+  const first = accent.replace('#', '').toUpperCase()
+  const out = [first]
+  if (count <= 1) return out
+  const { h, s, l } = hexToHsl(first)
+  const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
+  if (s < 0.08) {
+    const steps = [0.24, -0.24, 0.42, -0.42, 0.58, -0.58, 0.72, -0.72, 0.84, -0.84, 0.92]
+    for (let i = 1; i < count; i++) {
+      const li = clamp(l + steps[(i - 1) % steps.length], 0.06, 0.94)
+      out.push(hslToHex({ h, s, l: li }))
+    }
+  } else {
+    const cs = clamp(s, 0.5, 0.78)
+    const cl = clamp(l, 0.42, 0.56)
+    for (let i = 1; i < count; i++) out.push(hslToHex({ h: (h + i * GOLDEN_ANGLE) % 360, s: cs, l: cl }))
+  }
+  return out
+}
 
 type Slide = ReturnType<PptxGenJS['addSlide']>
 
-/** The accent rides first so a custom theme recolors the primary series. */
-function seriesColor(accent: string, i: number): string {
-  return i === 0 ? accent : SERIES_FRIENDS[(i - 1) % SERIES_FRIENDS.length]
+/** The accent rides first so a custom theme recolors the primary series;
+ *  companions derive from it via seriesPalette. */
+function seriesColor(palette: string[], i: number): string {
+  return palette[i % palette.length]
 }
 
 /** Round a chart max up to 1/2/2.5/5×10^k so axis-less bars still read true. */
-function niceMax(v: number): number {
+export function niceMax(v: number): number {
   if (v <= 0) return 1
   const exp = Math.pow(10, Math.floor(Math.log10(v)))
   for (const m of [1, 2, 2.5, 5, 10]) if (m * exp >= v) return m * exp
@@ -65,7 +120,8 @@ export function drawDeckChart(slide: Slide, c: DeckChart, accent: string, box: C
   let chartH = box.h
   const chartX = box.x
   const chartW = box.w
-  const colors = c.series.map((_, i) => seriesColor(accent, i))
+  const palette = seriesPalette(accent, c.series.length)
+  const colors = c.series.map((_, i) => seriesColor(palette, i))
 
   if (c.type === 'pie') {
     renderPie(slide, c, accent, chartTop, chartH, chartX, chartW)
@@ -176,7 +232,8 @@ function renderPie(slide: Slide, c: DeckChart, accent: string, chartTop: number,
   const r = Math.min(chartH / 2, chartW / 4)
   const cy = chartTop + chartH / 2
   const cx = chartX + chartW * 0.25
-  const colors = values.map((_, i) => (i === 0 ? accent : PIE_PALETTE[(i - 1) % PIE_PALETTE.length]))
+  // up to 12 slices from one accent — the golden angle spreads them all
+  const colors = seriesPalette(accent, values.length)
   if (total > 0) {
     let angle = 270 // OOXML geometry: degrees clockwise from 3 o'clock
     values.forEach((v, i) => {

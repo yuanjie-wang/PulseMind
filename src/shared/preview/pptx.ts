@@ -53,6 +53,8 @@ export interface PptxTextRun {
   link?: string
   /** Rendered as a <br> (an a:br line break inside the paragraph). */
   br?: boolean
+  /** rPr@spc (1/100 pt) → px, the letter-spacing the run carries. */
+  letterSpacingPx?: number
 }
 
 export interface PptxBullet {
@@ -91,6 +93,16 @@ export interface PptxLineStyle {
   dash?: 'dash' | 'dot' | 'solid'
 }
 
+/** a:outerShdw → the CSS box-shadow the renderer paints: OOXML is polar
+ *  (dist + dir clockwise from 3 o'clock), CSS wants dx/dy. */
+export interface PptxShadowVM {
+  offsetX: number
+  offsetY: number
+  blurPx: number
+  /** CSS color — rgba() carries the OOXML alpha. */
+  color: string
+}
+
 export interface PptxGeometry {
   /** preset-geometry tag — the renderer keys its extra styling off this */
   prst: string
@@ -118,6 +130,7 @@ export interface PptxShapeVM {
   /** CSS background (solid or linear-gradient); undefined = transparent. */
   fill?: string
   line?: PptxLineStyle
+  shadow?: PptxShadowVM
   geometry?: PptxGeometry
   text?: PptxTextFrame
   /** image kind: data: URL (the CSP allows data: images — DocxPreview's
@@ -416,6 +429,8 @@ interface TextStyle {
   align?: PptxParagraph['align']
   marLeftPx?: number
   bullet?: PptxBullet | 'none'
+  /** rPr@spc in pt (the attribute is 1/100 pt). */
+  letterSpacingPt?: number
 }
 
 /** A shape's placeholder kind + idx, for the inheritance chain. */
@@ -439,6 +454,7 @@ function styleOfRPr(rPr: XNode | undefined, ctx: ParseCtx, fonts?: Set<string>):
   if (rPr.attrs.i !== undefined) s.italic = rPr.attrs.i === '1' || rPr.attrs.i === 'true'
   if (rPr.attrs.u !== undefined) s.underline = rPr.attrs.u !== 'none'
   if (rPr.attrs.strike !== undefined) s.strike = rPr.attrs.strike !== 'noStrike'
+  if (rPr.attrs.spc !== undefined) s.letterSpacingPt = numAttr(rPr, 'spc', 0) / 100
   const fill = kid(rPr, 'solidFill')
   const color = fill ? resolveColorNode(colorChildOf(fill), ctx) : undefined
   if (color) s.color = color
@@ -615,6 +631,7 @@ function parseTextFrame(
         if (rPr.strike) run.strike = true
         if (rPr.color) run.color = rPr.color
         if (rPr.font) run.font = rPr.font
+        if (rPr.letterSpacingPt !== undefined) run.letterSpacingPx = rPr.letterSpacingPt * (4 / 3)
         const hlink = kid(kid(el, 'rPr'), 'hlinkClick')
         const rel = hlink ? chain.links?.get(relIdOf(hlink)) : undefined
         if (rel?.external) run.link = rel.target
@@ -1044,6 +1061,20 @@ function parseShape(
   if (fill !== undefined) vm.fill = fill
   if (line !== undefined) vm.line = line
   if (geometry.prst !== 'rect' || geometry.isLine) vm.geometry = geometry
+  // One outer shadow — the shape effects our route emits. dist/dir is polar
+  // (clockwise from 3 o'clock, screen-y down = sin positive), CSS wants dx/dy.
+  const outerShdw = kids(kid(spPr, 'effectLst'), 'outerShdw')[0]
+  const shadowColor = outerShdw ? resolveColorNode(colorChildOf(outerShdw), ctx) : undefined
+  if (outerShdw && shadowColor) {
+    const distPx = emuToPx(numAttr(outerShdw, 'dist', 0))
+    const rad = (angleToDeg(numAttr(outerShdw, 'dir', 5400000)) * Math.PI) / 180
+    vm.shadow = {
+      offsetX: distPx * Math.cos(rad),
+      offsetY: distPx * Math.sin(rad),
+      blurPx: emuToPx(numAttr(outerShdw, 'blurRad', 0)),
+      color: shadowColor,
+    }
+  }
   if (txBody) {
     const lstStyle = kid(txBody, 'lstStyle')
     const layoutShape = ph ? matchingPhInTree(env.layoutSpTree, ph) : undefined

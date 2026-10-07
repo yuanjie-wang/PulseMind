@@ -12,8 +12,10 @@
 //  so --pm-font-latin lands via a slide-XML rewrite (adm-zip), matching the
 //  format_text double-write convention (main/pptx/ops.ts).
 //
-//  Fidelity: the collector already refused what can't be honored
-//  (transparency, gradients, transforms, overflow); this module re-validates
+//  Fidelity: the collector refuses what still can't be honored (gradients,
+//  transforms, overflow, translucent TEXT color) and maps what now can
+//  (fill/line alpha → pptxgenjs transparency, single outer box-shadow →
+//  outerShdw, object-fit:cover → a real srcRect); this module re-validates
 //  the chart specs defensively and reports what it rendered plus what it
 //  degraded (never silently — SKILL 铁律 5).
 
@@ -23,7 +25,7 @@ import { extname } from 'node:path'
 import { validateDeckChart, type DeckChart } from '../../shared/deck/spec'
 import { SLIDE_H, SLIDE_W } from './html-route-types'
 import { drawDeckChart } from './chart-draw'
-import type { ChartBlock, ImageBlock, LayoutFacts, LayoutRun, TableBlock, TextBlock, BoxBlock } from './html-route-types'
+import type { BoxShadowFacts, ChartBlock, ImageBlock, LayoutFacts, LayoutRun, TableBlock, TextBlock, BoxBlock } from './html-route-types'
 
 const IN = 1 / 96 // px → inch on the 96dpi canvas
 const PT = 0.75 // px → point
@@ -79,6 +81,27 @@ function splitLatinEa(buffer: Buffer, latinFace: string, eaFace: string, monoFac
 const box = (b: { x: number; y: number; w: number; h: number }) => ({ x: b.x * IN, y: b.y * IN, w: b.w * IN, h: b.h * IN })
 
 /**
+ * CSS box-shadow → pptxgenjs outer shadow. OOXML's outerShdw is polar
+ * (dist + dir clockwise from 3 o'clock); CSS gives dx/dy, so dist = |offset|,
+ * dir = atan2(dy, dx) in degrees. The falsy-default guard is load-bearing:
+ * pptxgenjs fills `angle || 270` / `offset || 4` / `blur || 8`, so a legit
+ * 0° angle must ship as 360°, and zero offsets/blurs as an epsilon —
+ * otherwise every glow (`0 0 12px …`) secretly gains a 4pt offset.
+ */
+function shadowProps(s: BoxShadowFacts): Record<string, unknown> {
+  const dist = Math.hypot(s.offsetX, s.offsetY) * PT
+  const angleDeg = ((Math.atan2(s.offsetY, s.offsetX) * 180) / Math.PI + 360) % 360
+  return {
+    type: 'outer',
+    angle: Math.round(angleDeg) === 0 ? 360 : Math.round(angleDeg),
+    blur: Math.max(Math.round(s.blur * PT * 100) / 100, 0.01),
+    offset: Math.max(Math.round(dist * 100) / 100, 0.01),
+    color: s.color,
+    opacity: Math.round(s.alpha * 100) / 100,
+  }
+}
+
+/**
  * Text-box safety pad. PowerPoint text boxes carry default insets (~0.1" per
  * side) that would eat a shrink-wrapped html box (a page number is a few px
  * wide) into a wrapped line — `margin: 0` removes the insets, and PAD_X adds
@@ -132,6 +155,9 @@ function textRuns(runs: LayoutRun[], fontMono: string): Array<{ text: string; op
           underline: run.underline ? { style: 'sng' } : undefined,
           strike: run.strike ? true : undefined,
           color: run.color,
+          // letter-spacing px → pt; pptxgenjs emits spc (1/100 pt) and only
+          // for truthy values, so untracked runs omit it (0 = no tracking)
+          ...(run.charSpacingPx ? { charSpacing: Math.round(run.charSpacingPx * PT * 100) / 100 } : {}),
           ...(run.mono ? { fontFace: fontMono } : {}),
         },
       })
@@ -167,16 +193,70 @@ function emitBox(slide: ReturnType<PptxGenJS['addSlide']>, b: BoxBlock): void {
   const rounded = (b.radiusPx ?? 0) > 0.5
   slide.addShape(rounded ? 'roundRect' : 'rect', {
     ...box(b),
-    ...(b.fill ? { fill: { color: b.fill } } : {}),
-    ...(b.border ? { line: { color: b.border.color, width: Math.max(0.75, Math.round(b.border.widthPx * PT * 10) / 10) } } : {}),
+    ...(b.fill ? { fill: { color: b.fill, ...(b.fillTransparency !== undefined ? { transparency: b.fillTransparency } : {}) } } : {}),
+    ...(b.border
+      ? { line: { color: b.border.color, width: Math.max(0.75, Math.round(b.border.widthPx * PT * 10) / 10), ...(b.border.transparency !== undefined ? { transparency: b.border.transparency } : {}), ...(b.border.dash ? { dashType: b.border.dash } : {}) } }
+      : {}),
     ...(rounded ? { rectRadius: (b.radiusPx ?? 0) * IN } : {}),
+    ...(b.shadow ? { shadow: shadowProps(b.shadow) } : {}),
   } as never)
 }
 
-function emitImage(slide: ReturnType<PptxGenJS['addSlide']>, b: ImageBlock, images: Map<string, Buffer>): void {
+function emitImage(
+  slide: ReturnType<PptxGenJS['addSlide']>,
+  b: ImageBlock,
+  images: Map<string, Buffer>,
+  crops?: string[],
+  degradations?: string[],
+  page?: number
+): void {
   const data = images.get(b.src)
   if (!data) throw new Error(`图片没有解析到字节：${b.src}——这是内部状态不一致（服务已在测量前解析全部图片），请重试导出`)
-  slide.addImage({ data: `data:${imageMime(b.src)};base64,${data.toString('base64')}`, ...box(b), sizing: { type: 'contain', w: b.w * IN, h: b.h * IN } })
+  const add = (sizing?: { type: 'cover'; w: number; h: number }) =>
+    slide.addImage({
+      data: `data:${imageMime(b.src)};base64,${data.toString('base64')}`,
+      ...box(b),
+      ...(sizing ? { sizing } : {}),
+    })
+  // object-fit:cover → pptxgenjs sizing is a no-op (it sizes against the
+  // element frame, not the natural image), so the crop rides the post-pass:
+  // sizing 'cover' emits the zero-srcRect MARKER — the only source of that
+  // string — and applyCoverCrops swaps markers for real crops in pic order.
+  if (b.objectFit === 'cover' && b.coverCrop && crops) {
+    add({ type: 'cover', w: b.w * IN, h: b.h * IN })
+    crops.push(coverSrcRect(b.coverCrop))
+    return
+  }
+  if (b.objectFit === 'cover' && !b.coverCrop && degradations) {
+    degradations.push(`第 ${page} 页：object-fit:cover 读不到图片原始尺寸，按拉伸处理`)
+  }
+  add()
+}
+
+/** pptxgenjs's own `sizing: 'cover'` output — zero crop, the marker string. */
+const SRCRECT_MARKER = '<a:srcRect l="0" r="0" t="0" b="0"/><a:stretch/>'
+
+function coverSrcRect(crop: { l: number; r: number; t: number; b: number }): string {
+  const pct = (v: number): number => Math.round(v * 100000)
+  return `<a:srcRect l="${pct(crop.l)}" r="${pct(crop.r)}" t="${pct(crop.t)}" b="${pct(crop.b)}"/><a:stretch/>`
+}
+
+/** Swap each cover pic's zero srcRect for its computed crop. The k-th marker
+ *  in a slide's XML is the k-th cover image in that slide's emission order —
+ *  the same order the crops were collected in. */
+function applyCoverCrops(buffer: Buffer, cropsBySlide: string[][]): Buffer {
+  if (!cropsBySlide.some((c) => c.length > 0)) return buffer
+  const zip = new AdmZip(buffer)
+  for (const entry of zip.getEntries()) {
+    const m = entry.entryName.match(/^ppt\/slides\/slide(\d+)\.xml$/)
+    if (!m) continue
+    const crops = cropsBySlide[Number(m[1]) - 1]
+    if (!crops || crops.length === 0) continue
+    let i = 0
+    const xml = zip.readAsText(entry).replace(SRCRECT_MARKER, () => (i < crops.length ? crops[i++] : SRCRECT_MARKER))
+    zip.updateFile(entry, Buffer.from(xml, 'utf8'))
+  }
+  return zip.toBuffer()
 }
 
 function emitTable(slide: ReturnType<PptxGenJS['addSlide']>, b: TableBlock, fontZh: string): void {
@@ -189,7 +269,7 @@ function emitTable(slide: ReturnType<PptxGenJS['addSlide']>, b: TableBlock, font
         fontSize: Math.round(cell.fontSizePx * PT * 10) / 10,
         align: cell.align,
         valign: 'middle' as const,
-        ...(cell.fill ? { fill: { color: cell.fill } } : {}),
+        ...(cell.fill ? { fill: { color: cell.fill, ...(cell.fillTransparency !== undefined ? { transparency: cell.fillTransparency } : {}) } } : {}),
       },
     }))
   )
@@ -225,17 +305,21 @@ export async function htmlDeckToPptxBuffer(input: HtmlDeckInput): Promise<HtmlDe
   pptx.author = 'PulseMind'
 
   const census = { text: 0, box: 0, image: 0, table: 0, chart: 0 }
+  const coverCropsBySlide: string[][] = []
+  const emitDegradations: string[] = []
   facts.slides.forEach((sf, si) => {
     const page = si + 1
     const slide = pptx.addSlide()
-    if (sf.background) slide.background = { color: sf.background }
+    if (sf.background) slide.background = { color: sf.background, ...(sf.backgroundTransparency !== undefined ? { transparency: sf.backgroundTransparency } : {}) } as never
     // browser paint order: in-flow first, positioned above (stable partition)
     const ordered = [...sf.blocks.filter((b) => !b.positioned), ...sf.blocks.filter((b) => b.positioned)]
+    const crops: string[] = []
+    coverCropsBySlide[si] = crops
     ordered.forEach((b) => {
       switch (b.kind) {
         case 'text': emitText(slide, b, fontZh, fontMono); census.text++; break
         case 'box': emitBox(slide, b); census.box++; break
-        case 'image': emitImage(slide, b, images); census.image++; break
+        case 'image': emitImage(slide, b, images, crops, emitDegradations, page); census.image++; break
         case 'table': emitTable(slide, b, fontZh); census.table++; break
         case 'chart': emitChart(slide, b, accent, page); census.chart++; break
       }
@@ -243,12 +327,12 @@ export async function htmlDeckToPptxBuffer(input: HtmlDeckInput): Promise<HtmlDe
   })
 
   const out = (await pptx.write({ outputType: 'nodebuffer' })) as unknown as Buffer
-  const buffer = splitLatinEa(Buffer.from(out), fontLatin, fontZh, fontMono)
+  const buffer = applyCoverCrops(splitLatinEa(Buffer.from(out), fontLatin, fontZh, fontMono), coverCropsBySlide)
 
   const lines = [
     `【设计路线 · 保真报告】${facts.slides.length} 页：文本块 ${census.text}、色块 ${census.box}、图片 ${census.image}、表格 ${census.table}、图表 ${census.chart}（原生可编辑形状）`,
   ]
-  const degradations = [...(input.degradations ?? [])]
+  const degradations = [...(input.degradations ?? []), ...emitDegradations]
   if (degradations.length > 0) lines.push(`降级（如实告知用户）：${degradations.join('；')}`)
   lines.push('HTML 源（deck.html + tokens.css）已保留在会话里——改版式/改主题改它们后重新导出；交付后的小改也可以用 office_edit 直接改 pptx。')
   return { buffer, report: lines.join('\n') }

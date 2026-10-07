@@ -26,6 +26,8 @@ import { htmlDeckToPptxBuffer } from '../office-export/html-to-pptx'
 // heavy requires (exceljs ~187ms of the lot) and only a tool call needs them.
 // Loading inside each branch means one export pays for its own format, not five.
 
+import type { DeckChart } from '../../shared/deck/spec'
+
 const pReadFile = promisify(readFile)
 const pWriteFile = promisify(writeFile)
 const pRename = promisify(rename)
@@ -246,6 +248,49 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
         }
       }
 
+      // M9 (PLAN-docx-native-styles): ```chart fences rasterize to PNG through
+      // Chromium before the buffer build. Content errors (bad JSON / spec
+      // violations) REFUSE naming the fence — the model can fix those; a
+      // missing Chromium DEGRADES (no charts map → the generator keeps the
+      // fences as plain code blocks + the closing note). Charts are an
+      // enhancement, never a load-bearing wall.
+      let charts: Map<number, Buffer> | undefined
+      if ((input.format === 'docx' || input.format === 'pdf') && md && md.includes('```chart')) {
+        const { parseDocxFrontmatter } = await import('../office-export/md-to-docx')
+        const { mdChartSpecs, renderChartsToPng } = await import('../office-export/docx-charts')
+        const { validateDeckChart } = await import('../../shared/deck/spec')
+        const specsRaw = mdChartSpecs(md)
+        const errs: string[] = []
+        const specs: DeckChart[] = []
+        specsRaw.forEach((raw, i) => {
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(raw)
+          } catch (e) {
+            errs.push(`第 ${i + 1} 个 chart 围栏：JSON 解析失败（${e instanceof Error ? e.message : String(e)}）`)
+            return
+          }
+          const fenceErrs: string[] = []
+          validateDeckChart(parsed, `第 ${i + 1} 个 chart 围栏`, fenceErrs)
+          if (fenceErrs.length > 0) {
+            errs.push(...fenceErrs)
+            return
+          }
+          specs.push(parsed as DeckChart)
+        })
+        if (errs.length > 0) return { success: false, error: `content 中的图表无法转换：\n${errs.join('\n')}` }
+        if (specs.length > 0) {
+          const accent = parseDocxFrontmatter(md).design.accent ?? '1677FF'
+          try {
+            const pngs = await renderChartsToPng(specs, accent)
+            charts = new Map(pngs.map((buf, i) => [i, buf]))
+          } catch {
+            // no Chromium → degrade silently here; the generator's closing
+            // note names it (图表（浏览器内核缺席，已按原数据呈现）).
+          }
+        }
+      }
+
       // Build entirely in memory — a failure here has written nothing.
       let buffer: Buffer
       if (htmlPlan) {
@@ -272,7 +317,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
         }
       } else {
         try {
-          buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, mdImages, fontSize: input.fontSize })
+          buffer = await buildBuffer(input.format, { md, csv, docx: docxBytes, mdImages, fontSize: input.fontSize, charts })
         } catch (err) {
           return { success: false, error: `导出内容构建失败：${err instanceof Error ? err.message : String(err)}` }
         }
@@ -299,7 +344,7 @@ export async function svcExportDocument(input: ExportDocumentInput): Promise<Exp
 
 async function buildBuffer(
   format: ExportFormat,
-  source: { md?: string; csv?: string; docx?: Buffer; mdImages?: Map<string, Buffer>; fontSize?: number }
+  source: { md?: string; csv?: string; docx?: Buffer; mdImages?: Map<string, Buffer>; fontSize?: number; charts?: Map<number, Buffer> }
 ): Promise<Buffer> {
   if (format === 'pdf') {
     // pdf is a CONVERSION, not a native layout: an existing docx, or markdown
@@ -307,12 +352,12 @@ async function buildBuffer(
     // (images, math, footnotes) degrades identically on this path.
     const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
     const { docxToPdfBuffer } = await import('../office-export/docx-to-pdf')
-    const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages, { fontSize: source.fontSize }))
+    const docx = source.docx ?? (await markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages, { fontSize: source.fontSize, charts: source.charts }))
     return docxToPdfBuffer(docx)
   }
   if (format === 'docx') {
     const { markdownToDocxBuffer } = await import('../office-export/md-to-docx')
-    return markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages, { fontSize: source.fontSize })
+    return markdownToDocxBuffer(source.md ?? source.csv ?? '', source.mdImages, { fontSize: source.fontSize, charts: source.charts })
   }
   if (format === 'pptx') {
     if (source.md === undefined) throw new Error('pptx 需要 htmlPath（设计路线）或 markdown 内容；CSV 数据请导出 xlsx 或 csv')

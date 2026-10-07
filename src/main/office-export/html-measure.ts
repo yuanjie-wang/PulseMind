@@ -188,8 +188,10 @@ export type LaunchFn = (headless: boolean) => Promise<Browser>
 
 /** Per-export launch: the shared resolver (env → bundled → system Chrome/Edge)
  *  first, then playwright-core's own managed browser (what
- *  `npm run browsers:install` installs) as the dev-machine fallback. */
-async function defaultLaunch(headless: boolean): Promise<Browser> {
+ *  `npm run browsers:install` installs) as the dev-machine fallback.
+ *  Shared with the docx chart rasterizer (docx-charts.ts) — one launch
+ *  discipline, one error message. */
+export async function defaultLaunch(headless: boolean): Promise<Browser> {
   const { chromium } = await import('playwright-core')
   let sharedError = ''
   try {

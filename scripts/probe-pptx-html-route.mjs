@@ -18,7 +18,7 @@
 
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -59,7 +59,7 @@ writeFileSync(join(fixture, 'deck.html'), `<!doctype html>
 </style></head><body>
 <div class="slide">
   <div style="position:absolute; left:40px; top:40px; width:200px; height:100px; background:var(--pm-accent); border-radius:12px"></div>
-  <h1 style="position:absolute; left:64px; top:80px; width:600px; font-size:var(--pm-fs-cover); color:var(--pm-ink); font-weight:normal">季度<strong>回顾</strong></h1>
+  <h1 style="position:absolute; left:64px; top:80px; width:600px; font-size:var(--pm-fs-cover); color:var(--pm-ink); font-weight:normal; letter-spacing:4px">季度<strong>回顾</strong></h1>
   <div style="position:absolute; left:820px; top:500px; width:100px; font-size:var(--pm-fs-note); color:var(--pm-muted); font-family:var(--pm-font-mono)">3 / 14</div>
   <ul style="position:absolute; left:64px; top:200px; width:300px">
     <li style="font-size:18px">要点甲</li>
@@ -70,6 +70,13 @@ writeFileSync(join(fixture, 'deck.html'), `<!doctype html>
     <tr><td style="font-size:14px">甲</td><td>12</td></tr>
   </table>
   <img src="assets/logo.png" style="position:absolute; left:500px; top:440px; width:40px; height:40px">
+  <div style="position:absolute; left:64px; top:470px; width:240px; height:50px; border:2px dashed var(--pm-accent)"></div>
+</div>
+<div class="slide" style="background:var(--pm-bg)">
+  <img src="assets/logo.png" style="position:absolute; left:0; top:0; width:960px; height:540px; object-fit:cover">
+  <div style="position:absolute; left:0; top:0; width:960px; height:540px; background:rgba(0,0,0,0.35)"></div>
+  <div style="position:absolute; left:64px; top:200px; width:400px; height:160px; background:#FFFFFF; box-shadow:0px 2px 8px rgba(0,0,0,0.10); border-radius:8px"></div>
+  <h1 style="position:absolute; left:64px; top:60px; width:600px; font-size:var(--pm-fs-cover); color:#FFFFFF; font-weight:normal">满版封面</h1>
 </div>
 </body></html>`)
 
@@ -79,8 +86,34 @@ const bad = (name, body) => {
 }
 bad('transform.html', `<p style="transform:translateX(5px)">斜的</p>`)
 bad('overflow.html', `<div style="position:absolute; left:900px; top:500px; width:200px; height:100px; background:#333333"></div>`)
-bad('alpha.html', `<div style="position:absolute; left:10px; top:10px; width:100px; height:100px; background:rgba(194,72,59,0.5)"></div>`)
+// translucent TEXT color still refuses (fills map; OOXML runs carry no alpha)
+bad('alpha.html', `<p style="position:absolute; left:10px; top:10px; width:100px; color:rgba(0,0,0,0.5)">浅字</p>`)
 bad('overlap.html', `<p style="position:absolute; left:100px; top:100px; width:400px">上方标题标题标题标题</p><p style="position:absolute; left:100px; top:108px; width:400px">下方文本文本文本文本</p>`)
+
+// ── recipes.html: the reference's own skeletons must pass the profile they teach ──
+// Extracted VERBATIM from office-references.ts (single source of truth): every
+// ```html fence opening with <div class="slide" is a recipe skeleton. A future
+// edit that makes any recipe refusable (overflow, text overlap, …) fails here.
+const refsSrc = readFileSync(join(root, 'src/renderer/src/skills/built-in/office-references.ts'), 'utf8')
+const recipeFences = Array.from(
+  refsSrc.matchAll(/\\`\\`\\`html\n(<div class="slide"[\s\S]*?)\n\\`\\`\\`/g),
+  (m) => m[1].replaceAll('\\`', '`')
+)
+if (recipeFences.length !== 8) throw new Error(`expected 8 recipe skeletons in office-references.ts, extracted ${recipeFences.length}`)
+// the cover recipe ships a placeholder path — swap in the fixture's real image
+const recipeSlides = recipeFences.map((s) => s.replaceAll('assets/cover.jpg', 'assets/logo.png')).join('\n')
+writeFileSync(
+  join(fixture, 'recipes.html'),
+  `<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="./tokens.css">
+<style>
+  body { margin: 0 }
+  .slide { width: 960px; height: 540px; position: relative }
+</style></head><body>
+${recipeSlides}
+</body></html>`
+)
 
 // ── bundle the real modules and run in-process ──
 const bundle = join(cacheDir, 'pptx-html-route.cjs')
@@ -100,7 +133,7 @@ const fixturePath = (name) => ${JSON.stringify(fixture)} + '/' + name
 async function main() {
   // 1 + 4: real measurement — token cascade, runs, boxes, bullets, chart, table, image
   const measured = await measureLayout(fixturePath('deck.html'), { launch })
-  assert.equal(measured.slides.length, 1, 'one slide')
+  assert.equal(measured.slides.length, 2, 'two slides')
   assert.equal(measured.slides[0].background, 'FFFDF8', 'tokens.css --pm-bg beats injected defaults')
   const blocks = measured.slides[0].blocks
   const box = blocks.find((b) => b.kind === 'box')
@@ -114,6 +147,10 @@ async function main() {
   assert.equal(h1.runs[0].bold, false, 'font-weight:normal respected')
   assert.equal(h1.runs[1].bold, true, '<strong> splits the run bold')
   assert.equal(h1.runs[0].fontSizePx, 44, '--pm-fs-cover resolves through the cascade')
+  assert.equal(h1.runs[0].charSpacingPx, 4, 'letter-spacing:4px rides the run')
+  const dashedBox = blocks.filter((b) => b.kind === 'box' && b.border && b.border.dash)
+  assert.equal(dashedBox.length, 1, 'dashed border box collected')
+  assert.equal(dashedBox[0].border.dash, 'dash')
   const footer = blocks.find((b) => b.kind === 'text' && b.runs.some((r) => r.text.includes('3 / 14')))
   assert.ok(footer, 'footer block collected')
   assert.equal(footer.runs[0].mono, true, 'mono run detected via tokens face')
@@ -127,6 +164,22 @@ async function main() {
   const img = blocks.find((b) => b.kind === 'image')
   assert.equal(img.src, 'assets/logo.png', 'img src carried raw')
   console.log('  ok  measurement: tokens cascade, runs, box, bullet, chart, table, image')
+
+  // slide 2: the new design devices measured in a real Chromium
+  const s2 = measured.slides[1].blocks
+  const mask = s2.find((b) => b.kind === 'box' && b.fill === '000000')
+  assert.ok(mask, 'rgba mask measured as a box')
+  assert.equal(mask.fillTransparency, 65, 'rgba(0,0,0,0.35) → transparency 65 (35% opaque)')
+  const card = s2.find((b) => b.kind === 'box' && b.shadow)
+  assert.ok(card, 'box-shadow card measured')
+  assert.equal(card.fill, 'FFFFFF')
+  assert.deepEqual(card.shadow, { offsetX: 0, offsetY: 2, blur: 8, color: '000000', alpha: 0.1 }, 'shadow facts from computed style')
+  const cover = s2.find((b) => b.kind === 'image' && b.objectFit === 'cover')
+  assert.ok(cover, 'cover image measured')
+  assert.equal(cover.naturalW, 1, 'natural size decoded (1×1 PNG)')
+  assert.deepEqual(cover.coverCrop, { l: 0, r: 0, t: 0.21875, b: 0.21875 }, '1:1 natural in 16:9 window → t/b crop 0.21875')
+  assert.equal(measured.degradations.length, 0, 'no degradations on the fixture deck')
+  console.log('  ok  design devices: rgba mask, box-shadow, object-fit:cover crop')
 
   // 3: in-page profile refusals
   for (const [file, pattern] of [
@@ -168,11 +221,40 @@ async function main() {
   assert.ok(slide1.includes('<a:ea typeface="微软雅黑"'), 'a:ea = --pm-font-zh')
   assert.ok(slide1.includes('<a:latin typeface="Menlo"'), 'mono run rides --pm-font-mono')
   assert.ok(!slide1.includes('<a:ea typeface="Menlo"'), 'mono run CJK corrected back to the sans ea')
+  assert.ok(slide1.includes('spc="300"'), 'letter-spacing 4px → charSpacing 3pt (spc 300)')
+  assert.ok(slide1.includes('<a:prstDash val="dash"/>'), 'dashed border → prstDash')
   const media = zip.getEntries().filter((e) => e.entryName.startsWith('ppt/media/') && !e.entryName.endsWith('/'))
-  assert.equal(media.length, 1, 'image embedded once')
-  assert.ok(report.includes('1 页'), 'report census')
+  assert.equal(media.length, 2, 'both slides embed the image (data URIs are not deduped)')
+  assert.ok(report.includes('2 页'), 'report census')
   assert.ok(report.includes('原生可编辑形状'), 'report mentions native shapes')
   console.log('  ok  emission: px→EMU/pt, tokens, chart, table, latin/ea split, image, report')
+
+  // slide 2 emission: the design devices land as real OOXML
+  const slide2 = zip.readAsText('ppt/slides/slide2.xml')
+  assert.ok(slide2.includes('<a:alpha val="35000"/>'), 'rgba mask fill → 35% opaque (transparency 65)')
+  assert.ok(slide2.includes('<a:outerShdw'), 'box-shadow → outerShdw')
+  assert.ok(slide2.includes('blurRad="76200"'), 'shadow blur 8px → 6pt')
+  assert.ok(slide2.includes('dir="5400000"'), 'shadow offset (0,2)px → dir 90°')
+  assert.ok(slide2.includes('<a:alpha val="10000"/>'), 'shadow alpha 0.10')
+  assert.ok(slide2.includes('<a:srcRect l="0" r="0" t="21875" b="21875"/>'), 'cover crop injected (post-pass)')
+  assert.ok(!slide2.includes('t="0" b="0"/><a:stretch'), 'no zero-crop marker left behind')
+  console.log('  ok  emission devices: fill alpha, outerShdw, real srcRect crop')
+
+  // 5: the reference's own 8 recipe skeletons must pass the profile they teach
+  const recipes = await measureLayout(fixturePath('recipes.html'), { launch })
+  assert.equal(recipes.slides.length, 8, 'eight recipe slides measured')
+  assert.equal(recipes.degradations.length, 0, 'recipes degrade nothing: ' + JSON.stringify(recipes.degradations))
+  const recipeDeck = await htmlDeckToPptxBuffer({
+    facts: { slides: recipes.slides },
+    images,
+    accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', fontMono: 'Menlo',
+    title: '配方库探针',
+  })
+  const recipeZip = new AdmZip(recipeDeck.buffer)
+  for (let i = 1; i <= 8; i++) assert.ok(recipeZip.readAsText('ppt/slides/slide' + i + '.xml'), 'recipe slide ' + i + ' emitted')
+  assert.ok(recipeZip.readAsText('ppt/slides/slide1.xml').includes('t="21875"'), 'recipe A computes the cover crop')
+  assert.ok(recipeZip.readAsText('ppt/slides/slide1.xml').includes('spc="300"'), 'recipe A kicker carries letter-spacing')
+  console.log('  ok  recipes: all 8 reference skeletons measure clean and emit')
 
   // DI contract: a failing launcher propagates its own error (the
   // browsers:install hint lives in defaultLaunch, not in the injected one)

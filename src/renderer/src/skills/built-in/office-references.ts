@@ -6,9 +6,10 @@
  *
  * Every claim here is checked against the implementation, because a rule set
  * that promises more than the engine does is worse than no rule set:
- *   - markdown → docx mapping: office-export/md-to-docx.ts (only code runs get
- *     a face; fonts are never chosen — the one document-level control is the
- *     export_document `fontSize`, which scales body/headings/code together)
+ *   - markdown → docx mapping: office-export/md-to-docx.ts (fonts are never
+ *     chosen — the document-level controls are the export_document `fontSize`
+ *     and the markdown frontmatter (cover/header/footer/toc/indent/accent),
+ *     parsed by parseDocxFrontmatter; unknown keys land in a closing note)
  *   - markdown → xlsx: office-export/md-tables.ts + cell-type.ts (a bare grid —
  *     no styles, no formulas)
  *   - markdown → pptx: office-export/md-to-pptx.ts (slide limit 200, bullet
@@ -28,42 +29,67 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
 生成走 \`export_document\`（format docx，输入 markdown）；改已有文件走 \`office_edit\`。
 
-## 一、版式只能用 markdown 表达
+## 一、版式 = markdown 正文 + frontmatter 文档设计
 
-生成端是 markdown → docx 的固定映射，你能控制的版式就是这张表：
+生成端是 markdown → docx 的映射。正文版式用 markdown 表达：
 
 | markdown | 落到 docx 上 |
 |---|---|
 | \`#\` – \`######\` | Heading1 – Heading6 |
 | 空行分段 | 独立段落 |
-| \`**粗**\` \`*斜*\` \`~~删~~\`、以及用反引号包住的代码 | 加粗 / 斜体 / 删除线 / 等宽 |
+| \`**粗**\` \`*斜*\` \`~~删~~\`、以及用反引号包住的代码 | 加粗 / 斜体 / 删除线 / 等宽（可组合：\`***粗斜***\` 同时落两标志） |
 | \`[文字](url)\` | 超链接 |
 | \`![alt](workspace/图片.png)\` | 正文行内图片（工作区路径，png/jpg/jpeg/gif；宽上限 600px 等比缩） |
 | 无序 / 有序列表 | 项目符号 / 编号，嵌套 ≤3 层（更深会被拍平） |
 | 表格 | 表格（表头行加粗带底纹） |
-| 代码块 | 等宽 + 浅灰底纹的段落，无语法高亮 |
+| 代码块 | 等宽 + 浅灰底纹段落；声明语言（\`\`\`js）且属常用语言时带语法高亮着色，未声明/未注册语言纯文本 |
 | \`>\` 引用 | 缩进 + 左边框段落 |
+| \`[^1]\` 引用 + 行首 \`[^1]: 文字\` 定义 | 真脚注（单行定义；引用了不存在的定义会原文照旧并在文末点名） |
+| \`\`\`chart 围栏（data-chart 同方言 JSON） | 图表落成居中图片（引擎用浏览器内核把图表渲染成 PNG）；配色随 frontmatter accent；浏览器内核缺席时降级为代码块 + 文末注 |
 | \`---\` | 水平分隔线 |
 
-行内样式只取**最外层**一层：\`***加粗且斜体***\` 只落加粗或斜体中的一层，不会组合成两者兼有。这是既定的保真口径，不是 bug。
+**文档级设计（封面/页眉页脚/页码/目录/缩进/主题）写在 markdown 头部的 frontmatter 里**，全部可选，不给就是素文档：
+
+\`\`\`
+---
+title: 年度报告          # 有 title 才生成封面页（正文同文的首个 H1 不再重复）
+subtitle: 副标题         # 可选
+author: 撰写人           # 可选
+date: 2026-10-07         # 可选（你自己填，引擎不注入时钟）
+toc: true                # 目录（正文最前，之后自动分页）
+toc-depth: 3             # 可选，1–3，默认 3
+header: 文档页眉文字      # 可选，正文页眉
+footer: page             # 可选：page（第 X 页）| total（第 X 页 共 Y 页）| off
+indent: true             # 正文段落首行缩进 2 字符（公文场景）
+accent: "#0F766E"        # 可选主题色：引用块/表头底纹/标题底线随之着色
+---
+\`\`\`
+
+frontmatter 的键必须照上表拼写——未识别的键、解析不了的值会在文末注里点名（不会静默忽略）。目录在预览/PDF 里显示的是静态条目（无页码），页码以 Word/WPS 打开后更新域为准——用户在 Word 里打开时按提示更新即可，如实转述这一点。
 
 整份文档的字号用 \`export_document\` 的 \`fontSize\`（磅，6–72 可带 0.5：10.5=五号、12=小四、14=四号、16=三号）：它设的是**正文基准**，标题与代码块按同一比例缩放，层级不塌（不给就是 Word 默认 11 磅）。要让某一两处不一样：先导出，再用 \`office_edit\` 的 \`format_text\` 带 \`font_size\` 单点改。
 
 ## 二、表达不了的（别硬凑，如实说）
 
-- **封面页、页眉页脚、页码、目录**：生成端没有这些概念。
 - **插入图片（网络/内联地址）**：\`http(s)://\` 与 \`data:\` 的图片不嵌图，保持占位文字（形如 \`[图片:xxx.png,正文不支持]\`）——工作区里的图片文件才会真正嵌入。
-- **公式、脚注、内嵌 HTML**：原文照抄 + 文末一行说明。
+- **公式、内嵌 HTML**：原文照抄 + 文末一行说明。
 - **字体与局部字号**：字体从不指定，Word / WPS 按自己的默认样式渲染（CJK 由打开端替换；只有代码块固定等宽 Courier New）。字号只有 \`fontSize\` 这一个全文基准，**没有逐段字号**——逐段的先导出，再用 \`office_edit\` 的 \`format_text\` 改。
-- **首行缩进、行距、分节、页面设置**：无。
-
-用户明确要封面 / 页眉页脚 / 页码时：告诉他生成端做不到，但可以用 \`office_edit\` 补一个封面段落，其余的建议他在 Word 里手动加一次（加完就是模板，之后可复用）。
+- **页眉页脚/目录/域的后期编辑**：\`office_edit\` 改不了这些（只管正文段落与表格）——生成端一次给足，返工就改 frontmatter 重新导出。
+- **行距、分节、页面设置**：无（行距是既定的 1.5 倍排版，不收参数）。
+- **chart 围栏的两个边界**：图表是**图片**不是活图表（改数据 = 改 JSON 重新导出，同 PPT 的 data-chart 契约）；方言校验失败会整单拒绝并点名第几个围栏——JSON 写认真些。
+- **多行脚注**：脚注定义只认单行，续行会落回正文——长注释请写进正文或表格。
 
 ## 三、四种高频场景的结构
 
 **报告 / 调研**
 \`\`\`
-# 标题（一句话说清结论方向）
+---
+title: 标题（一句话说清结论方向）
+date: 2026-10-07
+toc: true
+footer: page
+---
+# 标题（封面已承载，正文不再重复写同文 H1）
 （摘要段：结论先行，2–4 句）
 ## 一、背景
 ## 二、发现      ← 数据一律进表格，不要用长句罗列数字
@@ -71,11 +97,12 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 \`\`\`
 
 **公文**
-- \`#\` 标题；正文用普通段落（首行缩进设不了，别假装有）。
+- frontmatter 给 \`indent: true\`（首行缩进 2 字符）+ \`footer: page\`；标题放 frontmatter \`title\` 会带封面页——公文通常**不要封面**，标题就用 \`#\` 写在正文。
 - 落款（单位、日期）各占一个独立段落。
 - 不用引用块、分隔线、emoji 这类装饰元素——正式文种里它们不合适。
 
 **合同 / 协议**
+- frontmatter 给 \`header: 文档名\`（每页页眉）与 \`footer: total\`（页码含总页数，便于"见第 X 页"引用）；封面按需。
 - 条款用有序列表 \`1.\` \`2.\`，层级不超过 3 层。
 - 关键条款、待填空处用 \`**加粗**\` 标出，让用户一眼看到。
 - 金额写清币种与单位（"人民币 12,000 元"），不要只写数字。
@@ -85,6 +112,7 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 - \`#\` 姓名 → 下一行放联系方式（一条段落，用 \` | \` 分隔）→ \`##\` 分板块（工作经历 / 项目 / 教育 / 技能）。
 - 每段经历用 \`###\` 或加粗行写"公司 · 职位 · 时间"，下面用无序列表列成果；成果尽量带数字。
 - 日期写成文本（如 \`2024.03 — 2026.09\`）。不能右对齐，也别指望。
+- 简历**不要** frontmatter \`title\`（那会生成封面页）；一页纸内说完。
 
 ## 四、编辑要点（office_edit·docx）
 
@@ -163,7 +191,7 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
 ## 三、表达不了的（如实告知）
 
-- **设计路线**：颜色只收不透明（半透明被点名拒绝）；渐变/CSS 变换/动画进不了 pptx；图表改数据 = 改 \`data-chart\` 标注后重转（形状不是活图表）；无母版/动画——用户公司模板的价值在母版，那走 \`office_edit\`（§四）。
+- **设计路线**：色块/边框/表格底色/页背景的**半透明会映射**成 PowerPoint 透明度（rgba 可用）；**文字色**仍不收半透明（改调淡 hex 或 --pm-muted）；渐变/CSS 变换/动画进不了 pptx；图表改数据 = 改 \`data-chart\` 标注后重转（形状不是活图表）；无母版/动画——用户公司模板的价值在母版，那走 \`office_edit\`（§四）。
 - **markdown 兜底路线**：图片降级成文字（末尾追加「备注」页列损失）；无图表、无版式变化，固定 16:9。
 - **两条路线都没有**：母版定制、动画、切换。
 
@@ -181,7 +209,7 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
 ## 五、配色与字号
 
-- 设计路线的配色由 tokens.css 一处驱动（§七 §1）；图表主色取 \`--pm-accent\`，先骑系列色首位。
+- 设计路线的配色由 tokens.css 一处驱动（§七 §1）；图表主色取 \`--pm-accent\`，先骑系列色首位；**伴生系列色引擎自动从 accent 色相派生**（金黄角轮转拉开色距，单色主题按明度阶梯区分）——图表永远和整套 deck 一家，不用你在 html 里挑第二三种颜色。
 - \`office_edit\` 手工样式时：颜色写 6 位 \`RRGGBB\` 不带 \`#\`；字号阶梯（pt）封面主标题 40–44 / 页标题 28–32 / 要点 18–22 / 注释与来源 12–14；一套 deck 最多 2–3 个强调色，正文近黑（\`262626\`），强调色只给标题或关键数字。
 - 底色 / 形状色用 \`set_shape_fill\`（\`"none"\` 表示无填充）、\`set_slide_background\`；位置尺寸用 \`set_shape_geometry\`（单位**英寸**）。
 - 样式类算子不允许改变可见文字——引擎会在文字被改动时拒绝整批。这是防"改样式顺手把内容改没了"的护栏，不是限制。
@@ -195,7 +223,7 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
 ## 七、设计路线（htmlPath：HTML → pptx）
 
-这是从零做 PPT 的**唯一生成路线**。四步：**风格对齐**（与用户确认，不要跳过）→ \`write\` tokens.css（主题落定）→ \`write\` deck.html（版式与内容）→ \`export_document\`（format pptx + \`htmlPath\`）。引擎用 Chromium 实测布局后输出**原生可编辑形状**（不是截图），产物预览与 HTML 一致。
+这是从零做 PPT 的**唯一生成路线**。四步：**风格对齐**（与用户确认，不要跳过）→ \`write\` tokens.css（主题落定）→ \`write\` deck.html（版式与内容）→ \`export_document\`（format pptx + \`htmlPath\`）。引擎用 Chromium 实测布局后输出**原生可编辑形状**（不是截图），产物预览与 HTML 一致。写 deck.html 从 §3 的配方库抄骨架——**先出样张**（封面 + 一页正文）导出确认气质，再补全篇。
 
 ### 0. 风格对齐：先定调，再动手
 
@@ -260,9 +288,9 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 </body></html>
 \`\`\`
 
-**能用**：h1–h6、p、ul/ol/li（真项目符号，嵌套 ≤2 层）、table（th/td，逐格底色字号生效）、img（工作区 png/jpg/gif，相对路径）、div/span（色块卡片：background/border/border-radius 都映射）、b/strong/i/em/u/s、布局用 absolute 或流式 + flex；字号（引用 var(--pm-fs-*)）字色、行高、对齐、等宽（font-family 只许 var(--pm-font-mono) 等三个字体变量）按浏览器实测落。960×540 @96dpi ≡ 10×5.625 英寸，浏览器里的 1px 在 pptx 里是 0.75pt。
+**能用**：h1–h6、p、ul/ol/li（真项目符号，嵌套 ≤2 层）、table（th/td，逐格底色字号生效）、img（工作区 png/jpg/gif，相对路径；**object-fit:cover** 满版裁切——封面大图的关键）、div/span（色块卡片：background/border/border-radius/**虚线点线**都映射；**rgba 半透明**映射 PowerPoint 透明度，图片蒙版、玻璃卡片、浅色叠层全靠它；**单层外阴影** \`box-shadow: 0 2px 8px rgba(0,0,0,0.10)\` 映射 PowerPoint 阴影——卡片 elevation 就这一招）、b/strong/i/em/u/s、布局用 absolute 或流式 + flex；字号（引用 var(--pm-fs-*)）字色、行高、对齐、**字距（letter-spacing——眉题 kicker、大数字 tracking 的气质开关）**、等宽（font-family 只许 var(--pm-font-mono) 等三个字体变量）按浏览器实测落。960×540 @96dpi ≡ 10×5.625 英寸，浏览器里的 1px 在 pptx 里是 0.75pt。
 
-**禁用（会整单拒绝）**：\`<script>\`、@font-face、svg/iframe/video/canvas 等白名单外元素；渐变（背景只收纯色）；半透明色（rgba α<1——需要浅色给 --pm-accent-soft 或调淡后的 hex）；transform / position:fixed / CSS 动画；在 HTML 里写字体名（font-family 只允许 var(--pm-font-…) 引用）；网络或内联资源（src 只能工作区文件）；表格 colspan/rowspan。**内容超出 960×540 也拒绝**——装不下就缩小或拆页。**两段文字的框相交也会拒绝**并点名两个元素——绝对定位按实际渲染高度排，拿不准就把下方元素多留一行高。box-shadow / opacity / 虚线边框映射不了，会在保真报告里如实列出，不静默丢弃。转换器已把文本框内边距清零并按对齐方向加了少量安全余量（右对齐向左扩、左对齐向右扩，锚点不动）——html 里量出的位置就是 pptx 里的位置，页码这类窄文本框不会因此折行。
+**禁用（会整单拒绝）**：\`<script>\`、@font-face、svg/iframe/video/canvas 等白名单外元素；渐变（背景只收纯色）；**半透明文字色**（rgba 的文字色拒绝——文字没有透明度可映射，改用调淡后的 hex）；transform / position:fixed / CSS 动画；在 HTML 里写字体名（font-family 只允许 var(--pm-font-…) 引用）；网络或内联资源（src 只能工作区文件）；表格 colspan/rowspan。**内容超出 960×540 也拒绝**——装不下就缩小或拆页。**两段文字的框相交也会拒绝**并点名两个元素——绝对定位按实际渲染高度排，拿不准就把下方元素多留一行高。多层 / inset / spread 的 box-shadow、元素 opacity、非居中的 object-position、double/groove 等异形边框（按实线处理）映射不了，会在保真报告里如实列出，不静默丢弃。转换器已把文本框内边距清零并按对齐方向加了少量安全余量（右对齐向左扩、左对齐向右扩，锚点不动）——html 里量出的位置就是 pptx 里的位置，页码这类窄文本框不会因此折行。
 
 **图表用标注，不要画 SVG**——引擎按 deck 同款词汇画原生形状（PowerPoint 里可改色改字，改数据 = 改标注后重转）：
 
@@ -273,18 +301,173 @@ export const OFFICE_SKILL_REFERENCES: Record<string, string> = {
 
 图表 JSON 与 deck 的 chart 字段同一 schema：type 取 column/bar/line/pie；categories 2–12 个；series 1–4 组与 categories 等长；pie 只吃一组且非负。
 
-### 3. 转换与交付
+### 3. 版式配方库：抄骨架，改内容
+
+八个配方覆盖一版 deck 的全部页面类型。**按内容选**：讲要点 → C；并列 2–4 件事 → D；关键数字 + 趋势 → E；两方案对比 → F；章节分隔 → B；金句/引用 → G；封面 → A；结束 → H；表格页 = C 把 ul 换成 table。前提：§0 的风格确认已过、tokens.css 已落定。**配方是起点，不是白名单**——硬边界只有 §2 的 profile：时间轴、步骤条、左图右文这类配方外的版式尽管写；用户给的方向永远优先于配方默认值。
+
+**四样全篇常量锁死**（它们就是这套 deck 的设计系统，做变体也不动）：
+
+1. 页边距 64px；
+2. 标题块：left:64 top:56 + 28×4 的 accent 短条（C/D/E/F 同款）；
+3. 页码：left:832 top:496 width:64 右对齐，mono + --pm-fs-note（封面/结束页不放）；
+4. 圆角全篇一个值（建议 8px）。
+
+**同类页复制同一个 slide div 只换文字**——一致性是设计感的一半。**满版页（A/B/G/H）豁免「accent 单页 ≤10%」纪律**（那条管正文页），全篇至少 2–3 页满版造节奏。反白文字在深底上一律 var(--pm-bg)，不要写死 #FFFFFF。**样张先行**：先把「封面 + 一页正文」两张样张 \`export_document\` 导出、在预览面板确认气质，对了再补全篇重导——改 HTML 便宜，写完 14 页才发现方向不对才是贵的。
+
+#### A · 封面（满版图 + 蒙版 + 反白巨标）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-ink)">
+  <img src="assets/cover.jpg" style="position:absolute; left:0; top:0; width:960px; height:540px; object-fit:cover">
+  <div style="position:absolute; left:0; top:0; width:960px; height:540px; background:rgba(0,0,0,0.45)"></div>
+  <div style="position:absolute; left:64px; top:368px; width:832px">
+    <p style="font-size:var(--pm-fs-note); color:var(--pm-bg); letter-spacing:4px; margin:0 0 12px">2026 · 第三季度</p>
+    <h1 style="font-size:var(--pm-fs-cover); color:var(--pm-bg); margin:0; line-height:1.15">季度经营回顾</h1>
+  </div>
+</div>
+\`\`\`
+
+（图片换成工作区里的真实图；用户没给图就直接用 B 的纯色满版，别硬凑。）
+
+#### B · 章节扉页（反色满版 + 大编号）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-ink)">
+  <p style="position:absolute; left:64px; top:150px; font-family:var(--pm-font-mono); font-size:96px; color:var(--pm-accent); margin:0; line-height:1">02</p>
+  <h1 style="position:absolute; left:64px; top:280px; width:700px; font-size:var(--pm-fs-cover); color:var(--pm-bg); margin:0">增长与效率</h1>
+  <p style="position:absolute; left:64px; top:400px; width:600px; font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0">本章讲清三件事：收入结构、成本曲线、下季度的杠杆</p>
+  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">2 / 14</div>
+</div>
+\`\`\`
+
+#### C · 标准正文页（短条标题 + 要点）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-bg)">
+  <div style="position:absolute; left:64px; top:56px; width:832px">
+    <div style="width:28px; height:4px; background:var(--pm-accent); margin-bottom:14px"></div>
+    <h2 style="font-size:var(--pm-fs-title); color:var(--pm-ink); margin:0">收入结构：三条曲线</h2>
+  </div>
+  <ul style="position:absolute; left:64px; top:170px; width:700px; line-height:1.7">
+    <li style="font-size:var(--pm-fs-body); color:var(--pm-ink)">订阅收入占比首次过半（58%）</li>
+    <li style="font-size:var(--pm-fs-body); color:var(--pm-ink)">大客户续约率 92%，创三年新高</li>
+  </ul>
+  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">3 / 14</div>
+</div>
+\`\`\`
+
+（结论进标题，要点 ≤20 字；每个要点独立一行。）
+
+#### D · 三卡页（等宽卡片 + 卡顶强调条）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-bg)">
+  <div style="position:absolute; left:64px; top:56px; width:832px">
+    <div style="width:28px; height:4px; background:var(--pm-accent); margin-bottom:14px"></div>
+    <h2 style="font-size:var(--pm-fs-title); color:var(--pm-ink); margin:0">下季度的三个杠杆</h2>
+  </div>
+  <div style="position:absolute; left:64px; top:170px; width:832px; display:flex; gap:24px">
+    <div style="flex:1; background:var(--pm-panel); border-radius:8px; border-top:3px solid var(--pm-accent); padding:24px">
+      <p style="font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-accent); margin:0 0 8px">01</p>
+      <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 8px">订阅提价</h3>
+      <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0; line-height:1.5">续约率有冗余，可承受一轮 5–8% 的试探性提价。</p>
+    </div>
+    <div style="flex:1; background:var(--pm-panel); border-radius:8px; border-top:3px solid var(--pm-accent); padding:24px">
+      <p style="font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-accent); margin:0 0 8px">02</p>
+      <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 8px">渠道下沉</h3>
+      <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0; line-height:1.5">二线城市装机量翻倍，先铺服务再谈转化。</p>
+    </div>
+    <div style="flex:1; background:var(--pm-panel); border-radius:8px; border-top:3px solid var(--pm-accent); padding:24px">
+      <p style="font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-accent); margin:0 0 8px">03</p>
+      <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 8px">成本曲线</h3>
+      <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0; line-height:1.5">供应链重新议价加云资源缩容，目标 −12%。</p>
+    </div>
+  </div>
+  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">4 / 14</div>
+</div>
+\`\`\`
+
+#### E · 数据页（左大数字 + 右图表）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-bg)">
+  <div style="position:absolute; left:64px; top:56px; width:832px">
+    <div style="width:28px; height:4px; background:var(--pm-accent); margin-bottom:14px"></div>
+    <h2 style="font-size:var(--pm-fs-title); color:var(--pm-ink); margin:0">订阅占比：四个季度爬到过半</h2>
+  </div>
+  <div style="position:absolute; left:64px; top:200px; width:240px">
+    <p style="font-family:var(--pm-font-mono); font-size:72px; color:var(--pm-accent); margin:0; line-height:1">58%</p>
+    <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:10px 0 0">订阅收入占比，首次过半</p>
+  </div>
+  <div data-chart='{"type":"line","categories":["Q4","Q1","Q2","Q3"],"series":[{"name":"订阅占比 %","values":[38,44,51,58]}]}' style="position:absolute; left:360px; top:170px; width:536px; height:310px"></div>
+  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">5 / 14</div>
+</div>
+\`\`\`
+
+（大数字写结论本身，口径进它下面的 caption；数据来源写在页脚或回复里。）
+
+#### F · 对比页（两栏 panel）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-bg)">
+  <div style="position:absolute; left:64px; top:56px; width:832px">
+    <div style="width:28px; height:4px; background:var(--pm-accent); margin-bottom:14px"></div>
+    <h2 style="font-size:var(--pm-fs-title); color:var(--pm-ink); margin:0">Q3 打法：两条路线</h2>
+  </div>
+  <div style="position:absolute; left:64px; top:170px; width:404px; height:310px; background:var(--pm-panel); border-radius:8px; padding:24px">
+    <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 10px">A · 稳守</h3>
+    <ul style="margin:0; padding-left:20px; line-height:1.7">
+      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">保续约，不加投入</li>
+      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">毛利率 +1pt</li>
+      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">风险：增长失速</li>
+    </ul>
+  </div>
+  <div style="position:absolute; left:492px; top:170px; width:404px; height:310px; background:var(--pm-panel); border-radius:8px; padding:24px">
+    <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 10px">B · 进攻</h3>
+    <ul style="margin:0; padding-left:20px; line-height:1.7">
+      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">渠道下沉换增量</li>
+      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">收入 +8%，毛利持平</li>
+      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">风险：现金流吃紧</li>
+    </ul>
+  </div>
+  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">6 / 14</div>
+</div>
+\`\`\`
+
+#### G · 金句页（反色大字）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-ink)">
+  <p style="position:absolute; left:64px; top:120px; width:832px; font-size:36px; color:var(--pm-bg); line-height:1.6; margin:0">「把成本曲线打下来，<br>增长才有力可言。」</p>
+  <p style="position:absolute; left:64px; top:400px; font-size:var(--pm-fs-note); color:var(--pm-muted); margin:0">— 2026 Q3 经营会纪要</p>
+  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">9 / 14</div>
+</div>
+\`\`\`
+
+（金句两行以内，\`<br>\` 自己控制断行；引用出处必须有。）
+
+#### H · 结束页（accent 满版反白）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-accent)">
+  <h1 style="position:absolute; left:64px; top:220px; width:700px; font-size:var(--pm-fs-cover); color:var(--pm-bg); margin:0">谢谢，等问题。</h1>
+  <p style="position:absolute; left:64px; top:340px; font-size:var(--pm-fs-body); color:var(--pm-bg); margin:0">数据与图表出处都在会话工作区的 deck.html</p>
+</div>
+\`\`\`
+
+### 4. 转换与交付
 
 - \`export_document\`（format pptx、htmlPath 指向 deck.html、file_path 给成品名）。**先 write 完 tokens 与 html 再调用**；profile 校验拒绝残缺 HTML 时按报错修完重试。
 - 成功结果带**保真报告**（每页块数 + 降级清单）——交付时如实转述给用户。
 - **双源契约**：HTML 是创作源——改版式/换主题 = 改 tokens.css 或 deck.html 重新导出；**交付后的小改走 office_edit**，不要改了 HTML 就重转（会丢掉已在 pptx 上做过的 office_edit 修改）。
 
-### 4. 设计 checklist（交付前）
+### 5. 设计 checklist（交付前）
 
 - 每页一个视觉重心：大标题 / 大数字 / 一张图；不要三栏小字挤一页。
 - 取色一律 var(--pm-*)，别硬写 hex——用户换品牌色才不用重写 HTML。
 - **强调色纪律**：accent 只给焦点元素（标题短条、章节编号、关键数字、图表主色），单页面积 ≤10%，禁止大面积铺色；浅色强调用 --pm-accent-soft。
 - **节奏**：全篇至少 2–3 页显著不同（满版反白/大图 vs 常规白底），别 14 页一个模子；章节扉页、封面、结束页可以放开做满版。
+- **满版图页的配方**（封面/章节页的高级感主要来自这个结构）：\`<img>\` 设 \`object-fit:cover\` 铺满 960×540 → 上面叠一层 \`background:rgba(0,0,0,0.35)\` 的全页色块做蒙版（半透明映射透明度）→ 反白标题压在蒙版上层。文字块之间仍不相交即可，蒙版色块与文字相交是合法的（只有文字压文字才拒绝）。
 - **密度与呼吸**：视觉锚点周围 ≥40px 空白；卡片内容占满容器（别只有半截字吊着）；横向并排的卡片标题基线对齐。
 - 字号走 var(--pm-fs-*) 阶梯（改阶不改 HTML）；页脚/页码惯例：右下 \`var(--pm-font-mono)\` + \`--pm-fs-note\`，写 \`3 / 14\` 样式；封面与结束页不放页码。
 - 逐元素 absolute 时留页边距（建议 ≥64px）；页码页脚自己排（引擎不自动加）。

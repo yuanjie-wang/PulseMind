@@ -10,8 +10,7 @@ vi.mock('../src/main/sandbox/guard', () => ({
   // shares the guard's `~` → home expansion): mirrored verbatim, identity for
   // the absolute paths these tests use.
   expandTilde: (t: string) => (t.startsWith('~') ? join(homedir(), t.slice(1)) : t),
-  guardFsTarget: async (target: string, mode: string) =>
-    target.includes('deny') ? { ok: false, reason: `deny-listed (${mode})` } : { ok: true },
+  guardFsTarget: async (target: string, mode: string) => (target.includes('deny') ? { ok: false, reason: `deny-listed (${mode})` } : { ok: true }),
 }))
 
 // The docx builder is spied so the read-back-gate test can feed a corrupted
@@ -21,12 +20,17 @@ vi.mock('../src/main/office-export/md-to-docx', async (importOriginal) => {
   return { ...actual, markdownToDocxBuffer: vi.fn(actual.markdownToDocxBuffer) }
 })
 
+vi.mock('../src/main/office-export/docx-charts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/main/office-export/docx-charts')>()
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+  return { ...actual, renderChartsToPng: vi.fn(async () => [png]) }
+})
+
 // The pdf converter needs a real BrowserWindow (printToPDF) — replaced here so
 // the vitest half pins the SERVICE contract (byte flow, refusals, gate,
 // suffix); the real conversion is the probe's job (scripts/probe-docx-pdf.mjs).
 vi.mock('../src/main/office-export/docx-to-pdf', () => ({
-  docxToPdfBuffer: vi.fn(async (docx: Buffer) =>
-    Buffer.from(`%PDF-1.4\nmock-of-${docx.length}-bytes\n%%EOF\n`)),
+  docxToPdfBuffer: vi.fn(async (docx: Buffer) => Buffer.from(`%PDF-1.4\nmock-of-${docx.length}-bytes\n%%EOF\n`)),
 }))
 
 const { svcExportDocument } = await import('../src/main/services/office-export')
@@ -396,5 +400,59 @@ describe('export_document wiring (source scans; the unit halves live in their ow
       expect(read('src/renderer/docx2pdf/index.ts')).toContain(key)
       expect(read('src/main/office-export/docx-to-pdf.ts')).toContain(key)
     }
+  })
+})
+
+describe('svcExportDocument — docx frontmatter rides content (PLAN-docx-native-styles)', () => {
+  it('frontmatter passes through the service untouched: cover/header/footer land in the real file', async () => {
+    const dir = tempDir()
+    const result = await svcExportDocument({
+      format: 'docx',
+      content: '---\ntitle: 服务层直通\nheader: 内部资料\nfooter: page\n---\n\n# 服务层直通\n\n正文。',
+      filePath: join(dir, '设计.docx'),
+    })
+    expect(result.success).toBe(true)
+    const zip = new AdmZip(readFileSync(result.path!))
+    expect(zip.readAsText('word/header1.xml')).toContain('内部资料')
+    expect(zip.readAsText('word/footer1.xml')).toContain('PAGE')
+    expect(zip.readAsText('word/document.xml')).toContain('服务层直通')
+  })
+})
+
+describe('svcExportDocument — ```chart fences (M9)', () => {
+  const FENCE = (body: string) => '```chart\n' + body + '\n```'
+  const GOOD = FENCE('{"type": "column", "categories": ["一月", "二月"], "series": [{"name": "营收", "values": [12, 30]}]}')
+
+  it('a valid chart fence embeds the rasterized PNG (renderChartsToPng at the DI seam)', async () => {
+    const dir = tempDir()
+    const result = await svcExportDocument({ format: 'docx', content: '图：\n\n' + GOOD, filePath: join(dir, '图表.docx') })
+    expect(result.success).toBe(true)
+    const zip = new AdmZip(readFileSync(result.path!))
+    expect(zip.readAsText('word/document.xml')).toContain('<w:drawing>')
+    // docx 库按内容哈希命名媒体（word/media/<hash>.png），断言「有一张 png」而非具体名
+    expect(zip.getEntries().some((e) => e.entryName.startsWith('word/media/') && e.entryName.endsWith('.png'))).toBe(true)
+  })
+
+  it('bad JSON refuses naming the fence; spec violations carry the validator message', async () => {
+    const dir = tempDir()
+    const badJson = await svcExportDocument({ format: 'docx', content: FENCE('{not json'), filePath: join(dir, '坏.json.docx') })
+    expect(badJson.success).toBe(false)
+    expect(badJson.error).toContain('第 1 个 chart 围栏')
+    expect(badJson.error).toContain('JSON 解析失败')
+    const badSpec = await svcExportDocument({
+      format: 'docx',
+      content: FENCE('{"type": "pie", "categories": ["甲", "乙"], "series": [{"name": "s", "values": [1]}, {"name": "t", "values": [2]}]}'),
+      filePath: join(dir, '坏spec.docx'),
+    })
+    expect(badSpec.success).toBe(false)
+    expect(badSpec.error).toContain('pie 只吃一组 series')
+    // nothing landed
+    expect(readdirSync(dir).filter((f) => f.endsWith('.docx'))).toEqual([])
+  })
+
+  it('xlsx ignores chart fences (docx/pdf-only enhancement)', async () => {
+    const dir = tempDir()
+    const result = await svcExportDocument({ format: 'xlsx', content: '| 甲 | 乙 |\n|---|---|\n| 1 | ' + GOOD + ' |', filePath: join(dir, '表.xlsx') })
+    expect(result.success).toBe(true)
   })
 })

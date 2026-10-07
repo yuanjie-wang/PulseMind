@@ -141,6 +141,171 @@ describe('htmlDeckToPptxBuffer (facts → pptx)', () => {
     expect(slide1.indexOf('要点甲')).toBeLessThan(slide1.indexOf('定位文本'))
   })
 
+  it('fill/line/border alpha maps to pptx transparency, slide background included', async () => {
+    const facts = {
+      slides: [
+        {
+          background: '0B1F3A',
+          backgroundTransparency: 25,
+          blocks: [
+            // mask over a photo: 65% alpha → pptx transparency 35
+            { kind: 'box', x: 0, y: 0, w: 960, h: 540, fill: '000000', fillTransparency: 65 },
+            { kind: 'box', x: 64, y: 64, w: 200, h: 60, fill: 'C2483B', border: { color: '7A241C', widthPx: 2, transparency: 40 } },
+          ],
+        },
+      ],
+    }
+    const { buffer } = await htmlDeckToPptxBuffer({
+      facts, images: new Map(), accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    const xml = new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+    expect(xml).toContain('<a:alpha val="75000"/>') // bg alpha 0.25 → 75% (transparency 25)
+    expect(xml).toContain('<a:alpha val="35000"/>') // mask fill alpha 0.65 → 35%
+    expect(xml).toContain('<a:alpha val="60000"/>') // border alpha 0.6 → 60%
+    // opaque fills stay alpha-free
+    expect(xml).not.toContain('<a:alpha val="100000"/>')
+  })
+
+  it('a single outer box-shadow lands as <a:outerShdw> (polar dist/dir from dx/dy)', async () => {
+    const facts = {
+      slides: [
+        {
+          blocks: [
+            // `0 2px 8px rgba(0,0,0,0.1)`: dist=1.5pt→19050 EMU, dir=90°→5400000, alpha 0.1
+            { kind: 'box', x: 64, y: 64, w: 300, h: 120, fill: 'FFFFFF', shadow: { offsetX: 0, offsetY: 2, blur: 8, color: '000000', alpha: 0.1 } },
+          ],
+        },
+      ],
+    }
+    const { buffer } = await htmlDeckToPptxBuffer({
+      facts, images: new Map(), accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    const xml = new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+    expect(xml).toContain('<a:outerShdw')
+    expect(xml).toContain('blurRad="76200"') // 8px × 0.75 = 6pt
+    expect(xml).toContain('dist="19050"') // |offset| = 2px × 0.75 = 1.5pt
+    expect(xml).toContain('dir="5400000"') // atan2(2, 0) = 90°
+    expect(xml).toContain('<a:alpha val="10000"/>') // opacity 0.1
+  })
+
+  it('shadow zeros survive pptxgenjs falsy-defaults (glow keeps no offset, 0° stays 0°)', async () => {
+    const facts = {
+      slides: [
+        {
+          blocks: [
+            // `0 0 12px …`: a glow — offset must stay ~0, not pptxgenjs's default 4pt
+            { kind: 'box', x: 64, y: 64, w: 300, h: 120, fill: 'FFFFFF', shadow: { offsetX: 0, offsetY: 0, blur: 12, color: '000000', alpha: 0.2 } },
+            // `4px 0 8px …`: dir=0° must not become pptxgenjs's default 270°
+            { kind: 'box', x: 400, y: 64, w: 300, h: 120, fill: 'FFFFFF', shadow: { offsetX: 4, offsetY: 0, blur: 8, color: '000000', alpha: 0.2 } },
+          ],
+        },
+      ],
+    }
+    const { buffer } = await htmlDeckToPptxBuffer({
+      facts, images: new Map(), accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    const xml = new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+    expect(xml).toContain('dist="127"') // 0.01pt epsilon — NOT the 4pt (50800) default
+    expect(xml).not.toContain('dist="50800"')
+    expect(xml).toContain('dir="21600000"') // 360° ≡ 0° — NOT the 270° default
+    expect(xml).not.toContain('dir="16200000"') // 270°
+  })
+
+  it('object-fit:cover rewrites the pic srcRect from the measured crop (post-pass)', async () => {
+    const facts = {
+      slides: [
+        {
+          blocks: [
+            // 2000×1500 (4:3) natural in a 960×540 (16:9) window: taller than
+            // the box → top/bottom crop (renderedH = 960/(4/3) = 720;
+            // (720−540)/(2·720) = 0.125). The collector computes this; the
+            // facts carry it verbatim.
+            { kind: 'image', x: 0, y: 0, w: 960, h: 540, src: 'assets/logo.png', objectFit: 'cover' as const, naturalW: 2000, naturalH: 1500, coverCrop: { l: 0, r: 0, t: 0.125, b: 0.125 } },
+            { kind: 'image', x: 640, y: 64, w: 256, h: 192, src: 'assets/logo.png' },
+          ],
+        },
+      ],
+    }
+    const { buffer, report } = await htmlDeckToPptxBuffer({
+      facts, images: EMIT_IMAGES, accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    const xml = new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+    // the cover pic carries the REAL crop; the plain image keeps the legacy
+    // stretch with no srcRect at all
+    expect(xml).toContain('<a:srcRect l="0" r="0" t="12500" b="12500"/>')
+    expect(xml.match(/<a:srcRect/g)).toHaveLength(1)
+    expect(xml).toContain('<a:stretch><a:fillRect/></a:stretch>')
+    expect(report).not.toContain('object-fit')
+  })
+
+  it('a cover image without a computable crop degrades to stretch, by name', async () => {
+    const facts = {
+      slides: [
+        {
+          blocks: [
+            { kind: 'image', x: 0, y: 0, w: 960, h: 540, src: 'assets/logo.png', objectFit: 'cover' as const },
+          ],
+        },
+      ],
+    }
+    const { buffer, report } = await htmlDeckToPptxBuffer({
+      facts, images: EMIT_IMAGES, accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    const xml = new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+    expect(xml).not.toContain('<a:srcRect')
+    expect(report).toContain('object-fit:cover')
+    expect(report).toContain('按拉伸处理')
+  })
+
+  it('letter-spacing px → charSpacing pt (spc = 1/100pt, 4px → 300)', async () => {
+    const facts = {
+      slides: [
+        {
+          blocks: [
+            {
+              kind: 'text', x: 64, y: 64, w: 400, h: 30, align: 'left' as const,
+              runs: [
+                run({ text: '眉 题', fontSizePx: 13, color: '8C8C8C' }),
+                { ...run({ text: '未加字距', fontSizePx: 13, color: '8C8C8C' }), charSpacingPx: 4 },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const { buffer } = await htmlDeckToPptxBuffer({
+      facts, images: new Map(), accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    const xml = new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+    expect(xml).toContain('spc="300"') // 4px × 0.75 = 3pt → spc 300
+    expect(xml.match(/spc="/g)).toHaveLength(1) // only the tracked run carries it
+  })
+
+  it('dashed/dotted borders land as prstDash; solid stays silent', async () => {
+    const facts = {
+      slides: [
+        {
+          blocks: [
+            { kind: 'box', x: 40, y: 40, w: 200, h: 60, border: { color: '7A241C', widthPx: 2, dash: 'dash' } },
+            { kind: 'box', x: 300, y: 40, w: 200, h: 60, border: { color: '333333', widthPx: 1, dash: 'dot' } },
+            { kind: 'box', x: 40, y: 140, w: 200, h: 60, border: { color: '666666', widthPx: 1 } },
+          ],
+        },
+      ],
+    }
+    const { buffer } = await htmlDeckToPptxBuffer({
+      facts, images: new Map(), accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
+    })
+    const xml = new AdmZip(buffer).readAsText('ppt/slides/slide1.xml')
+    expect(xml).toContain('<a:prstDash val="dash"/>')
+    expect(xml).toContain('<a:prstDash val="dot"/>')
+    expect(xml.match(/<a:prstDash val="dash"/g)).toHaveLength(1)
+    expect(xml.match(/<a:prstDash val="dot"/g)).toHaveLength(1)
+    // pptxgenjs writes prstDash val="solid" for plain lines — that is its
+    // own default shape, not something the profile asked for
+    expect(xml).toContain('<a:prstDash val="solid"/>')
+  })
+
   it('splits a:latin/a:ea — latin rides --pm-font-latin, CJK keeps --pm-font-zh', async () => {
     const { buffer } = await htmlDeckToPptxBuffer({
       facts: EMIT_FACTS, images: EMIT_IMAGES, accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', title: 't',
@@ -210,9 +375,11 @@ describe('htmlDeckToPptxBuffer (facts → pptx)', () => {
   it('column: grouped bars per series, legend, value + category labels (arbitrary box)', async () => {
     const xml = await emitChart({ type: 'column', categories: ['Q1', 'Q2'], series: [{ name: '营收', values: [120, 80] }, { name: '成本', values: [60, 90] }] })
     // 每系列色出现 3 次 = 2 根柱 + 1 个图例色块（文本框也带 rect 几何，
-    // 数 prst 区分不出柱子，数系列填充色才行）
+    // 数 prst 区分不出柱子，数系列填充色才行）。伴生色是 accent 派生的
+    // （seriesPalette 金黄角轮转）：红 accent 的第二系列是 3BC26F，不再是
+    // 固定 antd 青。
     expect(xml.match(/val="C2483B"/g)).toHaveLength(3)
-    expect(xml.match(/val="13C2C2"/g)).toHaveLength(3)
+    expect(xml.match(/val="3BC26F"/g)).toHaveLength(3)
     expect(xml).toContain('<a:t>营收</a:t>') // legend entry
     expect(xml).toContain('<a:t>成本</a:t>')
     for (const v of ['120', '80', '60', '90']) expect(xml).toContain(`<a:t>${v}</a:t>`) // value labels (≤24 cells)

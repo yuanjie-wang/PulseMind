@@ -58,6 +58,7 @@ function Runs({ frame, run }: { frame: PptxTextFrame; run: PptxParagraph['runs']
   if (run.strike) style.textDecoration = `${style.textDecoration ?? ''} line-through`.trim()
   if (run.color) style.color = run.color
   if (run.font) style.fontFamily = run.font
+  if (run.letterSpacingPx !== undefined) style.letterSpacing = `${run.letterSpacingPx}px`
   if (run.link) {
     // Read-only pane: the link is shown (colour + tooltip), never navigated.
     style.color = run.color ?? '#1677ff'
@@ -248,6 +249,11 @@ function ShapeView({ shape, idx }: { shape: PptxShapeVM; idx: number }): React.R
         ...boxStyle,
         background: pieSlice ?? shape.fill,
         border: pieSlice ? undefined : border,
+        // a:outerShdw rides the VM as CSS-ready dx/dy (the parser converts
+        // OOXML's polar dist/dir); the color's rgba already carries the alpha.
+        boxShadow: shape.shadow
+          ? `${shape.shadow.offsetX}px ${shape.shadow.offsetY}px ${shape.shadow.blurPx}px ${shape.shadow.color}`
+          : undefined,
         boxSizing: 'border-box',
         borderRadius:
           geometry?.prst === 'ellipse' || pieSlice
@@ -345,7 +351,6 @@ function SlideView({ slide, deck }: { slide: PptxSlideVM; deck: PptxDeck }): Rea
         // desk — both stay mode-independent (M4/T3).
         background: slide.background ?? '#FFFFFF',
         overflow: 'hidden', // the slideshow clips at the slide bounds
-        marginBottom: PAGE_GAP,
         boxShadow: '0 1px 4px rgba(0, 0, 0, 0.35)',
         flexShrink: 0,
       }}
@@ -444,15 +449,17 @@ export function PptxPreview({
   useWheelZoom(containerRef, zoomBy)
 
   // The fit follows the pane width (ResizeObserver) while no manual zoom is
-  // set; a manual zoom pins until 适应宽度 is pressed.
+  // set; a manual zoom pins until 适应宽度 is pressed. The CENTERING, however,
+  // lives inside applyZoom (its padding math) and must re-run on EVERY resize
+  // — gating it behind the manual-zoom check left a hand-zoomed deck pinned to
+  // a stale paddingLeft when the pane divider or window moved
+  // (review_20261007 中7; the other four viewers' observers never gated).
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
     const observer = new ResizeObserver(() => {
-      if (manualZoomRef.current === null) {
-        recomputeFit()
-        applyZoom()
-      }
+      if (manualZoomRef.current === null) recomputeFit()
+      applyZoom()
     })
     observer.observe(container)
     return () => observer.disconnect()
@@ -554,7 +561,10 @@ export function PptxPreview({
         >
           {deck && (
             <div className="pm-pptx-zoom" style={{ zoom: appliedZoom, fontFamily: defaultFontStack, color: '#000' }}>
-              <div style={{ paddingTop: PAGE_GAP }}>
+              {/* flex + gap, NOT margins: a trailing margin collapses out of
+                  the block and the scroll extent ends at the last slide's
+                  edge — the bottom margin visually vanished. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: PAGE_GAP, paddingTop: PAGE_GAP, paddingBottom: PAGE_GAP }}>
                 {deck.slides.map((slide) => (
                   <SlideView key={slide.index} slide={slide} deck={deck} />
                 ))}

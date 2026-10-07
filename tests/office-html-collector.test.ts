@@ -34,8 +34,6 @@ const at = (doc: Document, selector: string, index = 0): Element => {
 const wrap = (content: string) =>
   `<!doctype html><html><head><meta charset="utf-8"></head><body><div class="slide" style="width:960px;height:540px">${content}</div></body></html>`
 
-const SLIDE_ONLY = (doc: Document) => new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
-
 describe('collectDeckLayout (jsdom, stubbed rects)', () => {
   it('collects one fact-set per .slide in document order', () => {
     mount(`<div class="slide" style="width:960px;height:540px"></div><div class="slide" style="width:960px;height:540px"></div>`, (doc) => {
@@ -95,6 +93,180 @@ describe('collectDeckLayout (jsdom, stubbed rects)', () => {
     expect(block.fill).toBe('C2483B')
     expect(block.border).toEqual({ color: '7A241C', widthPx: 2 })
     expect(block.radiusPx).toBe(12)
+  })
+
+  it('letter-spacing rides the run; a tracked span splits runs, same tracking merges', () => {
+    const doc = mount(wrap(`<p style="font-size:20px;color:#1F1F1F"><span style="letter-spacing:4px">眉题</span><span style="letter-spacing:0">正文</span></p>`), (doc) =>
+      new Map<Element, Rect>([
+        [at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }],
+        [at(doc, 'p'), { x: 64, y: 80, w: 400, h: 30 }],
+      ]))
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const block = result.slides[0].blocks[0]
+    if (block.kind !== 'text') return
+    expect(block.runs).toHaveLength(2)
+    expect(block.runs[0].text).toBe('眉题')
+    expect(block.runs[0].charSpacingPx).toBe(4)
+    expect(block.runs[1].text).toBe('正文')
+    expect(block.runs[1].charSpacingPx).toBeUndefined() // normal spacing: no fact, no spc
+  })
+
+  it('dashed/dotted borders map to dash facts; double still degrades to solid', () => {
+    const doc = mount(
+      wrap(
+        `<div style="border:2px dashed #7A241C;width:100px;height:40px"></div>` +
+          `<div style="border:1px dotted #333333;width:100px;height:40px"></div>` +
+          `<div style="border:3px double #666666;width:100px;height:40px"></div>`,
+      ),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        doc.querySelectorAll('.slide > div').forEach((el, i) => m.set(el, { x: 40, y: 40 + i * 60, w: 100, h: 40 }))
+        return m
+      })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const boxes = result.slides[0].blocks.filter((b) => b.kind === 'box')
+    expect(boxes).toHaveLength(3)
+    const [dashed, dotted, doubled] = boxes
+    if (dashed.kind !== 'box' || dotted.kind !== 'box' || doubled.kind !== 'box') return
+    expect(dashed.border).toEqual({ color: '7A241C', widthPx: 2, dash: 'dash' })
+    expect(dotted.border).toEqual({ color: '333333', widthPx: 1, dash: 'dot' })
+    expect(doubled.border).toEqual({ color: '666666', widthPx: 3 }) // no dash fact
+    expect(result.degradations.join('；')).toMatch(/double 边框按实线处理/)
+  })
+
+  it('rgba fills map to pptx transparency (box, table cell, slide background) instead of refusing', () => {
+    document.body.innerHTML =
+      `<div class="slide" style="width:960px;height:540px;background:rgba(31,31,31,0.65)">` +
+      `<div style="background:rgba(200,60,50,0.4);width:200px;height:100px"></div>` +
+      `<table style="border-collapse:collapse"><tr><td style="background:rgba(0,0,0,0.08);width:100px;height:40px">甲</td></tr></table></div>`
+    const doc = document
+    ;(doc.querySelector('.slide > div') as HTMLElement).getBoundingClientRect = () =>
+      ({ left: 40, top: 40, right: 240, bottom: 140, width: 200, height: 100, x: 40, y: 40, toJSON: () => ({}) }) as DOMRect
+    ;(doc.querySelector('.slide') as HTMLElement).getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 960, bottom: 540, width: 960, height: 540, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    ;(doc.querySelector('table') as HTMLElement).getBoundingClientRect = () =>
+      ({ left: 64, top: 200, right: 164, bottom: 240, width: 100, height: 40, x: 64, y: 200, toJSON: () => ({}) }) as DOMRect
+    ;(doc.querySelector('td') as HTMLElement).getBoundingClientRect = () =>
+      ({ left: 64, top: 200, right: 164, bottom: 240, width: 100, height: 40, x: 64, y: 200, toJSON: () => ({}) }) as DOMRect
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const box = result.slides[0].blocks[0]
+    if (box.kind !== 'box') return
+    expect(box.fill).toBe('C83C32')
+    expect(box.fillTransparency).toBe(60) // alpha 0.4 → pptx transparency 60
+    const table = result.slides[0].blocks[1]
+    if (table.kind !== 'table') return
+    expect(table.cells[0][0].fill).toBe('000000')
+    expect(table.cells[0][0].fillTransparency).toBe(92)
+    // the slide fact itself: alpha 0.65 → transparency 35
+    expect(result.slides[0].background).toBe('1F1F1F')
+    expect(result.slides[0].backgroundTransparency).toBe(35)
+  })
+
+  it('a single outer box-shadow maps to shadow facts (px + alpha), no degradation', () => {
+    const doc = mount(wrap(`<div style="background:#FFFFFF;box-shadow:0px 2px 8px rgba(0,0,0,0.1);width:200px;height:100px"></div>`), (doc) =>
+      new Map<Element, Rect>([
+        [at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }],
+        [at(doc, '.slide > div'), { x: 40, y: 40, w: 200, h: 100 }],
+      ]))
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    expect(result.degradations).toEqual([])
+    const block = result.slides[0].blocks[0]
+    if (block.kind !== 'box') return
+    expect(block.shadow).toEqual({ offsetX: 0, offsetY: 2, blur: 8, color: '000000', alpha: 0.1 })
+  })
+
+  it('a shadow-only div (no fill, no border) still emits its box', () => {
+    const doc = mount(wrap(`<div style="box-shadow:0px 0px 12px rgba(0,0,0,0.2);width:200px;height:100px"></div>`), (doc) =>
+      new Map<Element, Rect>([
+        [at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }],
+        [at(doc, '.slide > div'), { x: 40, y: 40, w: 200, h: 100 }],
+      ]))
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const block = result.slides[0].blocks[0]
+    expect(block.kind).toBe('box')
+    if (block.kind !== 'box') return
+    expect(block.fill).toBeUndefined()
+    expect(block.shadow).toMatchObject({ blur: 12, alpha: 0.2 })
+  })
+
+  it('multi-layer / inset / spread box-shadows degrade by name, never silently', () => {
+    const doc = mount(
+      wrap(
+        `<div style="background:#FFFFFF;box-shadow:2px 2px 4px rgba(0,0,0,0.2), 0 0 6px rgba(0,0,0,0.1);width:100px;height:40px"></div>` +
+          `<div style="background:#FFFFFF;box-shadow:inset 0 0 4px rgba(0,0,0,0.3);width:100px;height:40px"></div>` +
+          `<div style="background:#FFFFFF;box-shadow:2px 2px 4px 2px rgba(0,0,0,0.3);width:100px;height:40px"></div>`,
+      ),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        doc.querySelectorAll('.slide > div').forEach((el, i) => m.set(el, { x: 40, y: 40 + i * 60, w: 100, h: 40 }))
+        return m
+      })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    // boxes still emit (they have fills) — but every shadow is dropped
+    expect(result.slides[0].blocks.filter((b) => b.kind === 'box')).toHaveLength(3)
+    expect(result.slides[0].blocks.every((b) => b.kind !== 'box' || b.shadow === undefined)).toBe(true)
+    const msg = result.degradations.join('；')
+    expect(msg).toMatch(/2 层 box-shadow/)
+    expect(msg).toMatch(/inset/)
+    expect(msg).toMatch(/spread/)
+  })
+
+  it('object-fit:cover rides the image facts; off-center object-position degrades', () => {
+    const doc = mount(
+      wrap(
+        `<img src="assets/a.png" style="object-fit:cover;width:400px;height:130px">` +
+          `<img src="assets/b.png" style="object-fit:cover;object-position:left top;width:400px;height:130px">` +
+          `<img src="assets/c.png" style="width:400px;height:130px">`,
+      ),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        doc.querySelectorAll('img').forEach((el, i) => m.set(el, { x: 40, y: 40 + i * 150, w: 400, h: 130 }))
+        return m
+      })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const images = result.slides[0].blocks.filter((b) => b.kind === 'image')
+    expect(images).toHaveLength(3)
+    const [covered, offCenter, plain] = images
+    if (covered.kind !== 'image' || offCenter.kind !== 'image' || plain.kind !== 'image') return
+    expect(covered.objectFit).toBe('cover')
+    expect(offCenter.objectFit).toBe('cover')
+    expect(plain.objectFit).toBeUndefined() // default stays contain (unchanged decks)
+    expect(result.degradations.join('；')).toMatch(/object-position/)
+  })
+
+  it('object-fit:cover computes the centered crop from the natural aspect', () => {
+    const doc = mount(wrap(`<img src="assets/a.png" style="object-fit:cover;width:960px;height:540px">`), (doc) =>
+      new Map<Element, Rect>([
+        [at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }],
+        [at(doc, 'img'), { x: 0, y: 0, w: 960, h: 540 }],
+      ]))
+    void doc
+    // jsdom decodes nothing — naturalWidth stays 0. Stub the decoded size the
+    // browser would report (2000×1500 = 4:3 into a 16:9 window → crop t/b).
+    const img = doc.querySelector('img') as HTMLImageElement
+    Object.defineProperty(img, 'naturalWidth', { value: 2000 })
+    Object.defineProperty(img, 'naturalHeight', { value: 1500 })
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const block = result.slides[0].blocks[0]
+    if (block.kind !== 'image') return
+    expect(block.naturalW).toBe(2000)
+    expect(block.naturalH).toBe(1500)
+    // renderedH = 960/(4/3) = 720; (720−540)/(2·720) = 0.125 top and bottom
+    expect(block.coverCrop).toEqual({ l: 0, r: 0, t: 0.125, b: 0.125 })
   })
 
   it('li text blocks carry bullet level and ordered kind (nesting counted)', () => {

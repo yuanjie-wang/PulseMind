@@ -7,14 +7,14 @@
 //  purpose — a SLIDE_W import here would silently break the serialization.
 //
 //  What it reports: per .slide (document order), every PAINTED thing as a
-//  flat block list — text (with per-node runs), boxes (opaque fill/border),
+//  flat block list — text (with per-node runs), boxes (fill/border/shadow),
 //  images, tables, data-chart annotations — plus refusals (profile
 //  violations, out-of-bounds) and advisory degradations. Coordinates are
-//  slide-relative px. Transparency is refused everywhere (pptx needs solid
-//  color; the fidelity contract prefers a named refusal over a blended
-//  guess). Painting order ≈ DOM order, with the browser's "positioned paints
-//  above in-flow" rule approximated by tagging positioned blocks; the emitter
-//  stable-partitions on that tag.
+//  slide-relative px. Alpha color maps to pptx transparency on fills/lines
+//  (pptxgenjs fill/line `transparency`); TEXT color has no alpha in OOXML
+//  runs and is still refused by name. Painting order ≈ DOM order, with the
+//  browser's "positioned paints above in-flow" rule approximated by tagging
+//  positioned blocks; the emitter stable-partitions on that tag.
 
 import type { CollectResult, LayoutRun, TableCellFacts } from './html-route-types'
 
@@ -33,10 +33,16 @@ export function collectDeckLayout(): CollectResult {
   const slides = Array.from(document.querySelectorAll('.slide')) as HTMLElement[]
   const errors: CollectResult['errors'] = []
   const degradations: string[] = []
-  const slideFacts: CollectResult['slides'] = []
+    const slideFacts: CollectResult['slides'] = []
 
-  // ── color reader: rgb()/rgba() → opaque hex, or a named refusal ──
-  const readColor = (value: string, page: number, what: string): { hex?: string; transparent?: boolean } | null => {
+  // ── color reader: rgb()/rgba() → hex + pptx transparency (fills/lines), or
+  // a named refusal for the text callers ──
+  // pptxgenjs carries fill/line alpha natively as `transparency` 0-100, so an
+  // rgba() FILL is a mapping, not a refusal — the fidelity contract holds
+  // because the pptx paints the same blend over the same backdrop. Text color
+  // has no alpha in OOXML runs, so the text callers keep the refusal (they
+  // check `transparency` and error out).
+  const readColor = (value: string): { hex?: string; transparency?: number; transparent?: boolean } | null => {
     const v = (value || '').trim()
     if (!v || v === 'transparent' || v === 'rgba(0, 0, 0, 0)') return { transparent: true }
     const m = v.match(/^rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)$/)
@@ -44,10 +50,7 @@ export function collectDeckLayout(): CollectResult {
     const part = (s: string): number => Math.max(0, Math.min(255, Math.round(parseFloat(s))))
     const hex = [m[1], m[2], m[3]].map((c) => part(c).toString(16).padStart(2, '0')).join('').toUpperCase()
     const alpha = m[4] === undefined ? 1 : parseFloat(m[4])
-    if (alpha < 0.999) {
-      errors.push({ page, message: `${what}用了半透明色 ${v}——设计路线只收不透明色，需要浅色请直接给调淡后的 hex（或调深背景色）。` })
-      return { transparent: true }
-    }
+    if (alpha < 0.999) return { hex, transparency: Math.max(1, Math.round((1 - alpha) * 100)) }
     return { hex }
   }
 
@@ -117,7 +120,6 @@ export function collectDeckLayout(): CollectResult {
     const ox = sr.left
     const oy = sr.top
     const blocks: CollectResult['slides'][number]['blocks'] = []
-    let shadowCount = 0
     let inlineGroup: Node[] = []
 
     const bounds = (b: { x: number; y: number; w: number; h: number }, what: string) => {
@@ -130,24 +132,91 @@ export function collectDeckLayout(): CollectResult {
     }
 
     // ── color/decoration readers for containers ──
-    const decoration = (el: HTMLElement): { fill?: string; border?: { color: string; widthPx: number }; radiusPx?: number } => {
+    const decoration = (el: HTMLElement): {
+      fill?: string
+      fillTransparency?: number
+      border?: { color: string; widthPx: number; transparency?: number; dash?: 'dash' | 'dot' }
+      radiusPx?: number
+      shadow?: { offsetX: number; offsetY: number; blur: number; color: string; alpha: number }
+    } => {
       const c = window.getComputedStyle(el)
-      const out: { fill?: string; border?: { color: string; widthPx: number }; radiusPx?: number } = {}
-      const bg = readColor(c.backgroundColor, page, `${desc(el)} 的背景色`)
-      if (bg && bg.hex) out.fill = bg.hex
+      const out: {
+        fill?: string
+        fillTransparency?: number
+        border?: { color: string; widthPx: number; transparency?: number; dash?: 'dash' | 'dot' }
+        radiusPx?: number
+        shadow?: { offsetX: number; offsetY: number; blur: number; color: string; alpha: number }
+      } = {}
+      const bg = readColor(c.backgroundColor)
+      if (bg && bg.hex) {
+        out.fill = bg.hex
+        if (bg.transparency !== undefined) out.fillTransparency = bg.transparency
+      }
       const bw = px(c.borderTopWidth)
       if (bw > 0) {
-        const bc = readColor(c.borderTopColor, page, `${desc(el)} 的边框色`)
-        if (bc && bc.hex) out.border = { color: bc.hex, widthPx: bw }
+        // dashed/dotted map to pptx dashType; the exotic styles (double,
+        // groove, ridge…) still degrade to solid by name
         const style = c.borderTopStyle
-        if (style && style !== 'solid' && style !== 'none') degradations.push(`第 ${page} 页：${desc(el)} 的 ${style} 边框按实线处理`)
+        const dash = style === 'dashed' ? ('dash' as const) : style === 'dotted' ? ('dot' as const) : undefined
+        if (style && style !== 'solid' && style !== 'none' && !dash) degradations.push(`第 ${page} 页：${desc(el)} 的 ${style} 边框按实线处理`)
+        const bc = readColor(c.borderTopColor)
+        if (bc && bc.hex) {
+          out.border = { color: bc.hex, widthPx: bw, ...(dash ? { dash } : {}) }
+          if (bc.transparency !== undefined) out.border.transparency = bc.transparency
+        }
       }
       const radius = px(c.borderTopLeftRadius)
       if (radius > 0.5) out.radiusPx = radius
-      if (c.boxShadow && c.boxShadow !== 'none') shadowCount++
+      if (c.boxShadow && c.boxShadow !== 'none') {
+        const shadow = parseBoxShadow(c.boxShadow, el)
+        if (shadow) out.shadow = shadow
+      }
       const op = parseFloat(c.opacity || '1')
       if (op < 0.999) degradations.push(`第 ${page} 页：${desc(el)} 的 opacity:${op} 未映射（按不透明渲染）`)
       return out
+    }
+
+    /** box-shadow → one outer shadow (px + alpha). Chromium computes color
+     *  FIRST (`rgba(...) 0px 2px 8px`), jsdom/author order keeps it last —
+     *  the parser takes the color from either end. Multiple layers, inset
+     *  and spread have no pptx primitive: named degradation, never silent. */
+    const parseBoxShadow = (css: string, el: HTMLElement): { offsetX: number; offsetY: number; blur: number; color: string; alpha: number } | null => {
+      const label = desc(el)
+      const layers = css.split(/,(?![^(]*\))/).map((s) => s.trim()).filter(Boolean)
+      if (layers.length > 1) {
+        degradations.push(`第 ${page} 页：${label} 的 ${layers.length} 层 box-shadow 未映射（只支持单层外阴影）`)
+        return null
+      }
+      let seg = layers[0]
+      if (/\binset\b/.test(seg)) {
+        degradations.push(`第 ${page} 页：${label} 的 inset box-shadow 未映射`)
+        return null
+      }
+      let color = '000000'
+      let alpha = 1
+      const cm = seg.match(/rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}/)
+      if (cm) {
+        const parsed = readColor(cm[0])
+        if (parsed && parsed.hex) {
+          color = parsed.hex
+          if (parsed.transparency !== undefined) alpha = Math.round(Math.max(0, Math.min(1, 1 - parsed.transparency / 100)) * 100) / 100
+        }
+        seg = seg.replace(cm[0], ' ')
+      }
+      const lengths = seg.trim().split(/\s+/).map(px)
+      if (lengths.length < 2) {
+        degradations.push(`第 ${page} 页：${label} 的 box-shadow 未映射（读不出偏移）`)
+        return null
+      }
+      const [offsetX, offsetY] = lengths
+      const blur = lengths.length > 2 ? lengths[2] : 0
+      const spread = lengths.length > 3 ? lengths[3] : 0
+      if (spread !== 0) {
+        degradations.push(`第 ${page} 页：${label} 的 box-shadow spread 未映射`)
+        return null
+      }
+      if (alpha === 0 || (offsetX === 0 && offsetY === 0 && blur === 0)) return null
+      return { offsetX, offsetY, blur, color, alpha }
     }
 
     // ── text runs: per-node styles, BR → '\n', whitespace collapsed like the
@@ -157,9 +226,20 @@ export function collectDeckLayout(): CollectResult {
       let pendingNewlines = 0
       const pushText = (text: string, styleOwner: Element | null) => {
         const c = window.getComputedStyle(styleOwner || fallback)
-        const col = readColor(c.color, page, `${desc(styleOwner || fallback)} 的文字色`)
+        const col = readColor(c.color)
+        // OOXML runs carry no alpha on color — text keeps the named refusal
+        // (fills map it; this is the one place translucency still refuses).
+        if (col && col.transparency !== undefined) {
+          errors.push({
+            page,
+            message: `${desc(styleOwner || fallback)} 的文字色用了半透明——文字没有透明度可映射，改用调淡后的 hex（浅色强调用 --pm-accent-soft 或 --pm-muted）。`,
+          })
+        }
         const family = c.fontFamily || ''
         const isMono = !!monoFace && (family.indexOf(monoFace) >= 0 || /--pm-font-mono/.test(family))
+        // letter-spacing: computed px ('normal' parses to 0) — one of the
+        // strongest typographic signals (kickers, tracked numerals)
+        const ls = px(c.letterSpacing)
         const run: LayoutRun = {
           text: (pendingNewlines > 0 ? '\n'.repeat(pendingNewlines) : '') + text,
           fontSizePx: px(c.fontSize) || 16,
@@ -169,12 +249,13 @@ export function collectDeckLayout(): CollectResult {
           strike: (c.textDecorationLine || c.textDecoration || '').indexOf('line-through') >= 0,
           color: col && col.hex ? col.hex : '262626',
           ...(isMono ? { mono: true } : {}),
+          ...(ls > 0.05 ? { charSpacingPx: ls } : {}),
         }
         pendingNewlines = 0
         const last = runs[runs.length - 1]
         if (last && last.fontSizePx === run.fontSizePx && last.bold === run.bold && last.italic === run.italic
           && last.underline === run.underline && last.strike === run.strike && last.color === run.color
-          && !!last.mono === !!run.mono) last.text += run.text
+          && !!last.mono === !!run.mono && (last.charSpacingPx ?? 0) === (run.charSpacingPx ?? 0)) last.text += run.text
         else runs.push(run)
       }
       const walk = (node: Node) => {
@@ -229,7 +310,43 @@ export function collectDeckLayout(): CollectResult {
         errors.push({ page, message: `${desc(el)} 缺少 src——图片必须是工作区里的文件（png/jpg/jpeg/gif）。` })
         return
       }
-      const block = { kind: 'image' as const, x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, src, positioned }
+      const c = window.getComputedStyle(el)
+      const block: CollectResult['slides'][number]['blocks'][number] = {
+        kind: 'image', x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, src, positioned,
+        ...(c.objectFit === 'cover' ? { objectFit: 'cover' as const } : {}),
+      }
+      if (c.objectFit === 'cover') {
+        // pptxgenjs sizes images against the element frame (it never decodes
+        // the natural size), so ITS cover is a no-op — the crop must be
+        // computed here where the browser knows both aspects, and injected
+        // into the pic's srcRect by the emitter's post-pass.
+        const img = el as HTMLImageElement
+        const nw = img.naturalWidth || 0
+        const nh = img.naturalHeight || 0
+        if (nw > 0 && nh > 0 && r.width > 0 && r.height > 0) {
+          block.naturalW = nw
+          block.naturalH = nh
+          const boxAspect = r.width / r.height
+          const natAspect = nw / nh
+          if (natAspect > boxAspect * 1.001) {
+            // image wider than the window: crop left/right
+            const renderedW = r.height * natAspect
+            const crop = (renderedW - r.width) / (2 * renderedW)
+            block.coverCrop = { l: crop, r: crop, t: 0, b: 0 }
+          } else if (natAspect < boxAspect * 0.999) {
+            // taller: crop top/bottom
+            const renderedH = r.width / natAspect
+            const crop = (renderedH - r.height) / (2 * renderedH)
+            block.coverCrop = { l: 0, r: 0, t: crop, b: crop }
+          }
+        }
+        // pptx cover crops centered — an off-center object-position would be
+        // a silent reframe, so it degrades by name instead.
+        const pos = (c.objectPosition || '').replace(/\s+/g, ' ').trim()
+        if (pos && pos !== '50% 50%' && pos !== 'center' && pos !== 'center center') {
+          degradations.push(`第 ${page} 页：${desc(el)} 的 object-position:${pos} 未映射——cover 按居中裁切`)
+        }
+      }
       blocks.push(block)
       bounds(block, desc(el))
     }
@@ -251,8 +368,11 @@ export function collectDeckLayout(): CollectResult {
             return
           }
           const cc = window.getComputedStyle(cell)
-          const fill = readColor(cc.backgroundColor, page, `${desc(cell)} 的背景色`)
-          const col = readColor(cc.color, page, `${desc(cell)} 的文字色`)
+          const fill = readColor(cc.backgroundColor)
+          const col = readColor(cc.color)
+          if (col && col.transparency !== undefined) {
+            errors.push({ page, message: `${desc(cell)} 的文字色用了半透明——文字没有透明度可映射，改用调淡后的 hex。` })
+          }
           const text = (cell.innerText !== undefined ? cell.innerText : cell.textContent || '')
             .replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim()
           rowCells.push({
@@ -263,6 +383,7 @@ export function collectDeckLayout(): CollectResult {
             fontSizePx: px(cc.fontSize) || 14,
             align: cc.textAlign === 'center' || cc.textAlign === 'right' ? cc.textAlign : 'left',
             fill: fill && fill.hex ? fill.hex : undefined,
+            ...(fill && fill.transparency !== undefined ? { fillTransparency: fill.transparency } : {}),
           })
           widths.push(cell.getBoundingClientRect().width)
         }
@@ -369,12 +490,15 @@ export function collectDeckLayout(): CollectResult {
       if (!hasBlockChild && !hasImg) {
         // a styled leaf paints its own box first, text lands on the content
         // box — two shapes, paint order keeps them stacked. An EMPTY styled
-        // leaf (a pure color box / banner) still emits its box: decoration
-        // fires whether or not there is text.
+        // leaf (a pure color box / banner / shadow-only glow) still emits its
+        // box: decoration fires whether or not there is text.
         const deco = el !== slideEl ? decoration(el) : {}
-        if (deco.fill || deco.border) {
+        if (deco.fill || deco.border || deco.shadow) {
           const r = el.getBoundingClientRect()
-          const box = { kind: 'box' as const, x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, fill: deco.fill, border: deco.border, radiusPx: deco.radiusPx, positioned: selfPositioned }
+          const box = {
+            kind: 'box' as const, x: r.left - ox, y: r.top - oy, w: r.width, h: r.height,
+            fill: deco.fill, fillTransparency: deco.fillTransparency, border: deco.border, radiusPx: deco.radiusPx, shadow: deco.shadow, positioned: selfPositioned,
+          }
           blocks.push(box)
           bounds(box, desc(el))
         }
@@ -385,9 +509,12 @@ export function collectDeckLayout(): CollectResult {
       // container: paint its own decoration first, then recurse
       if (el !== slideEl) {
         const deco = decoration(el)
-        if (deco.fill || deco.border) {
+        if (deco.fill || deco.border || deco.shadow) {
           const r = el.getBoundingClientRect()
-          const box = { kind: 'box' as const, x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, fill: deco.fill, border: deco.border, radiusPx: deco.radiusPx, positioned: selfPositioned }
+          const box = {
+            kind: 'box' as const, x: r.left - ox, y: r.top - oy, w: r.width, h: r.height,
+            fill: deco.fill, fillTransparency: deco.fillTransparency, border: deco.border, radiusPx: deco.radiusPx, shadow: deco.shadow, positioned: selfPositioned,
+          }
           blocks.push(box)
           bounds(box, desc(el))
         }
@@ -410,7 +537,7 @@ export function collectDeckLayout(): CollectResult {
     }
 
     const slideCs = window.getComputedStyle(slideEl)
-    const sbg = readColor(slideCs.backgroundColor, page, '.slide 的背景色')
+    const sbg = readColor(slideCs.backgroundColor)
     visit(slideEl, 0, false, false)
 
     // text-vs-text overlap: absolute layouts guessed from font sizes are this
@@ -434,8 +561,11 @@ export function collectDeckLayout(): CollectResult {
         })
       }
     }
-    if (shadowCount > 0) degradations.push(`第 ${page} 页：${shadowCount} 处 box-shadow 未映射`)
-    slideFacts.push({ background: sbg && sbg.hex ? sbg.hex : undefined, blocks })
+    slideFacts.push({
+      background: sbg && sbg.hex ? sbg.hex : undefined,
+      backgroundTransparency: sbg && sbg.transparency !== undefined ? sbg.transparency : undefined,
+      blocks,
+    })
   })
 
   if (slides.length === 0) {

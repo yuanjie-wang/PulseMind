@@ -107,6 +107,56 @@ async function phaseChild() {
   checks.push(['the second export lands on 合同-2.pdf (D6)', again.success === true && /合同-2\.pdf$/.test(again.path ?? ''), again.path])
   checks.push(['no tmp litter remains', readdirSync(work).every((f) => !f.includes('.pm-tmp'))])
 
+  // ⑤ frontmatter design (PLAN-docx-native-styles): cover section, real
+  // header/footer parts with PAGE fields, TOC field with cached entries —
+  // the design lands in the real bytes, then converts to PDF for the
+  // launcher's per-page verification.
+  const DESIGN_MD = `---
+title: 年度技术报告
+subtitle: 2026 财年
+author: 王元杰
+date: 2026-10-07
+toc: true
+header: 内部资料
+footer: total
+---
+
+# 年度技术报告
+
+本章为正文开篇。
+
+## 发现
+
+数据见表。
+
+## 结论
+
+结论如下。
+
+\`\`\`chart
+{"type": "column", "categories": ["一月", "二月", "三月"], "series": [{"name": "营收", "values": [120, 90, 150]}]}
+\`\`\`
+`
+  const designed = await svcExportDocument({ format: 'docx', content: DESIGN_MD, filePath: join(work, '设计.docx') })
+  checks.push(['frontmatter docx exports through the real chain', designed.success === true, designed.error])
+  if (designed.success) {
+    const dz = new AdmZip(readFileSync(designed.path))
+    const dxml = dz.readAsText('word/document.xml')
+    checks.push(['frontmatter docx is ONE section with titlePg (docx-preview paginates on the explicit break, not section bounds)', (dxml.match(/<w:sectPr/g) || []).length === 1 && dxml.includes('<w:titlePg/>'), `sectPr=${(dxml.match(/<w:sectPr/g) || []).length} titlePg=${dxml.includes('<w:titlePg/>')}`])
+    checks.push(['the cover ends with an explicit page break (the pagination both engines honor)', /<w:br w:type="page"\/>[^<]*<\/w:p>[\s\S]*?目录/.test(dxml) || (dxml.indexOf('<w:br w:type="page"/>') > -1 && dxml.indexOf('<w:br w:type="page"/>') < dxml.indexOf('目录')), `break@${dxml.indexOf('<w:br w:type="page"/>')} toc@${dxml.indexOf('目录')}`])
+    checks.push(['header part carries the 页眉 text', dz.readAsText('word/header1.xml').includes('内部资料')])
+    const footer = dz.readAsText('word/footer1.xml')
+    checks.push(['footer carries PAGE + SECTIONPAGES fields', footer.includes('PAGE') && footer.includes('SECTIONPAGES')])
+    const countIn = (n, h) => h.split(n).length - 1
+    checks.push(['TOC cached entries = body heading projection', countIn('发现', dxml) >= 2 && countIn('结论', dxml) >= 2])
+    checks.push(['settings updateFields on', dz.readAsText('word/settings.xml').includes('updateFields')])
+    checks.push(['chart fence embeds a drawing', dxml.includes('<w:drawing>'), `drawing=${dxml.includes('<w:drawing>')}`])
+    const mediaPng = dz.getEntries().find((e) => e.entryName.startsWith('word/media/') && e.entryName.endsWith('.png') && e.header.size > 2000)
+    checks.push(['chart PNG rasterized non-trivial (real Chromium, 2x)', !!mediaPng, mediaPng ? `${mediaPng.entryName} ${mediaPng.header.size}B` : 'no media png >2KB'])
+    const designedPdf = await svcExportDocument({ format: 'pdf', sourcePath: designed.path, filePath: join(work, '设计.pdf') })
+    checks.push(['the designed docx converts to PDF', designedPdf.success === true, designedPdf.error])
+  }
+
   writeFileSync(process.env.PM_REPORT, JSON.stringify({ checks, originalPgSzPt }), 'utf-8')
   app.exit(checks.every((c) => c[1]) ? 0 : 1)
 }
@@ -174,6 +224,7 @@ async function launcher() {
   const inlineExpect = payload.originalPgSzPt ?? (docxPagePt(flipped) ? { w: 595.3, h: 841.9 } : null)
   await verifyPdfWithExpected(join(out, 'work', '合同.pdf'), inlineExpect, 'inline 导出', false)
   await verifyPdfWithExpected(join(out, 'work', '协议.pdf'), docxPagePt(flipped), 'sourcePath 转换', true)
+  await verifyDesignedPdf(join(out, 'work', '设计.pdf'))
 
   const failed = results.filter((r) => !r.pass).length
   console.log(`\n${results.length - failed}/${results.length} checks passed`)
@@ -219,6 +270,38 @@ async function verifyPdfWithExpected(pdfPath, expected, label, expectLandscape =
   } else {
     check(`${label}: page size check ran`, false, 'expected sectPr unavailable')
   }
+}
+
+/** The frontmatter-designed docx → PDF, page by page: page 1 is the COVER
+ *  alone (title, no TOC/body), page 2 opens the body with the TOC label, its
+ *  cached entries, the header text and the footer frame. docx-preview renders
+ *  the header/footer parts and the static text runs; PAGE-field NUMBERS may be
+ *  renderer-dependent, so only the literal frame is load-bearing here. */
+async function verifyDesignedPdf(pdfPath) {
+  if (!existsSync(pdfPath)) {
+    check('frontmatter 设计: designed pdf exists', false, 'missing — the child conversion failed')
+    return
+  }
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(readFileSync(pdfPath)), isEvalSupported: false }).promise
+  const pageText = async (n) => {
+    const page = await doc.getPage(n)
+    const content = await page.getTextContent()
+    return content.items.map((it) => it.str ?? '').join('').normalize('NFKC')
+  }
+  const cover = await pageText(1)
+  check('frontmatter 设计: cover page is page 1 and carries the title', doc.numPages >= 2 && cover.includes('年度技术报告') && cover.includes('王元杰'), `${doc.numPages} pages; p1: ${cover.slice(0, 60)}`)
+  check('frontmatter 设计: cover page carries NO body/TOC content', !cover.includes('目录') && !cover.includes('结论'), `p1 has 目录=${cover.includes('目录')} 结论=${cover.includes('结论')}`)
+  check('frontmatter 设计: cover page is exempt from header/footer (empty first parts, both engines)', !cover.includes('内部资料') && !/第[\s\S]*共/.test(cover), `p1 has header=${cover.includes('内部资料')} footerFrame=${/第[\s\S]*共/.test(cover)}`)
+  const body = await pageText(2)
+  check('frontmatter 设计: body page 2 opens with the TOC (label + cached entries)', body.includes('目录') && body.includes('发现') && body.includes('结论'), `p2: ${body.slice(0, 60)}`)
+  check('frontmatter 设计: header text renders on body pages', body.includes('内部资料'), `p2 has header=${body.includes('内部资料')}`)
+  // 页 lands as ⻚ (CJK Radicals Supplement U+2ED2) in the fallback-font text
+  // layer — NFKC folds Kangxi Radicals (U+2F00 block) but NOT this block, so
+  // accept both forms. PAGE-field NUMBERS may stay blank (docx-preview doesn't
+  // evaluate fields); the literal frame is the load-bearing part.
+  const pageChar = /(页|⻚)/
+  check('frontmatter 设计: footer frame renders on body pages (第 X 页 共 Y 页)', pageChar.test(body) && body.includes('第') && body.includes('共'), `p2 footer frame=${pageChar.test(body) && body.includes('第') && body.includes('共')}`)
 }
 
 /** w:pgSz twips → print points, from the docx that fed this pdf. */

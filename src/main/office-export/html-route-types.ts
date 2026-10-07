@@ -32,8 +32,6 @@ export const TOKEN_KEYS = [
 ] as const
 export type TokenKey = (typeof TOKEN_KEYS)[number]
 
-const COLOR_KEYS: readonly string[] = ['--pm-accent', '--pm-accent-soft', '--pm-ink', '--pm-muted', '--pm-panel', '--pm-bg', '--pm-line']
-const FONT_KEYS: readonly string[] = ['--pm-font-zh', '--pm-font-latin', '--pm-font-mono']
 /** Type-scale keys: `NNpx` integers, html-side indirection only. */
 export const FS_KEYS: readonly string[] = ['--pm-fs-cover', '--pm-fs-title', '--pm-fs-body', '--pm-fs-note']
 
@@ -86,17 +84,38 @@ export interface LayoutRun {
   italic: boolean
   underline: boolean
   strike: boolean
-  /** Opaque RRGGBB — the profile refuses translucent color everywhere. */
+  /** Opaque RRGGBB — TEXT color refuses translucency (OOXML runs have no
+   *  alpha); fill/line color maps it to pptx transparency instead. */
   color: string
   /** The run's computed font-family is the --pm-font-mono face: the emitter
    *  writes the mono face into a:latin (digits/labels) and the post-pass
    *  keeps CJK in this run on --pm-font-zh. */
   mono?: boolean
+  /** letter-spacing measured off the browser (px, present only when CSS set
+   *  a non-normal value); the emitter ×0.75 → pptxgenjs charSpacing pt. */
+  charSpacingPx?: number
 }
 
 export interface LayoutBorder {
   color: string
   widthPx: number
+  /** CSS border alpha → pptxgenjs line transparency 0-100. */
+  transparency?: number
+  /** border-style dashed/dotted → pptxgenjs dashType; other non-solid styles
+   *  degrade to solid by name. */
+  dash?: 'dash' | 'dot'
+}
+
+/** A single outer box-shadow, measured px + the color's alpha. The emitter
+ *  turns it into a pptxgenjs outer shadow (dist = |offset|, dir = atan2). */
+export interface BoxShadowFacts {
+  offsetX: number
+  offsetY: number
+  blur: number
+  /** Opaque RRGGBB — the shadow's alpha rides `alpha`, not the hex. */
+  color: string
+  /** 0–1. */
+  alpha: number
 }
 
 interface BlockBox {
@@ -125,8 +144,11 @@ export interface TextBlock extends BlockBox {
 export interface BoxBlock extends BlockBox {
   kind: 'box'
   fill?: string
+  /** CSS background alpha → pptxgenjs fill transparency 0-100. */
+  fillTransparency?: number
   border?: LayoutBorder
   radiusPx?: number
+  shadow?: BoxShadowFacts
 }
 
 export interface ImageBlock extends BlockBox {
@@ -134,6 +156,17 @@ export interface ImageBlock extends BlockBox {
   /** The raw src attribute — the service resolves + reads bytes against the
    *  workspace and keys the image map by exactly this string. */
   src: string
+  /** object-fit: cover — the emitter rewrites the pic's srcRect from
+   *  `coverCrop`; anything else keeps the stretch-to-box behavior. */
+  objectFit?: 'cover'
+  /** The <img>'s natural (decoded) size — 0/absent when the runtime can't
+   *  decode (jsdom); the crop needs it. */
+  naturalW?: number
+  naturalH?: number
+  /** object-fit:cover's centered crop as srcRect fractions (0-1), computed
+   *  from the natural aspect vs the measured box. Present only when it is a
+   *  real crop (aspects differ and the natural size is known). */
+  coverCrop?: { l: number; r: number; t: number; b: number }
 }
 
 export interface TableCellFacts {
@@ -144,6 +177,7 @@ export interface TableCellFacts {
   fontSizePx: number
   align: 'left' | 'center' | 'right'
   fill?: string
+  fillTransparency?: number
 }
 
 export interface TableBlock extends BlockBox {
@@ -165,8 +199,10 @@ export interface ChartBlock extends BlockBox {
 export type LayoutBlock = TextBlock | BoxBlock | ImageBlock | TableBlock | ChartBlock
 
 export interface SlideFacts {
-  /** Opaque RRGGBB, present only when the .slide painted a background. */
+  /** RRGGBB, present only when the .slide painted a background. */
   background?: string
+  /** CSS background alpha → pptxgenjs background transparency 0-100. */
+  backgroundTransparency?: number
   blocks: LayoutBlock[]
 }
 
@@ -185,8 +221,9 @@ export interface MeasureError {
 
 /** What collectDeckLayout (in-page) returns. */
 export interface CollectResult extends LayoutFacts {
-  /** Advisory only — unmappable decoration (box-shadow) the route skips.
-   *  Refusals go in `errors`; these ride the fidelity report. */
+  /** Advisory only — decoration the route can't keep (multi-layer/inset
+   *  shadows, element opacity, non-center crop, dashed borders). Refusals go
+   *  in `errors`; these ride the fidelity report. */
   degradations: string[]
   errors: MeasureError[]
 }

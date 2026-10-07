@@ -233,6 +233,42 @@ describe('colours', () => {
     expect(shapes[2].fill).toBe('rgba(255, 0, 0, 0.5)')
   })
 
+  it('a:outerShdw becomes CSS-ready dx/dy + blur + rgba color (the design route card shadow)', () => {
+    const shapes = slide1Shapes(
+      deckWith(
+        '<sld><cSld><spTree>' +
+          // the shape our emitter writes: `0 2px 8px rgba(0,0,0,0.10)` →
+          // dist=19050 EMU (2px), dir=90°, blurRad=76200 (8px), alpha 10000
+          '<sp><nvSpPr><cNvPr id="2"/><nvPr/></nvSpPr><spPr><xfrm><off/><ext/></xfrm>' +
+          '<effectLst><outerShdw blurRad="76200" dist="19050" dir="5400000" algn="bl" rotWithShape="0">' +
+          '<srgbClr val="000000"><alpha val="10000"/></srgbClr></outerShdw></effectLst>' +
+          '</spPr></sp>' +
+          '</spTree></cSld></sld>'
+      )
+    )
+    const shadow = shapes[0].shadow!
+    expect(shadow.blurPx).toBe(8)
+    // polar dist/dir → CSS dx/dy: 90° points straight down
+    expect(shadow.offsetX).toBeCloseTo(0, 9)
+    expect(shadow.offsetY).toBeCloseTo(2, 9)
+    expect(shadow.color).toBe('rgba(0, 0, 0, 0.1)')
+  })
+
+  it('rPr@spc becomes the run letter-spacing in px (300 → 3pt → 4px)', () => {
+    const shapes = slide1Shapes(
+      deckWith(
+        '<sld><cSld><spTree>' +
+          '<sp><nvSpPr><cNvPr id="2"/><nvPr/></nvSpPr><spPr><xfrm><off/><ext/></xfrm></spPr>' +
+          '<txBody><bodyPr/><lstStyle/><p><r><rPr sz="1300" spc="300"/><t>KICKER</t></r>' +
+          '<r><rPr sz="1300"/><t>正文</t></r></p></txBody></sp>' +
+          '</spTree></cSld></sld>'
+      )
+    )
+    const frame = shapes[0].text!
+    expect(frame.paragraphs[0].runs[0].letterSpacingPx).toBeCloseTo(4, 6)
+    expect(frame.paragraphs[0].runs[1].letterSpacingPx).toBeUndefined() // untracked run stays clean
+  })
+
   it('lumMod+lumOff lightens by the documented luminance math', () => {
     // accent1 #4472C4 with lumMod 60% + lumOff 40% — PowerPoint's standard
     // "lighter variant". Expected value derived from L' = L·0.6 + 0.4.
