@@ -354,7 +354,10 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
           style={{ position: 'absolute', inset: 0, overflow: 'auto', background: 'var(--pm-desk)' }}
         >
           {pages && doc && (
-            <div data-pdf-doc style={{ width: 'fit-content', padding: PDF_PAGE_GAP }}>
+            /* flex + gap, NOT margins: the pages' trailing margin collapsed
+               out of the block and the scroll extent ended at the last
+               page's edge, while the block's own padding doubled the top. */
+            <div data-pdf-doc style={{ width: 'fit-content', display: 'flex', flexDirection: 'column', gap: PDF_PAGE_GAP, padding: PDF_PAGE_GAP }}>
               {layout.map((box, i) => {
                 const inWindow = i >= win.first && i <= win.last
                 return (
@@ -364,7 +367,6 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
                     style={{
                       width: box.width,
                       height: box.height,
-                      marginBottom: PDF_PAGE_GAP,
                       // The page itself is paper (the document's face): white
                       // in both modes. What follows it is the edge — the desk
                       // darkens and the shadow deepens so the white sheet
@@ -418,6 +420,7 @@ function PdfDocument({ path, kind }: { path: string; kind: FileKind }): React.Re
               textAlign: 'center',
               fontSize: 11,
               color: 'var(--pm-text-strong)',
+              background: 'transparent',
               border: '1px solid var(--pm-input-border)',
               borderRadius: 4,
               padding: '1px 2px',

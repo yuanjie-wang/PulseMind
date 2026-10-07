@@ -111,9 +111,10 @@ export function XlsxPreview({
     const scale = manualZoomRef.current ?? 1
     wrapper.style.zoom = String(scale)
     // Horizontal centering that splits the classic-scrollbar strip
-    // (visual-center.ts), measured off the live grid so switching to a sheet
-    // of a different width recenters on its own. The grid used to sit
-    // left-anchored the moment its painted width dropped under the pane.
+    // (visual-center.ts), measured off the live grid. The measurement alone
+    // does NOT make a sheet switch recenter — the container's size (what the
+    // ResizeObserver watches) is unchanged by a repaint — so the sheet effect
+    // below re-runs this after every sheet change (review_20261007 中9).
     const grid = container.querySelector<HTMLElement>('[data-xlsx-grid]')
     if (grid) container.style.paddingLeft = `${visualCenterPaddingX(container, grid.getBoundingClientRect().width)}px`
     appliedZoomRef.current = scale
@@ -178,6 +179,18 @@ export function XlsxPreview({
   /** Monotonic load epoch: a parse landing after a newer load began (path
    *  change, reload tick) must not repaint stale sheets over fresh ones. */
   const loadEpochRef = useRef(0)
+
+  // A sheet switch repaints the grid at its own width while the container's
+  // size (what the ResizeObserver watches) does not change — without this the
+  // centering padding stayed at the previous sheet's split (left gutter 207px
+  // against a 13px right one) until the next zoom or resize
+  // (review_20261007 中9: the applyZoom comment already claimed this worked).
+  // The effect runs after the new grid is in the DOM, so the measurement is
+  // the new sheet's; the load path's own applyZoom makes this a cheap no-op
+  // there.
+  useEffect(() => {
+    if (sheet) applyZoom()
+  }, [sheet, applyZoom])
 
   // Same shape as DocxPreview's load effect: everything in the effect, deps
   // name the triggers (path change / toolbar refresh).

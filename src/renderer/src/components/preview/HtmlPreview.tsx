@@ -87,9 +87,17 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
   // middle of its overflow — the one centering lever that works across the
   // opaque-origin frame — so an overflowing page stays center-anchored. A
   // scroll the user made is not fought until the next command.
-  useEffect(() => {
+  const reparkCenter = useCallback((): void => {
     void window.electronAPI.measurePreviewFrame(frameName, true).catch(() => {})
-  }, [zoom, frameName])
+  }, [frameName])
+  useEffect(() => {
+    reparkCenter()
+  }, [zoom, reparkCenter])
+  // The park rides the frame's OWN load event too: on first mount the zoom
+  // effect measured about:blank (the navigation had not finished — over=0/null,
+  // the park no-ops), and every reloadTick remounts the iframe with zoom and
+  // frameName unchanged, so without this the docking was lost on initial load
+  // AND on every agent edit (review_20261007 中8).
   // Stable per (path, elementMode) so a reload tick (key={reloadTick} remount
   // of the iframe) re-serves the SAME nonce; a different file gets a fresh one.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- generateNonce reads neither dep ON PURPOSE: the deps are the reset contract, not data
@@ -217,6 +225,7 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
           name={frameName}
           key={holdFrame ? `hold-${reloadTick}` : `go-${reloadTick}`}
           src={holdFrame ? undefined : src}
+          onLoad={reparkCenter}
           sandbox="allow-scripts"
           title="preview"
           style={{ display: 'block', width: '100%', height: '100%', border: 'none', background: '#fff', zoom }}

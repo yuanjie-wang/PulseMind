@@ -162,6 +162,7 @@ import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
 import { usePreviewPaneStore } from './src/renderer/src/stores/previewPaneStore'
 import { PreviewPane } from './src/renderer/src/components/preview/PreviewPane'
+import { installThemeVars, applyThemeAttr } from './src/renderer/src/theme/dom'
 
 let root = null
 window.__mount = () => {
@@ -183,6 +184,9 @@ window.__mount = () => {
   return true
 }
 window.__store = usePreviewPaneStore
+// The real variable sheet + the real html[data-theme] flip — the same two
+// calls App.tsx makes, so the dark checks below read the production palette.
+window.__setTheme = (mode) => { installThemeVars(); applyThemeAttr(mode) }
 window.__ready = true
 `
 
@@ -293,6 +297,29 @@ await page.locator('div[title="下一页"]').click()
 await page.waitForFunction(() => document.querySelector('[data-pdf-page-input]')?.value === '2')
 check('下一页 moved to page 2 and scrolled', await scrollBox().evaluate((el) => el.scrollTop > 0))
 check('page 2 canvas appeared', (await page.locator('[data-pdf-page="2"] canvas').count()) === 1)
+
+/* ── 3b. Dark mode: the page bar must stay legible. The page-jump input is a
+ *  native <input> — with no explicit background Chromium paints its UA white
+ *  field in EVERY theme (the app never sets color-scheme; dark rides
+ *  html[data-theme] vars only), so the near-white dark ink (#ececec) sat on
+ *  white. The fix pins background: transparent (the ZoomControls input's own
+ *  idiom) so the pane's themed ground shows through in both themes. */
+const inputPaint = (loc) => loc.evaluate((el) => {
+  const cs = getComputedStyle(el)
+  return { bg: cs.backgroundColor, ink: cs.color }
+})
+await page.evaluate(() => window.__setTheme('dark'))
+const darkPageInput = await inputPaint(pageInput())
+check('dark: page input paints no UA-white field (transparent → the dark ground shows)', darkPageInput.bg === 'rgba(0, 0, 0, 0)', darkPageInput.bg)
+check('dark: page input ink is the dark --pm-text-strong (#ececec)', darkPageInput.ink === 'rgb(236, 236, 236)', darkPageInput.ink)
+// The zoom % input only mounts while editing — click the label in, measure, Escape out.
+await page.locator('[data-zoom-label]').click()
+const darkZoomInput = await inputPaint(page.locator('[data-pdf-pagebar] + div input'))
+await page.keyboard.press('Escape')
+check('dark: the zoom % input beside the file bar stays transparent too', darkZoomInput.bg === 'rgba(0, 0, 0, 0)', darkZoomInput.bg)
+await page.evaluate(() => window.__setTheme('light'))
+const lightPageInput = await inputPaint(pageInput())
+check('light: page input back on the light sheet — still transparent, ink #333', lightPageInput.bg === 'rgba(0, 0, 0, 0)' && lightPageInput.ink === 'rgb(51, 51, 51)', JSON.stringify(lightPageInput))
 
 /* ── 4. The 305-page book: cap, laziness, jump. ── */
 await openFile('/w/长书.pdf')
