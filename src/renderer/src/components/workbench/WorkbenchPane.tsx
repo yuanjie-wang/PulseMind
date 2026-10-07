@@ -57,7 +57,7 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
   const setWidth = useWorkbenchStore((s) => s.setWidth)
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab)
   const setOpen = useWorkbenchStore((s) => s.setOpen)
-  const drag = useRef<{ startX: number; startWidth: number; lastSent: number } | null>(null)
+  const drag = useRef<{ pointerId: number; startX: number; startWidth: number; lastSent: number } | null>(null)
 
   const key = conversationId ?? DRAFT_CONVERSATION_KEY
   // This conversation's pane state; a conversation with no entry is closed.
@@ -69,12 +69,20 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
   if (!open) return <></>
 
   const onDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
-    drag.current = { startX: e.clientX, startWidth: effWidth, lastSent: 0 }
+    if (e.button !== 0) return
+    drag.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: effWidth, lastSent: 0 }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
   const onDragMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current
-    if (!d) return
+    if (!d || e.pointerId !== d.pointerId) return
+    // A canceled or silently-decaptured drag (pointercancel fires no
+    // pointerup) leaves drag.current set — from then on a plain HOVER over
+    // the handle would keep resizing. No button held = the drag is over.
+    if (e.buttons === 0) {
+      drag.current = null
+      return
+    }
     const next = clampPaneWidth(d.startWidth + (d.startX - e.clientX), chatAreaWidth)
     const now = Date.now()
     if (now - d.lastSent > 40) {
@@ -113,9 +121,11 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
     >
       {/* Drag handle (left edge) */}
       <div
+        data-pm-pane-drag-handle
         onPointerDown={onDragStart}
         onPointerMove={onDragMove}
         onPointerUp={onDragEnd}
+        onPointerCancel={onDragEnd}
         style={{
           position: 'absolute',
           left: 0,

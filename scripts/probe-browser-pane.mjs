@@ -759,6 +759,104 @@ check(
 )
 await shot('pane-favorites-dropdown.png')
 
+/* ── N. The width drag handle: a stuck drag must never turn HOVER into
+   resize. The old handle kept drag.current set whenever a drag ended without
+   a pointerup (pointercancel fires none; capture can also be lost silently) —
+   from then on merely hovering the edge resized the pane following the mouse
+   (user report 2026-10-07: 「鼠标移动到边界线上，不拖动，但是会触发改变侧边
+   窗口尺寸」). The fix: primary-button guard + pointerId match + a
+   buttons===0 belt in move + onPointerCancel clears. ── */
+await page.evaluate(() => window.__mount({ tabs: [] }))
+const dragHandle = page.locator('[data-pm-pane-drag-handle]')
+await dragHandle.waitFor()
+const paneWidth = () => dragHandle.evaluate((el) => el.parentElement.getBoundingClientRect().width)
+// Stage the stuck state the way reality produces it: a pointerdown whose
+// pointerup never arrives. A synthetic pointerdown is not an active pointer,
+// so the production setPointerCapture would throw NotFoundError mid-handler —
+// stub it for the staging dispatch only (restored before any real-mouse step).
+const stageStuckDrag = async (button = 0, buttons = 1) => {
+  const hb = await dragHandle.boundingBox()
+  await page.evaluate(({ x, y, button, buttons }) => {
+    const proto = Element.prototype
+    const real = proto.setPointerCapture
+    proto.setPointerCapture = function () {}
+    document.querySelector('[data-pm-pane-drag-handle]').dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button, buttons, pointerId: 1, clientX: x, clientY: y }),
+    )
+    proto.setPointerCapture = real
+  }, { x: hb.x + hb.width / 2, y: hb.y + hb.height / 2, button, buttons })
+}
+const edgeX = async () => (await dragHandle.boundingBox()).x + 3
+const synthMove = async (clientX, btns) => {
+  const hb = await dragHandle.boundingBox()
+  await page.evaluate(({ x, y, btns }) => {
+    document.querySelector('[data-pm-pane-drag-handle]').dispatchEvent(
+      new PointerEvent('pointermove', { bubbles: true, buttons: btns, pointerId: 1, clientX: x, clientY: y }),
+    )
+  }, { x: clientX, y: hb.y + 10, btns })
+}
+
+const w0 = await paneWidth()
+const hb0 = await dragHandle.boundingBox()
+const cx = hb0.x + hb0.width / 2
+const cy = hb0.y + hb0.height / 2
+// Real drag still works (also proves the button guard kept the normal path).
+await page.mouse.move(cx, cy)
+await page.mouse.down()
+for (const dx of [cx - 20, cx - 40, cx - 60]) {
+  await page.mouse.move(dx, cy)
+  await page.waitForTimeout(60) // the handle throttles setWidth to one per 40ms
+}
+await page.mouse.up()
+const w1 = await paneWidth()
+check('a real drag still widens the pane', w1 - w0 > 40 && w1 - w0 < 80, `${w0} → ${w1}`)
+// Control: hover with no button after a CLEAN drag never resizes.
+await page.mouse.move(cx, cy)
+await page.waitForTimeout(60)
+await page.mouse.move(cx + 6, cy)
+check('hovering the edge without a button is inert after a clean drag', Math.abs((await paneWidth()) - w1) < 1)
+// Stuck state #1, cleared by pointercancel. Isolated from the buttons belt:
+// a PRESSED synthetic move after the cancel must be inert too.
+await stageStuckDrag()
+await synthMove((await edgeX()) - 10, 1)
+const wC1 = await paneWidth()
+check('while the stuck drag is live, moves still resize it (staging sanity)', wC1 > w1 + 5, `${w1} → ${wC1}`)
+await page.evaluate(() => {
+  document.querySelector('[data-pm-pane-drag-handle]').dispatchEvent(
+    new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }),
+  )
+})
+await page.waitForTimeout(60) // clear the 40ms setWidth throttle: a live drag must be able to fire
+await synthMove((await edgeX()) - 30, 1)
+check('after pointercancel a pressed move no longer resizes (cancel cleared it)', Math.abs((await paneWidth()) - wC1) < 1, `${wC1} → ${await paneWidth()}`)
+// Stuck state #2 with NO cancel — the buttons belt: the very first move that
+// carries buttons===0 (a pure hover) ends the phantom drag.
+await stageStuckDrag()
+const wBeforeHover = await paneWidth()
+await synthMove((await edgeX()) - 30, 0)
+const wD = await paneWidth()
+check('a hover move (buttons=0) ends a stuck drag instead of resizing', Math.abs(wD - wBeforeHover) < 1, `${wBeforeHover} → ${wD}`)
+await page.waitForTimeout(60) // clear the 40ms setWidth throttle for the next probe
+await synthMove((await edgeX()) - 50, 1)
+check('…and the drag really is dead (a later pressed move is inert)', Math.abs((await paneWidth()) - wD) < 1, `${wD} → ${await paneWidth()}`)
+// Right-click must never start a drag either.
+await stageStuckDrag(2, 2)
+await page.waitForTimeout(60)
+await synthMove((await edgeX()) - 70, 2)
+const wF = await paneWidth()
+check('a right-button press starts no drag (moves with buttons=2 are inert)', Math.abs(wF - wD) < 1)
+// Recovery: after all the phantom states, a real drag works again. Fresh
+// coordinates — the earlier drags moved the pane's left edge ~60px left, so
+// the section-start cx no longer points at the handle.
+const hbEnd = await dragHandle.boundingBox()
+await page.mouse.move(hbEnd.x + hbEnd.width / 2, hbEnd.y + hbEnd.height / 2)
+await page.mouse.down()
+await page.mouse.move(hbEnd.x + hbEnd.width / 2 - 20, hbEnd.y + hbEnd.height / 2)
+await page.waitForTimeout(60)
+await page.mouse.up()
+check('a real drag works again after the phantom states', (await paneWidth()) - wF > 10, `${wF} → ${await paneWidth()}`)
+await shot('pane-drag-handle.png')
+
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
 console.log(`screenshots: ${SHOTS}`)
