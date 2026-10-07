@@ -333,7 +333,10 @@ class BatchRunner {
         routineId: state.routine.id,
         runId: state.parentRun.id,
         conversationId: '',
-        status: status === 'success' ? 'success' : 'failed',
+        // The parent's own tri-state passes through — 'partial' must reach the
+        // receiver as partial, not as failed (review_20261007 中4); `error`
+        // already carries the 成功/失败/跳过 counts line for judgement.
+        status,
         error: status === 'success' ? undefined : summary,
         skipped: { ...state.skippedCalls },
         finishedAt: new Date().toISOString(),

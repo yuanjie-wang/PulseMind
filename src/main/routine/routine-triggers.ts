@@ -30,6 +30,16 @@ const DEFAULT_DEBOUNCE_MS = 5_000
 
 class RoutineTriggerManager {
   private watchers = new Map<string, FSWatcher[]>()
+  /** The path set each watcher entry is mounted on — "already watching" is
+   *  only true when these still match the store (review_20261007 高2: an
+   *  id-stable, path-blind check let an edited path keep the OLD watcher live
+   *  while the NEW path never watched, silently, until a restart). */
+  private watchKeys = new Map<string, string>()
+  /** Debounce per routine, cached at sync() time. scheduleFire used to read
+   *  the store per fs event for this — the store has no memory cache, so a
+   *  build in a watched directory put hundreds of synchronous
+   *  readFileSync+JSON.parse on the shared main process (review_20261007 中5). */
+  private debounceMsCache = new Map<string, number>()
   private debounceTimers = new Map<string, NodeJS.Timeout>()
   private server: http.Server | null = null
   private started = false
@@ -43,21 +53,41 @@ class RoutineTriggerManager {
     if (!this.started) return
     const wanted = new Set<string>()
     for (const routine of routineStore.list()) {
-      const paths = (routine.triggers ?? [])
-        .filter((t) => t.type === 'file')
-        .flatMap((t) => (t.type === 'file' ? t.paths : []))
+      const fileTriggers = (routine.triggers ?? []).filter((t) => t.type === 'file')
+      const paths = fileTriggers.flatMap((t) => t.paths)
       if (!routine.enabled || paths.length === 0) continue
       wanted.add(routine.id)
-      if (this.watchers.has(routine.id)) continue // already watching; re-watching would double-fire
+      const debounceMs = fileTriggers.reduce<number | undefined>((acc, t) => (t.debounceMs ?? acc), undefined) ?? DEFAULT_DEBOUNCE_MS
+      const key = JSON.stringify(paths)
+      if (this.watchers.has(routine.id)) {
+        if (this.watchKeys.get(routine.id) === key) {
+          this.debounceMsCache.set(routine.id, debounceMs) // a debounce-only edit still applies
+          continue // same paths still mounted; re-watching would double-fire
+        }
+        this.closeWatchers(routine.id) // path edit: close the old mount first — "close, then open" is the double-fire guard
+      }
+      // Set AFTER closeWatchers: the teardown drops the cache entry, and the
+      // fresh mount must not fall back to the default window.
+      this.debounceMsCache.set(routine.id, debounceMs)
+      this.watchKeys.set(routine.id, key)
       this.watchers.set(routine.id, this.watchPaths(routine.id, paths))
     }
     // Routines whose triggers were removed / disabled / deleted.
-    for (const [routineId, ws] of this.watchers) {
+    for (const routineId of [...this.watchers.keys()]) {
       if (wanted.has(routineId)) continue
-      for (const w of ws) w.close()
-      this.clearDebounce(routineId)
-      this.watchers.delete(routineId)
+      this.closeWatchers(routineId)
     }
+  }
+
+  /** The one teardown: handles closed, pending debounce and cached mount
+   *  state dropped — used by path re-mount and removal alike. */
+  private closeWatchers(routineId: string): void {
+    const ws = this.watchers.get(routineId)
+    if (ws) for (const w of ws) w.close()
+    this.watchers.delete(routineId)
+    this.watchKeys.delete(routineId)
+    this.debounceMsCache.delete(routineId)
+    this.clearDebounce(routineId)
   }
 
   /** Watchers for one routine. A failed watch (missing path, no recursive
@@ -84,13 +114,11 @@ class RoutineTriggerManager {
   }
 
   /** Trailing debounce per ROUTINE (not per path): events inside the window
-   *  push the fire back, so a burst of writes collapses into one run. */
+   *  push the fire back, so a burst of writes collapses into one run. The
+   *  window length rides the value sync() cached — no store read here, this
+   *  runs on every fs event (review_20261007 中5). */
   private scheduleFire(routineId: string): void {
-    const routine = routineStore.get(routineId)
-    const debounce = routine?.triggers
-      ?.filter((t) => t.type === 'file')
-      .reduce<number | undefined>((acc, t) => (t.type === 'file' ? (t.debounceMs ?? acc) : acc), undefined)
-      ?? DEFAULT_DEBOUNCE_MS
+    const debounce = this.debounceMsCache.get(routineId) ?? DEFAULT_DEBOUNCE_MS
     this.clearDebounce(routineId)
     this.debounceTimers.set(routineId, setTimeout(() => {
       this.debounceTimers.delete(routineId)
@@ -137,11 +165,7 @@ class RoutineTriggerManager {
 
   stop(): void {
     this.started = false
-    for (const [routineId, ws] of this.watchers) {
-      for (const w of ws) w.close()
-      this.clearDebounce(routineId)
-    }
-    this.watchers.clear()
+    for (const routineId of [...this.watchers.keys()]) this.closeWatchers(routineId)
     if (this.server) {
       this.server.close()
       this.server = null

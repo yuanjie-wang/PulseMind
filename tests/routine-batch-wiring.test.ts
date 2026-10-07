@@ -343,3 +343,21 @@ describe('batch per-row timeout (单次超时)', () => {
     expect(src).toContain('BATCH_TIMEOUT_MINUTE_OPTIONS.map((m) => ({ value: m, label: `${m} 分钟` }))')
   })
 })
+
+/** review_20261007 中4: the parent's settlement webhook folded the local
+ *  tri-state to two values — a 99/100 batch pushed "failed" to the
+ *  away-from-machine receiver the webhook exists to reach, contradicting the
+ *  desktop's 部分完成. vitest cannot register the handler, so the pass-through
+ *  is pinned by source scan (behaviour of postSettlementEvent itself is
+ *  covered by routine-webhook.test.ts). */
+describe('batch settlement webhook carries the partial outcome', () => {
+  it("the parent's tri-state reaches the webhook unfolded", () => {
+    const src = source('src/main/routine/batch-runner.ts')
+    // The event's status is the local `status` verbatim — no success/failed fold.
+    expect(src).toMatch(/\n\s+status,\n\s+error:/)
+    expect(src).not.toContain("status === 'success' ? 'success' : 'failed'")
+    // And the wire type accepts the third value.
+    const wire = source('src/main/routine/webhook-out.ts')
+    expect(wire).toContain("status: 'success' | 'partial' | 'failed'")
+  })
+})

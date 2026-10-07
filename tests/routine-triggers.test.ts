@@ -5,7 +5,7 @@
 // through the REAL debounce; the webhook tests hit the REAL http server over
 // loopback fetch.
 
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -13,7 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 process.env.HOME = mkdtempSync(join(tmpdir(), 'pulsemind-routine-triggers-'))
 mkdirSync(join(process.env.HOME, '.pulsemind'), { recursive: true })
 
-const calls: { runner: Array<{ routineId: string; trigger: string }>; audit: Array<Record<string, unknown>> } = { runner: [], audit: [] }
+const calls: { runner: Array<{ routineId: string; trigger: string }>; audit: Array<Record<string, unknown>>; storeGet: number } = { runner: [], audit: [], storeGet: 0 }
 /** The single fixture `routineStore` serves; mutated per case. */
 let fixture: { id: string; name: string; enabled: boolean; triggers: unknown[]; running?: boolean } | null = null
 
@@ -33,7 +33,10 @@ vi.mock('../src/main/storage/audit-store', () => ({
 vi.mock('../src/main/storage/routine-store', () => ({
   routineStore: {
     list: () => (fixture ? [fixture] : []),
-    get: (id: string) => (fixture && fixture.id === id ? fixture : null),
+    get: (id: string) => {
+      calls.storeGet++
+      return fixture && fixture.id === id ? fixture : null
+    },
     hasRunningRun: () => fixture?.running === true,
   },
 }))
@@ -110,6 +113,44 @@ describe('routineTriggerManager', () => {
       writeFileSync(join(watchDir, 'b.txt'), 'x')
       await new Promise((r) => setTimeout(r, 1300))
       expect(calls.runner).toHaveLength(0)
+    })
+
+    // review_20261007 高2: sync()'s dedup keyed on routine id alone — an edited
+    // path set kept the OLD watcher live (removed path kept firing) while the
+    // added path never watched, silently, until 停用再启用 or restart.
+    it('editing the watched paths re-mounts: the old path goes silent, the new path fires', async () => {
+      const dirB = mkdtempSync(join(tmpdir(), 'pm-trigger-watch-b-'))
+      try {
+        fixture = { id: 'rp', name: '任务', enabled: true, triggers: [{ type: 'file', paths: [watchDir], debounceMs: 120 }] }
+        mgr.sync()
+        writeFileSync(join(watchDir, 'old.txt'), '1')
+        await until(() => calls.runner.length === 1)
+        fixture = { id: 'rp', name: '任务', enabled: true, triggers: [{ type: 'file', paths: [dirB], debounceMs: 120 }] }
+        mgr.sync()
+        writeFileSync(join(watchDir, 'old2.txt'), '2') // removed path: must be silent now
+        await new Promise((r) => setTimeout(r, 400))
+        expect(calls.runner).toHaveLength(1)
+        writeFileSync(join(dirB, 'new.txt'), '3') // added path: must watch and fire
+        await until(() => calls.runner.length === 2)
+        expect(calls.runner[1]).toMatchObject({ routineId: 'rp', trigger: 'file' })
+      } finally {
+        rmSync(dirB, { recursive: true, force: true })
+      }
+    })
+
+    // review_20261007 中5: the store has no memory cache, so the old per-event
+    // routineStore.get() paid a synchronous readFileSync+JSON.parse for every
+    // fs event on the shared main process. The debounce now rides the value
+    // sync() cached; only the actual fire reads the store (once).
+    it('a write burst reads the store once per fire, not once per fs event', async () => {
+      fixture = { id: 'rg', name: '任务', enabled: true, triggers: [{ type: 'file', paths: [watchDir], debounceMs: 120 }] }
+      mgr.sync()
+      calls.storeGet = 0
+      for (let i = 0; i < 20; i++) writeFileSync(join(watchDir, `burst-${i}.txt`), String(i))
+      await until(() => calls.runner.length >= 1)
+      await new Promise((r) => setTimeout(r, 300)) // let straggler events settle
+      expect(calls.runner).toHaveLength(1)
+      expect(calls.storeGet).toBe(1)
     })
   })
 

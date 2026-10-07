@@ -23,7 +23,11 @@ export interface RoutineSettlementEvent {
   routineId: string
   runId: string
   conversationId: string
-  status: 'success' | 'failed'
+  /** 'partial' = a batch parent run with mixed row outcomes — the desktop
+   *  notification says 部分完成, so the webhook must not call it 'failed'
+   *  (review_20261007 中4: 99/100 成功的批量跑给离机接收方推了 failed)。
+   *  `error` carries the aggregated counts line for the receiver to read. */
+  status: 'success' | 'partial' | 'failed'
   error?: string
   /** D13 auto-handled calls the user never saw: approvals rejected, questions skipped. */
   skipped: { approvals: number; questions: number }
