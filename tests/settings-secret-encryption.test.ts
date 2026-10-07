@@ -144,6 +144,48 @@ describe('secrets at rest (enc:v1:)', () => {
     expect((provider.headers as Record<string, string>)['x-api-token'].startsWith(ENC_PREFIX)).toBe(true)
   })
 
+  // review_20261007 中6: the settlement webhook's signing secret joined the
+  // walk — before this it rode a plaintext bypass while the same file's API
+  // keys were enc:v1:.
+  it('the webhook signing secret is encrypted on disk and served plaintext', async () => {
+    writeRaw({ ...RAW_BASE, notifications: { webhookUrl: 'https://ntfy.example/x', webhookSecret: 'whsec-live-123', onSettled: true } })
+    const store = await freshStore()
+    const snapshot = await store.get()
+    expect(snapshot.notifications!.webhookSecret).toBe('whsec-live-123')
+    await store.set(snapshot)
+    const disk = readRaw().notifications as Record<string, unknown>
+    expect(disk.webhookSecret).not.toBe('whsec-live-123')
+    expect(disk.webhookSecret as string).toMatch(/^enc:v1:/)
+    expect((await store.get()).notifications!.webhookSecret).toBe('whsec-live-123')
+  })
+
+  it('a ${ENV} webhook secret keeps its placeholder byte-identical on disk', async () => {
+    process.env.PULSE_WEBHOOK_KEY = 'whsec-env-123'
+    try {
+      writeRaw({ ...RAW_BASE, notifications: { webhookSecret: '${PULSE_WEBHOOK_KEY}' } })
+      const store = await freshStore()
+      const s = await store.get()
+      expect(s.notifications!.webhookSecret).toBe('whsec-env-123') // resolved in memory, like webhookUrl
+      await store.set(s) // the renderer sends the resolved value back — the placeholder must survive
+      expect((readRaw().notifications as Record<string, unknown>).webhookSecret).toBe('${PULSE_WEBHOOK_KEY}')
+    } finally {
+      delete process.env.PULSE_WEBHOOK_KEY
+    }
+  })
+
+  it('migrateEncryptedSecrets rewrites a plaintext webhook secret even with no plaintext carrier elsewhere', async () => {
+    writeRaw({
+      ...RAW_BASE,
+      providers: [{ id: 'p1', name: 'n', baseURL: 'https://api.example.com', model: 'm', apiKey: '${PULSE_TEST_KEY}' }],
+      notifications: { webhookSecret: 'whsec-plain-456' },
+    })
+    const mod = await freshStoreModule()
+    expect(await mod.migrateEncryptedSecrets()).toBe(true)
+    expect(readRaw().notifications as Record<string, unknown>).toHaveProperty('webhookSecret')
+    expect(readRaw().notifications!.webhookSecret as string).toMatch(/^enc:v1:/)
+    expect(await mod.migrateEncryptedSecrets()).toBe(false) // idempotent
+  })
+
   it('restorePlaceholders still works against a ciphertext previous file (decode-first ordering)', async () => {
     const store = await freshStore()
     await store.set(await store.get()) // a write encrypts — the file below is the ciphertext previous file
@@ -261,6 +303,15 @@ describe('encryptSecrets OFF (2026-09-25 opt-in ruling) — the keychain is neve
     expect((await store.get()).profiles![0].apiKey).toBeUndefined()
     await store.set(await store.get())
     expect(readProviderRaw(0).apiKey).toBeUndefined() // nothing resurrects
+  })
+
+  it('a ciphertext webhookSecret is DROPPED on read once the flag is off (review_20261007 中6)', async () => {
+    writeRaw({ ...RAW_BASE, encryptSecrets: false, notifications: { webhookSecret: `${ENC_PREFIX}bm90LWFyZWFsbHktYS1ibG9i` } })
+    const store = await freshStore()
+    expect((await store.get()).notifications!.webhookSecret).toBeUndefined()
+    // And the next save must not re-serve the ciphertext to disk.
+    await store.set(await store.get())
+    expect(readRaw().notifications as Record<string, unknown>).not.toHaveProperty('webhookSecret')
   })
 
   it('migrateEncryptedSecrets declines when the flag is off — and never even probes the keychain', async () => {

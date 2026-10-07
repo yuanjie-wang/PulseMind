@@ -208,7 +208,9 @@ function materializeProfiles(providers: LlmProviderConfig[]): LlmProfile[] {
 // Every consumer — session-manager, api-proxy, the renderer settings editor —
 // keeps reading the merged view's apiKey/headers unchanged. The walk touches
 // exactly the secret carriers (each provider's apiKey + headers, plus each
-// LEGACY profile's — a pre-migration file is decoded before grouping).
+// LEGACY profile's — a pre-migration file is decoded before grouping) and the
+// settlement webhook's signing secret (notifications.webhookSecret,
+// review_20261007 中6).
 
 const ENC_PREFIX = 'enc:v1:'
 
@@ -298,10 +300,25 @@ function mapSecretCarriers(carriers: unknown[], map: (value: string) => string |
 }
 
 function mapSettingsSecrets<T>(settings: T, map: (value: string) => string | undefined): T {
-  const out = settings as { providers?: unknown; profiles?: unknown }
+  const out = settings as { providers?: unknown; profiles?: unknown; notifications?: unknown }
   const next: Record<string, unknown> = { ...(out as Record<string, unknown>) }
   if (Array.isArray(out?.providers)) next.providers = mapSecretCarriers(out.providers, map)
   if (Array.isArray(out?.profiles)) next.profiles = mapSecretCarriers(out.profiles, map)
+  // review_20261007 中6: the settlement webhook's signing secret is a secret
+  // like the API keys — it rides the same walk instead of the plaintext bypass
+  // the trigger feature shipped with. ${ENV} placeholders stay raw
+  // (encryptSecretValue skips them) and restorePlaceholders covers this key
+  // through its generic object walk.
+  if (out?.notifications && typeof out.notifications === 'object' && !Array.isArray(out.notifications)) {
+    const n = out.notifications as Record<string, unknown>
+    if (typeof n.webhookSecret === 'string') {
+      const mapped = map(n.webhookSecret)
+      const nextN: Record<string, unknown> = { ...n }
+      if (mapped === undefined) delete nextN.webhookSecret
+      else nextN.webhookSecret = mapped
+      next.notifications = nextN
+    }
+  }
   return next as T
 }
 
@@ -312,8 +329,9 @@ function mapSettingsSecrets<T>(settings: T, map: (value: string) => string | und
  *  hidden modal (2026-09-25 black-screen report) — the opt-out must be able
  *  to guarantee that never happens. */
 function decodeSecretsDeep<T>(settings: T): T {
-  const out = settings as { providers?: unknown; profiles?: unknown; encryptSecrets?: boolean }
-  const hasCarriers = Array.isArray(out?.providers) || Array.isArray(out?.profiles)
+  const out = settings as { providers?: unknown; profiles?: unknown; notifications?: unknown; encryptSecrets?: boolean }
+  const hasCarriers = Array.isArray(out?.providers) || Array.isArray(out?.profiles) ||
+    !!(out?.notifications && typeof out.notifications === 'object' && !Array.isArray(out.notifications))
   if (!hasCarriers) return settings
   if (out.encryptSecrets !== true) {
     let dropped = false
@@ -336,8 +354,9 @@ function decodeSecretsDeep<T>(settings: T): T {
  *  Existing ciphertext passes through untouched (get() still decodes it, so a
  *  switch-off + one save naturally converts back to plaintext). */
 function encodeSecretsDeep<T>(settings: T): T {
-  const out = settings as { providers?: unknown; profiles?: unknown; encryptSecrets?: boolean }
-  const hasCarriers = Array.isArray(out?.providers) || Array.isArray(out?.profiles)
+  const out = settings as { providers?: unknown; profiles?: unknown; notifications?: unknown; encryptSecrets?: boolean }
+  const hasCarriers = Array.isArray(out?.providers) || Array.isArray(out?.profiles) ||
+    !!(out?.notifications && typeof out.notifications === 'object' && !Array.isArray(out.notifications))
   if (!hasCarriers) return settings
   if (out.encryptSecrets !== true) return settings
   return mapSettingsSecrets(settings, encryptSecretValue)
@@ -359,7 +378,7 @@ export async function migrateEncryptedSecrets(): Promise<boolean> {
   const current = await settingsStore.get()
   if (current.encryptSecrets !== true) return false
   if (!encryptionAvailable()) return false
-  let raw: { providers?: Array<Record<string, unknown>>; profiles?: Array<Record<string, unknown>> } | null = null
+  let raw: { providers?: Array<Record<string, unknown>>; profiles?: Array<Record<string, unknown>>; notifications?: Record<string, unknown> } | null = null
   try {
     raw = JSON.parse(await readFile(SETTINGS_PATH, 'utf-8'))
   } catch {
@@ -374,7 +393,11 @@ export async function migrateEncryptedSecrets(): Promise<boolean> {
     )
   const needs =
     (raw?.providers ?? []).some(carrierNeeds) ||
-    (raw?.profiles ?? []).some(carrierNeeds)
+    (raw?.profiles ?? []).some(carrierNeeds) ||
+    // review_20261007 中6: the webhook secret joins the migration's promise —
+    // an existing encryptSecrets install with a plaintext secret must not wait
+    // for an unrelated save to encrypt it.
+    isPlainSecret(raw?.notifications?.webhookSecret)
   if (!needs) return false
   if (!encryptionAvailable()) {
     console.warn('[settings] plaintext secrets found but safeStorage is unavailable — leaving settings.json untouched')
