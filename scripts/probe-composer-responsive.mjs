@@ -188,6 +188,11 @@ await page.locator('[data-case=narrow] .pm-chat-model').click()
 await visibleItems().first().waitFor()
 const modelItems = await visibleItems().allTextContents()
 check('narrow: model dropdown opens from the icon with the full list', modelItems.length === 2 && modelItems.some((l) => l.includes('GLM-4.6')), modelItems.join(' | '))
+// selectable + selectedKeys：打开时当前位置（narrow 用例的 activeProfileId=prof_glm）
+// 先于第一次点击可见 —— 恰一条 selected，且就是当前模型。（antd 6 的下拉菜单
+// 只有 ant-dropdown-menu-* 类，没有 ant-menu-*，selected 类是后者带 dropdown 前缀的。）
+const selected = await page.locator('.ant-dropdown-menu-item.ant-dropdown-menu-item-selected:visible').allTextContents()
+check('narrow: open menu marks the active model (exactly one selected row)', selected.length === 1 && selected[0].includes('GLM-4.6'), JSON.stringify(selected))
 await visibleItems().filter({ hasText: 'GLM-4.6' }).click()
 await waitMenusShut()
 check('narrow: picking a model lands onSelectProfile', (await page.evaluate(() => window.__pickedModel)) === 'prof_glm', String(await page.evaluate(() => window.__pickedModel)))

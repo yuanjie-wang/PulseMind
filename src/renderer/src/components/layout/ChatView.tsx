@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useCallback, useMemo, useId, useState } from 'react'
 import type { AgentStatus, AgentMessage, ContentBlock, SteerOutcome, ToolUseBlock, Plan } from '../../types/agent'
 import type { LlmProfile } from '../../types/settings'
-import { Segmented } from 'antd'
+import { Segmented, App as AntdApp } from 'antd'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectHue } from '../../stores/projectStore'
 import { useNavigationStore } from '../../stores/navigationStore'
@@ -244,6 +244,27 @@ function ChatView({
     isNearBottomRef.current = true
     onSendMessage(content)
   }, [onSendMessage])
+
+  // 项目模式未选项目时 Composer 拒绝发送（灰按钮 + Enter 静默）——这次拒绝的
+  // 回答：选择区摇晃一次（复用新建任务的 guidance shake，指向「缺的是项目」）
+  // + 一条 toast 说清原因。sendBlocked 只在欢迎页传，会话内挂载点不接。
+  // toast 以 composer 所在列水平居中：antd 的 message holder 是 body 级 fixed、
+  // 恒居中于整个窗口，而外壳不对称（左侧栏 + 右侧 workbench 面板），窗口中心
+  // ≠ 聊天列中心，toast 看起来就是歪的。整条 notice（position:relative）平移
+  // 列中心与窗口中心之差即可——不动 holder 的盒模型（它的 padding/box-sizing
+  // 是 antd 的实现细节），也不与 move-up 动画的 transform 相冲突。
+  const { message: antdMessage } = AntdApp.useApp()
+  const handleBlockedSend = useCallback(() => {
+    // rect 先读：requestShake 起的 ±10px 动画不应污染锚点测量。
+    const rect = composerShakeRef.current?.getBoundingClientRect()
+    useNewTaskStore.getState().requestShake('projectPicker')
+    const dx = rect ? rect.left + rect.width / 2 - window.innerWidth / 2 : 0
+    antdMessage.open({
+      type: 'warning',
+      content: t('welcome.selectProjectFirst'),
+      style: dx ? { position: 'relative', left: dx } : undefined,
+    })
+  }, [antdMessage, t])
 
   // ── Windowed rendering ──
   // Only the latest PAGE_SIZE segments render initially; older segments are
@@ -902,9 +923,11 @@ function ChatView({
             layout="inline"
             focusToken={welcomeFocusToken}
             // A project task owes a project: with none picked the send button
-            // greys out (the input keeps working) until a card is chosen — the
-            // welcome page asks, rather than the send failing with a warning.
+            // greys out (the input keeps working) until a card is chosen — and
+            // a refused send answers itself: the picker shakes and a warning
+            // names the reason (handleBlockedSend).
             sendBlocked={taskMode === 'project' && !newTaskProjectId}
+            onSendBlocked={handleBlockedSend}
             sendAccentHue={composerProjectHue}
             staging={staging}
             isRequesting={isRequesting}

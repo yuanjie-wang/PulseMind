@@ -89,6 +89,11 @@ export interface ComposerProps {
   /** Dims the send button and drops Enter, leaving the textarea usable — for a
    *  task form that still owes a choice (the welcome page's project pick). */
   sendBlocked?: boolean
+  /** Fired when a send attempt (button or Enter) is refused by sendBlocked.
+   *  The refusal itself is silent — this is the host's one hook to answer it
+   *  (the welcome page shakes the project picker and warns). Optional: without
+   *  it the refusal stays silent, as before. */
+  onSendBlocked?: () => void
   /** Identity hue of the project this composer belongs to, or undefined for a
    *  plain conversation / project mode with nothing picked yet: the send button
    *  then takes that project's color, the same one its welcome card wears. */
@@ -139,6 +144,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     isRequesting,
     disabled,
     sendBlocked,
+    onSendBlocked,
     sendAccentHue,
     loading,
     placeholder,
@@ -191,8 +197,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       return
     }
     // Greyed button, and Enter has to agree with it: a form that still needs a
-    // project chosen must not send through the keyboard either.
-    if (sendBlocked) return
+    // project chosen must not send through the keyboard either. The refusal is
+    // silent here by design — the host's onSendBlocked is what speaks (a grey
+    // button explains nothing; the user read this as "sending does nothing").
+    if (sendBlocked) {
+      onSendBlocked?.()
+      return
+    }
     if (!value.trim()) return
     onSubmit(value)
   }

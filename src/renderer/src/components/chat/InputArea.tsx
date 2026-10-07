@@ -75,6 +75,7 @@ function InputAreaImpl({
   autoFocus,
   focusToken,
   sendBlocked,
+  onSendBlocked,
   sendAccentHue,
   boundExpertId,
   onUnbindExpert,
@@ -130,6 +131,9 @@ function InputAreaImpl({
    *  choice — the welcome page's project mode with no project picked. The input
    *  stays usable: the user writes first, picks the project, then sends. */
   sendBlocked?: boolean
+  /** Fired when the user tries to send while sendBlocked (button or Enter) —
+   *  the host's hook to answer the silent refusal. Forwarded to Composer. */
+  onSendBlocked?: () => void
   /** Identity hue of the project the view belongs to: the send button then takes
    *  that project's color (see Composer). Absent for a plain conversation. */
   sendAccentHue?: number
@@ -710,6 +714,7 @@ function InputAreaImpl({
         isRequesting={isRequesting}
         disabled={isInputDisabled}
         sendBlocked={sendBlocked}
+        onSendBlocked={onSendBlocked}
         sendAccentHue={sendAccentHue}
         loading={isRequesting && !isInputDisabled}
         layout={layout}
@@ -1059,7 +1064,19 @@ function InputAreaImpl({
               </span>
             )}
             {showModelPicker && (
-              <Dropdown menu={{ items: modelItems }} trigger={['click']}>
+              <Dropdown
+                trigger={['click']}
+                // selectable + selectedKeys，与上面的授权下拉同一套机制：打开的
+                // 列表标出下一条消息真正会用的模型（activeProfileId 就是
+                // effectiveProfileId 的解析结果——pin > column > 上次使用 >
+                // 默认），当前位置先于第一次点击可见。跟随默认项是动作不是
+                // 状态，永远不落选中。
+                menu={{
+                  items: modelItems,
+                  selectable: true,
+                  selectedKeys: activeProfileId ? [activeProfileId] : [],
+                }}
+              >
                 <Button
                   size="small"
                   type="text"

@@ -143,4 +143,31 @@ describe('wiring', () => {
     expect(root).toBeGreaterThan(projectCards.indexOf('return ('))
     expect(projectCards.slice(root - 120, root)).toContain('ref={pickerShakeRef}')
   })
+
+  it('a send refused by sendBlocked shakes the picker and warns (user report 2026-10-07)', () => {
+    // The refusal itself is Composer-internal and silent; without the callback
+    // the grey button explained nothing and Enter was a no-op ("发送无效").
+    const composer = read('src', 'renderer', 'src', 'components', 'chat', 'Composer.tsx')
+    expect(composer).toContain('onSendBlocked?.()')
+    // The semantics live in ChatView — the component that owns sendBlocked:
+    // shake the picker (the surface that owes the choice) and name the reason.
+    expect(chatView).toContain("useNewTaskStore.getState().requestShake('projectPicker')")
+    expect(chatView).toContain("content: t('welcome.selectProjectFirst')")
+    // The toast centers over the CHAT COLUMN, not the window: antd's message
+    // holder is body-level fixed (window-centered forever), the shell is
+    // asymmetric (sidebar + workbench), so the notice is shifted by
+    // columnCenter - windowCenter via a relative `left` — user report
+    // 2026-10-07 「弹出的toast没有水平居中」.
+    expect(chatView).toContain('rect.left + rect.width / 2 - window.innerWidth / 2')
+    expect(chatView).toContain("style: dx ? { position: 'relative', left: dx } : undefined")
+    // Wired at the welcome mount (the only site that passes sendBlocked); the
+    // in-conversation composer has no blocked state to answer.
+    const welcome = chatView.indexOf('sendBlocked={taskMode')
+    expect(welcome).toBeGreaterThan(-1)
+    expect(chatView.slice(welcome, welcome + 200)).toContain('onSendBlocked={handleBlockedSend}')
+    // And the refused attempt never reaches the controller's guard below —
+    // that warning is the belt for paths that bypass the composer, not the
+    // voice of this one.
+    expect(composer).toContain('if (sendBlocked)')
+  })
 })
