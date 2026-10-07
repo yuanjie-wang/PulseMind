@@ -3,7 +3,7 @@
 // ToolExecContext.spawnSubAgent, and result summarization for the parent.
 
 import { getHost } from '../host'
-import { ENGINEERING_WORKFLOW } from '../system-prompt-builder'
+import { ENGINEERING_WORKFLOW, readProjectInstructionsBody } from '../system-prompt-builder'
 import {
   composeExpertInstructions,
   GENERAL_SUBAGENT_PROMPT,
@@ -241,14 +241,25 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
       // user's real directory) does not collect the model's scratch.
       envLines.push(`- Scratch: ${ex.opts.workspaceDir}/.pulsemind/tmp — put throwaway/intermediate files here, never loose in the workspace root`)
     }
+    // Project law rides the spawn prompt too (2026-10-07): a sub-agent doing
+    // the work must answer to the same standing instructions as the parent,
+    // and the parent cannot be trusted to transcribe them into every task.
+    // Content ONLY — no empty-state pointer, no write invitation: sub-agents
+    // are ephemeral workers; teaching the write path is the main agent's
+    // state-block section's job. Per-session prompt, no shared cache prefix,
+    // so the append is free; absent file → empty string, no section.
+    const projectLaw = ex.opts.workspaceDir ? await readProjectInstructionsBody(ex.opts.workspaceDir) : ''
+    const lawBlock = projectLaw
+      ? `\n\n# Project Instructions\nStanding instructions for this project (.pulsemind/AGENTS.md) — follow them for work in this workspace.\n${projectLaw}`
+      : ''
     if (Number.isFinite(ex.opts.maxTokens)) {
       envLines.push(`- Your maximum output limit: ${ex.opts.maxTokens} tokens per response. For large writes, split the content across multiple write calls.`)
     }
     const envBlock = envLines.length > 0 ? `\n\n# Running Environment\n${envLines.join('\n')}` : ''
     // Report contract lands between the environment and the engineering
-    // workflow: 谁在干活 → 能用什么 → 在哪干活 → 要交付什么 → 怎么干活. The
+    // workflow: 谁在干活 → 能用什么 → 在哪干活（+ 项目约定） → 要交付什么 → 怎么干活. The
     // `## 报告契约` heading keeps its text verbatim — only the carrier moved.
-    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}${reportContract}\n\n${ENGINEERING_WORKFLOW}`
+    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}${lawBlock}${reportContract}\n\n${ENGINEERING_WORKFLOW}`
 
     console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" system prompt length=${systemPrompt.length}, task message length=${taskMessage.length} first 200 chars:`, taskMessage.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`

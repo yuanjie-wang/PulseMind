@@ -251,7 +251,14 @@ describe('spawn choke point: admission in, exit verified', () => {
     expect(calls.tasks[0]).not.toContain('报告契约')
     expect(calls.tasks[0]).not.toContain('关键数据')
     expect(calls.statPaths).toEqual([`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`])
-    expect(calls.readPaths).toEqual([`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`])
+    // 2026-10-07: prompt composition now also reads the workspace's project
+    // instructions (.pulsemind/AGENTS.md) for the spawn prompt's
+    // `# Project Instructions` section — that probe lands FIRST (composition
+    // precedes settlement, where the report head is read).
+    expect(calls.readPaths).toEqual([
+      `/tmp/ws_ex/.pulsemind/AGENTS.md`,
+      `/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`,
+    ])
     expect(calls.executions).toEqual(['begin', 'running', 'delivered'])
     expect(calls.reports).toHaveLength(1)
     expect(calls.reports[0]).toEqual({ ref: 'n1', path: `/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`, status: 'success' })

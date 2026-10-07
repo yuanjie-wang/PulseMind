@@ -218,6 +218,17 @@ async function buildStateBlock(params: {
   const projectSection = buildProjectSection(opts.projectName, opts.projectOverview)
   if (projectSection) sections.push(projectSection)
 
+  // Project Instructions (2026-10-07): the workspace's .pulsemind/AGENTS.md —
+  // per-project standing instructions, user-authored, read from DISK every
+  // iteration like git, so an edit lands on the very next request with no
+  // restart. Bytes only move when the user edits the file, so the section sits
+  // with the other low-volatility blocks (after ## Project, before the
+  // commands). Absent file + a bound project → a one-line pointer that teaches
+  // the model the write path; absent + a plain minted workspace → nothing (a
+  // scratch dir has no conventions worth recording).
+  const instructions = await buildProjectInstructionsSection(opts)
+  if (instructions) sections.push(instructions)
+
   // Project Commands (PLAN-coding-contract P1 #21): OPT-IN, the same shape as
   // the git injection above. Read-only name strings — never executed — so the
   // model verifies with the commands the project ALREADY defines (contract #2).
@@ -288,6 +299,73 @@ function buildProjectSection(name?: string, overview?: string): string | null {
   if (name) lines.push(`- Name: ${name}`)
   if (overview) lines.push(`- Overview: ${overview}`)
   return lines.join('\n')
+}
+
+/**
+ * Cap on the injected Project Instructions body. The state block is re-sent
+ * whole on every request, so a pathological file must not ride it verbatim;
+ * the tail beyond the cap is replaced by a pointer at the file, which the
+ * model can `read` back. Exported so the sub-agent pass-through
+ * (executors/spawn-tool.ts) caps identically.
+ */
+export const MAX_PROJECT_AGENTS_CHARS = 8_000
+
+/**
+ * The workspace-local conventions file. PulseMind namespaces it under
+ * .pulsemind/ (the scratch dir's parent, already the app's own namespace in
+ * every workspace) rather than the workspace root on purpose: a root
+ * AGENTS.md belongs to whichever coding tool opened that directory, and two
+ * tools sharing one law file means neither owns its wording.
+ */
+export function projectAgentsPath(workspaceDir: string): string {
+  return `${workspaceDir}/.pulsemind/AGENTS.md`
+}
+
+/**
+ * Read + normalize the project-instructions file: trimmed, capped at
+ * MAX_PROJECT_AGENTS_CHARS with the tail replaced by a read-back pointer.
+ * Returns '' when the file is absent, unreadable or whitespace-only — the
+ * caller decides what an empty body means (state block: empty-state pointer
+ * for project-bound conversations; spawn: no section at all). Disk is read at
+ * point of use, so an edit lands on the next request with no registration
+ * step — the same philosophy as pick_skill's freshSkillDefinition.
+ */
+export async function readProjectInstructionsBody(workspaceDir: string): Promise<string> {
+  const path = projectAgentsPath(workspaceDir)
+  let text = ''
+  try {
+    text = (await getHost().readFile(path)) ?? ''
+  } catch { /* absent or unreadable → empty body */ }
+  const body = text.trim()
+  if (!body || body.length <= MAX_PROJECT_AGENTS_CHARS) return body
+  return body.slice(0, MAX_PROJECT_AGENTS_CHARS) +
+    `\n\n(The file exceeds ${MAX_PROJECT_AGENTS_CHARS} chars; the rest is not shown — \`read\` ${path} if you need it.)`
+}
+
+/**
+ * The main agent's `## Project Instructions` state-block section. Full file
+ * when present; otherwise a one-line empty-state pointer — but ONLY for
+ * project-bound conversations (opts.projectName): the pointer teaches the
+ * write path, and a plain chat's minted scratch workspace has no conventions
+ * to record, so it gets nothing at all.
+ */
+async function buildProjectInstructionsSection(opts: AgentEngineOptions): Promise<string | null> {
+  if (!opts.workspaceDir) return null
+  const body = await readProjectInstructionsBody(opts.workspaceDir)
+  if (body) {
+    return [
+      '## Project Instructions',
+      `Standing instructions for this project, from ${projectAgentsPath(opts.workspaceDir)}. Follow them for work in this workspace. The file is user-authored: when updating it, never delete or reword existing lines — append, or propose the change first.`,
+      body,
+    ].join('\n')
+  }
+  if (opts.projectName) {
+    return [
+      '## Project Instructions',
+      `- This project has no .pulsemind/AGENTS.md yet — its standing-instructions file (${projectAgentsPath(opts.workspaceDir)}). When the user states a durable, reusable convention for this project (tone, structure, naming, data rules), offer to record it there; confirm before the first write.`,
+    ].join('\n')
+  }
+  return null
 }
 
 /**
