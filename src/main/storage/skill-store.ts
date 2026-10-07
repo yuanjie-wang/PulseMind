@@ -460,8 +460,15 @@ export class SkillStore {
       }
       // Bundled references are seeded independently of SKILL.md: a built-in
       // that grows a new reference file must land it on the next launch of an
-      // install that already has the skill's SKILL.md.
-      await seedSkillResources(skillDir, skill.resources).catch((e) =>
+      // install that already has the skill's SKILL.md. The provenance hooks
+      // give EXISTING references the same upgrade arm SKILL.md has (2026-10-07:
+      // without it an edited pptx.md stranded the old rules on every install —
+      // the model kept reading stale rules forever).
+      await seedSkillResources(skillDir, skill.resources, {
+        seeds,
+        record: recordSeed,
+        skillName: skill.name,
+      }).catch((e) =>
         console.error(`[skill-store] Failed to seed resources for ${skill.name}:`, e)
       )
     }

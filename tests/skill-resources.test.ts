@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { resolveSkillResourcePath, seedSkillResources } from '../src/main/utils/skill-resources'
 import { BUILT_IN_SKILLS } from '../src/renderer/src/skills/built-in-skills'
 import { formatSkillMd, parseSkillMarkdown } from '../src/main/utils/skill-parser'
@@ -69,6 +70,69 @@ describe('seedSkillResources — seeding policy', () => {
 
   it('is a no-op without a resource map', async () => {
     expect(await seedSkillResources(newDir(), undefined)).toEqual([])
+  })
+})
+
+describe('seedSkillResources — the provenance upgrade arm (2026-10-07)', () => {
+  const sha = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex')
+  const harness = () => {
+    const seeds: Record<string, string> = {}
+    const recorded: string[] = []
+    return {
+      seeds,
+      recorded,
+      provenance: {
+        seeds,
+        record: (key: string, sig: string) => {
+          seeds[key] = sig
+          recorded.push(key)
+        },
+        skillName: 'office',
+      },
+    }
+  }
+
+  it('a manifest-recorded seed upgrades in place when the shipped text moves on', async () => {
+    const dir = newDir()
+    const h = harness()
+    await seedSkillResources(dir, { 'references/pptx.md': 'shipped v1' }, h.provenance)
+    expect(h.seeds['office#references/pptx.md']).toBe(sha('shipped v1'))
+    const second = await seedSkillResources(dir, { 'references/pptx.md': 'shipped v2 — recipes' }, h.provenance)
+    expect(second).toEqual([join(dir, 'references/pptx.md')])
+    expect(readFileSync(join(dir, 'references/pptx.md'), 'utf-8')).toBe('shipped v2 — recipes')
+    expect(h.seeds['office#references/pptx.md']).toBe(sha('shipped v2 — recipes'))
+  })
+
+  it('a user-edited reference still wins — the manifest does not record it as ours', async () => {
+    const dir = newDir()
+    const h = harness()
+    await seedSkillResources(dir, { 'references/pptx.md': 'shipped v1' }, h.provenance)
+    // the user edits the file behind the app's back
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(join(dir, 'references/pptx.md'), 'my hand-tuned rules', 'utf-8')
+    const second = await seedSkillResources(dir, { 'references/pptx.md': 'shipped v2' }, h.provenance)
+    expect(second).toEqual([])
+    expect(readFileSync(join(dir, 'references/pptx.md'), 'utf-8')).toBe('my hand-tuned rules')
+  })
+
+  it('a pre-manifest seed whose content IS the shipped text gets adopted, not rewritten', async () => {
+    const dir = newDir()
+    const h = harness()
+    const { writeFileSync, mkdirSync } = await import('node:fs')
+    mkdirSync(join(dir, 'references'), { recursive: true })
+    writeFileSync(join(dir, 'references/pptx.md'), 'shipped v1', 'utf-8') // seeded before manifests existed
+    const second = await seedSkillResources(dir, { 'references/pptx.md': 'shipped v1' }, h.provenance)
+    expect(second).toEqual([])
+    expect(h.seeds['office#references/pptx.md']).toBe(sha('shipped v1'))
+    expect(h.recorded).toContain('office#references/pptx.md')
+  })
+
+  it('without provenance the write-once behavior is unchanged (old callers)', async () => {
+    const dir = newDir()
+    await seedSkillResources(dir, { 'references/a.md': 'v1' })
+    const second = await seedSkillResources(dir, { 'references/a.md': 'v2' })
+    expect(second).toEqual([])
+    expect(readFileSync(join(dir, 'references/a.md'), 'utf-8')).toBe('v1')
   })
 })
 
