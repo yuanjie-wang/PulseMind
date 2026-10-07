@@ -28,6 +28,7 @@ import { SCHED_DEFAULTS } from './routine-form-model'
 import type { RoutineDraftState } from './routine-form-model'
 import type { RoutineAssistantPatch } from './routine-assist'
 import type { RoutineTrigger, RoutineWebhookTrigger } from '../../../../shared/types/routine'
+import { ROUTINE_WEBHOOK_UI } from '../../feature-flags'
 
 /** Schedule kinds in Segmented order; short labels — the block control splits
  *  the row evenly, the friendly detail lives in the row below it. */
@@ -546,16 +547,21 @@ function RunContextSection({ draft, onChange, models, activeModelId }: {
  *  webhook POST. The form manages AT MOST ONE of each; the stored type allows
  *  more but the UI has no reason to. The webhook token is displayed from the
  *  stored value; 重铸 just blanks it — the STORE mints the replacement at
- *  save, the UI never invents secrets. */
+ *  save, the UI never invents secrets. The webhook arm is gated off behind
+ *  ROUTINE_WEBHOOK_UI (feature-flags) — stored webhook triggers keep firing,
+ *  the switch and the fire URL just stop rendering. */
 function TriggersSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
   const fileTrigger = draft.triggers?.find((t): t is Extract<RoutineTrigger, { type: 'file' }> => t.type === 'file')
   const webhookTrigger = draft.triggers?.find((t): t is RoutineWebhookTrigger => t.type === 'webhook')
   const setTriggers = (next: RoutineTrigger[]): void => onChange({ ...draft, triggers: next.length > 0 ? next : undefined })
 
   // The loopback port resolves once per mount; 0 = the endpoint is dormant —
-  // the URL line then says so instead of showing a dead address.
+  // the URL line then says so instead of showing a dead address. The fetch is
+  // skipped while the webhook surface is gated off (feature-flags) — the port
+  // feeds only the fire URL below.
   const [port, setPort] = React.useState(0)
   React.useEffect(() => {
+    if (!ROUTINE_WEBHOOK_UI) return
     let cancelled = false
     void window.electronAPI.routineTriggersInfo()
       .then((info) => { if (!cancelled) setPort(info.port) })
@@ -646,41 +652,45 @@ function TriggersSection({ draft, onChange }: { draft: RoutineDraftState; onChan
           </Space>
         </div>
       )}
-      <div style={SCHED_ROW}>
-        <Switch
-          size="small"
-          checked={!!webhookTrigger}
-          onChange={(on) => {
-            setTriggers(on
-              ? [...(draft.triggers ?? []).filter((t) => t.type !== 'webhook'), { type: 'webhook', token: webhookTrigger?.token ?? '' }]
-              : (draft.triggers ?? []).filter((t) => t.type !== 'webhook'))
-          }}
-        />
-        <span style={ROW_LABEL}>Webhook 触发</span>
-      </div>
-      {webhookTrigger && (
-        <div style={{ marginTop: 8 }}>
-          <div style={CAPTION}>向下面的地址发一个 POST 即运行一次任务（仅本机回环；外部服务的 webhook 请用你自己的桥转发到本机）。</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-            {fireUrl ? (
-              <>
-                <Input size="small" readOnly value={fireUrl} style={{ maxWidth: 430, fontSize: 11 }} />
-                <Button size="small" onClick={() => { void navigator.clipboard.writeText(fireUrl).catch(() => {}) }}>复制</Button>
-              </>
-            ) : (
-              <span style={CAPTION}>
-                {draft.id ? (port > 0 ? '令牌尚未生成，保存任务后即可复制完整地址。' : '本会话的触发端点未启动。') : '保存任务后此处显示完整的触发地址。'}
-              </span>
-            )}
-            <Button
+      {ROUTINE_WEBHOOK_UI && (
+        <>
+          <div style={SCHED_ROW}>
+            <Switch
               size="small"
-              icon={<RedoOutlined />}
-              onClick={() => setTriggers((draft.triggers ?? []).map((t) => (t.type === 'webhook' ? { ...t, token: '' } : t)))}
-            >
-              重铸令牌
-            </Button>
+              checked={!!webhookTrigger}
+              onChange={(on) => {
+                setTriggers(on
+                  ? [...(draft.triggers ?? []).filter((t) => t.type !== 'webhook'), { type: 'webhook', token: webhookTrigger?.token ?? '' }]
+                  : (draft.triggers ?? []).filter((t) => t.type !== 'webhook'))
+              }}
+            />
+            <span style={ROW_LABEL}>Webhook 触发</span>
           </div>
-        </div>
+          {webhookTrigger && (
+            <div style={{ marginTop: 8 }}>
+              <div style={CAPTION}>向下面的地址发一个 POST 即运行一次任务（仅本机回环；外部服务的 webhook 请用你自己的桥转发到本机）。</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                {fireUrl ? (
+                  <>
+                    <Input size="small" readOnly value={fireUrl} style={{ maxWidth: 430, fontSize: 11 }} />
+                    <Button size="small" onClick={() => { void navigator.clipboard.writeText(fireUrl).catch(() => {}) }}>复制</Button>
+                  </>
+                ) : (
+                  <span style={CAPTION}>
+                    {draft.id ? (port > 0 ? '令牌尚未生成，保存任务后即可复制完整地址。' : '本会话的触发端点未启动。') : '保存任务后此处显示完整的触发地址。'}
+                  </span>
+                )}
+                <Button
+                  size="small"
+                  icon={<RedoOutlined />}
+                  onClick={() => setTriggers((draft.triggers ?? []).map((t) => (t.type === 'webhook' ? { ...t, token: '' } : t)))}
+                >
+                  重铸令牌
+                </Button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

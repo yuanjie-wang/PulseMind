@@ -8,6 +8,7 @@ import {Button, Drawer, Input, Space, Switch, Typography } from 'antd'
 import { FolderOpenOutlined } from '@ant-design/icons'
 import { useSettings } from '../../hooks/SettingsContext'
 import { useTranslation } from '../../i18n/useTranslation'
+import { ROUTINE_WEBHOOK_UI } from '../../feature-flags'
 import { notify } from '../../utils/notify'
 import type { DataPaths } from '../../types/electron'
 import type { AppSettings } from '../../types/settings'
@@ -106,27 +107,32 @@ function DataRuntimeSettings({ open, onClose, inline }: DataRuntimeSettingsProps
         {toggle('autoCompile', settings.knowledge?.autoCompile ?? false, (value) => {
           void save({ knowledge: { ...settings.knowledge, autoCompile: value } })
         })}
-        <div style={{ marginBottom: 16 }}>
-          <Text strong style={{ display: 'block', fontSize: 13 }}>{t('dataRuntime.routineWebhook')}</Text>
-          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>{t('dataRuntime.routineWebhookHelp')}</Text>
-          <Input
-            size="small"
-            placeholder="https://…"
-            value={webhookUrl}
-            disabled={disabled}
-            onChange={(e) => setWebhookUrl(e.target.value)}
-            onBlur={() => { if (webhookUrl !== (settings.notifications?.webhookUrl ?? '')) commitWebhook({ webhookUrl }) }}
-          />
-          <Input.Password
-            size="small"
-            style={{ marginTop: 6 }}
-            placeholder={t('dataRuntime.routineWebhookSecret')}
-            value={webhookSecret}
-            disabled={disabled}
-            onChange={(e) => setWebhookSecret(e.target.value)}
-            onBlur={() => { if (webhookSecret !== (settings.notifications?.webhookSecret ?? '')) commitWebhook({ webhookSecret }) }}
-          />
-        </div>
+        {/* The settlement webhook surface is gated off (feature-flags
+            ROUTINE_WEBHOOK_UI): stored url/secret keep working, the fields
+            just stop rendering. */}
+        {ROUTINE_WEBHOOK_UI && (
+          <div style={{ marginBottom: 16 }}>
+            <Text strong style={{ display: 'block', fontSize: 13 }}>{t('dataRuntime.routineWebhook')}</Text>
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>{t('dataRuntime.routineWebhookHelp')}</Text>
+            <Input
+              size="small"
+              placeholder="https://…"
+              value={webhookUrl}
+              disabled={disabled}
+              onChange={(e) => setWebhookUrl(e.target.value)}
+              onBlur={() => { if (webhookUrl !== (settings.notifications?.webhookUrl ?? '')) commitWebhook({ webhookUrl }) }}
+            />
+            <Input.Password
+              size="small"
+              style={{ marginTop: 6 }}
+              placeholder={t('dataRuntime.routineWebhookSecret')}
+              value={webhookSecret}
+              disabled={disabled}
+              onChange={(e) => setWebhookSecret(e.target.value)}
+              onBlur={() => { if (webhookSecret !== (settings.notifications?.webhookSecret ?? '')) commitWebhook({ webhookSecret }) }}
+            />
+          </div>
+        )}
       </Space>
     </>
   )
