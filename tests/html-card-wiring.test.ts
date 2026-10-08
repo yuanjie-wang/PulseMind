@@ -32,9 +32,11 @@ describe('html artifact card wiring', () => {
     expect(card).not.toContain('allow-same-origin')
   })
 
-  it('fragments get the height-reporting wrapper; full documents pass through', () => {
+  it('fragments AND full documents get the height reporter; meta CSP is stripped off the served copy', () => {
     expect(card).toContain('pm-html-card-height')
     expect(card).toContain('FULL_DOCUMENT')
+    expect(card).toContain('stripCspMeta')
+    expect(card).toContain('injectBeforeBodyClose')
   })
 
   it('the invariant core teaches the ```html card convention, after Render Reference', () => {

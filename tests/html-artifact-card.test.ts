@@ -46,11 +46,41 @@ describe('buildCardDocument', () => {
     expect(buildCardDocument(frag)).toContain(frag)
   })
 
-  it('passes a full document through byte-identical, no injection', () => {
+  it('strips a meta CSP off a fragment — it would kill the measure script too', () => {
+    const frag = '<meta http-equiv="Content-Security-Policy" content=\'script-src "self"\'><p>x</p>'
+    const doc = buildCardDocument(frag)
+    expect(doc).not.toContain('Content-Security-Policy')
+    expect(doc).toContain('<p>x</p>')
+    expect(doc).toContain('pm-html-card-height')
+  })
+
+  it('injects the height reporter into a full document before </body>', () => {
     const page = '<!DOCTYPE html><html><head><title>p</title></head><body>hi</body></html>'
-    expect(buildCardDocument(page)).toBe(page)
-    const page2 = '<html lang="en"><body>x</body></html>'
-    expect(buildCardDocument(page2)).toBe(page2)
+    const doc = buildCardDocument(page)
+    expect(doc).toContain('pm-html-card-height')
+    // The page's own markup is untouched — the reporter is the only edit, and
+    // it lands inside the body.
+    const head = page.slice(0, page.indexOf('</body>'))
+    const tail = page.slice(page.indexOf('</body>'))
+    expect(doc.startsWith(head)).toBe(true)
+    expect(doc.endsWith(tail)).toBe(true)
+    expect(doc.indexOf('pm-html-card-height')).toBeLessThan(doc.indexOf('</body>'))
+  })
+
+  it('a full document without </body> still gets the reporter (appended)', () => {
+    const page = '<html lang="en">x'
+    const doc = buildCardDocument(page)
+    expect(doc.startsWith(page)).toBe(true)
+    expect(doc).toContain('pm-html-card-height')
+  })
+
+  it('strips a meta CSP off full documents as well', () => {
+    const page =
+      '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'self\'"></head><body>hi</body></html>'
+    const doc = buildCardDocument(page)
+    expect(doc).not.toContain('Content-Security-Policy')
+    expect(doc).toContain('<body>hi<script>')
+    expect(doc).toContain('pm-html-card-height')
   })
 })
 

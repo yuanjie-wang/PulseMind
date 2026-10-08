@@ -37,12 +37,20 @@
  * calling it during render is safe under StrictMode). `streaming=false` is
  * the settled render — the full text, once.
  *
- * Height: fragments are wrapped in a shell that reports its scrollHeight via
- * postMessage (load + resize + ResizeObserver); the card clamps it to
- * [CARD_MIN_HEIGHT, CARD_MAX_HEIGHT] and lets the frame scroll past the cap.
- * A full document (the model emitted `<!doctype html>`/`<html>`) is used
- * verbatim — it gets no measure script and rides the default height with
- * internal scrolling, which is what a page-shaped artifact wants anyway.
+ * Height: EVERY card reports its document's scrollHeight via postMessage
+ * (load + resize + ResizeObserver) and the card clamps it to
+ * [CARD_MIN_HEIGHT, CARD_MAX_HEIGHT], letting the frame scroll past the cap.
+ * Fragments carry the measure script in their generated shell; a full
+ * document (the model emitted `<!doctype html>`/`<html>`) keeps its markup
+ * and gets the script injected before `</body>`. Full documents used to pass
+ * through verbatim and rode the default height clipped — models emit full
+ * documents for simple cards constantly, so the card showed 280px of a much
+ * taller page (user report 2026-10-08: 高度展示不完整).
+ *
+ * Both shapes get their meta CSP stripped on the served copy: local-file has
+ * no response headers, so meta is the only CSP vector, and a strict one would
+ * kill the model's own inline scripts AND the measure script — height back to
+ * the default, clipped (the preview pane strips for the same reason).
  */
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from 'antd'
@@ -50,9 +58,10 @@ import { ChromeOutlined, CopyOutlined, ExpandOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { createTextThrottle } from './stream-throttle'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
+import { injectBeforeBodyClose, stripCspMeta } from '../../../../shared/preview/html-inject'
 
 const CARD_MIN_HEIGHT = 120
-const CARD_MAX_HEIGHT = 480
+const CARD_MAX_HEIGHT = 800
 const CARD_DEFAULT_HEIGHT = 280
 const STREAM_PREVIEW_MIN_INTERVAL = 1000
 
@@ -94,15 +103,17 @@ export function hashText(text: string): string {
  *  hostile fragment can only move the card it lives in). */
 const MEASURE_SCRIPT = `<script>(function(){var s=function(){try{parent.postMessage({type:'pm-html-card-height',height:Math.ceil(document.documentElement.scrollHeight)},'*')}catch(e){}};window.addEventListener('load',s);document.addEventListener('DOMContentLoaded',s);window.addEventListener('resize',s);if('ResizeObserver' in window){new ResizeObserver(s).observe(document.documentElement)}s()})()</script>`
 
-/** Build the srcDoc. Fragments get a zero-margin shell + the measure script;
- *  full documents pass through byte-identical (no injection into a page the
- *  model authored whole). */
+/** Build the frame's document. Both shapes report height: fragments get a
+ *  zero-margin shell carrying the measure script; full documents keep their
+ *  markup and get the script injected before the last </body> (appended when
+ *  the page omits it — the parser hoists it into body either way). Both get
+ *  the meta CSP stripped first (header comment). */
 export function buildCardDocument(code: string): string {
-  if (FULL_DOCUMENT.test(code)) return code
+  if (FULL_DOCUMENT.test(code)) return injectBeforeBodyClose(stripCspMeta(code), MEASURE_SCRIPT)
   return [
     '<!doctype html><html><head><meta charset="utf-8">',
     '<style>html,body{margin:0;padding:0}</style></head><body>',
-    code,
+    stripCspMeta(code),
     MEASURE_SCRIPT,
     '</body></html>',
   ].join('')

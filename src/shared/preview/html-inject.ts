@@ -22,21 +22,21 @@ export function stripCspMeta(html: string): string {
   )
 }
 
-/** Inject the picker IIFE before the last </body> (or append when a page
- *  omits it — the parser hoists the script into body either way). */
-export function injectPickerScript(html: string, pickerScript: string): string {
-  const tag = `<script id="pm-picker-script">${pickerScript}</script>`
-  const closer = /<\/body\s*>\s*<\/html\s*>\s*$/i.exec(html)
-  if (closer) {
-    const at = closer.index
-    return `${html.slice(0, at)}${tag}${html.slice(at)}`
-  }
+/** Inject a snippet before the last </body> (or append when a page omits it —
+ *  the parser hoists trailing content into body either way). */
+export function injectBeforeBodyClose(html: string, snippet: string): string {
   const bodyCloser = /<\/body\s*>/gi
   let last: RegExpExecArray | null = null
   let match: RegExpExecArray | null
   while ((match = bodyCloser.exec(html)) !== null) last = match
-  if (last) return `${html.slice(0, last.index)}${tag}${html.slice(last.index)}`
-  return `${html}${tag}`
+  if (last) return `${html.slice(0, last.index)}${snippet}${html.slice(last.index)}`
+  return `${html}${snippet}`
+}
+
+/** Inject the picker IIFE before the last </body> (or append when a page
+ *  omits it — the parser hoists the script into body either way). */
+export function injectPickerScript(html: string, pickerScript: string): string {
+  return injectBeforeBodyClose(html, `<script id="pm-picker-script">${pickerScript}</script>`)
 }
 
 /** The nonce placeholder inside the generated PICKER_SCRIPT (the picker
