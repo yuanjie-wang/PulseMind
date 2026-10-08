@@ -124,7 +124,13 @@ function createOpenAIStreamParser(handlers: StreamEventHandlers): StreamParser {
     const finishReason = choices[0].finish_reason
 
     // ── Reasoning content (OpenAI o1/o3 thinking) ────────────
-    if (delta.reasoning_content !== undefined && delta.reasoning_content !== null) {
+    // Truthiness, not a null/undefined pair (2026-10-08): the opencode zen
+    // gateway sends `reasoning_content: ""` on EVERY content chunk once the
+    // real reasoning is over — each empty string opened a fresh thinking
+    // block that the same chunk's content immediately closed, so one reply
+    // rendered one EMPTY Thinking bar per content delta (the panel flood).
+    // An empty string carries nothing; only real text may open a block.
+    if (delta.reasoning_content) {
       if (!thinkingBlockStarted) {
         thinkingBlockIndex = nextBlockIndex++
         handlers.onContentBlockStart(thinkingBlockIndex, { type: 'thinking' })
