@@ -72,8 +72,11 @@ describe('knowledge rail isolation — the baseId travels the whole chain', () =
     expect(panel).toContain('knowledgeManager.rebuildWiki(scopedBaseId)')
     // URL dedup is per-base (the same URL may live in two bases)
     expect(panel).toContain('f.baseId === scopedBaseId')
-    // the wiki preview resolves against the file's OWN base dir
-    expect(panel).toContain('knowledgeGetWikiDir(record.baseId)')
+    // the wiki preview reads against the file's OWN base dir (2026-10-08:
+    // 查看编译结果 now reads wiki content into the panel modal — the workbench
+    // pane it used to target only renders in the chat view — still scoped by
+    // the file's own baseId)
+    expect(panel).toMatch(/readWiki\(record\.wikiOutputs!\[0\], record\.baseId\)/)
   })
 
   it('the pane feeds the panel the rail\u2019s selection and carries no detached target select', () => {

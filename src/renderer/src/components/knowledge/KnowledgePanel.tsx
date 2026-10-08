@@ -20,11 +20,10 @@ import { XMarkdown } from '@ant-design/x-markdown'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import { throttleTrailing } from '../../utils/throttle'
-import { openInPreviewPane } from '../../stores/previewPaneStore'
+import { compileQueue, enqueueCompileForFile } from './compile-queue'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeImportResult } from '../../../../shared/types/knowledge'
 import { DEFAULT_BASE_ID } from '../../../../shared/types/knowledge'
 import type { KnowledgeManager } from '../../knowledge/KnowledgeManager'
-import { compileQueue, enqueueCompileForFile } from './compile-queue'
 
 // ── Module-level dual queue engine ──
 //
@@ -962,24 +961,27 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
             {t('knowledgePanel.batchDelete')}
           </Button>
           {/* G3: move the whole selection into a base in one IPC call. */}
-          <Select<string>
-            size="small"
-            style={{ minWidth: 150 }}
-            placeholder="移动到知识库…"
-            value={undefined}
-            onChange={async (baseId) => {
-              try {
-                await knowledgeManager.setFilesBase(Array.from(selectedIds), baseId)
-                notify.success('已移动到知识库')
-                setSelectedIds(new Set())
-                loadFiles()
-              } catch (err) {
-                console.error('[KnowledgePanel] Batch assign failed:', err)
-                notify.error('分配失败')
-              }
-            }}
-            options={bases.map((b) => ({ value: b.id, label: b.name }))}
-          />
+          <Tooltip title={bases.length < 2 ? '只有当前知识库，无其他知识库可移动' : ''}>
+            <Select<string>
+              size="small"
+              style={{ minWidth: 150 }}
+              placeholder="移动到知识库…"
+              value={undefined}
+              disabled={bases.length < 2}
+              onChange={async (baseId) => {
+                try {
+                  await knowledgeManager.setFilesBase(Array.from(selectedIds), baseId)
+                  notify.success('已移动到知识库')
+                  setSelectedIds(new Set())
+                  loadFiles()
+                } catch (err) {
+                  console.error('[KnowledgePanel] Batch assign failed:', err)
+                  notify.error('分配失败')
+                }
+              }}
+              options={bases.map((b) => ({ value: b.id, label: b.name }))}
+            />
+          </Tooltip>
         </div>
       )}
 
@@ -1158,26 +1160,36 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
             filteredValue: null,
             render: (_, record) => (
               <Space size={0}>
-                {/* G3: one click-opens-a-menu assign per row. */}
-                <Dropdown
-                  menu={{
-                    items: bases.filter((b) => b.id !== record.baseId).map((b) => ({ key: b.id, label: b.name })),
-                    onClick: async ({ key }) => {
-                      try {
-                        await knowledgeManager.setFileBase(record.id, key)
-                        loadFiles()
-                      } catch (err) {
-                        console.error('[KnowledgePanel] Assign failed:', err)
-                        notify.error('分配失败')
-                      }
-                    },
-                  }}
-                  trigger={['click']}
-                >
-                  <Tooltip title="移动到知识库">
-                    <Button type="text" size="small" icon={<GroupOutlined />} style={{ color: 'var(--pm-text-soft)' }} />
+                {/* G3: one click-opens-a-menu assign per row. With a single
+                    base there is no destination — an empty dropdown used to
+                    read as a dead/greyed button, so the state says so. */}
+                {bases.filter((b) => b.id !== record.baseId).length > 0 ? (
+                  <Dropdown
+                    menu={{
+                      items: bases.filter((b) => b.id !== record.baseId).map((b) => ({ key: b.id, label: b.name })),
+                      onClick: async ({ key }) => {
+                        try {
+                          await knowledgeManager.setFileBase(record.id, key)
+                          loadFiles()
+                        } catch (err) {
+                          console.error('[KnowledgePanel] Assign failed:', err)
+                          notify.error('分配失败')
+                        }
+                      },
+                    }}
+                    trigger={['click']}
+                  >
+                    <Tooltip title="移动到知识库">
+                      <Button type="text" size="small" icon={<GroupOutlined />} style={{ color: 'var(--pm-text-soft)' }} />
+                    </Tooltip>
+                  </Dropdown>
+                ) : (
+                  <Tooltip title="只有当前知识库，无其他知识库可移动">
+                    <span style={{ cursor: 'not-allowed' }}>
+                      <Button type="text" size="small" icon={<GroupOutlined />} disabled style={{ color: 'var(--pm-text-faint)' }} />
+                    </span>
                   </Tooltip>
-                </Dropdown>
+                )}
                 <Tooltip title="预览">
                   <Button type="text" size="small" icon={<FileSearchOutlined />} style={{ color: 'var(--pm-text-soft)' }} onClick={() => handleOpenRaw(record)} />
                 </Tooltip>
@@ -1191,10 +1203,17 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
                       onClick={() => void (async () => {
                         try {
                           // wikiOutputs are relative to the file's OWN base's
-                          // wiki dir — the global dir is the default base's.
-                          const wikiDir = await window.electronAPI.knowledgeGetWikiDir(record.baseId)
-                          openInPreviewPane(`${wikiDir.replace(/\\/g, '/')}/${record.wikiOutputs![0]}`)
-                        } catch { /* dir unavailable — no entry jump */ }
+                          // wiki dir. Reads into the panel's own preview modal —
+                          // the workbench preview pane this used to target only
+                          // renders in the chat view, so from the knowledge
+                          // center the click landed in invisible state.
+                          const { content } = await knowledgeManager.readWiki(record.wikiOutputs![0], record.baseId)
+                          if (!content) { notify.error('编译结果读取失败'); return }
+                          setCompiledPreview({ visible: true, content, title: `${record.title} · 编译结果` })
+                        } catch (err) {
+                          console.error('[KnowledgePanel] Failed to read wiki output:', err)
+                          notify.error('编译结果读取失败')
+                        }
                       })()}
                     />
                   </Tooltip>
