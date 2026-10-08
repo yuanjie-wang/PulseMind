@@ -406,6 +406,46 @@ describe('collectDeckLayout (jsdom, stubbed rects)', () => {
     expect(result.errors.map((e) => e.message).join(' ')).not.toMatch(/重叠/)
   })
 
+  it('refuses text crossing a table — the 20261007235037 page-12 shape (full-width line 18px into a table)', () => {
+    const doc = mount(wrap(`<p style="position:absolute">安卓续航充电普遍 80–120W</p><table><tr><td>机型</td><td>电池</td></tr></table>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p'), { x: 64, y: 200, w: 832, h: 30 })
+      m.set(at(doc, 'table'), { x: 64, y: 212, w: 832, h: 200 })
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    const msg = result.errors.map((e) => e.message).join(' ')
+    expect(msg).toMatch(/表格区域重叠/)
+    expect(msg).toMatch(/安卓续航充电普遍/)
+    expect(result.errors[0].page).toBe(1)
+  })
+
+  it('refuses text crossing a chart box (charts draw their own labels)', () => {
+    const raw = JSON.stringify({ type: 'column', categories: ['Q1'], series: [{ name: 's', values: [1] }] })
+    const doc = mount(wrap(`<p style="position:absolute">上图可见</p><div data-chart='${raw}'></div>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p'), { x: 500, y: 200, w: 200, h: 30 })
+      m.set(at(doc, '[data-chart]'), { x: 64, y: 120, w: 600, h: 360 })
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/图表区域重叠/)
+  })
+
+  it('grazing a table (2px edge touch) stays tolerance, not a defect', () => {
+    const doc = mount(wrap(`<p style="position:absolute">说明行</p><table><tr><td>甲</td></tr></table>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p'), { x: 64, y: 170, w: 400, h: 30 })
+      m.set(at(doc, 'table'), { x: 64, y: 198, w: 832, h: 200 }) // 2px touch
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors.map((e) => e.message).join(' ')).not.toMatch(/重叠/)
+  })
+
   it('reports zero slides with the .slide hint when none exist', () => {
     mount('<div class="not-slide"></div>')
     const result = collectDeckLayout()

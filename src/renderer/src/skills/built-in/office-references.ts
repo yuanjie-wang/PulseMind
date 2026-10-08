@@ -290,7 +290,7 @@ footer: page
 
 **能用**：h1–h6、p、ul/ol/li（真项目符号，嵌套 ≤2 层）、table（th/td，逐格底色字号生效）、img（工作区 png/jpg/gif，相对路径；**object-fit:cover** 满版裁切——封面大图的关键）、div/span（色块卡片：background/border/border-radius/**虚线点线**都映射；**rgba 半透明**映射 PowerPoint 透明度，图片蒙版、玻璃卡片、浅色叠层全靠它；**单层外阴影** \`box-shadow: 0 2px 8px rgba(0,0,0,0.10)\` 映射 PowerPoint 阴影——卡片 elevation 就这一招）、b/strong/i/em/u/s、布局用 absolute 或流式 + flex；字号（引用 var(--pm-fs-*)）字色、行高、对齐、**字距（letter-spacing——眉题 kicker、大数字 tracking 的气质开关）**、等宽（font-family 只许 var(--pm-font-mono) 等三个字体变量）按浏览器实测落。960×540 @96dpi ≡ 10×5.625 英寸，浏览器里的 1px 在 pptx 里是 0.75pt。
 
-**禁用（会整单拒绝）**：\`<script>\`、@font-face、svg/iframe/video/canvas 等白名单外元素；渐变（背景只收纯色）；**半透明文字色**（rgba 的文字色拒绝——文字没有透明度可映射，改用调淡后的 hex）；transform / position:fixed / CSS 动画；在 HTML 里写字体名（font-family 只允许 var(--pm-font-…) 引用）；网络或内联资源（src 只能工作区文件）；表格 colspan/rowspan。**内容超出 960×540 也拒绝**——装不下就缩小或拆页。**两段文字的框相交也会拒绝**并点名两个元素——绝对定位按实际渲染高度排，拿不准就把下方元素多留一行高。多层 / inset / spread 的 box-shadow、元素 opacity、非居中的 object-position、double/groove 等异形边框（按实线处理）映射不了，会在保真报告里如实列出，不静默丢弃。转换器已把文本框内边距清零并按对齐方向加了少量安全余量（右对齐向左扩、左对齐向右扩，锚点不动）——html 里量出的位置就是 pptx 里的位置，页码这类窄文本框不会因此折行。
+**禁用（会整单拒绝）**：\`<script>\`、@font-face、svg/iframe/video/canvas 等白名单外元素；渐变（背景只收纯色）；**半透明文字色**（rgba 的文字色拒绝——文字没有透明度可映射，改用调淡后的 hex）；transform / position:fixed / CSS 动画；在 HTML 里写字体名（font-family 只允许 var(--pm-font-…) 引用）；网络或内联资源（src 只能工作区文件）；表格 colspan/rowspan。**内容超出 960×540 也拒绝**——装不下就缩小或拆页。**文字与文字/表格/图表的区域相交也会拒绝**并点名两者——绝对定位按实际渲染高度排，拿不准就把下方元素多留一行高；文字压在色块卡片或蒙版图上是合法的（那是设计手法）。多层 / inset / spread 的 box-shadow、元素 opacity、非居中的 object-position、double/groove 等异形边框（按实线处理）映射不了，会在保真报告里如实列出，不静默丢弃。转换器已把文本框内边距清零并按对齐方向加了少量安全余量（右对齐向左扩、左对齐向右扩，锚点不动）——html 里量出的位置就是 pptx 里的位置，页码这类窄文本框不会因此折行。
 
 **图表用标注，不要画 SVG**——引擎按 deck 同款词汇画原生形状（PowerPoint 里可改色改字，改数据 = 改标注后重转）：
 
@@ -301,20 +301,24 @@ footer: page
 
 图表 JSON 与 deck 的 chart 字段同一 schema：type 取 column/bar/line/pie；categories 2–12 个；series 1–4 组与 categories 等长；pie 只吃一组且非负。
 
-### 3. 版式配方库：抄骨架，改内容
+### 3. 版式配方库：页面壳 + 内容组件
 
-八个配方覆盖一版 deck 的全部页面类型。**按内容选**：讲要点 → C；并列 2–4 件事 → D；关键数字 + 趋势 → E；两方案对比 → F；章节分隔 → B；金句/引用 → G；封面 → A；结束 → H；表格页 = C 把 ul 换成 table。前提：§0 的风格确认已过、tokens.css 已落定。**配方是起点，不是白名单**——硬边界只有 §2 的 profile：时间轴、步骤条、左图右文这类配方外的版式尽管写；用户给的方向永远优先于配方默认值。
+配方分两层：**满版页直接用整页壳**（构图设计，不拆）；**正文页 = 标准壳 + 组件放进内容带**。**按内容选**：封面/章节/金句/结束 → 壳 A/B/G/H；讲要点 → 组件①；并列 2–4 件事 → ②；关键数字 → ③；趋势/构成 → ④（③+④ 并排 = 数据页）；两方案对比 → ⑤×2；表格页 → ⑥。前提：§0 的风格确认已过、tokens.css 已落定。**配方是起点，不是白名单**——硬边界只有 §2 的 profile：时间轴、步骤条、左图右文这类配方外的版式尽管写；用户给的方向永远优先于配方默认值。
 
 **四样全篇常量锁死**（它们就是这套 deck 的设计系统，做变体也不动）：
 
 1. 页边距 64px；
-2. 标题块：left:64 top:56 + 28×4 的 accent 短条（C/D/E/F 同款）；
+2. 标题块：left:64 top:56 + 28×4 的 accent 短条（所有正文页同款）；
 3. 页码：left:832 top:496 width:64 右对齐，mono + --pm-fs-note（封面/结束页不放）；
 4. 圆角全篇一个值（建议 8px）。
 
+**内容带的几何**（全部组件按它设计）：left:64, top:170, width:832，高 ≤310——480 以下是页码的领空。组件放进带内即可；并排两块给宽度比例（如 38% / 59%，gap:24px）。**文字与文字/表格/图表的区域相交会被整单拒绝**并点名两者——组件留在带内就不会撞上。
+
 **同类页复制同一个 slide div 只换文字**——一致性是设计感的一半。**满版页（A/B/G/H）豁免「accent 单页 ≤10%」纪律**（那条管正文页），全篇至少 2–3 页满版造节奏。反白文字在深底上一律 var(--pm-bg)，不要写死 #FFFFFF。**样张先行**：先把「封面 + 一页正文」两张样张 \`export_document\` 导出、在预览面板确认气质，对了再补全篇重导——改 HTML 便宜，写完 14 页才发现方向不对才是贵的。
 
-#### A · 封面（满版图 + 蒙版 + 反白巨标）
+#### 页面壳（整页照抄，改文字）
+
+**A · 封面**（满版图 + 蒙版 + 反白巨标）
 
 \`\`\`html
 <div class="slide" style="background:var(--pm-ink)">
@@ -329,7 +333,7 @@ footer: page
 
 （图片换成工作区里的真实图；用户没给图就直接用 B 的纯色满版，别硬凑。）
 
-#### B · 章节扉页（反色满版 + 大编号）
+**B · 章节扉页**（反色满版 + 大编号）
 
 \`\`\`html
 <div class="slide" style="background:var(--pm-ink)">
@@ -340,7 +344,30 @@ footer: page
 </div>
 \`\`\`
 
-#### C · 标准正文页（短条标题 + 要点）
+**G · 金句页**（反色大字）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-ink)">
+  <p style="position:absolute; left:64px; top:120px; width:832px; font-size:36px; color:var(--pm-bg); line-height:1.6; margin:0">「把成本曲线打下来，<br>增长才有力可言。」</p>
+  <p style="position:absolute; left:64px; top:400px; font-size:var(--pm-fs-note); color:var(--pm-muted); margin:0">— 2026 Q3 经营会纪要</p>
+  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">9 / 14</div>
+</div>
+\`\`\`
+
+（金句两行以内，\`<br>\` 自己控制断行；引用出处必须有。）
+
+**H · 结束页**（accent 满版反白）
+
+\`\`\`html
+<div class="slide" style="background:var(--pm-accent)">
+  <h1 style="position:absolute; left:64px; top:220px; width:700px; font-size:var(--pm-fs-cover); color:var(--pm-bg); margin:0">谢谢，等问题。</h1>
+  <p style="position:absolute; left:64px; top:340px; font-size:var(--pm-fs-body); color:var(--pm-bg); margin:0">数据与图表出处都在会话工作区的 deck.html</p>
+</div>
+\`\`\`
+
+#### 标准正文壳 + 拼装范例（C，唯一完整示例）
+
+正文页 = 标题块（top:56）+ 内容带里的一个组件 + 页码。这一页就是完整拼法，**换版式 = 换内容带里的组件**：
 
 \`\`\`html
 <div class="slide" style="background:var(--pm-bg)">
@@ -358,102 +385,73 @@ footer: page
 
 （结论进标题，要点 ≤20 字；每个要点独立一行。）
 
-#### D · 三卡页（等宽卡片 + 卡顶强调条）
+#### 内容组件库（放进内容带 left:64 / top:170 / width:832）
+
+**① 要点列表**——一行一个结论：
 
 \`\`\`html
-<div class="slide" style="background:var(--pm-bg)">
-  <div style="position:absolute; left:64px; top:56px; width:832px">
-    <div style="width:28px; height:4px; background:var(--pm-accent); margin-bottom:14px"></div>
-    <h2 style="font-size:var(--pm-fs-title); color:var(--pm-ink); margin:0">下季度的三个杠杆</h2>
+<ul style="position:absolute; left:64px; top:170px; width:760px; line-height:1.7">
+  <li style="font-size:var(--pm-fs-body); color:var(--pm-ink)">订阅收入占比首次过半（58%）</li>
+  <li style="font-size:var(--pm-fs-body); color:var(--pm-ink)">大客户续约率 92%，创三年新高</li>
+  <li style="font-size:var(--pm-fs-body); color:var(--pm-ink)">硬件毛利承压，Q4 重点改善</li>
+</ul>
+\`\`\`
+
+**② 卡片行**——2–4 张（\`flex:1\` 自动均分，gap:24），卡顶强调条 + mono 编号：
+
+\`\`\`html
+<div style="position:absolute; left:64px; top:170px; width:832px; display:flex; gap:24px">
+  <div style="flex:1; background:var(--pm-panel); border-radius:8px; border-top:3px solid var(--pm-accent); padding:24px">
+    <p style="font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-accent); margin:0 0 8px">01</p>
+    <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 8px">订阅提价</h3>
+    <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0; line-height:1.5">续约率有冗余，可承受一轮 5–8% 的试探性提价。</p>
   </div>
-  <div style="position:absolute; left:64px; top:170px; width:832px; display:flex; gap:24px">
-    <div style="flex:1; background:var(--pm-panel); border-radius:8px; border-top:3px solid var(--pm-accent); padding:24px">
-      <p style="font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-accent); margin:0 0 8px">01</p>
-      <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 8px">订阅提价</h3>
-      <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0; line-height:1.5">续约率有冗余，可承受一轮 5–8% 的试探性提价。</p>
-    </div>
-    <div style="flex:1; background:var(--pm-panel); border-radius:8px; border-top:3px solid var(--pm-accent); padding:24px">
-      <p style="font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-accent); margin:0 0 8px">02</p>
-      <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 8px">渠道下沉</h3>
-      <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0; line-height:1.5">二线城市装机量翻倍，先铺服务再谈转化。</p>
-    </div>
-    <div style="flex:1; background:var(--pm-panel); border-radius:8px; border-top:3px solid var(--pm-accent); padding:24px">
-      <p style="font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-accent); margin:0 0 8px">03</p>
-      <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 8px">成本曲线</h3>
-      <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0; line-height:1.5">供应链重新议价加云资源缩容，目标 −12%。</p>
-    </div>
+  <div style="flex:1; background:var(--pm-panel); border-radius:8px; border-top:3px solid var(--pm-accent); padding:24px">
+    <p style="font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-accent); margin:0 0 8px">02</p>
+    <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 8px">渠道下沉</h3>
+    <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:0; line-height:1.5">二线城市装机量翻倍，先铺服务再谈转化。</p>
   </div>
-  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">4 / 14</div>
 </div>
 \`\`\`
 
-#### E · 数据页（左大数字 + 右图表）
+**③ 大数字 + 说明**——数字写结论本身，口径进 caption；来源写在页脚或回复里：
 
 \`\`\`html
-<div class="slide" style="background:var(--pm-bg)">
-  <div style="position:absolute; left:64px; top:56px; width:832px">
-    <div style="width:28px; height:4px; background:var(--pm-accent); margin-bottom:14px"></div>
-    <h2 style="font-size:var(--pm-fs-title); color:var(--pm-ink); margin:0">订阅占比：四个季度爬到过半</h2>
-  </div>
-  <div style="position:absolute; left:64px; top:200px; width:240px">
-    <p style="font-family:var(--pm-font-mono); font-size:72px; color:var(--pm-accent); margin:0; line-height:1">58%</p>
-    <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:10px 0 0">订阅收入占比，首次过半</p>
-  </div>
-  <div data-chart='{"type":"line","categories":["Q4","Q1","Q2","Q3"],"series":[{"name":"订阅占比 %","values":[38,44,51,58]}]}' style="position:absolute; left:360px; top:170px; width:536px; height:310px"></div>
-  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">5 / 14</div>
+<div style="position:absolute; left:64px; top:190px; width:240px">
+  <p style="font-family:var(--pm-font-mono); font-size:72px; color:var(--pm-accent); margin:0; line-height:1">58%</p>
+  <p style="font-size:var(--pm-fs-body); color:var(--pm-muted); margin:10px 0 0">订阅收入占比，首次过半</p>
 </div>
 \`\`\`
 
-（大数字写结论本身，口径进它下面的 caption；数据来源写在页脚或回复里。）
-
-#### F · 对比页（两栏 panel）
+**④ 图表**——标注即图表（schema 见上文 data-chart）：
 
 \`\`\`html
-<div class="slide" style="background:var(--pm-bg)">
-  <div style="position:absolute; left:64px; top:56px; width:832px">
-    <div style="width:28px; height:4px; background:var(--pm-accent); margin-bottom:14px"></div>
-    <h2 style="font-size:var(--pm-fs-title); color:var(--pm-ink); margin:0">Q3 打法：两条路线</h2>
-  </div>
-  <div style="position:absolute; left:64px; top:170px; width:404px; height:310px; background:var(--pm-panel); border-radius:8px; padding:24px">
-    <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 10px">A · 稳守</h3>
-    <ul style="margin:0; padding-left:20px; line-height:1.7">
-      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">保续约，不加投入</li>
-      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">毛利率 +1pt</li>
-      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">风险：增长失速</li>
-    </ul>
-  </div>
-  <div style="position:absolute; left:492px; top:170px; width:404px; height:310px; background:var(--pm-panel); border-radius:8px; padding:24px">
-    <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 10px">B · 进攻</h3>
-    <ul style="margin:0; padding-left:20px; line-height:1.7">
-      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">渠道下沉换增量</li>
-      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">收入 +8%，毛利持平</li>
-      <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">风险：现金流吃紧</li>
-    </ul>
-  </div>
-  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">6 / 14</div>
+<div data-chart='{"type":"line","categories":["Q4","Q1","Q2","Q3"],"series":[{"name":"订阅占比 %","values":[38,44,51,58]}]}' style="position:absolute; left:360px; top:170px; width:536px; height:310px"></div>
+\`\`\`
+
+**⑤ 对比栏**——两块并排 = 对比页（第二块 left:492 width:404 同款；左现状右建议）：
+
+\`\`\`html
+<div style="position:absolute; left:64px; top:170px; width:404px; height:310px; background:var(--pm-panel); border-radius:8px; padding:24px">
+  <h3 style="font-size:var(--pm-fs-body); color:var(--pm-ink); margin:0 0 10px">A · 稳守</h3>
+  <ul style="margin:0; padding-left:20px; line-height:1.7">
+    <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">保续约，不加投入</li>
+    <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">毛利率 +1pt</li>
+    <li style="font-size:var(--pm-fs-body); color:var(--pm-muted)">风险：增长失速</li>
+  </ul>
 </div>
 \`\`\`
 
-#### G · 金句页（反色大字）
+**⑥ 表格**——表头 accent 反白、行高 40px、≤12 行（§二），口径与来源写进回复：
 
 \`\`\`html
-<div class="slide" style="background:var(--pm-ink)">
-  <p style="position:absolute; left:64px; top:120px; width:832px; font-size:36px; color:var(--pm-bg); line-height:1.6; margin:0">「把成本曲线打下来，<br>增长才有力可言。」</p>
-  <p style="position:absolute; left:64px; top:400px; font-size:var(--pm-fs-note); color:var(--pm-muted); margin:0">— 2026 Q3 经营会纪要</p>
-  <div style="position:absolute; left:832px; top:496px; width:64px; text-align:right; font-family:var(--pm-font-mono); font-size:var(--pm-fs-note); color:var(--pm-muted)">9 / 14</div>
-</div>
+<table style="position:absolute; left:64px; top:170px; width:832px; border-collapse:collapse">
+  <tr><th style="background:var(--pm-accent); color:var(--pm-bg); font-size:var(--pm-fs-body); padding:8px 12px; text-align:left">机型</th><th style="background:var(--pm-accent); color:var(--pm-bg); font-size:var(--pm-fs-body); padding:8px 12px; text-align:left">起售价</th></tr>
+  <tr><td style="font-size:var(--pm-fs-body); color:var(--pm-ink); padding:8px 12px">iPhone 18 Pro</td><td style="font-size:var(--pm-fs-body); color:var(--pm-ink); padding:8px 12px">¥7,999</td></tr>
+</table>
 \`\`\`
 
-（金句两行以内，\`<br>\` 自己控制断行；引用出处必须有。）
-
-#### H · 结束页（accent 满版反白）
-
-\`\`\`html
-<div class="slide" style="background:var(--pm-accent)">
-  <h1 style="position:absolute; left:64px; top:220px; width:700px; font-size:var(--pm-fs-cover); color:var(--pm-bg); margin:0">谢谢，等问题。</h1>
-  <p style="position:absolute; left:64px; top:340px; font-size:var(--pm-fs-body); color:var(--pm-bg); margin:0">数据与图表出处都在会话工作区的 deck.html</p>
-</div>
-\`\`\`
+组件可以两两并排（③+④ 就是数据页；并排时给宽度比例、共享 top:170 基线），但不要叠三层——超出内容带的组合先想想是不是该拆两页。
 
 ### 4. 转换与交付
 

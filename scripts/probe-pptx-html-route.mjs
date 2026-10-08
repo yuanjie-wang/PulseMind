@@ -89,19 +89,37 @@ bad('overflow.html', `<div style="position:absolute; left:900px; top:500px; widt
 // translucent TEXT color still refuses (fills map; OOXML runs carry no alpha)
 bad('alpha.html', `<p style="position:absolute; left:10px; top:10px; width:100px; color:rgba(0,0,0,0.5)">浅字</p>`)
 bad('overlap.html', `<p style="position:absolute; left:100px; top:100px; width:400px">上方标题标题标题标题</p><p style="position:absolute; left:100px; top:108px; width:400px">下方文本文本文本文本</p>`)
+// text-vs-surface (2026-10-07): tables and charts are text-bearing — a
+// full-width line crossing a table shipped once (the 20261007235037 p12 shape)
+bad('table-overlap.html', `<p style="position:absolute; left:64px; top:200px; width:832px">安卓续航充电普遍 80–120W</p><table style="position:absolute; left:64px; top:212px; width:600px"><tr><td>机型</td><td>电池</td></tr></table>`)
 
 // ── recipes.html: the reference's own skeletons must pass the profile they teach ──
-// Extracted VERBATIM from office-references.ts (single source of truth): every
-// ```html fence opening with <div class="slide" is a recipe skeleton. A future
-// edit that makes any recipe refusable (overflow, text overlap, …) fails here.
+// Extracted VERBATIM from office-references.ts (single source of truth). Two
+// kinds of fence: those opening with <div class="slide" are PAGE SHELLS and
+// mount as slides; every other html fence is a COMPONENT and the probe wraps
+// it in a standard shell before measuring — the same band geometry the
+// reference's prose promises. A future edit that makes any recipe refusable
+// (overflow, text/table overlap, …) fails here.
 const refsSrc = readFileSync(join(root, 'src/renderer/src/skills/built-in/office-references.ts'), 'utf8')
-const recipeFences = Array.from(
-  refsSrc.matchAll(/\\`\\`\\`html\n(<div class="slide"[\s\S]*?)\n\\`\\`\\`/g),
+// only §3 carries recipes — §1/§2 have other html fences (the deck skeleton,
+// the data-chart example) that are not pages
+const section3 = refsSrc.slice(refsSrc.indexOf('### 3. 版式配方库'), refsSrc.indexOf('### 4. 转换与交付'))
+const htmlFences = Array.from(
+  section3.matchAll(/\\`\\`\\`html\n([\s\S]*?)\n\\`\\`\\`/g),
   (m) => m[1].replaceAll('\\`', '`')
 )
-if (recipeFences.length !== 8) throw new Error(`expected 8 recipe skeletons in office-references.ts, extracted ${recipeFences.length}`)
-// the cover recipe ships a placeholder path — swap in the fixture's real image
-const recipeSlides = recipeFences.map((s) => s.replaceAll('assets/cover.jpg', 'assets/logo.png')).join('\n')
+const shells = htmlFences.filter((f) => f.startsWith('<div class="slide"'))
+const components = htmlFences.filter((f) => !f.startsWith('<div class="slide"'))
+// 5 shells: cover / section / quote / closing + the worked example (C).
+// 6 components: 要点列表 / 卡片行 / 大数字 / 图表 / 对比栏 / 表格.
+if (shells.length !== 5) throw new Error(`expected 5 page shells in office-references.ts §3, got ${shells.length}`)
+if (components.length !== 6) throw new Error(`expected 6 content components in office-references.ts §3, got ${components.length}`)
+const recipeSlides = [
+  ...shells,
+  ...components.map((f) => `<div class="slide" style="background:var(--pm-bg)">${f}</div>`),
+]
+  .map((s) => s.replaceAll('assets/cover.jpg', 'assets/logo.png'))
+  .join('\n')
 writeFileSync(
   join(fixture, 'recipes.html'),
   `<!doctype html>
@@ -187,6 +205,7 @@ async function main() {
     ['overflow.html', /超出页面/],
     ['alpha.html', /半透明/],
     ['overlap.html', /文字区域重叠/],
+    ['table-overlap.html', /表格区域重叠/],
   ]) {
     await assert.rejects(
       () => measureLayout(fixturePath(file), { launch }),
@@ -240,10 +259,17 @@ async function main() {
   assert.ok(!slide2.includes('t="0" b="0"/><a:stretch'), 'no zero-crop marker left behind')
   console.log('  ok  emission devices: fill alpha, outerShdw, real srcRect crop')
 
-  // 5: the reference's own 8 recipe skeletons must pass the profile they teach
+  // 5: the reference's own shells + components must pass the profile they teach
   const recipes = await measureLayout(fixturePath('recipes.html'), { launch })
-  assert.equal(recipes.slides.length, 8, 'eight recipe slides measured')
+  assert.equal(recipes.slides.length, 11, 'five shells + six band components measured')
   assert.equal(recipes.degradations.length, 0, 'recipes degrade nothing: ' + JSON.stringify(recipes.degradations))
+  // every component sits inside the band: its content must clear the page-number
+  // airspace (top ≤ 480) — the geometry the prose promises
+  recipes.slides.slice(5).forEach((sf, i) => {
+    for (const b of sf.blocks) {
+      assert.ok(b.y + b.h <= 480.5, 'component ' + (i + 1) + ' block overflows the band: kind=' + b.kind + ' bottom=' + Math.round(b.y + b.h))
+    }
+  })
   const recipeDeck = await htmlDeckToPptxBuffer({
     facts: { slides: recipes.slides },
     images,
@@ -251,10 +277,10 @@ async function main() {
     title: '配方库探针',
   })
   const recipeZip = new AdmZip(recipeDeck.buffer)
-  for (let i = 1; i <= 8; i++) assert.ok(recipeZip.readAsText('ppt/slides/slide' + i + '.xml'), 'recipe slide ' + i + ' emitted')
+  for (let i = 1; i <= 11; i++) assert.ok(recipeZip.readAsText('ppt/slides/slide' + i + '.xml'), 'recipe slide ' + i + ' emitted')
   assert.ok(recipeZip.readAsText('ppt/slides/slide1.xml').includes('t="21875"'), 'recipe A computes the cover crop')
   assert.ok(recipeZip.readAsText('ppt/slides/slide1.xml').includes('spc="300"'), 'recipe A kicker carries letter-spacing')
-  console.log('  ok  recipes: all 8 reference skeletons measure clean and emit')
+  console.log('  ok  recipes: 5 shells + 6 band components measure clean, stay in-band, and emit')
 
   // DI contract: a failing launcher propagates its own error (the
   // browsers:install hint lives in defaultLaunch, not in the injected one)

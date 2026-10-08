@@ -282,8 +282,14 @@ export function collectDeckLayout(): CollectResult {
 
     /** Text rects on this slide, for the pairwise overlap check at the end
      *  of the walk (text-over-text is a layout bug; text over a box/image is
-     *  legitimate and unchecked). */
-    const textRects: Array<{ x: number; y: number; w: number; h: number; label: string }> = []
+     *  legitimate and unchecked). Tables and charts are TEXT-BEARING
+     *  surfaces — a foreign text block crossing them collides with their own
+     *  labels/cells (2026-10-07: a full-width line sat 18px into a table and
+     *  shipped; boxes/images stay exempt because masks and cards are design
+     *  devices) — so they land in surfaceRects and the same tolerance check
+     *  refuses text-over-table/chart. */
+    const textRects: Array<{ x: number; y: number; w: number; h: number; label: string; ink?: { x: number; y: number; w: number; h: number } }> = []
+    const surfaceRects: Array<{ x: number; y: number; w: number; h: number; label: string; what: '表格' | '图表' }> = []
     const emitText = (owner: HTMLElement, rect: { x: number; y: number; w: number; h: number }, nodes: Node[], positioned: boolean, bullet?: { level: number; ordered: boolean }) => {
       const runs = buildRuns(nodes, owner)
       if (runs.length === 0) return
@@ -300,7 +306,23 @@ export function collectDeckLayout(): CollectResult {
       if (bullet) block.bullet = bullet
       blocks.push(block)
       bounds(block, desc(owner))
-      if (rect.w > 1 && rect.h > 1) textRects.push({ x: block.x, y: block.y, w: rect.w, h: rect.h, label: desc(owner) })
+      if (rect.w > 1 && rect.h > 1) {
+        // ink extent for the surface check: the union of the nodes' own line
+        // boxes — a wide left-aligned title's GLYPHS often end far short of
+        // its block box, and only the glyphs can collide with a table/chart.
+        // Range rects need layout (jsdom yields none) → fall back to the
+        // block rect, clamped into it so the ink check stays conservative.
+        const inkViewport = unionRect(nodes.flatMap((n) => rectsOf(n)).filter((r) => r.width > 0 || r.height > 0))
+        let check = { x: block.x, y: block.y, w: rect.w, h: rect.h }
+        if (inkViewport.w > 0.5 && inkViewport.h > 0.5) {
+          const ix = Math.max(block.x, inkViewport.x - ox)
+          const iy = Math.max(block.y, inkViewport.y - oy)
+          const ix2 = Math.min(block.x + block.w, inkViewport.x + inkViewport.w - ox)
+          const iy2 = Math.min(block.y + block.h, inkViewport.y + inkViewport.h - oy)
+          if (ix2 - ix > 0.5 && iy2 - iy > 0.5) check = { x: ix, y: iy, w: ix2 - ix, h: iy2 - iy }
+        }
+        textRects.push({ x: block.x, y: block.y, w: rect.w, h: rect.h, label: desc(owner), ink: check })
+      }
     }
 
     const emitImage = (el: HTMLElement, positioned: boolean) => {
@@ -404,6 +426,7 @@ export function collectDeckLayout(): CollectResult {
       const block = { kind: 'table' as const, x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, colWidthsPx, rowHeightsPx, cells, positioned }
       blocks.push(block)
       bounds(block, desc(el))
+      surfaceRects.push({ x: block.x, y: block.y, w: block.w, h: block.h, label: desc(el), what: '表格' })
     }
 
     // inline groups between block children: text-ish nodes accumulate into one
@@ -475,6 +498,7 @@ export function collectDeckLayout(): CollectResult {
         const block = { kind: 'chart' as const, x: r.left - ox, y: r.top - oy, w: r.width, h: r.height, raw, positioned }
         blocks.push(block)
         bounds(block, desc(el))
+        surfaceRects.push({ x: block.x, y: block.y, w: block.w, h: block.h, label: desc(el), what: '图表' })
         return
       }
       if (el.tagName === 'TABLE') { emitTable(el as HTMLTableElement, positioned); return }
@@ -545,20 +569,37 @@ export function collectDeckLayout(): CollectResult {
     // the html instead of shipping glyphs on glyphs (the deck route's "a weak
     // model cannot produce an overlapping page" guarantee, restored). Small
     // edge touches (≤3px) and slivers under 10% of the smaller box are
-    // tolerance, not defects.
+    // tolerance, not defects. Tables/charts ride the same tolerances as
+    // text-bearing surfaces (see surfaceRects).
+    const refuseOverlap = (
+      a: { x: number; y: number; w: number; h: number; label: string },
+      b: { x: number; y: number; w: number; h: number; label: string },
+      what: string,
+      advice: string
+    ): void => {
+      const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+      const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+      if (ix <= 3 || iy <= 3) return
+      const minArea = Math.min(a.w * a.h, b.w * b.h)
+      if (ix * iy < minArea * 0.1) return
+      errors.push({
+        page,
+        message: `${a.label} 与 ${b.label}的${what}重叠（相交 ${Math.round(ix)}×${Math.round(iy)}px）——${advice}`,
+      })
+    }
     for (let i = 0; i < textRects.length; i++) {
       for (let j = i + 1; j < textRects.length; j++) {
-        const a = textRects[i]
-        const b = textRects[j]
-        const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
-        const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
-        if (ix <= 3 || iy <= 3) continue
-        const minArea = Math.min(a.w * a.h, b.w * b.h)
-        if (ix * iy < minArea * 0.1) continue
-        errors.push({
-          page,
-          message: `${a.label} 与 ${b.label} 文字区域重叠（相交 ${Math.round(ix)}×${Math.round(iy)}px）——绝对定位要按实际渲染高度排：缩短上方文本、下移下方元素，或拉开间距。`,
-        })
+        refuseOverlap(textRects[i], textRects[j], '文字区域', '绝对定位要按实际渲染高度排：缩短上方文本、下移下方元素，或拉开间距。')
+      }
+    }
+    for (const t of textRects) {
+      // the ink extent (glyphs), not the block box — a wide title's empty
+      // right half must not refuse a chart sitting beside it
+      const tRect: { x: number; y: number; w: number; h: number; label: string } = { x: t.x, y: t.y, w: t.w, h: t.h, label: t.label, ...(t.ink ?? {}) }
+      for (const s of surfaceRects) {
+        refuseOverlap(tRect, s, `${s.what}区域`, s.what === '表格'
+          ? '表格是实心内容面——标题/说明放表格上方或下方（留出一行高），不要压在表格上。'
+          : '图表自带图例与坐标标注——外部文字放图表框外，或缩小图表框把空间让出来。')
       }
     }
     slideFacts.push({
