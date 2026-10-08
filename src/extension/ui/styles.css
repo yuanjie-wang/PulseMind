@@ -1375,6 +1375,22 @@ button {
   text-overflow: ellipsis;
 }
 
+/* 供应商分组头：桌面 antd 菜单 type:'group' 的标题行（.ant-menu-item-group-title）。
+   antd 的值：padding 8px 16px（paddingXS × padding）、字号与条目相同
+   （groupTitleFontSize = fontSize）、颜色 groupTitleColor = colorTextDescription。
+   面板换算：横向 16→8 与菜单项同一内缩对齐；字号沿用条目的 13px；颜色原值。 */
+.pm-model-group-title {
+  padding: 4px 8px;
+  color: rgba(0, 0, 0, 0.45); /* antd colorTextDescription */
+  font-size: 13px;
+  line-height: 1.5714; /* antd lineHeight */
+  cursor: default;
+  user-select: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .pm-approval-item:hover,
 .pm-model-item:hover {
   background: rgba(0, 0, 0, 0.04);

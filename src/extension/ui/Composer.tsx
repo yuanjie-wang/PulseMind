@@ -11,10 +11,10 @@
  * the desktop's file dialogs and profile store; the panel's job is 说一句话 —
  * the M4 side panel is where they land. */
 
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { MAX_USER_INPUT_CHARS } from '../../renderer/src/agent/engine/engine-constants'
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
-import { fullModelLabel, type ModelState } from '../../shared/agent-protocol'
+import { fullModelLabel, modelLabel, type ModelState, type ModelOption } from '../../shared/agent-protocol'
 import { Icon } from './icons'
 
 const MAX_HEIGHT_PX = 160
@@ -40,6 +40,24 @@ const APPROVAL_LEVELS: Array<{ mode: SandboxApprovalMode; label: string; icon: '
   { mode: 'outside-ask', label: '按需确认', icon: 'safety' },
   { mode: 'auto', label: '全部允许', icon: 'thunderbolt' },
 ]
+
+/** The desktop composer's 模型分组 rule, verbatim (InputArea `modelItems`):
+ *  group by `providerName` when MORE THAN ONE distinct provider is in play
+ *  (first-appearance order; a missing providerName groups under ''), a single
+ *  provider stays flat — a lone group header is noise. The panel renders the
+ *  groups as `.pm-model-group-title` rows, the desktop as antd `type:'group'`. */
+function modelMenuGroups(profiles: ModelOption[]): Array<{ provider: string; items: ModelOption[] }> {
+  const providerNames: string[] = []
+  for (const p of profiles) {
+    const provider = p.providerName ?? ''
+    if (!providerNames.includes(provider)) providerNames.push(provider)
+  }
+  if (providerNames.length <= 1) return []
+  return providerNames.map((provider) => ({
+    provider,
+    items: profiles.filter((p) => (p.providerName ?? '') === provider),
+  }))
+}
 
 /** One dropdown's plumbing: open state, its anchor ref, and the outside-click
  *  close. The panel has no antd Dropdown to do the latter, and both footer menus
@@ -110,11 +128,32 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
     APPROVAL_LEVELS.find((l) => l.mode === approvalMode) ??
     APPROVAL_LEVELS.find((l) => l.mode === DEFAULT_APPROVAL_MODE) ??
     APPROVAL_LEVELS[0]
-  // Same two-step as the desktop's own button: the active profile's label, with
-  // the placeholder reserved for the case where there is no profile at all.
+  // Same two-step as the desktop's own button (InputArea also labels the active
+  // pick with the bare modelLabel): the collapsed button drops the 供应商 prefix
+  // — the footer row is too tight for it, and the tooltip still names it. The
+  // MENU items keep fullModelLabel: there a bare label no longer says whose a
+  // same-named model is.
   const profiles = model?.profiles ?? []
   const activeProfile = profiles.find((p) => p.id === model?.activeId) ?? profiles[0]
-  const activeModelLabel = activeProfile ? fullModelLabel(activeProfile) : '选择模型'
+  const activeModelLabel = activeProfile ? modelLabel(activeProfile) : '选择模型'
+  const activeModelFullLabel = activeProfile ? fullModelLabel(activeProfile) : activeModelLabel
+
+  /** Desktop-identical item row: the bare modelLabel (the group header already
+   *  names the provider when grouped; the tooltip keeps the full label). */
+  const renderModelItem = (profile: ModelOption): React.JSX.Element => (
+    <button
+      key={profile.id}
+      className={`pm-model-item${profile.id === model?.activeId ? ' pm-model-item-active' : ''}`}
+      title={fullModelLabel(profile)}
+      onClick={() => {
+        modelMenu.close()
+        onSelectModel(profile.id)
+      }}
+    >
+      {modelLabel(profile)}
+    </button>
+  )
+  const modelGroups = modelMenuGroups(profiles)
 
   // 全部允许 = 工具调用不再经过批准，是唯一「无人拦截」的一档，所以它的图标和
   // 文案一起转警示橙（InputArea 的 UNRESTRICTED_COLOR，同一值同一用意）。加在
@@ -184,7 +223,7 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
             <span className="pm-model-anchor" ref={modelMenu.anchorRef}>
               <button
                 className={`pm-model${modelMenu.open ? ' pm-model-active' : ''}`}
-                title={activeModelLabel}
+                title={activeModelFullLabel}
                 onClick={modelMenu.toggle}
               >
                 <span className="pm-model-label">{activeModelLabel}</span>
@@ -194,23 +233,19 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
               </button>
               {modelMenu.open && (
                 <div className="pm-model-menu">
-                  {/* Flat list with the 供应商 prefix (fullModelLabel): the
-                      380px panel has no room for group headers, and with two
-                      providers carrying the same model id a bare label no
-                      longer says whose it is. */}
-                  {profiles.map((profile) => (
-                    <button
-                      key={profile.id}
-                      className={`pm-model-item${profile.id === model?.activeId ? ' pm-model-item-active' : ''}`}
-                      title={profile.model}
-                      onClick={() => {
-                        modelMenu.close()
-                        onSelectModel(profile.id)
-                      }}
-                    >
-                      {fullModelLabel(profile)}
-                    </button>
-                  ))}
+                  {/* 桌面 InputArea 同款分组（2026-10-08，用户：列表视觉与桌面
+                      一致）：条目用裸 modelLabel（分组头已经报过供应商），
+                      超过一家供应商时按 providerName 插 antd type:'group' 头，
+                      只有一家时保持平铺——孤零零一个头是噪音。分组判定与桌面
+                      逐字对齐（首现顺序、providerName 缺省按 '' 归组）。 */}
+                  {modelGroups.length > 0
+                    ? modelGroups.map((group) => (
+                        <Fragment key={`provider_group_${group.provider}`}>
+                          <div className="pm-model-group-title">{group.provider}</div>
+                          {group.items.map(renderModelItem)}
+                        </Fragment>
+                      ))
+                    : profiles.map(renderModelItem)}
                 </div>
               )}
             </span>

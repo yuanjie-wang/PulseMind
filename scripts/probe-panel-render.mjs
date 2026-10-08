@@ -38,17 +38,21 @@ mkdirSync(SHOTS, { recursive: true })
  *  missed `color` on a dark card produces — not against low contrast. */
 const INVISIBLE_DELTA = 25
 
-/** The 模型下拉 inventory — the shape session.list carries (id/name/provider/model,
- *  no credentials). The second profile has deliberately no name, and a long model
- *  id: the shared modelLabel falls back to 'provider:model' for it, which is also
- *  what exercises the label's truncation instead of assuming it.
+/** The 模型下拉 inventory — the shape session.list carries (id/name/provider/
+ *  providerName/model, no credentials). The second profile has deliberately no
+ *  name, and a long model id: the shared modelLabel falls back to
+ *  'provider:model' for it, which is also what exercises the label's truncation
+ *  instead of assuming it. Both profiles carry a providerName so the two label
+ *  forms genuinely diverge: the collapsed BUTTON shows the bare modelLabel (the
+ *  footer row is too tight for the 供应商 prefix — user ruling 2026-10-08),
+ *  the menu items keep fullModelLabel (there the prefix disambiguates).
  *
  *  Declared out here (not inside the harness) so the checks below can name the
  *  fallback label; interpolated into the harness as data. */
 const MODEL = {
   profiles: [
-    { id: 'p1', name: 'GPT-4o', provider: 'openai', model: 'gpt-4o' },
-    { id: 'p2', provider: 'deepseek', model: 'deepseek-chat-with-a-deliberately-long-name' },
+    { id: 'p1', name: 'GPT-4o', provider: 'openai', providerName: 'OpenAI', model: 'gpt-4o' },
+    { id: 'p2', provider: 'deepseek', providerName: 'DeepSeek 官方', model: 'deepseek-chat-with-a-deliberately-long-name' },
   ],
   activeId: 'p1',
 }
@@ -674,10 +678,16 @@ const modelMenu = await page.evaluate(() => {
   const rect = menu.getBoundingClientRect()
   const btn = root.querySelector('.pm-model').getBoundingClientRect()
   const items = [...root.querySelectorAll('.pm-model-item')]
+  const titles = [...root.querySelectorAll('.pm-model-group-title')]
   const activeIdx = items.findIndex((i) => i.classList.contains('pm-model-item-active'))
   const long = items[1]
+  const titleStyle = titles[0] ? getComputedStyle(titles[0]) : null
   return {
     labels: items.map((i) => i.textContent.trim()),
+    groupTitles: titles.map((t) => t.textContent.trim()),
+    groupTitleColor: titleStyle?.color ?? null,
+    groupTitleFontSize: titleStyle?.fontSize ?? null,
+    groupTitlePaddingLeft: titleStyle?.paddingLeft ?? null,
     activeIdx,
     activeBg: activeIdx >= 0 ? getComputedStyle(items[activeIdx]).backgroundColor : null,
     insidePanel: Math.round(rect.left) >= Math.round(panel.left) - 1 && Math.round(rect.right) <= Math.round(panel.right) + 1,
@@ -688,9 +698,14 @@ const modelMenu = await page.evaluate(() => {
   }
 })
 check(
-  '模型菜单列的是设置里的 profiles（无 name 的退回 provider:model）',
-  modelMenu.labels.join('|') === `GPT-4o|${FALLBACK_LABEL}`,
-  modelMenu.labels.join('|'),
+  '模型菜单与桌面同款分组：条目是裸 modelLabel，供应商在分组头上（无 name 的退回 provider:model）',
+  modelMenu.labels.join('|') === `GPT-4o|${FALLBACK_LABEL}` && modelMenu.groupTitles.join('|') === 'OpenAI|DeepSeek 官方',
+  `items=${modelMenu.labels.join('|')}, groups=${modelMenu.groupTitles.join('|')}`,
+)
+check(
+  '分组头是 antd 分组标题的样式（弱化墨色、条目同字号、与条目同横向内缩）',
+  modelMenu.groupTitleColor === 'rgba(0, 0, 0, 0.45)' && modelMenu.groupTitleFontSize === '13px' && modelMenu.groupTitlePaddingLeft === '8px',
+  `color=${modelMenu.groupTitleColor}, size=${modelMenu.groupTitleFontSize}, pad=${modelMenu.groupTitlePaddingLeft}`,
 )
 check('模型菜单整个落在面板内、并朝上展开', modelMenu.insidePanel && modelMenu.aboveButton, `inside=${modelMenu.insidePanel}, above=${modelMenu.aboveButton}`)
 check('过长的模型名在菜单项里截断而不是撑破面板', modelMenu.longClipped && !modelMenu.longOverflowsPanel, `clipped=${modelMenu.longClipped}, overflow=${modelMenu.longOverflowsPanel}`)
@@ -702,14 +717,20 @@ check(
   `idx=${modelMenu.activeIdx}, bg=${modelMenu.activeBg}`,
 )
 
-// 选中后按钮文案跟着换：两边同一个 modelLabel，不能一处显示 name、另一处显示 id。
+// 选中后按钮文案跟着换：按钮显示不带供应商前缀的 modelLabel（页脚空间有限，
+// 前缀在 tooltip 里），菜单项才带 fullModelLabel —— 两个形态由这组断言分开钉。
 await page.evaluate(() => window.__panels()[0].querySelectorAll('.pm-model-item')[1].click())
 await page.waitForTimeout(150)
 const afterSwitch = await page.evaluate(() => ({
   label: window.__panels()[0].querySelector('.pm-model-label')?.textContent,
+  title: window.__panels()[0].querySelector('.pm-model')?.getAttribute('title'),
   menuGone: !window.__panels()[0].querySelector('.pm-model-menu'),
 }))
-check('选中后按钮文案换成同一个 label，且菜单关闭', afterSwitch.label === FALLBACK_LABEL && afterSwitch.menuGone, `${afterSwitch.label} / menuGone=${afterSwitch.menuGone}`)
+check(
+  '选中后按钮文案换成不带前缀的 label（tooltip 保留全称），且菜单关闭',
+  afterSwitch.label === FALLBACK_LABEL && afterSwitch.title === `DeepSeek 官方 · ${FALLBACK_LABEL}` && afterSwitch.menuGone,
+  `${afterSwitch.label} / title=${afterSwitch.title} / menuGone=${afterSwitch.menuGone}`,
+)
 
 // 选中态跟着状态走，不是钉在第一行：换档后重开菜单，active 行换到新档位上。
 await page.evaluate(() => window.__panels()[0].querySelector('.pm-model').click())
