@@ -13,16 +13,25 @@ export type Segment =
   | { type: 'execution'; msgs: AgentMessage[] }
   | { type: 'streaming'; blocks: ContentBlock[] }
 
+/** Split segments rename their message copy (`__text` / `__exec` / `__ask`, the
+ *  `groupMessages` breakpoint ids below); the mirror still holds the UNSUFFIXED
+ *  id and that is what every backend write must address — the DB has no
+ *  `msg_…__text` row, so a suffixed id misses the message-existence check
+ *  (「消息尚未保存或不属于此会话」) and a metadata UPDATE silently hits 0 rows. */
+export function stripMessageIdSuffix(id: string): string {
+  return id.replace(/__\w+$/, '')
+}
+
 export function getSegmentKey(seg: Segment): string {
   if (seg.type === 'single') return 's-' + seg.msg.id
-  if (seg.type === 'execution') return 'e-' + (seg.msgs[0]?.id?.replace(/__\w+$/, '') || 'empty')
+  if (seg.type === 'execution') return 'e-' + (seg.msgs[0]?.id ? stripMessageIdSuffix(seg.msgs[0].id) : 'empty')
   return 'streaming'
 }
 
 export function getSegmentAnchorId(seg: Segment | undefined): string | undefined {
   if (!seg) return undefined
-  if (seg.type === 'single') return seg.msg.id.replace(/__\w+$/, '')
-  if (seg.type === 'execution') return seg.msgs[0]?.id?.replace(/__\w+$/, '')
+  if (seg.type === 'single') return stripMessageIdSuffix(seg.msg.id)
+  if (seg.type === 'execution') return seg.msgs[0]?.id ? stripMessageIdSuffix(seg.msgs[0].id) : undefined
   return undefined
 }
 

@@ -34,6 +34,7 @@ import { FileRefChip } from './FileRefChip'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { enqueueCompileForFile } from '../knowledge/compile-queue'
 import { createKnowledgeSaveAction } from './knowledge-save'
+import { stripMessageIdSuffix } from './message-segments'
 import { useMarkdownThemeClass } from '../../theme/mode'
 import { CollapseBody, POP_ANIM, SHAKE_ANIM } from './motion'
 
@@ -374,6 +375,11 @@ export const MessageGroup = React.memo(function MessageGroup({
   if (!hasDisplayableContent(msg)) return null
 
   const isUser = msg.role === 'user'
+  // Segments rename their message copy (`__text`/`__exec`/`__ask`); the mirror —
+  // and therefore the messages row — holds the bare id. Every backend write
+  // below (like metadata, knowledge capture) must address the bare id or the
+  // row lookup misses.
+  const persistedMsgId = stripMessageIdSuffix(msg.id)
 
   const assistantText = isUser
     ? ''
@@ -622,7 +628,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                   const next = !liked
                   setLiked(next)
                   setLikedPop(true)
-                  window.electronAPI.updateMessageMetadata(msg.id, { liked: next })
+                  window.electronAPI.updateMessageMetadata(persistedMsgId, { liked: next })
                 }}
                 title={t('chatView.like')}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--pm-hover)' }}
@@ -641,7 +647,7 @@ export const MessageGroup = React.memo(function MessageGroup({
                   if (favorited || savingFavorite) return
                   void handleSaveToKnowledge({
                     content: assistantText,
-                    messageId: msg.id,
+                    messageId: persistedMsgId,
                     conversationId,
                     title: conversationTitle,
                     writable: actions === 'full',
