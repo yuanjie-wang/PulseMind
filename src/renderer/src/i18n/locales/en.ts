@@ -82,6 +82,7 @@ const en: TranslationDict = {
       file: 'File',
       url: 'Web page',
       experience: 'Experience',
+      favorite: 'Favorite',
     },
   },
   htmlEdit: {

@@ -79,6 +79,7 @@ const zh = {
       file: '文件',
       url: '网页',
       experience: '经验',
+      favorite: '收藏',
     },
   },
   htmlEdit: {
