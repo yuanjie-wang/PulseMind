@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Collapse, Drawer, Input, InputNumber, Select, Button, Typography, Space, Modal, Popconfirm, Tag } from 'antd'
+import { Collapse, Drawer, Input, InputNumber, Select, Button, Typography, Space, Modal, Popconfirm, Tag, Switch } from 'antd'
 import { PlusOutlined, DeleteOutlined, SaveOutlined, CheckCircleOutlined, ExclamationCircleFilled, ApiOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { useSettings } from '../../hooks/SettingsContext'
@@ -595,6 +595,18 @@ function LlmSettings({ open, onClose, inline }: LlmSettingsProps): React.ReactEl
                     onChange={(val) => updateDraftModel(draftProvider.id, draftModel.id, { contextLength: val ?? undefined })}
                     style={{ width: '100%' }}
                   />
+                </Field>
+
+                <Field label={t('settingsDrawer.earlyStopGuard')}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Switch
+                      size="small"
+                      checked={draftModel.earlyStopGuard === true}
+                      onChange={(v) => updateDraftModel(draftProvider.id, draftModel.id, { earlyStopGuard: v || undefined })}
+                      aria-label={t('settingsDrawer.earlyStopGuard')}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12 }}>{t('settingsDrawer.earlyStopGuardHint')}</Text>
+                  </div>
                 </Field>
               </div>
             )}

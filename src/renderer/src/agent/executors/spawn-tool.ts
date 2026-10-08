@@ -3,7 +3,7 @@
 // ToolExecContext.spawnSubAgent, and result summarization for the parent.
 
 import { getHost } from '../host'
-import { ENGINEERING_WORKFLOW, readProjectInstructionsBody } from '../system-prompt-builder'
+import { ENGINEERING_WORKFLOW, TASK_COMPLETION_SENTINEL_SECTION, readProjectInstructionsBody } from '../system-prompt-builder'
 import {
   composeExpertInstructions,
   GENERAL_SUBAGENT_PROMPT,
@@ -259,7 +259,11 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
     // Report contract lands between the environment and the engineering
     // workflow: 谁在干活 → 能用什么 → 在哪干活（+ 项目约定） → 要交付什么 → 怎么干活. The
     // `## 报告契约` heading keeps its text verbatim — only the carrier moved.
-    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}${lawBlock}${reportContract}\n\n${ENGINEERING_WORKFLOW}`
+    // Guarded models teach the completion sentinel to their sub-agents too
+    // (the flag rides the opts spread, so a spawn of a guarded parent inherits
+    // both the section here and the engine-side guard itself).
+    const sentinelBlock = ex.opts.earlyStopGuard ? `\n\n${TASK_COMPLETION_SENTINEL_SECTION}` : ''
+    const systemPrompt = `${expertBlock}${skillsCtx}${envBlock}${lawBlock}${reportContract}\n\n${ENGINEERING_WORKFLOW}${sentinelBlock}`
 
     console.log(`[spawn_agent] subAgentId="${subAgentId || '(general)'}" system prompt length=${systemPrompt.length}, task message length=${taskMessage.length} first 200 chars:`, taskMessage.slice(0, 200))
     t.output = `Spawning sub-agent for task: ${task.slice(0, 100)}...`

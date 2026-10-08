@@ -112,6 +112,7 @@ function normalizeModels(raw: unknown): LlmModelConfig[] {
       contextLength: typeof m.contextLength === 'number' && Number.isFinite(m.contextLength) && m.contextLength > 0
         ? m.contextLength
         : undefined,
+      earlyStopGuard: m.earlyStopGuard === true ? true : undefined,
     }
     out.push(entry as unknown as LlmModelConfig)
   }
@@ -196,6 +197,7 @@ function materializeProfiles(providers: LlmProviderConfig[]): LlmProfile[] {
         model: m.model,
         maxTokens: m.maxTokens,
         contextLength: m.contextLength,
+        earlyStopGuard: m.earlyStopGuard,
       })
     }
   }

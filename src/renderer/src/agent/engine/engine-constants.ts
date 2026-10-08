@@ -41,6 +41,22 @@ export const STREAM_DONE_WATCHDOG_ERROR = 'stream done watchdog: 请求已结束
 // explicit error instead of the old silent close.
 export const MAX_THINKING_ONLY_RETRIES = 1
 
+// ── Early-stop continuation guard (per-model opt-in) ───────────────────
+// A weak model's chat prior makes it narrate the next step as prose and end
+// the turn (end_turn, visible text, no tool_use) while the task is clearly
+// still in flight. The user's measured pattern that shaped it: nudging with a
+// bare 「继续」 reliably resumes the work — so the engine automates exactly
+// that, gated by opts.earlyStopGuard (a LlmModelConfig flag; models without
+// it never see the guard). The nudge rides the state block (never persisted,
+// never rendered); the completion signal is the <<TASK_DONE>> sentinel taught
+// by the frozen core's TASK_COMPLETION_SENTINEL_SECTION and decoded by
+// engine/task-sentinel.ts. Two counters, two scopes: one nudge per PROGRESS
+// STRETCH (a continuation that produced tool calls re-arms it — the manual
+// pattern was "keep nudging while it makes progress"), bounded to the cap
+// below per turn so a model that stops after every sentence cannot multiply
+// the request count without limit.
+export const MAX_EARLYSTOP_CONTINUATIONS = 10
+
 // ── Tool parameter size limits ──────────────────────────────────────────
 // Prevents the LLM from passing overly large arguments (e.g. write content,
 // edit diffs) that would waste tokens or cause memory issues.

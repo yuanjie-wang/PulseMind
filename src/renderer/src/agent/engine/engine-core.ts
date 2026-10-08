@@ -65,6 +65,22 @@ export interface EngineCore {
    *  stream-runner re-issues once, then ends the turn as an explicit error.
    *  Reset by prepareTurn and by any round that produced visible output. */
   thinkingOnlyRetries: number
+  /** Early-stop continuation guard (opts.earlyStopGuard models only). */
+  // Tool rounds that have SETTLED this turn (recordToolBatchComplete ticks).
+  // The guard's "task in flight" evidence: a text-only end_turn with zero of
+  // these is just a chat answer. Reset by prepareTurn.
+  toolRoundsThisTurn: number
+  /** Nudges since the last progress (a continuation that produced tool calls
+   *  re-arms it to 0). One unproductive continuation then hands the turn back
+   *  — the model had its chance and its words are on the canvas. */
+  earlyStopContinues: number
+  /** Total nudges this turn (the hard cap MAX_EARLYSTOP_CONTINUATIONS reads
+   *  it; never reset mid-turn). Reset by prepareTurn. */
+  earlyStopNudgesTotal: number
+  /** Armed by stream-runner's guard, consumed by prepareLoopRequest: the next
+   *  built state block carries the continuation directive (final message,
+   *  never persisted, never rendered). One-shot per request build. */
+  pendingEarlyStopNudge: boolean
   /** The token limit parsed off a provider context-overflow rejection (null
    *  until one happens). prepareLoopRequest answers it with
    *  compactor.emergencyTruncate on the API copy; a successful request clears

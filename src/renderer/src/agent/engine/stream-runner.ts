@@ -2,7 +2,8 @@
  * LLM stream runner (PLAN-0.3.5 refactor, split 7/5): parser wiring, chunk
  * pump, stream-done await and idle-retry, extracted from AgentEngine.
  */
-import { MAX_STREAM_IDLE_RETRIES, MAX_THINKING_ONLY_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS, STREAM_DONE_WATCHDOG_MS, STREAM_DONE_WATCHDOG_ERROR } from './engine-constants'
+import { MAX_EARLYSTOP_CONTINUATIONS, MAX_STREAM_IDLE_RETRIES, MAX_THINKING_ONLY_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS, STREAM_DONE_WATCHDOG_MS, STREAM_DONE_WATCHDOG_ERROR } from './engine-constants'
+import { hasTaskDoneSentinel, stripTaskDoneSentinel } from './task-sentinel'
 import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { isContextOverflowRejection, parseContextOverflowLimit } from './context-estimate'
 import { IncrementalJsonTracker } from '../json-stream'
@@ -108,6 +109,26 @@ export class StreamRunner {
           // degenerates into repeat loops. Parse the XML back into real tool_use
           // blocks so the tools actually run.
           const extracted = extractInvokeToolCalls(this.engine.opts, rawBlocks)
+          // Early-stop guard companion (2026-10-08): a guarded model ends a
+          // finished task with the bare line <<TASK_DONE>>. The declaration is
+          // engine bookkeeping, not user-facing prose — peel it off the text
+          // blocks BEFORE the message lands (transcript, persistence and the
+          // extension mirror never see it). A text block that was NOTHING but
+          // the declaration is dropped whole.
+          let hasTaskDone = false
+          {
+            const kept: ContentBlock[] = []
+            for (const b of extracted.blocks) {
+              if (b.type === 'text' && hasTaskDoneSentinel((b as { text?: string }).text)) {
+                hasTaskDone = true
+                const text = stripTaskDoneSentinel((b as { text: string }).text)
+                if (text !== null) kept.push({ ...b, text })
+                continue
+              }
+              kept.push(b)
+            }
+            extracted.blocks = kept
+          }
           const blocks = extracted.blocks
           const convertedInvoke = extracted.converted
           const assistantMsg: AgentMessage = {
@@ -144,6 +165,12 @@ export class StreamRunner {
 
           if (toolUses.length > 0) this.engine.reportSpawnProgress(`子代理第 ${this.engine.loopCount} 轮完成,${toolUses.length} 个工具待执行`, true)
 
+          // A round that produced tool calls is PROGRESS: the early-stop
+          // guard's stretch counter re-arms (the manual pattern was "keep
+          // nudging while it moves"). Covers the tool_use branch and the
+          // max_tokens-with-truncated-calls branch alike.
+          if (toolUses.length > 0) this.engine.earlyStopContinues = 0
+
           // Execute tools even when the model finished with end_turn/stop but we
           // recovered XML `<invoke>` calls — otherwise they'd sit unexecuted.
           if ((stopReason === 'tool_use' || convertedInvoke) && toolUses.length > 0) {
@@ -166,7 +193,10 @@ export class StreamRunner {
           // is a real answer (or the "short visible reply cut by length" shape
           // that ruling protects), and still flows to handleMaxTokensResponse.
           const hasVisibleText = blocks.some((b) => b.type === 'text' && (b as { text?: string }).text?.trim())
-          if (toolUses.length === 0 && !hasVisibleText) {
+          // A bare <<TASK_DONE>> round is a deliberate completion declaration
+          // (possibly text-less after the strip) — NOT a degenerate thinking
+          // round; it closes the turn below without a re-issue.
+          if (toolUses.length === 0 && !hasVisibleText && !hasTaskDone) {
             if (this.engine.thinkingOnlyRetries < MAX_THINKING_ONLY_RETRIES) {
               this.engine.thinkingOnlyRetries += 1
               console.warn(`[AgentEngine] thinking-only round (stop=${stopReason}, no text/tool_use) — re-issuing (${this.engine.thinkingOnlyRetries}/${MAX_THINKING_ONLY_RETRIES})`)
@@ -197,6 +227,43 @@ export class StreamRunner {
             return
           }
           this.engine.thinkingOnlyRetries = 0
+
+          // ── Early-stop continuation guard (2026-10-08, opts.earlyStopGuard
+          // models only) ─────────────────────────────────────────────────
+          // A weak model's chat prior narrates the next step as prose and ends
+          // the turn (end_turn, visible text, no tool_use) while the task is
+          // in flight — the one degenerate shape the thinking-only retry above
+          // deliberately does not cover. Evidence of a task actually running:
+          // this turn has SETTLED tool rounds. Signal of a legitimate close:
+          // the <<TASK_DONE>> sentinel (its absence on a guarded model is the
+          // "stopped early" vote; max_tokens closes stay with their own 2026-09-20
+          // ruling below). Response: ONE continuation per progress stretch —
+          // the next state block carries the Turn Continuation directive — and
+          // a productive (tool-carrying) continuation re-arms it. An
+          // unproductive one falls through to the ordinary close: the model's
+          // words are on the canvas, a finished task ends exactly as before,
+          // and a chatty stop hands the turn back to the user.
+          if (stopReason !== 'max_tokens' && this.engine.opts.earlyStopGuard === true && !hasTaskDone) {
+            const canNudge = this.engine.toolRoundsThisTurn > 0
+              && this.engine.earlyStopContinues === 0
+              && this.engine.earlyStopNudgesTotal < MAX_EARLYSTOP_CONTINUATIONS
+            if (canNudge) {
+              this.engine.earlyStopContinues += 1
+              this.engine.earlyStopNudgesTotal += 1
+              this.engine.pendingEarlyStopNudge = true
+              console.warn(`[AgentEngine] early-stop guard: text-only end_turn after ${this.engine.toolRoundsThisTurn} tool round(s), no sentinel — auto-continuing (${this.engine.earlyStopNudgesTotal}/${MAX_EARLYSTOP_CONTINUATIONS})`)
+              this.engine.agentStatus = {
+                status: 'retrying',
+                message: `模型中途停止了工具调用，正在自动续跑 (${this.engine.earlyStopNudgesTotal}/${MAX_EARLYSTOP_CONTINUATIONS})…`,
+                attempt: this.engine.earlyStopNudgesTotal,
+                maxRetries: MAX_EARLYSTOP_CONTINUATIONS,
+                delay: 0
+              }
+              this.engine.notify()
+              await this.engine.continueLoop()
+              return
+            }
+          }
 
           if (stopReason === 'max_tokens') {
             await this.engine.handleMaxTokensResponse(toolUses)

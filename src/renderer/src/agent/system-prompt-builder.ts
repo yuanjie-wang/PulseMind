@@ -22,6 +22,11 @@ export interface BuildSystemPromptParams {
    *  schemas change, which invalidates the prefix anyway. Ignored on the
    *  spawned-sub-agent path — a spawn prompt owns its whole system message. */
   toolProtocols?: string
+  /** The early-stop guard's continuation directive (2026-10-08): true makes
+   *  the state block carry a `## Turn Continuation` section (second-to-last,
+   *  clock still last). Consumed by prepareLoopRequest — one request build
+   *  only, never persisted, never rendered. */
+  continuationNudge?: boolean
 }
 
 export interface BuildSystemPromptResult {
@@ -51,7 +56,7 @@ export interface BuildSystemPromptResult {
 }
 
 export async function buildSystemPrompt(params: BuildSystemPromptParams): Promise<BuildSystemPromptResult> {
-  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols } = params
+  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols, continuationNudge } = params
 
   if (spawnSystemPrompt) {
     const base = spawnSystemPromptAppendix
@@ -73,6 +78,7 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     messages,
     plan,
     summon,
+    continuationNudge,
   })
   return { systemPrompt, stateBlock }
 }
@@ -151,6 +157,7 @@ You have a local knowledge base (compiled wiki) of project documents and past co
   parts.push(ENGINEERING_WORKFLOW)
   parts.push(SESSION_STATE_NOTICE)
   parts.push(TOOL_CALL_FORMAT)
+  if (opts.earlyStopGuard) parts.push(TASK_COMPLETION_SENTINEL_SECTION)
   parts.push(COMPRESSED_TOOL_RESULTS)
   parts.push(CONTEXT_MANAGEMENT_NOTICE)
   parts.push(RENDER_REFERENCE)
@@ -193,8 +200,9 @@ async function buildStateBlock(params: {
   messages: AgentMessage[]
   plan: Plan | null
   summon?: SummonState | null
+  continuationNudge?: boolean
 }): Promise<string> {
-  const { opts, plan, summon } = params
+  const { opts, plan, summon, continuationNudge } = params
   const sections: string[] = []
 
   // Git status — OFF unless the user turned the injection on in settings, and
@@ -278,6 +286,12 @@ async function buildStateBlock(params: {
       }
     } catch { /* stats unavailable — the section just stays out */ }
   }
+
+  // Early-stop continuation directive (2026-10-08): armed by stream-runner's
+  // guard for exactly one request. Volatile by nature — present only on nudge
+  // rounds — so it sits last-but-clock: when absent, only the block tail
+  // re-bills. Never persisted, never rendered (state-block contract).
+  if (continuationNudge) sections.push(TURN_CONTINUATION_NUDGE)
 
   sections.push(buildClockSection())
 
@@ -641,6 +655,28 @@ const TOOL_CALL_FORMAT = `\
 ## Tool Call Format
 
 Only call tools via the API's structured JSON tool-call mechanism. Never emit XML tags like \`<invoke name="...">\` — such text is treated as prose and will NOT execute. Follow the tool definitions provided with this request.`
+
+/**
+ * Early-stop guard companion (2026-10-08, per-model opt-in): taught ONLY to
+ * models with LlmModelConfig.earlyStopGuard — conditional on the model, never
+ * on the enabled toolset (that fork is forbidden; a per-model fork is fine:
+ * there is no cross-model cache sharing to protect). Static bytes, so the
+ * shared-prefix contract holds for every conversation on that model. The
+ * marker itself is decoded by engine/task-sentinel.ts; spawn-tool.ts hangs
+ * the same section on sub-agent prompts of guarded models.
+ */
+export const TASK_COMPLETION_SENTINEL_SECTION = `\
+## Task Completion
+
+Doing the work takes precedence over replying. While any part of the user's request is still unfinished, do NOT end the turn — continue by calling the tools you need, request after request, until the work is done. Only when the task is fully complete, end your final reply with this exact marker on a line by itself:
+
+<<TASK_DONE>>
+
+A reply that ends without the marker while tools were used this turn may be treated as an unfinished turn and automatically continued.`
+
+const TURN_CONTINUATION_NUDGE = `\
+## Turn Continuation
+Your previous reply ended without tool calls, but this turn has already done tool work and the completion marker was absent — this may be an unfinished turn. If the task still has remaining steps, continue it NOW by calling tools. Only if it is fully complete, restate the final result briefly and end with <<TASK_DONE>> alone on the last line.`
 
 const COMPRESSED_TOOL_RESULTS = `\
 ## Compressed Tool Results

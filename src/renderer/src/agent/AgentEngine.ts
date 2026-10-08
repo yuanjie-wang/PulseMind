@@ -88,6 +88,13 @@ export interface AgentEngineOptions {
   model: string
   maxTokens: number
   contextLength?: number
+  /** Early-stop continuation guard (2026-10-08, per-model opt-in): when true,
+   *  stream-runner treats a text-only end_turn round AFTER tool activity as a
+   *  premature stop and auto-continues it once per progress stretch (the
+   *  <<TASK_DONE>> sentinel closes cleanly instead). Materialized from
+   *  LlmModelConfig.earlyStopGuard by the settings store; absent/undefined
+   *  means the guard is fully inert — the dispatch below never runs. */
+  earlyStopGuard?: boolean
   profileId?: string
   myName: string
   soul: string
@@ -289,6 +296,19 @@ export class AgentEngine implements EngineCore {
    *  prepareTurn and by any round that produced text or tool calls. */
   /** @internal */
   thinkingOnlyRetries = 0
+  // ── Early-stop continuation guard state (engine-constants.ts) ──
+  /** Tool rounds settled this turn — the guard's task-in-flight evidence. */
+  /** @internal */
+  toolRoundsThisTurn = 0
+  /** Nudges since the last productive (tool-carrying) continuation. */
+  /** @internal */
+  earlyStopContinues = 0
+  /** Total nudges this turn — MAX_EARLYSTOP_CONTINUATIONS's hard cap. */
+  /** @internal */
+  earlyStopNudgesTotal = 0
+  /** Armed by the guard, consumed by prepareLoopRequest's state block. */
+  /** @internal */
+  pendingEarlyStopNudge = false
   /** Provider context-overflow state (0.4.1 fix). The limit is parsed off the
    *  provider's own rejection — the one ground truth the estimates answer to —
    *  and prepareLoopRequest answers it with compactor.emergencyTruncate on the
@@ -427,6 +447,9 @@ export class AgentEngine implements EngineCore {
    *  another tick inside addToolResult, that would double-count the round. */
   recordToolBatchComplete(): void {
     this.compactTracking.toolRoundsSinceDrop++
+    // The early-stop guard's task-in-flight evidence (its only reader is
+    // stream-runner's dispatch, next request).
+    this.toolRoundsThisTurn++
   }
 
   /** Current history-summary cache (persisted with the conversation). */
@@ -831,6 +854,12 @@ export class AgentEngine implements EngineCore {
     // A new send gets a fresh thinking-only rescue too: even if the previous
     // turn exhausted its re-issue, the model gets one more sampling chance.
     this.thinkingOnlyRetries = 0
+    // Fresh early-stop guard budget for the same reason: the counters and the
+    // evidence counter belong to the turn that opened them.
+    this.toolRoundsThisTurn = 0
+    this.earlyStopContinues = 0
+    this.earlyStopNudgesTotal = 0
+    this.pendingEarlyStopNudge = false
     // Same for the stream idle-timeout budget. The cancel path already resets
     // it in the runner's catch (stream-runner, unconditional before the
     // isCancel return), so this is DEFENSE, not a bug fix: the "a new turn
@@ -1096,6 +1125,11 @@ export class AgentEngine implements EngineCore {
     // is sent as the FINAL message — the one position where a change costs only
     // itself. Measured on deepseek-flash: marking a tool description drops the
     // hit from 1280 to 384; marking the system message drops it to 0.
+    // The early-stop guard's continuation directive rides THIS request's state
+    // block (final message — never persisted, never rendered) and is consumed
+    // by the build: a stream-idle retry of the nudge round rebuilds without it.
+    const continuationNudge = this.pendingEarlyStopNudge
+    this.pendingEarlyStopNudge = false
     const spResult = await buildSystemPrompt({
       opts,
       spawnSystemPrompt: this.spawnSystemPrompt,
@@ -1104,6 +1138,7 @@ export class AgentEngine implements EngineCore {
       plan: this.planManager.plan,
       summon: this.summon,
       toolProtocols,
+      continuationNudge,
     })
     const systemPrompt = spResult.systemPrompt
     // The state block is rebuilt per request (never persisted, never rendered) so

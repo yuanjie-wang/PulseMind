@@ -378,6 +378,8 @@ const zh = {
     model: '模型',
     maxTokens: '最大输出 Token',
     contextLength: '上下文长度',
+    earlyStopGuard: '执行结果检测',
+    earlyStopGuardHint: '弱模型专用：任务执行中模型停止调用工具时自动续跑；完成时以 <<TASK_DONE>> 标记收官',
     apiKey: 'API 密钥',
     saveProfile: '保存配置',
     saved: '已保存',

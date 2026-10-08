@@ -21,6 +21,11 @@ export interface LlmModelConfig {
   name?: string
   maxTokens: number
   contextLength?: number
+  /** 早停续跑守卫（2026-10-08，按模型 opt-in）：开启后引擎把「本回合已有工具
+   *  活动、回合却以纯文本 end_turn 收场、且无 <<TASK_DONE>> 哨兵」判为早停，
+   *  自动续跑一次/进展段（哨兵行由冻结核心的任务完成节教授，引擎侧剥离）。
+   *  缺省 undefined = 守卫完全惰性，强模型零影响。 */
+  earlyStopGuard?: boolean
 }
 
 /** 供应商（连接层）：baseURL / apiKey / headers 被名下所有模型共享。 */
@@ -54,6 +59,8 @@ export interface LlmProfile {
   model: string
   maxTokens: number
   contextLength?: number
+  /** 物化自所属供应商名下模型条目的 earlyStopGuard。 */
+  earlyStopGuard?: boolean
   apiKey?: string
   headers?: Record<string, string>
 }

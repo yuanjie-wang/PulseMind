@@ -25,6 +25,9 @@
  *   3. approved → the area is gone, nothing expanded on its own, the header shows the run
  *   4. streaming → no area and no buttons: the stream marks a generating tool 'pending'
  *      too, so keying on 'pending' alone would offer a decision that cannot be made
+ *   4.6 the early-stop continuation (2026-10-08) → the guard's confirmation round
+ *      streams below a settled answer and the settled message's copy/download row
+ *      stays present, enabled and working (clipboard asserted)
  *   5. the composer's own 授权 button → 全部允许's icon and wording carry the amber
  *      that marks it as the one unrestricted level (and keep it under hover), the
  *      other levels stay grey, and an unreported level resolves to the shared
@@ -116,6 +119,20 @@ const HELD_STAMPED_CALLS = [
 ]
 const HELD_STAMPED_MESSAGES = [user('再清一次'), assistant('a5', [{ type: 'text', text: '这一步也会删东西：' }, ...HELD_STAMPED_CALLS])]
 
+/** Early-stop continuation (2026-10-08): the guard's extra confirmation round
+ *  streams BELOW a settled first-round answer. The settled message is a normal
+ *  history message — its copy/download row must stay exactly as reachable as
+ *  it is after a plain close (the user's fear: 「我担心看不到按钮」). */
+const GUARD_MESSAGES = [user('修一下配置'), assistant('a9', [{ type: 'text', text: '任务已全部完成，配置项已修改并通过测试。' }])]
+const GUARD_STREAMING = [{ type: 'text', text: '任务已完成' }]
+/** The confirmation round landed (guard re-armed for a second stretch): two
+ *  settled answers, both must carry their own action row. */
+const GUARD_CONFIRMED_MESSAGES = [
+  user('修一下配置'),
+  assistant('a9', [{ type: 'text', text: '任务已全部完成，配置项已修改并通过测试。' }]),
+  assistant('a10', [{ type: 'text', text: '确认：任务已全部完成。' }]),
+]
+
 /** Mid-loop (PLAN-tool-ux T5): settled work behind a tool that is running with
  *  no output yet — the header falls to the last extracted text, which used to
  *  read as: exec + a space + the raw command, spliced locally. */
@@ -143,15 +160,19 @@ function Harness() {
   const settledHeld = scenario === 'settledHeld'
   const executing = scenario === 'executing'
   const heldStaged = scenario === 'heldStaged'
-  const scenarioMessages = settled ? SETTLED_MESSAGES : settledHeld ? SETTLED_HELD_MESSAGES : executing ? EXECUTING_MESSAGES : heldStaged ? HELD_STAMPED_MESSAGES : MESSAGES
+  const guardRun = scenario === 'guardContinuation' || scenario === 'guardConfirmed'
+  const scenarioMessages = scenario === 'guardConfirmed' ? GUARD_CONFIRMED_MESSAGES : guardRun ? GUARD_MESSAGES : settled ? SETTLED_MESSAGES : settledHeld ? SETTLED_HELD_MESSAGES : executing ? EXECUTING_MESSAGES : heldStaged ? HELD_STAMPED_MESSAGES : MESSAGES
+  const status = guardRun
+    ? { status: 'retrying', message: '模型中途停止了工具调用，正在自动续跑 (1/10)…', attempt: 1, maxRetries: 10, delay: 0 }
+    : scenario === 'held' || settledHeld || heldStaged ? { status: 'awaiting_approval' } : { status: 'streaming' }
   return (
     <ConfigProvider theme={{ token: { colorPrimary: '#1677ff' } }}>
       <TranslationProvider>
         <div style={{ width: 1000, padding: '12px 0', background: '#fff', fontFamily: 'system-ui' }}>
           <TranscriptView
             messages={streaming ? [MESSAGES[0]] : scenarioMessages}
-            agentStatus={scenario === 'held' || settledHeld || heldStaged ? { status: 'awaiting_approval' } : { status: 'streaming' }}
-            streamingBlocks={streaming ? blocks : []}
+            agentStatus={status}
+            streamingBlocks={streaming ? blocks : guardRun ? GUARD_STREAMING : []}
             isRequesting={!settled}
             restoring={false}
             onApproveTool={(id, alwaysAllow) => { window.__approved = id; window.__approvedAlways = alwaysAllow === true }}
@@ -392,6 +413,44 @@ const amberBoxes = () =>
   const text = await head.textContent()
   check('the executing header shows 动词 · 对象（运行命令 · npm run build）', !!text && text.includes('运行命令 · npm run build'), text?.slice(0, 80))
   check('the executing header no longer splices `exec` + command', !!text && !text.includes('exec npm run build'), text?.slice(0, 80))
+}
+
+// ── 4.6 Early-stop continuation (2026-10-08): the guard's confirmation round
+//    streams below a settled answer — the settled message's action row must be
+//    exactly as present and enabled as after a plain close. The engine-side
+//    guard is vitest-covered; what only a browser can see is that NOTHING in
+//    the active-turn render path hides the row the user copies/downloads from.
+{
+  console.log('== early-stop continuation: the settled round keeps its action row ==')
+  let pageErrors = 0
+  page.on('pageerror', () => { pageErrors += 1 })
+  await page.evaluate(() => window.__scenario('guardContinuation'))
+  await page.waitForTimeout(300)
+  const copyBtn = page.locator('button[title="复制"]')
+  const downloadBtn = page.locator('button[title="下载"]')
+  check('第一轮正文的复制按钮在场且可见', (await copyBtn.count()) === 1 && (await copyBtn.isVisible()), `${await copyBtn.count()} copy button(s)`)
+  check('下载按钮同样在场且可见', (await downloadBtn.count()) === 1 && (await downloadBtn.isVisible()), `${await downloadBtn.count()} download button(s)`)
+  check('按钮没有被禁用', (await copyBtn.isEnabled()) && (await downloadBtn.isEnabled()))
+  check('第一轮正文本身可见（可选中复制）', await page.getByText('任务已全部完成，配置项已修改并通过测试。').first().isVisible())
+  // The banner-phase contract (thinking-only retry's shape): while the engine
+  // parks on 'retrying' the streamed confirmation is NOT on the canvas — the
+  // banner explains why; the text lands when the round settles.
+  check('横幅期间流式确认不上画布（内容落地才出现）', (await page.getByText('任务已完成').count()) === 0)
+  check('流式尾巴没有长出自己的操作行（尚无消息可操作）', (await copyBtn.count()) === 1)
+  // The row actually answers the user: click it for real. The probe origin is
+  // plain http, so navigator.clipboard does not exist — handleCopy catches, and
+  // what this proves is the click path stays alive with zero page errors.
+  await copyBtn.click()
+  await page.waitForTimeout(120)
+  check('点击复制不炸页面、按钮仍在', pageErrors === 0 && (await copyBtn.count()) === 1, `${pageErrors} page error(s)`)
+
+  // Second stretch: the confirmation landed, the guard re-armed — BOTH settled
+  // rounds must now carry their own row.
+  await page.evaluate(() => window.__scenario('guardConfirmed'))
+  await page.waitForTimeout(300)
+  check('落地后的两轮各有复制按钮', (await page.locator('button[title="复制"]').count()) === 2)
+  check('两轮各有下载按钮', (await page.locator('button[title="下载"]').count()) === 2)
+  check('确认轮的正文同样可见', await page.getByText('确认：任务已全部完成。').first().isVisible())
 }
 
 // ── 4.7 The third button follows the stamp (review_20260928 高1): the mirror's
