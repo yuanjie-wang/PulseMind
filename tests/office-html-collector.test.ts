@@ -34,6 +34,20 @@ const at = (doc: Document, selector: string, index = 0): Element => {
 const wrap = (content: string) =>
   `<!doctype html><html><head><meta charset="utf-8"></head><body><div class="slide" style="width:960px;height:540px">${content}</div></body></html>`
 
+/** Fake range rects for the ink extent: rectsOf() runs document.createRange()
+ *  per node, so the stub wraps it and answers from a node-keyed map. */
+function stubRangeRects(doc: Document, inkByNode: Map<Node, Array<Record<string, number>>>): void {
+  const orig = doc.createRange.bind(doc)
+  ;(doc as unknown as { createRange: () => Range }).createRange = () => {
+    const r = orig()
+    let current: Node | null = null
+    const origSelect = r.selectNode.bind(r)
+    r.selectNode = (n: Node) => { current = n; return origSelect(n) }
+    ;(r as unknown as { getClientRects: () => unknown }).getClientRects = () => inkByNode.get(current!) ?? []
+    return r
+  }
+}
+
 describe('collectDeckLayout (jsdom, stubbed rects)', () => {
   it('collects one fact-set per .slide in document order', () => {
     mount(`<div class="slide" style="width:960px;height:540px"></div><div class="slide" style="width:960px;height:540px"></div>`, (doc) => {
@@ -446,9 +460,179 @@ describe('collectDeckLayout (jsdom, stubbed rects)', () => {
     expect(result.errors.map((e) => e.message).join(' ')).not.toMatch(/重叠/)
   })
 
+  // The overlap checks probe the ink extent (range rects) with a fallback to
+  // the block box. jsdom has no layout, so these two stub createRange to fake
+  // the glyphs — the shapes the OLD clamped/fallback behavior got wrong.
+
+  it('text-vs-text probes the ink: a short-glyphed wide title does not collide across its empty half', () => {
+    const doc = mount(wrap(`<p style="position:absolute">短标题</p><p style="position:absolute">右侧说明文字</p>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p', 0), { x: 64, y: 100, w: 832, h: 30 }) // block box reaches x:896
+      m.set(at(doc, 'p', 1), { x: 600, y: 104, w: 200, h: 24 })
+      return m
+    })
+    const inkByNode = new Map<Node, Array<Record<string, number>>>()
+    doc.querySelectorAll('p').forEach((p, i) => {
+      inkByNode.set(p.firstChild as Node, [i === 0
+        ? { left: 64, top: 100, right: 264, bottom: 124, width: 200, height: 24 } // glyphs end at x:264
+        : { left: 600, top: 104, right: 800, bottom: 128, width: 200, height: 24 }])
+    })
+    stubRangeRects(doc, inkByNode)
+    const result = collectDeckLayout()
+    // the BLOCK boxes overlap (600 < 896) — the block-rect check refused this
+    expect(result.errors.map((e) => e.message).join(' ')).not.toMatch(/文字区域重叠/)
+  })
+
+  it('ink spilling past a fixed-height box is visible: the overlap is refused', () => {
+    const doc = mount(wrap(`<p style="position:absolute">溢出文本</p><p style="position:absolute">紧贴盒底的文本行</p>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p', 0), { x: 64, y: 100, w: 400, h: 30 }) // box ends at y:130
+      m.set(at(doc, 'p', 1), { x: 64, y: 140, w: 400, h: 24 })
+      return m
+    })
+    const inkByNode = new Map<Node, Array<Record<string, number>>>()
+    doc.querySelectorAll('p').forEach((p, i) => {
+      inkByNode.set(p.firstChild as Node, [i === 0
+        ? { left: 64, top: 100, right: 464, bottom: 190, width: 400, height: 90 } // glyphs reach y:190
+        : { left: 64, top: 140, right: 464, bottom: 164, width: 400, height: 24 }])
+    })
+    stubRangeRects(doc, inkByNode)
+    const result = collectDeckLayout()
+    // glyphs 100–190 vs 140–164: a real 24px collision the clamped ink (100–130) missed
+    expect(result.errors.map((e) => e.message).join(' ')).toMatch(/文字区域重叠/)
+  })
+
+  it('a box painted AFTER text that crosses it refuses — the glyphs would be buried', () => {
+    // the wild page-10/15 shape: an absolute lead whose bottom slips under a
+    // card row that follows it in the DOM
+    const doc = mount(
+      wrap(
+        `<p style="position:absolute; font-size:18px">把模型选择权还给用户的说明行</p>` +
+          `<div style="position:absolute; background:#F2ECE1"></div>`,
+      ),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        m.set(at(doc, 'p'), { x: 64, y: 162, w: 832, h: 32 })
+        m.set(at(doc, '.slide > div'), { x: 64, y: 170, w: 832, h: 300 })
+        return m
+      })
+    void doc
+    const result = collectDeckLayout()
+    const msg = result.errors.map((e) => e.message).join(' ')
+    expect(msg).toMatch(/盖掉/)
+    expect(msg).toMatch(/把模型选择权还给用户的说明行/)
+    expect(result.errors[0].page).toBe(1)
+  })
+
+  it('the mask/card device stays legal: text over an EARLIER surface, and text inside its card', () => {
+    const doc = mount(
+      wrap(
+        `<div style="position:absolute; background:rgba(0,0,0,0.45)"></div>` +
+          `<h1 style="position:absolute; width:300px; font-size:44px">反白巨标</h1>` +
+          `<div style="position:absolute; background:#F2ECE1; width:300px; height:200px"><p style="font-size:15px">卡内文字</p></div>`,
+      ),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        m.set(at(doc, '.slide > div', 0), { x: 0, y: 0, w: 960, h: 540 })
+        m.set(at(doc, 'h1'), { x: 64, y: 200, w: 300, h: 52 }) // glyphs end at x:364, clear of the card
+        m.set(at(doc, '.slide > div', 1), { x: 400, y: 120, w: 300, h: 200 })
+        m.set(at(doc, 'p'), { x: 420, y: 140, w: 260, h: 24 })
+        return m
+      })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+  })
+
   it('reports zero slides with the .slide hint when none exist', () => {
     mount('<div class="not-slide"></div>')
     const result = collectDeckLayout()
     expect(result.errors.map((e) => e.message).join(' ')).toMatch(/没有找到任何 \.slide/)
+  })
+
+  it('visibility:hidden content is skipped — leaf blocks, inline spans, counted once', () => {
+    const doc = mount(
+      wrap(
+        `<p style="visibility:hidden">隐身标题</p>` +
+          `<p style="font-size:20px">可见<span style="visibility:hidden">占位</span>文本</p>`,
+      ),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        m.set(at(doc, 'p', 0), { x: 10, y: 10, w: 200, h: 24 })
+        m.set(at(doc, 'p', 1), { x: 10, y: 44, w: 200, h: 24 })
+        return m
+      })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const texts = result.slides[0].blocks.filter((b) => b.kind === 'text')
+    expect(texts).toHaveLength(1)
+    if (texts[0].kind !== 'text') return
+    expect(texts[0].runs.map((r) => r.text).join('')).toBe('可见文本')
+    // 隐身的 p（容器层拦下）+ 隐身的 span（leaf 文本走 buildRuns 拦下）各计一次
+    expect(result.degradations.join('；')).toMatch(/2 处 visibility:hidden/)
+  })
+
+  it('refuses overflow-clipped text naming the clipping box, once per clipper', () => {
+    const doc = mount(wrap(`<div style="overflow:hidden;height:100px"><p>第一段</p><p>第二段</p></div>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, '.slide > div'), { x: 64, y: 80, w: 400, h: 100 })
+      m.set(at(doc, 'p', 0), { x: 64, y: 80, w: 400, h: 24 })
+      m.set(at(doc, 'p', 1), { x: 64, y: 104, w: 400, h: 24 })
+      return m
+    })
+    void doc
+    // jsdom has no layout: the overflow itself is a stubbed scroll metric
+    const box = at(doc, '.slide > div') as HTMLElement
+    Object.defineProperty(box, 'scrollHeight', { value: 300 })
+    Object.defineProperty(box, 'clientHeight', { value: 100 })
+    Object.defineProperty(box, 'scrollWidth', { value: 400 })
+    Object.defineProperty(box, 'clientWidth', { value: 400 })
+    const result = collectDeckLayout()
+    expect(result.errors.filter((e) => /overflow 裁剪/.test(e.message))).toHaveLength(1)
+    const msg = result.errors.map((e) => e.message).join(' ')
+    expect(msg).toMatch(/装不下/)
+    expect(msg).toMatch(/内容 400×300px，盒子 400×100px/)
+    expect(result.errors[0].page).toBe(1)
+  })
+
+  it('pre runs carry mono even though the UA monospace stack misses the token face', () => {
+    const doc = mount(wrap(`<pre>const pulse = 1</pre><p style="font-size:18px">正文</p>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'pre'), { x: 64, y: 80, w: 400, h: 60 })
+      m.set(at(doc, 'p'), { x: 64, y: 150, w: 400, h: 24 })
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    const [pre, p] = result.slides[0].blocks
+    if (pre.kind !== 'text' || p.kind !== 'text') return
+    expect(pre.runs[0].mono).toBe(true)
+    expect(p.runs[0].mono).toBeUndefined()
+  })
+
+  it('links degrade with a per-slide note — text stays, href cannot enter pptx', () => {
+    const doc = mount(wrap(`<p><a href="a.md">附录甲</a>与<a href="b.md">附录乙</a></p>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, 'p'), { x: 64, y: 80, w: 400, h: 24 })
+      return m
+    })
+    void doc
+    const result = collectDeckLayout()
+    expect(result.degradations.join('；')).toMatch(/第 1 页：2 个链接仅保留文字/)
+  })
+
+  it('an empty .slide degrades by name instead of silently exporting a blank page', () => {
+    mount(`<div class="slide" style="width:960px;height:540px"></div><div class="slide" style="width:960px;height:540px"><p>有内容</p></div>`, (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, '.slide', 1), { x: 0, y: 560, w: 960, h: 540 })
+      m.set(at(doc, 'p'), { x: 10, y: 570, w: 100, h: 20 })
+      return m
+    })
+    const result = collectDeckLayout()
+    const msg = result.degradations.join('；')
+    expect(msg).toMatch(/第 1 页没有任何内容块/)
+    expect(msg).not.toMatch(/第 2 页没有任何内容块/)
   })
 })

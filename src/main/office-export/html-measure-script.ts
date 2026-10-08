@@ -60,6 +60,19 @@ export function collectDeckLayout(): CollectResult {
     const own = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 18)
     return own ? `<${tag}>「${own}」` : `<${tag}>`
   }
+  // for painted SURFACES (boxes/images): textContent would quote the children's
+  // text a card container carries — the refusal names the surface, not its content
+  const descSurface = (el: Element): string => {
+    const cls = typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/).join('.') : ''
+    const own = Array.from(el.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => n.nodeValue || '')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 18)
+    return own ? `<${el.tagName.toLowerCase()}${cls}>「${own}」` : `<${el.tagName.toLowerCase()}${cls}>`
+  }
 
   const px = (v: string | null | undefined): number => (v ? parseFloat(v) || 0 : 0)
 
@@ -121,6 +134,15 @@ export function collectDeckLayout(): CollectResult {
     const oy = sr.top
     const blocks: CollectResult['slides'][number]['blocks'] = []
     let inlineGroup: Node[] = []
+    // visibility:hidden elements skipped during the walk — summarized as one
+    // degradation per slide so the exclusion is never silent. The leaf path
+    // (buildRuns) and the inline-group path (flushInline) re-walk the same
+    // nodes, so the set keeps a skipped element from counting twice.
+    let hiddenSkips = 0
+    const hiddenCounted = new Set<Element>()
+    const noteHidden = (el: Element): void => {
+      if (!hiddenCounted.has(el)) { hiddenCounted.add(el); hiddenSkips++ }
+    }
 
     const bounds = (b: { x: number; y: number; w: number; h: number }, what: string) => {
       if (b.x < -TOL || b.y < -TOL || b.x + b.w > 960 + TOL || b.y + b.h > 540 + TOL) {
@@ -129,6 +151,25 @@ export function collectDeckLayout(): CollectResult {
           message: `${what} 超出页面（x:${Math.round(b.x)} y:${Math.round(b.y)} 宽:${Math.round(b.w)} 高:${Math.round(b.h)}）——960×540 的画布装不下就是装不下，缩小或拆页。`,
         })
       }
+    }
+
+    // overflow clipping: the browser paints a clipped box, a pptx text box has
+    // no clip — the hidden part would appear IN FULL in the deck. Refuse when
+    // a text owner sits inside an overflow-clipped ancestor whose content
+    // really overflows (scroll > client). .slide itself is exempt: its clip is
+    // exactly what the bounds check above polices, and content inside the
+    // 960×540 box is never clipped by it. Reported once per clipping ancestor.
+    const CLIP_TOL = 2 // px of layout rounding before the overflow is real
+    const clippedReported = new Set<HTMLElement>()
+    const overflowClipper = (el: HTMLElement): HTMLElement | null => {
+      for (let a = el.parentElement; a && a !== slideEl; a = a.parentElement) {
+        const c = window.getComputedStyle(a)
+        const ox = c.overflowX || c.overflow || 'visible'
+        const oy = c.overflowY || c.overflow || 'visible'
+        if (ox !== 'hidden' && ox !== 'clip' && oy !== 'hidden' && oy !== 'clip') continue
+        if (a.scrollHeight > a.clientHeight + CLIP_TOL || a.scrollWidth > a.clientWidth + CLIP_TOL) return a
+      }
+      return null
     }
 
     // ── color/decoration readers for containers ──
@@ -224,7 +265,7 @@ export function collectDeckLayout(): CollectResult {
     const buildRuns = (nodes: Node[], fallback: HTMLElement): LayoutRun[] => {
       const runs: LayoutRun[] = []
       let pendingNewlines = 0
-      const pushText = (text: string, styleOwner: Element | null) => {
+      const pushText = (text: string, styleOwner: Element | null, inCode: boolean) => {
         const c = window.getComputedStyle(styleOwner || fallback)
         const col = readColor(c.color)
         // OOXML runs carry no alpha on color — text keeps the named refusal
@@ -236,7 +277,10 @@ export function collectDeckLayout(): CollectResult {
           })
         }
         const family = c.fontFamily || ''
-        const isMono = !!monoFace && (family.indexOf(monoFace) >= 0 || /--pm-font-mono/.test(family))
+        // code/pre are mono by intent: their UA stack is a generic `monospace`
+        // that never contains the token face, so the computed-style check
+        // alone would silently drop the one signal <code> exists for
+        const isMono = inCode || (!!monoFace && (family.indexOf(monoFace) >= 0 || /--pm-font-mono/.test(family)))
         // letter-spacing: computed px ('normal' parses to 0) — one of the
         // strongest typographic signals (kickers, tracked numerals)
         const ls = px(c.letterSpacing)
@@ -258,18 +302,27 @@ export function collectDeckLayout(): CollectResult {
           && !!last.mono === !!run.mono && (last.charSpacingPx ?? 0) === (run.charSpacingPx ?? 0)) last.text += run.text
         else runs.push(run)
       }
-      const walk = (node: Node) => {
+      const walk = (node: Node, inCode: boolean) => {
         if (node.nodeType === Node.TEXT_NODE) {
           const t = (node.nodeValue || '').replace(/[\t\n\r\f ]+/g, ' ')
-          if (t) pushText(t, node.parentElement)
+          if (t) pushText(t, node.parentElement, inCode)
           return
         }
         if (node.nodeType !== Node.ELEMENT_NODE) return
         const el = node as HTMLElement
         if (el.tagName === 'BR') { pendingNewlines++; return }
-        for (const child of Array.from(el.childNodes)) walk(child)
+        // a leaf's own kids are walked HERE, so invisible inline content (the
+        // classic hidden-placeholder span) is gated at the run level
+        const ec = window.getComputedStyle(el)
+        if (ec.display === 'none') return
+        if (ec.visibility === 'hidden') { noteHidden(el); return }
+        const next = inCode || el.tagName === 'CODE' || el.tagName === 'PRE'
+        for (const child of Array.from(el.childNodes)) walk(child, next)
       }
-      for (const n of nodes) walk(n)
+      // the leaf case: the OWNER is the <pre>/<code> and nodes are its kids —
+      // the walk above only sees the tag on the way DOWN, never at entry
+      const startInCode = fallback.tagName === 'CODE' || fallback.tagName === 'PRE'
+      for (const n of nodes) walk(n, startInCode)
       // trim the block's leading/trailing whitespace and stray edge newlines
       const firstRun = runs[0]
       if (firstRun) firstRun.text = firstRun.text.replace(/^[\n ]+/, '')
@@ -288,11 +341,26 @@ export function collectDeckLayout(): CollectResult {
      *  shipped; boxes/images stay exempt because masks and cards are design
      *  devices) — so they land in surfaceRects and the same tolerance check
      *  refuses text-over-table/chart. */
-    const textRects: Array<{ x: number; y: number; w: number; h: number; label: string; ink?: { x: number; y: number; w: number; h: number } }> = []
+    const textRects: Array<{ x: number; y: number; w: number; h: number; label: string; order: number; ink?: { x: number; y: number; w: number; h: number } }> = []
     const surfaceRects: Array<{ x: number; y: number; w: number; h: number; label: string; what: '表格' | '图表' }> = []
+    // box/image blocks with their PAINT order — a surface drawn AFTER the text
+    // buries its glyphs (the wild failure: an absolute lead whose bottom edge
+    // slipped under a card row that follows it in the DOM); text over an
+    // EARLIER surface is the mask/card device and stays legal. The order key
+    // mirrors the emitter's stable partition: in-flow first, positioned above,
+    // ties keep array order.
+    const paintedRects: Array<{ x: number; y: number; w: number; h: number; label: string; kind: 'box' | 'image'; order: number }> = []
     const emitText = (owner: HTMLElement, rect: { x: number; y: number; w: number; h: number }, nodes: Node[], positioned: boolean, bullet?: { level: number; ordered: boolean }) => {
       const runs = buildRuns(nodes, owner)
       if (runs.length === 0) return
+      const clipper = overflowClipper(owner)
+      if (clipper && !clippedReported.has(clipper)) {
+        clippedReported.add(clipper)
+        errors.push({
+          page,
+          message: `${desc(clipper)} 设了 overflow 裁剪且文字装不下（内容 ${clipper.scrollWidth}×${clipper.scrollHeight}px，盒子 ${clipper.clientWidth}×${clipper.clientHeight}px）——预览里被裁掉的文字在 pptx 里会完整显示；去掉裁剪让超界被真实检测，或缩短文字、加高盒子、拆页。`,
+        })
+      }
       const c = window.getComputedStyle(owner)
       const align = c.textAlign === 'center' || c.textAlign === 'right' || c.textAlign === 'justify' ? c.textAlign : 'left'
       const block: CollectResult['slides'][number]['blocks'][number] = {
@@ -307,21 +375,18 @@ export function collectDeckLayout(): CollectResult {
       blocks.push(block)
       bounds(block, desc(owner))
       if (rect.w > 1 && rect.h > 1) {
-        // ink extent for the surface check: the union of the nodes' own line
-        // boxes — a wide left-aligned title's GLYPHS often end far short of
-        // its block box, and only the glyphs can collide with a table/chart.
-        // Range rects need layout (jsdom yields none) → fall back to the
-        // block rect, clamped into it so the ink check stays conservative.
+        // ink extent: the union of the nodes' own line boxes, used AS-IS by
+        // every overlap check — never clamped into the block rect. Clamping
+        // made glyphs that spill past the box invisible to the checks (a
+        // fixed-height leaf with visible overflow escaped both); the ink
+        // itself already shrinks a wide-but-short title, which is the
+        // accuracy it exists for. Range rects need layout (jsdom yields
+        // none) → no ink → the checks fall back to the block rect.
         const inkViewport = unionRect(nodes.flatMap((n) => rectsOf(n)).filter((r) => r.width > 0 || r.height > 0))
-        let check = { x: block.x, y: block.y, w: rect.w, h: rect.h }
-        if (inkViewport.w > 0.5 && inkViewport.h > 0.5) {
-          const ix = Math.max(block.x, inkViewport.x - ox)
-          const iy = Math.max(block.y, inkViewport.y - oy)
-          const ix2 = Math.min(block.x + block.w, inkViewport.x + inkViewport.w - ox)
-          const iy2 = Math.min(block.y + block.h, inkViewport.y + inkViewport.h - oy)
-          if (ix2 - ix > 0.5 && iy2 - iy > 0.5) check = { x: ix, y: iy, w: ix2 - ix, h: iy2 - iy }
-        }
-        textRects.push({ x: block.x, y: block.y, w: rect.w, h: rect.h, label: desc(owner), ink: check })
+        const ink = inkViewport.w > 0.5 && inkViewport.h > 0.5
+          ? { x: inkViewport.x - ox, y: inkViewport.y - oy, w: inkViewport.w, h: inkViewport.h }
+          : undefined
+        textRects.push({ x: block.x, y: block.y, w: rect.w, h: rect.h, label: desc(owner), order: (block.positioned ? 1 : 0) * 1e6 + blocks.length - 1, ...(ink ? { ink } : {}) })
       }
     }
 
@@ -371,6 +436,7 @@ export function collectDeckLayout(): CollectResult {
       }
       blocks.push(block)
       bounds(block, desc(el))
+      paintedRects.push({ x: block.x, y: block.y, w: block.w, h: block.h, label: descSurface(el), kind: 'image', order: (block.positioned ? 1 : 0) * 1e6 + blocks.length - 1 })
     }
 
     const emitTable = (el: HTMLTableElement, positioned: boolean) => {
@@ -461,6 +527,11 @@ export function collectDeckLayout(): CollectResult {
         }
         if (node.nodeType !== Node.ELEMENT_NODE) return
         const el = node as HTMLElement
+        // hidden subtrees stay out of the batch (their text is counted by
+        // buildRuns; this gate is for an IMG buried in a hidden span)
+        const ec = window.getComputedStyle(el)
+        if (ec.display === 'none') return
+        if (ec.visibility === 'hidden') { noteHidden(el); return }
         if (el.tagName === 'IMG') { emitBatch(batch, rects); batch = []; rects = []; emitImage(el, positioned); return }
         if (el.tagName === 'BR') { batch.push(el); rects.push(...rectsOf(el)); return }
         for (const child of Array.from(el.childNodes)) walk(child)
@@ -472,6 +543,14 @@ export function collectDeckLayout(): CollectResult {
     const visit = (el: HTMLElement, listDepth: number, listOrdered: boolean, positioned: boolean) => {
       const c = window.getComputedStyle(el)
       if (c.display === 'none') return
+      if (c.visibility === 'hidden') {
+        // invisible content must not reach the pptx (the preview does not
+        // paint it either). visibility is per-element reversible, so a
+        // `visible` child inside a hidden subtree is intentionally out of
+        // scope — a rare construct, and this is the safe side of it.
+        noteHidden(el)
+        return
+      }
       if (!ALLOWED_TAGS.has(el.tagName)) {
         errors.push({ page, message: `不允许的元素 <${el.tagName.toLowerCase()}>——设计路线的白名单见 references/pptx.md（图表用 data-chart 标注，装饰用色块与图片）。` })
         return
@@ -525,6 +604,7 @@ export function collectDeckLayout(): CollectResult {
           }
           blocks.push(box)
           bounds(box, desc(el))
+          paintedRects.push({ x: box.x, y: box.y, w: box.w, h: box.h, label: descSurface(el), kind: 'box', order: (box.positioned ? 1 : 0) * 1e6 + blocks.length - 1 })
         }
         if (hasText) emitText(el, contentRect(el), kids, selfPositioned, el.tagName === 'LI' ? { level: listDepth, ordered: listOrdered } : undefined)
         return
@@ -541,13 +621,18 @@ export function collectDeckLayout(): CollectResult {
           }
           blocks.push(box)
           bounds(box, desc(el))
+          paintedRects.push({ x: box.x, y: box.y, w: box.w, h: box.h, label: descSurface(el), kind: 'box', order: (box.positioned ? 1 : 0) * 1e6 + blocks.length - 1 })
         }
       }
 
       for (const node of kids) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           const k = node as HTMLElement
-          if (window.getComputedStyle(k).display === 'none') continue
+          const kc = window.getComputedStyle(k)
+          if (kc.display === 'none') continue
+          // hidden inline elements must not reach the inline group either —
+          // they would otherwise surface through it with no check of their own
+          if (kc.visibility === 'hidden') { noteHidden(k); continue }
           if (blockish(k)) {
             flushInline(el, selfPositioned)
             const childList = k.tagName === 'UL' || k.tagName === 'OL'
@@ -587,20 +672,52 @@ export function collectDeckLayout(): CollectResult {
         message: `${a.label} 与 ${b.label}的${what}重叠（相交 ${Math.round(ix)}×${Math.round(iy)}px）——${advice}`,
       })
     }
+    // both checks probe the INK extent (the glyphs), falling back to the
+    // block box when the layout gave no range rects; label rides either way
+    // — the refusal names its elements
+    const probeRect = (t: { x: number; y: number; w: number; h: number; label: string; ink?: { x: number; y: number; w: number; h: number } }): { x: number; y: number; w: number; h: number; label: string } =>
+      t.ink ? { ...t.ink, label: t.label } : { x: t.x, y: t.y, w: t.w, h: t.h, label: t.label }
     for (let i = 0; i < textRects.length; i++) {
       for (let j = i + 1; j < textRects.length; j++) {
-        refuseOverlap(textRects[i], textRects[j], '文字区域', '绝对定位要按实际渲染高度排：缩短上方文本、下移下方元素，或拉开间距。')
+        refuseOverlap(probeRect(textRects[i]), probeRect(textRects[j]), '文字区域', '绝对定位要按实际渲染高度排：缩短上方文本、下移下方元素，或拉开间距。')
       }
     }
     for (const t of textRects) {
-      // the ink extent (glyphs), not the block box — a wide title's empty
-      // right half must not refuse a chart sitting beside it
-      const tRect: { x: number; y: number; w: number; h: number; label: string } = { x: t.x, y: t.y, w: t.w, h: t.h, label: t.label, ...(t.ink ?? {}) }
+      const tRect = probeRect(t)
       for (const s of surfaceRects) {
         refuseOverlap(tRect, s, `${s.what}区域`, s.what === '表格'
           ? '表格是实心内容面——标题/说明放表格上方或下方（留出一行高），不要压在表格上。'
           : '图表自带图例与坐标标注——外部文字放图表框外，或缩小图表框把空间让出来。')
       }
+    }
+    // text buried under a LATER-painted surface: text over an earlier box/image
+    // is the mask/card device (legal), but a surface drawn after the text paints
+    // on top of the glyphs — same tolerances as the checks above
+    for (const t of textRects) {
+      const tRect = probeRect(t)
+      for (const p of paintedRects) {
+        if (p.order <= t.order) continue
+        const ix = Math.min(tRect.x + tRect.w, p.x + p.w) - Math.max(tRect.x, p.x)
+        const iy = Math.min(tRect.y + tRect.h, p.y + p.h) - Math.max(tRect.y, p.y)
+        if (ix <= 3 || iy <= 3) continue
+        const minArea = Math.min(tRect.w * tRect.h, p.w * p.h)
+        if (ix * iy < minArea * 0.1) continue
+        const what = p.kind === 'image' ? '图片' : '色块'
+        errors.push({
+          page,
+          message: `${p.label} 在文字之后绘制且与 ${t.label} 的文字区域相交（${Math.round(ix)}×${Math.round(iy)}px）——${what}会把字盖掉：把两者错开，或把${what}挪到文字之前（先画的才当得了蒙版/卡片底）。`,
+        })
+      }
+    }
+    if (hiddenSkips > 0) {
+      degradations.push(`第 ${page} 页：${hiddenSkips} 处 visibility:hidden 的内容未转换（预览里也看不见）。`)
+    }
+    const linkCount = slideEl.querySelectorAll('a[href]').length
+    if (linkCount > 0) {
+      degradations.push(`第 ${page} 页：${linkCount} 个链接仅保留文字——href 进不了 pptx，需要可点的链接请在回复里给出。`)
+    }
+    if (blocks.length === 0) {
+      degradations.push(`第 ${page} 页没有任何内容块——会输出一页空白页。`)
     }
     slideFacts.push({
       background: sbg && sbg.hex ? sbg.hex : undefined,

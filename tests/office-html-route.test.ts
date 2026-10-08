@@ -545,6 +545,16 @@ describe('scanHtmlProfile', () => {
   it.each(cases)('refuses %s', (_name, pattern, html) => {
     expect(scanHtmlProfile(html).join('\n')).toMatch(pattern)
   })
+
+  it('refusals carry the 1-based source line', () => {
+    const html = `<style>.a{color:red}</style>\n<div class="slide"><script>alert(1)</script></div>`
+    expect(scanHtmlProfile(html).join('\n')).toMatch(/第 2 行：<script>/)
+  })
+
+  it('self-closing variants of the enumerated refusals are caught too', () => {
+    expect(scanHtmlProfile(`<head><script/></head>${clean}`).join('\n')).toMatch(/script/)
+    expect(scanHtmlProfile(`<div class="slide"><svg/></div>`).join('\n')).toMatch(/白名单外/)
+  })
 })
 
 describe('parseTokensCss', () => {

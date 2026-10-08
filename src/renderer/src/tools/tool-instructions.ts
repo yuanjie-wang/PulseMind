@@ -39,7 +39,7 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 - xlsx: NO formulas are generated, dates stay text, numbers convert only when the exact round-trip is safe (leading zeros like 工号 007 stay text on purpose).
 - csv: exports the FIRST table/sheet only.
 - pptx (content/markdown): images / inline HTML degrade to text with a closing 备注 page; one table per page; NO charts, fixed 16:9 layout.
-- pptx (htmlPath): 每页一个 960×540 的 .slide（超界整单拒绝并点名页码；两段文字的框相交同样拒绝并点名元素——按实际渲染高度排布）；图表是原生形状（改数据 = 改 data-chart 后重转）；颜色只收不透明色（半透明会被点名拒绝）；box-shadow/opacity/虚线边框按降级如实报告，不静默丢弃；转换结果的保真报告（各页块数 + 降级清单）随成功结果返回——交付时转述给用户。
+- pptx (htmlPath): 每页一个 960×540 的 .slide（超界整单拒绝并点名页码；两段文字的框相交同样拒绝并点名元素——按实际渲染高度排布；文字被 overflow:hidden 裁剪同样拒绝——预览里裁掉的部分 pptx 会完整显示；色块/图片画在文字之后且与文字相交也拒绝——字会被盖，内容区从上往下留够间距）；图表是原生形状（改数据 = 改 data-chart 后重转）；**文字色**只收不透明色（rgba 文字色整单拒绝——文字没有透明度可映射，改用调淡后的 hex）；填充/边框/表格底色/页背景的 rgba 半透明会映射成 PowerPoint 透明度，可用（图片蒙版、玻璃卡片、浅色叠层靠它）；box-shadow/opacity/虚线边框按降级如实报告，不静默丢弃；转换结果的保真报告（各页块数 + 降级清单）随成功结果返回——交付时转述给用户。
 `,
 
   read: `## read

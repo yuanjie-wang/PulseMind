@@ -92,6 +92,26 @@ bad('overlap.html', `<p style="position:absolute; left:100px; top:100px; width:4
 // text-vs-surface (2026-10-07): tables and charts are text-bearing — a
 // full-width line crossing a table shipped once (the 20261007235037 p12 shape)
 bad('table-overlap.html', `<p style="position:absolute; left:64px; top:200px; width:832px">安卓续航充电普遍 80–120W</p><table style="position:absolute; left:64px; top:212px; width:600px"><tr><td>机型</td><td>电池</td></tr></table>`)
+// ink extent, unclamped (2026-10-08): a fixed-height leaf's spilled glyphs
+// are real rectangles for BOTH overlap checks — the shape the old
+// clamp-into-block-rect hid
+bad('ink-overflow.html',
+  `<p style="position:absolute; left:64px; top:100px; width:400px; height:30px; margin:0; font-size:18px; line-height:1.4">` +
+  `一行两行三行四行五行六行七行八行九行十行十一行十二行十三行十四行十五行十六行十七行十八行十九行二十行的溢出文本</p>` +
+  `<p style="position:absolute; left:64px; top:140px; width:400px; margin:0">紧贴盒底的文本行</p>`)
+// ...and the flip side: a wide title whose GLYPHS end far short of its block
+// box must NOT refuse a neighbor sitting in that empty half (the block-rect
+// check refused this pair)
+writeFileSync(join(fixture, 'ink-wide.html'), `<!doctype html><html><head><style>.slide{width:960px;height:540px;position:relative}body{margin:0}</style></head>
+<body><div class="slide">
+  <h1 style="position:absolute; left:64px; top:100px; width:832px; margin:0; font-size:44px; font-weight:normal">短标题</h1>
+  <p style="position:absolute; left:600px; top:104px; width:200px; margin:0; font-size:16px">右侧说明文字</p>
+</div></body></html>`)
+// a surface painted after the text buries the glyphs (the wild deck-warm
+// page-10/15 shape: an absolute lead slipping under a later card row)
+bad('covered-text.html',
+  `<p style="position:absolute; left:64px; top:100px; width:832px; margin:0; font-size:18px">说明行文字说明行文字说明行文字</p>` +
+  `<div style="position:absolute; left:64px; top:112px; width:832px; height:200px; background:#F2ECE1"></div>`)
 
 // ── recipes.html: the reference's own skeletons must pass the profile they teach ──
 // Extracted VERBATIM from office-references.ts (single source of truth). Two
@@ -103,7 +123,7 @@ bad('table-overlap.html', `<p style="position:absolute; left:64px; top:200px; wi
 const refsSrc = readFileSync(join(root, 'src/renderer/src/skills/built-in/office-references.ts'), 'utf8')
 // only §3 carries recipes — §1/§2 have other html fences (the deck skeleton,
 // the data-chart example) that are not pages
-const section3 = refsSrc.slice(refsSrc.indexOf('### 3. 版式配方库'), refsSrc.indexOf('### 4. 转换与交付'))
+const section3 = refsSrc.slice(refsSrc.indexOf('### 3. '), refsSrc.indexOf('### 4. 转换与交付'))
 const htmlFences = Array.from(
   section3.matchAll(/\\`\\`\\`html\n([\s\S]*?)\n\\`\\`\\`/g),
   (m) => m[1].replaceAll('\\`', '`')
@@ -206,6 +226,8 @@ async function main() {
     ['alpha.html', /半透明/],
     ['overlap.html', /文字区域重叠/],
     ['table-overlap.html', /表格区域重叠/],
+    ['ink-overflow.html', /文字区域重叠/],
+    ['covered-text.html', /盖掉/],
   ]) {
     await assert.rejects(
       () => measureLayout(fixturePath(file), { launch }),
@@ -213,6 +235,12 @@ async function main() {
       file + ' must refuse')
     console.log('  ok  refusal: ' + file)
   }
+
+  // ink unclamped, flip side: the wide title's empty half must NOT refuse the
+  // neighbor inside it (the block-rect era refused this pair)
+  const wideOk = await measureLayout(fixturePath('ink-wide.html'), { launch })
+  assert.equal(wideOk.slides.length, 1, 'wide-title ink must not refuse the neighbor in its empty half')
+  console.log('  ok  tolerance: ink-wide.html (short glyphs in a wide box pass)')
 
   // 2: facts → pptx at 96dpi
   const { readFileSync } = require('node:fs')
@@ -274,7 +302,7 @@ async function main() {
     facts: { slides: recipes.slides },
     images,
     accent: 'C2483B', fontZh: '微软雅黑', fontLatin: 'Arial', fontMono: 'Menlo',
-    title: '配方库探针',
+    title: '版式示例探针',
   })
   const recipeZip = new AdmZip(recipeDeck.buffer)
   for (let i = 1; i <= 11; i++) assert.ok(recipeZip.readAsText('ppt/slides/slide' + i + '.xml'), 'recipe slide ' + i + ' emitted')

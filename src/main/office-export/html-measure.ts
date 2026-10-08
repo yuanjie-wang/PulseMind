@@ -32,27 +32,47 @@ const COLOR_KEYS: readonly string[] = ['--pm-accent', '--pm-accent-soft', '--pm-
 
 export function scanHtmlProfile(html: string): string[] {
   const errs: string[] = []
-  const add = (m: string): void => { if (!errs.includes(m)) errs.push(m) }
-  if (/<script[\s>]/i.test(html)) add('<script> 被拒绝——设计路线只转换静态版式，没有可执行内容。')
-  if (/<(svg|iframe|video|audio|canvas|form|input|select|textarea|button|object|embed)[\s>]/i.test(html)) {
-    add('出现了白名单外的元素——设计路线只收 h1–h6/p/ul/ol/li/table/img/div/span 等（白名单见 references/pptx.md）；图表用 data-chart 标注。')
+  // every refusal carries the 1-based source line — the model fixes the html
+  // by it, the page-level refusals' page+element discipline at the text layer
+  const lineAt = (index: number): number => html.slice(0, index).split('\n').length
+  const add = (message: string, index: number): void => {
+    const msg = `第 ${lineAt(index)} 行：${message}`
+    if (!errs.includes(msg)) errs.push(msg)
   }
-  if (/@font-face/i.test(html)) add('@font-face 被拒绝——字体只在 tokens.css 里从白名单选，web 字体进不了 pptx。')
-  if (/@import/i.test(html)) add('@import 被拒绝——样式只允许 <style> 与一处 tokens.css 的 link。')
-  if (/url\s*\(/i.test(html)) add('CSS url() 被拒绝——图片一律用 <img src> 指向工作区文件。')
-  if (/srcset/i.test(html)) add('srcset 被拒绝——<img> 只给一个确定的工作区 src。')
+  const hit = (re: RegExp): number => {
+    const m = re.exec(html)
+    return m ? m.index : -1
+  }
+  let at = hit(/<script\b/i)
+  if (at >= 0) add('<script> 被拒绝——设计路线只转换静态版式，没有可执行内容。', at)
+  at = hit(/<(svg|iframe|video|audio|canvas|form|input|select|textarea|button|object|embed)[\s/>]/i)
+  if (at >= 0) add('出现了白名单外的元素——设计路线只收 h1–h6/p/ul/ol/li/table/img/div/span 等（白名单见 references/pptx.md）；图表用 data-chart 标注。', at)
+  at = hit(/@font-face/i)
+  if (at >= 0) add('@font-face 被拒绝——字体只在 tokens.css 里从白名单选，web 字体进不了 pptx。', at)
+  at = hit(/@import/i)
+  if (at >= 0) add('@import 被拒绝——样式只允许 <style> 与一处 tokens.css 的 link。', at)
+  at = hit(/url\s*\(/i)
+  if (at >= 0) add('CSS url() 被拒绝——图片一律用 <img src> 指向工作区文件。', at)
+  at = hit(/srcset/i)
+  if (at >= 0) add('srcset 被拒绝——<img> 只给一个确定的工作区 src。', at)
   {
     const bare = Array.from(html.matchAll(/font-family\s*:\s*([^;}]+)/gi))
-      .map((m) => m[1].trim())
-      .filter((v) => !/^var\(--pm-font-(zh|latin|mono)\)$/.test(v))
-    if (bare.length > 0) add('font-family 只允许 var(--pm-font-zh / --pm-font-latin / --pm-font-mono) 引用——字体名只在 tokens.css 里声明（收到「' + bare[0] + '」）。')
+      .map((m) => ({ value: m[1].trim(), index: m.index ?? 0 }))
+      .filter((v) => !/^var\(--pm-font-(zh|latin|mono)\)$/.test(v.value))
+    if (bare.length > 0) add('font-family 只允许 var(--pm-font-zh / --pm-font-latin / --pm-font-mono) 引用——字体名只在 tokens.css 里声明（收到「' + bare[0].value + '」）。', bare[0].index)
   }
-  if (/position\s*:\s*fixed/i.test(html)) add('position:fixed 被拒绝——画布没有视口概念，用 absolute。')
-  if (/(^|[;{\s])transform\s*:/im.test(html)) add('transform 被拒绝——位置、旋转、缩放直接写进布局。')
-  if (/(^|[;{\s])(animation|transition)\s*:|@keyframes/i.test(html)) add('CSS 动画/过渡被拒绝——pptx 是静态页面。')
-  if (/gradient\s*\(/i.test(html)) add('渐变被拒绝——背景只收纯色；渐变可以拆成几个纯色块近似。')
-  if (/(colspan|rowspan)\s*=/i.test(html)) add('表格不支持 colspan/rowspan 合并单元格——拆成普通格子，或用色块拼版式。')
-  if (/(src|href)\s*=\s*["']?\s*(https?:|data:)/i.test(html)) add('网络/内联资源被拒绝——图片与样式只允许工作区文件。')
+  at = hit(/position\s*:\s*fixed/i)
+  if (at >= 0) add('position:fixed 被拒绝——画布没有视口概念，用 absolute。', at)
+  at = hit(/(^|[;{\s])transform\s*:/im)
+  if (at >= 0) add('transform 被拒绝——位置、旋转、缩放直接写进布局。', at)
+  at = hit(/(^|[;{\s])(animation|transition)\s*:|@keyframes/i)
+  if (at >= 0) add('CSS 动画/过渡被拒绝——pptx 是静态页面。', at)
+  at = hit(/gradient\s*\(/i)
+  if (at >= 0) add('渐变被拒绝——背景只收纯色；渐变可以拆成几个纯色块近似。', at)
+  at = hit(/(colspan|rowspan)\s*=/i)
+  if (at >= 0) add('表格不支持 colspan/rowspan 合并单元格——拆成普通格子，或用色块拼版式。', at)
+  at = hit(/(src|href)\s*=\s*["']?\s*(https?:|data:)/i)
+  if (at >= 0) add('网络/内联资源被拒绝——图片与样式只允许工作区文件。', at)
   return errs
 }
 
