@@ -124,7 +124,7 @@ interface SerializedLine {
 interface PageMemory {
   refs: WeakMap<Element, number>
   nextRefId: number
-  baseline: { url: string; expansion: number; lines: SerializedLine[] } | null
+  baseline: { url: string; expansion: number; truncated: boolean; lines: SerializedLine[] } | null
 }
 
 const newPageMemory = (): PageMemory => ({ refs: new WeakMap(), nextRefId: 0, baseline: null })
@@ -744,23 +744,28 @@ export function buildDomTree(root: ParentNode = document, opts?: BuildDomTreeOpt
   // The next delta's baseline — refreshed on every build, whatever this call
   // ends up printing, so a delta always compares against the freshest view.
   // The `*[n]` star is presentation (minted this build) and must not read as a
-  // change on the next diff, so the baseline stores lines without it.
+  // change on the next diff, so the baseline stores lines without it. The walk's
+  // truncated flag rides along: against a truncated baseline everything past
+  // the cap would read wholesale as "added" on the next delta.
   const url = location.href
   const prevBaseline = memory.baseline
   memory.baseline = {
     url,
     expansion: viewportExpansion,
+    truncated: tree.truncated,
     lines: lines.map((l) => (l.ref !== undefined ? { ...l, text: l.text.replace(/^(\t*)\*\[/, '$1[') } : l)),
   }
 
   // A delta is only attempted against a comparable baseline: same document,
   // same scoping (a different expansion numbers a different set, which would
-  // read wholesale as "added"), and a walk not cut short by the node cap —
-  // against a truncated baseline everything past the cap would read as added.
+  // read wholesale as "added"), and NEITHER walk cut short by the node cap —
+  // the current build's truncation would print an incomplete delta; a
+  // truncated BASELINE would list its missing tail as new.
   let bodyText = content
   if (
     opts?.delta === true &&
     prevBaseline !== null &&
+    !prevBaseline.truncated &&
     !tree.truncated &&
     prevBaseline.url === url &&
     prevBaseline.expansion === viewportExpansion

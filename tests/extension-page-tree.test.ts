@@ -108,6 +108,40 @@ describe('page-tree', () => {
     expect(text).toContain('page_scroll')
   })
 
+  it('a truncated baseline poisons the next delta: the follow-up read falls back to full', () => {
+    // Build 1 walks past the cap — its baseline is incomplete by construction.
+    const chunks: string[] = []
+    for (let i = 0; i < MAX_NODES + 200; i++) chunks.push(`<span>n${i}</span>`)
+    mount(chunks.join(''))
+    const truncatedBuild = buildDomTree(document)
+    expect(truncatedBuild.truncated).toBe(true)
+
+    // Build 2 is small and complete, and asks for a delta: everything past the
+    // truncated baseline's cap would read wholesale as "added", so the delta
+    // must be refused — the full view is the honest answer.
+    mount('<button id="a">A</button><button id="b">B</button>')
+    const next = buildDomTree(document, { delta: true })
+    expect(next.truncated).toBe(false)
+    expect(next.text).not.toContain('[增量视图]')
+    expect(next.text).toContain('[1]<button')
+
+    // And the poisoned baseline is replaced: the THIRD read deltas normally.
+    const third = buildDomTree(document, { delta: true })
+    expect(third.text).toContain('[增量视图]')
+  })
+
+  it('a delta is also refused when the CURRENT walk is the truncated one', () => {
+    mount('<button id="a">A</button>')
+    expect(buildDomTree(document).truncated).toBe(false)
+
+    const chunks: string[] = []
+    for (let i = 0; i < MAX_NODES + 200; i++) chunks.push(`<span>n${i}</span>`)
+    mount(chunks.join(''))
+    const next = buildDomTree(document, { delta: true })
+    expect(next.truncated).toBe(true)
+    expect(next.text).not.toContain('[增量视图]')
+  })
+
   it('reports scroll position, page size and a fallback hint when nothing is numbered', () => {
     mount('<div>只有一个元素</div>')
     const { text } = buildDomTree(document)
