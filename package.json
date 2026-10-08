@@ -103,16 +103,13 @@
     "icon": "resources/pulseMind.png",
     "compression": "maximum",
     "files": [
-      "out/**/*"
+      "out/**/*",
+      "!out/probe-*",
+      "!**/*.map",
+      "!node_modules/exiftool-vendored.pl/**",
+      "!node_modules/fluent-ffmpeg/coverage/**"
     ],
     "extraResources": [
-      {
-        "from": "resources/bin",
-        "to": "bin",
-        "filter": [
-          "**/*"
-        ]
-      },
       {
         "from": "resources/splash",
         "to": "resources/splash",
@@ -171,11 +168,29 @@
       "target": [
         "dmg"
       ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "resources/bin",
+          "to": "bin",
+          "filter": [
+            "darwin-${arch}/**"
+          ]
+        }
+      ]
     },
     "win": {
       "icon": "resources/pulseMind-win.ico",
-      "target": "portable"
+      "target": "portable",
+      "extraResources": [
+        {
+          "from": "resources/bin",
+          "to": "bin",
+          "filter": [
+            "win32-${arch}/**"
+          ]
+        }
+      ]
     },
     "linux": {
       "icon": "resources/pulseMind.png",
@@ -183,7 +198,16 @@
         "AppImage"
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}",
-      "category": "Development"
+      "category": "Development",
+      "extraResources": [
+        {
+          "from": "resources/bin",
+          "to": "bin",
+          "filter": [
+            "linux-${arch}/**"
+          ]
+        }
+      ]
     },
     "afterPack": "scripts/strip-lproj.js",
     "directories": {
