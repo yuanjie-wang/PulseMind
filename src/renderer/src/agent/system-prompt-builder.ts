@@ -69,7 +69,15 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     const systemPrompt = opts.expert?.instructions
       ? `${base}\n\n${opts.expert.instructions}`
       : base
-    return { systemPrompt, stateBlock: null }
+    // 子代理没有会话状态块（spawn prompt 自含全部机制），但早停守卫的续跑
+    // 指令仍须落到线上（2026-10-08）：flag 经 spawn-manager 的 opts 展开继承，
+    // stream-runner 的守卫对子代理照常开火——没有这里的最小 state block，
+    // pendingEarlyStopNudge 会被 prepareLoopRequest 消费后无处着落，子代理的
+    // 续跑退化成一次没有指令的裸重采样。块里只有这一节，单次请求，不落库。
+    return {
+      systemPrompt,
+      stateBlock: continuationNudge ? `<session-state>\n${TURN_CONTINUATION_NUDGE}\n</session-state>` : null,
+    }
   }
 
   const systemPrompt = await buildCorePrompt(opts, toolProtocols)

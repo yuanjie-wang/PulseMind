@@ -325,6 +325,40 @@ describe('the continuation directive rides exactly one state block', () => {
   })
 })
 
+describe('spawned engines get the directive too', () => {
+  const spawnOpts = {
+    apiKey: 'k', baseURL: 'https://example.invalid', model: 'm', maxTokens: 1024,
+    myName: '', soul: '', yourName: '', locale: 'zh' as const, earlyStopGuard: true,
+  }
+  it('spawn branch packs the nudge into a minimal state block', async () => {
+    const on = await buildSystemPrompt({ opts: spawnOpts as unknown as AgentEngineOptions, spawnSystemPrompt: 'You are a spawned expert.', messages: [], plan: null, continuationNudge: true })
+    expect(on.stateBlock).toContain('## Turn Continuation')
+    expect(on.stateBlock).toContain(TASK_DONE_SENTINEL)
+    expect(on.stateBlock).not.toContain('## Workspace') // minimal: no session state
+    const off = await buildSystemPrompt({ opts: spawnOpts as unknown as AgentEngineOptions, spawnSystemPrompt: 'You are a spawned expert.', messages: [], plan: null })
+    expect(off.stateBlock).toBeNull()
+  })
+
+  it('a spawned engine’s guard fires and its rebuilt request carries the directive', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine } = makeEngine(host, true)
+    engine.spawnSystemPrompt = 'You are a spawned expert doing the work.'
+    ;(engine.opts as { conversationId?: string }).conversationId = undefined
+
+    const rounds = [toolStream(), earlyStopStream()]
+    await drive(host, engine, rounds)
+    expect(engine.pendingEarlyStopNudge).toBe(true)
+
+    const req = await (engine as unknown as { prepareLoopRequest(o: AgentEngineOptions): Promise<{ resolvedBody: { messages: Array<{ role: string; content: unknown }> } }> }).prepareLoopRequest(engine.opts)
+    const messages = req.resolvedBody.messages as Array<{ role: string; content: unknown }>
+    const last = messages[messages.length - 1]
+    const text = typeof last.content === 'string' ? last.content : JSON.stringify(last.content)
+    expect(text).toContain('## Turn Continuation')
+    expect(engine.pendingEarlyStopNudge).toBe(false)
+  })
+})
+
 describe('prompt layer: the sentinel section is conditional on the flag', () => {
   const baseOpts = {
     apiKey: 'k', baseURL: 'https://example.invalid', model: 'm', maxTokens: 1024,
