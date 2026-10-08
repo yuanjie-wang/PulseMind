@@ -1,9 +1,9 @@
 import { mkdirSync, readFileSync, writeFileSync, utimesSync, readdirSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { app } from 'electron'
-import { dumpLlmRequest, dumpLlmResponse, summarizeResponseUsage, LLM_DUMP_DIR, LLM_DUMP_MAX_FILES } from '../src/main/llm/request-dump'
+import { dumpLlmRequest, dumpLlmResponse, summarizeResponseUsage, LLM_DUMP_DIR, LLM_DUMP_MAX_FILES, LLM_DUMP_MAX_AGE_MS } from '../src/main/llm/request-dump'
 import { performLlmStream, performSimpleFetch } from '../src/main/ipc/api-proxy.handler'
 
 const HOME = process.env.HOME as string
@@ -22,7 +22,7 @@ function writeSettings(raw: Record<string, unknown>): void {
 
 function dumpFiles(): string[] {
   try {
-    return readdirSync(LLM_DUMP_DIR).filter(n => n.endsWith('.json')).sort()
+    return readdirSync(LLM_DUMP_DIR).filter(n => n.endsWith('.request.txt')).sort()
   } catch {
     return []
   }
@@ -35,6 +35,11 @@ function responseFiles(): string[] {
   } catch {
     return []
   }
+}
+
+/** The pair's shared identity: filename minus role marker and extension. */
+function stemOf(name: string): string {
+  return basename(name).replace(/\.(?:request|response)\.txt$/, '')
 }
 
 /** The console line carrying url/method/headers (the second of the pair). */
@@ -292,8 +297,43 @@ describe('LLM response dump', () => {
     const responses = responseFiles()
     expect(requests).toHaveLength(1)
     expect(responses).toHaveLength(1)
-    expect(responses[0]).toBe(requests[0]!.replace(/\.json$/, '.response.txt'))
+    expect(responses[0]).toBe(requests[0]!.replace(/\.request\.txt$/, '.response.txt'))
     expect(readFileSync(join(LLM_DUMP_DIR, responses[0]), 'utf-8')).toBe(sse)
+  })
+
+  it('names the pair symmetrically: role markers over one stem, .txt on both sides', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    // 无论 body 是 SSE 流、JSON 还是错误页，两侧扩展名一律 .txt（user ruling
+    // 「都用txt吧」）——扩展名表角色不表格式，body 是什么由它开头几行自证。
+    const sseReq = await dumpLlmRequest({ requestId: 'shape_sse', url: 'u', method: 'POST', body: '{"i":1}' })
+    await dumpLlmResponse({ requestId: 'shape_sse', requestFile: sseReq, status: '200', body: 'data: {"a":1}\n\ndata: [DONE]\n\n' })
+
+    const jsonReq = await dumpLlmRequest({ requestId: 'shape_json', url: 'u', method: 'POST', body: '{"i":2}' })
+    await dumpLlmResponse({ requestId: 'shape_json', requestFile: jsonReq, status: '200', body: '{"id":"msg_1","usage":{}}' })
+
+    const oddReq = await dumpLlmRequest({ requestId: 'shape_odd', url: 'u', method: 'POST', body: '{"i":3}' })
+    await dumpLlmResponse({ requestId: 'shape_odd', requestFile: oddReq, status: '502', body: '<html>Bad Gateway</html>' })
+
+    // A response whose request half was never dumped mints its own stamp
+    // under the same scheme.
+    await dumpLlmResponse({ requestId: 'shape_orphan', requestFile: null, status: '200', body: 'event: ping\ndata: {}' })
+
+    const requests = dumpFiles()
+    expect(requests).toHaveLength(3)
+    expect(requests.every(f => f.endsWith('.request.txt'))).toBe(true)
+
+    const responses = responseFiles()
+    expect(responses).toHaveLength(4)
+    expect(responses.every(f => f.endsWith('.response.txt'))).toBe(true)
+
+    // Symmetry is the stem: each response sits on exactly its own request's
+    // stem, so the two halves of one call sort together and read as a pair.
+    const byId = (req: string) => responses.find(f => stemOf(f) === stemOf(req))!
+    expect(stemOf(byId(sseReq!))).toBe(stemOf(sseReq!))
+    expect(stemOf(byId(jsonReq!))).toBe(stemOf(jsonReq!))
+    expect(stemOf(byId(oddReq!))).toBe(stemOf(oddReq!))
+    expect(responses.some(f => f.includes('shape_orphan'))).toBe(true)
   })
 
   it('carries the usage readout on the log line', async () => {
@@ -330,6 +370,51 @@ describe('LLM response dump', () => {
     expect(responseFiles().some(f => f.includes('api_0000'))).toBe(false)
     const newest = `api_${String(LLM_DUMP_MAX_FILES + overflow - 1).padStart(4, '0')}`
     expect(responseFiles().some(f => f.includes(newest))).toBe(true)
+  })
+
+  // An upgraded install still holds the pre-rename names on disk for up to
+  // 7 days. The prune must keep counting them as requests and keep deleting
+  // the pair together — under-counting would let the directory outgrow its
+  // cap for the whole transition, and a sibling missed by extension would
+  // orphan half a transcript.
+  it('still prunes legacy-generation pairs written by the previous naming', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    mkdirSync(LLM_DUMP_DIR, { recursive: true })
+    // `2025-` so the fixtures sort OLDER than every real ISO stamp (digits
+    // sort below letters): the prune drops "oldest" = lexically first.
+    for (let i = 0; i < LLM_DUMP_MAX_FILES; i++) {
+      const stem = join(LLM_DUMP_DIR, `2025-a-${String(i).padStart(4, '0')}`)
+      writeFileSync(`${stem}.json`, '{}', 'utf-8')
+      writeFileSync(`${stem}.response.txt`, 'data: old\n\n', 'utf-8')
+    }
+    await dumpLlmRequest({ requestId: 'api_new', url: 'u', method: 'POST', body: '{"new":1}' })
+
+    const all = readdirSync(LLM_DUMP_DIR)
+    // 60 legacy requests + 1 current = 61 → one pair over the cap; what
+    // remains is exactly 60 requests, 59 legacy + the current one.
+    expect(all.filter(n => n.endsWith('.request.txt'))).toHaveLength(1)
+    expect(all.filter(n => n.endsWith('.json') && !n.endsWith('.response.json'))).toHaveLength(LLM_DUMP_MAX_FILES - 1)
+    // Lexically first = oldest by the sort the prune trusts: gone, WITH its
+    // .response.txt sibling; the next pair stays whole.
+    expect(all.some(n => n.startsWith('2025-a-0000'))).toBe(false)
+    expect(all.some(n => n.startsWith('2025-a-0001'))).toBe(true)
+  })
+
+  it('the 7-day age sweep still walks legacy names', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    mkdirSync(LLM_DUMP_DIR, { recursive: true })
+    const stem = join(LLM_DUMP_DIR, '2025-a-old')
+    writeFileSync(`${stem}.json`, '{}', 'utf-8')
+    writeFileSync(`${stem}.response.txt`, 'data: old\n\n', 'utf-8')
+    const stale = new Date(Date.now() - LLM_DUMP_MAX_AGE_MS - 60_000)
+    utimesSync(`${stem}.json`, stale, stale)
+    utimesSync(`${stem}.response.txt`, stale, stale)
+
+    await dumpLlmRequest({ requestId: 'api_new', url: 'u', method: 'POST', body: '{"new":1}' })
+
+    const all = readdirSync(LLM_DUMP_DIR)
+    expect(all.some(n => n.startsWith('2025-a-old'))).toBe(false)
+    expect(all.filter(n => n.endsWith('.request.txt'))).toHaveLength(1)
   })
 })
 

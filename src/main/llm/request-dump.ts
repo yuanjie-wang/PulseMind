@@ -14,9 +14,13 @@ export const LLM_DUMP_MAX_FILES = 60
  *  one debugging session, and no setting is added for a dev opt-in (打包默认关). */
 export const LLM_DUMP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
-/** Dump files are the request (`<stamp>-<id>.json`) and its paired response
- *  (`<stamp>-<id>.response.txt`) — both prunable, so both match here. */
-const DUMP_NAME_RE = /(\.json|\.response\.txt)$/
+/** Dump files are the request (`<stamp>-<id>.request.txt`) and its paired
+ *  response (`<stamp>-<id>.response.txt`) — one extension for both sides, the
+ *  role carried by the marker, per user ruling 2026-10-08 「都用txt吧」. Both
+ *  are prunable, and so is everything earlier generations wrote (the bare
+ *  `.json` / `.response.sse` / `.response.json` arms) — the age sweep retires
+ *  those within 7 days. */
+const DUMP_NAME_RE = /\.json$|\.request\.txt$|\.response\.(?:json|sse|txt)$/
 
 /**
  * Headers that identify the caller, masked to their last 4 chars before they
@@ -70,7 +74,7 @@ async function dumpEnabled(): Promise<boolean> {
 }
 
 /** Keep the directory bounded by count (capped in REQUESTS — each pruned
- *  request takes its `.response.txt` sibling with it, so a transcript never
+ *  request takes its `.response.*` sibling with it, so a transcript never
  *  loses its answer half) and by age (P3-b — swept over every dump file,
  *  including a response whose request was gated off mid-call). */
 async function pruneOldest(): Promise<void> {
@@ -83,11 +87,19 @@ async function pruneOldest(): Promise<void> {
       }
     } catch { /* the count prune below may have just removed it */ }
   }
-  const requests = names.filter(n => n.endsWith('.json'))
+  // A request is `.request.txt` (current) or a `.json` that is not a
+  // response's (earlier generations).
+  const requests = names.filter(n => n.endsWith('.request.txt')
+    || (n.endsWith('.json') && !n.endsWith('.response.json')))
   for (let i = 0, excess = requests.length - LLM_DUMP_MAX_FILES; i < excess; i++) {
-    const base = join(LLM_DUMP_DIR, requests[i])
-    await unlink(base).catch(() => {})
-    await unlink(base.replace(/\.json$/, '.response.txt')).catch(() => {})
+    const name = join(LLM_DUMP_DIR, requests[i])
+    await unlink(name).catch(() => {})
+    // The sibling's extension varied across generations — try each rather
+    // than guess.
+    const stem = name.replace(/(?:\.request)?\.(?:json|txt)$/, '')
+    for (const ext of ['.response.txt', '.response.json', '.response.sse']) {
+      await unlink(`${stem}${ext}`).catch(() => {})
+    }
   }
 }
 
@@ -171,7 +183,7 @@ export function summarizeResponseUsage(body: string): string {
 
 /**
  * Record the request exactly as it goes on the wire, to
- * `<DATA_DIR>/logs/llm-requests/<timestamp>-<requestId>.json`.
+ * `<DATA_DIR>/logs/llm-requests/<timestamp>-<requestId>.request.txt`.
  *
  * Called after the llm-request hook and after profile headers are merged, so
  * the file is what the provider receives rather than what the engine intended.
@@ -185,7 +197,7 @@ export async function dumpLlmRequest(req: LlmRequestDump): Promise<string | null
     if (!req.body || !(await dumpEnabled())) return null
     await mkdir(LLM_DUMP_DIR, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const file = join(LLM_DUMP_DIR, `${stamp}-${req.requestId}.json`)
+    const file = join(LLM_DUMP_DIR, `${stamp}-${req.requestId}.request.txt`)
     await writeFile(file, req.body, 'utf-8')
     console.log(`[LLM Dump] ${file}`)
     console.log(`[LLM Dump] ${req.method} ${req.url} bytes=${req.body.length} ${summarizeBody(req.body)} headers=${JSON.stringify(maskSecrets(req.headers))}`)
@@ -201,8 +213,8 @@ export async function dumpLlmRequest(req: LlmRequestDump): Promise<string | null
 export interface LlmResponseDump {
   requestId: string
   /** This call's request-dump path, when one was written — the response pairs
-   *  with it as `<request>.response.txt` instead of minting its own stamp, so
-   *  the two files of one call sort together. */
+   *  with it under the same stem (`<stem>.response.txt` instead of minting
+   *  its own stamp), so the two files of one call sort together. */
   requestFile?: string | null
   /** HTTP status, or the reason a body never finished ('interrupted'). */
   status: string
@@ -213,17 +225,20 @@ export interface LlmResponseDump {
 /**
  * Record the response exactly as it came back — the verbatim SSE event stream
  * for a streaming call, the plain body for a non-streaming one — next to its
- * request dump. Written at the stream's end, or at its failure point, which is
- * when a response dump matters most (an HTTP 400 body or a timed-out partial
- * stream). Like the request dump: verbatim, best-effort, and gated by the same
- * flag so nothing is written when dumping is off.
+ * request dump, as `<stem>.response.txt` (user ruling 2026-10-08: one
+ * extension for both sides; what the body IS — SSE / JSON / an HTML error
+ * page — is self-evident from its first lines). Written at the stream's end,
+ * or at its failure point, which is when a response dump matters most (an
+ * HTTP 400 body or a timed-out partial stream). Like the request dump:
+ * verbatim, best-effort, and gated by the same flag so nothing is written
+ * when dumping is off.
  */
 export async function dumpLlmResponse(dump: LlmResponseDump): Promise<void> {
   try {
     if (!dump.body || !(await dumpEnabled())) return
     await mkdir(LLM_DUMP_DIR, { recursive: true })
     const base = dump.requestFile
-      ? dump.requestFile.replace(/\.json$/, '')
+      ? dump.requestFile.replace(/(?:\.request)?\.(?:json|txt)$/, '')
       : join(LLM_DUMP_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${dump.requestId}`)
     const file = `${base}.response.txt`
     await writeFile(file, dump.body, 'utf-8')
