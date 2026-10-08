@@ -156,6 +156,34 @@ describe('extension WsClient', () => {
     client.close()
   })
 
+  it('a protocol-mismatch hello is fatal: no reconnect loop, and the rejection carries the code', async () => {
+    vi.useFakeTimers()
+    try {
+      FakeSocket.autoReply = () => ({ error: { code: -32002, message: 'protocol version mismatch: client 1, service 2' } })
+      const client = makeClient()
+
+      const ready = client.connect()
+      FakeSocket.instances[0].open()
+
+      // The application error code rides the rejection so callers can branch.
+      await expect(ready).rejects.toMatchObject({ code: -32002 })
+      expect(client.fatal).toBe(true)
+      expect(client.lastError).toContain('hello 失败')
+
+      // The backoff must NOT resurrect the client: retrying can never fix a
+      // version mismatch, and each attempt kicked its own ghost server-side.
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(FakeSocket.instances).toHaveLength(1)
+
+      // A direct reconnect attempt on the doomed instance refuses as well —
+      // the worker's keepalive alarm rebuilds a fresh client instead.
+      await expect(client.connect()).rejects.toThrow('protocol version mismatch')
+      expect(FakeSocket.instances).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a manual close suppresses reconnection and drops in-flight requests', async () => {
     vi.useFakeTimers()
     try {

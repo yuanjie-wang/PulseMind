@@ -7,6 +7,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { AgentEventData } from '../src/shared/agent-protocol'
 import { PanelBridge } from '../src/extension/background/panel-bridge'
+import { getSessionForTab, getTabForSession } from '../src/extension/background/state'
 import type { WsClient } from '../src/extension/background/ws-client'
 import type { ConnectionState } from '../src/extension/bridge'
 
@@ -19,7 +20,7 @@ interface SentMessage {
 }
 
 /** Minimal chrome surface the bridge touches (storage.session + tabs). */
-function installChromeStub(): { sent: SentMessage[]; tabs: unknown[] } {
+function installChromeStub(): { sent: SentMessage[]; tabs: unknown[]; sessionBag: Record<string, unknown> } {
   const sessionBag: Record<string, unknown> = {}
   const sent: SentMessage[] = []
   const tabs: unknown[] = []
@@ -39,7 +40,7 @@ function installChromeStub(): { sent: SentMessage[]; tabs: unknown[] } {
     },
     runtime: { getManifest: () => ({ version: '0.1.0' }) },
   }
-  return { sent, tabs }
+  return { sent, tabs, sessionBag }
 }
 
 class FakeClient {
@@ -103,6 +104,9 @@ const userMessage = (id: string, text: string): unknown => ({
 describe('extension panel bridge', () => {
   let client: FakeClient
   let sent: SentMessage[]
+  /** The raw chrome.storage.session bag — binding-symmetry assertions read the
+   *  maps directly instead of going through bridge behaviour. */
+  let sessionBag: Record<string, unknown>
   /** One settings store behind both RPCs, the way the real service has one: the
    *  DEFAULT switch is written to it, and the next read reports the new value. */
   let modelStore: ReturnType<typeof makeModelStore>
@@ -113,6 +117,7 @@ describe('extension panel bridge', () => {
   beforeEach(() => {
     const stub = installChromeStub()
     sent = stub.sent
+    sessionBag = stub.sessionBag
     modelStore = makeModelStore()
     sessionModels = new Map()
     client = new FakeClient()
@@ -353,16 +358,27 @@ describe('extension panel bridge', () => {
     expect(attached.snapshot?.approvalMode).toBe('outside-ask')
   })
 
-  it('relays an approval decision and an ask_user answer as one-way notifications', async () => {
+  it('relays an approval decision and an ask_user answer as requests (unknown callId must be visible)', async () => {
     const bridge = makeBridge(client)
     await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
 
+    // Requests, not notifications: the service answers whether the callId was
+    // still parked, so a stale button (server-side timeout already rejected)
+    // reaches the panel as a failed answer instead of a silent no-op.
     const approval = await bridge.handleRequest({ type: 'panel/approval-response', callId: 'toolu_1', approved: true }, TAB)
     expect(approval.ok).toBe(true)
-    expect(client.notificationsTo('approval.response')).toEqual([{ callId: 'toolu_1', approved: true }])
+    expect(client.callsTo('approval.response')).toEqual([{ callId: 'toolu_1', approved: true }])
 
     await bridge.handleRequest({ type: 'panel/answer', callId: 'toolu_2', response: '北京' }, TAB)
-    expect(client.notificationsTo('ask_user.response')).toEqual([{ callId: 'toolu_2', response: '北京' }])
+    expect(client.callsTo('ask_user.response')).toEqual([{ callId: 'toolu_2', response: '北京' }])
+
+    // And the failure path: the service's unknown-callId error propagates.
+    client.handlers['approval.response'] = () => {
+      throw new Error('unknown callId: toolu_x')
+    }
+    const stale = await bridge.handleRequest({ type: 'panel/approval-response', callId: 'toolu_x', approved: true }, TAB)
+    expect(stale.ok).toBe(false)
+    expect(stale.error).toContain('unknown callId')
   })
 
   it('refuses to relay an answer while the service is disconnected', async () => {
@@ -372,7 +388,7 @@ describe('extension panel bridge', () => {
     const res = await bridge.handleRequest({ type: 'panel/approval-response', callId: 'toolu_1', approved: true }, TAB)
     expect(res.ok).toBe(false)
     expect(res.error).toContain('未连接')
-    expect(client.notifications).toHaveLength(0)
+    expect(client.calls).toHaveLength(0)
   })
 
   it('relays the loop-limit decision with the tab session id (iteration_limit.response)', async () => {
@@ -381,10 +397,10 @@ describe('extension panel bridge', () => {
 
     const res = await bridge.handleRequest({ type: 'panel/iteration-response', approved: true }, TAB)
     expect(res.ok).toBe(true)
-    expect(client.notificationsTo('iteration_limit.response')).toEqual([{ sessionId: 'ws_1', approved: true }])
+    expect(client.callsTo('iteration_limit.response')).toEqual([{ sessionId: 'ws_1', approved: true }])
 
     await bridge.handleRequest({ type: 'panel/iteration-response', approved: false }, TAB)
-    expect(client.notificationsTo('iteration_limit.response')).toEqual([
+    expect(client.callsTo('iteration_limit.response')).toEqual([
       { sessionId: 'ws_1', approved: true },
       { sessionId: 'ws_1', approved: false },
     ])
@@ -394,7 +410,7 @@ describe('extension panel bridge', () => {
     const bridge = makeBridge(client)
     const res = await bridge.handleRequest({ type: 'panel/iteration-response', approved: true }, TAB)
     expect(res.ok).toBe(false)
-    expect(client.notifications).toHaveLength(0)
+    expect(client.calls).toHaveLength(0)
   })
 
   // ── 模型 (per conversation, like 授权) ──────────────────────────────
@@ -457,5 +473,68 @@ describe('extension panel bridge', () => {
     expect(res.ok).toBe(false)
     expect(res.error).toContain('未连接')
     expect(client.callsTo('model.setActive')).toHaveLength(0)
+  })
+
+  // ── 绑定对称性 + 预会话选择的生命周期 ──────────────────────────────
+
+  it('rebinding a session from a second tab releases the first tab\'s stale claim', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    expect(await getSessionForTab(TAB)).toBe('ws_1')
+
+    // The same session resumed from another tab: the session routes there now,
+    // so tab 7 must not keep believing it owns it (its asks would otherwise
+    // vanish into a transcript it never receives).
+    await bridge.handleRequest({ type: 'panel/resume-session', sessionId: 'ws_1' }, OTHER_TAB)
+
+    expect(await getTabForSession('ws_1')).toBe(OTHER_TAB)
+    expect(await getSessionForTab(TAB)).toBeNull()
+    expect(await getSessionForTab(OTHER_TAB)).toBe('ws_1')
+  })
+
+  it('consumes a pre-session choice after carrying it — it never resurfaces', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/set-model', profileId: 'p2' }, TAB)
+    await bridge.handleRequest({ type: 'panel/set-approval', mode: 'always-ask' }, TAB)
+
+    // First ask carries both onto the session…
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    expect(client.callsTo('model.setActive')).toHaveLength(1)
+    expect(client.callsTo('session.setApprovalMode')).toHaveLength(1)
+
+    // …and consumes the tab values: after the session is deleted, the next
+    // fresh session must NOT be pinned to picks from the previous one.
+    await bridge.handleRequest({ type: 'panel/delete-session', sessionId: 'ws_1' }, TAB)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'again' }, TAB)
+    expect(client.callsTo('model.setActive')).toHaveLength(1)
+    expect(client.callsTo('session.setApprovalMode')).toHaveLength(1)
+    expect(sessionBag.approvalModes).toEqual({})
+    expect(sessionBag.modelIds).toEqual({})
+  })
+
+  it('set-approval with a live session writes only the column, not the tab carry-over', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+
+    await bridge.handleRequest({ type: 'panel/set-approval', mode: 'auto' }, TAB)
+    expect(client.callsTo('session.setApprovalMode').at(-1)).toMatchObject({ sessionId: 'ws_1', mode: 'auto' })
+    // Tab-scoped choices are strictly pre-session: a live-session click must
+    // not leave a stale duplicate that resurrects on the next fresh session.
+    expect(sessionBag.approvalModes ?? {}).toEqual({})
+  })
+
+  it('新会话 carries the pre-session 授权/模型 choices too (same as the first ask)', async () => {
+    const bridge = makeBridge(client)
+    await bridge.handleRequest({ type: 'panel/set-model', profileId: 'p2' }, TAB)
+    await bridge.handleRequest({ type: 'panel/set-approval', mode: 'always-ask' }, TAB)
+
+    // The carry must not depend on what the user does next: 新会话 lands the
+    // same choices the first ask would have.
+    const res = await bridge.handleRequest({ type: 'panel/new-session' }, TAB)
+    expect(res.ok).toBe(true)
+    expect(client.callsTo('model.setActive')[0]).toMatchObject({ sessionId: 'ws_1', profileId: 'p2' })
+    expect(client.callsTo('session.setApprovalMode')[0]).toMatchObject({ sessionId: 'ws_1', mode: 'always-ask' })
+    expect(sessionBag.approvalModes).toEqual({})
+    expect(sessionBag.modelIds).toEqual({})
   })
 })

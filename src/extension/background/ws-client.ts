@@ -7,6 +7,7 @@
  * backoff reconnect (suppressed on manual close), server→client notifications
  * (tool.call / approval.request / ask_user.request) dispatched to handlers. */
 
+import { ErrorCodes } from '../../shared/agent-protocol/jsonrpc'
 import type { AgentEventParams } from '../../shared/agent-protocol'
 import type { JsonRpcRequest, JsonRpcResponse } from '../../shared/agent-protocol/jsonrpc'
 
@@ -49,6 +50,12 @@ export class WsClient {
   lastError = ''
   /** Application close code from the last close event (see CloseCodes). */
   lastCloseCode: number | null = null
+  /** A hello rejection no retry can fix (protocol version mismatch): reconnecting
+   *  would loop forever against the same service and kick its own ghost each
+   *  time. The client stops scheduling reconnects; the worker's keepalive alarm
+   *  is the recovery path (it rebuilds a fatal client, so a desktop that later
+   *  upgrades re-heals within one alarm period). */
+  fatal = false
 
   connected = false
 
@@ -69,6 +76,7 @@ export class WsClient {
    *  good handshake, rejected on teardown) so awaiters never hang. */
   connect(): Promise<void> {
     if (this.readyPromise) return this.readyPromise
+    if (this.fatal) return Promise.reject(new Error(this.lastError || 'unrecoverable hello failure'))
     this.manualClose = false
     this.readyPromise = new Promise<void>((resolve, reject) => {
       this.readySettle = (err) => (err ? reject(err) : resolve())
@@ -96,6 +104,7 @@ export class WsClient {
         })
         .catch((err: Error) => {
           this.lastError = `hello 失败: ${err.message}`
+          if ((err as Error & { code?: number }).code === ErrorCodes.protocolVersionMismatch) this.fatal = true
           this.teardown(err)
         })
     }
@@ -166,8 +175,13 @@ export class WsClient {
       this.pending.delete(msg.id as string | number)
       clearTimeout(entry.timer)
       const err = (msg as JsonRpcResponse).error
-      if (err) entry.reject(new Error(`${err.message} (code ${err.code})`))
-      else entry.resolve((msg as JsonRpcResponse).result)
+      if (err) {
+        // The application code rides the rejection: callers branch on it (the
+        // hello handshake turns a protocol mismatch into a fatal stop).
+        const failure = new Error(`${err.message} (code ${err.code})`) as Error & { code?: number }
+        failure.code = err.code
+        entry.reject(failure)
+      } else entry.resolve((msg as JsonRpcResponse).result)
       return
     }
     if ('method' in msg && typeof msg.method === 'string') {
@@ -196,11 +210,11 @@ export class WsClient {
       try { socket.close() } catch { /* already closing */ }
     }
     if (wasConnected || this.state !== 'closed') this.setState('closed')
-    if (!this.manualClose) this.scheduleReconnect()
+    if (!this.manualClose && !this.fatal) this.scheduleReconnect()
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer || this.manualClose) return
+    if (this.reconnectTimer || this.manualClose || this.fatal) return
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.backoffMs = Math.min(this.backoffMs * 2, this.cfg.reconnectMaxMs ?? 30_000)

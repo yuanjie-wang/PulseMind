@@ -7,7 +7,7 @@ import { startAgentService, type AgentServiceHandle, type AgentServiceConversati
 import { agentClientRegistry } from '../src/main/agent/client-registry'
 import { hostedToolProxy } from '../src/main/agent/hosted/proxy'
 import { hostedPromptRouter } from '../src/main/agent/hosted/prompts'
-import { PROTOCOL_VERSION, type AgentEventData } from '../src/shared/agent-protocol'
+import { ErrorCodes, PROTOCOL_VERSION, type AgentEventData } from '../src/shared/agent-protocol'
 import type { AgentServiceSessions } from '../src/main/agent/service-sessions'
 import type { SandboxApprovalMode } from '../src/shared/sandbox/policy'
 
@@ -551,6 +551,48 @@ describe('M0.4 session surface', () => {
       client.notify('iteration_limit.response', { sessionId, approved: true })
       await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'respondToTool' && c.args[0] === 'tu_q' && c.args[1] === '甲'))
       await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'extendLoop'))
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('answers request-shaped relays; an unknown callId and a dead session error back', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const { client, sessionId } = await openWithSession(handle)
+
+      // Nothing parked under these callIds (server-side timeouts reject after
+      // 2/5 minutes): the relay must say so, or the panel's buttons die
+      // silently — the defect this reply path exists for.
+      const staleApproval = await client.request('approval.response', { callId: 'tu_none', approved: true }, 8_000)
+      expect(staleApproval.error?.code).toBe(ErrorCodes.invalidParams)
+      const staleAsk = await client.request('ask_user.response', { callId: 'tu_none', response: 'x' }, 8_000)
+      expect(staleAsk.error?.code).toBe(ErrorCodes.invalidParams)
+
+      // A live prompt answers ok and settles into the engine.
+      sessions.setAskHandler((sid) => {
+        sessions.emit(sid, {
+          type: 'status',
+          status: 'awaiting_approval',
+          tools: [{ toolUseId: 'tu_r', name: 'write', detail: '{}' }],
+        })
+      })
+      await client.request('agent.ask', { sessionId, content: 'go' }, 8_000)
+      await client.waitFor('approval.request')
+      const settled = await client.request('approval.response', { callId: 'tu_r', approved: true }, 8_000)
+      expect(settled.result).toMatchObject({ ok: true })
+      await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'approveTool' && c.args[0] === 'tu_r'))
+
+      // The loop-limit decision has no callId — its failure mode is a dead
+      // session, and the reply is what keeps the panel's card from sitting
+      // there forever with a dead 继续/停止 pair.
+      const dead = await client.request('iteration_limit.response', { sessionId: 'ws_never_created', approved: true }, 8_000)
+      expect(dead.error?.code).toBe(ErrorCodes.sessionNotFound)
+      const alive = await client.request('iteration_limit.response', { sessionId, approved: false }, 8_000)
+      expect(alive.result).toMatchObject({ ok: true })
+      await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'stopExecution'))
 
       client.close()
     } finally {

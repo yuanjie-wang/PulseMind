@@ -72,27 +72,35 @@ class HostedPromptRouter {
     this.asks.clear()
   }
 
-  handleApprovalResponse(params: ApprovalResponseParams): void {
+  /** Settle one parked approval. Returns whether the callId was still pending —
+   *  the ws server turns a false into an error reply so the remote client's
+   *  button reports a stale answer (server-side timeouts reject silently; the
+   *  panel's buttons can easily outlive their prompt). */
+  handleApprovalResponse(params: ApprovalResponseParams): boolean {
     const entry = this.approvals.get(params.callId)
     if (!entry) {
       // No prompt under this callId: it timed out, or the session was never
       // routed to a hosted client. Silence here hides a whole class of "the
       // button does nothing" bugs — say so instead.
       console.warn(`[HostedPrompts] approval.response for unknown callId: ${params.callId}`)
-      return
+      return false
     }
     this.clear('approvals', params.callId)
     this.engineCall(entry.sessionId, params.approved ? 'approveTool' : 'rejectTool', [entry.toolUseId])
+    return true
   }
 
-  handleAskUserResponse(params: AskUserResponseParams): void {
+  /** Same contract as handleApprovalResponse: true when the question was still
+   *  pending and the answer was dispatched into the engine. */
+  handleAskUserResponse(params: AskUserResponseParams): boolean {
     const entry = this.asks.get(params.callId)
     if (!entry) {
       console.warn(`[HostedPrompts] ask_user.response for unknown callId: ${params.callId}`)
-      return
+      return false
     }
     this.clear('asks', params.callId)
     this.engineCall(entry.sessionId, 'respondToTool', [entry.toolUseId, String(params.response ?? '')])
+    return true
   }
 
   /** Loop-limit decision from the panel: continue extends the loop, anything

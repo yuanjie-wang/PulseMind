@@ -74,8 +74,10 @@ export type MethodName = (typeof Methods)[keyof typeof Methods]
 /** WebSocket close codes (4400–4499 is the application-defined range).
  *  Clients act on these: `unauthorized` means re-pair, `replaced` means another
  *  connection claimed the same client id, `forbiddenOrigin` means the caller is
- *  a web page rather than an extension. */
+ *  a web page rather than an extension. `protocolMismatch` follows a failed
+ *  hello — the service closes the socket after answering the hello error. */
 export const CloseCodes = {
+  protocolMismatch: 4400,
   unauthorized: 4401,
   forbiddenOrigin: 4403,
   replaced: 4409,

@@ -105,19 +105,29 @@ async function runEnsureClient(forceRediscover: boolean): Promise<void> {
       state.client?.close()
       state.client = null
       state.clientKey = ''
-      state.reason = '未发现桌面端服务（端口 8765–8779 无响应）'
+      state.reason = cfg.serviceUrl
+        ? `未连接到手动指定的服务（${cfg.serviceUrl} 无响应）`
+        : '未发现桌面端服务（端口 8765–8779 无响应）'
       broadcastState()
       return
     }
     state.discovery = { wsUrl: found.wsUrl, port: found.port }
-    // Persist what we paired with so the options page shows the endpoint in use
-    // (a manual override in cfg still wins on the next discovery pass).
-    if (!cfg.serviceUrl || !cfg.token) await saveConfig({ serviceUrl: found.wsUrl, token: found.token })
+    // Persist ONLY what was missing, so the options page shows the endpoint in
+    // use without overwriting the user's manual literals: a manual serviceUrl
+    // (or token) is what discovery just used — saving the discovered form over
+    // it would silently rewrite e.g. ws://localhost:8765 into ws://127.0.0.1:8765.
+    const patch: ExtensionConfig = {}
+    if (!cfg.serviceUrl) patch.serviceUrl = found.wsUrl
+    if (!cfg.token) patch.token = found.token
+    if (patch.serviceUrl || patch.token) await saveConfig(patch)
   }
 
   const token = cfg.token ?? (await loadConfig()).token ?? ''
   const key = `${state.discovery.wsUrl}|${token}`
-  if (state.client && state.clientKey === key) return
+  // A fatal client (hello protocol mismatch) must not block this pass: the
+  // keepalive alarm comes through here every 30s and is the ONE recovery path
+  // once reconnects stopped — rebuild it so a desktop that upgrades re-heals.
+  if (state.client && state.clientKey === key && !state.client.fatal) return
 
   state.client?.close()
   const client = new WsClient(

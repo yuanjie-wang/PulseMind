@@ -23,6 +23,8 @@ import {
   bindTabSession,
   clearSession,
   clearTab,
+  clearTabApprovalMode,
+  clearTabModelId,
   getSessionForTab,
   getTabApprovalMode,
   getTabForSession,
@@ -91,6 +93,11 @@ export class PanelBridge {
           await clearTab(tabId)
           await bindTabSession(tabId, created.sessionId)
           this.mirrors.set(created.sessionId, freshSessionState())
+          // Pre-session 授权/模型 choices ride onto the fresh conversation too —
+          // the same carry the first ask performs, so where the choice lands
+          // does not depend on whether the user sends or hits 新会话 first.
+          await this.applyTabApprovalMode(tabId, created.sessionId)
+          await this.applyTabModelId(tabId, created.sessionId)
           const summary = await this.listSessions(client)
           this.broadcast('panel/sessions', summary)
           return { ok: true, snapshot: await this.snapshot(tabId) }
@@ -123,13 +130,17 @@ export class PanelBridge {
         }
 
         case 'panel/set-approval': {
-          // Remember it on the tab first: with no session yet there is no
-          // conversation row to carry the choice, and ensureSession replays it
-          // once one exists.
-          await setTabApprovalMode(tabId, msg.mode)
+          // Tab-scoped choices are strictly PRE-session, like 模型: with no
+          // session yet there is no conversation row to carry the choice, so it
+          // waits here and ensureSession replays it once one exists (and clears
+          // it). With a session the column takes the click directly — writing
+          // the tab value too would leave a stale duplicate that resurrects on
+          // the next fresh session.
           const sessionId = await getSessionForTab(tabId)
           if (sessionId) {
             await this.requireClient().request(Methods.sessionSetApprovalMode, { sessionId, mode: msg.mode })
+          } else {
+            await setTabApprovalMode(tabId, msg.mode)
           }
           return { ok: true, snapshot: await this.snapshot(tabId) }
         }
@@ -152,26 +163,32 @@ export class PanelBridge {
         }
 
         case 'panel/approval-response': {
-          // Fire-and-forget: the service settles the parked tool call with it
-          // and sends the resulting status event, which is what updates the panel.
-          this.requireClient().notify(Methods.approvalResponse, { callId: msg.callId, approved: msg.approved })
+          // A request, not a notify: the service answers whether the callId was
+          // still parked. After a server-side timeout (审批 2 分钟静默即拒) the
+          // buttons can outlive their prompt — an unknown callId must reach the
+          // panel as a failed answer, not vanish into a server-side warn.
+          await this.requireClient().request(Methods.approvalResponse, { callId: msg.callId, approved: msg.approved })
           return { ok: true }
         }
 
         case 'panel/answer': {
-          this.requireClient().notify(Methods.askUserResponse, { callId: msg.callId, response: msg.response })
+          // Same shape as the approval relay: an unknown/timeout callId comes
+          // back as an error the panel can show (the engine settles its own
+          // timeouts with a timeout note, so the loop never stalls on it).
+          await this.requireClient().request(Methods.askUserResponse, { callId: msg.callId, response: msg.response })
           return { ok: true }
         }
 
         case 'panel/iteration-response': {
-          // Fire-and-forget like the approval answer: the engine is parked on
-          // the loop-limit decision (status awaiting_extension — no callId,
-          // the status event itself is the prompt) and the resulting status
-          // event updates the panel. The service's hosted router maps the
-          // decision to extendLoop / stopExecution.
+          // The engine is parked on the loop-limit decision (status
+          // awaiting_extension — no callId, the status event itself is the
+          // prompt) and the resulting status event updates the panel. Still sent
+          // as a request, so a session that is already gone surfaces as
+          // 提交失败 instead of leaving the card up forever. The service's
+          // hosted router maps the decision to extendLoop / stopExecution.
           const sessionId = await getSessionForTab(tabId)
           if (!sessionId) return { ok: false, error: 'no session' }
-          this.requireClient().notify(Methods.iterationLimitResponse, { sessionId, approved: msg.approved })
+          await this.requireClient().request(Methods.iterationLimitResponse, { sessionId, approved: msg.approved })
           return { ok: true }
         }
 
@@ -245,28 +262,34 @@ export class PanelBridge {
     return created.sessionId
   }
 
-  /** Carry a pre-session 授权 choice onto the session that just appeared. */
+  /** Carry a pre-session 授权 choice onto the session that just appeared, then
+   *  consume it: the value exists only to bridge the gap before the column,
+   *  and surviving the carry it would resurface onto every later session this
+   *  tab creates from scratch (a pick from sessions ago silently pinning a
+   *  fresh conversation). Kept on a failed carry — the next message retries. */
   private async applyTabApprovalMode(tabId: number, sessionId: string): Promise<void> {
     const mode = await getTabApprovalMode(tabId)
     if (!mode) return
-    await this.requireClient()
-      .request(Methods.sessionSetApprovalMode, { sessionId, mode })
-      .catch(() => {
-        /* the next message re-reads the stored mode anyway */
-      })
+    try {
+      await this.requireClient().request(Methods.sessionSetApprovalMode, { sessionId, mode })
+      await clearTabApprovalMode(tabId)
+    } catch {
+      /* the next message re-reads the stored mode anyway */
+    }
   }
 
   /** Carry a pre-session 模型 choice onto the session that just appeared —
-   *  same contract as the 授权 carry above: the column becomes the authority
-   *  once it exists, and the tab value only bridges the gap before it. */
+   *  same contract as the 授权 carry above: consumed on success, kept on
+   *  failure. */
   private async applyTabModelId(tabId: number, sessionId: string): Promise<void> {
     const profileId = await getTabModelId(tabId)
     if (!profileId) return
-    await this.requireClient()
-      .request(Methods.modelSetActive, { sessionId, profileId })
-      .catch(() => {
-        /* the label re-reads the stored model on the next snapshot anyway */
-      })
+    try {
+      await this.requireClient().request(Methods.modelSetActive, { sessionId, profileId })
+      await clearTabModelId(tabId)
+    } catch {
+      /* the label re-reads the stored model on the next snapshot anyway */
+    }
   }
 
   /** `session.list` answers with the model state riding along, so the two things

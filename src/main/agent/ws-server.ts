@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto'
 import { shortUuid } from '../utils/id'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
+  CloseCodes,
   ErrorCodes,
   Methods,
   Notifications,
@@ -254,6 +255,11 @@ export async function startAgentService(
             if (params.protocolVersion !== PROTOCOL_VERSION) {
               send(makeError(msg.id ?? null, ErrorCodes.protocolVersionMismatch,
                 `protocol version mismatch: client ${String(params.protocolVersion)}, service ${PROTOCOL_VERSION}`))
+              // Close instead of leaving the socket half-alive: the client has
+              // its answer, and a connection that can never speak the protocol
+              // must not sit in `conns` (it would be kicked only by the NEXT
+              // hello of the same clientId).
+              socket.close(CloseCodes.protocolMismatch, 'protocol version mismatch')
               break
             }
             send(makeResult(msg.id ?? null, { protocolVersion: PROTOCOL_VERSION, serviceVersion: SERVICE_VERSION }))
@@ -428,15 +434,37 @@ export async function startAgentService(
             break
           }
           case Methods.approvalResponse: {
-            hostedPromptRouter.handleApprovalResponse(params as unknown as ApprovalResponseParams)
+            // Reply only to real requests (id-carrying frames): the extension's
+            // panel sends these as requests so an unknown callId (server-side
+            // timeout already rejected it) reaches the button as an error;
+            // notification senders (Anywhere compat) get no reply, as before.
+            const handled = hostedPromptRouter.handleApprovalResponse(params as unknown as ApprovalResponseParams)
+            if (msg.id !== undefined && msg.id !== null) {
+              if (handled) send(makeResult(msg.id, { ok: true }))
+              else send(makeError(msg.id, ErrorCodes.invalidParams, `unknown callId: ${String((params as { callId?: unknown }).callId)}`))
+            }
             break
           }
           case Methods.askUserResponse: {
-            hostedPromptRouter.handleAskUserResponse(params as unknown as AskUserResponseParams)
+            const handled = hostedPromptRouter.handleAskUserResponse(params as unknown as AskUserResponseParams)
+            if (msg.id !== undefined && msg.id !== null) {
+              if (handled) send(makeResult(msg.id, { ok: true }))
+              else send(makeError(msg.id, ErrorCodes.invalidParams, `unknown callId: ${String((params as { callId?: unknown }).callId)}`))
+            }
             break
           }
           case Methods.iterationLimitResponse: {
-            hostedPromptRouter.handleIterationLimit(params as unknown as IterationLimitResponseParams)
+            // The status event is the decision's only feedback channel, so the
+            // reply is just delivery confirmation: a session that is already
+            // gone must error here, or the panel's loop-limit card would sit
+            // there forever with a dead 继续/停止 pair.
+            const itSessionId = String(params.sessionId ?? '')
+            const sessionLive = itSessionId !== '' && sessions.hasSession(itSessionId)
+            if (sessionLive) hostedPromptRouter.handleIterationLimit(params as unknown as IterationLimitResponseParams)
+            if (msg.id !== undefined && msg.id !== null) {
+              if (sessionLive) send(makeResult(msg.id, { ok: true }))
+              else send(makeError(msg.id, ErrorCodes.sessionNotFound, `session not found: ${itSessionId}`))
+            }
             break
           }
           case Methods.ping: {

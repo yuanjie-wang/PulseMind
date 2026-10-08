@@ -38,7 +38,14 @@ export async function getTabForSession(sessionId: string): Promise<number | null
   return map[sessionId] ?? null
 }
 
-/** Bind a tab to a session (idempotent; the previous binding is dropped). */
+/** Bind a tab to a session (idempotent; the previous binding is dropped).
+ *
+ * The cleanup is symmetric in BOTH directions: this tab's previous session is
+ * released, and any OTHER tab still pointing at this session is released too —
+ * the session now routes here, so a stale `tabSessions[oldTab] = sessionId`
+ * would let the old tab's panel believe it still owns the session while every
+ * event is delivered to the new one (its asks would vanish into a transcript
+ * it never receives). Hit for real by resuming one session from two tabs. */
 export async function bindTabSession(tabId: number, sessionId: string): Promise<void> {
   const [tabSessions, sessionTabs] = await Promise.all([
     read<IdMap>(KEY_TAB_SESSIONS, {}),
@@ -46,6 +53,9 @@ export async function bindTabSession(tabId: number, sessionId: string): Promise<
   ])
   for (const [sid, tid] of Object.entries(sessionTabs)) {
     if (tid === tabId) delete sessionTabs[sid]
+  }
+  for (const [tid, sid] of Object.entries(tabSessions)) {
+    if (sid === sessionId && tid !== String(tabId)) delete tabSessions[tid]
   }
   tabSessions[String(tabId)] = sessionId
   sessionTabs[sessionId] = tabId
@@ -114,6 +124,16 @@ export async function setTabApprovalMode(tabId: number, mode: SandboxApprovalMod
   await write(KEY_APPROVAL_MODES, map)
 }
 
+/** The carried choice was consumed (ensureSession applied it to the session
+ *  that just appeared): drop it, or it would resurface onto every later
+ *  session this tab creates from scratch — a pick from several sessions ago
+ *  silently pinning a fresh conversation. */
+export async function clearTabApprovalMode(tabId: number): Promise<void> {
+  const map = await read<ModeMap>(KEY_APPROVAL_MODES, {})
+  delete map[String(tabId)]
+  await write(KEY_APPROVAL_MODES, map)
+}
+
 /** The tab's pre-session 模型 choice, same contract as the 授权 one above: a
  *  panel can pick a model before its session exists, so the choice waits here
  *  and ensureSession applies it to the conversation the first message creates.
@@ -126,5 +146,12 @@ export async function getTabModelId(tabId: number): Promise<string | null> {
 export async function setTabModelId(tabId: number, profileId: string): Promise<void> {
   const map = await read<ModeMap>(KEY_MODEL_IDS, {})
   map[String(tabId)] = profileId
+  await write(KEY_MODEL_IDS, map)
+}
+
+/** Consumed pre-session 模型 choice — same contract as clearTabApprovalMode. */
+export async function clearTabModelId(tabId: number): Promise<void> {
+  const map = await read<ModeMap>(KEY_MODEL_IDS, {})
+  delete map[String(tabId)]
   await write(KEY_MODEL_IDS, map)
 }
