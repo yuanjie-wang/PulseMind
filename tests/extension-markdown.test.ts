@@ -2,21 +2,72 @@
  *
  * The transcript renders assistant output (and later page content) into the
  * page, so escaping is a security boundary, not a formatting detail: nothing the
- * model or the page produces may become live HTML or a `javascript:` href. */
+ * model or the page produces may become live script, a `javascript:` href, or
+ * an event handler. Raw HTML therefore renders only through the sanitizer
+ * (DOMPurify, explicit allowlist) — same as the desktop's XMarkdown, which
+ * feeds raw HTML through htmlparser2. DOMPurify needs a DOM: the suite runs in
+ * node, so a jsdom window is installed before any render call. */
 
 import { describe, expect, it } from 'vitest'
+import { JSDOM } from 'jsdom'
 import { escapeHtml, renderMarkdown } from '../src/extension/ui/markdown'
 
+const dom = new JSDOM('<!doctype html><html><body></body></html>')
+;(globalThis as unknown as { window: Window }).window = dom.window as unknown as Window
+;(globalThis as unknown as { document: Document }).document = dom.window.document
+
 describe('panel markdown', () => {
-  it('escapes raw HTML instead of emitting it', () => {
-    expect(renderMarkdown('<script>alert(1)</script>')).toBe('<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>')
-    expect(renderMarkdown('<img src=x onerror=alert(1)>')).not.toContain('<img')
-    expect(renderMarkdown('<img src=x onerror=alert(1)>')).toContain('&lt;img')
+  it('strips live HTML but keeps its text', () => {
+    // `<script>` is not an allowed tag: the tags vanish, the payload stays as
+    // inert text — it must not disappear silently (lost content reads as a
+    // renderer bug) and must not survive as markup.
+    expect(renderMarkdown('<script>alert(1)</script>')).toBe('<p>alert(1)</p>')
+    const img = renderMarkdown('<img src=x onerror=alert(1)>')
+    expect(img).not.toContain('onerror')
+    expect(img).toContain('<img')
     expect(escapeHtml('a & b "c" \'d\' <e>')).toBe('a &amp; b &quot;c&quot; &#39;d&#39; &lt;e&gt;')
   })
 
-  it('escapes code spans and fences', () => {
+  it('renders html blocks the desktop renders, sanitized', () => {
+    // The styled-card shape models actually emit, as a block and self-closed.
+    const card = renderMarkdown('<div style="color:red">卡片</div>')
+    expect(card).toContain('<div style="color:red">卡片</div>')
+    const multi = renderMarkdown('<div style="background:#f5f5f5">\n第一行\n第二行\n</div>')
+    expect(multi).toContain('<div style="background:#f5f5f5">')
+    expect(multi).toContain('第一行')
+    expect(multi).toContain('</div>')
+    // Markdown is not parsed inside a raw html block (desktop parity).
+    expect(renderMarkdown('<div>**not bold**</div>')).toContain('<div>**not bold**</div>')
+  })
+
+  it('sanitizes html blocks: no handlers, no script/style/frame, no javascript: hrefs', () => {
+    expect(renderMarkdown('<div onclick="alert(1)">x</div>')).not.toContain('onclick')
+    expect(renderMarkdown('<div onclick="alert(1)">x</div>')).toContain('>x<')
+    const style = renderMarkdown('<style>body { visibility: hidden }</style>')
+    expect(style).not.toContain('<style')
+    expect(renderMarkdown('<iframe src="https://evil.example"></iframe>')).not.toContain('<iframe')
+    expect(renderMarkdown('<form action="https://evil.example"><input name="pw"></form>')).not.toContain('<form')
+    const js = renderMarkdown('<a href="javascript:alert(1)">点我</a>')
+    expect(js).not.toContain('javascript:')
+    expect(js).toContain('点我')
+  })
+
+  it('forces sanitized links to open outside the page', () => {
+    const out = renderMarkdown('<a href="https://example.com/a">docs</a>')
+    expect(out).toContain('target="_blank"')
+    expect(out).toContain('rel="noreferrer noopener"')
+  })
+
+  it('renders inline html inside paragraphs, sanitized', () => {
+    expect(renderMarkdown('这是 <b>重点</b> 和 <span style="color:red">红色</span>')).toBe(
+      '<p>这是 <b>重点</b> 和 <span style="color:red">红色</span></p>',
+    )
+    // Code spans stay literal: the inline-html rule runs after them and must
+    // never see their content.
     expect(renderMarkdown('`<b>x</b>`')).toBe('<p><code>&lt;b&gt;x&lt;/b&gt;</code></p>')
+  })
+
+  it('escapes code spans and fences', () => {
     const fenced = renderMarkdown('```html\n<script>alert(1)</script>\n```')
     expect(fenced).toContain('<pre><code class="pm-lang-html">&lt;script&gt;')
     expect(fenced).not.toContain('<script>')

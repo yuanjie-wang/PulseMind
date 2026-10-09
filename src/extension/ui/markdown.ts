@@ -1,15 +1,25 @@
-/** Minimal dependency-free Markdown → HTML for the panel transcript.
+/** Minimal Markdown → HTML for the panel transcript.
  *
  * Security model: the source is escaped FIRST, and every step after that only
- * introduces tags this module generates. Assistant output and (later) page
- * content are untrusted, so raw HTML must never pass through; link targets are
- * scheme-checked so `javascript:` cannot be smuggled in through a link.
+ * introduces tags this module generates — with one deliberate exception, HTML
+ * blocks/spans. The desktop transcript renders raw HTML (XMarkdown feeds it
+ * through htmlparser2 + html-to-react), and the panel is the same UI, so model
+ * HTML must render here too. But the panel lives in a Shadow Root inside an
+ * arbitrary page, in the content script's isolated world where `chrome.runtime`
+ * is reachable — so the HTML passes a sanitizer first (DOMPurify, explicit
+ * allowlist: no script/style/iframe/form/svg, no event handlers, no data-*,
+ * `javascript:` URIs dropped; links are forced to `target="_blank"`). The
+ * sanitizer owns that boundary — hand-rolled allowlist filtering is how mXSS
+ * bugs get written, so this is the one dependency the module takes. Link
+ * targets in the module's OWN markdown syntax stay scheme-checked below.
  *
  * Scope tracks what the desktop transcript renders with `@ant-design/x-markdown`:
  * code fences, headings at their real level (the light theme's rules only
  * address `h1`–`h4`, so a clamped level would fall outside the styling), nested
- * lists, quotes, tables, rules, code spans, bold/italic, links. Anything richer
- * (math, mermaid, syntax highlighting) belongs in the desktop UI. */
+ * lists, quotes, tables, rules, code spans, bold/italic, links, and raw HTML.
+ * Anything richer (math, mermaid, syntax highlighting) belongs in the desktop UI. */
+
+import DOMPurify from 'dompurify'
 
 const ESCAPES: Record<string, string> = {
   '&': '&amp;',
@@ -32,18 +42,108 @@ function safeUrl(raw: string): string | null {
   return null
 }
 
+// ── raw HTML pass-through (sanitized) ─────────────────────────────────
+
+/** Text/structure/formatting only — the tags a model answer legitimately uses
+ *  for styled cards and emphasis. Deliberately absent: script/style/link/meta
+ *  (a `<style>` block would restyle the whole shadow tree), iframe/object/
+ *  embed/portal, svg/math (mXSS surface, no use here), and every form element
+ *  (a model-authored form is a phishing surface inside the panel). */
+const HTML_ALLOWED_TAGS = [
+  'a', 'abbr', 'article', 'aside', 'b', 'bdi', 'bdo', 'blockquote', 'br', 'caption',
+  'center', 'code', 'col', 'colgroup', 'dd', 'del', 'details', 'dfn', 'div', 'dl',
+  'dt', 'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i',
+  'img', 'ins', 'kbd', 'li', 'main', 'mark', 'ol', 'p', 'pre', 'q', 's', 'samp',
+  'section', 'small', 'span', 'strike', 'strong', 'sub', 'summary', 'sup', 'table',
+  'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul',
+]
+
+/** Presentation and table geometry; `style` is the feature (styled cards).
+ *  Anything event-ish or behavior-ish (onclick, srcset, formaction…) simply has
+ *  no entry here. target/rel are added by the hook below, not this list. */
+const HTML_ALLOWED_ATTR = [
+  'style', 'class', 'id', 'href', 'src', 'alt', 'title', 'width', 'height',
+  'align', 'colspan', 'rowspan', 'start', 'dir', 'lang', 'span',
+]
+
+type Purifier = ReturnType<typeof DOMPurify>
+let purifier: Purifier | null = null
+
+function sanitizeHtml(dirty: string): string {
+  // Fail closed: no DOM → nothing renders. Every real runtime (content script,
+  // options page, probe harness, jsdom-backed tests) has one; node alone does not.
+  const w = typeof window === 'undefined' ? null : window
+  if (!w) return ''
+  if (!purifier) {
+    purifier = DOMPurify(w)
+    purifier.addHook('afterSanitizeAttributes', (node) => {
+      // A model-authored link must never navigate the host page in place.
+      if (node.nodeName === 'A') {
+        node.setAttribute('target', '_blank')
+        node.setAttribute('rel', 'noreferrer noopener')
+      }
+    })
+  }
+  return purifier.sanitize(dirty, {
+    ALLOWED_TAGS: HTML_ALLOWED_TAGS,
+    ALLOWED_ATTR: HTML_ALLOWED_ATTR,
+    ALLOW_DATA_ATTR: false,
+    KEEP_CONTENT: true,
+  })
+}
+
+/** An inline HTML fragment: a tag, a closing tag, or a comment. Attribute
+ *  values containing `>` simply fail to match and stay escaped — the failure
+ *  direction is "shows literal text", never "executes". */
+const INLINE_HTML = /<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^<>]*)?>|<!--[\s\S]*?-->|<!DOCTYPE[^>]*>/g
+
+/** A PAIRED inline span (`<b>重点</b>`): sanitized as one fragment so the text
+ *  between the tags stays inside them — tag-by-tag sanitization would emit
+ *  `<b></b>重点` and break the emphasis. Same `[^<>]` attribute rule applies.
+ *  Nesting rides along: the outermost pair captures inner tags raw, and the
+ *  sanitizer processes the whole fragment. */
+const INLINE_HTML_SPAN = /<(b|strong|i|em|u|s|del|strike|mark|sub|sup|span|a|abbr|kbd|q|dfn|small|bdi|bdo|code)(\s[^<>]*)?>([\s\S]*?)<\/\1>/gi
+
+/** Void/self-contained inline tags — no closing tag to pair with. */
+const INLINE_HTML_VOID = /<(br|img|hr|wbr)(\s[^<>]*)?\/?>/gi
+
+/** Block-level HTML: a line that opens with one of these starts a raw block
+ *  (CommonMark type 6). Inline-only tags (`<b>…` at line start) stay in the
+ *  paragraph path, where the inline rule below sanitizes them. */
+const HTML_BLOCK_TAGS = new Set([
+  'article', 'aside', 'blockquote', 'center', 'details', 'div', 'dl', 'figure',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'main', 'ol', 'p', 'pre', 'section',
+  'summary', 'table', 'ul',
+])
+
+const htmlBlockOpen = (line: string): string | null => {
+  const m = /^\s*<([a-zA-Z][a-zA-Z0-9-]*)[\s>]/.exec(line)
+  if (!m) return null
+  const name = m[1].toLowerCase()
+  return HTML_BLOCK_TAGS.has(name) ? name : null
+}
+
 /** Sentinel-delimited stash for inline code, so later inline rules can't touch it. */
 const STASH_OPEN = '\u0000'
 const STASH_CLOSE = '\u0001'
 
 function renderInline(text: string): string {
-  // Escaping happens first; everything below wraps already-escaped text.
-  let out = escapeHtml(text)
   const stash: string[] = []
   const keep = (html: string): string => `${STASH_OPEN}${stash.push(html) - 1}${STASH_CLOSE}`
 
-  // Code spans first: their content is literal.
-  out = out.replace(/`([^`\n]+)`/g, (_m, code: string) => keep(`<code>${code}</code>`))
+  // Code spans first — they run on the RAW text (each line is raw here; the
+  // escaping below only touches what stays outside the stash), so their
+  // content stays literal no matter what the later rules see.
+  let out = text.replace(/`([^`\n]+)`/g, (_m, code: string) => keep(`<code>${escapeHtml(code)}</code>`))
+  // Inline HTML fragments next: paired spans first (content stays inside the
+  // tags), then void tags, then any leftover stray tag/comment — each whole
+  // fragment sanitized, then stashed like code spans so the markdown rules
+  // below can't reach into them.
+  out = out.replace(INLINE_HTML_SPAN, (m) => keep(sanitizeHtml(m)))
+  out = out.replace(INLINE_HTML_VOID, (m) => keep(sanitizeHtml(m)))
+  out = out.replace(INLINE_HTML, (m) => keep(sanitizeHtml(m)))
+  // Escaping happens for everything that remains; the sentinels survive it.
+  out = escapeHtml(out)
   // Links — only when the target passes the scheme check.
   out = out.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (match, label: string, href: string) => {
     const url = safeUrl(href)
@@ -184,6 +284,28 @@ export function renderMarkdown(source: string): string {
       while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++])
       const lang = fence[1] ? ` class="pm-lang-${escapeHtml(fence[1])}"` : ''
       html.push(`<pre><code${lang}>${escapeHtml(body.join('\n'))}</code></pre>`)
+      continue
+    }
+
+    // Raw HTML block (CommonMark type 6): from the opening line to a blank line
+    // or the closing tag. Sanitized as a whole; markdown is NOT parsed inside,
+    // matching the desktop's HTML-block behaviour.
+    const blockTag = htmlBlockOpen(line)
+    if (blockTag) {
+      flushAll()
+      const buf: string[] = [line]
+      const closeRe = new RegExp(`</${blockTag}\\s*>\\s*$`, 'i')
+      let j = i + 1
+      if (!closeRe.test(line)) {
+        while (j < lines.length && !/^\s*$/.test(lines[j]) && !closeRe.test(lines[j])) {
+          buf.push(lines[j])
+          j++
+        }
+      }
+      // i lands on the line the block stopped at (closing tag, blank, EOF);
+      // the outer loop's i++ steps past it.
+      i = j
+      html.push(sanitizeHtml(buf.join('\n')))
       continue
     }
 

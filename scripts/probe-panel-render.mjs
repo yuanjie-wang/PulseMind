@@ -236,6 +236,32 @@ const PANELS = [
       messages: [USER, { id: 'a4', role: 'assistant', createdAt: NOW, contentBlocks: [text('先看一眼页面结构，马上回来。')] }],
     }),
   },
+  {
+    // Raw HTML (user 2026-10-09: 面板要像桌面一样渲染 HTML 块): a styled card
+    // must render with its inline style, while the hostile samples ride along —
+    // a script block degenerates to inert text and an onerror img keeps its src
+    // but not its handler (sanitizer: DOMPurify allowlist, ui/markdown.ts).
+    title: 'HTML 卡片',
+    status: '就绪',
+    session: shell({
+      messages: [
+        USER,
+        {
+          id: 'a5',
+          role: 'assistant',
+          createdAt: NOW,
+          contentBlocks: [
+            text(
+              // The fixtures live inside this file's HARNESS template literal, so
+              // the newlines of the html sample have to survive one level of
+              // template evaluation — hence the doubled backslashes below.
+              '<div style="background:#fff7e6;padding:8px;border-radius:8px">橙色卡片</div>\\n\\n<script>alert(1)</script>\\n\\n<img src=x onerror=alert(1)>\\n\\n正文照常',
+            ),
+          ],
+        },
+      ],
+    }),
+  },
 ]
 
 // ── the host mirrors content/index.tsx exactly (same order, same two sheets) ──
@@ -501,6 +527,44 @@ check(
   'action row is the chat viewOnly variant (复制 / 下载 + 耗时 · Token)',
   probe.actionRow && probe.actionButtons.join('/') === '复制/下载' && /耗时|s|ms/.test(probe.actionStats) && !probe.actionStats.includes('收藏'),
   `${probe.actionButtons.join('/')} — ${probe.actionStats.replace(/\s+/g, ' ').trim()}`,
+)
+
+// ── HTML 卡片（真浏览器里的消毒渲染，user 2026-10-09）────────────────────
+// jsdom 里的 vitest 已经验过 sanitizer 的字符串输出；这里补的是字符串之后的
+// 一环：innerHTML 进 shadow root 后 inline style 真的生效、script 真的不成
+// 元素、img 的 onerror 真的不在属性里。
+const htmlCard = await page.evaluate(() => {
+  // Assistant markdown lands in `.pm-bubble-assistant` → `.pm-md` (Transcript's
+  // user bubble is `.pm-bubble` — not this fixture's container).
+  const root = window.__panels()[5]
+  const card = root.querySelector('.pm-bubble-assistant div[style]')
+  const style = card ? getComputedStyle(card) : null
+  return {
+    cardText: card?.textContent ?? '',
+    cardBg: style?.backgroundColor ?? '',
+    cardRadius: style?.borderRadius ?? '',
+    scriptEl: !!root.querySelector('.pm-bubble-assistant script'),
+    bodyTexts: [...root.querySelectorAll('.pm-bubble-assistant p, .pm-bubble-assistant div')].map((n) => n.textContent ?? ''),
+    // Elements don't survive page.evaluate's serialization — read the
+    // attributes here, not at the assertion.
+    imgOnerror: root.querySelector('.pm-bubble-assistant img')?.getAttribute('onerror') ?? null,
+    imgSrc: root.querySelector('.pm-bubble-assistant img')?.getAttribute('src') ?? null,
+  }
+})
+check(
+  'html 卡片渲染且 inline style 生效（底色 + 圆角）',
+  htmlCard.cardText === '橙色卡片' && htmlCard.cardBg === 'rgb(255, 247, 230)' && htmlCard.cardRadius === '8px',
+  `${htmlCard.cardBg} / ${htmlCard.cardRadius}`,
+)
+check(
+  'script 块退化为惰性正文（无 script 元素，payload 是可见文本）',
+  !htmlCard.scriptEl && htmlCard.bodyTexts.some((t) => t.includes('alert(1)')),
+  `script=${htmlCard.scriptEl}`,
+)
+check(
+  'img 保留 src 但 onerror 被剥掉，正文照常',
+  htmlCard.imgOnerror === null && htmlCard.imgSrc === 'x' && htmlCard.bodyTexts.some((t) => t.includes('正文照常')),
+  `onerror=${htmlCard.imgOnerror}, src=${htmlCard.imgSrc}`,
 )
 
 // 操作行的可见性（镜像 SegmentBlock 的 actionsVisible，M2.9）：同一轮里只有
@@ -793,7 +857,7 @@ check(
 // clicks the header: the strip has to be there with the card still shut. Then the
 // header is clicked once, to keep checking the dark card it opens onto.
 const panelCount = await page.evaluate(() => window.__panels().length)
-check('all five state panels mounted', panelCount === 5, `${panelCount} panels`)
+check('all six state panels mounted', panelCount === 6, `${panelCount} panels`)
 
 const held = await page.evaluate(() => {
   const root = window.__panels()[1]
