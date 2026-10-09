@@ -103,9 +103,15 @@ describe('HtmlArtifactCard rendering', () => {
     expect(html).toMatch(/srcdoc=/i)
   })
 
-  it('carries the preview/source tabs and the header actions', () => {
+  it('carries the preview/source tabs and the actions in the hover toolbar', () => {
     const html = renderCard('<h1>hi</h1>')
-    expect(html).toContain('htmlCard.title')
+    // The toolbar (and every control in it) is always in the markup — CSS
+    // hides it at rest, :hover reveals it. The chrome itself is pinned by the
+    // wiring scans in html-card-wiring.test.ts.
+    expect(html).toContain('pm-html-card')
+    expect(html).toContain('pm-html-card-float')
+    expect(html).toContain('pm-html-card-toolbar')
+    expect(html).toContain('pm-html-card-body')
     expect(html).toContain('htmlCard.preview')
     expect(html).toContain('htmlCard.code')
     expect(html).toContain('htmlCard.copy')

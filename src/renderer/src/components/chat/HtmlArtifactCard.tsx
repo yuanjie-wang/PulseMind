@@ -51,8 +51,21 @@
  * no response headers, so meta is the only CSP vector, and a strict one would
  * kill the model's own inline scripts AND the measure script — height back to
  * the default, clipped (the preview pane strips for the same reason).
+ *
+ * Chrome (2026-10-09 user ruling): the header bar is hover chrome, not
+ * content — at rest the card is a bare rounded iframe with NO border (the
+ * border never appears, hovered or not); hovering floats the five controls
+ * (preview/code tabs + copy/browser/pane) in a toolbar OUTSIDE the card's
+ * top-right corner, and a streaming badge rides the top-left. When a clipping
+ * ancestor's top edge leaves no headroom (the transcript scroller — the card
+ * the user just scrolled into the upper viewport), the chrome flips to the
+ * card's INSIDE top corners (`.pm-html-card-flip`), or the scroller cuts it
+ * off. Inline styles cannot express hover state, so the chrome rides one
+ * injected sheet (`.pm-html-card-*`, the CommandCard pulseKeyframe
+ * precedent); the root's overflow:clip lives on `.pm-html-card-body`
+ * instead, or it would clip the outside toolbar.
  */
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button } from 'antd'
 import { ChromeOutlined, CopyOutlined, ExpandOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
@@ -64,6 +77,16 @@ const CARD_MIN_HEIGHT = 120
 const CARD_MAX_HEIGHT = 800
 const CARD_DEFAULT_HEIGHT = 280
 const STREAM_PREVIEW_MIN_INTERVAL = 1000
+/** How long the toolbar survives the pointer fully leaving the card — the
+ *  dropdown exit-intent grace that makes the outside toolbar reachable by a
+ *  fast flick (see CARD_CHROME_CSS). */
+const CHROME_LEAVE_GRACE_MS = 150
+/** Headroom (px) the outside toolbar needs above the card; when the card sits
+ *  closer to a clipping ancestor's top (the transcript scroller — the user
+ *  just scrolled the card into the upper viewport), the chrome flips to the
+ *  card's INSIDE top corners instead, or the scroller cuts it off — reported
+ *  as 「被前一个消息块遮挡」. */
+const CHROME_FLIP_HEADROOM_PX = 48
 
 /** useLayoutEffect in the browser (swap the blob URL in before paint), the
  *  plain effect under SSR/node — a server render of a layout effect warns and
@@ -143,6 +166,34 @@ export function toLocalFileUrl(filePath: string): string {
   return `local-file://${filePath.replace(/\\/g, '/')}`
 }
 
+/** The card's rest/hover chrome (see the header comment). Hover state is JS,
+ *  not `:hover`: a pure CSS gate flips `pointer-events` in the SAME frame the
+ *  card loses hover, so one mouse event that jumps past the toolbar's hit box
+ *  (a fast flick covers 30px+) leaves the pointer parked on a pass-through
+ *  toolbar that can never re-hover — a deadlock the probe reproduced. The
+ *  `.pm-html-card-on` class is applied by the component with a 150ms
+ *  leave-grace (the dropdown exit-intent pattern): the toolbar stays
+ *  interactive through the gap, and re-entering cancels the hide. No hover
+ *  border (2026-10-09 ruling): the root keeps a constant 1px transparent
+ *  border so the card's box never shifts. `.pm-html-card-float` sits at
+ *  `bottom: 100%` — entirely above the card, never clipped by it. */
+const CARD_CHROME_CSS = `
+.pm-html-card-body { border-radius: 10px; overflow: hidden; }
+.pm-html-card-float { position: absolute; bottom: 100%; right: 0; padding-bottom: 6px; opacity: 0; pointer-events: none; transition: opacity 0.15s ease; z-index: 30; }
+.pm-html-card-on .pm-html-card-float { opacity: 1; pointer-events: auto; }
+.pm-html-card-toolbar { display: flex; align-items: center; gap: 4px; padding: 2px 6px; background: var(--pm-tile-bg, var(--pm-code-bg)); border: 1px solid var(--pm-border-soft); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14); }
+.pm-html-card-stream { position: absolute; bottom: 100%; left: 0; padding-bottom: 6px; pointer-events: none; z-index: 30; }
+.pm-html-card-flip .pm-html-card-float { bottom: auto; top: 6px; }
+.pm-html-card-flip .pm-html-card-stream { bottom: auto; top: 6px; }
+`
+let cardChromeInjected = false
+if (typeof document !== 'undefined' && !cardChromeInjected) {
+  const el = document.createElement('style')
+  el.textContent = CARD_CHROME_CSS
+  document.head.appendChild(el)
+  cardChromeInjected = true
+}
+
 function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }): React.ReactElement {
   return (
     <button
@@ -171,6 +222,45 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   const [copied, setCopied] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Hover chrome with a leave-grace (CARD_CHROME_CSS has the why). mouseenter
+  // /mouseleave don't fire when the pointer moves between descendants, so
+  // crossing from the iframe into the toolbar never toggles; only fully
+  // exiting the card starts the grace, and re-entering cancels it.
+  const [chromeOn, setChromeOn] = useState(false)
+  const [chromeFlipped, setChromeFlipped] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const chromeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const chromeEnter = useCallback(() => {
+    if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current)
+    chromeTimerRef.current = null
+    // Per-hover room check: the outside toolbar needs CHROME_FLIP_HEADROOM_PX
+    // above the card, and every clipping/scrolling ancestor's top edge (the
+    // transcript scroller) cuts what crosses it — inside corners when tight.
+    const root = rootRef.current
+    if (root) {
+      let limit = 0
+      let node: HTMLElement | null = root.parentElement
+      while (node) {
+        if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(node).overflowY)) {
+          limit = Math.max(limit, node.getBoundingClientRect().top + node.clientTop)
+        }
+        node = node.parentElement
+      }
+      setChromeFlipped(root.getBoundingClientRect().top - limit < CHROME_FLIP_HEADROOM_PX)
+    }
+    setChromeOn(true)
+  }, [])
+  const chromeLeave = useCallback(() => {
+    if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current)
+    chromeTimerRef.current = setTimeout(() => setChromeOn(false), CHROME_LEAVE_GRACE_MS)
+  }, [])
+  useEffect(
+    () => () => {
+      if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current)
+    },
+    [],
+  )
 
   // The streaming snapshot: see the header comment. Replacing the frame's
   // document (each blob URL swap) reloads the frame, so freshness is
@@ -263,87 +353,85 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
 
   return (
     <div
+      ref={rootRef}
       data-html-artifact-card=""
+      className={`pm-html-card${chromeOn ? ' pm-html-card-on' : ''}${chromeFlipped ? ' pm-html-card-flip' : ''}`}
+      onMouseEnter={chromeEnter}
+      onMouseLeave={chromeLeave}
       style={{
+        position: 'relative',
         margin: '8px 0',
-        border: '1px solid var(--pm-border-soft)',
+        border: '1px solid transparent',
         borderRadius: 10,
-        background: 'var(--pm-tile-bg, var(--pm-code-bg))',
-        overflow: 'hidden',
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '5px 10px',
-          borderBottom: '1px solid var(--pm-border-soft)',
-          userSelect: 'none',
-        }}
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{ flexShrink: 0, stroke: 'var(--pm-text-secondary)' }}
-        >
-          <polyline points="16 18 22 12 16 6" />
-          <polyline points="8 6 2 12 8 18" />
-        </svg>
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--pm-text-strong)' }}>{t('htmlCard.title')}</span>
-        {streaming && <span style={{ fontSize: 11, color: 'var(--pm-text-muted)' }}>{t('htmlCard.streaming')}</span>}
-        <span style={{ flex: 1 }} />
-        <TabButton active={view === 'preview'} onClick={() => setView('preview')}>
-          {t('htmlCard.preview')}
-        </TabButton>
-        <TabButton active={view === 'code'} onClick={() => setView('code')}>
-          {t('htmlCard.code')}
-        </TabButton>
-        <span style={{ width: 1, height: 14, background: 'var(--pm-border-soft)' }} />
-        <Button size="small" type="text" icon={<CopyOutlined />} title={copied ? t('htmlCard.copied') : t('htmlCard.copy')} onClick={() => void onCopy()} />
-        <Button size="small" type="text" icon={<ChromeOutlined />} title={t('htmlCard.openInBrowser')} onClick={() => void onOpenInBrowser()} />
-        <Button size="small" type="text" icon={<ExpandOutlined />} title={t('htmlCard.openInPreview')} onClick={() => void onOpenInPreview()} />
-      </div>
-      {view === 'preview' ? (
-        // Opaque-origin sandbox: see the header comment. `#fff` matches
-        // HtmlPreview — card content is designed light regardless of theme.
-        <iframe
-          ref={iframeRef}
-          title={t('htmlCard.title')}
-          sandbox="allow-scripts allow-popups allow-forms allow-modals"
-          src={frameUrl ?? undefined}
-          srcDoc={frameUrl === null && (!CAN_PERSIST || persistFailed) ? doc : undefined}
-          style={{
-            display: 'block',
-            width: '100%',
-            height: bodyHeight ?? CARD_DEFAULT_HEIGHT,
-            border: 'none',
-            background: '#fff',
-          }}
-        />
-      ) : (
-        <pre
-          style={{
-            margin: 0,
-            padding: 12,
-            background: 'var(--pm-code-bg)',
-            color: 'var(--pm-text-body)',
-            fontSize: 12.5,
-            lineHeight: 1.55,
-            maxHeight: CARD_MAX_HEIGHT,
-            overflow: 'auto',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {code}
-        </pre>
+      {streaming && (
+        <div className="pm-html-card-stream">
+          <span
+            style={{
+              fontSize: 11,
+              color: 'var(--pm-text-muted)',
+              background: 'var(--pm-tile-bg, var(--pm-code-bg))',
+              border: '1px solid var(--pm-border-soft)',
+              borderRadius: 999,
+              padding: '2px 8px',
+            }}
+          >
+            {t('htmlCard.streaming')}
+          </span>
+        </div>
       )}
+      <div className="pm-html-card-float">
+        <div className="pm-html-card-toolbar" style={{ userSelect: 'none' }}>
+          <TabButton active={view === 'preview'} onClick={() => setView('preview')}>
+            {t('htmlCard.preview')}
+          </TabButton>
+          <TabButton active={view === 'code'} onClick={() => setView('code')}>
+            {t('htmlCard.code')}
+          </TabButton>
+          <span style={{ width: 1, height: 14, background: 'var(--pm-border-soft)' }} />
+          <Button size="small" type="text" icon={<CopyOutlined />} title={copied ? t('htmlCard.copied') : t('htmlCard.copy')} onClick={() => void onCopy()} />
+          <Button size="small" type="text" icon={<ChromeOutlined />} title={t('htmlCard.openInBrowser')} onClick={() => void onOpenInBrowser()} />
+          <Button size="small" type="text" icon={<ExpandOutlined />} title={t('htmlCard.openInPreview')} onClick={() => void onOpenInPreview()} />
+        </div>
+      </div>
+      <div className="pm-html-card-body">
+        {view === 'preview' ? (
+          // Opaque-origin sandbox: see the header comment. `#fff` matches
+          // HtmlPreview — card content is designed light regardless of theme.
+          <iframe
+            ref={iframeRef}
+            title={t('htmlCard.title')}
+            sandbox="allow-scripts allow-popups allow-forms allow-modals"
+            src={frameUrl ?? undefined}
+            srcDoc={frameUrl === null && (!CAN_PERSIST || persistFailed) ? doc : undefined}
+            style={{
+              display: 'block',
+              width: '100%',
+              height: bodyHeight ?? CARD_DEFAULT_HEIGHT,
+              border: 'none',
+              background: '#fff',
+            }}
+          />
+        ) : (
+          <pre
+            style={{
+              margin: 0,
+              padding: 12,
+              background: 'var(--pm-code-bg)',
+              color: 'var(--pm-text-body)',
+              fontSize: 12.5,
+              lineHeight: 1.55,
+              maxHeight: CARD_MAX_HEIGHT,
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {code}
+          </pre>
+        )}
+      </div>
     </div>
   )
 }

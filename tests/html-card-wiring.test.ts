@@ -39,6 +39,29 @@ describe('html artifact card wiring', () => {
     expect(card).toContain('injectBeforeBodyClose')
   })
 
+  it('the chrome is hover-only and floats OUTSIDE the card (2026-10-09 ruling)', () => {
+    // Hover state is JS-driven with a leave-grace (`.pm-html-card-on`), NOT a
+    // CSS :hover gate — :hover flips pointer-events in the same frame hover
+    // is lost, deadlocking a pointer that jumped past the toolbar's hit box.
+    expect(card).toContain('pm-html-card-on')
+    expect(card).toContain('CHROME_LEAVE_GRACE_MS')
+    // No hover border (second ruling the same day): the root's border stays
+    // transparent always — the flip machinery must not come back.
+    expect(card).toContain("border: '1px solid transparent'")
+    expect(card).not.toContain('--pm-card-border')
+    // The toolbar sits at bottom:100% — entirely ABOVE the card. The root
+    // must NOT clip it: the overflow:clip lives on .pm-html-card-body. This
+    // is the shape that silently dies if someone re-adds overflow:hidden to
+    // the root "for the corners".
+    expect(card).toContain('bottom: 100%')
+    expect(card).toContain('.pm-html-card-body { border-radius: 10px; overflow: hidden; }')
+    expect(card).not.toMatch(/overflow: 'hidden',\s*\n\s*\}\}\s*\n\s*>/)
+    // The flip (2026-10-09 occlusion report): when a clipping ancestor's top
+    // edge leaves no headroom, the chrome moves INSIDE the card's top corners.
+    expect(card).toContain('.pm-html-card-flip .pm-html-card-float { bottom: auto; top: 6px; }')
+    expect(card).toContain('CHROME_FLIP_HEADROOM_PX')
+  })
+
   it('the invariant core teaches the ```html card convention, after Render Reference', () => {
     expect(prompt).toContain('## Visual HTML Aids')
     const visual = prompt.indexOf('parts.push(HTML_VISUAL_AIDS)')
