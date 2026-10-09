@@ -18,6 +18,8 @@
  * read of those diffs can never drift.
  */
 
+import { hunkMismatchError } from './edit-similarity'
+
 export interface DiffHunk {
   oldStart: number
   oldCount: number
@@ -124,9 +126,14 @@ export function applyPatch(content: string, hunks: DiffHunk[]): { success: true;
     }
 
     if (mismatch) {
+      // The bare one-liner left the model guessing where the hunk SHOULD go;
+      // hunkMismatchError reports the closest region whose text resembles the
+      // hunk's context/removed lines, so a stale line number or a whitespace
+      // drift is diagnosable from the error alone (same family as the
+      // string-edit miss hint in edit-similarity).
       return {
         success: false,
-        error: `Hunk at line ${hunk.oldStart} does not match file content. Expected different content in the target region.`
+        error: hunkMismatchError(hunk.oldStart, expectedSequence, fileLines.join('\n'))
       }
     }
 

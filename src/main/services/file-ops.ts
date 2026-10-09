@@ -7,6 +7,7 @@ import { readFile, writeFile, appendFile, stat, mkdir, readdir } from 'node:fs/p
 import type { Dirent } from 'node:fs'
 import * as path from 'node:path'
 import { patchContent } from '../../shared/diff/patch-utils'
+import { editMissError } from '../../shared/diff/edit-similarity'
 import { DATA_DIR } from '../storage'
 import { getOrConvert } from '../storage/read-cache'
 import { guardFsTarget, checkFsTarget, expandTilde } from '../sandbox/guard'
@@ -276,7 +277,10 @@ export async function svcEditFile(input: EditFileInput): Promise<EditFileResult>
       const count = normalizedContent.split(oldStr).length - 1
 
       if (count === 0) {
-        return { success: false, replacements: 0, error: `old_str not found in ${input.filePath}` }
+        // editMissError carries the closest matching region (line numbers +
+        // verbatim text) so a failed edit does not cost a fresh full read —
+        // a whitespace-only mismatch, the most common miss, is named as such.
+        return { success: false, replacements: 0, error: editMissError(input.filePath, normalizedContent, oldStr) }
       }
 
       const replaced = input.multi
