@@ -40,6 +40,7 @@ import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, 
 import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-constants'
 import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
 import { applyToolResultBudget } from './engine/result-ingestion'
+import { RepeatCallGuard, formatRepeatHint, toolCallSignature } from './engine/loop-guard'
 import type { CompactionEvent } from '../../../shared/agent-protocol/payloads'
 import type { EngineCore } from './engine/engine-core'
 import { stripToolResultImages } from './strip-tool-results'
@@ -296,6 +297,11 @@ export class AgentEngine implements EngineCore {
    *  prepareTurn and by any round that produced text or tool calls. */
   /** @internal */
   thinkingOnlyRetries = 0
+  /** Repeat-call detector (engine/loop-guard.ts): fed by addToolResult, one
+   *  record per settled call. Reset by prepareTurn with the other per-turn
+   *  counters — the churn count is only honest over the whole turn. */
+  /** @internal */
+  repeatGuard = new RepeatCallGuard()
   // ── Early-stop continuation guard state (engine-constants.ts) ──
   /** Tool rounds settled this turn — the guard's task-in-flight evidence. */
   /** @internal */
@@ -860,6 +866,10 @@ export class AgentEngine implements EngineCore {
     this.earlyStopContinues = 0
     this.earlyStopNudgesTotal = 0
     this.pendingEarlyStopNudge = false
+    // Repeat-call guard belongs to the turn too: a new send starts with a
+    // clean slate (stale signatures from the previous turn would flag a
+    // legitimate first call of this one as churn).
+    this.repeatGuard.reset()
     // Same for the stream idle-timeout budget. The cancel path already resets
     // it in the runner's catch (stream-runner, unconditional before the
     // isCancel return), so this is DEFENSE, not a bug fix: the "a new turn
@@ -1527,6 +1537,7 @@ export class AgentEngine implements EngineCore {
     this.loopCount = 0
     this.maxLoopCount = getLoopIterationLimit()
     this.streamingBlocks = []
+    this.repeatGuard.reset()
     // 恢复不是冻结：上面清场把 isCancelled 关上（防御性，恢复时刻并没有活回合），
     // 但恢复后的第一个用户决定——回答 ask_user 卡片 / 审批放行——经 addToolResult
     // → continueLoop 续跑，而那是唯一不经过 prepareTurn 复位闸门的入口（新消息 /
@@ -1569,6 +1580,17 @@ export class AgentEngine implements EngineCore {
   // ── Spawn sub-agent ──────────────────────────────────────────────────
 
   // ── Private helpers ──────────────────────────────────────────────────
+
+  /** The tool_use block a result settles, looked up by id — addToolResult's
+   *  only way to learn the call's name/input (loop-guard's signature source). */
+  private findToolUseBlock = (toolUseId: string): ToolUseBlock | null => {
+    for (const msg of this.messages) {
+      for (const b of msg.contentBlocks) {
+        if (b.type === 'tool_use' && b.id === toolUseId) return b as ToolUseBlock
+      }
+    }
+    return null
+  }
 
   /** @internal */
   addToolResult = (toolUseId: string, content: string, isError: boolean, imageData?: string, maxTokens?: number): void => {
@@ -1614,6 +1636,21 @@ export class AgentEngine implements EngineCore {
       }
     }
 
+    // Repeat-call guard (engine/loop-guard.ts): addToolResult receives neither
+    // name nor input, so the call's own tool_use block is looked up by id —
+    // the same id the marking loop above matched. A duplicate delivery was
+    // already rejected above and never reaches this record; a synthesized
+    // result without a block (defensive) simply skips the guard. The hint
+    // appends to the (possibly truncated) text tail — advisory bytes like the
+    // truncation marker: persistence and the mirror see them, the cache
+    // contract does not care (tool results are per-turn message content).
+    let resultText = text
+    const callBlock = this.findToolUseBlock(toolUseId)
+    if (callBlock) {
+      const { level, count } = this.repeatGuard.record(toolCallSignature(callBlock.name, callBlock.input), isError)
+      if (level !== 'none') resultText = `${text}\n${formatRepeatHint(level, count)}`
+    }
+
     const msgs = this.messages
     const lastMsg = msgs[msgs.length - 1]
     const secondLast = msgs.length >= 2 ? msgs[msgs.length - 2] : null
@@ -1622,7 +1659,7 @@ export class AgentEngine implements EngineCore {
     const resultBlock: ToolResultBlock = {
       type: 'tool_result',
       tool_use_id: toolUseId,
-      content: text,
+      content: resultText,
       is_error: isError,
       tool_result_id: crypto.randomUUID(),
       ...(imageData ? { imageData } as { imageData: string } : {})
