@@ -125,10 +125,13 @@ describe('渲染层消费（AppLayout / App）', () => {
     expect(src).not.toContain('Disable Tab key focus navigation')
     expect(src).not.toContain("e.key === 'Tab'")
     expect(src).toContain('<NotifyBridge />')
-    // 三处静默失败改为留痕
+    // 三处静默失败改为留痕。memory-compress 的留痕 2026-10-09 随渲染侧启动
+    // 合并触发一起迁走：合并只剩主进程一个 owner，失败留痕在
+    // session-manager sweep 的两处 console.warn（sweep 本身 / 水印落盘）。
     expect(src).toContain("reportSilentFailure('mcp-summary'")
-    expect(src).toContain("reportSilentFailure('memory-compress'")
     expect(src).toContain("reportSilentFailure('memory-migrate'")
+    expect(read('src/main/agent/session-manager.ts')).toContain("'[session-manager] watermark persist failed:'")
+    expect(read('src/main/agent/session-manager.ts')).toContain("'[SessionReview] merge sweep failed:'")
     expect(count(src, 'catch(() => {})')).toBe(0)
   })
 

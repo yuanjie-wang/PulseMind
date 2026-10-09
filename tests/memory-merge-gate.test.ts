@@ -126,3 +126,41 @@ describe('the watermark round-trips through settings.json with the attempt clock
     expect(src).toContain('memoryMergeWatermark?: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string }')
   })
 })
+
+// 配置播种修复的第二刀（2026-10-09）：场景帽截断合并产物。
+// 实测（llm-requests 转储 ns_1791559537057）：模型把 95 条正确合并成 20 条 /
+// 14935 字符的合法 JSON 数组（finish_reason=stop），enforceMaxOutputTokens
+// 按 4000 估算 token 二分砍到 5434 字符（「Unterminated string at position
+// 5434」）→ extractJson 失败 → 0 条落账 → 白烧一次 11.5K in / 27.6K out 的
+// 调用，还盖上 2h 重试锁。合并的输出是 JSON 数组，场景帽对它是纯伤害
+// （截断=必然解析失败）——本 describe 用真实 MemoryCompressionAgent（不
+// stub compressionAgent，走真的 OneShotAgent.execute → enforce → parse 链）
+// 钉住：一次等尺度的合法合并产物必须整体落账。
+describe('the merge output must survive to the parser (no scenario cap)', () => {
+  it('a full-size consolidation (~15K chars, 20 entries) lands intact and advances the watermark', async () => {
+    const { estimateTextTokens } = await import('../src/renderer/src/agent/engine/context-estimate')
+    const entries = Array.from({ length: 20 }, (_, i) => ({
+      content: `合并后的记忆 ${i} 号：三源交叉时天气现象/气温量级/风向常能对上，降水是最容易分歧的一项，交付口径须逐源列明。`.repeat(6),
+      type: 'fact',
+      category: 'code',
+    }))
+    const bigJson = JSON.stringify(entries, null, 2)
+    // 自检：这个形状必须真的超旧帽——否则帽值回readline时本测试悄悄失去牙齿
+    expect(estimateTextTokens(bigJson)).toBeGreaterThan(4000)
+
+    const saved: string[] = []
+    const deleted: string[] = []
+    const pool = Array.from({ length: 95 }, (_, n) => entry(`记忆内容 ${n} 号`, n))
+    const mm = new MemoryManager()
+    setHost(makeHost(pool, saved, deleted))
+    // 真 compressionAgent + 假 adapter：enforceMaxOutputTokens 与 extractJson 都是真的
+    mm.setConfig('key', 'https://example.invalid', { callNonStreaming: async () => bigJson } as never, 'test-model')
+
+    const ok = await mm.ensureMemoryMerged()
+
+    expect(ok).toBe(true) // 修复前：0 条 → false
+    expect(saved).toHaveLength(20) // 20 条合并产物整体落账
+    expect(deleted).toHaveLength(95) // 旧池（内容不在产物里）全部清掉
+    expect(mm.getMergeWatermark().lastRunAt).not.toBe(0) // 成功推进水位
+  })
+})

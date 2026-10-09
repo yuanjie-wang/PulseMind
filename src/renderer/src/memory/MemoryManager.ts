@@ -276,9 +276,18 @@ export class MemoryManager {
         })
         .join('\n')
 
+      // NO scenario maxOutputTokens here (2026-10-09): the merge's output is a
+      // JSON ARRAY of the consolidated pool — a scenario cap truncates it
+      // mid-array, which is a guaranteed parse failure. Measured live: a
+      // correct 95→20 consolidation came back as a valid 14935-char array,
+      // enforceMaxOutputTokens(cut at 4000) clipped it to 5434 chars
+      // ("Unterminated string"), extractJson returned [], and the attempt
+      // burned its LLM call AND stamped the 2h retry clock. The wire budget
+      // (modelMaxTokens) already bounds generation; this scenario has no
+      // honest length requirement to enforce.
       const merged = await this.compressionAgent.execute(
         { memoriesText },
-        { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, modelMaxTokens: this.modelMaxTokens }, maxOutputTokens: 4000 }
+        { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, modelMaxTokens: this.modelMaxTokens } }
       )
       if (merged.length === 0) {
         // The model ran and consolidated nothing — or its output did not parse

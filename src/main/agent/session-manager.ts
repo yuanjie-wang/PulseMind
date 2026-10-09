@@ -342,8 +342,10 @@ export class AgentSessionManagerImpl {
           )
           if (result.memories > 0) console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
           // extractAndSaveAll may have run the incremental merge — advance
-          // settings.json's watermark so a restart doesn't re-merge.
-          await this.runMemoryMergeSweep().catch((e) => console.warn('[SessionReview] merge sweep failed:', e))
+          // settings.json's watermark so a restart doesn't re-merge. The
+          // session's own profile goes in: a conversation-pinned model must
+          // not be overridden by the active one for this merge.
+          await this.runMemoryMergeSweep(profile).catch((e) => console.warn('[SessionReview] merge sweep failed:', e))
           if (result.experienceContent) {
             managers.experienceManager.save({
               title: result.experienceTitle ?? 'Untitled experience',
@@ -433,10 +435,22 @@ export class AgentSessionManagerImpl {
 
   /** Run the incremental memory merge (if due) and persist the watermark.
    *  Both the delayed startup sweep and the afterSession path land here, so
-   *  settings.json is written by exactly one shape. */
-  async runMemoryMergeSweep(): Promise<boolean> {
+   *  settings.json is written by exactly one shape. `profile` absent (startup
+   *  sweep) falls back to the active one, same resolution as the proxy. */
+  async runMemoryMergeSweep(profile?: LlmProfile): Promise<boolean> {
     if (!this.managers) return false
     const memoryManager = this.managers.memoryManager
+    // The merge reads its LLM config off instance fields (setConfig); the
+    // extraction path passes its config as arguments and never seeds them, so
+    // without this seeding the guard `!this.adapter || !this.apiKey` returned
+    // false forever — the pool grew unbounded past MERGE_TOTAL_CAP and no
+    // attempt was ever recorded (settings.json's memoryMergeWatermark stayed
+    // absent; found 2026-10-09 with 95 memories). App.tsx's setConfig only
+    // ever reached the renderer's own instance.
+    const p = profile ?? (await this.resolveActiveLlmProfile())
+    if (p) {
+      memoryManager.setConfig(p.apiKey ?? '', p.baseURL, createLlmAdapter(p.provider ?? 'anthropic'), p.model, p.maxTokens)
+    }
     const ran = await memoryManager.ensureMemoryMerged()
     const w = memoryManager.getMergeWatermark()
     // Persist every touch — including bare attempts. The idle-spin fix rides
@@ -453,6 +467,13 @@ export class AgentSessionManagerImpl {
       },
     })).catch((e) => console.warn('[session-manager] watermark persist failed:', e))
     return ran
+  }
+
+  /** Active-profile fallback for main-side one-shot LLM calls made outside a
+   *  session (the startup merge sweep). Same resolution order as the proxy. */
+  private async resolveActiveLlmProfile(): Promise<LlmProfile | undefined> {
+    const settings = await settingsStore.get()
+    return settings.profiles.find((p) => p.id === settings.activeProfileId) ?? settings.profiles[0]
   }
 
   /** Mirror the 设置 → 记忆/经验 master switches onto the shared managers.

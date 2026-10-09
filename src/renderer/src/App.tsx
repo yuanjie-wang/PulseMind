@@ -391,32 +391,16 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     if (!activeConvKey) void reloadSettings()
   }, [activeConvKey, reloadSettings])
 
-  // Set MemoryManager and KnowledgeManager config so background tasks can call the API
+  // Set KnowledgeManager config so background tasks can call the API.
+  // MemoryManager does NOT get one here: since M1.4 every engine is
+  // main-hosted, so the merge runs on session-manager's instance — whose
+  // runMemoryMergeSweep seeds its own config. This instance's fields are
+  // dead for LLM purposes (the panel CRUD path passes config as arguments),
+  // and a renderer-side merge trigger would race the main sweep with a
+  // watermark the main process can't see.
   if (apiKey) {
-    memoryManager.setConfig(apiKey, baseURL, adapter, model, maxTokens)
     knowledgeManager.setConfig(apiKey, baseURL, adapter, model, maxTokens)
   }
-
-  // Check if memory compression is needed on startup and when API key becomes available.
-  // Retry on failure (LLM may return bad JSON) with exponential backoff.
-  // Skipped entirely while the 记忆 master switch is off.
-  useEffect(() => {
-    if (!apiKey || settings.memoryEnabled === false) return
-    let attempts = 0
-    let timer: ReturnType<typeof setTimeout>
-    const attempt = () => {
-      memoryManager.ensureMemoryMerged().then((ok) => {
-        if (!ok && attempts < 3) {
-          attempts++
-          const delay = Math.min(10000 * Math.pow(2, attempts), 60000)
-          console.log(`[App] Memory compression will retry in ${delay}ms (attempt ${attempts}/3)`)
-          timer = setTimeout(attempt, delay)
-        }
-      }).catch((err: unknown) => reportSilentFailure('memory-compress', err))
-    }
-    attempt()
-    return () => clearTimeout(timer)
-  }, [apiKey, settings.memoryEnabled])
 
   // One-time migration: existing type='experience' memories → knowledge base raw/
   useEffect(() => {

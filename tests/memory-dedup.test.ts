@@ -223,6 +223,11 @@ describe('the incremental merge layer (P2)', () => {
       })
     const stale = walk('src').filter((f) => read(f).includes('ensureMemoryCompressed'))
     expect(stale).toEqual([])
-    expect(read(APP)).toContain('memoryManager.ensureMemoryMerged()')
+    // 2026-10-09：合并只剩主进程一个 owner——App.tsx 的渲染侧启动触发已删
+    // （它配置的 setConfig 只到渲染实例，主进程实例从未拿到配置，95 条记忆
+    // 时代合并一次都没跑过；修活主 sweep 后留着它就是跨进程双跑）。存活的
+    // 调用方在 session-manager 的 sweep 与 extractAndSaveAll 内部。
+    expect(read(APP)).not.toContain('ensureMemoryMerged')
+    expect(read(SESSION_MANAGER)).toContain('memoryManager.ensureMemoryMerged()')
   })
 })
