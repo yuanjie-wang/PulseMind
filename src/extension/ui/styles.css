@@ -315,6 +315,12 @@ button {
   color: var(--pm-error-text);
 }
 
+/* 未连接横幅的主行比横幅本体的 0.45 深一档（antd colorTextSecondary），让动作
+   提示站出来；长句换行由它自己承担（.pm-link 已 nowrap + shrink 0）。 */
+.pm-banner-title {
+  color: rgba(0, 0, 0, 0.65); /* antd colorTextSecondary */
+}
+
 .pm-link {
   border: none;
   background: none;
@@ -322,6 +328,11 @@ button {
   font-size: 12px;
   text-decoration: underline;
   cursor: pointer;
+  /* 左侧 reason 是长句、右侧是四字标签（space-between 布局）：收缩必须由
+     会换行的 span 独自承担，按钮不得被挤到折行——「打开设置」折成两行是死相
+     （user report 2026-10-09）。 */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* 循环上限续跑卡（桌面 chat/ExtensionPrompt 的 PromptBox，镜像它的金色系）。

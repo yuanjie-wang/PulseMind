@@ -9,7 +9,7 @@
 
 import { CloseCodes, Methods } from '../../shared/agent-protocol/methods'
 import type { AgentEventParams, ToolCallParams } from '../../shared/agent-protocol'
-import { isPanelRequest, type ConnectionState } from '../bridge'
+import { isPanelRequest, OPEN_OPTIONS_MESSAGE_TYPE, type ConnectionState } from '../bridge'
 import { resetCspVerdict } from './cdp'
 import { loadConfig, saveConfig, type ExtensionConfig } from './config'
 import { discoverService } from './discovery'
@@ -223,6 +223,15 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 chrome.runtime.onMessage.addListener((msg: { type?: string }, sender, sendResponse) => {
   if (msg?.type === STATE_MESSAGE_TYPE) {
     sendResponse(currentState())
+    return false
+  }
+  if (msg?.type === OPEN_OPTIONS_MESSAGE_TYPE) {
+    // The panel's 打开设置 banner button: openOptionsPage exists only in
+    // extension contexts (a content script's chrome.runtime lacks it), so the
+    // content script forwards here. Fire-and-forget — the sender wants no reply.
+    chrome.runtime.openOptionsPage().catch((err: unknown) => {
+      console.warn('[PulseMind] open options failed:', err instanceof Error ? err.message : err)
+    })
     return false
   }
   if (msg?.type === RECONNECT_MESSAGE_TYPE) {

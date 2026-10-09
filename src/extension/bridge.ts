@@ -95,6 +95,13 @@ export interface PageToolRequest {
 
 export const PAGE_TOOL_MESSAGE_TYPE = 'pulsemind/page-tool'
 
+/** content script → service worker: open the options page. `openOptionsPage`
+ *  exists only in extension contexts — from a content script the property is
+ *  simply ABSENT from its chrome.runtime binding (measured, Chromium 153), so
+ *  a direct call throws a TypeError the panel would swallow as a silent no-op.
+ *  The panel's 打开设置 button therefore routes through the worker here. */
+export const OPEN_OPTIONS_MESSAGE_TYPE = 'pulsemind/open-options'
+
 /** The content script's answer to a PageToolRequest. */
 export interface PageToolOutcome {
   ok: boolean

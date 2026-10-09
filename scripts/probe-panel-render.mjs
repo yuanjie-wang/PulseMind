@@ -398,7 +398,10 @@ chrome.runtime = {
       }
       return { ok: true, snapshot: {
         sessionId: 'ws_1',
-        connection: { state: 'open', connected: true },
+        // __disconnected（未连接横幅段）时回答断连态：真 App 据此画 .pm-banner。
+        connection: window.__disconnected === true
+          ? { state: 'closed', connected: false, reason: '未连接到手动指定的服务（ws://192.168.1.100:8765 无响应）' }
+          : { state: 'open', connected: true },
         panelOpen: window.__openPanel === true,
         messages: window.__longTranscript === true ? many : one,
         streamingBlocks: [],
@@ -1632,6 +1635,45 @@ check('reduced-motion 下兜底定时器摘掉过渡类', await waitAnimatingCla
 await page.emulateMedia({ reducedMotion: 'no-preference' })
 await page.locator('#wide-panel button[title="还原"]').click()
 check('还原回常态（reduced-motion 往返不留尾巴）', await waitSettled(380, 600))
+
+// ── 未连接横幅（真 App）：一句话术 + 四字「打开设置」不得折行 ──────────────
+// 话术就一句（user 2026-10-09 裁定：诊断原因不上横幅，options 页/日志才是诊断
+// 面）。右侧四字按钮此前被长 reason 挤成两行，nowrap + shrink 0 的声明仍在：
+// 现在的挤压源只剩主行自身折行（span 承担），声明钉保证它不会复发。
+console.log('== 未连接横幅（真 App，380px 收缩态） ==')
+await page.evaluate(() => {
+  window.__disconnected = true
+  window.__longTranscript = false
+  window.__mountPanel()
+})
+await page.waitForTimeout(400)
+
+const banner = await page.evaluate(() => {
+  const root = document.querySelector('#wide-panel')?.shadowRoot
+  const bannerEl = root?.querySelector('.pm-banner')
+  if (!bannerEl) return null
+  const panelRect = root.querySelector('.pm-panel').getBoundingClientRect()
+  const titleEl = bannerEl.querySelector('.pm-banner-title')
+  const btnEl = bannerEl.querySelector('.pm-link')
+  const btnRect = btnEl?.getBoundingClientRect()
+  return {
+    title: titleEl?.textContent ?? '',
+    titleColor: titleEl ? getComputedStyle(titleEl).color : null,
+    btnHeight: btnRect?.height ?? null,
+    btnNowrap: btnEl ? getComputedStyle(btnEl).whiteSpace : null,
+    btnShrink: btnEl ? getComputedStyle(btnEl).flexShrink : null,
+    btnInside: btnRect ? btnRect.right <= panelRect.right + 0.5 : false,
+  }
+})
+check('断连时真 App 画出未连接横幅与打开设置按钮', banner != null && banner.btnHeight != null, `${banner?.title} / 按钮 h=${banner?.btnHeight?.toFixed(1)}`)
+check('话术就一句：请先打开桌面端并稍等片刻', banner?.title === '请先打开 PulseMind 桌面端，并稍等片刻', banner?.title)
+check('主行比横幅本体深一档（0.65），提示站得出来', banner?.titleColor === 'rgba(0, 0, 0, 0.65)', banner?.titleColor)
+check(
+  '打开设置保持单行（flex-shrink 0 + nowrap 声明在位）',
+  banner != null && banner.btnHeight <= 24 && banner.btnNowrap === 'nowrap' && banner.btnShrink === '0',
+  `h=${banner?.btnHeight?.toFixed(1)}, white-space=${banner?.btnNowrap}, shrink=${banner?.btnShrink}`,
+)
+check('nowrap 的按钮没有把自己顶出面板', !!banner && banner.btnInside)
 
 await browser.close()
 

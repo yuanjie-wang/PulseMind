@@ -120,7 +120,12 @@ export function App(): React.JSX.Element {
 
       {!connection.connected ? (
         <div className="pm-banner">
-          <span>{connection.reason ? `未连接：${connection.reason}` : '未连接桌面端 PulseMind'}</span>
+          {/* 话术就这一句（user 2026-10-09 裁定，诊断原因不再上横幅——options 页
+              与 [PulseMind] 日志仍是诊断面）；连接中不催开桌面端——那正是它
+              正在做的事。 */}
+            <span className="pm-banner-title">
+              {connection.state === 'connecting' ? '正在连接桌面端 PulseMind…' : '请先打开 PulseMind 桌面端，并稍等片刻'}
+            </span>
           <button className="pm-link" onClick={openOptions}>
             打开设置
           </button>

@@ -3,7 +3,7 @@
  * Keeps chrome.runtime out of the React tree: the UI calls `request()` and
  * subscribes to `onNotification()`, both of which are plain promises/callbacks. */
 
-import { isPageToolRequest, type PanelNotification, type PanelRequest, type PanelResponse } from '../bridge'
+import { isPageToolRequest, OPEN_OPTIONS_MESSAGE_TYPE, type PanelNotification, type PanelRequest, type PanelResponse } from '../bridge'
 import { runPageTool } from './page-tools'
 
 type Listener = (msg: PanelNotification) => void
@@ -59,11 +59,17 @@ function isPanelNotification(msg: unknown): msg is PanelNotification {
   return typeof type === 'string' && type.startsWith(PANEL_NOTIFICATION_PREFIX)
 }
 
-/** Open the extension's options page (used by the "not connected" hint). */
+/** Open the extension's options page (used by the "not connected" hint).
+ *  openOptionsPage is absent from a content script's chrome.runtime, so the
+ *  call rides the worker (OPEN_OPTIONS_MESSAGE_TYPE); a direct call here would
+ *  throw and this function's silence would read as a dead button. */
 export function openOptions(): void {
   try {
-    chrome.runtime.openOptionsPage()
-  } catch {
-    /* no options page context (should not happen) */
+    void chrome.runtime
+      .sendMessage({ type: OPEN_OPTIONS_MESSAGE_TYPE })
+      .catch((err: unknown) => console.warn('[PulseMind] open options failed', err))
+  } catch (err) {
+    // A stale world after an extension reload (context invalidated).
+    console.warn('[PulseMind] open options failed', err)
   }
 }
