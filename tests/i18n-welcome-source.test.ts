@@ -15,12 +15,20 @@ import enDict from '../src/renderer/src/i18n/locales/en'
 
 const ROOT = join(__dirname, '..')
 
-/** KnowledgeFile['sourceType'] 的联合成员，从类型定义源码解析（运行时没有类型）。 */
+/** KnowledgeFile['sourceType'] 的联合成员，从类型定义源码解析（运行时没有类型）。
+ *  成员正则取整个引号串（不限小写：未来的 'webClip' 这类驼峰/数字成员不能
+ *  静默漏提——旧 `[a-z_]+` 对它们失明，四成员非空哨兵照常绿，漏补 label 不再红）；
+ *  再以「解析数 = 捕获段内引号串数」自检兜底解析器本身。 */
 function knowledgeSourceTypes(): string[] {
   const src = readFileSync(join(ROOT, 'src/shared/types/knowledge.ts'), 'utf8')
   const decl = src.match(/sourceType\??:\s*([^;\n]+)/)
   expect(decl, 'KnowledgeFile.sourceType declaration moved — update this test').toBeTruthy()
-  return [...(decl![1].matchAll(/'([a-z_]+)'/g))].map(m => m[1])
+  const captured = decl![1]
+  const members = [...captured.matchAll(/'([^']+)'/g)].map(m => m[1])
+  const quoted = captured.match(/'[^']*'/g) ?? []
+  expect(members.length, 'sourceType parser missed a quoted member on its own line').toBe(quoted.length)
+  expect(members.length, 'sourceType union parsed empty — the scan did not scan').toBeGreaterThan(0)
+  return members
 }
 
 describe('welcome.source labels cover every KnowledgeFile sourceType', () => {
