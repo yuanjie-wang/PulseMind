@@ -62,8 +62,16 @@ let _converter: MarkItDown | null = null
 // chain: xlsx-ops / docx-ops / pptx-ops import this module at load).
 async function getConverter(): Promise<MarkItDown> {
   if (!_converter) {
-    const { MarkItDown } = await import('markitdown-js')
-    _converter = new MarkItDown()
+    try {
+      const { MarkItDown } = await import('markitdown-js')
+      _converter = new MarkItDown()
+    } catch (err) {
+      // Same visibility constraint as the extractor's converter: the only
+      // caller (generateOfficeDiff) swallows everything into `undefined`, so
+      // a load failure would silently cost every office_edit its diff.
+      console.error('[markitdown] converter load failed (office-snapshot):', err)
+      throw err
+    }
   }
   return _converter
 }

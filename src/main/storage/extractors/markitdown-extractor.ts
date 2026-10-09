@@ -9,8 +9,17 @@ let _md: MarkItDown | null = null
 // FIRST extraction pays it instead.
 async function getConverter(): Promise<MarkItDown> {
   if (!_md) {
-    const { MarkItDown } = await import('markitdown-js')
-    _md = new MarkItDown()
+    try {
+      const { MarkItDown } = await import('markitdown-js')
+      _md = new MarkItDown()
+    } catch (err) {
+      // Surface the load error HERE or it is lost: svcConvertToMarkdown's
+      // `catch { return null }` flattens it into the same null a per-file
+      // convert failure yields, so read degrades to the shell with no trace
+      // of why. Rethrow unchanged — callers keep their null degradation.
+      console.error('[markitdown] converter load failed (extractor):', err)
+      throw err
+    }
   }
   return _md
 }
