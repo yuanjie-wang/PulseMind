@@ -228,6 +228,13 @@ describe('expert delegation: renderer wiring (source-scanned)', () => {
     expect(controllerSrc).toContain('else engineHandle.startLoop(content, knowledgeBase)')
   })
 
+  it('the @ tokens ride the outgoing message; the guard reads the words beside them', () => {
+    // 用户 2026-10-09: the mention's words are message content too — the
+    // controller must not rewrite `content` with the stripped remainder.
+    expect(controllerSrc).not.toContain('content = mentions.text')
+    expect(controllerSrc).toContain('!mentions.task.trim()')
+  })
+
   it('no longer binds the expert to the conversation from the summon path', () => {
     // The binding write was the old implementation; the chip's 解除专家 still
     // uses persistence.updateConversationExpert for legacy rows, so only the

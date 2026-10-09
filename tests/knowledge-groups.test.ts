@@ -39,11 +39,21 @@ describe('parseKnowledgeBaseMention (G5)', () => {
   })
 
   it('a name that is both an expert and a base reads as the EXPERT (既有语义优先)', () => {
+    // The expert token STAYS in the text now (user 2026-10-09), so the claim
+    // order is positional: the KB scan must skip the @ the expert parse claimed.
     const experts = [{ id: 'exp_1', name: '蝴蝶酥资料', enabled: true, description: '' }]
     const afterExpert = parseExpertMentions('查 @蝴蝶酥资料', experts as never[])
-    const { base } = parseKnowledgeBaseMention(afterExpert.text, BASES)
+    const { base } = parseKnowledgeBaseMention(afterExpert.text, BASES, afterExpert.spans)
     expect(afterExpert.experts).toHaveLength(1)
     expect(base).toBeNull()
+  })
+
+  it('an occurrence outside the claimed spans is still base material; only that token is cut', () => {
+    const experts = [{ id: 'exp_1', name: '写作专家', enabled: true, description: '' }]
+    const afterExpert = parseExpertMentions('@写作专家 查 @蝴蝶酥资料', experts as never[])
+    const { base, text } = parseKnowledgeBaseMention(afterExpert.text, BASES, afterExpert.spans)
+    expect(base?.id).toBe('kb_3')
+    expect(text).toBe('@写作专家 查')
   })
 })
 
@@ -80,7 +90,7 @@ describe('scope lifecycle wiring (source-scanned; node-env cannot mount the engi
   })
 
   it('the renderer parses the mention and hands it to the engine handle', () => {
-    expect(controller).toContain('parseKnowledgeBaseMention(content, bases)')
+    expect(controller).toContain('parseKnowledgeBaseMention(content, bases, mentions.spans)')
     expect(controller).toContain('engineHandle.startLoop(content, knowledgeBase)')
     expect(controller).toContain('engineHandle.startSummonedLoop(content, mentioned, knowledgeBase)')
   })

@@ -954,11 +954,12 @@ export class AgentEngine implements EngineCore {
 
   /**
    * 多专家 @召唤 → 计划模式（用户裁定 2026-09-17:「当@多个专家，能不能进入plan模式，
-   * 为多个专家分配任务」）。The turn opens like any other (the mentions are already
-   * stripped, the user's own assignment words survive), and the summons rides
-   * the per-turn state block as a brief that makes the plan the turn's shape:
-   * create_plan with every summoned expert assigned, dispatch the READY set in
-   * one parallel batch, settle with advance_plan, synthesize at the end.
+   * 为多个专家分配任务」）。The turn opens like any other — the @ tokens stay in
+   * the user's message (2026-10-09: mention text is message content too) — and
+   * the summons ALSO rides the per-turn state block as a brief that makes the
+   * plan the turn's shape: create_plan with every summoned expert assigned,
+   * dispatch the READY set in one parallel batch, settle with advance_plan,
+   * synthesize at the end.
    * Two mechanisms make it binding rather than advisory: create_plan refuses a
    * plan that leaves a summoned expert unassigned, and a turn that ends without
    * a plan is re-issued once (execution-flow's nudge). The engine still plans

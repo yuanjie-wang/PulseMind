@@ -119,24 +119,36 @@ function resolveReferences(ids: string[] | undefined, catalog: ExpertReference[]
   return ids.map((id) => byId.get(id)).filter((c): c is ExpertReference => !!c)
 }
 
-/** Resolve the @-mentions in a message to enabled experts and strip the tokens.
- *  A mention is a literal `@<name>` — robust for CJK names, where whitespace
- *  tokenization would glue trailing punctuation onto the token — and at each
- *  `@` the LONGEST matching name wins, so "翻译专家" is not read as a
- *  hypothetical "翻译" plus the characters "专家". Every occurrence is consumed,
- *  so several experts can be summoned at once; the roster comes back in the
- *  order the user mentioned them (their own list, which the plan brief then
- *  reads back) with duplicates dropped. The text that survives is what the user
- *  wrote *about* the task — the assignment words are not part of the token. */
+/** A consumed `@<name>` token, as offsets into the text it was found in. */
+export interface MentionSpan {
+  start: number
+  end: number
+}
+
+/** Resolve the @-mentions in a message to enabled experts. A mention is a
+ *  literal `@<name>` — robust for CJK names, where whitespace tokenization
+ *  would glue trailing punctuation onto the token — and at each `@` the LONGEST
+ *  matching name wins, so "翻译专家" is not read as a hypothetical "翻译" plus
+ *  the characters "专家". Every occurrence is consumed, so several experts can
+ *  be summoned at once; the roster comes back in the order the user mentioned
+ *  them (their own list, which the plan brief then reads back) with duplicates
+ *  dropped.
+ *  The `@` tokens are NOT cut from `text` (user 2026-10-09: the mention's words
+ *  are message content too — the transcript, the persistence row and the model
+ *  all read what the user typed). Callers that need the words BESIDE the
+ *  mentions read `task` (tokens cut, seams collapsed — "先让 @甲 看看" reads
+ *  "先让 看看"), and `spans` marks each consumed token in `text` so a
+ *  downstream mention parser (the knowledge-base scope) can skip them — the
+ *  既有语义优先 rule survives the tokens staying put. */
 export function parseExpertMentions(
   text: string,
   experts: ExpertProfile[]
-): { experts: ExpertProfile[]; text: string } {
+): { experts: ExpertProfile[]; text: string; task: string; spans: MentionSpan[] } {
   const candidates = experts
     .filter((e) => (e.enabled ?? true) && e.name)
     .sort((a, b) => b.name.length - a.name.length)
   const found: ExpertProfile[] = []
-  const spans: Array<{ start: number; end: number }> = []
+  const spans: MentionSpan[] = []
   let i = 0
   while (i < text.length) {
     if (text[i] === '@') {
@@ -151,10 +163,7 @@ export function parseExpertMentions(
     }
     i += 1
   }
-  if (found.length === 0) return { experts: [], text }
-  // Cut the tokens out of the ORIGINAL text (so positions stay meaningful), then
-  // collapse the gap each cut left behind: removing a token from "先让 @甲 看看"
-  // must read "先让 看看", not "先让  看看".
+  if (found.length === 0) return { experts: [], text, task: text, spans: [] }
   let rest = ''
   let cursor = 0
   for (const span of spans) {
@@ -162,7 +171,7 @@ export function parseExpertMentions(
     cursor = span.end
   }
   rest += text.slice(cursor)
-  return { experts: found, text: rest.replace(/[ \t]{2,}/g, ' ').trim() }
+  return { experts: found, text, task: rest.replace(/[ \t]{2,}/g, ' ').trim(), spans }
 }
 
 /** A knowledge base the user @-mentioned. Same wire shape as SummonedExpert
@@ -170,20 +179,24 @@ export function parseExpertMentions(
 export type MentionedKnowledgeBase = { id: string; name: string }
 
 /** Scope ONE @-mention against the base list: the first matching base name
- *  wins (v1 = single-base scope), the token is cut from the text exactly the
- *  way expert mentions are. Runs AFTER the expert parse on the remaining text,
- *  so a name that is both an expert and a base is claimed by the expert —
- *  既有语义优先. Pure; a malformed list yields null, never a throw. */
+ *  wins (v1 = single-base scope), and that one token is cut from the text the
+ *  way the expert parse's `task` field cuts expert tokens. `claimed` carries
+ *  the expert parse's spans (parseExpertMentions) — the token now STAYS in the
+ *  outgoing text, so the skip is positional: an `@` inside a claimed span is
+ *  expert material and never a base candidate (既有语义优先). Runs AFTER the
+ *  expert parse; pure; a malformed list yields null, never a throw. */
 export function parseKnowledgeBaseMention(
   text: string,
-  bases: ReadonlyArray<{ id: string; name: string }>
+  bases: ReadonlyArray<{ id: string; name: string }>,
+  claimed: ReadonlyArray<MentionSpan> = []
 ): { base: MentionedKnowledgeBase | null; text: string } {
   const candidates = bases
     .filter((b) => b.id && b.name)
     .sort((a, b) => b.name.length - a.name.length)
+  const isClaimed = (pos: number): boolean => claimed.some((s) => pos >= s.start && pos < s.end)
   let i = 0
   while (i < text.length) {
-    if (text[i] === '@') {
+    if (text[i] === '@' && !isClaimed(i)) {
       const hit = candidates.find((b) => text.startsWith(`@${b.name}`, i))
       if (hit) {
         const rest = (text.slice(0, i) + text.slice(i + 1 + hit.name.length))
@@ -199,13 +212,14 @@ export function parseKnowledgeBaseMention(
 
 /** Single-expert view of `parseExpertMentions` — the @-summon's original
  *  contract (one mention = delegate to that one expert). Kept as a wrapper so
- *  the two paths can never disagree about what a mention is. */
+ *  the two paths can never disagree about what a mention is. `text` is the
+ *  input verbatim: the tokens stay in the message (see parseExpertMentions). */
 export function parseExpertMention(
   text: string,
   experts: ExpertProfile[]
 ): { expert: ExpertProfile | null; text: string } {
-  const { experts: found, text: cleaned } = parseExpertMentions(text, experts)
-  return { expert: found[0] ?? null, text: found.length > 0 ? cleaned : text }
+  const { experts: found } = parseExpertMentions(text, experts)
+  return { expert: found[0] ?? null, text }
 }
 
 // ── @-summon (召唤) ─────────────────────────────────────────────────────

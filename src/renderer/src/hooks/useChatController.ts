@@ -361,29 +361,30 @@ export function useChatController(options: UseChatControllerOptions) {
       // never switches identity anymore. One name is the single-expert path
       // (the expert's conclusion is delivered verbatim); several are handed to
       // the engine's plan mode, which plans the work and assigns it. The
-      // mentions must resolve against enabled experts and are stripped from the
-      // outgoing text; with nothing left to delegate (an empty task) there is
-      // no summon at all.
+      // mentions must resolve against enabled experts, and the @ tokens STAY in
+      // the outgoing message (user 2026-10-09: the @ text is message content
+      // too — transcript, persistence and the model all read what was typed).
+      // The empty-task guard still reads the words BESIDE the mentions
+      // (`mentions.task`), so a bare roster with no assignment is no summon.
       let experts: ExpertProfile[] = []
       try { experts = await window.electronAPI.expertList() } catch { /* non-critical */ }
       const mentions = parseExpertMentions(content, experts)
       const mentioned: SummonedExpert[] = mentions.experts.map((e) => ({ id: e.id, name: e.name }))
-      if (mentioned.length > 0) {
-        content = mentions.text
-        if (!content.trim()) {
-          message.warning(t('chatView.expert.needTaskWithSummon'))
-          return false
-        }
+      if (mentioned.length > 0 && !mentions.task.trim()) {
+        message.warning(t('chatView.expert.needTaskWithSummon'))
+        return false
       }
 
       // ── @知识库 (PLAN-knowledge-groups G5): resolve the base scope ──
-      // Runs AFTER the expert parse on the remaining text, so a name that is
-      // both reads as the expert (既有语义优先). The scope rides THIS send
-      // only — the next message without an @mention searches everything.
+      // Runs AFTER the expert parse and skips the @ tokens the expert parse
+      // claimed (spans) — the tokens stay in the text now, so the claim order
+      // (既有语义优先: a name that is both reads as the expert) is positional.
+      // The scope rides THIS send only — the next message without an @mention
+      // searches everything; a matched base token is the one cut from the text.
       let knowledgeBase: { id: string; name: string } | null = null
       try {
         const bases = await window.electronAPI.knowledgeListBases()
-        const parsedBase = parseKnowledgeBaseMention(content, bases)
+        const parsedBase = parseKnowledgeBaseMention(content, bases, mentions.spans)
         knowledgeBase = parsedBase.base
         if (knowledgeBase) content = parsedBase.text
       } catch { /* bases unavailable — unscoped turn */ }

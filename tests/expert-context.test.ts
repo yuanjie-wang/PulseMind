@@ -120,10 +120,12 @@ describe('parseExpertMention', () => {
     expert({ id: 'expert-code', name: '代码审查专家', enabled: false }),
   ]
 
-  it('resolves an enabled expert by name and strips the token', () => {
+  it('resolves an enabled expert by name, and the @ token rides the text', () => {
+    // 用户 2026-10-09: the mention's words are message content too — the parse
+    // resolves the roster, never rewrites what the user typed.
     const r = parseExpertMention('@写作专家 帮我写一篇周报', experts)
     expect(r.expert?.id).toBe('expert-writing')
-    expect(r.text).toBe('帮我写一篇周报')
+    expect(r.text).toBe('@写作专家 帮我写一篇周报')
   })
 
   it('never resolves a disabled expert, leaving the text untouched', () => {
@@ -141,10 +143,10 @@ describe('parseExpertMention', () => {
     expect(parseExpertMention('@翻译专家 你好', overlapping).expert?.id).toBe('b')
   })
 
-  it('strips the mention inside a sentence, collapsing extra whitespace', () => {
+  it('leaves a mid-sentence mention in the text verbatim', () => {
     const r = parseExpertMention('先让 @写作专家 看看这段', experts)
     expect(r.expert?.id).toBe('expert-writing')
-    expect(r.text).toBe('先让 看看这段')
+    expect(r.text).toBe('先让 @写作专家 看看这段')
   })
 
   it('returns the text untouched without a match', () => {
@@ -164,16 +166,18 @@ describe('parseExpertMentions', () => {
     expert({ id: 'expert-off', name: '离职专家', enabled: false }),
   ]
 
-  it('collects every mentioned expert in match order and strips all tokens', () => {
+  it('collects every mentioned expert in match order; the tokens stay in the text and task is the remainder', () => {
     const r = parseExpertMentions('@写作专家 @数据分析专家 一起把这个方案做出来', experts)
     expect(r.experts.map((e) => e.id)).toEqual(['expert-writing', 'expert-data'])
-    expect(r.text).toBe('一起把这个方案做出来')
+    expect(r.text).toBe('@写作专家 @数据分析专家 一起把这个方案做出来')
+    expect(r.task).toBe('一起把这个方案做出来')
   })
 
   it('counts a name mentioned twice once', () => {
     const r = parseExpertMentions('@写作专家 先写，写完后 @写作专家 再改', experts)
     expect(r.experts.map((e) => e.id)).toEqual(['expert-writing'])
-    expect(r.text).toBe('先写，写完后 再改')
+    expect(r.text).toBe('@写作专家 先写，写完后 @写作专家 再改')
+    expect(r.task).toBe('先写，写完后 再改')
   })
 
   it('resolves an overlapping pair to the specific expert, not both', () => {
@@ -188,6 +192,7 @@ describe('parseExpertMentions', () => {
     const disabled = parseExpertMentions('@离职专家 帮我看看', experts)
     expect(disabled.experts).toEqual([])
     expect(disabled.text).toBe('@离职专家 帮我看看')
+    expect(disabled.spans).toEqual([])
 
     const none = parseExpertMentions('邮箱是 a@b.com', experts)
     expect(none.experts).toEqual([])
@@ -201,6 +206,24 @@ describe('parseExpertMentions', () => {
     const plural = parseExpertMentions('@写作专家 帮我写一篇周报', experts)
     expect(singular.expert?.id).toBe(plural.experts[0]?.id)
     expect(singular.text).toBe(plural.text)
+  })
+})
+
+// ── spans（token 留在消息里后的位置标记，2026-10-09）──
+
+describe('parseExpertMentions spans', () => {
+  const experts = [expert({ id: 'expert-writing', name: '写作专家' })]
+
+  it('marks every consumed token at its offsets in the text it stays in', () => {
+    const r = parseExpertMentions('先让 @写作专家 看看 @写作专家', experts)
+    expect(r.spans).toEqual([{ start: 3, end: 8 }, { start: 12, end: 17 }])
+  })
+
+  it('a mention at the very start, with punctuation glued on, still cuts cleanly from task', () => {
+    const r = parseExpertMentions('@写作专家，帮我看看', experts)
+    expect(r.spans).toEqual([{ start: 0, end: 5 }])
+    expect(r.task).toBe('，帮我看看')
+    expect(r.text).toBe('@写作专家，帮我看看')
   })
 })
 
