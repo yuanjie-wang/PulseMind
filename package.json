@@ -106,7 +106,6 @@
       "out/**/*",
       "!out/probe-*",
       "!**/*.map",
-      "!node_modules/exiftool-vendored.pl/**",
       "!node_modules/fluent-ffmpeg/coverage/**"
     ],
     "extraResources": [
@@ -169,6 +168,9 @@
         "dmg"
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "files": [
+        "!node_modules/exiftool-vendored.pl/**"
+      ],
       "extraResources": [
         {
           "from": "resources/bin",
@@ -182,6 +184,9 @@
     "win": {
       "icon": "resources/pulseMind-win.ico",
       "target": "portable",
+      "files": [
+        "!node_modules/exiftool-vendored.pl/**"
+      ],
       "extraResources": [
         {
           "from": "resources/bin",
