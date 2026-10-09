@@ -684,6 +684,7 @@ A reply that ends without the marker while tools were used this turn may be trea
 
 const TURN_CONTINUATION_NUDGE = `\
 ## Turn Continuation
+
 Your previous reply ended without tool calls, but this turn has already done tool work and the completion marker was absent — this may be an unfinished turn. If the task still has remaining steps, continue it NOW by calling tools. Only if it is fully complete, restate the final result briefly and end with <<TASK_DONE>> alone on the last line.`
 
 const COMPRESSED_TOOL_RESULTS = `\

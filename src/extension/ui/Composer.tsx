@@ -131,8 +131,9 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
   // Same two-step as the desktop's own button (InputArea also labels the active
   // pick with the bare modelLabel): the collapsed button drops the 供应商 prefix
   // — the footer row is too tight for it, and the tooltip still names it. The
-  // MENU items keep fullModelLabel: there a bare label no longer says whose a
-  // same-named model is.
+  // MENU items are bare modelLabel too — the group header names the provider
+  // when grouped, and a single provider has nothing to disambiguate — with
+  // fullModelLabel surviving only as the hover title (2026-10-08 ruling).
   const profiles = model?.profiles ?? []
   const activeProfile = profiles.find((p) => p.id === model?.activeId) ?? profiles[0]
   const activeModelLabel = activeProfile ? modelLabel(activeProfile) : '选择模型'

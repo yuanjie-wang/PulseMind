@@ -125,10 +125,10 @@ export function modelLabel(option: ModelOption): string {
   return option.name || `${option.provider ?? ''}:${option.model}`
 }
 
-/** The flat-list label: 供应商前缀 + modelLabel. Grouped pickers (antd group
- *  headers) use modelLabel alone — the group row already names the provider;
- *  a flat list (the extension panel) prefixes it so 「deepseek-chat」 still
- *  says whose it is when two providers carry the same model id. */
+/** The tooltip label: 供应商前缀 + modelLabel. Menu items render modelLabel
+ *  alone — the grouped header already names the provider, and a single
+ *  provider has nothing to disambiguate — while hover (`title`) carries this
+ *  full form, as does the collapsed button's tooltip in the extension panel. */
 export function fullModelLabel(option: ModelOption): string {
   const base = modelLabel(option)
   return option.providerName ? `${option.providerName} · ${base}` : base

@@ -17,9 +17,9 @@ export const LLM_DUMP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 /** Dump files are the request (`<stamp>-<id>.request.txt`) and its paired
  *  response (`<stamp>-<id>.response.txt`) — one extension for both sides, the
  *  role carried by the marker, per user ruling 2026-10-08 「都用txt吧」. Both
- *  are prunable, and so is everything earlier generations wrote (the bare
- *  `.json` / `.response.sse` / `.response.json` arms) — the age sweep retires
- *  those within 7 days. */
+ *  are prunable, and so is anything the alternate arms might match — the bare
+ *  `.json` / `.response.sse` / `.response.json` patterns are defensive against
+ *  future naming drift (no generation ever wrote them), retired within 7 days. */
 const DUMP_NAME_RE = /\.json$|\.request\.txt$|\.response\.(?:json|sse|txt)$/
 
 /**

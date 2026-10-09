@@ -260,6 +260,9 @@ function ChatView({
     useNewTaskStore.getState().requestShake('projectPicker')
     const dx = rect ? rect.left + rect.width / 2 - window.innerWidth / 2 : 0
     antdMessage.open({
+      // 同 key 复开：连按 Enter 的每次拒绝都刷新同一条通知并重置其时钟，
+      // 而不是叠出一摞（review_20261008 低6）。
+      key: 'send-blocked-project',
       type: 'warning',
       content: t('welcome.selectProjectFirst'),
       style: dx ? { position: 'relative', left: dx } : undefined,

@@ -91,7 +91,10 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
       if (activeTab === 'browser') onBrowserWidth(next)
     }
   }
-  const onDragEnd = () => {
+  const onDragEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    // 异指针的 pointerup（第二根手指、拖拽中落下的鼠标键）不能终止活拖拽
+    // ——只有发起拖拽的那根指针能（review_20261008 低7；move 臂已有同守卫）。
+    if (drag.current && e.pointerId !== drag.current.pointerId) return
     drag.current = null
   }
 

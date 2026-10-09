@@ -45,7 +45,8 @@ const INVISIBLE_DELTA = 25
  *  instead of assuming it. Both profiles carry a providerName so the two label
  *  forms genuinely diverge: the collapsed BUTTON shows the bare modelLabel (the
  *  footer row is too tight for the 供应商 prefix — user ruling 2026-10-08),
- *  the menu items keep fullModelLabel (there the prefix disambiguates).
+ *  and menu items are bare modelLabel as well — the group header names the
+ *  provider; fullModelLabel survives only as the hover title.
  *
  *  Declared out here (not inside the harness) so the checks below can name the
  *  fallback label; interpolated into the harness as data. */
@@ -718,7 +719,7 @@ check(
 )
 
 // 选中后按钮文案跟着换：按钮显示不带供应商前缀的 modelLabel（页脚空间有限，
-// 前缀在 tooltip 里），菜单项才带 fullModelLabel —— 两个形态由这组断言分开钉。
+// 全称在 tooltip 里），菜单项同为裸 modelLabel + tooltip 全称 —— 两个形态由这组断言分开钉。
 await page.evaluate(() => window.__panels()[0].querySelectorAll('.pm-model-item')[1].click())
 await page.waitForTimeout(150)
 const afterSwitch = await page.evaluate(() => ({

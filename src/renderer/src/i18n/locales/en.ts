@@ -384,7 +384,7 @@ const en: TranslationDict = {
     maxTokens: 'Max Output Tokens',
     contextLength: 'Context Length',
     earlyStopGuard: 'Execution Result Check',
-    earlyStopGuardHint: 'For weaker models: auto-continues when the model stops calling tools mid-task; a finished task ends with the <<TASK_DONE>> marker',
+    earlyStopGuardHint: 'For weaker models: auto-continues when the model stops calling tools mid-task; completion is judged by an agreed marker that never reaches the conversation',
     apiKey: 'API Key',
     saveProfile: 'Save Configuration',
     saved: 'Saved',

@@ -247,6 +247,11 @@ export class StreamRunner {
           // unproductive one falls through to the ordinary close: the model's
           // words are on the canvas, a finished task ends exactly as before,
           // and a chatty stop hands the turn back to the user.
+          // Ordering note: this guard consumes the text-only close BEFORE
+          // execution-flow's multi-expert summon nudge can see it — an
+          // @-summon turn (tool rounds counted, model closes in prose) burns
+          // one bounded continuation here first. The two bounded mechanisms
+          // overlap by at most one request per turn; accepted tradeoff.
           if (stopReason !== 'max_tokens' && this.engine.opts.earlyStopGuard === true && !hasTaskDone) {
             const canNudge = this.engine.toolRoundsThisTurn > 0
               && this.engine.earlyStopContinues === 0

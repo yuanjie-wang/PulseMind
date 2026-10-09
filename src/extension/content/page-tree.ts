@@ -712,7 +712,9 @@ export interface BuildDomTreeOptions {
    *  runs (visibility, occlusion and scrollability are layout facts), but the
    *  output lists only what changed. Falls back to the full view when there is
    *  no comparable baseline — first read, URL or `viewportExpansion` changed,
-   *  the walk truncated — or when the diff would cost more than the full body. */
+   *  EITHER build's walk truncated (a truncated baseline poisons the diff:
+   *  everything past the old cap would list as "added") — or when the diff
+   *  would cost more than the full body. */
   delta?: boolean
 }
 
