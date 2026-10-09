@@ -581,19 +581,68 @@ describe('collectDeckLayout (jsdom, stubbed rects)', () => {
       m.set(at(doc, 'p', 1), { x: 64, y: 104, w: 400, h: 24 })
       return m
     })
-    void doc
-    // jsdom has no layout: the overflow itself is a stubbed scroll metric
-    const box = at(doc, '.slide > div') as HTMLElement
-    Object.defineProperty(box, 'scrollHeight', { value: 300 })
-    Object.defineProperty(box, 'clientHeight', { value: 100 })
-    Object.defineProperty(box, 'scrollWidth', { value: 400 })
-    Object.defineProperty(box, 'clientWidth', { value: 400 })
+    // jsdom has no layout: the VISIBLE ink itself is stubbed — the second
+    // paragraph's line boxes sit below the clipper's client bottom (180),
+    // which is exactly the shape the ink-based check refuses (the scroll
+    // metrics no longer decide; see the 中4 control below).
+    stubRangeRects(doc, new Map<Node, Array<Record<string, number>>>([
+      [at(doc, 'p', 0).firstChild!, [{ left: 64, top: 80, right: 464, bottom: 104, width: 400, height: 24 }]],
+      [at(doc, 'p', 1).firstChild!, [{ left: 64, top: 280, right: 464, bottom: 304, width: 400, height: 24 }]],
+    ]))
     const result = collectDeckLayout()
     expect(result.errors.filter((e) => /overflow 裁剪/.test(e.message))).toHaveLength(1)
     const msg = result.errors.map((e) => e.message).join(' ')
     expect(msg).toMatch(/装不下/)
-    expect(msg).toMatch(/内容 400×300px，盒子 400×100px/)
+    expect(msg).toMatch(/可见文字墨迹 400×224px，盒子 400×100px/)
     expect(result.errors[0].page).toBe(1)
+  })
+
+  it('hidden content inflating the scroll metrics no longer refuses — the check reads visible ink (review 20261009 中4)', () => {
+    const doc = mount(wrap(`<div style="overflow:hidden;height:100px"><p>第一段</p><p style="visibility:hidden">隐身占位撑高</p></div>`), (doc) => {
+      const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+      m.set(at(doc, '.slide > div'), { x: 64, y: 80, w: 400, h: 100 })
+      m.set(at(doc, 'p', 0), { x: 64, y: 80, w: 400, h: 24 })
+      return m
+    })
+    // The classic phantom: the hidden paragraph keeps its layout box and
+    // inflates scrollHeight past the client box while the only VISIBLE line
+    // fits. The scroll-based check refused this whole order; the ink-based
+    // one lets it through (the stubbed scroll metrics are poison for the OLD
+    // check, ignored by the new one).
+    const box = at(doc, '.slide > div') as HTMLElement
+    Object.defineProperty(box, 'scrollHeight', { value: 300 })
+    Object.defineProperty(box, 'clientHeight', { value: 100 })
+    stubRangeRects(doc, new Map<Node, Array<Record<string, number>>>([
+      [at(doc, 'p', 0).firstChild!, [{ left: 64, top: 80, right: 464, bottom: 104, width: 400, height: 24 }]],
+    ]))
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
+    expect(result.slides[0].blocks.filter((b) => b.kind === 'text')).toHaveLength(1)
+  })
+
+  it('a hidden span no longer votes its line boxes into the ink union (review 20261009 中4)', () => {
+    const doc = mount(
+      wrap(
+        `<p style="font-size:20px">标题<span style="visibility:hidden">幽灵占位</span></p>` +
+          `<table style="border-collapse:collapse"><tr><td style="width:300px;height:60px">单元格</td></tr></table>`,
+      ),
+      (doc) => {
+        const m: Map<Element, Rect> = new Map([[at(doc, '.slide'), { x: 0, y: 0, w: 960, h: 540 }]])
+        m.set(at(doc, 'p'), { x: 64, y: 80, w: 400, h: 24 })
+        m.set(at(doc, 'table'), { x: 64, y: 200, w: 300, h: 60 })
+        return m
+      })
+    // The hidden span keeps its line box: if its range rects reached the ink
+    // union, the title's ink would stretch down into the table and refuse a
+    // page the preview paints without conflict. The stub hands the span the
+    // poisoned rects — the gated walk must never ask for them (the unfiltered
+    // flatMap did, and failed here).
+    stubRangeRects(doc, new Map<Node, Array<Record<string, number>>>([
+      [at(doc, 'p').firstChild!, [{ left: 64, top: 80, right: 264, bottom: 104, width: 200, height: 24 }]],
+      [at(doc, 'span'), [{ left: 64, top: 180, right: 464, bottom: 260, width: 400, height: 80 }]],
+    ]))
+    const result = collectDeckLayout()
+    expect(result.errors).toEqual([])
   })
 
   it('pre runs carry mono even though the UA monospace stack misses the token face', () => {

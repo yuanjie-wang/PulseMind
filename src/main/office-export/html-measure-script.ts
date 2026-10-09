@@ -155,21 +155,46 @@ export function collectDeckLayout(): CollectResult {
 
     // overflow clipping: the browser paints a clipped box, a pptx text box has
     // no clip — the hidden part would appear IN FULL in the deck. Refuse when
-    // a text owner sits inside an overflow-clipped ancestor whose content
-    // really overflows (scroll > client). .slide itself is exempt: its clip is
-    // exactly what the bounds check above polices, and content inside the
-    // 960×540 box is never clipped by it. Reported once per clipping ancestor.
+    // a text owner sits inside an overflow-clipped ancestor whose VISIBLE
+    // content really overflows the clipper's client area. .slide itself is
+    // exempt: its clip is exactly what the bounds check above polices, and
+    // content inside the 960×540 box is never clipped by it. Reported once
+    // per clipping ancestor. (The check must look at VISIBLE ink, not the raw
+    // scroll metrics: a visibility:hidden subtree keeps its layout box and
+    // still inflates scrollWidth/scrollHeight, so scroll>client fired on
+    // pages where the visible text fits fine — review 20261009 中4.)
     const CLIP_TOL = 2 // px of layout rounding before the overflow is real
     const clippedReported = new Set<HTMLElement>()
     const overflowClipper = (el: HTMLElement): HTMLElement | null => {
       for (let a = el.parentElement; a && a !== slideEl; a = a.parentElement) {
         const c = window.getComputedStyle(a)
-        const ox = c.overflowX || c.overflow || 'visible'
-        const oy = c.overflowY || c.overflow || 'visible'
-        if (ox !== 'hidden' && ox !== 'clip' && oy !== 'hidden' && oy !== 'clip') continue
-        if (a.scrollHeight > a.clientHeight + CLIP_TOL || a.scrollWidth > a.clientWidth + CLIP_TOL) return a
+        const clipX = c.overflowX || c.overflow || 'visible'
+        const clipY = c.overflowY || c.overflow || 'visible'
+        if (clipX !== 'hidden' && clipX !== 'clip' && clipY !== 'hidden' && clipY !== 'clip') continue
+        if (visibleOverflowInk(a)) return a
       }
       return null
+    }
+    // the ink union when VISIBLE text inside `a` extends past its client
+    // area (the padding box: border box minus borders; jsdom has no
+    // scrollbars), else null — with the client box that decided, so the
+    // refusal can quote the real overflowing extent instead of scroll
+    // metrics hidden content can inflate. The union's per-side min/max
+    // crosses an edge exactly when some line box does, so one union answers
+    // the any-side question.
+    const visibleOverflowInk = (a: HTMLElement): { ink: { x: number; y: number; w: number; h: number }; clientW: number; clientH: number } | null => {
+      const rects = visibleInkRects(a)
+      if (rects.length === 0) return null
+      const cr = a.getBoundingClientRect()
+      const cs = window.getComputedStyle(a)
+      const ink = unionRect(rects)
+      const x1 = cr.left + px(cs.borderLeftWidth)
+      const y1 = cr.top + px(cs.borderTopWidth)
+      const x2 = cr.right - px(cs.borderRightWidth)
+      const y2 = cr.bottom - px(cs.borderBottomWidth)
+      const overflows = ink.x < x1 - CLIP_TOL || ink.y < y1 - CLIP_TOL
+        || ink.x + ink.w > x2 + CLIP_TOL || ink.y + ink.h > y2 + CLIP_TOL
+      return overflows ? { ink, clientW: Math.round(x2 - x1), clientH: Math.round(y2 - y1) } : null
     }
 
     // ── color/decoration readers for containers ──
@@ -355,10 +380,15 @@ export function collectDeckLayout(): CollectResult {
       if (runs.length === 0) return
       const clipper = overflowClipper(owner)
       if (clipper && !clippedReported.has(clipper)) {
+        // quote the VISIBLE ink that overflows plus the client box that
+        // decided — scroll metrics are not quoted because a visibility:hidden
+        // subtree keeps its layout box and inflates them without painting
+        // anything (中4's other face)
+        const over = visibleOverflowInk(clipper)
         clippedReported.add(clipper)
         errors.push({
           page,
-          message: `${desc(clipper)} 设了 overflow 裁剪且文字装不下（内容 ${clipper.scrollWidth}×${clipper.scrollHeight}px，盒子 ${clipper.clientWidth}×${clipper.clientHeight}px）——预览里被裁掉的文字在 pptx 里会完整显示；去掉裁剪让超界被真实检测，或缩短文字、加高盒子、拆页。`,
+          message: `${desc(clipper)} 设了 overflow 裁剪且可见文字装不下（可见文字墨迹 ${Math.round(over?.ink.w ?? 0)}×${Math.round(over?.ink.h ?? 0)}px，盒子 ${over?.clientW ?? 0}×${over?.clientH ?? 0}px）——预览里被裁掉的文字在 pptx 里会完整显示；去掉裁剪让超界被真实检测，或缩短文字、加高盒子、拆页。`,
         })
       }
       const c = window.getComputedStyle(owner)
@@ -375,14 +405,16 @@ export function collectDeckLayout(): CollectResult {
       blocks.push(block)
       bounds(block, desc(owner))
       if (rect.w > 1 && rect.h > 1) {
-        // ink extent: the union of the nodes' own line boxes, used AS-IS by
-        // every overlap check — never clamped into the block rect. Clamping
-        // made glyphs that spill past the box invisible to the checks (a
-        // fixed-height leaf with visible overflow escaped both); the ink
-        // itself already shrinks a wide-but-short title, which is the
-        // accuracy it exists for. Range rects need layout (jsdom yields
-        // none) → no ink → the checks fall back to the block rect.
-        const inkViewport = unionRect(nodes.flatMap((n) => rectsOf(n)).filter((r) => r.width > 0 || r.height > 0))
+        // ink extent: the union of the VISIBLE nodes' own line boxes, used
+        // AS-IS by every overlap check — never clamped into the block rect.
+        // Clamping made glyphs that spill past the box invisible to the
+        // checks (a fixed-height leaf with visible overflow escaped both);
+        // the ink itself already shrinks a wide-but-short title, which is the
+        // accuracy it exists for. The collection is visibility-gated (see
+        // visibleInkRects): a hidden span's line box must not vote on
+        // overlaps the preview never paints. Range rects need layout (jsdom
+        // yields none) → no ink → the checks fall back to the block rect.
+        const inkViewport = unionRect(visibleInkRects(nodes))
         const ink = inkViewport.w > 0.5 && inkViewport.h > 0.5
           ? { x: inkViewport.x - ox, y: inkViewport.y - oy, w: inkViewport.w, h: inkViewport.h }
           : undefined
@@ -508,6 +540,31 @@ export function collectDeckLayout(): CollectResult {
       } catch {
         return []
       }
+    }
+    /** Rects of the VISIBLE paintable content (text nodes + BRs) under
+     *  `root`, gated exactly like the runs walk (buildRuns / flushInline):
+     *  display:none and visibility:hidden subtrees contribute nothing. The
+     *  gate is the whole point — a hidden subtree KEEPS its layout box, so
+     *  its range rects still come back, and letting them into an ink union
+     *  is how a hidden placeholder parked next to a table produced a phantom
+     *  text-over-table refusal (review 20261009 中4). Range rects need
+     *  layout (jsdom yields none → []) — callers degrade gracefully. */
+    const visibleInkRects = (root: Node | Node[]): DOMRect[] => {
+      const out: DOMRect[] = []
+      const walk = (node: Node): void => {
+        if (node.nodeType === Node.TEXT_NODE || (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'BR')) {
+          out.push(...rectsOf(node))
+          return
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return
+        const el = node as HTMLElement
+        const ec = window.getComputedStyle(el)
+        if (ec.display === 'none' || ec.visibility === 'hidden') return
+        for (const child of Array.from(el.childNodes)) walk(child)
+      }
+      if (Array.isArray(root)) for (const n of root) walk(n)
+      else walk(root)
+      return out
     }
     const flushInline = (owner: HTMLElement, positioned: boolean) => {
       if (inlineGroup.length === 0) { inlineGroup = []; return }
