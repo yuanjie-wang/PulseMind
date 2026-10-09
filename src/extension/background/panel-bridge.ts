@@ -266,30 +266,37 @@ export class PanelBridge {
    *  consume it: the value exists only to bridge the gap before the column,
    *  and surviving the carry it would resurface onto every later session this
    *  tab creates from scratch (a pick from sessions ago silently pinning a
-   *  fresh conversation). Kept on a failed carry — the next message retries. */
+   *  fresh conversation). Consumed even when the carry FAILS (review
+   *  20261009 中5): ensureSession applies only while the session id moves, so
+   *  "kept for a retry" meant "kept forever" — this session silently lost the
+   *  choice AND the dormant value later pinned the tab's next fresh session.
+   *  A failure here is deterministic in practice (the RPC runs right after a
+   *  successful sessionCreate — say the picked profile was deleted
+   *  desktop-side); the picker re-renders from the session's real state. */
   private async applyTabApprovalMode(tabId: number, sessionId: string): Promise<void> {
     const mode = await getTabApprovalMode(tabId)
     if (!mode) return
     try {
       await this.requireClient().request(Methods.sessionSetApprovalMode, { sessionId, mode })
-      await clearTabApprovalMode(tabId)
     } catch {
-      /* the next message re-reads the stored mode anyway */
+      /* best effort — the choice is dropped either way, the snapshot shows the session's real mode */
     }
+    await clearTabApprovalMode(tabId)
   }
 
   /** Carry a pre-session 模型 choice onto the session that just appeared —
-   *  same contract as the 授权 carry above: consumed on success, kept on
-   *  failure. */
+   *  same contract as the 授权 carry above: consumed on every path, success
+   *  or failure (review 20261009 中5 — keeping it on failure only ever
+   *  delivered it to the WRONG, later session). */
   private async applyTabModelId(tabId: number, sessionId: string): Promise<void> {
     const profileId = await getTabModelId(tabId)
     if (!profileId) return
     try {
       await this.requireClient().request(Methods.modelSetActive, { sessionId, profileId })
-      await clearTabModelId(tabId)
     } catch {
-      /* the label re-reads the stored model on the next snapshot anyway */
+      /* best effort — the label re-reads the session's real model on the next snapshot */
     }
+    await clearTabModelId(tabId)
   }
 
   /** `session.list` answers with the model state riding along, so the two things

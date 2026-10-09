@@ -512,6 +512,28 @@ describe('extension panel bridge', () => {
     expect(sessionBag.modelIds).toEqual({})
   })
 
+  it('a FAILED carry still consumes the tab value — no dormant pin for the next session (review 20261009 中5)', async () => {
+    const bridge = makeBridge(client)
+    // A pick the desktop cannot honor (profile deleted since): model.setActive
+    // throws deterministically for the unknown id.
+    await bridge.handleRequest({ type: 'panel/set-model', profileId: 'gone' }, TAB)
+
+    // The first ask delivers the carry best-effort: the RPC failed but the tab
+    // value is consumed anyway, and the ask itself still went out (a failed
+    // carry must not fail the message that triggered it).
+    await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
+    expect(client.callsTo('model.setActive')).toHaveLength(1)
+    expect(sessionBag.modelIds).toEqual({})
+    expect(client.callsTo('agent.ask')).toHaveLength(1)
+
+    // The old "kept for a retry" contract never retried — the carry runs only
+    // while the session id moves — so the value slept until the next fresh
+    // session and pinned THAT one, the exact shape the carry exists to prevent.
+    await bridge.handleRequest({ type: 'panel/delete-session', sessionId: 'ws_1' }, TAB)
+    await bridge.handleRequest({ type: 'panel/ask', content: 'again' }, TAB)
+    expect(client.callsTo('model.setActive')).toHaveLength(1)
+  })
+
   it('set-approval with a live session writes only the column, not the tab carry-over', async () => {
     const bridge = makeBridge(client)
     await bridge.handleRequest({ type: 'panel/ask', content: 'hi' }, TAB)
