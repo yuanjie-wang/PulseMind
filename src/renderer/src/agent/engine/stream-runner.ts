@@ -114,9 +114,13 @@ export class StreamRunner {
           // engine bookkeeping, not user-facing prose — peel it off the text
           // blocks BEFORE the message lands (transcript, persistence and the
           // extension mirror never see it). A text block that was NOTHING but
-          // the declaration is dropped whole.
+          // the declaration is dropped whole. Flag-gated (review 20261009
+          // 中2): an unguarded model never signed this protocol, so a literal
+          // <<TASK_DONE>> line in its output — a code sample, a discussion of
+          // this very mechanism — is content and must reach the transcript,
+          // persistence and the mirror verbatim.
           let hasTaskDone = false
-          {
+          if (opts.earlyStopGuard === true) {
             const kept: ContentBlock[] = []
             for (const b of extracted.blocks) {
               if (b.type === 'text' && hasTaskDoneSentinel((b as { text?: string }).text)) {

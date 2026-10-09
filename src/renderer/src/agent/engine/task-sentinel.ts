@@ -12,14 +12,23 @@ export const TASK_DONE_SENTINEL = '<<TASK_DONE>>'
 
 /** Line-anchored on purpose: prose that merely MENTIONS the marker (a tool
  *  result quoting it, the model discussing the convention) is not a
- *  declaration. A declaration is a line that trims to exactly the sentinel. */
-const SENTINEL_LINE_RE = /^[ \t]*<<TASK_DONE>>[ \t]*$/m
+ *  declaration — a declaration is a line that trims to exactly the sentinel.
+ *  ONE regex is the single source for BOTH consumers (detection re-arms the
+ *  guard, stripping rewrites the transcript): separate literals are how
+ *  review 20261009 中3 happened — the /m detection accepted a CRLF tail the
+ *  per-line strip then left in place, leaking the raw marker into the
+ *  transcript. The trailing `[ \t\r]` eats the `\r` a CRLF gateway leaves at
+ *  the line's tail after a split on `\n` (deliberately not `\s`: only the
+ *  CR/NL split is a real model shape). */
+const SENTINEL_LINE_RE = /^[ \t]*<<TASK_DONE>>[ \t\r]*$/
+
+const isSentinelLine = (line: string): boolean => SENTINEL_LINE_RE.test(line)
 
 /** Did this text declare task completion? Reads the RAW text — call it before
  *  stripping. */
 export function hasTaskDoneSentinel(text: string | undefined | null): boolean {
   if (!text) return false
-  return SENTINEL_LINE_RE.test(text)
+  return text.split('\n').some(isSentinelLine)
 }
 
 /** Remove sentinel lines from a text block. Returns null when nothing of the
@@ -29,7 +38,7 @@ export function stripTaskDoneSentinel(text: string): string | null {
   if (!hasTaskDoneSentinel(text)) return text
   const kept = text
     .split('\n')
-    .filter((line) => !/^[ \t]*<<TASK_DONE>>[ \t]*$/.test(line))
+    .filter((line) => !isSentinelLine(line))
     .join('\n')
     .trimEnd()
   return kept.length > 0 ? kept : null

@@ -153,6 +153,21 @@ describe('task-sentinel (pure helpers)', () => {
     expect(hasTaskDoneSentinel('')).toBe(false)
   })
 
+  it('detects and strips the marker under CRLF too — the two helpers cannot diverge (review 20261009 中3)', () => {
+    // The CRLF shape: a gateway passing the model's raw tokens through leaves
+    // a \r at each line's tail. The old two-regex form detected these (the /m
+    // `$` matches before \r) but the per-line strip kept `<<TASK_DONE>>\r` —
+    // the marker leaking into transcript + persistence, exactly what the
+    // "never see it" invariant forbids. One shared regex now decides both.
+    expect(hasTaskDoneSentinel('done.\r\n<<TASK_DONE>>\r\n')).toBe(true)
+    expect(hasTaskDoneSentinel(`done.\r\n  ${TASK_DONE_SENTINEL}\r`)).toBe(true)
+    expect(stripTaskDoneSentinel('结论：完成。\r\n<<TASK_DONE>>\r\n')).toBe('结论：完成。')
+    // A block that was nothing but the CRLF marker still drops whole.
+    expect(stripTaskDoneSentinel('<<TASK_DONE>>\r\n')).toBeNull()
+    // Inline prose (with or without the CR tail) is never a declaration.
+    expect(hasTaskDoneSentinel(`the marker is ${TASK_DONE_SENTINEL} inline\r\n`)).toBe(false)
+  })
+
   it('strips the marker line and drops a block that was only the marker', () => {
     expect(stripTaskDoneSentinel(`结论：完成。\n${TASK_DONE_SENTINEL}`)).toBe('结论：完成。')
     expect(stripTaskDoneSentinel(TASK_DONE_SENTINEL)).toBeNull()
@@ -236,6 +251,30 @@ describe('early-stop guard: gates', () => {
     expect(continueCalls).toBe(1) // the tool round's own continuation only
     expect(engine.messages.filter((m) => m.role === 'assistant')).toHaveLength(2)
     expect(engine.agentStatus).toEqual({ status: 'completed' })
+    expect(engine.pendingEarlyStopNudge).toBe(false)
+  })
+
+  it('an unguarded model keeps a literal sentinel line verbatim — no peel, no nudge (review 20261009 中2)', async () => {
+    const host = makeStreamHost()
+    setHost(host)
+    const { engine } = makeEngine(host, false)
+
+    // An unguarded model never signed the sentinel protocol, so a standalone
+    // marker line in its output (here: quoted inside a code fence, the exact
+    // line-anchored regex's blind spot) is CONTENT. The ungated peel rewrote
+    // it into an empty fence behind the model's back.
+    const quoted = [
+      sse({ choices: [{ delta: { content: `协议示例如下：\n\`\`\`\n${TASK_DONE_SENTINEL}\n\`\`\`` } }] }),
+      sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 12 } }),
+      'data: [DONE]\n\n',
+    ]
+    const rounds = [toolStream(), quoted]
+    const { continueCalls } = await drive(host, engine, rounds)
+
+    expect(continueCalls).toBe(1)
+    const last = engine.messages[engine.messages.length - 1]
+    const text = last.contentBlocks.find((b) => b.type === 'text') as { text: string }
+    expect(text.text).toContain(TASK_DONE_SENTINEL)
     expect(engine.pendingEarlyStopNudge).toBe(false)
   })
 
@@ -378,9 +417,13 @@ describe('prompt layer: the sentinel section is conditional on the flag', () => 
 describe('wiring scans (a half-landed edit must fail here)', () => {
   const read = (p: string): string => readFileSync(join(__dirname, '..', p), 'utf-8')
 
-  it('session-manager maps the profile flag at BOTH engine construction sites', () => {
+  it('session-manager maps the profile flag at BOTH engine construction sites, never on a pinned override (中1)', () => {
     const src = read('src/main/agent/session-manager.ts')
-    expect(src.match(/earlyStopGuard: profile\.earlyStopGuard === true/g)?.length).toBe(2)
+    // Arm ⇔ taught: an override prompt is returned verbatim (never taught the
+    // sentinel), so both the constructor and the refresh must exclude it.
+    expect(src.match(/earlyStopGuard: profile\.earlyStopGuard === true && !/g)?.length).toBe(2)
+    expect(src).toContain('!opts.systemPromptOverride')
+    expect(src).toContain('!entry.pinned.systemPromptOverride')
   })
 
   it('the sentinel section enters the core prompt ONLY behind the flag', () => {
@@ -391,6 +434,11 @@ describe('wiring scans (a half-landed edit must fail here)', () => {
   it('the guard dispatch is flag-gated in stream-runner', () => {
     const src = read('src/renderer/src/agent/engine/stream-runner.ts')
     expect(src).toContain("this.engine.opts.earlyStopGuard === true && !hasTaskDone")
+  })
+
+  it('the sentinel peel in stream-runner is flag-gated too (中2)', () => {
+    const src = read('src/renderer/src/agent/engine/stream-runner.ts')
+    expect(src).toContain('if (opts.earlyStopGuard === true) {')
   })
 
   it('prepareTurn resets the guard budget — a new turn never inherits the old counters', () => {

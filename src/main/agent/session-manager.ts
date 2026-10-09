@@ -727,7 +727,13 @@ export class AgentSessionManagerImpl {
       model: profile.model,
       maxTokens: profile.maxTokens ?? 32768,
       contextLength: profile.contextLength,
-      earlyStopGuard: profile.earlyStopGuard === true,
+      // Not armed on a pinned-override session (review 20261009 中1): the
+      // sentinel protocol is taught only by the core prompt and spawn-tool —
+      // buildSystemPrompt returns an override VERBATIM, so here the guard
+      // would fire on every text-only close after tool work while the model
+      // had never been told to write <<TASK_DONE>> (each progress stretch
+      // burning one false continuation). Arm ⇔ taught: no override, no flag.
+      earlyStopGuard: profile.earlyStopGuard === true && !opts.systemPromptOverride,
       profileId: profile.id,
       adapter: createLlmAdapter(profile.provider ?? 'anthropic'),
       myName: settings.myName,
@@ -1086,7 +1092,9 @@ export class AgentSessionManagerImpl {
       model: profile.model,
       maxTokens: profile.maxTokens ?? 32768,
       contextLength: profile.contextLength,
-      earlyStopGuard: profile.earlyStopGuard === true,
+      // Same arm ⇔ taught rule as the constructor (review 20261009 中1): a
+      // pinned override is never taught the sentinel, so it is never armed.
+      earlyStopGuard: profile.earlyStopGuard === true && !entry.pinned.systemPromptOverride,
       profileId: profile.id,
       adapter: createLlmAdapter(profile.provider ?? 'anthropic'),
       myName: settings.myName,
