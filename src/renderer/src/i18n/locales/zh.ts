@@ -180,7 +180,7 @@ const zh = {
     copy: '复制',
     download: '下载',
     like: '点赞',
-    favorite: '录入知识库',
+    favorite: '收藏至知识库',
     favorited: '已录入知识库',
     saveAsRoutine: '存为日常任务',
     routineExtracting: '正在提炼…',

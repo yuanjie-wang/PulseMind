@@ -65,7 +65,7 @@ describe('MessageGroup knowledge-save integration', () => {
     try {
       const saveBtn = mounted.container.querySelector<HTMLButtonElement>('[data-testid="knowledge-save"]')!
       expect(saveBtn).not.toBeNull()
-      expect(saveBtn.title).toBe('录入知识库')
+      expect(saveBtn.title).toBe('收藏至知识库')
       expect(iconPaths(saveBtn)).toEqual(expectedIconPaths(BookOutlined))
       // Same-turn clicks exercise the synchronous latch, not just React state.
       await act(async () => { saveBtn.click(); saveBtn.click(); await flush() })
@@ -74,7 +74,7 @@ describe('MessageGroup knowledge-save integration', () => {
         content: 'A useful conclusion.\nDetails stay intact.', messageId: msg.id,
         conversationId: 'favorite-integration-conversation', title: 'Fixture title',
       })
-      expect(saveBtn.title).toBe('录入知识库')
+      expect(saveBtn.title).toBe('收藏至知识库')
       expect(iconPaths(saveBtn)).toEqual(expectedIconPaths(BookOutlined))
       await act(async () => {
         finish({ id: 'favorite-integration-raw', status: 'raw' } as KnowledgeFile)
