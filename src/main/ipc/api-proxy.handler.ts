@@ -181,12 +181,30 @@ export async function fetchWithAttemptTimeout(
   signal?.addEventListener('abort', abortFromOuter, { once: true })
   const timer = setTimeout(() => attemptController.abort(new Error(`Connect timeout: no response headers within ${Math.round(timeoutMs / 1000)}s`)), timeoutMs)
   try {
-    return await fetch(url, {
-      method: options.method || 'POST',
-      headers: { ...options.headers },
-      body: options.body,
-      signal: attemptController.signal,
-    })
+    // SSRF 重定向复检（full_20261011 P1#4）：validateRequestUrl 只判初始
+    // host，默认 redirect:'follow' 会把 302 → 内网地址整体带过分类器。手动
+    // 逐跳，跳>0 时按首跳同一策略重新校验（公网直过；私网仅当与配置 baseURL
+    // 同 host）。body 是完整字符串，重发无损；跳数封顶 5。
+    let current = url
+    let res: Response
+    for (let hop = 0; ; hop++) {
+      if (hop > 0) await validateRequestUrl(current)
+      if (hop >= 5) throw new Error('SSRF 拦截: 重定向次数超过上限')
+      res = await fetch(current, {
+        method: options.method || 'POST',
+        headers: { ...options.headers },
+        body: options.body,
+        signal: attemptController.signal,
+        redirect: 'manual',
+      })
+      const loc = res.headers.get('location')
+      if (res.status >= 300 && res.status < 400 && loc) {
+        current = new URL(loc, current).href
+        continue
+      }
+      break
+    }
+    return res
   } finally {
     clearTimeout(timer)
     // The outer-signal link deliberately stays attached past the headers: the

@@ -5,7 +5,7 @@ import { stat } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { DATA_DIR, SKILLS_DIR, WORKSPACE_DIR, SETTINGS_PATH, KNOWLEDGE_DIR, TOOLS_DIR } from '../storage'
 import { getBundledRipgrepPath, getPlatformName } from '../services/platform-info'
-import { safeExternalUrl } from '../utils/external-url'
+import { safeExternalUrl, safeOpenPath } from '../utils/external-url'
 import { setTitleBarMaskAlpha } from '../window-chrome'
 
 export interface PlatformInfo {
@@ -103,7 +103,13 @@ export function registerAppHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.SHELL_OPEN_FOLDER, async (_event, folderPath: string): Promise<void> => {
-    await shell.openPath(folderPath)
+    // 与同文件 SHELL_OPEN_EXTERNAL 同门（full_20261011 M8-F4）：openPath 会把
+    // .app/.command/.exe/.lnk 交给系统启动器——「在系统中打开」按钮的路径来自
+    // 模型输出，一次点击 = 任意代码执行。可执行扩展名黑名单拒绝；不做
+    // dataDir 包含判定（这些按钮也要打开用户自选的任意位置附件）。
+    const safe = safeOpenPath(folderPath)
+    if (!safe) throw new Error(`blocked openPath (executable or malformed path): ${String(folderPath).slice(0, 120)}`)
+    await shell.openPath(safe)
   })
 
   ipcMain.handle(IPC_CHANNELS.SHELL_OPEN_EXTERNAL, async (_event, url: string): Promise<void> => {

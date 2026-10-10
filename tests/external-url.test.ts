@@ -4,6 +4,7 @@
 // is a pure function (dataDir is a parameter) — every main-side openExternal
 // call funnels through it.
 import { describe, expect, it } from 'vitest'
+import { safeOpenPath } from '../src/main/utils/external-url'
 import { safeExternalUrl } from '../src/main/utils/external-url'
 
 const DATA_DIR = '/Users/u/.pulsemind'
@@ -88,5 +89,35 @@ describe('safeExternalUrl — file: is jailed to dataDir', () => {
     )
     // A file whose name merely starts with the exec extension's prefix is fine.
     expect(safeExternalUrl(`file://${DATA_DIR}/tmp/notcommand`, DATA_DIR)).not.toBeNull()
+  })
+})
+
+describe('safeOpenPath — openPath never launches an executable (full_20261011 M8-F4)', () => {
+  it('denies launchable extensions on both platforms\' spellings', () => {
+    for (const p of [
+      '/Users/me/evil.app',
+      '/Users/me/evil.command',
+      '/Users/me/evil.exe',
+      'C:\\Users\\me\\evil.bat',
+      'C:\\Users\\me\\evil.lnk',
+      '/Users/me/evil.APP',
+      '/Users/me/x.workflow',
+    ]) {
+      expect(safeOpenPath(p), p).toBeNull()
+    }
+  })
+
+  it('allows documents and folders anywhere (users open picked attachments)', () => {
+    for (const p of ['/Users/me/报告.txt', 'C:\\Users\\me\\notes.md', '/Users/me/Projects', '/a/folder.d']) {
+      expect(safeOpenPath(p), p).toBe(p)
+    }
+  })
+
+  it('denies empty and NUL spellings; a dot in a directory name is not an extension', () => {
+    expect(safeOpenPath('')).toBeNull()
+    expect(safeOpenPath('  ')).toBeNull()
+    expect(safeOpenPath('/a/b\0.app')).toBeNull()
+    expect(safeOpenPath('/a/b\0.png')).toBeNull()  // NUL truncates the visible name
+    expect(safeOpenPath('/Users/me/my.dir/')).toBe('/Users/me/my.dir/')
   })
 })

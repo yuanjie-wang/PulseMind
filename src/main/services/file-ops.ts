@@ -379,6 +379,16 @@ export async function svcWriteFile(input: WriteFileInput): Promise<WriteFileResu
 }
 
 export async function svcConvertToMarkdown(filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> {
+  // deny-roots 同门（full_20261011 M10-P1-2）：这是 file-ops 里唯一没有
+  // checkFsTarget 的读入口——`~/.pulsemind/settings.json` 的文本可经渲染层
+  // 一次 convertFileToMarkdown 读出（第一轮 UTIL_COPY_FILE 无门那条的同类
+  // 残余，当时按调用点修了 copy/tmp、漏了 convert）。null 不区分「被拒」与
+  // 「转换失败」维持既有返回形状，拒绝侧留一行日志可诊断。
+  const guard = await checkFsTarget(filePath, 'read')
+  if (!guard.ok) {
+    console.warn(`[file-ops] convertToMarkdown denied: ${guard.reason}`)
+    return null
+  }
   try {
     return await getOrConvert(filePath)
   } catch {

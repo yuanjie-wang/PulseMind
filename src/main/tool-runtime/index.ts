@@ -98,12 +98,31 @@ async function httpRequest(params: Record<string, unknown>): Promise<{ status: n
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), Number(params.timeoutMs ?? 30_000))
   try {
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: params.body != null ? String(params.body) : undefined,
-      signal: controller.signal,
-    })
+    // SSRF 重定向复检（full_20261011 M8-F3）：默认 redirect:'follow' 会让
+    // 「公网地址 302 → http://169.254.169.254/」整体绕过上面的私网分类器——
+    // 它只对初始 host 跑过一次。改手动逐跳：每一跳的 Location 重新过协议
+    // 白名单与 isBlockedHost，跳数封顶 5。
+    let current = url
+    let res: Response
+    for (let hop = 0; ; hop++) {
+      const parsedHop = new URL(current)
+      if (!['http:', 'https:'].includes(parsedHop.protocol)) throw bridgeError('BAD_REQUEST', '仅支持 http/https')
+      if (hop > 0 && (await isBlockedHost(parsedHop))) throw bridgeError('EXEC_FAILED', '该地址不允许访问')
+      if (hop >= 5) throw bridgeError('EXEC_FAILED', '重定向次数超过上限')
+      res = await fetch(current, {
+        method,
+        headers,
+        body: params.body != null ? String(params.body) : undefined,
+        signal: controller.signal,
+        redirect: 'manual',
+      })
+      const loc = res.headers.get('location')
+      if (res.status >= 300 && res.status < 400 && loc) {
+        current = new URL(loc, current).href
+        continue
+      }
+      break
+    }
     const body = await res.text()
     if (body.length > 2 * 1024 * 1024) {
       throw bridgeError('EXEC_FAILED', '响应超过 2MB 上限')

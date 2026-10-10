@@ -83,6 +83,23 @@ function isInside(root: string, target: string): boolean {
   return normTarget.startsWith(normRoot + sep)
 }
 
+/** Validate a filesystem path destined for `shell.openPath` (full_20261011
+ *  M8-F4): openPath hands the path to LaunchServices/ShellExecute, which
+ *  LAUNCHES `.app`/`.command` on macOS and `.exe`/`.lnk`/`.bat` on Windows —
+ *  and the callers (preview pane, file chips) pass model-influenced paths.
+ *  Same executable deny-list as the file: scheme above. Containment is
+ *  deliberately NOT applied: those buttons also open files the USER picked
+ *  anywhere on disk (attachments), so the deny-list is the gate. Returns the
+ *  path or null (deny). */
+export function safeOpenPath(raw: string): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  if (raw.includes('\0')) return null
+  const dot = raw.lastIndexOf('.')
+  const slash = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'))
+  if (dot > slash && FILE_EXEC_DENY_EXTS.has(raw.slice(dot).toLowerCase())) return null
+  return raw
+}
+
 /**
  * Validate a URL destined for `shell.openExternal`.
  * Returns the (possibly normalized) URL, or null when it must not be opened.

@@ -32,7 +32,9 @@ import {
   type WindowOpenRoute,
 } from '../../shared/browser/pane'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
-import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
+import { isSubpath, resolveTarget } from '../../shared/sandbox/path-jail'
+import { resolveRealTarget } from '../sandbox/real-path'
+import { expandTilde } from '../sandbox/guard'
 import { DATA_DIR, WORKSPACE_DIR } from '../storage'
 import { auditStore } from '../storage/audit-store'
 import { browserHistoryStore } from '../storage/browser-history-store'
@@ -507,18 +509,24 @@ export class BrowserService {
           return browserOk(await page.evaluate(cmd.expression))
         case 'playwright': {
           // setInputFiles uploads local files into a page — jail them to the
-          // conversation's workspace so a page can't exfiltrate arbitrary paths.
+          // conversation's workspace so a page can't exfiltrate arbitrary
+          // paths (full_20261011 M10-P1-1): the old gate judged with
+          // operation:'read', which the jail answers "inside workspace =
+          // allowed" for — i.e. no workspace containment at all — and was
+          // SKIPPED ENTIRELY when the conversation had no workspace
+          // (fail-open). Now: explicit fail-closed subpath check on BOTH the
+          // lexical and the realpath coordinate, workspace required.
           if (cmd.op === 'setInputFiles') {
             const wsDir = getConversationWorkspaceDir(scopeId)
-            if (wsDir) {
-              const decision = guardPath({
-                denyRoots: buildBaselineDenyRoots(homedir(), process.platform),
-                workspaceDir: wsDir,
-                target: cmd.arg ?? '',
-                operation: 'read',
-              })
-              if (!decision.ok) return browserError('PATH_DENIED', `文件上传被拒绝：${decision.reason}`)
-            }
+            if (!wsDir) return browserError('PATH_DENIED', '文件上传被拒绝：当前会话没有工作区')
+            const arg = String(cmd.arg ?? '')
+            const target = expandTilde(arg)
+            const lexical = resolveTarget(wsDir, target)
+            const real = await resolveRealTarget(lexical)
+            if (real.status === 'unresolvable') return browserError('PATH_DENIED', '文件上传被拒绝：路径无法解析')
+            const wsReal = await resolveRealTarget(wsDir)
+            const inside = isSubpath(wsDir, lexical) || (wsReal.status === 'resolved' && isSubpath(wsReal.path, real.path))
+            if (!inside) return browserError('PATH_DENIED', '文件上传被拒绝：只能上传当前会话工作区内的文件')
           }
           return browserOk(await runPlaywrightOp(page, { selector: cmd.selector, op: cmd.op, arg: cmd.arg, timeoutMs: cmd.timeoutMs }, entry.lastSnapshot?.tree ?? null))
         }
