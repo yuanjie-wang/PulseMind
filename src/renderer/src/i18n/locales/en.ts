@@ -599,6 +599,8 @@ const en: TranslationDict = {
     typeUrl: 'URL',
     typeExperience: 'Experience',
     confirmDelete: 'Delete this item?',
+    deleteFailed: 'Delete failed: {{message}}',
+    batchDeletePartial: '{{failed}}/{{total}} deletions failed: {{message}}',
     importError: 'Import failed',
     importSuccess: 'Import succeeded',
     compiling: 'Compiling...',
@@ -905,6 +907,7 @@ const en: TranslationDict = {
     reload: 'Reload',
   },
   chatInput: {
+    attachNameUnsafe: 'Cannot attach {{names}}: the name contains ] or |, which breaks the attachment marker',
     waiting: 'Waiting for response...',
     placeholder: 'Type a message...',
   },

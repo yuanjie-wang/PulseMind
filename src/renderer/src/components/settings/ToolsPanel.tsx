@@ -3,7 +3,7 @@
 // 专家 / 技能 / 连接器 so the grid rhythm, hover, head/divider and action order
 // cannot drift — the previous Collapse-list shape was the one skeleton the
 // center's unification pass (P1) missed. Category section headers survive, since
-// dozens of tools across 8 categories are more navigable grouped than as one
+// dozens of tools across 9 categories are more navigable grouped than as one
 // flat grid. (The extension-only page_* family is not a category here — it is
 // not registered in the desktop registry at all, so there is nothing to manage.)
 
@@ -62,6 +62,7 @@ function ToolsPanel({
     browser: t('tools.categories.browser'),
     interaction: t('tools.categories.interaction'),
     memory: t('tools.categories.memory'),
+    context: t('tools.categories.context'),
     knowledge: t('tools.categories.knowledge'),
     experience: t('tools.categories.experience'),
     git: t('tools.categories.git')

@@ -254,7 +254,12 @@ function RoutineEditorPage({ routineId: routineIdProp, templateId, routineDraft 
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await window.electronAPI.routineDelete(routine.id)
+        try {
+          await window.electronAPI.routineDelete(routine.id)
+        } catch (err) {
+          notify.error(err instanceof Error ? err.message : '删除失败')
+          return
+        }
         // The assistant thread dies with its routine — dispose the live
         // main-side session first or a stale engine would hold the context
         // (the expert editor does the same).

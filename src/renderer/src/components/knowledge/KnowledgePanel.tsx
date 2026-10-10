@@ -461,7 +461,13 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       okText: t('common.delete'),
       cancelText: t('common.cancel'),
       onOk: async () => {
-        await knowledgeManager.deleteFile(file.id)
+        // 与同文件导入操作的两套约定拉齐（full_20261011 M5-P2/X5）：删除失败
+        // 曾只有 console 的 unhandled rejection，界面零反馈。
+        try {
+          await knowledgeManager.deleteFile(file.id)
+        } catch (err) {
+          notify.error(t('knowledgePanel.deleteFailed', { message: err instanceof Error ? err.message : String(err) }))
+        }
         loadFiles()
       }
     })
@@ -528,9 +534,17 @@ const KnowledgePanel = React.forwardRef<KnowledgePanelHandle, KnowledgePanelProp
       okText: '删除',
       cancelText: '取消',
       onOk: async () => {
+        let failed = 0
+        let lastErr = ''
         for (const id of selectedIds) {
-          await knowledgeManager.deleteFile(id)
+          try {
+            await knowledgeManager.deleteFile(id)
+          } catch (err) {
+            failed += 1
+            lastErr = err instanceof Error ? err.message : String(err)
+          }
         }
+        if (failed > 0) notify.error(t('knowledgePanel.batchDeletePartial', { failed, total: selectedIds.size, message: lastErr }))
         setSelectedIds(new Set())
         loadFiles()
       }

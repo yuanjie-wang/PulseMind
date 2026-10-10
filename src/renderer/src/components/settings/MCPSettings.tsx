@@ -19,6 +19,7 @@ import CapabilityCard, {
   CapabilityEmpty,
   CapabilitySwitch
 } from '../common/CapabilityCard'
+import { notifyFailure } from '../../utils/notify'
 
 /** A dot, not a filled Tag: on a ~260px card a colored status pill competes with
  *  the server name for the eye, which is exactly the crowding we're removing. */
@@ -281,11 +282,17 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
     return () => window.removeEventListener('mcp-state-changed', onMcpChange)
   }, [refresh])
 
+  // 变更类 IPC 的 {success,error} 契约必须判返回值（full_20261011 M4-P1-1/X5）：
+  // main 侧内部 catch 后 return 而不是 reject，调用点的 catch 永远不会走——
+  // 连接器启动失败（配置错/命令不存在）曾静默无提示。统一 notify + 判 r.success。
   const handleStart = async (id: string) => {
     setLoading((prev) => ({ ...prev, [id]: true }))
     try {
-      await window.electronAPI.mcpStartServer(id)
+      const r = await window.electronAPI.mcpStartServer(id)
+      if (!r.success) notifyFailure('mcp-start', r.error ?? 'start failed', r.error || '连接器启动失败')
       await refresh()
+    } catch (err) {
+      notifyFailure('mcp-start', err, '连接器启动失败')
     } finally {
       setLoading((prev) => ({ ...prev, [id]: false }))
     }
@@ -294,8 +301,11 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
   const handleStop = async (id: string) => {
     setLoading((prev) => ({ ...prev, [id]: true }))
     try {
-      await window.electronAPI.mcpStopServer(id)
+      const r = await window.electronAPI.mcpStopServer(id)
+      if (!r.success) notifyFailure('mcp-stop', r.error ?? 'stop failed', r.error || '连接器停止失败')
       await refresh()
+    } catch (err) {
+      notifyFailure('mcp-stop', err, '连接器停止失败')
     } finally {
       setLoading((prev) => ({ ...prev, [id]: false }))
     }
@@ -304,8 +314,11 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
   const handleRestart = async (id: string) => {
     setLoading((prev) => ({ ...prev, [id]: true }))
     try {
-      await window.electronAPI.mcpRestartServer(id)
+      const r = await window.electronAPI.mcpRestartServer(id)
+      if (!r.success) notifyFailure('mcp-restart', r.error ?? 'restart failed', r.error || '连接器重启失败')
       await refresh()
+    } catch (err) {
+      notifyFailure('mcp-restart', err, '连接器重启失败')
     } finally {
       setLoading((prev) => ({ ...prev, [id]: false }))
     }
@@ -340,7 +353,8 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
       title: '确认删除',
       content: `确定要删除连接器 "${server.name}" 吗？`,
       onOk: async () => {
-        await window.electronAPI.mcpUnregisterServer(server.id)
+        const r = await window.electronAPI.mcpUnregisterServer(server.id)
+        if (!r.success) notifyFailure('mcp-unregister', r.error ?? 'unregister failed', r.error || '连接器删除失败')
         await refresh()
       }
     })
@@ -366,10 +380,13 @@ const MCPSettings = React.forwardRef<MCPSettingsHandle>(function MCPSettings(_pr
           : []
       }
 
-      if (editingServer) {
-        await window.electronAPI.mcpUpdateServer(editingServer.id, config)
-      } else {
-        await window.electronAPI.mcpRegisterServer(config)
+      // 保存失败时保留弹窗让用户改，而不是静默关闭让人以为已保存：
+      const r = editingServer
+        ? await window.electronAPI.mcpUpdateServer(editingServer.id, config)
+        : await window.electronAPI.mcpRegisterServer(config)
+      if (!r.success) {
+        notifyFailure(editingServer ? 'mcp-update' : 'mcp-register', r.error ?? 'save failed', r.error || '连接器保存失败')
+        return
       }
       setFormOpen(false)
       await refresh()

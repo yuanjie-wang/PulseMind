@@ -195,7 +195,14 @@ function IntervalScheduleRow({ sched, onChange }: { sched: Extract<ScheduleConfi
       <Select
         style={{ width: 84 }}
         value={sched.unit}
-        onChange={(unit) => onChange({ kind: 'interval', unit, every: sched.every })}
+        onChange={(unit) => {
+          // 单位切换必须夹紧 every（full_20261011 M4-P1-2）：30 分钟切到小时
+          // 曾原样保留 30——输入框显示超过自己 max 的值，落库 0 */30 * * *，
+          // 实际每天 00:00 跑一次而界面说「每隔 30 小时」。一处夹紧两个方向。
+          const max = unit === 'minute' ? 59 : 23
+          const every = Math.min(Math.max(sched.every, 1), max)
+          onChange({ kind: 'interval', unit, every })
+        }}
         options={[{ value: 'minute', label: '分钟' }, { value: 'hour', label: '小时' }]}
       />
     </div>

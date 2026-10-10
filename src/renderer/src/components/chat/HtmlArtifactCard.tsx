@@ -73,6 +73,7 @@ import { createTextThrottle } from './stream-throttle'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { buildCardDocument, HTML_ARTIFACT_SANDBOX } from '../../../../shared/preview/html-inject'
 import { localFileUrl } from '../../../../shared/preview/local-file-url'
+import { reportSilentFailure } from '../../utils/notify'
 
 // buildCardDocument (with the measure script and the full-document test) moved
 // to shared/preview/html-inject — the extension panel's card builds the same
@@ -214,6 +215,7 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   const [chromeFlipped, setChromeFlipped] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const chromeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scrollFlipRafRef = useRef<number | null>(null)
   /** Per-hover room check: the outside toolbar needs CHROME_FLIP_HEADROOM_PX
    *  above the card, and every clipping/scrolling ancestor's top edge (the
    *  transcript scroller) cuts what crosses it — inside corners when tight.
@@ -247,13 +249,31 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
     chromeTimerRef.current = setTimeout(() => setChromeOn(false), CHROME_LEAVE_GRACE_MS)
   }, [])
   // Capture-phase scroll: scroll events don't bubble, and the scroller is an
-  // ancestor of the card.
+  // ancestor of the card. Two costs are bounded here (full_20261011 M1-P1-1):
+  // (1) TARGET GATE — the capture listener sees EVERY scroller's events
+  // (sidebar, workbench, plan panel); only ones from the card's own ancestor
+  // chain can change the flip verdict, the rest early-return without touching
+  // layout. (2) rAF COALESCING — streaming auto-scroll fires per frame; one
+  // measure per frame instead of one per event.
   useEffect(() => {
     if (!chromeOn) return
-    window.addEventListener('scroll', measureChromeFlip, true)
+    const onScroll = (e: Event) => {
+      const t = e.target
+      if (!(t instanceof Node)) return
+      const root = rootRef.current
+      if (t !== root && !(root && root.contains(t))) return
+      if (scrollFlipRafRef.current !== null) return
+      scrollFlipRafRef.current = requestAnimationFrame(() => {
+        scrollFlipRafRef.current = null
+        measureChromeFlip()
+      })
+    }
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', measureChromeFlip)
     return () => {
-      window.removeEventListener('scroll', measureChromeFlip, true)
+      if (scrollFlipRafRef.current !== null) cancelAnimationFrame(scrollFlipRafRef.current)
+      scrollFlipRafRef.current = null
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', measureChromeFlip)
     }
   }, [chromeOn, measureChromeFlip])
@@ -342,7 +362,12 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
 
   const onOpenInBrowser = async (): Promise<void> => {
     const filePath = await persistHtmlCopy(code)
-    if (!filePath) return
+    if (!filePath) {
+      // 写盘失败曾静默无反应（full_20261011 M1-P2-3/X5）——「打开」没打开，
+      // 用户只当按钮坏了。
+      reportSilentFailure('html-card-open')
+      return
+    }
     // Windows file: URIs are file:///C:/… — the same conversion
     // file-ops.ts svcCopyFile does.
     void window.electronAPI.openExternal(`file:///${filePath.replace(/\\/g, '/')}`)
@@ -350,7 +375,11 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
 
   const onOpenInPreview = async (): Promise<void> => {
     const filePath = await persistHtmlCopy(code)
-    if (filePath) openInPreviewPane(filePath)
+    if (!filePath) {
+      reportSilentFailure('html-card-open')
+      return
+    }
+    openInPreviewPane(filePath)
   }
 
   return (

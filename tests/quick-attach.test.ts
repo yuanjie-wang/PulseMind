@@ -162,10 +162,10 @@ describe('InputArea gates both entry points', () => {
   })
 
   it('routed paths (picker buttons too) go through the de-duplicating merge', () => {
-    expect(fnBody(src, 'addAttachments')).toMatch(/mergeAttachments\(prev, files\)/)
-    expect(fnBody(src, 'addAttachments')).toMatch(/mergeAttachments\(prev, folders\)/)
-    expect(src).toMatch(/setSelectedFiles\(\(prev\) => mergeAttachments\(prev, result\.filePaths\)\)/)
-    expect(src).toMatch(/setSelectedFolders\(\(prev\) => mergeAttachments\(prev, result\.filePaths\)\)/)
+    expect(fnBody(src, 'addAttachments')).toMatch(/mergeAttachmentsNotified\(prev, files\)/)
+    expect(fnBody(src, 'addAttachments')).toMatch(/mergeAttachmentsNotified\(prev, folders\)/)
+    expect(src).toMatch(/setSelectedFiles\(\(prev\) => mergeAttachmentsNotified\(prev, result\.filePaths\)\)/)
+    expect(src).toMatch(/setSelectedFolders\(\(prev\) => mergeAttachmentsNotified\(prev, result\.filePaths\)\)/)
   })
 
   it('the drop hint renders in the above-card layer, tail position, both conditions', () => {

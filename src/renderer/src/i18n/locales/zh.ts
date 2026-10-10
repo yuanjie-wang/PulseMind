@@ -592,6 +592,8 @@ const zh = {
     typeUrl: '链接',
     typeExperience: '经验',
     confirmDelete: '确认删除？',
+    deleteFailed: '删除失败：{{message}}',
+    batchDeletePartial: '{{failed}}/{{total}} 个文件删除失败：{{message}}',
     importError: '导入失败',
     importSuccess: '导入成功',
     compiling: '编译中...',
@@ -898,6 +900,7 @@ const zh = {
     reload: '重新加载',
   },
   chatInput: {
+    attachNameUnsafe: '无法附加「{{names}}」：文件名含 ] 或 |，会破坏附件标记',
     waiting: '等待响应中...',
     placeholder: '输入消息...',
   },

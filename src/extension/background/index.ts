@@ -7,7 +7,7 @@
  * that fills the panel transcript. M2: answer `tool.call` by driving the tab's
  * content script (see tool-router.ts). */
 
-import { CloseCodes, Methods } from '../../shared/agent-protocol/methods'
+import { CloseCodes, Methods, PROTOCOL_VERSION } from '../../shared/agent-protocol/methods'
 import type { AgentEventParams, ToolCallParams } from '../../shared/agent-protocol'
 import { isPanelRequest, OPEN_OPTIONS_MESSAGE_TYPE, type ConnectionState } from '../bridge'
 import { resetCspVerdict } from './cdp'
@@ -136,7 +136,9 @@ async function runEnsureClient(forceRediscover: boolean): Promise<void> {
       token,
       clientId: CLIENT_ID,
       clientVersion: chrome.runtime.getManifest().version,
-      protocolVersion: 1,
+      // 单一来源（full_20261011 M12-P1-3/X9）：字面量曾与共享常量各走各的——
+      // 抬一次 PROTOCOL_VERSION，扩展面板就因握手被拒且 fatal 而致命断连。
+      protocolVersion: PROTOCOL_VERSION,
     },
     {
       onStateChange: () => handleStateChange(),

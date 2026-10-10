@@ -95,7 +95,14 @@ export function ToolListPage({ selectedId }: { selectedId: string | null }): Rea
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await window.electronAPI.toolDelete(tool.id)
+        // 删除失败给 toast（full_20261011 M3-P2-3/X5）：无 try/catch 时失败
+        // 只是 console 里一行 unhandled rejection，界面无反应。
+        try {
+          await window.electronAPI.toolDelete(tool.id)
+        } catch (err) {
+          notify.error(`删除失败：${err instanceof Error ? err.message : String(err)}`)
+          return
+        }
         // Drop the tool's build session with it — the conversation row is gone,
         // so a live engine would only keep writing into nothing.
         void window.electronAPI

@@ -207,7 +207,14 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await window.electronAPI.routineDelete(routine.id)
+        // handler 无 {success} 返回（失败走 rejection）——catch 里给 toast，
+        // 否则删除失败既不弹窗提示也只在 console 留 unhandled rejection。
+        try {
+          await window.electronAPI.routineDelete(routine.id)
+        } catch (err) {
+          notify.error(err instanceof Error ? err.message : '删除失败')
+          return
+        }
         void reload()
       },
     })
@@ -397,7 +404,16 @@ function RoutineCenter({ runHistoryOf }: RoutineCenterProps): React.ReactElement
                         <Switch
                           size="small"
                           checked={routine.enabled}
-                          onChange={(checked) => void window.electronAPI.routineToggle(routine.id, checked).then(reload)}
+                          onChange={(checked) => {
+                            // 变更类 IPC 无失败分支曾产生 unhandled rejection +
+                            // 开关视觉与落库不一致（full_20261011 M4-P2-4/X5）。
+                            window.electronAPI.routineToggle(routine.id, checked)
+                              .then(() => reload())
+                              .catch((err: unknown) => {
+                                notify.error(err instanceof Error ? err.message : '切换启用状态失败')
+                                reload()
+                              })
+                          }}
                         />
                         <span style={{ flex: 1 }} />
                         <Tooltip title="立即运行">
