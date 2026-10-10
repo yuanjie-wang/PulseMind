@@ -42,6 +42,11 @@ describe('openBuiltInWindow', () => {
     // setMenu(null) half is platform-gated (non-darwin) and cannot be
     // asserted from a darwin test run — the stub records it as lastSetMenu.
     expect(win.options).toMatchObject({ title: '登录', width: 800, height: 600, show: true, autoHideMenuBar: true })
+    // The window is framed (only the main window is frameless), so an unset
+    // icon shows the host electron binary's own in the Windows title bar —
+    // the default Electron glyph in dev. Same file the main/splash windows
+    // and the tray resolve.
+    expect(String(win.options.icon)).toContain(process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png')
     expect(win.options.webPreferences).toMatchObject({
       sandbox: true,
       contextIsolation: true,

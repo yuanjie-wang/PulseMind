@@ -12,6 +12,8 @@
 // runtime trigger (connector missing credentials) calls this same function.
 
 import { BrowserWindow, app, shell } from 'electron'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { assertAllowedUrl } from '../shared/browser-client/protocol'
 import { safeExternalUrl } from './utils/external-url'
 import { DATA_DIR } from './storage/index'
@@ -19,6 +21,24 @@ import type { HookWindowHandle, HookWindowOptions } from '../shared/types/hooks'
 
 const DEFAULT_WIDTH = 1024
 const DEFAULT_HEIGHT = 768
+
+/** The app icon for this window's title bar / taskbar. The login window is
+ *  FRAMED (only the main window is frameless), so on Windows an unset icon
+ *  falls back to the host electron binary's own — the default Electron glyph
+ *  in dev, never the app's (user report 2026-10-10). Mirrors index.ts's
+ *  getResourcePath (prod: loose files under process.resourcesPath/resources;
+ *  dev: the project's resources/ dir); the prod base is guarded because
+ *  process.resourcesPath exists only under Electron — vitest runs this
+ *  module bare. Same file the main/splash windows and the tray use. */
+function appIconPath(): string {
+  const name = process.platform === 'win32' ? 'pulseMind-win.ico' : 'pulseMind.png'
+  const prodBase = process.resourcesPath
+  if (prodBase) {
+    const prodPath = join(prodBase, 'resources', name)
+    if (existsSync(prodPath)) return prodPath
+  }
+  return join(__dirname, '../../resources', name)
+}
 
 /** Every window this module opened, so the launch-hook watchdog can close the
  *  hook's login window when it abandons the flow (review 2026-09-26 中4) — a
@@ -89,6 +109,7 @@ export async function openBuiltInWindow(
     height: options?.height ?? DEFAULT_HEIGHT,
     title: options?.title ?? '',
     show: true,
+    icon: appIconPath(),
     // The app-wide menu template (menu.ts installs one on every platform)
     // paints a menu strip on any FRAMED window — the main window never shows
     // it only because it is frameless. autoHideMenuBar covers the first
