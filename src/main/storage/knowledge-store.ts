@@ -821,7 +821,17 @@ export async function reextractKnowledge(id: string): Promise<KnowledgeImportRes
   cleanContent = extractBase64Images(cleanContent, rawDir, row.base_id)
   const contentHash = createHash('sha256').update(cleanContent).digest('hex')
   const fullPath = join(rawDir, row.file_path)
-  writeFileSync(fullPath, cleanContent, 'utf-8')
+  // Rebuild the raw file's frontmatter (2026-10-10): the import path writes
+  // frontmatter + body (:791) but the re-extract used to write the bare body —
+  // one re-extract and the raw file lost its title/source_path/extracted
+  // header for good. Same fields as the import, with `extracted` refreshed.
+  const frontmatter = buildFrontmatter({
+    title: row.title,
+    source_type: row.source_type || 'file',
+    source_path: row.source_path,
+    extracted: localTimestamp()
+  })
+  writeFileSync(fullPath, frontmatter + cleanContent, 'utf-8')
   getDb().prepare("UPDATE knowledge_files SET content_hash = ?, status = 'raw', wiki_outputs = NULL, compiled_at = NULL WHERE id = ?").run(contentHash, id)
   syncKnowledgeFileToFts(id)
   return { success: true, file: getFile(id)! }
