@@ -154,10 +154,11 @@ Stop a background process you started with \`exec background: true\`, by its pid
 
   memory_search: `## memory_search
 
-Search across all past conversations and explicitly saved memories — auto-extracted and manually saved alike.
+Search long-term memories by keyword. The "Extracted Memories" section in your context is a condensed INDEX — short entries only, newest 20; older or longer memories live only in the store and are reachable exclusively through this tool.
 
 ### Guidelines
-- Recall past decisions, preferences, or context here; be specific in the query for best results
+- When a memory line looks relevant to the task but you need the detail (or the section says entries were omitted), search BEFORE acting on half-knowledge — one cheap call beats redoing a solved problem
+- Be specific in the query; results come back as full entries, newest first
 `,
 
   memory_save: `## memory_save

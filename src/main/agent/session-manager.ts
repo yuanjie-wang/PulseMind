@@ -332,6 +332,13 @@ export class AgentSessionManagerImpl {
           // line undercount every tool call and error, and extractAndSaveAll
           // flattens to text messages internally anyway (one cursor unit).
           if (ctx.messages.length === 0) return
+          // Seed the merge config BEFORE extractAndSaveAll: its internal
+          // ensureMemoryMerged (the merge-due session end) reads the manager's
+          // instance fields, which otherwise still hold the PREVIOUS sweep's
+          // profile — last session's pin or the startup active model — so the
+          // conversation-pinned model was honored by the first merge of a
+          // process only (review 2026-10-10 中4).
+          this.seedMemoryMergeConfig(managers.memoryManager, profile)
           // Fire-and-forget — single LLM call extracts memories + experience.
           const result = await managers.memoryManager.extractAndSaveAll(
             ctx.messages, profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
@@ -343,8 +350,8 @@ export class AgentSessionManagerImpl {
           if (result.memories > 0) console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
           // extractAndSaveAll may have run the incremental merge — advance
           // settings.json's watermark so a restart doesn't re-merge. The
-          // session's own profile goes in: a conversation-pinned model must
-          // not be overridden by the active one for this merge.
+          // config was already seeded above (before extraction); the sweep
+          // re-seeds only when no merge is in flight (setConfig's mutex).
           await this.runMemoryMergeSweep(profile).catch((e) => console.warn('[SessionReview] merge sweep failed:', e))
           if (result.experienceContent) {
             managers.experienceManager.save({
@@ -433,6 +440,17 @@ export class AgentSessionManagerImpl {
     })
   }
 
+  /** Seed the merge layer's LLM config onto the shared manager. Split from
+   *  runMemoryMergeSweep so afterSession can seed BEFORE extractAndSaveAll —
+   *  its internal ensureMemoryMerged reads these instance fields, and without
+   *  the pre-seed it ran on whichever profile the previous sweep left behind
+   *  (review 2026-10-10 中4). setConfig itself refuses to swap the config
+   *  while a merge is in flight (review 2026-10-10 中5), so a late sweep can
+   *  never change models under a running merge. */
+  private seedMemoryMergeConfig(memoryManager: MemoryManager, profile: LlmProfile): void {
+    memoryManager.setConfig(profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'), profile.model, profile.maxTokens)
+  }
+
   /** Run the incremental memory merge (if due) and persist the watermark.
    *  Both the delayed startup sweep and the afterSession path land here, so
    *  settings.json is written by exactly one shape. `profile` absent (startup
@@ -449,7 +467,7 @@ export class AgentSessionManagerImpl {
     // ever reached the renderer's own instance.
     const p = profile ?? (await this.resolveActiveLlmProfile())
     if (p) {
-      memoryManager.setConfig(p.apiKey ?? '', p.baseURL, createLlmAdapter(p.provider ?? 'anthropic'), p.model, p.maxTokens)
+      this.seedMemoryMergeConfig(memoryManager, p)
     }
     const ran = await memoryManager.ensureMemoryMerged()
     const w = memoryManager.getMergeWatermark()

@@ -548,6 +548,7 @@ const en: TranslationDict = {
       browser: 'Browser',
       interaction: 'Interaction',
       memory: 'Memory',
+      context: 'Context',
       knowledge: 'Knowledge',
       experience: 'Experience',
       git: 'Git',

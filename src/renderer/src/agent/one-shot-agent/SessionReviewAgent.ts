@@ -42,10 +42,22 @@ export class SessionReviewAgent extends OneShotAgent<SessionReviewInput, Session
 You are a session review system. Analyze the conversation below and extract two kinds of information in a single pass:
 
 ## A. Memories
-Extract important facts, decisions, and user preferences. Each memory must have:
-- "content": specific, durable information (not transient chat)
+A memory is knowledge about THE USER that makes the next conversation serve them better. Every memory must be attributable to the user — something they decided, prefer, corrected, or their durable background. The conversation transcript is only the EVIDENCE; what gets saved is what it reveals about the user, never a recap of the work itself. Each memory must have:
+- "content": specific and durable, anchored on the user ("用户拍板…", "用户要求…", "用户习惯…", "用户的背景是…"). HARD CAP: at most 100 characters, ONE short sentence (短句) stating the conclusion — no recipes, no step lists, no examples. If the insight cannot compress to one short sentence, it belongs in the experience record, not here
 - "type": one of "fact", "decision", "preference"
+  - "decision" — a choice the USER made or ratified: scope, approach or tool pick, priorities, a rejected alternative, a deliverable spec/口径 they signed off on
+  - "preference" — how the user wants things done: language, tone, format templates, granularity, workflow habits, and every correction they made to the agent's behavior or output
+  - "fact" — the user's background: role, organization, ongoing projects, domain context, and domain facts the user explicitly confirmed
 - "category": one of "code", "architecture", "user_pref", "decision", "general"
+
+NOT memories — never extract these, no matter how substantial they look:
+- The assistant's own analysis, frameworks, research findings, or summaries of files/webpages it read. The model's output is work product, not user knowledge — UNLESS the user explicitly approved or adopted it, which turns it into a "decision".
+- A log of what was done in one task ("查了X的天气", "完成了Y的调研") — execution narration is not durable knowledge.
+- Casual chat and greetings.
+
+Litmus test: if this memory disappeared, would the NEXT conversation for this user be visibly worse? If not, skip it.
+
+Yield bar: extraction is SELECTIVE, not exhaustive. At most 3 memories per review — only items clearing every rule above. Most conversations correctly yield ZERO memories: "memories": [] is a fully successful outcome, never pad and never lower the bar to have something to show. One high-value memory beats five marginal ones.
 
 Important: If existing memories are provided, ONLY output memories that are NOT already covered by them. Skip any fact, decision, or preference that duplicates or substantially overlaps an existing memory.
 

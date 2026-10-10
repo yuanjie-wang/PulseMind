@@ -542,6 +542,7 @@ const zh = {
       browser: '浏览器',
       interaction: '交互',
       memory: '记忆',
+      context: '上下文',
       knowledge: '知识',
       experience: '经验',
       git: 'Git',

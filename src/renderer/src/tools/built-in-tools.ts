@@ -378,9 +378,16 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   },
 
   // ── memory_search ──────────────────────────────────────────────────
+  // Always in the toolset (user 2026-10-10，取回通道修复): the resident memory
+  // section renders only short entries (≤100 chars, newest 20), so the model
+  // needs this tool on hand at all times to reach the archive — a gated tool
+  // it cannot see is useless as the slimmed section's retrieval channel.
+  // `triggers` STAY: the keyword door reads every gated tool's triggers to
+  // activate its whole category, and these carry the main Chinese door
+  // (记忆/记得/回忆) for memory_save / conversation_search / tool_result_search.
   {
     name: 'memory_search',
-    description: 'Search across memories, decisions, and user preferences.',
+    description: 'Search long-term memories (facts, decisions, user preferences) by keyword. The memory section in your context is a condensed index of short entries only — older or longer memories are NOT shown there; retrieve them with this tool.',
     category: 'memory',
     triggers: ['memory', 'recall', 'remember', 'search memory', 'past context', '记忆', '记得', '回忆', '上次', '之前'],
     input_schema: {
@@ -404,10 +411,13 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.memory_search,
     builtIn: true,
-    availability: 'gated',
+    availability: 'always',
   },
 
   // ── memory_save ────────────────────────────────────────────────────
+  // Always in the toolset（user 2026-10-10，与 memory_search 同裁定）：记忆
+  // 读写是常驻区的配套通道，不该等激活。triggers 留着——关键词门读每个
+  // gated 工具的触发词来激活整个类目，这里仍是 tool_result_search 的中文门。
   {
     name: 'memory_save',
     description: 'Save an important fact, decision, or preference to long-term memory.',
@@ -435,10 +445,11 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.memory_save,
     builtIn: true,
-    availability: 'gated',
+    availability: 'always',
   },
 
   // ── conversation_search ────────────────────────────────
+  // Always in the toolset（user 2026-10-10，与 memory_search 同裁定）。
   {
     name: 'conversation_search',
     description: 'Search past conversations by keyword or ID.',
@@ -460,14 +471,17 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     },
     instructions: toolInstructions.conversation_search,
     builtIn: true,
-    availability: 'gated',
+    availability: 'always',
   },
 
   // ── tool_result_search ────────────────────────────────────────────────
+  // 上下文类目（user 2026-10-10，随 context_compact 同迁）：压缩结果的取回
+  // 是上下文治理的取回半边，不是记忆。它仍 gated——按 id 取回是跟着压缩
+  // 事件走的被动动作，模型看到占位符才知道要查，常驻价值低。
   {
     name: 'tool_result_search',
     description: 'Look up the original content of compressed tool results by tool_result_id.',
-    category: 'memory',
+    category: 'context',
     triggers: ['tool result', 'lookup tool result', 'find tool result', 'search tool result'],
     input_schema: {
       type: 'object',
@@ -493,7 +507,13 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
     name: 'context_compact',
     description:
       'Manually compact the conversation context at a phase boundary you judge right (exploration finished, topic switch, before a large new stage): older context is archived into a summary injected into later requests, freeing window space. Attach a handover note (notes) to carry your progress and next steps verbatim. Rejected when the context is below ~55% of the window, when already used this turn, or while a request is streaming.',
-    category: 'memory',
+    // 上下文类目（user 2026-10-10：压缩是上下文管理，不是记忆）。原 'memory'
+    // 是计划书 D1 的「取回半边归队」推理——tool_result_search 早已在 memory，
+    // 驱逐半边跟进即可省一个类目；该推理混淆了知识面（记忆：跨会话的用户
+    // 知识）与上下文面（会话内窗口治理）。功能面无感：审批豁免按名字枚举
+    // （execution-flow isMemoryTool）、关键词门只看 gated、schema 不携带
+    // category——消费方只有设置面板的分组显示。
+    category: 'context',
     input_schema: {
       type: 'object',
       properties: {

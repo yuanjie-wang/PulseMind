@@ -1,5 +1,6 @@
 import { getDb, withFtsRecovery } from './database'
 import { memoryContentHash } from '../../shared/memory/content-hash'
+import { escapeLikePattern } from '../../shared/memory/like-pattern'
 
 export interface MemoryRow {
   id: string
@@ -94,31 +95,24 @@ export function deleteMemory(id: string): void {
   del()
 }
 
-/** Escape FTS5 special characters that would cause syntax errors. */
-function sanitizeFtsQuery(query: string): string {
-  // FTS5 treats these as syntax: ^ . * " ( ) + - ~ AND OR NOT NEAR
-  // Wrap in double quotes to treat as a safe phrase search
-  const hasSpecial = /[.*"()^+\-~]|(\b(AND|OR|NOT|NEAR)\b)/i.test(query)
-  if (!hasSpecial) return query
-  // Escape internal double quotes and wrap the whole thing in quotes
-  return `"${query.replace(/"/g, '""')}"`
-}
-
 export function searchMemories(query: string, limit: number = 10, category?: string): MemoryRow[] {
   const database = getDb()
-  return withFtsRecovery(() => {
-    let sql = `
-      SELECT m.id, m.content, m.type, m.category, m.source, m.created_at, m.updated_at
-      FROM memories_fts f
-      JOIN memories m ON m.rowid = f.rowid
-      WHERE memories_fts MATCH ?
-    `
-    const params: unknown[] = [sanitizeFtsQuery(query)]
-    if (category) { sql += ' AND m.category = ?'; params.push(category) }
-    sql += ' ORDER BY rank LIMIT ?'
-    params.push(limit)
-    return database.prepare(sql).all(...params) as MemoryRow[]
-  })
+  const q = query.trim()
+  if (!q) return []
+  // LIKE 全表扫（user 2026-10-10）：memories_fts 建表没指定分词器，默认
+  // unicode61 把连续汉字串当单个 token，中文子串查询几乎必然 miss（知识库
+  // FTS 同病，已迁 trigram；trigram 对 <3 字符的中文词仍落空）。记忆池封顶
+  // 后不过几十行，全表扫即时返回，任意长度的中文子串都能命中。
+  let sql = `
+    SELECT id, content, type, category, source, created_at, updated_at
+    FROM memories
+    WHERE content LIKE ? ESCAPE '\\'
+  `
+  const params: unknown[] = [`%${escapeLikePattern(q)}%`]
+  if (category) { sql += ' AND category = ?'; params.push(category) }
+  sql += ' ORDER BY created_at DESC LIMIT ?'
+  params.push(limit)
+  return database.prepare(sql).all(...params) as MemoryRow[]
 }
 
 export function countMemoriesByType(types: string[]): number {

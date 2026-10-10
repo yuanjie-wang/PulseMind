@@ -41,12 +41,35 @@ function functionBody(source: string, signature: string): string {
 describe('memory merge LLM-config seeding (main-side owner)', () => {
   const sessionManager = read('src/main/agent/session-manager.ts')
 
-  it('runMemoryMergeSweep seeds setConfig onto the manager BEFORE ensureMemoryMerged', () => {
+  it('runMemoryMergeSweep seeds the config onto the manager BEFORE ensureMemoryMerged', () => {
     const body = functionBody(sessionManager, 'async runMemoryMergeSweep(profile?: LlmProfile)')
-    const seed = body.indexOf('memoryManager.setConfig(')
+    const seed = body.indexOf('this.seedMemoryMergeConfig(memoryManager, p)')
     const merge = body.indexOf('memoryManager.ensureMemoryMerged()')
     expect(seed).toBeGreaterThan(-1)
     expect(merge).toBeGreaterThan(seed)
+  })
+
+  it('afterSession seeds the session profile BEFORE extractAndSaveAll (review 2026-10-10 中4)', () => {
+    // extractAndSaveAll's internal ensureMemoryMerged reads the manager's
+    // instance fields; without the pre-seed it ran on the PREVIOUS sweep's
+    // profile, so the conversation-pinned model was honored by the first
+    // merge of a process only. The post-extraction sweep stays (watermark).
+    const body = functionBody(sessionManager, 'afterSession: (ctx) => {')
+    const seed = body.indexOf('this.seedMemoryMergeConfig(managers.memoryManager, profile)')
+    const extract = body.indexOf('managers.memoryManager.extractAndSaveAll(')
+    const sweep = body.indexOf('this.runMemoryMergeSweep(profile)')
+    expect(seed).toBeGreaterThan(-1)
+    expect(extract).toBeGreaterThan(seed)
+    expect(sweep).toBeGreaterThan(extract)
+  })
+
+  it('seedMemoryMergeConfig forwards the full profile (key, adapter, model, maxTokens)', () => {
+    const body = functionBody(sessionManager, 'private seedMemoryMergeConfig(memoryManager: MemoryManager, profile: LlmProfile)')
+    expect(body).toContain("profile.apiKey ?? ''")
+    expect(body).toContain('profile.baseURL')
+    expect(body).toContain("createLlmAdapter(profile.provider ?? 'anthropic')")
+    expect(body).toContain('profile.model')
+    expect(body).toContain('profile.maxTokens')
   })
 
   it('startup sweep falls back to the active profile when no session profile is given', () => {
@@ -57,6 +80,13 @@ describe('memory merge LLM-config seeding (main-side owner)', () => {
 
   it('the afterSession sweep passes the session profile (conversation-pinned model wins)', () => {
     expect(sessionManager).toMatch(/runMemoryMergeSweep\(profile\)\.catch\(/)
+  })
+
+  it('setConfig refuses to swap the config while a merge is in flight (review 2026-10-10 中5)', () => {
+    // 共享单例 + fire-and-forget 播种：进行中换 config = 正在跑的合并被换模型。
+    const memoryManager = read('src/renderer/src/memory/MemoryManager.ts')
+    const body = functionBody(memoryManager, 'setConfig(apiKey: string, baseURL: string, adapter: LlmAdapter, model: string, modelMaxTokens?: number): void')
+    expect(body).toContain('if (this._compressing) return')
   })
 
   it('App.tsx no longer triggers the merge or configures MemoryManager (zombie path removed)', () => {

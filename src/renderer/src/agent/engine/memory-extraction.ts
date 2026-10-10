@@ -3,6 +3,7 @@
  * extracted from AgentEngine. Functions take the engine back-reference.
  */
 import { MEM_SALVAGE_MAX_PER_SESSION, MEM_SALVAGE_CONTEXT_RATIO } from './engine-constants'
+import { MEMORY_ENTRY_MAX_CHARS } from '../../../../shared/memory/limits'
 import type { EngineCore } from './engine-core'
 import { enforceMaxOutputTokens, withNoThinkingDirective } from '../one-shot-agent/OneShotAgent'
 import { getHost } from '../host'
@@ -54,8 +55,14 @@ export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promi
 
     const summary = pairTexts.join('\n---\n').slice(0, 3000)
 
-    // Call LLM for memory extraction
-    const prompt = 'You are a memory extraction system. Given AI reasoning and tool execution, extract any important facts, decisions, file paths, or user preferences that should be saved for future reference. Return a JSON array of memories, each with: "content" (string), "type" (one of: "fact", "decision", "preference"), "category" (one of: "code", "architecture", "user_pref", "decision", "general"). Only include genuinely important, durable information. Return ONLY the JSON array, no other text.'
+    // Orientation (user ruling 2026-10-10: 记忆侧重用户的决策/偏好，不归纳模型
+    // 产出): this path's input has NO user text — only assistant reasoning +
+    // tool names — so decisions/preferences cannot legitimately come from here,
+    // and the old prompt ("extract … decisions, file paths, or user
+    // preferences") structurally produced task-output summaries. What this
+    // transcript CAN durably reveal is the environment: tool/API quirks,
+    // machine constraints, failure modes. Save only those.
+    const prompt = 'You are a memory extraction system. The transcript below shows ONLY the assistant\'s reasoning and tool execution — the user\'s words are NOT in it. Extract ONLY durable ENVIRONMENT and TOOL facts worth reusing in future sessions: machine or tool constraints (missing flags, hard limits), API quirks and failure modes, capability boundaries, install/version pitfalls. Do NOT summarize what the task was about or what the assistant concluded — work-product narration is not a memory. The user is invisible here: do NOT invent decisions or user preferences. File paths are session-scoped — never save them. Each memory\'s "content" is ONE short sentence of at most 100 characters (短句，只留结论). Return a JSON array of memories, each with: "content" (string), "type": "fact", "category" (one of: "code", "architecture", "general"). Return [] when nothing durable appears. Return ONLY the JSON array, no other text.'
 
     let raw: string | null = null
     try {
@@ -111,10 +118,14 @@ export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promi
     // Save memories
     for (const mem of memories) {
       if (!mem.content || mem.content.length < 10) continue
+      // 100-char budget, structural half (user 2026-10-10): the prompt asks
+      // for one short sentence; an overlong output is dropped, not truncated —
+      // a mid-sentence slice would save garbage under a fact label.
+      if (mem.content.length > MEMORY_ENTRY_MAX_CHARS) continue
       try {
         await getHost().saveMemory({
           id: crypto.randomUUID(),
-          content: mem.content.slice(0, 2000),
+          content: mem.content,
           type: ['fact', 'decision', 'preference'].includes(mem.type) ? mem.type : 'auto',
           category: ['code', 'architecture', 'user_pref', 'decision', 'general'].includes(mem.category) ? mem.category : 'general',
           source: `conversation:${engine.opts.conversationId}`

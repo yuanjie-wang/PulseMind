@@ -11,6 +11,7 @@ import type { AgentMessage, TextBlock } from '../types/agent'
 import { MemoryCompressionAgent, SessionReviewAgent } from '../agent/one-shot-agent'
 import { getHost } from '../agent/host'
 import { memoryContentHash } from '../../../shared/memory/content-hash'
+import { MEMORY_ENTRY_MAX_CHARS, MEMORY_RESIDENT_CAP } from '../../../shared/memory/limits'
 import { parseExperienceMd } from '../../../shared/experience/frontmatter'
 import type { ExperienceRecord } from '../../../shared/types/experience-types'
 
@@ -20,7 +21,9 @@ import type { ExperienceRecord } from '../../../shared/types/experience-types'
  * Three parts of memory context:
  *   A. Manual — user-edited text file (via Memory panel Manual Memories editor)
  *   B. Extracted — auto-captured from sessions (types: auto, fact, decision, preference)
- *      Auto-compressed to ≤20 when total exceeds 30.
+ *      Resident slimming (user 2026-10-10): only entries ≤100 chars render, newest 20;
+ *      the pool merges when total exceeds 20. Longer/older entries stay searchable
+ *      via memory_search — the render filter is a view, never a deletion.
  *   C. Recent Sessions — conversation id + summary from SQLite,
  *      split into 15min–24h (all) and >24h (latest 50).
  *
@@ -52,6 +55,12 @@ export class MemoryManager {
   private extractionBackoff = new Map<string, { failedAt: number; attempts: number }>()
   private static BACKOFF_MS = 60 * 60 * 1000
   private static BACKOFF_MAX_ATTEMPTS = 3
+
+  /** Per-run harvest cap (user 2026-10-10: 低价值的内容不用进记忆) — the
+   *  structural backstop to the prompt's yield bar (at most 3). A model that
+   *  ignores it floods the pool, and every entry rides the system prompt, so
+   *  the cap holds even when the prompt fails. */
+  static readonly MAX_EXTRACT_PER_RUN = 5
 
   /** True when this conversation is inside the failure backoff window. */
   isInBackoff(conversationId: string): boolean {
@@ -154,8 +163,16 @@ export class MemoryManager {
     this.prefs = { ...this.prefs, ...prefs }
   }
 
-  /** Store LLM config so background tasks (compression) can call the API. */
+  /** Store LLM config so background tasks (compression) can call the API.
+   *  Refused while a merge is in flight: the manager is a process-wide
+   *  singleton and every sweep seeds it fire-and-forget (each session end
+   *  carries that session's profile, the startup sweep the active one) — a
+   *  seed landing mid-merge would swap the LLM config under the running call
+   *  (review 2026-10-10 中5). `ensureMemoryMerged` early-returns on the same
+   *  flag, so the sweeping caller is a merge no-op too; its next sweep
+   *  re-seeds. */
   setConfig(apiKey: string, baseURL: string, adapter: LlmAdapter, model: string, modelMaxTokens?: number): void {
+    if (this._compressing) return
     this.apiKey = apiKey
     this.baseURL = baseURL
     this.adapter = adapter
@@ -222,7 +239,10 @@ export class MemoryManager {
   // (updated_at > created_at) are undeletable by code no matter what the LLM
   // says, and the watermark rides settings.json via the main-process host.
   static readonly MERGE_MIN_NEW = 5
-  static readonly MERGE_TOTAL_CAP = 50
+  /** 超限归并帽（user 2026-10-10：常驻区瘦身）。曾为 50——全量注入时代池子
+   *  再大也只是常驻区变胖；现在常驻区只渲染 20 条，池子继续涨只会稀释
+   *  memory_search 与去重参考，20 一到就归并。 */
+  static readonly MERGE_TOTAL_CAP = MEMORY_RESIDENT_CAP
   static readonly MERGE_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000
   /** Failed/empty merge attempts retry on this shorter clock instead of the
    *  24h success interval (one transient LLM failure must not freeze merging
@@ -266,13 +286,17 @@ export class MemoryManager {
     this._compressing = true
     try {
       // Input: the FULL set (the merge must see what it consolidates into),
-      // with each line marked so the model can obey the rules below.
+      // with each line NUMBERED (#N — the consumption receipt's key) and
+      // marked so the model can obey the rules below.
+      const byLine = new Map<number, MemoryEntry>()
       const memoriesText = extracted
-        .map((m) => {
-          const marks: string[] = [`[${m.category}]`]
+        .map((m, i) => {
+          const line = i + 1
+          byLine.set(line, m)
+          const marks: string[] = [`#${line}`]
           if (m.updatedAt && m.createdAt && m.updatedAt > m.createdAt) marks.push('[USER-EDITED]')
           if (wm.lastRunAt !== 0 && new Date(m.createdAt).getTime() > wm.lastRunAt) marks.push('[NEW]')
-          return `- ${marks.join(' ')} ${m.content.slice(0, 300)}`
+          return `- ${marks.join(' ')} [${m.category}] ${m.content.slice(0, 300)}`
         })
         .join('\n')
 
@@ -285,10 +309,11 @@ export class MemoryManager {
       // burned its LLM call AND stamped the 2h retry clock. The wire budget
       // (modelMaxTokens) already bounds generation; this scenario has no
       // honest length requirement to enforce.
-      const merged = await this.compressionAgent.execute(
+      const result = await this.compressionAgent.execute(
         { memoriesText },
         { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, modelMaxTokens: this.modelMaxTokens } }
       )
+      const merged = result.memories
       if (merged.length === 0) {
         // The model ran and consolidated nothing — or its output did not parse
         // (extractJson already tried fences and bare-JSON recovery). Warn with
@@ -308,14 +333,20 @@ export class MemoryManager {
         mergedHashes.add(memoryContentHash(mem.content))
       }
 
-      // Delete only what the merge truly consumed: un-edited extracted rows
-      // whose content no longer exists in the merged set. A USER-EDITED row
-      // survives unconditionally (the plan's hard rule — the old delete-all
-      // silently destroyed exactly these).
-      for (const m of extracted) {
+      // Delete only what the merge has a RECEIPT for having consumed
+      // (2026-10-10): the row's exact content re-appeared in the merged set,
+      // or the model listed its line number in `dropped`. A row the model
+      // merely FORGOT matches neither and SURVIVES — the old delete-all-
+      // unmentioned rule turned one omission into permanent data loss, and
+      // the save-side hash gate only prevents duplicates, never loss. A
+      // survivor is retried by the next merge (the full set rides every run);
+      // USER-EDITED rows survive unconditionally either way (the plan's hard
+      // rule — the older delete-all silently destroyed exactly these).
+      const dropped = new Set(result.dropped)
+      for (const [line, m] of byLine) {
         const userEdited = !!(m.updatedAt && m.createdAt && m.updatedAt > m.createdAt)
         if (userEdited) continue
-        if (!mergedHashes.has(memoryContentHash(m.content))) {
+        if (mergedHashes.has(memoryContentHash(m.content)) || dropped.has(line)) {
           await this.deleteMemory(m.id)
         }
       }
@@ -331,7 +362,7 @@ export class MemoryManager {
       }
 
       this.setMergeWatermark({ lastRunAt: now, lastCount: await getHost().countMemories(extractedTypes), lastAttemptAt: now })
-      console.log(`[MemoryManager] merged ${extracted.length} extracted memories → ${mergedHashes.size} contents (watermark advanced)`)
+      console.log(`[MemoryManager] merged ${extracted.length} extracted memories → ${mergedHashes.size} contents (${dropped.size} dropped by receipt; watermark advanced)`)
       return true
     } catch (err) {
       console.warn('[MemoryManager] Memory merge error:', err)
@@ -544,8 +575,15 @@ export class MemoryManager {
 
       let memoriesSaved = 0
       if (memoryOn) {
-        for (const mem of result.memories) {
+        // Slice is the structural half of the yield bar — the prompt asks for
+        // at most 3; this guarantees the pool never takes more than the cap
+        // from one extraction run. The length check is the structural half of
+        // the 100-char budget — a model that ignores the short-sentence rule
+        // gets its overlong output dropped (it belongs in an experience
+        // record); the prompt is the first half, this is the guarantee.
+        for (const mem of result.memories.slice(0, MemoryManager.MAX_EXTRACT_PER_RUN)) {
           if (!mem.content || mem.content.length < 10) continue
+          if (mem.content.length > MEMORY_ENTRY_MAX_CHARS) continue
           const entry = await this.saveMemory({
             content: mem.content,
             type: validTypes.includes(mem.type) ? (mem.type as MemoryCreateInput['type']) : 'auto',
@@ -655,18 +693,31 @@ export class MemoryManager {
    * Build the memory context section for the system prompt.
    * Combines all four memory parts:
    *   A. Manual memories (user-edited)
-   *   B. Extracted memories (auto-captured facts/decisions/preferences, compressed if >50)
+   *   B. Extracted memories (resident view: ≤100-char entries, newest 20)
    *   B2. Experiences (workflow optimizations, user pain points)
    *   C. Recent session summaries
    */
-  /** Filter for extracted-type memories and format as markdown bullet lines. */
+  /**
+   * Filter for extracted-type memories and format as markdown bullet lines.
+   * 常驻区瘦身（user 2026-10-10）：只渲染 ≤100 字的条目、最新的 20 条——
+   * 常驻区是索引视图，不是全量转储。被挤出的条目（超长或更旧）留在库里，
+   * memory_search 可及；有省略时带一行指针，让模型知道档案存在。
+   */
   private getExtractedMemoriesContent(all: MemoryEntry[]): string {
     const extracted = all.filter((m) =>
       ['auto', 'fact', 'decision', 'preference'].includes(m.type)
     )
     if (extracted.length === 0) return ''
 
-    return extracted.map(m => `- ${m.content}`).join('\n')
+    const resident = extracted
+      .filter((m) => m.content.length <= MEMORY_ENTRY_MAX_CHARS)
+      .slice(0, MEMORY_RESIDENT_CAP)
+    const lines = resident.map((m) => `- ${m.content}`)
+    const omitted = extracted.length - resident.length
+    if (omitted > 0) {
+      lines.push(`(+${omitted} older or longer memories not shown — search them with the memory_search tool.)`)
+    }
+    return lines.length > 0 ? lines.join('\n') : ''
   }
 
   async buildMemoryContext(): Promise<string> {

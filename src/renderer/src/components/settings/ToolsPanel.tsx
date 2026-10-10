@@ -18,7 +18,8 @@ import {
   DatabaseOutlined,
   BranchesOutlined,
   ReadOutlined,
-  TrophyOutlined
+  TrophyOutlined,
+  DashboardOutlined
 } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { ToolState } from '../../tools/types'
@@ -36,12 +37,13 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   browser: <GlobalOutlined />,
   interaction: <QuestionCircleOutlined />,
   memory: <DatabaseOutlined />,
+  context: <DashboardOutlined />,
   knowledge: <ReadOutlined />,
   git: <BranchesOutlined />,
   experience: <TrophyOutlined />
 }
 
-const CATEGORY_ORDER = ['file', 'system', 'browser', 'interaction', 'memory', 'knowledge', 'experience', 'git']
+const CATEGORY_ORDER = ['file', 'system', 'browser', 'interaction', 'memory', 'context', 'knowledge', 'experience', 'git']
 
 interface ToolsPanelProps {
   tools: ToolState[]

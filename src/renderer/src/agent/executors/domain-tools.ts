@@ -135,8 +135,10 @@ export async function execMemoryTool(ex: ToolExecContext, t: ToolUseBlock): Prom
       else {
         const type = (String(t.input.type || 'fact') as any); const cat = (String(t.input.category || 'general') as any)
         const entry = await mm!.saveMemory({ content, type, category: cat })
-        // No prompt-cache bookkeeping here: the session-state block is rebuilt on
-        // every request, so a memory saved now is visible to the very next call.
+        // No prompt-cache bookkeeping here: the resident memory context rides
+        // the global TTL snapshot (≤3h), so a saved memory surfaces in the
+        // prompt at the next snapshot rebuild — memory_search sees it immediately.
+        // The save also passes the DB hash gate; entry === null means duplicate.
         t.output = entry ? content.slice(0,200) : 'Already in memory'; ex.addToolResult(t.id, entry ? `Saved to memory: "${content}" (${type}, ${cat})` : `Already in memory (duplicate): "${content}"`, false)
         t.exitCode = 0
       }

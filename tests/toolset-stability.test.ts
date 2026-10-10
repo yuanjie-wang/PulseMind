@@ -81,7 +81,7 @@ describe('the gate: gated built-ins are hidden until activated', () => {
   it('no activation → no gated tools in the toolset', async () => {
     const names = (await collectEnabledTools(deps(), fullToolManager())).map((t) => t.name)
     expect(names).toContain('read')
-    for (const gated of ['git_status', 'office_edit', 'memory_save', 'experience_save']) {
+    for (const gated of ['git_status', 'office_edit', 'experience_save']) {
       expect(names).not.toContain(gated)
     }
   })
@@ -154,14 +154,55 @@ describe('source shape', () => {
   })
 })
 
+describe('memory_read/write 三通道是 ALWAYS base 工具（user 2026-10-10：常驻区瘦身后它们是记忆的读写面）', () => {
+  const ALWAYS_MEMORY_TOOLS = ['memory_search', 'memory_save', 'conversation_search']
+
+  it('defined always + memory；triggers 必须保留——关键词门靠它们当 memory 类目的中文门', () => {
+    for (const name of ALWAYS_MEMORY_TOOLS) {
+      const def = BUILT_IN_TOOLS.find((t) => t.name === name)
+      expect(def, name).toBeDefined()
+      expect(def?.availability, name).toBe('always')
+      expect(def?.category, name).toBe('memory')
+      expect(def?.triggers?.length ?? 0, name).toBeGreaterThan(0)
+    }
+    expect(BUILT_IN_TOOLS.find((t) => t.name === 'memory_search')?.triggers).toContain('记忆')
+  })
+
+  it('ships in the dormant base toolset and their manuals ride Tool Protocols（索引+取回的教学随主干走）', async () => {
+    const names = (await collectEnabledTools(deps(), fullToolManager())).map((t) => t.name)
+    for (const name of ALWAYS_MEMORY_TOOLS) expect(names, name).toContain(name)
+    const protocols = buildToolProtocols(await collectEnabledTools(deps(), fullToolManager()))
+    expect(protocols).toContain('## memory_search')
+    expect(protocols).toContain('condensed INDEX')
+    expect(protocols).toContain('## memory_save')
+    expect(protocols).toContain('## conversation_search')
+  })
+
+  it('the manual is byte-stable across activation states (it sits in the shared trunk)', async () => {
+    const activated = await collectEnabledTools(deps({ selectedBuiltinTools: GATED_NAMES }), fullToolManager())
+    const dormant = await collectEnabledTools(deps(), fullToolManager())
+    expect(buildToolProtocols(activated)).toBe(buildToolProtocols(dormant))
+  })
+})
+
 describe('context_compact is an ALWAYS base tool (PLAN-context-compact-tool, user ruling 2026-10-01)', () => {
-  it('defined always + memory — the assertion direction is the REVERSE of the gated pins', () => {
+  it('defined always + context — 压缩是上下文治理不是记忆（user 2026-10-10）', () => {
     const def = BUILT_IN_TOOLS.find((t) => t.name === 'context_compact')
     expect(def).toBeDefined()
     expect(def?.availability).toBe('always')
-    expect(def?.category).toBe('memory')
+    expect(def?.category).toBe('context')
     // An always tool needs no triggers — the keyword door is inert for it.
     expect(def?.triggers).toBeUndefined()
+  })
+
+  it('context 类目成员：上下文治理的驱逐与取回两半都在，memory 类目无 gated 残留', () => {
+    const cat = (n: string): string | undefined => BUILT_IN_TOOLS.find((t) => t.name === n)?.category
+    expect(cat('context_compact')).toBe('context')
+    expect(cat('tool_result_search')).toBe('context')
+    // memory 类目剩 search/save/conversation_search 三兄弟，全 always——
+    // 关键词门对该类目自然失效，没有半激活的中间态
+    const memoryGated = BUILT_IN_TOOLS.filter((t) => t.category === 'memory' && t.availability === 'gated')
+    expect(memoryGated).toHaveLength(0)
   })
 
   it('ships in the dormant base toolset with no activation, and its manual rides Tool Protocols', async () => {
