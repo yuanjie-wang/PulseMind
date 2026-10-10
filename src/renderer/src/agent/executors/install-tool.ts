@@ -15,10 +15,19 @@ import type { ToolExecContext } from './context'
 import type { ToolUseBlock } from '../../types/agent'
 import type { MCPClientConfig } from '../../../../shared/types/electron-bridge'
 
+/** install 的判型谓词，分类器与执行体的唯一共同来源（full_20261011 M2-P1-2）：
+ *  审批梯子按 `type === 'mcp'` 把 install 挂 exec 档（注册完立即拉起 stdio
+ *  进程），而这里的执行体对同一字段先 trim 再比较——`"mcp "` / `"MCP"` 曾被
+ *  分类器判成「不是 install-mcp」落回 systemTools（永不 held），执行体却照样
+ *  完成 MCP 注册。两侧必须对同一个 type 值给出同一个答案。 */
+export function installTypeOf(t: Pick<ToolUseBlock, 'input'>): string {
+  return String(t.input?.type || '').trim().toLowerCase()
+}
+
 export async function execInstallTool(ex: ToolExecContext, t: ToolUseBlock): Promise<void> {
   t.status = 'running'; ex.notify()
   try {
-    const installType = String(t.input?.type || '').trim()
+    const installType = installTypeOf(t)
     const name = String(t.input?.name || '').trim()
     if (!installType) throw new Error('Field "type" is required: "skill" or "mcp".')
 

@@ -334,8 +334,12 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
       args.push('-F')
       for (const t of terms) args.push('-e', t)
     } else {
-      args.push(query)
+      // -e consumes the query as a VALUE: a model-controlled query like
+      // `--pre=/bin/sh` must never be parsed as a flag (rg runs the --pre
+      // program on every searched file — full_20261011 M10-P0-1, measured).
+      args.push('-F', '-e', query)
     }
+    args.push('--')
     args.push(dir)
     return args
   }
@@ -345,8 +349,9 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
       args.push('-F')
       for (const t of terms) args.push('-e', t)
     } else {
-      args.push(query)
+      args.push('-F', '-e', query)
     }
+    args.push('--')
     args.push(dir)
     return args
   }

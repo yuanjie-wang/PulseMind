@@ -10,6 +10,7 @@ import { addTruncatedResults, validateToolParams } from './result-ingestion'
 import { generateMsgId } from '../agent-utils'
 import type { ToolUseBlock, ContentBlock, AgentMessage } from '../../types/agent'
 import { buildCommandFromSkillInput } from '../command-builder'
+import { installTypeOf } from '../executors/install-tool'
 import { safeInvoke, safeInvokeObserver } from '../agent-utils'
 import { TOOL_PARAM_LIMITS } from './engine-constants'
 import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, tierOfTool } from './tool-tiers'
@@ -391,7 +392,7 @@ export class ExecutionFlow {
     // mcpStartServer 拉起 stdio command——信任组曾让它对审批梯子隐身，一条
     // 注入指令就能在 outside-ask 下绕过 exec 审批拿到进程启动。skill 分支
     // 只写文件不执行，留在信任组。梯子按 exec 档扣留（与 shell 同档）。
-    const isInstallMcp = (t: ToolUseBlock): boolean => t.name === 'install' && String(t.input?.type || '') === 'mcp'
+    const isInstallMcp = (t: ToolUseBlock): boolean => t.name === 'install' && installTypeOf(t) === 'mcp'
     const systemTools = tools.filter(t => isSystemTool(t.name) && !isInstallMcp(t))
     const installMcpTools = tools.filter(isInstallMcp)
     // context_compact rides the memory group on purpose (PLAN-context-compact-tool
@@ -548,7 +549,7 @@ export class ExecutionFlow {
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
     // install(type=mcp) 挂 exec 档（audit 2026-10-10 #1，同 dispatch 侧注释）：
     // 注册完立即拉起 stdio 进程，信任组曾让它在 outside-ask 下绕过 exec 审批。
-    const isInstallMcp = (t: ToolUseBlock): boolean => t.name === 'install' && String(t.input?.type || '') === 'mcp'
+    const isInstallMcp = (t: ToolUseBlock): boolean => t.name === 'install' && installTypeOf(t) === 'mcp'
     const installMcpTools = toolUses.filter(isInstallMcp)
     const systemTools = toolUses.filter(t => isSystemTool(t.name) && !isInstallMcp(t))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search' || name === 'context_compact'

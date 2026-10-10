@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { execInstallTool } from '../src/renderer/src/agent/executors/install-tool'
+import { execInstallTool, installTypeOf } from '../src/renderer/src/agent/executors/install-tool'
 import { setHost } from '../src/renderer/src/agent/host'
 import { HOST_METHOD_KEYS } from '../src/renderer/src/agent/host/types'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
@@ -359,5 +359,47 @@ describe('install wiring — the door exists at every layer and never routes thr
     // and the pure decision module carries the contract
     const jail = read('src/shared/sandbox/path-jail.ts')
     expect(jail).toContain('extraWritableRoots')
+  })
+})
+
+// ── full_20261011 M2-P1-2: the exec-tier hold on install(type=mcp) classified
+// with a strict `=== 'mcp'` while the executor trimmed the same field —
+// `"mcp "` / `"MCP"` fell back into systemTools (never held) and still
+// registered. One predicate now answers for both sides.
+
+describe('install-mcp classification — one predicate for the ladder and the executor', () => {
+  it('trim + casefold variants all classify as mcp', () => {
+    for (const t of ['mcp', ' mcp', 'mcp ', '\nmcp', 'MCP', ' Mcp ']) {
+      expect(installTypeOf({ input: { type: t } }), JSON.stringify(t)).toBe('mcp')
+    }
+    expect(installTypeOf({ input: { type: 'skill' } })).toBe('skill')
+    expect(installTypeOf({ input: { type: ' Skill ' } })).toBe('skill')
+    expect(installTypeOf({ input: {} })).toBe('')
+    expect(installTypeOf({ input: { type: 42 } })).toBe('42')
+  })
+
+  it('the executor and both ladder sites go through the predicate (no second spelling)', () => {
+    const src = read('src/renderer/src/agent/executors/install-tool.ts')
+    expect(src).toContain('const installType = installTypeOf(t)')
+    const flow = read('src/renderer/src/agent/engine/execution-flow.ts')
+    // The strict raw comparison must not come back at either ladder site:
+    expect(flow).not.toContain("String(t.input?.type || '') === 'mcp'")
+    expect(flow.match(/installTypeOf\(t\) === 'mcp'/g)).toHaveLength(2)
+  })
+
+  it('a case/spelling variant of mcp reaches the config door (was: unknown-type error)', async () => {
+    const registered: unknown[] = []
+    const started: string[] = []
+    const h = harness({
+      mcpRegisterServer: async (config: unknown) => {
+        registered.push(config)
+        return { success: true, server: { id: 'srv_1', name: (config as { name: string }).name } }
+      },
+      mcpStartServer: async (id: string) => { started.push(id); return { success: true } },
+    })
+    const t = h.block({ type: 'MCP', config: { name: 'probe-mcp', command: 'npx' } })
+    await execInstallTool(h.ex, t)
+    expect(registered).toHaveLength(1)
+    expect(started).toEqual(['srv_1'])
   })
 })
