@@ -38,7 +38,7 @@ import {
 } from '../../shared/agent-protocol'
 import { agentSessionManager } from './session-manager'
 import type { AgentServiceSessions } from './service-sessions'
-import { agentClientRegistry, type ClientTransport } from './client-registry'
+import { agentClientRegistry, isHostedClientId, type ClientTransport } from './client-registry'
 import { hostedToolProxy } from './hosted/proxy'
 import { hostedPromptRouter } from './hosted/prompts'
 import {
@@ -296,6 +296,16 @@ export async function startAgentService(
                 await sessions.createSession(sessionId, { agentId, title, clientId: conn.clientId })
               }
               conn.sessions.add(sessionId)
+              // Bind here too (2026-10-10): agentAsk was the ONLY bind site, so
+              // an MV3 service-worker restart reconnected via sessionCreate and
+              // the panel showed connected while every page_* call failed with
+              // "当前会话没有连接的浏览器客户端" — the drop() of the dead socket had
+              // unbound the session, and nothing re-bound until the next ask.
+              // Answer relays (approval/ask_user) don't bind either, so a parked
+              // session resumed mid-prompt stayed page-tool-less for its whole
+              // continuation. Hosted clients only: the registry's isHostedCapable
+              // gate keeps page tools extension-owned.
+              if (isHostedClientId(conn.clientId)) agentClientRegistry.bind(sessionId, transport)
               send(makeResult(msg.id ?? null, { sessionId, agentId: agentId ?? 'default', resumed }))
             })().catch((err) => send(makeError(msg.id ?? null, ErrorCodes.internal, errorMessage(err))))
             break

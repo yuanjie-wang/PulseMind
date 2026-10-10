@@ -558,6 +558,50 @@ describe('M0.4 session surface', () => {
     }
   })
 
+  it('registers EVERY ask of a parked batch — the panel answers them in order (2026-10-10: 第二题 unknown callId)', async () => {
+    const { handle, sessions } = await start()
+    try {
+      const { client, sessionId } = await openWithSession(handle)
+
+      sessions.setAskHandler((sid) => {
+        sessions.emit(sid, {
+          type: 'status',
+          status: 'awaiting_user_input',
+          tools: [
+            { toolUseId: 'tu_q1', name: 'ask_user', detail: '{"prompt":"选城市"}', args: { prompt: '选城市', choices: ['甲', '乙'] } },
+            { toolUseId: 'tu_q2', name: 'ask_user', detail: '{"prompt":"选日期"}', args: { prompt: '选日期', choices: ['今天', '明天'] } },
+          ],
+        })
+      })
+
+      const askRes = await client.request('agent.ask', { sessionId, content: '问吧' }, 8_000)
+      expect(askRes.result).toMatchObject({ accepted: true })
+
+      // Both questions prompt, each under its own callId. waitFor returns the
+      // FIRST matching notification without consuming it — collect instead.
+      await waitUntil(() => client.notifications.filter((n) => n.method === 'ask_user.request').length >= 2)
+      const callIds = client.notifications
+        .filter((n) => n.method === 'ask_user.request')
+        .map((n) => n.params.callId)
+        .sort()
+      expect(callIds).toEqual(['tu_q1', 'tu_q2'])
+
+      // The batch card answers in dispatch order — BOTH must reach the engine.
+      client.notify('ask_user.response', { callId: 'tu_q1', response: '甲' })
+      await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'respondToTool' && c.args[0] === 'tu_q1'))
+      client.notify('ask_user.response', { callId: 'tu_q2', response: '明天' })
+      await waitUntil(() => sessions.engineCalls.some((c) => c.method === 'respondToTool' && c.args[0] === 'tu_q2' && c.args[1] === '明天'))
+
+      // The consumed entries are gone; a replay errors instead of double-firing.
+      const replay = await client.request('ask_user.response', { callId: 'tu_q1', response: '甲' }, 8_000)
+      expect(replay.error?.code).toBe(ErrorCodes.invalidParams)
+
+      client.close()
+    } finally {
+      await handle.close()
+    }
+  })
+
   it('answers request-shaped relays; an unknown callId and a dead session error back', async () => {
     const { handle, sessions } = await start()
     try {
@@ -623,6 +667,41 @@ describe('M0.4 session surface', () => {
       expect(agentClientRegistry.isHostedCapable(sessionId)).toBe(false)
       expect(hostedPromptRouter.pendingCounts().asks).toBeLessThan(pending.asks)
       expect(sessions.engineCalls.some((c) => c.method === 'respondToTool' && c.args[0] === 'tu_q')).toBe(true)
+    } finally {
+      await handle.close()
+    }
+  })
+
+  it('session.create binds hosted clients so page tools survive an SW restart (2026-10-10)', async () => {
+    const { handle } = await start()
+    try {
+      // The SW-restart shape: a fresh socket resumes its session via
+      // session.create — WITHOUT an intervening agent.ask. Before the
+      // sessionCreate bind this left the registry empty (the dead socket's
+      // drop() had unbound it) and page_* failed with
+      // 「当前会话没有连接的浏览器客户端」 until the next message.
+      const client = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await client.open()
+      await client.hello('pulsemind-extension')
+      const res = await client.request('session.create', {})
+      const sessionId = res.result.sessionId as string
+      await waitUntil(() => agentClientRegistry.get(sessionId) !== undefined)
+      expect(agentClientRegistry.isHostedCapable(sessionId)).toBe(true)
+
+      // A non-hosted client's session.create must not open the page-tool gate:
+      // the bind never happens, so give the reply a beat and assert directly.
+      const plain = new TestClient(`ws://127.0.0.1:${handle.port}/?token=${handle.token}`)
+      await plain.open()
+      await plain.hello('some-cli-client')
+      const plainRes = await plain.request('session.create', {})
+      const plainSessionId = plainRes.result.sessionId as string
+      await new Promise((r) => setTimeout(r, 50))
+      expect(agentClientRegistry.get(plainSessionId)).toBeUndefined()
+      expect(agentClientRegistry.isHostedCapable(plainSessionId)).toBe(false)
+
+      client.close()
+      plain.close()
+      await waitUntil(() => agentClientRegistry.get(sessionId) === undefined && agentClientRegistry.get(plainSessionId) === undefined)
     } finally {
       await handle.close()
     }

@@ -166,21 +166,27 @@ class HostedPromptRouter {
   private routeAskUser(sessionId: string, tools: StatusToolInfo[]): void {
     const transport = agentClientRegistry.get(sessionId)
     if (!transport || !isHostedClientId(transport.clientId)) return
-    const tool = tools.find((t) => t.name === 'ask_user')
-    if (!tool || this.asks.has(tool.toolUseId)) return
-    const question = (tool.args as { prompt?: string } | undefined)?.prompt ?? tool.detail ?? '请选择'
-    const entry: PendingPrompt = {
-      sessionId,
-      transport,
-      toolUseId: tool.toolUseId,
-      timer: setTimeout(() => {
-        if (this.asks.delete(tool.toolUseId)) {
-          this.engineCall(sessionId, 'respondToTool', [tool.toolUseId, '（超时未回答，请继续或换个方式）'])
-        }
-      }, ASK_USER_TIMEOUT_MS),
+    // EVERY ask in the parked batch gets an entry, not just the first: the
+    // engine settles each question by its own callId, and the panel's batch
+    // card (the desktop's AskUserBatchCard mirror) answers them in dispatch
+    // order — an entry only for tools.find(...) made every answer after the
+    // first bounce with `unknown callId` (user report 2026-10-10, code -32602).
+    for (const tool of tools.filter((t) => t.name === 'ask_user')) {
+      if (this.asks.has(tool.toolUseId)) continue // already prompted (re-emit guard)
+      const question = (tool.args as { prompt?: string } | undefined)?.prompt ?? tool.detail ?? '请选择'
+      const entry: PendingPrompt = {
+        sessionId,
+        transport,
+        toolUseId: tool.toolUseId,
+        timer: setTimeout(() => {
+          if (this.asks.delete(tool.toolUseId)) {
+            this.engineCall(sessionId, 'respondToTool', [tool.toolUseId, '（超时未回答，请继续或换个方式）'])
+          }
+        }, ASK_USER_TIMEOUT_MS),
+      }
+      this.asks.set(tool.toolUseId, entry)
+      transport.sendAskUserRequest({ sessionId, callId: tool.toolUseId, question })
     }
-    this.asks.set(tool.toolUseId, entry)
-    transport.sendAskUserRequest({ sessionId, callId: tool.toolUseId, question })
   }
 
   private clear(kind: 'approvals' | 'asks', callId: string): void {
