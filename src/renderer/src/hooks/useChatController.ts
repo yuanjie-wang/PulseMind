@@ -59,6 +59,9 @@ export function useChatController(options: UseChatControllerOptions) {
   // ── 2. Title generation state (shared by handleRequest + auto-title + background) ──
   const titleGeneratedRef = useRef<Set<string>>(new Set())
   const pendingTitleGenRef = useRef<string | null>(null)
+  // 3rd-message refinement latches here in handleRequest and is consumed by
+  // the completion effect below — at most one refinement per conversation.
+  const titleRefinePendingRef = useRef<Set<string>>(new Set())
   const titleAgentRef = useRef(new TitleAgent())
 
   // ── 3. Engine (with background-complete callback for title gen) ──
@@ -110,12 +113,14 @@ export function useChatController(options: UseChatControllerOptions) {
   const generateTitle = useCallback(async (
     convId: string,
     messages: { role: string; contentBlocks?: { type: string; text?: string }[] }[],
-    opts: { llmFallback: string; stripFileMarkers?: boolean }
+    opts: { llmFallback: string; stripFileMarkers?: boolean; refine?: boolean }
   ): Promise<void> => {
     // Skip if conversation already has a meaningful title stored
-    // (prevents re-triggering title generation after app restart)
+    // (prevents re-triggering title generation after app restart).
+    // The 3rd-message refinement passes refine:true — its whole point is to
+    // RE-title a conversation that already has the first-message title.
     const existingConv = persistence.conversations.find((c: any) => String(c.key) === convId)
-    if (existingConv?.label && existingConv.label !== '新对话') return
+    if (!opts.refine && existingConv?.label && existingConv.label !== '新对话') return
 
     const firstUser = messages.find(m => m.role === 'user')
     const raw = firstUser?.contentBlocks?.find(b => b.type === 'text')?.text || ''
@@ -290,13 +295,26 @@ export function useChatController(options: UseChatControllerOptions) {
 
   // ── 6. Auto-title generation (active engine) ──
   //
-  // Generate title when the active engine first completes, and re-generate
-  // on the 3rd user message. Background-engine titles are handled in the
+  // Generate title when the active engine first completes, and — once per
+  // conversation, when the send that made the 3rd user message completes —
+  // re-generate from the full thread (userMsgCount ≥ 3 gives generateTitle
+  // its conversationContext). Background-engine titles are handled in the
   // onBackgroundComplete callback above.
   useEffect(() => {
     if (!persistence.activeConversationKey || engine.agentStatus.status !== 'completed') return
 
     const convId = String(persistence.activeConversationKey)
+
+    // 3rd-message refinement: latched by handleRequest, consumed here on the
+    // completing edge. Deleting first makes this once-per-conversation even
+    // if the call below fails.
+    if (titleRefinePendingRef.current.has(convId)) {
+      titleRefinePendingRef.current.delete(convId)
+      if (engine.messages.some((m) => m.role === 'assistant')) {
+        void generateTitle(convId, engine.messages, { llmFallback: '', refine: true })
+      }
+    }
+
     // Skip if title was already generated (first-round succeeded)
     if (titleGeneratedRef.current.has(convId)) return
     if (pendingTitleGenRef.current !== convId) return
@@ -445,6 +463,11 @@ export function useChatController(options: UseChatControllerOptions) {
       // differs: main dispatches the deterministic spawn_agent call (one
       // expert) or plans the work first (several), inside this conversation.
       const engineHandle = engine.getOrCreateEngine(convId)
+      // 3rd-user-message refinement latch: the send that makes the count hit
+      // 3 marks the conversation; the completion effect re-titles it from the
+      // full thread (the first-message title only ever saw message #1).
+      const userMsgCountBefore = engineHandle.messages.filter((m) => m.role === 'user').length
+      if (userMsgCountBefore + 1 === 3) titleRefinePendingRef.current.add(convId)
       if (mentioned.length > 0) engineHandle.startSummonedLoop(content, mentioned, knowledgeBase)
       else engineHandle.startLoop(content, knowledgeBase)
       // true = the turn left. Every early `return false` above is a bail the
