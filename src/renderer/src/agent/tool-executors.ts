@@ -274,7 +274,7 @@ export class ToolExecutor implements ToolExecContext {
       // 转义器），不再走 $HOME 裸奔拼接。
       const cmd = isWin
         ? `(Get-Content -Path ${hasTilde ? `(Join-Path $env:USERPROFILE '${psEscape(filePath.slice(1))}')` : `'${psEscape(filePath)}'`} -Encoding utf8 | Measure-Object -Line).Lines`
-        : `wc -l ${hasTilde ? `"\$HOME${shEscape(filePath.slice(1))}"` : shSingleQuote(filePath)}`
+        : `wc -l ${hasTilde ? `"$HOME${shEscape(filePath.slice(1))}"` : shSingleQuote(filePath)}`
       const r = await getHost().execCommandSync(cmd)
       if (r.code === 0) {
         const trimmed = r.output.trim()

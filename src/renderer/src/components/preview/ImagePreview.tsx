@@ -16,7 +16,7 @@ import { FileInfoBar } from './FileInfoBar'
 import { ZoomControls, ZOOM_STEP_FACTOR, zoomByFactor } from './ZoomControls'
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
 import { visualCenterPaddingX, visualCenterPaddingY } from './visual-center'
-import { localFileUrl } from '../../../shared/preview/local-file-url'
+import { localFileUrl } from '../../../../shared/preview/local-file-url'
 
 /** Breathing room between the image and the pane's edges. */
 const PADDING = 16

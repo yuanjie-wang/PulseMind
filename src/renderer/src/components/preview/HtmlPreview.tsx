@@ -41,7 +41,7 @@ import { usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { notify } from '../../utils/notify'
 import { FileInfoBar } from './FileInfoBar'
 import { ZoomControls, ZOOM_STEP_FACTOR, zoomByFactor, clampZoom } from './ZoomControls'
-import { localFileUrl } from '../../../shared/preview/local-file-url'
+import { localFileUrl } from '../../../../shared/preview/local-file-url'
 
 /** A per-mount secret the served picker echoes on every pm:* message (M9):
  *  the frame's page scripts share the picker's realm and event.source, so

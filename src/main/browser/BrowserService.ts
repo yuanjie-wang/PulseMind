@@ -8,7 +8,6 @@
 
 import { prefixedId } from '../utils/id'
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { clipboard, shell, type WebContents, type WebContentsView } from 'electron'
 import {
