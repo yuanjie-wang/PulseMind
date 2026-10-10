@@ -21,12 +21,32 @@ import { Icon } from './icons'
 import { formatDuration, formatTokenCount, thinkingPreview, toolBlockSummary, toolDisplayName, toolObjectSummary } from './format'
 import { resultSummary } from '../../shared/tool-display/result-summary'
 import { buildEditDiffModel, countChangedLines, type EditDiffLine, type EditDiffModel } from '../../shared/tool-display/edit-diff'
-import { renderMarkdown } from './markdown'
+import { renderMarkdown, splitHtmlFences } from './markdown'
+import { HtmlArtifactCard } from './HtmlArtifactCard'
 
 /** assistant/api text → the same `.x-markdown-light` wrapper the chat uses.
- *  The rendered HTML comes from our escape-first renderer, never raw input. */
-export function MarkdownBlock({ text, className = 'pm-text-block' }: { text: string; className?: string }): React.JSX.Element {
-  return <div className={`pm-md x-markdown-light ${className}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
+ *  The rendered HTML comes from our escape-first renderer (plus its sanitized
+ *  raw-HTML pass-through), with one dispatch before it: a ```html fence is an
+ *  artifact to preview (the desktop's HtmlArtifactCard), so the source splits
+ *  into markdown runs and html fences — each md run is its own `.pm-md` root,
+ *  which is safe because the trailing-margin reset inside styles.css is
+ *  per-root. */
+export function MarkdownBlock({ text, className = 'pm-text-block', streaming = false }: { text: string; className?: string; streaming?: boolean }): React.JSX.Element {
+  const segments = useMemo(() => splitHtmlFences(text), [text])
+  if (segments.length === 1 && segments[0].kind === 'md') {
+    return <div className={`pm-md x-markdown-light ${className}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
+  }
+  return (
+    <>
+      {segments.map((seg, i) =>
+        seg.kind === 'html' ? (
+          <HtmlArtifactCard key={i} code={seg.text} streaming={streaming && !!seg.partial && i === segments.length - 1} />
+        ) : (
+          <div key={i} className={`pm-md x-markdown-light ${className}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(seg.text) }} />
+        ),
+      )}
+    </>
+  )
 }
 
 // ── thinking ─────────────────────────────────────────────────────────
@@ -299,23 +319,21 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
 
 // ── ask_user ─────────────────────────────────────────────────────────
 
-/** The model's question. Choices come from the tool input (the same source the
- *  desktop reads), and the answer goes back as an `ask_user.response`. */
-export function AskUserBlock({ block, onAnswer }: {
+/** The interactive half of one question: choice rows + custom answer. Owns the
+ *  answeredRef latch — until the engine's tool_status patch lands the mirror,
+ *  the choices stayed live, and a second click (nothing seemed to happen) sent
+ *  a duplicate answer — which the engine's old duplicate guard turned into a
+ *  phantom concurrent round. The ref catches a same-tick double-fire the state
+ *  read cannot; the batch card keys this component per question, so one latch
+ *  instance rides one question. */
+function AskUserChoices({ block, onAnswer }: {
   block: ToolUseBlock
   onAnswer?: (toolUseId: string, response: string) => void
 }): React.JSX.Element {
-  const prompt = String(block.input?.prompt ?? '')
   const choices = String(block.input?.choices ?? '').split(',').map((c) => c.trim()).filter(Boolean)
   const multi = block.input?.multi === true
   const [selected, setSelected] = useState<string[]>([])
   const [custom, setCustom] = useState('')
-  const done = block.status === 'completed' || block.status === 'rejected'
-  // Latch on submit: until the engine's status patch lands the mirror, the
-  // choices stayed live, and a second click (nothing seemed to happen) sent a
-  // duplicate answer — which the engine's old duplicate guard turned into a
-  // phantom concurrent round. The ref catches a same-tick double-fire the
-  // state read cannot.
   const answeredRef = useRef<string | null>(null)
   const [answered, setAnswered] = useState<string | null>(null)
   const answer = (response: string): void => {
@@ -326,21 +344,8 @@ export function AskUserBlock({ block, onAnswer }: {
   }
 
   return (
-    <div className="pm-ask">
-      <div className="pm-ask-prompt">{prompt}</div>
-      {done ? (
-        block.status === 'completed' ? (
-          <div className="pm-ask-note">
-            <Icon name="checkCircle" style={{ marginRight: 6, color: '#389e0d' }} />
-            已选择：{block.output ?? ''}
-          </div>
-        ) : (
-          <div className="pm-ask-note pm-ask-note-err">
-            <Icon name="close" style={{ marginRight: 4, fontSize: 12 }} />
-            已由用户跳过
-          </div>
-        )
-      ) : answered !== null ? (
+    <>
+      {answered !== null ? (
         <div className="pm-ask-note">
           <Icon name="checkCircle" style={{ marginRight: 6, color: '#389e0d' }} />
           已选择：{answered}
@@ -399,6 +404,126 @@ export function AskUserBlock({ block, onAnswer }: {
             </button>
           </div>
         </>
+      )}
+    </>
+  )
+}
+
+/** A question settles when its answer landed (the engine's tool_status patch).
+ *  Generating = the stream is still building this call's input (`pending`, or
+ *  nothing at all) and its rows must not render — an answerable question with
+ *  half-generated choices is exactly the 「有点问题」 of several asks arriving
+ *  together. EVERYTHING else is live: the dispatch-time state is 'queued' (the
+ *  排队中/执行中 split marks every non-held call 'queued' and the ask PARKS
+ *  there awaiting_user_input — 'running' is the approval path's mark and a
+ *  question never rides it), which is why the desktop's own rule reads
+ *  「'queued' must count as live」. Gating on !== 'running' here hid every real
+ *  question's rows behind 整理中 forever (user report 2026-10-10: 看不到选项了). */
+function askSettled(block: ToolUseBlock): boolean {
+  return block.status === 'completed' || block.status === 'rejected'
+}
+
+function askGenerating(block: ToolUseBlock): boolean {
+  return block.status === 'pending' || block.status === undefined
+}
+
+/** The model's question (a SINGLE ask; 2+ render as AskUserBatchBlock). */
+export function AskUserBlock({ block, onAnswer }: {
+  block: ToolUseBlock
+  onAnswer?: (toolUseId: string, response: string) => void
+}): React.JSX.Element {
+  const prompt = String(block.input?.prompt ?? '')
+  return (
+    <div className="pm-ask">
+      <div className="pm-ask-prompt">{prompt}</div>
+      {askSettled(block) ? (
+        block.status === 'completed' ? (
+          <div className="pm-ask-note">
+            <Icon name="checkCircle" style={{ marginRight: 6, color: '#389e0d' }} />
+            已选择：{block.output ?? ''}
+          </div>
+        ) : (
+          <div className="pm-ask-note pm-ask-note-err">
+            <Icon name="close" style={{ marginRight: 4, fontSize: 12 }} />
+            已由用户跳过
+          </div>
+        )
+      ) : askGenerating(block) ? (
+        <div className="pm-ask-note pm-ask-generating">正在整理问题…</div>
+      ) : (
+        <AskUserChoices block={block} onAnswer={onAnswer} />
+      )}
+    </div>
+  )
+}
+
+/** Several asks dispatched in ONE turn (the desktop's AskUserBatchCard,
+ *  2026-10-06): they render as ONE card that walks the questions in dispatch
+ *  order — settled ones collapse to a summary line each, only the first
+ *  unsettled carries rows. Answering out of order would work engine-side (each
+ *  ask settles by its own callId), but N simultaneously-live cards bury the
+ *  guidance and let a half-generated question take answers, so the panel now
+ *  mirrors the batch. The advance latches LOCALLY (`localAnswers` — the
+ *  engine's tool_status patch lands a beat later) and the card swallows clicks
+ *  for 350ms after each answer: auto-advance re-renders under the pointer, and
+ *  a second click of a double click would land on the NEXT question's rows. */
+export function AskUserBatchBlock({ blocks, onAnswer }: {
+  blocks: ToolUseBlock[]
+  onAnswer?: (toolUseId: string, response: string) => void
+}): React.JSX.Element {
+  const [localAnswers, setLocalAnswers] = useState<Record<string, string>>({})
+  const lockUntilRef = useRef(0)
+
+  const settled = (b: ToolUseBlock): boolean => askSettled(b) || localAnswers[b.id] != null
+  const firstUnsettled = blocks.findIndex((b) => !settled(b))
+  const allSettled = firstUnsettled === -1
+  const current = allSettled ? null : blocks[firstUnsettled]
+  const currentStreaming = current != null && askGenerating(current)
+
+  const answer = (id: string, response: string): void => {
+    if (localAnswers[id] != null) return
+    lockUntilRef.current = Date.now() + 350
+    setLocalAnswers((prev) => ({ ...prev, [id]: response }))
+    onAnswer?.(id, response)
+  }
+
+  return (
+    <div
+      className="pm-ask pm-ask-batch"
+      data-ask-batch=""
+      onClickCapture={(e) => {
+        if (Date.now() < lockUntilRef.current) {
+          e.stopPropagation()
+          e.preventDefault()
+        }
+      }}
+    >
+      <div className="pm-ask-prompt">
+        问题
+        {blocks.length > 1 && <span className="pm-ask-badge">{allSettled ? `第 ${blocks.length}/${blocks.length} 题` : `第 ${firstUnsettled + 1}/${blocks.length} 题`}</span>}
+        {current?.input?.multi === true && <span className="pm-ask-badge">可多选</span>}
+      </div>
+      {blocks.filter(settled).map((b) => (
+        <div key={b.id} className="pm-ask-settled">
+          <div className="pm-ask-settled-row">
+            {b.status === 'rejected' ? (
+              <Icon name="close" style={{ color: '#f44747', fontSize: 12 }} />
+            ) : (
+              <Icon name="checkCircle" style={{ color: '#389e0d', fontSize: 13 }} />
+            )}
+            <span>{String(b.input?.prompt || '')}</span>
+          </div>
+          <div className={`pm-ask-settled-answer${b.status === 'rejected' ? ' pm-ask-settled-answer-err' : ''}`}>
+            {b.status === 'rejected' ? '已由用户跳过' : `已选择：${b.output || localAnswers[b.id] || ''}`}
+          </div>
+        </div>
+      ))}
+      {current && (
+        currentStreaming ? (
+          <div className="pm-ask-note pm-ask-generating">正在整理问题…</div>
+        ) : (
+          <AskUserChoices key={current.id} block={current} onAnswer={answer} />
+        )
       )}
     </div>
   )

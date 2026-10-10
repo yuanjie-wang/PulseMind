@@ -27,7 +27,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { ContentBlock, ToolResultBlock, ToolUseBlock } from '../../shared/types/agent'
 import type { SessionState } from '../../shared/agent-session/mirror'
-import { ActionRow, CursorRow, ErrorCard, MarkdownBlock, ThinkingBlock, ToolBlock } from './MessageBlocks'
+import { ActionRow, AskUserBatchBlock, CursorRow, ErrorCard, MarkdownBlock, ThinkingBlock, ToolBlock } from './MessageBlocks'
 
 type Message = SessionState['messages'][number]
 
@@ -112,14 +112,32 @@ interface BlockHandlers {
   onAnswer: (toolUseId: string, response: string) => void
 }
 
-function AssistantBlock({ block, completed, handlers }: {
+/** Several asks dispatched in ONE turn render as ONE batch card at the first
+ *  ask's position (the desktop MessageGroup's 2026-10-06 merge — the panel
+ *  listed them individually until 几个问题同时出现 felt broken: N live cards
+ *  bury the guidance and let answers land out of order). A single ask keeps
+ *  the plain card; non-ask blocks pass through untouched. */
+function groupAsks(blocks: ContentBlock[]): { block: ContentBlock; askGroup?: ToolUseBlock[]; skip?: boolean }[] {
+  const asks = blocks.filter((b) => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user') as ToolUseBlock[]
+  if (asks.length < 2) return blocks.map((block) => ({ block }))
+  const firstAskIdx = blocks.findIndex((b) => b.type === 'tool_use' && (b as ToolUseBlock).name === 'ask_user')
+  return blocks.map((block, i) => {
+    if (block.type !== 'tool_use' || (block as ToolUseBlock).name !== 'ask_user') return { block }
+    return i === firstAskIdx ? { block, askGroup: asks } : { block, skip: true }
+  })
+}
+
+function AssistantBlock({ block, completed, streaming, handlers }: {
   block: ContentBlock
   completed: Set<string>
+  /** The live stream's tail: an unterminated ```html fence previews instead of
+   *  showing raw source (the settled history render is always complete). */
+  streaming: boolean
   handlers: BlockHandlers
 }): React.JSX.Element | null {
   switch (block.type) {
     case 'text':
-      return <MarkdownBlock text={block.text} />
+      return <MarkdownBlock text={block.text} streaming={streaming} />
     case 'thinking':
       return <ThinkingBlock block={block} />
     case 'redacted_thinking':
@@ -184,9 +202,13 @@ function Message({ message, handlers, showRow }: {
   return (
     <div className="pm-row-assistant">
       <div className="pm-bubble-assistant">
-        {(message.contentBlocks ?? []).map((block, i) => (
-          <AssistantBlock key={i} block={block} completed={completed} handlers={handlers} />
-        ))}
+        {groupAsks(message.contentBlocks ?? []).map((entry, i) =>
+          entry.skip ? null : entry.askGroup ? (
+            <AskUserBatchBlock key={i} blocks={entry.askGroup} onAnswer={handlers.onAnswer} />
+          ) : (
+            <AssistantBlock key={i} block={entry.block} completed={completed} streaming={false} handlers={handlers} />
+          ),
+        )}
       </div>
       {/* The chat's row: 复制 / 下载 / 耗时 / Token (its `viewOnly` variant —
           like & favorite write message metadata a panel session has no row
@@ -202,9 +224,13 @@ function StreamingBlocks({ blocks, handlers }: { blocks: ContentBlock[]; handler
   return (
     <div className="pm-row-assistant">
       <div className="pm-bubble-assistant">
-        {visible.map((block, i) => (
-          <AssistantBlock key={`stream-${i}`} block={block} completed={new Set()} handlers={handlers} />
-        ))}
+        {groupAsks(visible).map((entry, i) =>
+          entry.skip ? null : entry.askGroup ? (
+            <AskUserBatchBlock key={`stream-${i}`} blocks={entry.askGroup} onAnswer={handlers.onAnswer} />
+          ) : (
+            <AssistantBlock key={`stream-${i}`} block={entry.block} completed={new Set()} streaming={true} handlers={handlers} />
+          ),
+        )}
       </div>
     </div>
   )

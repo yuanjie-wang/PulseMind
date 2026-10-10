@@ -35,6 +35,7 @@
     "src/shared/sandbox/command-allowlist.ts",
     "src/shared/tool-display/result-summary.ts",
     "src/shared/tool-display/edit-diff.ts",
+    "src/shared/preview/html-inject.ts",
     "src/shared/diff/**/*.ts",
     "src/renderer/src/agent/engine/engine-constants.ts"
   ]

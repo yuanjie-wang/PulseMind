@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { JSDOM } from 'jsdom'
-import { escapeHtml, renderMarkdown } from '../src/extension/ui/markdown'
+import { escapeHtml, renderMarkdown, splitHtmlFences } from '../src/extension/ui/markdown'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>')
 ;(globalThis as unknown as { window: Window }).window = dom.window as unknown as Window
@@ -38,6 +38,67 @@ describe('panel markdown', () => {
     expect(multi).toContain('</div>')
     // Markdown is not parsed inside a raw html block (desktop parity).
     expect(renderMarkdown('<div>**not bold**</div>')).toContain('<div>**not bold**</div>')
+  })
+
+  it('renders a NESTED same-tag card as one block — no line dropped, no split (review 2026-10-10 高1)', () => {
+    // Every inner line ends in its own </div>: the flagship shape for styled
+    // cards. The old first-close-line rule tested the closing line BEFORE
+    // pushing it — the title row vanished, the outer card became an empty
+    // shell and the body escaped as a sibling root.
+    const src = '<div class="card">\n  <div class="title">标题</div>\n  <div class="body">内容正文</div>\n</div>'
+    expect(renderMarkdown(src)).toBe('<div class="card">\n  <div class="title">标题</div>\n  <div class="body">内容正文</div>\n</div>')
+    // The single-line balanced shape stays intact too.
+    expect(renderMarkdown('<div class="card"><div class="title">t</div><div class="body">b</div></div>')).toBe(
+      '<div class="card"><div class="title">t</div><div class="body">b</div></div>',
+    )
+  })
+
+  it('keeps a still-open card across blank lines, but an unclosed fragment falls back to the blank line', () => {
+    // The desktop's parser keeps the element open across blank lines; so does
+    // the block collection while the tag is unclosed.
+    const blanked = renderMarkdown('<div class="card">\n  <div class="title">标题</div>\n\n  <div class="body">内容</div>\n</div>')
+    expect(blanked).toContain('<div class="title">标题</div>')
+    expect(blanked).toContain('<div class="body">内容</div>')
+    expect(blanked).not.toContain('<p>') // nothing leaked into markdown parsing
+    // An unbalanced fragment must not swallow the rest of the document: the
+    // block ends at its first blank line and markdown parsing resumes.
+    const unclosed = renderMarkdown('<div class="card">\nfragment\n\nmore **text**')
+    expect(unclosed).toContain('fragment</div>')
+    expect(unclosed).toContain('<p>more <strong>text</strong></p>')
+  })
+
+  it('an <hr> html block is complete on its own line (void tags never close)', () => {
+    // Depth-counting hr would wait forever for </hr> and swallow the rest.
+    expect(renderMarkdown('<hr>\n## Heading')).toBe('<hr>\n<h2>Heading</h2>')
+  })
+
+  it('keeps code spans inside paired inline html spans (review 2026-10-10 中1)', () => {
+    // The code span is stashed first, so the paired-span sanitization used to
+    // receive NUL sentinels — which the HTML parser drops — corrupting them
+    // into a bare digit + \u0001 and losing the code content.
+    expect(renderMarkdown('<b>a `x` b</b>')).toBe('<p><b>a <code>x</code> b</b></p>')
+    expect(renderMarkdown('<span>用 `npm i` 安装</span>')).toBe('<p><span>用 <code>npm i</code> 安装</span></p>')
+    const out = renderMarkdown('<code>`deep`</code> and <b>`x`</b>')
+    expect(out).toContain('<code>deep</code>')
+    expect(out).toContain('<code>x</code>')
+    // No sentinel residue of any generation (control chars or PUA).
+    for (const ch of ['\u0000', '\u0001', '\uE000', '\uE001']) {
+      expect(out.includes(ch)).toBe(false)
+    }
+  })
+
+  it('strips position:fixed/sticky from style — model HTML must not overlay the viewport (review 2026-10-10 中2)', () => {
+    // The panel host is position:fixed at the top of the z-order; a fixed
+    // descendant's containing block is the viewport, which no overflow clip
+    // can cut — so surviving fixed would paint an interactive full-page mask.
+    const overlay = renderMarkdown('<div style="position:fixed;inset:0;z-index:99999;background:#fff">overlay</div>')
+    expect(overlay).not.toContain('fixed')
+    expect(overlay).toContain('background:#fff') // the styled-card feature survives
+    const onlyFixed = renderMarkdown('<div style="position:fixed">x</div>')
+    expect(onlyFixed).not.toContain('style=')
+    expect(renderMarkdown('<div style="Position: Sticky;top:0">x</div>')).not.toMatch(/sticky/i)
+    // Contained positioning stays — it cannot escape the panel.
+    expect(renderMarkdown('<div style="position:absolute;left:0">x</div>')).toContain('position:absolute')
   })
 
   it('sanitizes html blocks: no handlers, no script/style/frame, no javascript: hrefs', () => {
@@ -147,5 +208,27 @@ describe('panel markdown', () => {
   it('handles an unterminated fence without losing the rest', () => {
     const out = renderMarkdown('```\nstill code')
     expect(out).toBe('<pre><code>still code</code></pre>')
+  })
+
+  it('splits ```html artifact fences out of the markdown runs', () => {
+    // The exact shape the system prompt teaches: prose, then a ```html card,
+    // then more prose. The fence body rides verbatim; the md runs re-join.
+    const segs = splitHtmlFences('前言\n\n```html\n<div style="color:red">卡片</div>\n```\n\n后记')
+    expect(segs).toEqual([
+      { kind: 'md', text: '前言\n\n' },
+      { kind: 'html', text: '<div style="color:red">卡片</div>', partial: false },
+      { kind: 'md', text: '\n后记' },
+    ])
+    // Non-html fences stay markdown (they render as code blocks).
+    expect(splitHtmlFences('```js\nconst a = 1\n```')).toEqual([{ kind: 'md', text: '```js\nconst a = 1\n```' }])
+    // Case-insensitive first info word, like the desktop's isHtmlFenceLang.
+    expect(splitHtmlFences('```HTML hl_lines\n<b>x</b>\n```')[0].kind).toBe('html')
+    // An unterminated html fence is the live stream's tail.
+    const tail = splitHtmlFences('前\n```html\n<div>')
+    expect(tail[1]).toEqual({ kind: 'html', text: '<div>', partial: true })
+    // An empty html fence is not a card — back to markdown (renders as code).
+    expect(splitHtmlFences('```html\n```')).toEqual([{ kind: 'md', text: '```html\n```' }])
+    // No fences: a single md segment carrying the source untouched.
+    expect(splitHtmlFences('plain **text**')).toEqual([{ kind: 'md', text: 'plain **text**' }])
   })
 })

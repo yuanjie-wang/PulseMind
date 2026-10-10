@@ -262,6 +262,30 @@ const PANELS = [
       ],
     }),
   },
+  {
+    // The html ARTIFACT fence (the shape the system prompt teaches): the
+    // fence renders as the desktop's preview card — sandboxed iframe, height
+    // reported by the measure script — not as a code block. Backticks ride the
+    // template literal escaped, same as the newlines above; bare backticks in
+    // a comment would terminate the HARNESS template, so none appear here.
+    title: 'HTML 围栏',
+    status: '就绪',
+    session: shell({
+      messages: [
+        USER,
+        {
+          id: 'a6',
+          role: 'assistant',
+          createdAt: NOW,
+          contentBlocks: [
+            text(
+              '下面是卡片：\\n\\n\`\`\`html\\n<div style="background:#fff7e6;padding:8px;border-radius:8px">橙色围栏卡片</div><div style="height:600px;background:#f5f5f7"></div>\\n\`\`\`\\n\\n围栏后正文',
+            ),
+          ],
+        },
+      ],
+    }),
+  },
 ]
 
 // ── the host mirrors content/index.tsx exactly (same order, same two sheets) ──
@@ -570,6 +594,43 @@ check(
   `onerror=${htmlCard.imgOnerror}, src=${htmlCard.imgSrc}`,
 )
 
+// ── ```html 围栏 → 工件预览卡（桌面 HtmlArtifactCard 的面板镜像）───────────
+// 围栏里的 html 不再是代码块，而是桌面同款的沙箱预览卡：帧文档经 srcdoc 携带
+// （含量高脚本），沙箱是不透明源，短内容的量高被钳到下限 120。
+const artifact = await page.evaluate(() => {
+  const root = window.__panels()[6]
+  const frame = root.querySelector('.pm-bubble-assistant iframe')
+  return {
+    frame: !!frame,
+    sandbox: frame?.getAttribute('sandbox') ?? '',
+    srcdoc: frame?.getAttribute('srcdoc') ?? '',
+    srcAttr: frame?.getAttribute('src') ?? '',
+    height: frame?.getBoundingClientRect().height ?? 0,
+    badge: !!root.querySelector('.pm-html-card-stream'),
+    before: root.querySelector('.pm-bubble-assistant')?.textContent?.includes('下面是卡片：') ?? false,
+    after: root.querySelector('.pm-bubble-assistant')?.textContent?.includes('围栏后正文') ?? false,
+  }
+})
+check('```html 围栏渲染为预览卡（iframe + 前后正文照常）', artifact.frame && artifact.before && artifact.after, `frame=${artifact.frame}`)
+check('iframe 沙箱是不透明源（allow-scripts 组，绝无 allow-same-origin）', artifact.sandbox === 'allow-scripts allow-popups allow-forms allow-modals', artifact.sandbox)
+check('帧文档由 srcdoc 携带（卡片内容 + 量高脚本在帧内）', artifact.srcdoc.includes('橙色围栏卡片') && artifact.srcdoc.includes('pm-html-card-height'), `${artifact.srcdoc.length} chars`)
+// 量高是异步的（帧 load 后 measure 脚本才 postMessage）。帧的 scrollHeight
+// 永远 ≥ 帧自身高度，所以「变矮」证不了什么——600px 的内容把帧从默认 280 撑起
+// 才是 postMessage 链路有牙齿的证明（上限 800 的钳制同链路）。
+const heightSettled = await page
+  .waitForFunction(
+    () => {
+      const f = document.querySelector('#page [data-pulsemind-panel]:nth-child(7)')?.shadowRoot?.querySelector('.pm-bubble-assistant iframe')
+      if (!f) return false
+      const h = f.getBoundingClientRect().height
+      return h > 300 && h <= 800
+    },
+    { timeout: 5000 },
+  )
+  .then(() => true, () => false)
+check('量高回传生效：600px 内容把帧撑离默认 280（postMessage 链路）', heightSettled && artifact.height > 300, `h=${artifact.height}, settled=${heightSettled}`)
+check('落定渲染没有生成中角标', !artifact.badge)
+
 // 操作行的可见性（镜像 SegmentBlock 的 actionsVisible，M2.9）：同一轮里只有
 // 最终输出带一行 —— 工具前的叙述（带工具卡的那条）没有，进行中的尾条也没有；
 // 历史重放则是每轮的最终答案各一行，而不是整条流水线每条都挂一个。
@@ -860,7 +921,7 @@ check(
 // clicks the header: the strip has to be there with the card still shut. Then the
 // header is clicked once, to keep checking the dark card it opens onto.
 const panelCount = await page.evaluate(() => window.__panels().length)
-check('all six state panels mounted', panelCount === 6, `${panelCount} panels`)
+check('all seven state panels mounted', panelCount === 7, `${panelCount} panels`)
 
 const held = await page.evaluate(() => {
   const root = window.__panels()[1]

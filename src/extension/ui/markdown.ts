@@ -82,6 +82,20 @@ function sanitizeHtml(dirty: string): string {
         node.setAttribute('target', '_blank')
         node.setAttribute('rel', 'noreferrer noopener')
       }
+      // A sanitized element must not escape the panel's layout: the host is
+      // position:fixed at the top of the z-order, and a fixed descendant's
+      // containing block is the VIEWPORT — no overflow clip in between can cut
+      // it, so surviving `position:fixed` would let model HTML paint an
+      // interactive full-viewport overlay (fake login box, fake system dialog)
+      // above the page. Sticky rides along for the same escape potential.
+      // Neither renders as intended inside a 380px column anyway; every other
+      // declaration (the styled-card feature) passes untouched.
+      const style = node.getAttribute?.('style')
+      if (style && /position\s*:\s*(fixed|sticky)/i.test(style)) {
+        const stripped = style.replace(/position\s*:\s*(fixed|sticky)\s*;?/gi, '').trim()
+        if (stripped) node.setAttribute('style', stripped)
+        else node.removeAttribute('style')
+      }
     })
   }
   return purifier.sanitize(dirty, {
@@ -116,6 +130,11 @@ const HTML_BLOCK_TAGS = new Set([
   'summary', 'table', 'ul',
 ])
 
+/** Void block tags: they never carry a closing tag, so their block is the
+ *  opening line alone. Depth-counting them would swallow the rest of the
+ *  document — no `</hr>` ever comes. */
+const HTML_VOID_BLOCK_TAGS = new Set(['hr'])
+
 const htmlBlockOpen = (line: string): string | null => {
   const m = /^\s*<([a-zA-Z][a-zA-Z0-9-]*)[\s>]/.exec(line)
   if (!m) return null
@@ -123,9 +142,82 @@ const htmlBlockOpen = (line: string): string | null => {
   return HTML_BLOCK_TAGS.has(name) ? name : null
 }
 
-/** Sentinel-delimited stash for inline code, so later inline rules can't touch it. */
-const STASH_OPEN = '\u0000'
-const STASH_CLOSE = '\u0001'
+// ── ```html artifact fences (the desktop's HtmlArtifactCard dispatch) ──
+
+export interface MarkdownSegment {
+  kind: 'md' | 'html'
+  text: string
+  /** html only: the fence never closed — a live stream's tail. */
+  partial?: boolean
+}
+
+/** Split a message's source into markdown runs and ```html artifact fences.
+ *  A ```html fence is a deliverable to preview, not code to read — the system
+ *  prompt teaches the model exactly that, and the desktop's CodeBlock routes
+ *  the fence to its artifact card — so the panel's MarkdownBlock renders html
+ *  segments through its own card and everything else through renderMarkdown.
+ *  Line-anchored like renderMarkdown's fence rule; the language is the info
+ *  string's first word, case-insensitive (the desktop's isHtmlFenceLang rule).
+ *  The segments are SLICES of the original (newline-normalized) source, so the
+ *  markdown runs re-render byte-identical; non-html fences are skipped whole —
+ *  a ```html sample inside a ```js fence is that fence's content, not a card.
+ *  An html fence with an empty body is not a card — back to markdown, where it
+ *  renders as the plain code block it visually is. */
+export function splitHtmlFences(source: string): MarkdownSegment[] {
+  const src = source.replace(/\r\n?/g, '\n')
+  const lines = src.split('\n')
+  const starts: number[] = []
+  let pos = 0
+  for (const l of lines) {
+    starts.push(pos)
+    pos += l.length + 1
+  }
+  const segments: MarkdownSegment[] = []
+  let mdStart = 0
+  for (let i = 0; i < lines.length; i++) {
+    const fence = /^\s*```(\w*)(.*)$/.exec(lines[i])
+    if (!fence) continue
+    const body: string[] = []
+    let closed = false
+    let j = i + 1
+    while (j < lines.length) {
+      if (/^\s*```\s*$/.test(lines[j])) {
+        closed = true
+        break
+      }
+      body.push(lines[j])
+      j++
+    }
+    const code = body.join('\n')
+    if (fence[1].toLowerCase() === 'html' && code.trim() !== '') {
+      const fenceStart = starts[i]
+      if (fenceStart > mdStart) segments.push({ kind: 'md', text: src.slice(mdStart, fenceStart) })
+      const bodyStart = starts[i + 1] ?? pos
+      // The body ends at the newline before the closing fence line; an
+      // unclosed fence runs to EOF and is the live stream's tail.
+      const bodyEnd = closed ? starts[j] - 1 : pos
+      segments.push({ kind: 'html', text: src.slice(bodyStart, bodyEnd), partial: !closed })
+      mdStart = closed ? starts[j] + lines[j].length + 1 : pos
+      i = j
+    } else if (closed) {
+      // A non-html fence stays markdown — skip past it so its body is never
+      // mistaken for a fence of its own.
+      i = j
+    }
+  }
+  if (mdStart < src.length) segments.push({ kind: 'md', text: src.slice(mdStart) })
+  return segments.length > 0 ? segments : [{ kind: 'md', text: '' }]
+}
+
+/** Sentinel-delimited stash for inline code, so later inline rules can't touch
+ *  it. Private-use characters, not control chars: the HTML parser drops NUL
+ *  from text content per spec, so the old `\u0000`/`\u0001` sentinels were
+ *  eaten whenever a paired inline span's whole content went through the
+ *  sanitizer — any code span inside `<b>`/`<span>`/`<code>` came back as a
+ *  bare digit + a stray `\u0001`. PUA characters pass through sanitization
+ *  (and escapeHtml) untouched. */
+const STASH_OPEN = '\uE000'
+const STASH_CLOSE = '\uE001'
 
 function renderInline(text: string): string {
   const stash: string[] = []
@@ -153,8 +245,16 @@ function renderInline(text: string): string {
   out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
   out = out.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
   out = out.replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
-  // Restore stashed spans last.
-  out = out.replace(new RegExp(`${STASH_OPEN}(\\d+)${STASH_CLOSE}`, 'g'), (_m, i: string) => stash[Number(i)] ?? '')
+  // Restore stashed spans — repeatedly, because a restored fragment can carry
+  // sentinels of its own: a code span inside a sanitized paired span rides
+  // along inside that fragment, so one pass would stop with inner sentinels
+  // still in place. Identical-output passes mean the stash is exhausted.
+  const stashRe = new RegExp(`${STASH_OPEN}(\\d+)${STASH_CLOSE}`, 'g')
+  for (let pass = 0; pass < 10; pass++) {
+    const next = out.replace(stashRe, (_m, i: string) => stash[Number(i)] ?? '')
+    if (next === out) break
+    out = next
+  }
   return out
 }
 
@@ -294,17 +394,51 @@ export function renderMarkdown(source: string): string {
     if (blockTag) {
       flushAll()
       const buf: string[] = [line]
-      const closeRe = new RegExp(`</${blockTag}\\s*>\\s*$`, 'i')
       let j = i + 1
-      if (!closeRe.test(line)) {
-        while (j < lines.length && !/^\s*$/.test(lines[j]) && !closeRe.test(lines[j])) {
-          buf.push(lines[j])
-          j++
+      if (!HTML_VOID_BLOCK_TAGS.has(blockTag)) {
+        // Count same-name opens/closes PER LINE so a nested card — every inner
+        // line ending in its own `</div>` — stays ONE block until the
+        // OUTERMOST close. The old first-close-line rule tested the closing
+        // line BEFORE pushing it, so that line was silently dropped (the
+        // flagship nested-card shape lost its title row and the outer card
+        // became an empty shell) and the card would have split at the inner
+        // close anyway. While the tag is still open, blank lines are consumed
+        // too — the desktop's parser keeps the element open across them; a
+        // balanced opening line (`<div>x</div>`) closes the block on itself.
+        const openRe = new RegExp(`<${blockTag}(?=[\\s>/])`, 'gi')
+        const closeRe = new RegExp(`</${blockTag}\\s*>`, 'gi')
+        const delta = (l: string): number => (l.match(openRe)?.length ?? 0) - (l.match(closeRe)?.length ?? 0)
+        let depth = delta(line)
+        if (depth > 0) {
+          let blankAt = -1
+          while (j < lines.length) {
+            const l = lines[j]
+            if (/^\s*$/.test(l)) {
+              if (blankAt < 0) blankAt = j
+              buf.push(l)
+              j++
+              continue
+            }
+            buf.push(l)
+            depth += delta(l)
+            j++
+            if (depth <= 0) break
+          }
+          if (depth > 0 && blankAt >= 0) {
+            // Unclosed at EOF (a fragment the model never closed): fall back
+            // to the CommonMark boundary — the block ends at its first blank
+            // line, the speculative tail returns to markdown parsing, and the
+            // sanitizer auto-closes what is kept.
+            buf.length = blankAt - i
+            j = blankAt
+          }
         }
       }
-      // i lands on the line the block stopped at (closing tag, blank, EOF);
-      // the outer loop's i++ steps past it.
-      i = j
+      // i lands on the LAST consumed line, so the outer loop's i++ steps onto
+      // the first unconsumed one (the closing tag line, the first blank of a
+      // truncated fragment, or the line after a self-contained block). The
+      // old `i = j` dropped the line AFTER a self-contained block entirely.
+      i = j - 1
       html.push(sanitizeHtml(buf.join('\n')))
       continue
     }

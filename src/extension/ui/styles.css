@@ -559,6 +559,131 @@ button {
   margin-bottom: 0;
 }
 
+/* ── HTML 工件卡（ui/HtmlArtifactCard.tsx，桌面 HtmlArtifactCard 的手工镜像）──
+   工具条配色取桌面浅色主题的解析值（palette.ts）：tile #fafbfc、border-soft
+   #e8e8e8、text-strong #333、text-muted #999——面板不带应用变量，全用字面量。 */
+.pm-html-card {
+  position: relative;
+  margin: 8px 0;
+  border: 1px solid transparent; /* 桌面 2026-10-09 裁定：无常显边框，占位防盒体抖动 */
+  border-radius: 10px;
+}
+.pm-html-card-body {
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+.pm-html-card-float {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  padding-bottom: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  z-index: 30;
+}
+.pm-html-card-on .pm-html-card-float { opacity: 1; pointer-events: auto; }
+.pm-html-card-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: #fafbfc; /* --pm-tile-bg */
+  border: 1px solid #e8e8e8; /* --pm-border-soft */
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+  user-select: none;
+}
+.pm-html-card-stream {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  padding-bottom: 6px;
+  pointer-events: none;
+  z-index: 30;
+}
+.pm-html-card-flip .pm-html-card-float { bottom: auto; top: 6px; }
+.pm-html-card-flip .pm-html-card-stream { bottom: auto; top: 6px; }
+.pm-html-card-badge {
+  font-size: 11px;
+  color: #999; /* --pm-text-muted */
+  background: #fafbfc; /* --pm-tile-bg */
+  border: 1px solid #e8e8e8; /* --pm-border-soft */
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.pm-html-card-tab {
+  border: none;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: #999; /* --pm-text-muted */
+  background: transparent;
+  font-family: inherit;
+}
+.pm-html-card-tab-on { color: #333; background: #ebebeb; } /* strong + hover-weak */
+.pm-html-card-icon-btn {
+  border: none;
+  cursor: pointer;
+  padding: 3px 6px;
+  background: transparent;
+  color: #666;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+}
+.pm-html-card-sep { width: 1px; height: 14px; background: #e8e8e8; }
+.pm-html-card-code {
+  margin: 0;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.04); /* --pm-code-bg */
+  color: #555; /* --pm-text-body */
+  font-size: 12.5px;
+  line-height: 1.55;
+  max-height: 800px; /* CARD_MAX_HEIGHT */
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 批次卡（桌面 AskUserBatchCard 的镜像）：题号/可多选徽标、已答题的折叠
+   摘要行。徽标取桌面 askBadgeStyle 的观感：主题色底 + 圆角胶囊。 */
+.pm-ask-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(22, 119, 255, 0.08); /* 桌面 var(--pm-link-bg) */
+  color: #1677ff; /* --pm-primary */
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 400;
+}
+.pm-ask-settled { margin-bottom: 10px; }
+.pm-ask-settled-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #333; /* 桌面 var(--pm-ink) */
+}
+.pm-ask-settled-answer {
+  margin-left: 19px;
+  font-size: 12px;
+  color: #999; /* 桌面 var(--pm-text-muted) */
+}
+.pm-ask-settled-answer-err { color: #f44747; }
+/* 生成中的问题（状态未派发）：斜体灰字，与桌面 askGenerating 同形 */
+.pm-ask-generating {
+  color: #999;
+  font-size: 12px;
+  font-style: italic;
+}
+
 /* ── 操作行（MessageGroup 回复下方按钮行）────────────────────────────── */
 
 .pm-actions {

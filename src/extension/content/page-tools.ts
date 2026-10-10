@@ -151,10 +151,38 @@ export function pageClick(args: Record<string, unknown>): string {
 
 export function pageInput(args: Record<string, unknown>): string {
   const el = elementAt(args.index)
+  const text = String(args.text ?? '')
+  // contentEditable surfaces (rich-text editors) are numbered by page-tree's
+  // isInteractive but are not input/textarea — they used to fail here with
+  // 「不是可输入元素」 and the model's only workaround was page_execute_js.
+  // The attribute check mirrors page-tree's (jsdom leaves isContentEditable
+  // undefined; inherited editability stays a real-browser behavior).
+  if (el instanceof HTMLElement && (el.isContentEditable || el.hasAttribute('contenteditable'))) {
+    try { el.focus({ preventScroll: true }) } catch { /* not focusable */ }
+    // Replace the field's content, mirroring the input/textarea semantics:
+    // select everything, then insert over the selection. execCommand is the
+    // one API that both mutates a contentEditable AND fires the input events
+    // editors listen for; the manual fallback covers engines without it
+    // (jsdom), where a plain text swap plus a dispatched input event is the
+    // best available approximation.
+    const doc = el.ownerDocument
+    const selection = doc.getSelection()
+    let usedExecCommand = false
+    try {
+      if (selection) {
+        selection.selectAllChildren(el)
+        usedExecCommand = doc.execCommand('insertText', false, text)
+      }
+    } catch { usedExecCommand = false }
+    if (!usedExecCommand) {
+      el.textContent = text
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    return `已向 [${args.index}] 输入 ${text.length} 个字符（contentEditable）。${STALE_HINT}`
+  }
   if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
     throw new Error(`[${args.index}] 不是可输入元素（<${el.tagName.toLowerCase()}>）`)
   }
-  const text = String(args.text ?? '')
   try { el.focus({ preventScroll: true }) } catch { /* not focusable */ }
   setNativeValue(el, text)
   return `已向 [${args.index}] 输入 ${text.length} 个字符。${STALE_HINT}`

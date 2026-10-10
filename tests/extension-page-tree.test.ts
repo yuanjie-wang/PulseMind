@@ -150,6 +150,28 @@ describe('page-tree', () => {
     expect(text).toContain('[Start of page]')
     expect(text).toContain('[End of page]')
   })
+
+  it('descends into a SAME-ORIGIN iframe and numbers its controls (2026-10-10)', () => {
+    mount('<button id="top">顶层按钮</button>')
+    const iframe = document.createElement('iframe')
+    document.body.appendChild(iframe)
+    const frameDoc = iframe.contentDocument
+    // jsdom serves a synchronous about:blank document for a mounted iframe.
+    expect(frameDoc).not.toBeNull()
+    if (!frameDoc) return
+    frameDoc.body!.innerHTML = '<button id="in-frame">框架内按钮</button><input id="frame-input" type="text" placeholder="帧内搜索"/>'
+
+    const { text, selectorMap } = buildDomTree(document)
+
+    // The frame's controls are numbered and reachable through the selector map
+    // (page_click/page_input resolve indices against this same map).
+    expect(text).toContain('框架内按钮')
+    expect(text).toContain('placeholder=帧内搜索')
+    const ids = new Set(Array.from(selectorMap.values()).map((el) => el.id))
+    expect(ids.has('in-frame')).toBe(true)
+    expect(ids.has('frame-input')).toBe(true)
+    expect(ids.has('top')).toBe(true)
+  })
 })
 
 describe('page-tree stable indices and delta reads', () => {
@@ -424,6 +446,25 @@ describe('page-tools', () => {
 
   it('refuses to type into a non-editable element', () => {
     mount('<button id="b">x</button>')
+    look()
+    expect(() => pageInput({ index: 1, text: 'hi' })).toThrow(/不是可输入元素/)
+  })
+
+  it('types into a contentEditable editor instead of refusing it (2026-10-10)', () => {
+    mount('<div id="editor" contenteditable="true"><p>旧稿</p></div>')
+    look()
+    const editor = document.getElementById('editor') as HTMLElement
+    const events: string[] = []
+    editor.addEventListener('input', () => events.push('input'))
+
+    const result = pageInput({ index: 1, text: '新稿内容' })
+    expect(result).toContain('contentEditable')
+    expect(editor.textContent).toBe('新稿内容')
+    expect(events).toContain('input') // jsdom has no execCommand → the manual fallback still fires it
+  })
+
+  it('still refuses a plain div without contentEditable', () => {
+    mount('<div id="static">静态</div><button>x</button>')
     look()
     expect(() => pageInput({ index: 1, text: 'hi' })).toThrow(/不是可输入元素/)
   })

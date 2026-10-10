@@ -64,7 +64,9 @@ const fixture = ({ choices, multi = false, status = 'awaiting_user_input' }) => 
       id: 'm2', role: 'assistant', createdAt: '2026-09-15T10:00:00.000Z',
       contentBlocks: [
         { type: 'text', text: '要往哪个城市订？' },
-        { type: 'tool_use', id: ASK_BLOCK_ID, name: 'ask_user', status: 'running', input: { prompt: '要往哪个城市订？', choices, multi } },
+        // status 'queued': the dispatch-time state (the 排队中/执行中 split) — the
+        // state a waiting question actually carries on the wire.
+        { type: 'tool_use', id: ASK_BLOCK_ID, name: 'ask_user', status: 'queued', input: { prompt: '要往哪个城市订？', choices, multi } },
         { type: 'tool_use', id: HELD_BLOCK_ID, name: 'page_click', status: 'pending', input: { index: 3 } },
       ],
     },
@@ -211,6 +213,96 @@ const sent = (page, type) => page.evaluate((t) => window.__sent.filter((m) => m.
   await page.close()
 }
 
+
+// ── 4c. 一轮多个 ask_user:批次卡（user 2026-10-10:「同时出现多个 ask user
+// 感觉有点问题」）── 桌面 2026-10-06 的 AskUserBatchCard 镜像:两题并成一卡、
+// 只带第一题的行、徽标读第 1/2 题;答完第一题本地闩锁推进,第二题的行才出现;
+// 推进后的 350ms 内连点被吞(否则双击的第二响会落到下一题的行上)。
+{
+  console.log('== ask_user 批次(一轮两题) ==')
+  const twoAsks = (status1 = 'queued', status2 = 'queued') => ({
+    sessionId: 'ws_1',
+    connection: { state: 'open', connected: true },
+    panelOpen: true,
+    messages: [
+      { id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '帮我订票' }], createdAt: '2026-09-15T10:00:00.000Z' },
+      {
+        id: 'm2', role: 'assistant', createdAt: '2026-09-15T10:00:00.000Z',
+        contentBlocks: [
+          { type: 'tool_use', id: 'toolu_ask_1', name: 'ask_user', status: status1, input: { prompt: '要往哪个城市订？', choices: '北京, 上海' } },
+          { type: 'tool_use', id: 'toolu_ask_2', name: 'ask_user', status: status2, input: { prompt: '要哪一天的票？', choices: '今天, 明天' } },
+        ],
+      },
+    ],
+    streamingBlocks: [],
+    status: 'awaiting_user_input',
+    sessions: [],
+    approvalMode: 'auto',
+  })
+
+  {
+    const { page, root } = await open(twoAsks())
+    check('两题并成一卡(单个 data-ask-batch,不再各画一张)', (await root.locator('[data-ask-batch]').count()) === 1)
+    check('徽标读第 1/2 题', ((await root.locator('.pm-ask-badge').first().textContent()) ?? '').includes('第 1/2 题'))
+    check('第一题的选项在场', (await root.locator('.pm-chip-choice').count()) === 2)
+    check('第二题的行不在场(只有第一未答的题带行)', !(await root.locator('.pm-bubble-assistant')?.textContent())?.includes('要哪一天的票？'), '第二题提示不可见')
+
+    await root.locator('.pm-chip-choice', { hasText: '北京' }).click()
+    await page.waitForTimeout(120)
+    const answers1 = await sent(page, 'panel/answer')
+    check('答第一题只发一条 panel/answer,callId 是第一题', answers1.length === 1 && answers1[0]?.callId === 'toolu_ask_1', JSON.stringify(answers1))
+    check('第一题折叠成已选回显', ((await root.locator('.pm-ask-settled-answer').textContent()) ?? '').includes('北京'))
+    check('推进后第二题的行出现', (await root.locator('.pm-chip-choice').count()) === 2)
+    check('徽标推进到第 2/2 题', ((await root.locator('.pm-ask-badge').first().textContent()) ?? '').includes('第 2/2 题'))
+    // 真实用户还在读题——等过 350ms 推进锁再答下一题（桌面探针同款节奏）。
+    await page.waitForTimeout(450)
+
+    await root.locator('.pm-chip-choice', { hasText: '今天' }).click()
+    await page.waitForTimeout(120)
+    const answers2 = await sent(page, 'panel/answer')
+    check('两题各发一条,按顺序各带自己的 callId', answers2.length === 2 && answers2[1]?.callId === 'toolu_ask_2', JSON.stringify(answers2))
+    await page.close()
+  }
+
+  {
+    // 推进闩锁:答完第一题后的 350ms 内,第二响必须被吞——否则双击的第二响
+    // 落在自动推进渲染出来的下一题选项上,发出第二条(错误的)答案。
+    const { page, root } = await open(twoAsks())
+    await root.locator('.pm-chip-choice', { hasText: '北京' }).click()
+    await root.locator('.pm-chip-choice', { hasText: '今天' }).click({ force: true, timeout: 300 }).catch(() => {})
+    await page.waitForTimeout(400)
+    const answers = await sent(page, 'panel/answer')
+    check('推进后 350ms 内的连点被吞(仍只有一条)', answers.length === 1 && answers[0]?.callId === 'toolu_ask_1', JSON.stringify(answers))
+    await page.close()
+  }
+
+  {
+    // 第一题还在流式生成(status 未派发):轮到它但它不可答——生成中的空问题
+    // 收到的任何回答都是对噪声的承诺。批次卡显示「正在整理问题…」,第二题的
+    // 行也不得越过顺序出现。
+    const { page, root } = await open(twoAsks('pending', 'running'))
+    check('生成中的第一题不渲染任何选项行(第二题也不得越序)', (await root.locator('.pm-chip-choice').count()) === 0)
+    check('批次卡显示整理中提示', (await root.locator('.pm-ask-generating').count()) === 1)
+    await root.locator('.pm-ask-generating').click({ force: true })
+    await page.waitForTimeout(150)
+    check('整理中提示不可点击发送', (await sent(page, 'panel/answer')).length === 0)
+    await page.close()
+  }
+}
+
+{
+  // 门控钉（user 2026-10-10: 看不到选项了 — 旧门控把派发态 'queued' 当成生成中，
+  // 真实等待中的问题永远出不来选项）。单问 'queued' 必须直接可答。
+  console.log('== ask_user 派发态(queued)必须可答 ==')
+  const { page, root } = await open(fixture({ choices: ['北京', '上海'] }))
+  check('queued 的单问渲染选项行', (await root.locator('.pm-chip-choice').count()) === 2)
+  check('queued 不显示整理中提示', (await root.locator('.pm-ask-generating').count()) === 0)
+  await root.locator('.pm-chip-choice', { hasText: '北京' }).click()
+  await page.waitForTimeout(200)
+  const answers = await sent(page, 'panel/answer')
+  check('queued 的回答照常投递', answers.length === 1 && answers[0]?.callId === ASK_BLOCK_ID, JSON.stringify(answers))
+  await page.close()
+}
 
 // ── 5. Held tool call: the approval strip below the header ────────────
 {

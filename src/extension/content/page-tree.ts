@@ -156,7 +156,7 @@ function hasLayout(doc: Document): boolean {
 function getStyle(el: Element): CSSStyleDeclaration | null {
   if (!styleCache.has(el)) {
     let s: CSSStyleDeclaration | null = null
-    try { s = window.getComputedStyle(el) } catch { s = null }
+    try { s = (el.ownerDocument.defaultView ?? window).getComputedStyle(el) } catch { s = null }
     styleCache.set(el, s)
   }
   return styleCache.get(el) ?? null
@@ -217,7 +217,12 @@ function isTopElement(el: Element, layout: boolean): boolean {
   if (!rect) return false
   const cx = rect.left + rect.width / 2
   const cy = rect.top + rect.height / 2
-  const top = hitTest(cx, cy, el) || hitTest(rect.left + 2, rect.top + 2, el) || hitTest(rect.right - 2, rect.bottom - 2, el)
+  // Hit-test in the element's OWN frame: an iframe-internal element's rect is
+  // iframe-viewport-relative and only that document's elementFromPoint can see
+  // it (the top document answers with the <iframe> host). Same document → same
+  // behavior as before.
+  const doc = el.ownerDocument
+  const top = hitTest(cx, cy, el, doc) || hitTest(rect.left + 2, rect.top + 2, el, doc) || hitTest(rect.right - 2, rect.bottom - 2, el, doc)
   return top === null || top === undefined ? true : top === el || el.contains(top)
 }
 
@@ -227,12 +232,13 @@ function isTopElement(el: Element, layout: boolean): boolean {
  *  against the element being tested is never true for anything inside a shadow
  *  root and such controls could never be numbered (real-browser find, M2.6).
  *  Descending into `shadowRoot.elementFromPoint` yields the element the click
- *  would really reach. */
+ *  would really reach. `doc` is the document to hit-test in — the element's
+ *  own frame for iframe-internal content (2026-10-10). */
 const MAX_SHADOW_PIERCE = 10
 
-function hitTest(x: number, y: number, root: Element): Element | null {
+function hitTest(x: number, y: number, root: Element, doc: Document): Element | null {
   try {
-    let hit: Element | null = document.elementFromPoint(x, y)
+    let hit: Element | null = doc.elementFromPoint(x, y)
     for (let depth = 0; depth < MAX_SHADOW_PIERCE; depth += 1) {
       if (!hit) return null
       // Checked at every level: the panel's own shadow content is only
@@ -254,11 +260,14 @@ function hitTest(x: number, y: number, root: Element): Element | null {
 
 // ── Viewport scoping (after page-agent) ──────────────────────────────
 
-/** Any client rect inside the expanded viewport counts; -1 disables scoping. */
+/** Any client rect inside the expanded viewport counts; -1 disables scoping.
+ *  The viewport is the element's OWN frame's (an iframe-internal element lives
+ *  in the iframe's viewport). */
 function isInExpandedViewport(el: Element, expansion: number, layout: boolean): boolean {
   if (!layout || expansion === -1) return true
-  const vw = window.innerWidth
-  const vh = window.innerHeight
+  const win = el.ownerDocument.defaultView
+  const vw = win?.innerWidth ?? window.innerWidth
+  const vh = win?.innerHeight ?? window.innerHeight
   try {
     const rects = el.getClientRects()
     if (rects.length > 0) {
@@ -276,11 +285,13 @@ function isInExpandedViewport(el: Element, expansion: number, layout: boolean): 
 }
 
 /** Fast reject: fully outside the viewport, not fixed/sticky, and sizeless.
- *  Sized containers continue so their children can still be reached. */
+ *  Sized containers continue so their children can still be reached.
+ *  Viewport is the element's OWN frame's, matching isInExpandedViewport. */
 function isOffViewport(el: Element, expansion: number, layout: boolean): boolean {
   if (!layout || expansion === -1) return false
-  const vw = window.innerWidth
-  const vh = window.innerHeight
+  const win = el.ownerDocument.defaultView
+  const vw = win?.innerWidth ?? window.innerWidth
+  const vh = win?.innerHeight ?? window.innerHeight
   const style = getStyle(el)
   if (style && (style.position === 'fixed' || style.position === 'sticky')) return false
   const he = el as HTMLElement
@@ -309,7 +320,10 @@ function isInteractive(el: Element, layout: boolean): boolean {
     if (style && INTERACTIVE_CURSORS.has(style.cursor)) return true
   }
   if (INTERACTIVE_TAGS.has(tag)) return true
-  if ((el as HTMLElement).isContentEditable) return true
+  // The attribute is checked alongside isContentEditable: it is the source of
+  // truth for a directly-editable element, and jsdom (tests/probes) leaves
+  // isContentEditable undefined — the attribute still reads there.
+  if ((el as HTMLElement).isContentEditable || el.hasAttribute('contenteditable')) return true
   const role = el.getAttribute('role')
   if (role && ['button', 'link', 'checkbox', 'radio', 'tab', 'menuitem', 'switch', 'combobox', 'textbox', 'searchbox'].includes(role)) return true
   const cls = `${el.className ?? ''}`
@@ -399,11 +413,14 @@ function getAttributes(el: Element): Record<string, string> | undefined {
 interface BuildState {
   map: Record<string, DomNode>
   visitedShadow: Set<ShadowRoot>
+  /** Same-origin frame documents already descended into — an iframe is walked
+   *  once even if the page re-appends it. */
+  visitedDocs: Set<Document>
   truncated: boolean
 }
 
 function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: number): FlatDomTree {
-  const state: BuildState = { map: {}, visitedShadow: new Set(), truncated: false }
+  const state: BuildState = { map: {}, visitedShadow: new Set(), visitedDocs: new Set(), truncated: false }
   let nodeCounter = 0
 
   function addNode(el: Node, parentId: string | null): string {
@@ -485,6 +502,29 @@ function buildFlatTree(root: ParentNode, layout: boolean, viewportExpansion: num
       for (const child of Array.from(element.shadowRoot.childNodes)) {
         const childId = addNode(child, id)
         if (childId) (state.map[id] as ElementNode).children.push(childId)
+      }
+    }
+
+    // Same-origin iframe piercing (2026-10-10): before this branch the walk
+    // only descended through shadowRoot and childNodes, and the content script
+    // registers all_frames:false — so elements inside an embedded map / login /
+    // payment frame were neither numbered nor clickable. contentDocument is
+    // reachable for SAME-origin frames; cross-origin access returns null or
+    // throws, and the catch degrades to today's behavior (the frame is a node,
+    // its contents stay invisible). The frame's children hang off the iframe
+    // node; geometry above runs in the element's own frame.
+    if (tag === 'iframe') {
+      let frameDoc: Document | null = null
+      try { frameDoc = (element as HTMLIFrameElement).contentDocument } catch { frameDoc = null }
+      if (frameDoc && !state.visitedDocs.has(frameDoc)) {
+        state.visitedDocs.add(frameDoc)
+        const container = frameDoc.body ?? frameDoc.documentElement
+        if (container) {
+          for (const child of Array.from(container.childNodes)) {
+            const childId = addNode(child, id)
+            if (childId) (state.map[id] as ElementNode).children.push(childId)
+          }
+        }
       }
     }
 
