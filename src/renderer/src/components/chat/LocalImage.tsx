@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ImageViewer } from './ImageViewer'
+import { localFileUrl } from '../../../shared/preview/local-file-url'
 
 export const IMAGE_EXTS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'avif', 'heic', 'heif',
@@ -30,7 +31,7 @@ export function LocalImage(props: React.ImgHTMLAttributes<HTMLImageElement> & Re
   let resolvedSrc = filePath
   if (resolvedSrc && /[/\\]\.pulsemind[/\\]tmp[/\\]/.test(resolvedSrc)) {
     if (!resolvedSrc.startsWith('local-file://')) {
-      resolvedSrc = `local-file://${resolvedSrc.replace(/\\/g, '/')}`
+      resolvedSrc = localFileUrl(resolvedSrc)
     }
   } else if (resolvedSrc?.startsWith('file:')) {
     resolvedSrc = resolvedSrc.replace(/^file:\/{1,3}/, 'local-file:///')

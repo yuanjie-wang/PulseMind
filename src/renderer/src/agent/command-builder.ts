@@ -31,15 +31,18 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       // token-level overflow is read's dedicated budget's job
       // (MAX_READ_RESULT_TOKENS in engine-constants).
       const limit = Math.min(Number(input.limit) || 500, 500)
-      // ~ 路径在引号里不展开（audit 2026-10-10 #6：read 是唯一没有 $HOME
-      // 前缀处理的文件命令）——按 list_dir 同款拼 $HOME。
+      // ~ 路径在引号里不展开（audit 2026-10-10 #6）。Windows 的单引号内一切
+      // 字面，$env:USERPROFILE 拼进 '…' 曾永远读不到（full_20261011 M2-P1-3）
+      // ——变量必须在引号外：Join-Path 展开变量、路径本体仍单引号免注入。
       const hasTilde = filePath.startsWith('~')
       if (isWin) {
-        const psPath = hasTilde ? '$env:USERPROFILE' + psEscape(filePath.slice(1)) : psEscape(filePath)
+        const psPath = hasTilde
+          ? `(Join-Path $env:USERPROFILE '${psEscape(filePath.slice(1))}')`
+          : `'${psEscape(filePath)}'`
         if (input.binary === true) {
-          return `Format-Hex '${psPath}' | Select-Object -Skip ($(${offset}) - 1) -First ${limit} | Out-String -Width 4096`
+          return `Format-Hex -Path ${psPath} | Select-Object -Skip ($(${offset}) - 1) -First ${limit} | Out-String -Width 4096`
         }
-        return `Get-Content '${psPath}' -Encoding utf8 | Select-Object -Skip ($(${offset}) - 1) -First ${limit}`
+        return `Get-Content -Path ${psPath} -Encoding utf8 | Select-Object -Skip ($(${offset}) - 1) -First ${limit}`
       }
       const escapedPath = hasTilde ? '$HOME' + shEscape(filePath.slice(1)) : shEscape(filePath)
       if (input.binary === true) return `xxd "${escapedPath}" | tail -n +${offset} | head -n ${limit}`
@@ -58,8 +61,11 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       // omitted, keeping a page well under the 4K-token tool-result guardrail.
       const limit = input.limit !== undefined && input.limit !== null ? Number(input.limit) : 100
       if (isWin) {
-        const psPath = hasTilde ? '$env:USERPROFILE' + dirPath.slice(1) : dirPath
-        const wrapped = `'${psEscape(psPath)}'`
+        // 同 read：$env:USERPROFILE 曾被拼进单引号字面量，list_dir ~/… 在
+        // Windows 必败（先存同款，随 M2-P1-3 一并修）。
+        const wrapped = hasTilde
+          ? `(Join-Path $env:USERPROFILE '${psEscape(dirPath.slice(1))}')`
+          : `'${psEscape(dirPath)}'`
         if (input.recursive === true) {
           let cmd = `Get-ChildItem -Path ${wrapped} -Recurse -Depth 2 -Force | Where-Object { $_.Name -notlike '.*' } | Select-Object -ExpandProperty FullName`
           cmd += ` | Select-Object -Skip ${offset} -First ${limit}`

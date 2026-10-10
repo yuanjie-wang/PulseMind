@@ -17,7 +17,7 @@ import type { SpawnSubAgentConfig, SubAgentHandle } from './agent-utils'
 import type { Plan } from '../../../shared/types/plan'
 import { writeFileChunked } from './agent-utils'
 import { buildCommandFromSkillInput, withDefaultSearchDir } from './command-builder'
-import { shSingleQuote } from './agent-utils'
+import { shSingleQuote, shEscape, psEscape } from './agent-utils'
 import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
 import { saveImagesInText } from './image-utils'
 import type { ToolExecContext } from './executors/context'
@@ -268,9 +268,13 @@ export class ToolExecutor implements ToolExecContext {
       // (review_20261005 P1-03). '…' + shSingleQuote leaves nothing to escape.
       // ~ 不进引号（引号里不展开），按 read 命令同款拼 $HOME。
       const hasTilde = filePath.startsWith('~')
+      // ~ 展开的引号坐标（full_20261011 M2-P1-3/X8）：变量必须在引号外——
+      // Windows 单引号内的 $env:USERPROFILE 是字面量（读必败）；POSIX 侧与
+      // read 的已验证分支同款（"$HOME" + shEscape，shEscape 是 "…" 语境的
+      // 转义器），不再走 $HOME 裸奔拼接。
       const cmd = isWin
-        ? `(Get-Content '${hasTilde ? '$env:USERPROFILE' + filePath.slice(1).replace(/'/g, "''") : filePath.replace(/'/g, "''")}' -Encoding utf8 | Measure-Object -Line).Lines`
-        : `wc -l ${hasTilde ? '$HOME' + shSingleQuote(filePath.slice(1)) : shSingleQuote(filePath)}`
+        ? `(Get-Content -Path ${hasTilde ? `(Join-Path $env:USERPROFILE '${psEscape(filePath.slice(1))}')` : `'${psEscape(filePath)}'`} -Encoding utf8 | Measure-Object -Line).Lines`
+        : `wc -l ${hasTilde ? `"\$HOME${shEscape(filePath.slice(1))}"` : shSingleQuote(filePath)}`
       const r = await getHost().execCommandSync(cmd)
       if (r.code === 0) {
         const trimmed = r.output.trim()

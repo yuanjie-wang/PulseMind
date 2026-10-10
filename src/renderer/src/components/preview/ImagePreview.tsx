@@ -16,6 +16,7 @@ import { FileInfoBar } from './FileInfoBar'
 import { ZoomControls, ZOOM_STEP_FACTOR, zoomByFactor } from './ZoomControls'
 import { useWheelZoom, anchoredScroll, type ZoomAnchor } from './useWheelZoom'
 import { visualCenterPaddingX, visualCenterPaddingY } from './visual-center'
+import { localFileUrl } from '../../../shared/preview/local-file-url'
 
 /** Breathing room between the image and the pane's edges. */
 const PADDING = 16
@@ -36,7 +37,7 @@ export function ImagePreview({ path }: { path: string }): React.ReactElement {
    *  copy below is only for the label). */
   const appliedZoomRef = useRef(1)
 
-  const url = `local-file://${path.replace(/\\/g, '/')}`
+  const url = localFileUrl(path)
 
   const applyZoom = useCallback(() => {
     const container = containerRef.current

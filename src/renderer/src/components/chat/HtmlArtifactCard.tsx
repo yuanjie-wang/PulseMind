@@ -72,6 +72,7 @@ import { useTranslation } from '../../i18n/useTranslation'
 import { createTextThrottle } from './stream-throttle'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { buildCardDocument, HTML_ARTIFACT_SANDBOX } from '../../../../shared/preview/html-inject'
+import { localFileUrl } from '../../../../shared/preview/local-file-url'
 
 // buildCardDocument (with the measure script and the full-document test) moved
 // to shared/preview/html-inject — the extension panel's card builds the same
@@ -145,7 +146,7 @@ export async function persistHtmlCopy(content: string): Promise<string | null> {
  *  URL hostname (local-file://C:/…), which serveLocalFile's
  *  resolveLocalFilePath reads back — same conversion LocalImage uses. */
 export function toLocalFileUrl(filePath: string): string {
-  return `local-file://${filePath.replace(/\\/g, '/')}`
+  return localFileUrl(filePath)
 }
 
 /** The card's rest/hover chrome (see the header comment). Hover state is JS,

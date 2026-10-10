@@ -41,6 +41,7 @@ import { usePreviewPaneStore } from '../../stores/previewPaneStore'
 import { notify } from '../../utils/notify'
 import { FileInfoBar } from './FileInfoBar'
 import { ZoomControls, ZOOM_STEP_FACTOR, zoomByFactor, clampZoom } from './ZoomControls'
+import { localFileUrl } from '../../../shared/preview/local-file-url'
 
 /** A per-mount secret the served picker echoes on every pm:* message (M9):
  *  the frame's page scripts share the picker's realm and event.source, so
@@ -102,9 +103,9 @@ export function HtmlPreview({ path, reloadTick, text, elementMode = false }: Pro
   // of the iframe) re-serves the SAME nonce; a different file gets a fresh one.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- generateNonce reads neither dep ON PURPOSE: the deps are the reset contract, not data
   const nonce = useMemo(() => generateNonce(), [path, elementMode])
-  const src = elementMode
-    ? `local-file://${path.replace(/\\/g, '/')}?pmPreview=1`
-    : `local-file://${path.replace(/\\/g, '/')}`
+  // 编码过的单一构造器（full_20261011 M3-P1-2）：裸拼曾让含 % 的路径吃 403、
+  // 含 # 的路径读错文件（pmPreview=1 供 served 页面读 location.search）。
+  const src = localFileUrl(path, elementMode ? 'pmPreview=1' : undefined)
 
   // M10: the nonce is registered in the MAIN process (per mount) and the
   // protocol handler stamps it into the served picker — the URL no longer
