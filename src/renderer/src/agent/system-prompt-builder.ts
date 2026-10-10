@@ -27,6 +27,11 @@ export interface BuildSystemPromptParams {
    *  clock still last). Consumed by prepareLoopRequest — one request build
    *  only, never persisted, never rendered. */
   continuationNudge?: boolean
+  /** Context window gauge (user 2026-10-10): the same contextTokens() estimate
+   *  guard ③ of context_compact uses, so the model can PREDICT a refusal
+   *  instead of spending a probe call. Per-turn volatile — state block only,
+   *  clock still last. Absent → no section (tests, spawned sessions). */
+  contextUsage?: { tokens: number; window: number }
 }
 
 export interface BuildSystemPromptResult {
@@ -209,8 +214,9 @@ async function buildStateBlock(params: {
   plan: Plan | null
   summon?: SummonState | null
   continuationNudge?: boolean
+  contextUsage?: { tokens: number; window: number }
 }): Promise<string> {
-  const { opts, plan, summon, continuationNudge } = params
+  const { opts, plan, summon, continuationNudge, contextUsage } = params
   const sections: string[] = []
 
   // Git status — OFF unless the user turned the injection on in settings, and
@@ -294,6 +300,13 @@ async function buildStateBlock(params: {
       }
     } catch { /* stats unavailable — the section just stays out */ }
   }
+
+  // Context Window gauge (user 2026-10-10): the model owns the context_compact
+  // decision, so it needs the same number the guard enforces. Sits BEFORE the
+  // nudge so the continuation directive keeps its "last-but-clock" contract;
+  // both are per-turn volatile and the clock re-bills the tail on every
+  // request regardless, so the line rides free.
+  if (contextUsage) sections.push(buildContextWindowSection(contextUsage))
 
   // Early-stop continuation directive (2026-10-08): armed by stream-runner's
   // guard for exactly one request. Volatile by nature — present only on nudge
@@ -506,6 +519,19 @@ function buildClockSection(): string {
   const date = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`
   const time = `${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')}`
   return `## Current Date\n- Date: ${date} ${time} ${Intl.DateTimeFormat().resolvedOptions().timeZone}`
+}
+
+/**
+ * The context-window gauge. Numbers are the engine's OWN estimate (the same
+ * `contextTokens()` guard ③ of context_compact enforces), so what the model
+ * sees is exactly what decides its call: below 55% a call is refused, the
+ * force target is 0.6×. Exported for the section's math pins.
+ */
+export function buildContextWindowSection(usage: { tokens: number; window: number }): string {
+  const pct = Math.min(100, Math.max(0, Math.round((usage.tokens / usage.window) * 100)))
+  const k = (n: number): string => `${Math.round(n / 1000)}K`
+  return `## Context Window
+- ~${pct}% used (~${k(usage.tokens)} / ${k(usage.window)} tokens). A context_compact call is refused below 55%; near that line, a phase boundary is the moment to call it with a handover note.`
 }
 
 function buildPageSection(pageContext?: AgentEngineOptions['pageContext']): string | null {

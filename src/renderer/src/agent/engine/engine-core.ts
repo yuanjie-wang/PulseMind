@@ -44,6 +44,14 @@ export interface EngineCore {
   opts: AgentEngineOptions
   abortController: AbortController | null
   currentRequestId: string | null
+  /** True only while continueLoop is inside prepareLoopRequest — the build
+   *  phase where compaction may await its history-summary LLM call. That call
+   *  rides the same retrying transport as a live request (20 attempts, each
+   *  with the 120s connect timeout) but arms NO currentRequestId, so the
+   *  sub-agent watchdog reads the phase as "no in-flight request" and would
+   *  settle a healthy engine past 10 quiet minutes (slow-gateway/Windows
+   *  reports). The watchdog counts this flag as in-flight work. */
+  prepareLoopInProgress: boolean
   /** Request ids this engine aborted while freezing/stopping (pauseExecution /
    *  stopExecution / prepareTurn). The stream-runner's catch must consult this
    *  SET, not the mutable `isCancelled`: a resume that lands between the abort

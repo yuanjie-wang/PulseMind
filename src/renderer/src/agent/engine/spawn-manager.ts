@@ -252,7 +252,14 @@ export function attachSubConversationSaver(
  *  settle signature cannot fire on legitimate work: a long tool run holds
  *  pendingToolIds, a long request holds currentRequestId (main-side retry
  *  sleeps included), and every other phase reports progress or grows
- *  messages. After SUB_WATCHDOG_STALL of neither, settle the spawn as an
+ *  messages. In-flight phases count as ALIVE, not merely exempt — the clock
+ *  refreshes while they run, so a >stallMs stretch of legitimate work (retry
+ *  stacking, a slow round) leaves no accrued debt behind when it ends and one
+ *  tick can no longer land in the post-work gap to settle a healthy engine
+ *  (the review_20261001 中1 shape, generalized off the frozen case).
+ *  prepareLoopInProgress covers the build phase, where the compaction
+ *  summary call awaits the same retrying transport with no currentRequestId
+ *  armed. After SUB_WATCHDOG_STALL of neither, settle the spawn as an
  *  error so the envelope reaches the parent, the slots free up and the
  *  scheduler moves on; the zombie engine is frozen so a late-resolving await
  *  cannot revive it invisibly. A frozen engine (pauseExecution's
@@ -281,13 +288,19 @@ export function attachSubAgentWatchdog(
     if (engine.isCancelled) {
       // 冻结期（pauseExecution 的 awaiting_continue）= 人为监护中，停摆债不
       // 累积：钟随 tick 刷新。否则冻结 ≥ stallMs 后旧债满额，解冻到新请求挂上
-      // currentRequestId 之间的异步间隙被一个 tick 命中就会把健康专家误结算
+      // 之间的异步间隙被一个 tick 命中就会把健康专家误结算
       // 为卡死（review_20261001 中1）。结算路径里的 isCancelled 卫兵语义不变。
       lastLiveness = Date.now()
       return
     }
+    // 在途（请求 / 工具 / 请求构建期）计活而非仅豁免：钟随 tick 刷新，一段
+    // 超过 stallMs 的合法在途（主侧重试堆叠、慢请求、构建期的压缩摘要调用）
+    // 结束后不留旧债，收尾间隙不再有 tick 能命中满额钟把健康专家误结算。
+    if (engine.pendingToolIds.size > 0 || engine.currentRequestId || engine.prepareLoopInProgress) {
+      lastLiveness = Date.now()
+      return
+    }
     if (Date.now() - lastLiveness < stallMs) return
-    if (engine.pendingToolIds.size > 0 || engine.currentRequestId) return
     console.error(`[SpawnManager] sub-agent ${subConvId} stalled ${Math.round(stallMs / 60_000)}min with no in-flight request, no pending tools and no progress — settling as error`)
     engine.isCancelled = true
     engine.abortController?.abort()

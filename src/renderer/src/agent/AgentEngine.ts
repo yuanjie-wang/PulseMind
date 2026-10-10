@@ -342,6 +342,10 @@ export class AgentEngine implements EngineCore {
   isAutoExecuting = false
   /** @internal */
   currentRequestId: string | null = null
+  /** @internal True while continueLoop awaits prepareLoopRequest — the request
+   *  build phase (compaction summary included) the watchdog must count as
+   *  in-flight. See EngineCore.prepareLoopInProgress. */
+  prepareLoopInProgress = false
   /** Maps MCP tool name → MCP server ID for routing */
   /** @internal */
   mcpToolOwner = new Map<string, string>()
@@ -1093,8 +1097,15 @@ export class AgentEngine implements EngineCore {
     }
 
     this.requestStartTime = performance.now()
+    // The build phase is watchdog-visible in-flight work: prepareLoopRequest's
+    // compaction can await the history-summary LLM call, which retries through
+    // the main transport (20 attempts) while currentRequestId is still null.
+    // Cleared inline after the build AND in finally (a build throw must still
+    // reach the catch below as an error settle, not an invisible escape).
+    this.prepareLoopInProgress = true
     try {
       const req = await this.prepareLoopRequest(opts)
+      this.prepareLoopInProgress = false
       await this.runLlmStream(opts, req)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
@@ -1106,6 +1117,8 @@ export class AgentEngine implements EngineCore {
       // Turn-end memory salvage (error path — the pairs are still in memory).
       runTurnEndMemoryExtraction(this)
       this.resolveCompletionIfSpawned('error')
+    } finally {
+      this.prepareLoopInProgress = false
     }
   }
 
@@ -1150,12 +1163,17 @@ export class AgentEngine implements EngineCore {
       summon: this.summon,
       toolProtocols,
       continuationNudge,
+      // The gauge rides the same estimate the compaction guard enforces —
+      // not the UI ring's wire anchor — so a refusal is predictable from the
+      // number the model sees (user 2026-10-10).
+      contextUsage: { tokens: this.compactor.contextTokens(), window: this.opts.contextLength || 128_000 },
     })
     const systemPrompt = spResult.systemPrompt
-    // The state block is rebuilt per request (never persisted, never rendered) so
-    // memory saved this turn is visible on the next call instead of waiting for a
-    // cache TTL — and, because it is not part of `messages`, the append-only
-    // history keeps its bytes.
+    // The state block is rebuilt per request (never persisted, never rendered)
+    // so per-turn values — plan graph, workspace, the context gauge — are
+    // always current. Resident memory is NOT here anymore (2026-09-26: it
+    // moved into the frozen core behind the double-TTL snapshot); the
+    // append-only history keeps its bytes because the block is not part of it.
     const stateBlock: AgentMessage | null = spResult.stateBlock
       ? {
           id: generateMsgId(),
@@ -1604,7 +1622,14 @@ export class AgentEngine implements EngineCore {
     const offloadDest = `~/.pulsemind/tmp/trunc/trunc_${toolUseId.slice(0, 8)}_${Date.now()}.txt`
     const { text, truncated } = applyToolResultBudget(content, isError, budget, offloadDest)
     if (truncated) {
-      getHost().writeFile({ filePath: offloadDest, content }).catch(() => {})
+      // The marker in `text` promises the file — a failed write must leave a
+      // trace, or a guard regression looks exactly like "the file isn't there"
+      // with the model chasing a dead read-back. (The offload dir is a sanctioned
+      // guard root — see main/sandbox/guard.ts — so success is the norm.)
+      getHost().writeFile({ filePath: offloadDest, content }).then(
+        (r) => { if (r && !r.success) console.warn(`[AgentEngine] truncation offload denied for ${offloadDest}: ${r.error ?? 'unknown'}`) },
+        (err) => { console.warn(`[AgentEngine] truncation offload failed for ${offloadDest}:`, err) }
+      )
     }
 
     // Guard against duplicate

@@ -27,6 +27,7 @@ function makeFakeEngine(overrides: Partial<Record<string, unknown>> = {}) {
     messages: [msg('m1'), msg('m2')] as AgentMessage[],
     pendingToolIds: new Set<string>(),
     currentRequestId: null as string | null,
+    prepareLoopInProgress: false,
     isCancelled: false,
     abortController: null as AbortController | null,
     agentStatus: { status: 'executing' } as { status: string; error?: string },
@@ -73,6 +74,38 @@ describe('sub-agent stall watchdog', () => {
     attachSubAgentWatchdog(engine, 'sub_x', { intervalMs: 1_000, stallMs: 5_000 })
     await vi.advanceTimersByTimeAsync(20_000)
     expect(engine.resolveCompletionIfSpawned).not.toHaveBeenCalled()
+  })
+
+  it('does not settle while the request-build phase runs (compaction summary has no request id)', async () => {
+    // prepareLoopRequest's history-summary call retries through the main
+    // transport (20 attempts × connect timeout) while currentRequestId is
+    // still null — the phase the Windows slow-gateway reports died in.
+    const engine = makeFakeEngine({ prepareLoopInProgress: true })
+    attachSubAgentWatchdog(engine, 'sub_x', { intervalMs: 1_000, stallMs: 5_000 })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(engine.resolveCompletionIfSpawned).not.toHaveBeenCalled()
+    // and the build ending hands the engine a FRESH clock, not a full debt
+    engine.prepareLoopInProgress = false
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(engine.resolveCompletionIfSpawned).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(engine.resolveCompletionIfSpawned).toHaveBeenCalledWith('error')
+  })
+
+  it('a >stallMs in-flight stretch leaves no debt behind — the post-request gap is not mis-settled', async () => {
+    // The old shape: in-flight ticks merely exempted (no refresh), so a request
+    // running past stallMs pre-charged the debt and the first tick after it
+    // settled (request cleared, next round not yet attached) killed a healthy
+    // engine. In-flight now counts as alive, same as the frozen case above.
+    const engine = makeFakeEngine({ currentRequestId: 'api_1' })
+    attachSubAgentWatchdog(engine, 'sub_x', { intervalMs: 1_000, stallMs: 5_000 })
+    await vi.advanceTimersByTimeAsync(60_000) // the request outlives the stall window
+    engine.currentRequestId = null // it ends; the async gap before the next round
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(engine.resolveCompletionIfSpawned).not.toHaveBeenCalled()
+    // a REAL post-gap stall still settles — the clock genuinely restarted
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(engine.resolveCompletionIfSpawned).toHaveBeenCalledWith('error')
   })
 
   it('does not settle while progress keeps reporting', async () => {
