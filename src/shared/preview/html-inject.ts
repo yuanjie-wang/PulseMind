@@ -65,3 +65,34 @@ export function withPickerNonce(pickerScript: string, nonce: string | undefined)
 export function buildPreviewCopy(html: string, pickerScript: string, nonce?: string): string {
   return injectPickerScript(stripCspMeta(html), withPickerNonce(pickerScript, nonce))
 }
+
+// ── HTML artifact card document (PLAN-html-card; chat + extension panel) ──
+
+/** A full HTML document the model wrote as a page, not a fragment. */
+export const HTML_ARTIFACT_FULL_DOCUMENT = /<!doctype html|<html[\s>]/i
+
+/** The script a FRAGMENT gets wrapped with: reports the document's scrollHeight
+ *  to the card (message type is namespaced and source-checked card-side, so a
+ *  hostile fragment can only move the card it lives in). Shared verbatim by the
+ *  desktop card and the extension panel — the frame must report height the same
+ *  way on both surfaces. */
+export const HTML_CARD_MEASURE_SCRIPT = `<script>(function(){var s=function(){try{parent.postMessage({type:'pm-html-card-height',height:Math.ceil(document.documentElement.scrollHeight)},'*')}catch(e){}};window.addEventListener('load',s);document.addEventListener('DOMContentLoaded',s);window.addEventListener('resize',s);if('ResizeObserver' in window){new ResizeObserver(s).observe(document.documentElement)}s()})()</script>`
+
+/** Build the frame's document. Both shapes report height: fragments get a
+ *  zero-margin shell carrying the measure script; full documents keep their
+ *  markup and get the script injected before the last </body> (appended when
+ *  the page omits it — the parser hoists it into body either way). Both get
+ *  the meta CSP stripped first — local-file and srcdoc frames alike take their
+ *  only CSP from the document itself, and a strict one would kill the model's
+ *  own inline scripts AND the measure script (height back to the default,
+ *  clipped). */
+export function buildCardDocument(code: string): string {
+  if (HTML_ARTIFACT_FULL_DOCUMENT.test(code)) return injectBeforeBodyClose(stripCspMeta(code), HTML_CARD_MEASURE_SCRIPT)
+  return [
+    '<!doctype html><html><head><meta charset="utf-8">',
+    '<style>html,body{margin:0;padding:0}</style></head><body>',
+    stripCspMeta(code),
+    HTML_CARD_MEASURE_SCRIPT,
+    '</body></html>',
+  ].join('')
+}

@@ -16,6 +16,7 @@ describe('html artifact card wiring', () => {
   const codeBlock = read('src/renderer/src/components/chat/CodeBlock.tsx')
   const card = read('src/renderer/src/components/chat/HtmlArtifactCard.tsx')
   const prompt = read('src/renderer/src/agent/system-prompt-builder.ts')
+  const SHARED = read('src/shared/preview/html-inject.ts')
 
   it('CodeBlock dispatches html fences to the card BEFORE the highlighter', () => {
     expect(codeBlock).toContain('isHtmlFenceLang(lang)')
@@ -34,9 +35,14 @@ describe('html artifact card wiring', () => {
 
   it('fragments AND full documents get the height reporter; meta CSP is stripped off the served copy', () => {
     expect(card).toContain('pm-html-card-height')
-    expect(card).toContain('FULL_DOCUMENT')
-    expect(card).toContain('stripCspMeta')
-    expect(card).toContain('injectBeforeBodyClose')
+    // buildCardDocument (with the full-document test, the measure script and
+    // the meta-CSP strip) lives in shared/preview/html-inject — the extension
+    // panel builds the same frame document and may not import this file.
+    expect(card).toContain("from '../../../../shared/preview/html-inject'")
+    expect(SHARED).toContain('HTML_ARTIFACT_FULL_DOCUMENT')
+    expect(SHARED).toContain('pm-html-card-height')
+    expect(SHARED).toContain('stripCspMeta')
+    expect(SHARED).toContain('injectBeforeBodyClose')
   })
 
   it('the chrome is hover-only and floats OUTSIDE the card (2026-10-09 ruling)', () => {
@@ -60,6 +66,16 @@ describe('html artifact card wiring', () => {
     // edge leaves no headroom, the chrome moves INSIDE the card's top corners.
     expect(card).toContain('.pm-html-card-flip .pm-html-card-float { bottom: auto; top: 6px; }')
     expect(card).toContain('CHROME_FLIP_HEADROOM_PX')
+    // The decision is re-measured while the chrome is up (review 2026-10-10
+    // 中6): scrolling under a stationary pointer fires no mouseenter, so a
+    // hover-time-only measurement goes stale the moment the wheel drifts the
+    // card toward the scroller's top edge — the exact occlusion returning.
+    // Capture phase, because scroll doesn't bubble and the scroller is an
+    // ancestor; gated on chromeOn, because the listeners are hover-scoped.
+    expect(card).toContain('measureChromeFlip()')
+    expect(card).toContain("window.addEventListener('scroll', measureChromeFlip, true)")
+    expect(card).toContain("window.addEventListener('resize', measureChromeFlip)")
+    expect(card).toMatch(/if \(!chromeOn\) return/)
   })
 
   it('the invariant core teaches the ```html card convention, after Render Reference', () => {

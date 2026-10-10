@@ -71,7 +71,13 @@ import { ChromeOutlined, CopyOutlined, ExpandOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { createTextThrottle } from './stream-throttle'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
-import { injectBeforeBodyClose, stripCspMeta } from '../../../../shared/preview/html-inject'
+import { buildCardDocument } from '../../../../shared/preview/html-inject'
+
+// buildCardDocument (with the measure script and the full-document test) moved
+// to shared/preview/html-inject — the extension panel's card builds the same
+// frame document, and the panel may not import this file (it would drag antd
+// into the content-script bundle). Re-exported here for the existing tests.
+export { buildCardDocument }
 
 const CARD_MIN_HEIGHT = 120
 const CARD_MAX_HEIGHT = 800
@@ -100,9 +106,6 @@ const useFrameLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : u
  *  (browser) from the srcdoc fallback (everything else). */
 const CAN_PERSIST = typeof window !== 'undefined' && typeof window.electronAPI?.writeFile === 'function'
 
-/** A full HTML document the model wrote as a page, not a fragment. */
-const FULL_DOCUMENT = /<!doctype html|<html[\s>]/i
-
 /** The fence's language field selects the card: `html`, case-insensitive, and
  *  an info string's leading word (`html hl_lines` etc.) — mirroring how
  *  resolveCodeLang ignores fence parameters. */
@@ -119,27 +122,6 @@ export function hashText(text: string): string {
     h = Math.imul(h, 0x01000193)
   }
   return `${(h >>> 0).toString(16)}-${text.length.toString(16)}`
-}
-
-/** The script a FRAGMENT gets wrapped with: reports the document's scrollHeight
- *  to the card (message type is namespaced and source-checked card-side, so a
- *  hostile fragment can only move the card it lives in). */
-const MEASURE_SCRIPT = `<script>(function(){var s=function(){try{parent.postMessage({type:'pm-html-card-height',height:Math.ceil(document.documentElement.scrollHeight)},'*')}catch(e){}};window.addEventListener('load',s);document.addEventListener('DOMContentLoaded',s);window.addEventListener('resize',s);if('ResizeObserver' in window){new ResizeObserver(s).observe(document.documentElement)}s()})()</script>`
-
-/** Build the frame's document. Both shapes report height: fragments get a
- *  zero-margin shell carrying the measure script; full documents keep their
- *  markup and get the script injected before the last </body> (appended when
- *  the page omits it — the parser hoists it into body either way). Both get
- *  the meta CSP stripped first (header comment). */
-export function buildCardDocument(code: string): string {
-  if (FULL_DOCUMENT.test(code)) return injectBeforeBodyClose(stripCspMeta(code), MEASURE_SCRIPT)
-  return [
-    '<!doctype html><html><head><meta charset="utf-8">',
-    '<style>html,body{margin:0;padding:0}</style></head><body>',
-    stripCspMeta(code),
-    MEASURE_SCRIPT,
-    '</body></html>',
-  ].join('')
 }
 
 /** Write `content` to the content-addressed tmp html-cards dir and return the
@@ -231,30 +213,49 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   const [chromeFlipped, setChromeFlipped] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const chromeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Per-hover room check: the outside toolbar needs CHROME_FLIP_HEADROOM_PX
+   *  above the card, and every clipping/scrolling ancestor's top edge (the
+   *  transcript scroller) cuts what crosses it — inside corners when tight.
+   *  Also the LIVE re-measure while the chrome is up: scrolling under a
+   *  stationary pointer (the wheel over the card fires no mouseenter) drifts
+   *  the card toward the scroller's top edge and strands a hover-time
+   *  decision — the stale outside toolbar gets clipped, the exact occlusion
+   *  the flip exists to avoid. Same-value setState bails, so settled wheel
+   *  ticks cost no re-render. */
+  const measureChromeFlip = useCallback(() => {
+    const root = rootRef.current
+    if (!root) return
+    let limit = 0
+    let node: HTMLElement | null = root.parentElement
+    while (node) {
+      if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(node).overflowY)) {
+        limit = Math.max(limit, node.getBoundingClientRect().top + node.clientTop)
+      }
+      node = node.parentElement
+    }
+    setChromeFlipped(root.getBoundingClientRect().top - limit < CHROME_FLIP_HEADROOM_PX)
+  }, [])
   const chromeEnter = useCallback(() => {
     if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current)
     chromeTimerRef.current = null
-    // Per-hover room check: the outside toolbar needs CHROME_FLIP_HEADROOM_PX
-    // above the card, and every clipping/scrolling ancestor's top edge (the
-    // transcript scroller) cuts what crosses it — inside corners when tight.
-    const root = rootRef.current
-    if (root) {
-      let limit = 0
-      let node: HTMLElement | null = root.parentElement
-      while (node) {
-        if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(node).overflowY)) {
-          limit = Math.max(limit, node.getBoundingClientRect().top + node.clientTop)
-        }
-        node = node.parentElement
-      }
-      setChromeFlipped(root.getBoundingClientRect().top - limit < CHROME_FLIP_HEADROOM_PX)
-    }
+    measureChromeFlip()
     setChromeOn(true)
-  }, [])
+  }, [measureChromeFlip])
   const chromeLeave = useCallback(() => {
     if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current)
     chromeTimerRef.current = setTimeout(() => setChromeOn(false), CHROME_LEAVE_GRACE_MS)
   }, [])
+  // Capture-phase scroll: scroll events don't bubble, and the scroller is an
+  // ancestor of the card.
+  useEffect(() => {
+    if (!chromeOn) return
+    window.addEventListener('scroll', measureChromeFlip, true)
+    window.addEventListener('resize', measureChromeFlip)
+    return () => {
+      window.removeEventListener('scroll', measureChromeFlip, true)
+      window.removeEventListener('resize', measureChromeFlip)
+    }
+  }, [chromeOn, measureChromeFlip])
   useEffect(
     () => () => {
       if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current)
