@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   BUS_Y,
+  BUS_LANE_STEP,
   CHANNEL,
   GAP_X,
   GAP_Y,
@@ -266,5 +267,32 @@ describe('layoutPlanGraph', () => {
       expect(rail).toBeLessThanOrEqual(hDst.x - CHANNEL)
     }
     expect(new Set(hRails).size).toBe(4)
+  })
+})
+
+describe('layoutPlanGraph — bus-lane reservation counts the anchor edges too (full_20261011 M12-P1-2)', () => {
+  it('every over edge rides BELOW the first card row, early terminals included', () => {
+    // n4 is an entry AND a terminal in wave 0: its 结束 anchor edge spans
+    // waves, so it claims a bus lane — a lane the dependency-only count never
+    // reserved, which let the bus cross the first card row.
+    const plan = createPlanDag('ship', [
+      { description: 'a' },
+      { description: 'b', dependsOn: [1] },
+      { description: 'c', dependsOn: [2] },
+      { description: 'd' },
+    ])
+    const layout = layoutPlanGraph(plan)
+    const cards = layout.nodes.filter(n => !n.id.startsWith('__'))
+    const minCardY = Math.min(...cards.map(n => n.y))
+    const overEdges = layout.edges.filter(e => e.kind === 'over')
+    // d→结束 is over (wave 0 → last); n1→n3 (wave 0 → wave 2) may also be over.
+    expect(overEdges.map(e => `${e.from}->${e.to}`)).toContain('n4->__end__')
+    // The reservation invariant: lanePad (min card y) clears the LAST lane.
+    expect(minCardY).toBeGreaterThanOrEqual(BUS_Y + overEdges.length * BUS_LANE_STEP + 12)
+    for (const e of overEdges) {
+      const ys = [...e.path.matchAll(/ (-?[\d.]+) (-?[\d.]+)/g)].map(m => Number(m[2]))
+      const busY = Math.min(...ys)
+      expect(busY, `${e.from}->${e.to} bus ${busY} vs top card ${minCardY}`).toBeLessThan(minCardY)
+    }
   })
 })

@@ -270,4 +270,48 @@ describe('void-element structural fallback', () => {
     expect(r.reason).toContain('2 个 <img>')
     expect(r.reason).not.toBe(GENERATED_ELEMENT_REASON)
   })
+
+  it('a direct hit on a WRONG TWIN is gated by the skeleton too (full_20261011 M12-P0-4)', () => {
+    // The page injected an img BEFORE #a, shifting every live index up: the
+    // user clicks live img#2 (= disk #a), and the live path resolves on disk
+    // to #b — the direct hit used to be BLESSED because a void element has no
+    // text hint to disagree with. The skeleton sees two same-tag candidates
+    // under the same ancestor chain and refuses instead of patching the twin.
+    const two = SRC.replace('<img id="shot" src="a.png">', '<img id="a" src="a.png"><img id="b" src="b.png">')
+    const drifted = resolveElementSmart(two, {
+      pmPath: 'html>body:nth-child(2)>div:nth-child(1)>img:nth-child(2)',
+      tag: 'img',
+      text: '',
+    })
+    expect(drifted.ok).toBe(false)
+    if (drifted.ok) return
+    expect(drifted.reason).toContain('2 个 <img>')
+    // …while a UNIQUE void element still resolves through the same gate (the
+    // direct hit and the skeleton candidate are the same element):
+    const unique = resolveElementSmart(SRC, {
+      pmPath: 'html>body:nth-child(2)>div:nth-child(1)>img:nth-child(1)',
+      tag: 'img',
+      text: '',
+    })
+    expect(unique.ok).toBe(true)
+    if (!unique.ok) return
+    expect(unique.location.attributes['id']).toBe('shot')
+  })
+})
+
+describe('quote-aware tag stripping (full_20261011 M12-P1-1)', () => {
+  it('an attribute value containing > no longer poisons the text comparison', () => {
+    // `onclick="a>b"` closed the old `/<[^>]*>/` early, leaving `b">` in the
+    // "text" — the static element was then reported as runtime-generated.
+    const SRC = '<html>\n<body>\n<button id="go" onclick="if(a>b)go()">提交订单</button>\n</body>\n</html>'
+    const r = resolveElementSmart(SRC, {
+      pmPath: 'html>body:nth-child(2)>button:nth-child(1)',
+      tag: 'button',
+      text: '提交订单',
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.matchedBy).toBe('path')
+    expect(r.location.attributes['id']).toBe('go')
+  })
 })

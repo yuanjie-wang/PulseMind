@@ -93,16 +93,25 @@ export function layoutPlanGraph(plan: Plan, direction: GraphDirection = 'horizon
   const waveOf = new Map<string, number>()
   waves.forEach((wave, wi) => { for (const n of wave) waveOf.set(n.id, wi) })
 
-  const lanesFor = new Map<string, number>()
+  // Bus-lane reservation must count the SAME edge set that will allocate
+  // lanes below (full_20261011 M12-P1-2): the terminal→结 end anchor drains
+  // from ANY wave, so a plan whose branch ends early rides its own lane — an
+  // edge a dependency-only count never saw, and the bus then crossed the
+  // first card row. Both counts are wave facts, so they are computable from
+  // waveOf alone before placement (the anchor edges' adjacency is decided by
+  // src.wave vs dst.wave−1, exactly as the spec loop below judges it).
+  const dependedOn = new Set(plan.nodes.flatMap(n => n.dependsOn))
   let totalLanes = 0
   for (const node of plan.nodes) {
     const nodeWave = waveOf.get(node.id)
     for (const depId of node.dependsOn) {
       const depWave = waveOf.get(depId)
       if (depWave !== undefined && nodeWave !== undefined && depWave !== nodeWave - 1) {
-        lanesFor.set(node.id, (lanesFor.get(node.id) ?? 0) + 1)
         totalLanes += 1
       }
+    }
+    if (!dependedOn.has(node.id) && nodeWave !== undefined && nodeWave !== waves.length - 1) {
+      totalLanes += 1
     }
   }
   // Bus lanes sit on the cross− side of the grid; the grid shifts to clear them.
@@ -152,7 +161,6 @@ export function layoutPlanGraph(plan: Plan, direction: GraphDirection = 'horizon
   })
   const pos = new Map(nodes.map(n => [n.id, n]))
 
-  const dependedOn = new Set(plan.nodes.flatMap(n => n.dependsOn))
   const entryIds = new Set(plan.nodes.filter(n => n.dependsOn.length === 0).map(n => n.id))
   const entries = nodes.filter(n => entryIds.has(n.id))
   const terminals = nodes.filter(n => !dependedOn.has(n.id))

@@ -166,12 +166,20 @@ function normalizeText(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
+/** Quote-aware tag stripper (full_20261011 M12-P1-1): `/<[^>]*>/` closed at
+ *  the FIRST `>`, so an attribute value containing one (`onclick="a>b"`,
+ *  `style="content:'>'"`) left tag fragments inside the "text" — static
+ *  elements then failed the text comparison and were reported as
+ *  「由页面脚本运行时生成」. Inside "…"/'…' a `>` is an ordinary character. */
+function stripTagsLoose(html: string): string {
+  return html.replace(/<(?:"[^"]*"|'[^']*'|[^>"'])*>/g, '')
+}
+
 /** Comparison-only decode (mirror of patch.ts's verification decoder — kept
  *  local because patch.ts imports this module). */
 function comparisonText(html: string): string {
   return normalizeText(
-    html
-      .replace(/<[^>]*>/g, '')
+    stripTagsLoose(html)
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
@@ -203,6 +211,50 @@ export interface SmartSelection {
  *  see them). */
 const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'])
 
+/** Void-element structural resolver (2026-10-10; direct-hit gate since
+ *  full_20261011 M12-P0-4): <img>/<br>/<hr>/<input> & co. have no endTag and
+ *  no inner text, so the text-anchored match can never see them. Match by
+ *  tag instead, disambiguated by the pmPath's ancestor TAG chain: a script
+ *  inserting siblings shifts every INDEX but no tag name, so ancestor-tag
+ *  agreement survives exactly the drift that breaks the direct path. Unique
+ *  agreement only — patching the wrong twin is data corruption, same
+ *  discipline as the text match. Returns null when not applicable (hint
+ *  present, or the tag is not void); an ambiguity is an honest ok:false, not
+ *  a guess. */
+function resolveVoidBySkeleton(html: string, selection: SmartSelection): SmartResolveResult | null {
+  if (selection.text.trim() || !VOID_TAGS.has(selection.tag)) return null
+  let tree
+  try {
+    tree = parse(html, { sourceCodeLocationInfo: true })
+  } catch (err) {
+    return { ok: false, reason: `HTML 解析失败: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  const segments = parsePmPath(selection.pmPath)
+  const ancestorTags = segments && segments.length > 1 ? segments.slice(0, -1).map((s) => s.tag) : null
+  const candidates: P5Element[][] = []
+  const walk = (node: P5ParentNode, chain: P5Element[]): void => {
+    for (const child of elementChildren(node)) {
+      const nextChain = [...chain, child]
+      if (child.tagName === selection.tag && child.sourceCodeLocation?.startTag) {
+        if (!ancestorTags || nextChain.slice(0, -1).map((n) => n.tagName).join('>') === ancestorTags.join('>')) {
+          candidates.push(nextChain)
+        }
+      }
+      walk(child, nextChain)
+    }
+  }
+  walk(tree as unknown as P5ParentNode, [])
+  if (candidates.length === 1) {
+    const chain = candidates[0]
+    const el = chain[chain.length - 1]
+    return { ok: true, location: buildLocation(el, chain), matchedBy: 'content', sourcePmPath: pmPathOfChain(chain) }
+  }
+  if (candidates.length > 1) {
+    return { ok: false, reason: `源码中有 ${candidates.length} 个 <${selection.tag}> 元素与所选元素的路径骨架一致，无法唯一定位（元素没有可匹配的文本）。请改用 AI 修改或编辑源码中的其他静态元素` }
+  }
+  return { ok: false, reason: GENERATED_ELEMENT_REASON }
+}
+
 /** Resolve the selected element against the disk text: exact pmPath first
  *  (verified against the picker's text hint — H9), then a unique tag+text
  *  match. Never guesses between duplicates. */
@@ -212,7 +264,19 @@ export function resolveElementSmart(html: string, selection: SmartSelection): Sm
   const capped = selection.text.trim().length >= 400
   const direct = resolveElement(html, selection.pmPath)
   if (direct.ok) {
-    if (!hint) return { ok: true, location: direct.location, matchedBy: 'path', sourcePmPath: selection.pmPath }
+    if (!hint) {
+      // A void element has NO comparable text, so a direct hit cannot be
+      // verified against anything — and a script-inserted sibling shifts
+      // every pmPath index onto a same-tag twin. The skeleton check (ancestor
+      // tag chain, UNIQUE agreement) is therefore not just the fallback for a
+      // FAILED direct resolve: it is the only verification a void element can
+      // have, so it gates the direct hit too (full_20261011 M12-P0-4 —
+      // patching the wrong twin is data corruption, same discipline as the
+      // text match). Non-void no-hint elements keep the plain path blessing.
+      const bySkeleton = resolveVoidBySkeleton(html, selection)
+      if (bySkeleton) return bySkeleton
+      return { ok: true, location: direct.location, matchedBy: 'path', sourcePmPath: selection.pmPath }
+    }
     // The pmPath indexes were built in the LIVE served DOM; a page script that
     // inserted or removed a sibling shifts every later index, and the walk can
     // land on a same-tag sibling of a template card list — patching the wrong
@@ -230,49 +294,13 @@ export function resolveElementSmart(html: string, selection: SmartSelection): Sm
     if (direct.reason.startsWith('HTML 解析失败')) return { ok: false, reason: direct.reason }
   }
 
-  // Void-element structural fallback (2026-10-10): <img>/<br>/<hr>/<input> & co.
-  // have no endTag and no inner text, so the content match below can never fire
-  // for them (it requires sl.startTag && sl.endTag, and the hint is '' anyway)
-  // — a script-shifted pmPath used to report 「该元素不在文件源码中」 for an
-  // element that IS in the source. Match by tag instead, disambiguated by the
-  // pmPath's ancestor TAG chain: a script inserting siblings shifts every
-  // INDEX but no tag name, so ancestor-tag agreement survives exactly the
-  // drift that breaks the direct path. Unique agreement only — patching the
-  // wrong twin is data corruption, same discipline as the text match.
-  if (!hint && VOID_TAGS.has(selection.tag)) {
-    let tree
-    try {
-      tree = parse(html, { sourceCodeLocationInfo: true })
-    } catch (err) {
-      return { ok: false, reason: `HTML 解析失败: ${err instanceof Error ? err.message : String(err)}` }
-    }
-    const segments = parsePmPath(selection.pmPath)
-    const ancestorTags = segments && segments.length > 1 ? segments.slice(0, -1).map((s) => s.tag) : null
-    const candidates: P5Element[][] = []
-    const walk = (node: P5ParentNode, chain: P5Element[]): void => {
-      for (const child of elementChildren(node)) {
-        const nextChain = [...chain, child]
-        if (child.tagName === selection.tag && child.sourceCodeLocation?.startTag) {
-          if (!ancestorTags || nextChain.slice(0, -1).map((n) => n.tagName).join('>') === ancestorTags.join('>')) {
-            candidates.push(nextChain)
-          }
-        }
-        walk(child, nextChain)
-      }
-    }
-    walk(tree as unknown as P5ParentNode, [])
-    if (candidates.length === 1) {
-      const chain = candidates[0]
-      const el = chain[chain.length - 1]
-      return { ok: true, location: buildLocation(el, chain), matchedBy: 'content', sourcePmPath: pmPathOfChain(chain) }
-    }
-    if (candidates.length > 1) {
-      return { ok: false, reason: `源码中有 ${candidates.length} 个 <${selection.tag}> 元素与所选元素的路径骨架一致，无法唯一定位（元素没有可匹配的文本）。请改用 AI 修改或编辑源码中的其他静态元素` }
-    }
+  if (!hint) {
+    // Void-element structural fallback (2026-10-10) — see resolveVoidBySkeleton:
+    // without a hint the content match below can never fire for a void tag.
+    const bySkeleton = resolveVoidBySkeleton(html, selection)
+    if (bySkeleton) return bySkeleton
     return { ok: false, reason: GENERATED_ELEMENT_REASON }
   }
-
-  if (!hint) return { ok: false, reason: GENERATED_ELEMENT_REASON }
   let tree
   try {
     tree = parse(html, { sourceCodeLocationInfo: true })

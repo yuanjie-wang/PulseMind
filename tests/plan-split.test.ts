@@ -154,6 +154,30 @@ describe('mergeSplitProposal: the node keeps working, children carry the remaind
     expect(plan.nodes[0].execution).toEqual({ attemptId: 'attempt_1', status: 'running' })
   })
 
+  it('rejects an out-of-range depends_on instead of minting a dangling dependency (full_20261011 M12-P0-3)', () => {
+    const { plan, attemptId } = diamondWithAttempt()
+    // 越界值曾把 childIds[d-1] 的 undefined 塞进 dependsOn（落盘成 null）：
+    // 节点既不 ready 也不 blocked、永不派发、计划永不收尾，而工具报成功。
+    for (const deps of [[0], [9], [3], [2]]) {
+      const result = mergeSplitProposal(plan, 1, attemptId, [
+        { description: 'A' },
+        { description: 'B', dependsOn: deps },
+      ])
+      expect(result.ok, JSON.stringify(deps)).toBe(false)
+      if (result.ok) return
+      expect(result.reason).toMatch(/out of range|itself|EARLIER/)
+    }
+    // 自引用同样拒绝（childIds[i] 指向自己，assertAcyclic 拦不到 undefined
+    // 但能拦自环——在闸这里就拦下，措辞可改正）。
+    const self = mergeSplitProposal(plan, 1, attemptId, [
+      { description: 'A', dependsOn: [1] },
+      { description: 'B' },
+    ])
+    expect(self.ok).toBe(false)
+    // …and a valid forward-only proposal still merges:
+    expect(mergeSplitProposal(plan, 1, attemptId, [{ description: 'A' }, { description: 'B', dependsOn: [1] }]).ok).toBe(true)
+  })
+
   it('rejects a stale attempt (CAS) and leaves the plan untouched', () => {
     const { plan } = diamondWithAttempt()
     const before = JSON.stringify(plan)

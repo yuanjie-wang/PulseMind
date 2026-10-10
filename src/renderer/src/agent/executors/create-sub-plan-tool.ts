@@ -36,6 +36,16 @@ export async function execCreateSubPlanTool(ex: ToolExecContext, t: ToolUseBlock
     const reason = String(t.input?.reason || '').trim() || undefined
     const bad = children.findIndex(c => !c.description || c.description.length > DESCRIPTION_MAX)
     if (bad !== -1) throw new Error(`sub-task ${bad + 1}: description must be 1–${DESCRIPTION_MAX} characters`)
+    // depends_on 与文本协议同规（full_20261011 M12-P0-3）：这里只产出可改正
+    // 的工具错误，闸本身设在 mergeSplitProposal（所有通道的汇合点）——越界值
+    // 曾变成悬空依赖：节点永不 ready/blocked，子任务静默丢失、计划永不收尾。
+    const badDep = children.findIndex((c, i) => (c.dependsOn ?? []).some(d =>
+      d === i + 1 || !Number.isInteger(d) || d < 1 || d > children.length || d > i + 1))
+    if (badDep !== -1) {
+      const c = children[badDep]
+      const d = (c.dependsOn ?? []).find(d => d === badDep + 1 || !Number.isInteger(d) || d < 1 || d > children.length || d > badDep + 1)
+      throw new Error(`sub-task ${badDep + 1}: depends_on ${d} is invalid — each depends_on must reference an EARLIER sub-task (1..${children.length}, 1-based, forward references only)`)
+    }
 
     const result = ex.createSubPlan?.(children, reason)
     if (!result) throw new Error('no parent plan channel — the bridge was not wired')

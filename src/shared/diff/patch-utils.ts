@@ -92,10 +92,25 @@ export function applyPatch(content: string, hunks: DiffHunk[]): { success: true;
     // The region is: [oldStart, oldStart + oldCount)
     const region = fileLines.slice(oldStart, oldStart + oldCount)
 
-    // Pure insertion (oldCount === 0 in diff header)
+    // Pure insertion (oldCount === 0 in diff header). An insertion used to
+    // splice on the raw line number with NO content check — a drifted number
+    // dropped the bytes somewhere else and still reported success, and the
+    // git-style `@@ -0,0 +1,K @@` computed oldStart = -1, which JS splice
+    // reads as "before the LAST line" (full_20261011 M12-P0-2, probe). Two
+    // rules close it: patch(1)'s own semantics for -0,0 is APPEND TO END
+    // (row 1 = before the first line), and any context lines the hunk
+    // carries must match at the target position — same discipline as the
+    // non-zero hunks below, miss goes through the same diagnosable error.
     if (hunk.oldCount === 0) {
+      const at = hunk.oldStart === 0
+        ? fileLines.length
+        : Math.min(Math.max(hunk.oldStart - 1, 0), fileLines.length)
+      const ctxLines = hunk.lines.filter(l => l.startsWith(' ')).map(l => l.slice(1))
+      if (ctxLines.length > 0 && ctxLines.some((l, k) => fileLines[at + k] !== l)) {
+        return { success: false, error: hunkMismatchError(hunk.oldStart, ctxLines, content) }
+      }
       const insertLines = hunk.lines.filter(l => l.startsWith('+')).map(l => l.slice(1))
-      fileLines.splice(oldStart, 0, ...insertLines)
+      fileLines.splice(at, 0, ...insertLines)
       continue
     }
 

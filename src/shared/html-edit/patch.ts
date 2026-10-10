@@ -228,9 +228,11 @@ export function decodedInnerText(html: string): string {
 }
 
 /** Crude tag stripper for the text-contains check — verification only; it
- *  never produces output that gets written. */
+ *  never produces output that gets written. Quote-aware (full_20261011
+ *  M12-P1-1, resolve.ts twin): a `>` inside an attribute value must not end
+ *  the tag early and leave fragments in the "text". */
 function stripTags(html: string): string {
-  return html.replace(/<[^>]*>/g, '')
+  return html.replace(/<(?:"[^"]*"|'[^']*'|[^>"'])*>/g, '')
 }
 
 /** Byte-span sanity: a Span must lie inside `html` and be well-ordered. */

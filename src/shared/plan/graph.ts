@@ -319,6 +319,22 @@ export function mergeSplitProposal(
     }
   }
 
+  // depends_on 范围闸（full_20261011 M12-P0-3）：d 是本提案内 1-based 的
+  // 子任务序号，越界/自引用曾把 childIds[d-1] 的 undefined 塞进 dependsOn
+  // （落盘后成 null）——节点既不 ready 也不 blocked、永不派发、计划永不
+  // 收尾，而工具照样报「Merged」。文本协议（validateSplitProposal）与
+  // create_plan 通道都有这道闸；这里是所有通道的汇合点，闸设在最汇合处。
+  // 措辞与两条兄弟通道同款，子代理可据此在循环内改正重试。
+  for (let ci = 0; ci < children.length; ci++) {
+    for (const d of children[ci]?.dependsOn ?? []) {
+      if (d === ci + 1) return { ok: false, reason: `sub-task ${ci + 1} depends on itself` }
+      if (!Number.isInteger(d) || d < 1 || d > children.length) {
+        return { ok: false, reason: `sub-task ${ci + 1}: dependency ${d} is out of range (1..${children.length})` }
+      }
+      if (d > ci + 1) return { ok: false, reason: `sub-task ${ci + 1}: dependency ${d} must reference an EARLIER sub-task (forward references only)` }
+    }
+  }
+
   // Append-only ids: continue after the highest number ever used.
   const nextNum = plan.nodes.reduce((max, n) => Math.max(max, nodeNumberOf(n)), 0) + 1
   const childIds = children.map((_, i) => `n${nextNum + i}`)
