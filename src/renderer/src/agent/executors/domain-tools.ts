@@ -9,6 +9,7 @@ import type { KnowledgeFile } from '../../../../shared/types/knowledge'
 import { EXPERIENCE_CATEGORIES, type ExperienceDraft, type ExperienceRecord } from '../../../../shared/types/experience-types'
 import { matchExperienceScript } from '../../../../shared/experience/script-usage'
 import { UI_PREVIEW_MAX, type ToolExecContext, type CompactToolOutcome } from './context'
+import { MEMORY_ENTRY_MAX_CHARS } from '../../../../shared/memory/limits'
 
 /** memory_search: tool block .output preview. */
 const MEMORY_PREVIEW_MAX = 2000
@@ -132,6 +133,14 @@ export async function execMemoryTool(ex: ToolExecContext, t: ToolUseBlock): Prom
     if (t.name === 'memory_save') {
       const mm = ex.opts.memoryManager; const content = String(t.input.content || '')
       if (!content.trim()) { ex.addToolResult(t.id, 'Nothing to save — content was empty.', true); t.exitCode = 1 }
+      else if (content.length > MEMORY_ENTRY_MAX_CHARS) {
+        // 结构性兜底与另两条写路径对齐（full_20261011 M7-P1-2/X7）：常驻区只
+        // 渲染 ≤100 字的条目，超限条目入库即「存了但永远看不见」——曾静默
+        // 收下还回传 Saved。拒绝并说明，让模型拆成一句结论重试。
+        t.output = `Too long: ${content.length} chars (max ${MEMORY_ENTRY_MAX_CHARS})`
+        ex.addToolResult(t.id, `NOT saved — ${content.length} characters exceeds the ${MEMORY_ENTRY_MAX_CHARS}-character limit for a single memory. Distill it into one concluding sentence and retry; long material belongs in an experience record or a project file.`, true)
+        t.exitCode = 1
+      }
       else {
         const type = (String(t.input.type || 'fact') as any); const cat = (String(t.input.category || 'general') as any)
         const entry = await mm!.saveMemory({ content, type, category: cat })

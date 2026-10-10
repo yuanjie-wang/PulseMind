@@ -428,7 +428,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
       properties: {
         content: {
           type: 'string',
-          description: 'The fact, decision, or preference to remember. Be specific and include context.',
+          description: 'The fact, decision, or preference to remember — ONE sentence, at most 100 characters (longer entries never show in the resident memory section).',
         },
         type: {
           type: 'string',

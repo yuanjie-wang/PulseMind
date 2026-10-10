@@ -45,7 +45,8 @@ export function saveMemory(id: string, content: string, type: string, category: 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         content = excluded.content, type = excluded.type,
-        category = excluded.category, updated_at = excluded.updated_at
+        category = excluded.category, updated_at = excluded.updated_at,
+        content_hash = excluded.content_hash
     `).run(id, content, type, category, source, now, now, contentHash)
 
     withFtsRecovery(() => {
@@ -63,7 +64,14 @@ export function updateMemory(id: string, data: { content?: string; type?: string
   const update = database.transaction(() => {
     const sets: string[] = ['updated_at = ?']
     const params: unknown[] = [now]
-    if (data.content !== undefined) { sets.push('content = ?'); params.push(data.content) }
+    // content_hash 与内容同写（full_20261011 M9-P1-1）：编辑曾只改 content、
+    // 留下陈旧 hash——此后 h(新内容) 查不到 → 同文重复入库；h(旧内容) 反而
+    // 命中 → saveMemory 把真实内容当重复静默丢弃。去重门以 hash 为准，
+    // hash 必须永远描述当前 content。
+    if (data.content !== undefined) {
+      sets.push('content = ?'); params.push(data.content)
+      sets.push('content_hash = ?'); params.push(memoryContentHash(data.content))
+    }
     if (data.type !== undefined) { sets.push('type = ?'); params.push(data.type) }
     if (data.category !== undefined) { sets.push('category = ?'); params.push(data.category) }
     params.push(id)

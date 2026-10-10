@@ -166,7 +166,8 @@ Search long-term memories by keyword. The "Extracted Memories" section in your c
 Save an important piece of information to long-term memory; it persists across sessions.
 
 ### Guidelines
-- Save when the user says "remember this" / "note that", when a preference is clearly stated, and for architectural decisions or important project context
+- Save when the user says "remember this" / "note that", or when a preference is clearly stated
+- ONE sentence, at most 100 characters: state the conclusion ("项目用 pnpm，测试跑 vitest"), not the reasoning — the resident memory section only shows entries this short, so a longer entry is saved but never displayed. Long material belongs in an experience record or a project file, not here
 - Don't save transient chat — only durable information
 `,
 

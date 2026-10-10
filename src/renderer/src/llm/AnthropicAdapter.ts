@@ -235,7 +235,12 @@ export const anthropicAdapter: LlmAdapter = {
       // Check if next messages have tool_results for these
       const resolvedIds = new Set<string>()
       for (let j = i + 1; j < messages.length; j++) {
-        if (messages[j].role !== 'user') break
+        // WIDE scan (same semantics as reconcileToolResults): a result landing
+        // after an interleaved assistant message still resolves its call —
+        // the narrow `break` here kept logging false "ORPHANED" alarms for
+        // exactly the chained-spawn shape reconcile had already fixed
+        // (full_20261011 M7-P1-1).
+        if (messages[j].role !== 'user') continue
         for (const b of messages[j].contentBlocks) {
           if (b.type === 'tool_result') resolvedIds.add(b.tool_use_id)
         }
@@ -272,7 +277,16 @@ export const anthropicAdapter: LlmAdapter = {
       const resolvedIds = new Set<string>()
       for (let j = i + 1; j < result.length; j++) {
         const next = result[j]
-        if (next.role !== 'user') break
+        // WIDE scan — the safety net must agree with reconcileToolResults
+        // about what "unresolved" means (full_20261011 M7-P1-1): under the
+        // narrow `break`, a result sitting after an interleaved assistant
+        // message (chained spawns) counted as missing and this net injected a
+        // SECOND tool_result for the same tool_use_id into the outgoing
+        // payload — a 400-shaped duplicate, or a fake "interrupted" verdict
+        // for a tool that is still running (the 2026-09-30 regression's
+        // exact shape). The injection only mutates the outgoing payload, not
+        // engine.messages, so addToolResult's duplicate guard cannot catch it.
+        if (next.role !== 'user') continue
         const nextContent = next.content
         if (!Array.isArray(nextContent)) continue
         for (const b of nextContent) {

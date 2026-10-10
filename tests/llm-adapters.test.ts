@@ -151,6 +151,41 @@ describe('openaiAdapter.buildRequest', () => {
   })
 })
 
+describe('anthropicAdapter.buildMessages — the safety net agrees with reconcile (full_20261011 M7-P1-1)', () => {
+  it('a tool_result after an INTERLEAVED assistant message resolves its call — no synthetic duplicate', () => {
+    // The chained-spawn shape: the real result sits after an assistant
+    // message. Under the narrow `break` scan the safety net injected a second
+    // tool_result for call_1 into the OUTGOING payload (duplicate id →
+    // Anthropic 400 shape; or a fake "interrupted" verdict).
+    const { apiMessages } = anthropicAdapter.buildMessages([
+      msg('user', [text('spawn A')], 'm1'),
+      msg('assistant', [toolUse('call_1', 'spawn_agent', {})], 'm2'),
+      msg('assistant', [text('A 报告完成')], 'm3'),
+      msg('user', [toolResult('call_1', 'A done')], 'm4'),
+    ], 'SYS')
+    const results = apiMessages.flatMap((m: { content: Array<{ type: string; tool_use_id?: string }> }) =>
+      Array.isArray(m.content) ? m.content.filter((b) => b.type === 'tool_result') : [])
+    expect(results).toHaveLength(1)
+    expect(results[0]!.tool_use_id).toBe('call_1')
+    expect(JSON.stringify(apiMessages)).not.toContain('interrupted or cancelled')
+  })
+
+  it('a genuinely unresolved tool_use still gets the synthetic result', () => {
+    // reconcile fixes a bare orphan, so the net's own case is the one buildMessages
+    // MANUFACTURES: an empty-content tool_result message is dropped from the API
+    // result (the `!blocks[0].content` skip), leaving call_x unresolved there.
+    const { apiMessages } = anthropicAdapter.buildMessages([
+      msg('user', [text('go')], 'm1'),
+      msg('assistant', [toolUse('call_x', 'shell', {})], 'm2'),
+      msg('user', [toolResult('call_x', '')], 'm3'),
+    ], 'SYS')
+    const injected = apiMessages.filter((m: { content: Array<{ type: string }> }) =>
+      Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'))
+    expect(injected).toHaveLength(1)
+    expect(JSON.stringify(apiMessages)).toContain('interrupted or cancelled')
+  })
+})
+
 describe('openaiAdapter.buildMessages', () => {
   it('puts the system prompt first and joins user text blocks with newlines', () => {
     const { apiMessages } = openaiAdapter.buildMessages([msg('user', [text('a'), text('b')])], 'SYS')
