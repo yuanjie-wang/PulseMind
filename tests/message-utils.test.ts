@@ -73,3 +73,48 @@ describe('storedMessagesToAgentMessages', () => {
     expect((back[1].contentBlocks[0] as ToolUseBlock).status).toBe('completed')
   })
 })
+
+// rejected 终态持久化（2026-10-10）：rejectTool 同时写 status='rejected' 和一个
+// isError 的 tool_result（循环继续需要它），而重载规则「有 tool_result →
+// completed」曾把每次拒绝都翻成已完成——拒绝角标（MessageGroup）与执行段落
+// 的拒绝计数（ExecutionSegment）重载后消失。'rejected' 是终态、不会腐烂、
+// 没有其他恢复来源，因此是唯一随盘持久化的 status。
+describe('rejected status survives the persist/reload round trip', () => {
+  it('sanitize keeps rejected, still strips the transient states', () => {
+    const msg: AgentMessage = {
+      id: 'm1', role: 'assistant', createdAt: '2026-01-01T00:00:00Z',
+      contentBlocks: [toolUse('t1', 'exec', 'rejected'), toolUse('t2', 'exec', 'running'), toolUse('t3', 'exec', 'completed')],
+    }
+    const conv = agentMessagesToConversation([msg], 'c1', 'title')
+    const blocks = conv.messages[0].contentBlocks as ToolUseBlock[]
+    expect(blocks[0].status).toBe('rejected')
+    expect(blocks[1].status).toBeUndefined()
+    expect(blocks[2].status).toBeUndefined()
+  })
+
+  it('reload respects the persisted rejected instead of stamping completed', () => {
+    const msgs = [{
+      id: 'm1', role: 'user' as const, createdAt: '2026-01-01T00:00:00Z',
+      contentBlocks: [
+        { type: 'tool_use', id: 't1', name: 'exec', input: {}, status: 'rejected' },
+        { type: 'tool_result', tool_use_id: 't1', content: 'Command execution was rejected by the user.', is_error: true },
+      ],
+    }]
+    const agentMsgs = storedMessagesToAgentMessages(msgs as never)
+    const block = agentMsgs[0].contentBlocks.find((b) => b.type === 'tool_use') as ToolUseBlock
+    expect(block.status).toBe('rejected')
+  })
+
+  it('reload still stamps completed for a tool_result without a persisted status', () => {
+    const msgs = [{
+      id: 'm1', role: 'user' as const, createdAt: '2026-01-01T00:00:00Z',
+      contentBlocks: [
+        { type: 'tool_use', id: 't1', name: 'read', input: {} },
+        { type: 'tool_result', tool_use_id: 't1', content: 'file body', is_error: false },
+      ],
+    }]
+    const agentMsgs = storedMessagesToAgentMessages(msgs as never)
+    const block = agentMsgs[0].contentBlocks.find((b) => b.type === 'tool_use') as ToolUseBlock
+    expect(block.status).toBe('completed')
+  })
+})

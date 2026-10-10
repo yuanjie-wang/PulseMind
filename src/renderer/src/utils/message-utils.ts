@@ -7,6 +7,13 @@ function sanitizeContentBlocks(blocks: ContentBlock[]): ContentBlock[] {
     if (b.type === 'tool_use') {
       // status is a runtime UI-only concern — never persist it,
       // otherwise partially-executed tools can show stale 'running' status on reload.
+      // THE exception is 'rejected' (2026-10-10): a rejection also writes a
+      // tool_result (the loop needs one to continue), so the reload rule
+      // "tool_result exists → completed" used to flip every rejected call to
+      // completed — the rejection glyph (MessageGroup) and the execution
+      // segment's rejection count (ExecutionSegment) vanished after a reload.
+      // 'rejected' is terminal, cannot go stale, and nothing else restores it.
+      if (b.status === 'rejected') return b
       const rest = { ...b } as ToolUseBlock & { status?: string }
       delete rest.status
       return rest as ContentBlock
@@ -82,11 +89,14 @@ export function storedMessagesToAgentMessages(msgs: Message[]): AgentMessage[] {
 
   // Derive tool_use status from tool_result presence (status is stripped on save
   // since it's a runtime-only concern — restore it here so the UI shows completion).
+  // A block that PERSISTED a status keeps it: 'rejected' survives sanitization
+  // precisely so this derivation does not overwrite it with completed.
   if (toolResultIds.size > 0) {
     for (const msg of agentMsgs) {
       for (const b of msg.contentBlocks) {
         if (b.type === 'tool_use' && toolResultIds.has(b.id)) {
-          ;(b as ToolUseBlock).status = 'completed'
+          const tool = b as ToolUseBlock
+          if (tool.status === undefined) tool.status = 'completed'
         }
       }
     }
