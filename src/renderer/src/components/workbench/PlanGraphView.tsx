@@ -6,6 +6,14 @@
 // whole point. The graph NEVER scales below 100% (D1): a too-narrow pane
 // pans instead — native scroll plus drag-to-scroll (D2), so text stays at
 // its native size and the compositor never resamples it.
+//
+// Canvas typography floor: every SVG <text> is ≥12px and an integer size
+// (user report 2026-10-10: Windows 上画布不清晰). The old 9–11.5px ladder was
+// calibrated on a 2x Retina display; on Windows the CJK fallback is Microsoft
+// YaHei, which mushes below ~12px, and 1x/1.25x displays turn fractional
+// glyph boxes into mid-pixel blurs. 12px is the app's own chrome floor
+// (workbench tab labels); hierarchy rides weight and the ink ladder, not size.
+// Clip constants below are recomputed for 12px CJK (= 12px advance).
 
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AimOutlined } from '@ant-design/icons'
@@ -134,8 +142,9 @@ const DESC_STEP = 15
 const OBJECTIVE_LINES = 2
 const OBJECTIVE_LINE_H = 18
 
-/** Text metrics for the wrap — must match the font sizes below (11.5px desc)
- *  and the inner width of the card (NODE_W − 20). */
+/** Text metrics for the wrap — must match the font sizes below (12px desc)
+ *  and the inner width of the card (NODE_W − 20): 13 CJK glyphs at 12px
+ *  advance = 156px ≤ 160. */
 const DESC_CJK = 13
 const DESC_LATIN = 25
 
@@ -297,7 +306,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
       return (
         <g key={n.id} data-node={n.id}>
           <rect x={n.x} y={n.y} width={n.w} height={n.h} rx={13} fill={done ? 'var(--pm-fill)' : 'var(--pm-elevated)'} stroke={done ? 'var(--pm-graph-ink-dim)' : 'var(--pm-border)'} strokeWidth={1.2} />
-          <text x={n.x + n.w / 2} y={n.y + n.h / 2 + 3.5} fontSize={10.5} fontWeight={600} fill={done ? 'var(--pm-text)' : 'var(--pm-graph-ink-dim)'} textAnchor="middle">
+          <text x={n.x + n.w / 2} y={n.y + n.h / 2 + 4.5} fontSize={12} fontWeight={600} fill={done ? 'var(--pm-text)' : 'var(--pm-graph-ink-dim)'} textAnchor="middle">
             {n.description}
           </text>
         </g>
@@ -365,39 +374,41 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
           strokeWidth={highlighted ? 1.8 : isReady ? 1.6 : 1.2}
         />
         {/* Row 1: 编号 left, execution/acceptance status and glyph right. */}
-        <text x={n.x + 10} y={n.y + ROW_NUM} fontSize={10} fontWeight={600} fill={card.num}>
+        <text x={n.x + 10} y={n.y + ROW_NUM} fontSize={12} fontWeight={600} fill={card.num}>
           {`n${n.num}`}
         </text>
-        <text x={n.x + n.w - 28} y={n.y + ROW_NUM} fontSize={9} fill={card.num} textAnchor="end">
+        <text x={n.x + n.w - 28} y={n.y + ROW_NUM} fontSize={12} fill={card.num} textAnchor="end">
           {statusWord}
         </text>
         {declaredChip && (
-          // Row 1 left, after the 编号: the settled words (已完成/已交付，待验收)
-          // end-anchored at n.w−28 leave this slot free at every status the chip
-          // can coexist with.
-          <text x={n.x + 30} y={n.y + ROW_NUM} fontSize={9} fontWeight={600}
+          // Row 1 left, after the 编号: the settled words (已完成/已拆分, 3
+          // glyphs, 36px) end-anchored at n.w−28 start at 116, so this slot
+          // fits a 4-glyph chip (48px, ends at 78) with room to spare.
+          <text x={n.x + 30} y={n.y + ROW_NUM} fontSize={12} fontWeight={600}
             fill={node.declaredStatus === 'failed' ? FAILED_RED : PARTIAL_AMBER}>
             {declaredChip}
           </text>
         )}
         <StatusIcon
-          kind={card.icon} x={n.x + n.w - 10 - ICON_SIZE} y={n.y + ROW_NUM - 7.5}
+          kind={card.icon} x={n.x + n.w - 10 - ICON_SIZE} y={n.y + ROW_NUM - 8}
           color={card.iconColor}
         />
         {/* Row 2: 执行者 — who runs it, lighter than the 编号 that names it. A
-            delivered report owns the row's right end, so the clip shortens to
-            keep the two from ever touching (NODE_W = 180: 11 CJK glyphs + the
-            38px link leave an 12px gap). */}
+            delivered report owns the row's right end: the 48px link (4 glyphs
+            at 12px) leaves 112px, i.e. 8 CJK glyphs + a 16px gap (NODE_W =
+            180, inner 160, 12px advance). Without the link the row holds 13
+            glyphs (156px); longer names keep the … and the full name rides
+            the tooltip. */}
         <text
-          x={n.x + 10} y={n.y + ROW_ASSIGNEE} fontSize={10}
+          x={n.x + 10} y={n.y + ROW_ASSIGNEE} fontSize={12}
           fill={n.assignee ? 'var(--pm-graph-ink-blocked)' : 'var(--pm-graph-ink-hollow)'}
         >
-          {clip(n.assignee ? `@${who}` : who, reportOpenable ? 11 : 15)}
+          {clip(n.assignee ? `@${who}` : who, reportOpenable ? 8 : 13)}
         </text>
         {reportOpenable && (
           <text
             className="pm-node-report"
-            x={n.x + n.w - 10} y={n.y + ROW_ASSIGNEE} fontSize={9.5}
+            x={n.x + n.w - 10} y={n.y + ROW_ASSIGNEE} fontSize={12}
             fill="var(--pm-link)" textAnchor="end"
             onClick={(e) => {
               // The link is its own click target inside a clickable card: the
@@ -417,7 +428,7 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
             key={li}
             x={n.x + 10}
             y={n.y + ROW_DESC + li * DESC_STEP}
-            fontSize={11.5}
+            fontSize={12}
             fontWeight={isReady ? 500 : 400}
             fill={card.desc}
             style={{ textDecoration: n.status === 'skipped' ? 'line-through' : undefined }}

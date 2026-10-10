@@ -199,10 +199,10 @@ function CanvasMount() {
 // Report fixture (PLAN-plan-exchange 表达面): delivered cards carrying a
 // system-minted reportPath. n1 declares 部分成功 against a completed
 // acceptance — the divergence is exactly what the chip exists to name — and
-// carries a LONG expert name so the row-2 clip (15 → 11 glyphs) is the real
-// collision case. n2 declares 成功: link only, no chip (the acceptance word
-// already says it). The link's click must open the report and NOT the session
-// drill-down behind it.
+// carries a LONG expert name so the row-2 clip (13 → 8 glyphs when the link
+// takes the row's right end) is the real collision case. n2 declares 成功:
+// link only, no chip (the acceptance word already says it). The link's click
+// must open the report and NOT the session drill-down behind it.
 const reportPlan = createPlanDag('报告契约表达面', [
   { description: '产出数据分析报告', assignee: 'exp_docs' },
   { description: '汇总为执行简报', dependsOn: [1] },
@@ -635,10 +635,11 @@ const byKey = Object.fromEntries(taskCards.map(c => [`${c.container}:${c.node}`,
 const EXPECTED_WHO = {
   'mid:n2': '@产品专家', 'mid:n4': '@前端专家', 'mid:n5': '@后端专家', 'mid:n7': '@产品专家',
   'mid:n1': '通用子代理', 'mid:n3': '通用子代理', 'mid:n6': '通用子代理',
-  // The long one is the point of the fixture: 14 CJK glyphs is the widest name
-  // the row can hold at clip(15), so exact equality here also proves the row
-  // was widened enough — an earlier 12 would silently drop 「运营专家」.
-  'fresh:n2': '@技术文档编写与知识库运营专家', 'chain:n1': '通用子代理',
+  // The long one is the point of the fixture: the row holds 13 CJK glyphs at
+  // the 12px canvas floor (156px of the 160px inner width), so 15 units clip
+  // to 12 + … — exact equality here also proves the clip moved with the font
+  // size (the 2026-10-10 Windows-clarity raise), not just the font size.
+  'fresh:n2': '@技术文档编写与知识库运…', 'chain:n1': '通用子代理',
 }
 const wrongWho = Object.entries(EXPECTED_WHO).filter(([k, want]) => byKey[k] && assigneeRow(byKey[k]) !== want)
 const idLeak = taskCards.filter(c => /exp_/.test(assigneeRow(c)))
@@ -956,7 +957,7 @@ const descFont = await cvBox.locator('g[data-node="n1"] text').filter({ hasText:
 check('[canvas] a 300px pane renders cards at native 180px at scale 1 (100% floor, D1)',
   n1attr.w === '180' && Math.abs(n1attr.bbox - 180) < 0.5 && Math.abs(n1attr.svgScale - 1) < 0.01,
   `attr=${n1attr.w} bbox=${n1attr.bbox?.toFixed(1)} svgScale=${n1attr.svgScale.toFixed(3)}`)
-check('[canvas] card text keeps its native 11.5px size', descFont === '11.5px', descFont)
+check('[canvas] card text keeps its native 12px size', descFont === '12px', descFont)
 
 // ② Drag from a blank corner pans the canvas exactly with the pointer (D2).
 const vpBox = await cvViewport.boundingBox()
