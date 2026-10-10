@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { getDb } from './database'
 import { DATA_DIR } from './index'
+import { safeChildPath } from './safe-name'
 import { latestAttemptsByIndex, progressFromAttempts } from '../../shared/routine/batch'
 import type { Routine, RoutineBatchProgress, RoutineRun, RoutineFileTrigger, RoutineTrigger, RoutineWebhookTrigger } from '../../shared/types/routine'
 
@@ -133,7 +134,11 @@ export const routineStore = {
   },
 
   remove(id: string): void {
-    try { unlinkSync(routinePath(id)) } catch { /* already gone */ }
+    // 名字消毒（full_20261011 M9-P0-1）：`.json` 后缀让穿越更好用——
+    // `id='../settings'` 曾直接删掉 ~/.pulsemind/settings.json。
+    const p = safeChildPath(ROUTINES_DIR, `${id}.json`)
+    if (!p) throw new Error(`invalid routine id: ${JSON.stringify(id)}`)
+    try { unlinkSync(p) } catch { /* already gone */ }
   },
 
   // ── Run history (SQLite) ──

@@ -246,7 +246,10 @@ export class SkillStore {
 
   /** Delete an imported skill from disk. */
   async deleteImported(name: string): Promise<void> {
-    const skillDir = join(SKILLS_DIR, name)
+    // 名字消毒（full_20261011 M9-P0-1）：`..` 曾把「删一个技能目录」变成
+    // 递归删 ~/.pulsemind 的任意祖先。
+    const skillDir = this.resolveSkillDir(name)
+    if (!skillDir) throw new Error(`invalid skill name: ${JSON.stringify(name)}`)
     await rm(skillDir, { recursive: true, force: true })
   }
 
@@ -256,7 +259,9 @@ export class SkillStore {
    * parses it, and returns a SkillDefinition (or null if not found).
    */
   async install(name: string): Promise<SkillDefinition | null> {
-    const mdPath = join(SKILLS_DIR, name, 'SKILL.md')
+    const skillDir = this.resolveSkillDir(name)
+    if (!skillDir) return null
+    const mdPath = join(skillDir, 'SKILL.md')
     try {
       const content = await readFile(mdPath, 'utf-8')
       const parsed = parseSkillMarkdown(content, `${name}/SKILL.md`)
@@ -272,7 +277,10 @@ export class SkillStore {
    */
   async write(skill: SkillDefinition): Promise<void> {
     await this.ensureSkillsDir()
-    const skillDir = join(SKILLS_DIR, skill.name)
+    // 写入侧同门（full_20261011 M9-P0-1 第 5 处）：name 可从 SKILLS_WRITE
+    // 直达，曾能在外层目录创建文件夹并落一个 SKILL.md。
+    const skillDir = this.resolveSkillDir(skill.name)
+    if (!skillDir) throw new Error(`invalid skill name: ${JSON.stringify(skill.name)}`)
     await mkdir(skillDir, { recursive: true })
     const mdPath = join(skillDir, 'SKILL.md')
     await writeFile(mdPath, formatSkillMd(skill), 'utf-8')
@@ -324,7 +332,9 @@ export class SkillStore {
 
   /** Read the raw content of a skill's SKILL.md file. */
   async readRawContent(name: string): Promise<string | null> {
-    const mdPath = join(SKILLS_DIR, name, 'SKILL.md')
+    const skillDir = this.resolveSkillDir(name)
+    if (!skillDir) return null
+    const mdPath = join(skillDir, 'SKILL.md')
     try {
       return await readFile(mdPath, 'utf-8')
     } catch {

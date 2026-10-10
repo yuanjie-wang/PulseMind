@@ -13,6 +13,7 @@ import { prefixedId } from '../utils/id'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { TOOLS_DIR } from './index'
+import { safeChildPath } from './safe-name'
 import { planPresetSeeds } from '../../shared/preset-seeding'
 import type { ToolCreateInput, ToolUpdateInput, UserTool } from '../../shared/types/user-tool'
 
@@ -234,6 +235,9 @@ export const toolStore = {
   /** Delete a tool. Preset tools are recorded in .presets.deleted.json so the
    *  next seeding (including after an app upgrade) will not restore them. */
   remove(id: string): void {
+    // 名字消毒（full_20261011 M9-P0-1）：`id='..'` 曾把 toolDir 变成
+    // TOOLS_DIR 的父目录并递归删除。
+    if (!safeChildPath(TOOLS_DIR, id)) throw new Error(`invalid tool id: ${JSON.stringify(id)}`)
     rmSync(toolDir(id), { recursive: true, force: true })
     if (id.startsWith(TOOL_PRESET_PREFIX)) {
       const presetId = id.slice(TOOL_PRESET_PREFIX.length)

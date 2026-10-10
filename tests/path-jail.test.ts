@@ -71,6 +71,25 @@ describe('guardPath — baseline (no session)', () => {
   it('still denies secrets', () => {
     expect(guardPath({ denyRoots: baselineRoots, target: `${HOME}/.ssh/id_rsa`, operation: 'read' }).ok).toBe(false)
   })
+  it('denies the executable/config surface of the app itself (full_20261011 M8-F2)', () => {
+    // A renderer-side UTIL write into hooks/ is code require()d by the NEXT
+    // main process; settings.json / mcp-servers.json carry credentials and
+    // spawn commands; db/ is the conversation store.
+    for (const target of [
+      `${HOME}/.pulsemind/hooks/app-start.js`,
+      `${HOME}/.pulsemind/settings.json`,
+      `${HOME}/.pulsemind/mcp/mcp-servers.json`,
+      `${HOME}/.pulsemind/db/pulsemind.db`,
+    ]) {
+      for (const operation of ['write', 'read'] as const) {
+        const d = guardPath({ denyRoots: baselineRoots, target, operation })
+        expect(d.ok, `${operation} ${target}`).toBe(false)
+      }
+    }
+    // …while the app's own working surfaces stay writable:
+    expect(guardPath({ denyRoots: baselineRoots, target: `${HOME}/.pulsemind/tmp/html-cards/x.html`, operation: 'write' }).ok).toBe(true)
+    expect(guardPath({ denyRoots: baselineRoots, target: `${HOME}/.pulsemind/skills/foo/SKILL.md`, operation: 'write' }).ok).toBe(true)
+  })
 })
 
 describe('guardPath — workspace under a deny root (M8.1)', () => {

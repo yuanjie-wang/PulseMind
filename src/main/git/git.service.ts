@@ -285,6 +285,27 @@ export async function invokeGitAction(action: GitAction): Promise<GitResult> {
             },
           }
         }
+        // pathspec 与 cwd 是同一坐标系的两维（full_20261011 M8-F1）：cwd 门只
+        // 证明「仓库入口在 workspace 内」，`git restore -- ../../x` 的 pathspec
+        // 却能指到 workspace 之外、仓库之内的文件——那正是本门要保护的未提交
+        // 修改。commit 的 files（git add 的对象）同判。与 cwd 一样用词法 +
+        // realpath 两个拼写，pathspec 指向尚不存在的文件时按词法坐标判定。
+        for (const f of action.files ?? []) {
+          const lexical = resolve(action.cwd, f)
+          const real = await realpath(lexical).catch(() => lexical)
+          if (!roots.some((r) => isSubpath(r, lexical)) && !roots.some((r) => isSubpath(r, real))) {
+            return {
+              ok: false,
+              error: {
+                code: 1,
+                message: `git ${action.action} blocked by sandbox: ${f} is outside the conversation workspace (${sandbox.workspaceDir})`,
+              },
+            }
+          }
+        }
+        // 残余（有意放过）：commit 不带 files 会提交整个暂存区。会话内暂存只
+        // 能通过上面已被 jail 的 files 路径产生；暂存区里的 workspace 外条目
+        // 只能来自用户自己的终端操作，提交它属用户本人动作的转发。
       }
     }
     switch (action.action) {

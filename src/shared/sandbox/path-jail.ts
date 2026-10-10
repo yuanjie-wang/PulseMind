@@ -90,6 +90,18 @@ export function buildBaselineDenyRoots(home: string, platform: string): string[]
     `${home}/.ssh`,
     `${home}/.aws`,
     `${home}/.gnupg`,
+    // The app's own executable/config surface (full_20261011 M8-F2): a
+    // renderer-side UTIL write used to reach these — hooks/*.js is require()d
+    // inside the main process (at startup and per LLM request), and
+    // settings.json / mcp-servers.json carry credentials and spawn commands.
+    // One renderer write = arbitrary code in the NEXT main process. The
+    // agent-side session jail denies all of ~/.pulsemind already; these four
+    // close the renderer-utility door. The app's other data surfaces
+    // (knowledge/, tmp/, workspace/, canvas/, db backups) stay writable.
+    `${home}/.pulsemind/hooks`,
+    `${home}/.pulsemind/settings.json`,
+    `${home}/.pulsemind/mcp/mcp-servers.json`,
+    `${home}/.pulsemind/db`,
   ]
   if (platform === 'darwin') roots.push(`${home}/Library/Keychains`)
   return roots

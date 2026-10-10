@@ -9,6 +9,7 @@ import { sha256Hex, normalizeMemoryContent } from '../../shared/memory/content-h
 import { parseExperienceMd } from '../../shared/experience/frontmatter'
 import { EXPERIENCES_DIR } from './index'
 import { getDb } from './database'
+import { safeChildPath } from './safe-name'
 
 // ── Script payload gates (PLAN-experience-scripts 1.3/1.5) ──
 // An experience's SKILL.md is documentation; its scripts are RUNNABLE. Three
@@ -193,8 +194,12 @@ export class ExperienceStore {
   }
 
   async read(name: string): Promise<string | null> {
+    // 名字消毒（full_20261011 M9-P0-1/X3）：read 的 name 从 agent 侧
+    // pick_skill 的经验兜底可达，`../skills/<x>` 曾能穿出 EXPERIENCES_DIR。
+    const mdPath = safeChildPath(EXPERIENCES_DIR, join(name, 'SKILL.md'))
+    if (!mdPath) return null
     try {
-      return await readFile(join(EXPERIENCES_DIR, name, 'SKILL.md'), 'utf-8')
+      return await readFile(mdPath, 'utf-8')
     } catch {
       return null
     }
@@ -393,7 +398,11 @@ export class ExperienceStore {
   }
 
   async delete(name: string): Promise<void> {
-    await rm(join(EXPERIENCES_DIR, name), { recursive: true, force: true })
+    // 名字消毒（full_20261011 M9-P0-1）：join 不做越界检查，`..` 会把
+    // 「删一个经验目录」变成递归删 ~/.pulsemind 的任意祖先。
+    const dir = safeChildPath(EXPERIENCES_DIR, name)
+    if (!dir) throw new Error(`invalid experience name: ${JSON.stringify(name)}`)
+    await rm(dir, { recursive: true, force: true })
     getDb().prepare('DELETE FROM experiences WHERE name = ?').run(name)
   }
 

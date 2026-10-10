@@ -708,10 +708,14 @@ export class ToolExecutor implements ToolExecContext {
           this.addToolResult(t.id, formatSelectedSkill(skill.definition.name, def, this.opts.skillsDir), false)
           t.exitCode = 0; t.status = 'completed'; this.notify(); return
         }
-        // Fall back to the experience library (skill-style progressive disclosure)
+        // Fall back to the experience library (skill-style progressive disclosure).
+        // 只接受 list() 里的名字（full_20261011 M2-P1-1）：白名单门只拦已注册
+        // 技能，解析不到技能的名字曾直达 em.read —— `../skills/<白名单外技能>`
+        // 借经验兜底穿门读任意目录下的 SKILL.md。候选表同源、list() 有缓存。
         const em = this.opts.experienceManager
         if (em) {
-          const raw = await em.read(skillName)
+          const knownExperiences = new Set((await em.list()).map((e) => e.name))
+          const raw = knownExperiences.has(skillName) ? await em.read(skillName) : null
           if (raw) {
             em.touch(skillName).catch(() => {})
             this.addToolResult(t.id, `## Selected Experience: ${skillName}\n\n${raw}${await experienceLocationBlock(em, skillName)}${await experienceStatsLine(em, skillName)}`, false)
@@ -749,7 +753,9 @@ export class ToolExecutor implements ToolExecContext {
         t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
       const em2 = this.opts.experienceManager
-      if (em2) {
+      // 同名字分支：cleanName 来自模型（选择代理的输出），只有真的出现在
+      // 候选表（list()）里才放行读盘。
+      if (em2 && experiences2.some((e) => e.name === cleanName)) {
         const raw2 = await em2.read(cleanName)
         if (raw2) {
           em2.touch(cleanName).catch(() => {})
