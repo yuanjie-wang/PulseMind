@@ -199,6 +199,10 @@ export interface SmartSelection {
   text: string
 }
 
+/** HTML void elements (no end tag, no inner text — the content match can never
+ *  see them). */
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'])
+
 /** Resolve the selected element against the disk text: exact pmPath first
  *  (verified against the picker's text hint — H9), then a unique tag+text
  *  match. Never guesses between duplicates. */
@@ -224,6 +228,48 @@ export function resolveElementSmart(html: string, selection: SmartSelection): Sm
   } else {
     // A parse failure is hopeless; everything else may still be findable.
     if (direct.reason.startsWith('HTML 解析失败')) return { ok: false, reason: direct.reason }
+  }
+
+  // Void-element structural fallback (2026-10-10): <img>/<br>/<hr>/<input> & co.
+  // have no endTag and no inner text, so the content match below can never fire
+  // for them (it requires sl.startTag && sl.endTag, and the hint is '' anyway)
+  // — a script-shifted pmPath used to report 「该元素不在文件源码中」 for an
+  // element that IS in the source. Match by tag instead, disambiguated by the
+  // pmPath's ancestor TAG chain: a script inserting siblings shifts every
+  // INDEX but no tag name, so ancestor-tag agreement survives exactly the
+  // drift that breaks the direct path. Unique agreement only — patching the
+  // wrong twin is data corruption, same discipline as the text match.
+  if (!hint && VOID_TAGS.has(selection.tag)) {
+    let tree
+    try {
+      tree = parse(html, { sourceCodeLocationInfo: true })
+    } catch (err) {
+      return { ok: false, reason: `HTML 解析失败: ${err instanceof Error ? err.message : String(err)}` }
+    }
+    const segments = parsePmPath(selection.pmPath)
+    const ancestorTags = segments && segments.length > 1 ? segments.slice(0, -1).map((s) => s.tag) : null
+    const candidates: P5Element[][] = []
+    const walk = (node: P5ParentNode, chain: P5Element[]): void => {
+      for (const child of elementChildren(node)) {
+        const nextChain = [...chain, child]
+        if (child.tagName === selection.tag && child.sourceCodeLocation?.startTag) {
+          if (!ancestorTags || nextChain.slice(0, -1).map((n) => n.tagName).join('>') === ancestorTags.join('>')) {
+            candidates.push(nextChain)
+          }
+        }
+        walk(child, nextChain)
+      }
+    }
+    walk(tree as unknown as P5ParentNode, [])
+    if (candidates.length === 1) {
+      const chain = candidates[0]
+      const el = chain[chain.length - 1]
+      return { ok: true, location: buildLocation(el, chain), matchedBy: 'content', sourcePmPath: pmPathOfChain(chain) }
+    }
+    if (candidates.length > 1) {
+      return { ok: false, reason: `源码中有 ${candidates.length} 个 <${selection.tag}> 元素与所选元素的路径骨架一致，无法唯一定位（元素没有可匹配的文本）。请改用 AI 修改或编辑源码中的其他静态元素` }
+    }
+    return { ok: false, reason: GENERATED_ELEMENT_REASON }
   }
 
   if (!hint) return { ok: false, reason: GENERATED_ELEMENT_REASON }

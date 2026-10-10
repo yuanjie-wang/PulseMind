@@ -94,9 +94,21 @@ describe('resolveElementSmart', () => {
     expect(r.reason).toContain('匹配到 2 处')
   })
 
-  it('refuses a text-less selection (nothing to match by)', () => {
+  it('rescues a shifted text-less VOID element via the structural fallback (2026-10-10)', () => {
+    // Was pinned as a refusal: a void <img> has no endTag and no text, so the
+    // content match could never fire and the shifted path read as 「不在文件
+    // 源码中」 for an element that IS in the source. The structural fallback
+    // locates it — the only same-tag element whose ancestor TAG chain agrees.
     const src = '<html><body><img src="a.png"></body></html>'
     const r = resolveElementSmart(src, { pmPath: 'html>body:nth-child(2)>img:nth-child(4)', tag: 'img', text: '' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.location.attributes['src']).toBe('a.png')
+    expect(r.sourcePmPath).toBe('html>body:nth-child(2)>img:nth-child(1)')
+  })
+
+  it('still refuses a text-less selection of a NON-void tag (nothing to match by)', () => {
+    const r = resolveElementSmart(SHIFT_SRC, { pmPath: SHIFT_LIVE_H1, tag: 'span', text: '' })
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.reason).toBe(GENERATED_ELEMENT_REASON)
@@ -225,5 +237,37 @@ describe('wiring (source scans)', () => {
     // family always (inline children ride the live-DOM commit), list and
     // container only without element children.
     expect(panelSrc).toContain("(category === 'text' || ((category === 'list' || category === 'container') && !hasElementChildren))")
+  })
+})
+
+// void 元素结构兜底（2026-10-10）：<img>/<br>/<hr>/<input> 没有 endTag 也没有
+// inner text——内容匹配要求 sl.startTag && sl.endTag 且 hint 非空，对 void 元素
+// 永远不可能命中；直连路径一旦被脚本位移打断，旧代码就报「该元素不在文件源码
+// 中」——对一个明明在源码里的静态 img 是彻头彻尾的谎话。兜底：同标签 +
+// pmPath 祖先标签骨架一致 → 唯一候选即定位；多候选给诚实的歧义报错。
+describe('void-element structural fallback', () => {
+  const SRC =
+    '<html>\n<body>\n<div id="gallery">\n<img id="shot" src="a.png">\n</div>\n<script>inject()</script>\n</body>\n</html>'
+  // The live tree: the injected div sits BEFORE #gallery, so the img's live
+  // path says div:nth-child(2) while the source lays it out at nth-child(1).
+  const LIVE_IMG = 'html>body:nth-child(2)>div:nth-child(2)>img:nth-child(1)'
+
+  it('resolves a script-shifted void element by ancestor-tag skeleton', () => {
+    const r = resolveElementSmart(SRC, { pmPath: LIVE_IMG, tag: 'img', text: '' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.matchedBy).toBe('content')
+    expect(r.location.attributes['id']).toBe('shot')
+    expect(r.location.endTag).toBeNull()
+    expect(r.sourcePmPath).toBe('html>body:nth-child(2)>div:nth-child(1)>img:nth-child(1)')
+  })
+
+  it('refuses honestly when several same-tag candidates share the skeleton', () => {
+    const two = SRC.replace('<img id="shot" src="a.png">', '<img id="a" src="a.png"><img id="b" src="b.png">')
+    const r = resolveElementSmart(two, { pmPath: LIVE_IMG, tag: 'img', text: '' })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toContain('2 个 <img>')
+    expect(r.reason).not.toBe(GENERATED_ELEMENT_REASON)
   })
 })
