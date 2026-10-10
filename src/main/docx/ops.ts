@@ -274,10 +274,13 @@ function applyOne(
             const rawStart = seg.from < seg.run.text.length ? seg.run.charMap[seg.from] : inner.end
             let rawEnd = seg.to < seg.run.text.length ? seg.run.charMap[seg.to] : inner.end
             if (rawEnd < rawStart) rawEnd = rawStart
-            const pre = inner.raw.slice(0, rawStart - inner.start)
-            const post = inner.raw.slice(rawEnd - inner.start)
+            // 范围 [rawStart, rawEnd) 只覆盖匹配区，周边原文原地保留——拼接
+            // pre/post 会把它们复制一份（「Hello world」换 Hello 出
+            // 「X world world」，full_20261011 M11-P0-1；修订分支按整 run
+            // 重建没有此问题）。实体边界扩张后范围已含整个实体，替换掉整个
+            // 实体即语义正确。
             const middle = segIndex === 0 ? escapeXmlText(op.replace) : ''
-            replacements.push({ start: rawStart, end: rawEnd, text: pre + middle + post })
+            replacements.push({ start: rawStart, end: rawEnd, text: middle })
           })
         }
         message = `替换 ${matches.length} 处`

@@ -78,6 +78,65 @@ describe('sheet names (D4 + sanitize + D6 dedupe)', () => {
   })
 })
 
+describe('sheet-name dedupe keeps the 31-char budget (full_20261011 M11-P1-2)', () => {
+  it('the suffix counts against the cap — a 31-char duplicate stays ≤31 after -2', () => {
+    const long = 'x'.repeat(31)
+    const out = dedupeSheetNames([long, long])
+    expect(out[0]).toHaveLength(31)
+    expect(out[1]).toHaveLength(31)
+    expect(out[1]).not.toBe(out[0])
+    // …and the produced pair is addWorksheet-clean end to end:
+    return sheetsToXlsxBuffer([
+      { name: out[0], rows: [['a']] },
+      { name: out[1], rows: [['b']] },
+    ]).then((buf) => expect(buf.length).toBeGreaterThan(0))
+  })
+
+  it('a name pushed past 31 chars is refused with a diagnosable error, not exceljs\'s throw', async () => {
+    await expect(sheetsToXlsxBuffer([{ name: 'y'.repeat(32), rows: [['a']] }]))
+      .rejects.toThrow(/工作表名超过 31 字符/)
+    await expect(sheetsToXlsxBuffer([
+      { name: 'dup', rows: [['a']] },
+      { name: 'DUP', rows: [['b']] },
+    ])).rejects.toThrow(/工作表重名/)
+  })
+})
+
+describe('list-item nested blocks render as blocks (full_20261011 M11-P1-1)', () => {
+  it('an indented code fence inside a list item renders as a real code block, not flattened text', async () => {
+    const md = [
+      '1. 安装依赖',
+      '',
+      '   ```bash',
+      '   npm install foo',
+      '   ```',
+      '',
+      '2. 后续步骤',
+    ].join('\n')
+    const buf = await markdownToDocxBuffer(md)
+    const xml = new AdmZip(buf).readFile('word/document.xml')!.toString('utf8')
+    // The real code block carries the grey fill; the flattened version was
+    // bare text inside the numbered paragraph.
+    expect(xml).toContain('w:shd')
+    expect(xml).toContain('npm install foo')
+    expect((await docxParagraphTexts(md)).join('\n')).not.toContain('安装依赖npm install foo')
+  })
+
+  it('an indented table inside a list item renders as a real table, not raw pipes', async () => {
+    const md = [
+      '1. 配置表',
+      '',
+      '   | 键 | 值 |',
+      '   |---|---|',
+      '   | a | 1 |',
+    ].join('\n')
+    const buf = await markdownToDocxBuffer(md)
+    const xml = new AdmZip(buf).readFile('word/document.xml')!.toString('utf8')
+    expect(xml).toContain('<w:tbl>')
+    expect(xml).not.toContain('| 键 | 值 |')
+  })
+})
+
 describe('markdown → sheets (D4: H2 opens a sheet, heading names it)', () => {
   it('splits each H2 section into its own named sheet; pre-heading table lands in Sheet1', () => {
     const md = [

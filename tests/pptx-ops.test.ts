@@ -143,6 +143,30 @@ describe('op semantics (D4)', () => {
     expect(results[0].detail).toContain('命中 1 处')
   })
 
+  it('a PARTIAL in-run match keeps the surroundings ONCE — no duplication (full_20261011 M11-P0-1)', () => {
+    // 「季度经营汇报」换「经营」：替换范围只覆盖匹配区，pre/post 拼进替换文本
+    // 曾把它们各复制一份（实测「季度季度X汇报汇报」）。
+    const { xml, results } = applySlideOps(SLIDE1, [
+      { op: 'replace_text', find: '经营', replace: '总结' },
+    ])
+    expect(results[0]!.ok).toBe(true)
+    const text = buildSlideModel(xml).shapes.flatMap((sp) => sp.paragraphs.map((p) => p.text)).join('\n')
+    expect(text).toContain('季度总结汇报')
+    expect(text).not.toContain('总结汇报汇报')
+    expect(text).not.toContain('季度季度')
+  })
+
+  it('a cross-run match empties the tail segments without duplicating their remainder (M11-P0-1)', () => {
+    // find 跨 run1 尾部 + run2 首字符：run2 的残留「到」曾随 post 复制。
+    const { xml, results } = applySlideOps(SLIDE1, [
+      { op: 'replace_text', find: '营收增长达', replace: '利润' },
+    ])
+    expect(results[0]!.ok).toBe(true)
+    const text = buildSlideModel(xml).shapes.flatMap((sp) => sp.paragraphs.map((p) => p.text)).join('\n')
+    expect(text).toContain('利润到23%')
+    expect(text).not.toContain('利润到到')
+  })
+
   it('set_shape_text replaces the whole txBody paragraphs, bodyPr/lstStyle intact', () => {
     const { xml } = applySlideOps(SLIDE1, [
       { op: 'set_shape_text', slide: 1, shape_id: '2', text: '新标题\n第二行' },

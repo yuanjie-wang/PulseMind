@@ -60,6 +60,19 @@ describe('replace_text', () => {
     expect(xml.match(/REPLACED/g)?.length).toBe(1)
   })
 
+  it('a PARTIAL in-run match keeps the surroundings ONCE — no duplication (full_20261011 M11-P0-1)', () => {
+    // run1='Hello ' 的「Hello」换「X」：pre/post 拼进替换文本曾产出双空格
+    // （'X  world of tomorrow'）。
+    const outcome = editDocx(CORPUS['split-runs.docx'](), [
+      { op: 'replace_text', find: 'Hello', replace: 'X' },
+    ])
+    const xml = new AdmZip(outcome.buffer).readFile('word/document.xml')!.toString('utf8')
+    const paragraphs = paragraphsOf(xml).join('\n')
+    expect(paragraphs).toContain('X world of tomorrow')
+    expect(paragraphs).not.toContain('X  world')
+    expect(paragraphs).not.toContain('Hello')
+  })
+
   it('table cell text is ordinary paragraph text', () => {
     const outcome = editDocx(CORPUS['styles-table.docx'](), [
       { op: 'replace_text', find: 'cell two', replace: 'cell 2' },

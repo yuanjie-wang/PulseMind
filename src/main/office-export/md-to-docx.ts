@@ -554,17 +554,26 @@ function blockChildren(tokens: MarkedToken[], ctx: GenCtx): DocxChild[] {
   return out
 }
 
-function listChildren(token: MarkedToken, level: number, ctx: GenCtx): Paragraph[] {
+function listChildren(token: MarkedToken, level: number, ctx: GenCtx): DocxChild[] {
   const capped = Math.min(level, 2) // 嵌套 ≤3 层（0..2），更深拍平到第三层
-  const out: Paragraph[] = []
+  const out: DocxChild[] = []
   for (const item of token.items ?? []) {
     const runs: InlineChild[] = []
     // 嵌套子表缓存在自己的缓冲里：父项自己的段落必须先于它落地，否则
     // 子项全部渲染到父项之前（文档顺序倒置）。
-    const nested: Paragraph[] = []
+    const nested: DocxChild[] = []
     for (const child of item.tokens ?? []) {
       if (child.type === 'list') {
         nested.push(...listChildren(child, level + 1, ctx))
+        continue
+      }
+      // 列表项内的块级结构（full_20261011 M11-P1-1）：code/table/blockquote
+      // 曾掉进 inlineRuns 的 default 分支被拍平成正文文本——围栏、行列结构
+      // 全部丢失且无降级注记。它们与 list 同等对待，走顶层同一套渲染
+      // （代码块灰底、真表格），其余不可渲染的 token 由 blockChildren 的
+      // default 分支记降级注记。
+      if (child.type === 'code' || child.type === 'table' || child.type === 'blockquote') {
+        nested.push(...blockChildren([child], ctx))
         continue
       }
       runs.push(...inlineRuns([child], ctx))

@@ -17,7 +17,17 @@ export interface SheetModel {
  *  zero bytes on disk — the service's read-back gate then never sees one). */
 export async function sheetsToXlsxBuffer(sheets: SheetModel[]): Promise<Buffer> {
   const wb = new ExcelJS.Workbook()
+  // 名字自检（full_20261011 M11-P1-2）：exceljs 对 >31 字符静默截断、对重名
+  // 表抛错——两个行为叠加就是「截断撞名整单失败，报错还不可诊断」。入口先
+  // 断言，把违例变成一句可读的话。
+  const seen = new Set<string>()
   for (const sheet of sheets) {
+    if (sheet.name.length > EXCEL_SHEET_MAX) {
+      throw new Error(`工作表名超过 ${EXCEL_SHEET_MAX} 字符：${sheet.name.slice(0, 40)}`)
+    }
+    const key = sheet.name.toLowerCase()
+    if (seen.has(key)) throw new Error(`工作表重名：${sheet.name}`)
+    seen.add(key)
     const ws = wb.addWorksheet(sheet.name)
     for (const row of typedRows(sheet.rows)) ws.addRow(row)
     // M5 rider (PLAN-office-expressiveness §2.5): the generated artifact stops
@@ -56,7 +66,10 @@ export function sanitizeSheetName(raw: string): string {
 }
 
 /** Assign final names: dedupe case-insensitively (Excel's rule) with `-2`,
- *  `-3`… — D6 at sheet granularity. */
+ *  `-3`… — D6 at sheet granularity. The suffix counts against the 31-char
+ *  budget (full_20261011 M11-P1-2): appending to an already-31-char name used
+ *  to push it over, exceljs silently truncated back to 31 and the NEXT
+ *  addWorksheet hit a duplicate-name throw — the whole export died. */
 export function dedupeSheetNames(names: string[]): string[] {
   const used = new Set<string>()
   const out: string[] = []
@@ -67,9 +80,16 @@ export function dedupeSheetNames(names: string[]): string[] {
       continue
     }
     let n = 2
-    while (used.has(`${original}-${n}`.toLowerCase())) n++
-    used.add(`${original}-${n}`.toLowerCase())
-    out.push(`${original}-${n}`)
+    for (;;) {
+      const suffix = `-${n}`
+      const candidate = original.slice(0, EXCEL_SHEET_MAX - suffix.length) + suffix
+      if (!used.has(candidate.toLowerCase())) {
+        used.add(candidate.toLowerCase())
+        out.push(candidate)
+        break
+      }
+      n++
+    }
   }
   return out
 }
