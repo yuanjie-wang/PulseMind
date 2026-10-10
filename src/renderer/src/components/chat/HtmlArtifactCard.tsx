@@ -365,7 +365,7 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
     if (!filePath) {
       // 写盘失败曾静默无反应（full_20261011 M1-P2-3/X5）——「打开」没打开，
       // 用户只当按钮坏了。
-      reportSilentFailure('html-card-open')
+      reportSilentFailure('html-card-open', new Error('persistHtmlCopy returned null'))
       return
     }
     // Windows file: URIs are file:///C:/… — the same conversion
@@ -376,7 +376,7 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
   const onOpenInPreview = async (): Promise<void> => {
     const filePath = await persistHtmlCopy(code)
     if (!filePath) {
-      reportSilentFailure('html-card-open')
+      reportSilentFailure('html-card-open', new Error('persistHtmlCopy returned null'))
       return
     }
     openInPreviewPane(filePath)

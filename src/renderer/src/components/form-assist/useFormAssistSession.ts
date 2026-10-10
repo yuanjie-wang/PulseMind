@@ -34,6 +34,9 @@ export interface FormAssistSession<P extends object> {
   streamingBlocks: ContentBlock[]
   isBusy: boolean
   restoring: boolean
+  /** The conversation id (formAssistConversationId) — hosts thread it into
+   *  TranscriptView so 「存到知识库」 gets a real id (full_20261011 M5-P1). */
+  conversationId?: string
   /** The patch the latest assistant reply auto-applied — the undo bar binds
    *  to this. It clears when a NEWER assistant reply carries no patch (a
    *  prose answer retires the undo), the conversation switches, or the host
