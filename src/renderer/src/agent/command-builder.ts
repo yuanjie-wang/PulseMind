@@ -1,5 +1,24 @@
 import { shEscape, shSingleQuote, psEscape } from './agent-utils'
 
+/** search/find 的 search_dir 缺省与相对解析（audit 2026-10-10 #5）：执行器
+ *  的 shell 以 $HOME 兜底 cwd，search_dir 省略时曾等于全 home 扫描。缺省回
+ *  会话 workspace；相对路径挂 workspace（与主进程 file-ops resolvePath 同一
+ *  坐标系）；绝对路径与 ~ 原样（~ 由下方各命令构造器的 $HOME 前缀展开）。
+ *  只在真正执行 search/find 的执行器调用——审批/白名单侧的命令重建永远见不
+ *  到 read 档工具，不需要同一默认值。 */
+export function withDefaultSearchDir(
+  input: Record<string, unknown>,
+  workspaceDir?: string,
+): Record<string, unknown> {
+  const raw = String(input.search_dir || '').trim()
+  if (!raw || raw === '.') {
+    return workspaceDir ? { ...input, search_dir: workspaceDir } : input
+  }
+  if (/^[/\\]|[A-Za-z]:[/\\]/.test(raw) || raw.startsWith('~')) return input
+  const sep = workspaceDir?.includes('\\') ? '\\' : '/'
+  return workspaceDir ? { ...input, search_dir: workspaceDir + sep + raw } : input
+}
+
 export function buildCommandFromSkillInput(toolName: string, input: Record<string, unknown>, platform: string, ripgrepPath?: string | null): string {
   const isWin = platform === 'win32' || (
     !platform && typeof navigator !== 'undefined' && /Windows|Win64/i.test(navigator.userAgent)
@@ -12,14 +31,19 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       // token-level overflow is read's dedicated budget's job
       // (MAX_READ_RESULT_TOKENS in engine-constants).
       const limit = Math.min(Number(input.limit) || 500, 500)
+      // ~ 路径在引号里不展开（audit 2026-10-10 #6：read 是唯一没有 $HOME
+      // 前缀处理的文件命令）——按 list_dir 同款拼 $HOME。
+      const hasTilde = filePath.startsWith('~')
       if (isWin) {
+        const psPath = hasTilde ? '$env:USERPROFILE' + psEscape(filePath.slice(1)) : psEscape(filePath)
         if (input.binary === true) {
-          return `Format-Hex '${psEscape(filePath)}' | Select-Object -Skip ($(${offset}) - 1) -First ${limit} | Out-String -Width 4096`
+          return `Format-Hex '${psPath}' | Select-Object -Skip ($(${offset}) - 1) -First ${limit} | Out-String -Width 4096`
         }
-        return `Get-Content '${psEscape(filePath)}' -Encoding utf8 | Select-Object -Skip ($(${offset}) - 1) -First ${limit}`
+        return `Get-Content '${psPath}' -Encoding utf8 | Select-Object -Skip ($(${offset}) - 1) -First ${limit}`
       }
-      if (input.binary === true) return `xxd "${shEscape(filePath)}" | tail -n +${offset} | head -n ${limit}`
-      return `tail -n +${offset} "${shEscape(filePath)}" | head -n ${limit}`
+      const escapedPath = hasTilde ? '$HOME' + shEscape(filePath.slice(1)) : shEscape(filePath)
+      if (input.binary === true) return `xxd "${escapedPath}" | tail -n +${offset} | head -n ${limit}`
+      return `tail -n +${offset} "${escapedPath}" | head -n ${limit}`
     }
     case 'write':
       return '(IPC write — not executed via shell)'
@@ -90,14 +114,16 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
         let cmd = `"${shEscape(ripgrepPath)}" -n --no-heading -i --max-columns 200 ${shSingleQuote(query)} ${shSingleQuote(searchDir)}`
         cmd += includePatterns.map(p => ` -g ${shSingleQuote(p)}`).join('')
         cmd += excludePatterns.map(p => ` -g ${shSingleQuote('!' + p)}`).join('')
-        return cmd + ' 2>/dev/null | head -100'
+        // stderr 并进输出（audit 2026-10-10 #4）：管道以 head 收尾，rg 的退出
+        // 码到不了执行器——/dev/null 曾把正则错误这类真实失败一起吞成空输出。
+        return cmd + ' 2>&1 | head -100'
       }
       let cmd = `if command -v rg >/dev/null 2>&1; then rg -n --no-heading -i --max-columns 200 ${shSingleQuote(query)} ${shSingleQuote(searchDir)}`
       cmd += includePatterns.map(p => ` -g ${shSingleQuote(p)}`).join('')
       cmd += excludePatterns.map(p => ` -g ${shSingleQuote('!' + p)}`).join('')
-      cmd += ` 2>/dev/null; else grep -rn "${shEscape(query)}" "${shEscape(searchDir)}"`
+      cmd += ` 2>&1; else grep -rn "${shEscape(query)}" "${shEscape(searchDir)}"`
       cmd += mkGrepInclude(includePatterns) + mkGrepExclude(excludePatterns)
-      cmd += ` 2>/dev/null; fi | head -100`
+      cmd += ` 2>&1; fi | head -100`
       return cmd
     }
     case 'find': {
@@ -110,7 +136,15 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
         const typeParam = type === 'f' ? ' -File' : type === 'd' ? ' -Directory' : ''
         return `Get-ChildItem -Path '${psEscape(searchDir)}' -Recurse -Depth ${Math.min(maxDepth, 10)}${typeParam} -Force${pattern ? ` -Filter '${psEscape(pattern)}'` : ''} -ErrorAction SilentlyContinue | Where-Object { !$_.PSPath.Contains('\\.git\\') -and !$_.PSPath.Contains('\\node_modules\\') } | Select-Object -ExpandProperty FullName | Select-Object -First 100 | Out-String`
       }
-      const typeExpr = type ? `-type ${type}` : ''
+      // type 白名单（audit 2026-10-10 #2）：find 是 read 档（永不审批），
+      // 任意拼写曾原样插进 shell 串。
+      const typeExpr = type === 'f' || type === 'd' ? `-type ${type}` : ''
+      // extra_args 同一注入面（schema 把它宣传为逃生舱，但审批梯子按工具名
+      // 放行——带元字符的 extra_args 就是无审批的任意命令）。普通 find 谓词
+      // （-o -name "x"、-mtime -7）不含这些字符，误伤为零。
+      if (/[;|&`$()<>\n\r]/.test(extraArgs)) {
+        return 'echo "Error: extra_args contains shell metacharacters — pass plain find arguments only (e.g. -o -name \\"*.env*\\")"'
+      }
       const nameExpr = pattern ? `-iname ${shSingleQuote(pattern)}` : ''
       const cond = [typeExpr, nameExpr, extraArgs].filter(Boolean).join(' ')
       return `find ${shSingleQuote(searchDir)} -maxdepth ${Math.min(maxDepth, 10)} ${cond} -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | head -100`

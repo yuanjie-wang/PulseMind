@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { shEscape, shSingleQuote } from '../src/renderer/src/agent/agent-utils'
-import { buildCommandFromSkillInput } from '../src/renderer/src/agent/command-builder'
+import { buildCommandFromSkillInput, withDefaultSearchDir } from '../src/renderer/src/agent/command-builder'
 
 // review_20261005 P1-02/P1-03: shEscape targets "…" contexts and does not
 // escape ', yet command-builder interpolated its output inside '…' — one raw '
@@ -239,5 +239,106 @@ describe('getLineCount (read tool metadata)', () => {
     expect(needleQuoting(captured!, NEEDLE)).toEqual({ occurred: true, allInside: true })
     // Non-vacuity: the old double-quote-only build put $(…) in command-substitution range.
     expect(needleQuoting(`wc -l "x\\"; \\$(touch /tmp/pwned).txt"`, NEEDLE)).toEqual({ occurred: true, allInside: false })
+  })
+})
+
+// ── audit 2026-10-10 #2/#4/#5/#6（工具审计修复批）────────────────────────
+describe('find 的注入面（read 档 = 永不审批，参数即命令串）', () => {
+  it('type 白名单：f/d 原样，其他拼写不进命令串', () => {
+    expect(buildCommandFromSkillInput('find', { pattern: 'x', search_dir: '/w', type: 'f' }, 'darwin', null)).toContain('-type f')
+    expect(buildCommandFromSkillInput('find', { pattern: 'x', search_dir: '/w', type: 'd' }, 'darwin', null)).toContain('-type d')
+    // 旧形状 `-type ${type}` 曾把任意拼写插进 shell 串——注入面闭合
+    expect(buildCommandFromSkillInput('find', { search_dir: '/w', type: 'f; touch /tmp/pwned' }, 'darwin', null)).not.toContain('touch')
+    expect(buildCommandFromSkillInput('find', { search_dir: '/w', type: 'f; touch /tmp/pwned' }, 'darwin', null)).toContain('-maxdepth')
+  })
+
+  it('extra_args 带元字符 → 拒绝为错误命令，不执行', () => {
+    const cmd = buildCommandFromSkillInput('find', { search_dir: '/w', extra_args: `-o -name "x"; ${NEEDLE}` }, 'darwin', null)
+    expect(cmd.startsWith('echo "Error:')).toBe(true)
+    expect(cmd).not.toContain(NEEDLE)
+  })
+
+  it.runIf(process.platform !== 'win32')('extra_args 注入不执行（real /bin/sh）+ 旧形状负控', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-shq-find-'))
+    const marker = join(dir, 'pwned')
+    const cmd = buildCommandFromSkillInput('find', { search_dir: dir, extra_args: `; ${NEEDLE} ${marker}` }, 'darwin', null)
+    try {
+      spawnSync('/bin/sh', ['-c', cmd], { encoding: 'utf-8' })
+      expect(existsSync(marker)).toBe(false)
+      // Non-vacuity: the pre-fix raw interpolation really did split commands.
+      const oldCmd = `find '${dir}' -maxdepth 5 ; ${NEEDLE} ${marker} -not -path '*/node_modules/*' 2>/dev/null | head -100`
+      spawnSync('/bin/sh', ['-c', oldCmd], { encoding: 'utf-8' })
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('普通 extra_args 谓词照原样通过（负控：-o -name 组合不受影响）', () => {
+    const cmd = buildCommandFromSkillInput('find', { search_dir: '/w', extra_args: '-o -name "*.env*"' }, 'darwin', null)
+    expect(cmd).toContain(`-o -name "*.env*"`)
+    expect(cmd).toContain('-maxdepth')
+  })
+})
+
+describe('search 的 stderr 通道与默认目录', () => {
+  it('rg 分支 stderr 并进输出（2>&1）——正则错误这类真实失败不再被吞成空输出', () => {
+    const cmd = buildCommandFromSkillInput('search', { query: 'x', search_dir: '/w' }, 'darwin', '/usr/local/bin/rg')
+    expect(cmd).toContain("2>&1 | head -100")
+    expect(cmd).not.toContain('2>/dev/null | head')
+  })
+
+  it('grep 回退分支同样 2>&1（rg 臂与 else 臂都在）', () => {
+    const cmd = buildCommandFromSkillInput('search', { query: 'x', search_dir: '/w' }, 'darwin', null)
+    expect((cmd.match(/2>&1/g) || []).length).toBeGreaterThanOrEqual(2)
+    expect(cmd).not.toContain('2>/dev/null;')
+  })
+})
+
+describe('read 的 ~ 路径在引号里不展开 → 拼 $HOME', () => {
+  it('POSIX：tail/xxd 的路径带 $HOME 前缀（与 list_dir 同款）', () => {
+    const tail = buildCommandFromSkillInput('read', { file_path: '~/.pulsemind/mem.md' }, 'darwin', null)
+    expect(tail).toContain(`tail -n +1 "$HOME`)
+    const xxd = buildCommandFromSkillInput('read', { file_path: '~/.pulsemind/mem.md', binary: true }, 'darwin', null)
+    expect(xxd).toContain(`xxd "$HOME`)
+  })
+
+  it('普通绝对路径不带 $HOME（负控）', () => {
+    const cmd = buildCommandFromSkillInput('read', { file_path: '/tmp/a.txt' }, 'darwin', null)
+    expect(cmd).toContain(`tail -n +1 "/tmp/a.txt"`)
+    expect(cmd).not.toContain('$HOME')
+  })
+
+  it('getLineCount 同样拼 $HOME（~ 文件的行数统计不再恒 0）', async () => {
+    const { setHost } = await import('../src/renderer/src/agent/host')
+    const { ToolExecutor } = await import('../src/renderer/src/agent/tool-executors')
+    let captured: string | null = null
+    setHost({
+      execCommandSync: async (cmd: string) => { captured = cmd; return { code: 0, output: '7 ~/x\n' } },
+    } as never)
+    const executor = new ToolExecutor({ platformInfo: { platform: 'darwin' } } as never, new Map(), {} as never, {} as never, () => {}, () => {})
+    await (executor as unknown as { getLineCount(p: string): Promise<number> }).getLineCount('~/notes.md')
+    expect(captured).toContain(`wc -l $HOME`)
+  })
+})
+
+describe('withDefaultSearchDir（search/find 的目录坐标）', () => {
+  it('缺省回 workspace；无 workspace 时维持 "."（命令构造器的原默认）', () => {
+    expect(withDefaultSearchDir({ query: 'x' }, '/ws')).toEqual({ query: 'x', search_dir: '/ws' })
+    expect(withDefaultSearchDir({ query: 'x' })).toEqual({ query: 'x' })
+  })
+
+  it('相对路径挂 workspace（与主进程 file-ops resolvePath 同一坐标系）', () => {
+    expect(withDefaultSearchDir({ query: 'x', search_dir: 'src' }, '/ws')).toEqual({ query: 'x', search_dir: '/ws/src' })
+    expect(withDefaultSearchDir({ query: 'x', search_dir: '.' }, '/ws')).toEqual({ query: 'x', search_dir: '/ws' })
+  })
+
+  it('绝对路径与 ~ 原样（~ 由命令构造器的 $HOME 前缀展开）', () => {
+    expect(withDefaultSearchDir({ query: 'x', search_dir: '/abs/dir' }, '/ws')).toEqual({ query: 'x', search_dir: '/abs/dir' })
+    expect(withDefaultSearchDir({ query: 'x', search_dir: '~/docs' }, '/ws')).toEqual({ query: 'x', search_dir: '~/docs' })
+  })
+
+  it('Windows 工作区用反斜杠拼接', () => {
+    expect(withDefaultSearchDir({ query: 'x', search_dir: 'src' }, 'C:\\ws')).toEqual({ query: 'x', search_dir: 'C:\\ws\\src' })
   })
 })

@@ -3,7 +3,7 @@ import { ExecutionFlow } from '../src/renderer/src/agent/engine/execution-flow'
 import { setHost } from '../src/renderer/src/agent/host'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import type { EngineCore } from '../src/renderer/src/agent/engine/engine-core'
-import { refreshMcpServers, disposeCache } from '../src/renderer/src/agent/mcp-cache'
+import { refreshMcpServers } from '../src/renderer/src/agent/mcp-cache'
 import type { AgentMessage, ToolUseBlock } from '../src/renderer/src/types/agent'
 
 /**
@@ -531,6 +531,33 @@ describe('ExecutionFlow 审批梯子与白名单', () => {
     expect(ran.sort()).toEqual(['mcp_free', 'mcp_orphan'])
     expect(raw.pendingToolIds.has('t_gated')).toBe(true)
     expect(raw.agentStatus.status).toBe('awaiting_approval')
+  })
+
+  // audit 2026-10-10 #1：install(type=mcp) 注册完立即拉起 stdio 进程——信任组
+  // 曾让它对审批梯子隐身。梯子按 exec 档扣留；skill 分支只写文件，留在信任组。
+  it('install(type=mcp) 在 outside-ask 被持有；放行后路由到 execInstall 而非 shell 默认', async () => {
+    const { raw, flow, calls } = makeCore({ opts: { approvalMode: 'outside-ask' } })
+    const inst = toolUse('t1', 'install', { type: 'mcp', config: { name: 'x', command: 'bash', args: ['-c', 'echo hi'] } })
+    raw.messages.push(msg([inst]))
+    await flow.handleToolUseResponse([inst])
+    expect(calls.executor).toHaveLength(0)
+    expect(raw.pendingToolIds.has('t1')).toBe(true)
+    expect(raw.agentStatus.status).toBe('awaiting_approval')
+    await flow.approveTool('t1')
+    expect(calls.executor).toEqual([['execInstall', 'install']])
+  })
+
+  it('install(type=skill) 留在信任组：outside-ask 也照常自动执行', async () => {
+    const { flow, calls, raw } = makeCore({ opts: { approvalMode: 'outside-ask' } })
+    await flow.handleToolUseResponse([toolUse('t1', 'install', { type: 'skill', content: '---\nname: x\n---\nbody' })])
+    expect(calls.executor).toEqual([['execInstall', 'install']])
+    expect(raw.agentStatus.status).not.toBe('awaiting_approval')
+  })
+
+  it('auto 模式 install(type=mcp) 照常自动执行（全访问档没有要绕的梯子）', async () => {
+    const { flow, calls } = makeCore({ opts: { approvalMode: 'auto' } })
+    await flow.handleToolUseResponse([toolUse('t1', 'install', { type: 'mcp', config: { name: 'x', command: 'bash' } })])
+    expect(calls.executor).toEqual([['execInstall', 'install']])
   })
 })
 

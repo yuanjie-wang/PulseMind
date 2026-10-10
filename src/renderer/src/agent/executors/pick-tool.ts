@@ -23,15 +23,15 @@ interface PickCandidate {
 export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSelectedTools: (names: string[]) => void): Promise<void> {
   t.status = 'running'; ex.notify()
   try {
-    // Helper: fetch all candidate tools — connected MCP tools + gated built-in tools.
-    // Gated built-ins wear synthetic per-category serverIds (`builtin:<category>`,
-    // e.g. `builtin:git`) so the MCP selection logic (names / serverName / intent)
-    // applies to them uniformly, mirroring per-server granularity.
+    // 可用连接器白名单（专家 / 子代理）：白名单外的服务器连候选都不进，
+    // 否则 pick_tool 会成为绕过限制的入口。undefined = 不限制，空数组 = 一个
+    // 都不许用。三个模式共用——serverName/intent 曾绕过这份过滤直接列全量
+    // 服务器，信封承诺「now available」的武器在受限会话里永远调不动
+    // （audit 2026-10-10 #8；引擎侧 mcpToolOwner 只装白名单服务器，漏的只是
+    // 信封诚实性，这里是把源头顶回去）。
+    const allowedServers = ex.opts.allowedMcpServers ? new Set(ex.opts.allowedMcpServers) : null
     const fetchCandidateTools = async () => {
       const servers = await getHost().mcpListServers()
-      // 可用连接器白名单（专家 / 子代理）：白名单外的服务器连候选都不进，
-      // 否则 pick_tool 会成为绕过限制的入口。undefined = 不限制，空数组 = 一个都不许用。
-      const allowedServers = ex.opts.allowedMcpServers ? new Set(ex.opts.allowedMcpServers) : null
       const all: PickCandidate[] = []
       for (const server of servers) {
         if (server.status !== 'connected') continue
@@ -107,7 +107,7 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
     // ── Mode 2: select by server name (new) ────────────────────────
     const serverNameInput = String(t.input?.serverName || '').trim()
     if (serverNameInput) {
-      const servers = await getHost().mcpListServers()
+      const servers = (await getHost().mcpListServers()).filter(s => !allowedServers || allowedServers.has(s.id))
       // Match by id first, then by name (case-insensitive)
       const matchedServer = servers.find(s =>
         s.id.toLowerCase() === serverNameInput.toLowerCase() ||
@@ -167,8 +167,10 @@ export async function execPickTool(ex: ToolExecContext, t: ToolUseBlock, setSele
       t.exitCode = 0; t.status = 'completed'; ex.notify(); return
     }
 
-    // Build server-level summary list for the server selection agent
-    const servers2 = await getHost().mcpListServers()
+    // Build server-level summary list for the server selection agent — the
+    // same whitelist filter as everywhere else, or the agent would hand back
+    // ids whose tools fetchCandidateTools never carried ("No tools found").
+    const servers2 = (await getHost().mcpListServers()).filter(s => !allowedServers || allowedServers.has(s.id))
     let serverList = servers2
       .filter(s => s.status === 'connected')
       .map(s => {

@@ -19,7 +19,7 @@ function t(id: string, name: string, input: Record<string, unknown> = {}, extra:
 }
 
 function makeHarness(over: { opts?: Record<string, unknown> } = {}) {
-  const results: Array<{ id: string, content: string, isError: boolean, maxTokens?: number }> = []
+  const results: Array<{ id: string, content: string, isError: boolean, maxTokens?: number, image?: string }> = []
   const host = {
     execCommandSync: vi.fn(async () => ({ code: 0, output: 'out' })),
     getFileStat: vi.fn(async () => ({ size: 500 })),
@@ -49,8 +49,8 @@ function makeHarness(over: { opts?: Record<string, unknown> } = {}) {
     new Map([['mcp_free', 'srv_free']]),
     {} as never,
     { execute: vi.fn(async () => 'office') } as never,
-    (id: string, content: string, isError: boolean, _image?: string, maxTokens?: number) => {
-      results.push({ id, content, isError, maxTokens })
+    (id: string, content: string, isError: boolean, image?: string, maxTokens?: number) => {
+      results.push({ id, content, isError, maxTokens, image })
     },
     () => {},
   )
@@ -533,5 +533,115 @@ describe('export_document — deck 退役指引可达（review_20261006 中9）'
     const h = makeHarness()
     await h.executor.execWorkspaceTool(t('t3', 'export_document', { format: 'pptx' }))
     expect(h.results[0].content).toContain('content / sourcePath / htmlPath 三选一')
+  })
+})
+
+// ── audit 2026-10-10（工具审计修复批）─────────────────────────────────────
+describe('execReadOnlyTools — search 语义与目录坐标（#4/#5/#6）', () => {
+  it('search 空输出 → No matches found.，非错误（rg/grep 无匹配退出码 1）', async () => {
+    const { executor, host, results } = makeHarness({ opts: { platformInfo: { platform: 'darwin' } } })
+    ;(host.execCommandSync as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ code: 1, output: '' })
+    await executor.execReadOnlyTools([t('t1', 'search', { query: 'ghost' })])
+    expect(results[0]).toMatchObject({ content: 'No matches found.', isError: false })
+  })
+
+  it('search 非空输出（含 2>&1 并入的错误文本）→ 原样放行，非错误', async () => {
+    const { executor, host, results } = makeHarness({ opts: { platformInfo: { platform: 'darwin' } } })
+    ;(host.execCommandSync as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ code: 0, output: 'rg: error: bad regex' })
+    await executor.execReadOnlyTools([t('t1', 'search', { query: '(' })])
+    expect(results[0]).toMatchObject({ content: 'rg: error: bad regex', isError: false })
+  })
+
+  it('search 省略 search_dir → 命令落在 workspaceDir；find 相对路径挂 workspace', async () => {
+    const { executor, host } = makeHarness({ opts: { platformInfo: { platform: 'darwin' }, workspaceDir: '/ws' } })
+    const mock = host.execCommandSync as ReturnType<typeof vi.fn>
+    mock.mockResolvedValue({ code: 0, output: 'hit' })
+    await executor.execReadOnlyTools([t('t1', 'search', { query: 'x' })])
+    expect(mock.mock.calls[0][0] as string).toContain(`'x' '/ws'`)
+    await executor.execReadOnlyTools([t('t2', 'find', { pattern: 'y', search_dir: 'src' })])
+    expect(mock.mock.calls[1][0] as string).toContain(`find '/ws/src'`)
+  })
+
+  it('read 相对 file_path 挂 workspaceDir——stat 与 shell 同一坐标（#6）', async () => {
+    const { executor, host } = makeHarness({ opts: { platformInfo: { platform: 'darwin' }, workspaceDir: '/ws' } })
+    await executor.execReadOnlyTools([t('t1', 'read', { file_path: 'src/a.ts' })])
+    expect(host.getFileStat).toHaveBeenCalledWith('/ws/src/a.ts')
+    const cmd = (host.execCommandSync as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(cmd).toContain('tail -n +1 "/ws/src/a.ts"')
+  })
+
+  it('read 的 ~ 路径原样到达（挂 workspace 会拼出字面量 ~ 目录）', async () => {
+    const { executor, host } = makeHarness({ opts: { platformInfo: { platform: 'darwin' }, workspaceDir: '/ws' } })
+    await executor.execReadOnlyTools([t('t1', 'read', { file_path: '~/.pulsemind/mem.md' })])
+    expect(host.getFileStat).toHaveBeenCalledWith('~/.pulsemind/mem.md')
+    const cmd = (host.execCommandSync as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(cmd).toContain('tail -n +1 "$HOME')
+  })
+
+  it('list_dir 相对 dir_path 挂 workspaceDir', async () => {
+    const { executor, host } = makeHarness({ opts: { platformInfo: { platform: 'darwin' }, workspaceDir: '/ws' } })
+    await executor.execReadOnlyTools([t('t1', 'list_dir', { dir_path: 'sub' })])
+    const cmd = (host.execCommandSync as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(cmd).toContain('ls -la "/ws/sub"')
+  })
+})
+
+describe('execBrowser — 多截图信封（#7）', () => {
+  it('多张时如实说仅附第 1 张，imageData 仍是第一张', async () => {
+    const { executor, host, results } = makeHarness()
+    ;(host.browserRunCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      result: 'ok', console: [], images: [{ base64: 'AAA' }, { base64: 'BBB' }],
+    })
+    await executor.execBrowser(t('t1', 'browser', { code: 'x' }))
+    expect(results[0].content).toContain('2 张截图')
+    expect(results[0].content).toContain('仅第 1 张已附加')
+    expect(results[0].image).toBe('AAA')
+  })
+
+  it('单张时维持原文案（负控）', async () => {
+    const { executor, host, results } = makeHarness()
+    ;(host.browserRunCode as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      result: 'ok', console: [], images: [{ base64: 'AAA' }],
+    })
+    await executor.execBrowser(t('t1', 'browser', { code: 'x' }))
+    expect(results[0].content).toContain('[1 张截图已附加]')
+    expect(results[0].content).not.toContain('仅第 1 张')
+  })
+})
+
+describe('execPickSkill — 白名单只拦技能不拦经验（#9）', () => {
+  it('受限会话按名读经验放行（旧形状先按白名单拒绝任何名字）', async () => {
+    const h = makeHarness({ opts: {
+      allowedSkills: ['other'],
+      skillManager: { getSkill: () => undefined, getEnabledSkills: () => [] },
+      experienceManager: { read: vi.fn(async () => 'EXP BODY'), list: vi.fn(async () => [{ name: 'exp1', dir: '/exp/exp1' }]), touch: vi.fn(async () => {}) },
+    } })
+    await h.executor.execPickSkill(t('t1', 'pick_skill', { name: 'exp1' }))
+    expect(h.results[0].isError).toBe(false)
+    expect(h.results[0].content).toContain('## Selected Experience: exp1')
+  })
+
+  it('受限会话按名读白名单外技能仍拒（裁定不变）', async () => {
+    const skillDef = { name: 'office', description: 'desc', category: 'cat', systemPrompt: 'SP' }
+    const h = makeHarness({ opts: {
+      allowedSkills: ['other'],
+      skillManager: { getSkill: () => ({ definition: skillDef }), getEnabledSkills: () => [] },
+    } })
+    await h.executor.execPickSkill(t('t1', 'pick_skill', { name: 'office' }))
+    expect(h.results[0].isError).toBe(true)
+    expect(h.results[0].content).toContain("not in this session's allowed skills")
+  })
+
+  it('intent 路径选中经验：受限会话放行（同一裁定）', async () => {
+    const skillDef = { name: 'office', description: 'desc', category: 'cat', systemPrompt: 'SP' }
+    const h = makeHarness({ opts: {
+      allowedSkills: ['office'],
+      skillManager: { getSkill: (name: string) => (name === 'office' ? { definition: skillDef } : undefined), getEnabledSkills: () => [{ definition: skillDef }] },
+      experienceManager: { read: vi.fn(async () => 'EXP BODY'), list: vi.fn(async () => [{ name: 'exp1', description: 'd' }]), touch: vi.fn(async () => {}) },
+    } })
+    ;((h.executor as unknown as { skillSelectionAgent: { execute: ReturnType<typeof vi.fn> } }).skillSelectionAgent.execute).mockResolvedValueOnce('exp1')
+    await h.executor.execPickSkill(t('t1', 'pick_skill', { intent: 'x' }))
+    expect(h.results[0].isError).toBe(false)
+    expect(h.results[0].content).toContain('## Selected Experience: exp1')
   })
 })

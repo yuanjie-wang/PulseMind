@@ -16,7 +16,7 @@ import type { AgentEngineOptions } from './AgentEngine'
 import type { SpawnSubAgentConfig, SubAgentHandle } from './agent-utils'
 import type { Plan } from '../../../shared/types/plan'
 import { writeFileChunked } from './agent-utils'
-import { buildCommandFromSkillInput } from './command-builder'
+import { buildCommandFromSkillInput, withDefaultSearchDir } from './command-builder'
 import { shSingleQuote } from './agent-utils'
 import { SkillKeywordAgent, SkillSelectionAgent } from './one-shot-agent'
 import { saveImagesInText } from './image-utils'
@@ -198,11 +198,13 @@ export class ToolExecutor implements ToolExecContext {
     }
   }
 
-  /** Resolve relative file_path against workspaceDir when set. */
+  /** Resolve relative file_path against workspaceDir when set. `~` passes
+   *  through untouched: the main process's expandTilde is the authority, and
+   *  joining it here would spell a literal `<workspace>/~/...` directory. */
   private resolveWorkspacePath(filePath: string): string {
     const wd = this.opts.workspaceDir
     if (!wd) return filePath
-    if (/^[/\\]|[A-Za-z]:[/\\]/.test(filePath)) return filePath
+    if (/^[/\\]|[A-Za-z]:[/\\]/.test(filePath) || filePath.startsWith('~')) return filePath
     const sep = wd.includes('\\') ? '\\' : '/'
     return wd + sep + filePath
   }
@@ -264,9 +266,11 @@ export class ToolExecutor implements ToolExecContext {
       // The POSIX branch used to escape only `"` while riding a DOUBLE-quoted
       // context — `$( )`/backtick in the path executed as command substitution
       // (review_20261005 P1-03). '…' + shSingleQuote leaves nothing to escape.
+      // ~ 不进引号（引号里不展开），按 read 命令同款拼 $HOME。
+      const hasTilde = filePath.startsWith('~')
       const cmd = isWin
-        ? `(Get-Content '${filePath.replace(/'/g, "''")}' -Encoding utf8 | Measure-Object -Line).Lines`
-        : `wc -l ${shSingleQuote(filePath)}`
+        ? `(Get-Content '${hasTilde ? '$env:USERPROFILE' + filePath.slice(1).replace(/'/g, "''") : filePath.replace(/'/g, "''")}' -Encoding utf8 | Measure-Object -Line).Lines`
+        : `wc -l ${hasTilde ? '$HOME' + shSingleQuote(filePath.slice(1)) : shSingleQuote(filePath)}`
       const r = await getHost().execCommandSync(cmd)
       if (r.code === 0) {
         const trimmed = r.output.trim()
@@ -300,7 +304,10 @@ export class ToolExecutor implements ToolExecContext {
         }
         // ── `read` tool: metadata header + content ────────────────────
         if (t.name === 'read') {
-          const filePath = String(t.input?.file_path || '')
+          // 相对路径挂 workspace、~ 原样（audit 2026-10-10 #6）：stat/markitdown
+          // 走主进程的 workspace 坐标，shell 曾按 $HOME 解析同一相对路径——两套
+          // 坐标让文本文件读取必败而元数据头还显示 stat 成功。
+          const filePath = this.resolveWorkspacePath(String(t.input?.file_path || ''))
           const offset = Number(t.input?.offset) || 1
           // read rides a dedicated budget (MAX_READ_RESULT_TOKENS) instead of
           // the 4K default, so still bound its page size here: the LLM's
@@ -344,7 +351,7 @@ export class ToolExecutor implements ToolExecContext {
           }
 
           // shell path (text files, or markitdown fallback)
-          const cmd = buildCommandFromSkillInput(t.name, { ...t.input, limit }, platform, this.opts.platformInfo?.ripgrepPath)
+          const cmd = buildCommandFromSkillInput(t.name, { ...t.input, file_path: filePath, limit }, platform, this.opts.platformInfo?.ripgrepPath)
           const cwd = String(t.input?.cwd || '')
           const timeoutMs = t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined
           const result = await getHost().execCommandSync(cmd, cwd || undefined, timeoutMs)
@@ -370,12 +377,29 @@ export class ToolExecutor implements ToolExecContext {
         }
 
         // ── Other read-only tools ─────────────────────────────────────
-        const cmd = buildCommandFromSkillInput(t.name, t.input || {}, platform, this.opts.platformInfo?.ripgrepPath)
+        // search/find 的 search_dir 缺省回 workspace、相对挂 workspace（audit
+        // 2026-10-10 #5：shell cwd 以 $HOME 兜底，省略曾等于全 home 扫描）；
+        // list_dir 的 dir_path 与 read 的 file_path 同一坐标系。审批/白名单
+        // 侧的命令重建永远见不到 read 档工具，不需要镜像这份默认值。
+        let genericInput: Record<string, unknown> = t.input || {}
+        if (t.name === 'search' || t.name === 'find') {
+          genericInput = withDefaultSearchDir(genericInput, this.opts.workspaceDir)
+        } else if (t.name === 'list_dir') {
+          genericInput = { ...genericInput, dir_path: this.resolveWorkspacePath(String(genericInput.dir_path || '')) }
+        }
+        const cmd = buildCommandFromSkillInput(t.name, genericInput, platform, this.opts.platformInfo?.ripgrepPath)
         const cwd = String(t.input?.cwd || '')
         const timeoutMs = t.input.timeout != null ? Number(t.input.timeout) * 1000 : undefined
         const result = await getHost().execCommandSync(cmd, cwd || undefined, timeoutMs)
         const output = result.output
         t.status = 'completed'; t.exitCode = result.code; t.output = output
+        // search：空输出是「无匹配」不是错误（audit 2026-10-10 #4）——rg/grep
+        // 无匹配退出码 1 曾被标成 is_error；真实失败的退出码又被尾部 head 的 0
+        // 掩盖，只有命令侧 2>&1 并进来的 stderr 文本会说话，非空即原样放行。
+        if (t.name === 'search') {
+          this.addToolResult(t.id, output || 'No matches found.', false)
+          return
+        }
         this.addToolResult(t.id, output || (result.code !== 0 ? `Command failed (exit: ${result.code})` : '(no output)'), result.code !== 0)
       } catch (err) {
         t.status = 'completed'; t.exitCode = -1
@@ -667,14 +691,18 @@ export class ToolExecutor implements ToolExecContext {
       // Expert/spawn skill whitelist: skills outside the pack are off-limits
       // (`undefined` = no restriction; an empty set blocks every skill).
       // Experiences stay readable — they're progressive-disclosure records.
+      // The gate therefore fires on REGISTERED SKILLS only (audit 2026-10-10
+      // #9): the old pre-check rejected every name before the experience
+      // lookup, so a restricted expert could not read any experience at all —
+      // the opposite of this comment. The intent branch below mirrors it.
       const allowedSkillSet = this.opts.allowedSkills ? new Set(this.opts.allowedSkills) : null
-      if (skillName && allowedSkillSet && !allowedSkillSet.has(skillName)) {
-        const msg = `Skill "${skillName}" is not in this session's allowed skills (${[...allowedSkillSet].join(', ')}). Work with what's available.`
-        this.addToolResult(t.id, msg, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return
-      }
       if (skillName) {
         t.output = `Looking up skill: ${skillName}...`; this.notify()
         const skill = sm!.getSkill(skillName)
+        if (skill && allowedSkillSet && !allowedSkillSet.has(skillName)) {
+          const msg = `Skill "${skillName}" is not in this session's allowed skills (${[...allowedSkillSet].join(', ')}). Work with what's available.`
+          this.addToolResult(t.id, msg, true); t.exitCode = 1; t.status = 'completed'; this.notify(); return
+        }
         if (skill) {
           const def = await this.freshSkillDefinition(skillName, skill.definition)
           this.addToolResult(t.id, formatSelectedSkill(skill.definition.name, def, this.opts.skillsDir), false)
@@ -707,13 +735,16 @@ export class ToolExecutor implements ToolExecContext {
       )
       if (!selectedName) { this.addToolResult(t.id, 'No matching skill found.', false); t.exitCode = 0; t.status = 'completed'; this.notify(); return }
       const cleanName = selectedName.trim()
-      if (allowedSkillSet && !allowedSkillSet.has(cleanName)) {
+      // 与名字分支同一裁定（audit 2026-10-10 #9）：白名单只拦技能。候选表里的
+      // 经验没有过滤（progressive disclosure），选中经验必须放行，否则受限
+      // 专家看到的候选永远选不中。
+      const selectedSkill = sm!.getSkill(cleanName)
+      if (selectedSkill && allowedSkillSet && !allowedSkillSet.has(cleanName)) {
         this.addToolResult(t.id, `"${cleanName}" selected but it is outside this session's allowed skills. Pick from: ${[...allowedSkillSet].join(', ')}.`, true)
         t.exitCode = 1; t.status = 'completed'; this.notify(); return
       }
-      const skill = sm!.getSkill(cleanName)
-      if (skill) {
-        const def = await this.freshSkillDefinition(cleanName, skill.definition)
+      if (selectedSkill) {
+        const def = await this.freshSkillDefinition(cleanName, selectedSkill.definition)
         this.addToolResult(t.id, formatSelectedSkill(cleanName, def, this.opts.skillsDir), false)
         t.exitCode = 0; t.status = 'completed'; this.notify(); return
       }
@@ -774,7 +805,10 @@ export class ToolExecutor implements ToolExecContext {
       // a label. Single values (`clicked`, `42`) keep the one-line form.
       parts.push(r.result.includes('\n') ? `Result:\n${r.result}` : `Result: ${r.result}`)
       if (r.console.length > 0) parts.push(`Console:\n${r.console.slice(0, 20).join('\n')}`)
-      if (r.images.length > 0) parts.push(`[${r.images.length} 张截图已附加]`)
+      // imageData 通道一次只载一张（audit 2026-10-10 #7）：旧文案谎报 N 张已
+      // 附加，第 2+ 张其实静默丢弃——如实说，并把取回方式指出来。
+      if (r.images.length === 1) parts.push('[1 张截图已附加]')
+      else if (r.images.length > 1) parts.push(`[${r.images.length} 张截图：仅第 1 张已附加为图片——要看其余的，把 emitImage 拆到单独的调用里逐张取]`)
       t.exitCode = r.error ? 1 : 0
       t.status = 'completed'
       const text = parts.join('\n\n')

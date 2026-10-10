@@ -34,7 +34,9 @@ export function pageToolTier(name: string): SandboxToolTier | null {
  *  Deliberately NOT the whole story for the desktop groups: the system/memory/
  *  knowledge tools answer 'exec' here yet are never held, because they are
  *  dispatched as trusted groups rather than through the ladder (a pre-existing
- *  exemption — `browser` is one of them, see execution-flow's heldTools). Use
+ *  exemption — `browser` AND `webfetch` are among them, see execution-flow's
+ *  isSystemTool and the requiresApproval note in shared/sandbox/policy.ts).
+ *  Net effect: network egress runs unattended at every approval level. Use
  *  this for page tools, which have no such exemption, and for display.
  *  `exec_logs` answers 'read' for the same reason it is NOT in READ_TIER_TOOLS:
  *  that set selects the *executor* (the native file reader), while its dispatch

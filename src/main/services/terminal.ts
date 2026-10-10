@@ -149,8 +149,17 @@ export async function svcExecuteCommand(
     ? ['powershell.exe', ['-NoProfile', '-Command', `${WIN_PS_UTF8_PREFIX}${command}`]]
     : [process.env.SHELL || '/bin/bash', ['-c', command]]
 
-  // Agent sessions confine the default cwd to the workspace; approval + audit
+  // Agent sessions confine the DEFAULT cwd to the workspace; approval + audit
   // are the controls (the former OS-level hard isolation is gone with projects).
+  // DOCUMENTED ASYMMETRY — do not "fix" silently (2026-10-10 audit #11): an
+  // EXPLICIT cwd from the agent is NOT jailed here, while the renderer IPC
+  // channel (ipc/terminal.handler.ts gateRendererExecution) mechanically
+  // rejects one outside the workspace. The handler's jail exists because a
+  // renderer reach-around (XSS) has no approval ladder to answer to; the
+  // agent's exec sits on the exec rung and answers to the user at every level
+  // above 'auto', and a shell can `cd` (or read absolute paths) anywhere
+  // anyway — a cwd jail on THIS path would be theater, so the controls here
+  // are the ladder and the audit row above.
   const sandboxCtx = currentSessionSandbox()
   const effectiveCwd = cwd || sandboxCtx?.workspaceDir || getHomeDir()
   ensureWorkspaceCwd(effectiveCwd)
@@ -235,9 +244,18 @@ export async function svcExecuteCommand(
       if (!text) return // incomplete sequence held for the next chunk
       entry.stdout += text
       if (entry.stdout.length > OUTPUT_LIMIT) {
+        // Cap + kill is the runaway guard (a chatty process must not outlive
+        // its own noise). Flush the decoder first — the kill lands mid-stream
+        // and the held incomplete sequence would otherwise be lost (the idle/
+        // wall paths below flush the same way). The model-facing recovery for
+        // a cut-up JSON is the tool-result offload: the captured head rides
+        // addToolResult's budget, whose marker points at the trunc/ read-back
+        // file — keep this line factual about WHAT happened.
+        const tail = outDecoder.flush()
+        if (tail) entry.stdout += tail
         entry.stdout = entry.stdout.slice(0, OUTPUT_LIMIT)
         killProcess(entry)
-        emit.output(processId, 'stderr', '\n[Output limit exceeded: 1MB]')
+        emit.output(processId, 'stderr', '\n[Output limit exceeded: 1MB — the process was stopped; output past the cap was discarded, the kept head is in this result]')
         return
       }
       emit.output(processId, 'stdout', text)

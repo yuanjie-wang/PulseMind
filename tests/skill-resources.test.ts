@@ -214,7 +214,9 @@ describe('the skill location reaches the model — the references read path', ()
     // the file its **Location:** line advertises must be the same text, not
     // the never-refreshed registry copy.
     expect(src).toContain('await this.freshSkillDefinition(skillName, skill.definition)')
-    expect(src).toContain('await this.freshSkillDefinition(cleanName, skill.definition)')
+    // intent 分支的局部变量在 audit 2026-10-10 #9 改名为 selectedSkill（白名单
+    // 只拦技能的判定要先查注册表）——磁盘新读的契约不变。
+    expect(src).toContain('await this.freshSkillDefinition(cleanName, selectedSkill.definition)')
     expect(src).toContain('formatSelectedSkill(skill.definition.name, def, this.opts.skillsDir)')
     expect(src).toContain('formatSelectedSkill(cleanName, def, this.opts.skillsDir)')
   })

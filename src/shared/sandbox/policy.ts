@@ -17,7 +17,9 @@ export function toSandboxApprovalMode(raw: unknown): SandboxApprovalMode | undef
 
 /** The level a conversation that never chose one runs at — 按需确认: reads and
  *  workspace writes run unattended, everything that leaves the workspace (shell,
- *  page_execute_js, gated MCP tools) waits for a click.
+ *  page_execute_js, gated MCP tools) waits for a click. `webfetch`/`browser`
+ *  do NOT wait — they ride the trusted system group past the ladder (see the
+ *  requiresApproval note below), so network egress runs unattended here too.
  *
  *  Deliberately not 'auto': the unrestricted level is a widening the user asks
  *  for (the UI tints it orange for exactly that reason), so it must never be
@@ -42,8 +44,16 @@ export type SandboxToolTier = 'read' | 'write' | 'exec'
 
 /** The approval ladder, as one decision the engine consults per tool:
  *  'auto' runs everything; 'outside-ask' holds calls that leave the workspace
- *  (shell, ungrouped tools, MCP tools declaring requireApproval); 'always-ask'
- *  also holds file writes and edits.
+ *  (shell/exec, ungrouped tools, install(mcp), MCP tools declaring
+ *  requireApproval); 'always-ask' also holds file writes and edits.
+ *
+ *  DOCUMENTED EXEMPTION — do not "fix" the inconsistency silently (2026-10-10
+ *  audit #2): `webfetch` and `browser` answer 'exec' here yet are NEVER held,
+ *  because the engine dispatches them as trusted system groups
+ *  (execution-flow's isSystemTool), not through this ladder — a pre-existing
+ *  exemption, see tool-tiers.ts' header for the other half of the note.
+ *  Network egress therefore runs unattended at every level including
+ *  'always-ask'. Tightening that is a product decision, not a drive-by edit.
  *
  *  `allowlisted` short-circuits the ladder (PLAN-coding-contract #5): the
  *  command's stable prefix is in the session's 「本会话总是允许」 set, which the

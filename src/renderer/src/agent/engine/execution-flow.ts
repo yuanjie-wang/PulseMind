@@ -117,6 +117,12 @@ export class ExecutionFlow {
       await this.engine.toolExecutor.execPageTool(targetBlock)
       return
     }
+    // install 的 MCP 分支被 exec 档扣留（audit 2026-10-10 #1）——放行后从这
+    // 里进执行器；没有这行它会掉进下面的 shell 默认路径被当命令执行。
+    if (targetBlock.name === 'install') {
+      await this.engine.toolExecutor.execInstall(targetBlock)
+      return
+    }
 
     // ask_user — no tool_result yet, wait for respondToTool
     if (targetBlock.name === 'ask_user') {
@@ -381,7 +387,13 @@ export class ExecutionFlow {
     const pageReadTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) === 'read')
     const pageWriteTools = tools.filter(t => isPageTool(t.name) && tierOfTool(t.name) !== 'read')
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
-    const systemTools = tools.filter(t => isSystemTool(t.name))
+    // install(type=mcp) 是 exec 档决定（audit 2026-10-10 #1）：注册完立即
+    // mcpStartServer 拉起 stdio command——信任组曾让它对审批梯子隐身，一条
+    // 注入指令就能在 outside-ask 下绕过 exec 审批拿到进程启动。skill 分支
+    // 只写文件不执行，留在信任组。梯子按 exec 档扣留（与 shell 同档）。
+    const isInstallMcp = (t: ToolUseBlock): boolean => t.name === 'install' && String(t.input?.type || '') === 'mcp'
+    const systemTools = tools.filter(t => isSystemTool(t.name) && !isInstallMcp(t))
+    const installMcpTools = tools.filter(isInstallMcp)
     // context_compact rides the memory group on purpose (PLAN-context-compact-tool
     // D7): the trusted-group exemption is name-based HERE, not category-based —
     // leaving it out drops the tool into otherTools and puts a compaction behind
@@ -399,7 +411,7 @@ export class ExecutionFlow {
     const mcpTools = tools.filter(t => isMCPTool(t.name) && !this.mcpRequiresApproval(t.name))
     const grouped = new Set([...readOnlyTools, ...writeEditTools, ...pageReadTools, ...pageWriteTools])
     const procReadTools = tools.filter(t => t.name === 'exec_logs')
-    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && t.name !== 'ask_user' && t.name !== 'exec_logs')
+    const otherTools = tools.filter(t => !grouped.has(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !isMCPTool(t.name) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs')
     const spawnTools = systemTools.filter(t => t.name === 'spawn_agent')
     const held = this.heldTiers()
     // exec_logs is a read (P0-3 #14) dispatched through execOtherTool — never a
@@ -437,6 +449,7 @@ export class ExecutionFlow {
       }
       if (mcpTools.length > 0) for (const t of mcpTools) await this.engine.toolExecutor.execMCPTool(t)
       if (!held.has('exec') && gatedMcpTools.length > 0) for (const t of gatedMcpTools) await this.engine.toolExecutor.execMCPTool(t)
+      if (!held.has('exec')) for (const t of installMcpTools) await this.engine.toolExecutor.execInstall(t)
       for (const t of systemTools) {
         if (t.name === 'spawn_agent') continue // started above, awaited after the serial groups
         if (t.name === 'pick_skill') await this.engine.toolExecutor.execPickSkill(t)
@@ -533,7 +546,11 @@ export class ExecutionFlow {
     const pageTools = toolUses.filter(t => isPageTool(t.name))
     const pageWriteTools = pageTools.filter(t => tierOfTool(t.name) !== 'read')
     const isSystemTool = (name: string): boolean => name === 'install' || name === 'pick_skill' || name === 'pick_tool' || name === 'spawn_agent' || name === 'create_plan' || name === 'advance_plan' || name === 'create_sub_plan' || name === 'webfetch' || name === 'browser'
-    const systemTools = toolUses.filter(t => isSystemTool(t.name))
+    // install(type=mcp) 挂 exec 档（audit 2026-10-10 #1，同 dispatch 侧注释）：
+    // 注册完立即拉起 stdio 进程，信任组曾让它在 outside-ask 下绕过 exec 审批。
+    const isInstallMcp = (t: ToolUseBlock): boolean => t.name === 'install' && String(t.input?.type || '') === 'mcp'
+    const installMcpTools = toolUses.filter(isInstallMcp)
+    const systemTools = toolUses.filter(t => isSystemTool(t.name) && !isInstallMcp(t))
     const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search' || name === 'context_compact'
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
@@ -544,7 +561,7 @@ export class ExecutionFlow {
     const mcpApprovalTools = toolUses.filter(t => isMCPTool(t.name) && this.mcpRequiresApproval(t.name))
     const mcpTools = toolUses.filter(t => isMCPTool(t.name))
     const pageHeldTools = pageWriteTools.filter(t => requiresApproval(this.engine.opts.approvalMode ?? 'auto', tierOfTool(t.name)))
-    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs')
+    const otherTools = toolUses.filter(t => !readOnlyTools.includes(t) && !writeEditTools.includes(t) && !pageTools.includes(t) && !systemTools.includes(t) && !memoryTools.includes(t) && !knowledgeTools.includes(t) && !experienceTools.includes(t) && !mcpTools.includes(t) && !installMcpTools.includes(t) && t.name !== 'ask_user' && t.name !== 'exec_logs')
 
     // The approval ladder decides what waits: shell / ungrouped / gated MCP
     // calls at 'outside-ask' and above, file writes as well at 'always-ask',
@@ -579,7 +596,7 @@ export class ExecutionFlow {
     }
     const heldTools = [
       ...(held.has('write') ? writeEditTools : []),
-      ...(held.has('exec') ? [...otherHeld, ...mcpApprovalTools] : []),
+      ...(held.has('exec') ? [...otherHeld, ...mcpApprovalTools, ...installMcpTools] : []),
       ...pageHeldTools,
     ]
 

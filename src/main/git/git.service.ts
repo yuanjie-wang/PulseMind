@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process'
 import { access, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
+import { currentSessionSandbox } from '../sandbox/session-context'
+import { isSubpath } from '../../shared/sandbox/path-jail'
 import type {
   GitAction,
   GitCommitResult,
@@ -257,6 +259,34 @@ export async function gitRestore(
 
 export async function invokeGitAction(action: GitAction): Promise<GitResult> {
   try {
+    // git 写动作与文件写同一坐标系（audit 2026-10-10 #3）：文件写被 path-jail
+    // 锁在会话 workspace（+ 额外可写根）内，git_commit/git_restore 却曾对磁盘
+    // 上任意 cwd 生效——同一回合里一条被放行的 restore 能在任何仓库丢弃未提交
+    // 修改。只在 agent 会话上下文在场时拦（ALS；渲染进程的 git 面板没有会话，
+    // 照旧可用）。读动作（status/diff/log）保持免地理——读在沙盒语义里本就
+    // 到处可读。判定用词法与 realpath 两个拼写（/tmp → /private/tmp 的祖先
+    // 符号链接会让单一坐标判死整个 workspace）。
+    if (action.action === 'commit' || action.action === 'restore') {
+      const sandbox = currentSessionSandbox()
+      if (sandbox) {
+        const [cwdReal, wsReal] = await Promise.all([
+          realpath(action.cwd).catch(() => null),
+          realpath(sandbox.workspaceDir).catch(() => null),
+        ])
+        const roots = [sandbox.workspaceDir, wsReal].filter((r): r is string => !!r)
+        const targets = [resolve(action.cwd), cwdReal].filter((t): t is string => !!t)
+        const inside = targets.some((t) => roots.some((r) => isSubpath(r, t)))
+        if (!inside) {
+          return {
+            ok: false,
+            error: {
+              code: 1,
+              message: `git ${action.action} blocked by sandbox: ${action.cwd} is outside the conversation workspace (${sandbox.workspaceDir})`,
+            },
+          }
+        }
+      }
+    }
     switch (action.action) {
       case 'is_repo': {
         const data = { isRepo: await checkIsRepo(action.cwd) }

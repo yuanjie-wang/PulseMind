@@ -66,12 +66,50 @@ export function isPreviewRequest(url: string): boolean {
   return isPreviewUrl(url)
 }
 
+/** True when the URL path carries a `..` segment (either separator) — the
+ *  traversal this surface must refuse. Defense-in-depth (2026-10-10 audit #8):
+ *  local-file:// is the one read surface that never meets the path jail. The
+ *  scheme is unprivileged (no registerSchemesAsPrivileged, no CORS headers on
+ *  the responses), so remote page content cannot fetch it — but nothing else
+ *  constrained the URL either, while every other file read answers to
+ *  guardFsTarget. */
+export function hasPathTraversal(path: string): boolean {
+  return path.split(/[\\/]/).includes('..')
+}
+
+/** The traversal gate, run on the RAW wire URL: the URL constructor COLLAPSES
+ *  dot segments (`..` and its `%2e` spellings) while parsing, so a check on
+ *  the parsed path can never see them — resolveLocalFilePath is handed an
+ *  already-clean absolute path. Returns true (refuse) when the raw path has a
+ *  `..` segment OR is not decodable (a malformed %-sequence never comes from
+ *  our own renderer; fail closed). */
+export function urlRefusedForTraversal(rawUrl: string): boolean {
+  const rawPath = rawUrl.split('?')[0] ?? ''
+  try {
+    return hasPathTraversal(decodeURIComponent(rawPath))
+  } catch {
+    return true
+  }
+}
+
 /** The whole protocol handler: unchanged file-serving branch plus the
  *  preview copy branch. Async on purpose (see the call site's comment in
  *  src/main/index.ts) — a sync read of a large file would freeze every IPC
  *  handler with it. */
 export async function serveLocalFile(request: Request): Promise<Response> {
+  // Gate ONE — raw wire URL (the URL constructor collapses dot segments, so
+  // the parsed path can never show them; see urlRefusedForTraversal).
+  if (urlRefusedForTraversal(request.url)) {
+    console.warn('[local-file] Traversal refused:', request.url)
+    return new Response('Forbidden', { status: 403 })
+  }
   const filePath = resolveLocalFilePath(request.url)
+  // Gate TWO — the decoded path: catches the win32 hostname branch and the
+  // URL-constructor-failure fallback, which never went through the parser.
+  if (hasPathTraversal(filePath)) {
+    console.warn('[local-file] Traversal refused:', filePath)
+    return new Response('Forbidden', { status: 403 })
+  }
   const ext = extname(filePath).toLowerCase()
   const previewCopy = isPreviewRequest(request.url) && (ext === '.html' || ext === '.htm')
   try {

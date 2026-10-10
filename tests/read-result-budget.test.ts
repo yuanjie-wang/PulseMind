@@ -97,3 +97,49 @@ function estimate(text: string): number {
   const cjk = text.length - text.replace(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g, '').length
   return cjk + Math.ceil((text.length - cjk) / 4)
 }
+
+// ── The offload must be REACHABLE (2026-10-10): the marker promises
+// "full text saved at ~/.pulsemind/tmp/trunc/…, use read" — but that path
+// used to be judged by the same guard as any other ~/.pulsemind target: the
+// write was denied (deny root, neither workspace nor skills) and silently
+// swallowed, and `read` was denied the same way. The offload dir is now a
+// sanctioned extra-writable root (main/sandbox/guard.ts), which exempts it
+// from the deny roots AND the workspace jail, reads and writes alike.
+describe('truncation offload reachability — the read-back is not a dead link', () => {
+  const home = process.env.HOME || '/home/x'
+  const trunc = `${home}/.pulsemind/tmp/trunc/trunc_abc_1.txt`
+
+  it('guardPath admits reads AND writes inside the offload root when it is sanctioned', async () => {
+    const { guardPath } = await import('../src/shared/sandbox/path-jail')
+    const denyRoots = [`${home}/.ssh`, `${home}/.aws`, `${home}/.gnupg`, `${home}/.pulsemind`]
+    const extra = [{ dir: `${home}/.pulsemind/tmp/trunc`, real: null }]
+    for (const operation of ['read', 'write'] as const) {
+      const ok = guardPath({
+        target: trunc, operation, denyRoots,
+        workspaceDir: `${home}/somewhere-else`, realTarget: trunc, extraWritableRoots: extra,
+      })
+      expect(ok.ok, `${operation} inside the sanctioned offload root must pass`).toBe(true)
+    }
+  })
+
+  it('negative control: without the sanctioned root the same target is denied', async () => {
+    const { guardPath } = await import('../src/shared/sandbox/path-jail')
+    const denyRoots = [`${home}/.pulsemind`]
+    const denied = guardPath({
+      target: trunc, operation: 'write', denyRoots,
+      workspaceDir: `${home}/somewhere-else`, realTarget: trunc, extraWritableRoots: [],
+    })
+    expect(denied.ok).toBe(false)
+  })
+
+  it('wiring: guard.ts sanctions the offload root alongside skills, and the engine surfaces offload failures', () => {
+    const guard = read('src/main/sandbox/guard.ts')
+    expect(guard).toContain("'.pulsemind', 'tmp', 'trunc'")
+    expect(guard).toContain('{ dir: truncRoot, real: truncReal }')
+    // the engine must not swallow an offload failure silently again
+    const engine = read('src/renderer/src/agent/AgentEngine.ts')
+    expect(engine).toContain('truncation offload denied')
+    expect(engine).toContain('truncation offload failed')
+    expect(engine).not.toMatch(/writeFile\(\{ filePath: offloadDest, content \}\)\.catch\(/)
+  })
+})
