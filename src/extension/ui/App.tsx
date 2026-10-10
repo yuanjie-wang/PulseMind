@@ -17,6 +17,7 @@ import { Logo } from './logo'
 import { Transcript } from './Transcript'
 import { useFabDrag } from './useFabDrag'
 import { usePanel } from './usePanel'
+import { trustedOnly } from './trusted'
 
 const STATUS_LABELS: Record<string, string> = {
   idle: '就绪',
@@ -160,10 +161,10 @@ export function App(): React.JSX.Element {
           <div className="pm-iterate-title">循环次数已达上限</div>
           <div className="pm-iterate-desc">任务仍在进行中，是否继续执行？继续将按当前上限额外增加一轮循环额度。</div>
           <div className="pm-iterate-actions">
-            <button className="pm-iterate-btn pm-iterate-btn-primary" onClick={() => panel.respondIteration(true)}>
+            <button className="pm-iterate-btn pm-iterate-btn-primary" onClick={(e) => { if (trustedOnly(e)) panel.respondIteration(true) }}>
               继续执行
             </button>
-            <button className="pm-iterate-btn pm-iterate-btn-danger" onClick={() => panel.respondIteration(false)}>
+            <button className="pm-iterate-btn pm-iterate-btn-danger" onClick={(e) => { if (trustedOnly(e)) panel.respondIteration(false) }}>
               停止
             </button>
           </div>

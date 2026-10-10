@@ -29,7 +29,7 @@
  * #999). */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { buildCardDocument } from '../../shared/preview/html-inject'
+import { buildCardDocument, HTML_ARTIFACT_SANDBOX } from '../../shared/preview/html-inject'
 import { Icon } from './icons'
 
 const CARD_MIN_HEIGHT = 120
@@ -198,7 +198,7 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
           <iframe
             ref={iframeRef}
             title="HTML 预览"
-            sandbox="allow-scripts allow-popups allow-forms allow-modals"
+            sandbox={HTML_ARTIFACT_SANDBOX}
             srcDoc={doc}
             style={{
               display: 'block',

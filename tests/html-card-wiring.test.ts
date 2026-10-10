@@ -29,7 +29,9 @@ describe('html artifact card wiring', () => {
   })
 
   it('the card iframe is sandboxed opaque-origin — never allow-same-origin', () => {
-    expect(card).toContain('sandbox="allow-scripts allow-popups allow-forms allow-modals"')
+    // The four flags ride the shared constant now (full_20261011 X4); the
+    // value itself is pinned in html-artifact-card.test.ts.
+    expect(card).toContain('sandbox={HTML_ARTIFACT_SANDBOX}')
     expect(card).not.toContain('allow-same-origin')
   })
 

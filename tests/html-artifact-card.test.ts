@@ -221,3 +221,49 @@ describe('the serving path is local-file, never blob (source contract)', () => {
     expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/)
   })
 })
+
+describe('artifact-card sandbox — one shared constant, panel actions trusted-only (full_20261011 X4/P0-3)', () => {
+  const read = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf-8')
+
+  it('both cards consume HTML_ARTIFACT_SANDBOX; the hand-copied string is gone', () => {
+    for (const [name, rel] of [
+      ['desktop', '../src/renderer/src/components/chat/HtmlArtifactCard.tsx'],
+      ['extension', '../src/extension/ui/HtmlArtifactCard.tsx'],
+    ] as const) {
+      const src = read(rel)
+      expect(src, name).toContain('HTML_ARTIFACT_SANDBOX}')
+      expect(src, name).not.toContain('sandbox="allow-scripts allow-popups')
+    }
+    // The other preview surfaces stay scripts-only (file previews, not
+    // interactive exhibits) — pin THAT so a copy-paste from the card cannot
+    // silently widen them either.
+    for (const rel of [
+      '../src/renderer/src/components/preview/HtmlPreview.tsx',
+      '../src/renderer/src/components/tool-studio/ToolRunner.tsx',
+      '../src/renderer/src/components/tool-studio/ToolWorkspace.tsx',
+    ]) {
+      expect(read(rel)).toContain('sandbox="allow-scripts"')
+    }
+  })
+
+  it('the panel shadow root is CLOSED and the security actions check isTrusted', () => {
+    const entry = read('../src/extension/content/index.tsx')
+    expect(entry).toContain("attachShadow({ mode: 'closed' })")
+    expect(entry).not.toContain("mode: 'open'")
+    // Honest threat statement: DOM unreachable, events still cross.
+    expect(entry).toContain('composed: true')
+    for (const rel of [
+      '../src/extension/ui/Composer.tsx',
+      '../src/extension/ui/MessageBlocks.tsx',
+      '../src/extension/ui/App.tsx',
+    ]) {
+      const src = read(rel)
+      expect(src, rel).toContain('trustedOnly')
+      // Every onClick on the guarded families must pass through the helper —
+      // a raw onChangeApprovalMode/respondIteration/onApprovalResponse arrow
+      // without the guard would reintroduce the synthetic-click hole.
+      expect(src.match(/trustedOnly\(e\)/g)?.length).toBeGreaterThan(0)
+    }
+    expect(read('../src/extension/ui/trusted.ts')).toContain('isTrusted === true')
+  })
+})

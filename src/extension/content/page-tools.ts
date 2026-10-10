@@ -49,8 +49,16 @@ function getSelectorMap(): Map<number, Element> {
 }
 
 /** React 兼容输入：原生 setter 绕过受控组件的 value 拦截，再派发 input/change。 */
+/** Push a value through the element's OWN realm prototype (full_20261011
+ *  M13-P1-1): a same-origin iframe's wrappers answer to the frame's
+ *  constructors, so the top-realm `instanceof` used to miss and the native
+ *  value setter must come from the frame's prototype. */
 function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
-  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  const win = (el.ownerDocument?.defaultView ?? window) as typeof window
+  const isTextarea = el instanceof (win.HTMLTextAreaElement ?? HTMLTextAreaElement)
+  const proto = isTextarea
+    ? (win.HTMLTextAreaElement ?? HTMLTextAreaElement).prototype
+    : (win.HTMLInputElement ?? HTMLInputElement).prototype
   const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
   if (setter) setter.call(el, value)
   else el.value = value
@@ -157,7 +165,10 @@ export function pageInput(args: Record<string, unknown>): string {
   // 「不是可输入元素」 and the model's only workaround was page_execute_js.
   // The attribute check mirrors page-tree's (jsdom leaves isContentEditable
   // undefined; inherited editability stays a real-browser behavior).
-  if (el instanceof HTMLElement && (el.isContentEditable || el.hasAttribute('contenteditable'))) {
+  // Realm-aware editability: a frame element's `isContentEditable` answers to
+  // the frame realm; duck-type instead of a top-realm instanceof (the
+  // attribute check mirrors page-tree's, as before).
+  if ((el as HTMLElement).isContentEditable === true || el.hasAttribute('contenteditable')) {
     try { el.focus({ preventScroll: true }) } catch { /* not focusable */ }
     // Replace the field's content, mirroring the input/textarea semantics:
     // select everything, then insert over the selection. execCommand is the
@@ -180,7 +191,12 @@ export function pageInput(args: Record<string, unknown>): string {
     }
     return `已向 [${args.index}] 输入 ${text.length} 个字符（contentEditable）。${STALE_HINT}`
   }
-  if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
+  // 帧内元素用元素自身 realm 的构造器判型（full_20261011 M13-P1-1）：DOM
+  // 包装对象按 realm 缓存，顶层 realm 的 instanceof 对同源 iframe 里的
+  // <input> 恒为 false —— 索引给得出编号、调用必报「不是可输入元素
+  // （<input>）」的自相矛盾错误。`?? window.X` 兜 ownerDocument 缺省视图。
+  const win = (el.ownerDocument?.defaultView ?? window) as typeof window
+  if (!(el instanceof (win.HTMLInputElement ?? HTMLInputElement)) && !(el instanceof (win.HTMLTextAreaElement ?? HTMLTextAreaElement))) {
     throw new Error(`[${args.index}] 不是可输入元素（<${el.tagName.toLowerCase()}>）`)
   }
   try { el.focus({ preventScroll: true }) } catch { /* not focusable */ }
@@ -190,7 +206,10 @@ export function pageInput(args: Record<string, unknown>): string {
 
 export function pageSelect(args: Record<string, unknown>): string {
   const el = elementAt(args.index)
-  if (!(el instanceof HTMLSelectElement)) throw new Error(`[${args.index}] 不是下拉框（<${el.tagName.toLowerCase()}>）`)
+  const selWin = (el.ownerDocument?.defaultView ?? window) as typeof window
+  if (!(el instanceof (selWin.HTMLSelectElement ?? HTMLSelectElement))) {
+    throw new Error(`[${args.index}] 不是下拉框（<${el.tagName.toLowerCase()}>）`)
+  }
   const want = String(args.option ?? '')
   let matched: HTMLOptionElement | undefined
   for (const opt of Array.from(el.options)) {

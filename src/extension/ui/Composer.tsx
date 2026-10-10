@@ -16,6 +16,7 @@ import { MAX_USER_INPUT_CHARS } from '../../renderer/src/agent/engine/engine-con
 import { DEFAULT_APPROVAL_MODE, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { fullModelLabel, modelLabel, type ModelState, type ModelOption } from '../../shared/agent-protocol'
 import { Icon } from './icons'
+import { trustedOnly } from './trusted'
 
 const MAX_HEIGHT_PX = 160
 
@@ -186,7 +187,7 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
             <button
               className={`pm-approval${approvalMenu.open ? ' pm-approval-active' : ''}${autoTint(active.mode)}`}
               title={`${active.label} · 工具调用审批`}
-              onClick={approvalMenu.toggle}
+              onClick={(e) => { if (trustedOnly(e)) approvalMenu.toggle() }}
             >
               <span className="pm-approval-icon">
                 <Icon name={active.icon} />
@@ -202,7 +203,10 @@ export function Composer({ busy, disabled, approvalMode, model, onSend, onStop, 
                   <button
                     key={level.mode}
                     className={`pm-approval-item${level.mode === active.mode ? ' pm-approval-item-active' : ''}${autoTint(level.mode)}`}
-                    onClick={() => {
+                    onClick={(e) => {
+                      // 授权级别是安全动作（full_20261011 M13-P0-1）：只认
+                      // 真实用户手势，合成 click 不能把会话静默改成「自动」。
+                      if (!trustedOnly(e)) return
                       approvalMenu.close()
                       onChangeApprovalMode(level.mode)
                     }}

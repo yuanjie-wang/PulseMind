@@ -172,6 +172,29 @@ describe('page-tree', () => {
     expect(ids.has('frame-input')).toBe(true)
     expect(ids.has('top')).toBe(true)
   })
+
+  it('page_input WRITES through a same-origin iframe control (full_20261011 M13-P1-1)', () => {
+    // Being NUMBERED is not enough: page_input judged element identity with
+    // the top realm's constructors, and a frame element's wrapper answers to
+    // the frame realm — so the frame input was numbered, then every write
+    // threw 「[n] 不是可输入元素（<input>）」. The real call is the pin.
+    mount('<button id="top">顶层按钮</button>')
+    const iframe = document.createElement('iframe')
+    document.body.appendChild(iframe)
+    const frameDoc = iframe.contentDocument
+    expect(frameDoc).not.toBeNull()
+    if (!frameDoc) return
+    frameDoc.body!.innerHTML = '<input id="frame-input" type="text" placeholder="帧内搜索"/>'
+    resetPageToolState()
+
+    const text = pageGetContent({})
+    const m = text.match(/\[(\d+)\]<input[^\n]*帧内搜索/)
+    expect(m, 'frame input must be numbered').not.toBeNull()
+    const idx = Number(m![1])
+    const out = pageInput({ index: idx, text: 'hello frame' })
+    expect(out).toContain('已向')
+    expect((frameDoc.getElementById('frame-input') as HTMLInputElement).value).toBe('hello frame')
+  })
 })
 
 describe('page-tree stable indices and delta reads', () => {

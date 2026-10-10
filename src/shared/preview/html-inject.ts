@@ -71,6 +71,16 @@ export function buildPreviewCopy(html: string, pickerScript: string, nonce?: str
 /** A full HTML document the model wrote as a page, not a fragment. */
 export const HTML_ARTIFACT_FULL_DOCUMENT = /<!doctype html|<html[\s>]/i
 
+/** The artifact card's iframe sandbox — ONE constant for the desktop chat card
+ *  and the extension panel card (full_20261011 X4/P1#30). FOUR flags is a
+ *  ruling, not an oversight: the artifact preview exists to exhibit
+ *  MODEL-GENERATED interactive HTML, where forms, window.open and alert()
+ *  demos are legitimate content. The other preview surfaces (HtmlPreview,
+ *  ToolRunner, ToolWorkspace) render user files / tool output and stay
+ *  scripts-only on purpose. The two cards previously hand-copied this string,
+ *  which is exactly how parity drift starts — consume the constant. */
+export const HTML_ARTIFACT_SANDBOX = 'allow-scripts allow-popups allow-forms allow-modals'
+
 /** The script a FRAGMENT gets wrapped with: reports the document's scrollHeight
  *  to the card (message type is namespaced and source-checked card-side, so a
  *  hostile fragment can only move the card it lives in). Shared verbatim by the

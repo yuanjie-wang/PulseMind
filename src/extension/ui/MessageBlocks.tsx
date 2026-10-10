@@ -23,6 +23,7 @@ import { resultSummary } from '../../shared/tool-display/result-summary'
 import { buildEditDiffModel, countChangedLines, type EditDiffLine, type EditDiffModel } from '../../shared/tool-display/edit-diff'
 import { renderMarkdown, splitHtmlFences } from './markdown'
 import { HtmlArtifactCard } from './HtmlArtifactCard'
+import { trustedOnly } from './trusted'
 
 /** assistant/api text → the same `.x-markdown-light` wrapper the chat uses.
  *  The rendered HTML comes from our escape-first renderer (plus its sanitized
@@ -303,11 +304,11 @@ function ToolCard({ block, awaitingApproval, streaming, onApprovalResponse }: {
 
       {awaitingApproval && (
         <div className="pm-cmd-actions">
-          <button className="pm-cmd-btn" onClick={() => onApprovalResponse(block.id, false)}>
+          <button className="pm-cmd-btn" onClick={(e) => { if (trustedOnly(e)) onApprovalResponse(block.id, false) }}>
             <Icon name="closeCircle" style={{ marginRight: 4 }} />
             跳过
           </button>
-          <button className="pm-cmd-btn pm-cmd-btn-primary" onClick={() => onApprovalResponse(block.id, true)}>
+          <button className="pm-cmd-btn pm-cmd-btn-primary" onClick={(e) => { if (trustedOnly(e)) onApprovalResponse(block.id, true) }}>
             <Icon name="playCircle" style={{ marginRight: 4 }} />
             运行
           </button>
@@ -574,11 +575,11 @@ export function ToolBlock({ block, completedFromResult, awaiting, onApprovalResp
       {collapsed && awaiting && !isAskUser && (
         <div className="pm-approve-area">
           <div className="pm-approve-row">
-            <button className="pm-approve-btn" onClick={() => onApprovalResponse(block.id, false)}>
+            <button className="pm-approve-btn" onClick={(e) => { if (trustedOnly(e)) onApprovalResponse(block.id, false) }}>
               <Icon name="closeCircle" />
               跳过
             </button>
-            <button className="pm-approve-btn pm-approve-btn-primary" onClick={() => onApprovalResponse(block.id, true)}>
+            <button className="pm-approve-btn pm-approve-btn-primary" onClick={(e) => { if (trustedOnly(e)) onApprovalResponse(block.id, true) }}>
               <Icon name="playCircle" />
               运行
             </button>

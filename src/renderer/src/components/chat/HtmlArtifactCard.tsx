@@ -71,7 +71,7 @@ import { ChromeOutlined, CopyOutlined, ExpandOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { createTextThrottle } from './stream-throttle'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
-import { buildCardDocument } from '../../../../shared/preview/html-inject'
+import { buildCardDocument, HTML_ARTIFACT_SANDBOX } from '../../../../shared/preview/html-inject'
 
 // buildCardDocument (with the measure script and the full-document test) moved
 // to shared/preview/html-inject — the extension panel's card builds the same
@@ -403,7 +403,7 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
           <iframe
             ref={iframeRef}
             title={t('htmlCard.title')}
-            sandbox="allow-scripts allow-popups allow-forms allow-modals"
+            sandbox={HTML_ARTIFACT_SANDBOX}
             src={frameUrl ?? undefined}
             srcDoc={frameUrl === null && (!CAN_PERSIST || persistFailed) ? doc : undefined}
             style={{

@@ -2,8 +2,21 @@
  *
  * Creates one host element with a Shadow Root, hands it to React, and relays
  * worker notifications into the UI. The host is created inside the isolated
- * world, so the page can neither read nor restyle the panel, and React needs no
- * second injection into the page's main world.
+ * world, and the Shadow Root is CLOSED (full_20261011 M13-P0-1 — with `open`
+ * any realm could walk `host.shadowRoot` to the transcript and to the
+ * approval buttons; an open root plus a synthetic click() silently flipped
+ * the session's approval level to auto). Honest threat statement — what the
+ * closed root does and does not buy:
+ * - DOM: unreachable. The page cannot read the transcript, restyle, or reach
+ *   any button node (`element.shadowRoot` is null for everyone but us).
+ * - EVENTS: still cross the boundary. keydown/input/composition are
+ *   `composed: true` and bubble out of the shadow with `e.key`/`e.data`
+ *   readable at `window` (M13-P1-2) — a page can log what is typed in the
+ *   composer. The only clean fix is hosting the composer in a
+ *   chrome-extension:// iframe (cross-document), an architecture decision
+ *   deliberately not taken here. The security-action buttons additionally
+ *   check `isTrusted` (ui/trusted.ts), so synthetic clicks are inert even if
+ *   a node reference leaks by some other path.
  *
  * The DOM pipeline (M2) must skip this subtree — it is marked with
  * `data-pulsemind-panel` and `content/page-tree.ts` will exclude it. */
@@ -34,7 +47,10 @@ function mount(): void {
   host.setAttribute(HOST_FLAG, '')
   // The host itself must not affect the page's layout at all.
   host.style.cssText = 'all: initial; position: fixed; z-index: 2147483647;'
-  const shadow = host.attachShadow({ mode: 'open' })
+  // CLOSED, not open (comment above): the panel is not readable as a DOM
+  // tree from the page, which is what breaks the synthetic-click chain.
+  // React keeps its own reference; nothing in this repo reads `shadowRoot`.
+  const shadow = host.attachShadow({ mode: 'closed' })
 
   // The transcript's markdown carries the chat's own class (`x-markdown-light`)
   // and the desktop gets its rules from `@ant-design/x-markdown/themes/light.css`
