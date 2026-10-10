@@ -426,6 +426,18 @@ export async function execSpawnAgent(ex: ToolExecContext, t: ToolUseBlock): Prom
             ? ` — the scheduler dispatches them once this node settles; do NOT execute or re-dispatch them yourself.`
             : ` — execute them yourself in dependency order after this node settles (direct mode: no scheduler).`)
       }
+      if (!splitNote && result.status !== 'completed' && planNode && planSplitConfig?.createdIds.length) {
+        // An error/stopped attempt that DID split mid-run still owes the parent
+        // the split fact: the created nodes are live pending rows in the parent
+        // plan, each depending on this node, and a consult round reading only
+        // the envelope would never learn they exist (user report 2026-10-11).
+        // The two sources above stay completed-gated — their wording assumes a
+        // delivered node; this one is failure-shaped: settle THIS node first
+        // (re-dispatch / fail / skip), then decide the children it left behind.
+        const ids = planSplitConfig.createdIds
+        const range = ids.length > 1 ? `${ids[0]}..${ids[ids.length - 1]}` : ids[0]
+        splitNote = `mid-run it called create_sub_plan: its remainder was split into new plan nodes ${range}, which sit PENDING in the plan — each depends on this node, so none will dispatch until this node is settled (re-dispatch / advance_plan fail / skip); decide theirs after.`
+      }
       // Exit check (PLAN-plan-exchange E3): a merged split skips it — the
       // proposal IS the splitter's deliverable and the children carry the
       // remainder. Everyone else owes a report at the minted path; missing or

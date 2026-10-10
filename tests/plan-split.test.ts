@@ -230,21 +230,29 @@ function makeSplitContext(plan: Plan | null) {
     tasks: [] as string[],
     planSplits: [] as unknown[],
   }
-  const state: { resultText?: string; mergeOverride?: { ok: false; reason: string } } = {}
+  const state: { resultText?: string; resultStatus?: 'completed' | 'error' | 'aborted'; resultError?: string; splitMidRun?: boolean; mergeOverride?: { ok: false; reason: string } } = {}
   const ex = {
     opts: { conversationId: 'conv_split_exec', maxTokens: 1024 },
     notify: () => {},
     addToolResult: (_id: string, content: string, isError: boolean) => { calls.results.push({ content, isError }) },
-    spawnSubAgent: (config: { initialMessages: Array<{ contentBlocks: Array<{ type: string; text?: string }> }>; planSplit?: unknown }) => {
+    spawnSubAgent: (config: { initialMessages: Array<{ contentBlocks: Array<{ type: string; text?: string }> }>; planSplit?: { createdIds?: string[] } | undefined }) => {
       calls.tasks.push(config.initialMessages[0]?.contentBlocks?.find(b => b.type === 'text')?.text ?? '')
       calls.planSplits.push(config.planSplit)
+      // Simulate the spawn-manager bridge: a mid-run create_sub_plan merge
+      // pushes the created node ids into the SAME config object the choke
+      // point reads after waitForCompletion.
+      if (state.splitMidRun && config.planSplit) config.planSplit.createdIds!.push('n5', 'n6')
       return {
         id: 'h1',
         subConvId: 'sub_split_test',
         messages: [],
         agentStatus: { status: 'completed' },
         abort: () => {},
-        waitForCompletion: async () => ({ status: 'completed', messages: subMessages(state.resultText ?? '普通完成') }),
+        waitForCompletion: async () => ({
+          status: state.resultStatus ?? 'completed',
+          ...(state.resultError ? { error: state.resultError } : {}),
+          messages: subMessages(state.resultText ?? '普通完成'),
+        }),
       }
     },
     getPlan: () => plan,
@@ -342,6 +350,49 @@ describe('spawn choke point: the text channel merges, then delivers normally (v2
     expect(calls.handoffs).toHaveLength(1)
     expect(calls.results[0].content).toContain('## Sub-Agent Result (completed)')
     expect(calls.results[0].content).not.toContain('**Split:**')
+  })
+
+  it('an error settlement that split mid-run still names the created nodes (the consult round sees them)', async () => {
+    // The completed-gated split notes never fire on an error envelope, so a
+    // watchdog-killed / crashed splitter left the consult round blind: the
+    // children were live pending rows in the parent plan and the envelope
+    // never said so. The failure-shaped note fixes exactly that.
+    const plan = splittablePlan()
+    const { ex, calls, tool, state } = makeSplitContext(plan)
+    state.resultStatus = 'error'
+    state.resultError = '子代理超过 10 分钟无任何产出且无在途请求/工具，疑似内部卡死，已自动结算。'
+    state.splitMidRun = true
+
+    const block = tool({ task: '拆我', planNode: 1 })
+    await execSpawnAgent(ex, block)
+
+    const result = calls.results[0]
+    expect(result.isError).toBe(true)
+    expect(result.content).toContain('### Sub-agent Status: error')
+    expect(result.content).toContain('疑似内部卡死')
+    expect(result.content).toContain(
+      '**Split:** mid-run it called create_sub_plan: its remainder was split into new plan nodes n5..n6, which sit PENDING in the plan',
+    )
+    expect(result.content).toContain('advance_plan fail / skip')
+    expect(calls.executions).toEqual(['begin', 'running', 'failed'])
+    expect(block.exitCode).toBe(1)
+    expect(block.output).toContain('剩余工作已拆分回父计划')
+  })
+
+  it('an error settlement with no mid-run split carries no Split note (negative control)', async () => {
+    const plan = splittablePlan()
+    const { ex, calls, tool, state } = makeSplitContext(plan)
+    state.resultStatus = 'error'
+    state.resultError = 'Sub-agent reached its loop limit (40 rounds) without completing the task.'
+
+    const block = tool({ task: '拆我', planNode: 1 })
+    await execSpawnAgent(ex, block)
+
+    const result = calls.results[0]
+    expect(result.isError).toBe(true)
+    expect(result.content).toContain('### Sub-agent Status: error')
+    expect(result.content).not.toContain('**Split:**')
+    expect(block.output).not.toContain('剩余工作已拆分回父计划')
   })
 })
 
