@@ -216,6 +216,9 @@ export function useFormAssistSession<P extends object>({ convId, title, spec, sy
     streamingBlocks,
     isBusy: session.isBusy,
     restoring: session.restoring,
+    // 宿主把 id 传给 TranscriptView → 「存到知识库」的 blank-id 守卫
+    // （full_20261011 M5-P1）：没有它该按钮在两个内嵌宿主里静默 no-op。
+    conversationId: convId ?? undefined,
     appliedPatch,
     clearAppliedPatch,
     send,

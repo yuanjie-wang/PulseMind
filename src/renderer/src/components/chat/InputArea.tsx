@@ -26,6 +26,7 @@ import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
 import { DEFAULT_APPROVAL_MODE } from '../../../../shared/sandbox/policy'
 import { modelLabel } from '../../../../shared/agent-protocol'
 import { fileUrlToPath, mergeAttachments, isImageFile } from '../../utils/quick-attach'
+import { notifyFailure } from '../../utils/notify'
 
 /** Approval levels, most restrictive first — the order the dropdown lists them
  *  in. The icons are chosen for distinct silhouettes, not for a family: antd's
@@ -326,13 +327,29 @@ function InputAreaImpl({
 
   const getFileName = (path: string) => path.replace(/^.*[\\/]/, '')
 
+  /** [file:…] 标记把路径原样拼进 prompt、解析侧把 `]` 当结束符 `|` 当分隔符
+   *  （full_20261011 M1-P1-2）——名字里带这两个字符的合法文件名曾让 chip 解析
+   *  错位、附件丢失、残余文本混进 prompt。这类路径拒绝附件化并明说；四个
+   *  入口（选文件/选文件夹/拖拽/剪贴板）都从这一处过。 */
+  const mergeAttachmentsNotified = (prev: string[], paths: string[]): string[] => {
+    const unsafe = paths.filter((p) => /\]|\|/.test(p))
+    if (unsafe.length > 0) {
+      notifyFailure(
+        'attach',
+        new Error(unsafe.join(', ')),
+        t('chat.attachNameUnsafe', { names: unsafe.map(getFileName).join(', ') }),
+      )
+    }
+    return mergeAttachments(prev, paths.filter((p) => !/\]|\|/.test(p)))
+  }
+
   const handlePickFile = async () => {
     const result = await window.electronAPI.showOpenDialog({
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: 'All Files', extensions: ['*'] }],
     })
     if (!result.canceled && result.filePaths.length > 0) {
-      setSelectedFiles((prev) => mergeAttachments(prev, result.filePaths))
+      setSelectedFiles((prev) => mergeAttachmentsNotified(prev, result.filePaths))
     }
   }
 
@@ -341,7 +358,7 @@ function InputAreaImpl({
       properties: ['openDirectory'],
     })
     if (!result.canceled && result.filePaths.length > 0) {
-      setSelectedFolders((prev) => mergeAttachments(prev, result.filePaths))
+      setSelectedFolders((prev) => mergeAttachmentsNotified(prev, result.filePaths))
     }
   }
 
@@ -388,8 +405,8 @@ function InputAreaImpl({
       if (stat.isDirectory) folders.push(p)
       else files.push(p)
     })
-    if (files.length > 0) setSelectedFiles((prev) => mergeAttachments(prev, files))
-    if (folders.length > 0) setSelectedFolders((prev) => mergeAttachments(prev, folders))
+    if (files.length > 0) setSelectedFiles((prev) => mergeAttachmentsNotified(prev, files))
+    if (folders.length > 0) setSelectedFolders((prev) => mergeAttachmentsNotified(prev, folders))
   }
 
   /** Clipboard / drag files → attachments — the same chips the file-picker

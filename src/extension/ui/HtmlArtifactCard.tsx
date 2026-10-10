@@ -101,12 +101,30 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
     chromeTimerRef.current = window.setTimeout(() => setChromeOn(false), CHROME_LEAVE_GRACE_MS)
   }, [])
   // Scroll events don't bubble and the scroller is an ancestor; capture phase.
+  // Same bounds as the desktop card (full_20261011 M1-P1-1): only the card's
+  // own ancestor scrollers can change the verdict (the page's other scrollers
+  // early-return — this listener sees EVERY scroll on the host page), and
+  // bursts coalesce to one measure per frame.
+  const scrollFlipRafRef = useRef<number | null>(null)
   useEffect(() => {
     if (!chromeOn) return
-    window.addEventListener('scroll', measureChromeFlip, true)
+    const onScroll = (e: Event) => {
+      const t = e.target
+      if (!(t instanceof Node)) return
+      const root = rootRef.current
+      if (t !== root && !(root && root.contains(t))) return
+      if (scrollFlipRafRef.current !== null) return
+      scrollFlipRafRef.current = window.requestAnimationFrame(() => {
+        scrollFlipRafRef.current = null
+        measureChromeFlip()
+      })
+    }
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', measureChromeFlip)
     return () => {
-      window.removeEventListener('scroll', measureChromeFlip, true)
+      if (scrollFlipRafRef.current !== null) window.cancelAnimationFrame(scrollFlipRafRef.current)
+      scrollFlipRafRef.current = null
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', measureChromeFlip)
     }
   }, [chromeOn, measureChromeFlip])

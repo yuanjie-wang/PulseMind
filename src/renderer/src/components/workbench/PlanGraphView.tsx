@@ -381,9 +381,12 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
           {statusWord}
         </text>
         {declaredChip && (
-          // Row 1 left, after the 编号: the settled words (已完成/已拆分, 3
-          // glyphs, 36px) end-anchored at n.w−28 start at 116, so this slot
-          // fits a 4-glyph chip (48px, ends at 78) with room to spare.
+          // Row 1 left, after the 编号: every status word is ≤3 glyphs
+          // (36px) end-anchored at n.w−28 → starts at ≥116 — including
+          // 「待验收」, shortened from 7 glyphs precisely because its old
+          // start (68) crossed this chip's end (78) at 12px
+          // (full_20261011 M3-P1-1; the row-2 clip constants were recomputed
+          // for 12px, this slot originally was not).
           <text x={n.x + 30} y={n.y + ROW_NUM} fontSize={12} fontWeight={600}
             fill={node.declaredStatus === 'failed' ? FAILED_RED : PARTIAL_AMBER}>
             {declaredChip}

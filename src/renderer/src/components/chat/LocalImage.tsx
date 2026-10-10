@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ImageViewer } from './ImageViewer'
-import { localFileUrl } from '../../../shared/preview/local-file-url'
+import { localFileUrl } from '../../../../shared/preview/local-file-url'
 
 export const IMAGE_EXTS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif', 'avif', 'heic', 'heif',

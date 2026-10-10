@@ -19,6 +19,8 @@ import CommandPalette from './CommandPalette'
 import { TITLE_BAR_HEIGHT } from '../../../../shared/window-chrome'
 import { CENTERS_SUBMENU, VIEW_TITLE_KEY } from '../../navigation/registry'
 import { useNavigationStore } from '../../stores/navigationStore'
+import type { AppView, AppViewKind } from '../../navigation/types'
+import { runSettingsLeaveGuard } from '../settings/settings-leave-guard'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
@@ -173,8 +175,22 @@ function AppLayout({
 }: AppLayoutProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
   const view = useNavigationStore((s) => s.view)
-  const navigate = useNavigationStore((s) => s.navigate)
+  const rawNavigate = useNavigationStore((s) => s.navigate)
   const navigateKind = useNavigationStore((s) => s.navigateKind)
+  // 全局导航也过未保存守卫（full_20261011 M4-P1-3）：runSettingsLeaveGuard
+  // 此前只被 SettingsPage 的页内 tab 切换调用——侧栏/标题/会话行/快捷键直接
+  // navigate 曾把脏表单静默丢掉，同一份改动「点页内 tab 会问、点侧栏不问」。
+  // 守卫拒绝（用户选择留下）即取消整个导航；守卫槽为空（不在设置页）时零
+  // 开销直通。navigateKind 同源（settings/usage 入口共用一张闸），但离开
+  // settings 的两个 kind 入口才需要判——其余 kind 本就没有登记守卫，直通。
+  const navigate = useCallback(async (next: AppView): Promise<void> => {
+    if (view.kind === 'settings' && !(await runSettingsLeaveGuard())) return
+    rawNavigate(next)
+  }, [view.kind, rawNavigate])
+  const guardedNavigateKind = useCallback(async (kind: AppViewKind): Promise<void> => {
+    if (view.kind === 'settings' && !(await runSettingsLeaveGuard())) return
+    navigateKind(kind)
+  }, [view.kind, navigateKind])
 
   const { token } = theme.useToken()
   const { t } = useTranslation()
@@ -264,7 +280,7 @@ function AppLayout({
       setProjectModalOpen(true)
       return
     }
-    navigate({ kind: 'chat' })
+    void navigate({ kind: 'chat' })
     if (canCreateNew) handleNewTask()
   }
 
@@ -278,7 +294,7 @@ function AppLayout({
     useNewTaskStore.getState().setMode('project')
     useNewTaskStore.getState().setProjectId(projectId)
     useNewTaskStore.getState().requestShake(null)
-    navigate({ kind: 'chat' })
+    void navigate({ kind: 'chat' })
     if (canCreateNew) onCreateNew()
   }
 
@@ -298,7 +314,7 @@ function AppLayout({
     useNewTaskStore.getState().setMode('chat')
     useNewTaskStore.getState().setProjectId(null)
     useNewTaskStore.getState().requestShake(null)
-    navigate({ kind: 'chat' })
+    void navigate({ kind: 'chat' })
     if (canCreateNew) onCreateNew()
   }
   const menuActionRef = useRef<(action: string) => void>(() => {})
@@ -323,13 +339,13 @@ function AppLayout({
           else useWorkbenchStore.getState().openTab(wbKey, 'workspace')
           break
         case 'open-search':
-          navigate({ kind: 'search' })
+          void navigate({ kind: 'search' })
           break
         case 'open-settings':
-          navigateKind('settings')
+          void guardedNavigateKind('settings')
           break
         case 'open-usage':
-          navigateKind('usage')
+          void guardedNavigateKind('usage')
           break
       }
     }
@@ -402,11 +418,11 @@ function AppLayout({
         if (workbenchOpen) useWorkbenchStore.getState().setOpen(wbKey, false)
         else useWorkbenchStore.getState().openTab(wbKey, 'workspace')
       },
-      openSearch: () => navigate({ kind: 'search' }),
-      openUsage: () => navigateKind('usage'),
-      openSettings: () => navigateKind('settings'),
-      openSettingsSection: (tab) => navigate({ kind: 'settings', settingsTab: tab as 'environment' }),
-      openConversation: (key) => { navigate({ kind: 'chat' }); onSelectConversation(key) },
+      openSearch: () => void navigate({ kind: 'search' }),
+      openUsage: () => void guardedNavigateKind('usage'),
+      openSettings: () => void guardedNavigateKind('settings'),
+      openSettingsSection: (tab) => void navigate({ kind: 'settings', settingsTab: tab as 'environment' }),
+      openConversation: (key) => { void navigate({ kind: 'chat' }); onSelectConversation(key) },
       newTaskInProject: handleProjectNewTask,
     },
   })
@@ -432,7 +448,7 @@ function AppLayout({
           key={item.view}
           type="text"
           className={`centers-switch-btn${view.kind === item.view ? ' active-mode-btn' : ''}`}
-          onClick={() => navigateKind(item.view)}
+          onClick={() => void guardedNavigateKind(item.view)}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           {t(item.labelKey)}
@@ -486,7 +502,7 @@ function AppLayout({
           justifyContent: 'space-between',
           WebkitAppRegion: 'drag'
         } as React.CSSProperties}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => navigate({ kind: 'settings', settingsTab: 'about' })}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', WebkitAppRegion: 'no-drag' } as React.CSSProperties} onClick={() => void navigate({ kind: 'settings', settingsTab: 'about' })}>
             <span style={{ fontSize: FONT_SIZE.xl, fontWeight: FONT_WEIGHT.semibold, color: 'var(--pm-ink)' }}>{t('appLayout.title')}</span>
             {/* Version rides the Vite `define` global (package.json's version). */}
             <span style={{ fontSize: FONT_SIZE.sm, fontWeight: FONT_WEIGHT.medium, color: 'var(--pm-text-muted)', lineHeight: 1 }}>v{__APP_VERSION__}</span>
@@ -558,7 +574,7 @@ function AppLayout({
                 <ConversationSidebar
                   conversations={looseConversations}
                   activeKey={activeChatKey}
-                  onSelect={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
+                  onSelect={(key: string) => { void navigate({ kind: 'chat' }); onSelectConversation(key) }}
                   onDelete={onDeleteConversation}
                   onRename={onRenameConversation}
                   onTogglePin={onTogglePinConversation}
@@ -574,7 +590,7 @@ function AppLayout({
                 onManualOrder={() => changeProjectSort('manual')}
                 onCreateTask={handleProjectNewTask}
                 onEditProject={setProjectEditTarget}
-                onOpenConversation={(key: string) => { navigate({ kind: 'chat' }); onSelectConversation(key) }}
+                onOpenConversation={(key: string) => { void navigate({ kind: 'chat' }); onSelectConversation(key) }}
                 onDelete={onDeleteConversation}
                 onRename={onRenameConversation}
                 onTogglePin={onTogglePinConversation}
@@ -601,7 +617,7 @@ function AppLayout({
               className={`sidebar-icon-btn${view.kind === 'usage' ? ' active-mode-btn' : ''}`}
               aria-label={t('sessionManager.statsTooltip')}
               icon={<BarChartOutlined style={{ fontSize: 16 }} />}
-              onClick={() => navigateKind('usage')}
+              onClick={() => void guardedNavigateKind('usage')}
             />
           </Tooltip>
           <Tooltip title={t('menu.settings')}>

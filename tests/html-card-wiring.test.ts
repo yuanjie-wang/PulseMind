@@ -75,9 +75,14 @@ describe('html artifact card wiring', () => {
     // Capture phase, because scroll doesn't bubble and the scroller is an
     // ancestor; gated on chromeOn, because the listeners are hover-scoped.
     expect(card).toContain('measureChromeFlip()')
-    expect(card).toContain("window.addEventListener('scroll', measureChromeFlip, true)")
+    // The capture listener now carries the perf bounds (full_20261011 M1-P1-1):
+    // a TARGET gate (a page/panel scroller's events must not force layout) and
+    // rAF coalescing (streaming auto-scroll fires per frame).
+    expect(card).toContain("window.addEventListener('scroll', onScroll, true)")
     expect(card).toContain("window.addEventListener('resize', measureChromeFlip)")
     expect(card).toMatch(/if \(!chromeOn\) return/)
+    expect(card).toMatch(/root\.contains\(t\)/)
+    expect(card).toContain('requestAnimationFrame')
   })
 
   it('the invariant core teaches the ```html card convention, after Render Reference', () => {

@@ -145,7 +145,7 @@ describe('parent-owned plan execution, separate from acceptance', () => {
 })
 
 describe('plan presentation and live targets', () => {
-  const cases: Array<[PlanNodeExecutionStatus | undefined, string]> = [[undefined, '未开始'], ['queued', '排队中'], ['running', '执行中'], ['delivered', '已交付，待验收'], ['failed', '执行失败'], ['stopped', '已停止']]
+  const cases: Array<[PlanNodeExecutionStatus | undefined, string]> = [[undefined, '未开始'], ['queued', '排队中'], ['running', '执行中'], ['delivered', '待验收'], ['failed', '执行失败'], ['stopped', '已停止']]
   it.each(cases)('renders %s as %s; only running spins', (status, label) => {
     const plan = createPlanDag('UI', [{ description: 'Task' }])
     if (status) plan.nodes[0].execution = { attemptId: 'a', status }

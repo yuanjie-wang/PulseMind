@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { createKnowledgeSaveAction, type KnowledgeSaveInput } from '../src/renderer/src/components/chat/knowledge-save'
 import type { KnowledgeFile } from '../src/shared/types/knowledge'
 
@@ -60,5 +62,21 @@ describe('one-way knowledge save', () => {
     await action({ ...input, ...patch })
     expect(deps.save).not.toHaveBeenCalled()
     expect(deps.pending).not.toHaveBeenCalled()
+  })
+})
+
+describe('wiring — the save action reaches the embedded hosts (full_20261011 M5-P1)', () => {
+  const read = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf-8')
+
+  it('TranscriptView threads conversationId to SegmentBlock; both hosts pass an id', () => {
+    const tv = read('../src/renderer/src/components/chat/TranscriptView.tsx')
+    expect(tv).toContain('conversationId?: string')
+    expect(tv).toContain('conversationId={conversationId}')
+    const fac = read('../src/renderer/src/components/form-assist/FormAssistColumn.tsx')
+    expect(fac).toContain('conversationId={session.conversationId}')
+    const sasv = read('../src/renderer/src/components/subagent/SubAgentSessionView.tsx')
+    expect(sasv).toContain('conversationId={subConvId}')
+    // The hook exposes the id the column threads through:
+    expect(read('../src/renderer/src/components/form-assist/useFormAssistSession.ts')).toContain('conversationId: convId ?? undefined')
   })
 })

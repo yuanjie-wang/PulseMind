@@ -106,6 +106,7 @@ export function FormAssistColumn<P extends object>({
         streamingBlocks={session.streamingBlocks}
         isRequesting={session.isBusy}
         restoring={session.restoring}
+        conversationId={session.conversationId}
         restoringHint={
           <div style={{ padding: '0 14px', color: 'var(--pm-text-muted)', fontSize: 13 }}>{t('formAssist.restoring')}</div>
         }

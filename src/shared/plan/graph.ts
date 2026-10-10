@@ -372,7 +372,10 @@ export function planNodeExecutionLabel(node: PlanNode): string {
   switch (node.execution?.status) {
     case 'queued': return '排队中'
     case 'running': return '执行中'
-    case 'delivered': return '已交付，待验收'
+    // 「待验收」3 字（full_20261011 M3-P1-1）：7 字旧词在 12px 字号下起点
+    // 68，与声明徽标（终点 78）重叠 10px——row 1 的槽位在字号提升时没像
+    // row 2 那样重算。3 字起点 116，留 38px 缝；「已交付」由验收态本身表达。
+    case 'delivered': return '待验收'
     case 'failed': return '执行失败'
     case 'stopped': return '已停止'
     default: return '未开始'

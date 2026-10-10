@@ -46,6 +46,12 @@ export interface TranscriptViewProps {
    *  entrance wave) instead of a burst of animations. A host that remounts per
    *  conversation needs nothing. */
   entranceKey?: string
+  /** Conversation id of the transcript's own session — threaded to the
+   *  assistant action row's 「存到知识库」 (full_20261011 M5-P1): without it
+   *  the save action's blank-id guard no-ops silently and the two embedded
+   *  hosts (form assist, sub-agent preview) showed a button that did
+   *  nothing. Omit for viewOnly transcripts that are not stored rows. */
+  conversationId?: string
   onApproveTool: (toolUseId: string, alwaysAllow?: boolean) => void
   onRejectTool: (toolUseId: string) => void
   onKillTool: (toolUseId: string) => void
@@ -66,6 +72,7 @@ export function TranscriptView({
   actions = 'full',
   contentInset = MESSAGE_COLUMN_INSET,
   entranceKey,
+  conversationId,
   onApproveTool,
   onRejectTool,
   onKillTool,
@@ -217,6 +224,7 @@ export function TranscriptView({
           awaitingApproval={agentStatus.status === 'awaiting_approval'}
           actions={actions}
           contentInset={contentInset}
+          conversationId={conversationId}
           enter={freshSegKeys.has(getSegmentKey(seg))}
           onApproveTool={onApproveTool}
           onRejectTool={onRejectTool}

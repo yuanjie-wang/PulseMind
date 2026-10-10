@@ -318,7 +318,11 @@ describe('read 的 ~ 路径在引号里不展开 → 拼 $HOME', () => {
     } as never)
     const executor = new ToolExecutor({ platformInfo: { platform: 'darwin' } } as never, new Map(), {} as never, {} as never, () => {}, () => {})
     await (executor as unknown as { getLineCount(p: string): Promise<number> }).getLineCount('~/notes.md')
-    expect(captured).toContain(`wc -l $HOME`)
+    // The variable must sit OUTSIDE the quotes to expand (full_20261011
+    // M2-P1-3/X8): "\$HOME…" inside the double-quoted path is the shape read's
+    // verified POSIX branch uses.
+    expect(captured).toContain(`wc -l "$HOME`)
+    expect(captured).not.toContain(`'$HOME`)
   })
 })
 

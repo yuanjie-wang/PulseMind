@@ -241,6 +241,9 @@ export function SubAgentSessionView({ subConvId, title, live, paused = false, re
         emptyHint={loadError ?? '暂无对话内容'}
         actions={live ? 'viewOnly' : 'full'}
         entranceKey={subConvId}
+        // 子会话自己的 id：'full' 分支（已结束的子对话回看）的「存到知识库」
+        // 需要 blank-id 守卫的真 id，否则按钮静默 no-op（full_20261011 M5-P1）。
+        conversationId={subConvId}
         onApproveTool={noop}
         onRejectTool={noop}
         onKillTool={noop}
