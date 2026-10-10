@@ -27,6 +27,12 @@ export interface SimilarRegion {
   totalLines: number
   /** every needle line matches once surrounding whitespace is ignored — the miss is indentation / invisible characters */
   whitespaceOnly: boolean
+  /** The region cleared the cheap gate (at least one needle line exists
+   *  verbatim in the file) but fell under the quality bar — resemblance is
+   *  real yet fragmentary, and callers must NOT word this as "nothing
+   *  matched": the gate just proved some lines DO appear, and that claim
+   *  steers the model toward the wrong-file dead end. */
+  fragmentary?: boolean
   /** verbatim file text at the region, line-numbered and capped */
   preview: string
 }
@@ -63,12 +69,16 @@ export function findSimilarRegion(content: string, needle: string, previewMaxLin
     }
   }
   // Quality bar: a region whose only resemblance is a shared closing brace
-  // ("1/3 lines line up") is noise dressed as guidance — worse than admitting
-  // nothing matched, because the model would re-anchor on an unrelated spot.
-  // Half the needle lines (≥2) must line up; a single-line needle matching at
-  // all IS the hit (that is the whitespaceOnly case).
+  // ("1/3 lines line up") is noise dressed as guidance — a NULL here would
+  // claim nothing matched at all. But the cheap gate already proved at least
+  // one needle line exists verbatim, so a sub-bar scan returns the fragment
+  // flagged `fragmentary` instead: callers say "partial resemblance, no
+  // aligned region", which is honest about both facts. (Half the needle lines
+  // (≥2) must line up for a real region; a single-line needle matching at all
+  // IS the hit — that is the whitespaceOnly case.)
   const minHits = total === 1 ? 1 : Math.max(2, Math.ceil(total / 2))
-  if (bestStart < 0 || bestHits < minHits) return null
+  if (bestStart < 0) return null
+  const fragmentary = bestHits < minHits
 
   const end = bestStart + Math.min(total, n - bestStart) // exclusive
   const windowLen = end - bestStart
@@ -97,6 +107,7 @@ export function findSimilarRegion(content: string, needle: string, previewMaxLin
     matchedLines: bestHits,
     totalLines: total,
     whitespaceOnly: bestHits === total,
+    fragmentary,
     preview: previewLines.join('\n'),
   }
 }
@@ -110,6 +121,14 @@ export function editMissError(filePath: string, normalizedContent: string, oldSt
     return `${base}. None of old_str's lines appear in the file (ignoring leading/trailing whitespace) — you may be targeting the wrong file, or the code differs more than expected. Re-read the target file to find the actual text before retrying.`
   }
   const where = `lines ${region.startLine}–${region.endLine}`
+  if (region.fragmentary) {
+    // Some needle lines DO exist (the gate proved it) but no aligned region
+    // cleared the quality bar — typically the needle was re-created from
+    // memory and drifted (an extra/remembered line shifting everything).
+    // Claiming "none of the lines appear" here would send the model off to
+    // re-read the wrong file.
+    return `${base}. Only ${region.matchedLines}/${region.totalLines} of old_str's line(s) appear in the file (fragmentary resemblance — no aligned region; the surrounding lines differ). You may be re-creating the code from memory: re-read ${where} and retry with old_str copied verbatim from the file, or pass a unified diff via the \`diff\` parameter — hunks re-anchor on context, not exact text. Closest fragment:\n${region.preview}`
+  }
   if (region.whitespaceOnly) {
     return `${base}. A match EXISTS at ${where}: all ${region.totalLines} line(s) are identical once surrounding whitespace is ignored, so the miss is indentation or invisible characters. Retry with old_str copied verbatim from the file (or pass a unified diff via the \`diff\` parameter — hunks re-anchor on context, not exact text). Actual file content at ${where}:\n${region.preview}`
   }
@@ -127,6 +146,9 @@ export function hunkMismatchError(oldStart: number, expectedLines: string[], con
     return `${base} None of the hunk's context/removed lines appear in the file — the hunk likely targets a stale line number or the wrong region. Re-read the file and regenerate the diff from the actual text.`
   }
   const where = `lines ${region.startLine}–${region.endLine}`
+  if (region.fragmentary) {
+    return `${base} Only ${region.matchedLines}/${region.totalLines} of the hunk's expected line(s) appear in the file (fragmentary resemblance — no aligned region; the surrounding lines differ). Re-read the file and regenerate the diff from the actual text. Closest fragment at ${where}:\n${region.preview}`
+  }
   if (region.whitespaceOnly) {
     return `${base} The expected lines DO exist at ${where} (whitespace differs) — re-anchor the hunk on the exact text below:\n${region.preview}`
   }

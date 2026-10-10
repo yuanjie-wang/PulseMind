@@ -49,8 +49,28 @@ describe('findSimilarRegion — locating the closest region', () => {
   })
 
   it('returns null when no needle line appears in the file at all', () => {
-    expect(findSimilarRegion(FILE, 'function totallyDifferent() {\n  return 42\n}')).toBeNull()
+    // The needle must not share a single line with the file (a trailing `}`
+    // would pass the gate and land in the fragmentary branch instead — that
+    // shape used to fall out of the sub-bar null and read as "none matched").
+    expect(findSimilarRegion(FILE, 'function totallyDifferent() {\n  return 42')).toBeNull()
     expect(findSimilarRegion(FILE, '   ')).toBeNull() // blank needle
+  })
+
+  it('a gate-passing but sub-bar scan returns the FRAGMENTARY region, not null (review 2026-10-10 中3)', () => {
+    // `function padLeft…` and `}` exist verbatim (the cheap gate passes) but
+    // the best window scores 1/4 — under the quality bar. The old null made
+    // the error claim NONE of the lines appear, disproved by the gate itself.
+    const needle = ['function padLeft(text, width) {', '  totally unrelated body', '  another unrelated line', '}'].join('\n')
+    const region = findSimilarRegion(FILE, needle)
+    expect(region).not.toBeNull()
+    expect(region!.fragmentary).toBe(true)
+    expect(region!.matchedLines).toBe(1)
+    expect(region!.startLine).toBe(1) // 1-hit windows tie; the earliest wins
+    expect(region!.preview).toContain('4 | }')
+    // A region at/above the bar is never flagged (3/4 lines line up here).
+    const aligned = findSimilarRegion(FILE, ['function padLeft(text, width) {', '  return " ".repeat(width - text.length) + text', '}', '}'].join('\n'))
+    expect(aligned!.fragmentary).toBeFalsy()
+    expect(aligned!.matchedLines).toBe(3)
   })
 
   it('tolerates CRLF content — the \\r rides the trimmed comparison', () => {
@@ -100,9 +120,25 @@ describe('editMissError — the edit tool\'s not-found surface', () => {
   })
 
   it('a needle absent from the file says so — usually the wrong file', () => {
-    const msg = editMissError('/ws/a.js', FILE, 'function nope() {\n  return 1\n}')
+    // No line of this needle exists in the file, so the cheap gate fails and
+    // the wording is true. (A needle sharing even a `}` line lands in the
+    // fragmentary branch instead.)
+    const msg = editMissError('/ws/a.js', FILE, 'function nope() {\n  return 1')
     expect(msg).toContain("None of old_str's lines appear")
     expect(msg).toContain('Re-read the target file')
+  })
+
+  it('a sub-bar scan says FRAGMENTARY, never "none of the lines appear" (review 2026-10-10 中3)', () => {
+    // The gate passed (two lines exist verbatim), so the old null-branch
+    // wording was a false claim that steered the model to the wrong file.
+    const needle = ['function padLeft(text, width) {', '  totally unrelated body', '  another unrelated line', '}'].join('\n')
+    const msg = editMissError('/ws/a.js', FILE, needle)
+    expect(msg.startsWith('old_str not found in /ws/a.js.')).toBe(true)
+    expect(msg).toContain('Only 1/4')
+    expect(msg).toContain('fragmentary resemblance')
+    expect(msg).not.toContain("None of old_str's lines appear")
+    expect(msg).toContain('lines 1–4')
+    expect(msg).toContain('4 | }')
   })
 })
 
@@ -116,6 +152,15 @@ describe('hunkMismatchError — the diff mode counterpart', () => {
 
   it('empty expected sequence degrades to the bare one-liner', () => {
     expect(hunkMismatchError(5, [], FILE)).toBe('Hunk at line 5 does not match file content. Expected different content in the target region.')
+  })
+
+  it('a sub-bar scan reports the fragment instead of claiming nothing appears', () => {
+    const msg = hunkMismatchError(50, ['function padLeft(text, width) {', '  totally unrelated body', '  another unrelated line', '}'], FILE)
+    expect(msg).toContain('Only 1/4')
+    expect(msg).toContain('fragmentary resemblance')
+    expect(msg).not.toContain('None of the hunk')
+    expect(msg).toContain('lines 1–4')
+    expect(msg).toContain('4 | }')
   })
 })
 
