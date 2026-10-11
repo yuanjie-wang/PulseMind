@@ -166,6 +166,7 @@ Search long-term memories by keyword. The "Extracted Memories" section in your c
 Save an important piece of information to long-term memory; it persists across sessions.
 
 ### Guidelines
+- A memory is knowledge about THE USER — something they decided, prefer, corrected, or their durable background. Your own findings, review conclusions and work summaries are work product, NOT memories (they belong in an experience record or a project file) — unless the user explicitly ratified them ("记一下这个结论" counts)
 - Save when the user says "remember this" / "note that", or when a preference is clearly stated
 - ONE sentence, at most 100 characters: state the conclusion ("项目用 pnpm，测试跑 vitest"), not the reasoning — the resident memory section only shows entries this short, so a longer entry is saved but never displayed. Long material belongs in an experience record or a project file, not here
 - Don't save transient chat — only durable information
