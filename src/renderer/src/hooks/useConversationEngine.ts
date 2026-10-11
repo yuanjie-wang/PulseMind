@@ -155,9 +155,39 @@ export function foldConvLight(
   return next
 }
 
+// ── Mirror eviction (12h-run memory bound) ──
+// Every conversation the desktop chat ever OPENED this run keeps a full
+// SessionState mirror (all messages, all blocks) in statesRef — and its
+// main-hosted engine holds the same transcript again — with no eviction path,
+// so a long session that visits many conversations grows renderer AND main
+// memory monotonically. The cap bounds the cache; the sweep (in
+// useConversationPersistence's 10s tick) drops the OLDEST-IDLE mirrors past
+// it. Reopening an evicted conversation follows the ordinary cold-open path
+// (hydrate from DB), so eviction costs a rehydrate, never data: candidates
+// are terminal-status only, and the persistence gate refuses anything the
+// verified-save ledger has not covered.
+export const MAX_CACHED_CONVERSATIONS = 20
+
+const TERMINAL_EVICTABLE_STATUSES: AgentStatus['status'][] = ['idle', 'completed', 'error']
+
+/** Pure candidate policy (tests drive this directly): non-active conversations
+ *  whose mirrored status can no longer move, oldest-touch first. Live statuses
+ *  are never candidates — their events must keep flowing for the sidebar
+ *  lights, the background-completion callbacks and the approval cards. */
+export function selectEvictionCandidates(
+  entries: Array<{ id: string; status: AgentStatus['status']; touchedAt: number }>,
+  activeId: string,
+): string[] {
+  return entries
+    .filter((e) => e.id !== activeId && TERMINAL_EVICTABLE_STATUSES.includes(e.status))
+    .sort((a, b) => a.touchedAt - b.touchedAt)
+    .map((e) => e.id)
+}
+
 export function useConversationEngine(options: UseConversationEngineOptions) {
   const statesRef = useRef<Map<string, SessionState>>(new Map())
   const enginesRef = useRef<Map<string, SessionEngineHandle>>(new Map())
+  const touchTimesRef = useRef<Map<string, number>>(new Map())
   const activeEngineIdRef = useRef<string>('')
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
@@ -168,6 +198,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
 
   // ── Session registry ──
   const ensureSession = useCallback((convId: string): SessionState => {
+    touchTimesRef.current.set(convId, Date.now())
     let st = statesRef.current.get(convId)
     if (!st) {
       const fresh = freshSessionState()
@@ -322,6 +353,9 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       const data = raw as AgentEventData
       const st = statesRef.current.get(sessionId)
       if (!st) return
+      // Recency for the mirror-eviction sweep (selectEvictionCandidates): the
+      // last event a conversation mirrored is the last time it was alive.
+      touchTimesRef.current.set(sessionId, Date.now())
       // Transport-only events (token/tool_start/spawn_progress/…) are not
       // mirrored; the follow-up below must not run for them.
       if (!applySessionEvent(st, data)) return
@@ -380,6 +414,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   /** Mark a conversation as the active one (keeps the ref in sync with callers). */
   const activateEngine = useCallback((convId: string) => {
     activeEngineIdRef.current = convId
+    touchTimesRef.current.set(convId, Date.now())
     // Opening the conversation is the read receipt: its 未读 light goes out.
     // Later completions judge 已读 against the new active id — watching a turn
     // finish stays dark, walking away and letting it finish lights green.
@@ -479,6 +514,28 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   const getWorkspaceDir = useCallback((convId: string): string | undefined =>
     statesRef.current.get(convId)?.workspaceDir, [])
 
+  // ── Mirror eviction (MAX_CACHED_CONVERSATIONS, 12h-run memory bound) ──
+  // Mechanism only — the policy (when/what) lives in the persistence sweep,
+  // which owns the verified-save ledger. `dispose` tears the MAIN-hosted
+  // engine down too: an evicted conversation's transcript lives on in SQLite,
+  // and re-opening follows the ordinary cold-open path (createSession +
+  // hydrate from DB). Same-renderer IPC is ordered, so a re-open racing the
+  // dispose lands after it.
+  const evictEngine = useCallback((convId: string) => {
+    enginesRef.current.get(convId)?.dispose()
+    enginesRef.current.delete(convId)
+    statesRef.current.delete(convId)
+    touchTimesRef.current.delete(convId)
+  }, [])
+
+  const listEvictionCandidates = useCallback((): string[] => {
+    const entries: Array<{ id: string; status: AgentStatus['status']; touchedAt: number }> = []
+    for (const [id, st] of statesRef.current) {
+      entries.push({ id, status: st.agentStatus.status, touchedAt: touchTimesRef.current.get(id) ?? 0 })
+    }
+    return selectEvictionCandidates(entries, activeEngineIdRef.current)
+  }, [])
+
   return {
     enginesRef,
     activeEngineIdRef,
@@ -491,6 +548,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     getOrCreateEngine,
     activateEngine,
     getWorkspaceDir,
+    evictEngine,
+    listEvictionCandidates,
     // State setters exposed for external load/restore operations
     setMessages,
     setAgentStatus,

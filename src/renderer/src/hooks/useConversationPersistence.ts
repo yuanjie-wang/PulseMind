@@ -16,6 +16,7 @@ import type { Conversation } from '../../../shared/types/conversation'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { usePendingApprovalStore } from '../stores/pendingApprovalStore'
 import { conversationKeyOf } from '../../../shared/conversation-key'
+import { MAX_CACHED_CONVERSATIONS } from './useConversationEngine'
 
 // ── Hook ──
 
@@ -38,13 +39,20 @@ interface UseConversationPersistenceOptions {
   setAgentStatus: React.Dispatch<React.SetStateAction<AgentStatus>>
   setStreamingBlocks: React.Dispatch<React.SetStateAction<any[]>>
   setPlan: React.Dispatch<React.SetStateAction<any>>
+  // Mirror eviction (MAX_CACHED_CONVERSATIONS, 12h-run memory bound): the
+  // engine hook owns the mechanism (candidate list by recency+status, mirror
+  // drop), this hook owns the policy gate — nothing leaves the cache until a
+  // verified save has covered it.
+  listEvictionCandidates?: () => string[]
+  evictEngine?: (convId: string) => void
 }
 
 export function useConversationPersistence(options: UseConversationPersistenceOptions) {
   const {
     autoCleanup, messages, agentStatus,
     enginesRef, activeEngineIdRef, getOrCreateEngine, markConversationRead,
-    setMessages, setAgentStatus, setStreamingBlocks, setPlan
+    setMessages, setAgentStatus, setStreamingBlocks, setPlan,
+    listEvictionCandidates, evictEngine
   } = options
 
   // ── Conversation list management (useXConversations) ──
@@ -189,30 +197,62 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
   // 流式检查点的「上次落库时刻」——只记验证成功的保存，保证两次流式落库
   // 间隔 ≥ STREAMING_CHECKPOINT_MS。
   const streamingCheckpointAtRef = useRef(new Map<string, number>())
+  /** Eviction gate (mirror eviction, MAX_CACHED_CONVERSATIONS): a conversation
+   *  may drop its cached mirror only when nothing about it is unsaved — the
+   *  sweep's clean-key ledger IS the verified-save record (sweepKeysMatch
+   *  compares the engine's current content fingerprint against the last
+   *  VERIFIED save), and a hydration still in flight has no engine worth
+   *  trusting yet. */
+  const isEvictable = useCallback((convId: string) => {
+    if (loadingIdsRef.current.has(convId)) return false
+    const engine = enginesRef.current.get(convId)
+    if (!engine) return true
+    return sweepKeysMatch(sweepCleanKeysRef.current.get(convId), sweepKeyOf(engine))
+  }, [enginesRef])
+
   useEffect(() => {
     const timer = setInterval(() => {
-      const now = Date.now()
-      for (const [id, engine] of enginesRef.current.entries()) {
-        // 流式会话走粗粒度检查点（窗口见 streamingCheckpointAtRef）；防抖路径
-        // 的 streaming 守卫维持原样——1s 级的流式期重复写没有必要，回合收尾的
-        // streaming→completed 迁移另有立即保存。纯流式段（delta 只进
-        // streamingBlocks，messages 数组引用不变）仍被下方 sweepKey 引用相等
-        // 短路，不白付快照 + 逐条 stringify；被窗口真正放行的只是 append 后
-        // 的增量保存。
-        const streaming = engine.agentStatus.status === 'streaming'
-        if (streaming && now - (streamingCheckpointAtRef.current.get(id) ?? 0) < STREAMING_CHECKPOINT_MS) continue
-        const key = sweepKeyOf(engine)
-        if (sweepKeysMatch(sweepCleanKeysRef.current.get(id), key)) continue
-        void saveConversationById(id).then((ok) => {
-          if (ok) {
-            sweepCleanKeysRef.current.set(id, key)
-            if (streaming) streamingCheckpointAtRef.current.set(id, Date.now())
-          }
-        })
-      }
+      void (async () => {
+        const now = Date.now()
+        for (const [id, engine] of enginesRef.current.entries()) {
+          // 流式会话走粗粒度检查点（窗口见 streamingCheckpointAtRef）；防抖路径
+          // 的 streaming 守卫维持原样——1s 级的流式期重复写没有必要，回合收尾的
+          // streaming→completed 迁移另有立即保存。纯流式段（delta 只进
+          // streamingBlocks，messages 数组引用不变）仍被下方 sweepKey 引用相等
+          // 短路，不白付快照 + 逐条 stringify；被窗口真正放行的只是 append 后
+          // 的增量保存。
+          const streaming = engine.agentStatus.status === 'streaming'
+          if (streaming && now - (streamingCheckpointAtRef.current.get(id) ?? 0) < STREAMING_CHECKPOINT_MS) continue
+          const key = sweepKeyOf(engine)
+          if (sweepKeysMatch(sweepCleanKeysRef.current.get(id), key)) continue
+          void saveConversationById(id).then((ok) => {
+            if (ok) {
+              sweepCleanKeysRef.current.set(id, key)
+              if (streaming) streamingCheckpointAtRef.current.set(id, Date.now())
+            }
+          })
+        }
+        // ── Mirror eviction ──
+        // Past MAX_CACHED_CONVERSATIONS cached mirrors, drop the OLDEST-IDLE
+        // ones (selectEvictionCandidates: terminal status, non-active,
+        // oldest-touch first) until back under the cap. The gate refuses
+        // anything unsaved; `forget` awaits an in-flight write and drops the
+        // save baseline (its fingerprints ≈ the messages' own JSON) — the
+        // baseline is re-seeded from hydration if the conversation returns.
+        // Runs AFTER the save loop, so entries verified this very tick are
+        // immediately eligible.
+        if (!listEvictionCandidates || !evictEngine) return
+        if (enginesRef.current.size <= MAX_CACHED_CONVERSATIONS) return
+        for (const id of listEvictionCandidates()) {
+          if (enginesRef.current.size <= MAX_CACHED_CONVERSATIONS) break
+          if (!isEvictable(id)) continue
+          await saveQueueRef.current.forget(id)
+          evictEngine(id)
+        }
+      })()
     }, 10000)
     return () => clearInterval(timer)
-  }, [enginesRef, saveConversationById])
+  }, [enginesRef, saveConversationById, listEvictionCandidates, evictEngine, isEvictable])
 
   // ── Save immediately when streaming ends ──
   const prevAgentStatusRef = useRef(agentStatus.status)

@@ -105,7 +105,11 @@ export function useChatController(options: UseChatControllerOptions) {
     setMessages: engine.setMessages,
     setAgentStatus: engine.setAgentStatus,
     setStreamingBlocks: engine.setStreamingBlocks,
-    setPlan: engine.setPlan
+    setPlan: engine.setPlan,
+    // Mirror eviction (MAX_CACHED_CONVERSATIONS): the engine owns the
+    // mechanism, the persistence sweep owns the policy (verified-save gate).
+    listEvictionCandidates: engine.listEvictionCandidates,
+    evictEngine: engine.evictEngine
   })
 
   // ── Shared title generation ────────────────────────────────────────
