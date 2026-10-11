@@ -50,6 +50,10 @@ interface BatchState {
   /** In-flight rows by conversation id — what 停止 has to interrupt. */
   inFlightHandles: Map<string, { stop: () => void }>
   parentSettled: boolean
+  /** The scheduler's slot-release event (see start): fires once when the
+   *  parent row settles — completion, or a stop that settles it. Absent for
+   *  manual/resume batches, which hold no scheduler slot. */
+  onSettled?: () => void
 }
 
 class BatchRunner {
@@ -73,7 +77,7 @@ class BatchRunner {
    *  absent, the routine's configured value applies, then the default. Same
    *  chain for `overrides.timeoutMinutes` — each row's 单次超时 (user
    *  2026-09-23: a hung row must be stoppable at a configured bound). */
-  async start(routine: Routine, trigger: RoutineRun['trigger'], overrides?: { concurrency?: number; timeoutMinutes?: number }): Promise<RoutineRun> {
+  async start(routine: Routine, trigger: RoutineRun['trigger'], overrides?: { concurrency?: number; timeoutMinutes?: number }, onSettled?: () => void): Promise<RoutineRun> {
     for (const state of this.active.values()) {
       if (state.routine.id === routine.id) {
         throw new Error(`「${routine.name}」已有批量运行在进行，请等待完成或先停止`)
@@ -105,7 +109,7 @@ class BatchRunner {
       timeoutMinutes,
     })
     auditStore.record({ scope: 'routine', actor: routine.id, action: 'batch.start', target: parentRun.id, decision: 'allowed' })
-    this.spawn(parentRun, routine, source.rows.length, (i) => rowParamsAt(source.headers, source.rows, routine.params, i), concurrency, timeoutMinutes)
+    this.spawn(parentRun, routine, source.rows.length, (i) => rowParamsAt(source.headers, source.rows, routine.params, i), concurrency, timeoutMinutes, undefined, onSettled)
     return parentRun
   }
 
@@ -171,7 +175,7 @@ class BatchRunner {
   /** Wire a batch state over the given rows and start the pool. `rowsFor` maps
    *  a row index to its values: computed from the CSV for a fresh batch, from
    *  the resume plan for a wave. */
-  private spawn(parentRun: RoutineRun, routine: Routine, totalRows: number, rowsFor: (index: number) => Record<string, string>, concurrency: number, timeoutMinutes: number, indices?: number[]): BatchState {
+  private spawn(parentRun: RoutineRun, routine: Routine, totalRows: number, rowsFor: (index: number) => Record<string, string>, concurrency: number, timeoutMinutes: number, indices?: number[], onSettled?: () => void): BatchState {
     const rows = indices ?? Array.from({ length: totalRows }, (_, i) => i)
     const paramsByIndex = new Map<number, Record<string, string>>(rows.map((i) => [i, rowsFor(i)]))
     const state: BatchState = {
@@ -187,6 +191,7 @@ class BatchRunner {
       timeoutMinutes,
       inFlightHandles: new Map(),
       parentSettled: false,
+      onSettled,
     }
     this.active.set(parentRun.id, state)
     state.queue.start()
@@ -318,6 +323,10 @@ class BatchRunner {
     else status = 'partial'
     const summary = `成功 ${progress.success} / 失败 ${progress.failed}` + (progress.skipped > 0 ? ` / 跳过 ${progress.skipped}` : '')
     routineStore.finishRun(state.parentRun.id, { status, error: status === 'success' ? undefined : summary })
+    // The scheduler's slot-release event: the parent row is settled, so the
+    // overlap guard reads the store again from here on. Also fires for a
+    // stop-settled parent — a stopped routine may fire again on its next cron.
+    state.onSettled?.()
     // One notification per BATCH, never per row (a hundred rows would be a
     // hundred toasts); a batch stopped before it ran anything stays silent —
     // the user pressed the stop themselves. The settlement webhook follows

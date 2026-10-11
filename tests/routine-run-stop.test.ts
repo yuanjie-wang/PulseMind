@@ -64,12 +64,14 @@ describe('single-run stop: the runner registry', () => {
   })
 
   it('leaves the registry on SETTLEMENT only — never inside stop()', () => {
-    // Exactly one delete, on the run's own onSettled. Deleting on stop too
-    // would empty the registry during the beat it takes stopExecution to park
-    // the engine, so the row still reads 运行中 while a second click gets the
-    // misleading 「该运行已不在进行中」 toast — a harmless repeat is the right
-    // answer there (the handle's settled/stopRequested guard no-ops it).
-    expect(src).toMatch(/onSettled: \(\) => activeSingleRuns\.delete\(run\.id\)/)
+    // Exactly one delete, on the run's own onSettled — which now ALSO calls
+    // the scheduler's slot-release hook (event-driven release), still strictly
+    // at settlement. Deleting on stop too would empty the registry during the
+    // beat it takes stopExecution to park the engine, so the row still reads
+    // 运行中 while a second click gets the misleading 「该运行已不在进行中」
+    // toast — a harmless repeat is the right answer there (the handle's
+    // settled/stopRequested guard no-ops it).
+    expect(src).toMatch(/onSettled: \(\) => \{ activeSingleRuns\.delete\(run\.id\); onSettled\?\.\(\) \}/)
     expect(src.match(/activeSingleRuns\.delete\(/g)?.length).toBe(1)
     // And stop() itself only interrupts — no registry surgery.
     const stopBody = src.slice(src.indexOf('stop(runId: string): void'))

@@ -102,6 +102,25 @@ class RoutineScheduler {
   private fire(routine: Routine, next: number): void {
     this.executingIds.add(routine.id)
     auditStore.record({ scope: 'routine', actor: 'scheduler', action: 'routine.fire', target: routine.id, decision: 'allowed' })
+    let checkTimer: ReturnType<typeof setInterval> | null = null
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      if (checkTimer) { clearInterval(checkTimer); checkTimer = null }
+      this.executingIds.delete(routine.id)
+    }
+    // Fallback release poller, kept from the old design — but WITHOUT the
+    // unconditional 30-min kill it used to carry: a run's 单次超时 reaches
+    // 120 minutes and a 200-row batch at concurrency 1 can run for days, so a
+    // fixed kill wedged every longer run's slot until restart (the routine then
+    // skipped all its cron fires forever). Event release below is the primary
+    // path; this poller only covers the shapes no settlement event can reach —
+    // a fast-fail run whose row was created and finished before any hook was
+    // wired. Its own condition (no running row) also self-clears it.
+    checkTimer = setInterval(() => {
+      if (!routineStore.hasRunningRun(routine.id)) release()
+    }, 15_000)
     try {
       // Batch integration (L10): a routine that opted in (batch.applyToSchedule)
       // runs its whole data file on a fire; everything else stays the single
@@ -110,22 +129,16 @@ class RoutineScheduler {
       // async now (xlsx read), so a refusal surfaces as a notification instead
       // of an unhandled rejection inside the tick.
       if (routine.batch?.applyToSchedule) {
-        void routineBatchRunner.start(routine, 'schedule').catch((err: unknown) => {
+        void routineBatchRunner.start(routine, 'schedule', undefined, release).catch((err: unknown) => {
           notify(`批量任务启动失败：${routine.name}`, err instanceof Error ? err.message : String(err))
+          // A refused start never creates a run row, so no settlement event can
+          // release the slot — release here.
+          release()
         })
-      } else routineRunner.start(routine, 'schedule')
+      } else routineRunner.start(routine, 'schedule', undefined, release)
     } finally {
       // Advance regardless of run outcome; the run itself reports separately.
       routineStore.update(routine.id, { nextRunAt: new Date(next).toISOString() })
-      // Free the slot once the run record stops being 'running' — poll loosely.
-      const check = setInterval(() => {
-        if (!routineStore.hasRunningRun(routine.id)) {
-          clearInterval(check)
-          this.executingIds.delete(routine.id)
-        }
-      }, 15_000)
-      // Safety: never leak the slot poller.
-      setTimeout(() => clearInterval(check), 30 * 60_000)
     }
   }
 }

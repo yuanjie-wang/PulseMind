@@ -338,8 +338,12 @@ export const routineRunner = {
   /** Fire-and-forget execution; resolves immediately with the run record while
    *  the run continues in the background (scheduler ticks must not block).
    *  The conversation id is generated here so it lands in the run row from the
-   *  start — run-history can attach to the live session mid-run. */
-  start(routine: Routine, trigger: RoutineRun['trigger'], params?: Record<string, string>): RoutineRun {
+   *  start — run-history can attach to the live session mid-run.
+   *  `onSettled` (optional) fires after THIS run's row is finished and its
+   *  transcript persisted — the scheduler's slot-release event (a fixed poller
+   *  bound cannot cover a 120-minute run); it also fires on the fast-fail path
+   *  (params/timeout refusal settled the row synchronously). */
+  start(routine: Routine, trigger: RoutineRun['trigger'], params?: Record<string, string>, onSettled?: () => void): RoutineRun {
     // A run whose required params resolved blank would execute a mangled prompt
     // (「检查  仓库的漏洞」) with nothing warning — refuse here instead. A manual
     // run throws so the click surfaces the reason; a scheduled fire has nobody
@@ -357,6 +361,7 @@ export const routineRunner = {
       if (trigger === 'manual') throw err
       const run = routineStore.startRun(routine.id, trigger, '')
       routineStore.finishRun(run.id, { status: 'failed', error: message })
+      onSettled?.()
       return run
     }
     const convId = `routine_${Date.now()}_${shortUuid(6)}`
@@ -370,7 +375,7 @@ export const routineRunner = {
       // The pool's slot-release point doubles as registry cleanup: once the
       // row is finished AND its transcript persisted there is nothing left
       // for 停止 to interrupt.
-      onSettled: () => activeSingleRuns.delete(run.id),
+      onSettled: () => { activeSingleRuns.delete(run.id); onSettled?.() },
     }))
     return run
   },
