@@ -138,6 +138,17 @@ interface ChatViewProps {
 
 // --- Message grouping lives in chat/message-segments (shared with the tool studio) ---
 
+// The chat scrollers are inset from the pane's right edge by this much. The
+// 6px global scrollbar paints flush at the container edge, and that edge is a
+// native drag surface the scrollbar must not touch: with the workbench closed
+// it is the OS resize border (~4-5px, kept by titleBarStyle:'hidden') — it
+// swallows pointer events before they reach the page, so of the 6px scrollbar
+// only ~1px actually scrolled and every grab became a window resize; with the
+// workbench open the pane's 6px col-resize drag handle sits flush against the
+// scrollbar's right edge, one stray pixel into a pane-width drag. The gap
+// clears both.
+const CHAT_SCROLLER_EDGE_GAP = 10
+
 // --- Main component ---
 
 function ChatView({
@@ -904,8 +915,12 @@ function ChatView({
 
         {/* Welcome content: auto-margin centering that degrades to scrolling
             when the window is too short (alignItems:center would clip the top
-            under the switcher instead). */}
-        <div data-welcome-region style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex' }}>
+            under the switcher instead). Same right inset as the transcript
+            scroller — this edge is the window's native resize border too. */}
+        <div
+          data-welcome-region
+          style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', marginRight: CHAT_SCROLLER_EDGE_GAP }}
+        >
           <WelcomeContent
             greeting={greeting}
             hasApiKey={hasApiKey}
@@ -989,7 +1004,15 @@ function ChatView({
         // conversation opens (markdown bodies, images, tool blocks), Chrome's
         // scroll anchoring would otherwise adjust scrollTop to keep the old
         // anchor node stable and drag the view off the tail.
-        style={{ height: '100%', overflow: 'auto', overflowAnchor: 'none' }}
+        // marginRight: CHAT_SCROLLER_EDGE_GAP — keeps the scrollbar clear of
+        // the native resize border / the workbench pane's drag handle (see the
+        // constant's note).
+        style={{
+          height: '100%',
+          overflow: 'auto',
+          overflowAnchor: 'none',
+          marginRight: CHAT_SCROLLER_EDGE_GAP,
+        }}
       >
         <div style={{ height: 24 }} />
 
