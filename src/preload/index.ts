@@ -127,7 +127,8 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_APPEND_MESSAGES, convId, title, messages),
   updateMessageMetadata: (msgId: string, data: { liked?: boolean; favorited?: boolean }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE_MESSAGE_METADATA, msgId, data),
-  deleteConversation: (id: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_DELETE, id),
+  deleteConversation: (id: string, opts?: { deleteWorkspace?: boolean }): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_DELETE, id, opts),
   updateConversationTitle: (id: string, title: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, id, title),
   updateConversationSummary: (id: string, summary: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE_SUMMARY, id, summary),
   updateConversationKeywords: (id: string, keywords: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATION_UPDATE_KEYWORDS, id, keywords),

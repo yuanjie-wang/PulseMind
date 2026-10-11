@@ -443,8 +443,14 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
       for (const c of oldest) {
         evictedIds.add(String(c.key))
         removeConversation(c.key)
+        // deleteWorkspace: the eviction is the ONE delete that also removes
+        // the conversation's minted workspace folder (12h disk bound — the
+        // folder tree grew to 10GB/302 folders in 5.5 weeks with no other
+        // cleanup). The guard is main-side (project jail roots, backfill rows
+        // pointing at the global root itself, and a moved base are never
+        // touched); a manual delete omits the flag and keeps the folder.
         await teardownConversation(String(c.key), enginesRef.current, saveQueueRef.current,
-          id => window.electronAPI.deleteConversation(id).catch(() => {}))
+          id => window.electronAPI.deleteConversation(id, { deleteWorkspace: true }).catch(() => {}))
       }
     }
 

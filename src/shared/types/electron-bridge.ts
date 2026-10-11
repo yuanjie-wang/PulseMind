@@ -158,7 +158,12 @@ export interface ElectronAPI {
   saveConversationSync: (conv: Conversation) => void
   appendConversationMessages: (convId: string, title: string, messages: Message[]) => Promise<void>
   updateMessageMetadata: (msgId: string, data: { liked?: boolean; favorited?: boolean }) => Promise<void>
-  deleteConversation: (id: string) => Promise<void>
+  /** `deleteWorkspace` rides ONLY the autoCleanup eviction (12h disk bound):
+   *  also remove the conversation's minted workspace folder (guarded main-side
+   *  to per-conversation folders under the global workspace — project jail
+   *  roots and backfill rows pointing at the root itself are never touched).
+   *  A manual delete omits it and keeps the folder. */
+  deleteConversation: (id: string, opts?: { deleteWorkspace?: boolean }) => Promise<void>
   updateConversationTitle: (id: string, title: string) => Promise<void>
   updateConversationSummary: (id: string, summary: string) => Promise<void>
   updateConversationKeywords: (id: string, keywords: string) => Promise<void>

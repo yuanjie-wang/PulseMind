@@ -37,6 +37,7 @@ import {
   getMonthlyTokenStats
 } from '../storage/stats.db'
 import { getDb } from '../storage/database'
+import { deleteConversationWorkspace } from '../storage/conversation-workspace'
 import type { ToolResultBatchEntry } from '../../shared/types/conversation'
 import type { SandboxApprovalMode } from '../../shared/sandbox/policy'
 import { rememberLastUsedApprovalMode, rememberLastUsedProfileId } from '../agent/last-used-defaults'
@@ -147,7 +148,18 @@ export function registerConversationHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_GET, passThrough(IPC_CHANNELS.CONVERSATION_GET, getConversation, null))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_HYDRATE, passThrough(IPC_CHANNELS.CONVERSATION_HYDRATE, hydrateConversation, null))
-  ipcMain.handle(IPC_CHANNELS.CONVERSATION_DELETE, voidHandler(IPC_CHANNELS.CONVERSATION_DELETE, deleteConversation))
+  // The workspace flag rides ONLY the autoCleanup eviction (12h disk bound):
+  // a manual delete keeps today's folder-preserving behavior — outputs the
+  // user may still want stay on disk. Workspace BEFORE the row: the guard
+  // reads the row's project binding and stored dir; deleteConversationWorkspace
+  // is best-effort by contract (false on refusal/failure), so the row delete
+  // always proceeds.
+  ipcMain.handle(IPC_CHANNELS.CONVERSATION_DELETE, async (_event, id: string, opts?: { deleteWorkspace?: boolean }): Promise<void> => {
+    try {
+      if (opts?.deleteWorkspace) await deleteConversationWorkspace(id)
+      deleteConversation(id)
+    } catch (e) { console.error(`[DB] error ${IPC_CHANNELS.CONVERSATION_DELETE}:`, e) }
+  })
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_TITLE, updateConversationTitle))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_SUMMARY, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_SUMMARY, updateConversationSummary))
   ipcMain.handle(IPC_CHANNELS.CONVERSATION_UPDATE_KEYWORDS, voidHandler(IPC_CHANNELS.CONVERSATION_UPDATE_KEYWORDS, updateConversationKeywords))

@@ -13,7 +13,7 @@
 // never go through here, so their behavior is unchanged.
 
 import { existsSync } from 'node:fs'
-import { mkdir, readdir } from 'node:fs/promises'
+import { mkdir, readdir, rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { getDb } from './database'
 import { WORKSPACE_DIR } from './index'
@@ -113,4 +113,49 @@ export async function resolveConversationWorkspace(convId: string, explicitProje
 
   setConversationWorkspaceDir(convId, dir)
   return dir
+}
+
+/** Whether this row's workspace_dir may be DELETED with its conversation:
+ *  only a per-conversation folder minted under the global workspace. The
+ *  exclusions are the two shapes that point somewhere else:
+ *  - a project binding: the project's dir is the user-picked jail root shared
+ *    by every conversation of the project — never ours to remove (and it COULD
+ *    live inside the global workspace by the user's choice, so the project
+ *    check is the load-bearing one, not the dirname one);
+ *  - the startup backfill rows (backfillConversationWorkspaces), which carry
+ *    the global workspace dir ITSELF — deleting one would wipe the whole tree;
+ *  - anything whose parent is not the CURRENT global base (the base moved via
+ *    settings since the mint — conservative: keep the folder).
+ *  Pure so tests can drive the guard matrix directly. */
+export function isDeletableConversationWorkspace(
+  workspaceDir: string | null | undefined,
+  projectId: string | null | undefined,
+  globalBase: string,
+): boolean {
+  if (!workspaceDir) return false
+  if (projectId && projectId !== DEFAULT_PROJECT_ID) return false
+  if (workspaceDir === globalBase) return false
+  return dirname(workspaceDir) === globalBase
+}
+
+/** Delete a conversation's minted workspace folder (autoCleanup eviction).
+ *  Best-effort by contract: false on any refusal or IO failure — a leftover
+ *  folder is the status quo the feature improves on, never a reason to fail
+ *  the conversation delete that follows. */
+export async function deleteConversationWorkspace(convId: string): Promise<boolean> {
+  try {
+    const row = getDb()
+      .prepare('SELECT workspace_dir, project_id FROM conversations WHERE id = ?')
+      .get(convId) as { workspace_dir: string | null; project_id: string | null } | undefined
+    if (!row) return false
+    const dir = row.workspace_dir
+    if (!dir) return false
+    const base = await globalWorkspaceDir()
+    if (!isDeletableConversationWorkspace(dir, row.project_id, base)) return false
+    await rm(dir, { recursive: true, force: true })
+    return true
+  } catch (err) {
+    console.warn(`[workspace] workspace deletion for ${convId} refused/failed:`, err)
+    return false
+  }
 }
