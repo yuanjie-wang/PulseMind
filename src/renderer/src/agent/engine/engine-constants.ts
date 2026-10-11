@@ -21,6 +21,42 @@ export const SYNC_COALESCE_MS = 80
 export const MAX_STREAM_IDLE_RETRIES = 2
 export const STREAM_IDLE_TIMEOUT_MARKERS = ['闲置超时', 'Stream idle timeout', 'stream done watchdog']
 
+// ── Mid-stream network-failure retry (12h unattended runs) ────────────
+// The idle-timeout retry covers a STALLED stream (proxy aborts after 60s of
+// silence). A stream can also DIE actively, and every one of those shapes used
+// to end the turn as a hard error — the one failure an unattended run cannot
+// survive (one mid-stream TCP reset = the whole task marked failed):
+//   - connection reset mid-body (undici: 'terminated' / 'other side closed' /
+//     cause ECONNRESET / 'socket hang up');
+//   - fetchWithRetry exhausting its 20 backoff attempts during a longer
+//     network outage ('fetch failed' + a connect/DNS cause);
+//   - the proxy's EXTERNAL abort — sleep/resume cancelAllRequests aborts every
+//     pending stream 3s after wake ('Request aborted'). User-stop never
+//     reaches this matcher: it sets isCancelled first and the catch's isCancel
+//     arm swallows the error; dispose/steer/retry register the request id in
+//     cancelledRequestIds the same way.
+// These share the idle-timeout budget (streamIdleRetries): consecutive
+// transport failures of any kind are one scarce resource. HTTP status errors
+// are deliberately excluded (see the 'HTTP ' guard in stream-runner): 4xx are
+// semantic (auth, request shape) and 429/5xx already got the proxy's 20
+// backoff attempts before surfacing here.
+export const STREAM_NETWORK_ERROR_MARKERS = [
+  'Request aborted',
+  'fetch failed',
+  'terminated',
+  'other side closed',
+  'socket hang up',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+]
+
 // ── Stream-done watchdog ───────────────────────────────────────────────
 // done/error are emitted synchronously inside performLlmStream before its
 // promise resolves, so a still-pending streamDonePromise after that resolve

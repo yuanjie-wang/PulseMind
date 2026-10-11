@@ -51,7 +51,7 @@ function makeHoldHost(): PulseHost & {
   issued: string[]
   aborted: string[]
   resolveStream(requestId: string, chunks: string[]): void
-  abortStream(requestId: string): void
+  abortStream(requestId: string, error?: string): void
 } {
   const issued: string[] = []
   const aborted: string[] = []
@@ -98,7 +98,7 @@ function makeHoldHost(): PulseHost & {
     issued: string[]
     aborted: string[]
     resolveStream(requestId: string, chunks: string[]): void
-    abortStream(requestId: string): void
+    abortStream(requestId: string, error?: string): void
   }
   Object.defineProperties(host, {
     issued: { get: () => issued },
@@ -115,12 +115,12 @@ function makeHoldHost(): PulseHost & {
     pending.delete(requestId)
     p.resolve()
   }
-  ;(base as Record<string, unknown>).abortStream = (requestId: string) => {
+  ;(base as Record<string, unknown>).abortStream = (requestId: string, error = 'Request aborted') => {
     const p = pending.get(requestId)
     if (!p) return
-    for (const fn of [...p.errorListeners]) fn({ requestId, error: 'Request aborted' })
+    for (const fn of [...p.errorListeners]) fn({ requestId, error })
     pending.delete(requestId)
-    p.reject(new Error('Request aborted'))
+    p.reject(new Error(error))
   }
   return host
 }
@@ -460,19 +460,22 @@ describe('a failing expert carries its reason to the parent (2026-09-29)', () =>
     await waitFor(() => host.issued.length >= 1, 'sub-agent LLM request')
     const [reqA] = host.issued
 
-    // A plain provider error (no idle-timeout / overflow marker, no cancel):
-    // the error path settles the sub-agent's completion in one shot, and the
-    // reason must survive the settle — the parent's envelope and tool card
-    // used to see only the bare word `error`.
-    host.abortStream(reqA)
+    // A plain provider error: HTTP-status errors are NOT transport-retryable
+    // (the engine's stream-failure retry covers resets/aborts — see
+    // tests/network-stream-retry.test.ts — so 'Request aborted' would now
+    // re-issue instead of settling), and the error path must still settle the
+    // sub-agent's completion in one shot with the reason surviving the settle
+    // — the parent's envelope and tool card used to see only the bare word
+    // `error`.
+    host.abortStream(reqA, 'HTTP 500: provider exploded')
 
     await waitFor(() => toolResultIds(engine).length >= 1, 'spawn envelope')
     const blocks = engine.messages.flatMap(m => m.contentBlocks)
     const resultBlock = blocks.find(b => b.type === 'tool_result' && (b as { tool_use_id: string }).tool_use_id === a.id) as { content: string } | undefined
     expect(resultBlock?.content).toContain('### Sub-agent Status: error')
-    expect(resultBlock?.content).toContain('**Reason:** Request aborted')
+    expect(resultBlock?.content).toContain('**Reason:** HTTP 500: provider exploded')
     const useBlock = blocks.find(b => b.type === 'tool_use' && b.id === a.id) as { output?: string; exitCode?: number } | undefined
-    expect(useBlock?.output).toContain('子代理失败：Request aborted')
+    expect(useBlock?.output).toContain('子代理失败：HTTP 500: provider exploded')
     expect(useBlock?.output).not.toContain('子代理已完成')
     expect(useBlock?.exitCode).toBe(1)
     // The failed expert's engine left the map with its settle — no leak.

@@ -2,7 +2,7 @@
  * LLM stream runner (PLAN-0.3.5 refactor, split 7/5): parser wiring, chunk
  * pump, stream-done await and idle-retry, extracted from AgentEngine.
  */
-import { MAX_EARLYSTOP_CONTINUATIONS, MAX_STREAM_IDLE_RETRIES, MAX_THINKING_ONLY_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS, STREAM_DONE_WATCHDOG_MS, STREAM_DONE_WATCHDOG_ERROR } from './engine-constants'
+import { MAX_EARLYSTOP_CONTINUATIONS, MAX_STREAM_IDLE_RETRIES, MAX_THINKING_ONLY_RETRIES, STREAM_IDLE_TIMEOUT_MARKERS, STREAM_DONE_WATCHDOG_MS, STREAM_DONE_WATCHDOG_ERROR, STREAM_NETWORK_ERROR_MARKERS } from './engine-constants'
 import { hasTaskDoneSentinel, stripTaskDoneSentinel } from './task-sentinel'
 import { runTurnEndMemoryExtraction } from './memory-extraction'
 import { isContextOverflowRejection, parseContextOverflowLimit } from './context-estimate'
@@ -375,6 +375,31 @@ export class StreamRunner {
         this.engine.jsonAccumulators = new Map()
         this.engine.toolUseBlocks = []
         this.engine.agentStatus = { status: 'retrying', message: `连接闲置超时，自动重试 (${this.engine.streamIdleRetries}/${MAX_STREAM_IDLE_RETRIES})…`, attempt: this.engine.streamIdleRetries, maxRetries: MAX_STREAM_IDLE_RETRIES, delay: 0 }
+        this.engine.notify()
+        await this.engine.continueLoop()
+        return
+      }
+      // Mid-stream network failure (see STREAM_NETWORK_ERROR_MARKERS): the
+      // connection DIED actively — reset mid-body, an exhausted retry chain in
+      // the proxy, or the sleep/resume cancelAllRequests sweep. Same budget as
+      // the idle timeout above (consecutive transport failures are one
+      // resource — which is why this branch sits BEFORE the reset below: a
+      // non-transport error ends the turn and refills the budget, an
+      // alternating idle/network sequence must not). Messages are untouched
+      // until onStreamComplete, so the re-issue regenerates from scratch. An
+      // 'HTTP …' status error never reaches here: 4xx are semantic and 429/5xx
+      // already got the proxy's 20 backoff attempts — engine-level retries
+      // would only re-hammer a provider that has been failing for minutes.
+      const isNetworkFailure = !message.startsWith('HTTP ')
+        && STREAM_NETWORK_ERROR_MARKERS.some(m => message.includes(m))
+      if (!isCancel && isNetworkFailure && this.engine.streamIdleRetries < MAX_STREAM_IDLE_RETRIES) {
+        this.engine.streamIdleRetries += 1
+        console.warn(`[AgentEngine] Stream network failure (${this.engine.streamIdleRetries}/${MAX_STREAM_IDLE_RETRIES}): ${message.slice(0, 200)} — retrying`)
+        this.engine.currentAssistantBlocks = []
+        this.engine.streamingBlocks = []
+        this.engine.jsonAccumulators = new Map()
+        this.engine.toolUseBlocks = []
+        this.engine.agentStatus = { status: 'retrying', message: `网络连接中断，自动重试 (${this.engine.streamIdleRetries}/${MAX_STREAM_IDLE_RETRIES})…`, attempt: this.engine.streamIdleRetries, maxRetries: MAX_STREAM_IDLE_RETRIES, delay: 0 }
         this.engine.notify()
         await this.engine.continueLoop()
         return
