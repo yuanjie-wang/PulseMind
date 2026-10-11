@@ -18,6 +18,7 @@ import { setHookWindowOpenListener, wasLastHookWindowUserClosed } from './hook-b
 import { beginGateEscape, cancelGateEscape } from './gate-escape'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
 import { resolveTitleBarOptions, setTitleBarTheme } from './window-chrome'
+import { installPopupMotionGuard } from './motion-guard'
 import { resolveThemePreference } from '../shared/theme'
 import { installApplicationMenu, attachShortcutFallback } from './menu'
 import { cancelAllRequests } from './ipc/api-proxy.handler'
@@ -463,6 +464,10 @@ function createWindow(): void {
     }
   })
   appViewDock.attach(mainWindow)
+  // Pin prefers-reduced-motion to no-preference for this target (see the
+  // module header): a mid-session Windows reduce flip parks every antd popup
+  // off-screen — rendered, animating, permanently invisible.
+  installPopupMotionGuard(mainWindow)
   // Readiness anchor for the splash crossfade (see scheduleSplashFade): the
   // fade holds until the renderer's first paint, revealing a finished window
   // instead of the background colour. Also logged — the main.log line is the
