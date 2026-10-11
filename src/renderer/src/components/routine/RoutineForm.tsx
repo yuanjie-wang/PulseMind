@@ -20,7 +20,7 @@ import { checkCron, nextRun } from '../../../../shared/schedule/cron'
 import { configToCron, WEEKDAY_LABELS } from '../../utils/schedule-builder'
 import type { ScheduleConfig } from '../../utils/schedule-builder'
 import type { SandboxApprovalMode } from '../../../../shared/sandbox/policy'
-import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, DEFAULT_BATCH_TIMEOUT_MINUTES, MAX_BATCH_ROWS, MAX_BATCH_CONCURRENCY } from '../../../../shared/routine/batch'
+import { analyzeCsvBatch, BATCH_TIMEOUT_MINUTE_OPTIONS, DEFAULT_BATCH_CONCURRENCY, DEFAULT_BATCH_TIMEOUT_MINUTES, MAX_BATCH_ROWS, MAX_BATCH_CONCURRENCY, mergeHeaderParams } from '../../../../shared/routine/batch'
 import type { CsvPreview } from '../../../../shared/routine/batch'
 import { useTranslation } from '../../i18n/useTranslation'
 import { AppliedPatchBar } from '../form-assist/AppliedPatchBar'
@@ -319,13 +319,39 @@ function RoutineAppliedBar({ applied, onUndo }: { applied: RoutineAssistantPatch
  *  header row, the first rows, and why a run would refuse (missing required
  *  column / over the row cap). The read carries no params: the mapping is
  *  recomputed on every render from the cached headers (analyzeCsvBatch), so a
- *  param keystroke never re-reads the file. */
+ *  param keystroke never re-reads the file.
+ *
+ *  Header→param auto-import (user 2026-10-11): a successful preview that was
+ *  ARMED by an explicit pick merges every not-yet-declared header into the
+ *  params (mergeHeaderParams) — no manual param editing. The arm flag is what
+ *  keeps re-opening a saved routine from resurrecting params the user deleted:
+ *  the mount preview runs unarmed. Re-picking the SAME file bumps `readTick`
+ *  (the path effect alone wouldn't re-fire), so the re-read re-syncs — that is
+ *  the recovery path for an over-deleted param list. */
 function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange: (draft: RoutineDraftState) => void }): React.ReactElement {
   /** The read result tagged with the path it came from — a mismatch (file
    *  switched, read still in flight) renders as "nothing yet" instead of the
    *  previous file's verdict, which is what lets the effect stay async-only. */
   const [entry, setEntry] = React.useState<{ path: string; preview: CsvPreview | null; error: string | null } | null>(null)
   const csvPath = draft.batch?.csvPath ?? ''
+  /** Latest-ref pair for the async sync: the preview's .then must merge into
+   *  the draft the user is editing NOW (they may have typed params while the
+   *  read was in flight), not the one captured when the effect ran — and the
+   *  refs keep the preview effect's deps down to [csvPath, readTick] (a fresh
+   *  onChange identity per render would otherwise re-preview on every
+   *  keystroke). Synced from a deps-less effect, never during render — the
+   *  IPC round trip is always at least a task long, so the refs are current
+   *  by the time the preview settles. */
+  const draftRef = React.useRef(draft)
+  const onChangeRef = React.useRef(onChange)
+  React.useEffect(() => {
+    draftRef.current = draft
+    onChangeRef.current = onChange
+  })
+  /** Set by an explicit pick, consumed by the next settled preview. */
+  const pendingSyncRef = React.useRef(false)
+  /** Re-read nonce for a same-path re-pick. */
+  const [readTick, setReadTick] = React.useState(0)
 
   React.useEffect(() => {
     if (!csvPath) return
@@ -338,10 +364,25 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
           preview: res.ok && res.preview ? res.preview : null,
           error: res.ok ? null : (res.error ?? '读取批量数据文件失败'),
         })
+        if (pendingSyncRef.current) {
+          pendingSyncRef.current = false
+          if (res.ok && res.preview) {
+            const base = draftRef.current
+            const merged = mergeHeaderParams(base.params, res.preview.headers)
+            if (merged.length > (base.params?.length ?? 0)) {
+              onChangeRef.current({ ...base, params: merged })
+            }
+          }
+        }
       })
-      .catch(() => { if (!cancelled) setEntry({ path: csvPath, preview: null, error: '读取批量数据文件失败' }) })
+      .catch(() => {
+        if (!cancelled) {
+          pendingSyncRef.current = false
+          setEntry({ path: csvPath, preview: null, error: '读取批量数据文件失败' })
+        }
+      })
     return () => { cancelled = true }
-  }, [csvPath])
+  }, [csvPath, readTick])
 
   const current = entry?.path === csvPath ? entry : null
   const preview = current?.preview ?? null
@@ -357,7 +398,14 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
         filters: [{ name: '批量数据', extensions: ['csv', 'txt', 'xlsx'] }],
       })
       const p = res.filePaths[0]
-      if (!res.canceled && p) onChange({ ...draft, batch: { ...(draft.batch ?? {}), csvPath: p } })
+      if (!res.canceled && p) {
+        pendingSyncRef.current = true
+        // Same file re-picked: the path effect won't re-fire on an unchanged
+        // path, so bump the read tick — the re-read re-syncs the headers
+        // (restores params the user has since deleted).
+        if (p === csvPath) setReadTick((t) => t + 1)
+        else onChange({ ...draft, batch: { ...(draft.batch ?? {}), csvPath: p } })
+      }
     } catch { /* dialog is best-effort; the section stays as it was */ }
   }
 
@@ -375,7 +423,7 @@ function BatchSection({ draft, onChange }: { draft: RoutineDraftState; onChange:
       {!draft.batch ? (
         <>
           <Button type="dashed" block icon={<FileTextOutlined />} onClick={() => void pick()}>选择数据文件</Button>
-          <div style={CAPTION}>选配后可批量执行：表头对应上面的参数名，每一行数据都会用独立会话跑一次任务。</div>
+          <div style={CAPTION}>选配后可批量执行：选择文件后表头自动识别为变量（可在上方参数中调整），每一行数据都会用独立会话跑一次任务。</div>
         </>
       ) : (
         <>

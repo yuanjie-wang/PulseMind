@@ -174,7 +174,7 @@ describe('format and size gates', () => {
   it('refuses a file over the size cap before parsing', async () => {
     const p = join(dir, 'huge.csv')
     writeFileSync(p, Buffer.alloc(MAX_BATCH_FILE_BYTES + 1, 0x20))
-    await expect(previewCsv(p, PARAMS)).rejects.toThrow(/超过 2MB 上限/)
+    await expect(previewCsv(p, PARAMS)).rejects.toThrow(/超过 50MB 上限/)
   })
 
   it('reports a missing file with the path, and a blank path up front', async () => {

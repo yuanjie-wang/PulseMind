@@ -12,8 +12,10 @@ import type { RoutineBatchProgress, RoutineParam, RoutineRun } from '../types/ro
  *  enqueue 50k conversations (LLM cost). Refused with a split-the-file hint. */
 export const MAX_BATCH_ROWS = 200
 
-/** CSV source size cap; 2MB of CSV is already ~10x the row cap. */
-export const MAX_BATCH_FILE_BYTES = 2 * 1024 * 1024
+/** CSV source size cap (user 2026-10-11: 2MB → 50MB so wide sheets and
+ *  long-cell rows load whole; the row cap above still bounds what a run
+ *  actually executes). */
+export const MAX_BATCH_FILE_BYTES = 50 * 1024 * 1024
 
 /** Rows executed at once. LLM concurrency is the scarce resource — same
  *  reasoning as MAX_PARALLEL_SUBAGENTS=5; each row is an ordinary session, so
@@ -59,6 +61,30 @@ export function analyzeCsvBatch(headers: string[], rows: string[][], params: Rou
   }
   const unmatchedHeaders = headers.filter((h) => !declared.some((p) => p.key === h))
   return { matchedParams, unmatchedHeaders, missingRequiredHeaders, totalRows: rows.length }
+}
+
+/** Header→param auto-import (user 2026-10-11: picking a data file should need
+ *  no manual param editing): every header without a declared param gains one —
+ *  verbatim key, empty label, NOT required (a derived param must never make a
+ *  single run demand a value, and loadBatchSource's missing-column refusal
+ *  keys off required params only). Existing declarations survive untouched, so
+ *  the editor can call this on every successful preview without resurrecting
+ *  a param the user deleted — the caller arms the merge on an explicit pick.
+ *  Duplicate headers keep one param (columnOfKey's first-occurrence rule is
+ *  what reads the rows). Returns the input array untouched when nothing is
+ *  added, so the caller can skip the onChange by identity. */
+export function mergeHeaderParams(params: RoutineParam[] | undefined, headers: string[]): RoutineParam[] {
+  const existing = params ?? []
+  const declared = new Set(existing.map((p) => p.key))
+  const derived: RoutineParam[] = []
+  const seen = new Set<string>()
+  for (const h of headers) {
+    if (!h || declared.has(h) || seen.has(h)) continue
+    seen.add(h)
+    derived.push({ key: h, label: '' })
+  }
+  if (derived.length === 0) return params ?? []
+  return [...existing, ...derived]
 }
 
 /** One row's provided values: only columns that map to declared params —

@@ -7,7 +7,7 @@
  * injected by batch runs, absent (token stays visible) in single runs. */
 
 import { describe, expect, it } from 'vitest'
-import { analyzeCsvBatch, rowParamsAt, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, effectiveTimeoutMinutes, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY, BATCH_TIMEOUT_MINUTE_OPTIONS, MAX_BATCH_TIMEOUT_MINUTES, DEFAULT_BATCH_TIMEOUT_MINUTES } from '../src/shared/routine/batch'
+import { analyzeCsvBatch, mergeHeaderParams, rowParamsAt, normalizeBatchConcurrency, normalizeBatchTimeoutMinutes, effectiveTimeoutMinutes, MAX_BATCH_CONCURRENCY, DEFAULT_BATCH_CONCURRENCY, BATCH_TIMEOUT_MINUTE_OPTIONS, MAX_BATCH_TIMEOUT_MINUTES, DEFAULT_BATCH_TIMEOUT_MINUTES } from '../src/shared/routine/batch'
 import { builtinRoutineVars, renderRoutinePrompt, resolveParamValues, assertRunnableParams as assertRunnableParamsRow } from '../src/shared/routine/params'
 import { parseCsv } from '../src/shared/routine/csv'
 import type { Routine, RoutineParam } from '../src/shared/types/routine'
@@ -52,6 +52,42 @@ describe('analyzeCsvBatch', () => {
   it('duplicate headers resolve to the first occurrence', () => {
     const t = parseCsv('repo,repo\nfirst,second\n')
     expect(rowParamsAt(t.headers, t.rows, PARAMS, 0)).toEqual({ repo: 'first' })
+  })
+})
+
+describe('mergeHeaderParams — header auto-import (表头自动识别为变量)', () => {
+  it('appends one param per undeclared header, in header order', () => {
+    // Existing declarations stay verbatim (key/label/default/required); the
+    // derived ones carry the header as key and nothing else.
+    const merged = mergeHeaderParams([{ key: 'repo', label: '仓库', required: true }], ['repo', 'branch', 'owner'])
+    expect(merged).toEqual([
+      { key: 'repo', label: '仓库', required: true },
+      { key: 'branch', label: '' },
+      { key: 'owner', label: '' },
+    ])
+  })
+
+  it('derived params are never required (a single run must not demand values)', () => {
+    const merged = mergeHeaderParams(undefined, ['name', 'score'])
+    expect(merged.every((p) => !p.required)).toBe(true)
+  })
+
+  it('skips blank and duplicate headers (one param per distinct key)', () => {
+    const merged = mergeHeaderParams(undefined, ['name', '', 'score', 'name'])
+    expect(merged).toEqual([{ key: 'name', label: '' }, { key: 'score', label: '' }])
+  })
+
+  it('fully-declared headers → the input array back, untouched (identity no-op)', () => {
+    const params: RoutineParam[] = [{ key: 'repo', label: '仓库' }]
+    expect(mergeHeaderParams(params, ['repo'])).toBe(params)
+    expect(mergeHeaderParams(undefined, [])).toEqual([])
+  })
+
+  it('does not resurrect a deleted param on re-preview — deletion is caller-armed', () => {
+    // The merge is pure: if the caller synced on every preview (not just an
+    // explicit pick), a user-deleted param would come straight back here.
+    const merged = mergeHeaderParams([{ key: 'branch', label: '分支' }], ['repo', 'branch'])
+    expect(merged.map((p) => p.key)).toEqual(['branch', 'repo'])
   })
 })
 

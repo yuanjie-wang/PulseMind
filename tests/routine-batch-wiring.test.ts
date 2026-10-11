@@ -138,14 +138,18 @@ describe('batch B2: concurrency override, resume, xlsx source', () => {
 
   it('the scheduled fire cannot crash on a batch refusal (async start)', () => {
     const src = source('src/main/routine/routine-scheduler.ts')
-    const idx = src.indexOf("void routineBatchRunner.start(routine, 'schedule')")
+    // The 4th argument is the scheduler's slot-release hook (event-driven
+    // release — a fixed poller bound cannot cover a 120-minute run).
+    const idx = src.indexOf("void routineBatchRunner.start(routine, 'schedule', undefined, release)")
     expect(idx).toBeGreaterThan(-1)
-    const tail = src.slice(idx, idx + 240)
+    const tail = src.slice(idx, idx + 420)
     // start() now REJECTS (the source read is async) — a bare void would be an
     // unhandled rejection; the catch must notify so the user learns the fire
-    // never happened.
+    // never happened — and release the slot, since no run row will ever
+    // settle it.
     expect(tail).toContain('.catch(')
     expect(tail).toContain('notify(')
+    expect(tail).toContain('release()')
   })
 
   it('the preview handler awaits the now-async parser', () => {
@@ -359,5 +363,35 @@ describe('batch settlement webhook carries the partial outcome', () => {
     // And the wire type accepts the third value.
     const wire = source('src/main/routine/webhook-out.ts')
     expect(wire).toContain("status: 'success' | 'partial' | 'failed'")
+  })
+})
+
+/** 表头自动识别为变量 (user 2026-10-11): picking a data file merges its
+ *  headers into the params — no manual param editing. The merge itself is
+ *  pinned behaviourally in tests/routine-batch-mapping.test.ts; this pins the
+ *  wiring the pure function cannot see: the arm lives ONLY in pick() (a mount
+ *  preview — re-opening a saved routine — must never resurrect deleted
+ *  params), the consumption rides the preview resolution, and the same-path
+ *  re-pick has its re-read nonce. */
+describe('batch header auto-import wiring', () => {
+  it('the editor arms the sync on pick and consumes it on preview success', () => {
+    const src = source('src/renderer/src/components/routine/RoutineForm.tsx')
+    expect(src).toContain('mergeHeaderParams(base.params, res.preview.headers)')
+    expect(src).toContain('import { analyzeCsvBatch')
+    expect(src).toContain('mergeHeaderParams }')
+    // Armed exactly once, in pick — not in the preview effect (an existing
+    // routine's mount preview runs unarmed).
+    expect(src.match(/pendingSyncRef\.current = true/g)?.length).toBe(1)
+    // Consumed on BOTH settle paths, or a failed read would leave the next
+    // preview (of a different file) syncing stale headers.
+    expect(src.match(/pendingSyncRef\.current = false/g)?.length).toBe(2)
+  })
+
+  it('re-picking the SAME file re-reads and re-syncs (deleted-param recovery)', () => {
+    const src = source('src/renderer/src/components/routine/RoutineForm.tsx')
+    expect(src).toContain('if (p === csvPath) setReadTick((t) => t + 1)')
+    // The nonce is a real effect dep, not a decoration — without it the
+    // bump never re-previews.
+    expect(src).toContain('}, [csvPath, readTick])')
   })
 })
