@@ -9,6 +9,7 @@ import type { KnowledgeFile } from '../../../../shared/types/knowledge'
 import { EXPERIENCE_CATEGORIES, type ExperienceDraft, type ExperienceRecord } from '../../../../shared/types/experience-types'
 import { matchExperienceScript } from '../../../../shared/experience/script-usage'
 import { UI_PREVIEW_MAX, type ToolExecContext, type CompactToolOutcome } from './context'
+import { MAX_LIVE_OUTPUT_CHARS } from '../engine/engine-constants'
 import { MEMORY_ENTRY_MAX_CHARS } from '../../../../shared/memory/limits'
 
 /** memory_search: tool block .output preview. */
@@ -565,13 +566,18 @@ export async function execExperienceTool(ex: ToolExecContext, t: ToolUseBlock): 
         let stdoutBuf = ''
         let stderrBuf = ''
         let settled = false
+        // Live-output cap (MAX_LIVE_OUTPUT_CHARS): same shape as the shell
+        // path in execution-flow — a long-running process must not grow these
+        // buffers (and t.output) without bound; head-kept so the frozen head
+        // also freezes the wire diff signature past the cap.
+        const capBuf = (buf: string): string => (buf.length > MAX_LIVE_OUTPUT_CHARS ? buf.slice(0, MAX_LIVE_OUTPUT_CHARS) : buf)
         // The terminal bus broadcasts by channel — concurrent engines' process
         // events land here too (PLAN-parallel-experts T7): the span filters by
         // processId and parks the window before executeCommand returns a pid.
         const span = beginTerminalSpan(getHost(), {
           onOutput: d => {
-            if (d.type === 'stderr') stderrBuf += d.data
-            else stdoutBuf += d.data
+            if (d.type === 'stderr') stderrBuf = capBuf(stderrBuf + d.data)
+            else stdoutBuf = capBuf(stdoutBuf + d.data)
             t.output = stdoutBuf + stderrBuf
             ex.notify()
           },

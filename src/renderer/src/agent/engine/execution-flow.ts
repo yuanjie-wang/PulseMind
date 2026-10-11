@@ -12,7 +12,7 @@ import type { ToolUseBlock, ContentBlock, AgentMessage } from '../../types/agent
 import { buildCommandFromSkillInput } from '../command-builder'
 import { installTypeOf } from '../executors/install-tool'
 import { safeInvoke, safeInvokeObserver } from '../agent-utils'
-import { TOOL_PARAM_LIMITS } from './engine-constants'
+import { TOOL_PARAM_LIMITS, MAX_LIVE_OUTPUT_CHARS } from './engine-constants'
 import { READ_TIER_TOOLS, WRITE_TIER_TOOLS, tierOfTool } from './tool-tiers'
 import { isPageTool } from '../../../../shared/agent-protocol/page-tools'
 import { requiresApproval } from '../../../../shared/sandbox/policy'
@@ -159,7 +159,16 @@ export class ExecutionFlow {
     // process delivers here too (PLAN-parallel-experts T7): the span filters
     // by processId and parks the pre-pid window instead of consuming it.
     const span = beginTerminalSpan(getHost(), {
-      onOutput: d => { outputBuffer += d.data; targetBlock!.output = outputBuffer; this.engine.notifyCoalesced() },
+      onOutput: d => {
+        outputBuffer += d.data
+        // Live-output cap (MAX_LIVE_OUTPUT_CHARS): a runaway process must not
+        // grow the block (and main-process memory) without bound. Head-kept —
+        // the same slice the session-manager wire cap already shows the
+        // renderer, so past the cap the frozen head also freezes the
+        // tool_status diff signature and the per-tick updates stop.
+        if (outputBuffer.length > MAX_LIVE_OUTPUT_CHARS) outputBuffer = outputBuffer.slice(0, MAX_LIVE_OUTPUT_CHARS)
+        targetBlock!.output = outputBuffer; this.engine.notifyCoalesced()
+      },
       onExit: d => {
         targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.cleanup(); this.engine.notify()
         this.engine.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)

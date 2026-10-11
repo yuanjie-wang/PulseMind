@@ -137,6 +137,22 @@ export const MAX_USER_INPUT_CHARS = 4_000
 export const MEM_SALVAGE_MAX_PER_SESSION = 3
 export const MEM_SALVAGE_CONTEXT_RATIO = 0.9
 
+// ── Live terminal-output cap ───────────────────────────────────────────
+// The engine-side accumulation of a RUNNING process's output (execution-flow's
+// shell path and domain-tools' exec executor) used to be unbounded: a `tail
+// -f`-style process grew the buffer — and the tool_use block it rides on — for
+// as long as it ran, in the MAIN process (the engine's host), with no ceiling.
+// The cap mirrors the session-manager's wire cap (200K chars, head-kept): past
+// it the live block freezes on the first 200K, which is exactly what the
+// renderer was already shown (the wire caps the same way), and the frozen head
+// also freezes the tool_status diff signature, so per-tick wire updates stop.
+// The FULL stream still lands in the proc-log (main/services/terminal.ts,
+// 8MB/file) and the settled result still goes through addToolResult's 4K
+// budget + tmp/trunc offload — what the cap bounds is only the live in-memory
+// copy (and with it, the trunc offload for >200K outputs: head-200K instead of
+// the whole stream).
+export const MAX_LIVE_OUTPUT_CHARS = 200_000
+
 // ── Tool-result / spawn-envelope context guardrails ─────────────────────
 // Per-tool-result token budget enforced by the engine's addToolResult (errors
 // pass whole; anything over is head+tail truncated with the full text offloaded
