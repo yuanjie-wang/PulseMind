@@ -24,7 +24,8 @@ const LABEL_KEYS: ReadonlySet<string> = new Set([
   'read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec', 'install', 'webfetch',
   'memory_search', 'memory_save', 'conversation_search', 'tool_result_search',
   'pick_skill', 'pick_tool', 'knowledge_search', 'knowledge_read', 'experience_read', 'experience_save',
-  'spawn_agent', 'create_plan', 'advance_plan', 'office_edit', 'office_read', 'export_document',
+  'spawn_agent', 'create_plan', 'advance_plan', 'office_edit', 'office_read', 'office_search',
+  'export_document',
   // Retired office tool names (merged into office_edit, 2026-10-04) — they
   // stay so hydrated transcripts' old cards keep their human labels.
   'docx_edit', 'xlsx_edit', 'pptx_edit',
@@ -70,6 +71,7 @@ export function toolObjectSummary(block: ToolUseBlock): string {
     case 'edit':
     case 'office_edit':
     case 'office_read':
+    case 'office_search':
     case 'docx_edit':
     case 'xlsx_edit':
     case 'pptx_edit':

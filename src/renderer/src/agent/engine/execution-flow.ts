@@ -88,11 +88,11 @@ export class ExecutionFlow {
       await this.engine.toolExecutor.execOtherTool(targetBlock)
       return
     }
-    // office_inspect / office_read are read-tier workspace tools — they can
-    // no longer be held (reads never wait), but the branch keeps an approval
-    // release from ever reaching the shell default below (the H10 trap, same
-    // shape as page tools).
-    if (targetBlock.name === 'office_inspect' || targetBlock.name === 'office_read') {
+    // office_inspect / office_read / office_search are read-tier workspace
+    // tools — they can no longer be held (reads never wait), but the branch
+    // keeps an approval release from ever reaching the shell default below
+    // (the H10 trap, same shape as page tools).
+    if (targetBlock.name === 'office_inspect' || targetBlock.name === 'office_read' || targetBlock.name === 'office_search') {
       await this.engine.toolExecutor.execWorkspaceTool(targetBlock)
       return
     }

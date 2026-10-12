@@ -711,7 +711,7 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
   // ── office_read (PLAN-office-read) ───────────────────────────────
   {
     name: 'office_read',
-    description: "Read .docx/.xlsx/.pptx content in the file's own address space: docx paragraphs with FULL text + style + index (and table cell text), xlsx cell values by sheet/range (formulas shown as =expression → result), pptx shapes with shape ids and full text. The read to use before editing — `read` gives reflowed markdown for humans; office_read gives the exact indices/coordinates that office_edit consumes. Paged; the result states the next offset.",
+    description: "Read .docx/.xlsx/.pptx content in the file's own address space: docx paragraphs with FULL text + style + index (and table cell text), xlsx cell values by sheet/range (formulas shown as =expression → result), pptx shapes with shape ids and full text. The read to use before editing — `read` gives reflowed markdown for humans; office_read gives the exact indices/coordinates that office_edit consumes. Paged; the result states the next offset. Large files: start with outline: true (docx heading paragraphs / pptx slide titles), then page into the section you actually need.",
     category: 'file',
     triggers: ['read docx', 'read xlsx', 'read pptx', '读取文档', '读表格', '读取 office'],
     input_schema: {
@@ -724,10 +724,34 @@ export const BUILT_IN_TOOLS: ToolDefinition[] = [
         sheet: { type: 'string', description: 'xlsx only: sheet name. Omit it to get the sheet inventory (names + sizes) first.' },
         range: { type: 'string', description: 'xlsx only: explicit range "A1:J50" or single cell "B3" (overrides offset/limit).' },
         slide: { type: 'number', description: 'pptx only: 1-based slide in presentation order; omit to read every slide.' },
+        outline: { type: 'boolean', description: 'docx/pptx only: heading outline instead of content — docx heading paragraphs (same indexes the editor consumes), pptx per-slide titles. Read this first on large files, then page into the section you need.' },
       },
       required: ['file_path'],
     },
     instructions: toolInstructions.office_read,
+    builtIn: true,
+    availability: 'gated',
+  },
+
+  // ── office_search (2026-10-12) ─────────────────────────────────────
+  {
+    name: 'office_search',
+    description: "Content search inside a .docx/.xlsx/.pptx WITHOUT reading it whole: docx hits are paragraph indexes + snippets (the same index space office_read pages and office_edit edits), xlsx hits are cell addresses + the hit row's leading cells, pptx hits are slide + shape id. How you find key rows/columns in a big sheet or locate a section in a long document — read only the hits afterwards with office_read.",
+    category: 'file',
+    triggers: ['search office', '搜索文档', '查找表格', 'office 搜索', '定位段落', '找单元格'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_path: { type: 'string', description: 'Path to the .docx/.xlsx/.pptx file (absolute or workspace-relative).' },
+        query: { type: 'string', description: 'Substring (case-insensitive by default); a regular expression when regex is true.' },
+        regex: { type: 'boolean', description: 'Interpret query as a regular expression.' },
+        case_sensitive: { type: 'boolean', description: 'Keep case sensitivity (default insensitive).' },
+        sheet: { type: 'string', description: 'xlsx only: sheet name; omit to scan every sheet.' },
+        slide: { type: 'number', description: 'pptx only: 1-based slide; omit to scan every slide.' },
+      },
+      required: ['file_path', 'query'],
+    },
+    instructions: toolInstructions.office_search,
     builtIn: true,
     availability: 'gated',
   },

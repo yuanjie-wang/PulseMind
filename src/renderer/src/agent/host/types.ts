@@ -117,6 +117,7 @@ export const HOST_METHOD_KEYS = [
   'editXlsx',
   'inspectOffice',
   'readOffice',
+  'searchOffice',
   'exportDocument',
   'knowledgeWriteExperience',
   // memory store + conversation summary counters (MemoryManager)

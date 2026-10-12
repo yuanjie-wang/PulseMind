@@ -301,6 +301,7 @@ const zh = {
     pptx_edit: '编辑 PPT 幻灯片',
     office_edit: '编辑 Office 文档',
     office_read: '读取 Office 文档',
+    office_search: '搜索 Office 文档',
     export_document: '导出文档',
     page_get_content: '阅读页面',
     page_scroll: '滚动页面',

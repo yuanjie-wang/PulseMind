@@ -304,6 +304,7 @@ const en: TranslationDict = {
     pptx_edit: 'Edit PPT slides',
     office_edit: 'Edit Office document',
     office_read: 'Read Office document',
+    office_search: 'Search Office document',
     export_document: 'Export document',
     page_get_content: 'Read page',
     page_scroll: 'Scroll page',

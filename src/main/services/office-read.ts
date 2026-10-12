@@ -10,7 +10,7 @@
 import AdmZip from 'adm-zip'
 import { guardFsTarget } from '../sandbox/guard'
 import { buildDocumentModel, GAP_CHAR } from '../docx/model'
-import { decodedText, type XmlElementNode } from '../docx/xml-splice'
+import { decodedText, parseXml, type XmlElementNode } from '../docx/xml-splice'
 import { buildSlideModel, slidePartNames } from '../pptx/model'
 import { xlsxCellText } from './office-inspect'
 import type { OfficeReadInput, OfficeReadResult } from '../../shared/office/ops'
@@ -27,6 +27,50 @@ const MAX_CELL_CHARS = 120
 
 const isElement = (n: { kind?: string }): n is XmlElementNode => n.kind === 'element'
 const renderGaps = (text: string): string => text.replace(new RegExp(GAP_CHAR, 'g'), ' ')
+
+// ── outline (2026-10-12): heading detection for the outline read ──
+// A paragraph is a heading when its own w:pPr carries a w:outlineLvl (direct,
+// 0-based in the XML) OR its style resolves to a heading level. Style
+// resolution runs on the style NAME from word/styles.xml ("heading 1" is the
+// stable spelling across locales — zh-CN Word/WPS ship 标题 styles with
+// numeric styleIds like "1" but still name them "heading 1"), falling back to
+// an English-convention styleId ("Heading1") when styles.xml is absent.
+const HEADING_NAME_RE = /^(?:heading|标题|標題)\s*(\d+)/i
+const HEADING_STYLE_ID_RE = /^heading\s*(\d+)/i
+
+/** styleId → heading level parsed out of word/styles.xml. Absent entry file
+ *  or a parse failure returns an empty map — the styleId fallback and the
+ *  direct outlineLvl still detect headings. */
+function docxHeadingLevels(zip: AdmZip): Map<string, number> {
+  const levels = new Map<string, number>()
+  const entry = zip.getEntry('word/styles.xml')
+  if (!entry) return levels
+  try {
+    const parsed = parseXml((entry.getData() as Buffer).toString('utf8'))
+    for (const el of parsed.allElements) {
+      if (el.name !== 'w:style') continue
+      const styleId = el.attrs.get('w:styleId')?.rawValue
+      if (!styleId) continue
+      const nameEl = el.children.find((c): c is XmlElementNode => isElement(c) && c.name === 'w:name')
+      const name = nameEl?.attrs.get('w:val')?.rawValue ?? ''
+      const m = HEADING_NAME_RE.exec(name) ?? HEADING_STYLE_ID_RE.exec(styleId)
+      if (m) levels.set(styleId, Number(m[1]))
+    }
+  } catch {
+    /* styles.xml unreadable — name-based detection off */
+  }
+  return levels
+}
+
+/** Direct heading signal: the paragraph's own w:outlineLvl, 0-based in the
+ *  XML → 1-based level. */
+function directOutlineLevel(paragraph: XmlElementNode): number | null {
+  const pPr = paragraph.children.find((c): c is XmlElementNode => isElement(c) && c.name === 'w:pPr')
+  const lvl = pPr?.children.find((c): c is XmlElementNode => isElement(c) && c.name === 'w:outlineLvl')
+  const raw = lvl?.attrs.get('w:val')?.rawValue
+  const n = raw == null ? Number.NaN : Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n + 1 : null
+}
 
 /** Full visible text of one table cell: its `w:p` paragraphs' `w:t` runs
  *  (w:del subtree excluded — deleted-revision text is not what the user
@@ -82,8 +126,9 @@ function parseRange(range: string): [number, number, number, number] | null {
 
 /** One rendered cell for a read window: formula cells show BOTH the
  *  expression and the cached result — the expression is what set_cell
- *  rewrites, the result is what the reader sees. */
-function xlsxReadCellText(cell: { value: unknown; formula?: string }): string {
+ *  rewrites, the result is what the reader sees. Shared with office-search,
+ *  whose match space must be the same rendering the reader sees. */
+export function xlsxReadCellText(cell: { value: unknown; formula?: string }): string {
   if (cell.formula) {
     const result = xlsxCellText(cell)
     return result ? `=${cell.formula} → ${result}` : `=${cell.formula}`
@@ -128,6 +173,33 @@ export async function svcReadOffice(input: OfficeReadInput): Promise<OfficeReadR
       const total = model.paragraphs.length
       if (total === 0) {
         return { success: true, format: 'docx', summary: 'Word 文档: 空文档（0 段）', details: { paragraphCount: 0 } }
+      }
+      // outline=true: headings only — the structure-first read for large
+      // documents. Indexes are the SAME flat paragraph indexes paging uses,
+      // so offset=<index> reads the section a heading opens.
+      if (input.outline === true) {
+        const levels = docxHeadingLevels(zip)
+        const styleIdLevel = (style: string | null): number | null => {
+          const m = style ? HEADING_STYLE_ID_RE.exec(style) : null
+          return m ? Number(m[1]) : null
+        }
+        const all: NonNullable<OfficeReadResult['details']['headings']> = []
+        for (const p of model.paragraphs) {
+          const level = directOutlineLevel(p.element) ?? levels.get(p.style ?? '') ?? styleIdLevel(p.style)
+          if (level === null) continue
+          const text = renderGaps(p.text).trim()
+          if (!text) continue
+          all.push({ index: p.index, style: p.style, level, text })
+        }
+        const OUTLINE_CAP = 500
+        const shown = all.slice(0, OUTLINE_CAP)
+        const capNote = all.length > OUTLINE_CAP ? `（仅列前 ${OUTLINE_CAP} 条）` : ''
+        return {
+          success: true,
+          format: 'docx',
+          summary: `Word 目录: ${all.length} 个标题${capNote}（全文共 ${total} 段）`,
+          details: { headings: shown, paragraphCount: total },
+        }
       }
       const offset = Math.min(Math.max(Math.floor(input.offset ?? 1), 1), total)
       const limit = Math.min(Math.max(Math.floor(input.limit ?? DOCX_DEFAULT_LIMIT), 1), DOCX_MAX_LIMIT)
@@ -187,9 +259,7 @@ export async function svcReadOffice(input: OfficeReadInput): Promise<OfficeReadR
         }
       }
 
-      const ws =
-        workbook.worksheets.find((w) => w.name === input.sheet) ??
-        workbook.worksheets.find((w) => w.name.toLowerCase() === input.sheet!.toLowerCase())
+      const ws = workbook.worksheets.find((w) => w.name === input.sheet) ?? workbook.worksheets.find((w) => w.name.toLowerCase() === input.sheet!.toLowerCase())
       if (!ws) {
         return {
           success: false,
@@ -272,6 +342,22 @@ export async function svcReadOffice(input: OfficeReadInput): Promise<OfficeReadR
           error: '无法从 presentation.xml 的 sldIdLst 解析出任何幻灯片（rels 缺失或损坏）——拒绝给出与编辑工具错位的页码',
         }
       }
+      // outline=true: per-slide titles only — the structure-first read for
+      // large decks. Page numbers are the same sldIdLst order `slide` counts.
+      if (input.outline === true) {
+        const slideTitles: NonNullable<OfficeReadResult['details']['slideTitles']> = []
+        for (let i = 0; i < slideNames.length; i++) {
+          const xml = (zip.readFile(slideNames[i]) as Buffer).toString('utf8')
+          const model = buildSlideModel(xml)
+          const titleShape = model.shapes.find((s) => s.phType === 'title' || s.phType === 'ctrTitle')
+          slideTitles.push({
+            index: i + 1,
+            title: titleShape ? renderGaps(titleShape.paragraphs.map((p) => p.text).join('\n')).trim() : '',
+            shapeId: titleShape ? titleShape.id : null,
+          })
+        }
+        return { success: true, format: 'pptx', summary: `PowerPoint 目录: ${slideNames.length} 页`, details: { slideTitles } }
+      }
       const wanted = input.slide != null ? Math.floor(input.slide) : null
       if (wanted !== null && (wanted < 1 || wanted > slideNames.length)) {
         return {
@@ -309,5 +395,11 @@ export async function svcReadOffice(input: OfficeReadInput): Promise<OfficeReadR
     }
   }
 
-  return { success: false, format: 'unknown', summary: '无法识别的 Office 格式', details: {}, error: 'ZIP 包内未找到 word/document.xml、xl/workbook.xml 或 ppt/presentation.xml' }
+  return {
+    success: false,
+    format: 'unknown',
+    summary: '无法识别的 Office 格式',
+    details: {},
+    error: 'ZIP 包内未找到 word/document.xml、xl/workbook.xml 或 ppt/presentation.xml',
+  }
 }

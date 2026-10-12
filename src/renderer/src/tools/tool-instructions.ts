@@ -47,8 +47,15 @@ Produce a REAL deliverable file (docx / xlsx / csv / pptx / pdf) the user can ta
 Read a file from the local filesystem. Returns the content as text behind a \`--- File Metadata ---\` header (path, size, line range).
 
 ### Guidelines
-- Document formats (PDF, DOCX, XLSX, …) are auto-converted to markdown — the header's \`Note:\` names the full conversion file
+- Document formats (PDF, DOCX, XLSX, …) are auto-converted to markdown — the header's \`Note:\` names the full conversion file (a plain .md file: readable AND searchable)
 - Find the right file with \`search\`/\`find\` before reading blindly
+
+### Large files — locate first, read second
+Never page through a big file 200 lines at a time hoping to stumble on the answer. Derive the range from the TASK first, then read only that range:
+- **Word / PDF / EPUB**: the conversion preserves headings as \`#\` lines. \`search\` the Note path for \`^## \`\` or a keyword to get line numbers, then \`read\` with \`offset\` around them. For .docx you can also ask \`office_read { outline: true }\` for the heading outline with paragraph indexes directly.
+- **Excel**: don't scan rows. \`office_read\` without \`sheet\` lists sheets + sizes first; \`office_search\` finds the rows matching your condition (cell addresses); \`office_read { sheet, offset }\` reads only that neighborhood.
+- **Long text / code**: \`search\` the keyword first, then \`read\` the hit's neighborhood.
+Read what the question needs, not what the file contains.
 `,
 
   write: `## write
@@ -277,7 +284,8 @@ The first edit of a file saves the original automatically (the backup path rides
 Edit-time triage for Office files (.docx/.xlsx/.pptx) — a structural inventory WITH a content head preview. It is NOT a full-content reader.
 
 ### When to use
-- Reading / summarizing / answering from the file → call \`read\` instead (auto-converts to markdown, paged). Do NOT inspect first.
+- Small file, plain reading / summarizing / answering → call \`read\` instead (auto-converts to markdown, paged).
+- LARGE file or unknown size → inspect FIRST even for read tasks: this inventory is bounded (counts, indexes, head previews) while a full read is not. Pick the region to read from it (office_read \`offset\`/\`range\`, office_search for content) instead of paging blind.
 - Before editing with office_edit → inspect first: the paragraph/sheet/slide indices and the text budget below are what you edit against.
 - To detect charts/pivot tables that would make office_edit's xlsx ops refuse.
 
@@ -299,11 +307,27 @@ Paged, structure-faithful reads in the file's OWN address space (.docx/.xlsx/.pp
 - Targeting an edit — exact paragraph text for replace_text, cell values beyond the head preview, a shape's full text, table cell contents → \`office_read\`. Its paragraph indexes / cell addresses / shape ids are what office_edit consumes.
 
 ### Per format
-- **docx**: \`offset\`/\`limit\` page paragraphs (default 40, max 200) with FULL text + style; \`tables: true\` adds cell text as "R1: c0 | c1 | ...". Gap chars (tab/line break) render as spaces — a find string copied from here matches.
-- **xlsx**: omit \`sheet\` → sheet inventory; then \`sheet="名称"\` + \`range="A1:J50"\` (or \`offset\`/\`limit\` rows). Formula cells render \`expression → result\`; the address of any cell = row number + column letter of the table header.
-- **pptx**: \`slide=N\` for one page, omit for all; shapes carry shapeId (+ placeholder type) and full text — set_shape_text takes one paragraph per line.
+- **docx**: \`outline: true\` → heading paragraphs only, with the SAME 0-based indexes office_edit consumes — the first call on a long document; then \`offset=<index>+1\` pages into the section a heading opens. Without it, \`offset\`/\`limit\` page paragraphs (default 40, max 200) with FULL text + style; \`tables: true\` adds cell text as "R1: c0 | c1 | ...". Gap chars (tab/line break) render as spaces — a find string copied from here matches.
+- **xlsx**: omit \`sheet\` → sheet inventory; then \`sheet="名称"\` + \`range="A1:J50"\` (or \`offset\`/\`limit\` rows). Formula cells render \`expression → result\`; the address of any cell = row number + column letter of the table header. To FIND rows by content use \`office_search\`, not row-by-row paging.
+- **pptx**: \`outline: true\` → per-slide titles; \`slide=N\` for one page, omit for all; shapes carry shapeId (+ placeholder type) and full text — set_shape_text takes one paragraph per line.
 
 The result ends with the next offset/slide/sheet; page through instead of re-reading the whole file. Read-only — never writes.
+`,
+
+  office_search: `## office_search
+
+Content search inside a .docx/.xlsx/.pptx WITHOUT reading it — find WHERE content lives (paragraph index / cell address / shape id), then read only the hits. The read-side counterpart of office_edit's find_replace, and the tool for big files: search first, read second.
+
+### Per format
+- **docx**: hits are \`[index] style: snippet\` — the flat paragraph indexes office_read pages and office_edit edits against (table cell paragraphs included).
+- **xlsx**: hits are \`sheet!address\` plus the hit row's leading cells as column context — how you find key rows/columns in a large sheet.
+- **pptx**: hits are page + \`[shapeId]\` + snippet.
+
+### Guidelines
+- \`query\` is a case-insensitive substring; \`regex: true\` interprets it as a regular expression; \`case_sensitive: true\` keeps case.
+- xlsx: pass \`sheet\` when the workbook has many sheets; headers are usually row 1, so the row preview tells you which column the hit is.
+- Hits are capped — the summary states the total; tighten the query instead of paging through hits.
+- Follow up with \`office_read\` on the hit's coordinates (the envelope spells out the call). Only the hits need reading, not the file.
 `,
 
   knowledge_read: `## knowledge_read

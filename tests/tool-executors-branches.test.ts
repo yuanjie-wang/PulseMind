@@ -216,7 +216,7 @@ describe('execWorkspaceTool — office_inspect / office_read', () => {
       file_path: '/a.xlsx', offset: 2, limit: 50, tables: true, sheet: 'S1', range: 'A1:B2',
     }))
     expect(h.host.readOffice).toHaveBeenCalledWith({
-      filePath: '/a.xlsx', offset: 2, limit: 50, tables: true, sheet: 'S1', range: 'A1:B2', slide: undefined,
+      filePath: '/a.xlsx', offset: 2, limit: 50, tables: true, sheet: 'S1', range: 'A1:B2', slide: undefined, outline: false,
     })
     expect(h.results[0].maxTokens).toBe(MAX_READ_RESULT_TOKENS)
 

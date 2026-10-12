@@ -115,8 +115,12 @@ describe('truncation offload reachability — the read-back is not a dead link',
     const extra = [{ dir: `${home}/.pulsemind/tmp/trunc`, real: null }]
     for (const operation of ['read', 'write'] as const) {
       const ok = guardPath({
-        target: trunc, operation, denyRoots,
-        workspaceDir: `${home}/somewhere-else`, realTarget: trunc, extraWritableRoots: extra,
+        target: trunc,
+        operation,
+        denyRoots,
+        workspaceDir: `${home}/somewhere-else`,
+        realTarget: trunc,
+        extraWritableRoots: extra,
       })
       expect(ok.ok, `${operation} inside the sanctioned offload root must pass`).toBe(true)
     }
@@ -126,8 +130,12 @@ describe('truncation offload reachability — the read-back is not a dead link',
     const { guardPath } = await import('../src/shared/sandbox/path-jail')
     const denyRoots = [`${home}/.pulsemind`]
     const denied = guardPath({
-      target: trunc, operation: 'write', denyRoots,
-      workspaceDir: `${home}/somewhere-else`, realTarget: trunc, extraWritableRoots: [],
+      target: trunc,
+      operation: 'write',
+      denyRoots,
+      workspaceDir: `${home}/somewhere-else`,
+      realTarget: trunc,
+      extraWritableRoots: [],
     })
     expect(denied.ok).toBe(false)
   })
@@ -141,5 +149,54 @@ describe('truncation offload reachability — the read-back is not a dead link',
     expect(engine).toContain('truncation offload denied')
     expect(engine).toContain('truncation offload failed')
     expect(engine).not.toMatch(/writeFile\(\{ filePath: offloadDest, content \}\)\.catch\(/)
+  })
+})
+
+// ── The read cache must be reachable the same way (2026-10-12): `read`'s
+// markitdown Note advertises "Full conversion saved at
+// ~/.pulsemind/tmp/read-cache/…" so the model can search headings/keywords
+// in the conversion and only then page `read` to the hits — convert once,
+// query many. Under a workspace session the advertised path was judged like
+// any other ~/.pulsemind target (deny root) and every read/search of it was
+// denied: the whole large-document strategy was a dead link. guard.ts now
+// sanctions the dir, same shape as trunc.
+describe('read-cache reachability — the conversion Note is not a dead link', () => {
+  const home = process.env.HOME || '/home/x'
+  const cached = `${home}/.pulsemind/tmp/read-cache/conv_abc.md`
+
+  it('guardPath admits reads AND writes inside the cache root when it is sanctioned', async () => {
+    const { guardPath } = await import('../src/shared/sandbox/path-jail')
+    const denyRoots = [`${home}/.ssh`, `${home}/.aws`, `${home}/.gnupg`, `${home}/.pulsemind`]
+    const extra = [{ dir: `${home}/.pulsemind/tmp/read-cache`, real: null }]
+    for (const operation of ['read', 'write'] as const) {
+      const ok = guardPath({
+        target: cached,
+        operation,
+        denyRoots,
+        workspaceDir: `${home}/somewhere-else`,
+        realTarget: cached,
+        extraWritableRoots: extra,
+      })
+      expect(ok.ok, `${operation} inside the sanctioned cache root must pass`).toBe(true)
+    }
+  })
+
+  it('negative control: without the sanctioned root the same target is denied', async () => {
+    const { guardPath } = await import('../src/shared/sandbox/path-jail')
+    const denied = guardPath({
+      target: cached,
+      operation: 'read',
+      denyRoots: [`${home}/.pulsemind`],
+      workspaceDir: `${home}/somewhere-else`,
+      realTarget: cached,
+      extraWritableRoots: [],
+    })
+    expect(denied.ok).toBe(false)
+  })
+
+  it('wiring: guard.ts sanctions the read-cache root alongside skills/trunc', () => {
+    const guard = read('src/main/sandbox/guard.ts')
+    expect(guard).toContain("'.pulsemind', 'tmp', 'read-cache'")
+    expect(guard).toContain('{ dir: readCacheRoot, real: readCacheReal }')
   })
 })

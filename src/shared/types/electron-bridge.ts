@@ -283,9 +283,7 @@ export interface ElectronAPI {
   onMenuAction: (callback: (action: string) => void) => () => void
 
   // 设置页「测试连接」：main 侧对 provider 发一次最小非流式探测
-  testLlmConnection: (
-    input: import('../llm/probe').LlmProbeInput & { profileId?: string },
-  ) => Promise<import('../llm/probe').LlmProbeOutcome>
+  testLlmConnection: (input: import('../llm/probe').LlmProbeInput & { profileId?: string }) => Promise<import('../llm/probe').LlmProbeOutcome>
 
   // Non-streaming fetch (avoids CORS)
   apiFetch: (
@@ -378,14 +376,16 @@ export interface ElectronAPI {
   /** Hosted (reverse-RPC) page tool: forwarded over the local agent service to
    *  the browser extension that is driving the session (PLAN-browser-extension
    *  M0.2). Only sessions with a connected hosted client can execute. */
-  hostedToolCall: (
-    tool: string,
-    args: Record<string, unknown>,
-    opts: { sessionId: string; timeoutMs?: number },
-  ) => Promise<unknown>
+  hostedToolCall: (tool: string, args: Record<string, unknown>, opts: { sessionId: string; timeoutMs?: number }) => Promise<unknown>
   /** Browser pane (A-M5). `browserActive`: PLAN-workbench W3 — false folds the
    *  native WebView while the workbench shows a non-browser tab. */
-  browserPaneSetState: (state: { viewKind: string; conversationId: string | null; chatAreaWidth: number; browserActive?: boolean; chromeOverlayHeight?: number }) => Promise<void>
+  browserPaneSetState: (state: {
+    viewKind: string
+    conversationId: string | null
+    chatAreaWidth: number
+    browserActive?: boolean
+    chromeOverlayHeight?: number
+  }) => Promise<void>
   browserPaneSetWidth: (width: number) => Promise<void>
   browserPaneAction: (action: Record<string, unknown>) => Promise<void>
   /** Address-bar history (PLAN-browser-pane-ux T3): manual navigation only. */
@@ -440,12 +440,32 @@ export interface ElectronAPI {
   editFile: (input: { filePath: string; oldStr: string; newStr: string; multi: boolean }) => Promise<{ success: boolean; replacements: number; error?: string }>
   patchFile: (input: { filePath: string; diff: string }) => Promise<{ success: boolean; replacements: number; error?: string }>
   writeFile: (input: { filePath: string; content: string; append?: boolean; expectContent?: string }) => Promise<{ success: boolean; error?: string }>
-  editDocx: (input: { filePath: string; ops: import('../office/ops').DocxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').DocxEditOutcome & { success: boolean; error?: string; backup?: string }>
-  editPptx: (input: { filePath: string; ops: import('../office/ops').PptxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').PptxEditOutcome & { success: boolean; error?: string; backup?: string }>
-  editXlsx: (input: { filePath: string; ops: import('../office/ops').XlsxToolOp[]; workspaceDir?: string }) => Promise<import('../office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>
+  editDocx: (input: {
+    filePath: string
+    ops: import('../office/ops').DocxToolOp[]
+    workspaceDir?: string
+  }) => Promise<import('../office/ops').DocxEditOutcome & { success: boolean; error?: string; backup?: string }>
+  editPptx: (input: {
+    filePath: string
+    ops: import('../office/ops').PptxToolOp[]
+    workspaceDir?: string
+  }) => Promise<import('../office/ops').PptxEditOutcome & { success: boolean; error?: string; backup?: string }>
+  editXlsx: (input: {
+    filePath: string
+    ops: import('../office/ops').XlsxToolOp[]
+    workspaceDir?: string
+  }) => Promise<import('../office/ops').XlsxEditOutcome & { success: boolean; error?: string; backup?: string }>
   inspectOffice: (input: { filePath: string }) => Promise<import('../office/ops').OfficeInspectResult>
   readOffice: (input: import('../office/ops').OfficeReadInput) => Promise<import('../office/ops').OfficeReadResult>
-  exportDocument: (input: { format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'; content?: string; sourcePath?: string; htmlPath?: string; fontSize?: number; filePath: string }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number; report?: string }>
+  searchOffice: (input: import('../office/ops').OfficeSearchInput) => Promise<import('../office/ops').OfficeSearchResult>
+  exportDocument: (input: {
+    format: 'docx' | 'xlsx' | 'csv' | 'pptx' | 'pdf'
+    content?: string
+    sourcePath?: string
+    htmlPath?: string
+    fontSize?: number
+    filePath: string
+  }) => Promise<{ success: boolean; error?: string; path?: string; bytes?: number; report?: string }>
   convertFileToMarkdown: (filePath: string) => Promise<{ content: string; cachePath: string; hit: boolean } | null>
   /** M10: register the per-mount element-edit nonce in the main process —
    *  the served picker copy reads it there, never the frame URL. */
@@ -507,7 +527,10 @@ export interface ElectronAPI {
   }) => Promise<{ written: number; logAppended: boolean; markedCompiled: number }>
   knowledgeUpdateStatus: (data: { id: string; status: 'compiled' }) => Promise<void>
   knowledgeClearAll: () => Promise<{ deletedRaw: number; deletedWiki: number }>
-  knowledgeSearchContent: (query: string, baseId?: string) => Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>>
+  knowledgeSearchContent: (
+    query: string,
+    baseId?: string,
+  ) => Promise<Array<{ id: string; filePath: string; title: string; sourceType: string; excerpts: string[] }>>
   knowledgeSearchWiki: (query: string, baseId?: string) => Promise<Array<{ wikiPath: string; title: string; type: string; lineNum: number; content: string }>>
   knowledgeRebuildIndex: (baseId?: string) => Promise<void>
   knowledgeGetSchema: () => Promise<string>

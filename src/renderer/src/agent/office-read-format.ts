@@ -38,7 +38,17 @@ export function formatOfficeReadResult(result: OfficeReadResult): string {
 
   const d = result.details
 
-  if (result.format === 'docx' && d.paragraphs) {
+  if (result.format === 'docx' && d.headings) {
+    if (push('标题（[段落] 级别: 文本）:')) {
+      for (const h of d.headings) {
+        if (!push(`[${h.index}] ${h.level ?? '?'} ${h.style ?? '-'}: ${h.text}`)) break
+      }
+    }
+    // [段落号] is the 0-based EDIT coordinate (office_edit consumes it
+    // verbatim); office_read's offset is 1-based — the envelope spells the
+    // +1 out instead of letting the model guess.
+    parts.push(`下一步：按 [段落号] 精读章节 → offset=[段落号]+1（读到下一同级标题前）；编辑 → 对照段落索引调 office_edit。`)
+  } else if (result.format === 'docx' && d.paragraphs) {
     if (d.paragraphs.length > 0 && push('段落全文（[段落] 样式: 文本）:')) {
       for (const p of d.paragraphs) {
         if (!push(`[${p.index}] ${p.style ?? '-'}: ${p.text || '(空段落)'}`)) break
@@ -98,11 +108,20 @@ export function formatOfficeReadResult(result: OfficeReadResult): string {
         parts.push(`…（超出预算被截断——用更小的 limit 或 range 重读）`)
         parts.push(`下一步：重读 → sheet="${d.sheet}" offset=${d.startRow ?? 1} limit=<更小>；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母。`)
       } else if (d.nextOffset) {
-        parts.push(`下一步：继续读 → sheet="${d.sheet}" offset=${d.nextOffset}；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母（公式显示为 =式 → 结果，set_cell 重写表达式）。`)
+        parts.push(
+          `下一步：继续读 → sheet="${d.sheet}" offset=${d.nextOffset}；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母（公式显示为 =式 → 结果，set_cell 重写表达式）。`,
+        )
       } else {
         parts.push(`下一步：已到「${d.sheet}」末尾；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母。`)
       }
     }
+  } else if (result.format === 'pptx' && d.slideTitles) {
+    if (push('页标题（slide: 标题）:')) {
+      for (const s of d.slideTitles) {
+        if (!push(`第 ${s.index} 页: ${s.title || '(无标题)'}`)) break
+      }
+    }
+    parts.push(`下一步：读整页 → slide=N；编辑 → 对照 shape id 调 office_edit。`)
   } else if (result.format === 'pptx' && d.slides) {
     for (const s of d.slides) {
       if (!push(`— 第 ${s.index} 页（${s.shapes.length} 形状）:`)) break

@@ -15,6 +15,44 @@ import type { OfficeReadResult } from '../src/shared/office/ops'
 
 const lastLine = (text: string): string => text.split('\n').at(-1) ?? ''
 
+describe('formatOfficeReadResult — outline views (2026-10-12)', () => {
+  it('docx headings render with level + index, and the envelope spells the offset +1', () => {
+    const text = formatOfficeReadResult({
+      success: true,
+      format: 'docx',
+      summary: 'Word 目录: 2 个标题（全文共 57 段）',
+      details: {
+        headings: [
+          { index: 0, style: 'Heading1', level: 1, text: '2026 年度报告' },
+          { index: 12, style: '2', level: 2, text: '二、发现' },
+        ],
+        paragraphCount: 57,
+      },
+    })
+    expect(text.split('\n')[0]).toBe('Word 目录: 2 个标题（全文共 57 段）')
+    expect(text).toContain('[0] 1 Heading1: 2026 年度报告')
+    expect(text).toContain('[12] 2 2: 二、发现')
+    expect(lastLine(text)).toBe('下一步：按 [段落号] 精读章节 → offset=[段落号]+1（读到下一同级标题前）；编辑 → 对照段落索引调 office_edit。')
+  })
+
+  it('pptx slide titles list every page, (无标题) included', () => {
+    const text = formatOfficeReadResult({
+      success: true,
+      format: 'pptx',
+      summary: 'PowerPoint 目录: 3 页',
+      details: {
+        slideTitles: [
+          { index: 1, title: '季度汇报', shapeId: '9' },
+          { index: 2, title: '', shapeId: null },
+        ],
+      },
+    })
+    expect(text).toContain('第 1 页: 季度汇报')
+    expect(text).toContain('第 2 页: (无标题)')
+    expect(lastLine(text)).toBe('下一步：读整页 → slide=N；编辑 → 对照 shape id 调 office_edit。')
+  })
+})
+
 describe('formatOfficeReadResult — docx', () => {
   const result: OfficeReadResult = {
     success: true,
@@ -27,7 +65,17 @@ describe('formatOfficeReadResult — docx', () => {
       ],
       paragraphCount: 5,
       nextOffset: 3,
-      tables: [{ index: 0, rows: 2, cols: 2, cells: [['名称', '数量'], ['甲 | 乙', '10']] }],
+      tables: [
+        {
+          index: 0,
+          rows: 2,
+          cols: 2,
+          cells: [
+            ['名称', '数量'],
+            ['甲 | 乙', '10'],
+          ],
+        },
+      ],
     },
   }
 
@@ -79,7 +127,9 @@ describe('formatOfficeReadResult — xlsx', () => {
     expect(text).toContain('| 11 | 甲 |')
     expect(text).toContain('| 12 | 乙 |')
     expect(text).not.toContain('| 1 | 甲 |') // window offset ≠ row number
-    expect(lastLine(text)).toBe('下一步：继续读 → sheet="数据" offset=13；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母（公式显示为 =式 → 结果，set_cell 重写表达式）。')
+    expect(lastLine(text)).toBe(
+      '下一步：继续读 → sheet="数据" offset=13；编辑 → office_edit 的 xlsx 算子；单元格地址 = 行号 + 列字母（公式显示为 =式 → 结果，set_cell 重写表达式）。',
+    )
   })
 
   it('sheet inventory ends with the sheet-then-read hint', () => {
@@ -87,7 +137,12 @@ describe('formatOfficeReadResult — xlsx', () => {
       success: true,
       format: 'xlsx',
       summary: 'Excel 工作簿: 数据(30行×3列), 说明(1行×1列)',
-      details: { sheets: [{ name: '数据', rowCount: 30, columnCount: 3 }, { name: '说明', rowCount: 1, columnCount: 1 }] },
+      details: {
+        sheets: [
+          { name: '数据', rowCount: 30, columnCount: 3 },
+          { name: '说明', rowCount: 1, columnCount: 1 },
+        ],
+      },
     })
     expect(text).toContain('- 数据: 30 行 × 3 列')
     expect(lastLine(text)).toBe('下一步：读值 → sheet="<名称>"（可加 range="A1:J50" 或 offset/limit 翻行）。')
@@ -161,19 +216,29 @@ describe('svcReadOffice — real fixtures', () => {
     fs.writeFileSync(xlsxPath, Buffer.from((await wb.xlsx.writeBuffer()) as ArrayBuffer))
 
     // pptx: sldIdLst deliberately references slide2 FIRST — presentation
-    // order (what pptx_edit's slide counts), not filename order
-    const slideXml = (text: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    // order (what pptx_edit's slide counts), not filename order. Slide2 also
+    // carries a title placeholder (outline reads it; it stays the SECOND
+    // shape so the existing shapes[0] assertions keep their object).
+    const slideXml = (text: string, title?: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-<p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="5" name="文本框 1"/><p:nvPr/></p:nvSpPr><p:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`
+<p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="5" name="文本框 1"/><p:nvPr/></p:nvSpPr><p:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:txBody></p:sp>${title ? `<p:sp><p:nvSpPr><p:cNvPr id="9" name="Title 1"/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>${title}</a:t></a:r></a:p></p:txBody></p:sp>` : ''}</p:spTree></p:cSld></p:sld>`
     const pptxZip = new AdmZip()
-    pptxZip.addFile('ppt/presentation.xml', Buffer.from(
-      `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>`,
-      'utf8'))
-    pptxZip.addFile('ppt/_rels/presentation.xml.rels', Buffer.from(
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="slides/slide2.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"/><Relationship Id="rId2" Target="slides/slide1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"/></Relationships>`,
-      'utf8'))
+    pptxZip.addFile(
+      'ppt/presentation.xml',
+      Buffer.from(
+        `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>`,
+        'utf8',
+      ),
+    )
+    pptxZip.addFile(
+      'ppt/_rels/presentation.xml.rels',
+      Buffer.from(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="slides/slide2.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"/><Relationship Id="rId2" Target="slides/slide1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"/></Relationships>`,
+        'utf8',
+      ),
+    )
     pptxZip.addFile('ppt/slides/slide1.xml', Buffer.from(slideXml('文件名在前的页'), 'utf8'))
-    pptxZip.addFile('ppt/slides/slide2.xml', Buffer.from(slideXml('演示顺序第一页'), 'utf8'))
+    pptxZip.addFile('ppt/slides/slide2.xml', Buffer.from(slideXml('演示顺序第一页', '季度汇报'), 'utf8'))
     const pptxPath = path.join(dir, '汇报.pptx')
     fs.writeFileSync(pptxPath, pptxZip.toBuffer())
 
@@ -231,6 +296,37 @@ describe('svcReadOffice — real fixtures', () => {
       const one = await svcReadOffice({ filePath: pptxPath, slide: 1 })
       expect(one.details.slides).toHaveLength(1)
       expect(one.details.slides![0].shapes[0].shapeId).toBe('5')
+
+      // ── outline (2026-10-12): the structure-first read ──
+      // docx: exactly the Heading1 paragraph, in the flat index space; the
+      // plain body paragraph and the table cell paragraphs are not headings.
+      const docOutline = await svcReadOffice({ filePath: docxPath, outline: true })
+      expect(docOutline.success).toBe(true)
+      expect(docOutline.summary).toContain('1 个标题')
+      expect(docOutline.details.headings).toEqual([{ index: 0, style: 'Heading1', level: 1, text: '2026 年度报告' }])
+
+      // docx: a style-less paragraph with a DIRECT outlineLvl is a heading
+      // too (level = val+1) — detected without any styles.xml entry.
+      const outlineXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:r><w:t>直接大纲级别的标题</w:t></w:r></w:p>
+<w:p><w:r><w:t>正文</w:t></w:r></w:p>
+</w:body></w:document>`
+      const outlineZip = new AdmZip()
+      outlineZip.addFile('word/document.xml', Buffer.from(outlineXml, 'utf8'))
+      const outlinePath = path.join(dir, '大纲.docx')
+      fs.writeFileSync(outlinePath, outlineZip.toBuffer())
+      const direct = await svcReadOffice({ filePath: outlinePath, outline: true })
+      expect(direct.details.headings).toEqual([{ index: 0, style: null, level: 2, text: '直接大纲级别的标题' }])
+
+      // pptx: titles in sldIdLst order; the slide without a placeholder keeps
+      // its place with an empty title
+      const deckOutline = await svcReadOffice({ filePath: pptxPath, outline: true })
+      expect(deckOutline.summary).toBe('PowerPoint 目录: 2 页')
+      expect(deckOutline.details.slideTitles).toEqual([
+        { index: 1, title: '季度汇报', shapeId: '9' },
+        { index: 2, title: '', shapeId: null },
+      ])
     } finally {
       process.env.HOME = prevHome
       fs.rmSync(fixture, { recursive: true, force: true })

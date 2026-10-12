@@ -24,6 +24,7 @@ import { svcEditPptx } from '../services/pptx-ops'
 import { svcEditXlsx } from '../services/xlsx-ops'
 import { svcInspectOffice } from '../services/office-inspect'
 import { svcReadOffice } from '../services/office-read'
+import { svcSearchOffice } from '../services/office-search'
 import { registerPreviewNonce } from '../preview/nonce-registry'
 import { measurePreviewFrame } from '../preview/frame-measure'
 import type {
@@ -46,8 +47,12 @@ export type { EditFileInput, EditFileResult, PatchFileInput, PatchFileResult, Wr
  *  rejects per-file. */
 function withRawResponse<R>(fn: (...args: any[]) => R | Promise<R>) {
   return async (_event: Electron.IpcMainInvokeEvent, ...args: any[]): Promise<R> => {
-    try { return await fn(...args) }
-    catch (e) { console.error('[IPC] file-ops error:', e); throw e }
+    try {
+      return await fn(...args)
+    } catch (e) {
+      console.error('[IPC] file-ops error:', e)
+      throw e
+    }
   }
 }
 
@@ -59,9 +64,8 @@ export function registerFileOpsHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.UTIL_COPY_FILE_TO_TMP, (_event, sourcePath: string) => svcCopyFileToTmp(sourcePath))
 
   // ── Copy file for download (handles local-file:// + /.pulsemind/ resolution) ──
-  ipcMain.handle(
-    IPC_CHANNELS.UTIL_COPY_FILE,
-    (_event, input: { sourceUrl?: string; destination: string }): Promise<{ success: boolean; error?: string }> => svcCopyFile(input),
+  ipcMain.handle(IPC_CHANNELS.UTIL_COPY_FILE, (_event, input: { sourceUrl?: string; destination: string }): Promise<{ success: boolean; error?: string }> =>
+    svcCopyFile(input),
   )
 
   // ── Read file ────────────────────────────────────────────────────
@@ -98,10 +102,38 @@ export function registerFileOpsHandlers(): void {
 
   // ── Write file (direct IPC, bypasses shell heredoc) ──────────────
   ipcMain.handle(IPC_CHANNELS.UTIL_WRITE_FILE, (_event, input: WriteFileInput): Promise<WriteFileResult> => svcWriteFile(input))
-  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_DOCX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditDocx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
-  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_PPTX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditPptx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
-  ipcMain.handle(IPC_CHANNELS.UTIL_EDIT_XLSX, withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) => svcEditXlsx(input as { filePath: string; ops: never[]; workspaceDir?: string })))
-  ipcMain.handle(IPC_CHANNELS.UTIL_INSPECT_OFFICE, withRawResponse(async (input: { filePath: string }) => svcInspectOffice(input)))
-  ipcMain.handle(IPC_CHANNELS.UTIL_READ_OFFICE, withRawResponse(async (input: import('../../shared/office/ops').OfficeReadInput) => svcReadOffice(input)))
-  ipcMain.handle(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, withRawResponse(async (input: import('../services/office-export').ExportDocumentInput) => svcExportDocument(input)))
+  ipcMain.handle(
+    IPC_CHANNELS.UTIL_EDIT_DOCX,
+    withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) =>
+      svcEditDocx(input as { filePath: string; ops: never[]; workspaceDir?: string }),
+    ),
+  )
+  ipcMain.handle(
+    IPC_CHANNELS.UTIL_EDIT_PPTX,
+    withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) =>
+      svcEditPptx(input as { filePath: string; ops: never[]; workspaceDir?: string }),
+    ),
+  )
+  ipcMain.handle(
+    IPC_CHANNELS.UTIL_EDIT_XLSX,
+    withRawResponse(async (input: { filePath: string; ops: unknown[]; workspaceDir?: string }) =>
+      svcEditXlsx(input as { filePath: string; ops: never[]; workspaceDir?: string }),
+    ),
+  )
+  ipcMain.handle(
+    IPC_CHANNELS.UTIL_INSPECT_OFFICE,
+    withRawResponse(async (input: { filePath: string }) => svcInspectOffice(input)),
+  )
+  ipcMain.handle(
+    IPC_CHANNELS.UTIL_READ_OFFICE,
+    withRawResponse(async (input: import('../../shared/office/ops').OfficeReadInput) => svcReadOffice(input)),
+  )
+  ipcMain.handle(
+    IPC_CHANNELS.UTIL_SEARCH_OFFICE,
+    withRawResponse(async (input: import('../../shared/office/ops').OfficeSearchInput) => svcSearchOffice(input)),
+  )
+  ipcMain.handle(
+    IPC_CHANNELS.UTIL_EXPORT_DOCUMENT,
+    withRawResponse(async (input: import('../services/office-export').ExportDocumentInput) => svcExportDocument(input)),
+  )
 }

@@ -85,6 +85,16 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
   // the advertised read-back was a dead link and the omitted middle was
   // unrecoverable from anywhere (tool_results persists the TRUNCATED copy).
   // Reads and writes alike are exempt, so `read` reaches the file.
+  //
+  // The read cache (~/.pulsemind/tmp/read-cache, 2026-10-12) is the third
+  // sanctioned root: `read` converts a binary document (pdf/docx/xlsx/…) once
+  // via markitdown, caches the markdown there, and the result's Note advertises
+  // that path so the model can `search` headings/keywords in it and only then
+  // page `read` to the hits. Before this root the advertised path was a dead
+  // link under a workspace session (~/.pulsemind is a deny root) — the
+  // convert-once-query-many strategy for large documents was unreachable.
+  // Reads and writes alike, same discipline as skills/trunc: the tree is
+  // app-owned cache, ttl-swept by tmp-cleanup.
   // Everything else under ~/.pulsemind (settings, db, memory, logs, mcp,
   // experiences) stays denied. Both spellings resolve like the workspace's, so
   // a symlinked ancestor or a link escaping the tree still fails the judgment.
@@ -94,6 +104,9 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
   const truncRoot = join(homedir(), '.pulsemind', 'tmp', 'trunc')
   const truncResolved = await resolveRealTarget(truncRoot)
   const truncReal = truncResolved.status === 'resolved' ? truncResolved.path : null
+  const readCacheRoot = join(homedir(), '.pulsemind', 'tmp', 'read-cache')
+  const readCacheResolved = await resolveRealTarget(readCacheRoot)
+  const readCacheReal = readCacheResolved.status === 'resolved' ? readCacheResolved.path : null
 
   const decision = guardPath({
     target,
@@ -105,6 +118,7 @@ export async function guardFsTarget(target: string, operation: GuardOperation): 
     extraWritableRoots: [
       { dir: skillsRoot, real: skillsReal },
       { dir: truncRoot, real: truncReal },
+      { dir: readCacheRoot, real: readCacheReal },
     ],
   })
 

@@ -26,6 +26,7 @@ import { execPickTool as pickToolImpl } from './executors/pick-tool'
 import { execSpawnAgent as spawnAgentImpl } from './executors/spawn-tool'
 import { formatInspectResult, INSPECT_RESULT_TOKEN_BUDGET } from './office-inspect-format'
 import { formatOfficeReadResult } from './office-read-format'
+import { formatOfficeSearchResult } from './office-search-format'
 
 /** 经验信封的位置段（PLAN-experience-scripts 1.4）：pick_skill 之前只回
  *  SKILL.md 原文，模型拿到正文也到不了盘上的脚本。与 formatSelectedSkill
@@ -306,6 +307,11 @@ export class ToolExecutor implements ToolExecContext {
           await this.execWorkspaceTool(t)
           return
         }
+        // ── office_search: coordinate-anchored content search, same tier ──
+        if (t.name === 'office_search') {
+          await this.execWorkspaceTool(t)
+          return
+        }
         // ── `read` tool: metadata header + content ────────────────────
         if (t.name === 'read') {
           // 相对路径挂 workspace、~ 原样（audit 2026-10-10 #6）：stat/markitdown
@@ -561,6 +567,7 @@ export class ToolExecutor implements ToolExecContext {
           sheet: typeof t.input.sheet === 'string' && t.input.sheet !== '' ? t.input.sheet : undefined,
           range: typeof t.input.range === 'string' && t.input.range !== '' ? t.input.range : undefined,
           slide: t.input.slide != null ? Number(t.input.slide) : undefined,
+          outline: t.input.outline === true,
         })
         if (result.success) {
           t.output = result.summary
@@ -569,6 +576,33 @@ export class ToolExecutor implements ToolExecContext {
           // self-caps under the budget passed here, so the next-step envelope
           // (offset/slide/sheet) survives as the true last bytes.
           this.addToolResult(t.id, formatOfficeReadResult(result), false, undefined, MAX_READ_RESULT_TOKENS)
+          t.exitCode = 0
+        } else {
+          const msg = `Error: ${result.error || result.summary}`
+          t.output = msg
+          this.addToolResult(t.id, msg, true)
+          t.exitCode = 1
+        }
+      } else if (t.name === 'office_search') {
+        let fp = String(t.input.file_path || '')
+        if (!fp) throw new Error('file_path is required')
+        fp = this.resolveWorkspacePath(fp)
+        const query = String(t.input.query || '')
+        if (!query) throw new Error('query is required')
+        t.output = `Searching ${fp}...`; this.notify()
+        const result = await getHost().searchOffice({
+          filePath: fp,
+          query,
+          regex: t.input.regex === true,
+          caseSensitive: t.input.case_sensitive === true,
+          sheet: typeof t.input.sheet === 'string' && t.input.sheet !== '' ? t.input.sheet : undefined,
+          slide: t.input.slide != null ? Number(t.input.slide) : undefined,
+        })
+        if (result.success) {
+          t.output = result.summary
+          // Same contract as office_read: the formatted hits ARE the answer,
+          // the follow-up-read envelope is the true last bytes.
+          this.addToolResult(t.id, formatOfficeSearchResult(result), false, undefined, MAX_READ_RESULT_TOKENS)
           t.exitCode = 0
         } else {
           const msg = `Error: ${result.error || result.summary}`

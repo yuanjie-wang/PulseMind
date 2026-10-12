@@ -380,8 +380,10 @@ const electronAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EDIT_XLSX, input),
   inspectOffice: (input: { filePath: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_INSPECT_OFFICE, input),
-  readOffice: (input: { filePath: string; offset?: number; limit?: number; tables?: boolean; sheet?: string; range?: string; slide?: number }): Promise<unknown> =>
+  readOffice: (input: { filePath: string; offset?: number; limit?: number; tables?: boolean; sheet?: string; range?: string; slide?: number; outline?: boolean }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_READ_OFFICE, input),
+  searchOffice: (input: { filePath: string; query: string; regex?: boolean; caseSensitive?: boolean; sheet?: string; slide?: number }): Promise<unknown> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UTIL_SEARCH_OFFICE, input),
   exportDocument: (input: { format: string; content?: string; sourcePath?: string; htmlPath?: string; fontSize?: number; filePath: string }): Promise<unknown> =>
     ipcRenderer.invoke(IPC_CHANNELS.UTIL_EXPORT_DOCUMENT, input),
   convertFileToMarkdown: (filePath: string): Promise<{ content: string; cachePath: string; hit: boolean } | null> =>

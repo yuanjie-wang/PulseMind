@@ -19,7 +19,11 @@ describe('office tools five-point wiring', () => {
   const mainHost = read('src/main/agent/main-host.ts')
 
   it('each channel is registered main-side, exposed via preload, and typed on the bridge', () => {
-    for (const [channel, method] of [['UTIL_EDIT_DOCX', 'editDocx'], ['UTIL_EDIT_XLSX', 'editXlsx']] as const) {
+    for (const [channel, method] of [
+      ['UTIL_EDIT_DOCX', 'editDocx'],
+      ['UTIL_EDIT_XLSX', 'editXlsx'],
+      ['UTIL_SEARCH_OFFICE', 'searchOffice'],
+    ] as const) {
       expect(channels).toContain(`${channel}: 'util:`)
       expect(handler).toContain(`IPC_CHANNELS.${channel}`)
       expect(preload).toContain(`${method}: (input`)
@@ -32,7 +36,10 @@ describe('office tools five-point wiring', () => {
   it('the services stay behind the standard write sequence', () => {
     const docx = read('src/main/services/docx-ops.ts')
     const xlsx = read('src/main/services/xlsx-ops.ts')
-    for (const [name, source] of [['docx-ops', docx], ['xlsx-ops', xlsx]] as const) {
+    for (const [name, source] of [
+      ['docx-ops', docx],
+      ['xlsx-ops', xlsx],
+    ] as const) {
       expect(source, name).toContain('guardFsTarget(')
       expect(source, name).toContain('withPathLock(')
       expect(source, name).toContain('backupOfficeOriginal(')
@@ -55,13 +62,13 @@ describe('tool surface', () => {
 
     const name = 'office_edit'
     expect(tools).toContain(`name: '${name}'`)
-    expect(tiers).toContain(`'${name}'`)                    // WRITE_TIER_TOOLS → approval hold
-    expect(executors).toContain(`'${name}'`)                // execWorkspaceTool case
-    expect(summary).toContain(`'${name}'`)                  // card label family
-    expect(instructions).toContain(`${name}: \``)           // static instructions (cache contract)
-    expect(limits).toContain(`${name}:`)                    // ops payload cap
-    expect(zh).toContain(`${name}: '`)                      // i18n label zh
-    expect(en).toContain(`${name}: '`)                      // i18n label en
+    expect(tiers).toContain(`'${name}'`) // WRITE_TIER_TOOLS → approval hold
+    expect(executors).toContain(`'${name}'`) // execWorkspaceTool case
+    expect(summary).toContain(`'${name}'`) // card label family
+    expect(instructions).toContain(`${name}: \``) // static instructions (cache contract)
+    expect(limits).toContain(`${name}:`) // ops payload cap
+    expect(zh).toContain(`${name}: '`) // i18n label zh
+    expect(en).toContain(`${name}: '`) // i18n label en
     // The three retired names survive ONLY where hydrated history needs them
     // (deliverables' writer sets + i18n labels) — nowhere as a live tool.
     expect(tools).not.toContain("name: 'docx_edit'")
@@ -79,6 +86,27 @@ describe('tool surface', () => {
     const schema = officeEdit.slice(0, officeEdit.indexOf('instructions:'))
     expect(schema).not.toContain("'outline'")
     expect(schema).not.toContain("'inspect'")
+  })
+
+  it('office_search is declared, gated, dispatched, and labelled — with its manual (2026-10-12)', () => {
+    const tools = read('src/renderer/src/tools/built-in-tools.ts')
+    const tiers = read('src/renderer/src/agent/engine/tool-tiers.ts')
+    const executors = read('src/renderer/src/agent/tool-executors.ts')
+    const summary = read('src/renderer/src/components/chat/tool-summary.ts')
+    const instructions = read('src/renderer/src/tools/tool-instructions.ts')
+    const formatter = read('src/renderer/src/agent/office-search-format.ts')
+    const zh = read('src/renderer/src/i18n/locales/zh.ts')
+    const en = read('src/renderer/src/i18n/locales/en.ts')
+
+    const name = 'office_search'
+    expect(tools).toContain(`name: '${name}'`)
+    expect(tiers).toContain(`'${name}'`) // READ_TIER_TOOLS — reads never wait
+    expect(executors).toContain(`'${name}'`) // both dispatch surfaces
+    expect(summary).toContain(`'${name}'`) // card object row family
+    expect(instructions).toContain(`${name}: \``) // static manual (cache contract)
+    expect(formatter).toContain(`formatOfficeSearchResult`) // envelope last
+    expect(zh).toContain(`${name}: '`)
+    expect(en).toContain(`${name}: '`)
   })
 
   it('the text write tools refuse office binaries (L11)', () => {
