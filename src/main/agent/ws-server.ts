@@ -42,12 +42,12 @@ import { agentClientRegistry, isHostedClientId, type ClientTransport } from './c
 import { hostedToolProxy } from './hosted/proxy'
 import { hostedPromptRouter } from './hosted/prompts'
 import {
-  deleteConversation,
   getConversationOrigin,
   hydrateConversation,
   listConversationsByOrigin,
   updateConversationTitle,
 } from '../storage/conversation.db'
+import { deleteConversationWithWorkspace } from '../storage/conversation-workspace'
 import { SERVICE_DEFAULT_PORT } from '../service-config'
 import { toSandboxApprovalMode, type SandboxApprovalMode } from '../../shared/sandbox/policy'
 
@@ -67,7 +67,9 @@ export interface AgentServiceConversations {
    *  composer shows (absent = never chosen). */
   listByOrigin(origin: string, limit: number): Array<{ id: string; title: string; updatedAt: string; approvalMode?: SandboxApprovalMode }>
   origin(id: string): string | null
-  remove(id: string): void
+  /** May return a promise (the production impl deletes the minted workspace
+   *  folder before the row); the delete handler awaits it when present. */
+  remove(id: string): void | Promise<void>
   rename(id: string, title: string): void
 }
 
@@ -75,7 +77,7 @@ const storageConversations: AgentServiceConversations = {
   hydrate: (id) => hydrateConversation(id),
   listByOrigin: (origin, limit) => listConversationsByOrigin(origin, limit),
   origin: (id) => getConversationOrigin(id),
-  remove: (id) => deleteConversation(id),
+  remove: (id) => deleteConversationWithWorkspace(id),
   rename: (id, title) => updateConversationTitle(id, title),
 }
 
@@ -364,7 +366,7 @@ export async function startAgentService(
                 return
               }
               if (sessions.hasSession(sessionId)) await sessions.engineCall(sessionId, 'dispose').catch(() => {})
-              store.remove(sessionId)
+              await store.remove(sessionId)
               conn.sessions.delete(sessionId)
               send(makeResult(msg.id ?? null, { ok: true }))
             })().catch((err) => send(makeError(msg.id ?? null, ErrorCodes.internal, errorMessage(err))))

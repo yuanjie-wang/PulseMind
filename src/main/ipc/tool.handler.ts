@@ -4,7 +4,7 @@ import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { toolStore } from '../storage/tool-store'
 import { getBundlePresetsDir } from '../storage'
-import { deleteConversation } from '../storage/conversation.db'
+import { deleteConversationWithWorkspace } from '../storage/conversation-workspace'
 import { svcToolBridgeInvoke } from '../tool-runtime'
 import type { ToolCreateInput, ToolUpdateInput } from '../../shared/types/user-tool'
 
@@ -23,13 +23,15 @@ export function registerToolStudioHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.TOOL_UPDATE, (_event, id: string, patch: ToolUpdateInput) => toolStore.update(id, patch))
 
-  ipcMain.handle(IPC_CHANNELS.TOOL_DELETE, (_event, id: string) => {
+  ipcMain.handle(IPC_CHANNELS.TOOL_DELETE, async (_event, id: string) => {
     toolStore.remove(id)
     // Cascade: the tool's studio conversation (and its messages) would
     // otherwise linger forever. Best-effort — tool removal must not fail
-    // because of conversation cleanup.
+    // because of conversation cleanup. Rides the workspace-converged entry
+    // for uniformity: studio rows rarely mint under the global base, so the
+    // guard usually refuses — and the row delete always proceeds.
     try {
-      deleteConversation(`toolstudio_${id}`)
+      await deleteConversationWithWorkspace(`toolstudio_${id}`)
     } catch (err) {
       console.warn(`[tool] failed to clean studio conversation for ${id}:`, err)
     }

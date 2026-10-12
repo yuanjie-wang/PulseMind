@@ -4,10 +4,14 @@
 // cascade takes their messages with them). Runs at startup and after each
 // settings save, so a tightened policy takes effect without a restart. A
 // conversation with a live agent session is never deleted — the session
-// manager decides what "live" means.
+// manager decides what "live" means. The row delete rides the shared
+// workspace-converged entry (deleteConversationWithWorkspace): a retention
+// user asked for the data GONE — leaving the minted folder behind would only
+// orphan it (row gone, folder unaccounted, disk still growing).
 
 import { settingsStore } from '../storage/settings-store'
-import { listExpiredConversationIds, deleteConversation } from '../storage/conversation.db'
+import { listExpiredConversationIds } from '../storage/conversation.db'
+import { deleteConversationWithWorkspace } from '../storage/conversation-workspace'
 import { agentSessionManager } from '../agent/session-manager'
 
 /** Delete conversations past the retention window; returns how many went. */
@@ -18,7 +22,7 @@ export async function cleanupExpiredConversations(): Promise<number> {
   for (const id of listExpiredConversationIds(conversationRetentionDays)) {
     if (agentSessionManager.hasSession(id)) continue
     try {
-      deleteConversation(id)
+      await deleteConversationWithWorkspace(id)
       removed += 1
     } catch (err) {
       console.warn('[retention] delete failed:', id, err)

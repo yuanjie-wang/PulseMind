@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -20,6 +20,7 @@ vi.mock('../src/main/storage/project-store', () => ({
 }))
 vi.mock('../src/main/storage/conversation.db', () => ({
   setConversationWorkspaceDir: vi.fn(),
+  deleteConversation: vi.fn(),
 }))
 vi.mock('../src/main/storage/index', () => ({
   WORKSPACE_DIR: '/data/pulsemind/workspace',
@@ -30,8 +31,10 @@ vi.mock('../src/main/storage/index', () => ({
   getBaseWikiDir: () => '/data/pulsemind/knowledge/wiki',
 }))
 
-const { isDeletableConversationWorkspace, deleteConversationWorkspace } = await import('../src/main/storage/conversation-workspace')
+const { isDeletableConversationWorkspace, deleteConversationWorkspace, deleteConversationWithWorkspace } =
+  await import('../src/main/storage/conversation-workspace')
 const { getDb } = await import('../src/main/storage/database')
+const { deleteConversation } = await import('../src/main/storage/conversation.db')
 
 const BASE = '/home/user/pulsemind-workspace'
 
@@ -105,5 +108,63 @@ describe('deleteConversationWorkspace (best-effort by contract)', () => {
   it('false on a missing row — never throws', async () => {
     stubRow(undefined)
     await expect(deleteConversationWorkspace('conv_missing')).resolves.toBe(false)
+  })
+})
+
+describe('deleteConversationWithWorkspace (the auto-delete convergence entry, review 2026-10-12 中2)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pulsemind-ws-guard-'))
+
+  function stubRow(row: { workspace_dir: string | null; project_id: string | null } | undefined) {
+    ;(getDb as ReturnType<typeof vi.fn>).mockReturnValue({
+      prepare: () => ({ get: () => row }),
+    })
+  }
+
+  beforeEach(() => {
+    vi.mocked(getDb).mockReset()
+    vi.mocked(deleteConversation).mockClear()
+  })
+
+  it('a minted folder goes with the row — folder deleted, row deleted', async () => {
+    const base = join(home, 'ws-conv')
+    const dir = join(base, '20261012120000')
+    mkdirSync(dir, { recursive: true })
+    stubRow({ workspace_dir: dir, project_id: null })
+    const { settingsStore } = await import('../src/main/storage/settings-store')
+    ;(settingsStore.get as ReturnType<typeof vi.fn>).mockResolvedValue({ workspaceDir: base })
+    await deleteConversationWithWorkspace('conv_1')
+    expect(existsSync(dir)).toBe(false)
+    expect(deleteConversation).toHaveBeenCalledWith('conv_1')
+  })
+
+  it('a guard refusal never blocks the row delete — folder stays, row goes', async () => {
+    const base = join(home, 'ws-conv2')
+    const dir = join(base, 'project-dir')
+    mkdirSync(dir, { recursive: true })
+    stubRow({ workspace_dir: dir, project_id: 'proj_9' })
+    const { settingsStore } = await import('../src/main/storage/settings-store')
+    ;(settingsStore.get as ReturnType<typeof vi.fn>).mockResolvedValue({ workspaceDir: base })
+    await deleteConversationWithWorkspace('conv_2')
+    expect(existsSync(dir)).toBe(true)
+    expect(deleteConversation).toHaveBeenCalledWith('conv_2')
+  })
+})
+
+describe('wiring: every AUTOMATIC delete path rides the guarded entry (review 2026-10-12 中2)', () => {
+  // Behavior pins live above (the entry itself) — these only stop a call site
+  // from silently reverting to the bare row-only deleteConversation. A NEW
+  // delete path added with the bare call is NOT caught here: converge, don't
+  // fork.
+  const read = (p: string) => readFileSync(p, 'utf8')
+
+  it('retention, routine run history, ws-server and tool studio all use the converged entry', () => {
+    expect(read('src/main/services/conversation-retention.ts')).toContain('deleteConversationWithWorkspace(id)')
+    expect(read('src/main/routine/routine-run-history.ts')).toContain('deleteConversationWithWorkspace(run.conversationId)')
+    expect(read('src/main/agent/ws-server.ts')).toContain('deleteConversationWithWorkspace(id)')
+    expect(read('src/main/ipc/tool.handler.ts')).toContain('deleteConversationWithWorkspace(`toolstudio_${id}`)')
+  })
+
+  it('form-assist discard rides the IPC deleteWorkspace flag', () => {
+    expect(read('src/renderer/src/components/form-assist/session-lifecycle.ts')).toContain('deleteConversation(convId, { deleteWorkspace: true })')
   })
 })

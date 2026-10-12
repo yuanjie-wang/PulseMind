@@ -19,7 +19,7 @@ import { getDb } from './database'
 import { WORKSPACE_DIR } from './index'
 import { settingsStore } from './settings-store'
 import { projectStore } from './project-store'
-import { setConversationWorkspaceDir } from './conversation.db'
+import { setConversationWorkspaceDir, deleteConversation } from './conversation.db'
 import { DEFAULT_PROJECT_ID } from '../../shared/types/project'
 import { conversationDirNameFor, formatConversationDirName, nextConversationDirName } from '../../shared/workspace-naming'
 
@@ -158,4 +158,19 @@ export async function deleteConversationWorkspace(convId: string): Promise<boole
     console.warn(`[workspace] workspace deletion for ${convId} refused/failed:`, err)
     return false
   }
+}
+
+/** The ONE entry the automatic delete paths converge on (review 2026-10-12
+ *  中2): workspace folder first — guard-checked, best-effort — then the row.
+ *  Workspace BEFORE the row because the guard reads the row's project binding
+ *  and stored dir. Without this convergence the 12h disk bound lived only on
+ *  the renderer's autoCleanup eviction: any retention policy (conversation or
+ *  routine-run) deleted rows while their minted folders accumulated forever,
+ *  orphaned — with the row gone there was nothing left to account for them.
+ *  Manual deletes (chat list) deliberately do NOT ride this — the user ruling
+ *  keeps a manual delete's outputs on disk; they go through the
+ *  CONVERSATION_DELETE IPC handler without the deleteWorkspace flag. */
+export async function deleteConversationWithWorkspace(convId: string): Promise<void> {
+  await deleteConversationWorkspace(convId)
+  deleteConversation(convId)
 }

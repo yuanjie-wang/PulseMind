@@ -47,9 +47,11 @@ export function registerRoutineHandlers(): void {
 
   // The card grid's delete dialog promises 「运行历史会一并删除」 — the task's
   // runs (and their transcripts) go with the definition, running row included.
+  // clearRoutine is now async (workspace-converged deletes) and internally
+  // best-effort per run; the trigger sync must not wait on folder IO.
   ipcMain.handle(IPC_CHANNELS.ROUTINE_DELETE, (_event, id: string) => {
     routineStore.remove(id)
-    routineRunHistory.clearRoutine(id, true)
+    void routineRunHistory.clearRoutine(id, true)
     routineTriggerManager.sync()
   })
 

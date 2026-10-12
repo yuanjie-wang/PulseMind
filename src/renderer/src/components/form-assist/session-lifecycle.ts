@@ -23,10 +23,14 @@ import { agentMessagesToConversation } from '../../utils/message-utils'
 
 /** Discard a form-assist conversation: dispose the live main-side session
  *  first, then delete the row — which takes the thread's rows with it.
- *  Idempotent — safe on ids that never had a session or a row. */
+ *  deleteWorkspace rides along (review 2026-10-12 中2): a discarded assist
+ *  thread is lifecycle cleanup, not a chat-list delete — the row-only shape
+ *  would orphan its minted folder forever. The main-side guard still refuses
+ *  project-bound and backfill rows. Idempotent — safe on ids that never had
+ *  a session or a row. */
 export async function discardAssistConversation(convId: string): Promise<void> {
   await window.electronAPI.agentSessionEngineCall(convId, 'dispose', []).catch(() => {})
-  await window.electronAPI.deleteConversation(convId).catch(() => {})
+  await window.electronAPI.deleteConversation(convId, { deleteWorkspace: true }).catch(() => {})
 }
 
 /** A create-flow's draft thread becomes the saved entity's own conversation:

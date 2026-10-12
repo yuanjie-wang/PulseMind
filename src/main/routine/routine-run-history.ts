@@ -3,9 +3,13 @@
 // run produced (its messages go with it through the FK cascade). Both entry
 // points — the workspace's manual cleanup and the startup retention prune —
 // go through here, so a transcript can never outlive the run that owns it.
+// The conversation delete rides the shared workspace-converged entry
+// (deleteConversationWithWorkspace): routine runs mint a session folder per
+// execution and are the single biggest producer of the 302-folder tree, so a
+// run delete that kept the folder would defeat the disk bound entirely.
 
 import { routineStore } from '../storage/routine-store'
-import { deleteConversation } from '../storage/conversation.db'
+import { deleteConversationWithWorkspace } from '../storage/conversation-workspace'
 import { settingsStore } from '../storage/settings-store'
 import type { RoutineRun } from '../../shared/types/routine'
 
@@ -18,11 +22,11 @@ function cutoffFromDays(days: number | undefined): string | null {
 }
 
 /** Drop the transcripts of run rows that were just deleted. */
-function dropConversations(runs: RoutineRun[]): void {
+async function dropConversations(runs: RoutineRun[]): Promise<void> {
   for (const run of runs) {
     if (!run.conversationId) continue
     try {
-      deleteConversation(run.conversationId)
+      await deleteConversationWithWorkspace(run.conversationId)
     } catch (err) {
       console.warn('[RoutineRunHistory] transcript cleanup failed:', err)
     }
@@ -31,16 +35,16 @@ function dropConversations(runs: RoutineRun[]): void {
 
 export const routineRunHistory = {
   /** 手动清理一条运行记录（连同它的对话）。返回删除条数。 */
-  remove(runId: string): number {
+  async remove(runId: string): Promise<number> {
     const removed = routineStore.removeRuns([runId])
-    dropConversations(removed)
+    await dropConversations(removed)
     return removed.length
   },
 
   /** 清空某个任务的运行记录（默认保留正在运行的那条）。 */
-  clearRoutine(routineId: string, includeRunning = false): number {
+  async clearRoutine(routineId: string, includeRunning = false): Promise<number> {
     const removed = routineStore.removeRunsOfRoutine(routineId, includeRunning)
-    dropConversations(removed)
+    await dropConversations(removed)
     return removed.length
   },
 
@@ -50,7 +54,7 @@ export const routineRunHistory = {
     const cutoff = cutoffFromDays(policy)
     if (!cutoff) return 0
     const removed = routineStore.removeRunsStartedBefore(cutoff)
-    dropConversations(removed)
+    await dropConversations(removed)
     return removed.length
   },
 }
