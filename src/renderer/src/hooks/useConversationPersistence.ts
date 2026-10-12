@@ -16,12 +16,52 @@ import type { Conversation } from '../../../shared/types/conversation'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import { usePendingApprovalStore } from '../stores/pendingApprovalStore'
 import { conversationKeyOf } from '../../../shared/conversation-key'
-import { MAX_CACHED_CONVERSATIONS } from './useConversationEngine'
+import { MAX_CACHED_CONVERSATIONS, TERMINAL_EVICTABLE_STATUSES } from './useConversationEngine'
 
 // ── Hook ──
 
 /** 流式会话的粗粒度检查点窗口：流式期每个会话至多每 60s 落一次库。 */
 const STREAMING_CHECKPOINT_MS = 60_000
+
+/** The eviction sweep step, extracted so tests can drive the REAL loop (the
+ *  10s interval inside the hook effect is unreachable from vitest, and the
+ *  previous wiring pin was a source-string scan — review 2026-10-12 低3).
+ *
+ *  The load-bearing part is the RE-VERIFY after `forget`: the candidate table
+ *  and the gate above it were evaluated BEFORE the await, and `forget` waits
+ *  on an in-flight SQLite write — tens to hundreds of ms across candidates —
+ *  during which the world can move. Disposing a conversation the user just
+ *  opened kills the status light and the event stream under their eyes
+ *  (review 2026-10-12 中1, path 1); disposing one whose status flipped live
+ *  inside the window kills a streaming turn (path 2). Skipping after the
+ *  forget has already dropped the save baseline — the next real save goes
+ *  full instead of incremental, which is the cheap and safe direction. */
+export interface MirrorEvictionIo {
+  /** Still past the cap? Re-read per candidate — every evict shrinks the map. */
+  overCap: () => boolean
+  /** The hook's verified-save gate; re-checked after the await too, so a
+   *  mutation landing mid-window keeps the engine. */
+  isEvictable: (id: string) => boolean
+  forget: (id: string) => Promise<void>
+  isActive: (id: string) => boolean
+  /** Reads the engine handle's LIVE mirrored status; undefined = the engine
+   *  already left the map mid-window (deleted, or disposed elsewhere). */
+  statusOf: (id: string) => AgentStatus['status'] | undefined
+  evict: (id: string) => void
+}
+
+export async function evictMirrorCandidates(candidates: string[], io: MirrorEvictionIo): Promise<void> {
+  for (const id of candidates) {
+    if (!io.overCap()) break
+    if (!io.isEvictable(id)) continue
+    await io.forget(id)
+    if (io.isActive(id)) continue
+    const status = io.statusOf(id)
+    if (!status || !TERMINAL_EVICTABLE_STATUSES.includes(status)) continue
+    if (!io.isEvictable(id)) continue
+    io.evict(id)
+  }
+}
 
 interface UseConversationPersistenceOptions {
   autoCleanup?: boolean
@@ -240,15 +280,19 @@ export function useConversationPersistence(options: UseConversationPersistenceOp
         // save baseline (its fingerprints ≈ the messages' own JSON) — the
         // baseline is re-seeded from hydration if the conversation returns.
         // Runs AFTER the save loop, so entries verified this very tick are
-        // immediately eligible.
+        // immediately eligible. The loop body (and the post-forget re-verify
+        // that keeps an activation or a live turn from being disposed) lives
+        // in evictMirrorCandidates — exported so tests drive the real thing.
         if (!listEvictionCandidates || !evictEngine) return
         if (enginesRef.current.size <= MAX_CACHED_CONVERSATIONS) return
-        for (const id of listEvictionCandidates()) {
-          if (enginesRef.current.size <= MAX_CACHED_CONVERSATIONS) break
-          if (!isEvictable(id)) continue
-          await saveQueueRef.current.forget(id)
-          evictEngine(id)
-        }
+        await evictMirrorCandidates(listEvictionCandidates(), {
+          overCap: () => enginesRef.current.size > MAX_CACHED_CONVERSATIONS,
+          isEvictable,
+          forget: id => saveQueueRef.current.forget(id),
+          isActive: id => activeEngineIdRef.current === id,
+          statusOf: id => enginesRef.current.get(id)?.agentStatus.status,
+          evict: evictEngine
+        })
       })()
     }, 10000)
     return () => clearInterval(timer)

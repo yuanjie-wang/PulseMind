@@ -168,7 +168,7 @@ export function foldConvLight(
 // verified-save ledger has not covered.
 export const MAX_CACHED_CONVERSATIONS = 20
 
-const TERMINAL_EVICTABLE_STATUSES: AgentStatus['status'][] = ['idle', 'completed', 'error']
+export const TERMINAL_EVICTABLE_STATUSES: AgentStatus['status'][] = ['idle', 'completed', 'error']
 
 /** Pure candidate policy (tests drive this directly): non-active conversations
  *  whose mirrored status can no longer move, oldest-touch first. Live statuses
