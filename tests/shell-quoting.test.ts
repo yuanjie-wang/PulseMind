@@ -267,7 +267,9 @@ describe('find 的注入面（read 档 = 永不审批，参数即命令串）', 
       expect(existsSync(marker)).toBe(false)
       // Non-vacuity: the pre-fix raw interpolation really did split commands.
       const oldCmd = `find '${dir}' -maxdepth 5 ; ${NEEDLE} ${marker} -not -path '*/node_modules/*' 2>/dev/null | head -100`
-      spawnSync('/bin/sh', ['-c', oldCmd], { encoding: 'utf-8' })
+      // cwd: dir — touch 的多余操作数（-not/-path）会在进程 cwd 落成空文件，
+      // 不指临时目录就漏进仓库根，每次跑套件都 resurrect（2026-10-13 实测）。
+      spawnSync('/bin/sh', ['-c', oldCmd], { encoding: 'utf-8', cwd: dir })
       expect(existsSync(marker)).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
