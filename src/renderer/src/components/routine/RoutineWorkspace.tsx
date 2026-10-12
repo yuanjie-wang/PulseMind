@@ -6,7 +6,7 @@
 // and the composer underneath lets the user continue the conversation after
 // the automated prompt — same transcript/composer components as the main chat.
 
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { App as AntdApp, Button, Dropdown, Progress, Spin, Tooltip } from 'antd'
 import {
   ArrowLeftOutlined,
@@ -30,6 +30,7 @@ import { retentionOptions } from '../settings/retention-options'
 import { useHostedAgentSession } from '../../hooks/useHostedAgentSession'
 import { TranscriptView } from '../chat/TranscriptView'
 import { InputArea } from '../chat/InputArea'
+import { projectContextUsed } from '../chat/ContextRing'
 import { describeRelativeTimeText } from '../../utils/relative-time'
 import { PANE_ROW_STYLES } from './pane-styles'
 import { stopRunConfirm, stopRoutineRun } from './stop-run'
@@ -496,6 +497,19 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
     return () => { alive = false }
   }, [convId])
 
+  // The composer's context ring (chat parity): usage projected past the last
+  // compaction pass, against the effective model's window — the conversation's
+  // own profile choice (the runner seeds it at session creation), falling back
+  // to the global default / any profile / 128K, the same chain App.tsx uses
+  // for the main chat.
+  const contextUsed = useMemo(
+    () => projectContextUsed(session.messages, session.lastCompaction),
+    [session.messages, session.lastCompaction],
+  )
+  const effectiveProfileId = convProfileId ?? settings.activeProfileId
+  const contextLength = settings.profiles.find((p) => p.id === effectiveProfileId)?.contextLength
+    ?? settings.profiles[0]?.contextLength ?? 128_000
+
   const emptyHint = session.restoring
     ? ''
     : unattended && session.messages.length === 0
@@ -551,6 +565,9 @@ function RunTranscript({ convId, routine, unattended }: RunTranscriptProps): Rea
               features={{ modelPicker: true, authorization: true }}
               approvalMode={session.approvalMode}
               onChangeApprovalMode={session.setApprovalMode}
+              contextUsed={contextUsed}
+              contextLength={contextLength}
+              lastCompaction={session.lastCompaction}
             />
           </div>
         )

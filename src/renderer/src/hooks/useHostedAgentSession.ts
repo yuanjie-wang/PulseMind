@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentStatus, ContentBlock } from '../types/agent'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 import type { ExpertProfile } from '../../../shared/types/expert'
-import type { AgentEventData } from '../../../shared/agent-protocol'
+import type { AgentEventData, CompactionEvent } from '../../../shared/agent-protocol'
 import type { SessionState } from '../../../shared/agent-session/mirror'
 import { applySessionEvent, freshSessionState, isActiveStatus, seedSessionState } from '../../../shared/agent-session/mirror'
 import { agentMessagesToConversation, storedMessagesToAgentMessages } from '../utils/message-utils'
@@ -57,6 +57,12 @@ export interface HostedAgentSession {
   isBusy: boolean
   /** True until the first restore (live snapshot or stored history) landed. */
   restoring: boolean
+  /** The session's last compaction pass, folded from live `compaction` events —
+   *  drives the context ring's post-compaction projection and the composer's
+   *  已压缩 chip. Live events only, exactly like the main chat's mirror: the
+   *  re-attach snapshot does not carry it, so it reads null after a restart
+   *  until the session compacts again. */
+  lastCompaction: CompactionEvent | null
   /** Send a user message; `annotation` is appended verbatim (callers pass
    *  context like the routine assistant's live-form block). */
   send: (text: string, annotation?: string) => void
@@ -80,6 +86,7 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ status: 'idle' })
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([])
+  const [lastCompaction, setLastCompaction] = useState<CompactionEvent | null>(null)
   // Nothing to restore without a conversation (fixed per keyed mount).
   const [restoring, setRestoring] = useState(convId != null)
 
@@ -90,7 +97,7 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
   // cadence the engine leg already uses. Cold paths (restore, send's
   // catch-up, the error setter) call `sync` directly — immediate, and it
   // updates the ledger the scheduled flush compares against.
-  const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[] }>({})
+  const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[]; lastCompaction?: CompactionEvent | null }>({})
   const pendingSyncRef = useRef<SessionState | null>(null)
   const syncTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const lastSyncAtRef = useRef(0)
@@ -108,6 +115,10 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
     if (state.streamingBlocks !== last.streamingBlocks) {
       last.streamingBlocks = state.streamingBlocks
       setStreamingBlocks([...state.streamingBlocks])
+    }
+    if (state.lastCompaction !== last.lastCompaction) {
+      last.lastCompaction = state.lastCompaction
+      setLastCompaction(state.lastCompaction)
     }
   }, [])
 
@@ -249,6 +260,7 @@ export function useHostedAgentSession({ convId, title, createOptions, resetKey }
     streamingBlocks,
     isBusy: isActiveStatus(agentStatus),
     restoring,
+    lastCompaction,
     send,
     cancel: useCallback(() => { if (convId) void window.electronAPI.agentSessionCancel(convId) }, [convId]),
     engineCall,
