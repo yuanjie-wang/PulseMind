@@ -151,6 +151,17 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       if (/[;|&`$()<>\n\r]/.test(extraArgs)) {
         return 'echo "Error: extra_args contains shell metacharacters — pass plain find arguments only (e.g. -o -name \\"*.env*\\")"'
       }
+      // 元字符黑名单挡不住 find 自己的执行谓词（review_20261011 高1）：`-exec
+      // sh {} +` 的 `+` 终结符不含任何元字符，read 档照样免审批跑命令。按
+      // token 拒整个写副作用家族；剥前导引号后再判（find 照样把 "-exec" 当
+      // 谓词）。前缀匹配盖住 -execdir/-fprintf 这类变体。
+      const FORBIDDEN_FIND_PREFIXES = ['-exec', '-ok', '-fprint', '-fls', '-delete']
+      const hasForbiddenPredicate = extraArgs
+        .split(/\s+/)
+        .some((tok) => FORBIDDEN_FIND_PREFIXES.some((p) => tok.replace(/^['"]+/, '').startsWith(p)))
+      if (hasForbiddenPredicate) {
+        return 'echo "Error: extra_args contains forbidden find predicates (-exec/-execdir/-ok/-fprint/-fls/-delete execute or write — not allowed in a read-tier search)"'
+      }
       const nameExpr = pattern ? `-iname ${shSingleQuote(pattern)}` : ''
       const cond = [typeExpr, nameExpr, extraArgs].filter(Boolean).join(' ')
       return `find ${shSingleQuote(searchDir)} -maxdepth ${Math.min(maxDepth, 10)} ${cond} -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | head -100`

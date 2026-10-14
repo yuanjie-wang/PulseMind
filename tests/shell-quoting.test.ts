@@ -281,6 +281,30 @@ describe('find 的注入面（read 档 = 永不审批，参数即命令串）', 
     expect(cmd).toContain(`-o -name "*.env*"`)
     expect(cmd).toContain('-maxdepth')
   })
+
+  // review_20261011 高1：`+` 终结符的 -exec 形态不含任何元字符，黑名单挡不住
+  // ——read 档零审批跑任意命令。执行谓词家族按 token 整族拒绝。
+  it.each([
+    ["-name '*.sh' -exec sh {} +", '-exec sh {} +'],
+    ['-name "*.sh" -execdir sh {} +', '-execdir'],
+    ['-mtime -7 -ok rm {} +', '-ok rm'],
+    ['-name x -fprint /tmp/out', '-fprint'],
+    ['-name x -fprintf /tmp/out "%p"', '-fprintf'],
+    ['-name x -fls /tmp/out', '-fls'],
+    ['-name "*.log" -delete', '-delete'],
+    ['-name x "-exec" sh {} +', '引号形态 "-exec"'],
+  ])('写副作用谓词被拒：%s', (extraArgs) => {
+    const cmd = buildCommandFromSkillInput('find', { search_dir: '/w', extra_args: extraArgs }, 'darwin', null)
+    expect(cmd.startsWith('echo "Error:')).toBe(true)
+    expect(cmd).not.toContain('sh {}')
+    expect(cmd).not.toContain('-fprint /tmp/out')
+  })
+
+  it('普通谓词不受谓词拒绝误伤（-mtime/-size/-empty/-perm 全通过）', () => {
+    const cmd = buildCommandFromSkillInput('find', { search_dir: '/w', extra_args: '-mtime -7 -size +1k -empty -perm 644' }, 'darwin', null)
+    expect(cmd).not.toContain('Error:')
+    expect(cmd).toContain('-mtime -7 -size +1k -empty -perm 644')
+  })
 })
 
 describe('search 的 stderr 通道与默认目录', () => {
