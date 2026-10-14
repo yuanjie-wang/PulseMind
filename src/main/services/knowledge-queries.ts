@@ -41,7 +41,7 @@ import {
   moveKnowledgeFileToBase,
   moveKnowledgeFilesToBase,
 } from '../storage/knowledge-store'
-import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
+import { ripgrepBinary, parseRgLine, buildRgSearchArgs } from '../utils/ripgrep'
 import { getDb } from '../storage/database'
 import type { KnowledgeFile, KnowledgeBase } from '../../shared/types/knowledge'
 
@@ -328,21 +328,9 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
 
   const terms = query.split(/\s+/).filter(Boolean)
 
-  const buildRgArgs = (dir: string): string[] => {
-    const args = ['-n', '--no-heading', '-i', '--max-columns', '300', '--max-count', '5']
-    if (terms.length > 1) {
-      args.push('-F')
-      for (const t of terms) args.push('-e', t)
-    } else {
-      // -e consumes the query as a VALUE: a model-controlled query like
-      // `--pre=/bin/sh` must never be parsed as a flag (rg runs the --pre
-      // program on every searched file — full_20261011 M10-P0-1, measured).
-      args.push('-F', '-e', query)
-    }
-    args.push('--')
-    args.push(dir)
-    return args
-  }
+  // 共享 builder（utils/ripgrep.ts）：两通道一个形状才不会再次漂移——
+  // M10-P0-1 修 wiki 漏 content 兄弟（review_20261013 高2）的教训。
+  const buildRgArgs = (dir: string): string[] => buildRgSearchArgs(query, dir)
   const buildGrepArgs = (dir: string): string[] => {
     const args = ['-rn', '-i', '--max-count', '5']
     if (terms.length > 1) {

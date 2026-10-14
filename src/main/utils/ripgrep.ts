@@ -11,6 +11,25 @@ export function ripgrepBinary(): string {
   return getBundledRipgrepPath() ?? 'rg'
 }
 
+/** The rg argv for a knowledge content search (wiki + raw store — ONE builder
+ *  so the two channels cannot drift). The query is ALWAYS consumed as a VALUE:
+ *  `-e` puts it where option parsing cannot reach — a bare positional query
+ *  like `--pre=/bin/sh` made rg run a program on every searched file
+ *  (full_20261011 M10-P0-1, measured with the repo's own rg 14.1.1) — and `--`
+ *  terminates option parsing before the search dir. Multi-word queries OR
+ *  their terms fixed-string; a single term is one fixed-string pattern. */
+export function buildRgSearchArgs(
+  query: string,
+  dir: string,
+  base: string[] = ['-n', '--no-heading', '-i', '--max-columns', '300', '--max-count', '5'],
+): string[] {
+  const terms = query.split(/\s+/).filter(Boolean)
+  const args = [...base, '-F']
+  for (const t of terms) args.push('-e', t)
+  args.push('--', dir)
+  return args
+}
+
 export interface RgLine {
   absPath: string
   lineNum: number

@@ -26,7 +26,7 @@ import {
   type KnowledgeBaseRow
 } from './knowledge.db'
 import { getDb } from './database'
-import { ripgrepBinary, parseRgLine } from '../utils/ripgrep'
+import { ripgrepBinary, parseRgLine, buildRgSearchArgs } from '../utils/ripgrep'
 import {
   KNOWLEDGE_SCHEMA_DIR,
   KNOWLEDGE_RAW_DIR,
@@ -503,14 +503,9 @@ async function searchContentViaRipgrep(query: string, rawDir: string, baseId: st
     const terms = query.trim().split(/\s+/).filter(Boolean)
     if (terms.length === 0) { resolve([]); return }
 
-    const args = ['-n', '--no-heading', '-i', '--max-columns', '300', '--max-count', '5']
-    if (terms.length > 1) {
-      args.push('-F')
-      for (const t of terms) args.push('-e', t)
-    } else {
-      args.push(query)
-    }
-    args.push(rawDir)
+    // 共享 builder（review_20261013 高2）：M10-P0-1 修了 wiki 兄弟分支，本
+    // 通道的单词臂曾把 query 裸推进 argv——`--pre=` 形态的旗标注入原样存活。
+    const args = buildRgSearchArgs(query, rawDir)
 
     execFile(ripgrepBinary(), args, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err && !stdout) { resolve([]); return }

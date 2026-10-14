@@ -34,10 +34,17 @@ vi.mock('../src/main/storage', async () => {
   }
 })
 
-vi.mock('../src/main/utils/ripgrep', () => ({
-  ripgrepBinary: () => '/usr/bin/rg',
-  parseRgLine: () => null,
-}))
+vi.mock('../src/main/utils/ripgrep', async (importOriginal) => {
+  // buildRgSearchArgs (review_20261013 高2) rides the same module — the wiki
+  // channel delegates to it now, so the mock must keep the real builder and
+  // stub only the binary/parse pair.
+  const actual = await importOriginal<typeof import('../src/main/utils/ripgrep')>()
+  return {
+    ...actual,
+    ripgrepBinary: () => '/usr/bin/rg',
+    parseRgLine: () => null,
+  }
+})
 
 // The service pulls ~30 names off the store; only wikiFtsCount matters here
 // (0 → the local FTS wrapper short-circuits → the rg fallback runs). A loop
