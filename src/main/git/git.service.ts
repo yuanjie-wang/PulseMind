@@ -290,7 +290,21 @@ export async function invokeGitAction(action: GitAction): Promise<GitResult> {
         // 却能指到 workspace 之外、仓库之内的文件——那正是本门要保护的未提交
         // 修改。commit 的 files（git add 的对象）同判。与 cwd 一样用词法 +
         // realpath 两个拼写，pathspec 指向尚不存在的文件时按词法坐标判定。
+        // pathspec magic 是 git 自己的解释维、Node resolve 不翻它
+        // （review_20261011 高3）：`:(top)x`/`:/x` 在词法坐标里是 cwd 内的普通
+        // 文件名、过门，git 却把它锚到仓库根——workspace 外的未提交修改被
+        // 实际丢弃。全部魔法拼写共享 ':' 前缀，先拒前缀（拒掉后 git 的 pathspec
+        // 语义只剩字面与通配，与上面的词法/realpath 坐标重新对齐）。
         for (const f of action.files ?? []) {
+          if (f.startsWith(':')) {
+            return {
+              ok: false,
+              error: {
+                code: 1,
+                message: `git ${action.action} blocked by sandbox: pathspec magic ("${f}") is not allowed — pass plain paths relative to the workspace`,
+              },
+            }
+          }
           const lexical = resolve(action.cwd, f)
           const real = await realpath(lexical).catch(() => lexical)
           if (!roots.some((r) => isSubpath(r, lexical)) && !roots.some((r) => isSubpath(r, real))) {

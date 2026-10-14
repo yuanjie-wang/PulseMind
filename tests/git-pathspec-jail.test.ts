@@ -52,6 +52,39 @@ describe('invokeGitAction — pathspec rides the same jail as cwd (M8-F1)', () =
     expect(r.ok).toBe(false)
   })
 
+  // review_20261011 高3: pathspec magic is GIT's own interpretation layer —
+  // `resolve(cwd, ':(top)user-work.js')` sees an in-workspace filename and
+  // passes the gate, git then anchors `:(top)` at the REPO ROOT (outside the
+  // workspace) and actually discards those changes. Every magic spelling
+  // shares the leading ':', so the gate refuses the prefix outright.
+  it.each([
+    [':(top)user-work.js', 'long-form top magic'],
+    [':/user-work.js', 'short-form same-as-top magic'],
+    [':(exclude)in-ws.js', 'exclude magic'],
+    [':!in-ws.js', 'short-form exclude magic'],
+  ])('pathspec magic is refused at the gate (%s — %s)', async (files) => {
+    const r = await invokeGitAction({ action: 'restore', cwd: workspaceDir, files: [files], confirm: true } as never)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    // refused at the GATE (the sandbox message) — git itself never ran
+    expect(r.error.message).toContain('blocked by sandbox')
+    expect(r.error.message).toContain('pathspec magic')
+  })
+
+  it('commit with top magic is refused too', async () => {
+    const r = await invokeGitAction({ action: 'commit', cwd: workspaceDir, message: 'x', files: [':(top)user-work.js'] } as never)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error.message).toContain('pathspec magic')
+  })
+
+  it('a colon-free relative path is untouched by the magic refusal (negative control)', async () => {
+    const r = await invokeGitAction({ action: 'restore', cwd: workspaceDir, files: ['in-ws.js'], confirm: true } as never)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error.message).not.toContain('blocked by sandbox')
+  })
+
   it('a pathspec that stays inside the workspace passes the gate (reaches git itself)', async () => {
     // No repo here on purpose: the gate must let it THROUGH (the failure is
     // git's own "not a repository", never the sandbox message).
