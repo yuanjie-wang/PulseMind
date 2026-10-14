@@ -299,6 +299,52 @@ const outside = await page.evaluate(() => {
 })
 check('a card with headroom keeps the toolbar outside', outside)
 
+console.log('── 悬停中滚动：live 重测翻转（review_20261011 中5 的回归钉） ──')
+// The occlusion decision must track scrolling UNDER A STATIONARY POINTER
+// (the wheel over the card fires no mouseenter). The scroll event's target
+// is the scroller — an ANCESTOR of the card; the old gate tested the reverse
+// direction and admitted ≈ nothing, so this whole sequence measured once at
+// hover and went stale. The probe drives: hover with headroom → scroll near
+// the edge (flip in) → scroll back (flip out), pointer never moves.
+await page.evaluate(() => { document.getElementById('clip-scroller').scrollTop = 0 })
+await page.waitForTimeout(100)
+// clipBox was captured at scrollTop=110 — re-read at the reset position, or
+// the hover lands 110px above the card and the section proves nothing.
+const restBox = await page.locator(`${caseSel('clipped')} iframe`).boundingBox()
+await page.mouse.move(restBox.x + restBox.width / 2, restBox.y + restBox.height / 2)
+await page.waitForTimeout(350)
+const liveBefore = await page.evaluate(() => {
+  const root = document.querySelector('[data-case=clipped] .pm-html-card')
+  const t = root.querySelector('.pm-html-card-toolbar').getBoundingClientRect()
+  const c = root.getBoundingClientRect()
+  return { flipped: root.className.includes('pm-html-card-flip'), outside: t.bottom <= c.top + 2 }
+})
+check('hover with headroom starts outside (no flip)', !liveBefore.flipped && liveBefore.outside, `class-flip=${liveBefore.flipped}`)
+await page.evaluate(() => { document.getElementById('clip-scroller').scrollTop = 90 })
+await page.waitForTimeout(350)
+const liveAfter = await page.evaluate(() => {
+  const root = document.querySelector('[data-case=clipped] .pm-html-card')
+  const t = root.querySelector('.pm-html-card-toolbar').getBoundingClientRect()
+  const c = root.getBoundingClientRect()
+  const stillHovered = document.elementFromPoint(c.left + c.width / 2, Math.min(c.top + c.height / 2, window.innerHeight - 1))
+  return {
+    flipped: root.className.includes('pm-html-card-flip'),
+    inside: t.top >= c.top,
+    pointerStillOnCard: !!stillHovered && !!stillHovered.closest('[data-case=clipped] .pm-html-card'),
+  }
+})
+check('scrolling under the stationary pointer flips the chrome inside', liveAfter.flipped && liveAfter.inside, `flip=${liveAfter.flipped} inside=${liveAfter.inside}`)
+check('the pointer stayed on the card through the scroll (mouseleave would fake a pass)', liveAfter.pointerStillOnCard)
+await page.evaluate(() => { document.getElementById('clip-scroller').scrollTop = 0 })
+await page.waitForTimeout(350)
+const liveBack = await page.evaluate(() => {
+  const root = document.querySelector('[data-case=clipped] .pm-html-card')
+  const t = root.querySelector('.pm-html-card-toolbar').getBoundingClientRect()
+  const c = root.getBoundingClientRect()
+  return { flipped: root.className.includes('pm-html-card-flip'), outside: t.bottom <= c.top + 2 }
+})
+check('scrolling back restores the outside placement (the gate admits both directions)', !liveBack.flipped && liveBack.outside)
+
 await browser.close()
 const failed = results.filter((r) => !r.pass)
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`)

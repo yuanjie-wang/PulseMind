@@ -267,3 +267,27 @@ describe('artifact-card sandbox — one shared constant, panel actions trusted-o
     expect(read('../src/extension/ui/trusted.ts')).toContain('isTrusted === true')
   })
 })
+
+describe('the scroll re-measure gate admits ancestors, not descendants (review_20261011 中5)', () => {
+  const read = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf-8')
+
+  it('both cards pass the scroller (an ancestor) and admit nothing else', () => {
+    for (const [name, rel] of [
+      ['desktop', '../src/renderer/src/components/chat/HtmlArtifactCard.tsx'],
+      ['extension', '../src/extension/ui/HtmlArtifactCard.tsx'],
+    ] as const) {
+      const src = read(rel)
+      expect(src, name).toMatch(/t === root \|\| t\.contains\(root\)/)
+      // The reversed gate (`root.contains(t)` — descendants) admitted ≈ the
+      // empty set: iframe scrolls never cross documents, so the live
+      // re-measure never fired while the tests stayed green.
+      expect(src, name).not.toMatch(/root\.contains\(t\)/)
+      // And the listener rides the card's OWN ROOT NODE — scroll events are
+      // non-composed; a window capture listener never sees a scroller inside
+      // the panel's ShadowRoot (review_20261011 中5, measured). The mirror
+      // must keep the two cards on the same line.
+      expect(src, name).toMatch(/rootNode\.addEventListener\('scroll', onScroll, true\)/)
+      expect(src, name).not.toMatch(/window\.addEventListener\('scroll'/)
+    }
+  })
+})

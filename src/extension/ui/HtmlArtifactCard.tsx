@@ -112,19 +112,33 @@ export function HtmlArtifactCard({ code, streaming }: { code: string; streaming:
       const t = e.target
       if (!(t instanceof Node)) return
       const root = rootRef.current
-      if (t !== root && !(root && root.contains(t))) return
+      // The scroll TARGET is the scroller itself — an ancestor of the card.
+      // The old gate tested the reverse direction (root ⊇ target, i.e. only
+      // descendants) and nothing in the card's subtree scrolls the parent
+      // document (iframe scrolls don't cross documents) — it admitted ≈ the
+      // empty set and silently disabled the live re-measure
+      // (review_20261011 中5). Pass root or any ancestor.
+      if (!root || !(t === root || t.contains(root))) return
       if (scrollFlipRafRef.current !== null) return
       scrollFlipRafRef.current = window.requestAnimationFrame(() => {
         scrollFlipRafRef.current = null
         measureChromeFlip()
       })
     }
-    window.addEventListener('scroll', onScroll, true)
+    // The listener rides the card's OWN ROOT NODE — the panel's ShadowRoot
+    // (the desktop mirror's getRootNode() is the document there). Scroll
+    // events are non-composed and never cross a shadow boundary, so a window
+    // capture listener never sees the transcript scroller inside this shadow
+    // tree — measured, only a ShadowRoot-capture listener receives it. Same
+    // code both sides keeps the mirror honest.
+    const rootNode = rootRef.current?.getRootNode()
+    if (!rootNode) return
+    rootNode.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', measureChromeFlip)
     return () => {
       if (scrollFlipRafRef.current !== null) window.cancelAnimationFrame(scrollFlipRafRef.current)
       scrollFlipRafRef.current = null
-      window.removeEventListener('scroll', onScroll, true)
+      rootNode.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', measureChromeFlip)
     }
   }, [chromeOn, measureChromeFlip])

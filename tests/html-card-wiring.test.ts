@@ -78,10 +78,21 @@ describe('html artifact card wiring', () => {
     // The capture listener now carries the perf bounds (full_20261011 M1-P1-1):
     // a TARGET gate (a page/panel scroller's events must not force layout) and
     // rAF coalescing (streaming auto-scroll fires per frame).
-    expect(card).toContain("window.addEventListener('scroll', onScroll, true)")
+    expect(card).toContain('getRootNode()')
+    expect(card).toContain('rootNode.addEventListener')
     expect(card).toContain("window.addEventListener('resize', measureChromeFlip)")
     expect(card).toMatch(/if \(!chromeOn\) return/)
-    expect(card).toMatch(/root\.contains\(t\)/)
+    // The TARGET gate admits root or its ANCESTORS (the scroller is the
+    // target; a descendant gate admitted ≈ the empty set and killed the live
+    // re-measure — review_20261011 中5, the old regex pinned the bug).
+    expect(card).toMatch(/t === root \|\| t\.contains\(root\)/)
+    expect(card).not.toMatch(/root\.contains\(t\)/)
+    // The listener rides the card's OWN ROOT NODE (document here, the panel's
+    // ShadowRoot in the extension mirror): scroll events are non-composed and
+    // never cross a shadow boundary — a window capture listener never sees
+    // the panel transcript's scroller (review_20261011 中5, measured).
+    expect(card).toMatch(/rootNode\.addEventListener\('scroll', onScroll, true\)/)
+    expect(card).not.toMatch(/window\.addEventListener\('scroll'/)
     expect(card).toContain('requestAnimationFrame')
   })
 

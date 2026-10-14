@@ -631,6 +631,72 @@ const heightSettled = await page
 check('量高回传生效：600px 内容把帧撑离默认 280（postMessage 链路）', heightSettled && artifact.height > 300, `h=${artifact.height}, settled=${heightSettled}`)
 check('落定渲染没有生成中角标', !artifact.badge)
 
+// ── 悬停中滚动：live 重测翻转（review_20261011 中5 的面板回归钉）──────────
+// 面板卡是桌面卡的手工镜像，滚动门是同一行代码。真鼠标悬停后指针不动、
+// 程序化滚动一个注入的滚动祖先（与真实转写滚动器同形：卡片在滚动器内，
+// scroll 事件沿捕获路径跨 shadow 到 window）→ chrome 翻进内侧；滚回原位
+// 翻回外侧。旧门判的是后代方向、对祖先滚动器全盲——这个序列全程不翻转。
+await page.evaluate(() => {
+  const shadow = window.__panels()[6]
+  const card = shadow.querySelector('.pm-html-card')
+  const scroller = document.createElement('div')
+  scroller.className = 'pm-live-scroller'
+  scroller.style.cssText = 'height:340px; overflow-y:auto; border:1px solid #ddd;'
+  const filler = document.createElement('div')
+  filler.style.cssText = 'height:200px; background:#fafafa; color:#666; font:12px system-ui; padding:8px; box-sizing:border-box;'
+  filler.textContent = '上方占位'
+  card.parentNode.insertBefore(scroller, card)
+  scroller.appendChild(filler)
+  scroller.appendChild(card)
+  const tail = document.createElement('div')
+  tail.style.cssText = 'height:260px;'
+  scroller.appendChild(tail)
+  scroller.scrollIntoView({ block: 'center', inline: 'center' })
+})
+const liveBox = await page.locator('#page [data-pulsemind-panel]:nth-child(7) .pm-html-card').boundingBox()
+// 悬停点取卡片顶部下方 80px：三个滚动位置（0 / 190 / 0）下这一点都在卡上，
+// mouseleave 不会中途把 chrome 收走。
+await page.mouse.move(liveBox.x + liveBox.width / 2, liveBox.y + 80)
+await page.waitForTimeout(350)
+const panelLiveBefore = await page.evaluate(() => {
+  const card = window.__panels()[6].querySelector('.pm-html-card')
+  const t = card.querySelector('.pm-html-card-toolbar').getBoundingClientRect()
+  return { flipped: card.className.includes('pm-html-card-flip'), outside: t.bottom <= card.getBoundingClientRect().top + 2 }
+})
+check('面板卡：有富余时悬停工具栏在外侧（不翻）', !panelLiveBefore.flipped && panelLiveBefore.outside, `flip=${panelLiveBefore.flipped}`)
+await page.evaluate(() => {
+  const s = window.__panels()[6].querySelector('.pm-live-scroller')
+  s.scrollTop = 190
+})
+await page.waitForTimeout(350)
+const panelLiveAfter = await page.evaluate(() => {
+  const card = window.__panels()[6].querySelector('.pm-html-card')
+  const t = card.querySelector('.pm-html-card-toolbar').getBoundingClientRect()
+  const c = card.getBoundingClientRect()
+  return {
+    flipped: card.className.includes('pm-html-card-flip'),
+    inside: t.top >= c.top,
+    chromeAlive: getComputedStyle(card.querySelector('.pm-html-card-float')).opacity === '1',
+  }
+})
+check('面板卡：悬停中滚动把 chrome 翻进内侧（live 重测有牙齿）', panelLiveAfter.flipped && panelLiveAfter.inside, `flip=${panelLiveAfter.flipped} inside=${panelLiveAfter.inside}`)
+check('面板卡：滚动后指针仍在卡上（mouseleave 没收走 chrome）', panelLiveAfter.chromeAlive)
+await page.evaluate(() => {
+  const s = window.__panels()[6].querySelector('.pm-live-scroller')
+  s.scrollTop = 0
+})
+await page.waitForTimeout(350)
+const panelLiveBack = await page.evaluate(() => window.__panels()[6].querySelector('.pm-html-card').className.includes('pm-html-card-flip'))
+check('面板卡：滚回原位翻回外侧（门两个方向都放行）', !panelLiveBack)
+// 还原 DOM——后面的 fullPage 截图要看到的是静止形态
+await page.evaluate(() => {
+  const shadow = window.__panels()[6]
+  const scroller = shadow.querySelector('.pm-live-scroller')
+  const card = scroller.querySelector('.pm-html-card')
+  scroller.parentNode.insertBefore(card, scroller)
+  scroller.remove()
+})
+
 // 操作行的可见性（镜像 SegmentBlock 的 actionsVisible，M2.9）：同一轮里只有
 // 最终输出带一行 —— 工具前的叙述（带工具卡的那条）没有，进行中的尾条也没有；
 // 历史重放则是每轮的最终答案各一行，而不是整条流水线每条都挂一个。
