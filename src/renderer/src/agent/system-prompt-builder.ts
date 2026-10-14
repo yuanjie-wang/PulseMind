@@ -61,7 +61,7 @@ export interface BuildSystemPromptResult {
 }
 
 export async function buildSystemPrompt(params: BuildSystemPromptParams): Promise<BuildSystemPromptResult> {
-  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols, continuationNudge } = params
+  const { opts, spawnSystemPrompt, spawnSystemPromptAppendix, messages, plan, summon, toolProtocols, continuationNudge, contextUsage } = params
 
   if (spawnSystemPrompt) {
     const base = spawnSystemPromptAppendix
@@ -92,6 +92,10 @@ export async function buildSystemPrompt(params: BuildSystemPromptParams): Promis
     plan,
     summon,
     continuationNudge,
+    // 上下文刻度的转发（review_20261011 高4）：生产端（AgentEngine）与消费端
+    // （buildStateBlock 的 ## Context Window 节）都在，唯独这一跳漏写——
+    // 功能自落库即死，模型对窗口占用全盲。
+    contextUsage,
   })
   return { systemPrompt, stateBlock }
 }

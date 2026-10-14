@@ -62,3 +62,32 @@ describe('wiring 扫描：引擎传数、节在钟前、续跑指令契约不动
     expect(src).toContain('if (contextUsage) sections.push')
   })
 })
+
+// 端到端真调用（review_20261011 高4 的漏网原因正是「三个 wiring 断言全是
+// readFileSync 源码扫描、没有任何用例执行 buildSystemPrompt」——生产端在
+// 传、消费端在等，顶层解构与 buildStateBlock 转发两跳漏写，类型 optional
+// 无声，源码扫描全绿而功能落库即死）。
+describe('buildSystemPrompt 端到端：contextUsage 真转发到 state block', () => {
+  it('传入 contextUsage → state block 含 ## Context Window 节，且在钟之前', async () => {
+    const { buildSystemPrompt } = await import('../src/renderer/src/agent/system-prompt-builder')
+    const { systemPrompt, stateBlock } = await buildSystemPrompt({
+      opts: {},
+      messages: [],
+      plan: null,
+      contextUsage: { tokens: 86_800, window: 140_000 },
+    })
+    expect(systemPrompt.length).toBeGreaterThan(0)
+    expect(stateBlock).toContain('## Context Window')
+    expect(stateBlock).toContain('~62% used (~87K / 140K tokens)')
+    // 节序契约：Context Window 在 Current Date（钟，恒最后）之前
+    expect(stateBlock.indexOf('## Context Window')).toBeLessThan(stateBlock.indexOf('## Current Date'))
+    expect(stateBlock.trimEnd().endsWith('</session-state>')).toBe(true)
+  })
+
+  it('缺省负控：不传 contextUsage → 不出节（真调用，非扫描）', async () => {
+    const { buildSystemPrompt } = await import('../src/renderer/src/agent/system-prompt-builder')
+    const { stateBlock } = await buildSystemPrompt({ opts: {}, messages: [], plan: null })
+    expect(stateBlock).not.toContain('## Context Window')
+    expect(stateBlock).toContain('## Current Date')
+  })
+})
