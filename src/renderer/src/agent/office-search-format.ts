@@ -33,6 +33,9 @@ export function formatOfficeSearchResult(result: OfficeSearchResult): string {
 
   if (hits.length === 0) {
     parts.push('无命中——换更短的关键词、开 regex（query 按正则解释），或用 office_read/office_inspect 确认结构后再找。')
+    // 预算/格数帽在首个命中前中止时，scanNote 是「这只是部分扫描」的唯一
+    // 信号——零命中分支提前返回也要带上，否则部分覆盖被渲染成诚实无命中。
+    if (d.scanNote) parts.push(d.scanNote)
     return parts.join('\n')
   }
 

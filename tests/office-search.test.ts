@@ -214,3 +214,132 @@ describe('svcSearchOffice — real fixtures', () => {
     }
   })
 })
+
+// review_20261013 中1: the matcher runs on the MAIN process — a model-generated
+// catastrophic-backtracking regex pinned the event loop with no abort channel
+// (window + IPC + every session frozen, no log line). The walk now carries a
+// total time budget and bails into scanNote with the partial result. The clock
+// is injected, so the trip is deterministic: the first call reads the base
+// time, every later call is past the deadline.
+describe('svcSearchOffice — match-time budget bails into scanNote (三格式同一出口)', () => {
+  it('docx/xlsx/pptx stop early and report partial coverage when the budget trips', async () => {
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const prevHome = process.env.HOME
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-office-budget-'))
+    process.env.HOME = fixture
+    const dir = path.join(fixture, 'docs')
+    fs.mkdirSync(dir)
+
+    const paragraphs = Array.from({ length: 5 }, (_, i) => `<w:p><w:r><w:t>预算段落${i}</w:t></w:r></w:p>`).join('')
+    const docxZip = new AdmZip()
+    docxZip.addFile(
+      'word/document.xml',
+      Buffer.from(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paragraphs}</w:body></w:document>`,
+        'utf8',
+      ),
+    )
+    const docxPath = path.join(dir, '预算.docx')
+    fs.writeFileSync(docxPath, docxZip.toBuffer())
+
+    const ExcelJS = (await import('exceljs')).default
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('数据')
+    for (let r = 1; r <= 3; r++) ws.addRow(['甲', '乙', '丙'])
+    const xlsxPath = path.join(dir, '预算.xlsx')
+    fs.writeFileSync(xlsxPath, Buffer.from((await wb.xlsx.writeBuffer()) as ArrayBuffer))
+
+    const shape = (id: number) =>
+      `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="文本框 ${id}"/><p:nvPr/></p:nvSpPr><p:txBody><a:p><a:r><a:t>预算形状${id}</a:t></a:r></a:p></p:txBody></p:sp>`
+    const pptxZip = new AdmZip()
+    pptxZip.addFile(
+      'ppt/presentation.xml',
+      Buffer.from(
+        `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>`,
+        'utf8',
+      ),
+    )
+    pptxZip.addFile(
+      'ppt/_rels/presentation.xml.rels',
+      Buffer.from(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="slides/slide1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"/></Relationships>`,
+        'utf8',
+      ),
+    )
+    pptxZip.addFile(
+      'ppt/slides/slide1.xml',
+      Buffer.from(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>${shape(5)}${shape(6)}</p:spTree></p:cSld></p:sld>`,
+        'utf8',
+      ),
+    )
+    const pptxPath = path.join(dir, '预算.pptx')
+    fs.writeFileSync(pptxPath, pptxZip.toBuffer())
+
+    try {
+      const { svcSearchOffice } = await import('../src/main/services/office-search')
+      // First now() call mints the deadline; every later call is past it, so
+      // the FIRST walked item trips the budget in each format's loop. Fresh
+      // clock per call — a shared counter would shift the next call's base.
+      const tripped = () => {
+        let calls = 0
+        return { budgetMs: 1_000, checkEvery: 1, now: () => (calls++ === 0 ? 0 : 10_000) }
+      }
+
+      const docx = await svcSearchOffice({ filePath: docxPath, query: '预算段落' }, tripped())
+      expect(docx.success).toBe(true)
+      expect(docx.details.totalMatches).toBe(0) // checked before the first match
+      expect(docx.details.scanNote).toContain('时长预算')
+
+      const xlsx = await svcSearchOffice({ filePath: xlsxPath, query: '甲' }, tripped())
+      expect(xlsx.success).toBe(true)
+      expect(xlsx.details.totalMatches).toBe(0)
+      expect(xlsx.details.scanNote).toContain('时长预算')
+
+      const pptx = await svcSearchOffice({ filePath: pptxPath, query: '预算形状' }, tripped())
+      expect(pptx.success).toBe(true)
+      expect(pptx.details.totalMatches).toBe(0)
+      expect(pptx.details.scanNote).toContain('时长预算')
+
+      // The formatter surfaces the note (the model's only signal it saw a part):
+      const { formatOfficeSearchResult } = await import('../src/renderer/src/agent/office-search-format')
+      expect(formatOfficeSearchResult(docx)).toContain('时长预算')
+    } finally {
+      process.env.HOME = prevHome
+      fs.rmSync(fixture, { recursive: true, force: true })
+    }
+  })
+
+  it('default opts (no injection) scan everything — negative control', async () => {
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const prevHome = process.env.HOME
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-office-budget-'))
+    process.env.HOME = fixture
+    const dir = path.join(fixture, 'docs')
+    fs.mkdirSync(dir)
+    const docxZip = new AdmZip()
+    docxZip.addFile(
+      'word/document.xml',
+      Buffer.from(
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>正常段落</w:t></w:r></w:p></w:body></w:document>`,
+        'utf8',
+      ),
+    )
+    const docxPath = path.join(dir, '正常.docx')
+    fs.writeFileSync(docxPath, docxZip.toBuffer())
+    try {
+      const { svcSearchOffice } = await import('../src/main/services/office-search')
+      const r = await svcSearchOffice({ filePath: docxPath, query: '正常段落' })
+      expect(r.success).toBe(true)
+      expect(r.details.totalMatches).toBe(1)
+      expect(r.details.scanNote).toBeUndefined()
+    } finally {
+      process.env.HOME = prevHome
+      fs.rmSync(fixture, { recursive: true, force: true })
+    }
+  })
+})

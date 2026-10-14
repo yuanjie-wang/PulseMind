@@ -23,6 +23,30 @@ const PREVIEW_CELL_CHARS = 40
 /** Scan bound for pathological sheets — the workbook is already in memory,
  *  this bounds only the walk. */
 const XLSX_MAX_SCAN_CELLS = 2_000_000
+/** Total match-time budget per file (ms), checked every MATCH_TIME_CHECK_EVERY
+ *  items. Matching runs on the MAIN process — a catastrophic-backtracking
+ *  regex (the query is model-generated) pins the event loop with no abort
+ *  channel, freezing window + IPC + every session. The walk bails into
+ *  scanNote with the partial result; one slow test() call still runs to
+ *  completion (V8 has no preemption), so the budget bounds the aggregate.
+ *  `now`/`checkEvery` are test seams — production uses wall time. */
+const MATCH_TIME_BUDGET_MS = 2_000
+const MATCH_TIME_CHECK_EVERY = 256
+
+interface MatchBudget {
+  /** True when the budget is spent; call once per walked item. */
+  spent: () => boolean
+  note: () => string
+}
+
+function makeMatchBudget(budgetMs: number, checkEvery: number, now: () => number): MatchBudget {
+  const deadline = now() + budgetMs
+  let tick = 0
+  return {
+    spent: () => tick++ % checkEvery === 0 && now() > deadline,
+    note: () => `匹配在 ${budgetMs}ms 时长预算处中止——以下为部分结果，收窄 query（或关闭 regex）后重试可扫完剩余`,
+  }
+}
 
 const renderGaps = (text: string): string => text.replace(new RegExp(GAP_CHAR, 'g'), ' ')
 
@@ -74,10 +98,21 @@ function snippetOf(text: string, matcher: Matcher): string {
   return `${start > 0 ? '…' : ''}${body}${end < text.length ? '…' : ''}`
 }
 
-export async function svcSearchOffice(input: OfficeSearchInput): Promise<OfficeSearchResult> {
+export interface OfficeSearchBudgetOpts {
+  /** Total match-time budget in ms (default MATCH_TIME_BUDGET_MS). */
+  budgetMs?: number
+  /** Clock granularity: check the deadline every N walked items (default MATCH_TIME_CHECK_EVERY). */
+  checkEvery?: number
+  /** Wall clock seam (tests). */
+  now?: () => number
+}
+
+export async function svcSearchOffice(input: OfficeSearchInput, opts?: OfficeSearchBudgetOpts): Promise<OfficeSearchResult> {
   const { filePath, query } = input
   if (!filePath) return { success: false, format: 'unknown', summary: 'file_path is required', details: {}, error: 'file_path is required' }
   if (!query) return { success: false, format: 'unknown', summary: 'query is required', details: {}, error: 'query is required' }
+
+  const budget = makeMatchBudget(opts?.budgetMs ?? MATCH_TIME_BUDGET_MS, opts?.checkEvery ?? MATCH_TIME_CHECK_EVERY, opts?.now ?? Date.now)
 
   const built = buildMatcher(input)
   if ('error' in built) {
@@ -132,7 +167,12 @@ export async function svcSearchOffice(input: OfficeSearchInput): Promise<OfficeS
       const model = buildDocumentModel(xml)
       const hits: NonNullable<OfficeSearchResult['details']['hits']> = []
       let totalMatches = 0
+      let timeNote: string | undefined
       for (const p of model.paragraphs) {
+        if (budget.spent()) {
+          timeNote = budget.note()
+          break
+        }
         const text = renderGaps(p.text)
         if (!matcher.matches(text)) continue
         totalMatches++
@@ -140,7 +180,7 @@ export async function svcSearchOffice(input: OfficeSearchInput): Promise<OfficeS
           hits.push({ index: p.index, style: p.style, snippet: snippetOf(text.trim(), matcher) })
         }
       }
-      return envelope('docx', 'Word', hits, totalMatches)
+      return envelope('docx', 'Word', hits, totalMatches, timeNote)
     } catch (err: any) {
       return { success: false, format: 'docx', summary: `解析失败: ${err.message}`, details: {}, error: err.message }
     }
@@ -177,6 +217,10 @@ export async function svcSearchOffice(input: OfficeSearchInput): Promise<OfficeS
           const row = ws.getRow(r)
           let preview: string[] | undefined
           for (let c = 1; c <= ws.columnCount; c++) {
+            if (budget.spent()) {
+              scanNote = budget.note()
+              break outer
+            }
             const cell = row.getCell(c)
             const text = xlsxReadCellText(cell)
             if (!text) continue
@@ -226,12 +270,17 @@ export async function svcSearchOffice(input: OfficeSearchInput): Promise<OfficeS
       }
       const hits: NonNullable<OfficeSearchResult['details']['hits']> = []
       let totalMatches = 0
-      for (let i = 0; i < slideNames.length; i++) {
+      let timeNote: string | undefined
+      outer: for (let i = 0; i < slideNames.length; i++) {
         const index = i + 1
         if (wanted !== null && index !== wanted) continue
         const xml = (zip.readFile(slideNames[i]) as Buffer).toString('utf8')
         const model = buildSlideModel(xml)
         for (const shape of model.shapes) {
+          if (budget.spent()) {
+            timeNote = budget.note()
+            break outer
+          }
           const text = shape.paragraphs.map((p) => renderGaps(p.text)).join('\n')
           if (!matcher.matches(text)) continue
           totalMatches++
@@ -240,7 +289,7 @@ export async function svcSearchOffice(input: OfficeSearchInput): Promise<OfficeS
           }
         }
       }
-      return envelope('pptx', 'PowerPoint', hits, totalMatches)
+      return envelope('pptx', 'PowerPoint', hits, totalMatches, timeNote)
     } catch (err: any) {
       return { success: false, format: 'pptx', summary: `解析失败: ${err.message}`, details: {}, error: err.message }
     }
