@@ -107,6 +107,7 @@
       "out/**/*",
       "!out/probe-*",
       "!**/*.map",
+      "!.codegraph{,/**/*}",
       "!node_modules/fluent-ffmpeg/coverage/**"
     ],
     "extraResources": [
@@ -170,6 +171,7 @@
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "files": [
+        "package.json",
         "!node_modules/exiftool-vendored.pl/**"
       ],
       "extraResources": [
@@ -186,6 +188,7 @@
       "icon": "resources/pulseMind-win.ico",
       "target": "portable",
       "files": [
+        "package.json",
         "!node_modules/exiftool-vendored.pl/**"
       ],
       "extraResources": [
@@ -215,7 +218,7 @@
         }
       ]
     },
-    "afterPack": "scripts/strip-lproj.js",
+    "afterPack": "scripts/after-pack.js",
     "directories": {
       "buildResources": "resources"
     },
