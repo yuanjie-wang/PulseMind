@@ -306,6 +306,40 @@ describe('openaiAdapter.createStreamParser', () => {
     expect(events[3]).toEqual(['complete', 'end_turn', { inputTokens: 40, outputTokens: 5, promptCacheHitTokens: 33 }])
   })
 
+  // The two nested-form cases are load-bearing for opencode zen (measured
+  // 2026-10-24): it sends `prompt_tokens_details.cached_tokens` ONLY — no
+  // top-level `prompt_cache_hit_tokens` — so a single-form read silently
+  // reported 0% cache hit for a whole 410-request task that was actually
+  // serving 83% from cache.
+  it('reads cache hits from the OpenAI-standard nested form (gateway shape) in the finish chunk', () => {
+    const { events, handlers } = record()
+    const p = openaiAdapter.createStreamParser(handlers)
+    p.processChunk(
+      deltaChunk({ content: 'Hi' }, 'stop', {
+        prompt_tokens: 70, completion_tokens: 5,
+        prompt_tokens_details: { audio_tokens: 0, cached_tokens: 60 }
+      }) + 'data: [DONE]\n'
+    )
+    p.flush()
+    expect(events).toEqual([
+      ['start', 0, { type: 'text' }],
+      ['delta', 0, { type: 'text_delta', text: 'Hi' }],
+      ['stop', 0],
+      ['complete', 'end_turn', { inputTokens: 70, outputTokens: 5, promptCacheHitTokens: 60 }],
+    ])
+  })
+
+  it('reads the nested cached form from a deferred usage-only chunk too', () => {
+    const { events, handlers } = record()
+    const p = openaiAdapter.createStreamParser(handlers)
+    p.processChunk(deltaChunk({ content: 'Hi' }))
+    p.processChunk(deltaChunk({}, 'stop'))
+    p.processChunk(usageChunk({ prompt_tokens: 40, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 33 } }))
+    p.flush()
+    expect(events).toHaveLength(4)
+    expect(events[3]).toEqual(['complete', 'end_turn', { inputTokens: 40, outputTokens: 5, promptCacheHitTokens: 33 }])
+  })
+
   it('tool stream: id-keyed blocks, index continuation, partial_json assembly, stop → tool_use', () => {
     const { events, handlers } = record()
     const p = openaiAdapter.createStreamParser(handlers)

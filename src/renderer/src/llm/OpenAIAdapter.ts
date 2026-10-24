@@ -19,13 +19,27 @@ function normalizeFinishReason(reason: string | null): string | null {
   return FINISH_REASON_MAP[reason] || reason
 }
 
-/** OpenAI-shaped usage → the normalized shape. Compatible endpoints (DeepSeek)
- *  report the cache hit count under their own key. */
+/** Cache hit count off an OpenAI-shaped usage object, in BOTH wire forms:
+ *  DeepSeek-compatible endpoints report it top-level (`prompt_cache_hit_tokens`),
+ *  OpenAI-standard gateways nest it (`prompt_tokens_details.cached_tokens` —
+ *  measured on opencode zen 2026-10-24: the top-level key is absent there, so
+ *  a single-form read silently reported 0% cache hit while the gateway was
+ *  actually serving 80%+ from cache for a whole 410-request task). */
+function cacheHitOf(usage: Record<string, unknown> | undefined | null): number | undefined {
+  if (!usage) return undefined
+  const top = usage.prompt_cache_hit_tokens
+  if (typeof top === 'number') return top
+  const details = usage.prompt_tokens_details as Record<string, unknown> | undefined
+  const nested = details?.cached_tokens
+  return typeof nested === 'number' ? nested : undefined
+}
+
+/** OpenAI-shaped usage → the normalized shape. */
 function openAiUsage(usage: Record<string, unknown>): LlmUsage {
   return {
     inputTokens: usage.prompt_tokens as number | undefined,
     outputTokens: usage.completion_tokens as number | undefined,
-    promptCacheHitTokens: usage.prompt_cache_hit_tokens as number | undefined
+    promptCacheHitTokens: cacheHitOf(usage)
   }
 }
 
@@ -42,6 +56,7 @@ function createOpenAIStreamParser(handlers: StreamEventHandlers): StreamParser {
   let nextBlockIndex = 0
   let usageInputTokens = 0
   let usageOutputTokens = 0
+  let usageCacheHitTokens: number | undefined
   let completed = false
   let pendingFinishReason: string | null = null
 
@@ -74,7 +89,8 @@ function createOpenAIStreamParser(handlers: StreamEventHandlers): StreamParser {
         completed = true
         handlers.onStreamComplete(normalizeFinishReason(pendingFinishReason), {
           inputTokens: usageInputTokens,
-          outputTokens: usageOutputTokens
+          outputTokens: usageOutputTokens,
+          promptCacheHitTokens: usageCacheHitTokens
         })
         pendingFinishReason = null
       }
@@ -92,6 +108,7 @@ function createOpenAIStreamParser(handlers: StreamEventHandlers): StreamParser {
     if (parsed.usage) {
       usageInputTokens = parsed.usage.prompt_tokens || 0
       usageOutputTokens = parsed.usage.completion_tokens || 0
+      usageCacheHitTokens = cacheHitOf(parsed.usage)
     }
 
     const choices = parsed.choices
@@ -104,7 +121,7 @@ function createOpenAIStreamParser(handlers: StreamEventHandlers): StreamParser {
           handlers.onStreamComplete(normalizeFinishReason(pendingFinishReason), {
             inputTokens: usageInputTokens,
             outputTokens: usageOutputTokens,
-            promptCacheHitTokens: parsed.usage?.prompt_cache_hit_tokens ?? undefined
+            promptCacheHitTokens: usageCacheHitTokens
           })
           pendingFinishReason = null
         } else if (!completed) {
@@ -113,7 +130,7 @@ function createOpenAIStreamParser(handlers: StreamEventHandlers): StreamParser {
           handlers.onStreamComplete('end_turn', {
             inputTokens: usageInputTokens,
             outputTokens: usageOutputTokens,
-            promptCacheHitTokens: parsed.usage?.prompt_cache_hit_tokens ?? undefined
+            promptCacheHitTokens: usageCacheHitTokens
           })
         }
       }
@@ -208,7 +225,7 @@ function createOpenAIStreamParser(handlers: StreamEventHandlers): StreamParser {
         handlers.onStreamComplete(normalizeFinishReason(finishReason), {
           inputTokens: usageInputTokens,
           outputTokens: usageOutputTokens,
-          promptCacheHitTokens: parsed.usage?.prompt_cache_hit_tokens ?? undefined
+          promptCacheHitTokens: usageCacheHitTokens
         })
       } else {
         // Usage may arrive in a separate chunk — defer onStreamComplete

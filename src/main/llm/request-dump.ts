@@ -124,7 +124,9 @@ function summarizeBody(body: string): string {
 
 /** The usage fields the two wire shapes carry — OpenAI-style prompt/completion
  *  naming, Anthropic's input/output naming. Anything else (model content that
- *  happens to echo a "usage" object) is ignored. */
+ *  happens to echo a "usage" object) is ignored. `cached_tokens` is flattened
+ *  out of OpenAI-standard `prompt_tokens_details` — gateways like opencode zen
+ *  nest the cache hit count there and carry no top-level form at all. */
 const USAGE_KEYS = new Set([
   'prompt_tokens', 'completion_tokens', 'prompt_cache_hit_tokens',
   'input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens',
@@ -139,6 +141,10 @@ function usageFieldsOf(parsed: unknown): Record<string, number> {
   const out: Record<string, number> = {}
   for (const [k, v] of Object.entries(usage as Record<string, unknown>)) {
     if (typeof v === 'number' && v > 0 && USAGE_KEYS.has(k)) out[k] = v
+  }
+  const details = (usage as { prompt_tokens_details?: { cached_tokens?: unknown } }).prompt_tokens_details
+  if (typeof details?.cached_tokens === 'number' && details.cached_tokens > 0) {
+    out.cached_tokens = details.cached_tokens
   }
   return out
 }
@@ -173,7 +179,7 @@ export function summarizeResponseUsage(body: string): string {
   }
   const input = merged.prompt_tokens ?? merged.input_tokens
   const output = merged.completion_tokens ?? merged.output_tokens
-  const cached = merged.prompt_cache_hit_tokens ?? merged.cache_read_input_tokens
+  const cached = merged.prompt_cache_hit_tokens ?? merged.cache_read_input_tokens ?? merged.cached_tokens
   const parts: string[] = []
   if (input !== undefined) parts.push(`in=${input}`)
   if (cached !== undefined) parts.push(`cached=${cached}`)

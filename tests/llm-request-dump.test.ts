@@ -432,6 +432,11 @@ describe('summarizeResponseUsage', () => {
     expect(summarizeResponseUsage(sse)).toBe(' usage=in=25 cached=100 out=7')
   })
 
+  it('reads cache hits from the OpenAI-standard nested prompt_tokens_details (opencode zen shape)', () => {
+    const sse = 'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"prompt_tokens_details":{"audio_tokens":0,"cached_tokens":80},"completion_tokens_details":{"reasoning_tokens":12}}}\n\ndata: [DONE]\n\n'
+    expect(summarizeResponseUsage(sse)).toBe(' usage=in=120 cached=80 out=30')
+  })
+
   it('reads a non-streaming body\'s top-level usage', () => {
     expect(summarizeResponseUsage('{"id":"msg_1","usage":{"prompt_tokens":9,"completion_tokens":2}}'))
       .toBe(' usage=in=9 out=2')
