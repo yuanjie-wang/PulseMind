@@ -103,6 +103,10 @@ function makeCore(over: {
     compactTracking: { toolRoundsSinceDrop: 0 },
     pendingToolIds: new Set<string>(),
     executingProcessId: null as string | null,
+    executingToolUseId: null as string | null,
+    contextWindowReaim: null as number | null,
+    persistedToolResultIds: new Set<string>(),
+    gatedScan: { scannedMsgs: 0, hitCategories: new Set<string>() },
     terminalCleanups: [] as Array<() => void>,
     selectedMcpTools: [] as string[],
     selectedBuiltinTools: [] as string[],
@@ -169,12 +173,18 @@ beforeEach(() => {
 })
 
 describe('ExecutionFlow approveTool 路由表', () => {
-  it('无 apiKey 直接返回', async () => {
+  it('缺 apiKey 不再静默死键（B6）——审批照常放行，工具执行', async () => {
+    // 2026-10-24 harness review B6: since M1.4 every engine is main-hosted and
+    // the LLM stream rides the api-proxy's own profile resolution — opts.apiKey
+    // is legitimately empty for local providers. The old silent return left the
+    // tool pending and the engine parked on awaiting_approval with a dead
+    // button; approval now proceeds (a local-model session can approve tools).
     const { raw, flow, calls } = makeCore({ opts: { apiKey: '' } })
+    // seed a held write so approveTool routes to the workspace executor
+    raw.messages = [{ id: 'm1', role: 'assistant', createdAt: new Date().toISOString(), contentBlocks: [{ type: 'tool_use', id: 't1', name: 'write', input: { file_path: 'a.txt', content: 'x' }, status: 'pending' }] }]
     await flow.approveTool('t1')
-    expect(calls.results).toHaveLength(0)
-    expect(calls.executor).toHaveLength(0)
-    expect(raw.agentStatus.status).toBe('idle')
+    expect(calls.executor).toContainEqual(['execWorkspaceTool', 'write'])
+    expect(raw.agentStatus.status).not.toBe('awaiting_approval')
   })
 
   it('找不到块 → 显式 error 状态', async () => {

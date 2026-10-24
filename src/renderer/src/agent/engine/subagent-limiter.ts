@@ -97,8 +97,24 @@ export function subAgentBudgetKey(opts: { sessionRootId?: string; conversationId
  * to the FIFO queue first — a late nested acquire never jumps it, because
  * while the queue is non-empty `running` is at the limit by invariant.
  */
+/** Admit queued dispatches FIFO into any capacity the CURRENT limit allows —
+ *  used at every acquire so a RAISED cap serves its waiters before any new
+ *  caller (the old fast path let a fresh acquire jump the queue the moment
+ *  running dipped under the new limit), and by the release hand-off's guard
+ *  below. Read on every step, so a saved limit change lands on the very next
+ *  acquire/release without touching experts already running. */
+function admitWaiting(budget: SessionBudget, key: string): void {
+  while (budget.waiting.length > 0 && budget.running < getSubAgentParallelLimit()) {
+    const next = budget.waiting.shift()
+    if (!next) break
+    budget.running += 1
+    next(makeRelease(key, budget))
+  }
+}
+
 export function tryAcquireSubAgentSlot(key: string): ReleaseSubAgentSlot | null {
   const budget = budgetOf(key)
+  admitWaiting(budget, key)
   if (budget.running >= getSubAgentParallelLimit()) return null
   budget.running += 1
   return makeRelease(key, budget)
@@ -114,6 +130,9 @@ export function tryAcquireSubAgentSlot(key: string): ReleaseSubAgentSlot | null 
  */
 export function acquireSubAgentSlot(key: string): Promise<ReleaseSubAgentSlot | null> {
   const budget = budgetOf(key)
+  // FIFO first: a raised cap must serve the queued waiters before this caller
+  // (admitWaiting), then this caller takes a slot only if one truly remains.
+  admitWaiting(budget, key)
   if (budget.running < getSubAgentParallelLimit()) {
     budget.running += 1
     return Promise.resolve(makeRelease(key, budget))
@@ -130,11 +149,20 @@ function makeRelease(key: string, budget: SessionBudget): ReleaseSubAgentSlot {
     released = true
     const next = budget.waiting.shift()
     if (next) {
-      // Hand the slot over rather than releasing and re-acquiring: `running`
-      // stays put, so the next expert starts the moment one finishes and FIFO
-      // order is decided by the queue, not by who wakes up first.
-      next(makeRelease(key, budget))
-      return
+      // Hot-update guard (2026-10-24 harness review): hand the slot over only
+      // while the CURRENT limit still admits the successor — a limit lowered
+      // below `running` mid-flight must not keep topping the concurrency back
+      // up on every release. The waiter goes back to the queue head (FIFO
+      // preserved) and the slot genuinely frees; later releases hand off again
+      // once running drains to the new cap.
+      if (budget.running <= getSubAgentParallelLimit()) {
+        // Hand the slot over rather than releasing and re-acquiring: `running`
+        // stays put, so the next expert starts the moment one finishes and FIFO
+        // order is decided by the queue, not by who wakes up first.
+        next(makeRelease(key, budget))
+        return
+      }
+      budget.waiting.unshift(next)
     }
     budget.running -= 1
     if (budget.running <= 0) {

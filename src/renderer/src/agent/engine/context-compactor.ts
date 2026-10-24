@@ -89,6 +89,87 @@ export function makeCompactTracking(): CompactTracking {
   return { toolRoundsSinceDrop: 0, consecutiveRefills: 0, summarySuspended: false }
 }
 
+// ── Display-side nano pricing (ContextRing projection, 2026-10-24) ──────
+// The ring's mid-batch over-read: its tail is priced RAW (every tool_result
+// whole) while the next request's nano pass replaces old results with
+// placeholders before anything ships — tool-heavy turns pinned the ring at
+// 79–96% while the wire carried ~60% (conv_20261021155951). This helper
+// mirrors nanoCompact's DECISION deterministically (protection window + tier
+// quotas + placeholder pricing) without touching the compactor's marks or
+// mandates, which only the live engine knows. Tail-only callers pass a
+// slice: quotas/protection are computed over exactly that slice, so a young
+// tail prices whole (yesterday's behavior — nano compresses nothing below
+// the quota anyway) and only a marathon tail compresses. The approximation
+// errs toward OVER-reading the shipped copy, never under it.
+const NANO_PLACEHOLDER_COST = 45 // '[tool_result_id: <uuid>]' ≈ 45 latin chars
+/** nano tier quotas, shared by nanoCompact and the ring-side projection
+ *  (estimateAfterNanoTokens) — ONE constant: a drifted copy in the projection
+ *  would silently misprice every ring reading. */
+const NANO_TIER_SIZES: Record<number, number> = { 1: 10, 2: 20 }
+
+export function estimateAfterNanoTokens(messages: AgentMessage[]): number {
+  const protectedMsgIds = new Set<string>()
+  {
+    let found = 0
+    for (let i = messages.length - 1; i >= 0 && found < NANO_PROTECTION_WINDOW; i--) {
+      const msg = messages[i]
+      if (msg.role !== 'user') continue
+      if (msg.contentBlocks.some(b => b.type === 'tool_result')) { protectedMsgIds.add(msg.id); found++ }
+    }
+  }
+  const toolUseToName = new Map<string, string>()
+  const counts: Record<number, number> = {}
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue
+    for (const block of msg.contentBlocks) {
+      if (block.type !== 'tool_use') continue
+      if (NANO_TIER3_NAMES.has(block.name)) continue
+      const tier = NANO_TIER_MAP[block.name] ?? 2
+      counts[tier] = (counts[tier] || 0) + 1
+      toolUseToName.set(block.id, block.name)
+    }
+  }
+  const compressTargets: Record<number, number> = {}
+  for (const [tierStr, count] of Object.entries(counts)) {
+    const tier = Number(tierStr)
+    const size = NANO_TIER_SIZES[tier]
+    if (!size) continue
+    const fullTiers = Math.floor(count / size)
+    if (fullTiers >= 2) compressTargets[tier] = (fullTiers - 1) * size
+  }
+  const compressed: Record<number, number> = {}
+  let total = 0
+  for (const msg of messages) {
+    for (const block of msg.contentBlocks) {
+      if (block.type === 'tool_result') {
+        const content = (block as ToolResultBlock).content || ''
+        const name = toolUseToName.get((block as ToolResultBlock).tool_use_id)
+        const tier = name ? (NANO_TIER_MAP[name] ?? 2) : undefined
+        // Same skip rules as nanoCompact: user messages only, not protected,
+        // not already a placeholder; quota budget burns oldest-first.
+        if (msg.role === 'user' && name && tier != null && !NANO_TIER3_NAMES.has(name)
+          && !protectedMsgIds.has(msg.id)
+          && !TOOL_RESULT_PLACEHOLDER_PREFIXES.some(p => content.startsWith(p))) {
+          const target = compressTargets[tier]
+          if (target && target > 0 && (compressed[tier] || 0) < target) {
+            compressed[tier] = (compressed[tier] || 0) + 1
+            total += NANO_PLACEHOLDER_COST
+            continue
+          }
+        }
+        total += estimateTextTokens(content)
+      } else if (block.type === 'text') {
+        total += estimateTextTokens((block as TextBlock).text)
+      } else if (block.type === 'tool_use') {
+        total += estimateTextTokens(JSON.stringify((block as ToolUseBlock).input) + (block as ToolUseBlock).name)
+      } else if (block.type === 'thinking') {
+        total += estimateTextTokens((block as { thinking: string }).thinking)
+      }
+    }
+  }
+  return total
+}
+
 // ── nanoCompact's shared classification (PLAN-context-compact-tool D3b) ──
 // Exported so the engine's free_results resolution applies the SAME rules at
 // mandate time that nanoCompact applies at compress time — a pick the model
@@ -443,6 +524,17 @@ export class ContextCompactor {
 
   constructor(private deps: ContextCompactorDeps) {}
 
+  /** The fixed overhead (system prompt + tool schemas + state block) the last
+   *  real request build priced. prewarmBody's simulation must truncate in the
+   *  SAME units the next build will: the fit walks are overhead-sensitive, so
+   *  a 0-overhead simulation promises drops the request never materializes
+   *  (or covers fewer ids than the request sheds) — the old bimodal walk
+   *  landed on the guard floor either way and hid the divergence. Set by
+   *  prepareLoopRequest on every build; 0 until the first request (manual
+   *  /compact on a fresh session), where the cache-hit branch absorbs the
+   *  drift. */
+  lastRequestOverhead = 0
+
   contextTokens(messages?: AgentMessage[], fixedOverhead = 0): number {
     // The shared estimator (engine/context-estimate.ts) carries the contract:
     // a real inputTokens report anchors the number, the tail appended since is
@@ -450,35 +542,47 @@ export class ContextCompactor {
     return contextTokensOf(messages ?? this.deps.getMessages(), fixedOverhead)
   }
 
-  /** Earliest index whose kept tail fits `thresholdTokens` under the estimate
-   *  plus fixed overhead, respecting the minimum user-turn / message-count
-   *  guards. Shared by hardTruncate (threshold 0.9× the window) and
-   *  emergencyTruncate (threshold 0.6× the provider's named limit). */
+  /** Largest keepStart whose kept tail fits `thresholdTokens` under the
+   *  estimate plus fixed overhead — i.e. the cut retains as MUCH history as
+   *  the threshold allows — bounded by the minimum-retention guards: the kept
+   *  tail never holds fewer than the last MIN_USER_TURNS user turns and
+   *  MIN_KEEP messages, and when even that floor cannot fit the threshold the
+   *  floor still wins (cut to it anyway; whatever remains over the line is the
+   *  emergency strip's problem, never a reason to no-op the whole pass).
+   *  Shared by hardTruncate (threshold 0.9× the window) and emergencyTruncate
+   *  (threshold 0.6× the provider's named limit). */
   private fitKeepStart(messages: AgentMessage[], thresholdTokens: number, overhead: number): number {
-    // Scan from the end to find the earliest index that satisfies both guarantees
-    let keepStart = messages.length
-
-    // Count user turns from the end
+    // Guards are a MINIMUM retention, so the LARGEST keepStart they permit is
+    // the more restrictive of the two floors. The old Math.max made MIN_KEEP a
+    // maximum retention and let a long tool tail evict both last user turns.
+    let guardMax = messages.length - MIN_KEEP
     let userTurnsFound = 0
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
         userTurnsFound++
         if (userTurnsFound >= MIN_USER_TURNS) {
-          keepStart = i
+          guardMax = Math.min(guardMax, i)
           break
         }
       }
     }
-    // Apply MIN_KEEP as a lower bound on the start index
-    keepStart = Math.max(keepStart, messages.length - MIN_KEEP)
+    if (guardMax <= 0) return 0
 
-    // Walk forward from keepStart — estimate what remains to see if we fit
-    while (keepStart > 0) {
-      const remaining = messages.slice(keepStart - 1)
-      if (this.estimateTokens(remaining) + overhead <= thresholdTokens) break
-      keepStart--
+    // Walk from "keep everything" up to the first fitting tail. Contributions
+    // are per-message additive (the same rule estimateMessagesTokens applies),
+    // so a running suffix sum prices each candidate in O(1) — O(n) total. The
+    // old loop broke on the first fit and DECREMENTED on a miss; since a
+    // smaller keepStart only grows the tail, that walk was bimodal: the guard
+    // floor fitting → cut to the floor (~10 messages against a 0.9× window of
+    // headroom, a utilization cliff); it not fitting → keepStart ran to 0 and
+    // the caller no-opped the entire pass.
+    const contributions = messages.map((m) => this.contributionOf(m))
+    let tail = contributions.reduce((a, b) => a + b, 0)
+    let keepStart = 0
+    while (keepStart < guardMax && tail + overhead > thresholdTokens) {
+      tail -= contributions[keepStart]
+      keepStart++
     }
-
     return keepStart
   }
 
@@ -592,8 +696,38 @@ export class ContextCompactor {
       }
     }
 
+    // Phase 2b — thinking blocks, oldest first (2026-10-24 harness review): in
+    // a reasoning marathon the CoT is the single biggest block kind, and phase
+    // 2 only touches tool_results — a small-window session whose last MIN_KEEP
+    // messages carry big thinking blocks could NEVER be forced under the
+    // limit, 400-looping on every retry. Whole-BLOCK removal (never a head
+    // cut: Anthropic validates a thinking block's signature against its exact
+    // bytes, so a truncated thinking text 400s the request — omitting the
+    // block entirely is the legal shape) and only when the message keeps at
+    // least one other block, so no message is ever emptied.
+    for (let i = 0; i < stripped.length && total > target; i++) {
+      const msg = stripped[i]
+      if (msg.role !== 'assistant') continue
+      if (!msg.contentBlocks.some(b => b.type === 'thinking' || b.type === 'redacted_thinking')) continue
+      if (!msg.contentBlocks.some(b => b.type !== 'thinking' && b.type !== 'redacted_thinking')) continue
+      let delta = 0
+      const kept: typeof msg.contentBlocks = []
+      for (const b of msg.contentBlocks) {
+        if ((b.type === 'thinking' || b.type === 'redacted_thinking') && total - delta > target) {
+          delta += estimateTextTokens(b.type === 'thinking' ? (b as { thinking: string }).thinking : (b as { data: string }).data)
+          continue
+        }
+        kept.push(b)
+      }
+      if (kept.length !== msg.contentBlocks.length) {
+        total -= delta
+        stripped[i] = { ...msg, contentBlocks: kept }
+        strippedAny = true
+      }
+    }
+
     if (strippedAny) {
-      console.log(`[AgentEngine] emergencyTruncate: stripped oldest tool_result bodies for a ${hardLimit}-token provider limit (context now ~${Math.max(0, Math.round(total))})`)
+      console.log(`[AgentEngine] emergencyTruncate: stripped oldest tool_result/thinking blocks for a ${hardLimit}-token provider limit (context now ~${Math.max(0, Math.round(total))})`)
       return stripped
     }
     return working
@@ -620,12 +754,11 @@ export class ContextCompactor {
    *  directly, so the wait can never self-deadlock. */
   async injectHistorySummary(
     original: AgentMessage[],
-    lightCompacted: AgentMessage[],
     truncated: AgentMessage[],
     instruction?: string
   ): Promise<AgentMessage[]> {
     if (this.prewarmPromise) await this.prewarmPromise.catch(() => {})
-    return this.injectHistorySummaryInto(original, lightCompacted, truncated, instruction)
+    return this.injectHistorySummaryInto(original, truncated, instruction)
   }
 
   /** Land a summary text, rolling it (one re-summarization of the whole text)
@@ -663,7 +796,6 @@ export class ContextCompactor {
 
   private async injectHistorySummaryInto(
     original: AgentMessage[],
-    lightCompacted: AgentMessage[],
     truncated: AgentMessage[],
     instruction?: string,
     notes?: string,
@@ -833,7 +965,7 @@ export class ContextCompactor {
 
   nanoCompact(messages: AgentMessage[]): AgentMessage[] {
     const TIER_MAP = NANO_TIER_MAP
-    const TIER_SIZES: Record<number, number> = { 1: 10, 2: 20 }
+    const TIER_SIZES = NANO_TIER_SIZES
     const TIER3_NAMES = NANO_TIER3_NAMES
     const PROTECTION_WINDOW = NANO_PROTECTION_WINDOW
 
@@ -1134,9 +1266,12 @@ export class ContextCompactor {
       // force bypasses ONLY light (hard stays passive, its 0.9× trigger
       // untouched), post-turn runs fully passive on light. A mismatched
       // simulation would promise a drop the request never materializes (or
-      // cover ids the real copy keeps).
-      const light = this.lightCompact(nano, contextLength, 0, source === 'manual' || source === 'tool')
-      const truncated = this.hardTruncate(light, contextLength, 0, hardForce)
+      // cover ids the real copy keeps). Same units too: the fit walks are
+      // overhead-sensitive, so the simulation prices the last real request's
+      // fixed overhead, not 0.
+      const overhead = this.lastRequestOverhead
+      const light = this.lightCompact(nano, contextLength, overhead, source === 'manual' || source === 'tool')
+      const truncated = this.hardTruncate(light, contextLength, overhead, hardForce)
       // Light's cycle drops count too — they are the main dropper once the
       // transcript outgrows the window, and the summary exists to cover
       // everything the copy loses, not just hard's share.
@@ -1144,7 +1279,7 @@ export class ContextCompactor {
       if (droppedCount <= 0) return null
       const summaryBefore = this.historySummary ? { ...this.historySummary } : null
       marksAtSuspend = new Set(this._compressedToolUseIds)
-      const final = await this.injectHistorySummaryInto(original, light, truncated, instruction, notes, { bypassBreaker: source === 'tool' })
+      const final = await this.injectHistorySummaryInto(original, truncated, instruction, notes, { bypassBreaker: source === 'tool' })
       const summary = this.historySummary
       const summaryChanged =
         !summary || !summaryBefore ||

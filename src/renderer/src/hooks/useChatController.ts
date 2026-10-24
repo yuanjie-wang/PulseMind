@@ -17,6 +17,7 @@ import { shouldDrainOnStatusChange } from '../utils/staged-drain'
 import type { ExpertProfile } from '../../../shared/types/expert'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentMessage } from '../types/agent'
+import type { CompactionEvent } from '../../../shared/agent-protocol'
 import type { HooksConfig } from '../types/hooks'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
 
@@ -365,7 +366,17 @@ export function useChatController(options: UseChatControllerOptions) {
           message.warning(t('chatView.compaction.busy'))
           return false
         }
-        const event = await engine.getOrCreateEngine(target).compactNow(instruction)
+        // A rejected engine call must not vanish down the unhandled-rejection
+        // hole (the callers swallow rejections to restore staged text): the
+        // command was consumed either way, so report it and stop.
+        let event: CompactionEvent | null = null
+        try {
+          event = await engine.getOrCreateEngine(target).compactNow(instruction)
+        } catch (err) {
+          console.warn('[ChatController] /compact engine call failed:', err)
+          message.error(t('chatView.compaction.failed'))
+          return true
+        }
         if (event) {
           const freed = Math.max(0, event.tokensBefore - event.tokensAfter)
           message.success(t('chatView.compaction.done', { dropped: event.droppedMessages, freed: `${(freed / 1024).toFixed(1)}K` }))

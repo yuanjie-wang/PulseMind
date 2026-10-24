@@ -96,10 +96,14 @@ describe('buildRgSearchArgs — the query is a value on BOTH channels', () => {
     expect(args.slice(7)).toEqual(['-F', '-e', 'react', '-e', 'hooks', '--', DIR])
   })
 
-  it('an empty/whitespace query still terminates options before the dir', () => {
-    const args = buildRgSearchArgs('   ', DIR)
-    expect(args[args.length - 2]).toBe('--')
-    expect(args[args.length - 1]).toBe(DIR)
+  it('a whitespace-only query returns null — no rg argv goes out (review_20261015 中1)', () => {
+    // `-e VALUE` + `--` 的安全以 terms ≥ 1 为前提：零 `-e` 时 rg 把 `--` 后的
+    // 第一个 positional 当 PATTERN——dir 成了字面量模式，rg 转头递归扫描主进程
+    // CWD（rg 14.1.1 实测）。旧断言只钉 `--` 与 dir 的位置，恰好给这个危险
+    // 形状背了书；现在空白 query 在 builder 里收口为 null，调用方走无命中。
+    expect(buildRgSearchArgs('', DIR)).toBeNull()
+    expect(buildRgSearchArgs('   ', DIR)).toBeNull()
+    expect(buildRgSearchArgs('\t\n ', DIR)).toBeNull()
   })
 })
 
@@ -120,6 +124,9 @@ describe('search call sites use the shared resolver', () => {
     expect(src).not.toContain("execFile('rg'")
     expect(src).toContain('execFile(ripgrepBinary()')
     expect(src).toContain("process.platform !== 'win32')")
+    // review_20261015 中1：wiki 通道的空白 query 守卫必须是 trim 后判——
+    // `if (!query)` 让 `'   '` 穿过去，rg 臂带着零 `-e` 的 argv 起跑。
+    expect(src).toContain('!query.trim()')
   })
 
   it('the content channel delegates to the shared builder too (M10-P0-1 fixed the wiki and missed this sibling — review_20261013 高2)', () => {

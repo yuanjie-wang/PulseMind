@@ -60,6 +60,9 @@ export function mirroredStatus(snapshot: StatusSnapshot): AgentStatus {
       attempt: snapshot.attempt,
       maxRetries: snapshot.maxRetries,
       delay: snapshot.delayMs ?? 0,
+      // The overflow re-aim's live window hint (AgentStatus.contextWindow):
+      // optional, present only on the overflow-retry shape.
+      ...(snapshot.contextWindow != null ? { contextWindow: snapshot.contextWindow } : {}),
     }
   }
   return { status: snapshot.status } as AgentStatus

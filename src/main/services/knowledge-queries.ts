@@ -318,7 +318,10 @@ function guessTitle(absPath: string, wikiPath: string): string {
 /** Search wiki content via ripgrep (grep fallback, Unix only). */
 export async function svcSearchWiki(query: string, baseId?: string): Promise<WikiSearchMatch[]> {
   const wikiDir = baseId !== undefined ? getBaseWikiDir(baseId) : undefined
-  if (!query) return []
+  // trim（review_20261015 中1）：`'   '` 为真值曾穿过旧守卫——FTS 前置返回
+  // 空后，rg 臂带着零 `-e` 的 argv 起跑，`--` 后的目录被 rg 当成 PATTERN、
+  // 静默扫描主进程 CWD。空白 query 在这里与 builder（返回 null）两处收口。
+  if (!query.trim()) return []
 
   const ftsResults = searchWikiFts(query, 30, baseId)
   if (ftsResults.length > 0) return ftsResults
@@ -330,7 +333,7 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
 
   // 共享 builder（utils/ripgrep.ts）：两通道一个形状才不会再次漂移——
   // M10-P0-1 修 wiki 漏 content 兄弟（review_20261013 高2）的教训。
-  const buildRgArgs = (dir: string): string[] => buildRgSearchArgs(query, dir)
+  const buildRgArgs = (dir: string): string[] | null => buildRgSearchArgs(query, dir)
   const buildGrepArgs = (dir: string): string[] => {
     const args = ['-rn', '-i', '--max-count', '5']
     if (terms.length > 1) {
@@ -359,8 +362,11 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
   // Search one directory
   const searchDir = async (dir: string) => {
     if (!existsSync(dir)) return
+    // null（空白 query）= 不发起 rg，走无命中——危险 argv 不出门。
+    const rgArgs = buildRgArgs(dir)
+    if (!rgArgs) return
     await new Promise<void>((resolve) => {
-      execFile(ripgrepBinary(), buildRgArgs(dir), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      execFile(ripgrepBinary(), rgArgs, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
         if (err && !stdout) { resolve(); return }
         parseOutput(stdout, dir)
         resolve()
@@ -369,7 +375,7 @@ export async function svcSearchWiki(query: string, baseId?: string): Promise<Wik
     if (results.length === 0 && terms.length > 1) {
       terms.length = 0; terms.push(query)
       await new Promise<void>((resolve) => {
-        execFile(ripgrepBinary(), buildRgArgs(dir), { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        execFile(ripgrepBinary(), rgArgs, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
           if (err && !stdout) { resolve(); return }
           parseOutput(stdout, dir)
           resolve()

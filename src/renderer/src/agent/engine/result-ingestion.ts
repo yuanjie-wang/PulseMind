@@ -83,7 +83,14 @@ import type { AgentEngineOptions } from '../AgentEngine'
         const paramRe = /<parameter\s+name\s*=\s*["']([^"']+)["']>([\s\S]*?)<\/parameter>/g
         let pm: RegExpExecArray | null
         while ((pm = paramRe.exec(body)) !== null) {
-          input[pm[1].trim()] = pm[2].trim()
+          // XML parameter bodies are strings by construction; restore the
+          // boolean literals so strict-typed executors keep working — `write`'s
+          // `append === true` silently executed an OVERWRITE when the recovery
+          // handed it the STRING "true" while the model had asked to append
+          // (2026-10-24 harness review). Numbers deliberately stay strings:
+          // every consumer already Number()-coerces at use sites.
+          const rawParam = pm[2].trim()
+          input[pm[1].trim()] = rawParam === 'true' ? true : rawParam === 'false' ? false : rawParam
         }
         if (Object.keys(input).length === 0) continue
         calls.push({ name, input })

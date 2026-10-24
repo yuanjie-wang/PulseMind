@@ -99,6 +99,20 @@ export class StreamRunner {
         onStreamComplete: async (stopReason, usage) => {
           if (this.engine.isCancelled) return
 
+          // The stream ENDED here — reap the in-flight id at this semantic
+          // boundary, not when the transport finishes settling. This very
+          // callback is what dispatches the tool batch, and performLlmStream
+          // fires onDone() synchronously but resolves its promise only after
+          // the response dump's DISK WRITE, so runner.run's cleanupListeners
+          // lands a macrotask behind the whole microtask tool cascade. The
+          // stale id in exactly that window refused every real-world
+          // context_compact call ever made (7/7, DB 全量核对 2026-10-21:
+          // the model tried to hand over at 79–96% and was told to 「等当前
+          // 回合的这一轮结束后再调用」— a moment that cannot exist, tools only
+          // run between requests). cleanupListeners' guarded write below still
+          // yields to any newer id armed since (thinking-only retry etc.).
+          if (this.engine.currentRequestId === requestId) this.engine.currentRequestId = null
+
           const elapsedMs = this.engine.requestStartTime > 0 ? Math.round(performance.now() - this.engine.requestStartTime) : 0
           const rawBlocks = this.engine.currentAssistantBlocks.filter((b): b is ContentBlock => b !== undefined)
           // Fallback: some models (e.g. deepseek-v4-flash via the opencode zen/go
@@ -415,12 +429,35 @@ export class StreamRunner {
       // still set, so every later request (manual retry included) stays forced
       // under the limit until one is accepted.
       if (!isCancel && isContextOverflowRejection(message)) {
-        const limit = parseContextOverflowLimit(message) ?? Math.floor((this.engine.opts.contextLength || 128_000) / 2)
+        const parsed = parseContextOverflowLimit(message)
+        const limit = parsed ?? Math.floor((this.engine.opts.contextLength || 128_000) / 2)
         this.engine.contextOverflowLimit = limit
         if (this.engine.opts.contextLength && limit < this.engine.opts.contextLength) {
           // The profile's number is the denominator of the context ring AND
           // the target of every compaction trigger — a wrong one disables both.
           console.warn(`[AgentEngine] provider limit ${limit} < profile contextLength ${this.engine.opts.contextLength} — fix the profile's 上下文长度 setting`)
+        }
+        // Re-aim THIS session's automatic chain at the provider's real window
+        // (0.4.2 「压缩机制不触发」排查): light (0.3×), hard (0.1×), the compact
+        // tool's 0.55 precheck and the gauge all read opts.contextLength — a
+        // stale or unset profile number larger than the real window parks every
+        // trigger past it, so nothing ever fires proactively and each growth
+        // cycle costs one 400 + forced retry (accept clears the flag, the copy
+        // re-inflates toward the phantom window, overflow again). Only a
+        // provider-NUMBERED limit re-aims — it is ground truth; the numberless
+        // fallback guess keeps today's flag-only semantics so a vague rejection
+        // cannot silently shrink the session. refreshOptions rebuilds the bag
+        // from the profile, so the re-aim is session-scoped by construction,
+        // and upward never re-aims (a conservative profile number wastes
+        // window but is never wrong).
+        if (parsed != null && parsed < (this.engine.opts.contextLength || 128_000)) {
+          console.warn(`[AgentEngine] re-aiming session context window: ${this.engine.opts.contextLength ?? '(unset → 128_000)'} → ${parsed}`)
+          this.engine.opts.contextLength = parsed
+          // Parked on the engine, not just opts: refreshOptions rebuilds the
+          // opts bag wholesale from the profile, so updateOptions re-clamps
+          // from this field or the re-aim dies on the next approval flip /
+          // settings sweep (2026-10-24 harness review B8).
+          this.engine.contextWindowReaim = parsed
         }
         if (this.engine.contextOverflowRetries < 1) {
           this.engine.contextOverflowRetries += 1
@@ -429,7 +466,11 @@ export class StreamRunner {
           this.engine.streamingBlocks = []
           this.engine.jsonAccumulators = new Map()
           this.engine.toolUseBlocks = []
-          this.engine.agentStatus = { status: 'retrying', message: '上下文超限，已按模型上限截断历史并重试…', attempt: 1, maxRetries: 1, delay: 0 }
+          // contextWindow rides the retrying status so the renderer's ring can
+          // re-base its denominator on the live session value (the profile's
+          // number is what the overflow just disproved).
+          const contextWindow = this.engine.opts.contextLength ?? undefined
+          this.engine.agentStatus = { status: 'retrying', message: '上下文超限，已按模型上限截断历史并重试…', attempt: 1, maxRetries: 1, delay: 0, ...(contextWindow != null ? { contextWindow } : {}) }
           this.engine.notify()
           await this.engine.continueLoop()
           return

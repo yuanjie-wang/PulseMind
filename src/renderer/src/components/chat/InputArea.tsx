@@ -315,11 +315,21 @@ function InputAreaImpl({
     : lastCompaction.source === 'request'
       ? t('chatView.compaction.chip', { dropped: lastCompaction.droppedMessages, freed: compactionFreedK })
       : t('chatView.compaction.chipPending', { dropped: lastCompaction.droppedMessages, freed: compactionFreedK })
+  // The replay count covers ONLY this pass's dropped region, and
+  // collectUserReplays replays at least the head of every dropped user text,
+  // so 0 ⇔ the dropped region held no user-typed message at all — the zero
+  // branch can truthfully promise the user's words were untouched. Never fold
+  // the two wordings into one template: 「0 条用户消息原文保留」 reads as data
+  // loss (user report 2026-10-15).
   const compactionHint = lastCompaction
-    ? t('chatView.compaction.tooltip', {
-        strategies: lastCompaction.strategies.join(' · '),
-        replayed: lastCompaction.replayedUserMessages,
-      })
+    ? lastCompaction.replayedUserMessages > 0
+      ? t('chatView.compaction.tooltip', {
+          strategies: lastCompaction.strategies.join(' · '),
+          replayed: lastCompaction.replayedUserMessages,
+        })
+      : t('chatView.compaction.tooltipZeroReplays', {
+          strategies: lastCompaction.strategies.join(' · '),
+        })
     : ''
 
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])

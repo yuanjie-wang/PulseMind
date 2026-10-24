@@ -66,7 +66,7 @@ describe('compaction pipeline stress: a marathon-shaped session stays fitted, ut
       const nano = compactor.nanoCompact(messages)
       const light = compactor.lightCompact(nano, WINDOW, OVERHEAD)
       const truncated = compactor.hardTruncate(light, WINDOW, OVERHEAD)
-      const final = await compactor.injectHistorySummary(messages, light, truncated)
+      const final = await compactor.injectHistorySummary(messages, truncated)
 
       // 1. 放行前拟合——启发式与真实报告两个单位都要在窗口内
       const wireH = estimateMessagesTokens(final) + OVERHEAD
@@ -100,7 +100,7 @@ describe('compaction pipeline stress: a marathon-shaped session stays fitted, ut
     const nano2 = compactor.nanoCompact(messages)
     const light2 = compactor.lightCompact(nano2, WINDOW, OVERHEAD)
     const truncated2 = compactor.hardTruncate(light2, WINDOW, OVERHEAD)
-    const final2 = await compactor.injectHistorySummary(messages, light2, truncated2)
+    const final2 = await compactor.injectHistorySummary(messages, truncated2)
     const wireH2 = estimateMessagesTokens(final2) + OVERHEAD
     expect(wireH2).toBeLessThanOrEqual(WINDOW)
     expect(final2.length).toBeLessThanOrEqual(lastFinal.length)

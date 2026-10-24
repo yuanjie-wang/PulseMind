@@ -237,7 +237,7 @@ export interface CompactionEvent {
  *  `error`'s reason, `retrying`'s attempt/maxRetries/delayMs/message and
  *  `awaiting_extension`'s currentCount/limit ride only when the engine had
  *  them: an honest absence beats a fake zero. */
-export type StatusSnapshot = { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string; currentCount?: number; limit?: number }
+export type StatusSnapshot = { status: string; error?: string; attempt?: number; maxRetries?: number; delayMs?: number; message?: string; currentCount?: number; limit?: number; contextWindow?: number }
 
 /** Streaming progress events. One notification per event; ordering within a
  *  session is guaranteed per-connection. */

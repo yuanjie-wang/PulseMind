@@ -227,11 +227,13 @@ const zh = {
     compaction: {
       chip: '已压缩 {{dropped}} 条 · 释放 ~{{freed}}',
       chipPending: '已压缩 {{dropped}} 条 · 下次请求生效 (~{{freed}})',
-      tooltip: '压缩策略：{{strategies}}；其中 {{replayed}} 条用户消息原文保留，旧历史已摘要、全文可用工具取回。',
+      tooltip: '压缩策略：{{strategies}}；丢弃区中 {{replayed}} 条用户消息原文已保留在副本中；旧历史已摘要、全文可用工具取回。',
+      tooltipZeroReplays: '压缩策略：{{strategies}}；本次只压缩了工具往返，用户消息未受影响；旧历史已摘要、全文可用工具取回。',
       noConversation: '还没有会话，先发一条消息再压缩',
       busy: '任务执行中，结束后再压缩',
       done: '已压缩 {{dropped}} 条历史，释放约 {{freed}} tokens',
       nothing: '当前上下文不多，暂无需压缩',
+      failed: '压缩失败，请稍后重试',
     },
     approval: {
       label: '授权方式',

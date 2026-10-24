@@ -26,11 +26,14 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
   switch (toolName) {
     case 'read': {
       const filePath = String(input.file_path || '')
-      const offset = Number(input.offset) || 1
+      // Floor at 1 (2026-10-24 harness review): a negative offset/limit passed
+      // straight through — `head -n -5` is "all but the last 5 lines" on GNU
+      // and a hard error on BSD/macOS, `tail -n +-3` likewise. Cap stays 500.
+      const offset = Math.max(1, Number(input.offset) || 1)
       // Hard cap: a page is bounded at 500 lines — the structural bound;
       // token-level overflow is read's dedicated budget's job
       // (MAX_READ_RESULT_TOKENS in engine-constants).
-      const limit = Math.min(Number(input.limit) || 500, 500)
+      const limit = Math.max(1, Math.min(Number(input.limit) || 500, 500))
       // ~ 路径在引号里不展开（audit 2026-10-10 #6）。Windows 的单引号内一切
       // 字面，$env:USERPROFILE 拼进 '…' 曾永远读不到（full_20261011 M2-P1-3）
       // ——变量必须在引号外：Join-Path 展开变量、路径本体仍单引号免注入。
@@ -45,7 +48,10 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
         return `Get-Content -Path ${psPath} -Encoding utf8 | Select-Object -Skip ($(${offset}) - 1) -First ${limit}`
       }
       const escapedPath = hasTilde ? '$HOME' + shEscape(filePath.slice(1)) : shEscape(filePath)
-      if (input.binary === true) return `xxd "${escapedPath}" | tail -n +${offset} | head -n ${limit}`
+      // xxd ships with vim (present on macOS, often ABSENT on slim
+      // Linux/AppImage targets) — fall back to POSIX-baseline od for the hex
+      // dump instead of failing the whole read arm there.
+      if (input.binary === true) return `(command -v xxd >/dev/null 2>&1 && xxd "${escapedPath}" || od -A x -t x1z "${escapedPath}") | tail -n +${offset} | head -n ${limit}`
       return `tail -n +${offset} "${escapedPath}" | head -n ${limit}`
     }
     case 'write':
@@ -56,10 +62,11 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       const dirPath = String(input.dir_path || '')
       if (!dirPath) return 'Error: dir_path is required'
       const hasTilde = dirPath.startsWith('~')
-      const offset = Number(input.offset) || 0
+      const offset = Math.max(0, Number(input.offset) || 0)
       // Default limit bounds every listing at 100 entries even when `limit` is
       // omitted, keeping a page well under the 4K-token tool-result guardrail.
-      const limit = input.limit !== undefined && input.limit !== null ? Number(input.limit) : 100
+      // Floored at 1: a zero/negative page size is caller noise, not "all rows".
+      const limit = Math.max(1, input.limit !== undefined && input.limit !== null ? Number(input.limit) : 100)
       if (isWin) {
         // 同 read：$env:USERPROFILE 曾被拼进单引号字面量，list_dir ~/… 在
         // Windows 必败（先存同款，随 M2-P1-3 一并修）。
@@ -153,12 +160,21 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
       }
       // 元字符黑名单挡不住 find 自己的执行谓词（review_20261011 高1）：`-exec
       // sh {} +` 的 `+` 终结符不含任何元字符，read 档照样免审批跑命令。按
-      // token 拒整个写副作用家族；剥前导引号后再判（find 照样把 "-exec" 当
-      // 谓词）。前缀匹配盖住 -execdir/-fprintf 这类变体。
+      // token 拒整个写副作用家族；前缀匹配盖住 -execdir/-fprintf 这类变体。
+      // shell 在分词之后、交给 find 之前还会做词中引号/反斜杠剥离（review_
+      // 20261015 高1：`-ex"e"c` / `-e'x'ec` / `-ex\ec` / `\-exec` 到 find 眼里
+      // 都重建出 `-exec`，实测绕过只剥前导引号的旧防线）——判前缀前先把转义
+      // 逐字还原、引号字符全剥。find 谓词名是纯字母与连字符，凡 shell 能重建
+      // 出谓词的拼写这里剥完必然同形（剥不掉的只会多删字符，前缀照旧命中）；
+      // 剥错的残余误伤只落在「文件名带引号/反斜杠且恰好拼出谓词前缀」的病态
+      // 输入上，方向是拒绝（fail-closed）。
       const FORBIDDEN_FIND_PREFIXES = ['-exec', '-ok', '-fprint', '-fls', '-delete']
       const hasForbiddenPredicate = extraArgs
         .split(/\s+/)
-        .some((tok) => FORBIDDEN_FIND_PREFIXES.some((p) => tok.replace(/^['"]+/, '').startsWith(p)))
+        .some((tok) => {
+          const bare = tok.replace(/\\(.)/g, '$1').replace(/['"]/g, '')
+          return FORBIDDEN_FIND_PREFIXES.some((p) => bare.startsWith(p))
+        })
       if (hasForbiddenPredicate) {
         return 'echo "Error: extra_args contains forbidden find predicates (-exec/-execdir/-ok/-fprint/-fls/-delete execute or write — not allowed in a read-tier search)"'
       }
@@ -189,9 +205,15 @@ export function buildCommandFromSkillInput(toolName: string, input: Record<strin
 
       // macOS (default)
       if (choiceList.length > 0) {
+        // AppleScript string escaping (backslash FIRST, then quote) — the same
+        // layer the single-select arm below uses. The old shape shEscape'd the
+        // prompt (a SHELL layer: `\$` is a syntax error inside AppleScript
+        // "…", so any $-bearing prompt failed the whole dialog) and left items
+        // with raw backslashes un-escaped (a Windows path string failed too).
+        const asEscape = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
         const multiFlag = input.multi === true ? ' with multiple selections allowed' : ''
-        const items = choiceList.map(c => `"${c.replace(/"/g, '\\"')}"`).join(', ')
-        return `osascript << 'OSAEOF'\nset theChoices to {${items}}\nset theSelection to choose from list theChoices with prompt "${shEscape(prompt)}"${multiFlag}\nif theSelection is false then\n  return "CANCELLED"\nelse\n  set AppleScript's text item delimiters to ", "\n  return theSelection as text\nend if\nOSAEOF`
+        const items = choiceList.map(c => `"${asEscape(c)}"`).join(', ')
+        return `osascript << 'OSAEOF'\nset theChoices to {${items}}\nset theSelection to choose from list theChoices with prompt "${asEscape(prompt)}"${multiFlag}\nif theSelection is false then\n  return "CANCELLED"\nelse\n  set AppleScript's text item delimiters to ", "\n  return theSelection as text\nend if\nOSAEOF`
       }
       // The -e payload rides a SINGLE-quoted shell arg, so a raw ' in the prompt
       // closed it — same injection class as the '…' contexts above (found while

@@ -12,10 +12,14 @@ const turn = (t: string): AgentMessage[] => [
   { id: `a${++seq}`, role: 'assistant', contentBlocks: [text(`回复：${t}`)], createdAt: '2026-09-23T10:00:01.000Z' },
 ]
 
-/** A conversation long enough that a forced hardTruncate (0.6× of a 500-token
- *  window) drops a real region: 30 messages × ~10 tokens ≈ 300+ tokens. */
+/** A conversation long enough that BOTH hard shapes drop a real region against
+ *  a 500-token window: the prewarm's forced simulation (0.6× = 300) and the
+ *  request path's passive trigger (0.9× = 450). 50 messages × ~11.5 ≈ 575
+ *  tokens — the old 15-turn fixture sat below 450, where the fixed walk now
+ *  (correctly) keeps everything, and the request-path half of these contracts
+ *  had nothing real to pin. */
 function makeConversation(): AgentMessage[] {
-  return Array.from({ length: 15 }, (_, i) => turn(`第${i + 1}轮的完整需求描述`).flat()).flat() as AgentMessage[]
+  return Array.from({ length: 25 }, (_, i) => turn(`第${i + 1}轮的完整需求描述`).flat()).flat() as AgentMessage[]
 }
 
 function makeCompactor(messages: AgentMessage[], summary = '摘要内容') {
@@ -49,7 +53,7 @@ describe('compactor.prewarm: the summary moves off the request path', () => {
     // then the summary, then the kept tail.
     const light = compactor.lightCompact(messages, 500, 0)
     const truncated = compactor.hardTruncate(light, 500, 0)
-    const final = await compactor.injectHistorySummary(messages, light, truncated)
+    const final = await compactor.injectHistorySummary(messages, truncated)
     expect(runHistorySummary).toHaveBeenCalledTimes(1) // still once
     const summaryIdx = final.findIndex((m) =>
       (m.contentBlocks[0] as { text: string }).text.includes('【历史对话摘要】'))
@@ -127,7 +131,7 @@ describe('compactor.prewarm: the summary moves off the request path', () => {
     const prewarmRun = compactor.prewarm({ contextLength: 500, source: 'post-turn' })
     const light = compactor.lightCompact(messages, 500, 0)
     const truncated = compactor.hardTruncate(light, 500, 0)
-    const requestPath = compactor.injectHistorySummary(messages, light, truncated)
+    const requestPath = compactor.injectHistorySummary(messages, truncated)
     await new Promise((r) => setTimeout(r, 10))
     expect(slow).toHaveBeenCalledTimes(1) // only the prewarm's call so far
     release('慢摘要')

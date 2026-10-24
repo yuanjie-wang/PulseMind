@@ -212,7 +212,7 @@ describe('the coverage line rides the summary message, never the cache', () => {
   it('first build: the line states the covered span; the cache text stays pure', async () => {
     const msgs = build(10)
     const { compactor } = makeCompactor(msgs)
-    const final = await compactor.injectHistorySummary(msgs, msgs, msgs.slice(10))
+    const final = await compactor.injectHistorySummary(msgs, msgs.slice(10))
 
     const t = summaryText(final)
     expect(t.startsWith('【历史对话摘要】\n〔覆盖〕')).toBe(true)
@@ -225,21 +225,21 @@ describe('the coverage line rides the summary message, never the cache', () => {
   it('cache-hit passes re-render the identical line (the wire prefix must not churn)', async () => {
     const msgs = build(10)
     const { compactor } = makeCompactor(msgs)
-    const first = await compactor.injectHistorySummary(msgs, msgs, msgs.slice(10))
-    const second = await compactor.injectHistorySummary(msgs, msgs, msgs.slice(10))
+    const first = await compactor.injectHistorySummary(msgs, msgs.slice(10))
+    const second = await compactor.injectHistorySummary(msgs, msgs.slice(10))
     expect(summaryText(first)).toBe(summaryText(second))
   })
 
   it('an extension re-renders the line over the grown coverage', async () => {
     const msgs = build(18)
     const { compactor, runHistorySummary } = makeCompactor(msgs)
-    await compactor.injectHistorySummary(msgs, msgs, msgs.slice(10))
-    expect(summaryText(await compactor.injectHistorySummary(msgs, msgs, msgs.slice(10))))
+    await compactor.injectHistorySummary(msgs, msgs.slice(10))
+    expect(summaryText(await compactor.injectHistorySummary(msgs, msgs.slice(10))))
       .toContain('已压缩 10 条消息（用户发言 5 条）')
 
     // Pairs 5-8 accrue past the 12K line → one extension call → the ledger and
     // the line grow together.
-    const second = await compactor.injectHistorySummary(msgs, msgs, msgs.slice(18))
+    const second = await compactor.injectHistorySummary(msgs, msgs.slice(18))
     expect(runHistorySummary).toHaveBeenCalledTimes(2)
     expect(summaryText(second)).toContain('已压缩 18 条消息（用户发言 9 条）')
   })
@@ -250,9 +250,9 @@ describe('the coverage line rides the summary message, never the cache', () => {
     const compactor = new ContextCompactor({ runHistorySummary, getMessages: () => msgs })
     const final = await (compactor as unknown as {
       injectHistorySummaryInto: (
-        o: AgentMessage[], l: AgentMessage[], t: AgentMessage[], instruction?: string, notes?: string
+        o: AgentMessage[], t: AgentMessage[], instruction?: string, notes?: string
       ) => Promise<AgentMessage[]>
-    }).injectHistorySummaryInto(msgs, msgs, msgs.slice(10), undefined, '交接笔记：记住这个坑')
+    }).injectHistorySummaryInto(msgs, msgs.slice(10), undefined, '交接笔记：记住这个坑')
 
     const t = summaryText(final)
     expect(t).toContain('【交接笔记】')
@@ -263,13 +263,13 @@ describe('the coverage line rides the summary message, never the cache', () => {
   it('a rehydrated cache (no covered ledger) derives the line positionally from the frontier', async () => {
     const msgs = build(10)
     const { compactor } = makeCompactor(msgs)
-    await compactor.injectHistorySummary(msgs, msgs, msgs.slice(10))
+    await compactor.injectHistorySummary(msgs, msgs.slice(10))
     const cache = compactor.getHistorySummary()!
 
     // Rehydrate the way persistence does: text + frontier id, no ledger.
     const rehydrated = new ContextCompactor({ runHistorySummary: vi.fn(async () => '摘要内容'), getMessages: () => msgs })
     rehydrated.seedHistorySummary(cache.text, cache.firstKeptId)
-    const final = await rehydrated.injectHistorySummary(msgs, msgs, msgs.slice(10))
+    const final = await rehydrated.injectHistorySummary(msgs, msgs.slice(10))
     expect(summaryText(final)).toContain('已压缩 10 条消息（用户发言 5 条）')
   })
 })

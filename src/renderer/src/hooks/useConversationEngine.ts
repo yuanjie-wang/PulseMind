@@ -302,15 +302,30 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
   // engine leg already uses; document.hidden skips rAF, which never fires in
   // a hidden window.
   const lastSyncedRef = useRef<{ messages?: AgentMessage[]; agentStatus?: AgentStatus; streamingBlocks?: ContentBlock[]; plan?: Plan | null }>({})
-  const pendingSyncRef = useRef<SessionState | null>(null)
+  // The pending sync carries the session it was scheduled FOR. The scheduler
+  // only accepts the active conversation's events, but the flush fires up to
+  // one coalesce window (~80ms) later — after 新建任务 / a sidebar switch has
+  // already cleared or replaced React's slices for the NEW active conversation.
+  // Without the ownership check that stale flush re-pushes the OLD
+  // conversation's messages/running status into the new view: the welcome page
+  // comes back as the old transcript mid-run, or the draft view freezes on a
+  // spinner no live event will ever settle (measured 2026-10-24, user report
+  // 「新建会话后视图错乱继续」).
+  const pendingSyncRef = useRef<{ sessionId: string; st: SessionState } | null>(null)
   const syncTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const lastSyncAtRef = useRef(0)
 
   const flushActiveSync = useCallback(() => {
     if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = undefined }
-    const st = pendingSyncRef.current
+    const pending = pendingSyncRef.current
     pendingSyncRef.current = null
-    if (!st) return
+    if (!pending) return
+    // Drop a sync whose session stopped being the active one between schedule
+    // and flush: every switch path (activateEngine / handleSelectConversation /
+    // createNewConversation) writes activeEngineIdRef before the pending timer
+    // can fire, so this is the single choke point that covers all of them.
+    if (pending.sessionId !== activeEngineIdRef.current) return
+    const st = pending.st
     lastSyncAtRef.current = Date.now()
     const last = lastSyncedRef.current
     if (st.messages !== last.messages) {
@@ -331,8 +346,8 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
     }
   }, [])
 
-  const scheduleActiveSync = useCallback((st: SessionState) => {
-    pendingSyncRef.current = st
+  const scheduleActiveSync = useCallback((sessionId: string, st: SessionState) => {
+    pendingSyncRef.current = { sessionId, st }
     if (syncTimerRef.current) return
     const since = Date.now() - lastSyncAtRef.current
     syncTimerRef.current = setTimeout(() => {
@@ -388,7 +403,7 @@ export function useConversationEngine(options: UseConversationEngineOptions) {
       // slice-aware (see scheduleActiveSync above).
       if (activeEngineIdRef.current === sessionId) {
         if (data.type === 'compaction') setLastCompaction(data.event)
-        scheduleActiveSync(st)
+        scheduleActiveSync(sessionId, st)
       }
     })
     return () => {

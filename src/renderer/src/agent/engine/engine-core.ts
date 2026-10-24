@@ -97,6 +97,11 @@ export interface EngineCore {
   /** One-shot guard for the automatic truncated retry after an overflow —
    *  reset by a successful request and by prepareTurn. */
   contextOverflowRetries: number
+  /** The provider-named window an overflow rejection re-aimed this session at
+   *  (null until one happens). updateOptions clamps opts.contextLength back
+   *  under it — refreshOptions rebuilds the bag wholesale, so the re-aim must
+   *  live on the engine to survive a refresh. Dropped on profile switch. */
+  contextWindowReaim: number | null
   /** Refill-breaker state (PLAN-context-zcode-benchmarks P1): the pace
    *  counter the refill evaluation reads and the suspended flag the
    *  compactor consumes through its deps. See context-compactor.ts
@@ -104,6 +109,18 @@ export interface EngineCore {
   compactTracking: CompactTracking
   pendingToolIds: Set<string>
   executingProcessId: string | null
+  /** The tool_use id of the command `executingProcessId` runs — written next
+   *  to the pid, so a cleanup that kills the process can settle THAT call's
+   *  block (the exit event never arrives once the terminal listeners unbind;
+   *  see execution-flow.cleanup). */
+  executingToolUseId: string | null
+  /** tool_result ref ids already handed to the DB — persistUnsavedToolResults
+   *  skips them instead of re-binding the whole history every request. */
+  persistedToolResultIds: Set<string>
+  /** Gated-tool keyword scan watermark (tool-collection): messages scanned so
+   *  far + categories whose triggers already hit. The live history's user text
+   *  is append-only, so incremental scanning is exact. */
+  gatedScan: { scannedMsgs: number; hitCategories: Set<string> }
   terminalCleanups: (() => void)[]
   selectedMcpTools: string[]
   selectedBuiltinTools: string[]

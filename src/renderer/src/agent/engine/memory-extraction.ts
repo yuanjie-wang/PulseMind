@@ -145,13 +145,20 @@ export async function persistUnsavedToolResults(engine: EngineCore): Promise<voi
       ref_id: string; message_id: string; block_index: number;
       tool_use_id: string; content: string; is_error: number
     }> = []
+    // Incremental by the engine's persisted-id set: the old shape re-bound the
+    // WHOLE history's result bodies on every request build only for the DB to
+    // discard them via INSERT OR IGNORE — O(accumulated bytes) per request on
+    // a marathon tool session (better-sqlite3 copies every bound content
+    // buffer before the conflict check). ref ids are UUIDs minted once per
+    // block, so a remembered id is permanently done.
+    const seen = engine.persistedToolResultIds
     for (const msg of engine.messages) {
       if (msg.role !== 'user') continue
       for (let bi = 0; bi < msg.contentBlocks.length; bi++) {
         const block = msg.contentBlocks[bi]
         if (block.type !== 'tool_result') continue
         const tr = block as ToolResultBlock
-        if (tr.tool_result_id && tr.content && !tr.content.startsWith('[tool_result_id:') && !tr.content.startsWith('[Tool Result:')) {
+        if (tr.tool_result_id && tr.content && !seen.has(tr.tool_result_id) && !tr.content.startsWith('[tool_result_id:') && !tr.content.startsWith('[Tool Result:')) {
           entries.push({
             ref_id: tr.tool_result_id,
             message_id: msg.id,
@@ -166,6 +173,7 @@ export async function persistUnsavedToolResults(engine: EngineCore): Promise<voi
     if (entries.length === 0) return
     try {
       await getHost().persistToolResults(engine.opts.conversationId!, entries)
+      for (const e of entries) seen.add(e.ref_id)
     } catch (err) {
       console.warn('[AgentEngine] persistUnsavedToolResults failed:', err)
     }

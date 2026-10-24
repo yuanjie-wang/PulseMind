@@ -128,12 +128,24 @@ export function requestTokensOf(messages: AgentMessage[], fixedOverhead = 0): nu
 
 const CONTEXT_OVERFLOW_PATTERN = /(maximum context length|context length|prompt is too long|too many (input )?tokens|input (length|tokens).{0,20}exceed|.{0,8}exceed.{0,20}context|上下文.{0,8}(超长|超限|过长|超出)|长度超过)/i
 
-/** True when an error message reads as a provider context-overflow rejection —
- *  separate from parseContextOverflowLimit because a rejection that names no
- *  number still must trigger the rescue (the caller then halves its
- *  configured contextLength). */
+/** The proxy prefixes every non-ok rejection with its status
+ *  (`HTTP <status>: <body>`, api-proxy.handler). 413 is the STRUCTURED
+ *  "request too large" signal: gateways that answer with a generic body
+ *  ("Payload Too Large", empty, HTML) give the text pattern nothing to match,
+ *  and without the status arm those rejections errored the turn with the
+ *  whole rescue chain unengaged. 413 is not retried by the proxy (only
+ *  429/5xx are), so it reaches the runner immediately. */
+const OVERFLOW_STATUS_PREFIX = /^HTTP\s+413\b/
+
+/** True when an error reads as a provider context-overflow rejection — by body
+ *  text (any wording the pattern covers) or by the 413 status the proxy
+ *  prefixes. Separate from parseContextOverflowLimit because a rejection that
+ *  names no number still must trigger the rescue (the caller then halves its
+ *  configured contextLength); the session re-aim, by contrast, keys on a
+ *  parsed number only. */
 export function isContextOverflowRejection(message: string): boolean {
-  return CONTEXT_OVERFLOW_PATTERN.test(message)
+  if (CONTEXT_OVERFLOW_PATTERN.test(message)) return true
+  return OVERFLOW_STATUS_PREFIX.test(message)
 }
 
 /** The token limit a provider names in its context-overflow rejection, or null

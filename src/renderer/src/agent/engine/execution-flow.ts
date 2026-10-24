@@ -28,6 +28,13 @@ import { beginTerminalSpan } from '../terminal-span'
  *  membership test at three sites (dispatch, gate, approve). The sets
  *  themselves live in tool-tiers.ts, next to `tierOfTool`. */
 
+/** The trusted memory group's membership — ONE list shared by the dispatch
+ *  partition (isMemoryTool below) and approveTool's release routing. A drifted
+ *  third copy in approveTool once missed context_compact: exactly the
+ *  copy-drift accident the dispatch-side comment warns about, so the list
+ *  lives once, here. */
+const MEMORY_GROUP_TOOL_NAMES = ['memory_search', 'memory_save', 'conversation_search', 'tool_result_search', 'context_compact']
+
 /** Swap one tool_use block for a restamped replacement inside the message that
  *  owns it (the stream's just-appended assistant message). Engine-side the
  *  contentBlocks array is edited in place — every diff consumer keys on message
@@ -52,6 +59,11 @@ export class ExecutionFlow {
   private heldTiers(): Set<SandboxToolTier> {
     const held = new Set<SandboxToolTier>()
     if (this.engine.spawnSystemPrompt) return held
+    // The fallback is deliberately 'auto', NOT DEFAULT_APPROVAL_MODE: it covers
+    // engines with NO user to answer a hold (a sub-agent inheriting an unset
+    // parent / a derived session that pins its own level — see
+    // AgentEngineOptions.approvalMode). A hold nobody can release is worse
+    // than an auto-run; every user-facing constructor passes an explicit level.
     const mode = this.engine.opts.approvalMode ?? 'auto'
     if (requiresApproval(mode, 'write')) held.add('write')
     if (requiresApproval(mode, 'exec')) held.add('exec')
@@ -59,17 +71,50 @@ export class ExecutionFlow {
   }
 
   cleanup(): void {
+    // Order is kill → settle → unbind, and each step is load-bearing
+    // (2026-10-24 harness review B7): the killed process's exit event arrives
+    // asynchronously over IPC, so a cleanup that unbound the terminal listeners
+    // FIRST left that exit unconsumed — the block spun 执行中 forever and its
+    // id never left pendingToolIds (approving a second held call mid-run killed
+    // the first command and wedged the whole batch in 'executing'; a
+    // stop/pause mid-command left a permanently-spinning card). We kill, settle
+    // the killed call's block HERE, and only then unbind — the later exit
+    // event lands on a stopped span and is dropped deterministically, the
+    // duplicate result on the already-settled id is swallowed by addToolResult's
+    // duplicate guard.
+    const pid = this.engine.executingProcessId
+    const killedToolUseId = this.engine.executingToolUseId
+    this.engine.executingProcessId = null
+    this.engine.executingToolUseId = null
+    if (pid) {
+      try { this.engine.getHost().killCommand(pid) } catch { /* already dead */ }
+    }
     this.engine.terminalCleanups.forEach((fn: () => void) => { try { fn() } catch { /* ignore */ } })
     this.engine.terminalCleanups = []
-    if (this.engine.executingProcessId) {
-      try { this.engine.getHost().killCommand(this.engine.executingProcessId) } catch { /* already dead */ }
-      this.engine.executingProcessId = null
+    if (pid && killedToolUseId) {
+      const block = this.findToolBlock(killedToolUseId)
+      // 'running' only: a block the onExit/onError handler already settled
+      // cleared the pid fields, so this path can only see a genuinely
+      // in-flight command.
+      if (block && block.status === 'running') {
+        block.status = 'completed'
+        block.exitCode = -1
+        block.output = `${block.output || ''}\n[killed by user]`.trimStart()
+        this.engine.notify()
+        this.engine.addToolResult(killedToolUseId, 'Command execution was terminated before exit (killed by session cleanup).', true)
+      }
     }
   }
 
 
   approveTool = async (toolUseId: string, alwaysAllow?: boolean): Promise<void> => {
-    if (!this.engine.opts.apiKey) return
+    // No apiKey gate: approving releases a TOOL execution, and since every
+    // engine is main-hosted the LLM stream rides the api-proxy's own profile
+    // resolution — `opts.apiKey` is legitimately empty for local providers
+    // (ollama/LM Studio), and the old silent return here left such sessions
+    // parked on awaiting_approval with a dead button (the renderer-engine-era
+    // guard survived the M1.4 move). Missing-block and execution failures
+    // still settle loudly below.
 
     let targetBlock: ToolUseBlock | undefined
     for (const msg of this.engine.messages) {
@@ -83,7 +128,7 @@ export class ExecutionFlow {
     targetBlock.status = 'running'; this.engine.notify()
     this.engine.agentStatus = { status: 'executing', toolUseId }; this.engine.notify()
 
-    const memoryTools: string[] = ['memory_search', 'memory_save', 'conversation_search', 'tool_result_search']
+    const memoryTools: string[] = MEMORY_GROUP_TOOL_NAMES
     if (memoryTools.includes(targetBlock.name)) {
       await this.engine.toolExecutor.execOtherTool(targetBlock)
       return
@@ -170,12 +215,12 @@ export class ExecutionFlow {
         targetBlock!.output = outputBuffer; this.engine.notifyCoalesced()
       },
       onExit: d => {
-        targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.cleanup(); this.engine.notify()
+        targetBlock!.exitCode = d.code; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.engine.executingToolUseId = null; this.cleanup(); this.engine.notify()
         this.engine.addToolResult(toolUseId, outputBuffer || '(no output)', d.code !== 0)
       },
       onError: d => {
         if (terminalErrorReceived) return; terminalErrorReceived = true
-        targetBlock!.exitCode = -1; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; targetBlock!.output = d.message; this.cleanup(); this.engine.notify()
+        targetBlock!.exitCode = -1; targetBlock!.status = 'completed'; this.engine.executingProcessId = null; this.engine.executingToolUseId = null; targetBlock!.output = d.message; this.cleanup(); this.engine.notify()
         this.engine.addToolResult(toolUseId, `Error: ${d.message}`, true)
       },
     })
@@ -186,6 +231,7 @@ export class ExecutionFlow {
       const timeoutMs = targetBlock.input.timeout != null ? Number(targetBlock.input.timeout) * 1000 : undefined
       const processId = await getHost().executeCommand(resolvedCommand, resolvedCwd || undefined, timeoutMs)
       this.engine.executingProcessId = processId
+      this.engine.executingToolUseId = toolUseId
       span.claim(processId)
     } catch (err) {
       span.stop()
@@ -222,7 +268,7 @@ export class ExecutionFlow {
       this.engine.addToolResult(toolUseId, updated, false)
       return
     }
-    if (this.engine.executingProcessId) { getHost().killCommand(this.engine.executingProcessId); this.engine.executingProcessId = null }
+    if (this.engine.executingProcessId) { getHost().killCommand(this.engine.executingProcessId); this.engine.executingProcessId = null; this.engine.executingToolUseId = null }
     this.cleanup()
     for (const msg of this.engine.messages) {
       for (const blk of msg.contentBlocks) {
@@ -407,8 +453,9 @@ export class ExecutionFlow {
     // context_compact rides the memory group on purpose (PLAN-context-compact-tool
     // D7): the trusted-group exemption is name-based HERE, not category-based —
     // leaving it out drops the tool into otherTools and puts a compaction behind
-    // the approval ladder. Both isMemoryTool sites must list it.
-    const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search' || name === 'context_compact'
+    // the approval ladder. Single source: MEMORY_GROUP_TOOL_NAMES (approveTool's
+    // release routing reads the same list).
+    const isMemoryTool = (name: string): boolean => MEMORY_GROUP_TOOL_NAMES.includes(name)
     const memoryTools = tools.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
     const knowledgeTools = tools.filter(t => isKnowledgeTool(t.name))
@@ -561,7 +608,7 @@ export class ExecutionFlow {
     const isInstallMcp = (t: ToolUseBlock): boolean => t.name === 'install' && installTypeOf(t) === 'mcp'
     const installMcpTools = toolUses.filter(isInstallMcp)
     const systemTools = toolUses.filter(t => isSystemTool(t.name) && !isInstallMcp(t))
-    const isMemoryTool = (name: string): boolean => name === 'memory_search' || name === 'memory_save' || name === 'conversation_search' || name === 'tool_result_search' || name === 'context_compact'
+    const isMemoryTool = (name: string): boolean => MEMORY_GROUP_TOOL_NAMES.includes(name)
     const memoryTools = toolUses.filter(t => isMemoryTool(t.name))
     const isKnowledgeTool = (name: string): boolean => name === 'knowledge_search' || name === 'knowledge_read'
     const knowledgeTools = toolUses.filter(t => isKnowledgeTool(t.name))
@@ -641,24 +688,34 @@ export class ExecutionFlow {
       this.engine.onSpawnProgress(`子代理进度: [${completed}/${toolUses.length}] ${toolUses.map(t => t.name).join(', ')}`)
     }
 
-    // Nothing to confirm: the batch either ran to completion above or is still
-    // draining asynchronously (a running command's exit closes the loop).
+    // ── Sub-agent ask_user fail-fast ──────────────────────────────────
+    // (isSpawnedSubAgent, NOT spawnSystemPrompt — the assistants' pinned
+    // override lands in the same field and their transcript has a live user to
+    // answer): a spawned agent has no user channel, so ask_user must fail fast
+    // instead of parking forever. isAutoExecuting suppresses addToolResult's
+    // per-result continuation while the whole ask family settles — each result
+    // would otherwise re-fire continueLoop over the same emptied pending set
+    // and run concurrent streams on the shared request state — so the ONE
+    // explicit continuation below is the only one.
+    if (askUserTools.length > 0 && this.engine.isSpawnedSubAgent) {
+      this.engine.isAutoExecuting = true
+      for (const t of askUserTools) {
+        this.engine.addToolResult(t.id, 'ask_user is not available in sub-agent mode.', true)
+        t.status = 'completed'
+      }
+      this.engine.isAutoExecuting = false
+      if (this.engine.pendingToolIds.size === 0) this.engine.continueLoop()
+      else { this.engine.agentStatus = { status: 'completed' }; this.engine.notify(); this.engine.resolveCompletionIfSpawned('completed') }
+      this.engine.notify()
+      safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'tool_use', status: this.engine.agentStatus }, 'afterLlmCall')
+      return
+    }
+
+    // ── Nothing held: the batch either ran to completion or is still
+    // draining asynchronously (a running command's exit closes the loop). ──
     if (heldTools.length === 0) {
       if (askUserTools.length > 0) {
-        // Sub-agents only (isSpawnedSubAgent, NOT spawnSystemPrompt — the
-        // assistants' pinned override lands in the same field and their
-        // transcript has a live user to answer): a spawned agent has no user
-        // channel, so ask_user must fail fast instead of parking forever.
-        if (this.engine.isSpawnedSubAgent) {
-          for (const t of askUserTools) {
-            this.engine.addToolResult(t.id, 'ask_user is not available in sub-agent mode.', true)
-            t.status = 'completed'
-          }
-          if (this.engine.pendingToolIds.size === 0) this.engine.continueLoop()
-          else { this.engine.agentStatus = { status: 'completed' }; this.engine.notify(); this.engine.resolveCompletionIfSpawned('completed') }
-        } else {
-          this.engine.agentStatus = { status: 'awaiting_user_input', tools: askUserTools }
-        }
+        this.engine.agentStatus = { status: 'awaiting_user_input', tools: askUserTools }
       } else if (this.engine.pendingToolIds.size === 0) {
         // kick() true = the scheduler just dispatched a wave (or an attempt
         // owns the turn): status is `executing` and the batch's own drain
@@ -680,11 +737,30 @@ export class ExecutionFlow {
       return
     }
 
-    // Held: the approval UI owns the loop from here. Only an explicit approval
-    // (or rejection) settles each held tool, so the pending set is exactly them.
-    this.engine.pendingToolIds = new Set(heldTools.map(t => t.id))
-    this.engine.agentStatus = { status: 'awaiting_approval', tools: toolUses }
-    safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'tool_use', status: { status: 'awaiting_approval', tools: toolUses } }, 'afterLlmCall')
+    // ── Held calls on the ladder: the approval UI owns the loop from here.
+    // Only an explicit approval (or rejection) settles each held tool, so the
+    // pending set is exactly them — plus the ask cards of a MIXED batch. ──
+    if (askUserTools.length > 0) {
+      // Mixed batch (ask_user + ladder-held calls — a weak model's shape): the
+      // question leads. Both parks share the pending set: answering the
+      // question drops the engine onto awaiting_approval via addToolResult's
+      // repaint (remaining-held branch there), and the hosted flow registers
+      // the ask entries here, the approval prompts after the repaint. The
+      // pre-fix shape dropped the ask ids from the pending set entirely — the
+      // question was never asked, reconcile faked a "cancelled" result, and
+      // the hosted panel's answer bounced with unknown callId.
+      this.engine.pendingToolIds = new Set([...heldTools, ...askUserTools].map(t => t.id))
+      this.engine.agentStatus = { status: 'awaiting_user_input', tools: askUserTools }
+      safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'tool_use', status: { status: 'awaiting_user_input', tools: askUserTools } }, 'afterLlmCall')
+    } else {
+      // tools carries ONLY the held calls: session-manager ships status.tools
+      // to hosted clients verbatim, and the whole batch here would mint
+      // approval cards (with 120s auto-reject timers) for tools that already
+      // ran — a completed card flipped to 已拒绝 when the timer fired.
+      this.engine.pendingToolIds = new Set(heldTools.map(t => t.id))
+      this.engine.agentStatus = { status: 'awaiting_approval', tools: heldTools }
+      safeInvokeObserver(opts.hooks?.afterLlmCall, { messages: this.engine.messages, stopReason: 'tool_use', status: { status: 'awaiting_approval', tools: heldTools } }, 'afterLlmCall')
+    }
     this.engine.notify()
   }
 

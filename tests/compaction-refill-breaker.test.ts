@@ -104,7 +104,7 @@ describe('suspended compactor: the summary absorption pauses, the ledger holds',
     // Plain truncation while suspended with no cache — no call, no cache, and
     // the user replays STILL ride (P1 suspends summary absorption only; the
     // replays are not part of it).
-    const final = await compactor.injectHistorySummary(msgs, msgs, msgs.slice(10))
+    const final = await compactor.injectHistorySummary(msgs, msgs.slice(10))
     expect(runHistorySummary).not.toHaveBeenCalled()
     expect(compactor.getHistorySummary()).toBeNull()
     expect(compactor.lastInjectReplayCount).toBeGreaterThan(0)
@@ -126,14 +126,14 @@ describe('suspended compactor: the summary absorption pauses, the ledger holds',
     // (pairs 0-2). Each message enters the summary region capped at
     // SUMMARY_TEXT_CAP=2000 chars, so "enough to cross the accrual line" is
     // counted in capped units (~2K chars/message), not raw fixture sizes.
-    await compactor.injectHistorySummary(msgs, msgs, msgs.slice(6))
+    await compactor.injectHistorySummary(msgs, msgs.slice(6))
     expect(runHistorySummary).toHaveBeenCalledTimes(1)
     const cached = compactor.getHistorySummary()
 
     // Pass 2 (suspended): the same text rides, no extension call, the ledger's
     // coverage does NOT grow — the new slice stays uncovered.
     suspended = true
-    await compactor.injectHistorySummary(msgs, msgs, msgs.slice(15))
+    await compactor.injectHistorySummary(msgs, msgs.slice(15))
     expect(runHistorySummary).toHaveBeenCalledTimes(1)
     expect(compactor.getHistorySummary()).toEqual(cached)
 
@@ -141,7 +141,7 @@ describe('suspended compactor: the summary absorption pauses, the ledger holds',
     // (9 uncovered messages ≈ 18K capped chars > the 12K line; the slice the
     // breaker sat on was never stamped covered).
     suspended = false
-    await compactor.injectHistorySummary(msgs, msgs, msgs.slice(15))
+    await compactor.injectHistorySummary(msgs, msgs.slice(15))
     expect(runHistorySummary).toHaveBeenCalledTimes(2)
     const absorbed = runHistorySummary.mock.calls[1][0] as string
     expect(absorbed).toContain('MARKER-5') // the uncovered accrual, not the whole region

@@ -2,8 +2,10 @@
 // user rulings 2026-10-01 ×2). Two-power split: the model drives nano (free_results
 // mandated picks) and light (main action = prewarm with instruction/notes); hard +
 // emergency stay agent-side. The pins below are the ones the plan calls out by name:
-//   - guard matrix ①streaming ②once-per-turn ③<55% (with the just-above-line pass)
-//     ④nothing-to-drop — and free_results-only exempt from ②③
+//   - guard matrix ①in-flight markers (currentRequestId/prepareLoopInProgress —
+//     agentStatus is a stale proxy, see the ① case) ②once-per-turn ③<55% (with
+//     the just-above-line pass) ④nothing-to-drop — and free_results-only
+//     exempt from ②③
 //   - success: event source='tool', the one-shot force bypasses ONLY light
 //     (lightCompact sees force=true, hardTruncate force=false, consumed exactly once),
 //     notes verbatim in the summary message AND the cache text, notes survive a
@@ -102,16 +104,24 @@ function resultContentOf(copy: AgentMessage[], tuId: string): string | undefined
 beforeEach(() => { engineBodies.length = 0 })
 
 describe('guards ①—④ (main action only; free_results exempt from ②③)', () => {
-  it('① streaming refuses with request_in_flight', async () => {
+  it('① an in-flight request (the marker pair, not agentStatus) refuses with request_in_flight', async () => {
     const engine = makeEngine({ cycles: 3, contextLength: 1000 })
-    engine.agentStatus = { status: 'streaming' }
+    engine.currentRequestId = 'api_test_1'
     const out = await engine.compactForTool({})
     expect(out).toMatchObject({ ok: false, reason: 'request_in_flight' })
-    engine.agentStatus = { status: 'retrying' }
+    // The build phase arms no request id (its summary call rides the same
+    // transport) — the second in-flight marker covers it (watchdog pair).
+    engine.currentRequestId = null
+    engine.prepareLoopInProgress = true
     expect((await engine.compactForTool({})).reason).toBe('request_in_flight')
-    // executing (tool execution, no request in flight) is the sanctioned moment;
-    // the 7-message history passes ③ but nothing is droppable below MIN_KEEP.
-    engine.agentStatus = { status: 'executing' }
+    // Both markers null is the sanctioned moment EVEN with agentStatus still
+    // 'streaming' — the auto-run path never flips the status between requests
+    // (only approveTool / the delegated loop / the plan scheduler write
+    // 'executing'), which is exactly why the old status read refused every
+    // mid-turn call. The 7-message history passes ③ but nothing is droppable
+    // below MIN_KEEP.
+    engine.prepareLoopInProgress = false
+    engine.agentStatus = { status: 'streaming' }
     expect((await engine.compactForTool({})).reason).toBe('nothing_to_drop')
   })
 
@@ -210,6 +220,12 @@ describe('success path: event, one-shot light-only force, notes', () => {
   it('simulation == materialization: the prewarm drop pairs with the next build\'s actual drop', async () => {
     const events: CompactionEvent[] = []
     const engine = makeEngine({ contextLength: 6000, onCompaction: (e) => events.push(e) })
+    // Production sequence: context_compact only fires mid-loop, AFTER real
+    // requests — and the prewarm's simulation truncates in the LAST request's
+    // fixed-overhead units (lastRequestOverhead; the fit walks are
+    // overhead-sensitive). Seed the memo with one real build first, or the
+    // simulation prices 0 overhead against a build that prices the real thing.
+    await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
     const out = await engine.compactForTool({})
     expect(out.ok).toBe(true)
     const prewarmEvent = events.find(e => e.source === 'tool')!
@@ -350,11 +366,17 @@ describe('wiring — the scans that keep the channel honest', () => {
     expect(text).toContain('tu_7（最近 4 轮保护内）')
   })
 
-  it('both isMemoryTool sites list context_compact — the trusted-group exemption is name-based', () => {
+  it('both isMemoryTool sites read the ONE shared list — the trusted-group exemption is name-based', () => {
     const flow = read('src/renderer/src/agent/engine/execution-flow.ts')
-    const sites = flow.match(/isMemoryTool = \(name: string\): boolean =>/g) ?? []
+    // 2026-10-24 harness review: the two sites (dispatch partition + approveTool
+    // release routing) now read MEMORY_GROUP_TOOL_NAMES — one list, no drift.
+    const sites = flow.match(/isMemoryTool = \(name: string\): boolean => MEMORY_GROUP_TOOL_NAMES\.includes\(name\)/g) ?? []
     expect(sites.length).toBe(2)
-    expect(flow.match(/name === 'context_compact'/g)?.length).toBe(2)
+    // The shared list itself names context_compact exactly once (and is the
+    // ONLY literal list — the drifted third copy in approveTool is gone).
+    expect(flow.match(/MEMORY_GROUP_TOOL_NAMES = \[[^\]]*\]/g)?.length).toBe(1)
+    expect(flow).toContain("'context_compact']")
+    expect(flow.match(/'memory_search', 'memory_save'/g)?.length).toBe(1)
   })
 
   it('the engine arms, consumes and clears the three state pieces', () => {

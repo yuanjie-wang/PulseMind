@@ -39,9 +39,21 @@ describe('context-overflow classification', () => {
     expect(parseContextOverflowLimit(msg)).toBeNull() // no length keyword near the digits
   })
 
+  it('arms on the 413 status even when the body gives the pattern nothing', () => {
+    // The proxy prefixes every non-ok rejection: `HTTP <status>: <body>`.
+    // A generic "Payload Too Large" body names no length/token keyword —
+    // before the status arm, these gateways errored the turn with the rescue
+    // chain unengaged.
+    const msg = 'HTTP 413: Payload Too Large'
+    expect(isContextOverflowRejection(msg)).toBe(true)
+    expect(parseContextOverflowLimit(msg)).toBeNull() // no number → the caller halves its configured window
+  })
+
   it('leaves unrelated errors alone', () => {
     expect(isContextOverflowRejection('rate limit exceeded, retry after 30 seconds')).toBe(false)
     expect(isContextOverflowRejection('Connection reset by peer')).toBe(false)
+    expect(isContextOverflowRejection('HTTP 400: {"error":{"message":"Invalid model id"}}')).toBe(false)
+    expect(isContextOverflowRejection('HTTP 429: too many requests')).toBe(false) // the proxy owns 429 backoff
     expect(parseContextOverflowLimit('401 Unauthorized')).toBeNull()
   })
 })

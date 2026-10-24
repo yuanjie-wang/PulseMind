@@ -500,12 +500,12 @@ function ftsContentSearch(query: string, baseId?: string): ContentMatch[] {
  *  DB row must be resolved against the SAME base the scan ran in (M15). */
 async function searchContentViaRipgrep(query: string, rawDir: string, baseId: string): Promise<ContentMatch[]> {
   return new Promise((resolve) => {
-    const terms = query.trim().split(/\s+/).filter(Boolean)
-    if (terms.length === 0) { resolve([]); return }
-
     // 共享 builder（review_20261013 高2）：M10-P0-1 修了 wiki 兄弟分支，本
     // 通道的单词臂曾把 query 裸推进 argv——`--pre=` 形态的旗标注入原样存活。
+    // 空白 query 在 builder 里收口返回 null（review_20261015 中1：零 `-e` 的
+    // argv 会把 dir 当 PATTERN）——null 即无命中，rg 不会被调用。
     const args = buildRgSearchArgs(query, rawDir)
+    if (!args) { resolve([]); return }
 
     execFile(ripgrepBinary(), args, { timeout: 10000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err && !stdout) { resolve([]); return }

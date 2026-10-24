@@ -9,9 +9,14 @@
 // zip-stream → archiver-utils 正是这样丢的：exceljs→archiver 要 2.1.0（顶层），
 // zip-stream 要 3.0.4（嵌套），构建机上 hoisting 翻转后收集器把嵌套那份漏掉，
 // 用户侧打包后 require('exceljs') 直接 Cannot find module。
-// 修复分两层：package.json overrides 把 archiver-utils 拉平成单一版本（无冲突
-// 即无嵌套形态问题），本门禁把残余冲突（exceljs 的 unzipper 0.10/0.12 无法
-// 拉平）等任何同类丢件变成构建失败而不是用户运行时崩溃。
+// 修复分两层：lockfile 钉死自洽形态（npm ci 可复现：顶层 archiver-utils@2.1.0
+// + zip-stream 名下嵌套 3.0.4，tests/packed-node-modules.test.ts 的 state-Y
+// 用例钉住），本门禁把残余冲突（exceljs 的 unzipper 0.10/0.12 无法拉平）等
+// 任何同类丢件变成构建失败而不是用户运行时崩溃。
+// 红线：不要用 package.json overrides 把这族依赖拉平 —— Go 树读的是磁盘上的
+// 物理 package.json，overrides 对它不可见；实测拉到 2.1.0 丢 zip-stream 的、
+// 拉到 3.0.4 丢 archiver 的，两头都是同样的静默丢件（该方案已被否决，
+// wiring 用例钉住 overrides 必须不在场）。
 //
 // 纯逻辑（resolveVirtual / listPackageDirs / collectMissing）由
 // tests/packed-node-modules.test.ts 直测；本文件同时是 afterPack 的入口，

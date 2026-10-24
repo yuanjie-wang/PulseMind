@@ -112,11 +112,20 @@ export class ExperienceManager {
     if (!this.enabled) return null
     const records = await this.ensureCached()
     if (records.length === 0) return null
+    // Byte-stable ordering — prefix-cache contract (2026-10-24 harness review):
+    // the store returns rows LRU-first (ORDER BY last_used_at DESC) and every
+    // pick_skill/experience_read TOUCHES its record, so an LRU-ordered index
+    // would reorder the FROZEN CORE on the very next request after any read —
+    // re-billing the tool schemas and the whole history behind them. This
+    // index rides the same invariant core as the memory context (whose
+    // two-clock pin exists for exactly that instability); names in code-unit
+    // order change bytes only when the SET itself changes (save/evict/rename).
+    const names = records.map((r) => r.name).sort()
     return `## Experience Index
 
 Available past experiences (use pick_skill with name to read one in full):
 
-${records.map((r) => r.name).join(', ')}`
+${names.join(', ')}`
   }
 
   /**

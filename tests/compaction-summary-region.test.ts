@@ -66,7 +66,7 @@ describe('injectHistorySummaryInto: the dropped region spans light AND hard', ()
     expect(nano.length - light.length).toBeGreaterThan(0) // light is the dropper
     expect(light.length - truncated.length).toBe(0) // hard dropped NOTHING
 
-    const final = await compactor.injectHistorySummary(msgs, light, truncated)
+    const final = await compactor.injectHistorySummary(msgs, truncated)
 
     expect(runHistorySummary).toHaveBeenCalledTimes(1)
     // The summarizer saw the region's REAL tool results — the oldest, a middle
@@ -97,7 +97,7 @@ describe('injectHistorySummaryInto: the dropped region spans light AND hard', ()
     const nano = compactor.nanoCompact(msgs)
     const light = compactor.lightCompact(nano, 200_000, 0)
     const truncated = compactor.hardTruncate(light, 200_000, 0)
-    const final = await compactor.injectHistorySummary(msgs, light, truncated)
+    const final = await compactor.injectHistorySummary(msgs, truncated)
     const replayed = final.find((m) =>
       m.id === 'u-intent' &&
       (m.contentBlocks[0] as { text?: string }).text?.includes('xlsx 而不是 csv'))
@@ -176,7 +176,7 @@ describe('history-summary cache: frontier accrual bounds the LLM call rate', () 
     // 1st inject: no cache → full-region summarize (branch 4). The frontier is
     // the NEWEST DROPPED message (msgs[9]) — the hole-shape key — not the kept
     // tail's start (msgs[10]), which is what pinned the old cache forever.
-    await compactor.injectHistorySummary(msgs, msgs, msgs.slice(10))
+    await compactor.injectHistorySummary(msgs, msgs.slice(10))
     expect(runHistorySummary).toHaveBeenCalledTimes(1)
     const frontier0 = compactor.getHistorySummary()!.firstKeptId
     expect(frontier0).toBe(msgs[9].id)
@@ -184,19 +184,19 @@ describe('history-summary cache: frontier accrual bounds the LLM call rate', () 
 
     // 2nd: frontier advanced by 2 small messages — below the accrual line →
     // reused verbatim, NO call, frontier deliberately NOT re-keyed.
-    const second = await compactor.injectHistorySummary(msgs, msgs, msgs.slice(12))
+    const second = await compactor.injectHistorySummary(msgs, msgs.slice(12))
     expect(runHistorySummary).toHaveBeenCalledTimes(1)
     expect(compactor.getHistorySummary()!.firstKeptId).toBe(frontier0)
     expect(second.some((m) => (m.contentBlocks[0] as { text?: string }).text?.includes('【历史对话摘要】'))).toBe(true)
 
     // 3rd: advance by 5 more (still below the line alone) — still no call.
-    await compactor.injectHistorySummary(msgs, msgs, msgs.slice(15))
+    await compactor.injectHistorySummary(msgs, msgs.slice(15))
     expect(runHistorySummary).toHaveBeenCalledTimes(1)
 
     // 4th: the accrued slice (msgs 10-17 = pairs 5-8, ~16K chars of region
     // text) crosses the line → exactly ONE call covering the whole accrual,
     // frontier re-keyed.
-    const fourth = await compactor.injectHistorySummary(msgs, msgs, msgs.slice(18))
+    const fourth = await compactor.injectHistorySummary(msgs, msgs.slice(18))
     expect(runHistorySummary).toHaveBeenCalledTimes(2)
     const accrued = runHistorySummary.mock.calls[1][0] as string
     expect(accrued).toContain('MARKER-5')
@@ -227,7 +227,7 @@ describe('history-summary coverage: the 40K input cap does not stamp what it nev
 
     // 1st pass: only the oldest ~40K chars are built; the ledger must not
     // claim coverage of the capped-away tail.
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     expect(runHistorySummary).toHaveBeenCalledTimes(1)
     const first = runHistorySummary.mock.calls[0][0] as string
     expect(first).toContain('MARKER-0')
@@ -238,13 +238,13 @@ describe('history-summary coverage: the 40K input cap does not stamp what it nev
     expect(compactor.getHistorySummary()!.firstKeptId).toBe(msgs[39].id)
 
     // 2nd pass: the capped-away tail is still uncovered → one call absorbs it.
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     expect(runHistorySummary).toHaveBeenCalledTimes(2)
     const second = runHistorySummary.mock.calls[1][0] as string
     expect(second).toContain('MARKER-19') // THE defect: the old shape stamped it covered and never summarized it
 
     // 3rd pass: fully covered → cache reused, no further call.
-    const text = await compactor.injectHistorySummary(msgs, msgs, [])
+    const text = await compactor.injectHistorySummary(msgs, [])
     expect(runHistorySummary).toHaveBeenCalledTimes(2)
     expect(compactor.getHistorySummary()!.text).toBe('摘要内容\n\n摘要内容')
     expect(text.some((m) => (m.contentBlocks[0] as { text?: string }).text?.includes('【历史对话摘要】'))).toBe(true)
@@ -314,11 +314,11 @@ describe('history-summary cache: the accumulated text is capped and rolled (低3
     const runHistorySummary = vi.fn(async () => '滚'.repeat(12_500))
     const compactor = new ContextCompactor({ runHistorySummary, getMessages: () => msgs })
 
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     expect(runHistorySummary).toHaveBeenCalledTimes(1)
     expect(compactor.getHistorySummary()!.text).toBe('滚'.repeat(12_500))
 
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     // Call 2 = the extension (the newly-uncovered slice), call 3 = the roll.
     expect(runHistorySummary).toHaveBeenCalledTimes(3)
     expect(runHistorySummary.mock.calls[2][0]).toBe('滚'.repeat(12_500) + '\n\n' + '滚'.repeat(12_500))
@@ -326,7 +326,7 @@ describe('history-summary cache: the accumulated text is capped and rolled (低3
     expect(compactor.getHistorySummary()!.text).toBe('滚'.repeat(12_500))
     // The roll saw the whole merge → the ledger absorbed everything → a third
     // pass is a pure cache hit.
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     expect(runHistorySummary).toHaveBeenCalledTimes(3)
   })
 
@@ -338,15 +338,15 @@ describe('history-summary cache: the accumulated text is capped and rolled (低3
       .mockResolvedValueOnce('')                  // …whose roll fails
     const compactor = new ContextCompactor({ runHistorySummary, getMessages: () => msgs })
 
-    await compactor.injectHistorySummary(msgs, msgs, [])
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     // The merge never landed: the cache keeps the pass-1 state untouched.
     expect(compactor.getHistorySummary()!.text).toBe('滚'.repeat(12_500))
     expect(compactor.getHistorySummary()!.firstKeptId).toBe(msgs[39].id)
 
     // The tail's ids were never covered — a third pass retries the extension
     // (call 4) instead of declaring everything absorbed.
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     expect(runHistorySummary).toHaveBeenCalledTimes(4)
     expect(runHistorySummary.mock.calls[3][0]).toContain('MARKER-10')
   })
@@ -358,12 +358,12 @@ describe('history-summary cache: the accumulated text is capped and rolled (低3
       .mockResolvedValueOnce('滚'.repeat(12_500)) // the roll
     const compactor = new ContextCompactor({ runHistorySummary, getMessages: () => msgs })
 
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     expect(runHistorySummary).toHaveBeenCalledTimes(2)
     expect(runHistorySummary.mock.calls[1][0]).toBe('滚'.repeat(25_000))
     expect(compactor.getHistorySummary()!.text).toBe('滚'.repeat(12_500))
     // Coverage complete → the next pass is a pure cache hit.
-    await compactor.injectHistorySummary(msgs, msgs, [])
+    await compactor.injectHistorySummary(msgs, [])
     expect(runHistorySummary).toHaveBeenCalledTimes(2)
   })
 })

@@ -74,7 +74,7 @@ describe('compaction fit units: the enforcement speaks the same units the trigge
       const nano = compactor.nanoCompact(history)
       const light = compactor.lightCompact(nano, WINDOW, OVERHEAD)
       const truncated = compactor.hardTruncate(light, WINDOW, OVERHEAD)
-      const final = await compactor.injectHistorySummary(history, light, truncated)
+      const final = await compactor.injectHistorySummary(history, truncated)
 
       // 触发输入（与 lightCompact 内部同款）：锚点单位
       const est = compactor.contextTokens(nano, OVERHEAD)

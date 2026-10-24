@@ -27,12 +27,31 @@ export interface BuildSystemPromptParams {
    *  clock still last). Consumed by prepareLoopRequest — one request build
    *  only, never persisted, never rendered. */
   continuationNudge?: boolean
-  /** Context window gauge (user 2026-10-10): the same contextTokens() estimate
-   *  guard ③ of context_compact uses, so the model can PREDICT a refusal
-   *  instead of spending a probe call. Per-turn volatile — state block only,
-   *  clock still last. Absent → no section (tests, spawned sessions). */
-  contextUsage?: { tokens: number; window: number }
+  /** Context window gauge (user 2026-10-10): the POST-PIPELINE size of THIS
+   *  request — what the model is actually reading after the automatic
+   *  nano/light/hard passes (2026-10-24 口径修正). The pre-pipeline reading
+   *  (last wire anchor + raw tail, requestTokensOf) over-reads by exactly the
+   *  share the pipeline compresses before it ships: a tool-heavy turn pinned
+   *  the gauge at 79–96% while the wire carried ~60%, and the model read the
+   *  gap as exhaustion and began rationing its work (conv_20261021155951).
+   *  `tokens: null` = sentinel mode: the pipeline has not run yet, so the
+   *  block carries CONTEXT_GAUGE_SENTINEL and prepareLoopRequest swaps in the
+   *  real section afterwards (one replace, one occurrence). Absent → no
+   *  section (tests, spawned sessions). Per-turn volatile — state block only,
+   *  clock still last. */
+  contextUsage?: { tokens: number | null; window: number }
 }
+
+/** Sentinel standing in for the Context Window gauge while the compaction
+ *  pipeline runs: the gauge must report the POST-COMPACTION size, but the
+ *  pipeline needs the state block's byte length for its overhead estimate
+ *  first (chicken-and-egg). prepareLoopRequest builds the block with the
+ *  sentinel, runs the pipeline, then single-replaces the sentinel with
+ *  buildContextWindowSection's real section — same position (before the
+ *  continuation nudge, clock last). Building the block twice instead would
+ *  double the per-request host reads (git status, AGENTS.md, knowledge
+ *  stats) for one number. */
+export const CONTEXT_GAUGE_SENTINEL = '@@PULSEMIND_CONTEXT_GAUGE@@'
 
 export interface BuildSystemPromptResult {
   /**
@@ -218,7 +237,7 @@ async function buildStateBlock(params: {
   plan: Plan | null
   summon?: SummonState | null
   continuationNudge?: boolean
-  contextUsage?: { tokens: number; window: number }
+  contextUsage?: { tokens: number | null; window: number }
 }): Promise<string> {
   const { opts, plan, summon, continuationNudge, contextUsage } = params
   const sections: string[] = []
@@ -306,11 +325,21 @@ async function buildStateBlock(params: {
   }
 
   // Context Window gauge (user 2026-10-10): the model owns the context_compact
-  // decision, so it needs the same number the guard enforces. Sits BEFORE the
-  // nudge so the continuation directive keeps its "last-but-clock" contract;
-  // both are per-turn volatile and the clock re-bills the tail on every
-  // request regardless, so the line rides free.
-  if (contextUsage) sections.push(buildContextWindowSection(contextUsage))
+  // decision, so it needs an occupancy number it can trust — the POST-PIPELINE
+  // size of this request (sentinel here; prepareLoopRequest swaps the real
+  // section in after the compaction pipeline runs). Sits BEFORE the nudge so
+  // the continuation directive keeps its "last-but-clock" contract; both are
+  // per-turn volatile and the clock re-bills the tail on every request
+  // regardless, so the line rides free.
+  if (contextUsage) {
+    // Narrow through a local: passing contextUsage whole would lose the
+    // null-check's property narrowing (TS narrows the access path, not the
+    // containing object).
+    const gaugeSection = contextUsage.tokens === null
+      ? CONTEXT_GAUGE_SENTINEL
+      : buildContextWindowSection({ tokens: contextUsage.tokens, window: contextUsage.window })
+    sections.push(gaugeSection)
+  }
 
   // Early-stop continuation directive (2026-10-08): armed by stream-runner's
   // guard for exactly one request. Volatile by nature — present only on nudge
@@ -320,7 +349,17 @@ async function buildStateBlock(params: {
 
   sections.push(buildClockSection())
 
-  return `<session-state>\n${sections.join('\n\n')}\n</session-state>`
+  // Delimiter hygiene (2026-10-24 harness review): every section interpolates
+  // external bytes — page titles, project text, git paths, user-authored
+  // AGENTS.md bodies — and none of them may be able to CLOSE this wrapper
+  // early and keep writing as if it were environment state. SESSION_STATE_NOTICE
+  // tells the model the LATEST block is authoritative, so a forged tail would
+  // inherit that authority. Neutralize the literal tags anywhere in the body;
+  // the escaped forms stay perfectly readable to the model.
+  const body = sections.join('\n\n')
+    .replaceAll('<session-state>', '<session\\-state>')
+    .replaceAll('</session-state>', '<\\/session-state>')
+  return `<session-state>\n${body}\n</session-state>`
 }
 
 function buildWorkspaceSection(workspaceDir?: string): string | null {
@@ -526,16 +565,24 @@ function buildClockSection(): string {
 }
 
 /**
- * The context-window gauge. Numbers are the engine's OWN estimate (the same
- * `contextTokens()` guard ③ of context_compact enforces), so what the model
- * sees is exactly what decides its call: below 55% a call is refused, the
- * force target is 0.6×. Exported for the section's math pins.
+ * The context-window gauge. Numbers are the REQUEST-side estimate
+ * (requestTokensOf): the last real request's wire size plus the tail since —
+ * the same reading the UI ring shows, and the only unit where "~N% used" is
+ * a true sentence about this window. Below the 55% line a context_compact
+ * call is refused; the force target is 0.6×. Exported for the section's math
+ * pins.
  */
+/** The gauge line. The number is the POST-PIPELINE size of THIS request (see
+ *  BuildSystemPromptParams.contextUsage for the 口径 history). Guard ③ still
+ *  refuses context_compact in transcript-pressure units and prints its own
+ *  honest percentage in the refusal envelope, so the line no longer cites the
+ *  55% threshold against a differently-unit'd number. */
 export function buildContextWindowSection(usage: { tokens: number; window: number }): string {
   const pct = Math.min(100, Math.max(0, Math.round((usage.tokens / usage.window) * 100)))
   const k = (n: number): string => `${Math.round(n / 1000)}K`
   return `## Context Window
-- ~${pct}% used (~${k(usage.tokens)} / ${k(usage.window)} tokens). A context_compact call is refused below 55%; near that line, a phase boundary is the moment to call it with a handover note.`
+- ~${pct}% used (~${k(usage.tokens)} / ${k(usage.window)} tokens) — the size of THIS request, measured after automatic compaction. Every request is re-fitted automatically; work normally and do not rush to finish or ration detail to save context.
+- context_compact at a phase boundary, with a handover note, is how you deliberately free room for what comes next; calls with nothing droppable are refused.`
 }
 
 function buildPageSection(pageContext?: AgentEngineOptions['pageContext']): string | null {
@@ -633,6 +680,23 @@ async function matchExperiences(
  * Do NOT reintroduce a probe call before this one. tests/git-context.test.ts
  * pins the call count.
  */
+/** Per-list cap on git-context file entries (2026-10-24 harness review): the
+ *  state block is re-sent whole on every request, and git runs
+ *  `--untracked-files=all` — a workspace without node_modules/dist ignored
+ *  would otherwise ride tens of thousands of file lines into every iteration
+ *  of a tool loop. Same shape as MAX_PROJECT_COMMANDS: head + a count pointer.
+ *  The FULL counts stay in each header line, so nothing is hidden. */
+const MAX_GIT_LIST_ENTRIES = 50
+
+function gitListLines(label: string, files: string[]): string[] {
+  if (files.length === 0) return []
+  const shown = files.slice(0, MAX_GIT_LIST_ENTRIES).map((f) => `  ${f}`)
+  const more = files.length > MAX_GIT_LIST_ENTRIES
+    ? [`  … +${files.length - MAX_GIT_LIST_ENTRIES} more (use git to list)`]
+    : []
+  return [`${label} (${files.length}):`, ...shown, ...more]
+}
+
 async function buildGitContext(cwd: string): Promise<string | null> {
   try {
     const status = await getHost().gitInvoke({ action: 'status', cwd })
@@ -640,10 +704,10 @@ async function buildGitContext(cwd: string): Promise<string | null> {
     const d = status.data as GitStatusInfo
     if (!d.isRepo) return null
     const lines = ['--- Git Context ---', `Repo: ${cwd} (branch: ${d.branch ?? 'detached'})`, `Ahead: ${d.ahead} | Behind: ${d.behind}`]
-    if (d.staged.length) lines.push(`Staged (${d.staged.length}):`, ...d.staged.map((f) => `  ${f}`))
-    if (d.unstaged.length) lines.push(`Unstaged (${d.unstaged.length}):`, ...d.unstaged.map((f) => `  ${f}`))
-    if (d.untracked.length) lines.push(`Untracked (${d.untracked.length}):`, ...d.untracked.map((f) => `  ${f}`))
-    if (d.conflict.length) lines.push(`Conflicts (${d.conflict.length}):`, ...d.conflict.map((f) => `  ${f}`))
+    lines.push(...gitListLines('Staged', d.staged))
+    lines.push(...gitListLines('Unstaged', d.unstaged))
+    lines.push(...gitListLines('Untracked', d.untracked))
+    lines.push(...gitListLines('Conflicts', d.conflict))
     lines.push('--- End Git Context ---')
     return lines.join('\n')
   } catch {

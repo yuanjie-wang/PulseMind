@@ -139,7 +139,7 @@ describe('injectHistorySummaryInto: the reminder rides the compensation region',
     const original = [...dropped, ...tail]
     const { compactor } = makeCompactor(original)
 
-    const final = await compactor.injectHistorySummary(original, [...dropped], tail)
+    const final = await compactor.injectHistorySummary(original, tail)
     const kinds = final.map((m) => {
       const b0 = m.contentBlocks[0]
       const t = b0 && 'text' in b0 ? (b0 as { text: string }).text : ''
@@ -162,7 +162,7 @@ describe('injectHistorySummaryInto: the reminder rides the compensation region',
     const original = [...dropped, ...tail]
     const { compactor } = makeCompactor(original)
 
-    const final = await compactor.injectHistorySummary(original, [...dropped], tail)
+    const final = await compactor.injectHistorySummary(original, tail)
     expect(final.some((m) => (m.contentBlocks[0] as { text?: string }).text?.includes('【已归档读取提醒】'))).toBe(false)
     expect(compactor.lastReminderCount).toBe(0)
   })
@@ -180,7 +180,7 @@ describe('injectHistorySummaryInto: the reminder rides the compensation region',
     const original = [...dropped, ...tail]
     const { compactor } = makeCompactor(original)
 
-    const final = await compactor.injectHistorySummary(original, [...dropped], tail)
+    const final = await compactor.injectHistorySummary(original, tail)
     const replays = compactor.lastInjectReplayCount // 1
     const reminders = compactor.lastReminderCount // 1
     expect(replays).toBe(1)

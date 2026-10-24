@@ -111,7 +111,11 @@ function statusSnapshotOf(status: AgentStatus): StatusSnapshot {
     status: status.status,
     ...(status.status === 'error' ? { error: status.error } : {}),
     ...(status.status === 'retrying'
-      ? { attempt: status.attempt, maxRetries: status.maxRetries, delayMs: status.delay, message: status.message }
+      ? { attempt: status.attempt, maxRetries: status.maxRetries, delayMs: status.delay, message: status.message,
+          // The overflow re-aim's live window hint (see AgentStatus.contextWindow)
+          // — the renderer ring's denominator needs it when the provider just
+          // corrected a phantom profile number.
+          ...(status.contextWindow != null ? { contextWindow: status.contextWindow } : {}) }
       : {}),
     ...(status.status === 'awaiting_extension' ? { currentCount: status.currentCount, limit: status.limit } : {}),
   }

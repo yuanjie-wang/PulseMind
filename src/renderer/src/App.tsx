@@ -39,6 +39,7 @@ import { enqueueStartupCompile } from './components/knowledge/compile-queue'
 import { createLlmAdapter } from './llm/index'
 import { generateMcpSummaries } from './agent/mcp-summary-service'
 import { useGreeting } from './hooks/useGreeting'
+import { resolveContextWindow, useSessionContextWindowStore } from './utils/context-window'
 import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
@@ -373,6 +374,36 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     ? (activeConvProfileId ?? settings.activeProfileId)
     : (pendingProfileId ?? settings.lastUsedProfileId ?? settings.activeProfileId)
   const profilePinned = activeConvKey ? activeConvProfileId != null : false
+  // 溢出重瞄准的活体窗口（2026-10-24 harness review B8）：retrying 状态捎来
+  // 的会话实报窗口钉进外部 store（utils/context-window.ts，与
+  // pendingProfileStore 同款），分母取 min(profile 解析值, 会话实报值)——
+  // 引擎侧的压缩链/刻度节都读重瞄准后的数字，圆环跟它对齐才不至于在模型
+  // 实际跑满窗口时显示 45%。换会话即失效；引擎侧换 profile 会丢弃重瞄准，
+  // 这里的旧值随之被 profile 解析值取代（重瞄准只会更小，min 永不吃掉
+  // 正确的更大窗口）。
+  const pinnedSessionWindow = useSessionContextWindowStore((s) => s.pinned)
+  const pinSessionWindow = useSessionContextWindowStore((s) => s.pin)
+  useEffect(() => {
+    if (agentStatus.status === 'retrying' && agentStatus.contextWindow != null) {
+      pinSessionWindow(activeConvKey, agentStatus.contextWindow)
+    }
+  }, [agentStatus, activeConvKey, pinSessionWindow])
+  // 上下文刻度（composer 圆环）的分母跟会话实际在用的模型走，解析链镜像
+  // 主进程 resolveProfile、回落与引擎一致（utils/context-window.ts）。
+  // 上方喂给 useChatController 的 contextLength 是 M1.4 主进程托管后的兼容
+  // 形参（渲染端引擎选项不参与行为），那个值仍取默认模型是可接受的；这个
+  // 显示值是用户实际看到的刻度，必须按会话解析 —— 旧实现直接画默认模型的
+  // 窗口，改默认模型的上下文长度会当场穿透到钉了别的模型的会话上
+  // （2026-10-18 用户报告「正在用 A，改了默认 B 的参数，错乱」）。
+  const profileContextLength = resolveContextWindow(
+    settings.profiles ?? [],
+    effectiveProfileId,
+    settings.activeProfileId,
+  )
+  const sessionWindowMatches = pinnedSessionWindow != null && pinnedSessionWindow.conv === activeConvKey
+  const displayContextLength = sessionWindowMatches
+    ? Math.min(profileContextLength, pinnedSessionWindow.window)
+    : profileContextLength
   const changeProfile = useCallback((profileId: string): void => {
     if (activeConvKey) updateConversationProfile(activeConvKey, profileId)
     else usePendingProfileStore.getState().setProfileId(profileId)
@@ -673,7 +704,7 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
               agentStatus={agentStatus}
               streamingBlocks={streamingBlocks}
               hasApiKey={hasApiKey}
-              contextLength={contextLength}
+              contextLength={displayContextLength}
               onOpenPlanNode={onOpenPlanNode}
               onOpenNodeReport={onOpenNodeReport}
               onOpenSubAgent={onOpenSubAgent}

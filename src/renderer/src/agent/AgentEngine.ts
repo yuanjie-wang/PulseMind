@@ -18,7 +18,7 @@ import type { PlatformInfo } from '../types/electron'
 import type { LlmAdapter } from '../llm/adapter'
 import { SkillKeywordAgent, SkillSelectionAgent, HistorySummaryAgent } from './one-shot-agent'
 import { safeInvoke, safeInvokeObserver, getLoopIterationLimit, generateMsgId, type SubAgentResult, type SpawnSubAgentConfig, type SubAgentHandle } from './agent-utils'
-import { buildSystemPrompt } from './system-prompt-builder'
+import { buildSystemPrompt, buildContextWindowSection, CONTEXT_GAUGE_SENTINEL } from './system-prompt-builder'
 import type { ExpertRuntimeContext } from '../../../shared/types/expert'
 import { normalizeSummonedExperts, type SummonState, type SummonedExpert } from '../../../shared/expert-context'
 import type { SandboxApprovalMode } from '../../../shared/sandbox/policy'
@@ -277,6 +277,11 @@ export class AgentEngine implements EngineCore {
   terminalCleanups: (() => void)[] = []
   /** @internal */
   executingProcessId: string | null = null
+  /** @internal — the tool_use id of the command `executingProcessId` runs, so
+   *  a cleanup that kills the process can settle THAT call's block (the exit
+   *  event never arrives once the terminal listeners unbind — see
+   *  execution-flow.cleanup). Written next to executingProcessId, always. */
+  executingToolUseId: string | null = null
   /** @internal */
   isCancelled = false
   /** @internal — request ids aborted while freezing/stopping (see the field's
@@ -324,6 +329,15 @@ export class AgentEngine implements EngineCore {
   contextOverflowLimit: number | null = null
   /** @internal */
   contextOverflowRetries = 0
+  /** @internal — the provider-named window a context-overflow rejection re-aimed
+   *  this session at (see stream-runner's catch). refreshOptions rebuilds the
+   *  opts bag wholesale from the profile, so the re-aim lives HERE and
+   *  updateOptions clamps opts.contextLength back under it — otherwise every
+   *  approval flip / model-default sweep / persona edit would silently restore
+   *  the phantom window and re-arm the 400-oscillation the re-aim closed. The
+   *  re-aim belongs to the model that reported it: switching profiles drops it;
+   *  a new conversation (reset) starts clean. */
+  contextWindowReaim: number | null = null
   /** Number of spawn_agent calls in the round's dispatching assistant message —
    *  the denominator of the shared envelope budget (see executors/spawn-tool.ts
    *  spawnEnvelopeBudget). Stable across the batch: every dispatch of the round
@@ -353,14 +367,8 @@ export class AgentEngine implements EngineCore {
   public selectedMcpTools: string[] = []
   /** Gated built-in tool names activated via pick_tool or keyword trigger — empty = all hidden */
   public selectedBuiltinTools: string[] = []
-  /** Cached history summary for the currently-dropped region. The id is the
-   *  COVERAGE FRONTIER — the newest message the summary text covers (the last
-   *  dropped one), not a kept-tail start: light drops holes (whole tool
-   *  cycles), so a kept-tail key pinned itself to the first surviving
-   *  non-cycle message and the cache never extended (conv_20260927170026:
-   *  one 683-char summary for 29h). Serialized/persisted under the historical
-   *  `firstKeptId` name; consumers treat it as opaque. */
-  private historySummary: { firstKeptId: string; text: string } | null = null
+  /** Cached history summary state lives on `this.compactor` (the real cache);
+   *  the old shadow field here was write-only dead weight and is gone. */
   // Sub-agents for background LLM tasks (stateless singletons)
   private skillKeywordAgent = new SkillKeywordAgent()
   private skillSelectionAgent = new SkillSelectionAgent()
@@ -444,6 +452,20 @@ export class AgentEngine implements EngineCore {
    *  the breaker has suspended summary absorption. See
    *  engine/context-compactor.ts `evaluateRefillBreaker`. */
   compactTracking: CompactTracking = makeCompactTracking()
+
+  /** @internal — tool_result ref ids already handed to the DB
+   *  (persistUnsavedToolResults). Without it every request build re-bound the
+   *  WHOLE history's result bodies into INSERT OR IGNORE calls that the DB
+   *  then discarded — O(accumulated bytes) per request on a marathon tool
+   *  session. ref ids are UUIDs minted at block creation, so the set is
+   *  conversation-scoped by construction. */
+  persistedToolResultIds: Set<string> = new Set()
+
+  /** @internal — gated-tool keyword scan watermark (tool-collection): user
+   *  text in the live history is append-only, so the scan only ever needs the
+   *  messages appended since the last pass; a wholesale history replacement
+   *  (loadConversation/reset) is detected by the count going backwards. */
+  gatedScan: { scannedMsgs: number; hitCategories: Set<string> } = { scannedMsgs: 0, hitCategories: new Set() }
 
   /** @internal — execution-flow counts one completed tool batch per model
    *  round whose tool results landed; the refill breaker reads the pace.
@@ -557,11 +579,18 @@ export class AgentEngine implements EngineCore {
     const freeResults = (call.freeResults ?? []).map((s) => String(s).trim()).filter(Boolean)
 
     // ① A request actually in flight stays un-raceable: the prewarm mutates the
-    // shared summary cache. Tool execution happens BETWEEN requests (status
-    // 'executing' with none in flight) and is exactly the sanctioned moment —
-    // compactNow's blanket guard was the over-conservative one (D4).
-    const status = this.agentStatus.status
-    if (status === 'streaming' || status === 'retrying') {
+    // shared summary cache. The signal is the engine's in-flight marker pair —
+    // currentRequestId (cleanupListeners clears it the moment the stream
+    // settles) + prepareLoopInProgress (the build phase, whose summary call
+    // arms no id) — the same pair the spawned watchdog's liveness check reads.
+    // agentStatus is the wrong proxy: the auto-run path never flips the status
+    // off 'streaming' between a settled stream and the next request (only
+    // approveTool / the delegated loop / the plan scheduler ever write
+    // 'executing'), so the old status read refused every mid-turn call — the
+    // tool's primary scenario (user report 2026-10-17). By tool-execution time
+    // both markers are null: exactly the sanctioned moment — compactNow's
+    // blanket guard was the over-conservative one (D4).
+    if (this.currentRequestId || this.prepareLoopInProgress) {
       return { ok: false, reason: 'request_in_flight' }
     }
 
@@ -701,7 +730,14 @@ export class AgentEngine implements EngineCore {
       this.mcpToolOwner,
       this.skillKeywordAgent,
       this.skillSelectionAgent,
-      (id, content, isError, imageData) => this.addToolResult(id, content, isError, imageData),
+      // All five params THROUGH (2026-10-24 harness review B1): the 5th is the
+      // per-tool result budget — read/office_read/office_search send
+      // MAX_READ_RESULT_TOKENS (30K) and office_inspect its 8K here. A 4-arg
+      // lambda is assignable to the wider signature so the compiler stayed
+      // silent while every one of those budgets was dropped and addToolResult
+      // fell back to the 4K default (head+tail truncation on every large
+      // read).
+      (id, content, isError, imageData, maxTokens) => this.addToolResult(id, content, isError, imageData, maxTokens),
       () => this.notify(),
       (pid) => { this.executingProcessId = pid },
       (config) => this.spawnSubAgent(config),
@@ -753,13 +789,29 @@ export class AgentEngine implements EngineCore {
   updateOptions(opts: AgentEngineOptions): void {
     const oldModel = this.opts.model
     const newModel = opts.model
+    const oldProfileId = this.opts.profileId
     console.log(`[AgentEngine] updateOptions: ${oldModel} -> ${newModel}`, {
       apiKey: opts.apiKey ? `${opts.apiKey.slice(0, 8)}...` : null,
       baseURL: opts.baseURL,
       model: opts.model,
       provider: opts.adapter.constructor.name
     })
+    // The overflow re-aim belongs to the MODEL that reported it — a profile
+    // switch drops it (a bigger-window model must not inherit the old one's
+    // shrunken chain).
+    if (opts.profileId !== oldProfileId) this.contextWindowReaim = null
     this.opts = opts
+    // Re-aim durability: updateOptions replaces the bag wholesale from the
+    // profile, so without this clamp any refreshOptions (approval flip, model
+    // default sweep, persona edit) would restore the phantom window that the
+    // provider's numbered rejection just corrected. Upward never applies — a
+    // conservative profile number wastes window but is never wrong.
+    if (this.contextWindowReaim != null) {
+      const profileWindow = opts.contextLength ?? 128_000
+      if (this.contextWindowReaim < profileWindow) {
+        this.opts = { ...opts, contextLength: this.contextWindowReaim }
+      }
+    }
     // The expert pack rides the bag wholesale (refreshOptions re-attaches it
     // WITH its mirror fields), so the one derived piece living outside opts
     // must be re-derived here when the key is present — the same rule
@@ -767,7 +819,7 @@ export class AgentEngine implements EngineCore {
     if (opts.allowedMcpServers !== undefined) {
       this.allowedMcpServersSet = new Set(opts.allowedMcpServers)
     }
-    this.toolExecutor.updateOptions(opts)
+    this.toolExecutor.updateOptions(this.opts)
   }
 
   /** Swap the @-summoned expert config pack at runtime. Expert state lives on
@@ -1045,6 +1097,19 @@ export class AgentEngine implements EngineCore {
     // pressed stop. Explicit resumes (resumeExecution / retryLastTurn) reset
     // isCancelled first, so they pass.
     if (this.isCancelled) return
+    // Reentrancy guard (2026-10-24 harness review): a request — or its build
+    // phase — already in flight means a second continueLoop would run a
+    // concurrent stream over the SAME currentAssistantBlocks / streamingBlocks /
+    // currentRequestId: interleaved garbage and double loop-count burn (the
+    // sub-agent ask_user fail-fast shape was the first proven trigger). Every
+    // sanctioned path either waits out the drain (addToolResult's tail) or
+    // aborts the old request first (steer / retry / prepareTurn), so a hit here
+    // is a bug in some new path — log it loudly and drop the re-entry rather
+    // than corrupt the stream state.
+    if (this.currentRequestId != null || this.prepareLoopInProgress) {
+      console.error('[AgentEngine] continueLoop suppressed: a request is already in flight (loop re-entry)')
+      return
+    }
     if (!opts.apiKey) {
       this.agentStatus = { status: 'error', error: 'API key not configured' }
       this.notify()
@@ -1163,25 +1228,24 @@ export class AgentEngine implements EngineCore {
       summon: this.summon,
       toolProtocols,
       continuationNudge,
-      // The gauge rides the same estimate the compaction guard enforces —
-      // not the UI ring's wire anchor — so a refusal is predictable from the
-      // number the model sees (user 2026-10-10).
-      contextUsage: { tokens: this.compactor.contextTokens(), window: this.opts.contextLength || 128_000 },
+      // The gauge must report the POST-PIPELINE size of this request, but the
+      // pipeline below needs the state block's byte length first — so pass 1
+      // ships the SENTINEL and the real section is swapped in after
+      // finalMessages exists (one replace; see CONTEXT_GAUGE_SENTINEL). The
+      // pre-pipeline reading (last wire anchor + raw tail) is the number the
+      // 2026-10-20 fix chose, and it over-reads by exactly the share the
+      // nano/light passes compress before anything ships: tool-heavy turns
+      // pinned it at 79–96% while the wire carried ~60%, and the model read
+      // the gap as exhaustion and began rationing its work
+      // (conv_20261021155951: 「上下文只剩不到 4%，我必须小批量并一次成功」).
+      contextUsage: { tokens: null, window: this.opts.contextLength || 128_000 },
     })
     const systemPrompt = spResult.systemPrompt
-    // The state block is rebuilt per request (never persisted, never rendered)
-    // so per-turn values — plan graph, workspace, the context gauge — are
-    // always current. Resident memory is NOT here anymore (2026-09-26: it
-    // moved into the frozen core behind the double-TTL snapshot); the
-    // append-only history keeps its bytes because the block is not part of it.
-    const stateBlock: AgentMessage | null = spResult.stateBlock
-      ? {
-          id: generateMsgId(),
-          role: 'user',
-          contentBlocks: [{ type: 'text', text: spResult.stateBlock }],
-          createdAt: new Date().toISOString(),
-        }
-      : null
+    // The state block's MESSAGE is built AFTER the compaction pipeline below:
+    // its gauge section is swapped for the real post-pipeline number there
+    // (CONTEXT_GAUGE_SENTINEL). fixedOverhead prices the pass-1 text — the
+    // sentinel-vs-gauge length delta is a few dozen tokens of noise in the
+    // fit walks. Never persisted, never rendered (state-block contract).
 
     // ── Persist tool_results for tool_result_search ──────────────
     if (this.opts.conversationId) {
@@ -1204,6 +1268,10 @@ export class AgentEngine implements EngineCore {
     // Injected into the fallback estimate so compaction still fires at the right
     // pressure point before the first API token report arrives.
     const fixedOverhead = estimateTokens(systemPrompt) + estimateTokens(JSON.stringify(enabledTools)) + (spResult.stateBlock ? estimateTokens(spResult.stateBlock) : 0)
+    // The compactor's off-request simulations (prewarm / context_compact) must
+    // truncate in these units or their frontier diverges from what the next
+    // build materializes — see lastRequestOverhead.
+    this.compactor.lastRequestOverhead = fixedOverhead
     // A provider just rejected this conversation as context-overflow: the
     // estimates missed it once (that is why the oversized request went out),
     // so ignore their thresholds and force the API copy under the limit the
@@ -1240,7 +1308,7 @@ export class AgentEngine implements EngineCore {
     // and the dropped-region arithmetic inside (original.length - truncated.length)
     // must span emergency's drops too when the overflow flag is parked.
     const summaryBefore = this.compactor.getHistorySummary()
-    const finalMessages = await this.compactor.injectHistorySummary(apiMessages, lightCompacted, truncatedMessages)
+    const finalMessages = await this.compactor.injectHistorySummary(apiMessages, truncatedMessages)
 
     // ── Compaction event: the pass is otherwise invisible ──
     // Detect per layer by reference/length (nano is 1:1, so reference identity
@@ -1311,10 +1379,44 @@ export class AgentEngine implements EngineCore {
 
     // The state block is appended AFTER compaction: it is per-turn context, not
     // history — it must never be summarized, truncated or moved off the end.
+    // Its gauge section swaps in NOW: finalMessages is what this request
+    // actually ships, so contextTokensOf(finalMessages, fixedOverhead) is the
+    // honest occupancy (wire units — the anchor already carries the previous
+    // request's overhead, the fallback leg adds this one's). A missing
+    // sentinel (older call sites, tests) keeps the block as built.
+    let stateBlockText: string | null = spResult.stateBlock
+    if (stateBlockText !== null && stateBlockText.includes(CONTEXT_GAUGE_SENTINEL)) {
+      // Swap the LAST occurrence, not String.replace's first match: every
+      // user-content-bearing section (git paths, project text, disk-read
+      // instructions, page title) renders BEFORE the gauge, and only
+      // engine-built sections (continuation nudge, clock) follow it — a
+      // literal sentinel inside user content must not eat the swap while the
+      // real sentinel rides the wire verbatim and the gauge silently
+      // disappears.
+      const at = stateBlockText.lastIndexOf(CONTEXT_GAUGE_SENTINEL)
+      stateBlockText = stateBlockText.slice(0, at)
+        + buildContextWindowSection({ tokens: contextTokensOf(finalMessages, fixedOverhead), window: this.opts.contextLength || 128_000 })
+        + stateBlockText.slice(at + CONTEXT_GAUGE_SENTINEL.length)
+    }
+    const stateBlock: AgentMessage | null = stateBlockText !== null
+      ? {
+          id: generateMsgId(),
+          role: 'user',
+          contentBlocks: [{ type: 'text', text: stateBlockText }],
+          createdAt: new Date().toISOString(),
+        }
+      : null
     const requestMessages: AgentMessage[] = stateBlock ? [...finalMessages, stateBlock] : finalMessages
 
     const { url: apiUrl, headers, body } = opts.adapter.buildRequest(opts.baseURL, opts.apiKey ?? '', {
       model: opts.model,
+      // The ×1.5 headroom is inherited from the initial commit (no written
+      // rationale survives): thinking gateways settle reasoning INSIDE
+      // max_tokens, so a request sized exactly at the configured value can cut
+      // visible replies on reasoning models. Known edge: a profile whose
+      // 输出上限 already equals the provider's hard cap can 400 here
+      // ("max_tokens too large") — that rejection is NOT a context overflow,
+      // so the rescue chain leaves it to end the turn plainly.
       maxTokens: Math.floor(opts.maxTokens * 1.5),
       messages: requestMessages,
       tools: enabledTools,
@@ -1531,7 +1633,11 @@ export class AgentEngine implements EngineCore {
     this.maxLoopCount = getLoopIterationLimit()
     this.isCancelled = false
     this.pendingToolIds = new Set()
-    this.historySummary = null
+    // A fresh conversation starts with a clean overflow re-aim (the shrunken
+    // window belonged to the conversation that earned it) and a clean gated
+    // scan watermark.
+    this.contextWindowReaim = null
+    this.gatedScan = { scannedMsgs: 0, hitCategories: new Set() }
     // A fresh conversation also clears an explicit /compact: the force sticks
     // until reset precisely so a live session stays slim, but it must not
     // outlive the history it was compacting. The compactor's summary cache is
@@ -1556,6 +1662,11 @@ export class AgentEngine implements EngineCore {
     this.maxLoopCount = getLoopIterationLimit()
     this.streamingBlocks = []
     this.repeatGuard.reset()
+    // The messages were replaced wholesale — the gated scan's watermark can no
+    // longer trust its count, and the overflow re-aim belonged to whatever
+    // history just left the engine.
+    this.gatedScan = { scannedMsgs: 0, hitCategories: new Set() }
+    this.contextWindowReaim = null
     // 恢复不是冻结：上面清场把 isCancelled 关上（防御性，恢复时刻并没有活回合），
     // 但恢复后的第一个用户决定——回答 ask_user 卡片 / 审批放行——经 addToolResult
     // → continueLoop 续跑，而那是唯一不经过 prepareTurn 复位闸门的入口（新消息 /
@@ -1737,13 +1848,14 @@ export class AgentEngine implements EngineCore {
       // settleAndChain may have registered chained calls above, so the
       // remaining set is re-read after it.
       if (this.pendingToolIds.size > 0) {
-        const remaining = this.toolUseBlocks.filter(t => this.pendingToolIds.has(t.id))
-        // Park only for a call the ladder is actually holding ('pending'). This
-        // branch fires after EVERY result in a batch and the rest usually are just
-        // still running — repainting the park then would flip the approval UI on
-        // (and pause the turn clock as waiting-on-user) for a decision nobody owes.
-        if (remaining.some(t => t.status === 'pending')) {
-          this.agentStatus = { status: 'awaiting_approval', tools: remaining }
+        // Only calls the ladder is ACTUALLY holding ('pending') ride the park
+        // status — the still-running batch-mates and unanswered ask_user cards
+        // are in the pending SET but not on the ladder, and listing them let a
+        // hosted client mint approval cards (with 120s auto-reject timers!)
+        // for tools that had already run or were questions, not approvals.
+        const stillHeld = this.toolUseBlocks.filter(t => this.pendingToolIds.has(t.id) && t.status === 'pending')
+        if (stillHeld.length > 0) {
+          this.agentStatus = { status: 'awaiting_approval', tools: stillHeld }
           this.notify()
         }
       }

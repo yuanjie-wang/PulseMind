@@ -116,4 +116,13 @@ describe('svcSearchWiki — query is a value, never an option (full_20261011 M10
     expect(rg!.args.includes('-F')).toBe(true)
     expect(rg!.args.includes('-e')).toBe(true)
   })
+
+  // review_20261015 中1：`'   '` 为真值曾穿过 `if (!query)`，FTS 前置对纯空白
+  // 返回空后 rg 臂带着零 `-e` 的 argv 起跑——`--` 把 wiki 目录当 PATTERN、
+  // rg 静默递归扫描主进程 CWD（rg 14.1.1 实测）。钉死整条通道：空白 query
+  // 一个进程都不发起。
+  it('a whitespace-only query spawns NOTHING — no rg, no grep, no fallback', async () => {
+    await svcSearchWiki('   ', 'base1')
+    expect(execCalls).toHaveLength(0)
+  })
 })

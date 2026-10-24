@@ -17,13 +17,19 @@ export function ripgrepBinary(): string {
  *  like `--pre=/bin/sh` made rg run a program on every searched file
  *  (full_20261011 M10-P0-1, measured with the repo's own rg 14.1.1) — and `--`
  *  terminates option parsing before the search dir. Multi-word queries OR
- *  their terms fixed-string; a single term is one fixed-string pattern. */
+ *  their terms fixed-string; a single term is one fixed-string pattern.
+ *  Returns NULL for a whitespace-only query: `-e` + `--` is safe only while
+ *  terms ≥ 1 — with zero `-e`, rg reads the first positional after `--` as the
+ *  PATTERN, turning the search dir into a literal pattern and silently
+ *  scanning the main process's CWD (review_20261015 中1, measured). Callers
+ *  treat null as no results and must not spawn rg. */
 export function buildRgSearchArgs(
   query: string,
   dir: string,
   base: string[] = ['-n', '--no-heading', '-i', '--max-columns', '300', '--max-count', '5'],
-): string[] {
+): string[] | null {
   const terms = query.split(/\s+/).filter(Boolean)
+  if (terms.length === 0) return null
   const args = [...base, '-F']
   for (const t of terms) args.push('-e', t)
   args.push('--', dir)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { shEscape, shSingleQuote } from '../src/renderer/src/agent/agent-utils'
@@ -284,6 +284,9 @@ describe('find 的注入面（read 档 = 永不审批，参数即命令串）', 
 
   // review_20261011 高1：`+` 终结符的 -exec 形态不含任何元字符，黑名单挡不住
   // ——read 档零审批跑任意命令。执行谓词家族按 token 整族拒绝。
+  // review_20261015 高1：shell 在分词后还会做词中引号/反斜杠剥离——`-ex"e"c`/
+  // `-e'x'ec`/`-ex\ec` 到 find 眼里都重建出 `-exec`（实测），只剥前导引号的
+  // 判法全部漏过；`\-exec` 是转义连杠的第四种拼写。
   it.each([
     ["-name '*.sh' -exec sh {} +", '-exec sh {} +'],
     ['-name "*.sh" -execdir sh {} +', '-execdir'],
@@ -293,11 +296,30 @@ describe('find 的注入面（read 档 = 永不审批，参数即命令串）', 
     ['-name x -fls /tmp/out', '-fls'],
     ['-name "*.log" -delete', '-delete'],
     ['-name x "-exec" sh {} +', '引号形态 "-exec"'],
+    ['-name "*.sh" -ex"e"c sh {} +', '词中双引号 -ex"e"c'],
+    ['-name x -e\'x\'ec sh {} +', '词中单引号 -e\'x\'ec'],
+    ['-mtime -7 -ex\\ec sh {} +', '词中反斜杠 -ex\\ec'],
+    ['\\-exec sh {} +', '转义连杠 \\-exec'],
   ])('写副作用谓词被拒：%s', (extraArgs) => {
     const cmd = buildCommandFromSkillInput('find', { search_dir: '/w', extra_args: extraArgs }, 'darwin', null)
     expect(cmd.startsWith('echo "Error:')).toBe(true)
     expect(cmd).not.toContain('sh {}')
     expect(cmd).not.toContain('-fprint /tmp/out')
+  })
+
+  it.runIf(process.platform !== 'win32')('非空对照：词中引号变体经真实 shell 确实重建出 -exec', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-shq-find-quote-'))
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'x')
+      // shell 剥掉词中引号后 find 收到的就是 `-exec`：echo 以匹配路径跑起来
+      // ——证明该拼写不是「find 当错谓词安全失败」的形状，上面的整族拒绝钉的
+      // 是真实可达的执行面。（`{}` 必须紧挨 `+`；嵌在别的词里 find 会以
+      // no terminating ";" 拒掉整条谓词。）
+      const probe = spawnSync('/bin/sh', ['-c', `find '${dir}' -name '*.txt' -ex"e"c echo {} +`], { encoding: 'utf-8' })
+      expect(probe.stdout).toContain('a.txt')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('普通谓词不受谓词拒绝误伤（-mtime/-size/-empty/-perm 全通过）', () => {

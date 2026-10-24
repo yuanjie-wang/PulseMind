@@ -238,3 +238,163 @@ describe('emergencyTruncate', () => {
     expect(compactor.emergencyTruncate([textMsg('user', 'hi')], 0, 0)).toHaveLength(1)
   })
 })
+
+// ── fitKeepStart retention semantics (0.4.2「压缩机制不触发」修复) ──
+// The old walk broke on the first fit and DECREMENTED on a miss; since a
+// smaller keepStart only grows the tail, the walk was bimodal — the guard
+// floor fitting → cut to the floor (~10 messages against a 0.9× window of
+// headroom), it not fitting → keepStart ran to 0 and the caller no-opped the
+// whole pass. The rewrite keeps the MOST history that fits, bounded by the
+// minimum-retention guards (Math.min), and the floor wins over infeasibility.
+describe('fitKeepStart retention semantics', () => {
+  it('keeps the MOST history that fits the 0.9× threshold, not the guard floor', () => {
+    // 60 rounds ≈ 90.4K tokens against a 100K window: hard's threshold is 90K
+    // and the old shape kept 4 messages (~3K) — a utilization cliff.
+    const msgs: AgentMessage[] = []
+    for (let i = 0; i < 60; i++) msgs.push(...round(`k${i}`, 1_500))
+    const compactor = makeCompactor(msgs)
+    const out = compactor.hardTruncate(msgs, 100_000, 0)
+    expect(out.length).toBeGreaterThan(100)
+    expect(compactor.estimateTokens(out)).toBeLessThanOrEqual(90_000)
+  })
+
+  it('cuts to the guard floor instead of no-opping when even the floor cannot fit', () => {
+    // 5 fat recent rounds (300K) over a 100K window: the old walk ran keepStart
+    // to 0 and hardTruncate returned the SAME array — zero proactive drops.
+    const msgs: AgentMessage[] = []
+    for (let i = 0; i < 20; i++) msgs.push(...round(`f${i}`, 200))
+    for (let i = 0; i < 5; i++) msgs.push(...round(`ff${i}`, 60_000))
+    const compactor = makeCompactor(msgs)
+    const out = compactor.hardTruncate(msgs, 100_000, 0)
+    expect(out).not.toBe(msgs)
+    // floor = min(second-last user index, len-10) → exactly the last 10 messages
+    expect(out.length).toBe(10)
+    const useIds = new Set<string>()
+    for (const m of out) {
+      for (const b of m.contentBlocks) if (b.type === 'tool_use') useIds.add((b as { id: string }).id)
+    }
+    for (const m of out) {
+      for (const b of m.contentBlocks) {
+        if (b.type === 'tool_result') expect(useIds.has((b as { tool_use_id: string }).tool_use_id)).toBe(true)
+      }
+    }
+  })
+
+  it('MIN_KEEP is a minimum retention and both last user turns survive', () => {
+    // Text-only conversation (light has no tool cycles to drop): 240K tokens
+    // over a 100K window — the old shape kept 4 messages.
+    const msgs: AgentMessage[] = []
+    for (let i = 0; i < 80; i++) {
+      msgs.push(textMsg('user', '很'.repeat(1_500)))
+      msgs.push(textMsg('assistant', '很'.repeat(1_500)))
+    }
+    const compactor = makeCompactor(msgs)
+    const out = compactor.hardTruncate(msgs, 100_000, 0)
+    expect(out.length).toBeGreaterThan(10)
+    const lastTwoUsers = msgs.filter((m) => m.role === 'user').slice(-2)
+    for (const u of lastTwoUsers) expect(out).toContain(u)
+  })
+
+  it('emergencyTruncate phase 1 cuts to the floor before stripping bodies', () => {
+    // 3 fat rounds (90K) over a 100K named limit: the old walk no-opped phase 1
+    // entirely (the floor could not fit) and left all 46 messages for the strip.
+    const msgs: AgentMessage[] = []
+    for (let i = 0; i < 20; i++) msgs.push(...round(`e${i}`, 100))
+    for (let i = 0; i < 3; i++) msgs.push(...round(`ef${i}`, 30_000))
+    const compactor = makeCompactor(msgs)
+    const result = compactor.emergencyTruncate(msgs, 100_000, 0)
+    expect(result.length).toBe(10) // phase 1: floor cut
+    expect(contextTokensOf(result)).toBeLessThanOrEqual(60_000) // phase 2: strip to target
+    const useIds = new Set<string>()
+    for (const m of result) {
+      for (const b of m.contentBlocks) if (b.type === 'tool_use') useIds.add((b as { id: string }).id)
+    }
+    for (const m of result) {
+      for (const b of m.contentBlocks) {
+        if (b.type === 'tool_result') expect(useIds.has((b as { tool_use_id: string }).tool_use_id)).toBe(true)
+      }
+    }
+  })
+})
+
+// ── 覆盖补钉（0.4.2）：lcov 摸底发现的两条生产可达分支零覆盖 ──
+// 其一：includePairedToolUses 的配对修复——最大保留走查下切点奇偶任意，落在
+// tool_result 开头时必须向前补配对 tool_use，否则请求带着孤儿 result 被
+// provider 拒绝；旧双态走查的切点总在偶数位，这个分支从未被任何 fixture 执行。
+// 其二：lightCompact 的 userHasText 剥离——带正文的用户轮所在循环被丢弃时
+// 保文本、剥 tool_result（textContributionOf + toStrip 重建）。
+describe('cut-boundary pairing & text-bearing cycle strip', () => {
+  it('a cut landing on a result-bearing user message pulls back to its tool_use', () => {
+    // 40 rounds; every tool_use carries a fat input so the odd/even crossing
+    // window is wide enough to place deterministically: the threshold is aimed
+    // so the maximum-retention walk first fits at index 21 — the RESULT of
+    // round 10 — which would orphan its tool_use without the repair walk.
+    const msgs: AgentMessage[] = []
+    for (let i = 0; i < 40; i++) {
+      msgs.push({
+        id: `pu${i}`, role: 'assistant', createdAt: AT,
+        contentBlocks: [{ type: 'tool_use', id: `t${i}`, name: 'read', input: { q: 'x'.repeat(220) } }] as ContentBlock[],
+      })
+      msgs.push({
+        id: `pr${i}`, role: 'user', createdAt: AT,
+        contentBlocks: [{ type: 'tool_result', tool_use_id: `t${i}`, content: '很'.repeat(100) }] as ContentBlock[],
+      })
+    }
+    const compactor = makeCompactor(msgs)
+    const total = compactor.estimateTokens(msgs)
+    const cum20 = compactor.estimateTokens(msgs.slice(0, 20))
+    const threshold = total - cum20 - 20 // first fitting tail starts at index 21 (odd → a result message)
+    const window = Math.ceil(threshold / 0.9)
+    const out = compactor.hardTruncate(msgs, window, 0)
+    // The repair pulled the cut back to the tool_use of round 10 (index 20).
+    expect(out.length).toBe(msgs.length - 20)
+    expect((out[0].contentBlocks[0] as { type: string }).type).toBe('tool_use')
+    const useIds = new Set<string>()
+    for (const m of out) {
+      for (const b of m.contentBlocks) if (b.type === 'tool_use') useIds.add((b as { id: string }).id)
+    }
+    for (const m of out) {
+      for (const b of m.contentBlocks) {
+        if (b.type === 'tool_result') expect(useIds.has((b as { tool_use_id: string }).tool_use_id)).toBe(true)
+      }
+    }
+  })
+
+  it('lightCompact strips a text-bearing user cycle to its text (the userHasText branch)', () => {
+    const msgs: AgentMessage[] = []
+    for (let i = 0; i < 60; i++) {
+      msgs.push({
+        id: `su${i}`, role: 'assistant', createdAt: AT,
+        contentBlocks: [{ type: 'tool_use', id: `s${i}`, name: 'read', input: {} }] as ContentBlock[],
+      })
+      msgs.push({
+        id: `sr${i}`, role: 'user', createdAt: AT,
+        contentBlocks: [
+          { type: 'tool_result', tool_use_id: `s${i}`, content: '很'.repeat(2000) },
+          { type: 'text', text: '很'.repeat(500) },
+        ] as ContentBlock[],
+      })
+    }
+    const compactor = makeCompactor(msgs)
+    const out = compactor.lightCompact(msgs, 100_000, 0)
+    expect(out.length).toBeLessThan(msgs.length)
+    // Survivors of dropped cycles keep ONLY their text — the tool_result is
+    // stripped, the user's own words ride on.
+    const stripped = out.filter((m) => m.role === 'user' && !m.contentBlocks.some((b) => b.type === 'tool_result'))
+    expect(stripped.length).toBeGreaterThan(0)
+    for (const m of stripped) {
+      for (const b of m.contentBlocks) expect(b.type).toBe('text')
+      expect((m.contentBlocks[0] as { text: string }).text).toHaveLength(500)
+    }
+    // Every surviving tool_result still pairs with a tool_use.
+    const useIds = new Set<string>()
+    for (const m of out) {
+      for (const b of m.contentBlocks) if (b.type === 'tool_use') useIds.add((b as { id: string }).id)
+    }
+    for (const m of out) {
+      for (const b of m.contentBlocks) {
+        if (b.type === 'tool_result') expect(useIds.has((b as { tool_use_id: string }).tool_use_id)).toBe(true)
+      }
+    }
+  })
+})

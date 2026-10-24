@@ -3,7 +3,7 @@ import { Tooltip } from 'antd'
 import { useTranslation } from '../../i18n/useTranslation'
 import type { AgentMessage } from '../../types/agent'
 import type { CompactionEvent } from '../../../../shared/agent-protocol'
-import { requestTokensOf, estimateMessagesTokens } from '../../agent/engine/context-estimate'
+import { estimateAfterNanoTokens } from '../../agent/engine/context-compactor'
 
 // ── Context usage ring ────────────────────────────────────────────────
 
@@ -61,10 +61,11 @@ export function ContextRing({ used, total, diameter }: { used: number; total: nu
 }
 
 /**
- * Estimate context usage for a message list. Delegates to `requestTokensOf` —
- * the last REAL request's priced size (the `input_tokens` persisted on the
- * message row, so the number survives a restart) plus the CJK-aware tail
- * appended since. Deliberately NOT the compactor's `contextTokensOf`: that
+ * Estimate context usage for a message list: the last REAL request's priced
+ * size (the `input_tokens` persisted on the message row, so the number
+ * survives a restart) plus the tail appended since — priced through the nano
+ * rules (`estimateAfterNanoTokens`), because that is how the next request
+ * will carry it. Deliberately NOT the compactor's `contextTokensOf`: that
  * reader max-guards with the whole-transcript estimate, which is the copy
  * pipeline's trigger input and pins at >100% forever once the append-only
  * history outgrows the window — 775.2K shown against an 88K wire request
@@ -74,7 +75,19 @@ export function ContextRing({ used, total, diameter }: { used: number; total: nu
  */
 export function estimateContextUsed(messages: AgentMessage[]): number {
   if (!messages.length) return 0
-  return requestTokensOf(messages)
+  // Anchor + tail priced as the NEXT request would carry it: the tail's old
+  // tool_results become nano placeholders before anything ships, and pricing
+  // them raw over-read by exactly that share — a tool-heavy batch pinned the
+  // ring at 79–96% mid-turn while the wire carried ~60%
+  // (conv_20261021155951, 2026-10-24). estimateAfterNanoTokens computes
+  // quotas/protection over the tail slice alone, so a young tail prices whole
+  // (nano compresses nothing below quota anyway) and the reading never drops
+  // under what the request will really ship.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const t = messages[i].inputTokens
+    if (t && t > 0) return t + estimateAfterNanoTokens(messages.slice(i + 1))
+  }
+  return estimateAfterNanoTokens(messages)
 }
 
 /**
@@ -94,13 +107,15 @@ export function projectContextUsed(messages: AgentMessage[], compaction: Compact
   // the same main-process clock, so plain comparison orders them.
   if (typeof compaction.ts !== 'number' || !Number.isFinite(compaction.ts)) return raw
   const cutAt = compaction.ts
-  let tail = 0
+  const tailMsgs: AgentMessage[] = []
   for (const msg of messages) {
     const at = msg.createdAt ? Date.parse(msg.createdAt) : NaN
     if (!Number.isFinite(at)) return raw
-    if (at > cutAt) tail += estimateMessagesTokens([msg])
+    if (at > cutAt) tailMsgs.push(msg)
   }
-  const projected = compaction.tokensAfter + tail
+  // Same nano pricing as the raw path — the tail's compressible results ride
+  // the next request as placeholders, not whole.
+  const projected = compaction.tokensAfter + estimateAfterNanoTokens(tailMsgs)
   // Estimates drift upward as the tail grows; a projection above the raw
   // number would mean the "compacted" copy is bigger than the history — fall
   // back to the raw reading rather than show a ring that grew on compaction.

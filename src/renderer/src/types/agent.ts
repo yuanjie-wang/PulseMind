@@ -7,7 +7,12 @@ export type { ContentBlock, TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBl
 export type AgentStatus =
   | { status: 'idle' }
   | { status: 'streaming' }
-  | { status: 'retrying'; message: string; attempt: number; maxRetries: number; delay: number }
+  | { status: 'retrying'; message: string; attempt: number; maxRetries: number; delay: number
+      /** The session's effective context window when this retry armed an
+       *  overflow re-aim (parsed off the provider's own rejection) — the ring
+       *  denominator's live hint. Optional; only the overflow-retry shape sets
+       *  it, every other retrying status leaves it out. */
+      contextWindow?: number }
   | { status: 'awaiting_approval'; tools: ToolUseBlock[] }
   | { status: 'awaiting_user_input'; tools: ToolUseBlock[] }
   | { status: 'executing'; toolUseId: string }

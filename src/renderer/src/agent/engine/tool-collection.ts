@@ -21,6 +21,13 @@ export interface ToolCollectionDeps {
   messages: AgentMessage[]
   spawnSystemPrompt?: string
   opts: AgentEngineOptions
+  /** Incremental-scan watermark (engine field; optional so test stubs keep
+   *  working): user messages scanned so far + categories whose triggers
+   *  already hit. The live history's user text is append-only, so scanning
+   *  only the appended slice is exact — the old shape joined+lowercased the
+   *  ENTIRE transcript's user text on every request (MB-scale allocations on
+   *  a long tool session). Absent → one full scan, uncached (old behavior). */
+  gatedScan?: { scannedMsgs: number; hitCategories: Set<string> }
 }
 
 export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager: ToolManager): Promise<any[]> {
@@ -77,25 +84,62 @@ export async function collectEnabledTools(deps: ToolCollectionDeps, toolManager:
   // they make system + base-schemas byte-identical for every conversation, so
   // differently-activated conversations still share that whole trunk.
   {
-    const userText = deps.messages
-      .filter((m) => m.role === 'user')
-      .flatMap((m) => m.contentBlocks)
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as TextBlock).text)
-      .join('\n')
-      .toLowerCase()
+    // Category-level: any trigger hit activates the whole gated category (git/memory/knowledge),
+    // so "commit my changes" surfaces status/diff/log/commit/restore together.
+    // Restored 2026-09-26 (user: 按需激活的工具不应直接出现在上下文中) after a
+    // same-day experiment that shipped them unconditionally — the gate is the
+    // product semantics; what KEEPS the cross-conversation cache warm is the two
+    // shapes below it: activated gated schemas ride at the END of the tools
+    // array, and gated manuals are excluded from buildToolProtocols. Together
+    // they make system + base-schemas byte-identical for every conversation, so
+    // differently-activated conversations still share that whole trunk.
     const gatedByCategory = new Map<string, string[]>()
     for (const def of enabledTools) {
       if (def.availability !== 'gated') continue
       const arr = gatedByCategory.get(def.category) || []
       gatedByCategory.set(def.category, [...arr, ...(def.triggers || [])])
     }
-    const activated = new Set(deps.selectedBuiltinTools)
-    for (const [category, keywords] of gatedByCategory) {
-      if (keywords.some((kw) => userText.includes(kw.toLowerCase()))) {
-        for (const def of enabledTools) {
-          if (def.availability === 'gated' && def.category === category) activated.add(def.name)
+    // Incremental keyword scan (watermark on the engine, 2026-10-24): the live
+    // history's user text is append-only, so only messages appended since the
+    // last pass are joined+lowercased — the old shape re-processed the ENTIRE
+    // transcript on every request (MB-scale allocations on a long tool
+    // session). A history replaced wholesale (count going backwards) rescans
+    // from zero; no watermark (test stubs) → one full scan, same behavior.
+    const userMsgs = deps.messages.filter((m) => m.role === 'user')
+    const userTextOf = (slice: AgentMessage[]): string => slice
+      .flatMap((m) => m.contentBlocks)
+      .filter((b) => b.type === 'text')
+      .map((b) => (b as TextBlock).text)
+      .join('\n')
+      .toLowerCase()
+    let hitCategories: Set<string>
+    const state = deps.gatedScan
+    if (state) {
+      if (userMsgs.length < state.scannedMsgs) {
+        state.scannedMsgs = 0
+        state.hitCategories.clear()
+      }
+      const from = state.scannedMsgs
+      state.scannedMsgs = userMsgs.length
+      if (userMsgs.length > from) {
+        const sliceText = userTextOf(userMsgs.slice(from))
+        for (const [category, keywords] of gatedByCategory) {
+          if (state.hitCategories.has(category)) continue
+          if (keywords.some((kw) => sliceText.includes(kw.toLowerCase()))) state.hitCategories.add(category)
         }
+      }
+      hitCategories = state.hitCategories
+    } else {
+      const allText = userTextOf(userMsgs)
+      hitCategories = new Set()
+      for (const [category, keywords] of gatedByCategory) {
+        if (keywords.some((kw) => allText.includes(kw.toLowerCase()))) hitCategories.add(category)
+      }
+    }
+    const activated = new Set(deps.selectedBuiltinTools)
+    for (const category of hitCategories) {
+      for (const def of enabledTools) {
+        if (def.availability === 'gated' && def.category === category) activated.add(def.name)
       }
     }
     deps.selectedBuiltinTools = [...activated]

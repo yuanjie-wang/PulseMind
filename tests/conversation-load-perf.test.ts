@@ -35,14 +35,18 @@ describe('opening a conversation reads the rows once', () => {
 })
 
 describe('the context ring reads the shared estimator', () => {
-  it('estimateContextUsed delegates to requestTokensOf — the anchored reader', () => {
+  it('estimateContextUsed anchors on input_tokens and prices the tail post-nano', () => {
     // The ring shows what the model sees: the last real request's priced size
-    // (persisted input_tokens) plus the tail since. The max-guarded
-    // contextTokensOf stayed the COMPACTOR's trigger input — taking it here
+    // (persisted input_tokens) plus the tail since — priced through the nano
+    // rules (estimateAfterNanoTokens), because that is how the next request
+    // carries it (2026-10-24; raw-tail pricing over-read by exactly the
+    // compressible share, 79–96% shown against a ~60% wire). The max-guarded
+    // contextTokensOf stays the COMPACTOR's trigger input — taking it here
     // pinned the ring at whole-transcript pressure forever (775.2K shown
     // against an 88K wire request, conv_20260927170026, 2026-09-28).
     const ring = src('src/renderer/src/components/chat/ContextRing.tsx')
-    expect(ring).toContain('requestTokensOf(messages)')
+    expect(ring).toContain('messages[i].inputTokens')
+    expect(ring).toContain('estimateAfterNanoTokens(messages.slice(i + 1))')
     expect(ring).not.toContain('contextTokensOf(')
     expect(ring).not.toContain('text.length / 2')
     expect(ring).not.toContain('inputTokens != null')
