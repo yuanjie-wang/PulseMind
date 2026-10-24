@@ -40,6 +40,22 @@ describe('agentMessagesToConversation', () => {
     expect(conv.id).toBe('c1')
     expect(conv.title).toBe('title')
   })
+
+  // promptCacheHitTokens is the DB-persisted audit dimension (2026-10-24): a
+  // finished task's true billable split is only reconstructable if the cache
+  // hit count survives both conversion directions — round-tripping through
+  // persistence is what makes a post-hoc cost audit possible.
+  it('carries promptCacheHitTokens through both conversion directions', () => {
+    const msg: AgentMessage = {
+      id: 'm1', role: 'assistant', createdAt: '2026-01-01T00:00:00Z',
+      contentBlocks: [{ type: 'text', text: 'hi' }],
+      inputTokens: 70, outputTokens: 5, promptCacheHitTokens: 60,
+    }
+    const conv = agentMessagesToConversation([msg], 'c1', 'title')
+    expect(conv.messages[0].promptCacheHitTokens).toBe(60)
+    const back = storedMessagesToAgentMessages(conv.messages)
+    expect(back[0].promptCacheHitTokens).toBe(60)
+  })
 })
 
 describe('storedMessagesToAgentMessages', () => {

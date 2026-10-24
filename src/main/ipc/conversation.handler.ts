@@ -61,12 +61,12 @@ function voidHandler(channel: string, fn: (...args: any[]) => void) {
 // ── Slot-filling helpers ────────────────────────────────────────────────
 
 function fillHourlySlots(
-  rows: Array<{ label: string; inputTokens: number; outputTokens: number }>
+  rows: Array<{ label: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>
 ): TokenStats['hourly'] {
   const now = new Date()
-  const map = new Map<string, { time: string; inputTokens: number; outputTokens: number }>()
+  const map = new Map<string, { time: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>()
   for (const r of rows) {
-    if (r.label) map.set(r.label.slice(0, 13), { time: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+    if (r.label) map.set(r.label.slice(0, 13), { time: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens, cachedTokens: r.cachedTokens })
   }
   const slots: TokenStats['hourly'] = []
   for (let i = 11; i >= 0; i--) {
@@ -80,12 +80,12 @@ function fillHourlySlots(
 }
 
 function fillDailySlots(
-  rows: Array<{ label: string; inputTokens: number; outputTokens: number }>
+  rows: Array<{ label: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>
 ): TokenStats['daily'] {
   const now = new Date()
-  const map = new Map<string, { date: string; inputTokens: number; outputTokens: number }>()
+  const map = new Map<string, { date: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>()
   for (const r of rows) {
-    if (r.label) map.set(r.label, { date: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+    if (r.label) map.set(r.label, { date: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens, cachedTokens: r.cachedTokens })
   }
   const slots: TokenStats['daily'] = []
   for (let i = 6; i >= 0; i--) {
@@ -98,12 +98,12 @@ function fillDailySlots(
 }
 
 function fillMonthlySlots(
-  rows: Array<{ label: string; inputTokens: number; outputTokens: number }>
+  rows: Array<{ label: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>
 ): TokenStats['monthly'] {
   const now = new Date()
-  const map = new Map<string, { month: string; inputTokens: number; outputTokens: number }>()
+  const map = new Map<string, { month: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>()
   for (const r of rows) {
-    if (r.label) map.set(r.label, { month: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+    if (r.label) map.set(r.label, { month: r.label, inputTokens: r.inputTokens, outputTokens: r.outputTokens, cachedTokens: r.cachedTokens })
   }
   const slots: TokenStats['monthly'] = []
   for (let i = 5; i >= 0; i--) {

@@ -49,7 +49,8 @@ export function agentMessagesToConversation(
         favorited: m.favorited,
         processingMs: m.processingMs,
         inputTokens: m.inputTokens,
-        outputTokens: m.outputTokens
+        outputTokens: m.outputTokens,
+        promptCacheHitTokens: m.promptCacheHitTokens
       }
     }),
     createdAt: now,
@@ -82,6 +83,7 @@ export function storedMessagesToAgentMessages(msgs: Message[]): AgentMessage[] {
       processingMs: m.processingMs,
       inputTokens: m.inputTokens,
       outputTokens: m.outputTokens,
+      promptCacheHitTokens: m.promptCacheHitTokens,
       autoSummary: m.autoSummary,
       compressedIds: m.compressedIds
     } as AgentMessage

@@ -212,9 +212,9 @@ export function getConversation(id: string): Conversation | null {
 
   const messages = database
     .prepare(
-      'SELECT id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens, auto_summary, compressed_ids FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
+      'SELECT id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens, cached_tokens, auto_summary, compressed_ids FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
     )
-    .all(id) as Array<{ id: string; role: string; content: string; content_blocks: string | null; created_at: string; liked: number | null; favorited: number | null; processing_ms: number | null; input_tokens: number | null; output_tokens: number | null; auto_summary: number | null; compressed_ids: string | null }>
+    .all(id) as Array<{ id: string; role: string; content: string; content_blocks: string | null; created_at: string; liked: number | null; favorited: number | null; processing_ms: number | null; input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null; auto_summary: number | null; compressed_ids: string | null }>
 
   return {
     id: conv.id, title: conv.title, summary: conv.summary || undefined,
@@ -229,6 +229,7 @@ export function getConversation(id: string): Conversation | null {
       createdAt: m.created_at, liked: m.liked === 1, favorited: m.favorited === 1,
       processingMs: m.processing_ms ?? undefined, inputTokens: m.input_tokens ?? undefined,
       outputTokens: m.output_tokens ?? undefined,
+      promptCacheHitTokens: m.cached_tokens ?? undefined,
       autoSummary: m.auto_summary === 1 || undefined,
       compressedIds: m.compressed_ids ? JSON.parse(m.compressed_ids) : undefined
     })),
@@ -258,17 +259,17 @@ function saveConversationInner(conversation: Conversation): void {
        history_summary = excluded.history_summary, history_summary_frontier = excluded.history_summary_frontier`
   )
   const upsertMsg = database.prepare(
-    `INSERT INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens, cached_tokens)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        role = excluded.role, content = excluded.content, content_blocks = excluded.content_blocks,
        created_at = excluded.created_at,
        liked = excluded.liked,
        favorited = messages.favorited,
-       processing_ms = excluded.processing_ms, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens`
+       processing_ms = excluded.processing_ms, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cached_tokens = excluded.cached_tokens`
   )
   const insertTokenUsage = database.prepare(
-    'INSERT OR REPLACE INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)'
+    'INSERT OR REPLACE INTO token_usage (id, input_tokens, output_tokens, cached_tokens, created_at) VALUES (?, ?, ?, ?, ?)'
   )
   const insertToolResult = database.prepare(
     'INSERT OR REPLACE INTO tool_results (ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -312,12 +313,12 @@ function saveConversationInner(conversation: Conversation): void {
         conversation.id, msg.role, msg.content || '',
         sanitized ? JSON.stringify(sanitized) : null,
         msg.createdAt || now, msg.liked ? 1 : 0, msg.favorited ? 1 : 0,
-        msg.processingMs ?? null, msg.inputTokens ?? null, msg.outputTokens ?? null
+        msg.processingMs ?? null, msg.inputTokens ?? null, msg.outputTokens ?? null, msg.promptCacheHitTokens ?? null
       )
       if (msg.inputTokens || msg.outputTokens) {
         insertTokenUsage.run(
           `tu_${msgId}`,
-          msg.inputTokens || 0, msg.outputTokens || 0, msg.createdAt || now
+          msg.inputTokens || 0, msg.outputTokens || 0, msg.promptCacheHitTokens || 0, msg.createdAt || now
         )
       }
       savedIds.push(msgId)
@@ -348,17 +349,17 @@ export function appendConversationMessages(
        updated_at = MAX(conversations.updated_at, excluded.updated_at)`
   )
   const upsertMsg = database.prepare(
-    `INSERT INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO messages (id, conversation_id, role, content, content_blocks, created_at, liked, favorited, processing_ms, input_tokens, output_tokens, cached_tokens)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        role = excluded.role, content = excluded.content, content_blocks = excluded.content_blocks,
        created_at = excluded.created_at,
        liked = excluded.liked,
        favorited = messages.favorited,
-       processing_ms = excluded.processing_ms, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens`
+       processing_ms = excluded.processing_ms, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cached_tokens = excluded.cached_tokens`
   )
   const insertTokenUsage = database.prepare(
-    'INSERT OR REPLACE INTO token_usage (id, input_tokens, output_tokens, created_at) VALUES (?, ?, ?, ?)'
+    'INSERT OR REPLACE INTO token_usage (id, input_tokens, output_tokens, cached_tokens, created_at) VALUES (?, ?, ?, ?, ?)'
   )
   const insertToolResult = database.prepare(
     'INSERT OR REPLACE INTO tool_results (ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -375,12 +376,12 @@ export function appendConversationMessages(
         convId, msg.role, msg.content || '',
         sanitized ? JSON.stringify(sanitized) : null,
         msg.createdAt || now, msg.liked ? 1 : 0, msg.favorited ? 1 : 0,
-        msg.processingMs ?? null, msg.inputTokens ?? null, msg.outputTokens ?? null
+        msg.processingMs ?? null, msg.inputTokens ?? null, msg.outputTokens ?? null, msg.promptCacheHitTokens ?? null
       )
       if (msg.inputTokens || msg.outputTokens) {
         insertTokenUsage.run(
           `tu_${msg.id}`,
-          msg.inputTokens || 0, msg.outputTokens || 0, msg.createdAt || now
+          msg.inputTokens || 0, msg.outputTokens || 0, msg.promptCacheHitTokens || 0, msg.createdAt || now
         )
       }
     }

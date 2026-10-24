@@ -37,6 +37,12 @@ export interface Message {
   processingMs?: number
   inputTokens?: number
   outputTokens?: number
+  /** Provider-reported prefix cache hits inside inputTokens (OpenAI
+   *  `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`,
+   *  Anthropic `cache_read_input_tokens`). Persisted as messages.cached_tokens
+   *  so a finished task's true billable split stays auditable after the
+   *  request dumps have been pruned. */
+  promptCacheHitTokens?: number
   autoSummary?: boolean
   compressedIds?: string[]
 }
@@ -72,7 +78,7 @@ export interface ToolResultBatchEntry {
 }
 
 export interface TokenStats {
-  hourly: Array<{ time: string; inputTokens: number; outputTokens: number }>
-  daily: Array<{ date: string; inputTokens: number; outputTokens: number }>
-  monthly: Array<{ month: string; inputTokens: number; outputTokens: number }>
+  hourly: Array<{ time: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>
+  daily: Array<{ date: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>
+  monthly: Array<{ month: string; inputTokens: number; outputTokens: number; cachedTokens?: number }>
 }

@@ -103,6 +103,7 @@ function createTables(): void {
       processing_ms   INTEGER,
       input_tokens    INTEGER,
       output_tokens   INTEGER,
+      cached_tokens   INTEGER,
       auto_summary    INTEGER NOT NULL DEFAULT 0,
       compressed_ids  TEXT,
       created_at      TEXT NOT NULL,
@@ -137,6 +138,7 @@ function createTables(): void {
       id             TEXT PRIMARY KEY,
       input_tokens   INTEGER NOT NULL DEFAULT 0,
       output_tokens  INTEGER NOT NULL DEFAULT 0,
+      cached_tokens  INTEGER NOT NULL DEFAULT 0,
       created_at     TEXT NOT NULL
     );
 
@@ -281,6 +283,13 @@ function createTables(): void {
   try { database.exec('ALTER TABLE messages ADD COLUMN processing_ms INTEGER') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN input_tokens INTEGER') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN output_tokens INTEGER') } catch {}
+  try { database.exec('ALTER TABLE messages ADD COLUMN cached_tokens INTEGER') } catch {}
+  // cached_tokens (2026-10-24): the provider-reported prefix-cache hit share of
+  // input_tokens. Without it the DB cannot answer "what did this task actually
+  // cost" once the llm-requests dumps are pruned — a 410-request translation
+  // task left only its last 60 dumps, and its true 83% hit rate had to be
+  // reconstructed by hand from those.
+  try { database.exec('ALTER TABLE token_usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN auto_summary INTEGER NOT NULL DEFAULT 0') } catch {}
   try { database.exec('ALTER TABLE messages ADD COLUMN compressed_ids TEXT') } catch {}
   // Ensure tool_results has the is_error column

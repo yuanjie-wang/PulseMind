@@ -7,6 +7,8 @@ export interface TokenStatsRow {
   label: string
   inputTokens: number
   outputTokens: number
+  /** Prefix-cache hits inside inputTokens (0 for pre-2026-10-24 rows). */
+  cachedTokens: number
 }
 
 export function getHourlyTokenStats(): TokenStatsRow[] {
@@ -15,7 +17,8 @@ export function getHourlyTokenStats(): TokenStatsRow[] {
       SELECT
         strftime('%Y-%m-%d %H:00', ${NORM}, 'localtime') AS label,
         COALESCE(SUM(input_tokens), 0) AS inputTokens,
-        COALESCE(SUM(output_tokens), 0) AS outputTokens
+        COALESCE(SUM(output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(cached_tokens), 0) AS cachedTokens
       FROM token_usage
       WHERE datetime(${NORM}) >= datetime('now', '-12 hours')
       GROUP BY strftime('%Y-%m-%d %H', ${NORM}, 'localtime')
@@ -30,7 +33,8 @@ export function getDailyTokenStats(): TokenStatsRow[] {
       SELECT
         date(${NORM}) AS label,
         COALESCE(SUM(input_tokens), 0) AS inputTokens,
-        COALESCE(SUM(output_tokens), 0) AS outputTokens
+        COALESCE(SUM(output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(cached_tokens), 0) AS cachedTokens
       FROM token_usage
       WHERE datetime(${NORM}) >= datetime('now', '-7 days')
       GROUP BY date(${NORM})
@@ -45,7 +49,8 @@ export function getMonthlyTokenStats(): TokenStatsRow[] {
       SELECT
         strftime('%Y-%m', ${NORM}) AS label,
         COALESCE(SUM(input_tokens), 0) AS inputTokens,
-        COALESCE(SUM(output_tokens), 0) AS outputTokens
+        COALESCE(SUM(output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(cached_tokens), 0) AS cachedTokens
       FROM token_usage
       WHERE datetime(${NORM}) >= datetime('now', '-6 months')
       GROUP BY strftime('%Y-%m', ${NORM})
