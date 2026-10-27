@@ -226,6 +226,52 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_experiences_created_at ON experiences(created_at);
     CREATE INDEX IF NOT EXISTS idx_experiences_last_used ON experiences(last_used_at);
 
+    -- 记忆页（PLAN-memory-wiki，2026-10-25）：记忆 wiki 化的统一存储，记忆与经验
+    -- （type='experience'）同库同协议。title 与 alias 共用一个 NOCASE 命名空间，
+    -- 唯一性由写路径（memory-pages-store 的冲突判定）保证——title 上不放 UNIQUE
+    -- 是因为 COLLATE NOCASE 的 UNIQUE 与迁移期大小写变体兼容性由显式判定更可控。
+    -- FTS 独立表（无 content=）：memories_fts 的 external content + 手工同步是
+    -- 已付过学费的坑；trigram 是中文子串的正解（knowledge_fts 同款）。
+    CREATE TABLE IF NOT EXISTS memory_pages (
+      id                    TEXT PRIMARY KEY,
+      title                 TEXT NOT NULL,
+      type                  TEXT NOT NULL CHECK(type IN ('preference', 'decision', 'fact', 'experience')),
+      body                  TEXT NOT NULL,
+      aliases               TEXT NOT NULL DEFAULT '[]',
+      links                 TEXT NOT NULL DEFAULT '[]',
+      superseded_by         TEXT,
+      source_conversation_id TEXT,
+      files_json            TEXT,
+      maturity              TEXT NOT NULL DEFAULT 'clue',
+      recurrence            INTEGER NOT NULL DEFAULT 0,
+      last_reinforced_at    TEXT,
+      sop_attempts          INTEGER NOT NULL DEFAULT 0,
+      sop_last_attempt_at   TEXT,
+      enabled               INTEGER NOT NULL DEFAULT 1,
+      use_count             INTEGER NOT NULL DEFAULT 0,
+      last_used_at          TEXT,
+      content_hash          TEXT NOT NULL,
+      created_at            TEXT NOT NULL,
+      updated_at            TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_pages_type ON memory_pages(type);
+    CREATE INDEX IF NOT EXISTS idx_memory_pages_updated ON memory_pages(updated_at DESC);
+
+    -- 技能使用计数（2026-10-27）：pick_skill 选中已注册技能时 +1（经验页的对应物是
+    -- memory_pages.use_count）。按技能名键控——内置技能不在任何表里，这是它们唯一的
+    -- 持久化落点；技能被删除时行留着无害（重装同名即续计）。
+    CREATE TABLE IF NOT EXISTS skill_uses (
+      name          TEXT PRIMARY KEY,
+      use_count     INTEGER NOT NULL DEFAULT 0,
+      last_used_at  TEXT
+    );
+    -- E3（PLAN-capability-followups）：一句话结论，recall/卡片描述消费；旧行 NULL。
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_pages_fts USING fts5(
+      title, aliases_text, body, page_id UNINDEXED, tokenize='trigram'
+    );
+
     -- 专家配置包：只描述身份 + 绑定知识 + 托管参数。旧的 allowed_tools /
     -- allowed_mcp_servers / allowed_skills / is_built_in / summonable 已废弃
     -- （能力与全局保持一致）；老库里的这些列原样留着不删，见下方迁移说明。
@@ -264,6 +310,22 @@ function createTables(): void {
   // new-column index to that exec.
   try { database.exec('CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)') } catch {}
   try { database.exec('ALTER TABLE experiences ADD COLUMN files_json TEXT') } catch {}
+  // E3（PLAN-capability-followups）：记忆页一句话结论（recall 信封/卡片描述）。
+  try { database.exec('ALTER TABLE memory_pages ADD COLUMN summary TEXT') } catch {}
+  // PLAN-experience-sop 刀一：经验页成熟度（files ⇒ 'sop' 派生，存储层执法）+
+  // reinforce 重现记账（二阶段自动固化的资格信号）。
+  try { database.exec("ALTER TABLE memory_pages ADD COLUMN maturity TEXT NOT NULL DEFAULT 'clue'") } catch {}
+  try { database.exec('ALTER TABLE memory_pages ADD COLUMN recurrence INTEGER NOT NULL DEFAULT 0') } catch {}
+  try { database.exec('ALTER TABLE memory_pages ADD COLUMN last_reinforced_at TEXT') } catch {}
+  // PLAN-experience-sop 刀四：自动固化的失败记账（24h 退避 + 3 次退役）。
+  try { database.exec('ALTER TABLE memory_pages ADD COLUMN sop_attempts INTEGER NOT NULL DEFAULT 0') } catch {}
+  try { database.exec('ALTER TABLE memory_pages ADD COLUMN sop_last_attempt_at TEXT') } catch {}
+  // 2026-10-27 经验卡开关（经验也是技能）：停用 = 不进候选/提示/自动固化；旧行默认启用。
+  try { database.exec('ALTER TABLE memory_pages ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1') } catch {}
+  // 2026-10-27 退役软态（compile pass 的 retire op）：过时页退出活页池，行保留、
+  // 理由留档、UI 可恢复；旧行 NULL = 活页。
+  try { database.exec('ALTER TABLE memory_pages ADD COLUMN retired_at TEXT') } catch {}
+  try { database.exec('ALTER TABLE memory_pages ADD COLUMN retire_reason TEXT') } catch {}
   try {
     const missing = database.prepare('SELECT id, content FROM memories WHERE content_hash IS NULL').all() as Array<{ id: string; content: string }>
     if (missing.length > 0) {

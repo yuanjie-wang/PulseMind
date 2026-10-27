@@ -73,7 +73,7 @@ describe('memory_save cannot silently save what the resident section will never 
   it('the executor refuses over-limit content with an honest error', () => {
     const src = read('src/renderer/src/agent/executors/domain-tools.ts')
     expect(src).toContain('MEMORY_ENTRY_MAX_CHARS')
-    expect(src).toContain('exceeds the')
+    expect(src).toContain('characters. Distill the conclusion')  // v2 拒绝话术（页面协议）
   })
   it('the contract reaches the model: manual + schema description carry the limit', () => {
     const manual = read('src/renderer/src/tools/tool-instructions.ts')

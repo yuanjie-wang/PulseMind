@@ -20,6 +20,7 @@ import type { ToolPreferences } from '../shared/types/tool-types'
 import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from '../shared/types/skill-types'
 import type { ExperienceRecord, ExperienceDraft } from '../shared/types/experience-types'
 import type { MemoryEntry, MemorySearchInput } from '../shared/types/memory'
+import type { MemoryPageType, PageOp } from '../shared/memory-pages'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from '../shared/types/knowledge'
 import type { MCPManagedServer, MCPClientConfig, MCPToolCallResult } from '../shared/types/electron-bridge'
 import type { ExpertProfile } from '../shared/types/expert'
@@ -198,6 +199,10 @@ const electronAPI = {
   listSkillFiles: (name: string): Promise<string[]> => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST_FILES, name),
   readSkillFile: (name: string, relPath: string): Promise<string | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.SKILLS_READ_FILE, name, relPath),
+  // 技能使用计数（2026-10-27）
+  recordSkillUse: (name: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SKILL_USE_RECORD, name),
+  listSkillUses: (): Promise<Record<string, { useCount: number; lastUsedAt: string | null; installedAt: string | null }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SKILL_USE_LIST),
 
   // Experiences
   listExperiences: (): Promise<ExperienceRecord[]> => ipcRenderer.invoke(IPC_CHANNELS.EXPERIENCES_LIST),
@@ -409,6 +414,24 @@ const electronAPI = {
   appendMemoryMd: (data: { sectionHeading: string; entry: string }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_APPEND_MD, data),
   updateMemory: (id: string, data: { content?: string; type?: string; category?: string }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.MEMORY_UPDATE, id, data),
+
+  // Memory pages（PLAN-memory-wiki，2026-10-25）
+  listMemoryPages: (type?: MemoryPageType) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_LIST, type),
+  getMemoryPage: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_GET, id),
+  searchMemoryPages: (data: { query: string; type?: MemoryPageType; limit?: number }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_SEARCH, data),
+  applyMemoryPageOps: (ops: PageOp[]) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_APPLY_OPS, ops),
+  touchMemoryPage: (pageId: string) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_TOUCH, pageId),
+  setMemoryPageEnabled: (pageId: string, enabled: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_SET_ENABLED, pageId, enabled),
+  setMemoryPageRetired: (pageId: string, retired: boolean, reason?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_SET_RETIRED, pageId, retired, reason),
+  distillSop: (pageId: string): Promise<{ conversationId?: string; error?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_DISTILL_SOP, pageId),
+  deleteMemoryPage: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_DELETE, id),
+  countMemoryPages: (type?: MemoryPageType) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_COUNT, type),
+  memoryPageCatalog: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_PAGE_CATALOG),
+  runMemorySweepNow: (): Promise<{ extracted: number; error?: string }> => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_SWEEP_RUN),
 
   // MCP - Model Context Protocol
   mcpListServers: (): Promise<MCPManagedServer[]> => ipcRenderer.invoke(IPC_CHANNELS.MCP_LIST_SERVERS),

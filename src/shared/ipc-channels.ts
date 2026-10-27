@@ -88,6 +88,20 @@ export const IPC_CHANNELS = {
   MEMORY_SAVE_MD: 'memory:save-md',
   MEMORY_APPEND_MD: 'memory:append-md',
 
+  // ── Memory pages（PLAN-memory-wiki，2026-10-25）── 旧 MEMORY_* 通道迁移期保持不动（旧表冻结只读）
+  MEMORY_PAGE_LIST: 'memory-page:list',
+  MEMORY_PAGE_GET: 'memory-page:get',
+  MEMORY_PAGE_SEARCH: 'memory-page:search',
+  MEMORY_PAGE_APPLY_OPS: 'memory-page:apply-ops',
+  MEMORY_PAGE_TOUCH: 'memory-page:touch',
+  MEMORY_PAGE_SET_ENABLED: 'memory-page:set-enabled',
+  MEMORY_PAGE_SET_RETIRED: 'memory-page:set-retired',
+  MEMORY_PAGE_DISTILL_SOP: 'memory-page:distill-sop',
+  MEMORY_PAGE_DELETE: 'memory-page:delete',
+  MEMORY_PAGE_COUNT: 'memory-page:count',
+  MEMORY_PAGE_CATALOG: 'memory-page:catalog',
+  MEMORY_SWEEP_RUN: 'memory-sweep:run',
+
   // ── Settings ──
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
@@ -111,6 +125,9 @@ export const IPC_CHANNELS = {
   SKILLS_CHANGED: 'skills:changed',
   SKILLS_LIST_FILES: 'skills:list-files',
   SKILLS_READ_FILE: 'skills:read-file',
+  // 技能使用计数（2026-10-27）：pick_skill 记账 + 技能中心卡片展示
+  SKILL_USE_RECORD: 'skill-use:record',
+  SKILL_USE_LIST: 'skill-use:list',
 
   // ── Experiences ──
   EXPERIENCES_LIST: 'experiences:list',

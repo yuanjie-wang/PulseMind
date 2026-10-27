@@ -11,6 +11,7 @@ import type { AppSettings } from './settings'
 import type { ToolPreferences } from './tool-types'
 import type { SkillPreferences, SkillPreferencesPatch, SkillDefinition } from './skill-types'
 import type { MemoryEntry, MemorySearchInput } from './memory'
+import type { MemoryPageRecord, MemoryPageType, PageOp, PageOpResult } from '../memory-pages'
 import type { KnowledgeFile, KnowledgeBase, KnowledgeStats, KnowledgeImportResult, KnowledgeListOptions, KnowledgeListResult } from './knowledge'
 import type { ExpertProfile } from './expert'
 import type { SummonedExpert } from '../expert-context'
@@ -232,6 +233,11 @@ export interface ElectronAPI {
   listSkillFiles: (name: string) => Promise<string[]>
   /** Read one file inside the skill directory by its skill-relative path. */
   readSkillFile: (name: string, relPath: string) => Promise<string | null>
+  /** 技能使用计数（2026-10-27）：pick_skill 选中已注册技能时 +1（经验页走 touchMemoryPage）。 */
+  recordSkillUse: (name: string) => Promise<void>
+  /** 技能中心卡片的「使用 N 次 · 安装于 …」数据：按技能名键控；installedAt = 技能目录
+   *  创建时间（内置技能由 UI 显示 `--`，不看这个值）。 */
+  listSkillUses: () => Promise<Record<string, { useCount: number; lastUsedAt: string | null; installedAt: string | null }>>
 
   // Experiences
   listExperiences: () => Promise<ExperienceRecord[]>
@@ -489,6 +495,23 @@ export interface ElectronAPI {
   saveMemoryMd: (content: string) => Promise<void>
   appendMemoryMd: (data: { sectionHeading: string; entry: string }) => Promise<void>
   updateMemory: (id: string, data: { content?: string; type?: string; category?: string }) => Promise<void>
+
+  // Memory pages（PLAN-memory-wiki，2026-10-25）—— 记忆 wiki 化的统一读写面
+  listMemoryPages: (type?: MemoryPageType) => Promise<MemoryPageRecord[]>
+  getMemoryPage: (id: string) => Promise<MemoryPageRecord | null>
+  searchMemoryPages: (data: { query: string; type?: MemoryPageType; limit?: number }) => Promise<(MemoryPageRecord & { viaFts: boolean })[]>
+  applyMemoryPageOps: (ops: PageOp[]) => Promise<PageOpResult[]>
+  touchMemoryPage: (pageId: string) => Promise<void>
+  /** 经验卡开关（2026-10-27）：停用 = 不进候选表/提示/自动固化。 */
+  setMemoryPageEnabled: (pageId: string, enabled: boolean) => Promise<void>
+  /** 退役/恢复（2026-10-27）：恢复 = 清空退役软态回活页池；理由仅在退役方向生效
+   *  （UI 目前只有恢复方向，退役由 compile pass 产出）。 */
+  setMemoryPageRetired: (pageId: string, retired: boolean, reason?: string) => Promise<void>
+  distillSop: (pageId: string) => Promise<{ conversationId?: string; error?: string }>
+  deleteMemoryPage: (id: string) => Promise<void>
+  countMemoryPages: (type?: MemoryPageType) => Promise<number>
+  memoryPageCatalog: () => Promise<{ text: string; mode: 'full' | 'bucketed'; liveCount: number }>
+  runMemorySweepNow: () => Promise<{ extracted: number; error?: string }>
 
   // MCP - Model Context Protocol
   mcpListServers: () => Promise<MCPManagedServer[]>

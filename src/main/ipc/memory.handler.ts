@@ -2,6 +2,20 @@ import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { listMemories, saveMemory, deleteMemory, searchMemories, updateMemory, countMemoriesByType, type MemoryRow } from '../storage/memory.db'
+import {
+  applyPageOps,
+  touchMemoryPage,
+  setMemoryPageEnabled,
+  setMemoryPageRetired,
+  countMemoryPages,
+  deleteMemoryPage,
+  getMemoryPageById,
+  listMemoryPages,
+  pageCatalog,
+  searchMemoryPages,
+  type MemoryPageSearchHit,
+} from '../storage/memory-pages-store'
+import type { MemoryPageType, PageOp, PageOpResult } from '../../shared/memory-pages'
 import { MEMORY_MD_PATH } from '../storage/index'
 import { withErrorLogging } from './ipc-utils'
 
@@ -175,3 +189,75 @@ function toMemoryEntry(row: MemoryRow): MemoryApiEntry {
     updatedAt: row.updated_at
   }
 }
+
+// ── Memory pages（PLAN-memory-wiki，2026-10-25）──────────────────────
+
+/** 检索命中（脱壳为可序列化形状；record 为完整页记录）。 */
+function toSearchHit(hit: MemoryPageSearchHit) {
+  return { ...hit.record, viaFts: hit.viaFts }
+}
+
+export function registerMemoryPageHandlers(): void {
+  ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_LIST, withRawResponse(async (type?: MemoryPageType) => listMemoryPages(type)))
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_GET, withRawResponse(async (id: string) => getMemoryPageById(id)))
+
+  ipcMain.handle(
+    IPC_CHANNELS.MEMORY_PAGE_SEARCH,
+    withRawResponse(async (data: { query: string; type?: MemoryPageType; limit?: number }) =>
+      searchMemoryPages(data).map(toSearchHit)
+    )
+  )
+
+  ipcMain.handle(
+    IPC_CHANNELS.MEMORY_PAGE_APPLY_OPS,
+    withRawResponse(async (ops: PageOp[]): Promise<PageOpResult[]> => applyPageOps(ops))
+  )
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_TOUCH, withErrorLogging(async (pageId: string) => touchMemoryPage(pageId)))
+
+  ipcMain.handle(
+    IPC_CHANNELS.MEMORY_PAGE_SET_ENABLED,
+    withErrorLogging(async (pageId: string, enabled: boolean) => setMemoryPageEnabled(pageId, enabled === true))
+  )
+
+  ipcMain.handle(
+    IPC_CHANNELS.MEMORY_PAGE_SET_RETIRED,
+    withErrorLogging(async (pageId: string, retired: boolean, reason?: string) => setMemoryPageRetired(pageId, retired === true, typeof reason === 'string' ? reason : undefined))
+  )
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_DELETE, withErrorLogging(async (id: string) => deleteMemoryPage(id)))
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_COUNT, withRawResponse(async (type?: MemoryPageType) => countMemoryPages(type)))
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_CATALOG, withRawResponse(async () => pageCatalog()))
+}
+
+
+// ── SOP 固化（PLAN-experience-sop 刀三）：按钮 → session-manager 托管运行 ──
+let sopDistillTrigger: ((pageId: string) => Promise<{ conversationId?: string; error?: string }>) | null = null
+export function setSopDistillTrigger(fn: (pageId: string) => Promise<{ conversationId?: string; error?: string }>): void {
+  sopDistillTrigger = fn
+}
+try {
+  ipcMain.handle(IPC_CHANNELS.MEMORY_PAGE_DISTILL_SOP, async (_e, pageId: string): Promise<{ conversationId?: string; error?: string }> => {
+    if (!sopDistillTrigger) return { error: '固化服务未就绪' }
+    try { return await sopDistillTrigger(pageId) }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
+  })
+} catch { /* 模块级重复加载（探针 bundle）时静默 */ }
+
+// ── 「立即提取」：定时清扫的手动旁路（PLAN-memory-wiki M2c）──
+// 调度器宿主是 session-manager（有 managers/profile），handler 经注册的
+// 回调触发；未注册（session-manager 未初始化）时如实报错。
+let memorySweepTrigger: (() => Promise<number>) | null = null
+export function setMemorySweepTrigger(fn: () => Promise<number>): void {
+  memorySweepTrigger = fn
+}
+try {
+  ipcMain.handle(IPC_CHANNELS.MEMORY_SWEEP_RUN, async (): Promise<{ extracted: number; error?: string }> => {
+    if (!memorySweepTrigger) return { extracted: 0, error: 'sweep not ready' }
+    try { return { extracted: await memorySweepTrigger() } }
+    catch (e) { return { extracted: 0, error: e instanceof Error ? e.message : String(e) } }
+  })
+} catch { /* 模块级重复加载（探针 bundle）时静默 */ }

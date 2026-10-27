@@ -1,9 +1,40 @@
 import { ipcMain, dialog } from 'electron'
+import { readdir, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { IPC_CHANNELS } from '../../shared/ipc-channels'
 import { skillStore } from '../storage/skill-store'
+import { listSkillUses, recordSkillUse } from '../storage/skill-use-store'
+import { SKILLS_DIR } from '../storage'
 import type { SkillDefinition, SkillPreferencesPatch } from '../../shared/types/skill-types'
 
+/** 技能中心卡片的「使用 N 次 · 安装于 …」：计数来自 skill_uses，安装时间 = 技能目录
+ *  的创建时间（birthtime；拿不到的文件系统回落 ctime）。零使用的技能也要有安装时间，
+ *  所以按磁盘目录而不是按计数行枚举。 */
+async function listSkillUseInfo(): Promise<Record<string, { useCount: number; lastUsedAt: string | null; installedAt: string | null }>> {
+  const out: Record<string, { useCount: number; lastUsedAt: string | null; installedAt: string | null }> = {}
+  for (const row of listSkillUses()) out[row.name] = { useCount: row.useCount, lastUsedAt: row.lastUsedAt, installedAt: null }
+  let dirs: string[] = []
+  try { dirs = await readdir(SKILLS_DIR) } catch { /* 目录不存在 = 无已安装技能 */ }
+  for (const name of dirs) {
+    if (name.startsWith('.')) continue
+    try {
+      const s = await stat(join(SKILLS_DIR, name))
+      if (!s.isDirectory()) continue
+      const ms = s.birthtimeMs > 0 ? s.birthtimeMs : s.ctimeMs
+      const entry = out[name] ?? (out[name] = { useCount: 0, lastUsedAt: null, installedAt: null })
+      entry.installedAt = new Date(ms).toISOString()
+    } catch { /* 单个目录读不到不影响其余 */ }
+  }
+  return out
+}
+
 export function registerSkillHandlers(): void {
+  // 技能使用计数（2026-10-27）
+  ipcMain.handle(IPC_CHANNELS.SKILL_USE_RECORD, async (_event, name: string) => {
+    if (typeof name === 'string' && name.trim()) recordSkillUse(name.trim())
+  })
+  ipcMain.handle(IPC_CHANNELS.SKILL_USE_LIST, async () => listSkillUseInfo())
+
   // Preferences
   ipcMain.handle(IPC_CHANNELS.SKILLS_GET_PREFERENCES, async () => {
     return skillStore.get()
