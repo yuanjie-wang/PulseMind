@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { isAbsolute } from 'node:path'
 import { currentSessionSandbox } from '../sandbox/session-context'
+import { withProxyDispatcher } from '../utils/proxy'
 
 // ── Transport Interface ─────────────────────────────────────────────
 
@@ -39,9 +40,7 @@ export class StdioTransport implements MCPTransport {
       // the shell; absolute exe paths spawn directly via CreateProcess, which
       // handles spaces in the path natively.
       const lower = this.command.toLowerCase()
-      const needsShell =
-        process.platform === 'win32' &&
-        (!isAbsolute(this.command) || lower.endsWith('.cmd') || lower.endsWith('.bat'))
+      const needsShell = process.platform === 'win32' && (!isAbsolute(this.command) || lower.endsWith('.cmd') || lower.endsWith('.bat'))
       const child = spawn(this.command, this.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: this.env,
@@ -171,14 +170,17 @@ export class SSETransport implements MCPTransport {
   async connect(): Promise<void> {
     this.abortController = new AbortController()
 
-    const response = await fetch(this.url, {
-      headers: {
-        Accept: 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        ...this.headers,
-      },
-      signal: this.abortController.signal,
-    })
+    const response = await fetch(
+      this.url,
+      await withProxyDispatcher({
+        headers: {
+          Accept: 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          ...this.headers,
+        },
+        signal: this.abortController.signal,
+      }),
+    )
 
     if (!response.ok) {
       throw new Error(`MCP SSE 连接失败: HTTP ${response.status} ${response.statusText}`)
@@ -209,7 +211,9 @@ export class SSETransport implements MCPTransport {
             messageUrl: parsed.url || parsed.messageUrl || evt.data,
             sessionId: parsed.sessionId || '',
           }
-        } catch { this.session = { messageUrl: evt.data, sessionId: '' } }
+        } catch {
+          this.session = { messageUrl: evt.data, sessionId: '' }
+        }
         break
       }
 
@@ -221,12 +225,7 @@ export class SSETransport implements MCPTransport {
     this.backgroundRead(reader, buffer, currentEvent, currentData)
   }
 
-  private async backgroundRead(
-    reader: ReadableStreamDefaultReader<Uint8Array>,
-    initialBuf: string,
-    initialEvent: string,
-    initialData: string,
-  ): Promise<void> {
+  private async backgroundRead(reader: ReadableStreamDefaultReader<Uint8Array>, initialBuf: string, initialEvent: string, initialData: string): Promise<void> {
     const decoder = new TextDecoder()
     let buffer = initialBuf
     let currentEvent = initialEvent
@@ -281,7 +280,6 @@ export class SSETransport implements MCPTransport {
   }
 }
 
-
 // ── Streamable HTTP Transport (MCP Streamable HTTP / 高德 MCP) ──
 
 /**
@@ -312,16 +310,19 @@ export class StreamableHTTPTransport implements MCPTransport {
     this.connected = true
 
     try {
-      const response = await fetch(this.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json, text/event-stream',
-          ...this.headers,
-        },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 'ping', method: 'ping' }),
-        signal: this.abortController.signal,
-      })
+      const response = await fetch(
+        this.url,
+        await withProxyDispatcher({
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            ...this.headers,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'ping', method: 'ping' }),
+          signal: this.abortController.signal,
+        }),
+      )
 
       if (!response.ok) {
         this.connected = false

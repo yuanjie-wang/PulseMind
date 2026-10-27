@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { app } from 'electron'
 import type { Browser, BrowserContext } from 'playwright-core'
 import { settingsStore } from '../../storage/settings-store'
+import { parseProxyUrl, ProxyConfigError } from '../../../shared/proxy'
 import type { BackendAdapter, BackendTab } from './BackendAdapter'
 import type { BackendDescriptor } from '../../../shared/browser-client/protocol'
 
@@ -45,12 +46,22 @@ export class ManagedBackend implements BackendAdapter {
   async start(): Promise<void> {
     if (this.browser?.isConnected?.()) return
     let headless = true
+    let proxyUrl: string | null = null
     try {
-      headless = (await settingsStore.get()).browser?.headless ?? true
-    } catch {
+      const settings = await settingsStore.get()
+      headless = settings.browser?.headless ?? true
+      // 抓包面（2026-10-27）：托管浏览器跟主进程 fetch 一样走用户代理。
+      // Chromium 走系统证书库，Fiddler/Charles 的根证书装进系统链即可
+      // 解密 HTTPS，不需要 proxyStrictSSL。
+      proxyUrl = parseProxyUrl(settings.proxyUrl)
+    } catch (err) {
+      // 代理配置无效必须响亮地失败——用户刚填的坏地址静默直连，抓包就
+      // 抓了个寂寞；settings 本身读不出来才回落默认（headless 同款容错）。
+      if (err instanceof ProxyConfigError) throw err
       /* default */
     }
     const launch = await resolveLaunchOptions(headless)
+    if (proxyUrl) (launch as LaunchOptions).proxy = { server: proxyUrl }
     const { chromium } = await import('playwright-core')
     this.browser = await chromium.launch(launch)
   }
@@ -100,6 +111,10 @@ interface LaunchOptions {
   executablePath?: string
   channel?: 'chrome' | 'msedge'
   headless: boolean
+  /** Playwright 代理参数（抓包调试）：只在 start() 的真实 launch 上设置，
+   *  resolveLaunchOptions 的可执行文件探测不背它——代理不可达不该把
+   *  「找不到浏览器内核」的探测误伤。 */
+  proxy?: { server: string }
 }
 
 /** Try candidates in order; first that launches wins. Exported for M2's

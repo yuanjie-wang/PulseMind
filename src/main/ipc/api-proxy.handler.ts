@@ -7,6 +7,7 @@ import { applyLlmRequestHook } from '../llm-hook'
 import { dumpLlmRequest, dumpLlmResponse } from '../llm/request-dump'
 import { ensureLaunchHooks } from '../hooks-runner'
 import { resolveEnvVarsInString, findUnresolvedEnvVar } from '../../shared/env'
+import { withProxyDispatcher, ProxyConfigError } from '../utils/proxy'
 
 /**
  * Resolve ${VAR_NAME} patterns in a string using environment variables.
@@ -67,11 +68,12 @@ export function urlMatchesProfileBaseURL(requestUrl: string, baseURL: string): b
  * would otherwise resolve `${VAR}` against a process.env the hook hasn't
  * populated yet and fail fast on a variable that was about to exist.
  */
-export async function applyProfileHeaders(headers?: Record<string, string>, opts: ApplyProfileHeadersOptions = {}): Promise<Record<string, string> | undefined> {
+export async function applyProfileHeaders(
+  headers?: Record<string, string>,
+  opts: ApplyProfileHeadersOptions = {},
+): Promise<Record<string, string> | undefined> {
   await ensureLaunchHooks()
-  const base: Record<string, string> = headers
-    ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, resolveEnvVarsInString(v)]))
-    : {}
+  const base: Record<string, string> = headers ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, resolveEnvVarsInString(v)])) : {}
   let result: Record<string, string> | undefined
   if (opts.mergeProfileHeaders === false) {
     result = Object.keys(base).length ? base : headers
@@ -84,12 +86,13 @@ export async function applyProfileHeaders(headers?: Record<string, string>, opts
     // specific path prefix is the provider the URL actually belongs to.
     const urlMatched = opts.url
       ? settings.profiles
-          .filter(p => urlMatchesProfileBaseURL(opts.url!, p.baseURL ?? ''))
+          .filter((p) => urlMatchesProfileBaseURL(opts.url!, p.baseURL ?? ''))
           .sort((a, b) => (b.baseURL ?? '').length - (a.baseURL ?? '').length)[0]
       : undefined
-    const profile = (opts.profileId ? settings.profiles.find(p => p.id === opts.profileId) : undefined)
-      ?? urlMatched
-      ?? settings.profiles.find(p => p.id === settings.activeProfileId)
+    const profile =
+      (opts.profileId ? settings.profiles.find((p) => p.id === opts.profileId) : undefined) ??
+      urlMatched ??
+      settings.profiles.find((p) => p.id === settings.activeProfileId)
     if (!profile?.headers) {
       result = Object.keys(base).length ? base : headers
     } else {
@@ -123,18 +126,24 @@ export async function applyProfileHeaders(headers?: Record<string, string>, opts
 /** Verify the request URL is not an SSRF attempt against the user's configured API host. */
 export async function validateRequestUrl(requestUrl: string): Promise<void> {
   let parsed: URL
-  try { parsed = new URL(requestUrl) } catch { throw new Error(`无效 URL: ${requestUrl.slice(0, 100)}`) }
+  try {
+    parsed = new URL(requestUrl)
+  } catch {
+    throw new Error(`无效 URL: ${requestUrl.slice(0, 100)}`)
+  }
 
   if (!(await isPrivateHost(parsed.hostname))) return // public IP — safe
 
   // Private IP — only allow if the user's configured baseURL also points to one (local LLM)
   const settings = await settingsStore.get()
-  const activeProfile = settings.profiles.find(p => p.id === settings.activeProfileId)
+  const activeProfile = settings.profiles.find((p) => p.id === settings.activeProfileId)
   if (activeProfile?.baseURL) {
     try {
       const baseParsed = new URL(activeProfile.baseURL)
       if (baseParsed.hostname === parsed.hostname) return // same host as configured — allow
-    } catch { /* ignore parse failures */ }
+    } catch {
+      /* ignore parse failures */
+    }
   }
   throw new Error(`SSRF 拦截: 目标地址 ${parsed.hostname} 为内网 IP，且非 LLM 配置地址`)
 }
@@ -150,8 +159,15 @@ function getSender(event: Electron.IpcMainInvokeEvent): Electron.WebContents {
   return BrowserWindow.fromWebContents(event.sender)?.webContents ?? event.sender
 }
 
-function isRetryable(status: number): boolean {
-  return status === 429 || (status >= 500 && status < 600)
+/** The built-in retryable set: rate limiting plus any 5xx. `extraCodes`
+ *  extends it with user-configured codes (settings `llmRetryStatusCodes`) —
+ *  additive, never replacing the defaults. Codes below 400 never reach here:
+ *  `response.ok` short-circuits 2xx and redirects are followed manually inside
+ *  the fetch, so the configured domain is 400–599 (mirrors the settings
+ *  reader's normalization). */
+export function isRetryable(status: number, extraCodes?: number[]): boolean {
+  if (status === 429 || (status >= 500 && status < 600)) return true
+  return extraCodes?.includes(status) ?? false
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -190,13 +206,16 @@ export async function fetchWithAttemptTimeout(
     for (let hop = 0; ; hop++) {
       if (hop > 0) await validateRequestUrl(current)
       if (hop >= 5) throw new Error('SSRF 拦截: 重定向次数超过上限')
-      res = await fetch(current, {
-        method: options.method || 'POST',
-        headers: { ...options.headers },
-        body: options.body,
-        signal: attemptController.signal,
-        redirect: 'manual',
-      })
+      res = await fetch(
+        current,
+        await withProxyDispatcher({
+          method: options.method || 'POST',
+          headers: { ...options.headers },
+          body: options.body,
+          signal: attemptController.signal,
+          redirect: 'manual',
+        }),
+      )
       const loc = res.headers.get('location')
       if (res.status >= 300 && res.status < 400 && loc) {
         current = new URL(loc, current).href
@@ -222,11 +241,12 @@ async function fetchWithRetry(
   signal?: AbortSignal,
   maxRetries = 20,
   onRetry?: (attempt: number, reason: string) => void,
+  extraRetryCodes?: number[],
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     try {
       const response = await fetchWithAttemptTimeout(url, options, signal, CONNECT_TIMEOUT_MS)
-      if (response.ok || !isRetryable(response.status) || attempt >= maxRetries) {
+      if (response.ok || !isRetryable(response.status, extraRetryCodes) || attempt >= maxRetries) {
         return response
       }
       const delay = (attempt + 5) * 1000
@@ -236,6 +256,9 @@ async function fetchWithRetry(
     } catch (err) {
       // Don't retry aborted requests (user cancellation)
       if (signal?.aborted) throw err
+      // 代理配置无效是确定性错误——同一个拼写错误重试 20 次只会把一次失败
+      // 放大成几分钟的退避停顿；立即失败，话术自己教修正（shared/proxy）。
+      if (err instanceof ProxyConfigError) throw err
       // Network error (ECONNRESET, ETIMEDOUT, ECONNREFUSED, DNS, TLS…) — retry
       if (attempt >= maxRetries) throw err
       const delay = (attempt + 5) * 1000
@@ -279,7 +302,9 @@ export async function performLlmStream(
   controller: AbortController,
   maxRetries = 20,
 ): Promise<void> {
-  try { await validateRequestUrl(url) } catch (e) {
+  try {
+    await validateRequestUrl(url)
+  } catch (e) {
     sinks.onError(e instanceof Error ? e.message : 'SSRF 拦截')
     return
   }
@@ -308,6 +333,9 @@ export async function performLlmStream(
     // Stringify body in main process so the renderer isn't blocked on large JSON.
     const body = typeof options.body === 'object' ? JSON.stringify(options.body) : options.body
     const mergedHeaders = await applyProfileHeaders(options.headers, { profileId: options.profileId, url })
+    // 附加重试码表按请求读取（mtime 缓存的 store）——改完设置对下一次请求生效，
+    // 与 dump 门同款语义；缓存命中时这是一次纯内存读。
+    const extraRetryCodes = (await settingsStore.get()).llmRetryStatusCodes
     // llm-request hook: the streaming channel is LLM-only (AgentEngine loop +
     // OpenAIAdapter.callNonStreaming). webfetch goes through the simple fetch
     // handler, so every request here is an LLM request — always run the hook.
@@ -316,12 +344,12 @@ export async function performLlmStream(
       requestId,
     })
     const finalUrl = hookApplied.url
-    const finalBody = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
+    const finalBody = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : (hookApplied.body as string | undefined)
     const finalHeaders = hookApplied.headers
     const resolvedOptions: { method?: string; headers?: Record<string, string>; body?: string } = {
       ...options,
       body: finalBody,
-      headers: finalHeaders
+      headers: finalHeaders,
     }
     // Full request dump (dev: always, packaged: `debugLlmRequests`). Placed here
     // on purpose — this is the last point where url/headers/body are the bytes
@@ -331,9 +359,9 @@ export async function performLlmStream(
       url: finalUrl,
       method: resolvedOptions.method || 'POST',
       headers: finalHeaders,
-      body: resolvedOptions.body || ''
+      body: resolvedOptions.body || '',
     })
-    const response = await fetchWithRetry(finalUrl, resolvedOptions, controller.signal, maxRetries, retryCb)
+    const response = await fetchWithRetry(finalUrl, resolvedOptions, controller.signal, maxRetries, retryCb, extraRetryCodes)
 
     console.log(`[API-Proxy] Response status: ${response.status} for ${requestId}`)
 
@@ -350,7 +378,9 @@ export async function performLlmStream(
           return `${i}:${m.role} content=${contentStr} len=${typeof content === 'string' ? content.length : '?'} tool_calls=${m.tool_calls?.length ?? 0}${m.tool_calls ? ' calls=[' + m.tool_calls.map((tc: any) => `${tc.function?.name || '?'}(${(tc.function?.arguments || '').length})`).join(',') + ']' : ''}`
         })
         console.error(`[API-Proxy] HTTP ${response.status} full messages:`, msgs.join('\n  '))
-      } catch { /* ignore parse error */ }
+      } catch {
+        /* ignore parse error */
+      }
       sinks.onError(`HTTP ${response.status}: ${errText.slice(0, 1000)}`)
       return
     }
@@ -403,8 +433,7 @@ export async function performLlmStream(
     // read. Nothing received yet skips inside dumpLlmResponse (empty body).
     await writeResponseDump(controller.signal.aborted ? 'aborted' : 'interrupted')
     if (controller.signal.aborted) {
-      const isTimeout = controller.signal.reason instanceof Error
-        && controller.signal.reason.message === 'Stream idle timeout'
+      const isTimeout = controller.signal.reason instanceof Error && controller.signal.reason.message === 'Stream idle timeout'
       if (isTimeout) {
         console.log(`[API-Proxy] Stream idle timeout: ${requestId}`)
         sinks.onError('连接闲置超时，请重试')
@@ -431,22 +460,32 @@ export async function performLlmStream(
 export function registerApiProxyHandlers(): void {
   // Start a proxied streaming HTTP request — bridges performLlmStream sinks to
   // the requesting renderer's webContents.
-  ipcMain.handle(
-    IPC_CHANNELS.API_FETCH_STREAM,
-    async (event, requestId: string, url: string, options: LlmStreamOptions) => {
-      const webContents = getSender(event)
-      const guard = (send: () => void) => {
-        if (!webContents.isDestroyed()) { try { send() } catch { /* renderer frame disposed */ } }
+  ipcMain.handle(IPC_CHANNELS.API_FETCH_STREAM, async (event, requestId: string, url: string, options: LlmStreamOptions) => {
+    const webContents = getSender(event)
+    const guard = (send: () => void) => {
+      if (!webContents.isDestroyed()) {
+        try {
+          send()
+        } catch {
+          /* renderer frame disposed */
+        }
       }
-      const controller = new AbortController()
-      await performLlmStream(requestId, url, options, {
+    }
+    const controller = new AbortController()
+    await performLlmStream(
+      requestId,
+      url,
+      options,
+      {
         onError: (message) => guard(() => webContents.send(IPC_CHANNELS.API_STREAM_ERROR, { requestId, error: message })),
-        onRetry: (attempt, maxRetries, delay, message) => guard(() => webContents.send(IPC_CHANNELS.API_STREAM_RETRY, { requestId, attempt, maxRetries, delay, message })),
+        onRetry: (attempt, maxRetries, delay, message) =>
+          guard(() => webContents.send(IPC_CHANNELS.API_STREAM_RETRY, { requestId, attempt, maxRetries, delay, message })),
         onChunk: (text) => guard(() => webContents.send(IPC_CHANNELS.API_STREAM_CHUNK, { requestId, data: text })),
         onDone: () => guard(() => webContents.send(IPC_CHANNELS.API_STREAM_DONE, { requestId })),
-      }, controller)
-    }
-  )
+      },
+      controller,
+    )
+  })
 
   // Abort an ongoing streaming request
   ipcMain.handle(IPC_CHANNELS.API_ABORT_STREAM, async (_event, requestId: string) => {
@@ -479,7 +518,9 @@ export function abortLlmStream(requestId: string): void {
 /** Simple non-streaming fetch: SSRF-validated, 30s timeout, 50MB cap, returns text. */
 export async function performSimpleFetch(url: string, options: SimpleFetchOptions): Promise<string | null> {
   console.log(`[API-Proxy] Simple fetch: POST ${url}`)
-  try { await validateRequestUrl(url) } catch {
+  try {
+    await validateRequestUrl(url)
+  } catch {
     console.error(`[API-Proxy] SSRF blocked: ${url}`)
     return null
   }
@@ -492,7 +533,7 @@ export async function performSimpleFetch(url: string, options: SimpleFetchOption
       const mergedHeaders2 = await applyProfileHeaders(options.headers, {
         mergeProfileHeaders: options.withProfileHeaders === true,
         profileId: options.profileId,
-        url
+        url,
       })
       // Same opt-in as the hook below — only LLM calls (one-shots over the
       // Anthropic wire, the connection probe) hook and dump. webfetch hits
@@ -509,13 +550,13 @@ export async function performSimpleFetch(url: string, options: SimpleFetchOption
           requestId: 'simple',
         })
         finalUrl2 = hookApplied.url
-        finalBody2 = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : hookApplied.body as string | undefined
+        finalBody2 = typeof hookApplied.body === 'object' ? JSON.stringify(hookApplied.body) : (hookApplied.body as string | undefined)
         finalHeaders2 = hookApplied.headers
       }
       const resolvedOptions2: { method?: string; headers?: Record<string, string>; body?: string } = {
         ...options,
         body: finalBody2,
-        headers: finalHeaders2
+        headers: finalHeaders2,
       }
       // This funnel used to leave no request trace at all (the documented
       // one-shot dump blind spot) — with the response, both halves now land.
@@ -525,10 +566,13 @@ export async function performSimpleFetch(url: string, options: SimpleFetchOption
             url: finalUrl2,
             method: resolvedOptions2.method || 'POST',
             headers: finalHeaders2,
-            body: resolvedOptions2.body || ''
+            body: resolvedOptions2.body || '',
           })
         : null
-      const response = await fetchWithRetry(finalUrl2, resolvedOptions2, controller.signal)
+      // 附加重试码表只对 LLM 调用生效（webfetch 打的是任意公共 URL，不背
+      // LLM 重试配置的名字）；非 LLM 路保持默认码表。
+      const extraRetryCodes = isLlmCall ? (await settingsStore.get()).llmRetryStatusCodes : undefined
+      const response = await fetchWithRetry(finalUrl2, resolvedOptions2, controller.signal, 20, undefined, extraRetryCodes)
       if (!response.ok) {
         const errText = await response.text().catch(() => 'Unknown error')
         if (isLlmCall) await dumpLlmResponse({ requestId: simpleRequestId, requestFile: requestDumpFile, status: String(response.status), body: errText })

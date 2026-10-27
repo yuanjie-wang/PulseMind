@@ -120,9 +120,28 @@ export interface AppSettings {
    * 开发版默认开启；打包版需显式设为 true（读取按文件 mtime 缓存，改完下一次请求即生效）。
    */
   debugLlmRequests?: boolean
+  /** LLM 请求自动重试的**附加** HTTP 状态码：服务端返回这些码时与 429/5xx 一样
+   *  走重试退避（某些网关用自定义 4xx 表达瞬时限流/过载）。默认码表（429 + 5xx）
+   *  永远生效，本配置是追加不是替换；缺失/空 = 只用默认码表。读取按文件 mtime
+   *  缓存，改完对下一次请求生效（与 debugLlmRequests 同款）。归一化只保留
+   *  400–599 的整数并去重（settings-store readRetryStatusCodes）。 */
+  llmRetryStatusCodes?: number[]
   /** 调试用：主线程关键路径计时（src/main/perf/perf-log.ts 的 [perf] 行，
    *  现覆盖 emitMessages 与 saveConversation）。开关语义与 debugLlmRequests 相同。 */
   debugPerfLogs?: boolean
+  /** 用户级 HTTP 代理（抓包调试，2026-10-27）：设置后主进程全部对外 HTTP 都走
+   *  它 —— LLM 流/一次性调用与简单 fetch（api-proxy 的唯一 fetch 点）、连接
+   *  探针、webfetch（ipc 与 tool-runtime 两路）、MCP HTTP transport、例行
+   *  webhook，以及托管浏览器的启动参数（ManagedBackend 的 Playwright proxy）。
+   *  undici ProxyAgent 按 (proxyUrl, proxyStrictSSL) 缓存复用；读取走 mtime
+   *  缓存的 store，改完对下一次请求生效，无需重启。仅支持 http/https 代理
+   *  （Fiddler/Charles/mitmproxy 都是），socks 不支持。空 = 直连。 */
+  proxyUrl?: string
+  /** 代理开启时的 HTTPS 证书校验开关（默认 true）：抓包工具解密 HTTPS 是用
+   *  自签根证书重签目标站点的证书，而 undici 走 Node 内置 CA（不读系统
+   *  钥匙串），不关它抓到的只有 CONNECT 隧道；关闭即跳过校验（requestTls/
+   *  proxyTls rejectUnauthorized:false），仅调试场景使用。 */
+  proxyStrictSSL?: boolean
   /** Browser runtime (A-M4). */
   browser?: {
     /** Default backend for conversations that never chose one ('managed'). */
@@ -162,6 +181,13 @@ export interface AppSettings {
    *  靠它跨重启仍然有效。主进程的 session-manager 在合并后回写这里，重启后
    *  水位不丢。 */
   memoryMergeWatermark?: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string }
+  /** 记忆提取定时清扫间隔（小时）；0 = 关闭定时仅手动（PLAN-memory-wiki M2c）。 */
+  memoryExtractIntervalHours?: number
+  /** 记忆 wiki 化一次性迁移完成时刻（ISO）；存在即不再跑（PLAN-memory-wiki M5）。 */
+  memoryPagesMigratedAt?: string
+  /** 页面编译 watermark（PLAN-memory-wiki M6）。lastCursorAt（2026-10-27 分区
+   *  整理）：选页游标（ISO）——下轮从 createdAt 晚于它的页起转，是位置不是成绩。 */
+  memoryCompileWatermark?: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string; lastCursorAt?: string }
   /** 例行任务结算的 webhook 触达（PLAN-routine-triggers M1）：run 结算时向
    *  webhookUrl POST 一条 JSON 摘要（HMAC 签名，fire-and-forget，失败只落
    *  日志）。payload 只含 ids 与状态，不含转写正文。secret 支持 ${ENV}

@@ -17,6 +17,7 @@
 import { createHmac } from 'node:crypto'
 import { settingsStore } from '../storage/settings-store'
 import { resolveEnvVarsInString } from '../../shared/env'
+import { withProxyDispatcher, ProxyConfigError } from '../utils/proxy'
 
 export interface RoutineSettlementEvent {
   event: 'routine.settled'
@@ -69,11 +70,16 @@ export async function postSettlementEvent(payload: RoutineSettlementEvent): Prom
     const controller = new AbortController()
     const net = setTimeout(() => controller.abort(), TIMEOUT_MS)
     try {
-      const res = await fetch(url, { method: 'POST', headers, body, signal: controller.signal })
+      const res = await fetch(url, await withProxyDispatcher({ method: 'POST', headers, body, signal: controller.signal }))
       // 4xx (except 429) is a receiver-side misconfig — backing off cannot fix it.
       if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) return
       console.warn(`[routine-webhook] attempt ${attempt}/${ATTEMPTS}: HTTP ${res.status}`)
     } catch (err) {
+      // 代理配置无效重试也不会好（fire-and-forget 纪律下连退避都不欠它）。
+      if (err instanceof ProxyConfigError) {
+        console.warn(`[routine-webhook] proxy misconfigured, giving up: ${err.message}`)
+        return
+      }
       console.warn(`[routine-webhook] attempt ${attempt}/${ATTEMPTS}:`, err instanceof Error ? err.message : err)
     } finally {
       clearTimeout(net)

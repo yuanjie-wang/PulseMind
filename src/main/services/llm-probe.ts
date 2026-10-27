@@ -21,6 +21,7 @@ import {
   type LlmProbeOutcome,
 } from '../../shared/llm/probe'
 import { applyProfileHeaders, validateRequestUrl } from '../ipc/api-proxy.handler'
+import { withProxyDispatcher } from '../utils/proxy'
 
 const PROBE_TIMEOUT_MS = 15_000
 
@@ -93,12 +94,15 @@ export async function testLlmConnection(input: LlmProbeInput & { profileId?: str
         profileId: input.profileId,
       },
     )
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: mergedHeaders,
-      body: buildProbeBody(provider, model),
-      signal: controller.signal,
-    })
+    const response = await fetch(
+      url,
+      await withProxyDispatcher({
+        method: 'POST',
+        headers: mergedHeaders,
+        body: buildProbeBody(provider, model),
+        signal: controller.signal,
+      }),
+    )
     const latencyMs = Date.now() - t0
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '')

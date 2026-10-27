@@ -436,16 +436,33 @@ function readIntInRange(raw: unknown, fallback: number, min: number, max: number
   return floored
 }
 
+/** LLM 自动重试的附加状态码（AppSettings.llmRetryStatusCodes）：逐元素校验，
+ *  只留 400–599 的整数（ok 短路与手动跟跳让 <400 的码永远到不了重试门，
+ *  收进配置只会是死条目），去重升序；缺失/非数组/过滤后为空整体回落
+ *  undefined = 只用内置默认码表（429 + 5xx）。 */
+function readRetryStatusCodes(raw: unknown): number[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out = new Set<number>()
+  for (const value of raw) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    const code = Math.floor(value)
+    if (code < 400 || code > 599) continue
+    out.add(code)
+  }
+  return out.size > 0 ? [...out].sort((a, b) => a - b) : undefined
+}
+
 /** 记忆合并水位读取器：形状不对就丢弃（合并层会当作从未合并过，重新
  *  收敛一次——幂等，无害），绝不带病入库。lastAttemptAt 是失败/空尝试的
  *  时钟（空转修复 2026-09-26），与 lastRunAt 一样可选。 */
-function readMergeWatermark(raw: unknown): { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string } | undefined {
+function readMergeWatermark(raw: unknown): { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string; lastCursorAt?: string } | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const w = raw as Record<string, unknown>
-  const out: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string } = {}
+  const out: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string; lastCursorAt?: string } = {}
   if (typeof w.lastRunAt === 'string' && w.lastRunAt) out.lastRunAt = w.lastRunAt
   if (typeof w.lastCount === 'number' && Number.isFinite(w.lastCount) && w.lastCount >= 0) out.lastCount = w.lastCount
   if (typeof w.lastAttemptAt === 'string' && w.lastAttemptAt) out.lastAttemptAt = w.lastAttemptAt
+  if (typeof w.lastCursorAt === 'string' && w.lastCursorAt) out.lastCursorAt = w.lastCursorAt
   return Object.keys(out).length > 0 ? out : undefined
 }
 
@@ -543,7 +560,10 @@ const FALLBACK_SETTINGS: AppSettings = {
   maxLoopIterations: 200,
   maxParallelSubAgents: 5,
   debugLlmRequests: false,
-  debugPerfLogs: false
+  debugPerfLogs: false,
+  // 网络代理（抓包调试）：默认直连 + 严格校验证书。
+  proxyUrl: '',
+  proxyStrictSSL: true
 }
 
 /**
@@ -622,6 +642,11 @@ export class SettingsStore {
           maxParallelSubAgents: readIntInRange(parsed.maxParallelSubAgents, 5, 1, 10),
           debugLlmRequests: parsed.debugLlmRequests === true,
           debugPerfLogs: parsed.debugPerfLogs === true,
+          // 网络代理（抓包调试，2026-10-27）：URL 原样保留（归一化与校验在
+          // 消费点 shared/proxy.parseProxyUrl，读时即最新），证书校验缺省开。
+          proxyUrl: typeof parsed.proxyUrl === 'string' ? parsed.proxyUrl : '',
+          proxyStrictSSL: parsed.proxyStrictSSL !== false,
+          llmRetryStatusCodes: readRetryStatusCodes(parsed.llmRetryStatusCodes),
           projectSortMode: readProjectSortMode(parsed.projectSortMode),
           // 备份保留天数（P3-a）：缺失/非法 → 默认 30（这里的预期就是默认开启
           // ——用户点名了那三个 8 月的无主备份）；显式 0 → 永久保留。与
@@ -632,6 +657,12 @@ export class SettingsStore {
           encryptSecrets: parsed.encryptSecrets === true,
           // 记忆合并水位（P2）：整存/逐字段读都走这里，漏了就是写进去读不出来。
           memoryMergeWatermark: readMergeWatermark(parsed.memoryMergeWatermark),
+          memoryExtractIntervalHours:
+            typeof parsed.memoryExtractIntervalHours === 'number' && Number.isFinite(parsed.memoryExtractIntervalHours) && parsed.memoryExtractIntervalHours >= 0
+              ? parsed.memoryExtractIntervalHours
+              : 6,
+          memoryPagesMigratedAt: typeof parsed.memoryPagesMigratedAt === 'string' ? parsed.memoryPagesMigratedAt : undefined,
+          memoryCompileWatermark: readMergeWatermark(parsed.memoryCompileWatermark),
           // 上次使用的授权/模型（「新建会话沿用上次选择」）：与可选组同病同治 ——
           // get() 是逐字段重建，漏掉这里就是写进去读不出来 + 下次整存被抹掉。
           lastUsedApprovalMode: toSandboxApprovalMode(parsed.lastUsedApprovalMode),

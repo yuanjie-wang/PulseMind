@@ -14,6 +14,7 @@ import { auditStore } from '../storage/audit-store'
 import { guardPath, buildBaselineDenyRoots } from '../../shared/sandbox/path-jail'
 import { resolveRealTargetSync } from '../sandbox/real-path'
 import { isPrivateHost } from '../utils/ssrf'
+import { withProxyDispatcher } from '../utils/proxy'
 import { homedir, platform } from 'node:os'
 import type { UserTool } from '../../shared/types/user-tool'
 
@@ -109,13 +110,16 @@ async function httpRequest(params: Record<string, unknown>): Promise<{ status: n
       if (!['http:', 'https:'].includes(parsedHop.protocol)) throw bridgeError('BAD_REQUEST', '仅支持 http/https')
       if (hop > 0 && (await isBlockedHost(parsedHop))) throw bridgeError('EXEC_FAILED', '该地址不允许访问')
       if (hop >= 5) throw bridgeError('EXEC_FAILED', '重定向次数超过上限')
-      res = await fetch(current, {
-        method,
-        headers,
-        body: params.body != null ? String(params.body) : undefined,
-        signal: controller.signal,
-        redirect: 'manual',
-      })
+      res = await fetch(
+        current,
+        await withProxyDispatcher({
+          method,
+          headers,
+          body: params.body != null ? String(params.body) : undefined,
+          signal: controller.signal,
+          redirect: 'manual',
+        }),
+      )
       const loc = res.headers.get('location')
       if (res.status >= 300 && res.status < 400 && loc) {
         current = new URL(loc, current).href
@@ -128,7 +132,9 @@ async function httpRequest(params: Record<string, unknown>): Promise<{ status: n
       throw bridgeError('EXEC_FAILED', '响应超过 2MB 上限')
     }
     const resHeaders: Record<string, string> = {}
-    res.headers.forEach((v, k) => { resHeaders[k] = v })
+    res.headers.forEach((v, k) => {
+      resHeaders[k] = v
+    })
     return { status: res.status, headers: resHeaders, body }
   } finally {
     clearTimeout(timeout)
@@ -155,7 +161,11 @@ function resolveToolPath(toolId: string, target: unknown): string {
   // ancestor relocates it, comparing the real target against the lexical
   // toolDir would deny every op of that tool.
   let realToolDir = toolDir
-  try { realToolDir = realpathSync(toolDir) } catch { /* not created yet — lexical anchor */ }
+  try {
+    realToolDir = realpathSync(toolDir)
+  } catch {
+    /* not created yet — lexical anchor */
+  }
 
   const decision = guardPath({
     target: resolved,
