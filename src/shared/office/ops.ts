@@ -6,7 +6,7 @@ export type DocxToolOp =
   | { op: 'outline' }
   | { op: 'replace_text'; find: string; replace: string; expected_count?: number; paragraph?: number; track_changes?: boolean }
   | { op: 'insert_paragraph'; paragraph: number; position: 'before' | 'after'; text: string; style?: string }
-  | { op: 'delete_paragraph'; paragraph: number }
+  | { op: 'delete_paragraph'; paragraph?: number; find?: string; expected_count?: number }
   | { op: 'set_paragraph_style'; paragraph: number; style: string }
   | {
       op: 'format_text'

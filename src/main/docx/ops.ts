@@ -13,7 +13,7 @@ export type DocxOp =
   | { op: 'outline' }
   | { op: 'replace_text'; find: string; replace: string; expected_count?: number; paragraph?: number; track_changes?: boolean }
   | { op: 'insert_paragraph'; paragraph: number; position: 'before' | 'after'; text: string; style?: string }
-  | { op: 'delete_paragraph'; paragraph: number }
+  | { op: 'delete_paragraph'; paragraph?: number; find?: string; expected_count?: number }
   | { op: 'set_paragraph_style'; paragraph: number; style: string }
   | { op: 'format_text'; find: string; paragraph?: number; expected_count?: number; bold?: boolean; italic?: boolean; underline?: boolean; color?: string; font_size?: number }
   | { op: 'insert_image'; paragraph: number; position: 'before' | 'after'; image: string; width_px?: number; height_px?: number }
@@ -117,6 +117,18 @@ function requireParagraph(model: ReturnType<typeof buildDocumentModel>, index: n
   const paragraph = model.paragraphs[index]
   if (!paragraph) throw new Error(`段落 ${index} 不存在（文档共 ${model.paragraphs.length} 段）`)
   return paragraph
+}
+
+/** Guards shared by both delete_paragraph anchors: a paragraph carrying the
+ *  section break and a cell's only block element must refuse (an empty cell
+ *  is illegal OOXML). */
+function assertDeletableParagraph(paragraph: ReturnType<typeof buildDocumentModel>['paragraphs'][number]): void {
+  if (paragraph.hasSectPr) {
+    throw new Error('delete_paragraph: 该段落的 pPr 含分节符（w:sectPr），删除会破坏文档分节——请改用 set_paragraph_style 或手工处理')
+  }
+  if (paragraph.soleBlockOfCell) {
+    throw new Error('delete_paragraph: 该段落是表格单元格内唯一的块级元素，删除会产生非法的空单元格（Word 报「内容有问题」）——请清空文本或删除整行/表格')
+  }
 }
 
 // ── rPr surgery (format_text) ──
@@ -304,15 +316,36 @@ function applyOne(
       break
     }
     case 'delete_paragraph': {
-      const paragraph = requireParagraph(model, op.paragraph)
-      if (paragraph.hasSectPr) {
-        throw new Error('delete_paragraph: 该段落的 pPr 含分节符（w:sectPr），删除会破坏文档分节——请改用 set_paragraph_style 或手工处理')
+      // Two anchors, exactly one. The text anchor exists because index-anchored
+      // ops drift: an insert/delete EARLIER in the batch renumbers everything
+      // after it (each op re-parses the current state), and a stale index that
+      // stays in range deletes the WRONG paragraph silently. `find` matches
+      // paragraph text the same space replace_text/office_search use.
+      const byText = op.find !== undefined
+      if (byText === (op.paragraph !== undefined)) {
+        throw new Error('delete_paragraph: paragraph（0-based 索引）与 find（文本锚）必须二选一')
       }
-      if (paragraph.soleBlockOfCell) {
-        throw new Error('delete_paragraph: 该段落是表格单元格内唯一的块级元素，删除会产生非法的空单元格（Word 报「内容有问题」）——请清空文本或删除整行/表格')
+      if (byText) {
+        if (op.find === '') throw new Error('delete_paragraph: find 不能为空')
+        // Each matching PARAGRAPH counts once — occurrences inside one
+        // paragraph are one target (unlike replace_text, the unit is the
+        // block, not the hit).
+        const expected = op.expected_count ?? 1
+        const matched = model.paragraphs.filter((p) => p.text.includes(op.find!))
+        if (matched.length !== expected) {
+          throw new Error(`delete_paragraph: 「${op.find!.slice(0, 40)}」命中 ${matched.length} 段（expected_count=${expected}）— 用 expected_count 或更长的原文片段明确范围`)
+        }
+        for (const paragraph of matched) {
+          assertDeletableParagraph(paragraph)
+          replacements.push({ start: paragraph.element.start, end: paragraph.element.end, text: '' })
+        }
+        message = `按「${op.find!.slice(0, 24)}」删除 ${matched.length} 段（原索引 ${matched.map((p) => p.index).join('、')}）`
+      } else {
+        const paragraph = requireParagraph(model, op.paragraph!)
+        assertDeletableParagraph(paragraph)
+        replacements.push({ start: paragraph.element.start, end: paragraph.element.end, text: '' })
+        message = `删除段落 ${op.paragraph}`
       }
-      replacements.push({ start: paragraph.element.start, end: paragraph.element.end, text: '' })
-      message = `删除段落 ${op.paragraph}`
       break
     }
     case 'set_paragraph_style': {

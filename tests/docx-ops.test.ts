@@ -212,3 +212,82 @@ describe('outline (L9)', () => {
     expect(outcome.results.every((r) => r.ok)).toBe(true)
   })
 })
+
+describe('delete_paragraph find (text anchor)', () => {
+  // simple.docx 的唯一段落换成两段共享词「contract」的段落——多命中与
+  // expected_count 守卫的底座。
+  const twoParagraphDocx = (): Buffer => {
+    const zip = new AdmZip(CORPUS['simple.docx']())
+    const xml = zip.readFile('word/document.xml')!.toString('utf8')
+    const two = xml.replace(
+      '<w:p><w:r><w:t xml:space="preserve">Hello world</w:t></w:r></w:p>',
+      '<w:p><w:r><w:t xml:space="preserve">Alpha contract</w:t></w:r></w:p>' +
+        '<w:p><w:r><w:t xml:space="preserve">Beta contract</w:t></w:r></w:p>',
+    )
+    const out = new AdmZip()
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory) continue
+      out.addFile(entry.entryName, entry.entryName === 'word/document.xml' ? Buffer.from(two, 'utf8') : zip.readFile(entry.entryName)!)
+    }
+    return out.toBuffer()
+  }
+
+  it('find deletes the matching paragraphs and gate ③ accounts the count', () => {
+    const outcome = editDocx(twoParagraphDocx(), [{ op: 'delete_paragraph', find: 'contract', expected_count: 2 }])
+    expect(paragraphsOf(new AdmZip(outcome.buffer).readFile('word/document.xml')!.toString('utf8'))).toHaveLength(0)
+    expect(outcome.results[0].detail).toContain('2 段')
+  })
+
+  it('hit-count mismatch refuses the whole batch', () => {
+    // 默认 expected_count=1，命中 2 段 → 整批拒绝。
+    expect(() => editDocx(twoParagraphDocx(), [{ op: 'delete_paragraph', find: 'contract' }])).toThrow(OpBatchError)
+  })
+
+  it('paragraph 与 find 同时给（或都不给）都拒绝', () => {
+    expect(() => editDocx(CORPUS['simple.docx'](), [{ op: 'delete_paragraph', paragraph: 0, find: 'Hello' }])).toThrow(/二选一/)
+    expect(() => editDocx(CORPUS['simple.docx'](), [{ op: 'delete_paragraph' }])).toThrow(/二选一/)
+  })
+
+  it('the text anchor sees EARLIER batch ops: insert then delete-by-find in ONE batch', () => {
+    // 钉死批内语义（索引漂移警告的根据）：后面的 op 看到前面 op 生效后的
+    // 文档——insert 进来的段落对同一批的 find 可见，删干净后逐字节复原。
+    const outcome = editDocx(CORPUS['simple.docx'](), [
+      { op: 'insert_paragraph', paragraph: 0, position: 'before', text: 'MARKER' },
+      { op: 'delete_paragraph', find: 'MARKER' },
+    ])
+    const xml = new AdmZip(outcome.buffer).readFile('word/document.xml')!.toString('utf8')
+    expect(paragraphsOf(xml)).toEqual(['Hello world'])
+    expect(xml).toBe(docXml('simple.docx'))
+  })
+
+  it('a cell-only paragraph is refused via find too', () => {
+    expect(() =>
+      editDocx(CORPUS['styles-table.docx'](), [{ op: 'delete_paragraph', find: 'cell one' }]),
+    ).toThrow(/唯一的块级元素/)
+  })
+})
+
+describe('insert_image without [Content_Types].xml (module-11 P2-2)', () => {
+  const noCtDocx = (): Buffer => {
+    const zip = new AdmZip(CORPUS['simple.docx']())
+    const out = new AdmZip()
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory || entry.entryName === '[Content_Types].xml') continue
+      out.addFile(entry.entryName, zip.readFile(entry.entryName)!)
+    }
+    return out.toBuffer()
+  }
+
+  it('refuses the batch with a diagnosable error instead of writing unregistered media', () => {
+    expect(() =>
+      editDocx(noCtDocx(), [{ op: 'insert_image', paragraph: 0, position: 'after', image: 'shot.png' }], {
+        resolveImageBytes: () => ({ ext: 'png', bytes: Buffer.from([0x89, 0x50]) }),
+      }),
+    ).toThrow(/Content_Types/)
+  })
+
+  it('non-image ops still work on such a package', () => {
+    const outcome = editDocx(noCtDocx(), [{ op: 'replace_text', find: 'Hello world', replace: 'Hi' }])
+    expect(new AdmZip(outcome.buffer).readFile('word/document.xml')!.toString('utf8')).toContain('Hi')
+  })
+})

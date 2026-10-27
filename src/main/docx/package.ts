@@ -50,6 +50,13 @@ export function editDocx(buffer: Buffer, ops: DocxOp[], opts?: { resolveImageByt
   const entryNames = zip.getEntries().filter((e) => !e.isDirectory).map((e) => e.entryName)
   const relsEntry = zip.getEntry('word/_rels/document.xml.rels')
   const ctEntry = zip.getEntry('[Content_Types].xml')
+  // module-11 P2-2: a package without [Content_Types].xml would receive media
+  // parts with no type registration — Word/WPS refuses the file or silently
+  // drops the image (the "insert succeeded, picture missing" report). Refusing
+  // the batch here is the loud failure; the media write would be the silent one.
+  if (!ctEntry && payload.ops.some((op) => op.op === 'insert_image')) {
+    throw new Error('insert_image: 包内缺少 [Content_Types].xml，插入的媒体无法登记类型（Word/WPS 会拒开或丢图）——请先在 Word/WPS 中另存为 .docx 重建包结构')
+  }
   const imageState: ImageBatchState = {
     relsXml: relsEntry ? (zip.readFile(relsEntry) as Buffer).toString('utf8') : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>',
     contentTypesXml: ctEntry ? (zip.readFile(ctEntry) as Buffer).toString('utf8') : '',
@@ -165,7 +172,7 @@ export function verifySemantic(beforeXml: string, afterXml: string, ops: DocxOp[
   for (const op of ops) {
     if (op.op === 'insert_paragraph') expectedCount += 1
     if (op.op === 'insert_image') expectedCount += 1
-    if (op.op === 'delete_paragraph') expectedCount -= 1
+    if (op.op === 'delete_paragraph') expectedCount -= op.find !== undefined ? (op.expected_count ?? 1) : 1
     if (op.op === 'insert_table_row') {
       // Every cloned cell carries exactly one new <w:p> (the clone rebuilds
       // cell content) — the row count is cell count.
