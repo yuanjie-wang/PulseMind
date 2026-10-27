@@ -134,6 +134,8 @@ SQLite (WAL mode + FTS5) at `~/.pulsemind/db/pulsemind.db`:
 - **tool_results**: `ref_id, conversation_id, message_id, block_index, tool_use_id, content, is_error` — tool_result content stored separately to keep messages lightweight
 - **memories**: `id, content, type (auto|manual|decision|fact|preference|experience), category (code|architecture|user_pref|decision|general|experience), source, created_at, updated_at`
 - **memories_fts**: FTS5 virtual table over `memories.content`
+- **memory_pages** (2026-10-25 PLAN-memory-wiki): `id, title, type (preference|decision|fact|experience), body, aliases, links, superseded_by, source_conversation_id, files_json, use_count, last_used_at, content_hash, created_at, updated_at` — 记忆与经验的统一 wiki 存储（旧 memories/experiences 冻结只读）
+- **memory_pages_fts**: FTS5 trigram over `(title, aliases_text, body)` — 中文子串正解（memories_fts 的 unicode61 已知失效）；检索栈 = trigram 短语 + 短词/CJK 滑窗二元组 LIKE 兜底（`scripts/probe-memory-fts-recall.mjs` 实测定形：改写召回 90% vs 生产 LIKE 0%）
 - **knowledge_files**: `id, file_path, title, source_type (file|url|experience), source_url, source_path, conv_id, content_hash, status (raw|compiled), wiki_outputs, created_at, compiled_at`
 - **knowledge_fts**: FTS5 virtual table over knowledge file content
 - **favorites**: `id, message_id, conversation_id, conversation_title, role, content, content_blocks, created_at`
