@@ -7,7 +7,6 @@ import React from 'react'
 import {
   BookOutlined,
   DesktopOutlined,
-  ExperimentOutlined,
   SettingOutlined,
   DatabaseOutlined,
   UserOutlined,
@@ -22,7 +21,6 @@ import type { AppView } from '../../navigation/types'
 import type { MemoryManager } from '../../memory/MemoryManager'
 import AgentSettings from './AgentSettings'
 import EnvironmentSettings from './EnvironmentSettings'
-import ExperiencePanel from './ExperiencePanel'
 import DataRuntimeSettings from './DataRuntimeSettings'
 import ExtensionSettings from './ExtensionSettings'
 import ShortcutsSettings from './ShortcutsSettings'
@@ -40,7 +38,6 @@ const MENU: { key: SettingsTab; icon: React.ReactElement; labelKey: string }[] =
   { key: 'shortcuts', icon: <KeyOutlined />, labelKey: 'appLayout.shortcuts' },
   { key: 'assistant', icon: <UserOutlined />, labelKey: 'appLayout.assistant' },
   { key: 'memory', icon: <BookOutlined />, labelKey: 'appLayout.memory' },
-  { key: 'experiences', icon: <ExperimentOutlined />, labelKey: 'appLayout.experiences' },
   { key: 'data', icon: <DatabaseOutlined />, labelKey: 'appLayout.dataRuntime' },
   { key: 'about', icon: <InfoCircleOutlined />, labelKey: 'menu.about' },
 ]
@@ -76,8 +73,6 @@ function SettingsPage({ memoryManager, onReloadConversations }: SettingsPageProp
         return <DataRuntimeSettings inline open onClose={() => {}} />
       case 'memory':
         return memoryManager ? <MemorySettings inline open onClose={() => {}} memoryManager={memoryManager} /> : null
-      case 'experiences':
-        return <ExperiencePanel />
       case 'assistant':
         return <AgentSettings inline open onClose={() => {}} />
       case 'settings':

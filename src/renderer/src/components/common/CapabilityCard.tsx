@@ -14,6 +14,9 @@
 //
 // Deliberately NOT here: 记忆 (`MemorySettings`) keeps its own headless card — a
 // memory's text *is* the card, and two floating tags do not warrant a 38px head.
+// 经验 is the exception by ruling (2026-10-26, 经验也是技能): in the skill center's
+// 经验 section the experience cards ride THIS shell, so they sit in the same grid
+// as the skill cards with the same head/radius/action row.
 
 import React from 'react'
 import { Button, Card, Empty, Switch, Tooltip } from 'antd'
@@ -59,6 +62,9 @@ export interface CapabilityCardProps {
   /** A divider-topped band pinned to the card's bottom, for callers whose cards
    *  must line up (the connector's tool count). */
   footer?: React.ReactNode
+  /** Fades the whole card (an outdated experience page still listed for its
+   *  lineage). State, not a second skeleton — everything else stays the same. */
+  dimmed?: boolean
   children?: React.ReactNode
 }
 
@@ -70,6 +76,7 @@ function CapabilityCard({
   actions,
   onClick,
   footer,
+  dimmed,
   children
 }: CapabilityCardProps): React.ReactElement {
   // Keyboard parity for the click-to-open card; inner buttons keep their own key
@@ -89,7 +96,7 @@ function CapabilityCard({
       onClick={onClick}
       onKeyDown={onClick ? handleKeyDown : undefined}
       tabIndex={onClick ? 0 : undefined}
-      style={{ borderRadius: 10, height: '100%', cursor: onClick ? 'pointer' : undefined }}
+      style={{ borderRadius: 10, height: '100%', cursor: onClick ? 'pointer' : undefined, opacity: dimmed ? 0.55 : undefined }}
       styles={{
         // The card is a column so the body can take the height *left over* by the
         // head. It must not be `height: 100%`: that resolves against the card's
@@ -105,10 +112,16 @@ function CapabilityCard({
         }
       }}
       title={
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+        // `display: flex`（不是 inline-flex）：inline-flex 按内容撑开，长标题被
+        // .ant-card-head-title 的 overflow 硬裁在动作区边上、不出省略号（经验卡的
+        // 长中文标题首次暴露）。flex 容器填满 head-title，名字 minWidth: 0 收缩出
+        // 省略号，图标与徽标 flexShrink: 0 不让位。
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
           <span style={{ flexShrink: 0, display: 'inline-flex', color: 'var(--pm-text-secondary)' }}>{icon}</span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
-          {badge}
+          <span style={{ flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={name}>
+            {name}
+          </span>
+          {badge && <span style={{ flexShrink: 0, display: 'inline-flex' }}>{badge}</span>}
         </span>
       }
       extra={

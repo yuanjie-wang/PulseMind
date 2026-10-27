@@ -78,8 +78,53 @@ FIXTURES.expertReset = FIXTURES.expertList
 // The skill card's click target is the three-pane browser, which reads the pack.
 FIXTURES.listSkillFiles = () => ['SKILL.md', 'scripts/run.sh']
 FIXTURES.readSkillFile = () => '# Skill\\n\\nfixture body'
+// 经验分区（E1）：MemoryPagesBrowser 网格与三栏浏览器都从这里取数。p1 是
+// SOP 态活页（金标 + scripts 树），p2 是被取代的旧页（半透明 + 旧版本标），
+// p3 是 clue 态活页（固化按钮）。fixture 有状态：开关 IPC 真的改 enabled，
+// 这样随后打开的浏览器能看到「已停用」标。
+const EXPERIENCES = [
+  { id: 'p1', title: '发布前跑通构建', type: 'experience', summary: null,
+    body: '# 发布前跑通构建\\n\\n先跑完整 build 再打包。',
+    aliases: ['发布检查'], links: [], supersededBy: null, sourceConversationId: 'conv1',
+    files: [{ path: 'scripts/verify.mjs', content: 'console.log("ok")\\n' }],
+    useCount: 3, lastUsedAt: null,
+    createdAt: '2026-10-26T00:00:00.000Z', updatedAt: '2026-10-26T00:00:00.000Z',
+    maturity: 'sop', recurrence: 1, lastReinforcedAt: null, sopAttempts: 0, sopLastAttemptAt: null, enabled: true },
+  { id: 'p2', title: '旧版打包步骤', type: 'experience', summary: null,
+    body: '旧内容', aliases: [], links: [], supersededBy: 'p1', sourceConversationId: 'conv0',
+    files: null, useCount: 0, lastUsedAt: null,
+    createdAt: '2026-10-25T00:00:00.000Z', updatedAt: '2026-10-25T00:00:00.000Z',
+    maturity: 'clue', recurrence: 0, lastReinforcedAt: null, sopAttempts: 0, sopLastAttemptAt: null, enabled: true },
+  // clue 态活页：头部带固化按钮；summary（技能式 description）站在技能卡 description 的位置。
+  { id: 'p3', title: '日报自动汇总', type: 'experience', summary: '每天早上汇总各群日报时用',
+    body: '## 适用场景\\n每天早上。\\n## 步骤\\n1. 拉取各群消息。', aliases: ['日报'], links: [], supersededBy: null, sourceConversationId: 'conv3',
+    files: null, useCount: 0, lastUsedAt: null,
+    createdAt: '2026-10-24T00:00:00.000Z', updatedAt: '2026-10-24T00:00:00.000Z',
+    maturity: 'clue', recurrence: 0, lastReinforcedAt: null, sopAttempts: 0, sopLastAttemptAt: null, enabled: true },
+  // 长标题 + 故意不带 enabled 字段（旧主进程的记录形状）：标题要出省略号且不被动作区
+  // 遮住；开关要默认打开（只有显式 false 才算停用）。
+  { id: 'p4', title: '把各个项目群的日报在每天早上九点前自动汇总成一份周报草稿并同步到知识库', type: 'experience', summary: '周报草稿的自动化流程',
+    body: '## 适用场景\\n每周一。', aliases: [], links: [], supersededBy: null, sourceConversationId: 'conv4',
+    files: null, useCount: 0, lastUsedAt: null,
+    createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z',
+    maturity: 'clue', recurrence: 0, lastReinforcedAt: null, sopAttempts: 0, sopLastAttemptAt: null },
+]
+FIXTURES.listMemoryPages = () => EXPERIENCES.map((p) => ({ ...p }))
+// 技能使用计数（2026-10-27）：tavily 用过 5 次且有安装时间；内置技能用过 2 次（安装
+// 时间由 UI 显示 --）；code-review 没有任何记录 → 使用 0 次 · 安装于 --。
+FIXTURES.listSkillUses = () => ({
+  'tavily-search': { useCount: 5, lastUsedAt: '2026-10-26T10:00:00.000Z', installedAt: '2026-10-20T08:00:00.000Z' },
+  'builtin-skill': { useCount: 2, lastUsedAt: '2026-10-25T10:00:00.000Z', installedAt: '2026-10-01T08:00:00.000Z' },
+})
+window.__pageToggles = []
+FIXTURES.setMemoryPageEnabled = (id, enabled) => {
+  window.__pageToggles.push([id, enabled])
+  const p = EXPERIENCES.find((x) => x.id === id)
+  if (p) p.enabled = enabled
+}
+// Stubs receive the real call arguments (the toggle stub needs them; the rest ignore them).
 window.electronAPI = new Proxy({}, {
-  get: (_t, key) => () => Promise.resolve((FIXTURES[key] ?? (() => undefined))()),
+  get: (_t, key) => (...args) => Promise.resolve((FIXTURES[key] ?? (() => undefined))(...args)),
 })
 
 const SKILLS = [
@@ -246,7 +291,9 @@ const snap = await page.evaluate(() => {
 
   const read = (panelId) => {
     const panel = document.querySelector(`[data-panel="${panelId}"]`)
-    const card = panel?.querySelector('.ant-card')
+    // 三分区（E1）把「内置」网格排在面板最前，而内置卡没有删除键——操作行断言
+    // 要读「已安装」区的第一张卡（DOM 序 = 内置网格在前）。
+    const card = panelId === 'skills' ? panel.querySelectorAll('.ant-card')[1] : panel?.querySelector('.ant-card')
     if (!card) return null
     const cs = getComputedStyle(card)
     const head = card.querySelector('.ant-card-head')
@@ -563,6 +610,285 @@ await page.waitForTimeout(200)
 const afterExpand = await toolCard.evaluate((c) => !!c.querySelector('.ant-card-body [style*="monospace"]'))
 check('点内置工具卡展开说明（不跳转）',
   !beforeExpand && afterExpand, `before=${beforeExpand} after=${afterExpand}`)
+
+// ── 经验也是技能（E1 展示面收口，2026-10-26 用户裁定）：经验卡点击进入与技能
+//    一致的三栏浏览器，不再弹详情 Modal。skills 面板此刻停在技能浏览器里——
+//    先返回栅格，经验分区才可见（上面的滚动测试把面板压到了 260px，先还原）。 ──
+await page.evaluate(() => { document.querySelector('[data-panel="skills"]').style.height = '820px' })
+await page.locator('[data-panel="skills"] button', { hasText: '返回' }).click()
+await page.waitForFunction(
+  () => document.querySelector('[data-panel="skills"]')?.textContent.includes('发布前跑通构建'),
+  null,
+  { timeout: 5000 }
+)
+
+const expGrid = await page.evaluate(() => {
+  const panel = document.querySelector('[data-panel="skills"]')
+  const cardOf = (title) => [...panel.querySelectorAll('div[style*="cursor: pointer"]')].find((d) => d.textContent.includes(title))
+  const live = cardOf('发布前跑通构建')
+  const stale = cardOf('旧版打包步骤')
+  const clue = cardOf('日报自动汇总')
+  // 同壳断言的参照：已安装区第一张技能卡（tavily-search）
+  const skillCard = [...panel.querySelectorAll('.ant-card')].find((c) => c.textContent.includes('tavily-search'))
+  const shell = (card) => {
+    if (!card) return null
+    const head = card.querySelector('.ant-card-head')
+    const title = card.querySelector('.ant-card-head-title')
+    const nameEl = [...(title?.querySelectorAll('span') ?? [])].find((s) => s.children.length === 0 && s.textContent.trim().length > 0) ?? title
+    const body = card.querySelector('.ant-card-body')
+    return {
+      isAntCard: card.classList.contains('ant-card'),
+      hasHead: !!head,
+      headHeight: head ? Math.round(head.getBoundingClientRect().height) : null,
+      headDivider: head ? getComputedStyle(head).borderBottomWidth : null,
+      radius: getComputedStyle(card).borderRadius,
+      nameFontSize: nameEl ? getComputedStyle(nameEl).fontSize : null,
+      nameFontWeight: nameEl ? getComputedStyle(nameEl).fontWeight : null,
+      bodyPadding: body ? getComputedStyle(body).padding : null,
+      hasHeadIcon: !!title?.querySelector('.anticon'),
+      gridColumn: Math.round(parseFloat(getComputedStyle(card.parentElement).gridTemplateColumns.split(' ')[0]) || 0),
+    }
+  }
+  return {
+    hasSearch: !!panel.querySelector('input[placeholder="搜索经验"]'),
+    liveOpacity: live ? getComputedStyle(live).opacity : null,
+    staleOpacity: stale ? getComputedStyle(stale).opacity : null,
+    liveTags: live ? [...live.querySelectorAll('.ant-tag')].map((t) => t.textContent.trim()) : [],
+    staleTags: stale ? [...stale.querySelectorAll('.ant-tag')].map((t) => t.textContent.trim()) : [],
+    liveHasDelete: !!live?.querySelector('.ant-card-extra .anticon-delete'),
+    liveDeleteDanger: !!live?.querySelector('.ant-card-extra .ant-btn-dangerous'),
+    // 头部 icon 也是闪电——固化按钮要限定在 button 里找
+    liveHasDistill: !!live?.querySelector('.ant-card-extra button .anticon-thunderbolt'),
+    clueHasDistill: !!clue?.querySelector('.ant-card-extra button .anticon-thunderbolt'),
+    // 正文位 = 描述段落（body 里还有元信息行，不能读整个 body）
+    clueBodyText: clue?.querySelector('.ant-card-body .ant-typography')?.textContent.trim() ?? null,
+    liveBodyText: live?.querySelector('.ant-card-body .ant-typography')?.textContent.trim() ?? null,
+    // 动作序与技能卡同：开关在前、删除在后；被取代的旧页没有开关
+    actionsOf: (() => {
+      const label = (el) => el.classList.contains('ant-switch') ? 'switch'
+        : el.classList.contains('ant-btn-dangerous') ? 'delete'
+        : el.querySelector?.('.anticon-thunderbolt') ? 'distill' : el.tagName.toLowerCase()
+      const read = (card) => card ? [...(card.querySelector('.ant-card-extra')?.firstElementChild?.children ?? [])].map(label) : null
+      return { live: read(live), clue: read(clue), stale: read(stale) }
+    })(),
+    clueSwitchChecked: !!clue?.querySelector('.ant-card-extra .ant-switch-checked'),
+    // 长标题卡：名字 span 出省略号、右缘不越过动作区左缘；无 enabled 字段时开关默认开
+    longTitle: (() => {
+      const card = cardOf('把各个项目群的日报')
+      if (!card) return null
+      const title = card.querySelector('.ant-card-head-title')
+      const nameEl = [...(title?.querySelectorAll('span') ?? [])].find((s) => s.children.length === 0 && s.textContent.trim().length > 0)
+      const extra = card.querySelector('.ant-card-extra')
+      const n = nameEl?.getBoundingClientRect()
+      const x = extra?.getBoundingClientRect()
+      return {
+        ellipsis: !!nameEl && nameEl.scrollWidth > nameEl.clientWidth && getComputedStyle(nameEl).textOverflow === 'ellipsis',
+        noOverlap: !!n && !!x && n.right <= x.left + 0.5,
+        gap: n && x ? Math.round(x.left - n.right) : null,
+        switchChecked: !!card.querySelector('.ant-card-extra .ant-switch-checked'),
+      }
+    })(),
+    expShell: shell(live),
+    skillShell: shell(skillCard),
+  }
+})
+check('经验分区渲染网格：搜索框 + SOP 活页 + 被取代旧页',
+  expGrid.hasSearch && expGrid.liveOpacity === '1' && expGrid.staleOpacity === '0.55',
+  JSON.stringify({ search: expGrid.hasSearch, live: expGrid.liveOpacity, stale: expGrid.staleOpacity }))
+check('经验卡操作区在头部：SOP 活页带金标 + danger 删除、无固化按钮（固化只对 clue 态）',
+  expGrid.liveTags.some((s) => s.startsWith('SOP')) && expGrid.liveHasDelete && expGrid.liveDeleteDanger && !expGrid.liveHasDistill,
+  JSON.stringify({ tags: expGrid.liveTags, delete: expGrid.liveHasDelete, danger: expGrid.liveDeleteDanger, distill: expGrid.liveHasDistill }))
+check('被取代的经验卡带「旧版本」标',
+  expGrid.staleTags.includes('旧版本'), JSON.stringify(expGrid.staleTags))
+check('clue 态活页头部带固化按钮；正文位显示技能式 summary（无 summary 的旧页回落剥标记的正文摘录）',
+  expGrid.clueHasDistill && expGrid.clueBodyText === '每天早上汇总各群日报时用'
+    && expGrid.liveBodyText === '发布前跑通构建 先跑完整 build 再打包。',
+  JSON.stringify({ distill: expGrid.clueHasDistill, clueBody: expGrid.clueBodyText, liveBody: expGrid.liveBodyText }))
+// ── 2026-10-27 用户三点：长标题用省略号截断、不被开关遮住；开关默认打开（无 enabled 字段也开）──
+check('长标题出省略号且名字右缘不越过动作区左缘（开关不再遮标题）',
+  !!expGrid.longTitle && expGrid.longTitle.ellipsis && expGrid.longTitle.noOverlap,
+  JSON.stringify(expGrid.longTitle))
+check('开关默认打开：记录没有 enabled 字段时仍是开（只有显式 false 才停用）',
+  !!expGrid.longTitle && expGrid.longTitle.switchChecked, JSON.stringify({ checked: expGrid.longTitle?.switchChecked }))
+
+// ── 使用次数 + 安装/提取时间（2026-10-27）：技能卡与经验卡同形的元信息行；内置技能安装时间显示 --。
+await page.waitForFunction(
+  () => document.querySelector('[data-panel="skills"]')?.textContent.includes('使用 5 次'),
+  null,
+  { timeout: 5000 }
+)
+const meta = await page.evaluate(() => {
+  const panel = document.querySelector('[data-panel="skills"]')
+  const metaOf = (title) => {
+    const card = [...panel.querySelectorAll('.ant-card')].find((c) => c.querySelector('.ant-card-head-title')?.textContent.includes(title))
+    return card?.querySelector('[data-card-meta]')?.textContent.trim() ?? null
+  }
+  // 分区标题：<div><Text strong>标签</Text><Text secondary>计数</Text></div>
+  const countOf = (label) => {
+    const d = [...panel.querySelectorAll('div')].find((x) => x.children.length === 2 && x.children[0].textContent.trim() === label)
+    return d?.children[1]?.textContent.trim() ?? null
+  }
+  return {
+    tavily: metaOf('tavily-search'),
+    builtin: metaOf('builtin-skill'),
+    review: metaOf('code-review'),
+    expLive: metaOf('发布前跑通构建'),
+    counts: { builtIn: countOf('内置'), imported: countOf('已安装'), experience: countOf('经验') },
+  }
+})
+check('技能卡元信息行：已安装技能显示使用次数与安装日期',
+  meta.tavily === '使用 5 次 · 安装于 2026-10-20', JSON.stringify(meta.tavily))
+check('内置技能的安装时间显示 --（用户裁定），使用次数照常',
+  meta.builtin === '使用 2 次 · 安装于 --', JSON.stringify(meta.builtin))
+check('无任何记录的技能显示 使用 0 次 · 安装于 --',
+  meta.review === '使用 0 次 · 安装于 --', JSON.stringify(meta.review))
+check('经验卡元信息行同形：使用次数 · 提取日期',
+  meta.expLive === '使用 3 次 · 提取于 2026-10-26', JSON.stringify(meta.expLive))
+check('三个分区标题右侧都有总数（经验的总数不再缺席）',
+  JSON.stringify(meta.counts) === JSON.stringify({ builtIn: '1', imported: '2', experience: '4' }), JSON.stringify(meta.counts))
+// ── 经验卡与技能卡同壳（2026-10-26 用户裁定「经验卡片的样式应该和普通技能一致」）：
+//    同 antd head（分割线/高度）、同名字号与字重、同圆角、同 body 内边距、同栅格列宽、头部带 icon。
+{
+  const e = expGrid.expShell
+  const s = expGrid.skillShell
+  const same = (k) => e && s && JSON.stringify(e[k]) === JSON.stringify(s[k])
+  const keys = ['isAntCard', 'hasHead', 'headHeight', 'headDivider', 'radius', 'nameFontSize', 'nameFontWeight', 'bodyPadding', 'hasHeadIcon', 'gridColumn']
+  const diff = keys.filter((k) => !same(k))
+  check('经验卡与技能卡同壳（head/字号/圆角/内边距/栅格列宽/头部 icon 全部一致）',
+    !!e && !!s && e.isAntCard && diff.length === 0,
+    diff.length === 0 ? `shell=${JSON.stringify(e)}` : `差异: ${diff.map((k) => `${k} 经验=${JSON.stringify(e?.[k])} 技能=${JSON.stringify(s?.[k])}`).join(' | ')}`)
+}
+
+// ── 经验卡开关（2026-10-27 用户：「开关呢」）：技能卡有启用开关，经验卡同款——
+//    动作序 开关·(固化)·删除 与技能卡一致；被取代的旧页无开关；拨开关走 IPC 且不打开卡片。
+check('经验卡动作序与技能卡同：开关在前、删除在后（SOP 页 switch·delete，clue 页 switch·distill·delete）',
+  JSON.stringify(expGrid.actionsOf.live) === JSON.stringify(['switch', 'delete'])
+    && JSON.stringify(expGrid.actionsOf.clue) === JSON.stringify(['switch', 'distill', 'delete'])
+    && expGrid.clueSwitchChecked,
+  JSON.stringify({ ...expGrid.actionsOf, clueChecked: expGrid.clueSwitchChecked }))
+check('被取代的旧页没有开关（只剩删除）',
+  JSON.stringify(expGrid.actionsOf.stale) === JSON.stringify(['delete']), JSON.stringify(expGrid.actionsOf.stale))
+
+await page.locator('[data-panel="skills"] div[style*="cursor: pointer"]', { hasText: '日报自动汇总' }).first()
+  .locator('.ant-card-extra .ant-switch').click()
+await page.waitForTimeout(200)
+const toggled = await page.evaluate(() => {
+  const panel = document.querySelector('[data-panel="skills"]')
+  const clue = [...panel.querySelectorAll('div[style*="cursor: pointer"]')].find((d) => d.textContent.includes('日报自动汇总'))
+  return {
+    calls: window.__pageToggles,
+    switchChecked: !!clue?.querySelector('.ant-card-extra .ant-switch-checked'),
+    browserOpened: !!panel.querySelector('.ant-segmented'),
+  }
+})
+check('拨开关：IPC 收到 (p3,false)、开关即时转灰（乐观更新）、卡片没有被顺带打开',
+  JSON.stringify(toggled.calls) === JSON.stringify([['p3', false]]) && !toggled.switchChecked && !toggled.browserOpened,
+  JSON.stringify(toggled))
+
+// 点经验卡 → 三栏浏览器（技能同款），绝不弹 Modal。等 h1 落地——正文经
+// XMarkdown 的异步解析器渲染，Segmented 出现在内容之前。
+await page.locator('[data-panel="skills"] div[style*="cursor: pointer"]', { hasText: '发布前跑通构建' }).first().click()
+await page.waitForFunction(
+  () => {
+    const panel = document.querySelector('[data-panel="skills"]')
+    return !!panel?.querySelector('.ant-segmented') && !!panel?.querySelector('h1')
+  },
+  null,
+  { timeout: 5000 }
+)
+const expBrowser = await page.evaluate(() => {
+  const panel = document.querySelector('[data-panel="skills"]')
+  const treeTitles = [...panel.querySelectorAll('.ant-tree-title')].map((n) => n.textContent.trim())
+  // 左列表分组标：三分区与网格同构（内置 / 已安装 / 经验）
+  const groupLabels = [...panel.querySelectorAll('div')]
+    .filter((d) => d.children.length === 0 && ['内置', '已安装', '经验'].includes(d.textContent.trim()))
+    .map((d) => d.textContent.trim())
+  return {
+    // 探针前段开过的 MCP 编辑弹窗 Esc 后 DOM 仍留存（antd 不销毁）——判「可见」
+    // 的 modal-wrap 而不是 DOM 存在性。
+    modalOpen: [...document.querySelectorAll('.ant-modal-wrap')].some((w) => getComputedStyle(w).display !== 'none'),
+    groupLabels,
+    // 刚拨停用的 p3 在左列表要挂「已停用」标（浏览器重新拉取 fixture 看到了 enabled:false）
+    disabledRowTag: (() => {
+      // 行 = 直接子元素里有一个 span 恰为标题文本的 div（祖先容器的直接子元素不满足）
+      const row = [...panel.querySelectorAll('div')].find((d) =>
+        [...d.children].some((c) => c.tagName === 'SPAN' && c.textContent.trim() === '日报自动汇总'))
+      return row?.querySelector('.ant-tag')?.textContent.trim() ?? null
+    })(),
+    rows: ['发布前跑通构建', '旧版打包步骤', 'tavily-search'].every((s) => panel.textContent.includes(s)),
+    treeTitles,
+    defaultMarkdown: !!panel.querySelector('h1'),
+    segmented: [...panel.querySelectorAll('.ant-segmented-item')].map((s) => s.textContent.trim()),
+    metaLine: panel.textContent.includes('别名: 发布检查') && panel.textContent.includes('使用 3 次'),
+    sopRowTag: !!panel.querySelector('.ant-tag-gold'),
+  }
+})
+check('点经验卡打开三栏浏览器且零 Modal',
+  !expBrowser.modalOpen && expBrowser.defaultMarkdown && expBrowser.segmented.includes('源码'),
+  JSON.stringify({ modal: expBrowser.modalOpen, md: expBrowser.defaultMarkdown, segmented: expBrowser.segmented }))
+check('左列表三分区组标齐全（内置/已安装/经验，与网格同构）+ 两条经验行 + SOP 金标',
+  JSON.stringify(expBrowser.groupLabels) === JSON.stringify(['内置', '已安装', '经验'])
+    && expBrowser.rows && expBrowser.sopRowTag,
+  JSON.stringify({ groups: expBrowser.groupLabels, rows: expBrowser.rows, sop: expBrowser.sopRowTag }))
+check('刚停用的经验在左列表挂「已停用」标（与停用技能同款）',
+  expBrowser.disabledRowTag === '已停用', JSON.stringify(expBrowser.disabledRowTag))
+check('中间树：SKILL.md 与 scripts/verify.mjs（经验正文文件与技能同名）',
+  expBrowser.treeTitles.join('|').includes('SKILL.md') && !expBrowser.treeTitles.join('|').includes('page.md') && expBrowser.treeTitles.join('|').includes('verify.mjs'),
+  JSON.stringify(expBrowser.treeTitles))
+check('经验正文默认渲染 markdown 且页首带别名/使用次数',
+  expBrowser.defaultMarkdown && expBrowser.metaLine, `md=${expBrowser.defaultMarkdown} meta=${expBrowser.metaLine}`)
+
+// 渲染 → 源码切换：原始 markdown 可见（与技能预览同一 Segmented）。
+await page.locator('[data-panel="skills"] .ant-segmented-item', { hasText: '源码' }).click()
+await page.waitForTimeout(150)
+check('源码形态显示原始正文（# 标题字面量在 DOM）',
+  await page.evaluate(() => document.querySelector('[data-panel="skills"]').textContent.includes('# 发布前跑通构建')))
+
+// 树切到脚本：高亮代码形态（resolveCodeLang(.mjs) → javascript）。
+await page.locator('[data-panel="skills"] .ant-tree-title', { hasText: 'verify.mjs' }).click()
+await page.waitForTimeout(200)
+check('树切脚本显示脚本源码',
+  await page.evaluate(() => document.querySelector('[data-panel="skills"]').textContent.includes('console.log')))
+
+// 左列表技能 ↔ 经验互切（一个浏览空间）。等待落在 check 里——超时落 FAIL 而不是异常。
+let skillSwitch = false
+try {
+  await page.locator('[data-panel="skills"] span', { hasText: 'tavily-search' }).first().click()
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('[data-panel="skills"] .ant-tree-title')].some((n) => n.textContent.includes('run.sh')),
+    null,
+    { timeout: 5000 }
+  )
+  skillSwitch = true
+} catch { /* keep false */ }
+check('左列表切回技能后文件树回到技能包（run.sh 在树里）', skillSwitch)
+
+let expSwitchBack = false
+try {
+  await page.locator('[data-panel="skills"] span', { hasText: '发布前跑通构建' }).first().click()
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('[data-panel="skills"] .ant-tree-title')].some((n) => n.textContent.includes('verify.mjs')),
+    null,
+    { timeout: 5000 }
+  )
+  expSwitchBack = true
+} catch { /* keep false */ }
+check('再点经验行回到经验（verify.mjs 在树里，exp: key 往返无损）', expSwitchBack)
+
+// 被取代的旧页也可打开阅读（列表半透明 ≠ 不可读）。
+await page.locator('[data-panel="skills"] span', { hasText: '旧版打包步骤' }).first().click()
+await page.waitForTimeout(300)
+check('被取代的经验页打开后正文可读',
+  await page.evaluate(() => document.querySelector('[data-panel="skills"]').textContent.includes('旧内容')))
+
+// 返回 → 栅格恢复（浏览器卸载）。
+await page.locator('[data-panel="skills"] button', { hasText: '返回' }).click()
+await page.waitForTimeout(250)
+check('返回后经验网格恢复、浏览器卸载',
+  await page.evaluate(() => {
+    const panel = document.querySelector('[data-panel="skills"]')
+    return panel.textContent.includes('发布前跑通构建') && !panel.querySelector('.ant-segmented')
+  }))
 
 await browser.close()
 

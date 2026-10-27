@@ -6,11 +6,19 @@ import { CodeHighlight, PlainCode, resolveCodeLang } from '../common/CodeHighlig
 import { useTranslation } from '../../i18n/useTranslation'
 import { useMarkdownThemeClass } from '../../theme/mode'
 import type { SkillState } from '../../skills/types'
+import type { MemoryPageRecord } from '../../../../shared/memory-pages'
 
 const { Text } = Typography
 
 /** Preview cap — the read IPC returns plain text, huge files only waste memory. */
 const PREVIEW_LIMIT = 200 * 1024
+
+/** 经验条目的 key 前缀：技能列表用 name 作 key，经验页用页 id——前缀隔离两个命名空间。 */
+export const EXPERIENCE_KEY_PREFIX = 'exp:'
+
+export function experienceKey(pageId: string): string {
+  return `${EXPERIENCE_KEY_PREFIX}${pageId}`
+}
 
 interface TreeNodeData {
   title: string
@@ -61,60 +69,123 @@ type ContentState = 'ready' | 'missing'
 
 interface SkillBrowserProps {
   skills: SkillState[]
-  /** Currently viewed skill name. */
-  activeName: string
-  onSelect: (name: string) => void
+  /** Currently viewed entry: a skill name, or experienceKey(id). */
+  activeKey: string
+  onSelect: (key: string) => void
   onBack: () => void
 }
 
-/** The skill viewer opened by clicking a card: skill list on the left, the
- *  active skill's directory tree in the middle, file preview on the right. */
-function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProps): React.ReactElement {
+/** 经验页的文件视图：正文是 SKILL.md（经验也是技能——正文文件与技能同名），files 数组还原成 scripts/* 路径——
+ *  与 sop-runner 落库、pick_skill 信封的形状一致。 */
+function experienceFileList(rec: MemoryPageRecord): string[] {
+  return ['SKILL.md', ...(rec.files ?? []).map((f) => f.path)]
+}
+
+/** 统一的读取入口：经验从内存记录解析（body → SKILL.md，files → scripts/*），
+ *  技能走目录 IPC——两侧经同一个三栏渲染。 */
+function readEntryFile(
+  activeExperience: MemoryPageRecord | null,
+  key: string,
+  path: string
+): Promise<string | null> {
+  if (key.startsWith(EXPERIENCE_KEY_PREFIX)) {
+    if (!activeExperience) return Promise.resolve(null)
+    if (path === 'SKILL.md') return Promise.resolve(activeExperience.body)
+    return Promise.resolve(activeExperience.files?.find((f) => f.path === path)?.content ?? null)
+  }
+  return window.electronAPI.readSkillFile(key, path)
+}
+
+/** The viewer opened by clicking a card: entries list on the left, the active
+ *  entry's directory tree in the middle, file preview on the right. Skills read
+ *  their pack over IPC; experiences load once from memory_pages and resolve
+ *  in-memory, so 经验 rides the exact same three columns as a skill (E1:
+ *  展示面跟内容语义走——经验也是技能). */
+function SkillBrowser({ skills, activeKey, onSelect, onBack }: SkillBrowserProps): React.ReactElement {
   const { t } = useTranslation()
   const mdClass = useMarkdownThemeClass()
   const [files, setFiles] = useState<string[]>([])
-  /** Which skill `files` belongs to — lets "loading" be derived, so no state
+  /** Which entry `files` belongs to — lets "loading" be derived, so no state
    *  is ever set synchronously inside an effect. */
-  const [filesSkill, setFilesSkill] = useState<string | null>(null)
+  const [filesSource, setFilesSource] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [content, setContent] = useState<string | null>(null)
   const [contentState, setContentState] = useState<ContentState>('ready')
-  /** `${name}/${path}` the loaded content belongs to; mismatch = in flight. */
+  /** `${key}/${path}` the loaded content belongs to; mismatch = in flight. */
   const [loadedKey, setLoadedKey] = useState('')
   /** Markdown files render by default; the toggle switches back to source. */
   const [mdSourceView, setMdSourceView] = useState(false)
+  const [experiences, setExperiences] = useState<MemoryPageRecord[]>([])
+  const [expLoading, setExpLoading] = useState(true)
 
-  const requestedKey = `${activeName}/${selectedFile ?? ''}`
-  const loadingFiles = filesSkill !== activeName
-  const contentLoading = selectedFile !== null && loadedKey !== requestedKey
-
-  // File list per skill; SKILL.md is the default selection.
   useEffect(() => {
     let cancelled = false
     window.electronAPI
-      .listSkillFiles(activeName)
+      .listMemoryPages('experience')
+      .then((list) => {
+        if (cancelled) return
+        setExperiences(list)
+        setExpLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setExpLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // The active experience record — stable null for skill keys, so the effects
+  // below never re-run for a skill when the experience list lands.
+  const activeExperience = useMemo(
+    () =>
+      activeKey.startsWith(EXPERIENCE_KEY_PREFIX)
+        ? (experiences.find((p) => experienceKey(p.id) === activeKey) ?? null)
+        : null,
+    [activeKey, experiences]
+  )
+
+  const requestedKey = `${activeKey}/${selectedFile ?? ''}`
+  const loadingFiles = filesSource !== activeKey
+  const contentLoading = selectedFile !== null && loadedKey !== requestedKey
+
+  // File list per entry; SKILL.md is the default selection (for experiences too). An
+  // experience key before its records arrive keeps waiting (no state is set),
+  // and the effect re-runs when `activeExperience` lands.
+  useEffect(() => {
+    let cancelled = false
+    const load = activeKey.startsWith(EXPERIENCE_KEY_PREFIX)
+      ? activeExperience
+        ? Promise.resolve(experienceFileList(activeExperience))
+        : null // 经验记录未到位：等 deps 变化，期间保持加载态
+      : window.electronAPI.listSkillFiles(activeKey)
+    if (!load) return
+    load
       .then((list) => {
         if (cancelled) return
         setFiles(list)
-        setFilesSkill(activeName)
-        setSelectedFile(list.includes('SKILL.md') ? 'SKILL.md' : (list[0] ?? null))
+        setFilesSource(activeKey)
+        setSelectedFile(
+          list.includes('SKILL.md') ? 'SKILL.md' : (list[0] ?? null)
+        )
       })
       .catch(() => {
         if (cancelled) return
         setFiles([])
-        setFilesSkill(activeName)
+        setFilesSource(activeKey)
         setSelectedFile(null)
       })
     return () => {
       cancelled = true
     }
-  }, [activeName])
+  }, [activeKey, activeExperience])
 
   // File content per selection.
   useEffect(() => {
     if (!selectedFile) return
     let cancelled = false
-    window.electronAPI.readSkillFile(activeName, selectedFile).then((text) => {
+    readEntryFile(activeExperience, activeKey, selectedFile).then((text) => {
       if (cancelled) return
       setContent(text)
       setContentState(text === null ? 'missing' : 'ready')
@@ -123,7 +194,7 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
     return () => {
       cancelled = true
     }
-  }, [activeName, selectedFile, requestedKey])
+  }, [activeKey, selectedFile, requestedKey, activeExperience])
 
   const treeData = useMemo(() => buildTreeData(files), [files])
   const fileSet = useMemo(() => new Set(files), [files])
@@ -196,7 +267,7 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
           overflow: 'hidden'
         }}
       >
-        {/* Left: all skills */}
+        {/* Left: three groups mirroring the grid's sections — 内置 / 已安装 / 经验 */}
         <div
           style={{
             width: 200,
@@ -207,41 +278,116 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
             boxSizing: 'border-box'
           }}
         >
-          {skills.map((skill) => {
-            const isActive = skill.definition.name === activeName
-            return (
-              <div
-                key={skill.definition.name}
-                onClick={() => onSelect(skill.definition.name)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '6px 10px',
-                  marginBottom: 2,
-                  borderRadius: 8,
-                  cursor: 'pointer',
-                  fontSize: 12.5,
-                  background: isActive ? 'var(--pm-hover)' : undefined,
-                  fontWeight: isActive ? 600 : undefined,
-                  color: isActive ? 'var(--pm-ink)' : 'var(--pm-text-body)'
-                }}
-              >
-                <ThunderboltOutlined style={{ flexShrink: 0, fontSize: 11, color: 'var(--pm-text-muted)' }} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {skill.definition.name}
-                </span>
-                {!skill.enabled && (
-                  <Tag style={{ fontSize: 10, lineHeight: '15px', padding: '0 4px', marginInlineEnd: 0, flexShrink: 0 }}>
-                    {t('skills.browser.disabledTag')}
-                  </Tag>
-                )}
+          {(() => {
+            const groupLabel = (label: string): React.ReactElement => (
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--pm-text-faint)', padding: '10px 10px 4px' }}>
+                {label}
               </div>
             )
-          })}
+            const entryRow = (key: string, label: string, tag?: React.ReactNode, dimmed?: boolean): React.ReactElement => {
+              const isActive = key === activeKey
+              return (
+                <div
+                  key={key}
+                  onClick={() => onSelect(key)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '6px 10px',
+                    marginBottom: 2,
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    fontSize: 12.5,
+                    opacity: dimmed ? 0.55 : 1,
+                    background: isActive ? 'var(--pm-hover)' : undefined,
+                    fontWeight: isActive ? 600 : undefined,
+                    color: isActive ? 'var(--pm-ink)' : 'var(--pm-text-body)'
+                  }}
+                >
+                  <ThunderboltOutlined style={{ flexShrink: 0, fontSize: 11, color: 'var(--pm-text-muted)' }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {label}
+                  </span>
+                  {tag}
+                </div>
+              )
+            }
+            const builtInSkills = skills.filter((s) => s.definition.builtIn)
+            const importedSkills = skills.filter((s) => !s.definition.builtIn)
+            return (
+              <>
+                {builtInSkills.length > 0 && (
+                  <>
+                    {groupLabel(t('skillsSection.builtIn'))}
+                    {builtInSkills.map((skill) =>
+                      entryRow(
+                        skill.definition.name,
+                        skill.definition.name,
+                        !skill.enabled ? (
+                          <Tag style={{ fontSize: 10, lineHeight: '15px', padding: '0 4px', marginInlineEnd: 0, flexShrink: 0 }}>
+                            {t('skills.browser.disabledTag')}
+                          </Tag>
+                        ) : undefined
+                      )
+                    )}
+                  </>
+                )}
+                {importedSkills.length > 0 && (
+                  <>
+                    {groupLabel(t('skillsSection.imported'))}
+                    {importedSkills.map((skill) =>
+                      entryRow(
+                        skill.definition.name,
+                        skill.definition.name,
+                        !skill.enabled ? (
+                          <Tag style={{ fontSize: 10, lineHeight: '15px', padding: '0 4px', marginInlineEnd: 0, flexShrink: 0 }}>
+                            {t('skills.browser.disabledTag')}
+                          </Tag>
+                        ) : undefined
+                      )
+                    )}
+                  </>
+                )}
+                {expLoading ? (
+                  <div style={{ padding: '10px', textAlign: 'center' }}>
+                    <Spin />
+                  </div>
+                ) : experiences.length > 0 ? (
+                  <>
+                    {groupLabel(t('skillsSection.experience'))}
+                    {experiences.map((page) =>
+                      entryRow(
+                        experienceKey(page.id),
+                        page.title,
+                        page.supersededBy ? (
+                          <Tag style={{ fontSize: 10, lineHeight: '15px', padding: '0 4px', marginInlineEnd: 0, flexShrink: 0 }}>
+                            {t('memoryPages.superseded')}
+                          </Tag>
+                        ) : page.retiredAt ? (
+                          <Tag style={{ fontSize: 10, lineHeight: '15px', padding: '0 4px', marginInlineEnd: 0, flexShrink: 0 }}>
+                            {t('memoryPages.retired')}
+                          </Tag>
+                        ) : page.enabled === false ? (
+                          <Tag style={{ fontSize: 10, lineHeight: '15px', padding: '0 4px', marginInlineEnd: 0, flexShrink: 0 }}>
+                            {t('skills.browser.disabledTag')}
+                          </Tag>
+                        ) : page.maturity === 'sop' ? (
+                          <Tag color="gold" style={{ fontSize: 10, lineHeight: '15px', padding: '0 4px', marginInlineEnd: 0, flexShrink: 0 }}>
+                            {t('skills.browser.sopTag')}
+                          </Tag>
+                        ) : undefined,
+                        !!page.supersededBy || !!page.retiredAt
+                      )
+                    )}
+                  </>
+                ) : null}
+              </>
+            )
+          })()}
         </div>
 
-        {/* Middle: active skill's directory tree */}
+        {/* Middle: active entry's directory tree */}
         <div
           style={{
             width: 230,
@@ -262,7 +408,7 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
             </Text>
           ) : (
             <Tree
-              key={activeName}
+              key={activeKey}
               blockNode
               showIcon
               defaultExpandAll
@@ -312,6 +458,18 @@ function SkillBrowser({ skills, activeName, onSelect, onBack }: SkillBrowserProp
                     { label: t('skills.browser.source'), value: 'source' }
                   ]}
                 />
+              )}
+            </div>
+          )}
+          {activeExperience && selectedFile === 'SKILL.md' && (activeExperience.aliases.length > 0 || activeExperience.useCount > 0) && (
+            <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', marginBottom: 8 }}>
+              {activeExperience.aliases.length > 0 && (
+                <span style={activeExperience.useCount > 0 ? { marginRight: 10 } : undefined}>
+                  {t('memoryPages.aliases')}: {activeExperience.aliases.join(' · ')}
+                </span>
+              )}
+              {activeExperience.useCount > 0 && (
+                <span>{t('memoryPages.useCount', { count: activeExperience.useCount })}</span>
               )}
             </div>
           )}

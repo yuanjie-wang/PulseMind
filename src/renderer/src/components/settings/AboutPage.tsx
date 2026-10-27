@@ -113,7 +113,7 @@ PulseMind 是一款本地优先的桌面端 AI 助手，搭载自主 Agent 引�
 
 ## Office 文档
 
-- **字节级保真编辑** — office_edit 只改要改的（docx / xlsx / pptx），未触碰的部分逐字节不变，最大程度保留原文档的格式与兼容性
+- **字节级保真编辑** — office_edit 只改要改的（docx / xlsx / pptx）：docx / pptx 未触碰部分逐字节不变，xlsx 保格式保值但整簿重写，最大程度保留原文档的格式与兼容性
 - **表达力完整** — Word 生成可嵌图、编辑可增删表格行；Excel 可设样式、列宽与冻结窗格，生成端表头加粗、列宽自适应
 - **设计路线生成** — PPT 从零生成走设计路线：模型先落主题（tokens.css）再写版式（deck.html），引擎用 Chromium 实测布局，输出原生可编辑形状（不是截图）并附保真报告；Markdown 大纲是纯文字的兜底路线
 - **结构先行** — office_inspect 让 AI 编辑前先看清文档结构

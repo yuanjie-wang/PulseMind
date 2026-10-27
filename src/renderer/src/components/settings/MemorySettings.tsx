@@ -1,18 +1,18 @@
-// ── Memory settings section ──
-// 设置 → 记忆: the memoryEnabled master switch (FeatureSwitch, mirrored to the
-// shared MemoryManager by App.tsx / settings.handler) plus manual memory CRUD
-// and search against the live MemoryManager instance.
+// ── Memory settings section（v2，PLAN-memory-wiki M7 / E5，2026-10-25）──
+// 三个分区，用户面前只有一个名词「记忆」：手动记忆（MEMORY.md 编辑）、
+// 自动记忆（总开关卡片内含提取频率与「立即提取」）、已提取的记忆（浏览/搜索/删除，
+// 经验归技能中心）。旧的提取记忆列表/清空随旧表冻结一并退役。
 import React, { useState, useEffect, useCallback } from 'react'
-import {Drawer, Typography, Space, Button, Tag, Empty, Popconfirm, Input, Spin, Card } from 'antd'
-import { BookOutlined, ClearOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { Drawer, Typography, Button, Input, InputNumber, Space } from 'antd'
+import { BookOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify, notifyFailure } from '../../utils/notify'
 import { useSettings } from '../../hooks/SettingsContext'
 import { MemoryManager } from '../../memory/MemoryManager'
-import type { MemoryEntry } from '../../memory/types'
-import FeatureSwitch from './FeatureSwitch'
+import FeatureSwitch, { SettingCard } from './FeatureSwitch'
+import MemoryPagesBrowser from '../knowledge/MemoryPagesPanel'
 
-const { Text, Paragraph } = Typography
+const { Text } = Typography
 
 interface MemorySettingsProps {
   open: boolean
@@ -21,252 +21,94 @@ interface MemorySettingsProps {
   inline?: boolean
 }
 
-const CATEGORY_COLORS: Record<string, string> = {
-  code: 'blue',
-  architecture: 'purple',
-  user_pref: 'green',
-  decision: 'orange',
-  general: 'default',
-  experience: 'cyan'
-}
-
 function MemorySettings({ open, onClose, memoryManager, inline }: MemorySettingsProps): React.ReactElement {
-  const [memories, setMemories] = useState<MemoryEntry[]>([])
-  const [loading, setLoading] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
   const [mdContent, setMdContent] = useState('')
+  const [sweeping, setSweeping] = useState(false)
   const { t } = useTranslation()
   const { settings, saveSettings } = useSettings()
-  // 设置 → 记忆 master switch: gates auto extraction + prompt injection.
   const memoryOn = settings.memoryEnabled ?? true
-
-  const TYPE_LABELS: Record<string, string> = {
-    fact: t('memoryDrawer.type.fact'),
-    decision: t('memoryDrawer.type.decision'),
-    preference: t('memoryDrawer.type.preference'),
-    auto: t('memoryDrawer.type.auto'),
-    manual: t('memoryDrawer.type.manual'),
-    experience: t('memoryDrawer.type.experience')
-  }
-
-  const CATEGORY_LABELS: Record<string, string> = {
-    general: t('memoryDrawer.category.general'),
-    code: t('memoryDrawer.category.code'),
-    architecture: t('memoryDrawer.category.architecture'),
-    user_pref: t('memoryDrawer.category.userPref'),
-    decision: t('memoryDrawer.category.decision'),
-    experience: t('memoryDrawer.category.experience')
-  }
-
-  const loadMemories = useCallback(async () => {
-    setLoading(true)
-    const t0 = performance.now()
-    try {
-      const all = await memoryManager.listMemories()
-      console.log(`[MemoryPanel] loadMemories round-trip: ${(performance.now() - t0).toFixed(1)}ms, ${all.length} items`)
-      setMemories(all.filter((m) => m.type !== 'experience'))
-    } catch (err) {
-      notifyFailure('memory.load', err, t('memoryDrawer.loadFailed'))
-    } finally {
-      setLoading(false)
-    }
-  }, [memoryManager])
+  const intervalHours = settings.memoryExtractIntervalHours ?? 6
 
   const loadMd = useCallback(async () => {
-    const t0 = performance.now()
     try {
-      const content = await memoryManager.getMemoryMd()
-      console.log(`[MemoryPanel] loadMd round-trip: ${(performance.now() - t0).toFixed(1)}ms`)
-      setMdContent(content)
+      setMdContent(await memoryManager.getMemoryMd())
     } catch (err) {
       notifyFailure('memory.loadMd', err, t('memoryDrawer.loadFailed'))
     }
-  }, [memoryManager])
+  }, [memoryManager, t])
 
   useEffect(() => {
-    if (open) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- async data load, no cascading renders
-      loadMemories()
-      loadMd()
-    }
-  }, [open, loadMemories, loadMd, memoryManager])
-
-  const handleSearch = async (query: string) => {
-    setSearchQuery(query)
-    if (!query.trim()) {
-      loadMemories()
-      return
-    }
-    setLoading(true)
-    try {
-      const results = await memoryManager.searchMemories({ query, limit: 50 })
-      setMemories(results)
-    } catch (err) {
-      notifyFailure('memory.search', err, t('memoryDrawer.searchFailed'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleDelete = async (id: string) => {
-    try {
-      await memoryManager.deleteMemory(id)
-      setMemories((prev) => prev.filter((m) => m.id !== id))
-      notify.success(t('memoryDrawer.memoryDeleted'))
-    } catch {
-      notify.error(t('memoryDrawer.memoryDeleteFailed'))
-    }
-  }
-
-  const handleClearAll = async () => {
-    let deleted = 0
-    for (const mem of memories) {
-      await memoryManager.deleteMemory(mem.id)
-      deleted++
-    }
-    setMemories([])
-    notify.success(t('memoryDrawer.clearDeleted', { count: deleted }))
-  }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async data load, no cascading renders
+    if (open) loadMd()
+  }, [open, loadMd])
 
   const handleSaveMd = async () => {
     await memoryManager.saveMemoryMd(mdContent)
     notify.success(t('memoryDrawer.manualMemoriesSaved'))
   }
 
+  const handleSweepNow = async () => {
+    setSweeping(true)
+    try {
+      const res = await window.electronAPI.runMemorySweepNow()
+      if (res.error) notify.error(res.error)
+      else notify.success(t('memoryDrawer.sweepDone', { count: res.extracted }))
+    } catch (err) {
+      notifyFailure('memory.sweep', err, t('memoryDrawer.sweepFailed'))
+    } finally {
+      setSweeping(false)
+    }
+  }
+
   const body = (
     <>
       <Text strong style={{ display: 'block', fontSize: 16, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--pm-border-hairline)' }}>{t('memoryDrawer.title')}</Text>
 
-      {/* ── Master switch (设置 → 记忆) ── */}
-      <FeatureSwitch
-        label={t('memoryDrawer.masterSwitch')}
-        help={t('memoryDrawer.masterSwitchHelp')}
-        checked={memoryOn}
-        onChange={(checked) => saveSettings({ ...settings, memoryEnabled: checked })}
-      />
-
-      {/* ── Manual Memories Editor ── */}
-      <div style={{ marginBottom: 16 }}>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('memoryDrawer.manualMemories')}</Text>
-        <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-          {t('memoryDrawer.manualMemoriesHelp')}
-        </Text>
+      {/* ── 手动记忆（MEMORY.md）── */}
+      <SettingCard
+        title={t('memoryDrawer.manualMemories')}
+        help={t('memoryDrawer.manualMemoriesHelp')}
+        extra={<Button type="primary" size="small" onClick={handleSaveMd}>{t('memoryDrawer.save')}</Button>}
+      >
         <Input.TextArea
           value={mdContent}
           onChange={(e) => setMdContent(e.target.value)}
           rows={6}
           style={{ fontFamily: 'monospace', fontSize: 12 }}
         />
-        <Button
-          type="primary"
-          size="small"
-          style={{ marginTop: 8 }}
-          onClick={handleSaveMd}
-        >
-          {t('memoryDrawer.save')}
-        </Button>
-      </div>
+      </SettingCard>
 
-      {/* ── Extracted Memories Section ── */}
-      <div style={{ marginBottom: 12 }}>
-        <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('memoryDrawer.extractedMemories')}</Text>
-        <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-          {t('memoryDrawer.extractedMemoriesHelp')}
-        </Text>
-      </div>
-
-      {/* ── Search ── */}
-      <div style={{ marginBottom: 16 }}>
-        <Space.Compact style={{ width: '100%' }}>
-          <Input
-            prefix={<SearchOutlined />}
-            placeholder={t('memoryDrawer.searchPlaceholder')}
-            value={searchQuery}
-            onChange={(e) => handleSearch(e.target.value)}
-            allowClear
+      {/* ── 自动记忆：总开关 + 提取频率（PLAN-memory-wiki M2c：主时机 = 定时清扫）── */}
+      <FeatureSwitch
+        label={t('memoryDrawer.masterSwitch')}
+        help={t('memoryDrawer.masterSwitchHelp')}
+        checked={memoryOn}
+        onChange={(checked) => saveSettings({ ...settings, memoryEnabled: checked })}
+      >
+        <Space wrap align="center" size={[8, 8]}>
+          <Text style={{ fontSize: 13 }}>{t('memoryDrawer.extractInterval')}</Text>
+          <InputNumber
+            min={0}
+            max={168}
+            step={1}
+            value={intervalHours}
+            onChange={(v) => saveSettings({ ...settings, memoryExtractIntervalHours: typeof v === 'number' ? v : 0 })}
+            style={{ width: 90 }}
+            addonAfter={t('memoryDrawer.hoursUnit')}
           />
-          <Button icon={<ReloadOutlined />} onClick={loadMemories} />
-        </Space.Compact>
-      </div>
-
-      {/* ── Memory count & actions ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <Space size={4}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {t('memoryDrawer.count', { count: memories.length })}
-          </Text>
-          {memories.length > 40 && (
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              {t('memoryDrawer.compressWarning')}
-            </Text>
-          )}
+          <Button size="small" icon={<ThunderboltOutlined />} loading={sweeping} onClick={handleSweepNow}>
+            {t('memoryDrawer.sweepNow')}
+          </Button>
         </Space>
-        <Space size={4}>
-          <Popconfirm
-            title={t('memoryDrawer.clearConfirm')}
-            description={`这将删除全部 ${memories.length} 条记忆。`}
-            onConfirm={handleClearAll}
-            okText={t('memoryDrawer.deleteOk')}
-            okButtonProps={{ danger: true }}
-          >
-            {memories.length > 0 && (
-              <Button type="text" danger size="small" icon={<ClearOutlined />}>
-                {t('memoryDrawer.clearAll')}
-              </Button>
-            )}
-          </Popconfirm>
-        </Space>
-      </div>
+        <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+          {t('memoryDrawer.extractIntervalHelp')}
+        </Text>
+      </FeatureSwitch>
 
-      {/* ── Memory cards ── */}
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 40 }}>
-          <Spin />
-        </div>
-      ) : memories.length === 0 ? (
-        <Empty
-          description={t('memoryDrawer.empty')}
-        />
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-          {memories.map((item) => (
-            <Card key={item.id} size="small" style={{ borderRadius: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 4, marginBottom: 6 }}>
-                <Space size={4} wrap style={{ minWidth: 0 }}>
-                  <Tag color={CATEGORY_COLORS[item.category] || 'default'} style={{ marginInlineEnd: 0 }}>
-                    {CATEGORY_LABELS[item.category] || item.category}
-                  </Tag>
-                  <Tag style={{ marginInlineEnd: 0 }}>{TYPE_LABELS[item.type] || item.type}</Tag>
-                </Space>
-                <Space size={0} style={{ flexShrink: 0 }}>
-                  <Button type="text" size="small" icon={<CopyOutlined style={{ color: 'var(--pm-text-faint)' }} />} onClick={() => {
-                    navigator.clipboard.writeText(item.content)
-                    notify.success(t('common.copy'))
-                  }} />
-                  <Popconfirm
-                    title={t('memoryDrawer.deleteTitle')}
-                    onConfirm={() => handleDelete(item.id)}
-                    okText={t('memoryDrawer.deleteOk')}
-                    okButtonProps={{ danger: true }}
-                    cancelText={t('memoryDrawer.deleteCancel')}
-                  >
-                    <Button type="text" size="small" icon={<DeleteOutlined style={{ color: 'var(--pm-text-faint)' }} />} />
-                  </Popconfirm>
-                </Space>
-              </div>
-              <Paragraph style={{ margin: 0, fontSize: 13 }} ellipsis={{ rows: 3, expandable: true }}>
-                {item.content}
-              </Paragraph>
-              <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
-                {(() => {
-                  const d = new Date(item.createdAt)
-                  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-                })()}
-              </Text>
-            </Card>
-          ))}
-        </div>
-      )}
+      {/* ── 已提取的记忆（E5：内容归位设置面板；经验归技能中心不在过滤内）── */}
+      <SettingCard title={t('memoryPages.browseTitle')} help={t('memoryPages.browseHelp')}>
+        <MemoryPagesBrowser deletable />
+      </SettingCard>
     </>
   )
 

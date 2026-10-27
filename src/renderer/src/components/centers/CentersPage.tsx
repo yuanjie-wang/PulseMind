@@ -87,7 +87,9 @@ function KnowledgePane({ knowledgeManager }: { knowledgeManager: KnowledgeManage
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 24px 6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+
             {/* Every import entry lands in the SELECTED base — the selection
+                replaced the old target dropdown. 记忆子页签下这些知识库专属操作不可达
                 replaced the old target dropdown. */}
             <Dropdown
               menu={{

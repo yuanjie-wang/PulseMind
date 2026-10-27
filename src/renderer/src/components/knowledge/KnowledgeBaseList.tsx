@@ -18,6 +18,11 @@ import { DEFAULT_BASE_ID } from '../../../../shared/types/knowledge'
 
 const { Text } = Typography
 
+/** 记忆库（PLAN-memory-wiki M7，用户裁定 2026-10-25）：记忆是与各知识库并列的
+ *  特殊库——它不是某个 base 的子页签，而是 rail 上的一个固定条目，选中后主区
+ *  换渲染 MemoryPagesPanel。保留 id，普通 base 永远不会与其冲突（DB 生成 id）。 */
+export const MEMORY_BASE_ID = 'memory'
+
 export interface KnowledgeBaseListProps {
   knowledgeManager: KnowledgeManager
   selectedBaseId: string
@@ -39,6 +44,8 @@ export function KnowledgeBaseList({ knowledgeManager, selectedBaseId, onSelectBa
   // Mount + every refreshSignal bump (imports elsewhere change file counts).
   // eslint-disable-next-line react-hooks/set-state-in-effect -- loadBases sets state only after its await, outside the sync effect body
   useEffect(() => { void loadBases() }, [loadBases, refreshSignal])
+
+
 
   const handleCreate = async (): Promise<void> => {
     try {
