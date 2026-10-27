@@ -24,7 +24,10 @@ import { runSettingsLeaveGuard } from '../settings/settings-leave-guard'
 import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectStore } from '../../stores/projectStore'
 import { useWorkbenchStore } from '../../stores/workbenchStore'
+import { useSidebarStore } from '../../stores/sidebarStore'
 import { useCommandPaletteStore } from '../../stores/commandPaletteStore'
+import { clampSidebarWidth, COLUMN_DRAG_HANDLE_WIDTH } from '../../../../shared/ui/layout-widths'
+import { useColumnDrag } from '../../hooks/useColumnDrag'
 import { buildCommandItems } from '../../navigation/command-palette-items'
 import { DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
 import { conversationKeyOf } from '../../../../shared/conversation-key'
@@ -174,6 +177,23 @@ function AppLayout({
   children
 }: AppLayoutProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
+  // ── Sidebar drag handle (2026-10-26) ──
+  // The Sider used to be a fixed 280; the right edge now carries a 6px
+  // col-resize handle writing the width to the persisted sidebar store.
+  // antd's Sider transitions its width (the collapse animation) — inline
+  // `none` only while dragging, or every pointermove would lag a 0.2s tween
+  // behind the cursor. The stored value is clamped at every consumption
+  // against the live window, never trusted raw off the disk.
+  const rawSidebarWidth = useSidebarStore((s) => s.width)
+  const setSidebarWidth = useSidebarStore((s) => s.setWidth)
+  const sidebarDrag = useColumnDrag({
+    getStartWidth: () => clampSidebarWidth(useSidebarStore.getState().width, window.innerWidth),
+    // Handle on the right edge of a left column: rightward travel grows it.
+    direction: 1,
+    clamp: (w) => clampSidebarWidth(w, window.innerWidth),
+    apply: setSidebarWidth,
+  })
+  const effSidebarWidth = clampSidebarWidth(rawSidebarWidth, window.innerWidth)
   const view = useNavigationStore((s) => s.view)
   const rawNavigate = useNavigationStore((s) => s.navigate)
   const navigateKind = useNavigationStore((s) => s.navigateKind)
@@ -404,7 +424,6 @@ function AppLayout({
       { key: 'shortcuts', label: t('palette.sectionShortcuts') },
       { key: 'assistant', label: t('palette.sectionAssistant') },
       { key: 'memory', label: t('palette.sectionMemory') },
-      { key: 'experiences', label: t('palette.sectionExperiences') },
       { key: 'data', label: t('palette.sectionData') },
       { key: 'about', label: t('palette.sectionAbout') },
     ],
@@ -481,14 +500,18 @@ function AppLayout({
   return (
     <Layout style={{ height: '100vh', overflow: 'hidden' }}>
       <Sider
-        width={280}
+        width={effSidebarWidth}
         collapsedWidth={0}
         collapsible
         collapsed={collapsed}
         onCollapse={setCollapsed}
         theme="light"
         trigger={null}
-        style={{ borderRight: `1px solid ${token.colorBorderSecondary}`, background: SIDEBAR_BACKGROUND }}>
+        style={{
+          borderRight: `1px solid ${token.colorBorderSecondary}`,
+          background: SIDEBAR_BACKGROUND,
+          transition: sidebarDrag.dragging ? 'none' : undefined
+        }}>
         {/* Space for the macOS traffic lights; the sidebar title deliberately sits below
             them. Not rendered elsewhere, where the sidebar starts at the top. */}
         {SIDEBAR_TOP_BAND_HEIGHT > 0 && (
@@ -626,10 +649,35 @@ function AppLayout({
               className={`sidebar-icon-btn${view.kind === 'settings' ? ' active-mode-btn' : ''}`}
               aria-label={t('menu.settings')}
               icon={<SettingOutlined style={{ fontSize: 16 }} />}
-              onClick={() => navigateKind('settings')}
-            />
+            onClick={() => navigateKind('settings')}
+          />
           </Tooltip>
         </div>
+        {/* Drag handle on the Sider's right edge (width drag, 2026-10-26).
+            Absolute → out of the children wrapper's flex flow, resolved
+            against the Sider itself; hidden while collapsed, where there is
+            no edge to grab. `no-drag` beats the title row's app-drag region
+            the handle's full-height column crosses. */}
+        {!collapsed && (
+          <div
+            data-pm-sidebar-drag-handle
+            onPointerDown={sidebarDrag.onPointerDown}
+            onPointerMove={sidebarDrag.onPointerMove}
+            onPointerUp={sidebarDrag.onPointerUp}
+            onPointerCancel={sidebarDrag.onPointerUp}
+            style={{
+              position: 'absolute',
+              right: 0,
+              top: 0,
+              bottom: 0,
+              width: COLUMN_DRAG_HANDLE_WIDTH,
+              cursor: 'col-resize',
+              zIndex: 2,
+              background: 'transparent',
+              WebkitAppRegion: 'no-drag'
+            } as React.CSSProperties}
+          />
+        )}
       </Sider>
 
       <Layout style={{ minHeight: 0, overflow: 'hidden' }}>

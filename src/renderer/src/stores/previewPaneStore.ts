@@ -1,10 +1,11 @@
 // ── Preview pane store (PLAN-preview-pane §设计2) ──
-// Renderer-local state for the workbench's file tab (PLAN-workbench W7):
+// Renderer-local state for the workbench's file previews (PLAN-workbench W7):
 // tab strips scoped per conversation (switching away and back restores them)
 // and per-path reload ticks the content components watch to re-read a changed
 // file. Pane visibility and width live in workbenchStore — opening the first
-// tab of a conversation brings the workbench up on the files tab, and closing
-// the last one folds it back (WorkBuddy-style). Tab-list mutations live in
+// tab of a conversation brings the workbench up on the 工作区 tab, where the
+// preview renders beside the tree (the standalone 文件预览 tab is gone, so
+// there is no empty-tab fold-back either). Tab-list mutations live in
 // preview-tabs.ts (pure, unit-tested).
 
 import { create } from 'zustand'
@@ -115,7 +116,7 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
       tabsByConversation: touch(s.tabsByConversation, key, tabs),
       activeByConversation: { ...s.activeByConversation, [key]: path },
     }))
-    useWorkbenchStore.getState().openTab(key, 'files')
+    useWorkbenchStore.getState().openTab(key, 'workspace')
   },
 
   closeTab: (conversationId, path) => {
@@ -136,12 +137,9 @@ export const usePreviewPaneStore = create<PreviewPaneState>()((set, get) => ({
       externalChanges: omitKey(s.externalChanges, path),
       oversized: omitKey(s.oversized, path),
     }))
-    // Last tab gone → fold the workbench back, but only when the user is
-    // looking at the files tab (closing a background conversation's tab must
-    // not yank the pane away from plan/browser).
-    if (result.tabs.length === 0 && useWorkbenchStore.getState().activeTab === 'files') {
-      useWorkbenchStore.getState().setOpen(key, false)
-    }
+    // No fold-back when the strip empties: the preview lives beside the 工作区
+    // tree now, and closing the last tab just returns the tree to full width —
+    // folding the pane would yank it away from a user who is browsing.
   },
 
   setActive: (conversationId, path) => {

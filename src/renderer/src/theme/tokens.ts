@@ -115,6 +115,17 @@ export function buildAntdTheme(mode: ThemeMode): ThemeConfig {
       // in the checkbox sheet) to ink, the same inversion solid primary
       // surfaces already take via colorTextLightSolid.
       Checkbox: dark ? { colorWhite: INK } : {},
+      // The workspace tree is a DirectoryTree, and DirectoryTree's selected row
+      // does NOT read the controlItemBgActive alias the pair above heals — it
+      // has its own component tokens, defaulted to colorPrimary +
+      // colorTextLightSolid: the ink primary under solid white text, i.e. the
+      // selected file read 黑底白字 (user 2026-10-25: 选中行要灰底黑字). The same
+      // neutral selected grey the fixes above use, with the row's ordinary
+      // colorText so selection does not re-ink the label.
+      Tree: {
+        directoryNodeSelectedBg: dark ? '#333333' : '#f5f5f5',
+        directoryNodeSelectedColor: dark ? 'rgba(255, 255, 255, 0.85)' : 'rgba(0, 0, 0, 0.88)',
+      },
       // Radio's checked dot is the same mechanism's second consumer: the dot
       // paints colorWhite on a colorPrimary disc — in dark, white on
       // near-white, the tick-vanished shape again (the MCP 传输类型 radios

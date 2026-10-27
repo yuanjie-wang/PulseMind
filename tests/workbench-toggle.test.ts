@@ -1,7 +1,8 @@
 // ── 手动打开工作台，默认落在「工作区」tab ──
 // 用户要求（2026-09-17）：主动打开侧边窗口时默认选择工作区 tab。此前标题栏
 // 的开关只是 `setOpen(key, !open)`，打开后显示的是上次持久化的 activeTab
-// （全新安装是「文件预览」），与用户预期不符。
+// （全新安装曾是「文件预览」，该 tab 已于 2026-10-25 并入「工作区」），与
+// 用户预期不符。
 //
 // 两条腿，互不覆盖（vitest 是 node 环境，组件挂不了）：store 的 openTab
 // 语义在这里真跑；「按钮的打开分支走的是 openTab 而不是 setOpen」是接线
@@ -22,7 +23,7 @@ describe('workbenchStore (manual-open contract)', () => {
     useWorkbenchStore.setState({
       openByConversation: {},
       width: WORKBENCH_DEFAULT_WIDTH,
-      activeTab: 'files',
+      activeTab: 'workspace',
     })
   })
 
@@ -41,7 +42,8 @@ describe('workbenchStore (manual-open contract)', () => {
   })
 
   it('auto-open funnels still override with their own tab', () => {
-    // 计划/浏览器/文件预览的自动打开各带各的 tab，手动默认不得粘住它们。
+    // 计划/浏览器的自动打开各带各的 tab（文件预览的自动打开也落在工作区），
+    // 手动默认不得粘住它们。
     useWorkbenchStore.getState().openTab(KEY, 'workspace')
     useWorkbenchStore.getState().openTab(KEY, 'plan')
     expect(useWorkbenchStore.getState().activeTab).toBe('plan')

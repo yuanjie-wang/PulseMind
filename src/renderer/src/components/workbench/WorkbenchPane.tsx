@@ -1,21 +1,20 @@
 // ── Right-side workbench (PLAN-workbench) ──
-// One docked pane, four tool tabs: 工作区 (workspace file tree) /
-// 文件预览 (per-conversation preview) / 浏览器 (in-app browser) / 工作计划
-// (plan DAG). Owns the geometry the views used to each carry separately:
-// absolute right edge, one shared width with a left-edge drag handle, one
-// paddingRight reserve upstream. The browser tab keeps its native-WebView
-// contract — while it is frontmost the renderer reports browserActive=true
-// so the main-process dock shows.
+// One docked pane, three tool tabs: 工作区 (file tree + file preview side by
+// side — the standalone 文件预览 tab was merged into it, 2026-10-25) /
+// 浏览器 (in-app browser) / 工作计划 (plan DAG). Owns the geometry the views
+// used to each carry separately: absolute right edge, one shared width with a
+// left-edge drag handle, one paddingRight reserve upstream. The browser tab
+// keeps its native-WebView contract — while it is frontmost the renderer
+// reports browserActive=true so the main-process dock shows.
 
 import React, { useRef } from 'react'
 import { X } from 'lucide-react'
 import { clampPaneWidth, PANE_DRAG_HANDLE_WIDTH, type BrowserPaneAction, type BrowserPaneUpdate } from '../../../../shared/browser/pane'
 import { useWorkbenchStore, WORKBENCH_TAB_IDS, type WorkbenchTab } from '../../stores/workbenchStore'
 import { usePreviewPaneStore, DRAFT_CONVERSATION_KEY } from '../../stores/previewPaneStore'
-import { PreviewPane } from '../preview/PreviewPane'
 import { BrowserPaneChrome } from '../browser/BrowserPaneChrome'
 import { PlanGraphView } from './PlanGraphView'
-import { WorkspaceTree } from './WorkspaceTree'
+import { WorkspacePane } from './WorkspacePane'
 import type { Plan } from '../../types/agent'
 
 const TAB_STRIP_HEIGHT = 32
@@ -52,8 +51,9 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
   // drag clamp is not enough, every consumption of the stored value clamps.
   const effWidth = clampPaneWidth(width, chatAreaWidth)
   // A persisted activeTab naming a removed tab (the one-day deliverables
-  // aggregate) would otherwise render a pane body with no view.
-  const activeTab = useWorkbenchStore((s) => (WORKBENCH_TAB_IDS.has(s.activeTab) ? s.activeTab : 'files'))
+  // aggregate, or 'files' before its merge into 工作区) would otherwise render
+  // a pane body with no view.
+  const activeTab = useWorkbenchStore((s) => (WORKBENCH_TAB_IDS.has(s.activeTab) ? s.activeTab : 'workspace'))
   const setWidth = useWorkbenchStore((s) => s.setWidth)
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab)
   const setOpen = useWorkbenchStore((s) => s.setOpen)
@@ -99,8 +99,10 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
   }
 
   const tabs: Array<{ id: WorkbenchTab; label: string; badge?: string }> = [
-    { id: 'workspace' as const, label: '工作区' },
-    ...(fileTabs > 0 ? [{ id: 'files' as const, label: '文件预览', badge: String(fileTabs) }] : [{ id: 'files' as const, label: '文件预览' }]),
+    // The open-file count rides 工作区's badge now that the preview lives there.
+    ...(fileTabs > 0
+      ? [{ id: 'workspace' as const, label: '工作区', badge: String(fileTabs) }]
+      : [{ id: 'workspace' as const, label: '工作区' }]),
     ...(browserPane.tabs.length > 0
       ? [{ id: 'browser' as const, label: '浏览器', badge: String(browserPane.tabs.length) }]
       : [{ id: 'browser' as const, label: '浏览器' }]),
@@ -206,8 +208,7 @@ export function WorkbenchPane({ conversationId, chatAreaWidth, plan, onPlanJump 
 
       {/* Active tool view */}
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        {activeTab === 'files' && <PreviewPane conversationId={conversationId} />}
-        {activeTab === 'workspace' && <WorkspaceTree conversationId={conversationId} />}
+        {activeTab === 'workspace' && <WorkspacePane conversationId={conversationId} />}
         {activeTab === 'browser' && <BrowserPaneChrome pane={browserPane} onAction={onBrowserAction} />}
         {activeTab === 'plan' && <PlanGraphView plan={plan} onJumpToStep={onPlanJump} onOpenPlanNode={onOpenPlanNode} canOpenNode={canOpenNode} onOpenNodeReport={onOpenNodeReport} highlightNodeId={highlightPlanNodeId} />}
       </div>
