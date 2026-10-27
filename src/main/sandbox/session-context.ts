@@ -30,3 +30,27 @@ export const sessionSandbox = new AsyncLocalStorage<SessionSandboxContext>()
 export function currentSessionSandbox(): SessionSandboxContext | null {
   return sessionSandbox.getStore() ?? null
 }
+
+// ── Background-exit push (2026-10-28 后台任务唤醒) ──
+// terminal.ts discovers a background process's death inside its child 'exit'
+// handler — the one moment main knows (pid, code) and can name the owning
+// session (the spawn-time sandbox context). Session-manager registers a
+// listener here to enqueue a wake-up notice on the owning engine; terminal
+// fires it. A listener REGISTRY rather than a direct import: session-manager
+// already sits above the services layer, and a service → manager import would
+// invert the dependency arrow for one call (setHookWindowOpenListener /
+// gate-escape are the same shape). The exit path must never break, so the
+// notify swallows everything.
+type BackgroundExitListener = (sessionId: string, pid: number, code: number | null) => void
+
+let backgroundExitListener: BackgroundExitListener | null = null
+
+export function setSessionBackgroundExitListener(fn: BackgroundExitListener | null): void {
+  backgroundExitListener = fn
+}
+
+export function notifySessionBackgroundExit(sessionId: string, pid: number, code: number | null): void {
+  try {
+    backgroundExitListener?.(sessionId, pid, code)
+  } catch { /* the process is dead either way; the log tail still reports it */ }
+}

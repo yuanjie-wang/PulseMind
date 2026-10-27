@@ -16,7 +16,7 @@ import { createStreamParser } from '../src/renderer/src/llm/stream-utils'
 import { setHost } from '../src/renderer/src/agent/host'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import type { StreamEventHandlers } from '../src/renderer/src/llm/stream-types'
-import type { AgentMessage } from '../src/renderer/src/types/agent'
+import type { AgentMessage, ToolResultBlock, ToolUseBlock } from '../src/renderer/src/types/agent'
 import type { ContentBlock } from '../src/shared/types/agent'
 import type { ToolDefinition } from '../src/renderer/src/tools/types'
 
@@ -39,8 +39,8 @@ function msg(role: 'user' | 'assistant', contentBlocks: ContentBlock[], id = 'm1
 }
 const text = (t: string): ContentBlock => ({ type: 'text', text: t })
 const thinking = (t: string): ContentBlock => ({ type: 'thinking', thinking: t })
-const toolUse = (id: string, name: string, input: Record<string, unknown> = {}): ContentBlock => ({
-  type: 'tool_use', id, name, input,
+const toolUse = (id: string, name: string, input: Record<string, unknown> = {}, status?: ToolUseBlock['status']): ContentBlock => ({
+  type: 'tool_use', id, name, input, ...(status ? { status } : {}),
 })
 const toolResult = (id: string, content: string, is_error = false): ContentBlock => ({
   type: 'tool_result', tool_use_id: id, content, is_error,
@@ -186,6 +186,85 @@ describe('anthropicAdapter.buildMessages — the safety net agrees with reconcil
   })
 })
 
+describe('reconcile placeholders are status-aware (2026-10-25 plan-tool evaluation)', () => {
+  // The evaluation's shape: a manual spawn_agent re-dispatch was answered by
+  // the reconcile fabrication while the sub-agent was still running — the
+  // model read "interrupted or cancelled" for work that completed and wrote
+  // its report. A call its executor still holds must read as live, and the
+  // placeholder must be replaceable (_synthetic) when the real result lands.
+  it('anthropic reconcile: a live tool_use reads "still in progress", not interrupted, and carries _synthetic', () => {
+    for (const status of ['queued', 'approved', 'running'] as const) {
+      const messages = [
+        msg('assistant', [toolUse('c1', 'spawn_agent', {}, status)], 'm1'),
+        msg('user', [text('go on')], 'm2'),
+      ]
+      anthropicAdapter.reconcileMessages!(messages)
+      const injected = messages[1].contentBlocks[0] as ToolResultBlock
+      expect(injected.content).toContain('still in progress')
+      expect(injected.is_error).toBe(false)
+      expect(injected._synthetic).toBe(true)
+    }
+  })
+
+  it('anthropic reconcile: a dead tool_use keeps the interrupted verdict, also marked _synthetic', () => {
+    const messages = [
+      msg('assistant', [toolUse('c1', 'spawn_agent', {}, 'pending')], 'm1'),
+      msg('user', [text('go on')], 'm2'),
+    ]
+    anthropicAdapter.reconcileMessages!(messages)
+    const injected = messages[1].contentBlocks[0] as ToolResultBlock
+    expect(injected.content).toContain('interrupted or cancelled')
+    expect(injected.is_error).toBe(true)
+    expect(injected._synthetic).toBe(true)
+  })
+
+  it('openai reconcile: same status split, same _synthetic marker', () => {
+    const live = [
+      msg('assistant', [toolUse('c1', 'spawn_agent', {}, 'running')], 'm1'),
+      msg('user', [text('go on')], 'm2'),
+    ]
+    openaiAdapter.reconcileMessages!(live)
+    const injectedLive = live[1].contentBlocks[0] as ToolResultBlock
+    expect(injectedLive.content).toContain('still in progress')
+    expect(injectedLive.is_error).toBe(false)
+    expect(injectedLive._synthetic).toBe(true)
+
+    const dead = [
+      msg('assistant', [toolUse('c2', 'shell', {})], 'm1'),
+      msg('user', [text('go on')], 'm2'),
+    ]
+    openaiAdapter.reconcileMessages!(dead)
+    const injectedDead = dead[1].contentBlocks[0] as ToolResultBlock
+    expect(injectedDead.content).toContain('interrupted or cancelled')
+    expect(injectedDead._synthetic).toBe(true)
+  })
+
+  it('anthropic buildMessages end-to-end: a live call never reads interrupted in the outgoing payload', () => {
+    // buildMessages reconciles FIRST, so its own net is preempted here — this
+    // pins the observable invariant through the whole path: the placeholder
+    // the reconcile fabricated for the live call is what reaches the payload.
+    const { apiMessages } = anthropicAdapter.buildMessages([
+      msg('user', [text('go')], 'm1'),
+      msg('assistant', [toolUse('call_x', 'spawn_agent', {}, 'running')], 'm2'),
+      msg('user', [toolResult('call_x', '')], 'm3'),
+    ], 'SYS')
+    expect(JSON.stringify(apiMessages)).toContain('still in progress')
+    expect(JSON.stringify(apiMessages)).not.toContain('interrupted or cancelled')
+  })
+
+  it('openai buildMessages safety net: a LIVE call manufactures the still-in-progress verdict', () => {
+    // OpenAI's buildMessages does NOT reconcile first — the net below fires
+    // directly, so this exercises its status branch for real.
+    const { apiMessages } = openaiAdapter.buildMessages([
+      msg('user', [text('go')], 'm1'),
+      msg('assistant', [toolUse('call_live', 'spawn_agent', {}, 'running')], 'm2'),
+    ], '')
+    const toolMsg = apiMessages.find((m: { role?: string }) => m.role === 'tool') as { content: string }
+    expect(toolMsg.content).toContain('still in progress')
+    expect(JSON.stringify(apiMessages)).not.toContain('interrupted or cancelled')
+  })
+})
+
 describe('openaiAdapter.buildMessages', () => {
   it('puts the system prompt first and joins user text blocks with newlines', () => {
     const { apiMessages } = openaiAdapter.buildMessages([msg('user', [text('a'), text('b')])], 'SYS')
@@ -245,7 +324,7 @@ describe('openaiAdapter.buildMessages', () => {
     ], '')
     expect(apiMessages).toEqual([
       { role: 'assistant', content: null, tool_calls: [{ id: 'call_x', type: 'function', function: { name: 'shell', arguments: '{}' } }] },
-      { role: 'tool', tool_call_id: 'call_x', content: 'Tool execution was interrupted or cancelled before producing a result.' },
+      { role: 'tool', tool_call_id: 'call_x', content: 'Tool execution was interrupted or cancelled.' },
       { role: 'user', content: 'next' },
     ])
   })
@@ -442,6 +521,7 @@ describe('openaiAdapter.reconcileMessages', () => {
       type: 'tool_result', tool_use_id: 'c1',
       content: 'Tool execution was interrupted or cancelled.', is_error: true,
       tool_result_id: expect.any(String),
+      _synthetic: true,
     }])
     expect(messages[2].contentBlocks).toEqual([text('go on')]) // original text untouched
   })

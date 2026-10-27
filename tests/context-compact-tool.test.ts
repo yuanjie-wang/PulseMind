@@ -162,7 +162,7 @@ describe('guards ①—④ (main action only; free_results exempt from ②③)',
     // The next request's nano pass materializes the placeholder (quota never
     // fires at 8 uses — only the mandated channel could have compressed it).
     await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
-    expect(resultContentOf(engineBodies[0], 'tu_0')).toMatch(/^\[tool_result_id: tr_0\]$/)
+    expect(resultContentOf(engineBodies[0], 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/)
   })
 })
 
@@ -255,8 +255,8 @@ describe('free_results: mandated ≠ marks, both directions', () => {
     expect(out.freedResults).toEqual(['tu_30'])
 
     const copy1 = engineBodies[0]
-    expect(resultContentOf(copy1, 'tu_30')).toMatch(/^\[tool_result_id: tr_30\]$/) // mandated: compressed regardless of quota
-    expect(resultContentOf(copy1, 'tu_0')).toMatch(/^\[tool_result_id: tr_0\]$/)   // quota pick (marked)
+    expect(resultContentOf(copy1, 'tu_30')).toMatch(/^⟨archived: tr_30⟩$/) // mandated: compressed regardless of quota
+    expect(resultContentOf(copy1, 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/)   // quota pick (marked)
     expect(resultContentOf(copy1, 'tu_44')).toMatch(/^x{1500}$/)                   // protection window
 
     // Second build: the marks' bounce applies to the QUOTA pick (it re-inflates
@@ -265,7 +265,7 @@ describe('free_results: mandated ≠ marks, both directions', () => {
     await (engine as unknown as { prepareLoopRequest: (o: AgentEngineOptions) => Promise<unknown> }).prepareLoopRequest(engine.opts)
     const copy2 = engineBodies[1]
     expect(resultContentOf(copy2, 'tu_0')).toMatch(/^x{1500}$/)                    // marked → allowed to re-inflate
-    expect(resultContentOf(copy2, 'tu_30')).toMatch(/^\[tool_result_id: tr_30\]$/) // mandated → stable
+    expect(resultContentOf(copy2, 'tu_30')).toMatch(/^⟨archived: tr_30⟩$/) // mandated → stable
   })
 
   it('skips and reports TIER3 / protection-window / unknown ids; idempotent on repeats', async () => {
@@ -289,7 +289,7 @@ describe('free_results: mandated ≠ marks, both directions', () => {
     ])
     expect(resultContentOf(engineBodies[0], 'tu_ask')).toBe('答')
     expect(resultContentOf(engineBodies[0], 'tu_7')).toMatch(/^x{1500}$/)
-    expect(resultContentOf(engineBodies[0], 'tu_0')).toMatch(/^\[tool_result_id: tr_0\]$/)
+    expect(resultContentOf(engineBodies[0], 'tu_0')).toMatch(/^⟨archived: tr_0⟩$/)
   })
 })
 
@@ -376,7 +376,7 @@ describe('wiring — the scans that keep the channel honest', () => {
     // ONLY literal list — the drifted third copy in approveTool is gone).
     expect(flow.match(/MEMORY_GROUP_TOOL_NAMES = \[[^\]]*\]/g)?.length).toBe(1)
     expect(flow).toContain("'context_compact']")
-    expect(flow.match(/'memory_search', 'memory_save'/g)?.length).toBe(1)
+    expect(flow.match(/'recall', 'memory_save'/g)?.length).toBe(1)  // 检索一元化：memory_search/conversation_search → recall
   })
 
   it('the engine arms, consumes and clears the three state pieces', () => {

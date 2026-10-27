@@ -4,6 +4,7 @@ import type { LlmAdapter } from './adapter'
 import type { LlmRequestParams } from './types'
 import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 import { createStreamParser, fetchStreamChunks } from './stream-utils'
+import { reconcilePlaceholderFor } from './tool-reconcile'
 
 // ── Stop Reason Normalization ─────────────────────────────────────────
 
@@ -261,6 +262,9 @@ function buildApiMessages(messages: AgentMessage[], systemPrompt: string): unkno
   // Used to detect orphaned tool_results whose matching tool_use was dropped
   // by the compaction pipeline (hardTruncate/lightCompact).
   let pendingToolCallIds: Set<string> | null = null
+  // Runtime status per tool_use id — the mapped wire shape drops it, and the
+  // safety net below needs it to tell a live call from a dead one.
+  const statusById = new Map<string, ToolUseBlock['status']>()
 
   for (const msg of messages) {
     const textBlocks = msg.contentBlocks.filter(
@@ -269,6 +273,7 @@ function buildApiMessages(messages: AgentMessage[], systemPrompt: string): unkno
     const toolUseBlocks = msg.contentBlocks.filter(
       (b): b is ToolUseBlock => b.type === 'tool_use'
     )
+    for (const tu of toolUseBlocks) statusById.set(tu.id, tu.status)
     const toolResultBlocks = msg.contentBlocks.filter(
       (b): b is ToolResultBlock => b.type === 'tool_result'
     )
@@ -373,10 +378,12 @@ function buildApiMessages(messages: AgentMessage[], systemPrompt: string): unkno
     if (unresolved.length === 0) continue
 
     console.warn(`[OpenAI] Injecting synthetic tool response for ${unresolved.length} orphaned tool_call(s):`, unresolved.map((tc) => tc.id))
+    // Status-aware (llm/tool-reconcile.ts): a call its executor still holds
+    // must not read as "interrupted or cancelled" here either.
     const synthetic: unknown[] = unresolved.map((tc) => ({
       role: 'tool',
       tool_call_id: tc.id,
-      content: 'Tool execution was interrupted or cancelled before producing a result.'
+      content: reconcilePlaceholderFor({ status: statusById.get(tc.id) }).content
     }))
     result.splice(i + 1, 0, ...synthetic)
     i += synthetic.length
@@ -458,8 +465,8 @@ export const openaiAdapter: LlmAdapter = {
 
       const resolvedIds = new Set<string>()
       // Wide scan (see AnthropicAdapter.reconcileToolResults): a result
-      // landing after an interleaved assistant message still resolves its
-      // call — breaking at the first non-user message fabricated synthetic
+      // landing after an interleaved assistant message still resolves its call —
+      // breaking at the first non-user message fabricated synthetic
       // errors for live chained spawns.
       for (let j = i + 1; j < messages.length; j++) {
         for (const block of messages[j].contentBlocks) {
@@ -470,19 +477,29 @@ export const openaiAdapter: LlmAdapter = {
       const unresolved = toolUses.filter(tu => !resolvedIds.has(tu.id))
       if (unresolved.length === 0) continue
 
+      // Status-aware fabrication (llm/tool-reconcile.ts): a call its executor
+      // still holds must not read as "interrupted or cancelled", and every
+      // fabricated block is marked _synthetic so the real result replaces it
+      // at addToolResult instead of being swallowed as a duplicate.
+      const fabricated = new Map(unresolved.map(tu => {
+        const placeholder = reconcilePlaceholderFor(tu)
+        return [tu.id, {
+          type: 'tool_result' as const,
+          tool_use_id: tu.id,
+          content: placeholder.content,
+          is_error: placeholder.isError,
+          tool_result_id: crypto.randomUUID(),
+          _synthetic: true
+        } satisfies ToolResultBlock]
+      }))
+
       const next = messages[i + 1]
       const targetIndex = i + 1
       if (next?.role === 'user' && next.contentBlocks.some(b => b.type !== 'tool_result')) {
         messages.splice(targetIndex, 0, {
           id: `reconcile_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
           role: 'user',
-          contentBlocks: unresolved.map(tu => ({
-            type: 'tool_result' as const,
-            tool_use_id: tu.id,
-            content: 'Tool execution was interrupted or cancelled.',
-            is_error: true,
-            tool_result_id: crypto.randomUUID()
-          })),
+          contentBlocks: unresolved.map(tu => fabricated.get(tu.id)!),
           createdAt: new Date().toISOString()
         })
       } else {
@@ -495,13 +512,7 @@ export const openaiAdapter: LlmAdapter = {
           })
         }
         for (const tu of unresolved) {
-          messages[targetIndex].contentBlocks.push({
-            type: 'tool_result' as const,
-            tool_use_id: tu.id,
-            content: 'Tool execution was interrupted or cancelled.',
-            is_error: true,
-            tool_result_id: crypto.randomUUID()
-          })
+          messages[targetIndex].contentBlocks.push(fabricated.get(tu.id)!)
         }
       }
     }

@@ -4,10 +4,10 @@
 // contextLength 画圆环，且默认模型没设该字段时回落到 profiles[0]（又一个
 // 不相干模型的窗口）。解析链镜像主进程 resolveProfile；末级回落 128_000 与
 // 引擎一致（AgentEngine 的 `contextLength || 128_000`）。
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { resolveContextWindow } from '../src/renderer/src/utils/context-window'
+import { resolveContextWindow, sessionWindowKeyOf, useSessionContextWindowStore } from '../src/renderer/src/utils/context-window'
 
 const REPO = process.cwd()
 const read = (...p: string[]): string => readFileSync(join(REPO, ...p), 'utf-8')
@@ -45,6 +45,53 @@ describe('resolveContextWindow', () => {
   })
 })
 
+// 溢出重瞄准的会话窗口 pin（2026-10-24 harness review B8；review_20261025
+// 中1 定形）：键 = 会话 × 模型。重瞄准属于产生它的那个模型——引擎侧换
+// profile 即丢弃（tests/harness-review-20261024.test.ts 的 profileId 分支
+// 组），渲染端键失配即回落 profile 解析值；换 profile 的消费点显式
+// clearConv 拦住往返切换的旧键重新命中。
+describe('useSessionContextWindowStore（溢出重瞄准 pin）', () => {
+  beforeEach(() => {
+    useSessionContextWindowStore.setState({ pinned: {} })
+  })
+
+  it('pin 后同键可读，换 profile 键失配即读不到（中1 的失效场景）', () => {
+    const { pin } = useSessionContextWindowStore.getState()
+    pin('conv1', 'p1', 128_000)
+    expect(useSessionContextWindowStore.getState().pinned[sessionWindowKeyOf('conv1', 'p1')]).toBe(128_000)
+    // 会话内换到更大窗口的模型：旧 pin 必须不再命中，分母回落 profile 解析值。
+    expect(useSessionContextWindowStore.getState().pinned[sessionWindowKeyOf('conv1', 'p2')]).toBeUndefined()
+  })
+
+  it('clearConv 清掉该会话名下全部键，其他会话的 pin 不动', () => {
+    const { pin, clearConv } = useSessionContextWindowStore.getState()
+    pin('conv1', 'p1', 128_000)
+    pin('conv1', 'p2', 90_000)
+    pin('conv2', 'p1', 64_000)
+    clearConv('conv1')
+    const pinned = useSessionContextWindowStore.getState().pinned
+    expect(pinned[sessionWindowKeyOf('conv1', 'p1')]).toBeUndefined()
+    expect(pinned[sessionWindowKeyOf('conv1', 'p2')]).toBeUndefined()
+    expect(pinned[sessionWindowKeyOf('conv2', 'p1')]).toBe(64_000)
+  })
+
+  it('同会话同模型重新 pin 覆盖旧值（provider 的最新纠正为准）', () => {
+    const { pin } = useSessionContextWindowStore.getState()
+    pin('conv1', 'p1', 128_000)
+    pin('conv1', 'p1', 100_000)
+    expect(useSessionContextWindowStore.getState().pinned[sessionWindowKeyOf('conv1', 'p1')]).toBe(100_000)
+  })
+
+  it('多会话交替 pin 互不覆盖（旧单槽形态的问题）', () => {
+    const { pin } = useSessionContextWindowStore.getState()
+    pin('conv1', 'p1', 128_000)
+    pin('conv2', 'p9', 64_000)
+    const pinned = useSessionContextWindowStore.getState().pinned
+    expect(pinned[sessionWindowKeyOf('conv1', 'p1')]).toBe(128_000)
+    expect(pinned[sessionWindowKeyOf('conv2', 'p9')]).toBe(64_000)
+  })
+})
+
 // 接线钉：App 必须把按会话解析的窗口值传给 ChatView（welcome 与会话内两个
 // composer 共用这个 prop）。回退成裸 contextLength（默认模型的值）即回归。
 describe('context ring wiring', () => {
@@ -56,7 +103,18 @@ describe('context ring wiring', () => {
     // session-reported overflow re-aim (provider-named window riding the
     // retrying status) clamps it down via Math.min before it reaches the ring.
     expect(app).toMatch(/profileContextLength = resolveContextWindow\(/)
-    expect(app).toMatch(/Math\.min\(profileContextLength, pinnedSessionWindow\.window\)/)
+    expect(app).toMatch(/Math\.min\(profileContextLength, pinnedSessionWindow\)/)
+  })
+
+  // review_20261025 中1/低4：pin 键必须带 profileId（重瞄准属于产生它的那个
+  // 模型，引擎侧换 profile 即丢弃——渲染端键失配即回落 profile 解析值），
+  // 且换 profile 的两个消费点必须显式 clearConv（键失配拦不住 P1→P2→P1
+  // 往返对旧键的重新命中）。
+  it('pin 携带会话当时的模型，换 profile 的消费点显式清 pin', () => {
+    expect(app).toMatch(/pinSessionWindow\(activeConvKey, effectiveProfileId, agentStatus\.contextWindow\)/)
+    expect(app).toMatch(/sessionWindowKeyOf\(activeConvKey, effectiveProfileId\)/)
+    const clears = app.match(/clearSessionWindow\(activeConvKey\)/g) ?? []
+    expect(clears.length).toBe(2) // changeProfile + resetProfile，缺一即回归
   })
 })
 

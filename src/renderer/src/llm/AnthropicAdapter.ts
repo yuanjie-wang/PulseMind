@@ -1,10 +1,11 @@
 import { getHost } from '../agent/host'
-import type { AgentMessage, ToolUseBlock, ContentBlock } from '../types/agent'
+import type { AgentMessage, ToolUseBlock, ContentBlock, ToolResultBlock } from '../types/agent'
 import type { ToolDefinition } from '../tools/types'
 import type { LlmAdapter } from './adapter'
 import type { LlmRequestParams } from './types'
 import type { StreamEventHandlers, StreamParser, LlmUsage } from './stream-types'
 import { createStreamParser } from './stream-utils'
+import { reconcilePlaceholderFor } from './tool-reconcile'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -106,6 +107,21 @@ function createSseDispatcher(handlers: StreamEventHandlers): StreamParser {
 
 // ── Tool Result Reconciliation ────────────────────────────────────────
 
+/** The fabricated tool_result for one unanswered tool_use — status-aware
+ *  (llm/tool-reconcile.ts) and marked `_synthetic` so addToolResult replaces
+ *  it with the real result instead of swallowing it as a duplicate. */
+function fabricatedResultBlock(tu: ToolUseBlock): ToolResultBlock {
+  const placeholder = reconcilePlaceholderFor(tu)
+  return {
+    type: 'tool_result',
+    tool_use_id: tu.id,
+    content: placeholder.content,
+    is_error: placeholder.isError,
+    tool_result_id: crypto.randomUUID(),
+    _synthetic: true
+  }
+}
+
 function reconcileToolResults(messages: AgentMessage[]): void {
   for (let i = 0; i < messages.length - 1; i++) {
     const cur = messages[i]
@@ -142,13 +158,7 @@ function reconcileToolResults(messages: AgentMessage[]): void {
       messages.splice(targetIndex, 0, {
         id: `msg_reconcile_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
         role: 'user',
-        contentBlocks: unresolvedToolUses.map(tu => ({
-          type: 'tool_result' as const,
-          tool_use_id: tu.id,
-          content: 'Tool execution was interrupted or cancelled.',
-          is_error: true,
-          tool_result_id: crypto.randomUUID()
-        })),
+        contentBlocks: unresolvedToolUses.map(fabricatedResultBlock),
         createdAt: new Date().toISOString()
       })
     } else {
@@ -161,13 +171,7 @@ function reconcileToolResults(messages: AgentMessage[]): void {
         })
       }
       for (const tu of unresolvedToolUses) {
-        messages[targetIndex].contentBlocks.push({
-          type: 'tool_result' as const,
-          tool_use_id: tu.id,
-          content: 'Tool execution was interrupted or cancelled.',
-          is_error: true,
-          tool_result_id: crypto.randomUUID()
-        })
+        messages[targetIndex].contentBlocks.push(fabricatedResultBlock(tu))
       }
     }
   }
@@ -252,9 +256,15 @@ export const anthropicAdapter: LlmAdapter = {
     }
 
     const result: Array<Record<string, unknown>> = []
+    // Runtime status per tool_use id — the mapped wire shape drops it, and the
+    // safety net below needs it to tell a live call from a dead one.
+    const statusById = new Map<string, ToolUseBlock['status']>()
     for (const msg of messages) {
       const blocks = msg.contentBlocks
       if (!blocks || blocks.length === 0) continue
+      for (const b of blocks) {
+        if (b.type === 'tool_use') statusById.set(b.id, (b as ToolUseBlock).status)
+      }
       if (blocks.length === 1 && blocks[0].type === 'tool_result' && !blocks[0].content) continue
       const content = contentBlocksToApi(blocks)
       // Skip messages where all blocks were filtered out (e.g. only thinking blocks)
@@ -298,16 +308,19 @@ export const anthropicAdapter: LlmAdapter = {
 
       const unresolved = toolUses.filter(tu => !resolvedIds.has(tu.id))
       if (unresolved.length > 0) {
-        console.warn(`[AnthropicAdapter] Injecting synthetic tool_result for ${unresolved.length} orphaned tool_use(s):`, unresolved.map(tu => tu.id))
-        result.splice(i + 1, 0, {
-          role: 'user',
-          content: unresolved.map(tu => ({
+      console.warn(`[AnthropicAdapter] Injecting synthetic tool_result for ${unresolved.length} orphaned tool_use(s):`, unresolved.map(tu => tu.id))
+      result.splice(i + 1, 0, {
+        role: 'user',
+        content: unresolved.map(tu => {
+          const placeholder = reconcilePlaceholderFor({ status: statusById.get(tu.id) })
+          return {
             type: 'tool_result',
             tool_use_id: tu.id,
-            content: 'Tool execution was interrupted or cancelled.',
-            is_error: true
-          }))
+            content: placeholder.content,
+            ...(placeholder.isError ? { is_error: true } : {})
+          }
         })
+      })
       }
     }
 

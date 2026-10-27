@@ -38,6 +38,13 @@ export interface ToolResultBlock {
   imageData?: string
   /** Pointer to tool_results table (UUID); set when content is stored separately. */
   tool_result_id?: string
+  /** Reconcile placeholder marker (llm/tool-reconcile.ts): the block was
+   *  fabricated because a request had to go out while the call was still
+   *  unanswered. A real result arriving later REPLACES a _synthetic block
+   *  (addToolResult) instead of being swallowed by the duplicate guard.
+   *  Never serialized to the wire — the adapters map tool_result blocks
+   *  field-explicitly. */
+  _synthetic?: boolean
 }
 
 export interface ThinkingBlock {

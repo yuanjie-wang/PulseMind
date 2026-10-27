@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, createWriteStream, openSync, readSync, statSync, closeSync, type WriteStream } from 'node:fs'
 import { join } from 'node:path'
 import { ensureLaunchHooks, getHookEnv } from '../hooks-runner'
-import { currentSessionSandbox } from '../sandbox/session-context'
+import { currentSessionSandbox, notifySessionBackgroundExit } from '../sandbox/session-context'
 import { isSubpath } from '../../shared/sandbox/path-jail'
 import { auditStore } from '../storage/audit-store'
 import { DATA_DIR } from '../storage/index'
@@ -505,6 +505,7 @@ export async function svcExecuteBackground(command: string, cwd?: string): Promi
     log.writeExitLine(null)
     processes.delete(processId)
     if (pid > 0) backgroundByPid.delete(pid)
+    if (sandboxCtx) notifySessionBackgroundExit(sandboxCtx.sessionId, pid, null)
   })
   child.on('exit', (code) => {
     log.write(outDecoder.flush())
@@ -512,6 +513,13 @@ export async function svcExecuteBackground(command: string, cwd?: string): Promi
     log.writeExitLine(code)
     processes.delete(processId)
     if (pid > 0) backgroundByPid.delete(pid)
+    // 唤醒（2026-10-28）：the old contract made exec_logs the death-discovery
+    // channel and the MODEL had to remember to poll — a finished build sat
+    // invisible until the next unrelated turn. The exit moment is the one
+    // point main knows (pid, code, owning session); the engine renders the
+    // undelivered notices into its next request's state block (one-shot,
+    // cache-tail-safe) so the model sees the completion without remembering.
+    if (sandboxCtx) notifySessionBackgroundExit(sandboxCtx.sessionId, pid, code)
   })
 
   return { pid, processId }

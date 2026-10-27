@@ -36,7 +36,7 @@ import { PlanScheduler } from './engine/plan-scheduler'
 import { StreamRunner } from './engine/stream-runner'
 import { TurnClock, isWaitingOnUserStatus } from './engine/turn-clock'
 import { releaseQueuedSubAgents, subAgentBudgetKey } from './engine/subagent-limiter'
-import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, NANO_TIER3_NAMES, NANO_PROTECTION_WINDOW, type CompactTracking } from './engine/context-compactor'
+import { ContextCompactor, POST_TURN_COMPACT_USED_RATIO, evaluateRefillBreaker, makeCompactTracking, REFILL_TOOL_TURN_THRESHOLD, NANO_TIER3_NAMES, NANO_PROTECTION_WINDOW, dropStaleThinkingOnlyTurns, type CompactTracking } from './engine/context-compactor'
 import { MAX_TOOL_RESULT_TOKENS, MAX_USER_INPUT_CHARS } from './engine/engine-constants'
 import { estimateTextTokens as estimateTokens, contextTokensOf } from './engine/context-estimate'
 import { applyToolResultBudget } from './engine/result-ingestion'
@@ -45,6 +45,7 @@ import type { CompactionEvent } from '../../../shared/agent-protocol/payloads'
 import type { EngineCore } from './engine/engine-core'
 import { stripToolResultImages } from './strip-tool-results'
 import { regroupToolResults } from '../llm/regroup-tool-results'
+import { elideTodoWritePairs } from '../llm/elide-todo-pairs'
 
 // ── Tool-result guardrail ─────────────────────────────────────────────
 // Every tool result funnels through addToolResult; executors do NOT truncate
@@ -174,9 +175,12 @@ export interface AgentEngineOptions {
    *  v2 R2): the toolset drops SUB_AGENT_DENY_TOOLS (create_plan /
    *  advance_plan / spawn_agent) — a sub-agent plans nothing, settles nothing
    *  and delegates nothing; its only growth channel is create_sub_plan (when
-   *  `spawnPlanSplit` is also set). Execution keeps matching early-return
-   *  guards: collection hides the schema, the guard catches an out-of-schema
-   *  hallucinated call (dispatch is by NAME). */
+   *  `spawnPlanSplit` is also set). todo_write is deliberately NOT denied
+   *  (2026-10-26, user: 允许子代理用todo_write)：the sub-agent keeps its own
+   *  direct list in its own PlanManager, invisible to the parent's plan.
+   *  Execution keeps matching early-return guards: collection hides the
+   *  schema, the guard catches an out-of-schema hallucinated call (dispatch
+   *  is by NAME). */
   spawnedToolset?: boolean
   /** Set for spawns of SPLITTABLE plan nodes (v2 R6/R7): arms
    *  create_sub_plan in the toolset and carries the parent-plan bridge
@@ -504,6 +508,15 @@ export class AgentEngine implements EngineCore {
    *  above the post-turn ratio the natural thresholds fire on their own. */
   private manualCompactActive = false
   private postTurnPrewarmInFlight = false
+
+  // ── Background-exit wake-up (2026-10-28 后台任务唤醒) ────────────────
+
+  /** Undelivered background-exit notices. terminal.ts discovers a background
+   *  child's death on the main side and pushes (pid, code) here through
+   *  session-manager's listener; the NEXT request's state block renders them
+   *  once and drains. A request without a state block leaves the queue
+   *  untouched — exec_logs remains the discovery channel either way. */
+  private pendingBackgroundNotices: Array<{ pid: number; code: number | null }> = []
 
   /** Explicit /compact [指示词]: force-compact from the next request on, and
    *  prewarm the summary now (one LLM call at idle instead of blocking the
@@ -1187,6 +1200,15 @@ export class AgentEngine implements EngineCore {
     }
   }
 
+  /** Main-side background exit → session-manager listener lands here. The
+   *  engine may be mid-turn or idle; either way the notice waits for the next
+   *  prepareLoopRequest. Capped so a burst of dying processes can't grow the
+   *  queue unbounded while the session sits parked. */
+  enqueueBackgroundNotice(pid: number, code: number | null): void {
+    this.pendingBackgroundNotices.push({ pid, code })
+    if (this.pendingBackgroundNotices.length > 20) this.pendingBackgroundNotices.shift()
+  }
+
   /**
    * Build the loop's LLM request: system prompt, tool schemas, compaction
    * pipeline and hook processing. Returns transport-ready request parts.
@@ -1261,7 +1283,18 @@ export class AgentEngine implements EngineCore {
     // providers require each tool_result next to its own tool_use message.
     // Identity on legal histories, so sessions that never chain are
     // byte-identical and the compaction pipeline below sees a legal shape.
-    const apiMessages = regroupToolResults(this.messages.map(stripToolResultImages))
+    // Elide settled todo_write pairs first (2026-10-25): the list's
+    // authoritative state rides the <session-state> block, so an old
+    // todo_write pair in history is a pure echo — the API copy keeps only the
+    // most recent call (its result carries the delta/cautions exactly once).
+    // Store/mirrors untouched; unpaired calls survive for the adapters'
+    // reconcile; elided pairs never enter the dropped-region arithmetic below.
+    // Same layer, same reason (2026-10-25): an old thinking-only assistant turn
+    // (a max_tokens-truncated reasoning turn) leaves nothing to ship once its
+    // turn is over — see dropStaleThinkingOnlyTurns. Block-level stripping of
+    // thinking on mixed messages is the compactor's (stripStaleThinking, beside
+    // nano below), because the prewarm simulation must see it too.
+    const apiMessages = regroupToolResults(elideTodoWritePairs(dropStaleThinkingOnlyTurns(this.messages.map(stripToolResultImages))))
 
     // ── Compaction pipeline (operates on API copy; this.messages untouched) ──
     // Fixed overhead the char heuristic never sees: system prompt + tool schemas.
@@ -1288,13 +1321,16 @@ export class AgentEngine implements EngineCore {
       }
     }
     const nanoCompacted = this.compactor.nanoCompact(pipelineMessages)
+    // Stale-thinking strip beside nano (THINKING_STRIP_USED_RATIO): old turns'
+    // reasoning_content off the wire. Runs here AND in prewarmBody.
+    const thinkingStripped = this.compactor.stripStaleThinking(nanoCompacted, opts.contextLength || 128000, fixedOverhead)
     // Two force sources, two scopes (keep them separate — see the field
     // comments): manualCompactActive (/compact) sticks until reset and drives
     // BOTH layers; pendingToolCompactForce (context_compact) is one-shot for
     // THIS copy and bypasses ONLY light — hard's passive 0.9× trigger stays
     // armed against the model's own misjudgement (D3 two-powers split).
     const lightForce = this.manualCompactActive || this.pendingToolCompactForce
-    const lightCompacted = this.compactor.lightCompact(nanoCompacted, opts.contextLength || 128000, fixedOverhead, lightForce)
+    const lightCompacted = this.compactor.lightCompact(thinkingStripped, opts.contextLength || 128000, fixedOverhead, lightForce)
     const truncatedMessages = this.compactor.hardTruncate(lightCompacted, opts.contextLength || 128000, fixedOverhead, this.manualCompactActive)
     // The tool force armed the drop this copy just materialized — consume it
     // here, after the build, so exactly one request runs slimmed.
@@ -1302,7 +1338,7 @@ export class AgentEngine implements EngineCore {
     // After truncation, inject an LLM summary of the dropped region into the API
     // copy so the model keeps the gist. Synthetic message never leaves this scope.
     // The summarizer source is the PRE-PIPELINE copy (before emergency/nano):
-    // nanoCompact has already replaced old tool_results with [tool_result_id:]
+    // nanoCompact has already replaced old tool_results with ⟨archived:⟩
     // placeholders, so summarizing lightCompacted would hide what the tools
     // actually returned (incl. failures) and let the summary fabricate outcomes;
     // and the dropped-region arithmetic inside (original.length - truncated.length)
@@ -1318,7 +1354,10 @@ export class AgentEngine implements EngineCore {
     const compactStrategies: string[] = []
     if (emergencyChanged) compactStrategies.push('emergency')
     if (nanoCompacted.some((m, i) => m !== pipelineMessages[i])) compactStrategies.push('nano')
-    if (lightCompacted.length !== nanoCompacted.length) compactStrategies.push('light')
+    // The strip rebuilds the same objects every build, so reference identity
+    // would name it on every request — only a NEWLY stripped turn counts.
+    if (this.compactor.lastThinkingStripNew > 0) compactStrategies.push('thinking')
+    if (lightCompacted.length !== thinkingStripped.length) compactStrategies.push('light')
     if (truncatedMessages.length !== lightCompacted.length) compactStrategies.push('hard')
     // The reminder's own synthetic message would read as a summary landed —
     // exclude it so 'summary' keeps meaning "a summary message is in the copy".
@@ -1397,6 +1436,16 @@ export class AgentEngine implements EngineCore {
       stateBlockText = stateBlockText.slice(0, at)
         + buildContextWindowSection({ tokens: contextTokensOf(finalMessages, fixedOverhead), window: this.opts.contextLength || 128_000 })
         + stateBlockText.slice(at + CONTEXT_GAUGE_SENTINEL.length)
+    }
+    // Background-exit notices (2026-10-28): render ONCE, into the final
+    // message of this request — the state block is per-turn, never persisted,
+    // so the cache only re-bills its own tail block. A round with no state
+    // block holds the queue for the next one; exec_logs stays the fallback.
+    if (this.pendingBackgroundNotices.length > 0 && stateBlockText !== null) {
+      const lines = this.pendingBackgroundNotices
+        .map((n) => `- background process pid=${n.pid} exited (code=${n.code ?? 'killed/failed to spawn'}) — fetch its output with exec_logs before relying on it`)
+      stateBlockText += `\n## Background\n${lines.join('\n')}`
+      this.pendingBackgroundNotices = []
     }
     const stateBlock: AgentMessage | null = stateBlockText !== null
       ? {
@@ -1651,6 +1700,7 @@ export class AgentEngine implements EngineCore {
     this.pendingToolCompactForce = false
     this.toolCompactUsedThisTurn = false
     this.compactor.clearMandatedToolResultIds()
+    this.compactor.clearStrippedThinkingIds()
     this.notify()
   }
 
@@ -1744,19 +1794,29 @@ export class AgentEngine implements EngineCore {
     }
 
     // Guard against duplicate
+    let syntheticSlot: { msg: AgentMessage; idx: number } | null = null
     for (const msg of this.messages) {
       if (msg.role !== 'user') continue
-      if (msg.contentBlocks.some(b => b.type === 'tool_result' && b.tool_use_id === toolUseId)) {
-        console.warn(`[AgentEngine] Duplicate tool_result skipped for ${toolUseId}`)
-        // A duplicate of an ALREADY-settled result must not re-drive the loop:
-        // the first delivery already continued it, and a second continue issued
-        // mid-stream races the running round on this engine's shared stream
-        // state — the doubled garbled assistant message (ask_user chip answered
-        // twice, user report 2026-09-20). Only a duplicate that was STILL
-        // pending — the batch is genuinely waiting on it — may close the loop.
-        if (this.pendingToolIds.delete(toolUseId) && this.pendingToolIds.size === 0 && !this.isAutoExecuting) this.continueLoop()
-        return
+      const idx = msg.contentBlocks.findIndex(b => b.type === 'tool_result' && b.tool_use_id === toolUseId)
+      if (idx === -1) continue
+      if ((msg.contentBlocks[idx] as ToolResultBlock)._synthetic === true) {
+        // A reconcile placeholder (llm/tool-reconcile.ts) for a call that was
+        // STILL RUNNING when a request had to go out. The real result replaces
+        // it in place — the model eventually reads the true envelope instead of
+        // an eternal "still running" — and then flows through the ordinary
+        // delivery tail below, exactly like a first result.
+        syntheticSlot = { msg, idx }
+        break
       }
+      console.warn(`[AgentEngine] Duplicate tool_result skipped for ${toolUseId}`)
+      // A duplicate of an ALREADY-settled result must not re-drive the loop:
+      // the first delivery already continued it, and a second continue issued
+      // mid-stream races the running round on this engine's shared stream
+      // state — the doubled garbled assistant message (ask_user chip answered
+      // twice, user report 2026-09-20). Only a duplicate that was STILL
+      // pending — the batch is genuinely waiting on it — may close the loop.
+      if (this.pendingToolIds.delete(toolUseId) && this.pendingToolIds.size === 0 && !this.isAutoExecuting) this.continueLoop()
+      return
     }
 
     // Auto-mark tool_use as completed — ensures React.memo re-renders ExecutionSegment
@@ -1801,7 +1861,15 @@ export class AgentEngine implements EngineCore {
       ...(imageData ? { imageData } as { imageData: string } : {})
     }
 
-    if (isToolResultCollector) {
+    if (syntheticSlot) {
+      // Replace the placeholder in place, rebuilding every touched container
+      // (the mirror identity contract — an in-place block edit never re-signs
+      // the message, patchToolUse's lesson).
+      const { msg: owner, idx } = syntheticSlot
+      const blocks = [...owner.contentBlocks]
+      blocks[idx] = resultBlock
+      this.messages = msgs.map(m => m === owner ? { ...owner, contentBlocks: blocks } : m)
+    } else if (isToolResultCollector) {
       (lastMsg as AgentMessage).contentBlocks = [...lastMsg.contentBlocks, resultBlock]
       this.messages = [...msgs]
     } else {

@@ -19,8 +19,14 @@ const SUMMARY_RESULT_CAP = 400
 // each and ZCode's inline re-injection (5 files / 50K tokens) spends window.
 const DROPPED_READ_REMINDER_CAP = 10
 // nano's placeholder prefixes — a result already carrying one IS its own
-// retrieval pointer, so reminding about it would be pure duplication.
-const TOOL_RESULT_PLACEHOLDER_PREFIXES = ['[tool_result_id:', '[Tool Result:']
+// retrieval pointer, so reminding about it would be pure duplication. The
+// ⟨archived: …⟩ glyph (2026-10-26) is deliberately OUTSIDE the [tool_result_…]
+// family: the old `[tool_result_id:` prefix sat one character family away from
+// the `[tool_result_error]` failure marker, and a model reading a batch of
+// placeholders misread them as eight failed calls (conv_20261026154702). The
+// two bracket forms are kept as LEGACY prefixes so a placeholder minted by an
+// older build still reads as archived after an upgrade mid-session.
+const TOOL_RESULT_PLACEHOLDER_PREFIXES = ['⟨archived:', '[tool_result_id:', '[Tool Result:']
 // Frontier-advance accrual line for the history-summary cache: a frontier that
 // moved forward re-summarizes only once the pending slice behind the cached
 // frontier is worth an LLM call. A fit-based lightCompact advances the frontier
@@ -60,6 +66,18 @@ const USER_REPLAY_BUDGET_TOKENS = 10_000
 // history summary at turn end, so the expensive LLM summary runs while the
 // engine is idle instead of blocking the next turn's first request.
 export const POST_TURN_COMPACT_USED_RATIO = 0.75
+// Stale-thinking strip (2026-10-25, conv_20261025172138 「飞行棋」 88% 复盘): the
+// OpenAI adapter maps EVERY thinking block in history back onto the wire as
+// reasoning_content and the gateway bills it as input — one 18.6K-token
+// reasoning turn re-entered the next request as +19.7K prompt tokens and
+// rode every request of the conversation from then on. Both providers' own
+// contracts only need the CURRENT turn's reasoning (DeepSeek's thinking-mode
+// tool loop; Anthropic's signed blocks inside the live loop), so thinking
+// behind the last text user message is dead weight. Gated on usage: below the
+// line a short conversation never pays the once-per-turn prefix re-bill the
+// strip costs at a turn boundary (the previous turn's residual content
+// changes bytes, so the cache breaks there once, then stabilizes).
+export const THINKING_STRIP_USED_RATIO = 0.5
 
 // ── Refill breaker (PLAN-context-zcode-benchmarks P1) ───────────────────
 // The fit-based layers (light/hard) drop on the pass that crosses the line;
@@ -101,7 +119,7 @@ export function makeCompactTracking(): CompactTracking {
 // tail prices whole (yesterday's behavior — nano compresses nothing below
 // the quota anyway) and only a marathon tail compresses. The approximation
 // errs toward OVER-reading the shipped copy, never under it.
-const NANO_PLACEHOLDER_COST = 45 // '[tool_result_id: <uuid>]' ≈ 45 latin chars
+const NANO_PLACEHOLDER_COST = 45 // '⟨archived: <uuid>⟩' ≈ 45 latin chars + the two multibyte glyphs
 /** nano tier quotas, shared by nanoCompact and the ring-side projection
  *  (estimateAfterNanoTokens) — ONE constant: a drifted copy in the projection
  *  would silently misprice every ring reading. */
@@ -176,8 +194,8 @@ export function estimateAfterNanoTokens(messages: AgentMessage[]): number {
 // makes must not be accepted here and silently skipped there (or vice versa).
 const NANO_TIER_MAP: Record<string, number> = {
   exec: 1, search: 1, find: 1, list_dir: 1,
-  read: 2, knowledge_read: 2, knowledge_search: 2, experience_read: 2, experience_save: 2,
-  memory_search: 2, memory_save: 2, conversation_search: 2, tool_result_search: 2,
+  read: 2, experience_read: 2, experience_save: 2,
+  recall: 2, memory_save: 2, tool_result_search: 2,
   spawn_agent: 2, edit: 2, write: 2, install: 2, pick_skill: 2, pick_tool: 2, webfetch: 2
 }
 /** Never compressed — not by the quota walk, not even by an explicit
@@ -462,6 +480,54 @@ export function buildSummaryCoverageHeader(dropped: AgentMessage[], covered: Set
   const end = formatStamp(msgs[msgs.length - 1].createdAt)
   const span = start === end ? start : `${start} – ${end}`
   return `〔覆盖〕${span} · 已压缩 ${msgs.length} 条消息（用户发言 ${userTurns} 条）`
+}
+
+/** The turn anchor every boundary rule hangs off: the newest user message
+ *  that carries text. Tool-result collector messages (role user, tool_result
+ *  blocks only) do not count, so a mid-turn ask_user answer never ends the
+ *  turn — the same reading lightCompact's Protection 1 uses. −1 when the
+ *  history holds no such message (a routine's tool stream): callers then strip
+ *  nothing, since without an anchor every block could be the live loop's. */
+export function lastTextUserMessageIndex(messages: AgentMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === 'user' && m.contentBlocks.some((b) => b.type === 'text')) return i
+  }
+  return -1
+}
+
+function isThinkingBlock(b: ContentBlock): boolean {
+  return b.type === 'thinking' || b.type === 'redacted_thinking'
+}
+
+function thinkingTextOf(b: ContentBlock): string {
+  return b.type === 'thinking' ? (b as { thinking: string }).thinking : (b as { data?: string }).data ?? ''
+}
+
+/** apiMessages-layer elision, sibling of elideTodoWritePairs: an assistant
+ *  message behind the turn anchor carrying ONLY thinking — the shape a
+ *  max_tokens-truncated reasoning turn leaves (49,152 reasoning tokens, zero
+ *  body) — has nothing left to ship once its turn is over, and stripped of its
+ *  thinking it would be an empty assistant message the gateway rejects. It is
+ *  removed here, before the copy is fixed, so it never enters the dropped-
+ *  region summary arithmetic (there is nothing in it to summarize).
+ *  Unconditional: no usage level justifies shipping it. The current turn's own
+ *  thinking-only message (the thinking-only retry's shape) sits behind no
+ *  anchor and stays. Identity-preserving when nothing is dropped. */
+export function dropStaleThinkingOnlyTurns(messages: AgentMessage[]): AgentMessage[] {
+  const anchor = lastTextUserMessageIndex(messages)
+  if (anchor < 0) return messages
+  let changed = false
+  const kept: AgentMessage[] = []
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    if (i < anchor && m.role === 'assistant' && m.contentBlocks.length > 0 && m.contentBlocks.every(isThinkingBlock)) {
+      changed = true
+      continue
+    }
+    kept.push(m)
+  }
+  return changed ? kept : messages
 }
 
 
@@ -1030,7 +1096,7 @@ export class ContextCompactor {
         const mandated = this.mandatedCompressIds.has(block.tool_use_id)
         if (!mandated && this._compressedToolUseIds.has(block.tool_use_id)) return block
         const tr = block as ToolResultBlock
-        if (tr.content.startsWith('[tool_result_id:') || tr.content.startsWith('[Tool Result:')) return block
+        if (TOOL_RESULT_PLACEHOLDER_PREFIXES.some((p) => tr.content.startsWith(p))) return block
         if (!mandated) {
           const tier = TIER_MAP[name] ?? 2
           const target = compressTargets[tier]
@@ -1041,10 +1107,86 @@ export class ContextCompactor {
         if (!tr.tool_result_id) tr.tool_result_id = crypto.randomUUID()
         modified = true
         if (!mandated) this._compressedToolUseIds.add(tr.tool_use_id)
-        return { ...tr, content: `[tool_result_id: ${tr.tool_result_id}]` }
+        return { ...tr, content: `⟨archived: ${tr.tool_result_id}⟩` }
       })
       return modified ? { ...msg, contentBlocks: newBlocks } : msg
     })
+  }
+
+  /** Message ids whose stale thinking the REQUEST path has already stripped.
+   *  Reporting state only — the strip itself is a pure function of
+   *  (messages, anchor) and never consults this set. It exists so the
+   *  compaction event names 'thinking' only on the request that strips
+   *  something NEW (a turn just closed), not on every request: the strip
+   *  rebuilds the same objects each build, so reference identity (nano's
+   *  footprint) would read as a fresh compaction every time. The prewarm
+   *  simulation passes record=false — it must not consume the request path's
+   *  "new" signal. */
+  private strippedThinkingIds = new Set<string>()
+  /** Messages the last recording stripStaleThinking pass stripped for the
+   *  first time. */
+  lastThinkingStripNew = 0
+
+  /** Conversation reset — a new history has no stripped ids to remember. */
+  clearStrippedThinkingIds(): void {
+    this.strippedThinkingIds.clear()
+    this.lastThinkingStripNew = 0
+  }
+
+  /** Strip thinking off assistant messages behind the turn anchor (see
+   *  THINKING_STRIP_USED_RATIO). Runs beside nano at BOTH pipeline sites —
+   *  prepareLoopRequest and prewarmBody — so the prewarm simulation prices the
+   *  copy the next request will actually build. Deliberately NOT nano's
+   *  one-shot compress → skip → re-inflate shape: the same block is stripped on
+   *  every build, because a bouncing block would flip the cache prefix every
+   *  request. Two bookkeeping corrections ride along, both in heuristic units:
+   *  `outputTokens` is cleared on a stripped message (that report priced the
+   *  thinking now gone — estimateMessagesTokens would otherwise keep billing
+   *  the message at the report alone, the 模块11 underprice rule inverted),
+   *  and the report anchor's `inputTokens` loses the weight of every block
+   *  stripped BEFORE it (its prompt held them; left alone the anchor over-reads
+   *  by exactly that weight on the turn's first request, and an over-read fires
+   *  light into dropping cycles the next summary pass may absorb for good). The
+   *  CJK-heavy heuristic over-prices DeepSeek's thinking by ~30%, so the
+   *  corrected anchor UNDER-reads for that one request until the next real
+   *  report — the safer error, and the max-guard's full heuristic backstops it.
+   *  Untouched messages keep their identity. */
+  stripStaleThinking(messages: AgentMessage[], contextLength: number, fixedOverhead = 0, record = true): AgentMessage[] {
+    if (record) this.lastThinkingStripNew = 0
+    if (!contextLength) return messages
+    if (this.contextTokens(messages, fixedOverhead) < contextLength * THINKING_STRIP_USED_RATIO) return messages
+    const anchor = lastTextUserMessageIndex(messages)
+    if (anchor < 0) return messages
+
+    let reportIdx = -1
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].inputTokens) { reportIdx = i; break }
+    }
+
+    let strippedBeforeReport = 0
+    let changed = false
+    let fresh = 0
+    const out = messages.map((m, i) => {
+      if (i >= anchor || m.role !== 'assistant' || !m.contentBlocks.some(isThinkingBlock)) return m
+      changed = true
+      if (record && !this.strippedThinkingIds.has(m.id)) {
+        this.strippedThinkingIds.add(m.id)
+        fresh++
+      }
+      if (i < reportIdx) {
+        for (const b of m.contentBlocks) {
+          if (isThinkingBlock(b)) strippedBeforeReport += estimateTextTokens(thinkingTextOf(b))
+        }
+      }
+      return { ...m, contentBlocks: m.contentBlocks.filter((b) => !isThinkingBlock(b)), outputTokens: undefined }
+    })
+    if (!changed) return messages
+    if (record) this.lastThinkingStripNew = fresh
+    if (reportIdx >= 0 && strippedBeforeReport > 0) {
+      const r = out[reportIdx]
+      out[reportIdx] = { ...r, inputTokens: Math.max(1, (r.inputTokens ?? 0) - strippedBeforeReport) }
+    }
+    return out
   }
 
   /** Heuristic token contribution of ONE message — the same rule
@@ -1270,12 +1412,15 @@ export class ContextCompactor {
       // overhead-sensitive, so the simulation prices the last real request's
       // fixed overhead, not 0.
       const overhead = this.lastRequestOverhead
-      const light = this.lightCompact(nano, contextLength, overhead, source === 'manual' || source === 'tool')
+      // record=false: the simulation must not consume the request path's
+      // "newly stripped" signal (see strippedThinkingIds).
+      const stripped = this.stripStaleThinking(nano, contextLength, overhead, false)
+      const light = this.lightCompact(stripped, contextLength, overhead, source === 'manual' || source === 'tool')
       const truncated = this.hardTruncate(light, contextLength, overhead, hardForce)
       // Light's cycle drops count too — they are the main dropper once the
       // transcript outgrows the window, and the summary exists to cover
       // everything the copy loses, not just hard's share.
-      const droppedCount = nano.length - truncated.length
+      const droppedCount = stripped.length - truncated.length
       if (droppedCount <= 0) return null
       const summaryBefore = this.historySummary ? { ...this.historySummary } : null
       marksAtSuspend = new Set(this._compressedToolUseIds)
@@ -1287,7 +1432,8 @@ export class ContextCompactor {
         summary.text !== summaryBefore.text
       const strategies: string[] = []
       if (nano.some((m, i) => m !== original[i])) strategies.push('nano')
-      if (light.length !== nano.length) strategies.push('light')
+      if (stripped.some((m, i) => m !== nano[i])) strategies.push('thinking')
+      if (light.length !== stripped.length) strategies.push('light')
       strategies.push('hard')
       if (summary) strategies.push('summary')
       console.log(

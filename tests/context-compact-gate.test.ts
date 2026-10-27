@@ -113,21 +113,25 @@ function makeEngine(_host: StreamHost) {
   return engine
 }
 
-/** Long tool history past the 0.55 worthwhileness line: assistant (thinking +
- *  tool_use) → user collector, repeated. The thinking blocks are the weight
+/** Long tool history past the 0.55 worthwhileness line: assistant (narration
+ *  text + tool_use) → user collector, repeated. The text blocks are the weight
  *  nano CANNOT eat (it only rewrites tool_results) — light deletes whole
  *  cycles including them, so a tool-sourced compact has something real to
- *  drop even after the nano pass collapses the old results. */
+ *  drop even after the nano pass collapses the old results. Deliberately NOT
+ *  thinking blocks (the fixture's original shape): since 2026-10-25 the
+ *  stale-thinking strip removes old turns' thinking before light runs, and a
+ *  history whose only weight is stale thinking legitimately has nothing left
+ *  for context_compact to archive — the tool's refusal there is correct. */
 function bigToolHistory(rounds = 40, heavyChars = 2_000): AgentMessage[] {
   const msgs: AgentMessage[] = [
     { id: 'u0', role: 'user', contentBlocks: [{ type: 'text', text: '开始校对合同译本' }], createdAt: '2026-10-21T08:00:00.000Z' },
   ]
-  const thinking = '逐条核对原文与译文的一致性：术语、数字、条款引用、标点。'.repeat(Math.ceil(heavyChars / 33))
+  const narration = '逐条核对原文与译文的一致性：术语、数字、条款引用、标点。'.repeat(Math.ceil(heavyChars / 33))
   for (let i = 0; i < rounds; i++) {
     msgs.push({
       id: `a${i}`, role: 'assistant', createdAt: new Date(Date.parse('2026-10-21T08:00:00.000Z') + i * 60_000).toISOString(),
       contentBlocks: [
-        { type: 'thinking', thinking: `${thinking}（第${i}轮）`, signature: undefined },
+        { type: 'text', text: `${narration}（第${i}轮）` },
         { type: 'tool_use', id: `tu${i}`, name: 'exec', input: { command: `grep -c "第${i}条" contract.txt` }, status: 'completed' },
       ] as never,
     })
