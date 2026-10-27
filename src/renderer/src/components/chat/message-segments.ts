@@ -24,7 +24,10 @@ export function stripMessageIdSuffix(id: string): string {
 
 export function getSegmentKey(seg: Segment): string {
   if (seg.type === 'single') return 's-' + seg.msg.id
-  if (seg.type === 'execution') return 'e-' + (seg.msgs[0]?.id ? stripMessageIdSuffix(seg.msgs[0].id) : 'empty')
+  // Raw first-msg id, NOT stripped: one message can contribute TWO exec slices
+  // (__think before its text, __exec after) landing in different segments —
+  // stripping would key both 'e-<id>' and React would see duplicate keys.
+  if (seg.type === 'execution') return 'e-' + (seg.msgs[0]?.id ?? 'empty')
   return 'streaming'
 }
 
@@ -33,6 +36,26 @@ export function getSegmentAnchorId(seg: Segment | undefined): string | undefined
   if (seg.type === 'single') return stripMessageIdSuffix(seg.msg.id)
   if (seg.type === 'execution') return seg.msgs[0]?.id ? stripMessageIdSuffix(seg.msgs[0].id) : undefined
   return undefined
+}
+
+/** Index of the last text block that already carries text, -1 when none. The
+ *  streaming caret rides that block (SegmentView's streaming tail): it is the
+ *  end of what the user is reading, and a later block still empty has no text
+ *  token for x-markdown to put a tail after anyway. */
+export function lastLiveTextIndex(blocks: readonly ContentBlock[]): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i]
+    if (b.type === 'text' && b.text.length > 0) return i
+  }
+  return -1
+}
+
+/** A live text tail is on screen — the streaming segment has text, so its
+ *  in-text caret is drawn. The transcript's bottom StreamingCursor yields to
+ *  it (hosts pass `show={isRequesting && !hasLiveTextTail(segments)}`): one
+ *  caret moves from the column's foot into the sentence, never two cursors. */
+export function hasLiveTextTail(segs: readonly Segment[]): boolean {
+  return segs.some((s) => s.type === 'streaming' && lastLiveTextIndex(s.blocks) >= 0)
 }
 
 /** Same segment, and unchanged content: reused by the structural-sharing cache
@@ -53,6 +76,11 @@ export function matchSegment(a: Segment, b: Segment): boolean {
   }
   if (a.type === 'execution') {
     const ab = b as typeof a
+    // Live synthetic slices mutate in place every streamed tick — a matching id
+    // set must never reuse the cached segment, or the group header freezes one
+    // tick behind (the in-place-mutation lesson from the mirror fold).
+    const live = (m: AgentMessage) => m.id === 'streaming-think' || m.id === 'streaming-exec'
+    if (a.msgs.some(live) || ab.msgs.some(live)) return false
     if (a.msgs.length !== ab.msgs.length) return false
     return a.msgs.every((m, i) => m.id === ab.msgs[i].id)
   }
@@ -70,6 +98,18 @@ export function groupMessages(messages: AgentMessage[]): Segment[] {
       pendingExec = null
     }
   }
+
+  // Forward-stable grouping (user ruling 2026-10-25, ninth of the day —
+  // replacing the round-8 retro-folding): the user diagnosed the old design
+  // exactly — thinking was held in the pending buffer and its fate (fold into
+  // the text bubble / fuse with tools / stand alone) was decided by what
+  // arrived AFTER it, so committed structure kept rewriting itself (a visible
+  // 深度思考 group dissolved the moment its text landed). NO MORE LOOK-AHEAD:
+  // thinking commits into the exec group the moment it exists; text flushes
+  // that group as-is (its own 已完成 · 深度思考N次 segment — a completed step,
+  // not an orphan); later text/tools are their own stable segments. Groups
+  // still GROW in place while pending (consecutive thinking rounds count up
+  // 1次→2次 before any flush) but never dissolve after formation.
 
   while (i < messages.length) {
     const msg = messages[i]
@@ -101,7 +141,22 @@ export function groupMessages(messages: AgentMessage[]): Segment[] {
       const hasAskUser = toolBlocks.some((b) => b.name === 'ask_user')
       const nonAskUserTools = toolBlocks.filter((b) => b.name !== 'ask_user')
 
-      // Text is a breakpoint: flush pending execution, emit text as standalone
+      // Thinking is execution-family (user ruling 2026-10-25: 把 thinking 当作
+      // execution 合并入 segment): it lives in the collapsible exec grouping,
+      // never the text bubble and never a bare standalone strip. Models emit
+      // reasoning FIRST, and this persona narrates before acting — so thinking
+      // is its own slice that the text breakpoint flushes, keeping the reading
+      // order [▸Thinking] [narration] [▸tools] instead of burying the
+      // narration under the tools it introduced. Adjacent rounds with no text
+      // between them share one group.
+      if (thinkingBlocks.length > 0) {
+        if (!pendingExec) pendingExec = []
+        pendingExec.push({ ...msg, id: msg.id + '__think', contentBlocks: thinkingBlocks })
+      }
+
+      // Text is a breakpoint: flush pending execution, emit text as standalone.
+      // The flushed group stands as-is — no folding into the bubble, no
+      // retroactive dissolution (see the forward-stable note above).
       if (textBlocks.length > 0) {
         flushExec()
         segments.push({
@@ -112,9 +167,7 @@ export function groupMessages(messages: AgentMessage[]): Segment[] {
 
       // Non-ask_user tools → add to current execution segment
       if (nonAskUserTools.length > 0) {
-        // Thinking stays with tools only when text was NOT emitted already
-        const extra = textBlocks.length === 0 ? thinkingBlocks : []
-        const toolMsg = { ...msg, id: msg.id + '__exec', contentBlocks: [...extra, ...nonAskUserTools] }
+        const toolMsg = { ...msg, id: msg.id + '__exec', contentBlocks: nonAskUserTools }
         if (!pendingExec) pendingExec = []
         pendingExec.push(toolMsg)
       }
@@ -126,7 +179,7 @@ export function groupMessages(messages: AgentMessage[]): Segment[] {
         segments.push({ type: 'single', msg: { ...msg, id: msg.id + '__ask', contentBlocks: askUserBlocks } })
       }
 
-      // No text, no tools, no ask_user → nothing visible (thinking-only / empty), skip
+      // Truly empty (no thinking, no tools, no text) → skip
       i++
       continue
     }
@@ -176,9 +229,37 @@ export function buildSegments(input: BuildSegmentsInput): Segment[] {
   if (!isStreaming) return segs
 
   if (streamingBlocks.length > 0) {
+    const thinkingBlocks = streamingBlocks.filter((b) => b.type === 'thinking' || b.type === 'redacted_thinking')
     const textBlocks = streamingBlocks.filter((b) => b.type === 'text')
     const toolBlocks = streamingBlocks.filter((b) => b.type === 'tool_use')
 
+    // Streaming thinking JOINS the open execution segment (user spec
+    // 2026-10-25, tenth ruling: message → thinking/tool_use open ONE segment,
+    // subsequent blocks 塞入 it; the segment closes only at the next message).
+    // The old separate strip fragmented the open segment into [group][strip].
+    // Anti-freeze visibility is kept by the group header (ExecutionSegment
+    // renders the live reasoning tail while receiving). The live slices are
+    // FOUND within the segment (think/tool deltas may interleave) — never
+    // appended twice.
+    if (thinkingBlocks.length > 0) {
+      const last = segs[segs.length - 1]
+      if (last?.type === 'execution') {
+        const existing = last.msgs.find((m) => m.id === 'streaming-think')
+        if (existing) {
+          existing.contentBlocks = thinkingBlocks
+        } else {
+          segs[segs.length - 1] = {
+            type: 'execution',
+            msgs: [...last.msgs, { role: 'assistant', id: 'streaming-think', createdAt: new Date().toISOString(), contentBlocks: thinkingBlocks }],
+          }
+        }
+      } else {
+        segs.push({
+          type: 'execution',
+          msgs: [{ role: 'assistant', id: 'streaming-think', createdAt: new Date().toISOString(), contentBlocks: thinkingBlocks }],
+        })
+      }
+    }
     // Text streams as a streaming segment
     if (textBlocks.length > 0) {
       segs.push({ type: 'streaming', blocks: textBlocks })
@@ -192,12 +273,12 @@ export function buildSegments(input: BuildSegmentsInput): Segment[] {
 
       const lastSeg = segs[segs.length - 1]
       if (lastSeg?.type === 'execution') {
-        const lastMsg = lastSeg.msgs[lastSeg.msgs.length - 1]
-        if (lastMsg?.id === 'streaming-exec') {
-          // Merge accumulated blocks into the existing synthetic message
-          lastMsg.contentBlocks = Array.from(
+        const existingExec = lastSeg.msgs.find((m) => m.id === 'streaming-exec')
+        if (existingExec) {
+          // Merge accumulated blocks into the existing live slice
+          existingExec.contentBlocks = Array.from(
             new Map<string, ContentBlock>(
-              [...lastMsg.contentBlocks, ...accumulated].map((b) => [
+              [...existingExec.contentBlocks, ...accumulated].map((b) => [
                 b.type === 'tool_use' ? (b as ToolUseBlock).id : b.type,
                 b,
               ] as [string, ContentBlock])

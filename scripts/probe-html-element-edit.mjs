@@ -50,10 +50,11 @@ const HARNESS = `
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { buildAntdTheme } from './src/renderer/src/theme/tokens'
 import { SettingsProvider } from './src/renderer/src/hooks/SettingsContext'
 import { usePreviewPaneStore } from './src/renderer/src/stores/previewPaneStore'
 import { useHtmlEditStore, consumeFailure } from './src/renderer/src/stores/htmlEditStore'
-import { PreviewPane } from './src/renderer/src/components/preview/PreviewPane'
+import { WorkspacePane } from './src/renderer/src/components/workbench/WorkspacePane'
 import { buildPreviewCopy } from './src/shared/preview/html-inject'
 import { PICKER_SCRIPT } from './src/main/preview/picker-source.generated'
 
@@ -85,12 +86,13 @@ Element.prototype.setAttribute = function (name, value) {
 let root = null
 window.__mount = () => {
   if (root) root.unmount()
+  usePreviewPaneStore.getState().setWorkspaceDir('/w')
   root = createRoot(document.getElementById('root'))
   root.render(
-    <ConfigProvider>
+    <ConfigProvider theme={buildAntdTheme('light')}>
       <SettingsProvider>
         <TranslationProvider initialLocale="zh">
-          <PreviewPane conversationId={undefined} />
+          <WorkspacePane conversationId={undefined} />
         </TranslationProvider>
       </SettingsProvider>
     </ConfigProvider>
@@ -252,6 +254,13 @@ await page.addScriptTag({
     : key === 'onApiStreamError' ? (cb) => { window.__streamSubs.error.push(cb); return () => {} }
     : key === 'onApiStreamDone' ? (cb) => { window.__streamSubs.done.push(cb); return () => {} }
     : key === 'getFileStat' ? () => Promise.resolve({ size: 10, mtime: '2026-09-16T00:00:00Z' })
+    : key === 'listDir' ? (p) => {
+        if (p !== '/w') return Promise.resolve(null)
+        const entries = Object.keys(window.__files).map((path) => ({
+          name: path.slice(path.lastIndexOf('/') + 1), path, isDir: false,
+        }))
+        return Promise.resolve({ entries })
+      }
     : key === 'registerPreviewNonce' ? ({ filePath, nonce }) => {
         window.__previewNonces[filePath] = nonce
         return Promise.resolve()
@@ -266,15 +275,23 @@ await page.addScriptTag({
 await page.addScriptTag({ path: OUT })
 await page.waitForFunction(() => window.__ready)
 
-const elementToggle = () => page.locator('div[title="元素编辑"]')
-const sourceToggle = () => page.locator('div[title="编辑"]')
 const frame = () => page.frameLocator('iframe')
 const openFile = (path) => page.evaluate((p) => window.__store.getState().openFile(null, p), path)
+// The element/source toggles live in the address bar's 更多 menu now (the
+// preview's own toolbar is gone, 2026-10-25).
+const menuClick = async (label) => {
+  await page.locator('[data-ws-more]').click()
+  await page.getByRole('menuitem', { name: label, exact: true }).waitFor()
+  await page.getByRole('menuitem', { name: label, exact: true }).click()
+  await page.waitForTimeout(60)
+}
+const enterElementMode = () => menuClick('元素编辑')
+const enterSourceMode = () => menuClick('编辑')
 
 await page.evaluate(() => window.__mount())
 await openFile('/w/page.html')
 await page.waitForTimeout(150)
-await elementToggle().click()
+await enterElementMode()
 await frame().locator('h1#t').waitFor()
 
 /* ── 1. Click-select: real mouse on the h1 → panel shows the breadcrumb. ── */
@@ -371,7 +388,7 @@ check('…and the arbitration explains why (the reason is toasted)', true)
 /* ── 6b. A shifted live path still edits via the content fallback. ── */
 await openFile('/w/shift.html')
 await page.waitForTimeout(150)
-await elementToggle().click()
+await enterElementMode()
 await frame().locator('h1#st').waitFor()
 await frame().locator('h1#st').click()
 await page.waitForTimeout(200)
@@ -555,7 +572,7 @@ check(
 /* ── 7. Strict-CSP page: the picker still runs (meta stripped pre-inject). ── */
 await openFile('/w/strict.html')
 await page.waitForTimeout(150)
-await elementToggle().click()
+await enterElementMode()
 await frame().locator('h1#strict-head').waitFor()
 await frame().locator('h1#strict-head').click()
 await page.waitForTimeout(200)
@@ -616,8 +633,9 @@ const writesAfterForge = await page.evaluate(() => window.__writeCalls.length)
 check('a forged pm:select/pm:commit-text (right source, wrong nonce) lands nowhere', sel && sel.pmPath === 'html>body:nth-child(2)>div:nth-child(1)>h1:nth-child(1)' && writesAfterForge === writesBeforeForge, JSON.stringify({ sel: sel?.pmPath, writes: writesAfterForge }))
 check('the picker script tag is scrubbed from the frame (nonce unreadable), overlay intact', !forged.scriptTagLeft && forged.pickerHostAlive, JSON.stringify(forged))
 
-/* ── 10. The source editor entry is still on the toolbar (D2). ── */
-await sourceToggle().click()
+/* ── 10. The source editor entry is still reachable (D2 advanced hatch,
+          via the address bar's 更多 menu). ── */
+await enterSourceMode()
 await page.locator('textarea').waitFor()
 check('the advanced source editor still opens for html', (await page.locator('textarea').inputValue()).includes('<h1 style="color: purple'), '')
 

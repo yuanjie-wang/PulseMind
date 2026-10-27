@@ -3,8 +3,9 @@
  * the per-turn inline card in the chat (capped height, scrolls inside) and the
  * workbench 产物 tab's aggregate panel (fills its pane). Extracted verbatim
  * from the retired chat-tail DeliverablesCard — row click still opens the file
- * through the REAL previewPaneStore.openFile, which flips the workbench to the
- * 文件预览 tab itself. Pure presentation: the caller owns the derivation.
+ * through the REAL previewPaneStore.openFile, which brings the workbench up on
+ * the 工作区 tab (where the preview renders beside the tree) itself. Pure
+ * presentation: the caller owns the derivation.
  */
 import React from 'react'
 import type { Deliverable, DeliverableRow } from './deliverables'

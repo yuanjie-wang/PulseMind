@@ -7,7 +7,7 @@
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { AgentStatus, AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
-import { buildSegments, getSegmentKey, type Segment } from './message-segments'
+import { buildSegments, getSegmentKey, hasLiveTextTail, type Segment } from './message-segments'
 import { SegmentBlock, MESSAGE_COLUMN_INSET } from './SegmentView'
 import { useSegmentEntrance } from './use-segment-entrance'
 import type { MessageActions } from './MessageGroup'
@@ -232,7 +232,7 @@ export function TranscriptView({
           onRespondToTool={onRespondToTool}
         />
       ))}
-      <StreamingCursor show={isRequesting} contentInset={contentInset} />
+      <StreamingCursor show={isRequesting && !hasLiveTextTail(segments)} contentInset={contentInset} />
       {agentStatus.status === 'error' && (
         <div style={{ maxWidth: 1000, margin: '0 auto', padding: '0 24px' }}>
           <ErrorDisplay

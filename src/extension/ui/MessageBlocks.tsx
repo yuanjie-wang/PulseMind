@@ -18,7 +18,7 @@
 import { memo, useRef, useMemo, useState } from 'react'
 import type { ThinkingBlock as ThinkingBlockType, ToolUseBlock } from '../../shared/types/agent'
 import { Icon } from './icons'
-import { formatDuration, formatTokenCount, thinkingPreview, toolBlockSummary, toolDisplayName, toolObjectSummary } from './format'
+import { formatDuration, formatTokenCount, cacheHitRate, thinkingPreview, toolBlockSummary, toolDisplayName, toolObjectSummary } from './format'
 import { resultSummary } from '../../shared/tool-display/result-summary'
 import { buildEditDiffModel, countChangedLines, type EditDiffLine, type EditDiffModel } from '../../shared/tool-display/edit-diff'
 import { renderMarkdown, splitHtmlFences } from './markdown'
@@ -51,17 +51,23 @@ export function MarkdownBlock({ text, className = 'pm-text-block', streaming = f
 }
 
 // ── thinking ─────────────────────────────────────────────────────────
+// 桌面 2026-10-25 统一裁定：思考行与工具行同构 —— 左绿勾 + 粗体黑「深度思考」
+// + 弱色摘要 + 右向右箭头，margin '4px 0' / padding '5px 10px' / gap 6 /
+// 12px 字阶，行高随内容（与 CollapsibleToolBlock 头完全一致）。
 
 export function ThinkingBlock({ block }: { block: ThinkingBlockType }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
   return (
-    <div className="pm-thinking" onClick={() => setExpanded(!expanded)}>
-      <div className="pm-thinking-head">
+    <div className="pm-thinking">
+      <div className="pm-thinking-head" onClick={() => setExpanded(!expanded)}>
         <span className="pm-thinking-caret">
+          <Icon name="check" />
+        </span>
+        <span className="pm-thinking-title">深度思考</span>
+        <span className="pm-thinking-preview">{thinkingPreview(block.thinking)}</span>
+        <span className="pm-thinking-fold">
           <Icon name={expanded ? 'caretDown' : 'caretRight'} />
         </span>
-        <span className="pm-thinking-title">Thinking</span>
-        {!expanded && <span className="pm-thinking-preview">{thinkingPreview(block.thinking)}</span>}
       </div>
       {expanded && <pre className="pm-thinking-body">{block.thinking}</pre>}
     </div>
@@ -641,10 +647,10 @@ export function ActionRow({ text, msg }: { text: string; msg: ActionMeta }): Rea
               {formatTokenCount(msg.outputTokens)}
             </span>
           )}
-          {msg.promptCacheHitTokens != null && (
-            <span className="pm-stats-item" title="缓存命中">
+          {msg.promptCacheHitTokens != null && msg.inputTokens != null && msg.inputTokens > 0 && (
+            <span className="pm-stats-item" title="缓存命中率">
               <Icon name="aim" />
-              {formatTokenCount(msg.promptCacheHitTokens)}
+              {cacheHitRate(msg.promptCacheHitTokens, msg.inputTokens)}
             </span>
           )}
         </span>

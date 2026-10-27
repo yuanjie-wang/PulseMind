@@ -25,9 +25,12 @@ export const SHAKE_ANIM = 'pm-shake-x 0.3s ease-out'
 /** The held-call decision strip: slide in, then a short edge pulse — twice,
  *  deliberately not looping (a looping glow reads as an error state). */
 export const APPROVAL_IN_ANIM = 'pm-approval-in 0.22s ease-out, pm-approval-pulse 0.9s ease-out 0.15s 2'
+/** The transcript caret (StreamingCaret): half a second on, half off, no fade. */
+export const CARET_BLINK_ANIM = 'pm-caret-blink 1s step-end infinite'
 
 const MOTION_CSS = `
 @keyframes pm-enter-up { from { opacity: 0; transform: translateY(4px); } }
+@keyframes pm-caret-blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
 @keyframes pm-pop-in { from { opacity: 0; transform: scale(0.6); } }
 @keyframes pm-shake-x {
   0%, 100% { transform: none; }

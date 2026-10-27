@@ -12,6 +12,14 @@
  * have no turn to attach to and are not shown. Empty derivation renders
  * nothing at all, not even a placeholder.
  *
+ * TIMING (2026-10-25 用户裁定): the card waits for its turn to SETTLE. The
+ * derivation still folds rows in live, but ChatView suppresses the live
+ * turn's card until the engine reaches a turn-ending status (idle / completed
+ * / error — routine-entry's rule) — mid-turn the card used to ride the
+ * streaming tail, dropping frame by frame and changing row count while the
+ * turn was still producing. Earlier turns are settled history and always
+ * render.
+ *
  * Renders the CARD BOX only (the caller owns any column padding): the margins
  * are the spacing contract — 8 above, 16 inside the column, 12 below, because
  * assistant messages and execution segments carry no bottom margin of their

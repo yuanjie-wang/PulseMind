@@ -17,7 +17,7 @@ const zh = (key: string): string => {
     'toolLabel.webfetch': '访问网页',
     'toolLabel.git_commit': '创建提交',
     'toolLabel.spawn_agent': '召唤专家',
-    'toolLabel.knowledge_search': '检索知识库',
+    'toolLabel.recall': '本地检索',
     'toolLabel.find': '查找文件',
     'toolLabel.page_click': '点击元素',
   }
@@ -71,7 +71,7 @@ describe('toolBlockSummary object half stays verbatim', () => {
   it('search family carries the query; find its pattern', () => {
     expect(toolBlockSummary(block('search', { query: 'write lock' }), zh)).toBe('搜索内容 · write lock')
     expect(toolBlockSummary(block('find', { pattern: '*.test.ts' }), zh)).toBe('查找文件 · *.test.ts')
-    expect(toolBlockSummary(block('knowledge_search', { query: '沙盒' }), zh)).toBe('检索知识库 · 沙盒')
+    expect(toolBlockSummary(block('recall', { query: '沙盒' }), zh)).toBe('本地检索 · 沙盒')
   })
 
   it('webfetch shows the host, git_commit the message first line', () => {

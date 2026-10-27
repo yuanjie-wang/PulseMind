@@ -15,12 +15,12 @@ import {
   ArrowUpOutlined,
   HourglassOutlined,
   CloseOutlined,
-  LockOutlined,
   AimOutlined,
   EyeOutlined,
   ScheduleOutlined,
   LoadingOutlined
 } from '@ant-design/icons'
+
 import { useTranslation } from '../../i18n/useTranslation'
 import { notify } from '../../utils/notify'
 import type { AgentMessage, ToolUseBlock, ToolResultBlock, ThinkingBlock } from '../../types/agent'
@@ -29,7 +29,7 @@ import { ApprovalArea } from './ApprovalArea'
 import { toolBlockSummary, toolDisplayName, subAgentSessionTitle } from './tool-summary'
 import { CodeBlock } from './CodeBlock'
 import { LocalImage } from './LocalImage'
-import { ThinkingBlockView } from './ThinkingBlockView'
+import { ThinkingBlockView, ThinkingRedactedRow } from './ThinkingBlockView'
 import { FileRefChip } from './FileRefChip'
 import { openInPreviewPane } from '../../stores/previewPaneStore'
 import { enqueueCompileForFile } from '../knowledge/compile-queue'
@@ -54,7 +54,11 @@ const userBubbleStyle: React.CSSProperties = {
 
 const assistantBubbleStyle: React.CSSProperties = {
   borderRadius: 12,
-  padding: '4px 0',
+  // No vertical padding (user ruling 2026-10-25): this wrapper sometimes holds
+  // a whole multi-tool_use slice, sometimes a single thinking row — its own
+  // padding stacked onto the rows' margins and made the spacing uneven. The
+  // rows carry exactly their own margins now.
+  padding: 0,
   width: '100%',
   fontSize: 14,
   lineHeight: 1.6
@@ -87,6 +91,12 @@ function formatTokenCount(n: number): string {
     return `${(n / 1000).toFixed(1)}k`
   }
   return n.toLocaleString()
+}
+
+// inputTokens is the cached share's container (both adapters' streaming paths
+// sum cache reads into it), so the pair alone prices the rate.
+function cacheHitRate(hitTokens: number, inputTokens: number): string {
+  return `${Math.round((hitTokens / inputTokens) * 100)}%`
 }
 
 // ── Collapsible tool_use block ────────────────────────────────────────
@@ -159,7 +169,7 @@ function CollapsibleToolBlock({
   const canOpenSession = block.name === 'spawn_agent' && !!subConvId && !!onOpenSubAgent
 
   return (
-    <div style={{ margin: '4px 0' }}>
+    <div style={{ margin: '2px 0' }}>
       {/* Collapsible header bar */}
       <div
         data-tool-head={block.id}
@@ -168,8 +178,12 @@ function CollapsibleToolBlock({
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          padding: '5px 10px',
-          background: needsAction ? 'var(--pm-warn-bg)' : 'var(--pm-fill)',
+          padding: '3px 10px',
+          lineHeight: 1.4,
+          // No grey chip (2026-10-25, with the thinking unification): the head
+          // is a plain row; only a HELD call paints its warn tint, hover is
+          // the one-step fill.
+          background: needsAction ? 'var(--pm-warn-bg)' : 'transparent',
           borderRadius: 6,
           cursor: 'pointer',
           fontSize: 13,
@@ -179,7 +193,7 @@ function CollapsibleToolBlock({
           transition: 'background 0.15s'
         }}
         onMouseEnter={(e) => { e.currentTarget.style.background = needsAction ? 'var(--pm-warn-bg-hover)' : 'var(--pm-fill-hover)' }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = needsAction ? 'var(--pm-warn-bg)' : 'var(--pm-fill)' }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = needsAction ? 'var(--pm-warn-bg)' : 'transparent' }}
       >
         {/* Status indicator. Glyph ladder (user 2026-09-30): hourglass = not
             yet executing ('pending' — generating or held — and 'queued'),
@@ -191,6 +205,7 @@ function CollapsibleToolBlock({
         <span
           style={{
             fontSize: 14,
+            lineHeight: 1,
             flexShrink: 0,
             width: 18,
             textAlign: 'center',
@@ -577,13 +592,7 @@ export const MessageGroup = React.memo(function MessageGroup({
               return <ThinkingBlockView key={i} block={block as ThinkingBlock} />
             }
             if (block.type === 'redacted_thinking') {
-              return (
-                <div key={i} style={{ margin: '6px 0', borderLeft: '2px solid var(--pm-border-strong)', paddingLeft: 10 }}>
-                  <div style={{ color: 'var(--pm-text-quiet)', fontSize: 13, lineHeight: 1.6 }}>
-                    <LockOutlined style={{marginRight:4,fontSize:11}} />Thinking redacted
-                  </div>
-                </div>
-              )
+              return <ThinkingRedactedRow key={i} />
             }
           }
           return null
@@ -686,6 +695,9 @@ export const MessageGroup = React.memo(function MessageGroup({
                 color: 'var(--pm-text-faint)',
                 fontSize: 12,
                 lineHeight: 1,
+                // Tooltip-only row: `help` instead of the text I-beam `auto`
+                // renders over selectable-looking spans.
+                cursor: 'help',
                 // Durations and token counts align their digit columns across
                 // neighboring messages instead of jittering with each render.
                 fontVariantNumeric: 'tabular-nums'
@@ -701,8 +713,8 @@ export const MessageGroup = React.memo(function MessageGroup({
               {msg.outputTokens != null && (
                 <span title={t('chatView.outputTokens')}><ArrowDownOutlined style={{fontSize:10,marginRight:2}} />{formatTokenCount(msg.outputTokens)}</span>
               )}
-              {msg.promptCacheHitTokens != null && (
-                <span title={t('chatView.promptCacheHit')}><AimOutlined style={{fontSize:10,marginRight:2}} />{formatTokenCount(msg.promptCacheHitTokens)}</span>
+              {msg.promptCacheHitTokens != null && msg.inputTokens != null && msg.inputTokens > 0 && (
+                <span title={t('chatView.promptCacheHit')}><AimOutlined style={{fontSize:10,marginRight:2}} />{cacheHitRate(msg.promptCacheHitTokens, msg.inputTokens)}</span>
               )}
             </span>
           )}

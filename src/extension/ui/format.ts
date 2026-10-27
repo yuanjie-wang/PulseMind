@@ -24,14 +24,11 @@ const TOOL_LABELS: Record<string, string> = {
   exec: '运行命令',
   install: '安装依赖',
   webfetch: '访问网页',
-  memory_search: '检索记忆',
+  recall: '本地检索',
   memory_save: '保存记忆',
-  conversation_search: '搜索历史会话',
   tool_result_search: '搜索工具结果',
   pick_skill: '查找技能',
   pick_tool: '启动工具',
-  knowledge_search: '检索知识库',
-  knowledge_read: '阅读知识',
   experience_read: '读取经验',
   experience_save: '保存经验',
   spawn_agent: '召唤专家',
@@ -82,10 +79,8 @@ export function toolObjectSummary(block: ToolUseBlock): string {
     case 'list_dir': return (input.dir_path as string) || ''
     case 'search':
     case 'find':
-    case 'memory_search':
-    case 'conversation_search':
+    case 'recall':
     case 'tool_result_search':
-    case 'knowledge_search':
       return firstLine((input.query as string) || (input.pattern as string) || '', 60)
     case 'webfetch': {
       try { return new URL(input.url as string).host } catch { return (input.url as string) || '' }
@@ -125,6 +120,13 @@ export function formatDuration(ms: number): string {
 export function formatTokenCount(n: number): string {
   if (n >= 10_000) return `${(n / 1000).toFixed(1)}k`
   return n.toLocaleString()
+}
+
+/** `83%` — the chat's cache-hit rate off the message's own usage pair:
+ *  inputTokens is the cached share's container (both adapters' streaming paths
+ *  sum cache reads into it), so the pair alone prices the rate. */
+export function cacheHitRate(hitTokens: number, inputTokens: number): string {
+  return `${Math.round((hitTokens / inputTokens) * 100)}%`
 }
 
 /** Thinking-block preview line: the first line (truncated) plus a line count —

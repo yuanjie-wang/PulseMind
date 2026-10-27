@@ -533,8 +533,8 @@ check(
   `${probe.cardRadius} / ${probe.cardBg} / ${probe.cardBlur} / ${probe.cardShadow}`,
 )
 check(
-  'tool header uses the chat greys, the approval hold its amber',
-  probe.toolBg === 'rgb(245, 245, 245)' && probe.pendingBg === 'rgb(255, 247, 230)' && probe.pendingBorder === 'rgb(255, 213, 145)',
+  'tool header is chromeless (no grey chip, 2026-10-25), the approval hold its amber',
+  probe.toolBg === 'rgba(0, 0, 0, 0)' && probe.pendingBg === 'rgb(255, 247, 230)' && probe.pendingBorder === 'rgb(255, 213, 145)',
   `${probe.toolBg} / held ${probe.pendingBg} + ${probe.pendingBorder}`,
 )
 // The theme sets `table { overflow: hidden }`; the panel overrides it, because a

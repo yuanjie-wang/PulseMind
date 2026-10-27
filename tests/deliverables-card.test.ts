@@ -4,7 +4,8 @@
 // the only surface. The non-negotiable links are store-level facts, assertable
 // here without a layout engine:
 //   - a row click → the REAL previewPaneStore.openFile → the workbench flips
-//     to 'files' with the file's tab registered;
+//     to 'workspace' (the 文件预览 tab merged into 工作区) with the file's tab
+//     registered;
 //   - when a turn ends on assistant text, the card mounts INSIDE the message
 //     ABOVE its action toolbar (MessageGroup's aboveActions slot) — DOM order
 //     card-before-toolbar is pinned here;
@@ -51,7 +52,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   vi.stubGlobal('matchMedia', vi.fn().mockImplementation(() => ({ matches: false,
     addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} })))
-  useWorkbenchStore.setState({ activeTab: 'files', openByConversation: {} })
+  useWorkbenchStore.setState({ activeTab: 'browser', openByConversation: {} })
   usePreviewPaneStore.setState({ tabsByConversation: {}, activeByConversation: {} })
 })
 afterEach(() => { vi.unstubAllGlobals() })
@@ -122,7 +123,7 @@ describe('TurnDeliverablesCard', () => {
     }
   })
 
-  it('row click calls the REAL openFile — tab registered, workbench flips to files', async () => {
+  it('row click calls the REAL openFile — tab registered, workbench flips to 工作区', async () => {
     const mounted = await mount(
       React.createElement(TurnDeliverablesCard, {
         deliverable: collectDeliverables(msgs), conversationId: 'conv_1', workspaceDir: '/ws'
@@ -135,7 +136,7 @@ describe('TurnDeliverablesCard', () => {
       const tabs = store.tabsByConversation['conv_1'] ?? []
       expect(tabs.map((tb) => tb.path)).toContain('/ws/report.md')
       expect(store.activeByConversation['conv_1']).toBe('/ws/report.md')
-      expect(useWorkbenchStore.getState().activeTab).toBe('files')
+      expect(useWorkbenchStore.getState().activeTab).toBe('workspace')
     } finally {
       await mounted.unmount()
     }
@@ -208,5 +209,16 @@ describe('Wiring (source scans — the mount itself is probe territory)', () => 
     expect(src).not.toContain("'deliverables'")
     // a persisted activeTab naming the removed tab must not blank the pane
     expect(src).toContain('WORKBENCH_TAB_IDS.has(s.activeTab)')
+  })
+
+  it('ChatView: the live turn card waits for the turn to settle (2026-10-25)', () => {
+    const src = read(CHAT_VIEW)
+    // The live turn (the last one while the engine is still working) is
+    // suppressed from the card map; the settle predicate is routine-entry's —
+    // the same idle/completed/error rule 存为日常任务 rides. Earlier turns are
+    // settled history and must keep rendering, so the gate is per-turn, not a
+    // blanket `turnRows` shutdown.
+    expect(src).toContain('!routineEntryAllowed(agentStatus.status)')
+    expect(src).toContain('turn !== liveTurn && turnPlacement.lastSegmentOfTurn[turn] === abs')
   })
 })

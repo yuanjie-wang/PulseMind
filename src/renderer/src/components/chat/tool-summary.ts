@@ -22,9 +22,9 @@ export type ToolTranslator = (key: string) => string
  *  description's first sentence, then to the raw name. */
 const LABEL_KEYS: ReadonlySet<string> = new Set([
   'read', 'write', 'edit', 'list_dir', 'search', 'find', 'exec', 'install', 'webfetch',
-  'memory_search', 'memory_save', 'conversation_search', 'tool_result_search',
-  'pick_skill', 'pick_tool', 'knowledge_search', 'knowledge_read', 'experience_read', 'experience_save',
-  'spawn_agent', 'create_plan', 'advance_plan', 'office_edit', 'office_read', 'office_search',
+  'recall', 'memory_save', 'tool_result_search',
+  'pick_skill', 'pick_tool', 'experience_read', 'experience_save',
+  'spawn_agent', 'create_plan', 'advance_plan', 'todo_write', 'office_edit', 'office_read', 'office_search',
   'export_document',
   // Retired office tool names (merged into office_edit, 2026-10-04) — they
   // stay so hydrated transcripts' old cards keep their human labels.
@@ -86,16 +86,18 @@ export function toolObjectSummary(block: ToolUseBlock): string {
     case 'list_dir': return (input.dir_path as string) || ''
     case 'search':
     case 'find':
-    case 'memory_search':
-    case 'conversation_search':
+    case 'recall':
     case 'tool_result_search':
-    case 'knowledge_search':
       return firstLine((input.query as string) || (input.pattern as string) || '', 60)
     case 'webfetch': {
       try { return new URL(input.url as string).host } catch { return (input.url as string) || '' }
     }
     case 'git_commit': return firstLine(input.message, 60)
     case 'create_plan': return firstLine(input.objective, 60)
+    case 'todo_write': {
+      const items = Array.isArray(input.items) ? input.items : []
+      return firstLine(input.objective, 40) || `${items.length} 项`
+    }
     case 'ask_user': return ((input.prompt as string) || '').slice(0, 80)
     default: return ''
   }

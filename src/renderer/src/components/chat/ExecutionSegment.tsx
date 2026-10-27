@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react'
-import { RightOutlined } from '@ant-design/icons'
+import React, { useState, useMemo, useRef, useEffect } from 'react'
+import { CheckOutlined, RightOutlined } from '@ant-design/icons'
 import type { AgentMessage, ContentBlock, ToolUseBlock } from '../../types/agent'
 import { MessageGroup } from './MessageGroup'
 import { ApprovalArea } from './ApprovalArea'
@@ -60,6 +60,8 @@ function contentBlocksToTexts(blocks: ContentBlock[], t: ToolTranslator): string
     if (block.type === 'thinking') {
       const line = block.thinking.replace(/\n+/g, ' ').trim()
       if (line) texts.push(line)
+    } else if (block.type === 'redacted_thinking') {
+      texts.push('Thinking redacted')
     } else if (block.type === 'text') {
       const line = block.text.replace(/\n+/g, ' ').trim()
       if (line) texts.push(line)
@@ -76,13 +78,47 @@ function contentBlocksToTexts(blocks: ContentBlock[], t: ToolTranslator): string
 
 // --- Component ---
 
+/** The live reasoning tail's rotation cadence. 700ms: slow enough that the
+ *  header reads calm (the user report was flicker at the 80ms coalesced tick),
+ *  fast enough that the tail still feels alive. */
+const LIVE_TAIL_ROTATE_MS = 700
+
+/** The live reasoning tail's display clock: the stream pushes a new tail every
+ *  ~80ms coalesced tick, and re-rendering the header text at that rate reads
+ *  as flicker (user report 2026-10-25). `shown` advances at most once per
+ *  `minIntervalMs` — trailing-edge, so the final tail still lands after the
+ *  stream ends. Pure display clock; holds no stream state. */
+function useRotatingTail(text: string, minIntervalMs = 700): string {
+  const [shown, setShown] = useState(text)
+  const lastAtRef = useRef(0)
+  const textRef = useRef(text)
+  useEffect(() => {
+    textRef.current = text
+    const now = performance.now()
+    const elapsed = now - lastAtRef.current
+    if (elapsed >= minIntervalMs) {
+      lastAtRef.current = now
+      setShown(text)
+      return
+    }
+    const timer = setTimeout(() => {
+      lastAtRef.current = performance.now()
+      setShown(textRef.current)
+    }, minIntervalMs - elapsed)
+    return () => clearTimeout(timer)
+  }, [text, minIntervalMs])
+  return shown
+}
+
 export const ExecutionSegment = React.memo(function ExecutionSegment(props: ExecutionSegmentProps): React.ReactElement {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
 
   // Single traversal for all derived state — replaces 4 separate useMemo calls
-  const { texts, initial, done, toolCount, activityText, receivingText, liveOutput, heldCalls } = useMemo(() => {
+  const { texts, initial, done, toolCount, activityText, receivingText, liveOutput, heldCalls, pureThinking, thinkingCount, receivingThinking } = useMemo(() => {
     let hasTools = false
+    let hasThinking = false
+    let thinkingCount = 0
     let anyNonPending = false // any tool has a status beyond 'pending' (queued, running, completed, rejected)
     let anyInFlight = false // 'running' or 'queued' — the batch is not settled yet
     let hasToolResults = false // presence of tool_result indicates completion (used when status stripped on save)
@@ -110,6 +146,7 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
         texts.push(...contentBlocksToTexts(msg.contentBlocks, t))
       }
       for (const block of msg.contentBlocks) {
+        if (block.type === 'thinking' || block.type === 'redacted_thinking') { hasThinking = true; thinkingCount++ }
         if (block.type === 'tool_use') {
           toolCount++
           hasTools = true
@@ -165,6 +202,21 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
     if (execs > 0) activityParts.push(`运行 ${execs} 条命令`)
     if (rejections > 0) activityParts.push(`拒绝 ${rejections} 次`)
 
+    // The live reasoning tail (the old streaming strip's visibility, now carried
+    // by the open group's header): the LAST 'streaming-think' slice's newest
+    // bytes + a total char count. Rendered as [稳定「深度思考」标签][轮动尾巴] —
+    // the label must never remount; only the tail rotates (see the header).
+    let liveThinkingTail = ''
+    for (const msg of props.messages) {
+      if (msg.id !== 'streaming-think') continue
+      const thinkBlocks = msg.contentBlocks.filter((b) => b.type === 'thinking') as { thinking: string }[]
+      const all = thinkBlocks.map((b) => b.thinking).join('')
+      if (all) {
+        const tail = all.slice(-40).replace(/\s+/g, ' ').trim()
+        liveThinkingTail = `…${tail} (${all.length} chars)`
+      }
+    }
+
     return {
       texts,
       initial: !anyNonPending && !hasToolResults,
@@ -174,9 +226,19 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
       anyNonPending,
       liveOutput,
       heldCalls,
+      // A group with reasoning but no tool calls (a degenerate round the engine
+      // committed, e.g. the max_tokens shape): none of the tool states below
+      // apply — settled it reads like a tool family count (已完成 · 深度思考N次,
+      // 2026-10-25 ruling); while the engine is still working it carries the
+      // reasoning's own first line as the live identity.
+      pureThinking: !hasTools && hasThinking,
+      thinkingCount,
+      receivingThinking: props.isReceiving && toolNames.size === 0 && !!liveThinkingTail,
       receivingText: props.isReceiving && toolNames.size > 0
         ? Array.from(toolNames).map((name) => toolDisplayName(name, t)).join('、') + ' 指令生成中...'
-        : ''
+        : props.isReceiving && liveThinkingTail
+          ? liveThinkingTail
+          : ''
     }
   }, [props.messages, props.isReceiving, props.awaitingApproval, t])
 
@@ -190,12 +252,33 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
   const isPending = props.isLastSegment && props.isRequesting
   const showDone = done && !isPending
   const showInitialActive = initial && props.isRequesting
-  const showSpinner = !showDone && props.isRequesting
+  // The raw slice flag only says a live slice still exists in the group
+  // (think deltas merged in, then the round's text started streaming).
+  // RECEIVING means the group is still the ACTIVE tail — once segments exist
+  // after it, a lingering slice must not hold the header in its 生成中 state:
+  // done rules (user report 2026-10-25: the group spun until the message
+  // committed, though its tools had settled and the text was already streaming
+  // after it).
+  const isReceiving = !!props.isReceiving && isPending
+  // 接收中的组一律转圈（含纯思考直播组——组头已承载活尾巴，旋转补上"活着"的另一半）
+  const showSpinner = !showDone && props.isRequesting && (!pureThinking || isReceiving)
+  // 完成态的组头亮绿勾（2026-10-25 统一裁定）。纯思考组的"完成"是它自己提交
+  // 的那一刻（isReceiving 落空 = 直播切片已换成本消息 id）——与引擎是否还在
+  // 流式后续内容无关（用户报告：正文流式时前方的思考组仍无成功标记；工具组
+  // 没这个问题，因为它的 done 只看工具落定）。
+  const pureThinkingComplete = pureThinking && !isReceiving
+  const showSettledCheck = showDone || pureThinkingComplete
   // Done state carries the activity narrative when any family counts up
   // (PLAN-tool-ux T4); families that don't map (MCP, git, page tools) keep
   // the plain call-count form.
   const doneText = activityText || `工具调用${toolCount}次`
-  const displayText = props.isReceiving ? receivingText : anyHeld ? t('commandCard.awaitingApproval') : (showDone ? `已完成 · ${doneText}` : showInitialActive ? '开始执行' : (liveOutput || (texts.length > 0 ? texts[texts.length - 1] : 'Processing...')))
+  // 纯思考组提交后即读工具家族口径：已完成 · 深度思考N次（直播接收态走
+  // receivingText 的活尾巴分支，到不了这里）。
+  const pureThinkingText = `已完成 · 深度思考${thinkingCount}次`
+  const displayText = isReceiving ? receivingText : anyHeld ? t('commandCard.awaitingApproval') : pureThinking ? pureThinkingText : (showDone ? `已完成 · ${doneText}` : showInitialActive ? '开始执行' : (liveOutput || (texts.length > 0 ? texts[texts.length - 1] : 'Processing...')))
+  // The rotating tail's display clock: the raw receivingText changes every
+  // 80ms tick; `shown` advances at most every ~700ms (useRotatingTail).
+  const rotatingTail = useRotatingTail(isReceiving && receivingThinking ? receivingText : '', LIVE_TAIL_ROTATE_MS)
 
   return (
     <div style={{ margin: '8px 0', borderRadius: 8, overflow: 'hidden' }}>
@@ -227,24 +310,56 @@ export const ExecutionSegment = React.memo(function ExecutionSegment(props: Exec
             willChange: 'transform'
           }} />
         )}
+        {!showSpinner && showSettledCheck && (
+          <CheckOutlined style={{ color: '#4ec9b0', fontSize: 14, width: 14, textAlign: 'center', flexShrink: 0, marginRight: 6 }} />
+        )}
         <div style={{ display: 'flex', flex: 1, overflow: 'hidden', alignItems: 'center', minWidth: 0 }}>
-          <div
-            key={displayText}
-            style={{
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              minWidth: 0,
-              flexShrink: 1,
-              fontSize: 13,
-              color: anyHeld ? 'var(--pm-warn)' : 'var(--pm-text-muted)',
-              fontWeight: anyHeld ? 500 : undefined,
-              lineHeight: '22px',
-              animation: 'pulsemind-fade-in 0.25s ease-out'
-            }}
-          >
-            {displayText}
-          </div>
+          {isReceiving && receivingThinking ? (
+            // 直播思考头 = [稳定「深度思考」标签][轮动尾巴]。标签永不重挂
+            // （用户报告：长推理快速输出时组头逐帧闪烁——旧实现整条文本共用
+            // key={displayText}，每个 tick 重放淡入）；尾巴单独一根 span，
+            // useRotatingTail 限频换文本，key 只在轮动落地时变、轻淡入切换。
+            <>
+              <span style={{ flexShrink: 0, fontSize: 13, lineHeight: '22px', color: 'var(--pm-text-muted)' }}>
+                深度思考
+              </span>
+              <span
+                key={rotatingTail}
+                style={{
+                  marginLeft: 8,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  minWidth: 0,
+                  flex: 1,
+                  fontSize: 13,
+                  color: 'var(--pm-text-muted)',
+                  lineHeight: '22px',
+                  animation: 'pulsemind-fade-in 0.25s ease-out'
+                }}
+              >
+                {rotatingTail}
+              </span>
+            </>
+          ) : (
+            <div
+              key={displayText}
+              style={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+                flexShrink: 1,
+                fontSize: 13,
+                color: anyHeld ? 'var(--pm-warn)' : 'var(--pm-text-muted)',
+                fontWeight: anyHeld ? 500 : undefined,
+                lineHeight: '22px',
+                animation: 'pulsemind-fade-in 0.25s ease-out'
+              }}
+            >
+              {displayText}
+            </div>
+          )}
           <RightOutlined
             style={{
               color: 'var(--pm-text-faint)',

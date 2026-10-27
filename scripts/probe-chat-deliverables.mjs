@@ -8,8 +8,10 @@
  *
  *   - the per-turn card is an IN-FLOW card after each turn's last segment — it
  *     exists for turns with rows only (here: the head turn and the last turn,
- *     65 filler turns in between get nothing), and the LAST turn's card trails
- *     the live tail while the turn is still working;
+ *     65 filler turns in between get nothing). Since 2026-10-25 (用户裁定) the
+ *     LAST turn's card waits for the turn to SETTLE: while the engine is still
+ *     working it does not render at all, and it appears once, complete, when
+ *     the turn finishes;
  *   - the whole-conversation aggregate moved into the workbench's 产物 tab;
  *     the full-list feed red line lives THERE now: the panel is derived from
  *     the FULL messages, never ChatView's render window — which is why this
@@ -18,8 +20,10 @@
  *   - turn-card attribution is DIRECT-child only: the spawned 调研专家's rows
  *     join the turn that launched it, the grandchild's rows stay
  *     aggregate-only;
- *   - an op appears the moment its tool_result lands (streaming, mid-turn),
- *     while a still-pending write shows nothing;
+ *   - row derivation is still live (an op folds in the moment its tool_result
+ *     lands, a still-pending write shows nothing) — the CARD's render is what
+ *     the settle gate defers, which is why the settled check still sees all
+ *     three rows at once;
  *   - a row click opens the workbench's file tab through the REAL
  *     previewPaneStore.openFile.
  *
@@ -170,9 +174,10 @@ function Harness() {
     setStatus({ status: 'idle' })
     return true
   }
-  // A mid-turn op: the pending write adds a row for NOTHING; its paired result
-  // (still executing) adds one immediately — D5's live follow, on the last
-  // turn's card.
+  // A mid-turn op: the derivation stays live (D5) — the pending write adds a
+  // row for nothing, its paired result folds in the moment it lands — but the
+  // 2026-10-25 ruling defers the CARD: while status is executing the last
+  // turn's card does not render at all; it appears once at __finishTurn.
   window.__startOp = () => {
     setMessages((m) => [...m, { id: 's1a', role: 'assistant', contentBlocks: [{ type: 'tool_use', id: 's1u', name: 'write', input: { file_path: WS + '/streaming.md' }, status: 'running' }], createdAt: AT }])
     setStatus({ status: 'executing', toolUseId: 's1u' })
@@ -405,7 +410,8 @@ await page.waitForTimeout(300)
   await page.screenshot({ path: join(SHOTS, 'turn-cards.png') })
 }
 
-// ── 3. Real click on a turn-card row → preview tab + workbench flips to files ──
+// ── 3. Real click on a turn-card row → preview tab + workbench on 工作区
+//        (文件预览 merged into 工作区, 2026-10-25) ──
 {
   console.log('== 点击轮卡产物行 ==')
   await page.locator('[data-testid="turn-deliverables-row"][data-dl-path="/pm-probe-ws/tail-report.md"]').click()
@@ -413,22 +419,28 @@ await page.waitForTimeout(300)
   const tabs = await page.evaluate(() => window.__previewTabs())
   const wb = await page.evaluate(() => window.__workbench())
   check('预览页签注册了该文件', tabs.includes('/pm-probe-ws/tail-report.md'), JSON.stringify(tabs))
-  check('工作台翻到文件预览', wb.tab === 'files', JSON.stringify(wb))
+  check('工作台落在工作区（预览与树同屏）', wb.tab === 'workspace', JSON.stringify(wb))
 }
 
-// ── 4. Streaming: pending op shows nothing, landed op shows immediately ──
+// ── 4. Streaming: the live turn's card waits for the turn to settle ──
+// 2026-10-25 用户裁定（反转旧的「tool_result 落地即入列」出卡契约）：轮次未
+// 落定（executing/streaming/挂起）时本轮卡根本不挂——旧行为是卡跟着流式尾巴
+// 逐帧下坠、行数中途变化；落定（completed）后一次性出现。行的派生仍是实时的
+// （collectTurnDeliverables 随 tool_result 到齐），被推迟的只是卡的渲染。
 {
   console.log('== 流式推进 ==')
   await page.evaluate(() => window.__startOp())
   await page.waitForTimeout(250)
-  const during = await page.evaluate(() => window.__lastCardPaths().length)
-  check('pending 的 write 不入列', during === 2, `rows=${during}`)
+  const during = await page.evaluate(() => window.__turnCards().some((c) => c.textContent.includes('tail-report.md') || c.textContent.includes('streaming.md')))
+  check('executing 中本轮卡不出现（旧契约是落地即入列，已反转）', during === false, `liveCard=${during}`)
   await page.evaluate(() => window.__completeOp())
   await page.waitForTimeout(250)
-  const afterPaths = await page.evaluate(() => window.__lastCardPaths())
-  check('tool_result 落地即入列（最后一轮 3 行）', afterPaths.length === 3 && afterPaths.includes('/pm-probe-ws/streaming.md'), JSON.stringify(afterPaths))
+  const after = await page.evaluate(() => window.__turnCards().some((c) => c.textContent.includes('streaming.md')))
+  check('tool_result 落地也不出卡——必须等输出完全结束', after === false, `liveCard=${after}`)
   await page.evaluate(() => window.__finishTurn())
-  await page.waitForTimeout(200)
+  await page.waitForTimeout(300)
+  const settledPaths = await page.evaluate(() => window.__lastCardPaths())
+  check('落定后本轮卡一次性出现（3 行，含 streaming.md）', settledPaths.length === 3 && settledPaths.includes('/pm-probe-ws/streaming.md') && settledPaths.includes('/pm-probe-ws/tail-report.md'), JSON.stringify(settledPaths))
   await page.screenshot({ path: join(SHOTS, 'expanded.png') })
 }
 

@@ -2330,18 +2330,11 @@ window.__t4Vector = () => {
   }
   const v = {}
   const pane = appRoot('t4-pane')
-  // PreviewPane's root renders a <style> element as its FIRST child, so the
-  // rows start at index 1: [style, stripRow, toolbarRow, content].
-  const tabActive = pane && pane.querySelector("[data-tab-path='/w/报.md']")
-  const tabIdle = pane && pane.querySelector("[data-tab-path='/w/注.txt']")
+  // The strip/toolbar are gone (2026-10-25): PreviewPane's root is the content
+  // row alone — the seeded markdown has no readFile fixture on purpose, so the
+  // content IS the ErrorCard.
   v.paneGround = pick(pane, ['backgroundColor'])
-  v.tabActive = pick(tabActive, ['backgroundColor', 'boxShadow', 'color'])
-  v.tabIdle = pick(tabIdle, ['color'])
-  v.stripBorder = pick(tabActive && tabActive.parentElement.parentElement, ['borderBottomColor'])
-  const toolRow = pane && pane.children[2]
-  v.toolInk = pick(toolRow && toolRow.children[0], ['color'])
-  v.pathInk = pick(toolRow && toolRow.children[3], ['color'])
-  const content = pane && pane.children[3]
+  const content = pane && pane.children[0]
   v.errInk = pick(content && content.querySelector('div'), ['color'])
   const empty = appRoot('t4-pane-empty')
   v.emptyIcon = pick(empty && empty.children[0], ['color'])
@@ -2445,7 +2438,8 @@ window.__mountWB = () => {
   // The pane needs one conversation open (persisted store — forced here), a
   // plan with two nodes (工作计划's link-blue progress badge) and a browser tab
   // (浏览器's muted count badge) so both badge roles have an element to ride.
-  useWorkbenchStore.setState({ openByConversation: { 'wb-conv': true }, activeTab: 'files', width: 420 })
+  // The 文件预览 tab merged into 工作区 (2026-10-25): the front tab IS 工作区.
+  useWorkbenchStore.setState({ openByConversation: { 'wb-conv': true }, activeTab: 'workspace', width: 420 })
   createRoot(mk('wb-shell', 300)).render(
     <WBMode>
       <WorkbenchPane
@@ -2462,9 +2456,16 @@ window.__mountWB = () => {
     </WBMode>
   )
   // The tree's root dir comes from the preview store; its rows from the
-  // listDir stub the INIT script installed.
+  // listDir stub the INIT script installed. Selection is controlled state now
+  // (the address bar mirrors it), so the host carries the setter — the §15
+  // flow clicks the row below to put the antd-token-borne selected pair on
+  // screen for both mode passes.
   usePreviewPaneStore.setState({ workspaceDir: '/w/工作区' })
-  createRoot(mk('wb-tree', 200)).render(<WBMode><WorkspaceTree conversationId="wb-conv" /></WBMode>)
+  const WSTreeHost = () => {
+    const [sel, setSel] = useState(null)
+    return <WorkspaceTree conversationId="wb-conv" selectedPath={sel} onSelectPath={setSel} />
+  }
+  createRoot(mk('wb-tree', 200)).render(<WBMode><WSTreeHost /></WBMode>)
   createRoot(mk('wb-editor', 120)).render(<WBMode><FileEditor value="hello" onChange={() => {}} onSave={() => {}} /></WBMode>)
 }
 
@@ -2483,18 +2484,20 @@ window.__wbVector = () => {
   v.stripGround = pick(strip, ['backgroundColor', 'borderBottomColor'])
   const tabsRow = strip && strip.children[0]
   const tabByLabel = (label) => tabsRow && [...tabsRow.children].find((d) => d.textContent && d.textContent.indexOf(label) >= 0)
-  v.tabActive = pick(tabByLabel('文件预览'), ['backgroundColor', 'boxShadow', 'color'])
-  v.tabIdle = pick(tabByLabel('工作区'), ['color'])
+  v.tabActive = pick(tabByLabel('工作区'), ['backgroundColor', 'boxShadow', 'color'])
+  v.tabIdle = pick(tabByLabel('浏览器'), ['color'])
   const badgeOf = (tab) => (tab && tab.children.length > 1 ? tab.children[1] : null)
   v.badgeCount = pick(badgeOf(tabByLabel('浏览器')), ['backgroundColor'])
   v.badgePlan = pick(badgeOf(tabByLabel('工作计划')), ['backgroundColor'])
   v.closeInk = pick(strip && strip.children[1], ['color'])
 
   const treeHost = document.getElementById('wb-tree')
-  const pathBar = treeHost && [...treeHost.querySelectorAll('div')].find((d) => (d.getAttribute('style') || '').indexOf('--pm-separator-faint') >= 0)
-  v.wsPathBar = pick(pathBar, ['borderBottomColor'])
-  v.wsPathText = pick(pathBar && [...pathBar.children].find((d) => d.tagName === 'SPAN'), ['color'])
   v.wsBtnInk = pick(treeHost && treeHost.querySelector('.pm-ws-btn'), ['color'])
+  // The root path bar is gone — the address bar above the merged view carries
+  // the path (and 打开/更多) since 2026-10-25.
+  const addr = document.querySelector('#wb-shell [data-ws-address]')
+  v.wsAddrBorder = pick(addr, ['borderBottomColor'])
+  v.wsAddrInk = pick(addr && addr.querySelector('[data-ws-address-path]'), ['color'])
 
   v.editorInk = pick(document.querySelector('#wb-editor textarea'), ['color', 'backgroundColor'])
   return v
@@ -4899,11 +4902,6 @@ check('翻转：能力/设置/浏览器面的读数都随模式变化', t3Flip.l
 console.log('\n=== 14. 预览面（M4/T1–T3） ===')
 const T4_TABLE = {
   paneGround: { backgroundColor: '--pm-bg' },
-  tabActive: { backgroundColor: '--pm-tile-soft', boxShadow: '--pm-shadow-chip', color: '--pm-text-strong' },
-  tabIdle: { color: '--pm-text-quiet' },
-  stripBorder: { borderBottomColor: '--pm-separator-faint' },
-  toolInk: { color: '--pm-text-secondary' },
-  pathInk: { color: '--pm-text-muted' },
   errInk: { color: '--pm-text-muted' },
   // the empty state's decorative icon keeps its literal grey on purpose; the
   // hint line under it was #bbb — the faint rung
@@ -4957,7 +4955,9 @@ await page.evaluate((bin) => { window.__pmBinaries = bin }, {
 })
 await page.evaluate(() => window.__mountT4())
 await page.waitForFunction(() => {
-  return !!document.querySelector('#t4-pane [data-tab-path]')
+  // The pane's strip is gone (2026-10-25) — the ErrorCard's 重试 button is
+  // what proves the seeded file's content really mounted.
+  return !!document.querySelector('#t4-pane button')
     && !!document.querySelector('#t4-pane-empty')
     && !!document.querySelector('#t4-xlsx [data-xlsx-grid]')
     && !!document.querySelector('#t4-pdf [data-pdf-page="1"]')
@@ -5089,8 +5089,8 @@ const WB_TABLE = {
   badgeCount: { backgroundColor: '--pm-badge-muted' },
   badgePlan: { backgroundColor: '--pm-link' },
   closeInk: { color: '--pm-text-quiet' },
-  wsPathBar: { borderBottomColor: '--pm-separator-faint' },
-  wsPathText: { color: '--pm-text-secondary' },
+  wsAddrBorder: { borderBottomColor: '--pm-separator-faint' },
+  wsAddrInk: { color: '--pm-text-muted' },
   wsBtnInk: { color: '--pm-graph-ink-dim' },
   editorInk: { color: '--pm-text-strong', backgroundColor: '--pm-bg' },
 }
@@ -5102,11 +5102,21 @@ await page.evaluate(() => {
 await page.waitForFunction(() => {
   const strip = document.querySelector('#wb-shell .ant-app > div')
   const tabs = strip && strip.children[1] && strip.children[1].children[0]
-  return !!tabs && tabs.children.length >= 4
+  // 三个工具 tab（工作区/浏览器/工作计划）——文件预览已并入工作区。
+  return !!tabs && tabs.children.length >= 3
     && !!document.querySelector('#wb-tree .pm-ws-btn')
     && !!document.querySelector('#wb-editor textarea')
 }, { timeout: 20000 })
 await page.waitForTimeout(150)
+
+// Select the one row (报.md) so the DirectoryTree's antd-token-borne selected
+// pair is on screen for both mode passes. A DOM click is fine here: the check
+// reads paint, not trust.
+await page.evaluate(() => {
+  const name = document.querySelector('#wb-tree .pm-ws-row .pm-ws-name')
+  if (name) name.click()
+})
+await page.waitForFunction(() => document.querySelector('#wb-tree .ant-tree-treenode-selected'))
 
 async function wbExpectations() {
   const roles = new Set()
@@ -5161,6 +5171,47 @@ const wbNotFlipped = wbKeys.filter((key) => {
   return Object.keys(WB_TABLE[key]).every((prop) => l[prop] === d[prop])
 })
 check('翻转：工作台外壳全部读数都随模式变化', wbNotFlipped.length === 0 && wbMissing.length === 0, [...wbNotFlipped, ...wbMissing].join(' | ') || `${wbKeys.length} 个角色的读数全部不同`)
+
+// The tree's selected row is antd-token-borne (DirectoryTree's
+// directoryNodeSelectedBg/Color — NOT a --pm role), so it cannot ride
+// WB_TABLE's role/flip discipline; pinned by value per mode instead. The
+// user's ruling (2026-10-25): 选中行灰底黑字, never the ink-primary black
+// the defaults derive. Light: #f5f5f5 + ordinary colorText; dark: the #333
+// rung + light colorText. Clicked into in #wb-tree above; selection survives
+// the theme re-renders (same tree instance, uncontrolled state).
+async function wsSelRead() {
+  return page.evaluate(() => {
+    const node = document.querySelector('#wb-tree .ant-tree-treenode-selected')
+    const wrapper = node && node.querySelector('.ant-tree-node-content-wrapper')
+    return node && wrapper
+      ? { bg: getComputedStyle(node).backgroundColor, ink: getComputedStyle(wrapper).color }
+      : null
+  })
+}
+await page.evaluate(() => window.__setMode('light'))
+// 300ms, not a nicety: the tree node's text/bg carry antd's 0.2s
+// motionDurationMid transition — 80ms read mid-flight ink (§16's
+// ASSIST_SETTLE lesson, same trap one section over).
+await page.waitForTimeout(300)
+const wsSelLight = await wsSelRead()
+check(
+  '浅色 工作区选中行 = 灰底黑字 (#f5f5f5 / 常规墨)',
+  !!wsSelLight && wsSelLight.bg === 'rgb(245, 245, 245)' && wsSelLight.ink === 'rgba(0, 0, 0, 0.88)',
+  JSON.stringify(wsSelLight),
+)
+await page.evaluate(() => window.__setMode('dark'))
+await page.waitForTimeout(300)
+const wsSelDark = await wsSelRead()
+check(
+  '深色 工作区选中行 = 深灰底浅墨 (#333333 / 浅字)',
+  !!wsSelDark && wsSelDark.bg === 'rgb(51, 51, 51)' && wsSelDark.ink === 'rgba(255, 255, 255, 0.85)',
+  JSON.stringify(wsSelDark),
+)
+check(
+  '翻转：工作区选中行随模式变化',
+  !!wsSelLight && !!wsSelDark && wsSelLight.bg !== wsSelDark.bg && wsSelLight.ink !== wsSelDark.ink,
+  JSON.stringify({ light: wsSelLight, dark: wsSelDark }),
+)
 
 // The cut control: dark attribute, no dark section — every reading falls back.
 await page.evaluate(() => window.__setMode('dark'))

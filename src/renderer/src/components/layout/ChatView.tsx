@@ -6,7 +6,7 @@ import { useNewTaskStore, type NewTaskMode } from '../../stores/newTaskStore'
 import { useProjectHue } from '../../stores/projectStore'
 import { useNavigationStore } from '../../stores/navigationStore'
 import { SegmentBlock } from '../chat/SegmentView'
-import { buildSegments, getSegmentAnchorId, getSegmentKey, type Segment } from '../chat/message-segments'
+import { buildSegments, getSegmentAnchorId, getSegmentKey, hasLiveTextTail, type Segment } from '../chat/message-segments'
 import { useSegmentEntrance } from '../chat/use-segment-entrance'
 import { routineEntryAllowed, routineEntryTargetIndex } from '../chat/routine-entry'
 import { StreamingCursor } from '../chat/StreamingCursor'
@@ -419,7 +419,7 @@ function ChatView({
       }}
     >
       <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--pm-link)', flexShrink: 0 }} />
-      <span>计划进行中 · {planSettled}/{planTotal}</span>
+      <span>{plan?.mode === 'direct' ? '清单进行中' : '计划进行中'} · {planSettled}/{planTotal}</span>
       <span style={{ color: 'var(--pm-link)' }}>查看</span>
     </div>
   ) : null, [plan, planTotal, planSettled, workbenchOpen, wbKey])
@@ -1019,8 +1019,17 @@ function ChatView({
         {renderedSegments.map((seg, i) => {
           const abs = windowTop + i
           const turn = turnPlacement.turnOf[abs]
+          // 本轮产物卡等轮次完全落定（2026-10-25 用户裁定）：轮次未落定时最后一轮
+          // 是 live 轮——文件行随 tool_result 逐个到齐，卡会跟着流式尾巴逐帧下坠、
+          // 行数中途变化；落定（idle/completed/error，routine-entry 同一套判定）
+          // 后才一次性出现。更早的轮次是已落定的历史，照常出卡。
+          const liveTurn = !routineEntryAllowed(agentStatus.status)
+            ? turnPlacement.turnOf[turnPlacement.turnOf.length - 1]
+            : undefined
           const turnDeliverable =
-            turn !== undefined && turnPlacement.lastSegmentOfTurn[turn] === abs ? turnRows[turn] : undefined
+            turn !== undefined && turn !== liveTurn && turnPlacement.lastSegmentOfTurn[turn] === abs
+              ? turnRows[turn]
+              : undefined
           const card =
             turnDeliverable && turnDeliverable.rows.length > 0 ? (
               <TurnDeliverablesCard
@@ -1045,8 +1054,9 @@ function ChatView({
         })}
 
         <div style={{ minHeight: 1, paddingBottom: 160 }}>
-          {/* Single blinking cursor — always present during active request */}
-          <StreamingCursor show={isRequesting} />
+          {/* The single cursor of a run: at the foot while nothing streams as
+              text, otherwise at the end of the live text (SegmentView's tail). */}
+          <StreamingCursor show={isRequesting && !hasLiveTextTail(allSegments)} />
 
           {/* Error state */}
           {isError && (

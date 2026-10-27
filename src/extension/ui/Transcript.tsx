@@ -141,12 +141,14 @@ function AssistantBlock({ block, completed, streaming, handlers }: {
     case 'thinking':
       return <ThinkingBlock block={block} />
     case 'redacted_thinking':
-      // The chat's inline lock line (MessageGroup's redacted branch).
+      // The chat's redacted row (ThinkingBlockView's ThinkingRedactedRow):
+      // same tool-row construction, lock glyph, nothing to expand.
       return (
         <div className="pm-thinking">
-          <div className="pm-thinking-head">
-            <span className="pm-thinking-caret">🔒</span>
-            <span className="pm-thinking-title">Thinking redacted</span>
+          <div className="pm-thinking-head" style={{ cursor: 'default' }}>
+            <span className="pm-thinking-caret" style={{ color: 'var(--pm-muted)' }}>🔒</span>
+            <span className="pm-thinking-title">深度思考</span>
+            <span className="pm-thinking-preview">（已隐藏）</span>
           </div>
         </div>
       )

@@ -42,6 +42,10 @@
  *   7. two ask_user calls in ONE batch merge into one [data-ask-batch] card:
  *      progress badge, settled questions collapse to summaries, the rows hand
  *      over question by question, and a double click answers exactly once
+ *   8. streaming thinking (2026-10-25 飞行棋卡死复盘): a pure-thinking round
+ *      renders a live strip — tail preview + char count, expandable to the full
+ *      plain pre — and on commit folds into a collapsible execution group whose
+ *      header shows the Thinking first line (把 thinking 当作 execution)
  *
  * No Electron, no LLM calls, no extension: `window.electronAPI` is stubbed and the
  * page is plain, so this cannot touch a real PulseMind session.
@@ -105,6 +109,39 @@ const handlers = {
 function Harness() {
   const [, force] = useState(0)
   const rerender = () => force((n) => n + 1)
+  window.__rerender = rerender
+  // isRequesting is stateful so the streaming-thinking section can settle the
+  // turn (the done-state chrome only lights when the engine is idle).
+  const [requesting, setRequesting] = useState(true)
+  window.__setRequesting = (v) => setRequesting(v)
+  // Streaming tail (2026-10-25 streaming-thinking segment): non-empty blocks
+  // ride a streaming status, exactly what the engine's 80ms coalesced pushes
+  // look like in the mirror.
+  const [streamingBlocks, setStreamingBlocks] = useState([])
+  window.__setStreaming = (blocks) => {
+    setStreamingBlocks(blocks)
+    state.agentStatus = blocks.length > 0 ? { status: 'streaming' } : { status: 'completed' }
+  }
+  // The commit step: a thinking-only round lands (the max_tokens shape) while
+  // the live tail clears — state is bundle-scoped, so this has to run inside.
+  window.__commitThinking = (t) => {
+    state.messages = [...state.messages, { id: 'a-think', role: 'assistant', contentBlocks: [{ type: 'thinking', thinking: t }], createdAt: NOW }]
+    window.__setStreaming([])
+  }
+  // A following TEXT round — the retro-fusion trigger.
+  window.__appendTextRound = (t) => {
+    state.messages = [...state.messages, { id: 'a-text', role: 'assistant', contentBlocks: [{ type: 'text', text: t }], createdAt: NOW }]
+    rerender()
+  }
+  // A committed TOOL round (executed, settled) — the user's spinning-group sequence.
+  window.__appendToolRound = () => {
+    state.messages = [
+      ...state.messages,
+      { id: 'a-tool', role: 'assistant', contentBlocks: [{ type: 'tool_use', id: 'tool-x', name: 'write', status: 'completed', exitCode: 0, input: {} }], createdAt: NOW },
+      { id: 'u-result', role: 'user', contentBlocks: [{ type: 'tool_result', tool_use_id: 'tool-x', content: 'ok' }], createdAt: NOW },
+    ]
+    rerender()
+  }
 
   // What the renderer's session subscription does (useConversationEngine): fold the
   // wire event into the mirror, then hand React the mirrored array. The engine
@@ -149,8 +186,8 @@ function Harness() {
           <TranscriptView
             messages={state.messages}
             agentStatus={state.agentStatus}
-            streamingBlocks={[]}
-            isRequesting={true}
+            streamingBlocks={streamingBlocks}
+            isRequesting={requesting}
             restoring={false}
             onApproveTool={handlers.approve}
             onRejectTool={handlers.reject}
@@ -364,6 +401,223 @@ const skipped = () => page.getByText('已由用户跳过', { exact: false })
   check('双击最后一题只上报一次', reported.length === logBefore + 1 && last[0] === 'bq2' && last[1] === '不要', JSON.stringify(reported))
   check('全部答完后选项行收场', (await batch().locator('.pm-ask-rows').count()) === 0)
   check('两题各留一条摘要', (await batch().getByText('已选择：', { exact: false }).count()) === 2)
+}
+
+// ── 8. Streaming thinking is a live strip, and it survives the commit ──
+// conv_20261025172138 卡死复盘: a reasoning round streamed 45,851 thinking
+// tokens over ~4 minutes while the transcript rendered NOTHING (the segment
+// builder lifted only text/tool_use), and the committed thinking-only round was
+// skipped too. The strip must exist while the deltas flow — with a LIVE tail
+// preview, plain-text expand, no markdown parse — and the settled round must
+// keep it instead of dropping the round on commit.
+{
+  console.log('== 流式 thinking ==')
+  const HEAD = 'HEADMARKER-at-the-very-start'
+  const TAIL = 'TAILMARKER-at-the-very-end'
+  const thinkText = (n) => `${HEAD}-${'r'.repeat(n)}-${TAIL}`
+  // Tenth ruling: streaming thinking JOINS the open execution group — the old
+  // separate strip is gone. Live visibility lives in the GROUP HEADER (live
+  // tail + char count + spinner); the thinking row itself is inside the group
+  // body (expand to reach it).
+  const liveGroupHead = () => page.locator('[data-segment-head]', { hasText: '深度思考' })
+
+  // Mid-round: only reasoning deltas have arrived.
+  const first = thinkText(2900)
+  const second = thinkText(3900)
+  await page.evaluate((t) => window.__setStreaming([{ type: 'thinking', thinking: t }]), first)
+  await page.waitForTimeout(200)
+  check('直播组在流式期间可见', (await liveGroupHead().count()) === 1)
+  check('组头显示活尾巴', await page.getByText(TAIL, { exact: false }).isVisible())
+  check('组头不展示开头（是尾巴不是开头）', (await page.getByText(HEAD, { exact: false }).count()) === 0)
+  check('组头带字符计数', await page.getByText(`(${first.length} chars)`, { exact: false }).isVisible())
+  const spinning = await page.evaluate(() => {
+    const head = document.querySelector('[data-segment-head]')
+    const firstChild = head?.firstElementChild
+    return firstChild ? getComputedStyle(firstChild).borderRadius === '50%' : false
+  })
+  check('接收中组头转圈', spinning)
+
+  // Live-ness: more deltas → the tail rotates to the new count within the
+  // rotation clock (~700ms), not per tick (per tick was the flicker report).
+  await page.evaluate((t) => window.__setStreaming([{ type: 'thinking', thinking: t }]), second)
+  await page.waitForTimeout(900)
+  check('增量轮动落地新计数（节流后到达）', await page.getByText(`(${second.length} chars)`, { exact: false }).isVisible())
+
+  // Flicker fix: the header is [stable 深度思考 label][rotating tail] — the
+  // label node SURVIVES across ticks (the whole text used to remount per tick
+  // via key={displayText}, replaying the fade at streaming rate), and the tail
+  // is held between rotations instead of swapping every 80ms.
+  await page.evaluate(() => {
+    const head = document.querySelector('[data-segment-head]')
+    const span = [...(head?.querySelectorAll('span') ?? [])].find((s) => s.textContent === '深度思考')
+    if (span) span.__pmAnchor = 'keep-me'
+  })
+  await page.evaluate((t) => window.__setStreaming([{ type: 'thinking', thinking: t }]), thinkText(4400))
+  await page.waitForTimeout(120)
+  const anchorAlive = await page.evaluate(() => {
+    const head = document.querySelector('[data-segment-head]')
+    const span = [...(head?.querySelectorAll('span') ?? [])].find((s) => s.textContent === '深度思考')
+    return span ? span.__pmAnchor === 'keep-me' : false
+  })
+  check('「深度思考」标签跨 tick 不重挂', anchorAlive)
+  const tailHeld = await page.evaluate((len) => {
+    const head = document.querySelector('[data-segment-head]')
+    return head?.textContent.includes(`(${len} chars)`) ?? false
+  }, second.length)
+  check('尾巴节流持有（120ms 内未换新值）', tailHeld)
+  await page.waitForTimeout(800)
+  const tailRotated = await page.evaluate((len) => {
+    const head = document.querySelector('[data-segment-head]')
+    return head?.textContent.includes(`(${len} chars)`) ?? false
+  }, thinkText(4400).length)
+  check('尾巴轮动落地新值（节流后到达）', tailRotated)
+
+  // Expand the live group: the thinking row is inside; expanding the row shows
+  // the full text in a plain pre — capped and scrollable like the settled one.
+  await liveGroupHead().click()
+  await page.waitForTimeout(200)
+  const rowHeader = () => page.locator('[data-thinking-head]', { hasText: '深度思考' })
+  check('直播组内思考行可见', await rowHeader().isVisible())
+  await rowHeader().click()
+  await page.waitForTimeout(150)
+  const pre = page.locator('pre', { hasText: TAIL })
+  check('展开后全文可见（头尾都在）', (await pre.count()) === 1 && await pre.getByText(HEAD, { exact: false }).isVisible())
+  check('展开态限高 400 可滚', await pre.first().evaluate((el) => {
+    const s = getComputedStyle(el)
+    return s.maxHeight === '400px' && s.overflowY === 'auto'
+  }))
+  await rowHeader().click()
+  await page.waitForTimeout(100)
+  check('再点收起', (await page.locator('pre').count()) === 0)
+
+  // Collapsed = ONE line, even for a CJK tail (80 CJK chars at fontSize 12
+  // used to wrap the header to ~3 lines — user report 2026-10-25).
+  const cjkText = '开头标记。' + '想'.repeat(300) + '。尾部标记收尾'
+  await page.evaluate((t) => window.__setStreaming([{ type: 'thinking', thinking: t }]), cjkText)
+  await page.waitForTimeout(150)
+  const headerH = await page.evaluate(() => {
+    const el = document.querySelector('[data-thinking-head]')
+    return el ? el.getBoundingClientRect().height : null
+  })
+  check('CJK 长预览折叠仍是一行（紧凑行）', headerH !== null && headerH < 30, `header height ${headerH}px — compact row is ~26px, two lines would be ~45`)
+  check('CJK 预览带字符计数', await page.getByText(`(${cjkText.length} chars)`, { exact: false }).isVisible())
+
+  // 上下对齐: the thinking row and a tool row are the SAME row chrome — equal
+  // heights, measured against a REAL tool head inside the same open group.
+  await page.evaluate(() => window.__setStreaming([
+    { type: 'thinking', thinking: 'x' },
+    { type: 'tool_use', id: 'tw-align', name: 'write', status: 'pending', input: {} },
+  ]))
+  await page.waitForTimeout(200)
+  const headHeights = await page.evaluate(() => ({
+    think: document.querySelector('[data-thinking-head]')?.getBoundingClientRect().height ?? null,
+    tool: document.querySelector('[data-tool-head]')?.getBoundingClientRect().height ?? null,
+  }))
+  check('思考头与工具头同高（上下对齐）', headHeights.think !== null && headHeights.tool !== null && Math.abs(headHeights.think - headHeights.tool) <= 1, JSON.stringify(headHeights))
+
+  const rowLeft = () => page.evaluate(() => {
+    const el = document.querySelector('[data-thinking-head]')
+    return el ? el.getBoundingClientRect().left : null
+  })
+  // The clicks above leave the pointer ON the group — the hover fill would
+  // read as a grey chip. Park it before measuring the resting chrome.
+  await page.mouse.move(0, 0)
+  await page.waitForTimeout(150)
+  const liveLeft = await rowLeft()
+  const liveBg = await page.evaluate(() => {
+    const el = document.querySelector('[data-thinking-head]')
+    return el ? getComputedStyle(el).backgroundColor : null
+  })
+  check('思考头无浅灰底', liveBg === 'rgba(0, 0, 0, 0)', liveBg)
+
+  // The round commits as thinking-only (the max_tokens shape): the SAME group
+  // persists — rekeyed to the committed message, collapsed again. Settling
+  // means the engine goes idle: the done-state chrome lights only then.
+  await page.evaluate(() => window.__setRequesting(false))
+  await page.evaluate((t) => window.__commitThinking(t), first)
+  await page.waitForTimeout(250)
+  const groupHead = () => page.locator('[data-segment-head]', { hasText: '已完成 · 深度思考' })
+  check('提交后仍是同一个 exec 组', (await groupHead().count()) === 1)
+  check('组头读工具家族口径：已完成 · 深度思考1次', await page.getByText('已完成 · 深度思考1次', { exact: false }).isVisible())
+  await groupHead().click()
+  await page.waitForTimeout(250)
+  // 完成态 chrome（2026-10-25 统一裁定）：左绿勾 + 右向右箭头 —— 思考头与
+  // 组头同形。绿勾是终端家族的 #4ec9b0（rgb 78,201,176），与工具卡完成勾同源；
+  // 头内 svg 数 ≥2 = 勾 + 折箭。
+  const chrome = await page.evaluate(() => {
+    const probe = (sel) => {
+      const head = document.querySelector(sel)
+      const svg = head?.querySelector('svg')
+      return { color: svg ? getComputedStyle(svg).color : null, svgs: head ? head.querySelectorAll('svg').length : 0 }
+    }
+    return { think: probe('[data-thinking-head]'), group: probe('[data-segment-head]') }
+  })
+  check('完成态思考头左缘绿勾', chrome.think.color === 'rgb(78, 201, 176)', JSON.stringify(chrome))
+  check('思考头右缘有折箭（勾+箭两个 svg）', chrome.think.svgs >= 2, `svgs=${chrome.think.svgs}`)
+  check('完成态执行组头同亮绿勾+折箭', chrome.group.color === 'rgb(78, 201, 176)' && chrome.group.svgs >= 2, JSON.stringify(chrome.group))
+  // 行首标签是工具名字阶：粗体 600 + 深色（--pm-text-strong），不是弱色文本
+  const labelStyle = await page.evaluate(() => {
+    const span = [...(document.querySelector('[data-thinking-head]')?.querySelectorAll('span') ?? [])]
+      .find((s) => s.textContent === '深度思考')
+    if (!span) return null
+    const cs = getComputedStyle(span)
+    return { weight: cs.fontWeight, color: cs.color }
+  })
+  check('行首「深度思考」粗体深色（同工具名）', labelStyle?.weight === '600' && labelStyle.color === 'rgb(51, 51, 51)', JSON.stringify(labelStyle))
+  const settledLeft = await rowLeft()
+  check('提交前后思考行位置稳定（不跳动）', settledLeft !== null && liveLeft !== null && Math.abs(settledLeft - liveLeft) <= 0.5, `live ${liveLeft} vs settled ${settledLeft}`)
+  check('组内思考条预览回开头摘要', await page.getByText(HEAD, { exact: false }).first().isVisible())
+  await rowHeader().click()
+  await page.waitForTimeout(150)
+  check('组内思考条仍可展开全文', (await page.locator('pre', { hasText: TAIL }).count()) === 1)
+
+  // Forward stability (ninth ruling — no look-ahead): when the next assistant
+  // round is TEXT, the thinking group must STAND — committed structure never
+  // rewrites. The old retro-folding dissolved it into the bubble; pinned gone.
+  await page.evaluate((t) => window.__appendTextRound(t), '这是思考之后的正文。')
+  await page.waitForTimeout(250)
+  check('正文轮到来后思考组原地成立（不溶解）', (await page.locator('[data-segment-head]', { hasText: '已完成 · 深度思考' }).count()) === 1)
+  check('组内思考行仍在', (await page.locator('[data-thinking-head]').count()) === 1)
+  check('正文气泡独立出现在组后', await page.getByText('这是思考之后的正文。').isVisible())
+
+  // Success marking while a LATER message streams (user report): the committed
+  // group is complete the moment its round committed — the green check and the
+  // 已完成 header must be up EVEN while the engine is still streaming the text
+  // that follows it (it used to sit unresolved at 深度思考 · 首行).
+  await page.evaluate(() => window.__setRequesting(true))
+  await page.evaluate(() => window.__setStreaming([{ type: 'text', text: '后续正文流式输出中' }]))
+  await page.waitForTimeout(250)
+  check('正文流式时思考组已读已完成', await page.getByText('已完成 · 深度思考1次', { exact: false }).isVisible())
+  const streamingMark = await page.evaluate(() => {
+    const head = [...document.querySelectorAll('[data-segment-head]')].find((h) => h.textContent?.includes('已完成 · 深度思考'))
+    const svg = head?.querySelector('svg')
+    return svg ? getComputedStyle(svg).color : null
+  })
+  check('正文流式时思考组绿勾已亮', streamingMark === 'rgb(78, 201, 176)', streamingMark)
+
+  // The user's exact sequence: tools committed → thinking streams (its live
+  // slice joins the open group) → the message text streams AFTER the group.
+  // The group must read 已完成 the moment the text segment exists after it —
+  // a lingering live slice must not hold the header in 指令生成中 (it spun
+  // until the message committed before the isReceiving-narrowing fix).
+  await page.evaluate(() => window.__setRequesting(true))
+  await page.evaluate(() => window.__appendToolRound())
+  await page.evaluate(() => window.__setStreaming([
+    { type: 'thinking', thinking: 'live-think-slice' },
+    { type: 'text', text: '第二轮正文流式输出中' },
+  ]))
+  await page.waitForTimeout(250)
+  check('工具+思考组在正文流式时已读已完成', (await page.locator('[data-segment-head]', { hasText: '已完成 · 修改 1 个文件' }).count()) === 1)
+  check('残留直播切片不再让组头停留在生成中', (await page.getByText('指令生成中', { exact: false }).count()) === 0)
+  const toolSpinning = await page.evaluate(() => {
+    const head = [...document.querySelectorAll('[data-segment-head]')].find((h) => h.textContent?.includes('已完成 · 修改'))
+    const firstChild = head?.firstElementChild
+    return firstChild ? getComputedStyle(firstChild).borderRadius === '50%' : null
+  })
+  check('正文流式时组头不再转圈', toolSpinning === false, `spinning=${toolSpinning}`)
+  // Reset the tail so the fixture ends settled.
+  await page.evaluate(() => window.__setStreaming([]))
+  await page.evaluate(() => window.__setRequesting(false))
 }
 
 await browser.close()

@@ -1,21 +1,23 @@
 /**
  * Preview pane editing probe (PLAN-preview-edit T4; real Chromium, real mouse).
  *
- * Mounts the production PreviewPane + PreviewContent + FileEditor over a
+ * Mounts the production WorkspacePane (address bar + tree + PreviewPane) over a
  * stubbed electronAPI that serves fixture files and records writeFile calls,
- * then drives the whole edit story the way a user would:
+ * then drives the whole edit story the way a user now would (2026-10-25
+ * layout: the preview's own toolbar is gone — 编辑/保存 ride the address bar's
+ * 更多 menu, the dirty dot sits next to the address path):
  *
- *   1. typing makes the tab dirty (the orange dot);
- *   2. button-save and ⌘S both write — with the CRLF line endings and BOM
+ *   1. typing makes the file dirty (the orange dot beside the address path);
+ *   2. menu-save and ⌘S both write — with the CRLF line endings and BOM
  *      restored from the ORIGINAL file, not the textarea's LF;
- *   3. switching tabs and back keeps the draft;
- *   4. closing a dirty tab asks (Modal.confirm), closing a clean one doesn't;
- *   5. an external change meets a dirty draft as a two-choice banner
+ *   3. switching files and back keeps the draft;
+ *   4. an external change meets a dirty draft as a two-choice banner
  *      (保留我的修改 / 重新加载 both behave), and a clean draft refreshes
  *      WITHOUT remounting the editor;
- *   6. image tabs get no edit entry; an oversized file refuses to edit;
- *   7. saving an html bumps the iframe key (the frame really remounts);
- *   8. a rejected write (path jail) surfaces the error as a toast.
+ *   5. image tabs get no edit entry (disabled menu item); an oversized file
+ *      refuses to edit;
+ *   6. saving an html bumps the iframe key (the frame really remounts);
+ *   7. a rejected write (path jail) surfaces the error as a toast.
  *
  * Usage: node scripts/probe-preview-edit.mjs [--headed]
  */
@@ -31,18 +33,20 @@ const HARNESS = `
 import { createRoot } from 'react-dom/client'
 import { ConfigProvider } from 'antd'
 import { TranslationProvider } from './src/renderer/src/i18n/useTranslation'
+import { buildAntdTheme } from './src/renderer/src/theme/tokens'
 import { usePreviewPaneStore } from './src/renderer/src/stores/previewPaneStore'
 import { makeDraftFromDisk } from './src/renderer/src/stores/preview-edit'
-import { PreviewPane } from './src/renderer/src/components/preview/PreviewPane'
+import { WorkspacePane } from './src/renderer/src/components/workbench/WorkspacePane'
 
 let root = null
 window.__mount = () => {
   if (root) root.unmount()
+  usePreviewPaneStore.getState().setWorkspaceDir('/w')
   root = createRoot(document.getElementById('root'))
   root.render(
-    <ConfigProvider>
+    <ConfigProvider theme={buildAntdTheme('light')}>
       <TranslationProvider initialLocale="zh">
-        <PreviewPane conversationId={undefined} />
+        <WorkspacePane conversationId={undefined} />
       </TranslationProvider>
     </ConfigProvider>
   )
@@ -86,7 +90,14 @@ await page.addScriptTag({
   window.__writeCalls = [];
   window.__deny = {};
   window.electronAPI = new Proxy({}, { get: (_t, key) =>
-    key === 'readFile' ? (p) => {
+    key === 'listDir' ? (p) => {
+      if (p !== '/w') return Promise.resolve(null)
+      const entries = Object.keys(window.__files).map((path) => ({
+        name: path.slice(path.lastIndexOf('/') + 1), path, isDir: false,
+      }))
+      return Promise.resolve({ entries })
+    }
+    : key === 'readFile' ? (p) => {
       const text = window.__files[p]
       return Promise.resolve(text === undefined ? null : text)
     }
@@ -97,43 +108,64 @@ await page.addScriptTag({
     }
     : key === 'getFileStat' ? () => Promise.resolve({ size: 10, mtime: '2026-09-16T00:00:00Z' })
     : key === 'openFolder' ? () => Promise.resolve()
+    : key === 'deletePath' ? () => Promise.resolve({ success: true })
     : key === 'showSaveDialog' ? () => Promise.resolve({ canceled: true })
     : key === 'copyFile' ? () => Promise.resolve()
-    : /[Ll]ist$/.test(key) ? () => Promise.resolve([])
     : /^on[A-Z]/.test(key) ? () => () => {}
     : () => Promise.resolve(undefined) })`,
 })
 await page.addScriptTag({ path: OUT })
 await page.waitForFunction(() => window.__ready)
 
-const editToggle = () => page.locator('div[title="编辑"], div[title="预览"], div[title="该类型不支持编辑"]')
-const saveButton = () => page.locator('div[title="保存"]')
 const textarea = () => page.locator('textarea')
-const openFile = (path) => page.evaluate((p) => window.__store.getState().openFile(null, p), path)
+const row = (p) => page.locator(`.pm-ws-row[data-ws-path="${p}"] .pm-ws-name`)
+const openFile = async (p) => {
+  await row(p).click()
+  await page.waitForFunction((pp) => window.__store.getState().activeByConversation['__draft__'] === pp, p)
+}
+const addressPath = () => page.locator('[data-ws-address-path]').innerText()
+/** Open the 更多 menu and click one item by its exact label. */
+const menuClick = async (label) => {
+  await page.locator('[data-ws-more]').click()
+  await page.getByRole('menuitem', { name: label, exact: true }).waitFor()
+  await page.getByRole('menuitem', { name: label, exact: true }).click()
+  await page.waitForTimeout(60)
+}
+const menuDisabled = async (label) => {
+  await page.locator('[data-ws-more]').click()
+  const item = page.getByRole('menuitem', { name: label, exact: true })
+  await item.waitFor()
+  const disabled = await item.getAttribute('aria-disabled')
+  await page.keyboard.press('Escape')
+  return disabled === 'true'
+}
 
 await page.evaluate(() => window.__mount())
+await page.locator('.pm-ws-tree').waitFor()
 await openFile('/w/a.md')
-await editToggle().waitFor()
 
-/* ── 1. Typing makes the tab dirty; the textarea shows the file text. ── */
-await editToggle().click()
+/* ── 0. The address bar names the selection; the preview shows the file. ── */
+check('the address bar shows the selected file’s absolute path', (await addressPath()) === '/w/a.md', await addressPath())
+check('…and the preview renders the file (no tab strip anywhere)', (await page.locator('.pm-preview-tabstrip').count()) === 0 && (await page.getByText('标题').first().isVisible()))
+
+/* ── 1. Typing makes the file dirty; the textarea shows the file text. ── */
+await menuClick('编辑')
 await textarea().waitFor()
 const initial = await textarea().inputValue()
 check('edit mode shows the file source (CRLF normalized to LF for the textarea)', initial === '# 标题\n正文\n', JSON.stringify(initial))
-check('image tabs have no edit entry (disabled toggle with the unavailable hint)', (await page.locator('div[title="该类型不支持编辑"]').count()) === 0 || true) // replaced below once pic tab opens
 const dotBefore = await page.locator('span[title="未保存的修改"]').count()
 await textarea().click()
 await textarea().press('End')
 await page.keyboard.type('# 尾注')
 const dotAfter = await page.locator('span[title="未保存的修改"]').count()
-check('typing flips the dirty dot on the tab', dotBefore === 0 && dotAfter === 1, `dots ${dotBefore}→${dotAfter}`)
+check('typing flips the dirty dot beside the address path', dotBefore === 0 && dotAfter === 1, `dots ${dotBefore}→${dotAfter}`)
 
-/* ── 2. Button save writes with CRLF restored. ── */
-await saveButton().click()
+/* ── 2. Menu save writes with CRLF restored. ── */
+await menuClick('保存')
 await page.waitForTimeout(120)
 let calls = await page.evaluate(() => window.__writeCalls)
 check(
-  'button save writes the edited content with the original CRLF endings',
+  'menu save writes the edited content with the original CRLF endings',
   calls.length === 1 && calls[0].filePath === '/w/a.md' && calls[0].content === '# 标题\r\n正文\r\n# 尾注',
   JSON.stringify(calls[0]),
 )
@@ -152,35 +184,19 @@ check(
   JSON.stringify(calls[1]?.content?.slice(-12)),
 )
 
-/* ── 4. Switching tabs and back keeps the draft. ── */
+/* ── 4. Switching files and back keeps the draft. ── */
 await textarea().click()
 await textarea().press('End')
 await page.keyboard.type('DRAFT-MARK')
 await openFile('/w/b.md')
-await editToggle().click() // b.md starts in view mode — edit mode is per tab
+await menuClick('编辑') // b.md starts in view mode — edit mode is per file
 await textarea().waitFor()
-check('the other tab opens with its own text', (await textarea().inputValue()).startsWith('# B'), '')
+check('the other file opens with its own text', (await textarea().inputValue()).startsWith('# B'), '')
 await openFile('/w/a.md')
 await textarea().waitFor()
 check('switching back restores the draft (D4: store survives remount)', (await textarea().inputValue()).includes('DRAFT-MARK'), '')
 
-/* ── 5. Closing a dirty tab asks; confirming closes. ── */
-await page.locator('span[title="未保存的修改"]').locator('..').locator('..').hover()
-await page.locator('.ant-modal-confirm').count().then(() => {})
-// click the X on the dirty tab (last X in the strip)
-await page.locator('div[title="/w/a.md"] svg.lucide-x').first().click()
-await page.locator('.ant-modal-confirm').waitFor()
-check('closing a dirty tab asks before discarding (D10)', (await page.locator('.ant-modal-confirm').count()) === 1)
-await page.locator('.ant-modal-confirm-btns button').first().click()
-check('cancelling keeps the tab (and its draft)', (await textarea().inputValue()).includes('DRAFT-MARK'), JSON.stringify(await textarea().inputValue()))
-
-/* ── 6. Clean tab closes without asking. ── */
-await openFile('/w/b.md')
-await page.locator('div[title="/w/b.md"] svg.lucide-x').first().click()
-await page.waitForTimeout(150)
-check('closing a clean tab asks nothing', (await page.locator('.ant-modal-confirm:visible').count()) === 0)
-
-/* ── 7. Conflict banner: dirty draft + external change (D7). ── */
+/* ── 5. Conflict banner: dirty draft + external change (D7). ── */
 await openFile('/w/a.md')
 await textarea().waitFor()
 await page.evaluate(() => {
@@ -205,7 +221,7 @@ await page.getByText('重新加载').click()
 await page.waitForTimeout(120)
 check('重新加载 discards the draft and shows the disk text', (await textarea().inputValue()) === 'agent 改过的\n', JSON.stringify(await textarea().inputValue()))
 
-/* ── 8. A CLEAN draft refreshes without remounting the editor. ── */
+/* ── 6. A CLEAN draft refreshes without remounting the editor. ── */
 await page.evaluate(() => {
   const st = window.__store.getState()
   st.setDraft('/w/a.md', window.__makeDraft(window.__files['/w/a.md']))
@@ -224,24 +240,17 @@ const adopted = await textarea().inputValue()
 check('a clean draft refreshes silently (editor NOT remounted)', nodeBefore && stayed, `same node=${stayed}`)
 check('…and adopts the new disk text', adopted === 'agent 静默改的\n', JSON.stringify(adopted))
 
-/* ── 9. Image tabs expose no edit entry. ── */
+/* ── 7. Image files expose a disabled edit entry. ── */
 await openFile('/w/pic.png')
 await page.waitForTimeout(80)
-check('image tabs have no edit toggle (read-only, D1)', (await page.locator('div[title="该类型不支持编辑"]').count()) === 1)
+check('image files carry a disabled 编辑 item (read-only, D1)', (await menuDisabled('该类型不支持编辑')) === true)
 
-/* ── 10. An oversized file refuses to edit. ── */
+/* ── 8. An oversized file refuses to edit. ── */
 await openFile('/w/huge.md')
 await page.waitForTimeout(200)
-const hugeDisabled = await page.locator('div[title="该类型不支持编辑"]').count()
-check('>1MB disables the edit toggle (D8)', hugeDisabled === 1, `disabled entries=${hugeDisabled}`)
-await openFile('/w/a.md')
-await editToggle().click()
-await page.waitForTimeout(80)
-check('…and an oversized file in edit mode shows the too-large card', (await page.getByText('文件过大，暂不支持编辑').count()) >= 0)
-await editToggle().click() // leave edit mode
-await page.waitForTimeout(60)
+check('>1MB disables the 编辑 item (D8)', (await menuDisabled('该类型不支持编辑')) === true)
 
-/* ── 11. Saving an html bumps the iframe key (frame remounts). ── */
+/* ── 9. Saving an html bumps the iframe key (frame remounts). ── */
 await openFile('/w/c.html')
 await page.evaluate(() => {
   const st = window.__store.getState()
@@ -249,21 +258,21 @@ await page.evaluate(() => {
   st.setDraft('/w/c.html', { ...entry, content: '<html><body><p>edited</p></body></html>' })
 })
 let iframe = await page.evaluate(() => { window.__frame = document.querySelector('iframe'); return !!window.__frame })
-await saveButton().click()
+await menuClick('保存')
 await page.waitForTimeout(150)
 const frameReplaced = await page.evaluate(() => document.querySelector('iframe') !== window.__frame)
-check('an html tab renders its iframe', iframe)
+check('an html file renders its iframe', iframe)
 check('…and saving remounts the frame (key={reloadTick}, D5)', frameReplaced, `replaced=${frameReplaced}`)
 
-/* ── 12. A rejected write surfaces the error (D9). ── */
+/* ── 10. A rejected write surfaces the error (D9). ── */
 await openFile('/w/deny.md')
-await editToggle().click()
+await menuClick('编辑')
 await textarea().waitFor()
 await textarea().click()
 await page.keyboard.press('End')
 await page.keyboard.type('x')
 await page.evaluate(() => { window.__deny['/w/deny.md'] = '路径被拒绝：~/.ssh 属于受保护目录' })
-await saveButton().click()
+await menuClick('保存')
 await page.getByText('路径被拒绝').waitFor()
 check('a rejected save shows the error as a toast (D9)', true)
 

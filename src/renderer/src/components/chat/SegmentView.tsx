@@ -3,16 +3,17 @@
  * both render messages, execution segments and streaming text identically.
  */
 import React, { useRef } from 'react'
-import { XMarkdown } from '@ant-design/x-markdown'
+import { XMarkdown, type XMarkdownProps } from '@ant-design/x-markdown'
 import Latex from '@ant-design/x-markdown/plugins/Latex'
 import { MessageGroup, type MessageActions } from './MessageGroup'
 import { ExecutionSegment } from './ExecutionSegment'
 import { CodeBlock } from './CodeBlock'
+import { StreamingCaret } from './StreamingCaret'
 import { useMarkdownThemeClass } from '../../theme/mode'
 import { createTextThrottle, STREAM_PARSE_MIN_INTERVAL } from './stream-throttle'
 import { ENTER_ANIM } from './motion'
 import type { ContentBlock } from '../../types/agent'
-import type { Segment } from './message-segments'
+import { lastLiveTextIndex, type Segment } from './message-segments'
 
 /** The chat's message-column padding. It is what makes the bubbles line up with
  *  the composer: the column is 1000 wide, the composer card 952, and the 24px
@@ -73,6 +74,10 @@ function StreamingText({ blocks }: { blocks: ContentBlock[] }): React.ReactEleme
   // several stable). feed() is O(1) and idempotent for the shown text, so
   // running it here every tick is nothing — what it gates is the parse below.
   const throttlesRef = useRef<Map<number, ReturnType<typeof createTextThrottle>>>(new Map())
+  // The caret rides the last block that has text — the end of what the user is
+  // reading. hasLiveTextTail (the hosts' StreamingCursor gate) is the same test
+  // over the segment, so the foot caret is gone exactly while this one shows.
+  const tailIndex = lastLiveTextIndex(blocks)
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12 }}>
       <div style={{ paddingLeft: 12, width: '100%', fontSize: 14, lineHeight: 1.6 }}>
@@ -87,7 +92,7 @@ function StreamingText({ blocks }: { blocks: ContentBlock[] }): React.ReactEleme
           const shown = throttle.feed(block.text, performance.now())
           return (
             <div key={i} className={mdClass} style={{ color: 'var(--pm-text-strong)' }}>
-              <StreamingMarkdown shown={shown} />
+              <StreamingMarkdown shown={shown} tail={i === tailIndex} />
             </div>
           )
         })}
@@ -96,17 +101,48 @@ function StreamingText({ blocks }: { blocks: ContentBlock[] }): React.ReactEleme
   )
 }
 
+/** x-markdown's streaming mode for the live tail. `hasNextChunk` holds an
+ *  unclosed token back until it closes — half a `**` or a `[text](` no longer
+ *  flashes as raw syntax between refreshes; `enableAnimation` fades in each
+ *  refresh's new text per block (the throttle sets the chunk size, the default
+ *  200ms fade overlaps the 150ms interval; motion.tsx's reduced-motion rule
+ *  covers the keyframe). The flag is a constant `true`, not `isStreaming`: this
+ *  component exists only while the segment is live — the settled message is a
+ *  different segment rendering a plain XMarkdown — and the memo below only
+ *  watches `shown`/`tail`, so a flipping flag would be swallowed anyway.
+ *  Module constants because XMarkdown memoizes on the object's identity. */
+type StreamingOption = NonNullable<XMarkdownProps['streaming']>
+const STREAMING_MD: StreamingOption = { hasNextChunk: true, enableAnimation: true }
+/** The caret at the end of the live text: the transcript's own glyph, which
+ *  the foot StreamingCursor stops drawing while this tail exists. x-markdown
+ *  injects it after the last text token, so an empty `shown` draws none. */
+function StreamingTail(): React.ReactElement {
+  return <StreamingCaret style={{ marginLeft: 2 }} />
+}
+const STREAMING_MD_TAIL: StreamingOption = { ...STREAMING_MD, tail: { component: StreamingTail } }
+
 /** The parse boundary. Memoized on the FROZEN snapshot: the live text changes
  *  every tick, but `shown` only advances at STREAM_PARSE_MIN_INTERVAL, so
  *  between advances this skips the render entirely — and XMarkdown's parse
  *  with it. That skip is where the throttle's saving lives (a same-content
  *  re-render would re-parse anyway). */
 const StreamingMarkdown = React.memo(
-  function StreamingMarkdown({ shown }: { shown: string }): React.ReactElement {
-    return <XMarkdown content={shown} components={{ code: CodeBlock }} config={{ extensions: Latex() }} />
+  function StreamingMarkdown({ shown, tail }: { shown: string; tail: boolean }): React.ReactElement {
+    return (
+      <XMarkdown
+        content={shown}
+        streaming={tail ? STREAMING_MD_TAIL : STREAMING_MD}
+        components={{ code: CodeBlock }}
+        config={{ extensions: Latex() }}
+      />
+    )
   },
-  (a, b) => a.shown === b.shown,
+  (a, b) => a.shown === b.shown && a.tail === b.tail,
 )
+
+/** The open live segment: streaming thinking ('streaming-think') and streaming
+ *  tool deltas ('streaming-exec') both mark it as receiving. */
+const isLiveSlice = (m: { id: string }): boolean => m.id === 'streaming-exec' || m.id === 'streaming-think'
 
 export function SegmentView({
   seg,
@@ -132,7 +168,7 @@ export function SegmentView({
         messages={seg.msgs}
         isLastSegment={isLastSegment}
         isRequesting={!!isRequesting}
-        isReceiving={seg.msgs.some((m) => m.id === 'streaming-exec')}
+        isReceiving={seg.msgs.some(isLiveSlice)}
         onApproveTool={onApproveTool}
         onRejectTool={onRejectTool}
         onKillTool={onKillTool ?? onRejectTool}

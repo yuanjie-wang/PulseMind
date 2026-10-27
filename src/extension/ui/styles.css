@@ -26,18 +26,15 @@
 
   --pm-fs: 14px; /* MessageGroup userBubbleStyle/assistantBubbleStyle fontSize */
   --pm-lh: 1.6; /* 同上 lineHeight */
-  --pm-text: #333; /* SegmentView StreamingText color */
-  --pm-muted: #999; /* 工具卡 summary / 空态提示 */
-  --pm-muted-2: #888; /* ThinkingBlockView 标题行 */
-  --pm-muted-3: #aaa; /* ThinkingBlockView 折叠预览 */
+  --pm-text: #333; /* SegmentView StreamingText color / .pm-tool-name 字色 */
+  --pm-muted: #999; /* 工具卡 summary / 思考头文本 / 空态提示 */
   --pm-faint: #bbb; /* 操作行图标 / 展开箭头 */
   --pm-divider: #ddd; /* 操作行分隔竖线 */
 
   --pm-user-bg: #f0f2f4; /* userBubbleStyle.background */
   --pm-user-fg: #000; /* userBubbleStyle.color */
 
-  --pm-tool-bg: #f5f5f5; /* CollapsibleToolBlock header background */
-  --pm-tool-bg-hover: #ebebeb;
+  --pm-tool-bg-hover: #ebebeb; /* 工具头/思考头 hover 的一步填充（静默态无底色，2026-10-25 去灰） */
   --pm-tool-pending-bg: #fff7e6; /* needsAction: 待批准 */
   --pm-tool-pending-hover: #ffe7ba;
   --pm-tool-pending-border: #ffd591;
@@ -52,7 +49,6 @@
   --pm-primary: #1677ff; /* antd colorPrimary（发送按钮 / 链接 / 主题色） */
   --pm-primary-hover: #4096ff;
 
-  --pm-think-rule: #d0d0d0; /* ThinkingBlockView borderLeft */
   --pm-think-bg: #f6f6f6; /* 展开后的 pre 背景 */
   --pm-think-fg: #555;
 
@@ -448,10 +444,12 @@ button {
   word-break: break-word;
 }
 
-/* 助手气泡：radius 12 / padding '4px 0' / width 100% */
+/* 助手气泡：radius 12 / width 100%。
+   2026-10-25 桌面去掉垂直 padding（该包裹层有时装多个 tool_use、有时只装
+   一个 thinking 行，自带 padding 叠上行距导致间距不均）——行距全归行自己。 */
 .pm-bubble-assistant {
   border-radius: var(--pm-radius-bubble);
-  padding: 4px 0;
+  padding: 0;
   width: 100%;
   font-size: var(--pm-fs);
   line-height: var(--pm-lh);
@@ -723,6 +721,8 @@ button {
   color: var(--pm-faint);
   font-size: 12px;
   line-height: 1;
+  /* 纯 tooltip 行：help 光标，替代 auto 在文字上渲染的文本 I-beam */
+  cursor: help;
 }
 
 .pm-stats-divider {
@@ -740,37 +740,73 @@ button {
 }
 
 /* ── 思考块（ThinkingBlockView）───────────────────────────────────────── */
+/* 2026-10-25 桌面统一裁定（第六次同构 + 第七次紧凑）：思考行 = CollapsibleToolBlock
+   行的同构兄弟 —— margin '2px 0' / padding '3px 10px' / gap 6 / lineHeight 1.4 /
+   12px 字阶 / 内容高；左绿勾、粗体黑「深度思考」、弱色摘要、右向右箭头。 */
 
-/* margin '6px 0' / borderLeft '2px solid #d0d0d0' / paddingLeft 10 */
 .pm-thinking {
-  margin: 6px 0;
-  border-left: 2px solid var(--pm-think-rule);
-  padding-left: 10px;
-  cursor: pointer;
-  user-select: none;
+  margin: 2px 0;
 }
 
-/* 标题行：color #888 / 13px / lineHeight 1.6 */
 .pm-thinking-head {
-  color: var(--pm-muted-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  line-height: 1.4;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--pm-radius-card);
+  cursor: pointer;
   font-size: 13px;
-  line-height: 1.6;
+  color: #555;
+  user-select: none;
+  overflow: hidden;
+  transition: background 0.15s;
 }
 
+.pm-thinking-head:hover {
+  background: var(--pm-tool-bg-hover);
+}
+
+/* 绿勾位：width 18 / 居中 / 终端家族绿（同 .pm-tool-icon-ok） */
 .pm-thinking-caret {
-  margin-right: 6px;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--pm-ok);
 }
 
+/* 标签：fontWeight 600 / #333 / 12px（同 .pm-tool-name） */
 .pm-thinking-title {
-  font-weight: 500;
+  font-weight: 600;
+  color: var(--pm-text);
+  flex-shrink: 0;
+  font-size: 12px;
 }
 
-/* 折叠时的单行预览：marginLeft 8 / color #aaa / 12px */
+/* 摘要：#999 / 12px / 单行省略 / flex 1（同 .pm-tool-summary） */
 .pm-thinking-preview {
-  margin-left: 8px;
-  color: var(--pm-muted-3);
+  color: var(--pm-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
   font-size: 12px;
+}
+
+/* 右缘折箭：11px / #bbb（同 ExecutionSegment 的 RightOutlined） */
+.pm-thinking-fold {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--pm-faint);
 }
 
 /* 展开后的 pre：padding 8 / #f6f6f6 / radius 4 / 12px / lineHeight 1.5 */
@@ -794,17 +830,21 @@ button {
 /* ── 工具卡（CollapsibleToolBlock 头部）───────────────────────────────── */
 
 .pm-tool {
-  margin: 4px 0;
+  margin: 2px 0;
 }
 
-/* 头部：gap 6 / padding '5px 10px' / background #f5f5f5 / radius 6 /
-   13px / color #555 / border 1px solid transparent */
+/* 头部：gap 6 / padding '3px 10px' / lineHeight 1.4 / radius 6 /
+   13px / color #555 / border 1px solid transparent。
+   2026-10-25 桌面去灰（工具头与思考头都不带浅灰背景）+ 同日紧凑
+   （margin '2px 0' / padding '3px 10px' / lineHeight 1.4，与思考行同步）——
+   静默态 background: transparent，hover 才有一步填充。 */
 .pm-tool-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
-  background: var(--pm-tool-bg);
+  padding: 3px 10px;
+  line-height: 1.4;
+  background: transparent;
   border: 1px solid transparent;
   border-radius: var(--pm-radius-card);
   cursor: pointer;
