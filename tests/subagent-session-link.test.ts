@@ -205,9 +205,13 @@ describe('the spawn card opens the one sub-agent session view', () => {
   it('threads the live flag into the transcript as isRequesting', () => {
     expect(read(R('components', 'subagent', 'SubAgentSessionView.tsx')))
       .toContain('isRequesting={live && !paused && !loading}')
-    // The hook the DOM tests/probe key on (the keyframe name carries a uid).
-    expect(read(R('components', 'chat', 'StreamingCursor.tsx')))
+    // The hook the DOM tests/probe key on. The glyph lives in StreamingCaret
+    // (shared with SegmentView's in-text streaming tail since 2026-10-26), and
+    // the foot cursor must still draw it.
+    expect(read(R('components', 'chat', 'StreamingCaret.tsx')))
       .toContain('data-streaming-cursor=')
+    expect(read(R('components', 'chat', 'StreamingCursor.tsx')))
+      .toContain('<StreamingCaret />')
   })
 
   // Third ruling of the same pass: 输出流的尾部会被输入框遮挡，应该要把输入框隐藏.

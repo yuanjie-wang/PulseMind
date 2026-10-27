@@ -179,6 +179,23 @@ describe('built-in skills — every referenced file ships', () => {
     }
   })
 
+  it('the coding-workflow skill ships the six route disciplines its body routes to', () => {
+    const coding = BUILT_IN_SKILLS.find((s) => s.name === 'coding-workflow')
+    expect(coding).toBeDefined()
+    expect(Object.keys(coding!.resources!).sort()).toEqual([
+      'references/code-review.md',
+      'references/debug-root-cause.md',
+      'references/feature-delivery.md',
+      'references/migration.md',
+      'references/performance.md',
+      'references/refactor-large.md',
+    ])
+    // Same non-stub bar as the office rule sets.
+    for (const [path, content] of Object.entries(coding!.resources!)) {
+      expect(content.length, `${path} looks like a stub`).toBeGreaterThan(1200)
+    }
+  })
+
   it('round-trips through SKILL.md without leaking resources into the frontmatter', () => {
     const office = BUILT_IN_SKILLS.find((s) => s.name === 'office')!
     const md = formatSkillMd(office)
