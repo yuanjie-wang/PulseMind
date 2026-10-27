@@ -10,7 +10,12 @@
  * alone — via advance_plan or (since PLAN-plan-scheduler) the auto-scheduler.
  */
 
-export type PlanNodeStatus = 'pending' | 'completed' | 'failed' | 'skipped' | 'split'
+export type PlanNodeStatus = 'pending' | 'blocked' | 'completed' | 'failed' | 'skipped' | 'split'
+// 'blocked' is direct-mode (todo_write) vocabulary: live work waiting on
+// something outside the agent's control. It is NOT terminal (the plan stays
+// open, isTerminal excludes it) and it never reaches a delegated plan — the
+// DAG has no minting path for it; delegated blocked-ness is DERIVED
+// (graph.ts blockedNodes: dead dependencies), never stored.
 
 export type PlanNodeExecutionStatus = 'queued' | 'running' | 'delivered' | 'failed' | 'stopped'
 
@@ -78,6 +83,12 @@ export interface Plan {
   version: 2
   /** delegated (default): ready nodes spawn to experts; direct: the main agent executes them itself. */
   mode?: 'direct' | 'delegated'
+  /** The node the main agent is working on NOW (todo_write's in_progress mark,
+   *  direct mode only). One at a time; cleared when the node settles or drops
+   *  off the list. Deliberately NOT `execution.status` — that field carries
+   *  the attempt CAS contract (attemptId, scheduler settle), which a
+   *  never-dispatched todo node must not grow. */
+  currentNodeId?: string
   /** Exchange-area identity (PLAN-plan-exchange E1): `<workspace>/.pulsemind/plans/<id>/`.
    *  Minted at create/migrate, lazily on legacy plans by PlanManager at
    *  dispatch (which always saves the plan). Absent on plans never dispatched. */

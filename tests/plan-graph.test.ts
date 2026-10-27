@@ -171,12 +171,16 @@ describe('text rendering', () => {
     expect(formatPlanForPrompt(closed)).toBeNull()
   })
 
-  it('direct mode keeps the model-driven rules (the scheduler never touches it)', () => {
+  it('direct mode renders the todo contract (the scheduler never touches it)', () => {
+    // Since 2026-10-25 direct mode IS the todo list — todo_write is its only
+    // writer and the prompt rules teach the checklist discipline.
     const plan = diamond()
     plan.mode = 'direct'
+    plan.currentNodeId = 'n1'
     const text = formatPlanForPrompt(plan)!
-    expect(text).toContain('the plan never advances on its own')
-    expect(text).toContain('Execute READY nodes yourself')
+    expect(text).toContain('[~] n1: 调研 — IN PROGRESS')
+    expect(text).toContain('Work through the list yourself')
+    expect(text).toContain('todo_write')
     expect(text).not.toContain('AUTOMATICALLY')
   })
 
@@ -185,7 +189,10 @@ describe('text rendering', () => {
     markNode(plan, 1, 'completed')
     const snap = formatPlanSnapshot(plan, { action: 'complete', node: 1, notes: '调研完成' })
     expect(snap).toContain('Node n1 completed.')
-    expect(snap).toContain('Ready now (start these, in parallel for delegated mode): n2, n3')
+    // Scheduler-aligned wording (2026-10-25 plan-tool evaluation): the old
+    // "start these, in parallel" invited the manual spawn round the rules
+    // forbid — the snapshot contradicted its own create header.
+    expect(snap).toContain('Ready: n2, n3 — the scheduler dispatches these automatically; do NOT call spawn_agent for them.')
     expect(snap).toContain('调研完成')
 
     markNode(plan, 2, 'completed'); markNode(plan, 3, 'completed'); markNode(plan, 4, 'completed')

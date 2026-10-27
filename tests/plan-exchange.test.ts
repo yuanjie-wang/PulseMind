@@ -78,6 +78,25 @@ describe('resolvePlanExchange: system-minted paths', () => {
     expect(extractDeclaredStatus('error handling 已加固')).toBeUndefined()
   })
 
+  it('extractDeclaredStatus: the LEADING verdict is the declaration — later keywords on the line are subject matter (2026-10-26 n1/n2)', () => {
+    // The real incident lines (plan_mvoyoit7): both reports declare 成功 at
+    // the head; the whole-line worst-first scan read the evidence/branch 失败
+    // and recorded both nodes as declared-failed
+    expect(extractDeclaredStatus('## 状态\n成功 —— 新增的特殊字符测试在旧实现上实测失败、在新实现上全绿，57/57 通过')).toBe('success')
+    expect(extractDeclaredStatus('## 状态\n成功 —— 覆盖「有路径直接落盘 / 无路径先 SaveAs 再落盘 / 取消即中止 / 失败即 false」四条分支')).toBe('success')
+    // a partial head wins too — the 失败 in the reason is WHY it is partial
+    expect(extractDeclaredStatus('## 状态\n部分成功 —— 主流程已落库，导出失败')).toBe('partial')
+    // English synonyms and decorations before the head: bold, list marker, a
+    // redundant label restated under the heading
+    expect(extractDeclaredStatus('## 状态\nSuccess — all 57 pass; the old build failed them')).toBe('success')
+    expect(extractDeclaredStatus('## 状态\n- **成功** —— 全部通过')).toBe('success')
+    expect(extractDeclaredStatus('## 状态\n执行结果：失败 —— 网络不可达')).toBe('failed')
+    // a line that does NOT lead with a verdict keeps the pessimistic rule
+    expect(extractDeclaredStatus('状态：整体失败，A 部分成功')).toBe('failed')
+    // and a passing negation is not a verdict at the head — unchanged stance
+    expect(extractDeclaredStatus('## 状态\n不是失败 —— 但有两项降级')).toBe('failed')
+  })
+
   it('the admission contract names the minted path, the skeleton, and the node spec', () => {
     const plan = createPlanDag('x', [{ description: 'a', reportSpec: '关键数据必须含 CSV 表' }])
     const ex = resolvePlanExchange('/tmp/ws', plan)!
@@ -224,7 +243,9 @@ function makeExchangeContext(opts: { workspaceDir?: string; reportSize?: number 
   const plan = createPlanDag('exchange', [{ description: '调研节点' }, { description: '下游', dependsOn: [1] }])
   ;(ex as { calls: typeof calls }).calls = calls
   const tool = (input: Record<string, unknown>) =>
-    ({ id: 't1', type: 'tool_use', name: 'spawn_agent', input, status: 'pending' }) as ToolUseBlock
+    // autoDispatch: exchange-contract dispatches are the scheduler's own
+    // post-scheduler — the call shape its ownership gate exempts.
+    ({ id: 't1', type: 'tool_use', name: 'spawn_agent', input: input.planNode !== undefined ? { ...input, autoDispatch: true } : input, status: 'pending' }) as ToolUseBlock
   return { ex: ex as ToolExecContext, calls, tool, state, plan }
 }
 
@@ -253,9 +274,16 @@ describe('spawn choke point: admission in, exit verified', () => {
     expect(calls.statPaths).toEqual([`/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`])
     // 2026-10-07: prompt composition now also reads the workspace's project
     // instructions (.pulsemind/AGENTS.md) for the spawn prompt's
-    // `# Project Instructions` section — that probe lands FIRST (composition
-    // precedes settlement, where the report head is read).
+    // `# Project Instructions` section — that probe lands BEFORE settlement,
+    // where the report head is read. 2026-10-27 验证闭环: composition probes
+    // the five root manifests FIRST (the env block's `Verify:` line,
+    // verify-loop.ts detection) — still all ahead of the settlement read.
     expect(calls.readPaths).toEqual([
+      `/tmp/ws_ex/package.json`,
+      `/tmp/ws_ex/Cargo.toml`,
+      `/tmp/ws_ex/go.mod`,
+      `/tmp/ws_ex/pyproject.toml`,
+      `/tmp/ws_ex/Makefile`,
       `/tmp/ws_ex/.pulsemind/AGENTS.md`,
       `/tmp/ws_ex/.pulsemind/plans/${plan.id}/1-report.md`,
     ])

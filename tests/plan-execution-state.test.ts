@@ -19,7 +19,9 @@ import { PlanGraphView } from '../src/renderer/src/components/workbench/PlanGrap
 import { resolvePlanNodeTarget } from '../src/renderer/src/agent/plan-node-target'
 import { acquireSubAgentSlot, MAX_PARALLEL_SUBAGENTS, releaseQueuedSubAgents, resetSubAgentLimiter } from '../src/renderer/src/agent/engine/subagent-limiter'
 
-const tool = (): ToolUseBlock => ({ type: 'tool_use', id: 'same-tool-id', name: 'spawn_agent', input: { task: 'Deliver node', planNode: 1 } })
+// autoDispatch: the attempt-CAS fixtures simulate the scheduler's own dispatch
+// (the only sender a never-started READY node accepts post-gate).
+const tool = (): ToolUseBlock => ({ type: 'tool_use', id: 'same-tool-id', name: 'spawn_agent', input: { task: 'Deliver node', planNode: 1, autoDispatch: true } })
 function deferred() {
   let resolve!: (result: SubAgentResult) => void
   let reject!: (error: Error) => void

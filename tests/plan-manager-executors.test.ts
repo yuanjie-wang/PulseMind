@@ -50,7 +50,7 @@ describe('create_plan executor', () => {
     expect(mgr.plan?.version).toBe(2)
     expect(mgr.plan?.nodes.map(n => n.id)).toEqual(['n1', 'n2', 'n3'])
     expect(results[0].content).toContain('Plan created with 3 node(s)')
-    expect(results[0].content).toContain('Ready now')
+    expect(results[0].content).toContain('Ready:')
     expect(notifications).toHaveLength(1)
   })
 

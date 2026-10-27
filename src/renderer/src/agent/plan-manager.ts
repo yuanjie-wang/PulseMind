@@ -4,9 +4,10 @@
  * recordNodeHandoff). All graph rules (validation, ready/blocked derivation,
  * snapshot text) live in shared/plan/graph.ts — this class only adapts callers
  * to it and anchors jump targets. The plan's ONLY writer is this class
- * (single-writer); what changed in PLAN-plan-scheduler is that the writer has
- * two policies — the model's advance_plan executor and the scheduler's
- * delivery→completed settle — not one. Sub-agents never touch the plan.
+ * (single-writer); the writer has FOUR policies — the model's advance_plan
+ * executor, the scheduler's delivery→completed settle, the split merge, and
+ * todo_write's direct-mode reconcile (the todo list IS a direct plan) — not
+ * one. Sub-agents never touch the plan.
  */
 import type { ToolUseBlock, AgentMessage } from '../types/agent'
 import type { Plan, PlanNode, PlanNodeExecutionStatus } from '../../../shared/types/plan'
@@ -17,11 +18,14 @@ import {
   updateNodeExecution,
   completeAllNodes,
   createPlanDag,
+  detectPreNarration,
   formatPlanSnapshot,
   linkNodeSession,
   markNode,
   NODE_HANDOFF_MAX,
+  PRE_NARRATION_NOTICE,
   readyNodes,
+  reconcileTodo,
   resolveNodeRef,
   type RawPlanNode,
 } from '../../../shared/plan/graph'
@@ -229,11 +233,75 @@ export class PlanManager {
     t.status = 'completed'; this.notify()
   }
 
+  /** todo_write (the direct-mode channel): the model's full todo list, applied
+   *  through reconcileTodo — append new entries, soft-skip retired pendings,
+   *  never touch settled ones. Routing is enforced HERE, not in prose: a
+   *  summons means delegation (create_plan), a live delegated plan means the
+   *  DAG owns this conversation until it closes. */
+  async execTodoWrite(t: ToolUseBlock): Promise<void> {
+    t.status = 'running'; this.notify()
+    try {
+      const summoned = this.getSummonedExperts?.() ?? []
+      if (summoned.length > 0) {
+        throw new Error(
+          `The user summoned ${summoned.length} expert(s) — that work is DELEGATED. Build the assignment DAG with create_plan (every summoned expert owns a node) instead of a todo list.`,
+        )
+      }
+      if (this.plan && (this.plan.mode ?? 'delegated') !== 'direct' && !this.plan.completed) {
+        throw new Error('A delegated plan is active — settle it (or close it with advance_plan action="finish") before opening a todo list.')
+      }
+      const result = reconcileTodo(
+        this.plan,
+        String(t.input?.objective || ''),
+        t.input?.items,
+        { msgId: this.anchorOf(t.id) },
+      )
+      this.plan = result.plan
+      this.notifyPlanChange()
+      const snapshot = formatPlanSnapshot(this.plan, {
+        action: result.minted ? 'create' : 'update',
+        changed: result.changed,
+        stats: result.stats,
+      })
+      // Soft gate (2026-10-27): the manual's rule 2 (「exactly one
+      // in_progress」) echoed in the result when the SUBMITTED list claims
+      // several. A note, never a rejection — reconcileTodo derives the live
+      // state anyway, and the panel's own rendering is the authority.
+      const items = Array.isArray(t.input?.items) ? t.input.items : []
+      const activeCount = items.filter((i: unknown) => (i as { status?: string } | null)?.status === 'in_progress').length
+      const activeNote = activeCount > 1
+        ? `\n\n(Note: ${activeCount} steps claim in_progress — exactly one step is actively worked at a time; keep the others pending or blocked.)`
+        : ''
+      // Pre-narration correction (2026-10-25): when the call's own message
+      // already speaks in the snapshot's voice, the model pre-wrote a return
+      // (a deterministic format it can compute before the tool runs — fabricated
+      // evidence in the most trusted format). Prepend the correction to the REAL
+      // result: highest-salience teaching, zero loop cost, and the transcript
+      // keeps both sides adjacent for audit.
+      const anchorId = this.anchorOf(t.id)
+      const anchorText = anchorId
+        ? (this.getMessages().find(m => m.id === anchorId)?.contentBlocks ?? [])
+            .filter(b => b.type === 'text')
+            .map(b => (b as { text: string }).text)
+            .join('\n')
+        : ''
+      this.addToolResult(t.id, detectPreNarration(anchorText) ? `${PRE_NARRATION_NOTICE}${snapshot}${activeNote}` : snapshot + activeNote, false)
+      t.exitCode = 0
+    } catch (err) {
+      this.addToolResult(t.id, `Error: ${err instanceof Error ? err.message : 'todo_write failed'}`, true)
+      t.exitCode = -1
+    }
+    t.status = 'completed'; this.notify()
+  }
+
   async execAdvancePlan(t: ToolUseBlock): Promise<void> {
     t.status = 'running'; this.notify()
     try {
       const plan = this.plan
       if (!plan || plan.completed) throw new Error('No active plan. Call create_plan first.')
+      if ((plan.mode ?? 'delegated') === 'direct') {
+        throw new Error('This is a todo list (direct mode) — update it with todo_write (send the full list with updated statuses), not advance_plan.')
+      }
 
       const action = String(t.input?.action || '')
       const notes = String(t.input?.notes || '')

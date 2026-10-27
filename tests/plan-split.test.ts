@@ -293,7 +293,10 @@ function makeSplitContext(plan: Plan | null) {
     formatExecResult: () => '',
   } as unknown as ToolExecContext
   const tool = (input: Record<string, unknown>) =>
-    ({ id: 't1', type: 'tool_use', name: 'spawn_agent', input, status: 'pending' }) as ToolUseBlock
+    // autoDispatch: these fixtures exercise the split/exchange contract on a
+    // dispatched node — post-scheduler that dispatch is the scheduler's own,
+    // exactly the call shape its ownership gate exempts.
+    ({ id: 't1', type: 'tool_use', name: 'spawn_agent', input: input.planNode !== undefined ? { ...input, autoDispatch: true } : input, status: 'pending' }) as ToolUseBlock
   return { ex, calls, tool, state }
 }
 

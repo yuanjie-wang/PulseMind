@@ -143,7 +143,11 @@ export class PlanScheduler {
   }
 
   /** Mint this wave's spawn_agent blocks — the same shape the clean-drain
-   *  dispatch and the mid-drain chain both send through the spawn machinery. */
+   *  dispatch and the mid-drain chain both send through the spawn machinery.
+   *  autoDispatch stamps the scheduler's own calls so spawn-tool's
+   *  scheduler-ownership gate (manual spawn of a never-started READY node is
+   *  rejected) lets them through — the gate's whole point is that THIS path,
+   *  not the model, owns those dispatches. */
   private mintCalls(nodes: PlanNode[]): ToolUseBlock[] {
     return nodes.map((node, i) => ({
       id: `toolu_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 9)}`,
@@ -153,6 +157,7 @@ export class PlanScheduler {
         task: node.description,
         ...(node.assignee ? { subAgentId: node.assignee } : {}),
         planNode: node.id,
+        autoDispatch: true,
       },
       status: 'pending',
     }))

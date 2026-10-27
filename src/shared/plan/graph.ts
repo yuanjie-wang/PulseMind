@@ -94,7 +94,7 @@ function assertAcyclic(nodes: PlanNode[]): void {
 
 // ── Derivation ───────────────────────────────────────────────────────────
 
-export const isTerminal = (status: PlanNodeStatus): boolean => status !== 'pending'
+export const isTerminal = (status: PlanNodeStatus): boolean => status !== 'pending' && status !== 'blocked'
 
 /** Pending and every dependency completed — the parallel-dispatch set (D1). */
 export function readyNodes(plan: Plan): PlanNode[] {
@@ -152,7 +152,7 @@ function idMap(plan: Plan): Map<string, PlanNode> {
 
 // ── Mutation ─────────────────────────────────────────────────────────────
 
-export type SettleStatus = Exclude<PlanNodeStatus, 'pending'>
+export type SettleStatus = Exclude<PlanNodeStatus, 'pending' | 'blocked'>
 
 /** Accepts `3`, `'3'` and `'n3'` for node n3 (D5); null when unresolved. */
 export function resolveNodeRef(plan: Plan, ref: string | number): PlanNode | null {
@@ -368,7 +368,7 @@ export function mergeSplitProposal(
 }
 
 export function planNodeExecutionLabel(node: PlanNode): string {
-  if (node.status !== 'pending') return { completed: '已完成', failed: '失败', skipped: '跳过', split: '已拆分' }[node.status]
+  if (node.status !== 'pending') return { completed: '已完成', failed: '失败', skipped: '跳过', split: '已拆分', blocked: '已阻塞' }[node.status]
   switch (node.execution?.status) {
     case 'queued': return '排队中'
     case 'running': return '执行中'
@@ -421,9 +421,316 @@ export function migrateLinearPlan(old: unknown): Plan | null {
   return { id: mintPlanId(), objective: String(legacy.objective ?? ''), nodes, completed, version: 2, mode: legacy.mode ?? 'delegated' }
 }
 
+// ── Todo reconcile (the direct-mode writer) ──────────────────────────────
+// todo_write's backing policy: a direct-mode plan IS a todo list — flat (no
+// edges), never dispatched, statuses self-reported. The write is a
+// FULL-LIST-REPLACE reconcile (TodoWrite semantics): the incoming list is the
+// truth, but settled entries are immutable, so the diff lands as append +
+// soft-skip. This is PlanManager's FOURTH write policy, next to
+// advance_plan / autoSettle / split-merge — same single-writer class.
+
+/** One todo_write list item. Absent status = keep whatever the node carries
+ *  (a matched pending stays pending); 'in_progress' marks the entry the agent
+ *  is working on NOW (last one wins); 'blocked' = live work waiting on
+ *  something outside the agent's control (say what in `note`). */
+export interface TodoItem {
+  description: string
+  /** The entry's identity ("n2" — the numbers every snapshot row carries).
+   *  THE reference path, full stop: present → claim that entry (open entries
+   *  reword in place, a retired entry revives, a settled entry ignores
+   *  wording and status claims); ABSENT → a NEW entry, no wording fallback.
+   *  A forgotten id on an existing step forks it (new + old retires) — the
+   *  retire∧add caution in the delta is the net for exactly that. */
+  id?: string
+  status?: 'pending' | 'in_progress' | 'completed' | 'blocked'
+  /** One-line context riding the entry (what a blocked one waits on, a key
+   *  result, a pointer) — carried on `PlanNode.summary` so the panel and the
+   *  snapshot render it with zero new vocabulary. Live entries only: a note
+   *  on an already-settled entry is ignored (the immutability red line). */
+  note?: string
+}
+
+export interface TodoReconcileStats {
+  added: number
+  retired: number
+  completed: number
+  /** id-claimed settled entries whose incoming wording was ignored (settled
+   *  is immutable) — surfaced so the delta result can say so out loud instead
+   *  of silently swallowing the model's edit. */
+  keptWording: number
+  /** Blocked entries that dropped off the list and were retired. They get
+   *  their own callout in the delta result: blocked is the state most likely
+   *  to be forgotten (nothing pushes it forward), and silently losing a task
+   *  that was waiting on something is worse than naming the loss. */
+  retiredBlocked?: Array<{ id: string; note?: string }>
+}
+
+export interface TodoReconcileResult {
+  plan: Plan
+  stats: TodoReconcileStats
+  /** true = a fresh todo was minted (no live direct plan); false = the live
+   *  todo was reconciled in place. The executor picks the snapshot's
+   *  create/update voice from this — the text differs and so does the
+   *  model's next move. */
+  minted: boolean
+  /** Entries TOUCHED this pass (status move, append, retire, in-place
+   *  reword, note, current-marker) — the delta snapshot renders ONLY these;
+   *  the model's own tool input already carries the full list it sent, so
+   *  re-echoing it is pure redundancy. */
+  changed: string[]
+}
+
+function normalizeTodoItems(raw: unknown): TodoItem[] {
+  const arr = Array.isArray(raw) ? raw : []
+  return arr.map((r) => {
+    const o = (r ?? {}) as { description?: unknown; status?: unknown; note?: unknown; id?: unknown }
+    const status = o.status === 'in_progress' || o.status === 'completed' || o.status === 'pending' || o.status === 'blocked'
+      ? o.status
+      : undefined
+    const note = typeof o.note === 'string' && o.note.trim() ? o.note.trim() : undefined
+    const id = typeof o.id === 'string' && o.id.trim() ? o.id.trim() : undefined
+    return {
+      description: String(o.description ?? '').trim(),
+      ...(id ? { id } : {}),
+      ...(status ? { status } : {}),
+      ...(note ? { note } : {}),
+    }
+  })
+}
+
+/** Full-list-replace reconcile over the direct plan. `plan` null (or not a
+ *  live direct plan) MINTS a fresh todo; a live direct plan reconciles in
+ *  place. Throws model-facing messages (same contract as createPlanDag). */
+export function reconcileTodo(
+  plan: Plan | null,
+  objective: string,
+  rawItems: unknown,
+  fix?: { msgId?: string },
+): TodoReconcileResult {
+  const items = normalizeTodoItems(rawItems)
+  for (let i = 0; i < items.length; i++) {
+    if (!items[i].description) throw new Error(`item ${i + 1}: description is required`)
+  }
+  const live = plan && (plan.mode ?? 'delegated') === 'direct' && !plan.completed ? plan : null
+
+  if (!live) {
+    if (items.length === 0) throw new Error('items are required — a todo list starts with at least one entry')
+    if (!objective.trim()) throw new Error('objective is required')
+    if (items.length > MAX_PLAN_NODES) throw new Error(`maximum ${MAX_PLAN_NODES} entries allowed`)
+    const next: Plan = {
+      id: mintPlanId(),
+      objective: objective.trim(),
+      nodes: items.map((it, i) => ({ id: `n${i + 1}`, description: it.description, status: 'pending', dependsOn: [] })),
+      completed: false,
+      version: 2,
+      mode: 'direct',
+    }
+    return {
+      plan: applyTodoStatuses(next, items, fix),
+      stats: { added: items.length, retired: 0, completed: countTodoCompleted(items), keptWording: 0 },
+      minted: true,
+      changed: next.nodes.map(n => n.id),
+    }
+  }
+
+  const stats: TodoReconcileStats = { added: 0, retired: 0, completed: 0, keptWording: 0 }
+  // Simulate the whole claim/append pass OFF-LINE first (mergeSplitProposal's
+  // whole-unit rule): every gate — id resolution, duplicates, and the node
+  // budget, which a later append can breach AFTER earlier appends already
+  // landed — throws before the first byte of `live` moves. A rejected
+  // todo_write must leave the caller's plan exactly as it was.
+  const working = live.nodes.map(n => ({ id: n.id, status: n.status, taken: false }))
+  const paired: Array<{ item: TodoItem; nodeId: string; isNew: boolean; viaId: boolean }> = []
+  // Pass A — id claims are the ONLY reference path (2026-10-25: identity is
+  // the id, not the wording — the same model the plan tools always had, and
+  // the reword trap is structurally gone because rewording rides the id).
+  // Naming a retired entry by id IS the recovery path for an accidental
+  // retirement.
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    if (item.id === undefined) continue
+    const nid = `n${item.id.toLowerCase().replace(/^n/, '')}`
+    if (!/^n\d+$/.test(nid)) {
+      throw new Error(`item ${i + 1}: id "${item.id}" is not an entry number — use the n1..n${working.length} from the last list`)
+    }
+    const hit = working.find(w => w.id === nid)
+    if (!hit) throw new Error(`item ${i + 1}: id "${nid}" does not exist — the list has n1..n${working.length}`)
+    if (paired.some(p => p.nodeId === nid)) throw new Error(`item ${i + 1}: id "${nid}" is claimed twice — one list entry per id`)
+    hit.taken = true
+    paired[i] = { item, nodeId: nid, isNew: false, viaId: true }
+  }
+  // Pass B — everything without an id is a NEW entry, period. There is no
+  // wording fallback: a forgotten id on an existing step forks it (new entry
+  // + the old one retires), and the retire∧add caution in the delta is the
+  // net that flags exactly that — the one failure mode left, and it is a
+  // discipline slip with a visible outcome, not a silent correctness trap.
+  for (let i = 0; i < items.length; i++) {
+    if (paired[i]) continue
+    if (working.length >= MAX_PLAN_NODES) {
+      throw new Error(`maximum ${MAX_PLAN_NODES} entries allowed — retire finished entries instead of adding past the cap`)
+    }
+    const nextNum = working.reduce((max, w) => Math.max(max, Number(w.id.slice(1))), 0) + 1
+    const id = `n${nextNum}`
+    working.push({ id, status: 'pending', taken: true })
+    paired[i] = { item: items[i], nodeId: id, isNew: true, viaId: false }
+  }
+
+  // Mutation phase — cannot throw: append the new nodes, then apply.
+  const changed = new Set<string>()
+  const byId = new Map(live.nodes.map(n => [n.id, n]))
+  for (const { item, nodeId, isNew } of paired) {
+    if (!isNew) continue
+    live.nodes.push({ id: nodeId, description: item.description, status: 'pending', dependsOn: [] })
+    stats.added++
+    changed.add(nodeId)
+  }
+  for (const { item, nodeId, viaId } of paired) {
+    const node = byId.get(nodeId) ?? live.nodes.find(n => n.id === nodeId)!
+    let touched = false
+    // (a) Revive — an explicit id on a retired entry brings it back (its
+    // status becomes the item's, defaulting to pending; a completed claim
+    // rides the check-off below). Runs BEFORE the reword so a revived entry
+    // picks up the new wording too.
+    if (viaId && node.status === 'skipped') {
+      node.status = item.status === 'blocked' ? 'blocked' : 'pending'
+      touched = true
+    }
+    // (b) In-place reword — the id escape hatch. Only OPEN entries rewrite:
+    // settled is immutable, and its incoming wording is counted so the delta
+    // result can say it was ignored instead of eating it silently.
+    if (viaId && (node.status === 'pending' || node.status === 'blocked') && item.description !== node.description) {
+      node.description = item.description
+      touched = true
+    } else if (viaId && (node.status === 'completed' || node.status === 'failed') && item.description !== node.description) {
+      stats.keptWording++
+    }
+    const openNow = node.status === 'pending' || node.status === 'blocked'
+    // (c) Notes ride any OPEN entry (including one just revived, and the
+    // settle moment below). Already-settled entries ignore them — settled is
+    // immutable, full stop (the one-rule form; the id corrects nothing on a
+    // settled entry, a correction re-opens work as a new entry).
+    if (openNow && item.note !== undefined && node.summary !== item.note) {
+      node.summary = item.note || undefined
+      touched = true
+    }
+    // (d) Status transitions.
+    if (node.status === 'pending' && item.status === 'blocked') {
+      node.status = 'blocked'
+      touched = true
+    }
+    // Recovery: an explicit pending / in_progress / completed claim on a
+    // blocked entry un-blocks it first (in_progress lands through the
+    // current-marker below, completed through the check-off).
+    if (node.status === 'blocked' && item.status !== undefined && item.status !== 'blocked') {
+      node.status = 'pending'
+      touched = true
+    }
+    if (node.status === 'pending' && item.status === 'completed') {
+      markNode(live, node.id, 'completed', { msgId: fix?.msgId })
+      stats.completed++
+      touched = true
+    }
+    if (touched) changed.add(node.id)
+  }
+  // Retire: open nodes (pending or blocked) absent from the incoming list are
+  // obsolete (soft-skip; their row stays as history — and shows up in the
+  // delta, which is what makes the reword caution readable). A BLOCKED
+  // retirement is not a normal rescope — it is named in the stats so the
+  // delta result can call it out (a forgotten wait is a lost task).
+  const claimed = new Set(paired.map(({ nodeId }) => nodeId))
+  for (const n of live.nodes) {
+    if (!claimed.has(n.id) && (n.status === 'pending' || n.status === 'blocked')) {
+      const wasBlocked = n.status === 'blocked'
+      n.status = 'skipped'
+      stats.retired++
+      changed.add(n.id)
+      if (wasBlocked) stats.retiredBlocked = [...(stats.retiredBlocked ?? []), { id: n.id, note: n.summary }]
+    }
+  }
+  // in_progress is DERIVED from the incoming list alone (full-replace purity:
+  // the list above IS the current truth) — last valid claim wins, absence
+  // means nothing is in progress. A claim on a settled node is not valid: the
+  // work is done, the marker dies with it. Marker moves land in the delta
+  // too — both the new current and the one it left.
+  const claimedCurrent = [...paired].reverse().find(({ item, nodeId }) => item.status === 'in_progress' && (byId.get(nodeId) ?? live.nodes.find(n => n.id === nodeId))!.status === 'pending')
+  if (claimedCurrent) {
+    if (live.currentNodeId !== claimedCurrent.nodeId) changed.add(claimedCurrent.nodeId)
+    live.currentNodeId = claimedCurrent.nodeId
+  } else {
+    if (live.currentNodeId) changed.add(live.currentNodeId)
+    delete live.currentNodeId
+  }
+  if (objective.trim()) live.objective = objective.trim()
+  if (live.nodes.every(n => isTerminal(n.status))) live.completed = true
+  return { plan: live, stats, minted: false, changed: [...changed] }
+}
+
+function countTodoCompleted(items: TodoItem[]): number {
+  return items.filter(i => i.status === 'completed').length
+}
+
+// ── Pre-narration detection（预写返回检测，2026-10-25）─────────────────────
+// The snapshot format is DETERMINISTIC — a model that knows the reconcile
+// rules can compute `+0 added, 0 retired, 1 completed` before the tool runs,
+// and prose that quotes it reads as evidence while being fabrication. These
+// patterns match the UPDATE-SNAPSHOT voice only — the voice no legal prose
+// can use pre-call: citing the list's CURRENT state from <session-state>
+// (「n1 已完成，现在标 n2」) is recitation and stays legal; entry-row markers
+// ([done]/[~]) are ambiguous with state-block quotes and are deliberately
+// NOT detected. The executor prefixes the REAL result with a correction when
+// this fires — in-loop teaching at the highest-salience position.
+
+const PRE_NARRATION_PATTERNS: RegExp[] = [
+  /\+\d+\s+added\b/,
+  /\b\d+\s+retired\b/,
+  /\b\d+\/\d+\s+settled\b/,
+  /Todo list (created|updated)\b/,
+  /Heads-up: n\d+ was BLOCKED/,
+  /Caution: this update both retired and added/,
+]
+
+/** True when the text speaks in the update-snapshot's voice — the voice that
+ *  only a real tool result can earn. Intent prose and state-block recitation
+ *  never match. */
+export function detectPreNarration(text: string): boolean {
+  return PRE_NARRATION_PATTERNS.some(p => p.test(text))
+}
+
+/** The correction header the executor prepends to the real result. */
+export const PRE_NARRATION_NOTICE =
+  '⚠ Pre-narrated return detected: the prose in your message quoted snapshot output before this tool ran — that text was computed, not received, and is not evidence. The content below is the REAL result; quote only this.\n\n'
+
+/** Status pass over a freshly minted todo: pre-marked currents, pre-blocked
+ *  entries and opening notes all land here (a mint may carry any live shape). */
+function applyTodoStatuses(plan: Plan, items: TodoItem[], fix?: { msgId?: string }): Plan {
+  items.forEach((item, i) => {
+    const node = plan.nodes[i]
+    if (item.note) node.summary = item.note
+    if (item.status === 'blocked') node.status = 'blocked'
+    if (item.status === 'completed') markNode(plan, `n${i + 1}`, 'completed', { msgId: fix?.msgId })
+  })
+  const current = [...items].reverse().find(i => i.status === 'in_progress')
+  if (current) plan.currentNodeId = `n${items.indexOf(current) + 1}`
+  return plan
+}
+
 // ── Text rendering (prompt section + tool snapshot) ──────────────────────
 
-const STATUS_MARKER: Record<PlanNodeStatus, string> = { pending: '[ ]', completed: '[done]', failed: '[fail]', skipped: '[skip]', split: '[split]' }
+const STATUS_MARKER: Record<PlanNodeStatus, string> = { pending: '[ ]', blocked: '[wait]', completed: '[done]', failed: '[fail]', skipped: '[skip]', split: '[split]' }
+
+/** One todo line — the direct-mode sibling of describeNode: status marker +
+ *  number + words, no dependency vocabulary (a todo has no edges). */
+function describeTodoNode(node: PlanNode, current: string | null): string {
+  const inFlight = node.status === 'pending' && current === node.id
+  let line = `${inFlight ? '[~]' : STATUS_MARKER[node.status]} n${nodeNumberOf(node)}: ${node.description}`
+  if (inFlight) line += ' — IN PROGRESS'
+  if (node.status === 'blocked') line += ' — BLOCKED'
+  if (node.summary) line += ` — ${node.summary}`
+  return line
+}
+
+const isTodoPlan = (plan: Plan): boolean => (plan.mode ?? 'delegated') === 'direct'
+export { isTodoPlan }
 
 /** One node line, shared by the prompt section and the snapshot so the model
  *  sees the same node vocabulary in both places. */
@@ -459,12 +766,13 @@ function normalizePlanShape(plan: Plan | null): Plan | null {
 export function formatPlanForPrompt(plan: Plan | null): string | null {
   const active = normalizePlanShape(plan)
   if (!active || active.completed) return null
+  const todo = isTodoPlan(active)
   const byId = idMap(active)
   const ready = new Set(readyNodes(active).map(n => n.id))
   const lines: string[] = ['## Current Plan', '', `Objective: "${active.objective}"`, `Mode: ${active.mode ?? 'delegated'}`, '']
-  for (const node of active.nodes) lines.push(describeNode(node, byId, ready))
+  for (const node of active.nodes) lines.push(todo ? describeTodoNode(node, active.currentNodeId ?? null) : describeNode(node, byId, ready))
   lines.push('', '### Rules')
-  if ((active.mode ?? 'delegated') === 'delegated') {
+  if (!todo) {
     // PLAN-plan-scheduler S1: the scheduler owns dispatch and settlement, so
     // the rules tell the model what it is actually consulted for — anything
     // vaguer produces ritual spawn/advance rounds the scheduler exists to kill.
@@ -472,34 +780,56 @@ export function formatPlanForPrompt(plan: Plan | null): string | null {
     lines.push('2. Never execute a delegated node yourself.')
     lines.push('3. You are consulted at exactly two points: a node FAILED (decide: re-dispatch it to retry, or `advance_plan` action="fail" / action="skip" with node=<its number>), and the final settle (write the answer for the user; action="finish" only to close early).')
   } else {
-    lines.push('1. Execute READY nodes yourself in dependency order.')
-    lines.push('2. When a node settles call `advance_plan` with node=<its number> — the plan never advances on its own. action="complete" (retrying a failed node = retry), action="fail", action="skip".')
-    lines.push('3. Close with action="finish" once the objective is met; the plan auto-closes when the last node settles.')
+    // A todo list runs itself down: no dispatcher, no spawns — the agent is
+    // the only executor, and todo_write is the only state channel.
+    lines.push('1. Work through the list yourself, one entry at a time — no spawn_agent, no delegation, no advance_plan.')
+    lines.push('2. Mark exactly ONE entry in_progress while working on it; the moment it settles call todo_write with the updated list (that entry completed). Work pinned on something outside your control is blocked (+ a note saying what it waits on) — never in_progress.')
+    lines.push('3. Rescope freely: send the full list every time — existing entries carry their id (no id = a NEW entry), dropped entries retire as skipped, settled entries never change.')
   }
   return lines.join('\n')
 }
 
 export interface PlanSnapshotInfo {
-  action: 'create' | 'complete' | 'fail' | 'skip' | 'finish'
+  action: 'create' | 'complete' | 'fail' | 'skip' | 'finish' | 'update'
   node?: string | number
   notes?: string
+  /** todo update delta: the entries touched this pass — the result renders
+   *  ONLY these rows, because the model's own tool input already carries the
+   *  full list it sent (the state block re-injects the full list next turn).
+   *  Absent → render everything (defensive / non-executor callers). */
+  changed?: string[]
+  /** reconcile stats for the update header, the reword caution and the
+   *  blocked-drop-off callouts. */
+  stats?: TodoReconcileStats
 }
 
-/** Full-plan snapshot returned as the create_plan / advance_plan tool_result —
- *  the model's view of the graph after the mutation, with the ready set called
- *  out. */
+/** Full-plan snapshot returned as the create_plan / advance_plan / todo_write
+ *  tool_result — the model's view of the graph after the mutation. Delegated
+ *  plans render whole; todo updates render as a DELTA (see PlanSnapshotInfo). */
 export function formatPlanSnapshot(plan: Plan | null, info: PlanSnapshotInfo): string {
   const active = normalizePlanShape(plan)
   if (!active) return ''
+  const todo = isTodoPlan(active)
   const parts: string[] = []
   const ref = info.node !== undefined ? resolveNodeRef(active, info.node) : null
   const num = ref ? nodeNumberOf(ref) : null
   if (info.action === 'create') {
-    const delegated = (active.mode ?? 'delegated') === 'delegated'
-    parts.push(`Plan created with ${active.nodes.length} node(s), numbered n1..n${active.nodes.length} — the numbering is fixed. Mode: ${active.mode ?? 'delegated'}. All nodes start pending.`
-      + (delegated
-        ? ' The scheduler dispatches READY nodes and settles each one on delivery — you are consulted only when a node fails.'
-        : ' Dispatch nodes with spawn_agent planNode=<n> and settle them with advance_plan node=<n>.'))
+    parts.push((active.mode ?? 'delegated') === 'delegated'
+      ? `Plan created with ${active.nodes.length} node(s), numbered n1..n${active.nodes.length} — the numbering is fixed. Mode: delegated. All nodes start pending. The scheduler dispatches READY nodes and settles each one on delivery — you are consulted only when a node fails.`
+      : `Todo list created with ${active.nodes.length} entr${active.nodes.length === 1 ? 'y' : 'ies'} — work through them yourself and call todo_write with the updated list as you go (the entry you are on in_progress, settled ones completed).`)
+  }
+  else if (info.action === 'update') {
+    const s = info.stats
+    parts.push(`Todo list updated${s ? ` — +${s.added} added, ${s.retired} retired, ${s.completed} completed` : ''}.`)
+    if (s && s.keptWording > 0) {
+      parts.push(`${s.keptWording} settled entr${s.keptWording === 1 ? 'y' : 'ies'} kept their wording — settled steps are immutable; their row above is unchanged.`)
+    }
+    if (s && s.retired > 0 && s.added > 0) {
+      parts.push('Caution: this update both retired and added entries. If one of those pairs is a REWORD of the same step, you broke its thread — next time re-send that entry with its id (the n-number, e.g. { "id": "n2" }) to rewrite it in place, or to bring a retired entry back.')
+    }
+    for (const rb of s?.retiredBlocked ?? []) {
+      parts.push(`Heads-up: ${rb.id} was BLOCKED when it dropped off the list${rb.note ? ` (was waiting on: ${rb.note})` : ''} — it is retired now. Re-send it with its id to bring it back if the wait still stands.`)
+    }
   }
   else if (active.completed && info.action === 'complete') parts.push(`Node n${num} completed — every node is settled, the plan is complete.`)
   else if (info.action === 'complete' && num !== null) parts.push(`Node n${num} completed.`)
@@ -510,14 +840,30 @@ export function formatPlanSnapshot(plan: Plan | null, info: PlanSnapshotInfo): s
 
   const byId = idMap(active)
   const ready = new Set(readyNodes(active).map(n => n.id))
-  for (const node of active.nodes) parts.push(describeNode(node, byId, ready))
+  const changedSet = info.changed ? new Set(info.changed) : null
+  for (const node of active.nodes) {
+    if (todo && changedSet && !changedSet.has(node.id)) continue
+    parts.push(todo ? describeTodoNode(node, active.currentNodeId ?? null) : describeNode(node, byId, ready))
+  }
 
-  const readyList = active.nodes.filter(n => ready.has(n.id)).map(nodeNumberOf)
   if (!active.completed) {
     parts.push('')
-    parts.push(readyList.length > 0
-      ? `Ready now (start these, in parallel for delegated mode): ${readyList.map(n => `n${n}`).join(', ')}`
-      : 'Nothing is ready — every open node waits on dependencies.')
+    if (todo) {
+      const open = active.nodes.filter(n => n.status === 'pending' || n.status === 'blocked').length
+      parts.push(`${active.nodes.length - open}/${active.nodes.length} settled — keep exactly ONE entry in_progress while working on it.`)
+      const blockedCount = active.nodes.filter(n => n.status === 'blocked').length
+      if (blockedCount > 0) parts.push(`${blockedCount} blocked — open work waiting on something outside your control, NOT settled progress.`)
+    } else {
+      const readyList = active.nodes.filter(n => ready.has(n.id)).map(nodeNumberOf)
+      // Scheduler-aligned wording (the plan-tool 2026-10-25 evaluation): the
+      // old "start these, in parallel" invited a manual spawn_agent round the
+      // rules above and the scheduler both forbid — a node dispatched twice,
+      // once by the model and once by the scheduler, is the exact confusion
+      // that produced it.
+      parts.push(readyList.length > 0
+        ? `Ready: ${readyList.map(n => `n${n}`).join(', ')} — the scheduler dispatches these automatically; do NOT call spawn_agent for them.`
+        : 'Nothing is ready — every open node waits on dependencies.')
+    }
   }
   if (info.notes) parts.push('', info.notes)
   return parts.join('\n')

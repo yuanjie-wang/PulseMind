@@ -19,7 +19,7 @@ import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } fro
 import { AimOutlined } from '@ant-design/icons'
 import type { Plan, PlanNodeStatus } from '../../types/agent'
 import { layoutPlanGraph, type LayoutNode } from '../../../../shared/plan/layout'
-import { blockedNodes, planNodeDeclaredLabel, planNodeExecutionLabel } from '../../../../shared/plan/graph'
+import { blockedNodes, isTodoPlan, planNodeDeclaredLabel, planNodeExecutionLabel } from '../../../../shared/plan/graph'
 import { DRAG_THRESHOLD_PX, planTopologySignature, viewScale } from '../../../../shared/plan/view'
 import { expertLabel } from '../../../../shared/expert-context'
 import { getCachedExpertProfiles, subscribeCache } from '../../agent/mcp-cache'
@@ -62,6 +62,11 @@ const CARD: Record<PlanNodeStatus, CardStyle> = {
   // downstream), so the node stays legible — no strikethrough, no hollow ink;
   // only the fork glyph and the 已拆分 word tell it apart from completed.
   split: { border: 'var(--pm-border-soft)', num: 'var(--pm-graph-ink)', desc: 'var(--pm-graph-ink-dim)', icon: 'fork', iconColor: 'var(--pm-graph-ink-dim)' },
+  // todo_write vocabulary (direct mode only — a delegated plan never mints
+  // it): live work waiting on something outside the agent's control. Drawn
+  // like the DAG's derived blocked (ban glyph, hollow-ish ink) but WITHOUT
+  // the dead-dash border — blocked todos are alive, just paused.
+  blocked: { border: 'var(--pm-frame)', num: 'var(--pm-graph-ink-blocked)', desc: 'var(--pm-graph-ink-blocked)', icon: 'ban', iconColor: 'var(--pm-graph-ink-dim)' },
 }
 /** The node in flight: darkest border and darkest words in the graph, and the
  *  only moving thing — the spinner carries it, the card border stays still. */
@@ -74,6 +79,7 @@ const EDGE: Record<PlanNodeStatus, { stroke: string; dash?: string; width: numbe
   failed: { stroke: 'var(--pm-border)', dash: '5 3', width: 1.3 },
   skipped: { stroke: 'var(--pm-frame)', dash: '5 3', width: 1.3 },
   pending: { stroke: 'var(--pm-border)', width: 1.2 },
+  blocked: { stroke: 'var(--pm-border)', dash: '2 3', width: 1.2 },
   // A split node's own incoming edges read like completed ones — its work
   // continues in the children downstream, not in this card.
   split: { stroke: 'var(--pm-text-ghost)', width: 1.5 },
@@ -282,10 +288,15 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
       <div style={{ padding: 24, fontSize: 12, color: 'var(--pm-text-muted)', textAlign: 'center' }}>
         <AimOutlined style={{ fontSize: 20, display: 'block', marginBottom: 8, color: 'var(--pm-border)' }} />
         暂无进行中的计划
-        <div style={{ marginTop: 4, fontSize: 11, color: 'var(--pm-text-faint)' }}>让 AI 用 create_plan 拆解任务后，依赖图会显示在这里</div>
+        <div style={{ marginTop: 4, fontSize: 11, color: 'var(--pm-text-faint)' }}>让 AI 用 create_plan 拆解委派任务、或用 todo_write 记录清单后，会显示在这里</div>
       </div>
     )
   }
+
+  // Direct mode = todo list: the DAG's waves/columns would LIE here — todo
+  // nodes carry no edges, so planLayers would hang them all in one parallel
+  // wave. A todo's contract is the list itself, so it gets the list rendering.
+  if (isTodoPlan(plan)) return <TodoListView plan={plan} onJumpToStep={onJumpToStep} />
 
   const blockedIds = new Set(plan && blockedNodes(plan).map(n => n.id))
   const settled = plan ? plan.nodes.filter(n => n.status !== 'pending').length : 0
@@ -613,6 +624,106 @@ export function PlanGraphView({ plan, onJumpToStep, onOpenPlanNode, canOpenNode,
             复位
           </button>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ── Todo list view (the direct-mode plan) ──────────────────────────────────
+// The checklist rendering for todo_write's plans. Header mirrors the graph's
+// (objective + progress); rows reuse the card vocabulary — the same hand-drawn
+// StatusIcon glyphs and ink ladder, no hue beyond the two status exceptions.
+// A settled row stays visible behind the live ones (same rule as the cards);
+// the current row reads by its spinner and a quiet background tint — no
+// accent bars or colored edges (用户裁定 2026-10-25: 左侧蓝竖条太 AI 味).
+function TodoListView({ plan, onJumpToStep }: { plan: Plan; onJumpToStep: (msgId: string) => void }): React.ReactElement {
+  const settled = plan.nodes.filter(n => n.status !== 'pending').length
+  const pct = plan.nodes.length > 0 ? Math.round((settled / plan.nodes.length) * 100) : 0
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <style>{`
+        @keyframes pm-spin { to { transform: rotate(360deg); } }
+        .pm-spin {
+          animation: pm-spin 0.9s linear infinite;
+          transform-box: fill-box;
+          transform-origin: center;
+        }
+        @media (prefers-reduced-motion: reduce) { .pm-spin { animation: none; } }
+      `}</style>
+      <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid var(--pm-border-hairline)', flexShrink: 0 }}>
+        <div
+          data-objective
+          title={plan.objective}
+          style={{
+            fontSize: 12.5, color: 'var(--pm-text)', fontWeight: 600, lineHeight: `${OBJECTIVE_LINE_H}px`,
+            overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: OBJECTIVE_LINES, WebkitBoxOrient: 'vertical',
+          }}
+        >
+          {plan.objective}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+          <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--pm-border-hairline)', overflow: 'hidden' }}>
+            <div style={{ width: `${pct}%`, height: '100%', borderRadius: 2, background: 'var(--pm-text)', transition: 'width 0.3s' }} />
+          </div>
+          <span style={{ fontSize: 11, color: 'var(--pm-graph-ink-dim)', flexShrink: 0 }}>
+            {plan.completed ? '已完成' : `${settled}/${plan.nodes.length}`}
+          </span>
+        </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '6px 8px' }}>
+        {plan.nodes.map((node) => {
+          const current = node.status === 'pending' && plan.currentNodeId === node.id
+          const icon: { kind: IconKind; color: string } = node.status === 'completed'
+            ? { kind: 'check', color: DONE_GREEN }
+            : node.status === 'failed'
+              ? { kind: 'cross', color: FAILED_RED }
+              : node.status === 'skipped' || node.status === 'split'
+                ? { kind: 'minus', color: 'var(--pm-graph-ink-faint)' }
+                : node.status === 'blocked'
+                  ? { kind: 'ban', color: 'var(--pm-graph-ink-dim)' }
+                  : current ? { kind: 'spinner', color: 'var(--pm-graph-ink-live)' } : { kind: 'circle', color: 'var(--pm-graph-ink-faint)' }
+          const ink = node.status === 'completed' ? 'var(--pm-graph-ink-dim)'
+            : node.status === 'skipped' ? 'var(--pm-graph-ink-hollow)'
+            : node.status === 'blocked' ? 'var(--pm-graph-ink-blocked)'
+            : current ? 'var(--pm-text)' : 'var(--pm-graph-ink)'
+          const openable = !!node.msgId
+          return (
+            <div
+              key={node.id}
+              data-todo-node={node.id}
+              title={[
+                current ? '进行中' : planNodeExecutionLabel(node),
+                node.summary,
+                openable ? '点击定位到对话' : null,
+              ].filter(Boolean).join(' · ')}
+              onClick={() => { if (node.msgId) onJumpToStep(node.msgId) }}
+              style={{
+                display: 'flex', gap: 8, alignItems: 'flex-start', padding: '7px 8px', borderRadius: 8,
+                cursor: openable ? 'pointer' : 'default',
+                background: current ? 'var(--pm-link-bg)' : 'transparent',
+              }}
+            >
+              <svg width={12} height={12} viewBox="0 0 12 12" style={{ flexShrink: 0, marginTop: 3 }}>
+                <StatusIcon kind={icon.kind} x={0} y={0} color={icon.color} />
+              </svg>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{
+                  fontSize: 12, color: ink, fontWeight: current ? 500 : 400,
+                  textDecoration: node.status === 'skipped' ? 'line-through' : undefined,
+                  wordBreak: 'break-word',
+                }}>
+                  {node.description}
+                </div>
+                {node.summary && (
+                  <div style={{ fontSize: 11, color: 'var(--pm-text-muted)', marginTop: 2 }}>{node.summary}</div>
+                )}
+              </div>
+              <span style={{ fontSize: 11, color: 'var(--pm-graph-ink-hollow)', flexShrink: 0, marginTop: 2 }}>
+                {`n${Number(node.id.slice(1))}`}
+              </span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

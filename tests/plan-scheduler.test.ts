@@ -503,8 +503,9 @@ describe('scheduler wiring (source scans)', () => {
     const graph = src('src/shared/plan/graph.ts')
     expect(graph).toContain('dispatched AUTOMATICALLY by the scheduler')
     expect(graph).toContain('You are consulted at exactly two points')
-    // Direct mode still never advances on its own — the main agent runs it.
-    expect(graph).toContain('the plan never advances on its own')
+    // Direct mode is the todo list now (2026-10-25) — still main-agent-run,
+    // still never scheduler-driven; the prose teaches todo_write.
+    expect(graph).toContain('Work through the list yourself')
 
     const tools = src('src/renderer/src/tools/built-in-tools.ts')
     expect(tools).toContain('the scheduler runs the plan')

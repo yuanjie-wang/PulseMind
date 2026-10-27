@@ -58,14 +58,38 @@ export type DeclaredStatus = 'success' | 'partial' | 'failed'
 
 /** Verdict keywords on a verdict line, worst-first: when several match the
  *  same line the most pessimistic declaration wins (see
- *  extractDeclaredStatus). */
+ *  extractDeclaredStatus). Used only when the line does not LEAD with a
+ *  verdict — see LEADING_STATUS_KEYWORDS. */
 const STATUS_KEYWORDS: Array<[DeclaredStatus, RegExp]> = [
   ['failed', /失败|\bfailed\b/i],
   ['partial', /部分成功|部分完成|\bpartial\b/i],
   ['success', /成功|\bsuccess(?:ful)?\b|\bcompleted\b/i],
 ]
 
+/** The same vocabulary anchored at the head of the verdict line. The skeleton
+ *  mandates the verdict LEAD its line (「成功 / 部分成功 / 失败 —— 选一个，
+ *  后跟一句原因」), so a keyword at the head IS the declaration, and any later
+ *  keyword on the line is subject matter riding the one-line reason — evidence
+ *  (n1: 「成功 —— 新增测试在旧实现上实测失败、在新实现上全绿」) or branch
+ *  naming (n2: 「成功 —— 覆盖「…失败即 false」分支」); both declared 成功 and
+ *  both recorded failed under the whole-line worst-first scan
+ *  (plan_mvoyoit7, 2026-10-26). */
+const LEADING_STATUS_KEYWORDS: Array<[DeclaredStatus, RegExp]> = [
+  ['failed', /^失败|^failed\b/i],
+  ['partial', /^部分成功|^部分完成|^partial\b/i],
+  ['success', /^成功|^success(?:ful)?\b|^completed\b/i],
+]
+
 function scanStatus(line: string): DeclaredStatus | undefined {
+  // The head of the line, minus the usual decorations: a list marker, a bold
+  // opener, and a redundant status label (「执行结果：」 restated under a 状态
+  // heading). What remains should start with the verdict.
+  const head = line
+    .replace(/^[ \t]*(?:[-*+][ \t]+)?(?:\*\*)?/, '')
+    .replace(/^(?:执行|任务|最终)?(?:状态|结果|status|result)(?:\*\*)?[：:][ \t]*/i, '')
+  for (const [status, re] of LEADING_STATUS_KEYWORDS) {
+    if (re.test(head)) return status
+  }
   for (const [status, re] of STATUS_KEYWORDS) {
     if (re.test(line)) return status
   }
@@ -112,8 +136,13 @@ function statusLineOf(text: string): string | undefined {
  *  (conv_20261005114823 n8: the report said 成功, the prose scan overrode
  *  it). No verdict line → undefined: an honest "no declaration" (no chip) —
  *  a hidden failure surfaces when the downstream reader opens the report,
- *  which the exchange contract already makes it do. Within the line the
- *  WORST match wins (failed before partial before success): a line naming
+ *  which the exchange contract already makes it do. The verdict is read off
+ *  the HEAD of the line first (the skeleton puts it there): a leading keyword
+ *  IS the declaration and later keywords on the line are subject matter
+ *  (evidence, branch naming) — the old whole-line worst-first scan turned two
+ *  成功-declaring nodes into declared-failed off exactly that. Lines that do
+ *  not lead with a verdict keep the pessimistic rule: within the line the
+ *  WORST match wins (failed before partial before success), a line naming
  *  several reads pessimistic, and a passing negation (「不是失败」) is priced
  *  in — the model states its verdict plainly, the scan only reads it.
  *  English synonyms count (weak models mix); `error` on a verdict line is a
