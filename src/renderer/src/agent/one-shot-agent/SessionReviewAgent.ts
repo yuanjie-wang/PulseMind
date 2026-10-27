@@ -1,37 +1,41 @@
-// ── Session review one-shot ──
-// Runs once at session end (afterSession hook, both renderer and main hosts):
-// a single LLM pass over the transcript that extracts memories, a title
-// summary + search keywords, and optionally an experience record in one call.
-// Dedupes against existing memories passed in via the prompt.
+// ── Session review one-shot（v3，PLAN-experience-sop 刀一，2026-10-26）──
+// 单次 LLM 调用同时产出记忆页与经验页（pages 协议），取代 v1 的
+// 「memories 扁平行 + 独立经验池」双产物。目录只给 title+别名（经验页带全文摘录），
+// 因此：
+//   - update 只对「全文可见且未截断」的经验页开放（v1 截断禁修订纪律的延续）；
+//   - 其余修订一律 supersede——旧正文留在取代链谱系里，新页自含完整正文，天然安全。
+// v3 变更：①脚本协议整体退出（一阶段产不出经验证的脚本——输入有损、无执行回路；
+// 脚本固化是二阶段 SOP 代理的职责）；②经验洞见命中既有页由「跳过」改「reinforce」
+// ——同一线索反复出现恰是最值得固化的信号，去重纪律不再吞掉它。
+// 结构性纪律（≤3 条、100 字帽）从 v1 原样继承。
 
 import { OneShotAgent } from './OneShotAgent'
 import { extractJson } from './json-utils'
 import { parseScriptFences } from '../../../../shared/experience/script-fence'
-import type { ExtractedMemory } from './MemoryExtractionAgent'
+import { MEMORY_PAGE_TYPES, type MemoryPageFile, type MemoryPageType, type PageIndexEntry, type PageOp } from '../../../../shared/memory-pages'
 
 export interface SessionReviewInput {
   sessionSummary: string
-  existingExperiencesText?: string
-  existingMemoriesText?: string
+  /** 全量页面目录（buildExtractionCatalog 产物，进 prompt）。 */
+  catalogText: string
+  catalogMode: 'full' | 'bucketed'
+  /** 活页索引（target 校验用，不进 prompt）。 */
+  pageIndex: PageIndexEntry[]
+  /** update 可用的页 title 集合（全文可见且未截断）。 */
+  revisableTitles: string[]
   locale?: string
 }
 
 export interface SessionReviewOutput {
-  memories: ExtractedMemory[]
+  pages: PageOp[]
   summary?: string
   keywords?: string[]
-  experience?: {
-    title: string
-    content: string
-    category: string
-    files?: { path: string; content: string }[]
-    /** THREE-WAY protocol (PLAN-experience-iteration): 'create' (default) makes
-     *  a new pool record; 'update' says `content` is the full revised document
-     *  OF `target` (a pool record name). parseResponse degrades a bad update
-     *  to 'create' rather than drop the insight. */
-    action?: 'create' | 'update'
-    target?: string
-  } | null
+}
+
+/** 模型输出的单条 op（content 内可携带 ### File: 脚本围栏，解析时拆出）。 */
+type RawPageOp = Partial<Record<'action' | 'target' | 'title' | 'type' | 'content', unknown>> & {
+  aliases?: unknown
+  links?: unknown
 }
 
 export class SessionReviewAgent extends OneShotAgent<SessionReviewInput, SessionReviewOutput> {
@@ -39,179 +43,199 @@ export class SessionReviewAgent extends OneShotAgent<SessionReviewInput, Session
 
   protected buildSystemPrompt(): string {
     return `\
-You are a session review system. Analyze the conversation below and extract two kinds of information in a single pass:
+You are a session review system. Analyze the conversation below and maintain the user's MEMORY PAGES in a single pass.
 
-## A. Memories
-A memory is knowledge about THE USER that makes the next conversation serve them better. Every memory must be attributable to the user — something they decided, prefer, corrected, or their durable background. The conversation transcript is only the EVIDENCE; what gets saved is what it reveals about the user, never a recap of the work itself. Each memory must have:
-- "content": specific and durable, anchored on the user ("用户拍板…", "用户要求…", "用户习惯…", "用户的背景是…"). HARD CAP: at most 100 characters, ONE short sentence (短句) stating the conclusion — no recipes, no step lists, no examples. If the insight cannot compress to one short sentence, it belongs in the experience record, not here
-- "type": one of "fact", "decision", "preference"
-  - "decision" — a choice the USER made or ratified: scope, approach or tool pick, priorities, a rejected alternative, a deliverable spec/口径 they signed off on
-  - "preference" — how the user wants things done: language, tone, format templates, granularity, workflow habits, and every correction they made to the agent's behavior or output
-  - "fact" — the user's background: role, organization, ongoing projects, domain context, and domain facts the user explicitly confirmed
-- "category": one of "code", "architecture", "user_pref", "decision", "general"
+## A. Page model
+The memory store is a wiki of pages. Every page has a title (unique), a type, a body, optional aliases and links.
+- "type" is exactly one of: "preference" (how the user wants things done — tone, formats, workflow habits, and every correction they made to the agent's behavior), "decision" (a choice the USER made or ratified — scope, approach, tool pick, deliverable spec), "fact" (the user's background: role, organization, ongoing projects, environment, domain facts they confirmed), "experience" (a reusable playbook/lesson — see section B).
+- A page is knowledge about THE USER or a durable lesson, never a recap of one task's execution. Every page must be attributable to the user — something they decided, prefer, corrected, or their durable background. The transcript is only EVIDENCE.
+- Litmus test: if this page disappeared, would the NEXT conversation for this user be visibly worse? If not, skip it.
+- Yield bar: SELECTIVE, not exhaustive. At most 3 non-experience pages per review; Most conversations correctly yield ZERO. "pages": [] is a fully successful outcome, never pad and never lower the bar. One high-value memory beats five marginal ones.
 
-NOT memories — never extract these, no matter how substantial they look:
+NOT pages — never extract:
 - The assistant's own analysis, frameworks, research findings, or summaries of files/webpages it read. The model's output is work product, not user knowledge — UNLESS the user explicitly approved or adopted it, which turns it into a "decision".
-- A log of what was done in one task ("查了X的天气", "完成了Y的调研") — execution narration is not durable knowledge.
-- Casual chat and greetings.
+- A log of what was done in one task — execution narration is not durable knowledge. Casual chat.
 
-Litmus test: if this memory disappeared, would the NEXT conversation for this user be visibly worse? If not, skip it.
+## B. Experience pages (QUALIFICATION GATE first)
+The summary begins with "(Conversation statistics: N tool call(s), M tool error(s))". Write an experience page ONLY if at least ONE holds:
+1. Complex task completed successfully (5+ tool calls)
+2. The agent hit a wall and eventually found a viable path — the struggle is the lesson
+3. The user corrected the agent's behavior/approach
+4. A non-trivial reusable workflow was discovered
+Otherwise NO experience page this round.
 
-Yield bar: extraction is SELECTIVE, not exhaustive. At most 3 memories per review — only items clearing every rule above. Most conversations correctly yield ZERO memories: "memories": [] is a fully successful outcome, never pad and never lower the bar to have something to show. One high-value memory beats five marginal ones.
-
-Important: If existing memories are provided, ONLY output memories that are NOT already covered by them. Skip any fact, decision, or preference that duplicates or substantially overlaps an existing memory.
-
-Also generate:
-- "summary": a short phrase (max 200 chars) describing this conversation
-- "keywords": array of search keywords (max 10, prefer Chinese if conversation is in Chinese)
-
-## B. Experience (optional)
-
-### B1. QUALIFICATION GATE — pass this BEFORE writing anything
-The conversation summary begins with a line like "(Conversation statistics: N tool call(s), M tool error(s))". Use it. Extract an experience ONLY if the conversation contains at least ONE of these four situations:
-1. A complex task completed successfully (the statistics show 5+ tool calls)
-2. The agent hit a wall (failed attempts, errors, dead ends — the statistics show tool errors, or the transcript shows repeated failures) and eventually found a viable path — the struggle itself is the lesson
-3. The user corrected the agent's behavior or approach — the correction is worth remembering
-4. A non-trivial workflow was discovered — a multi-step process, ordering, or technique that would save time next time
-
-A casual chat, a simple question answered in one exchange, a one-off decision, or a task with no tools and no friction does NOT qualify. When the statistics show few tool calls, zero tool errors, AND the transcript carries no correction or pain point — set "experience" to null.
-
-Two types of valuable experience, once the gate passes:
-**Optimizations:** A repetitive task was simplified, a workflow shortcut discovered, a process improvement found through trial and error. Worth remembering because the same situation will come up again.
-
-**User pain points:** The user expressed frustration, dissatisfaction, or pushed back on an approach. This signals a recurring problem worth avoiding in the future.
-
-An experience has:
-- "title": a short, descriptive title (max 30 chars). Choose a title that makes the experience easily identifiable in a list.
-- "content": structured Markdown with four sections:
-  - ## 背景 (Background) — What prompted this? Context of the problem or task.
-  - ## 过程 (Process) — What was done? Key steps, approaches tried, tools used.
-  - ## 问题 (Problems) — What went wrong or was tricky? Pain points, pitfalls, frustrations.
-  - ## 优化 (Optimization) — Lessons learned, what to do differently next time, actionable takeaways.
-- "category": one of "code", "architecture", "user_pref", "decision", "general" — choose the most relevant category
-
-### B2. DUPLICATES / EXTENDS / NEW — the three ways an insight meets the pool
-When EXISTING EXPERIENCES is provided, compare your insight against EVERY entry and pick exactly one:
-- **DUPLICATES** — an existing entry already covers this lesson (even worded differently): set "experience" to null.
-- **EXTENDS** — an existing entry covers the SAME subject and this conversation adds to it (a new pitfall, a correction, a better step, a script worth keeping alongside): set "action": "update" and "target" to that entry's name (the first field of its "- name | category | ..." line, copy it verbatim). "content" is then the FULL revised document — keep every paragraph of the existing entry that still holds, fold the new lesson into the matching section, and do NOT truncate. An entry whose body ends with the「正文被截断」marker was only partially shown: you do NOT have the whole document, so DO NOT revise that entry from the excerpt — pick NEW (or skip) instead. The store rejects a revision whose content is much shorter than the record it would overwrite, and such a rejection counts as a failed save.
-- **NEW** — no entry covers it: set "action": "create" (or omit "action"; create is the default) with the new title.
-
-If "action" is "update", the store overwrites the target record with your "content" — a partial fragment would destroy the entry, so always send the complete merged document.
-
-### Deterministic, repeatable work → ship a SCRIPT
-When the conversation contains fixed, deterministic, re-runnable work (the exact same steps would run again), ALSO distill it into an executable Node script instead of leaving it as prose. Declare it inside "content" as a fenced block:
-
-### File: scripts/<name>.mjs
-\`\`\`js
-<complete script source>
+An experience page is a DRAFT SKILL — its graduation path is promotion to an installed skill — so its body follows the SKILL.md standard: a manual written for a FUTURE session, never a report of what happened this time. Body template (keep the headings verbatim):
+\`\`\`markdown
+## 适用场景
+<the trigger situations where this playbook applies — when to use it>
+## 步骤
+<the reusable procedure — numbered, imperative voice>
+## 注意事项
+<pitfalls and guardrails learned the hard way — optional section>
 \`\`\`
 
-followed by a "## 脚本 (Script)" section in the content that documents each script: purpose, exact invocation, parameters, preconditions, and where its output lands.
+Rules:
+- INSTRUCTIONS, never narration: convert every episode into what a future agent should DO ("做 X 时先 Y 再 Z"), never "这次我先…后来发现…" case narration.
+- Self-contained: a future session reading ONLY this page must be able to execute the workflow — name the tools, the order, the acceptance check.
+- "summary" is the skill-standard DESCRIPTION: what this playbook does + when to use it (the pick_skill candidate list shows exactly this line), max 50 chars.
+- Write the content in the conversation's language; keep the headings verbatim.
 
-Script hard requirements (violating any makes the script useless):
-- Node.js 20, ONLY built-in modules prefixed with "node:" (fs, path, ...). The app ships Node 20 with NO npm — a script depending on an npm package can never run on any machine.
-- Parameterize EVERYTHING through process.argv / environment variables. Hard-coding values from THIS conversation (paths, ids, urls) is the classic dead script.
-- Deterministic output, idempotent re-runs, single file, at most 3 files per experience.
-- Write shell/python steps as plain text in the 过程/优化 sections instead — they are NOT portable.
-If the work is judgment-based (not mechanically repeatable), do NOT invent a script.
+## C. The PAGE CATALOG and the five actions
+You are given the PAGE CATALOG (all live pages). Every new insight must meet it in exactly one way — pick per insight:
 
-On an "update": a script that CHANGES goes in a fence with the SAME path — it overwrites the old file. Scripts you are not changing must NOT be re-emitted (files not listed are left untouched on disk). A script that is now wrong should simply be omitted from the revised content.
-
-If this conversation doesn't contain any worthwhile lessons, set "experience" to null.
+- **create** — nothing covers it: {"action":"create","title":"<unique topic title>","type":"...","content":"<body>","summary":"<ONE sentence, max 50 chars — a use-when description for experience pages (see B), a conclusion for decision pages — required for both>","aliases":["<likely search terms>"],"links":["<related page title>"]}. Aliases are the words a future query would use — 2-4 per page. For preference/fact pages content is ONE short sentence, HARD CAP 100 chars. decision/experience pages may be long.
+- **update** — ONLY for a catalog page whose FULL body is shown (no 「正文被截断」 marker; bucketed catalogs offer none): {"action":"update","target":"<exact title>","content":"<FULL revised document merging old + new>"}. Never truncate; a much-shorter revision is rejected by the store.
+- **supersede** — the page's conclusion changed (a decision or preference evolved): {"action":"supersede","target":"<exact title or alias>","title":"<new title>","type":"...","content":"<complete self-contained body; the old page stays readable in lineage>","summary":"<ONE sentence, max 50 chars — same rule as create>"}. You do NOT need the old body for this — write the new one completely.
+- **alias** — only adding search aliases to an existing page: {"action":"alias","target":"<title>","aliases":["..."]}.
+- **reinforce** — an EXPERIENCE page already covers an optimizable pattern that appeared AGAIN in this conversation: {"action":"reinforce","target":"<exact title>","note":"<ONE line: what recurred this time>"}. Repetition is the strongest signal that a pattern is worth distilling — never stay silent when a known experience topic recurs; reinforce it. Reinforce is ONLY for experience pages.
+- Non-experience duplicates: an insight about preferences/decisions/facts NOT already covered by the catalog is the bar — if a live page covers it (even worded differently), output nothing for that insight.
 
 ## Output Format
-Return ONLY a JSON object with these keys:
+Return ONLY a JSON object:
 {
-  "memories": [{ "content": "...", "type": "fact|decision|preference", "category": "code|architecture|user_pref|decision|general" }],
-  "summary": "...",
-  "keywords": ["...", "..."],
-  "experience": { "action": "create|update", "target": "<existing name, only when action=update>", "title": "...", "content": "...", "category": "code|architecture|user_pref|decision|general" } | null
+  "pages": [
+    {"action":"create|update|alias|supersede|reinforce", "target":"<only for update/alias/supersede/reinforce>", "title":"<for create/supersede>", "type":"preference|decision|fact|experience", "content":"...", "aliases":["..."], "links":["..."], "note":"<reinforce only>"}
+  ],
+  "summary": "<max 200 chars describing this conversation>",
+  "keywords": ["<max 10, prefer the conversation's language>"]
 }`
   }
 
   protected buildUserMessages(input: SessionReviewInput): { role: string; content: string }[] {
     const langInstruction = input.locale === 'zh'
-      ? '请用中文编写 experience 的 content。'
-      : 'Write the experience content in English.'
-
-    const memoriesSection = input.existingMemoriesText
-      ? `\n\nEXISTING MEMORIES (do NOT output a memory that duplicates any of these):\n${input.existingMemoriesText}`
+      ? '请用中文编写页面 content。'
+      : 'Write page content in English.'
+    const modeNote = input.catalogMode === 'bucketed'
+      ? '\n(catalog is over budget and grouped by type — update is unavailable this round; use create/alias/supersede only)'
       : ''
-
-    const existingSection = input.existingExperiencesText
-      ? `\n\nEXISTING EXPERIENCES (the live experience pool — decide DUPLICATES / EXTENDS / NEW against these; each line is "- name | category | description" followed by the entry's body):\n${input.existingExperiencesText}`
-      : ''
-
     return [{
       role: 'user',
-      content: `Review this conversation and extract memories + optional experience.\n${langInstruction}${memoriesSection}${existingSection}\n\n${input.sessionSummary}`
+      content: `Review this conversation and maintain the memory pages.\n${langInstruction}\n\nPAGE CATALOG (every live page; update targets must come verbatim from here):${modeNote}\n${input.catalogText}\n\n${input.sessionSummary}`,
     }]
   }
 
   protected parseResponse(raw: string, input: SessionReviewInput): SessionReviewOutput {
-    const parsed = extractJson<{
-      memories?: unknown[]
-      summary?: string
-      keywords?: unknown[]
-      experience?: { title?: string; content?: string; category?: string; action?: string; target?: string } | null
-    }>(raw)
-
+    const parsed = extractJson<{ pages?: unknown[]; summary?: string; keywords?: unknown[] }>(raw)
     if (!parsed) return this.getDefaultOutput()
 
-    // Support old format (array of memories only)
-    if (Array.isArray(parsed)) {
-      return { memories: parsed as ExtractedMemory[] }
+    const refs = new Set<string>()
+    for (const p of input.pageIndex) {
+      refs.add(p.title.toLowerCase())
+      for (const a of p.aliases) refs.add(a.toLowerCase())
+    }
+    const revisable = new Set(input.revisableTitles.map((t) => t.toLowerCase()))
+    // 目录里 target（title 或 alias）→ 该页的 title（update 需要按 title 寻址且可修订）
+    const refToTitle = new Map<string, string>()
+    for (const p of input.pageIndex) {
+      refToTitle.set(p.title.toLowerCase(), p.title)
+      for (const a of p.aliases) refToTitle.set(a.toLowerCase(), p.title)
     }
 
+    const memoryOps: PageOp[] = []
+    const experienceOps: PageOp[] = []
+    const reinforceOps: PageOp[] = []
+    for (const raw of Array.isArray(parsed.pages) ? (parsed.pages as RawPageOp[]) : []) {
+      const op = normalizeOp(raw, refs, revisable, refToTitle)
+      if (!op) continue
+      if (op.action === 'reinforce') reinforceOps.push(op)
+      else if (op.type === 'experience') experienceOps.push(op)
+      else memoryOps.push(op)
+    }
+    // 结构性纪律：非经验页 ≤3（帽是保证，prompt 是前半）；经验页 ≤1（资格门的兜底）；
+    // reinforce ≤3（重现记账不是新页，不占经验页帽——它在攒二阶段的资格信号）
     return {
-      memories: Array.isArray(parsed.memories) ? parsed.memories as ExtractedMemory[] : [],
+      pages: [...memoryOps.slice(0, 3), ...experienceOps.slice(0, 1), ...reinforceOps.slice(0, 3)],
       summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
       keywords: Array.isArray(parsed.keywords) ? parsed.keywords.filter((k: unknown) => typeof k === 'string') : undefined,
-      experience: parsed.experience && typeof parsed.experience === 'object' && parsed.experience.content && parsed.experience.content !== 'None'
-        ? (() => {
-            const content = typeof parsed.experience.content === 'string' ? parsed.experience.content : ''
-            // Script fences ride INSIDE content; split them out here (P1.2 of
-            // PLAN-experience-scripts). Rejected files are the store gates'
-            // concern — parse only splits and prefix-checks.
-            const { content: body, files } = parseScriptFences(content)
-            // THREE-WAY protocol: an update must name a record the model was
-            // actually shown. Unknown/missing target degrades to create —
-            // 宁可多一条不可丢洞见 (the store has the same fallback for a
-            // target evicted between prompt-build and save).
-            const poolNames = poolNamesOf(input.existingExperiencesText)
-            const wantsUpdate = parsed.experience.action === 'update'
-            const target = typeof parsed.experience.target === 'string' ? parsed.experience.target.trim() : ''
-            const validTarget = wantsUpdate && target && poolNames.has(target)
-            if (wantsUpdate && !validTarget) {
-              console.warn(`[SessionReviewAgent] update target ${target ? `"${target}" not in the pool` : 'missing'} — degrading to create`)
-            }
-            return {
-              title: typeof parsed.experience.title === 'string' ? parsed.experience.title : '',
-              content: body,
-              category: typeof parsed.experience.category === 'string' ? parsed.experience.category : 'general',
-              files: files.length > 0 ? files : undefined,
-              action: validTarget ? 'update' as const : 'create' as const,
-              target: validTarget ? target : undefined,
-            }
-          })()
-        : null
     }
   }
 
   protected getDefaultOutput(): SessionReviewOutput {
-    return { memories: [] }
+    return { pages: [] }
   }
 }
 
-/** The set of pool record names the prompt actually showed the model — the
- *  first field of each "- name | category | description" line. An `update`
- *  target outside this set is a hallucination and degrades to create. */
-export function poolNamesOf(existingExperiencesText?: string): Set<string> {
-  const names = new Set<string>()
-  if (!existingExperiencesText) return names
-  for (const line of existingExperiencesText.split('\n')) {
-    const m = line.match(/^- (\S+) \| /)
-    if (m) names.add(m[1])
+/** 单条模型 op 的校验/降级（poolNamesOf 纪律的推广：幻觉 target 降级而非丢弃洞见）。 */
+function normalizeOp(
+  raw: RawPageOp,
+  refs: Set<string>,
+  revisable: Set<string>,
+  refToTitle: Map<string, string>
+): (PageOp & { files?: MemoryPageFile[] }) | null {
+  const action = typeof raw.action === 'string' ? raw.action : 'create'
+  const type = MEMORY_PAGE_TYPES.includes(raw.type as MemoryPageType) ? (raw.type as MemoryPageType) : 'fact'
+  const content = typeof raw.content === 'string' ? raw.content : ''
+  const title = typeof raw.title === 'string' ? raw.title.trim() : ''
+  const summary = typeof (raw as { summary?: unknown }).summary === 'string' ? ((raw as { summary: string }).summary.trim() || undefined) : undefined
+  const aliases = Array.isArray(raw.aliases) ? raw.aliases.filter((a): a is string => typeof a === 'string' && !!a.trim()).map((a) => a.trim()) : []
+  const links = Array.isArray(raw.links) ? raw.links.filter((l): l is string => typeof l === 'string' && !!l.trim()) : []
+  // 经验页脚本围栏：拆出 files，content 留正文
+  const { content: body, files } = parseScriptFences(content)
+
+  /** 幻觉 target 的降级出口：create（宁可多一页，compile pass 会并）。 */
+  const mkCreate = (): (PageOp & { files?: MemoryPageFile[] }) | null => {
+    if (!title || !body) return null
+    if ((type === 'preference' || type === 'fact') && body.length > 100) return null
+    const op: PageOp & { files?: MemoryPageFile[] } = { action: 'create', title, type, content: body, aliases, links }
+    if (summary) op.summary = summary
+    if (type === 'experience' && files.length > 0) op.files = files
+    return op
   }
-  return names
+
+  if (action === 'create' || action === 'supersede') {
+    let target: string | undefined
+    if (action === 'supersede') {
+      target = typeof raw.target === 'string' ? raw.target.trim() : ''
+      const resolved = target ? refToTitle.get(target.toLowerCase()) : undefined
+      if (!resolved) {
+        // 幻觉 target：降级 create，宁可多一页（compile pass 会并）
+        console.warn(`[SessionReviewAgent] supersede target "${target}" not in catalog — degrading to create`)
+        return mkCreate()
+      }
+      target = resolved
+    }
+    if (!title || !body) return null
+    // 100 字帽是 preference/fact 的结构性半边（decision/experience 允许长正文）
+    if ((type === 'preference' || type === 'fact') && body.length > 100) return null
+    const op: PageOp & { files?: MemoryPageFile[] } =
+      action === 'supersede'
+        ? { action: 'supersede', target, title, type, content: body, aliases, links }
+        : { action: 'create', title, type, content: body, aliases, links }
+    if (type === 'experience' && files.length > 0) op.files = files
+    return op
+  }
+
+  if (action === 'update') {
+    const target = typeof raw.target === 'string' ? raw.target.trim() : ''
+    const resolved = target ? refToTitle.get(target.toLowerCase()) : undefined
+    if (!resolved || !body) return null
+    if (!revisable.has(resolved.toLowerCase())) {
+      // 目录没给全文（或分桶模式）：改写看不到的正文是破坏——降级为 create，
+      // title 取目标页 title（update op 自带不了 title），交给 compile pass 归并
+      console.warn(`[SessionReviewAgent] update target "${target}" body not fully shown — degrading to create`)
+      if ((type === 'preference' || type === 'fact') && body.length > 100) return null
+      const degraded: PageOp & { files?: MemoryPageFile[] } = { action: 'create', title: resolved, type, content: body, aliases, links }
+      if (type === 'experience' && files.length > 0) degraded.files = files
+      return degraded
+    }
+    return { action: 'update', target: resolved, content: body, aliases, links }
+  }
+
+  if (action === 'reinforce') {
+    const target = typeof raw.target === 'string' ? raw.target.trim() : ''
+    const resolved = target ? refToTitle.get(target.toLowerCase()) : undefined
+    if (!resolved) return null // 幻觉 target：静默丢弃（记账宁缺毋滥，不降级 create）
+    const note = typeof (raw as { note?: unknown }).note === 'string' ? (raw as { note: string }).note.trim() : ''
+    if (!note) return null
+    return { action: 'reinforce', target: resolved, note }
+  }
+
+  if (action === 'alias') {
+    const target = typeof raw.target === 'string' ? raw.target.trim() : ''
+    const resolved = target ? refToTitle.get(target.toLowerCase()) : undefined
+    if (!resolved || aliases.length === 0) return null
+    return { action: 'alias', target: resolved, aliases, links }
+  }
+
+  return null
 }

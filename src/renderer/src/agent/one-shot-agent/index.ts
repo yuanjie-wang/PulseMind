@@ -12,14 +12,14 @@ export { MCPServerSummaryAgent } from './MCPServerSummaryAgent'
 export type { MCPServerSummaryInput } from './MCPServerSummaryAgent'
 export { ServerSelectionAgent } from './ServerSelectionAgent'
 export type { ServerSelectionInput } from './ServerSelectionAgent'
-export { MemoryCompressionAgent } from './MemoryCompressionAgent'
-export type { MemoryCompressionInput, CompressedMemory } from './MemoryCompressionAgent'
+export { MemoryPageCompileAgent } from './MemoryPageCompileAgent'
+export type { MemoryPageCompileInput, MemoryPageCompileOutput } from './MemoryPageCompileAgent'
 export { MemoryExtractionAgent } from './MemoryExtractionAgent'
 export type { MemoryExtractionInput, MemoryExtractionOutput, ExtractedMemory } from './MemoryExtractionAgent'
 // ExperienceAgent (the strict-gate shell with ZERO call sites) was deleted in
 // PLAN-experience-iteration — its four-situation gate now lives in
 // SessionReviewAgent's system prompt, which is the only live extraction path.
-export { SessionReviewAgent, poolNamesOf } from './SessionReviewAgent'
+export { SessionReviewAgent } from './SessionReviewAgent'
 export type { SessionReviewInput, SessionReviewOutput } from './SessionReviewAgent'
 export { KnowledgeCompilerAgent } from './KnowledgeCompilerAgent'
 export { AutoSummaryAgent } from './AutoSummaryAgent'

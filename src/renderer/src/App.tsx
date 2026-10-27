@@ -39,7 +39,7 @@ import { enqueueStartupCompile } from './components/knowledge/compile-queue'
 import { createLlmAdapter } from './llm/index'
 import { generateMcpSummaries } from './agent/mcp-summary-service'
 import { useGreeting } from './hooks/useGreeting'
-import { resolveContextWindow, useSessionContextWindowStore } from './utils/context-window'
+import { resolveContextWindow, sessionWindowKeyOf, useSessionContextWindowStore } from './utils/context-window'
 import type { HooksConfig } from './types/hooks'
 import { TranslationProvider, useTranslation } from './i18n/useTranslation'
 import { usePendingApprovalStore } from './stores/pendingApprovalStore'
@@ -168,44 +168,8 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
       return ctx
     },
     afterSession: (ctx) => {
+      // 提取已移交定时清扫（PLAN-memory-wiki M2c）：afterSession 不再触发 LLM 提取
       console.log('[Hook] afterSession, status:', ctx.status.status)
-
-      // Auto-capture memories/summary when session ends (completed, error, or cancelled)
-      if (memoryManagerRef.current && apiKey) {
-        const mm = memoryManagerRef.current
-        // Pass the FULL message list (PLAN-experience-iteration): the old
-        // text-only pre-filter made the gate's `(Conversation statistics: …)`
-        // line undercount every tool call and error, and extractAndSaveAll
-        // flattens to text messages internally anyway (one cursor unit).
-        if (ctx.messages.length > 0) {
-          // Fire-and-forget — single LLM call extracts memories + experience.
-          // minDelta=4 (PLAN-memory-extraction-dedup): a thin turn-end delta
-          // generalizes into near-duplicates — it waits and accumulates.
-          mm.extractAndSaveAll(ctx.messages, apiKey, baseURL, adapter, model, conversationIdRef.current ?? undefined, settings.locale, undefined, { minDelta: 4 }).then(result => {
-            if (result.memories > 0) {
-              console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
-            }
-            // Save extracted experience as a standalone SKILL (not into the wiki)
-            if (result.experienceContent && experienceManagerRef.current) {
-              experienceManagerRef.current.save({
-                title: result.experienceTitle ?? 'Untitled experience',
-                description: result.experienceContent.slice(0, 120),
-                content: result.experienceContent,
-                category: result.experienceCategory ?? 'general',
-                sourceConversationId: conversationIdRef.current ?? undefined,
-                files: result.experienceFiles,
-                // Iteration (PLAN-experience-iteration): update target re-aims the save.
-                targetName: result.experienceTarget
-              }).then(({ record }) => {
-                console.log('[SessionReview] Experience saved to experience skill library')
-                experienceManagerRef.current?.ensureTriggers(record.name, {
-                  adapter, apiKey: apiKey || '', baseURL, model, modelMaxTokens: maxTokens
-                }, Boolean(result.experienceTarget)).catch((err: unknown) => console.warn('[SessionReview] Trigger extraction failed:', err))
-              }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
-            }
-          })
-        }
-      }
     },
     beforeTool: (ctx) => {
       console.log('[Hook] beforeTool:', ctx.toolName, ctx.command.slice(0, 80))
@@ -378,16 +342,24 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
   // 的会话实报窗口钉进外部 store（utils/context-window.ts，与
   // pendingProfileStore 同款），分母取 min(profile 解析值, 会话实报值)——
   // 引擎侧的压缩链/刻度节都读重瞄准后的数字，圆环跟它对齐才不至于在模型
-  // 实际跑满窗口时显示 45%。换会话即失效；引擎侧换 profile 会丢弃重瞄准，
-  // 这里的旧值随之被 profile 解析值取代（重瞄准只会更小，min 永不吃掉
-  // 正确的更大窗口）。
-  const pinnedSessionWindow = useSessionContextWindowStore((s) => s.pinned)
+  // 实际跑满窗口时显示 45%。pin 键带 profileId（review_20261025 中1）：重
+  // 瞄准属于产生它的那个模型，引擎侧换 profile 即丢弃（AgentEngine.
+  // updateOptions 的 profileId 分支），这里键失配即回落 profile 解析值；
+  // changeProfile/resetProfile 再显式 clearConv，拦住 P1→P2→P1 往返对旧键
+  // 的重新命中。换会话不失效——引擎的 reaim 本就随会话存续。
   const pinSessionWindow = useSessionContextWindowStore((s) => s.pin)
+  const clearSessionWindow = useSessionContextWindowStore((s) => s.clearConv)
+  const sessionWindowKey = activeConvKey && effectiveProfileId
+    ? sessionWindowKeyOf(activeConvKey, effectiveProfileId)
+    : null
+  const pinnedSessionWindow = useSessionContextWindowStore((s) =>
+    sessionWindowKey ? s.pinned[sessionWindowKey] : undefined)
   useEffect(() => {
-    if (agentStatus.status === 'retrying' && agentStatus.contextWindow != null) {
-      pinSessionWindow(activeConvKey, agentStatus.contextWindow)
+    if (agentStatus.status === 'retrying' && agentStatus.contextWindow != null
+      && activeConvKey && effectiveProfileId) {
+      pinSessionWindow(activeConvKey, effectiveProfileId, agentStatus.contextWindow)
     }
-  }, [agentStatus, activeConvKey, pinSessionWindow])
+  }, [agentStatus, activeConvKey, effectiveProfileId, pinSessionWindow])
   // 上下文刻度（composer 圆环）的分母跟会话实际在用的模型走，解析链镜像
   // 主进程 resolveProfile、回落与引擎一致（utils/context-window.ts）。
   // 上方喂给 useChatController 的 contextLength 是 M1.4 主进程托管后的兼容
@@ -400,18 +372,30 @@ const contextLength = activeProfile?.contextLength ?? settings.profiles[0]?.cont
     effectiveProfileId,
     settings.activeProfileId,
   )
-  const sessionWindowMatches = pinnedSessionWindow != null && pinnedSessionWindow.conv === activeConvKey
-  const displayContextLength = sessionWindowMatches
-    ? Math.min(profileContextLength, pinnedSessionWindow.window)
+  const displayContextLength = pinnedSessionWindow != null
+    ? Math.min(profileContextLength, pinnedSessionWindow)
     : profileContextLength
   const changeProfile = useCallback((profileId: string): void => {
-    if (activeConvKey) updateConversationProfile(activeConvKey, profileId)
-    else usePendingProfileStore.getState().setProfileId(profileId)
-  }, [activeConvKey, updateConversationProfile])
+    if (activeConvKey) {
+      // 条件镜像引擎侧的 `opts.profileId !== oldProfileId` 才丢 reaim：重选
+      // 同一个模型时引擎保留重瞄准，这里也必须保留 pin。清的时机必须显式
+      // （review_20261025 低4）——键失配只拦「当前模型 ≠ pin 时的模型」，
+      // 拦不住往返切换对旧键的重新命中。
+      if (profileId !== effectiveProfileId) clearSessionWindow(activeConvKey)
+      updateConversationProfile(activeConvKey, profileId)
+    } else {
+      usePendingProfileStore.getState().setProfileId(profileId)
+    }
+  }, [activeConvKey, effectiveProfileId, updateConversationProfile, clearSessionWindow])
   const resetProfile = useCallback((): void => {
-    if (activeConvKey) updateConversationProfile(activeConvKey, null)
-    else usePendingProfileStore.getState().clearProfileId()
-  }, [activeConvKey, updateConversationProfile])
+    if (activeConvKey) {
+      // 解除钉选后会话回落到全局默认模型——解析值变化才清（同上，镜像引擎）。
+      if (settings.activeProfileId !== effectiveProfileId) clearSessionWindow(activeConvKey)
+      updateConversationProfile(activeConvKey, null)
+    } else {
+      usePendingProfileStore.getState().clearProfileId()
+    }
+  }, [activeConvKey, effectiveProfileId, settings.activeProfileId, updateConversationProfile, clearSessionWindow])
 
   // 进入 welcome（没有任何会话打开）时刷新一次设置快照：welcome composer 的
   // 授权/模型回退读 settings.lastUsed*，而插件面板等其他表面的修改只落在主

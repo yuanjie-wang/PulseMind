@@ -1,264 +1,290 @@
-import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import { setHost } from '../src/renderer/src/agent/host'
 import { MemoryManager } from '../src/renderer/src/memory/MemoryManager'
-import type { MemoryEntry } from '../src/renderer/src/memory/types'
+import type { MemoryPageRecord } from '../src/shared/memory-pages'
 
 /**
- * 记忆合并空转修复（2026-09-26）。
- *
- * 实测：同一份 Consolidate 负载 2 分钟内逐字节相同地打了 4 遍。根因链 =
- * watermark 只在合并成功时推进 → 失败/空结果后 lastRunAt 仍是 0 → 间隔门
- * （24h）永远不生效、且「新增」按全量池计算永远 ≥5 → 每个触发点
- * （afterSession / 启动延迟 sweep）都重新发起同一次 LLM 调用。
- *
- * 修复 = 水位带上 lastAttemptAt：尝试即盖章，成功走 24h 时钟，失败/空走
- * 2h 重试时钟。本文件用真实的 MemoryManager + 假 host + 桩 compressionAgent
- * 把三层行为钉死。
+ * 页面编译层的门（PLAN-memory-wiki M6，2026-10-25；分区整理 2026-10-27）——
+ * 语义自旧合并空转修复（2026-09-26）原样移植：watermark 带 lastAttemptAt，
+ * 尝试即盖章；成功走 24h 钟，异常/全废产出走 2h 重试钟；「增长」按活页数差
+ * ≥8 判定（lastCount=0 的首编译在 ≥8 页时即到期——迁移兜底臂的 per-row 页
+ * 等着第一轮归并）。满目视图下的空产出就是「池子干净」= 成功（维护钟臂的
+ * 停转前提：否则干净的大池子每 2h 空转一轮）。
+ * 分区整理（2026-10-27）：选页按 createdAt 升序从 lastCursorAt 起装预算，
+ * 取代「超预算全体降级 titles-only 禁 merge」；游标是位置不是成绩，异常也
+ * 推进；到末端回落全量从头再轮。超预算池子另有 7 天维护钟（无增长也整理）。
+ * 附加纪律：编译永不硬删（并页走 supersede 留谱系；过时页走 retire 留理由）。
  */
 
-const RETRY_MS = (MemoryManager as unknown as { MERGE_RETRY_MS: number }).MERGE_RETRY_MS
-const MIN_INTERVAL_MS = (MemoryManager as unknown as { MERGE_MIN_INTERVAL_MS: number }).MERGE_MIN_INTERVAL_MS
+const RETRY_MS = (MemoryManager as unknown as { COMPILE_RETRY_MS: number }).COMPILE_RETRY_MS
+const MIN_INTERVAL_MS = (MemoryManager as unknown as { COMPILE_MIN_INTERVAL_MS: number }).COMPILE_MIN_INTERVAL_MS
+const MIN_NEW = (MemoryManager as unknown as { COMPILE_MIN_NEW: number }).COMPILE_MIN_NEW
+const MAINTENANCE_MS = (MemoryManager as unknown as { COMPILE_MAINTENANCE_MS: number }).COMPILE_MAINTENANCE_MS
 
-function makeHost(memories: MemoryEntry[], saved: string[], deleted: string[]): PulseHost {
-  return {
-    listMemories: async () => memories,
-    countMemories: async () => memories.length,
-    saveMemory: async (input: { content: string }) => {
-      saved.push(input.content)
-      return { id: 'mem_x', content: input.content, type: 'auto', category: 'general', createdAt: new Date().toISOString() } as MemoryEntry
+const page = (id: string, title: string): MemoryPageRecord => ({
+  id, title, type: 'fact', body: `${title} 正文`, aliases: [], links: [], supersededBy: null,
+  sourceConversationId: null, files: null, useCount: 0, lastUsedAt: null,
+  createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z',
+})
+
+/** 大页工厂：body ~4K、createdAt 逐秒递增（分区排序的稳定序）、双位标题（免前缀歧义）。 */
+const bigPage = (i: number): MemoryPageRecord => ({
+  ...page(`p${i}`, `页${String(i).padStart(2, '0')}`),
+  body: 'x'.repeat(4000),
+  createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, i)).toISOString(),
+})
+const big = (n: number) => Array.from({ length: n }, (_, i) => bigPage(i))
+
+function makeHost(pages: MemoryPageRecord[]) {
+  const calls = { llm: 0, appliedOps: [] as unknown[] }
+  const host = {
+    listMemoryPages: async () => pages,
+    applyMemoryPageOps: async (ops: unknown[]) => {
+      calls.appliedOps.push(...ops)
+      return ops.map((op, i) => ({ op, ok: true, pageId: `page_new_${i}` }))
     },
-    deleteMemory: async (id: string) => {
-      deleted.push(id)
-    },
-  } as unknown as PulseHost
+  }
+  setHost(host as unknown as PulseHost)
+  return { calls }
 }
 
-function entry(content: string, n: number): MemoryEntry {
-  return { id: `mem_${n}`, content, type: 'auto', category: 'code', createdAt: new Date().toISOString() } as MemoryEntry
-}
-
-function makeManager(host: PulseHost): { mm: MemoryManager; execute: ReturnType<typeof vi.fn> } {
+function makeManager() {
   const mm = new MemoryManager()
-  setHost(host)
   mm.setConfig('key', 'https://example.invalid', {} as never, 'test-model')
-  const execute = vi.fn(async () => ({ memories: [], dropped: [] }))
-  ;(mm as unknown as { compressionAgent: { execute: typeof execute } }).compressionAgent = { execute }
+  const execute = vi.fn(async () => ({ pages: [] }))
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(mm as unknown as { compileAgent: { execute: typeof execute } }).compileAgent = { execute }
   return { mm, execute }
 }
 
-describe('the merge attempt gate (idle-spin fix)', () => {
-  it('an empty merge result does not spin: the immediate second call issues zero LLM calls', async () => {
-    const saved: string[] = []
-    const deleted: string[] = []
-    const { mm, execute } = makeManager(makeHost([1, 2, 3, 4, 5, 6].map((n) => entry(`记忆内容 ${n} 号`, n)), saved, deleted))
+const many = (n: number) => Array.from({ length: n }, (_, i) => page(`p${i}`, `页${i}`))
 
-    await mm.ensureMemoryMerged()
-    expect(execute).toHaveBeenCalledTimes(1) // 尝试发生了
-    expect(mm.getMergeWatermark().lastAttemptAt).not.toBe(0) // 尝试被盖章
-
-    await mm.ensureMemoryMerged()
-    await mm.ensureMemoryMerged()
-    expect(execute).toHaveBeenCalledTimes(1) // 修复点：空结果后立刻重触发不再打 LLM
-  })
-
-  it('a failed attempt retries on the short clock (RETRY_MS), not the 24h clock', async () => {
-    const { mm, execute } = makeManager(makeHost([1, 2, 3, 4, 5, 6].map((n) => entry(`记忆内容 ${n} 号`, n)), [], []))
-    await mm.ensureMemoryMerged()
+describe('the compile attempt gate（空转帽移植）', () => {
+  it('空产出 = 成功（24h 钟）：紧接的第二次调用零 LLM 调用，lastRunAt 落章', async () => {
+    makeHost(many(MIN_NEW))
+    const { mm, execute } = makeManager()
+    await mm.ensurePagesCompiled()
     expect(execute).toHaveBeenCalledTimes(1)
+    // 满目视图下空产出就是「池子干净」——成功钟而非重试钟（维护钟臂的停转前提）
+    expect(mm.getCompileWatermark().lastRunAt).not.toBe(0)
+    await mm.ensurePagesCompiled()
+    expect(execute).toHaveBeenCalledTimes(1) // 24h 钟内不再开火
+  })
 
-    // 回拨到重试窗口之外 → 允许再试
-    mm.setMergeWatermark({ lastRunAt: 0, lastCount: 0, lastAttemptAt: Date.now() - RETRY_MS - 1 })
-    await mm.ensureMemoryMerged()
-    expect(execute).toHaveBeenCalledTimes(2)
+  it('成功走 24h 钟：产出应用后整日不再跑', async () => {
+    makeHost(many(MIN_NEW))
+    const { mm, execute } = makeManager()
+    execute.mockResolvedValueOnce({ pages: [{ action: 'alias', target: '页0', aliases: ['别名'] }] })
+    expect(await mm.ensurePagesCompiled()).toBe(true)
+    expect(execute).toHaveBeenCalledTimes(1)
+    await mm.ensurePagesCompiled()
+    expect(execute).toHaveBeenCalledTimes(1) // 24h 钟内不再开火
+  })
 
-    // 成功过一次（lastRunAt 领先）→ 24h 时钟持有
-    mm.setMergeWatermark({ lastRunAt: Date.now() - MIN_INTERVAL_MS + 60_000, lastCount: 6, lastAttemptAt: 0 })
-    execute.mockClear()
-    await mm.ensureMemoryMerged()
+  it('异常走 2h 重试钟：到点放行（advanceTimers）', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.now())
+    try {
+      makeHost(many(MIN_NEW))
+      const { mm, execute } = makeManager()
+      execute.mockRejectedValueOnce(new Error('boom'))
+      expect(await mm.ensurePagesCompiled()).toBe(false)
+      vi.setSystemTime(Date.now() + RETRY_MS + 1000)
+      await mm.ensurePagesCompiled()
+      expect(execute).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('due 判定（活页数差 ≥8；bootstrap）', () => {
+  it('页数不足（<2 或 <MIN_NEW 且无基线）不跑', async () => {
+    makeHost(many(MIN_NEW - 1))
+    const { mm, execute } = makeManager()
+    expect(await mm.ensurePagesCompiled()).toBe(false)
     expect(execute).not.toHaveBeenCalled()
+    makeHost(many(1))
+    expect(await mm.ensurePagesCompiled()).toBe(false)
   })
 
-  it('a successful merge advances lastRunAt and the immediate next call is a no-op', async () => {
-    const saved: string[] = []
-    const { mm, execute } = makeManager(makeHost([1, 2, 3, 4, 5, 6].map((n) => entry(`记忆内容 ${n} 号`, n)), saved, []))
-    execute.mockResolvedValue({ memories: [{ content: '合并后的一条足够长的记忆内容', type: 'fact', category: 'code' }], dropped: [1, 2, 3, 4, 5, 6] })
-
-    const ran = await mm.ensureMemoryMerged()
-    expect(ran).toBe(true)
-    expect(saved).toEqual(['合并后的一条足够长的记忆内容'])
-    const wm = mm.getMergeWatermark()
-    expect(wm.lastRunAt).not.toBe(0)
-    expect(wm.lastAttemptAt).not.toBe(0)
-
-    execute.mockClear()
-    await mm.ensureMemoryMerged()
-    expect(execute).not.toHaveBeenCalled()
-  })
-
-  it('below the due threshold nothing is attempted at all', async () => {
-    const { mm, execute } = makeManager(makeHost([1, 2].map((n) => entry(`短池 ${n}`, n)), [], []))
-    await mm.ensureMemoryMerged()
-    expect(execute).not.toHaveBeenCalled()
-    expect(mm.getMergeWatermark().lastAttemptAt).toBe(0)
-  })
-})
-
-// 播种互斥（review 2026-10-10 中5）：共享 MemoryManager 单例，每个会话结束的
-// afterSession sweep 带各自的 profile、启动 sweep 带活动档，都是 fire-and-forget
-// ——进行中的播种会把正在跑的合并换到别的模型下。setConfig 在 _compressing
-// 期间必须拒收；合并落定后恢复收种。
-describe('setConfig refuses to swap the config mid-merge', () => {
-  it('a seed landing while a merge runs is dropped; after it settles, seeding works again', async () => {
-    const pool = [1, 2, 3, 4, 5, 6].map((n) => entry(`记忆内容 ${n} 号`, n))
-    const { mm, execute } = makeManager(makeHost(pool, [], []))
-    let release: (v: unknown) => void = () => {}
-    execute.mockImplementationOnce(() => new Promise((r) => (release = r)))
-    const fields = mm as unknown as { apiKey: string; model: string; _compressing: boolean }
-
-    const running = mm.ensureMemoryMerged()
-    await vi.waitFor(() => expect(fields._compressing).toBe(true)) // 尝试已盖章、合并已升旗
-
-    mm.setConfig('key-b', 'https://b.invalid', {} as never, 'model-b')
-    expect(fields.apiKey).toBe('key') // 运行中的合并保住自己的 config
-    expect(fields.model).toBe('test-model')
-
-    release([])
-    await running // 空产物 → 尝试盖章、_compressing 落旗
-
-    mm.setConfig('key-b', 'https://b.invalid', {} as never, 'model-b')
-    expect(fields.apiKey).toBe('key-b')
+  it('基线后增长 <8 不跑；≥8 到期', async () => {
+    let pages = many(MIN_NEW)
+    makeHost(pages)
+    const { mm, execute } = makeManager()
+    execute.mockResolvedValueOnce({ pages: [{ action: 'alias', target: '页0', aliases: ['x'] }] })
+    await mm.ensurePagesCompiled() // 基线 = MIN_NEW
+    // 时间推进越过 24h：增长 1 页（<8）→ 不跑
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.now() + MIN_INTERVAL_MS + 1000)
+    try {
+      pages = [...pages, page('extra', '额外页')]
+      makeHost(pages)
+      const before = execute.mock.calls.length
+      await mm.ensurePagesCompiled()
+      expect(execute.mock.calls.length).toBe(before)
+      // 再长 7 页（总增长 8）→ 到期
+      pages = [...pages, ...many(7).map((p, i) => ({ ...p, id: `g${i}`, title: `增${i}` }))]
+      makeHost(pages)
+      await mm.ensurePagesCompiled()
+      expect(execute.mock.calls.length).toBe(before + 1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
-describe('the watermark round-trips through settings.json with the attempt clock', () => {
-  const STORE = 'src/main/storage/settings-store.ts'
-  const SESSION_MANAGER = 'src/main/agent/session-manager.ts'
-
-  it('the persist shape carries lastAttemptAt and the sweep persists bare attempts', () => {
-    const sm = readFileSync(SESSION_MANAGER, 'utf-8')
-    expect(sm).toContain('lastAttemptAt: new Date(w.lastAttemptAt).toISOString()')
-    expect(sm).toContain('w.lastRunAt === 0 && !w.lastAttemptAt') // 空 attempts 不写盘，失败过的必须写
-    expect(sm).toContain('lastAttemptAt: w?.lastAttemptAt ? new Date(w.lastAttemptAt).getTime() : 0') // 启动播种
+describe('编译语义：不删不建', () => {
+  it('op 应用经 applyMemoryPageOps；host 无 delete 调用面（编译层永不删除）', async () => {
+    const { calls } = makeHost(many(MIN_NEW))
+    const { mm, execute } = makeManager()
+    execute.mockResolvedValueOnce({ pages: [{ action: 'supersede', target: '页0', title: '规范页', type: 'fact', content: '合并正文' }] })
+    await mm.ensurePagesCompiled()
+    expect(calls.appliedOps.length).toBe(1)
+    expect(calls.appliedOps[0]).toMatchObject({ action: 'supersede' })
   })
 
-  it('the settings-store reader parses lastAttemptAt', () => {
-    const src = readFileSync(STORE, 'utf-8')
-    expect(src).toContain("typeof w.lastAttemptAt === 'string' && w.lastAttemptAt")
+  it('retire op 直达 applyMemoryPageOps（理由随 op 落审计面）', async () => {
+    const { calls } = makeHost(many(MIN_NEW))
+    const { mm, execute } = makeManager()
+    execute.mockResolvedValueOnce({ pages: [{ action: 'retire', target: '页0', reason: '内容已过时' }] })
+    expect(await mm.ensurePagesCompiled()).toBe(true)
+    expect(calls.appliedOps[0]).toMatchObject({ action: 'retire', target: '页0', reason: '内容已过时' })
   })
 
-  it('the settings type carries the attempt field', () => {
-    const src = readFileSync('src/shared/types/settings.ts', 'utf-8')
-    expect(src).toContain('memoryMergeWatermark?: { lastRunAt?: string; lastCount?: number; lastAttemptAt?: string }')
-  })
-})
-
-// 配置播种修复的第二刀（2026-10-09）：场景帽截断合并产物。
-// 实测（llm-requests 转储 ns_1791559537057）：模型把 95 条正确合并成 20 条 /
-// 14935 字符的合法 JSON（finish_reason=stop），enforceMaxOutputTokens
-// 按 4000 估算 token 二分砍到 5434 字符（「Unterminated string at position
-// 5434」）→ extractJson 失败 → 0 条落账 → 白烧一次 11.5K in / 27.6K out 的
-// 调用，还盖上 2h 重试锁。合并的输出是 JSON 对象（memories+dropped 回执），
-// 场景帽对它是纯伤害（截断=必然解析失败）——本 describe 用真实
-// MemoryCompressionAgent（不 stub compressionAgent，走真的 OneShotAgent.execute
-// → enforce → parse 链）钉住：一次等尺度的合法合并产物必须整体落账。
-describe('the merge output must survive to the parser (no scenario cap)', () => {
-  it('a full-size consolidation (~15K chars, 20 entries) lands intact and advances the watermark', async () => {
-    const { estimateTextTokens } = await import('../src/renderer/src/agent/engine/context-estimate')
-    const entries = Array.from({ length: 20 }, (_, i) => ({
-      content: `合并后的记忆 ${i} 号：三源交叉时天气现象/气温量级/风向常能对上，降水是最容易分歧的一项，交付口径须逐源列明。`.repeat(6),
-      type: 'fact',
-      category: 'code',
-    }))
-    const bigJson = JSON.stringify({ memories: entries, dropped: Array.from({ length: 95 }, (_, i) => i + 1) }, null, 2)
-    // 自检：这个形状必须真的超旧帽——否则帽值回readline时本测试悄悄失去牙齿
-    expect(estimateTextTokens(bigJson)).toBeGreaterThan(4000)
-
-    const saved: string[] = []
-    const deleted: string[] = []
-    const pool = Array.from({ length: 95 }, (_, n) => entry(`记忆内容 ${n} 号`, n))
-    const mm = new MemoryManager()
-    setHost(makeHost(pool, saved, deleted))
-    // 真 compressionAgent + 假 adapter：enforceMaxOutputTokens 与 extractJson 都是真的
-    mm.setConfig('key', 'https://example.invalid', { callNonStreaming: async () => bigJson } as never, 'test-model')
-
-    const ok = await mm.ensureMemoryMerged()
-
-    expect(ok).toBe(true) // 修复前：0 条 → false
-    expect(saved).toHaveLength(20) // 20 条合并产物整体落账
-    expect(deleted).toHaveLength(95) // 回执点名全部弃掉 → 旧池清掉
-    expect(mm.getMergeWatermark().lastRunAt).not.toBe(0) // 成功推进水位
+  it('无 LLM 配置（renderer 形态）直接 false，不触 host', async () => {
+    makeHost(many(MIN_NEW))
+    const mm = new MemoryManager() // 无 setConfig
+    expect(await mm.ensurePagesCompiled()).toBe(false)
   })
 })
 
-// 消费回执制（2026-10-10）：旧删除谓词是「内容 hash 不在产物里就删」——模型
-// 整理时漏掉一条 = 永久丢失，保存侧 hash 门只防重复不防丢失。现在删除需要
-// 回执：hash 精确复现（逐字搬运）或 dropped 点名。没被点名的行存活，等下一
-// 次合并重试（每次都带全量池）。
-describe('the consumption receipt — deletion needs proof of consumption', () => {
-  it('a row the model forgot (neither merged nor dropped) survives; receipted rows go', async () => {
-    const saved: string[] = []
-    const deleted: string[] = []
-    // 6 行输入；模型合并成 1 条并只点了 5 行的弃单——漏了第 3 行
-    const { mm, execute } = makeManager(makeHost([1, 2, 3, 4, 5, 6].map((n) => entry(`记忆内容 ${n} 号`, n)), saved, deleted))
-    execute.mockResolvedValue({
-      memories: [{ content: '合并后的一条足够长的记忆内容', type: 'fact', category: 'code' }],
-      dropped: [1, 2, 4, 5, 6],
-    })
-
-    const ran = await mm.ensureMemoryMerged()
-    expect(ran).toBe(true)
-    expect(deleted).toEqual(['mem_1', 'mem_2', 'mem_4', 'mem_5', 'mem_6']) // 回执内的行删
-    expect(deleted).not.toContain('mem_3') // 遗忘的行存活（修复前必删）
-    expect(saved).toEqual(['合并后的一条足够长的记忆内容'])
+describe('分区整理（2026-10-27）：游标轮转装预算', () => {
+  it('大池子分片：单轮装预算为止，超出的页不进本轮输入', async () => {
+    makeHost(big(20)) // 20 × ~4K ≈ 80K，单轮只装得下 ~7 页
+    const { mm, execute } = makeManager()
+    await mm.ensurePagesCompiled()
+    expect(execute).toHaveBeenCalledTimes(1)
+    const input = execute.mock.calls[0][0] as { pagesText: string; mode: string }
+    expect(input.mode).toBe('full')
+    expect(input.pagesText).toContain('页00')
+    expect(input.pagesText).toContain('页06')
+    expect(input.pagesText).not.toContain('页07')
+    expect(input.pagesText).not.toContain('页19')
   })
 
-  it('a verbatim carry-over deletes by hash even without a receipt; USER-EDITED rows survive both ways', async () => {
-    const saved: string[] = []
-    const deleted: string[] = []
-    const carried = entry('用户偏好深色主题，截图一律走浅色', 1)
-    const edited = entry('用户对部署节奏有强意见', 2)
-    edited.updatedAt = new Date(Date.now() + 5000).toISOString() // USER-EDITED
-    // 池子要过 MERGE_MIN_NEW=5 的触发线（水位为 0 时按全量计）
-    const { mm, execute } = makeManager(makeHost([carried, edited, ...[3, 4, 5, 6].map((n) => entry(`填充记忆 ${n} 号`, n))], saved, deleted))
-    execute.mockResolvedValue({
-      memories: [
-        { content: '用户偏好深色主题，截图一律走浅色', type: 'preference', category: 'user_pref' }, // 逐字复现
-        { content: '完全无关的一条合并记忆，长到足以过长度门', type: 'fact', category: 'general' },
-      ],
-      dropped: [], // 什么回执都没给
-    })
-
-    await mm.ensureMemoryMerged()
-    expect(deleted).toEqual(['mem_1']) // hash 命中照删（新池里有同一内容）
-    expect(deleted).not.toContain('mem_2') // USER-EDITED 双保险存活
+  it('游标推进：下一片从上轮末页之后起转（createdAt 升序轮转）', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.now())
+    try {
+      makeHost(big(20))
+      const { mm, execute } = makeManager()
+      await mm.ensurePagesCompiled()
+      const cursor = mm.getCompileWatermark().lastCursorAt
+      expect(cursor).toBeGreaterThan(0)
+      vi.setSystemTime(Date.now() + MAINTENANCE_MS + 1000) // 无增长，靠维护钟开下一轮
+      await mm.ensurePagesCompiled()
+      const input = execute.mock.calls[1][0] as { pagesText: string }
+      expect(input.pagesText).toContain('页07')
+      expect(input.pagesText).not.toContain('页00')
+      // 游标 = 上轮末页（页06）的 createdAt
+      expect(cursor).toBe(Date.UTC(2026, 9, 1, 0, 0, 6))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('an output with NO receipts deletes nothing beyond hash matches', async () => {
-    const saved: string[] = []
-    const deleted: string[] = []
-    const { mm, execute } = makeManager(makeHost([1, 2, 3, 4, 5, 6].map((n) => entry(`记忆内容 ${n} 号`, n)), saved, deleted))
-    // 合并产物不与任何旧行同内容，dropped 为空（旧形状裸数组经 parseResponse
-    // 归一化后就是这种形状）→ 无回执即不动行，旧池整体存活等下次合并
-    execute.mockResolvedValue({ memories: [{ content: '一条新的合并记忆，内容完全不同', type: 'fact', category: 'code' }], dropped: [] })
-
-    await mm.ensureMemoryMerged()
-    expect(deleted).toEqual([]) // 无回执不动行
-    expect(saved).toEqual(['一条新的合并记忆，内容完全不同'])
+  it('游标到末端（无更新的页）回落全量从头再轮', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.now())
+    try {
+      makeHost(big(8)) // 首轮装 7 页（页00..页06），剩页07
+      const { mm, execute } = makeManager()
+      await mm.ensurePagesCompiled()
+      vi.setSystemTime(Date.now() + MAINTENANCE_MS + 1000)
+      await mm.ensurePagesCompiled() // 第二片 = [页07]
+      expect(execute.mock.calls[1][0]).toMatchObject({ pagesText: expect.stringContaining('页07') })
+      vi.setSystemTime(Date.now() + MAINTENANCE_MS + 2000)
+      await mm.ensurePagesCompiled() // 游标已到末端 → 回落全量，从页00 再轮
+      const input = execute.mock.calls[2][0] as { pagesText: string }
+      expect(input.pagesText).toContain('页00')
+      expect(input.pagesText).not.toContain('页07\n')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it('the parser normalizes the object contract: numbers sanitized, legacy array tolerated', async () => {
-    const { MemoryCompressionAgent } = await import('../src/renderer/src/agent/one-shot-agent')
-    const agent = new MemoryCompressionAgent()
-    const parse = (raw: string) => (agent as unknown as { parseResponse: (r: string) => unknown }).parseResponse(raw)
+  it('游标是位置不是成绩：异常也推进，重试不吃同一切片', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.now())
+    try {
+      makeHost(big(20))
+      const { mm, execute } = makeManager()
+      execute.mockRejectedValueOnce(new Error('boom'))
+      expect(await mm.ensurePagesCompiled()).toBe(false)
+      expect(mm.getCompileWatermark().lastCursorAt).toBe(Date.UTC(2026, 9, 1, 0, 0, 6))
+      vi.setSystemTime(Date.now() + RETRY_MS + 1000)
+      let secondSlice = ''
+      execute.mockImplementationOnce(async (input) => { secondSlice = (input as { pagesText: string }).pagesText; return { pages: [] } })
+      await mm.ensurePagesCompiled()
+      expect(secondSlice).toContain('页07')
+      expect(secondSlice).not.toContain('页00')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
 
-    const obj = parse('{"memories":[{"content":"一条足够长的合并记忆","type":"fact","category":"code"}],"dropped":[3,1,3,-2,2.5,"9"]}') as { memories: unknown[]; dropped: number[] }
-    expect(obj.memories).toHaveLength(1)
-    expect(obj.dropped).toEqual([3, 1]) // 去重、剔负数/非整数/非数字
+describe('维护钟（超预算池子的无增长整理）', () => {
+  it('超预算 + 无增长：24h 不放行、7 天放行', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.now())
+    try {
+      makeHost(big(20))
+      const { mm, execute } = makeManager()
+      await mm.ensurePagesCompiled() // bootstrap 增长触发
+      expect(execute).toHaveBeenCalledTimes(1)
+      vi.setSystemTime(Date.now() + MIN_INTERVAL_MS + 1000) // 24h 后，仍 < 7d
+      await mm.ensurePagesCompiled()
+      expect(execute).toHaveBeenCalledTimes(1)
+      vi.setSystemTime(Date.now() + MAINTENANCE_MS + 2000) // > 7d
+      await mm.ensurePagesCompiled()
+      expect(execute).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
-    const legacy = parse('[{"content":"旧形状裸数组产物","type":"fact","category":"code"}]') as { memories: unknown[]; dropped: number[] }
-    expect(legacy.memories).toHaveLength(1)
-    expect(legacy.dropped).toEqual([]) // 裸数组=无回执
+  it('预算内的小池子无增长：7 天后也不放行（维护钟只在分区生效时接管）', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.now())
+    try {
+      makeHost(many(MIN_NEW))
+      const { mm, execute } = makeManager()
+      await mm.ensurePagesCompiled()
+      vi.setSystemTime(Date.now() + MAINTENANCE_MS + 1000)
+      await mm.ensurePagesCompiled()
+      expect(execute).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('编译输入排除面', () => {
+  it('SOP 页与退役页不进输入（园丁不修电器；退役页已出池）', async () => {
+    const pages = [
+      ...many(MIN_NEW),
+      { ...page('sop1', '脚本页甲'), maturity: 'sop' as const, files: [{ path: 's.mjs', content: 'x' }] },
+      { ...page('ret1', '退役页乙'), retiredAt: '2026-10-27T00:00:00.000Z', retireReason: '过时' },
+    ]
+    makeHost(pages)
+    const { mm, execute } = makeManager()
+    await mm.ensurePagesCompiled()
+    const input = execute.mock.calls[0][0] as { pagesText: string }
+    expect(input.pagesText).not.toContain('脚本页甲')
+    expect(input.pagesText).not.toContain('退役页乙')
+    expect(input.pagesText).toContain('页0')
   })
 })

@@ -115,28 +115,32 @@ export async function extractMemoriesFromOldToolPairs(engine: EngineCore): Promi
       }
     }
 
-    // Save memories
-    for (const mem of memories) {
-      if (!mem.content || mem.content.length < 10) continue
-      // 100-char budget, structural half (user 2026-10-10): the prompt asks
-      // for one short sentence; an overlong output is dropped, not truncated —
-      // a mid-sentence slice would save garbage under a fact label.
-      if (mem.content.length > MEMORY_ENTRY_MAX_CHARS) continue
+    // Save as pages（PLAN-memory-wiki：打捞产物也是记忆页；title 取结论头部，
+    // 撞名/重样交给 compile pass 归并——打捞在上下文高压下，不做目录对齐）
+    const ops = memories
+      .filter((mem) => typeof mem?.content === 'string' && mem.content.length >= 10 && mem.content.length <= MEMORY_ENTRY_MAX_CHARS)
+      .map((mem) => ({
+        action: 'create' as const,
+        title: mem.content.slice(0, 24),
+        type: 'fact' as const,
+        content: mem.content as string,
+        links: [] as string[],
+      }))
+    let salvaged = 0
+    if (ops.length > 0) {
       try {
-        await getHost().saveMemory({
-          id: crypto.randomUUID(),
-          content: mem.content,
-          type: ['fact', 'decision', 'preference'].includes(mem.type) ? mem.type : 'auto',
-          category: ['code', 'architecture', 'user_pref', 'decision', 'general'].includes(mem.category) ? mem.category : 'general',
-          source: `conversation:${engine.opts.conversationId}`
-        })
+        const results = await getHost().applyMemoryPageOps(ops)
+        salvaged = results.filter((r) => r.ok).length
+        for (const r of results.filter((x) => !x.ok)) {
+          console.warn(`[AgentEngine] salvage page op failed (${r.op.title}):`, r.error)
+        }
       } catch (err) {
-        console.warn('[AgentEngine] Failed to save extracted memory:', err)
+        console.warn('[AgentEngine] Failed to save salvaged memory pages:', err)
       }
     }
 
-    if (memories.length > 0) {
-      console.log(`[AgentEngine] Memory extraction: saved ${memories.length} memories from ${compressible.length} old tool pairs`)
+    if (salvaged > 0) {
+      console.log(`[AgentEngine] Memory extraction: salvaged ${salvaged} page(s) from ${compressible.length} old tool pairs`)
     }
   }
 

@@ -76,7 +76,12 @@ describe('desktop 模型 wiring (per conversation)', () => {
   })
 
   it('routes the click to the conversation, or holds it for the next one', () => {
-    expect(appSrc).toContain('if (activeConvKey) updateConversationProfile(activeConvKey, profileId)')
+    // review_20261025 中1: the branch grew the overflow re-aim pin clear
+    // (profile changed ⇒ the engine drops its re-aim, the renderer's pin must
+    // go with it), so the column write no longer sits on the `if` line itself.
+    // [\s\S]*? spans the inline comment between the three anchors; the order
+    // is the wiring (write stays inside the activeConvKey branch).
+    expect(appSrc).toMatch(/if \(activeConvKey\) \{[\s\S]*?if \(profileId !== effectiveProfileId\) clearSessionWindow\(activeConvKey\)[\s\S]*?updateConversationProfile\(activeConvKey, profileId\)/)
     expect(appSrc).toContain('usePendingProfileStore.getState().setProfileId(profileId)')
   })
 

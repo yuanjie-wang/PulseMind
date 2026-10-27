@@ -130,8 +130,9 @@ describe('渲染层消费（AppLayout / App）', () => {
     // session-manager sweep 的两处 console.warn（sweep 本身 / 水印落盘）。
     expect(src).toContain("reportSilentFailure('mcp-summary'")
     expect(src).toContain("reportSilentFailure('memory-migrate'")
-    expect(read('src/main/agent/session-manager.ts')).toContain("'[session-manager] watermark persist failed:'")
-    expect(read('src/main/agent/session-manager.ts')).toContain("'[SessionReview] merge sweep failed:'")
+    expect(read('src/main/agent/session-manager.ts')).toContain("'[session-manager] compile watermark persist failed:'")
+    // M2c：merge sweep 触发从 afterSession 收敛到启动定时器（文案随宿主更新）
+    expect(read('src/main/agent/session-manager.ts')).toContain("'[session-manager] memory compile failed:'")
     expect(count(src, 'catch(() => {})')).toBe(0)
   })
 

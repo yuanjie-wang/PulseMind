@@ -74,11 +74,10 @@ describe('scope lifecycle wiring (source-scanned; node-env cannot mount the engi
     expect(engine).toContain('this.stagedKnowledgeBaseScope = null')
   })
 
-  it('the knowledge_search executor funnels the scope into every search shape', () => {
+  it('the recall executor funnels the scope into every search shape（knowledge_search 已并入 recall）', () => {
     expect(domainTools).toContain('ex.opts.knowledgeBaseScope?.id')
     expect(domainTools).toContain('km.searchContent(query, scopeBaseId)')
     expect(domainTools).toContain('km.searchWiki(query, scopeBaseId)')
-    expect(domainTools).toContain('if (scopeBaseId !== undefined) opts.baseId = scopeBaseId')
   })
 
   it('the ask chain carries the base hop by hop (any hop dropping it = silent全库)', () => {

@@ -135,6 +135,14 @@ export const HOST_METHOD_KEYS = [
   'updateConversationExtractedMsgCount',
   'updateConversationKeywords',
   'updateConversationSummary',
+  // memory pages（PLAN-memory-wiki）
+  'listMemoryPages',
+  'searchMemoryPages',
+  'applyMemoryPageOps',
+  // pick_skill 的经验选中记账（PLAN-experience-sop B5）
+  'touchMemoryPage',
+  // pick_skill 的技能选中记账（2026-10-27，技能卡「使用 N 次」）
+  'recordSkillUse',
 ] as const
 
 export type HostMethodKey = (typeof HOST_METHOD_KEYS)[number]

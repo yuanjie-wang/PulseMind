@@ -4,12 +4,15 @@ import { describe, expect, it, vi } from 'vitest'
 import type { PulseHost } from '../src/renderer/src/agent/host/types'
 import { setHost } from '../src/renderer/src/agent/host'
 import { MemoryManager } from '../src/renderer/src/memory/MemoryManager'
+import { SessionReviewAgent } from '../src/renderer/src/agent/one-shot-agent/SessionReviewAgent'
 import type { MemoryEntry } from '../src/renderer/src/memory/types'
 import { MEMORY_ENTRY_MAX_CHARS, MEMORY_RESIDENT_CAP } from '../src/shared/memory/limits'
 import { escapeLikePattern } from '../src/shared/memory/like-pattern'
 
 /**
- * 常驻记忆区瘦身（user 2026-10-10 三条裁定：单条 ≤100 字、内容用短句、
+ * 记忆纪律钉子（PLAN-memory-wiki M4 后形态）：常驻区渲染已退役（记忆/经验
+ * 全部转 JIT 检索），本文件钉 100 字短句纪律在提取协议与 memory_save 执行器
+ * 两侧的结构执法。原「常驻记忆区瘦身（user 2026-10-10 三条裁定：单条 ≤100 字、内容用短句、
  * memory_search 作取回通道）。
  *
  * 背景（llm-requests api_1791639104031 实测）：26 条记忆全量注入 system
@@ -28,6 +31,11 @@ function makeHost(memories: MemoryEntry[], saved: string[] = []): PulseHost {
   return {
     getMemoryMd: async () => '',
     listMemories: async () => memories,
+    listMemoryPages: async () => [],
+    applyMemoryPageOps: async (ops: Array<{ action: string; title?: string; content?: string }>) => {
+      for (const op of ops) if (op.content !== undefined) saved.push(op.content)
+      return ops.map((op, i) => ({ op, ok: true, pageId: `page_${i}` }))
+    },
     listConversationsForMemory: async () => [],
     saveMemory: async (input: { content: string }) => {
       saved.push(input.content)
@@ -40,133 +48,39 @@ function entry(content: string, n: number, type = 'auto'): MemoryEntry {
   return { id: `mem_${n}`, content, type, category: 'code', createdAt: new Date().toISOString() } as MemoryEntry
 }
 
-describe('常驻区渲染：≤100 字过滤 + 20 条帽 + 省略指针', () => {
-  it('超长条目不进常驻区，短条目照常渲染', async () => {
-    const long = '长'.repeat(MEMORY_ENTRY_MAX_CHARS + 1)
-    const mm = new MemoryManager()
-    setHost(makeHost([entry('短条目甲', 1), entry(long, 2), entry('短条目乙', 3)]))
-    const ctx = await (mm as unknown as { buildMemoryContext(): Promise<string> }).buildMemoryContext()
-    expect(ctx).toContain('- 短条目甲')
-    expect(ctx).toContain('- 短条目乙')
-    expect(ctx).not.toContain(long)
-  })
-
-  it('恰好 100 字的条目在界内（≤ 而非 <）', async () => {
-    const exact = '界'.repeat(MEMORY_ENTRY_MAX_CHARS)
-    const mm = new MemoryManager()
-    setHost(makeHost([entry(exact, 1)]))
-    const ctx = await (mm as unknown as { buildMemoryContext(): Promise<string> }).buildMemoryContext()
-    expect(ctx).toContain(exact)
-  })
-
-  it('超过 20 条时只渲染最新 20 条（listMemories 已 newest-first），指针行报省略数', async () => {
-    const memories = Array.from({ length: MEMORY_RESIDENT_CAP + 3 }, (_, i) => entry(`第${i}条短记忆`, i))
-    const mm = new MemoryManager()
-    setHost(makeHost(memories))
-    const ctx = await (mm as unknown as { buildMemoryContext(): Promise<string> }).buildMemoryContext()
-    expect(ctx).toContain('- 第0条短记忆')
-    expect(ctx).toContain(`- 第${MEMORY_RESIDENT_CAP - 1}条短记忆`)
-    expect(ctx).not.toContain(`- 第${MEMORY_RESIDENT_CAP}条短记忆`)
-    expect(ctx).toContain('(+3 older or longer memories not shown — search them with the memory_search tool.)')
-  })
-
-  it('全部超长时只剩指针行——档案的存在必须让模型知道', async () => {
-    const long = '长'.repeat(MEMORY_ENTRY_MAX_CHARS + 5)
-    const mm = new MemoryManager()
-    setHost(makeHost([entry(long, 1, 'fact'), entry(long + '乙', 2, 'fact')]))
-    const ctx = await (mm as unknown as { buildMemoryContext(): Promise<string> }).buildMemoryContext()
-    expect(ctx).toContain('## Extracted Memories')
-    expect(ctx).toContain('(+2 older or longer memories not shown — search them with the memory_search tool.)')
-    expect(ctx).not.toContain('- ' + long)
-  })
-
-  it('manual 类型不进 Extracted 节；指针只数 extracted 型', async () => {
-    const mm = new MemoryManager()
-    setHost(makeHost([entry('用户手动的一条', 1, 'manual'), entry('自动提取的一条', 2)]))
-    const ctx = await (mm as unknown as { buildMemoryContext(): Promise<string> }).buildMemoryContext()
-    expect(ctx).toContain('- 自动提取的一条')
-    expect(ctx).not.toContain('not shown') // 全渲染，无省略
-  })
-})
-
-describe('合并门：总数帽 20（曾为 50，全量注入时代的遗产）', () => {
-  it('MERGE_TOTAL_CAP = MEMORY_RESIDENT_CAP = 20', () => {
-    expect(MemoryManager.MERGE_TOTAL_CAP).toBe(20)
-    expect(MEMORY_RESIDENT_CAP).toBe(20)
-  })
-
-  it('水位新鲜（无新增）但总数超 20 → 仍触发归并', async () => {
-    const saved: string[] = []
-    const deleted: string[] = []
-    // 30 天前的旧条目：相对 25h 前的 lastRunAt，added = 0 < 5——
-    // 唯一能开门的就是总数帽（旧值 50 会让这次合并静默缺席）。
-    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-    const pool: MemoryEntry[] = Array.from({ length: MEMORY_RESIDENT_CAP + 1 }, (_, n) => ({
-      id: `mem_${n}`, content: `记忆内容 ${n} 号`, type: 'auto', category: 'code', createdAt: old,
-    } as MemoryEntry))
-    const host = {
-      listMemories: async () => pool,
-      countMemories: async () => pool.length,
-      saveMemory: async (input: { content: string }) => {
-        saved.push(input.content)
-        return { id: 'mem_x', content: input.content, type: 'auto', category: 'general', createdAt: new Date().toISOString() } as MemoryEntry
-      },
-      deleteMemory: async (id: string) => { deleted.push(id) },
-    } as unknown as PulseHost
-    const mm = new MemoryManager()
-    setHost(host)
-    mm.setConfig('key', 'https://example.invalid', {} as never, 'test-model')
-    mm.setMergeWatermark({ lastRunAt: Date.now() - 25 * 60 * 60 * 1000, lastCount: 21 })
-    const execute = vi.fn(async () => [] as Array<{ content: string; type: string; category: string }>)
-    ;(mm as unknown as { compressionAgent: { execute: typeof execute } }).compressionAgent = { execute }
-
-    await mm.ensureMemoryMerged()
-    expect(execute).toHaveBeenCalledTimes(1)
-  })
-})
-
 describe('主提取路径的结构兜底：超限条目不入库', () => {
-  it('150 字的产出被丢，100 字内的产出照存（prompt 失守时的保证）', async () => {
-    const saved: string[] = []
-    const mm = new MemoryManager()
-    setHost(makeHost([entry('既有记忆', 1)], saved))
-    const execute = vi.fn(async () => ({
-      memories: [
-        { content: '短'.repeat(100), type: 'fact', category: 'general' },
-        { content: '长'.repeat(MEMORY_ENTRY_MAX_CHARS + 50), type: 'fact', category: 'general' },
-        { content: ' AB', type: 'fact', category: 'general' }, // <10 字，旧的长度下限
+  it('preference/fact 超 100 字整条丢弃，帽内的照存（v2：帽在 agent.parseResponse，结构兜底不再依赖 store 复检）', () => {
+    const agent = new SessionReviewAgent()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parse = (raw: string) => (agent as any).parseResponse(raw, {
+      sessionSummary: '(Conversation statistics: 2 tool call(s), 0 tool error(s))',
+      catalogText: '(no pages yet)', catalogMode: 'full', pageIndex: [], revisableTitles: [],
+    })
+    const out = parse(JSON.stringify({
+      pages: [
+        { action: 'create', title: '短偏好', type: 'preference', content: '短'.repeat(MEMORY_ENTRY_MAX_CHARS) },
+        { action: 'create', title: '长偏好', type: 'preference', content: '长'.repeat(MEMORY_ENTRY_MAX_CHARS + 50) },
+        { action: 'create', title: '长决策', type: 'decision', content: '长'.repeat(500) },
       ],
-      summary: undefined,
-      keywords: undefined,
-      experience: null,
     }))
-    ;(mm as unknown as { sessionReviewAgent: { execute: typeof execute } }).sessionReviewAgent = { execute }
-
-    const result = await mm.extractAndSaveAll(
-      [{ id: 'm1', role: 'user', contentBlocks: [{ type: 'text', text: '帮我把这个偏好记下来' }] }] as never,
-      'key', 'https://example.invalid', {} as never, 'test-model',
-    )
-
-    expect(result.memories).toBe(1)
-    expect(saved).toEqual(['短'.repeat(100)])
+    expect(out.pages.map((p: { title: string }) => p.title)).toEqual(['短偏好', '长决策'])
   })
 })
 
 describe('wiring 扫描：三条写路径的短句规则 + 检索通道', () => {
-  it('SessionReviewAgent 的提取规则带 100 字帽与短句要求', () => {
+  it('SessionReviewAgent 的提取规则带 100 字帽与短句要求（v2：帽只压 preference/fact）', () => {
     const src = read('src/renderer/src/agent/one-shot-agent/SessionReviewAgent.ts')
-    expect(src).toContain('at most 100 characters')
+    expect(src).toContain('HARD CAP 100 chars')
     expect(src).toContain('ONE short sentence')
-    expect(src).toContain('experience record, not here')
+    expect(src).toContain("body.length > 100")  // 结构兜底（normalizeOp）
   })
 
-  it('MemoryCompressionAgent 的合并规则带同一顶帽', () => {
-    const src = read('src/renderer/src/agent/one-shot-agent/MemoryCompressionAgent.ts')
-    expect(src).toContain('at most 100 characters')
-    expect(src).toContain('ONE short sentence')
-    // 既有取向不回退：USER-EDITED 仍是第一条规则
-    const rules = src.slice(src.indexOf('buildSystemPrompt'))
-    expect(rules.indexOf('USER-EDITED memories are authoritative')).toBeGreaterThan(0)
+  it('MemoryPageCompileAgent 的整理纪律：不硬删、合并保全量正文（M6；retire 软态 2026-10-27）', () => {
+    const src = read('src/renderer/src/agent/one-shot-agent/MemoryPageCompileAgent.ts')
+    expect(src).toContain('NEVER create a new topic and NEVER hard-delete anything')
+    expect(src).toContain('never truncate')
+    expect(src).toContain('supersede')
+    expect(src).toContain('rows are never removed by this pass')
   })
 
   it('打捞路径：prompt 带短句规则，保存循环带结构兜底（不再 slice(0, 2000)）', () => {

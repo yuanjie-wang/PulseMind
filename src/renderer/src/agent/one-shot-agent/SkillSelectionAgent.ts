@@ -9,7 +9,9 @@ export class SkillSelectionAgent extends OneShotAgent<SkillSelectionInput, strin
   readonly name = 'SkillSelectionAgent'
 
   protected buildSystemPrompt(): string {
-    return 'You are a skill selection system. Given user intent and available skills, select the single most relevant skill. If none match, respond with "none". Return ONLY the skill name.'
+    // [experience] 行（PLAN-experience-sop B1）是记忆页经验草稿，同样可选——
+    // 返回其 title 原文，调用侧按注册表未命中再解析经验页。
+    return 'You are a skill selection system. Given user intent and available skills, select the single most relevant entry. Lines marked [experience] are drafted experience pages and are equally selectable. If none match, respond with "none". Return ONLY the entry name (the title, verbatim).'
   }
 
   protected buildUserMessages(input: SkillSelectionInput): { role: string; content: string }[] {

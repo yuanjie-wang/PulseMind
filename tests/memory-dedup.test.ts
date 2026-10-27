@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { normalizeMemoryContent, memoryContentHash, sha256Hex } from '../src/shared/memory/content-hash'
@@ -163,14 +163,15 @@ describe('extraction backoff + minDelta (P0 #5 / P1 #6)', () => {
     expect(mm.isInBackoff('c2')).toBe(true) // retired for the process run
   })
 
-  it('wiring: both afterSession hosts pass minDelta=4, the backfill passes 1', () => {
-    expect(read(APP)).toContain('{ minDelta: 4 }')
-    expect(read(SESSION_MANAGER)).toContain('{ minDelta: 4 }')
-    expect(read(CONTROLLER)).toContain('{ minDelta: 1 }')
+  it('wiring: 定时清扫是唯一提取调用点，minDelta 走 SWEEP_MIN_DELTA（PLAN-memory-wiki M2c）', () => {
+    // afterSession（App.tsx）与启动回填（useChatController）均已退役
+    expect(read(APP)).not.toContain('extractAndSaveAll')
+    expect(read(CONTROLLER)).not.toContain('extractAndSaveAll')
+    expect(read(SESSION_MANAGER)).toContain('SWEEP_MIN_DELTA }')
   })
 
-  it('wiring: the backfill runs extractAndSaveAll with memory off, and extractAndSaveExperiences is gone', () => {
-    expect(read(CONTROLLER)).toContain('{ memory: false, experience: true }')
+  it('wiring: 记忆/经验开关经清扫的 featureFlags 下传，独立提取路径已不存在', () => {
+    expect(read(SESSION_MANAGER)).toContain('{ memory: memoryOn, experience: experienceOn }')
     expect(read('src/renderer/src/memory/MemoryManager.ts')).not.toContain('extractAndSaveExperiences(')
     expect(read('src/renderer/src/memory/MemoryManager.ts')).not.toContain('new ExperienceAgent()')
   })
@@ -190,44 +191,27 @@ describe('the DB-layer dedup gate (P0 #4 wiring)', () => {
   })
 })
 
-describe('the incremental merge layer (P2)', () => {
-  it('the >50 delete-all rewrite is gone; the watermark gates the merge', () => {
+describe('the page compile layer (M6, 取代 P2 合并层)', () => {
+  it('watermark gates the compile; 旧机器全库无引用', () => {
     const src = read('src/renderer/src/memory/MemoryManager.ts')
-    expect(src).not.toContain('ensureMemoryCompressed')
-    expect(src).toContain('ensureMemoryMerged')
-    expect(src).toContain('MERGE_MIN_NEW')
-    expect(src).toContain('MERGE_MIN_INTERVAL_MS')
-    // user-edited rows survive unconditionally
-    expect(src).toContain('userEdited')
+    expect(src).toContain('ensurePagesCompiled')
+    expect(src).toContain('COMPILE_MIN_NEW')
+    expect(src).toContain('COMPILE_MIN_INTERVAL_MS')
+    for (const stale of ['ensureMemoryCompressed', 'ensureMemoryMerged', 'MERGE_MIN_NEW']) {
+      expect(src).not.toContain(stale)
+      expect(read(SESSION_MANAGER)).not.toContain(stale)
+    }
+    expect(existsSync(join(__dirname, '..', 'src/renderer/src/agent/one-shot-agent/MemoryCompressionAgent.ts'))).toBe(false)
   })
-  it('the watermark rides settings.json and main persists it', () => {
-    expect(read('src/shared/types/settings.ts')).toContain('memoryMergeWatermark')
-    expect(read(SESSION_MANAGER)).toContain('runMemoryMergeSweep')
-    // 2026-09-26 空转修复：持久化形状带上 lastAttemptAt（失败/空尝试的时钟），
-    // 且裸尝试也要落盘——否则每次重启都会把「从未尝试」当成「从未合并」重打一遍。
+  it('the watermark rides settings.json and main persists it (空转修复语义移植)', () => {
+    expect(read('src/shared/types/settings.ts')).toContain('memoryCompileWatermark')
+    expect(read(SESSION_MANAGER)).toContain('runMemoryCompileSweep')
+    // 裸尝试也落盘——否则每次重启把「从未尝试」当「从未编译」重打一遍
     const sm = read(SESSION_MANAGER)
     expect(sm).toContain('lastRunAt: new Date(w.lastRunAt).toISOString()')
-    expect(sm).toContain('lastAttemptAt: new Date(w.lastAttemptAt).toISOString()')
-    expect(sm).toContain('lastAttemptAt: w?.lastAttemptAt ? new Date(w.lastAttemptAt).getTime() : 0')
-  })
-  it('every caller uses the new name — a stale call crashes the app, not the test', () => {
-    // App.tsx's startup compression effect kept calling the deleted
-    // ensureMemoryCompressed() after the rename: with no API key the effect
-    // returned early, so the TypeError only surfaced once a key resolved —
-    // as a white screen on boot. Scan ALL of src/, not just the class file.
-    const walk = (dir: string): string[] =>
-      readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-        const p = join(dir, e.name)
-        if (e.isDirectory()) return walk(p)
-        return /\.tsx?$/.test(p) ? [p] : []
-      })
-    const stale = walk('src').filter((f) => read(f).includes('ensureMemoryCompressed'))
-    expect(stale).toEqual([])
-    // 2026-10-09：合并只剩主进程一个 owner——App.tsx 的渲染侧启动触发已删
-    // （它配置的 setConfig 只到渲染实例，主进程实例从未拿到配置，95 条记忆
-    // 时代合并一次都没跑过；修活主 sweep 后留着它就是跨进程双跑）。存活的
-    // 调用方在 session-manager 的 sweep 与 extractAndSaveAll 内部。
-    expect(read(APP)).not.toContain('ensureMemoryMerged')
-    expect(read(SESSION_MANAGER)).toContain('memoryManager.ensureMemoryMerged()')
+    expect(sm).toContain('lastAttemptAt')
+    // 渲染侧无触发（单 owner）；编译调用只在主进程 sweep
+    expect(read(APP)).not.toContain('ensurePagesCompiled')
+    expect(sm).toContain('memoryManager.ensurePagesCompiled()')
   })
 })

@@ -27,6 +27,8 @@ import { skillStore } from '../storage/skill-store'
 import { expertStore } from '../storage/expert-store'
 import { experienceStore } from '../storage/experience-store'
 import { saveMemory, listMemories, deleteMemory, searchMemories, updateMemory, countMemoriesByType, type MemoryRow } from '../storage/memory.db'
+import { applyPageOps, listMemoryPages, searchMemoryPages, touchMemoryPage } from '../storage/memory-pages-store'
+import { recordSkillUse } from '../storage/skill-use-store'
 import { MEMORY_MD_PATH } from '../storage'
 import * as svcDocx from '../services/docx-ops'
 import * as svcPptx from '../services/pptx-ops'
@@ -363,6 +365,12 @@ export const mainHost: PulseHost = {
   },
   listMemories: (category) => Promise.resolve(listMemories(category).map(toMemoryEntry)),
   searchMemories: async (data) => searchMemories(data.query, data.limit, data.category).map(toMemoryEntry),
+  // memory pages（PLAN-memory-wiki，2026-10-25）
+  listMemoryPages: (type) => Promise.resolve(listMemoryPages(type)),
+  searchMemoryPages: (data) => Promise.resolve(searchMemoryPages(data).map((h) => ({ ...h.record, viaFts: h.viaFts }))),
+  applyMemoryPageOps: async (ops) => applyPageOps(ops),
+  touchMemoryPage: async (pageId) => touchMemoryPage(pageId),
+  recordSkillUse: async (name) => recordSkillUse(name),
   updateMemory: async (id, data) => {
     updateMemory(id, data)
   },

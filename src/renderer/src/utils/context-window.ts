@@ -21,20 +21,44 @@ export function resolveContextWindow(
 // ── 溢出重瞄准的会话窗口（2026-10-24 harness review B8）──
 // 服务商用带数字的 400 拒绝纠正了 profile 的窗口后，引擎把重瞄准值随
 // retrying 状态捎过来（types/agent.ts → statusSnapshotOf → mirror 全链透传）。
-// 状态本身是瞬态的，这里按会话钉住最近一次收到的值，供圆环分母取
-// min(profile 解析值, 会话实报值)。放 zustand 而非组件内 ref/state：
+// 状态本身是瞬态的，这里按「会话 × 模型」钉住最近一次收到的值，供圆环分母
+// 取 min(profile 解析值, 会话实报值)。放 zustand 而非组件内 ref/state：
 // 渲染期要读它算分母（react-hooks/refs 禁止渲染期读 ref），而它由 effect
 // 观察 agentStatus 写入（lint 同样禁止 effect 内同步 setState）——外部
 // store 两边都合法，与 pendingProfileStore 同款。
+//
+// 键必须带 profileId（review_20261025 中1）：重瞄准属于「产生它的那个模型」
+// ——引擎侧换 profile 即丢弃（AgentEngine.updateOptions 的 profileId 分支），
+// 渲染端键失配后分母自然回落 profile 解析值，与引擎两侧同型。但单靠键失配
+// 拦不住 P1→P2→P1 的往返——回来时旧键重新命中，而引擎在两跳里早已各自丢弃
+// 过重瞄准——所以换 profile 的消费点（App 的 changeProfile/resetProfile）
+// 必须显式 clearConv。多会话各占一键，交替切换不再互相覆盖（旧单槽形态的
+// 问题）。换会话不失效是刻意的：引擎的 reaim 本就随会话存续。
 import { create } from 'zustand'
 
+/** pin 键的唯一拼装点：convKey 与 profileId 都来自 app 内部 id，`::` 分隔
+ *  足够；测试与 App 共用本函数，键格式漂移会在 read 侧立刻失配。 */
+export const sessionWindowKeyOf = (convKey: string, profileId: string): string => `${convKey}::${profileId}`
+
 interface SessionContextWindowState {
-  /** 最近一次溢出重瞄准：{ conv, window }；null = 本进程还没见过。 */
-  pinned: { conv: string | null | undefined; window: number } | null
-  pin: (conv: string | null | undefined, window: number) => void
+  /** 溢出重瞄准：`${convKey}::${profileId}` → 重瞄准后的窗口。 */
+  pinned: Record<string, number>
+  pin: (convKey: string, profileId: string, window: number) => void
+  /** 清掉该会话名下的全部 pin（换 profile 时调用——往返切换的旧键失配
+   *  拦不住，见上）。其他会话的 pin 不动。 */
+  clearConv: (convKey: string) => void
 }
 
 export const useSessionContextWindowStore = create<SessionContextWindowState>((set) => ({
-  pinned: null,
-  pin: (conv, window) => set({ pinned: { conv, window } }),
+  pinned: {},
+  pin: (convKey, profileId, window) => set((s) => ({ pinned: { ...s.pinned, [sessionWindowKeyOf(convKey, profileId)]: window } })),
+  clearConv: (convKey) =>
+    set((s) => {
+      const prefix = `${convKey}::`
+      const next: Record<string, number> = {}
+      for (const key of Object.keys(s.pinned)) {
+        if (!key.startsWith(prefix)) next[key] = s.pinned[key]
+      }
+      return { pinned: next }
+    }),
 }))

@@ -23,7 +23,14 @@ import { settingsStore } from '../storage/settings-store'
 import { toolPreferencesStore } from '../storage/tool-preferences-store'
 import { skillStore } from '../storage/skill-store'
 import { SKILLS_DIR, WORKSPACE_DIR } from '../storage'
-import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, getConversationProfileId, setConversationProfile, deriveConvType } from '../storage/conversation.db'
+import { updateConversationOrigin, setConversationProject, getConversationProjectId, getConversationExpertId, getConversationApprovalMode, setConversationApprovalMode, getConversationProfileId, setConversationProfile, deriveConvType, listMemorySweepCandidates, getConversation } from '../storage/conversation.db'
+import { judgeSweepCandidate, sweepIntervalMs, SWEEP_ACTIVE_WINDOW_MS, SWEEP_BATCH_LIMIT, SWEEP_MIN_DELTA } from '../../shared/memory-sweep'
+import { setMemorySweepTrigger, setSopDistillTrigger } from '../ipc/memory.handler'
+import { distillSop as runSopDistill, isSopDistilling } from './sop-runner'
+import { judgeSopCandidate, sortBySopPriority, SOP_SWEEP_BATCH } from '../../shared/sop-sweep'
+import { isLivePage } from '../../shared/memory-pages'
+import { listMemoryPages } from '../storage/memory-pages-store'
+import { migrateExperiencesToPages, listFlatMemoriesForMigration, fallbackFlatMemoryOps, applyFlatMemoryMigration } from '../services/memory-migration'
 import { resolveConversationWorkspace } from '../storage/conversation-workspace'
 import { projectStore } from '../storage/project-store'
 import { expertStore } from '../storage/expert-store'
@@ -31,7 +38,7 @@ import { serverManager } from '../mcp/MCPServerManager'
 import { composeExpertInstructions, normalizeSummonedExperts, toExpertRefCatalogs, type ExpertRefCatalogs } from '../../shared/expert-context'
 import type { SummonedExpert } from '../../shared/expert-context'
 import type { ExpertProfile, ExpertRuntimeContext } from '../../shared/types/expert'
-import { sessionSandbox, type SessionSandboxContext } from '../sandbox/session-context'
+import { sessionSandbox, setSessionBackgroundExitListener, type SessionSandboxContext } from '../sandbox/session-context'
 import { svcReapBackgroundPids as reapBackgroundPids } from '../services/terminal'
 import { agentClientRegistry } from './client-registry'
 import { diffMessageStats, messageStatsSignature } from '../../shared/agent-session/message-stats'
@@ -47,7 +54,6 @@ import { perfTime } from '../perf/perf-log'
 import { keepAwake } from '../system/keep-awake'
 import { rememberLastUsedApprovalMode, rememberLastUsedProfileId, seedLastUsedDefaults } from './last-used-defaults'
 import type { AgentEventData, PlanSnapshot, AgentSessionCreateOptions, PageContext, StatusToolInfo, StatusSnapshot, ModelState, CompactionEvent } from '../../shared/agent-protocol'
-import type { HooksConfig } from '../../renderer/src/types/hooks'
 
 interface Managers {
   toolManager: ToolManager
@@ -157,6 +163,20 @@ export class AgentSessionManagerImpl {
    *  clock / token counts) for the same in-place diffing. */
   private messageStatsRegistry = new Map<string, Map<string, string>>()
   private messageContentRegistry = new Map<string, Map<string, string>>()
+
+  constructor() {
+    // 后台任务唤醒（2026-10-28）：terminal.ts 在后台子进程 exit 的同一拍把
+    // (sessionId, pid, code) 推到这里，转发给属主会话的引擎排队——引擎在下一次
+    // 请求构建时把未投递的通知渲染进 state block（一次性）。引擎不存在（会话
+    // 已关/重建中）就静默丢：exec_logs 的日志尾巴仍是完整的发现通道。
+    setSessionBackgroundExitListener((sessionId, pid, code) => {
+      try {
+        this.sessions.get(sessionId)?.engine.enqueueBackgroundNotice(pid, code)
+      } catch (err) {
+        console.warn(`[AgentSession] background exit notice failed (${sessionId} pid=${pid}):`, err)
+      }
+    })
+  }
 
   /** Subscribe to session events (the IPC bridge forwards these to renderers). */
   onEvent(sink: SessionEventSink): () => void {
@@ -314,71 +334,6 @@ export class AgentSessionManagerImpl {
     if (updates.length > 0) this.emit(sessionId, { type: 'message_stats', updates })
   }
 
-  /** Port of App.tsx afterSession hook: auto-capture memories + experience. */
-  private buildHooks(
-    profile: LlmProfile,
-    managers: Managers,
-    sessionId: string,
-  ): HooksConfig {
-    return {
-      afterSession: (ctx) => {
-        void (async () => {
-          // Master switches (设置 → 记忆/经验) are read at session end, so a
-          // toggle takes effect on the next session without touching engines.
-          const settings = await settingsStore.get()
-          const memoryOn = settings.memoryEnabled ?? true
-          const experienceOn = settings.experienceEnabled ?? true
-          if (!memoryOn && !experienceOn) return
-
-          const llmConfig = { adapter: createLlmAdapter(profile.provider ?? 'anthropic'), apiKey: profile.apiKey ?? '', baseURL: profile.baseURL, model: profile.model }
-          // Pass the FULL message list (PLAN-experience-iteration): the old
-          // text-only pre-filter made the gate's `(Conversation statistics: …)`
-          // line undercount every tool call and error, and extractAndSaveAll
-          // flattens to text messages internally anyway (one cursor unit).
-          if (ctx.messages.length === 0) return
-          // Seed the merge config BEFORE extractAndSaveAll: its internal
-          // ensureMemoryMerged (the merge-due session end) reads the manager's
-          // instance fields, which otherwise still hold the PREVIOUS sweep's
-          // profile — last session's pin or the startup active model — so the
-          // conversation-pinned model was honored by the first merge of a
-          // process only (review 2026-10-10 中4).
-          this.seedMemoryMergeConfig(managers.memoryManager, profile)
-          // Fire-and-forget — single LLM call extracts memories + experience.
-          const result = await managers.memoryManager.extractAndSaveAll(
-            ctx.messages, profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
-            profile.model, sessionId, settings.locale, { memory: memoryOn, experience: experienceOn },
-            // minDelta=4 (PLAN-memory-extraction-dedup): same contract as the
-            // desktop hook — a thin delta waits, accumulates, extracts once.
-            { minDelta: 4 },
-          )
-          if (result.memories > 0) console.log(`[SessionReview] Saved ${result.memories} memory/ies`)
-          // extractAndSaveAll may have run the incremental merge — advance
-          // settings.json's watermark so a restart doesn't re-merge. The
-          // config was already seeded above (before extraction); the sweep
-          // re-seeds only when no merge is in flight (setConfig's mutex).
-          await this.runMemoryMergeSweep(profile).catch((e) => console.warn('[SessionReview] merge sweep failed:', e))
-          if (result.experienceContent) {
-            managers.experienceManager.save({
-              title: result.experienceTitle ?? 'Untitled experience',
-              description: result.experienceContent.slice(0, 120),
-              content: result.experienceContent,
-              category: result.experienceCategory ?? 'general',
-              sourceConversationId: sessionId,
-              files: result.experienceFiles,
-              // Iteration (PLAN-experience-iteration): the model's update
-              // target re-aims this save at the record it revises.
-              targetName: result.experienceTarget,
-            }).then(({ record }) => {
-              // A revised record's old triggers may no longer describe it —
-              // re-extract even though triggers exist.
-              managers.experienceManager.ensureTriggers(record.name, llmConfig, Boolean(result.experienceTarget)).catch((err: unknown) =>
-                console.warn('[SessionReview] Trigger extraction failed:', err))
-            }).catch((err: unknown) => console.warn('[SessionReview] Failed to save experience:', err))
-          }
-        })().catch((err) => console.warn('[SessionReview] extraction failed:', err))
-      },
-    }
-  }
 
   /** Assemble the shared managers once (mirrors useChatManagers.loadPrefs). */
   async ensureManagers(): Promise<Managers> {
@@ -420,75 +375,167 @@ export class AgentSessionManagerImpl {
         const startupSettings = await settingsStore.get()
         await this.syncFeatureToggles(this.managers, startupSettings)
         this.syncRunLimits(startupSettings)
-        this.seedMergeWatermark(this.managers.memoryManager, startupSettings)
+        this.seedCompileWatermark(this.managers.memoryManager, startupSettings)
         // P2 (PLAN-memory-extraction-dedup): the merge layer's own sweep — a
         // few minutes after startup so first paint never waits on an LLM call.
-        // Also runs from extractAndSaveAll (turn ends); the watermark keeps
-        // both entry points honest about "what changed since the last merge".
+        // 页面编译层（M6）：取代旧扁平归并 sweep，同一 3 分钟启动位。
         setTimeout(() => {
-          void this.runMemoryMergeSweep().catch((e) => console.warn('[session-manager] memory merge failed:', e))
+          void this.runMemoryCompileSweep().catch((e) => console.warn('[session-manager] memory compile failed:', e))
         }, 3 * 60 * 1000).unref?.()
+        this.scheduleMemorySweep()
+        // SOP 固化入口（PLAN-experience-sop 刀三）：IPC → 托管无人值守运行
+        setSopDistillTrigger((pageId) => runSopDistill(pageId))
+        // M5：一次性迁移（幂等旗标）；fire-and-forget，不挡首绘
+        void this.runMemoryPagesMigration().catch((e) => console.warn('[memory-migration] failed:', e))
         return this.managers
       })()
     }
     return this.managersPromise
   }
 
-  /** Seed the merge watermark from settings.json onto the manager instance. */
-  private seedMergeWatermark(memoryManager: MemoryManager, settings: AppSettings): void {
-    const w = settings.memoryMergeWatermark
-    memoryManager.setMergeWatermark({
+  /** Seed the compile watermark from settings.json (memoryCompileWatermark)。 */
+  private seedCompileWatermark(memoryManager: MemoryManager, settings: AppSettings): void {
+    const w = settings.memoryCompileWatermark
+    memoryManager.seedCompileWatermark({
       lastRunAt: w?.lastRunAt ? new Date(w.lastRunAt).getTime() : 0,
       lastCount: w?.lastCount ?? 0,
       lastAttemptAt: w?.lastAttemptAt ? new Date(w.lastAttemptAt).getTime() : 0,
+      lastCursorAt: w?.lastCursorAt ? new Date(w.lastCursorAt).getTime() : 0,
     })
   }
 
-  /** Seed the merge layer's LLM config onto the shared manager. Split from
-   *  runMemoryMergeSweep so afterSession can seed BEFORE extractAndSaveAll —
-   *  its internal ensureMemoryMerged reads these instance fields, and without
-   *  the pre-seed it ran on whichever profile the previous sweep left behind
-   *  (review 2026-10-10 中4). setConfig itself refuses to swap the config
-   *  while a merge is in flight (review 2026-10-10 中5), so a late sweep can
-   *  never change models under a running merge. */
-  private seedMemoryMergeConfig(memoryManager: MemoryManager, profile: LlmProfile): void {
+  /** Seed the merge layer's LLM config onto the shared manager. The merge
+   *  reads these instance fields; without the pre-seed it ran on whichever
+   *  profile the previous sweep left behind (review 2026-10-10 中4).
+   *  setConfig refuses to swap the config while a merge is in flight (中5). */
+  private seedLlmConfig(memoryManager: MemoryManager, profile: LlmProfile): void {
     memoryManager.setConfig(profile.apiKey ?? '', profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'), profile.model, profile.maxTokens)
   }
 
-  /** Run the incremental memory merge (if due) and persist the watermark.
-   *  Both the delayed startup sweep and the afterSession path land here, so
-   *  settings.json is written by exactly one shape. `profile` absent (startup
-   *  sweep) falls back to the active one, same resolution as the proxy. */
-  async runMemoryMergeSweep(profile?: LlmProfile): Promise<boolean> {
+  /** 页面编译 sweep（M6）：到期则跑一轮 ensurePagesCompiled 并持久化 watermark。
+   *  `profile` 缺席（启动定时器）回落活动模型——与代理同一解析序。 */
+  async runMemoryCompileSweep(profile?: LlmProfile): Promise<boolean> {
     if (!this.managers) return false
     const memoryManager = this.managers.memoryManager
-    // The merge reads its LLM config off instance fields (setConfig); the
-    // extraction path passes its config as arguments and never seeds them, so
-    // without this seeding the guard `!this.adapter || !this.apiKey` returned
-    // false forever — the pool grew unbounded past MERGE_TOTAL_CAP and no
-    // attempt was ever recorded (settings.json's memoryMergeWatermark stayed
-    // absent; found 2026-10-09 with 95 memories). App.tsx's setConfig only
-    // ever reached the renderer's own instance.
     const p = profile ?? (await this.resolveActiveLlmProfile())
-    if (p) {
-      this.seedMemoryMergeConfig(memoryManager, p)
-    }
-    const ran = await memoryManager.ensureMemoryMerged()
-    const w = memoryManager.getMergeWatermark()
-    // Persist every touch — including bare attempts. The idle-spin fix rides
-    // on lastAttemptAt surviving the restart: without it a failed merge is
-    // re-attempted once per process launch, and lastRunAt === 0 means the
-    // "added" count is the full pool, so it was always re-due.
-    if (w.lastRunAt === 0 && !w.lastAttemptAt) return ran // never attempted — nothing to persist
-    await settingsStore.update((s) => ({
-      ...s,
-      memoryMergeWatermark: {
+    if (p) this.seedLlmConfig(memoryManager, p)
+    const ran = await memoryManager.ensurePagesCompiled()
+    const w = memoryManager.getCompileWatermark()
+    // 每次触碰都持久化（含纯尝试）：lastAttemptAt 活过重启是空转帽的前提
+    if (w.lastRunAt === 0 && !w.lastAttemptAt && !w.lastCursorAt) return ran
+    await settingsStore.update((s0) => ({
+      ...s0,
+      memoryCompileWatermark: {
         ...(w.lastRunAt !== 0 ? { lastRunAt: new Date(w.lastRunAt).toISOString() } : {}),
         lastCount: w.lastCount,
         ...(w.lastAttemptAt ? { lastAttemptAt: new Date(w.lastAttemptAt).toISOString() } : {}),
+        ...(w.lastCursorAt ? { lastCursorAt: new Date(w.lastCursorAt).toISOString() } : {}),
       },
-    })).catch((e) => console.warn('[session-manager] watermark persist failed:', e))
+    })).catch((e) => console.warn('[session-manager] compile watermark persist failed:', e))
     return ran
+  }
+
+  /** M5 一次性迁移：经验池字节平移 + 扁平记忆确定性落页（LLM 归并进 M6 的
+   *  compile pass 波次——本步先保数据连续与可检索）。旧表/旧目录冻结不删。 */
+  private async runMemoryPagesMigration(): Promise<void> {
+    if (!this.managers) return
+    const settings = await settingsStore.get()
+    if (settings.memoryPagesMigratedAt) return
+    const expCount = migrateExperiencesToPages()
+    const flatRows = listFlatMemoriesForMigration()
+    const memCount = applyFlatMemoryMigration(fallbackFlatMemoryOps(flatRows))
+    await settingsStore.update((s0) => ({ ...s0, memoryPagesMigratedAt: new Date().toISOString() }))
+    console.log(`[memory-migration] ${expCount} experience page(s) byte-shifted, ${memCount} flat memorie(s) paged (fallback arm; merge rides the compile-pass wave)`)
+  }
+
+  // ── 记忆提取定时清扫（PLAN-memory-wiki M2c）────────────────────────────
+  // 用户裁定（2026-10-25）：主时机 = 定时（默认 6h、可设、0=仅手动），
+  // afterSession/启动回填退役；游标制补课——应用没跑的时段下次启动自然扫掉。
+  private sweepTimer: NodeJS.Timeout | null = null
+  private sweepInFlight = false
+
+  /** 定时器编排：启动 3 分钟首跑 + 到点循环；设置变更后重排（applyFeatureToggles 调用）。 */
+  scheduleMemorySweep(): void {
+    setMemorySweepTrigger(() => this.triggerMemorySweepNow())
+    if (this.sweepTimer) { clearTimeout(this.sweepTimer); this.sweepTimer = null }
+    void settingsStore.get().then((settings) => {
+      const ms = sweepIntervalMs(settings.memoryExtractIntervalHours)
+      if (ms === null) return // 0 = 关闭定时，仅手动触发
+      this.sweepTimer = setTimeout(() => {
+        this.sweepTimer = null
+        void this.runMemoryExtractionSweep().catch((e) => console.warn('[memory-sweep] failed:', e))
+          .finally(() => this.scheduleMemorySweep()) // 重排下一轮
+      }, Math.min(ms, 3 * 60 * 1000) <= 0 ? ms : ms)
+      this.sweepTimer.unref?.()
+    })
+  }
+
+  /** 「立即提取」入口（设置面板按钮）：无视间隔设置跑一轮（资格条件照常生效）。 */
+  async triggerMemorySweepNow(): Promise<number> {
+    return this.runMemoryExtractionSweep()
+  }
+
+  private async runMemoryExtractionSweep(): Promise<number> {
+    if (!this.managers || this.sweepInFlight) return 0
+    this.sweepInFlight = true
+    try {
+      const settings = await settingsStore.get()
+      const memoryOn = settings.memoryEnabled ?? true
+      const experienceOn = settings.experienceEnabled ?? true
+      if (!memoryOn && !experienceOn) return 0
+      const profile = await this.resolveActiveLlmProfile()
+      if (!profile || !profile.apiKey) return 0
+
+      // SOP 自动清扫（PLAN-experience-sop 刀四）：搭提取清扫的车——资格门在
+      // shared/sop-sweep（recurrence ≥2 / 24h 退避 / 3 次退役 / use_count 优先），
+      // 每轮批 ≤2，fire-and-forget 派发（运行在后台，本 sweep 不等它）。
+      await this.runSopDistillSweep(experienceOn)
+
+      const candidates = listMemorySweepCandidates(new Date(Date.now() - SWEEP_ACTIVE_WINDOW_MS).toISOString(), SWEEP_BATCH_LIMIT * 2)
+      let extracted = 0
+      for (const c of candidates) {
+        if (extracted >= SWEEP_BATCH_LIMIT) break
+        const conv = getConversation(c.id)
+        if (!conv) continue
+        const messages = (conv.messages ?? []).map((m) => ({ ...m, contentBlocks: m.contentBlocks ?? [] }))
+        // 文本消息精确计数（游标同一单位）——SQL 的 msgCount 只是粗筛上界
+        const textCount = messages.filter(
+          (m) => (m.role === 'user' || m.role === 'assistant') && (m.contentBlocks ?? []).some((b) => b.type === 'text')
+        ).length
+        const verdict = judgeSweepCandidate({ totalTextMessages: textCount, cursor: c.extractedMsgCount, lastActiveAt: new Date(conv.updatedAt).getTime() }, Date.now())
+        if (verdict !== 'extract') continue
+        const result = await this.managers.memoryManager.extractAndSaveAll(
+          messages, profile.apiKey, profile.baseURL, createLlmAdapter(profile.provider ?? 'anthropic'),
+          profile.model, c.id, settings.locale, { memory: memoryOn, experience: experienceOn }, { minDelta: SWEEP_MIN_DELTA },
+        )
+        extracted++
+        if (result.pages > 0) console.log(`[memory-sweep] ${c.id}: ${result.pages} page op(s)`)
+      }
+      return extracted
+    } finally {
+      this.sweepInFlight = false
+    }
+  }
+
+  /** SOP 自动清扫（刀四）：从活经验页里选资格页派发固化。批 ≤2、同页在飞跳过；
+   *  资格判定与排序的语义在 shared/sop-sweep.ts（vitest 直测）。 */
+  private async runSopDistillSweep(experienceOn: boolean): Promise<number> {
+    if (!experienceOn) return 0
+    const now = Date.now()
+    // 停用的经验不进自动固化（用户拨下开关 = 别为它跑无人值守会话）；退役页同排除
+    //（园丁判它过时，固化代理不该再为它跑）；手动按钮不受此门
+    const candidates = sortBySopPriority(listMemoryPages('experience').filter((p) => isLivePage(p) && p.enabled !== false))
+      .filter((p) => judgeSopCandidate({ maturity: p.maturity, recurrence: p.recurrence, attempts: p.sopAttempts, lastAttemptAt: p.sopLastAttemptAt ? Date.parse(p.sopLastAttemptAt) : null }, now) === 'distill')
+      .slice(0, SOP_SWEEP_BATCH)
+    let dispatched = 0
+    for (const c of candidates) {
+      if (isSopDistilling(c.id)) continue
+      const result = await runSopDistill(c.id)
+      if (result.error) console.warn(`[sop-sweep] ${c.id} (${c.title}): ${result.error}`)
+      else dispatched++
+    }
+    if (dispatched > 0) console.log(`[sop-sweep] dispatched ${dispatched} distillation run(s)`)
+    return dispatched
   }
 
   /** Active-profile fallback for main-side one-shot LLM calls made outside a
@@ -521,6 +568,7 @@ export class AgentSessionManagerImpl {
   /** Re-apply the master switches and run limits after a settings save
    *  (settings.handler). */
   async applyFeatureToggles(settings: AppSettings): Promise<void> {
+    this.scheduleMemorySweep() // 间隔设置变更后重排定时器
     const managers = await this.ensureManagers()
     this.syncFeatureToggles(managers, settings)
     this.syncRunLimits(settings)
@@ -796,7 +844,6 @@ export class AgentSessionManagerImpl {
       locale: settings.locale === 'en' ? 'en' : 'zh',
       // A derived session (prompt override) is not a user conversation: its
       // transcript must not feed the memory/experience pipeline.
-      hooks: opts.systemPromptOverride ? undefined : this.buildHooks(profile, managers, sessionId),
       conversationId: sessionId,
       systemPromptOverride: opts.systemPromptOverride,
       allowedTools: opts.allowedTools,
@@ -1158,7 +1205,6 @@ export class AgentSessionManagerImpl {
       conversationId: sessionId,
       // updateOptions replaces the option bag wholesale — re-attach the pins
       // (and the session-review hooks, which the refresh used to drop).
-      hooks: entry.pinned.systemPromptOverride ? undefined : this.buildHooks(profile, managers, sessionId),
       systemPromptOverride: entry.pinned.systemPromptOverride,
       allowedTools: entry.pinned.allowedTools,
       expert: entry.expertState ?? undefined,

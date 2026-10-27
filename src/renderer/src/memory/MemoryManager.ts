@@ -8,10 +8,9 @@ import type {
 import { DEFAULT_MEMORY_PREFERENCES } from './types'
 import type { LlmAdapter } from '../llm/adapter'
 import type { AgentMessage, TextBlock } from '../types/agent'
-import { MemoryCompressionAgent, SessionReviewAgent } from '../agent/one-shot-agent'
+import { MemoryPageCompileAgent, SessionReviewAgent } from '../agent/one-shot-agent'
 import { getHost } from '../agent/host'
-import { memoryContentHash } from '../../../shared/memory/content-hash'
-import { MEMORY_ENTRY_MAX_CHARS, MEMORY_RESIDENT_CAP } from '../../../shared/memory/limits'
+import { buildExtractionCatalog, isLivePage, type PageOp } from '../../../shared/memory-pages'
 import { parseExperienceMd } from '../../../shared/experience/frontmatter'
 import type { ExperienceRecord } from '../../../shared/types/experience-types'
 
@@ -23,7 +22,7 @@ import type { ExperienceRecord } from '../../../shared/types/experience-types'
  *   B. Extracted — auto-captured from sessions (types: auto, fact, decision, preference)
  *      Resident slimming (user 2026-10-10): only entries ≤100 chars render, newest 20;
  *      the pool merges when total exceeds 20. Longer/older entries stay searchable
- *      via memory_search — the render filter is a view, never a deletion.
+ *      via recall — the render filter is a view, never a deletion.
  *   C. Recent Sessions — conversation id + summary from SQLite,
  *      split into 15min–24h (all) and >24h (latest 50).
  *
@@ -42,11 +41,11 @@ export class MemoryManager {
   private model: string = ''
   private modelMaxTokens: number | undefined = undefined
 
-  private compressionAgent = new MemoryCompressionAgent()
+  private compileAgent = new MemoryPageCompileAgent()
   private sessionReviewAgent = new SessionReviewAgent()
 
-  /** Simple flag to prevent concurrent compression runs. */
-  private _compressing = false
+  /** 防并发编译（单飞）。 */
+  private _compiling = false
 
   // P0 (PLAN-memory-extraction-dedup): failure backoff, process-lifetime.
   // A conversation whose extraction LLM call just FAILED retried on every
@@ -74,83 +73,39 @@ export class MemoryManager {
    *  plus when the last ATTEMPT ran. Only a successful merge advances
    *  lastRunAt (the 24h clock and the [NEW] marks); a failed or empty attempt
    *  advances only lastAttemptAt (the retry clock). Mirrored into
-   *  settings.json by the main-process hook so both survive a restart. */
-  private mergeWatermark: { lastRunAt: number; lastCount: number; lastAttemptAt: number } = {
+   *  settings.json by the main-process hook so both survive a restart.
+   *  lastCursorAt（2026-10-27 分区整理）：选页游标（ms）——下轮从 createdAt 晚于
+   *  它的页起转；是位置不是成绩，失败也推进（毒切片不反复重试，绕圈回访）。 */
+  private compileWatermark: {
+    lastRunAt: number
+    lastCount: number
+    lastAttemptAt: number
+    lastCursorAt: number
+  } = {
     lastRunAt: 0,
     lastCount: 0,
     lastAttemptAt: 0,
+    lastCursorAt: 0,
   }
 
-  setMergeWatermark(w: { lastRunAt: number; lastCount: number; lastAttemptAt?: number }): void {
-    this.mergeWatermark = { lastAttemptAt: 0, ...w }
+  seedCompileWatermark(w: { lastRunAt: number; lastCount: number; lastAttemptAt?: number; lastCursorAt?: number }): void {
+    this.compileWatermark = { lastAttemptAt: 0, lastCursorAt: 0, ...w }
   }
 
-  getMergeWatermark(): { lastRunAt: number; lastCount: number; lastAttemptAt: number } {
-    return { ...this.mergeWatermark }
+  getCompileWatermark(): { lastRunAt: number; lastCount: number; lastAttemptAt: number; lastCursorAt: number } {
+    return { ...this.compileWatermark }
   }
 
-  // ── Prompt-cache memory snapshot (2026-09-26 用户裁定) ────────────────
-  // The memory context (# Memory Context: extracted memories + the recent-
-  // conversations table) moved OUT of the per-turn state block INTO the system
-  // prompt, where DeepSeek's prefix cache can actually reuse it — the block is
-  // re-sent and re-billed every request, the system prompt is the shared trunk.
-  // Two clocks keep its bytes stable (2026-09-26 用户裁定: global 3h, session 1h):
-  //   全局快照 — one string per process, rebuilt lazily at most once per its 3h
-  //     TTL; every conversation that pins inside the window shares its bytes,
-  //     so conversations warm EACH OTHER's prefix.
-  //   会话级 pin — a conversation pins the global string at its first request
-  //     and keeps those bytes for its own 1h TTL, so a live conversation never
-  //     changes its prefix mid-flight. On expiry it re-pins from the CURRENT
-  //     global — usually still fresh (no rebuild, identical bytes, free); when
-  //     the global did rebuild with changed memories, the new bytes land at the
-  //     pin's hourly boundary (one re-bill, at most once per hour).
-  // Worst-case staleness ≈ 4h (a pin can hold data that was already up to 3h
-  // old when it pinned, then holds it 1h). This deliberately reverses the
-  // 「memory visible on the very next call」 shape of PLAN-memory-extraction-dedup.
-  static readonly MEMORY_CONTEXT_GLOBAL_TTL_MS = 3 * 60 * 60 * 1000
-  static readonly MEMORY_CONTEXT_SESSION_TTL_MS = 1 * 60 * 60 * 1000
-  /** Pin-table cap: entries hold a ~7KB string each; 64 conversations cover
-   *  every plausibly-live session, oldest-capturedAt evicted on overflow. */
-  private static readonly MEMORY_CONTEXT_PIN_CAP = 64
-  private memoryContextSnapshot: { text: string; capturedAt: number } | null = null
-  private memoryContextPins = new Map<string, { text: string; capturedAt: number }>()
-
-  /**
-   * The system-prompt memory context: byte-stable within a conversation's TTL
-   * and across conversations pinning the same global window. `conversationId`
-   * absent (tests, tools without a session) → the global snapshot only.
-   */
-  async getStableMemoryContext(conversationId?: string): Promise<string> {
-    // The master switch must take effect on the next request, so the OFF path
-    // never reads or writes either cache.
+  /** 手动记忆（MEMORY.md）注入文——唯一残余的动态节（PLAN-memory-wiki M4）。
+   *  直读不缓存（每请求一次小文件 IPC，代价可忽略）：字节仅在用户编辑时
+   *  变化，跨请求/跨会话天然稳定；master switch off 立即生效。取代 v1 的
+   *  双钟 TTL 快照（2026-09-26 裁定随动态注入退役：提取产物已全部转 JIT）。 */
+  async getManualMemoryContext(conversationId?: string): Promise<string> {
+    void conversationId // 保留签名位：调用方（builder）透传，未来按需细分
     if (!this.prefs.autoInjectEnabled) return ''
-    const now = Date.now()
-
-    if (conversationId) {
-      const pin = this.memoryContextPins.get(conversationId)
-      if (pin && now - pin.capturedAt < MemoryManager.MEMORY_CONTEXT_SESSION_TTL_MS) return pin.text
-    }
-
-    if (!this.memoryContextSnapshot || now - this.memoryContextSnapshot.capturedAt >= MemoryManager.MEMORY_CONTEXT_GLOBAL_TTL_MS) {
-      this.memoryContextSnapshot = { text: await this.buildMemoryContext(), capturedAt: now }
-    }
-    const text = this.memoryContextSnapshot.text
-
-    if (conversationId) {
-      this.memoryContextPins.set(conversationId, { text, capturedAt: now })
-      if (this.memoryContextPins.size > MemoryManager.MEMORY_CONTEXT_PIN_CAP) {
-        let oldestKey: string | null = null
-        let oldest = Infinity
-        for (const [key, entry] of this.memoryContextPins) {
-          if (entry.capturedAt < oldest) {
-            oldest = entry.capturedAt
-            oldestKey = key
-          }
-        }
-        if (oldestKey) this.memoryContextPins.delete(oldestKey)
-      }
-    }
-    return text
+    const content = await this.getMemoryMd()
+    if (!content || !content.trim()) return ''
+    return `# Manual Memories\n\n${content.trim()}`
   }
 
   // --- Preferences ---
@@ -168,11 +123,11 @@ export class MemoryManager {
    *  singleton and every sweep seeds it fire-and-forget (each session end
    *  carries that session's profile, the startup sweep the active one) — a
    *  seed landing mid-merge would swap the LLM config under the running call
-   *  (review 2026-10-10 中5). `ensureMemoryMerged` early-returns on the same
+   *  (review 2026-10-10 中5). the compile pass early-returns on the same
    *  flag, so the sweeping caller is a merge no-op too; its next sweep
    *  re-seeds. */
   setConfig(apiKey: string, baseURL: string, adapter: LlmAdapter, model: string, modelMaxTokens?: number): void {
-    if (this._compressing) return
+    if (this._compiling) return
     this.apiKey = apiKey
     this.baseURL = baseURL
     this.adapter = adapter
@@ -233,142 +188,116 @@ export class MemoryManager {
   // P2 (PLAN-memory-extraction-dedup): the old "over 50 → delete-all → rewrite"
   // consolidation is GONE. It silently discarded user-edited memories and
   // re-billed every memory on every rewrite. The replacement is an INCREMENTAL
-  // merge with an explicit watermark (new ≥5 since last merge, or total >50,
-  // and ≥24h since the last run): merged output lands row-by-row through the
-  // hash-gated saveMemory (literal repeats dedupe for free), user-edited rows
-  // (updated_at > created_at) are undeletable by code no matter what the LLM
-  // says, and the watermark rides settings.json via the main-process host.
-  static readonly MERGE_MIN_NEW = 5
-  /** 超限归并帽（user 2026-10-10：常驻区瘦身）。曾为 50——全量注入时代池子
-   *  再大也只是常驻区变胖；现在常驻区只渲染 20 条，池子继续涨只会稀释
-   *  memory_search 与去重参考，20 一到就归并。 */
-  static readonly MERGE_TOTAL_CAP = MEMORY_RESIDENT_CAP
-  static readonly MERGE_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000
-  /** Failed/empty merge attempts retry on this shorter clock instead of the
-   *  24h success interval (one transient LLM failure must not freeze merging
-   *  for a day), and it is the ceiling on the idle spin: before 2026-09-26 an
-   *  attempt advanced nothing, so every session end re-fired the identical
-   *  consolidate call — four byte-identical payloads in two minutes. */
-  static readonly MERGE_RETRY_MS = 2 * 60 * 60 * 1000
+  // ── 页面编译层（PLAN-memory-wiki M6，2026-10-25；分区整理 + retire 2026-10-27）──
+  // 取代旧扁平记忆归并（随旧表冻结退役，记录见 _review/review_20261025-memory-wiki.md）：
+  // 低频整理活页——合并近似页（迁移兜底臂的 per-row 页在此归并）、别名卫生、
+  // links 补全、过时页退役（retire op：软态、理由留档、UI 可恢复）。
+  // 只经 supersede/alias/update/retire，不删不建，谱系可回溯。
+  /** 页数增长阈值：活页较上次编译 +N 即到期。 */
+  static readonly COMPILE_MIN_NEW = 8
+  static readonly COMPILE_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000
+  /** 失败/空产出后的短重试钟（一次瞬时 LLM 失败不该冻结整理一天；也是空转帽）。 */
+  static readonly COMPILE_RETRY_MS = 2 * 60 * 60 * 1000
+  /** 编译输入预算（页 title+正文+别名的总字符）。单轮按游标分区选页装预算为止
+   *  ——取代旧的「超预算全体降级 titles-only 且禁 merge」：分桶让合并（唯一减员
+   *  手段）恰好在大池子时停摆，越需要整理的池子越整理不动。 */
+  static readonly COMPILE_BODY_BUDGET = 30_000
+  /** 维护钟：池子装不进单轮预算（分区真正生效）时，无增长也每 7 天整理一轮——
+   *  静止的大池子否则永远等不到园丁，retire 出口随之失灵。 */
+  static readonly COMPILE_MAINTENANCE_MS = 7 * 24 * 60 * 60 * 1000
+  /** 整理视图里单页正文的截断点：超长页标「正文被截断」→ agent 不可 update
+   * （截断防丢由 apply 层执法）；截断同时把单页输入成本钉住。 */
+  private static readonly COMPILE_PAGE_BODY = 600
 
-  /**
-   * Incremental memory merge. Returns true when a merge actually ran.
-   * Only touches extracted types; manual memories are never touched.
-   */
-  async ensureMemoryMerged(): Promise<boolean> {
-    if (this._compressing || !this.adapter || !this.apiKey) return false
-    const wm = this.getMergeWatermark()
+  /** 页面编译 pass。返回 true 当一轮编译真的跑成（见下——满目视图下的空产出
+   *  就是「池子干净」，算跑成）。两级门：成功持 24h 钟（lastRunAt），失败/全废
+   *  尝试只持 2h 重试钟（lastAttemptAt）——门必须读 ATTEMPT：不推进的尝试若不
+   *  落钟，每个触发点都会重开火（旧合并层的已付学费，语义原样移植）。
+   *
+   *  分区整理（2026-10-27）：选页按 createdAt 升序从 lastCursorAt 起装预算，
+   *  单轮输入由此保证 ≤ 预算；游标之后没有更新的页 → 回落全量从头再轮（每一页
+   *  周期性获得园丁到访）。游标是位置不是成绩：异常也推进——毒切片不该每 2h
+   *  重试同一批，绕一圈自然回访。 */
+  async ensurePagesCompiled(): Promise<boolean> {
+    if (this._compiling || !this.adapter || !this.apiKey) return false
+    const wm = this.getCompileWatermark()
     const now = Date.now()
-    // Two-tier gate: a successful merge holds the 24h clock (lastRunAt), a
-    // failed or empty attempt holds only the retry clock (lastAttemptAt). The
-    // gate must read the ATTEMPT — an attempt that advanced nothing used to
-    // leave every gate open, and with lastRunAt === 0 the "added" count below
-    // is the whole pool, so every trigger re-qualified.
-    const lastTouch = Math.max(wm.lastRunAt, wm.lastAttemptAt)
-    if (lastTouch !== 0) {
-      const gap = wm.lastRunAt >= wm.lastAttemptAt ? MemoryManager.MERGE_MIN_INTERVAL_MS : MemoryManager.MERGE_RETRY_MS
-      if (now - lastTouch < gap) return false
+    const gap = wm.lastRunAt >= wm.lastAttemptAt ? MemoryManager.COMPILE_MIN_INTERVAL_MS : MemoryManager.COMPILE_RETRY_MS
+    const since = wm.lastRunAt >= wm.lastAttemptAt ? wm.lastRunAt : wm.lastAttemptAt
+    if (since > 0 && now - since < gap) return false
+
+    const all = await getHost().listMemoryPages()
+    // SOP 页排除（PLAN-experience-sop 刀一）：整理是园丁，不修电器——compile agent
+    // 只看正文做近似合并，理解不了脚本；带 files 的页进来就会被无脚本的 supersede
+    // 丢掉脚本（apply 层护栏也会拒，这里不让它进输入省一趟 op）。退役页同排除。
+    const live = all.filter((p) => isLivePage(p) && p.maturity !== 'sop')
+    if (live.length < 2) return false // 无可整理
+    let poolSize = 0
+    for (const p of live) poolSize += p.title.length + p.body.length + p.aliases.join('').length
+    const growthDue =
+      live.length - wm.lastCount >= MemoryManager.COMPILE_MIN_NEW || (wm.lastCount === 0 && live.length >= MemoryManager.COMPILE_MIN_NEW)
+    const maintenanceDue =
+      poolSize > MemoryManager.COMPILE_BODY_BUDGET && wm.lastRunAt > 0 && now - wm.lastRunAt >= MemoryManager.COMPILE_MAINTENANCE_MS
+    if (!growthDue && !maintenanceDue) return false
+
+    // 分区选页：createdAt 升序（并列按 id 定序）从游标起装预算，末页永远入批
+    //（超大页靠 COMPILE_PAGE_BODY 截断钉住成本）。ISO 串同构，字典序即可比较。
+    const ordered = [...live].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+    const cursorIso = wm.lastCursorAt > 0 ? new Date(wm.lastCursorAt).toISOString() : ''
+    const pending = cursorIso ? ordered.filter((p) => p.createdAt > cursorIso) : ordered
+    const batch: typeof live = []
+    let budget = 0
+    for (const p of pending.length > 0 ? pending : ordered) {
+      const size = p.title.length + p.body.length + p.aliases.join('').length
+      if (batch.length > 0 && budget + size > MemoryManager.COMPILE_BODY_BUDGET) break
+      batch.push(p)
+      budget += size
     }
+    const cursorMs = new Date(batch[batch.length - 1].createdAt).getTime()
 
-    const extractedTypes = ['auto', 'fact', 'decision', 'preference']
-    const all = await this.listMemories()
-    const extracted = all.filter((m) => extractedTypes.includes(m.type))
-    const added = wm.lastRunAt === 0
-      ? extracted.length
-      : extracted.filter((m) => new Date(m.createdAt).getTime() > wm.lastRunAt).length
-    const due = added >= MemoryManager.MERGE_MIN_NEW || extracted.length > MemoryManager.MERGE_TOTAL_CAP
-    if (!due) return false
-
-    // The attempt counts from here — before the LLM call — so a throw (caught
-    // below) still lands inside the retry window instead of re-firing at the
-    // very next session end.
-    this.setMergeWatermark({ ...wm, lastAttemptAt: now })
-    this._compressing = true
+    this._compiling = true
     try {
-      // Input: the FULL set (the merge must see what it consolidates into),
-      // with each line NUMBERED (#N — the consumption receipt's key) and
-      // marked so the model can obey the rules below.
-      const byLine = new Map<number, MemoryEntry>()
-      const memoriesText = extracted
-        .map((m, i) => {
-          const line = i + 1
-          byLine.set(line, m)
-          const marks: string[] = [`#${line}`]
-          if (m.updatedAt && m.createdAt && m.updatedAt > m.createdAt) marks.push('[USER-EDITED]')
-          if (wm.lastRunAt !== 0 && new Date(m.createdAt).getTime() > wm.lastRunAt) marks.push('[NEW]')
-          return `- ${marks.join(' ')} [${m.category}] ${m.content.slice(0, 300)}`
-        })
-        .join('\n')
-
-      // NO scenario maxOutputTokens here (2026-10-09): the merge's output is a
-      // JSON ARRAY of the consolidated pool — a scenario cap truncates it
-      // mid-array, which is a guaranteed parse failure. Measured live: a
-      // correct 95→20 consolidation came back as a valid 14935-char array,
-      // enforceMaxOutputTokens(cut at 4000) clipped it to 5434 chars
-      // ("Unterminated string"), extractJson returned [], and the attempt
-      // burned its LLM call AND stamped the 2h retry clock. The wire budget
-      // (modelMaxTokens) already bounds generation; this scenario has no
-      // honest length requirement to enforce.
-      const result = await this.compressionAgent.execute(
-        { memoriesText },
-        { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, modelMaxTokens: this.modelMaxTokens } }
+      // 页面视图：行尾带 使用/重现 计数——退役判断的价值信号（高价值页禁 retire
+      // 的判断依据在 agent 侧，数据从这里来）。
+      const lines = batch.map((p) => {
+        const alias = p.aliases.length > 0 ? ` 别名: ${p.aliases.join(', ')}` : ''
+        const usage = p.useCount > 0 ? ` 使用${p.useCount}次` : ''
+        const recurrence = p.recurrence > 0 ? ` 重现${p.recurrence}次` : ''
+        const body = p.body.length <= MemoryManager.COMPILE_PAGE_BODY
+          ? p.body
+          : `${p.body.slice(0, MemoryManager.COMPILE_PAGE_BODY)} 「正文被截断」`
+        const missingSummary = p.summary ? '' : ' 〔summary 缺失——update 时补一句结论〕'
+        return `- ${p.title} (${p.type})${alias}${usage}${recurrence}${missingSummary}\n  正文: ${body.replace(/\n/g, ' ')}`
+      })
+      const result = await this.compileAgent.execute(
+        { pagesText: lines.join('\n'), mode: 'full', pageIndex: batch.map((p) => ({ id: p.id, title: p.title, type: p.type, aliases: p.aliases })), locale: undefined },
+        { llmConfig: { adapter: this.adapter, apiKey: this.apiKey, baseURL: this.baseURL, model: this.model, modelMaxTokens: this.modelMaxTokens }, maxOutputTokens: 4000 },
       )
-      const merged = result.memories
-      if (merged.length === 0) {
-        // The model ran and consolidated nothing — or its output did not parse
-        // (extractJson already tried fences and bare-JSON recovery). Warn with
-        // the input size so a systematic parse miss is diagnosable; lastRunAt
-        // stays put and the attempt gate caps the retry at one per RETRY_MS.
-        console.warn(`[MemoryManager] memory merge produced 0 entries for ${extracted.length} inputs — will retry after MERGE_RETRY_MS`)
-        return false
-      }
-
-      const validTypes = ['auto', 'manual', 'fact', 'decision', 'preference']
-      const validCategories = ['code', 'architecture', 'user_pref', 'decision', 'general']
-
-      // Output identity = content hash (the same key the save gate uses).
-      const mergedHashes = new Set<string>()
-      for (const mem of merged) {
-        if (!mem.content || mem.content.length < 10) continue
-        mergedHashes.add(memoryContentHash(mem.content))
-      }
-
-      // Delete only what the merge has a RECEIPT for having consumed
-      // (2026-10-10): the row's exact content re-appeared in the merged set,
-      // or the model listed its line number in `dropped`. A row the model
-      // merely FORGOT matches neither and SURVIVES — the old delete-all-
-      // unmentioned rule turned one omission into permanent data loss, and
-      // the save-side hash gate only prevents duplicates, never loss. A
-      // survivor is retried by the next merge (the full set rides every run);
-      // USER-EDITED rows survive unconditionally either way (the plan's hard
-      // rule — the older delete-all silently destroyed exactly these).
-      const dropped = new Set(result.dropped)
-      for (const [line, m] of byLine) {
-        const userEdited = !!(m.updatedAt && m.createdAt && m.updatedAt > m.createdAt)
-        if (userEdited) continue
-        if (mergedHashes.has(memoryContentHash(m.content)) || dropped.has(line)) {
-          await this.deleteMemory(m.id)
+      const ops = result.pages
+      let applied = 0
+      if (ops.length > 0) {
+        const results = await getHost().applyMemoryPageOps(ops)
+        applied = results.filter((r) => r.ok).length
+        for (const r of results.filter((x) => !x.ok)) {
+          console.warn(`[MemoryManager] compile op failed (${r.op.action} ${r.op.target ?? ''}):`, r.error)
         }
       }
-
-      // Re-save the merged set: the saveMemory hash gate makes this an UPSERT
-      // against surviving rows (same content → skipped) and an insert for
-      // genuinely new consolidations.
-      for (const mem of merged) {
-        if (!mem.content || mem.content.length < 10) continue
-        const type = validTypes.includes(mem.type) ? mem.type : 'auto'
-        const category = validCategories.includes(mem.category) ? mem.category : 'general'
-        await this.saveMemory({ content: mem.content, type: type as MemoryCreateInput['type'], category: category as MemoryCreateInput['category'] })
-      }
-
-      this.setMergeWatermark({ lastRunAt: now, lastCount: await getHost().countMemories(extractedTypes), lastAttemptAt: now })
-      console.log(`[MemoryManager] merged ${extracted.length} extracted memories → ${mergedHashes.size} contents (${dropped.size} dropped by receipt; watermark advanced)`)
-      return true
+      // 成功 = 无异常且（无产出 或 至少一个 op 落库）：满目视图下空产出 = 池子
+      // 干净，是真成功（维护钟臂靠它停转，否则干净的大池子每 2h 空转一轮）；
+      // 全废产出（ops>0 且 applied=0）按旧纪律只推重试钟。游标无论如何推进。
+      const after = (await getHost().listMemoryPages()).filter(isLivePage).length
+      const success = ops.length === 0 || applied > 0
+      this.compileWatermark = success
+        ? { lastRunAt: now, lastCount: after, lastAttemptAt: now, lastCursorAt: cursorMs }
+        : { ...this.compileWatermark, lastAttemptAt: now, lastCursorAt: cursorMs }
+      console.log(`[MemoryManager] compile pass: ${applied}/${ops.length} op(s) applied over ${batch.length}/${live.length} live pages, pool → ${after}`)
+      return success
     } catch (err) {
-      console.warn('[MemoryManager] Memory merge error:', err)
+      console.warn('[MemoryManager] compile pass error:', err)
+      this.compileWatermark = { ...this.compileWatermark, lastAttemptAt: Date.now(), lastCursorAt: cursorMs }
       return false
     } finally {
-      this._compressing = false
+      this._compiling = false
     }
   }
 
@@ -381,51 +310,7 @@ export class MemoryManager {
   // Provides a summary of recent sessions for the system prompt.
   // ===================================================================
 
-  /**
-   * Build a string describing recent conversations, split into two time windows:
-   *   - 15 minutes to 24 hours ago (all sessions)
-   *   - Older than 24 hours (latest 50)
-   */
-  private async getRecentSessionContext(): Promise<string> {
-    const now = Date.now()
-    const oneMinAgo = new Date(now - 1 * 60 * 1000).toISOString()
-    const twentyFourHAgo = new Date(now - 24 * 60 * 60 * 1000).toISOString()
-
-    const [recentSessions, olderSessions] = await Promise.all([
-      getHost().listConversationsForMemory({
-        afterTime: twentyFourHAgo,
-        beforeTime: oneMinAgo
-      }),
-      getHost().listConversationsForMemory({
-        beforeTime: twentyFourHAgo,
-        limit: 50
-      })
-    ])
-
-    const parts: string[] = []
-    parts.push('<guide>If needed, you can use the ID to trigger conversation_search to retrieve the conversation records.</guide>')
-    parts.push('<data>')
-    parts.push('|id|keywords|')
-    if (recentSessions.length > 0) {
-      for (const s of recentSessions) {
-        const label = s.keywords || s.summary || s.title
-        if (!label) continue
-        parts.push(`${s.id}|${label}|`)
-      }
-    }
-
-    if (olderSessions.length > 0) {
-      for (const s of olderSessions) {
-        const label = s.keywords || s.summary || s.title
-        if (!label) continue
-        parts.push(`${s.id}|${label}|`)
-      }
-    }
-    parts.push('</data>')
-
-    return parts.join('')
-  }
-
+  
   // ===================================================================
   // Experience Capture
   // Extracts workflow optimizations and user pain points from sessions,
@@ -467,27 +352,26 @@ export class MemoryManager {
     options?: { minDelta?: number }
   ): Promise<{
     memories: number
+    /** v2：成功落库的页面 op 数（含经验页）。 */
+    pages: number
+    /** v1 兼容残影（恒 null；M2c 拆除调用方后删除）。 */
     experienceTitle: string | null
     experienceContent: string | null
     experienceCategory: string | null
-    experienceFiles?: { path: string; content: string }[]
-    /** Set when the model chose to ITERATE (action=update): the pool record
-     *  `name` the content is a revision OF. Pass it to save({targetName}). */
-    experienceTarget?: string
   }> {
     const memoryOn = featureFlags?.memory !== false
     const experienceOn = featureFlags?.experience !== false
-    if (!apiKey || (!memoryOn && !experienceOn)) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+    if (!apiKey || (!memoryOn && !experienceOn)) return { memories: 0, pages: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
     if (conversationId && this.isInBackoff(conversationId)) {
       console.log(`[MemoryManager] conversation ${conversationId} is in extraction backoff, skipping`)
-      return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+      return { memories: 0, pages: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
     }
 
     // Unify on text-only messages (user/assistant with a text block) — same
     // cursor semantics as the backfill's, so every pipeline
     // agrees on what "processed" means.
     const textMessages = MemoryManager.toTextMessages(messages)
-    if (textMessages.length === 0) return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+    if (textMessages.length === 0) return { memories: 0, pages: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
 
     // --- Incremental cursor: skip if conversation fully processed ---
     let cursor = 0
@@ -495,7 +379,7 @@ export class MemoryManager {
       const processedCount = await getHost().getConversationExtractedMsgCount(conversationId)
       if (processedCount >= textMessages.length) {
         console.log(`[MemoryManager] Already extracted for conversation ${conversationId} at msg count ${processedCount}, skipping`)
-        return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+        return { memories: 0, pages: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
       }
       cursor = processedCount
       console.log(`[MemoryManager] Extracting memories+experiences for conversation ${conversationId}: ${textMessages.length - cursor} new msgs (cursor ${cursor}/${textMessages.length})`)
@@ -511,7 +395,7 @@ export class MemoryManager {
     const minDelta = options?.minDelta ?? 1
     if (conversationId && delta.length < minDelta) {
       console.log(`[MemoryManager] delta ${delta.length} < minDelta ${minDelta} for conversation ${conversationId}, waiting to accumulate`)
-      return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+      return { memories: 0, pages: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
     }
 
     // Build session summary: anchor (context only) + delta (to analyze)
@@ -536,15 +420,22 @@ export class MemoryManager {
     }
     const summary = summaryParts.join('\n\n').slice(0, 12000)
 
-    // Dedup context: bounded existing experiences + existing memories
-    const [existingExperiencesText, existingMemoriesText] = await Promise.all([
-      this.buildExistingExperiencesText(),
-      this.buildExistingMemoriesText()
-    ])
+    // 写时归页的承重面：全量页面目录（title+别名；经验页带全文摘录）。
+    // 记忆与经验在这次调用里同时产出（PLAN-memory-wiki v2 统一协议）。
+    const allPages = await getHost().listMemoryPages()
+    const live = allPages.filter(isLivePage)
+    const catalog = buildExtractionCatalog(live.map((p) => ({ title: p.title, type: p.type, aliases: p.aliases, body: p.body })))
 
     try {
       const result = await this.sessionReviewAgent.execute(
-        { sessionSummary: summary, existingExperiencesText, existingMemoriesText, locale },
+        {
+          sessionSummary: summary,
+          catalogText: catalog.text,
+          catalogMode: catalog.mode,
+          pageIndex: live.map((p) => ({ id: p.id, title: p.title, type: p.type, aliases: p.aliases })),
+          revisableTitles: catalog.revisableTitles,
+          locale,
+        },
         { llmConfig: { adapter, apiKey, baseURL, model, modelMaxTokens: this.modelMaxTokens }, maxOutputTokens: 4000 }
       )
 
@@ -569,54 +460,23 @@ export class MemoryManager {
         }
       }
 
-      // --- Save extracted memories ---
-      const validTypes = ['auto', 'manual', 'fact', 'decision', 'preference']
-      const validCategories = ['code', 'architecture', 'user_pref', 'decision', 'general']
-
-      let memoriesSaved = 0
-      if (memoryOn) {
-        // Slice is the structural half of the yield bar — the prompt asks for
-        // at most 3; this guarantees the pool never takes more than the cap
-        // from one extraction run. The length check is the structural half of
-        // the 100-char budget — a model that ignores the short-sentence rule
-        // gets its overlong output dropped (it belongs in an experience
-        // record); the prompt is the first half, this is the guarantee.
-        for (const mem of result.memories.slice(0, MemoryManager.MAX_EXTRACT_PER_RUN)) {
-          if (!mem.content || mem.content.length < 10) continue
-          if (mem.content.length > MEMORY_ENTRY_MAX_CHARS) continue
-          const entry = await this.saveMemory({
-            content: mem.content,
-            type: validTypes.includes(mem.type) ? (mem.type as MemoryCreateInput['type']) : 'auto',
-            category: validCategories.includes(mem.category)
-              ? (mem.category as MemoryCreateInput['category'])
-              : 'general'
-          })
-          if (entry) memoriesSaved++
-        }
+      // --- Apply page ops（op 级隔离：坏 op 不拖垮同批）---
+      // 开关按类型过滤：记忆关 → 只放行经验页 op；经验关 → 只放行非经验 op。
+      // update/alias 无 type 字段（它们修订既有页），仅在双开时放行；
+      // reinforce 只对经验页成立，归经验开关管。
+      const ops: PageOp[] = result.pages.filter((op) => {
+        if (memoryOn && experienceOn) return true
+        if (op.action === 'reinforce') return experienceOn
+        if (op.type === 'experience') return experienceOn
+        if (op.action === 'create' || op.action === 'supersede') return memoryOn
+        return false
+      })
+      const opResults = ops.length > 0 ? await getHost().applyMemoryPageOps(ops) : []
+      const pagesApplied = opResults.filter((r) => r.ok).length
+      const memoriesSaved = opResults.filter((r) => r.ok && r.op.type !== 'experience').length
+      for (const r of opResults.filter((x) => !x.ok)) {
+        console.warn(`[MemoryManager] page op failed (${r.op.action} ${r.op.target ?? r.op.title ?? ''}):`, r.error)
       }
-
-      // --- Extract experience (don't save to memories — caller saves to the pool) ---
-      let experienceTitle: string | null = null
-      let experienceContent: string | null = null
-      let experienceCategory: string | null = null
-      let experienceFiles: { path: string; content: string }[] | undefined
-      let experienceTarget: string | undefined
-      if (experienceOn && result.experience && result.experience.content) {
-        const title = result.experience.title
-        experienceTitle = typeof title === 'string' && title ? title : null
-        const cat = result.experience.category
-        experienceCategory = validCategories.includes(cat) ? cat : 'general'
-        experienceContent = result.experience.content
-        experienceFiles = result.experience.files
-        if (result.experience.action === 'update' && result.experience.target) {
-          // action=update with a name the model saw in the pool section →
-          // caller re-targets its save; the agent already validated/degraded.
-          experienceTarget = result.experience.target
-        }
-      }
-
-      // Check if memory compression is needed
-      if (memoryOn) await this.ensureMemoryMerged()
 
       if (conversationId) this.extractionBackoff.delete(conversationId)
 
@@ -633,8 +493,9 @@ export class MemoryManager {
         })
       }
 
-      console.log(`[MemoryManager] Saved ${memoriesSaved} memory/ies from conversation ${conversationId || 'unknown'}`)
-      return { memories: memoriesSaved, experienceTitle, experienceContent, experienceCategory, experienceFiles, experienceTarget }
+      console.log(`[MemoryManager] Applied ${pagesApplied} page op(s) from conversation ${conversationId || 'unknown'}`)
+      // experience* 字段是 v1 调用方的兼容残影（M2c 拆除调用方后删除）
+      return { memories: memoriesSaved, pages: pagesApplied, experienceTitle: null, experienceContent: null, experienceCategory: null }
     } catch (err) {
       console.warn('[MemoryManager] extractAndSaveAll error:', err)
       if (conversationId) {
@@ -645,7 +506,7 @@ export class MemoryManager {
           console.warn(`[MemoryManager] conversation ${conversationId} failed extraction ${attempts} times — retired for this process run`)
         }
       }
-      return { memories: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
+      return { memories: 0, pages: 0, experienceTitle: null, experienceContent: null, experienceCategory: null }
     }
   }
 
@@ -697,69 +558,7 @@ export class MemoryManager {
    *   B2. Experiences (workflow optimizations, user pain points)
    *   C. Recent session summaries
    */
-  /**
-   * Filter for extracted-type memories and format as markdown bullet lines.
-   * 常驻区瘦身（user 2026-10-10）：只渲染 ≤100 字的条目、最新的 20 条——
-   * 常驻区是索引视图，不是全量转储。被挤出的条目（超长或更旧）留在库里，
-   * memory_search 可及；有省略时带一行指针，让模型知道档案存在。
-   */
-  private getExtractedMemoriesContent(all: MemoryEntry[]): string {
-    const extracted = all.filter((m) =>
-      ['auto', 'fact', 'decision', 'preference'].includes(m.type)
-    )
-    if (extracted.length === 0) return ''
-
-    const resident = extracted
-      .filter((m) => m.content.length <= MEMORY_ENTRY_MAX_CHARS)
-      .slice(0, MEMORY_RESIDENT_CAP)
-    const lines = resident.map((m) => `- ${m.content}`)
-    const omitted = extracted.length - resident.length
-    if (omitted > 0) {
-      lines.push(`(+${omitted} older or longer memories not shown — search them with the memory_search tool.)`)
-    }
-    return lines.length > 0 ? lines.join('\n') : ''
-  }
-
-  async buildMemoryContext(): Promise<string> {
-    if (!this.prefs.autoInjectEnabled) return ''
-
-    // Compression is handled at extraction time — no blocking LLM calls here.
-    // Load memories, recent sessions, and manual memories file in parallel — 3 IPC calls concurrently.
-    const [manualMdContent, all, sessionContext] = await Promise.all([
-      this.getMemoryMd(),
-      this.listMemories(),
-      this.getRecentSessionContext()
-    ])
-
-    const parts: string[] = ['# Memory Context']
-
-    // Part A: Manual Memories (user-edited from Memory panel, stored in file)
-    if (manualMdContent && typeof manualMdContent === 'string' && manualMdContent.trim()) {
-      parts.push('## Manual Memories')
-      parts.push(manualMdContent)
-    }
-
-    // Part B: Extracted Memories (facts, decisions, preferences)
-    const extractedContent = this.getExtractedMemoriesContent(all)
-    if (extractedContent) {
-      parts.push('## Extracted Memories')
-      parts.push(extractedContent)
-    }
-
-    // Part B2: Experiences — removed. Experiences are now stored in the knowledge
-    // base (raw/ directory) and compiled into wiki pages, replacing the old
-    // in-memory experiences section.
-
-    // Part C: Recent sessions
-    if (sessionContext) {
-      parts.push('## Recent Conversations')
-      parts.push(sessionContext)
-    }
-
-    const result = parts.join('\n')
-    return result === '# Memory Context' ? '' : result
-  }
-
+  
   // ===================================================================
   // Helpers — shared by the extraction pipelines
   // ===================================================================

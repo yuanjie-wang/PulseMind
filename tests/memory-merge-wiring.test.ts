@@ -1,20 +1,8 @@
-// 记忆合并的配置播种（2026-10-09，95 条记忆不压缩的根因修复）。
-//
-// 实测：库里有 95 条可合并记忆（> MERGE_TOTAL_CAP=50，due 恒真），
-// settings.json 里 memoryMergeWatermark 整个不存在——说明 ensureMemoryMerged
-// 连一次「尝试」都没发生过（尝试会在 LLM 调用前盖 lastAttemptAt，
-// runMemoryMergeSweep 会把裸尝试也落盘）。死因在守卫第一行：
-//   if (this._compressing || !this.adapter || !this.apiKey) return false
-// 合并读实例字段，而 M1.4 主进程托管后唯一干活的 MemoryManager
-// （session-manager 里 new 的那个）从未被 setConfig——全仓库唯一调用点
-// App.tsx:396 配置的是渲染进程自己的实例。提取不受影响：extractAndSaveAll
-// 的 apiKey/baseURL/adapter/model 是参数传入的，这正是「提取正常、合并死」
-// 的不对称根源。渲染侧的 App.tsx 启动合并触发因此也是僵尸路径（且它的
-// 水印只在渲染实例内存里，主进程落盘逻辑永远看不到；主进程 sweep 修活后
-// 它还会变成跨进程双跑竞态）——一并删除，合并只留主进程一个 owner。
-//
-// 跨文件契约，vitest 无法用真进程验证，按 wiring-scan 惯例钉源码形状。
-
+// 页面编译 sweep 的配置播种（PLAN-memory-wiki M6，2026-10-25）——纪律自旧
+// 合并层 wiring（2026-10-09「95 条记忆不压缩」根因）原样移植：编译读
+// MemoryManager 实例字段，主进程 sweep 必须先 resolve + seed 再编译；
+// setConfig 在编译飞行中拒绝换配置。旧机器（runMemoryMergeSweep/
+// MemoryCompressionAgent/memoryMergeWatermark 写入）整体退役。
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -22,10 +10,12 @@ import { describe, expect, it } from 'vitest'
 const ROOT = join(__dirname, '..')
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8')
 
-/** 抽取一个函数体（按签名起点到大括号配平），签名变了就红——防扫描空转。 */
+const sessionManager = read('src/main/agent/session-manager.ts')
+const managerSrc = read('src/renderer/src/memory/MemoryManager.ts')
+
 function functionBody(source: string, signature: string): string {
   const start = source.indexOf(signature)
-  expect(start).toBeGreaterThanOrEqual(0) // 签名不存在 = 契约被改名，直接红
+  expect(start).toBeGreaterThanOrEqual(0)
   const open = source.indexOf('{', start)
   let depth = 0
   for (let i = open; i < source.length; i++) {
@@ -38,62 +28,37 @@ function functionBody(source: string, signature: string): string {
   throw new Error('unbalanced braces')
 }
 
-describe('memory merge LLM-config seeding (main-side owner)', () => {
-  const sessionManager = read('src/main/agent/session-manager.ts')
-
-  it('runMemoryMergeSweep seeds the config onto the manager BEFORE ensureMemoryMerged', () => {
-    const body = functionBody(sessionManager, 'async runMemoryMergeSweep(profile?: LlmProfile)')
-    const seed = body.indexOf('this.seedMemoryMergeConfig(memoryManager, p)')
-    const merge = body.indexOf('memoryManager.ensureMemoryMerged()')
-    expect(seed).toBeGreaterThan(-1)
-    expect(merge).toBeGreaterThan(seed)
+describe('页面编译 sweep 接线（主进程唯一 owner）', () => {
+  it('启动 3 分钟定时器 + sweep 自身先 resolve → seed → 编译（顺序不变量）', () => {
+    expect(sessionManager).toContain('runMemoryCompileSweep()')
+    const body = functionBody(sessionManager, 'async runMemoryCompileSweep(profile?: LlmProfile): Promise<boolean>')
+    const resolve = body.indexOf('await this.resolveActiveLlmProfile()')
+    const seed = body.indexOf('this.seedLlmConfig(memoryManager, p)')
+    const compile = body.indexOf('await memoryManager.ensurePagesCompiled()')
+    expect(resolve).toBeGreaterThan(-1)
+    expect(seed).toBeGreaterThan(resolve)
+    expect(compile).toBeGreaterThan(seed)
   })
 
-  it('afterSession seeds the session profile BEFORE extractAndSaveAll (review 2026-10-10 中4)', () => {
-    // extractAndSaveAll's internal ensureMemoryMerged reads the manager's
-    // instance fields; without the pre-seed it ran on the PREVIOUS sweep's
-    // profile, so the conversation-pinned model was honored by the first
-    // merge of a process only. The post-extraction sweep stays (watermark).
-    const body = functionBody(sessionManager, 'afterSession: (ctx) => {')
-    const seed = body.indexOf('this.seedMemoryMergeConfig(managers.memoryManager, profile)')
-    const extract = body.indexOf('managers.memoryManager.extractAndSaveAll(')
-    const sweep = body.indexOf('this.runMemoryMergeSweep(profile)')
-    expect(seed).toBeGreaterThan(-1)
-    expect(extract).toBeGreaterThan(seed)
-    expect(sweep).toBeGreaterThan(extract)
+  it('watermark 双向：seed 读 memoryCompileWatermark，sweep 每次触碰落盘', () => {
+    const seed = functionBody(sessionManager, 'private seedCompileWatermark(memoryManager: MemoryManager, settings: AppSettings)')
+    expect(seed).toContain('settings.memoryCompileWatermark')
+    expect(sessionManager).toContain('memoryCompileWatermark:')
+    expect(sessionManager).toContain('this.seedCompileWatermark(this.managers.memoryManager, startupSettings)')
   })
 
-  it('seedMemoryMergeConfig forwards the full profile (key, adapter, model, maxTokens)', () => {
-    const body = functionBody(sessionManager, 'private seedMemoryMergeConfig(memoryManager: MemoryManager, profile: LlmProfile)')
-    expect(body).toContain("profile.apiKey ?? ''")
-    expect(body).toContain('profile.baseURL')
-    expect(body).toContain("createLlmAdapter(profile.provider ?? 'anthropic')")
-    expect(body).toContain('profile.model')
-    expect(body).toContain('profile.maxTokens')
+  it('seedLlmConfig 转发完整 profile；setConfig 飞行中拒换（中4/中5 纪律移植）', () => {
+    const seed = functionBody(sessionManager, 'private seedLlmConfig(memoryManager: MemoryManager, profile: LlmProfile)')
+    for (const frag of ["profile.apiKey ?? ''", 'profile.baseURL', "createLlmAdapter(profile.provider ?? 'anthropic')", 'profile.model', 'profile.maxTokens']) {
+      expect(seed).toContain(frag)
+    }
+    expect(managerSrc).toContain('if (this._compiling) return')
   })
 
-  it('startup sweep falls back to the active profile when no session profile is given', () => {
-    const body = functionBody(sessionManager, 'private async resolveActiveLlmProfile()')
-    // 与 api-proxy 同一解析序：activeProfileId 命中，否则第一条。
-    expect(body).toContain("settings.profiles.find((p) => p.id === settings.activeProfileId) ?? settings.profiles[0]")
-  })
-
-  it('the afterSession sweep passes the session profile (conversation-pinned model wins)', () => {
-    expect(sessionManager).toMatch(/runMemoryMergeSweep\(profile\)\.catch\(/)
-  })
-
-  it('setConfig refuses to swap the config while a merge is in flight (review 2026-10-10 中5)', () => {
-    // 共享单例 + fire-and-forget 播种：进行中换 config = 正在跑的合并被换模型。
-    const memoryManager = read('src/renderer/src/memory/MemoryManager.ts')
-    const body = functionBody(memoryManager, 'setConfig(apiKey: string, baseURL: string, adapter: LlmAdapter, model: string, modelMaxTokens?: number): void')
-    expect(body).toContain('if (this._compressing) return')
-  })
-
-  it('App.tsx no longer triggers the merge or configures MemoryManager (zombie path removed)', () => {
-    const app = read('src/renderer/src/App.tsx')
-    expect(app).not.toContain('ensureMemoryMerged')
-    expect(app).not.toContain('memoryManager.setConfig(')
-    // 知识编译仍在渲染例试图走这条配置——不能顺手误删。
-    expect(app).toContain('knowledgeManager.setConfig(')
+  it('旧机器退役：runMemoryMergeSweep / ensureMemoryMerged / MemoryCompressionAgent 全库无引用', () => {
+    for (const banned of ['runMemoryMergeSweep', 'ensureMemoryMerged', 'MemoryCompressionAgent', 'setMergeWatermark', 'getMergeWatermark']) {
+      expect(sessionManager).not.toContain(banned)
+      expect(managerSrc).not.toContain(banned)
+    }
   })
 })

@@ -27,12 +27,12 @@ describe('主提取路径（SessionReviewAgent A 节）：记忆锚定用户，�
   it('三条轴全部要求用户归属', () => {
     expect(src).toContain('attributable to the user')
     expect(src).toContain('a choice the USER made or ratified')
-    expect(src).toContain('every correction they made')
+    expect(src).toContain('every correction they made to the agent\'s behavior')
     expect(src).toContain('the user\'s background: role, organization, ongoing projects')
   })
 
   it('负面清单点名模型产出/执行日志/寒暄，带「用户认可即 decision」的口子', () => {
-    expect(src).toContain('NOT memories')
+    expect(src).toContain('NOT pages')
     expect(src).toContain('The assistant\'s own analysis, frameworks, research findings')
     expect(src).toContain('UNLESS the user explicitly approved or adopted it')
     expect(src).toContain('execution narration is not durable knowledge')
@@ -43,15 +43,15 @@ describe('主提取路径（SessionReviewAgent A 节）：记忆锚定用户，�
   })
 
   it('产出门槛：至多 3 条，空数组是合法且常见的结果（user 2026-10-10：低价值不进记忆）', () => {
-    expect(src).toContain('At most 3 memories per review')
+    expect(src).toContain('At most 3 non-experience pages per review')
     expect(src).toContain('Most conversations correctly yield ZERO')
     expect(src).toContain('One high-value memory beats five marginal ones')
   })
 
   it('既有契约不回退：去重规则与经验资格门照旧', () => {
     expect(src).toContain('QUALIFICATION GATE')
-    expect(src).toContain('NOT already covered by them')
-    expect(src).toContain('EXISTING EXPERIENCES (the live experience pool')
+    expect(src).toContain('NOT already covered by the catalog')
+    expect(src).toContain('PAGE CATALOG (every live page')
   })
 })
 
@@ -74,23 +74,12 @@ describe('打捞路径（extractMemoriesFromOldToolPairs）：只收环境/工�
   })
 })
 
-describe('合并步骤（MemoryCompressionAgent）：无用户锚点的叙述条目可丢弃', () => {
-  const src = read('src/renderer/src/agent/one-shot-agent/MemoryCompressionAgent.ts')
-
-  it('丢弃判据在场，且 USER-EDITED 优先级仍是第一条', () => {
-    expect(src).toContain('merely narrates what happened in one conversation')
-    expect(src).toContain('a durable environment fact')
-    const rules = src.slice(src.indexOf('buildSystemPrompt'))
-    expect(rules.indexOf('USER-EDITED memories are authoritative')).toBeGreaterThan(0)
-    expect(rules.indexOf('USER-EDITED memories are authoritative')).toBeLessThan(rules.indexOf('merely narrates'))
-  })
-})
-
 describe('保存循环（extractAndSaveAll）：每轮收获的兜底帽', () => {
   const src = read('src/renderer/src/memory/MemoryManager.ts')
 
-  it('MAX_EXTRACT_PER_RUN 存在且被 slice 执法——提示词失守时结构兜底', () => {
-    expect(src).toContain('MAX_EXTRACT_PER_RUN = 5')
-    expect(src).toContain('result.memories.slice(0, MemoryManager.MAX_EXTRACT_PER_RUN)')
+  it('兜底帽随 v2 迁到 agent.parseResponse：非经验 slice(0,3) + 经验 slice(0,1)——提示词失守时结构兜底', () => {
+    const agentSrc = read('src/renderer/src/agent/one-shot-agent/SessionReviewAgent.ts')
+    expect(agentSrc).toContain('memoryOps.slice(0, 3)')
+    expect(agentSrc).toContain('experienceOps.slice(0, 1)')
   })
 })

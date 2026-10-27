@@ -73,3 +73,12 @@ export function parseScriptFences(rawContent: string): ScriptFenceResult {
 
   return { content: kept.join('\n'), files, rejected }
 }
+
+/** parseScriptFences 的对偶（PLAN-experience-sop B3）：把 files 数组还原成
+ *  `### File:` 围栏文本——pick_skill 的经验信封消费（files_json 里存的脚本
+ *  重新内联进正文形态，模型读到的就是提取协议的原始形状）。 */
+export function serializeScriptFences(files: ReadonlyArray<{ path: string; content: string }>): string {
+  return files
+    .map((f) => `### File: ${f.path}\n\`\`\`js\n${f.content}\n\`\`\``)
+    .join('\n\n')
+}
